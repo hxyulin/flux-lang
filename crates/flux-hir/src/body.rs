@@ -5,7 +5,7 @@ use flux_intern::Symbol;
 use flux_syntax::TextRange;
 use flux_syntax::ast::{BinaryOp, UnaryOp};
 
-use crate::{ConstId, FunctionId, StructId, TypeRef};
+use crate::{ConstId, FunctionId, StructId, TraitId, TypeRef};
 
 pub type ExprId = Idx<Expr>;
 pub type PatId = Idx<Pat>;
@@ -181,6 +181,16 @@ pub enum Res {
     Struct(StructId),
     /// A constant, free or associated.
     Const(ConstId),
+    /// An associated item that type checking finds from a type's inherent
+    /// and trait items: `T::f`, `S::f` for a trait's `f`, `Self::f` in a
+    /// trait, `<T as Tr>::f` (with `trait_`), or `Tr::f` (without `ty`,
+    /// whose `Self` is inferred). The trait's generic arguments, if
+    /// written, are the path's `ty` arguments.
+    Assoc {
+        ty: Option<TypeRefId>,
+        trait_: Option<TraitId>,
+        name: Symbol,
+    },
     /// Unresolved; already reported.
     Err,
 }

@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use flux_hir::{Diagnostic, FunctionId, Hir, ImplTarget};
+use flux_hir::{Diagnostic, FunctionId, Hir, ImplTarget, Owner};
 use flux_mir::mono::Instance;
 use flux_mir::{
     BinOp, Body, Constant, FileMir, Local, Operand, Place, ProjectionElem, Rvalue, StatementKind,
@@ -30,7 +30,7 @@ use keel_ir::{
 /// included: one function per instance of a function the program needs.
 /// An error if a generic function needs instances of itself without end.
 pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Result<Module, Diagnostic> {
-    let instances = flux_mir::mono::collect(hir, mir)?;
+    let instances = flux_mir::mono::collect(hir, &typed.sigs, mir)?;
     let mut module = Module::default();
     let items = &hir.items;
     let symbols: HashMap<FunctionId, String> = items
@@ -43,7 +43,7 @@ pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Result<Modul
                 // The function's path: its crate, its modules, and its
                 // type for an associated function, `krate::m::S::new`,
                 // where `S` is in `m` wherever the `impl` block is.
-                let target = f.owner.and_then(|i| items.impls[i].target);
+                let target = items.impl_of(id).and_then(|i| items.impls[i].target);
                 let module = match target {
                     Some(ImplTarget::Struct(s)) => items.structs[s].loc.module,
                     _ => f.loc.module,
@@ -55,10 +55,16 @@ pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Result<Modul
                     m = items.modules[id].parent;
                 }
                 path.reverse();
-                match target {
-                    Some(ImplTarget::Struct(s)) => path.push(items.structs[s].name.as_str()),
-                    Some(ImplTarget::Primitive(name)) => path.push(name.as_str()),
-                    None => {}
+                match (target, f.owner) {
+                    (Some(ImplTarget::Struct(s)), _) => path.push(items.structs[s].name.as_str()),
+                    (Some(ImplTarget::Primitive(name)), _) => path.push(name.as_str()),
+                    (None, Some(Owner::Trait(t))) => path.push(items.traits[t].name.as_str()),
+                    (None, Some(Owner::Impl(imp))) => {
+                        if let Some(t) = items.impls[imp].trait_ {
+                            path.push(items.traits[t].name.as_str());
+                        }
+                    }
+                    (None, None) => {}
                 }
                 path.push(f.name.as_str());
                 mangle(&path)
@@ -133,13 +139,14 @@ pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Result<Modul
 fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: Instance) -> String {
     let base = &symbols[&instance.function];
     let items = &hir.items;
-    let block =
-        items.functions[instance.function]
-            .owner
-            .filter(|&owner| match items.impls[owner].target {
-                Some(ImplTarget::Struct(s)) => !items.structs[s].generics.is_empty(),
-                _ => false,
-            });
+    // A trait's blocks for different types each have its methods.
+    let block = items.impl_of(instance.function).filter(|&owner| {
+        let imp = &items.impls[owner];
+        match imp.target {
+            Some(ImplTarget::Struct(s)) => !items.structs[s].generics.is_empty(),
+            _ => imp.trait_ref.is_some(),
+        }
+    });
     if instance.args.is_empty() && block.is_none() {
         return base.clone();
     }
@@ -928,6 +935,9 @@ impl Lower<'_, '_, '_> {
             function: func,
             args: generic_args,
         };
+        let instance =
+            flux_ty::traits::resolve_instance(&self.ctx.hir.items, &self.ctx.typed.sigs, instance);
+        let (func, generic_args) = (instance.function, instance.args);
         if let Some(&callee) = self.callees.get(&instance) {
             return callee;
         }

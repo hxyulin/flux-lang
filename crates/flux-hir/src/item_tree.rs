@@ -18,6 +18,7 @@ pub type StructId = Idx<Struct>;
 pub type ImplId = Idx<Impl>;
 pub type ModuleId = Idx<Module>;
 pub type ConstId = Idx<Const>;
+pub type TraitId = Idx<Trait>;
 
 /// A crate, an index into [`ItemTree::crates`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,14 +33,20 @@ pub struct ItemTree {
     /// functions of `impl` blocks.
     pub functions: Arena<Function>,
     pub structs: Arena<Struct>,
+    pub traits: Arena<Trait>,
     pub impls: Arena<Impl>,
     /// Free and associated constants.
     pub consts: Arena<Const>,
     pub uses: Vec<Use>,
     /// What each module's names mean, imports included.
     pub def_map: DefMap,
-    /// The associated items of each type, by name, in source order.
-    pub assoc: std::collections::HashMap<(ImplTarget, Symbol), Vec<AssocItem>>,
+    /// The associated items of each type's inherent `impl` blocks, by
+    /// name, in source order.
+    pub assoc: rustc_hash::FxHashMap<(ImplTarget, Symbol), Vec<AssocItem>>,
+    /// The `impl` blocks of each trait, in source order.
+    pub trait_impls: rustc_hash::FxHashMap<TraitId, Vec<ImplId>>,
+    /// The traits with a function of each name.
+    pub trait_fns: rustc_hash::FxHashMap<Symbol, Vec<TraitId>>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -86,10 +93,17 @@ pub struct ItemLoc {
     pub vis: Visibility,
 }
 
-/// An inherent `impl` block: `impl S { ... }` or `impl<T> S<T> { ... }`.
+/// An `impl` block: inherent, `impl S { ... }` or `impl<T> S<T> { ... }`,
+/// or of a trait, `impl Tr for S { ... }`.
 #[derive(Debug)]
 pub struct Impl {
     pub generics: Generics,
+    /// `Tr` in `impl Tr for S`, as written.
+    pub trait_ref: Option<Bound>,
+    /// The trait it implements, once resolved; `None` for an inherent
+    /// block or a trait that did not resolve (reported).
+    pub trait_: Option<TraitId>,
+    pub is_unsafe: bool,
     pub self_ty: TypeRef,
     /// The self type's range.
     pub self_range: TextRange,
@@ -97,7 +111,8 @@ pub struct Impl {
     pub def_range: TextRange,
     pub module: ModuleId,
     pub file: FileId,
-    /// The type it is for; `None` if that did not resolve (reported).
+    /// The type an inherent block is for; `None` for a trait's block or
+    /// if it did not resolve (reported).
     pub target: Option<ImplTarget>,
     pub functions: Vec<FunctionId>,
     pub consts: Vec<ConstId>,
@@ -112,13 +127,86 @@ pub struct Const {
     /// The type's range.
     pub ty_range: TextRange,
     pub loc: ItemLoc,
-    /// The `impl` block it is in, if any.
-    pub owner: Option<ImplId>,
+    /// The `impl` block or trait it is in, if any.
+    pub owner: Option<Owner>,
     /// The `CONST` node in `loc.file`, for lowering its value.
     pub node: NodeId,
     pub has_body: bool,
     /// `const N: i32`, where rustc reports errors about the constant.
     pub def_range: TextRange,
+}
+
+/// What an associated item is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Owner {
+    Impl(ImplId),
+    Trait(TraitId),
+}
+
+impl Owner {
+    pub fn as_impl(self) -> Option<ImplId> {
+        match self {
+            Owner::Impl(id) => Some(id),
+            Owner::Trait(_) => None,
+        }
+    }
+
+    pub fn as_trait(self) -> Option<TraitId> {
+        match self {
+            Owner::Trait(id) => Some(id),
+            Owner::Impl(_) => None,
+        }
+    }
+}
+
+/// A trait: `trait Tr<T>: Super where ... { ... }`.
+#[derive(Debug)]
+pub struct Trait {
+    pub name: Symbol,
+    /// Its own parameters; `Self` is an implicit one before them.
+    pub generics: Generics,
+    /// `Super` in `trait Tr: Super`: bounds on `Self` that every type
+    /// implementing it must also meet.
+    pub supertraits: Box<[Bound]>,
+    pub loc: ItemLoc,
+    pub is_unsafe: bool,
+    /// `#[lang = "name"]`, which only `core` may write: a trait the
+    /// compiler knows.
+    pub lang: Option<Symbol>,
+    pub functions: Vec<FunctionId>,
+    /// The names of its items flux does not support (reported), which
+    /// paths to them do not report again.
+    pub unsupported: Vec<Symbol>,
+    pub name_range: TextRange,
+    /// `trait Tr`, where rustc reports errors about the whole trait.
+    pub def_range: TextRange,
+}
+
+impl Trait {
+    /// Its function called `name`, if any.
+    pub fn function(&self, items: &ItemTree, name: Symbol) -> Option<FunctionId> {
+        self.functions
+            .iter()
+            .copied()
+            .find(|&f| items.functions[f].name == name)
+    }
+}
+
+/// A trait bound as written: `Tr` or `Tr<A>` in `T: Tr`, or the trait of
+/// `impl Tr for S`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bound {
+    pub path: Path,
+    pub range: TextRange,
+}
+
+/// One bound on a type: `T: Tr` in a parameter list or `where` clause
+/// (`T: A + B` is two).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WherePredicate {
+    pub ty: TypeRef,
+    pub ty_range: TextRange,
+    pub bound: Bound,
 }
 
 /// An associated item of an `impl` block's type.
@@ -201,8 +289,8 @@ pub struct Function {
     pub inherits_overflow_checks: bool,
     /// Takes more arguments after `params`, like C's `printf(fmt, ...)`.
     pub is_variadic: bool,
-    /// The `impl` block it is in, if any.
-    pub owner: Option<ImplId>,
+    /// The `impl` block or trait it is in, if any.
+    pub owner: Option<Owner>,
     /// Has a `self` parameter, which is `params[0]`: a method.
     pub has_self: bool,
     pub has_body: bool,
@@ -213,19 +301,28 @@ pub struct Function {
     /// From the first keyword to the end of the signature, where rustc
     /// reports errors about the whole function: `fn f(x: i32) -> i32`.
     pub def_range: TextRange,
+    /// The whole item, body included.
+    pub item_range: TextRange,
+    /// `(x: i32)`
+    pub param_list: TextRange,
 }
 
 #[derive(Debug)]
 pub struct Param {
     pub ty: TypeRef,
+    /// The type's range; `self`'s whole.
     pub range: TextRange,
+    /// `x: i32`
+    pub whole: TextRange,
 }
 
-/// An item's generic parameters: `<T, U>`. Only type parameters without
-/// bounds are supported.
+/// An item's generic parameters, `<T, U>`, and the bounds on them, from
+/// the list and its `where` clause. Only type parameters are supported.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Generics {
     pub params: Box<[GenericParam]>,
+    /// In source order: `T: A + B` in the list, then the `where` clause.
+    pub predicates: Box<[WherePredicate]>,
     /// From `<` to `>`; empty if there is no list.
     pub range: TextRange,
     /// Had lifetime parameters (reported as not supported).
@@ -286,6 +383,8 @@ pub enum UseKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Path {
     pub anchor: PathAnchor,
+    /// `<T as Tr>` or `<T>` before the segments: a qualified path.
+    pub qself: Option<Box<QSelf>>,
     pub segments: Box<[Symbol]>,
     /// Each segment's range, for diagnostics; empty for paths flux made.
     pub ranges: Box<[TextRange]>,
@@ -294,6 +393,16 @@ pub struct Path {
     /// The generic arguments after each segment, if any; empty if no
     /// segment has them.
     pub args: Box<[Option<GenericArgs>]>,
+}
+
+/// The start of a qualified path: `<T as Tr>` or `<T>`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QSelf {
+    pub ty: TypeRef,
+    pub ty_range: TextRange,
+    pub trait_: Option<Path>,
+    /// `<T as Tr>`
+    pub range: TextRange,
 }
 
 /// Generic arguments as written: `<A, B>` or `::<A, B>`.
@@ -324,6 +433,7 @@ impl Path {
     pub fn single(name: Symbol) -> Path {
         Path {
             anchor: PathAnchor::Plain,
+            qself: None,
             segments: Box::new([name]),
             ranges: Box::default(),
             anchor_ranges: Box::default(),
@@ -344,7 +454,7 @@ impl Path {
     /// The name, if this is one plain name.
     pub fn as_name(&self) -> Option<Symbol> {
         match (self.anchor, &*self.segments) {
-            (PathAnchor::Plain, [name]) => Some(*name),
+            (PathAnchor::Plain, [name]) if self.qself.is_none() => Some(*name),
             _ => None,
         }
     }
@@ -363,8 +473,14 @@ impl std::fmt::Display for Path {
             }
             PathAnchor::Global => f.write_str("::")?,
         }
+        if let Some(qself) = &self.qself {
+            match &qself.trait_ {
+                Some(t) => write!(f, "<{} as {t}>", qself.ty)?,
+                None => write!(f, "<{}>", qself.ty)?,
+            }
+        }
         for (i, segment) in self.segments.iter().enumerate() {
-            if i > 0 {
+            if i > 0 || self.qself.is_some() {
                 f.write_str("::")?;
             }
             write!(f, "{segment}")?;
@@ -480,14 +596,37 @@ impl ItemTree {
         self.crates[self.modules[module].krate.0 as usize].is_core
     }
 
-    /// `f`, or `S::f` for an associated function.
+    /// `f`, `S::f` for an associated function, `Tr::f` for a trait's
+    /// and `<S as Tr>::f` for one in a trait's `impl` block.
     pub fn function_path(&self, function: &Function) -> String {
-        match function.owner.and_then(|i| self.impls[i].target) {
+        let imp = match function.owner {
+            Some(Owner::Trait(t)) => return format!("{}::{}", self.traits[t].name, function.name),
+            Some(Owner::Impl(imp)) => &self.impls[imp],
+            None => return function.name.to_string(),
+        };
+        if let Some(r) = &imp.trait_ref {
+            return format!("<{} as {}>::{}", imp.self_ty, r.path, function.name);
+        }
+        match imp.target {
             Some(ImplTarget::Struct(strukt)) => {
                 format!("{}::{}", self.structs[strukt].name, function.name)
             }
             Some(ImplTarget::Primitive(name)) => format!("{name}::{}", function.name),
             None => function.name.to_string(),
+        }
+    }
+
+    /// The `impl` block `function` is in, if any.
+    pub fn impl_of(&self, function: FunctionId) -> Option<ImplId> {
+        self.functions[function].owner.and_then(Owner::as_impl)
+    }
+
+    /// The generic parameters of `owner`, before an associated item's own:
+    /// an `impl` block's, or a trait's after its `Self`.
+    pub fn owner_generics(&self, owner: Option<Owner>) -> Option<&Generics> {
+        match owner? {
+            Owner::Impl(imp) => Some(&self.impls[imp].generics),
+            Owner::Trait(t) => Some(&self.traits[t].generics),
         }
     }
 
@@ -655,7 +794,10 @@ impl Collector<'_> {
             ast::Item::ExternCrate(_) => "`extern crate` declarations",
             ast::Item::MacroCall(_) => "macros",
             ast::Item::Static(_) => "statics",
-            ast::Item::Trait(_) => "traits",
+            ast::Item::Trait(t) => {
+                self.collect_trait(ctx, t);
+                return;
+            }
             ast::Item::TypeAlias(_) => "type aliases",
         };
         unsupported(
@@ -746,6 +888,128 @@ impl Collector<'_> {
         Some(vis)
     }
 
+    /// The visibility of an associated item: as written in an inherent
+    /// `impl` block, and the trait's in a trait or its `impl` blocks,
+    /// where none may be written.
+    fn item_visibility(
+        &mut self,
+        ctx: Ctx,
+        vis: Option<ast::Visibility<'_>>,
+        owner: Option<Owner>,
+    ) -> Visibility {
+        let trait_vis = match owner {
+            Some(Owner::Trait(t)) => self.items.traits[t].loc.vis,
+            Some(Owner::Impl(imp)) if self.items.impls[imp].trait_ref.is_some() => {
+                Visibility::Public
+            }
+            _ => return self.visibility(ctx, vis),
+        };
+        if let Some(vis) = vis {
+            self.items.diagnostics.push(Diagnostic::new(
+                vis.syntax().text_range(),
+                "visibility qualifiers are not permitted here",
+            ));
+        }
+        trait_vis
+    }
+
+    fn collect_trait(&mut self, ctx: Ctx, t: ast::Trait<'_>) {
+        let is_core = self.items.is_core(ctx.module);
+        let mut lang = None;
+        for attr in t.attrs() {
+            match lang_attr(attr) {
+                Some(name) if is_core => lang = Some(name),
+                _ => check_attr(attr, &mut self.items.diagnostics),
+            }
+        }
+        let vis = self.visibility(ctx, t.visibility());
+        let Some(name) = t.name() else {
+            return;
+        };
+        let diagnostics = &mut self.items.diagnostics;
+        let generics =
+            collect_generics(t.generic_param_list(), t.where_clause(), true, diagnostics);
+        let mut supertraits = Vec::new();
+        if let Some(list) = t.type_bound_list() {
+            lower_bounds(list, &mut supertraits, diagnostics);
+        }
+        let name_range = name.syntax().text_range();
+        let id = self.items.traits.alloc(Trait {
+            name: Symbol::intern(name.text()),
+            generics,
+            supertraits: supertraits.into(),
+            loc: ItemLoc {
+                module: ctx.module,
+                file: ctx.file,
+                vis,
+            },
+            is_unsafe: t.unsafe_token().is_some(),
+            lang,
+            functions: Vec::new(),
+            unsupported: Vec::new(),
+            name_range,
+            def_range: TextRange::new(def_start(t.syntax()), name_range.end()),
+        });
+        let Some(list) = t.assoc_item_list() else {
+            return;
+        };
+        check_attrs(list.attrs(), &mut self.items.diagnostics);
+        for item in list.items() {
+            let what = match item {
+                ast::Item::Fn(f) => {
+                    if let Some(function) = self.collect_fn(ctx, f, false, Some(Owner::Trait(id))) {
+                        let data = &self.items.functions[function];
+                        let duplicate = self.items.traits[id]
+                            .functions
+                            .iter()
+                            .any(|&g| self.items.functions[g].name == data.name);
+                        if duplicate {
+                            // rustc's span has a bodiless item's `;`.
+                            let range = if data.has_body {
+                                data.def_range
+                            } else {
+                                data.item_range
+                            };
+                            let name = data.name;
+                            self.items.diagnostics.push(Diagnostic::new(
+                                range,
+                                format!("the name `{name}` is defined multiple times"),
+                            ));
+                        } else {
+                            self.items.traits[id].functions.push(function);
+                            let name = self.items.functions[function].name;
+                            self.items.trait_fns.entry(name).or_default().push(id);
+                        }
+                    }
+                    continue;
+                }
+                ast::Item::Const(c) => {
+                    if let Some(name) = c.name() {
+                        self.items.traits[id]
+                            .unsupported
+                            .push(Symbol::intern(name.text()));
+                    }
+                    "associated constants in traits"
+                }
+                ast::Item::TypeAlias(t) => {
+                    if let Some(name) = t.name() {
+                        self.items.traits[id]
+                            .unsupported
+                            .push(Symbol::intern(name.text()));
+                    }
+                    "associated types"
+                }
+                ast::Item::MacroCall(_) => "macros",
+                _ => "items like this in traits",
+            };
+            unsupported(
+                &mut self.items.diagnostics,
+                item.syntax().text_range(),
+                what,
+            );
+        }
+    }
+
     fn collect_module(&mut self, ctx: Ctx, m: ast::Module<'_>) {
         check_attrs(m.attrs(), &mut self.items.diagnostics);
         let vis = self.visibility(ctx, m.visibility());
@@ -827,6 +1091,7 @@ impl Collector<'_> {
         if let Some(tree) = u.use_tree() {
             let prefix = Path {
                 anchor: PathAnchor::Plain,
+                qself: None,
                 segments: Box::default(),
                 ranges: Box::default(),
                 anchor_ranges: Box::default(),
@@ -940,15 +1205,24 @@ impl Collector<'_> {
                 "visibility qualifiers are not permitted here",
             ));
         }
-        if imp.for_token().is_some() {
-            unsupported(diagnostics, range, "trait implementations");
-            return;
-        }
-        let generics = collect_generics(imp.generic_param_list(), false, diagnostics);
-        if let Some(clause) = imp.where_clause() {
-            unsupported(diagnostics, clause.syntax().text_range(), "`where` clauses");
-        }
-        if let Some(token) = imp.unsafe_token() {
+        let generics = collect_generics(
+            imp.generic_param_list(),
+            imp.where_clause(),
+            false,
+            diagnostics,
+        );
+        let trait_ref = match imp.trait_ty() {
+            Some(ty) => match lower_bound_type(ty, diagnostics) {
+                Some(bound) => Some(bound),
+                None => return,
+            },
+            // `impl for S`, reported by the parser.
+            None if imp.for_token().is_some() => return,
+            None => None,
+        };
+        if trait_ref.is_none()
+            && let Some(token) = imp.unsafe_token()
+        {
             diagnostics.push(Diagnostic::new(
                 token.text_range(),
                 "inherent impls cannot be unsafe",
@@ -956,9 +1230,16 @@ impl Collector<'_> {
         }
         let self_ty = lower_type(imp.self_ty(), diagnostics);
         let self_range = imp.self_ty().map_or(range, |t| t.syntax().text_range());
-        let def_range = TextRange::new(def_start(imp.syntax()), self_range.end());
+        let header_end = imp
+            .where_clause()
+            .map_or(self_range.end(), |w| w.syntax().text_range().end());
+        let def_range = TextRange::new(def_start(imp.syntax()), header_end);
+        let is_trait_impl = trait_ref.is_some();
         let id = self.items.impls.alloc(Impl {
             generics,
+            trait_ref,
+            trait_: None,
+            is_unsafe: imp.unsafe_token().is_some(),
             self_ty,
             self_range,
             def_range,
@@ -975,10 +1256,13 @@ impl Collector<'_> {
         for item in list.items() {
             let what = match item {
                 ast::Item::Fn(f) => {
-                    if let Some(function) = self.collect_fn(ctx, f, false, Some(id)) {
+                    if let Some(function) = self.collect_fn(ctx, f, false, Some(Owner::Impl(id))) {
                         self.items.impls[id].functions.push(function);
                     }
                     continue;
+                }
+                ast::Item::Const(_) if is_trait_impl => {
+                    "associated constants in trait implementations"
                 }
                 ast::Item::Const(c) => {
                     if let Some(konst) = self.collect_const(ctx, c, Some(id)) {
@@ -1003,7 +1287,7 @@ impl Collector<'_> {
         ctx: Ctx,
         f: ast::Fn<'_>,
         in_extern_block: bool,
-        owner: Option<ImplId>,
+        owner: Option<Owner>,
     ) -> Option<FunctionId> {
         let is_core = self.items.is_core(ctx.module);
         let mut inherits_overflow_checks = false;
@@ -1014,25 +1298,28 @@ impl Collector<'_> {
                 check_attr(attr, &mut self.items.diagnostics);
             }
         }
-        let vis = self.visibility(ctx, f.visibility());
+        let vis = self.item_visibility(ctx, f.visibility(), owner);
         let name = f.name()?;
+        let outer: Vec<Symbol> = match f.generic_param_list() {
+            Some(_) => self
+                .items
+                .owner_generics(owner)
+                .map_or(Vec::new(), |g| g.params.iter().map(|p| p.name).collect()),
+            None => Vec::new(),
+        };
         let diagnostics = &mut self.items.diagnostics;
-        let generics = collect_generics(f.generic_param_list(), false, diagnostics);
+        let generics =
+            collect_generics(f.generic_param_list(), f.where_clause(), false, diagnostics);
         if in_extern_block && !generics.is_empty() {
             diagnostics.push(Diagnostic::new(
                 TextRange::new(def_start(f.syntax()), f.syntax().text_range().end()),
                 "foreign items may not have type parameters",
             ));
         }
-        if let Some(owner) = owner {
+        {
             // A method's parameters may not shadow its block's.
             for param in generics.params.iter() {
-                if self.items.impls[owner]
-                    .generics
-                    .params
-                    .iter()
-                    .any(|p| p.name == param.name)
-                {
+                if outer.contains(&param.name) {
                     diagnostics.push(Diagnostic::new(
                         param.range,
                         format!(
@@ -1042,9 +1329,6 @@ impl Collector<'_> {
                     ));
                 }
             }
-        }
-        if let Some(clause) = f.where_clause() {
-            unsupported(diagnostics, clause.syntax().text_range(), "`where` clauses");
         }
         if let Some(token) = f.async_token() {
             unsupported(diagnostics, token.text_range(), "`async` functions");
@@ -1078,7 +1362,11 @@ impl Collector<'_> {
                         },
                         None => self_ty,
                     };
-                    params.push(Param { ty, range });
+                    params.push(Param {
+                        ty,
+                        range,
+                        whole: range,
+                    });
                     has_self = true;
                 }
             }
@@ -1106,6 +1394,7 @@ impl Collector<'_> {
                     range: param
                         .ty()
                         .map_or(param.syntax().text_range(), |t| t.syntax().text_range()),
+                    whole: param.syntax().text_range(),
                 });
             }
         }
@@ -1118,11 +1407,26 @@ impl Collector<'_> {
             None => (TypeRef::unit(), name.syntax().text_range()),
         };
         let has_body = f.body().is_some();
-        if owner.is_some() && !has_body {
+        if matches!(owner, Some(Owner::Impl(_))) && !has_body {
             diagnostics.push(Diagnostic::new(
-                name.syntax().text_range(),
+                TextRange::new(def_start(f.syntax()), f.syntax().text_range().end()),
                 "associated function in `impl` without body",
             ));
+        }
+        if !has_body
+            && !in_extern_block
+            && let Some(list) = f.param_list()
+        {
+            for param in list.params() {
+                if let Some(pat) = param.pat()
+                    && !matches!(pat, ast::Pat::IdentPat(_) | ast::Pat::WildcardPat(_))
+                {
+                    diagnostics.push(Diagnostic::new(
+                        pat.syntax().text_range(),
+                        "patterns aren't allowed in functions without bodies",
+                    ));
+                }
+            }
         }
         if in_extern_block && has_body {
             diagnostics.push(Diagnostic::new(
@@ -1144,29 +1448,35 @@ impl Collector<'_> {
         .flatten()
         .next()
         .map_or(0, |n| n.text_range().end());
-        Some(self.items.functions.alloc(Function {
-            def_range: TextRange::new(def_start(f.syntax()), signature_end),
-            name: Symbol::intern(name.text()),
-            generics,
-            params: params.into(),
-            ret,
-            ret_range,
-            loc: ItemLoc {
-                module: ctx.module,
-                file: ctx.file,
-                vis,
-            },
-            is_unsafe: in_extern_block || f.unsafe_token().is_some(),
-            is_extern: in_extern_block,
-            is_const: f.const_token().is_some(),
-            inherits_overflow_checks,
-            is_variadic,
-            owner,
-            has_self,
-            has_body: has_body && !in_extern_block,
-            node: f.syntax().id(),
-            name_range: name.syntax().text_range(),
-        }))
+        Some(
+            self.items.functions.alloc(Function {
+                def_range: TextRange::new(def_start(f.syntax()), signature_end),
+                item_range: TextRange::new(def_start(f.syntax()), f.syntax().text_range().end()),
+                param_list: f
+                    .param_list()
+                    .map_or(name.syntax().text_range(), |p| p.syntax().text_range()),
+                name: Symbol::intern(name.text()),
+                generics,
+                params: params.into(),
+                ret,
+                ret_range,
+                loc: ItemLoc {
+                    module: ctx.module,
+                    file: ctx.file,
+                    vis,
+                },
+                is_unsafe: in_extern_block || f.unsafe_token().is_some(),
+                is_extern: in_extern_block,
+                is_const: f.const_token().is_some(),
+                inherits_overflow_checks,
+                is_variadic,
+                owner,
+                has_self,
+                has_body: has_body && !in_extern_block,
+                node: f.syntax().id(),
+                name_range: name.syntax().text_range(),
+            }),
+        )
     }
 
     fn collect_const(
@@ -1176,7 +1486,7 @@ impl Collector<'_> {
         owner: Option<ImplId>,
     ) -> Option<ConstId> {
         check_attrs(c.attrs(), &mut self.items.diagnostics);
-        let vis = self.visibility(ctx, c.visibility());
+        let vis = self.item_visibility(ctx, c.visibility(), owner.map(Owner::Impl));
         let name = c.name();
         let name_end = name
             .map(|n| n.syntax().text_range().end())
@@ -1225,7 +1535,7 @@ impl Collector<'_> {
                     file: ctx.file,
                     vis,
                 },
-                owner,
+                owner: owner.map(Owner::Impl),
                 node: c.syntax().id(),
                 has_body,
                 def_range: TextRange::new(def_start, header_end),
@@ -1240,9 +1550,24 @@ impl Collector<'_> {
             return;
         };
         let diagnostics = &mut self.items.diagnostics;
-        let generics = collect_generics(s.generic_param_list(), true, diagnostics);
+        let generics = collect_generics(s.generic_param_list(), None, true, diagnostics);
         if let Some(clause) = s.where_clause() {
-            unsupported(diagnostics, clause.syntax().text_range(), "`where` clauses");
+            unsupported(
+                diagnostics,
+                clause.syntax().text_range(),
+                "`where` clauses on structs",
+            );
+        }
+        if let Some(p) = generics.predicates.first() {
+            let range = TextRange::new(
+                p.bound.range.start(),
+                generics
+                    .predicates
+                    .last()
+                    .map_or(p.bound.range, |p| p.bound.range)
+                    .end(),
+            );
+            unsupported(diagnostics, range, "trait bounds on structs");
         }
         let mut fields = Vec::new();
         let kind = if let Some(list) = s.record_field_list() {
@@ -1423,6 +1748,14 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
 /// has any or is malformed. For `use` declarations and visibilities.
 pub(crate) fn lower_path(path: ast::Path<'_>, diagnostics: &mut Vec<Diagnostic>) -> Option<Path> {
     let lowered = lower_generic_path(path, diagnostics)?;
+    if lowered.qself.is_some() {
+        unsupported(
+            diagnostics,
+            path.syntax().text_range(),
+            "qualified paths here",
+        );
+        return None;
+    }
     if !lowered.args.is_empty() {
         unsupported(diagnostics, path.syntax().text_range(), "generic arguments");
         return None;
@@ -1452,13 +1785,35 @@ pub(crate) fn lower_generic_path(
         current = p.qualifier();
     }
     segments.reverse();
+    // `<T as Tr>::f`: the qualified segment comes first.
+    let mut qself = None;
+    if segments[0].name_ref().is_none() && segments[0].l_angle_token().is_some() {
+        let segment = segments.remove(0);
+        let ty_range = segment
+            .self_ty()
+            .map_or(segment.syntax().text_range(), |t| t.syntax().text_range());
+        let ty = lower_type(segment.self_ty(), diagnostics);
+        let trait_ = match segment.trait_ty() {
+            Some(t) => Some(lower_generic_path(t.path()?, diagnostics)?),
+            None => None,
+        };
+        qself = Some(Box::new(QSelf {
+            ty,
+            ty_range,
+            trait_,
+            range: segment.syntax().text_range(),
+        }));
+        if segments.is_empty() {
+            return None;
+        }
+    }
     // A leading `::`, not a turbofish's.
     let leading = |segment: &ast::PathSegment<'_>| {
         let colons = segment.colon2_token()?;
         let name = segment.name_ref()?;
         Some(colons.text_range().start() < name.syntax().text_range().start())
     };
-    let mut anchor = if leading(&segments[0]) == Some(true) {
+    let mut anchor = if qself.is_none() && leading(&segments[0]) == Some(true) {
         PathAnchor::Global
     } else {
         PathAnchor::Plain
@@ -1486,6 +1841,14 @@ pub(crate) fn lower_generic_path(
             let message = format!("`{}` in paths can only be used in {what}", name.text());
             diagnostics.push(Diagnostic::new(range, message));
         };
+        if qself.is_some()
+            && (name.crate_token().is_some()
+                || name.super_token().is_some()
+                || name.self_token().is_some())
+        {
+            misplaced("start position", diagnostics);
+            return None;
+        }
         if name.crate_token().is_some() {
             if i != 0 || anchor != PathAnchor::Plain {
                 misplaced("start position", diagnostics);
@@ -1528,6 +1891,7 @@ pub(crate) fn lower_generic_path(
     }
     Some(Path {
         anchor,
+        qself,
         segments: names.into(),
         ranges: ranges.into(),
         anchor_ranges: anchor_ranges.into(),
@@ -1565,15 +1929,105 @@ pub(crate) fn lower_generic_args(
     }
 }
 
-/// An item's generic parameter list: type parameters without bounds or
-/// defaults, with distinct names.
+/// `#[lang = "name"]`'s name.
+fn lang_attr(attr: ast::Attr<'_>) -> Option<Symbol> {
+    if attr_name(attr) != Some("lang") {
+        return None;
+    }
+    let text = attr.meta()?.syntax().text();
+    let value = text.split('"').nth(1)?;
+    Some(Symbol::intern(value))
+}
+
+/// The trait of `impl Tr for S`, which must be a path.
+fn lower_bound_type(ty: ast::Type<'_>, diagnostics: &mut Vec<Diagnostic>) -> Option<Bound> {
+    let range = ty.syntax().text_range();
+    let ast::Type::PathType(path) = ty else {
+        diagnostics.push(Diagnostic::new(range, "expected a trait, found type"));
+        return None;
+    };
+    let path = lower_generic_path(path.path()?, diagnostics)?;
+    Some(Bound { path, range })
+}
+
+/// The trait bounds in `list`, `A + B`; others are reported.
+fn lower_bounds(
+    list: ast::TypeBoundList<'_>,
+    out: &mut Vec<Bound>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for bound in list.bounds() {
+        let range = bound.syntax().text_range();
+        let what = if bound.lifetime().is_some() {
+            "lifetime bounds"
+        } else if bound.use_token().is_some() {
+            "`use` bounds"
+        } else if bound.question_token().is_some() {
+            "`?Sized` bounds"
+        } else if bound.for_token().is_some() {
+            "higher-ranked bounds"
+        } else if bound.l_paren_token().is_some() {
+            "parenthesized bounds"
+        } else {
+            let Some(path) = bound.path_type().and_then(|p| p.path()) else {
+                continue;
+            };
+            if let Some(path) = lower_generic_path(path, diagnostics) {
+                out.push(Bound { path, range });
+            }
+            continue;
+        };
+        unsupported(diagnostics, range, what);
+    }
+}
+
+/// An item's generic parameter list and `where` clause: type parameters
+/// without defaults, with distinct names, and trait bounds on types.
 fn collect_generics(
     list: Option<ast::GenericParamList<'_>>,
+    where_clause: Option<ast::WhereClause<'_>>,
     defaults_allowed: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Generics {
+    let mut predicates = Vec::new();
+    let where_predicates = |predicates: &mut Vec<WherePredicate>,
+                            diagnostics: &mut Vec<Diagnostic>| {
+        let Some(clause) = where_clause else {
+            return;
+        };
+        for pred in clause.predicates() {
+            let range = pred.syntax().text_range();
+            if let Some(lifetime) = pred.lifetime() {
+                unsupported(
+                    diagnostics,
+                    lifetime.syntax().text_range(),
+                    "lifetime bounds",
+                );
+                continue;
+            }
+            if pred.for_token().is_some() {
+                unsupported(diagnostics, range, "higher-ranked bounds");
+                continue;
+            }
+            let ty_range = pred.ty().map_or(range, |t| t.syntax().text_range());
+            let ty = lower_type(pred.ty(), diagnostics);
+            let mut bounds = Vec::new();
+            if let Some(list) = pred.type_bound_list() {
+                lower_bounds(list, &mut bounds, diagnostics);
+            }
+            predicates.extend(bounds.into_iter().map(|bound| WherePredicate {
+                ty: ty.clone(),
+                ty_range,
+                bound,
+            }));
+        }
+    };
     let Some(list) = list else {
-        return Generics::default();
+        where_predicates(&mut predicates, diagnostics);
+        return Generics {
+            predicates: predicates.into(),
+            ..Generics::default()
+        };
     };
     let mut params: Vec<GenericParam> = Vec::new();
     let mut has_lifetimes = false;
@@ -1585,10 +2039,16 @@ fn collect_generics(
                 let Some(name) = param.name() else {
                     continue;
                 };
-                if let Some(bounds) = param.type_bound_list()
-                    && bounds.bounds().next().is_some()
-                {
-                    unsupported(diagnostics, bounds.syntax().text_range(), "trait bounds");
+                if let Some(list) = param.type_bound_list() {
+                    let mut bounds = Vec::new();
+                    lower_bounds(list, &mut bounds, diagnostics);
+                    let ty = TypeRef::Path(Path::single(Symbol::intern(name.text())));
+                    let ty_range = name.syntax().text_range();
+                    predicates.extend(bounds.into_iter().map(|bound| WherePredicate {
+                        ty: ty.clone(),
+                        ty_range,
+                        bound,
+                    }));
                 }
                 if let Some(default) = param.default_type() {
                     if defaults_allowed {
@@ -1629,8 +2089,10 @@ fn collect_generics(
         };
         unsupported(diagnostics, range, what);
     }
+    where_predicates(&mut predicates, diagnostics);
     Generics {
         params: params.into(),
+        predicates: predicates.into(),
         range: list.syntax().text_range(),
         has_lifetimes,
     }

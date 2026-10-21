@@ -19,8 +19,8 @@ use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
 
 use crate::item_tree::{
-    AssocItem, ConstId, ImplTarget, ItemTree, ModuleId, Path, PathAnchor, StructKind, TypeRef,
-    UseKind, Visibility, is_primitive,
+    AssocItem, ConstId, ImplTarget, ItemTree, ModuleId, Path, PathAnchor, StructKind, TraitId,
+    TypeRef, UseKind, Visibility, is_primitive,
 };
 use crate::{Diagnostic, FileId, FunctionId, StructId};
 
@@ -36,6 +36,7 @@ pub enum Ns {
 pub enum Def {
     Module(ModuleId),
     Struct(StructId),
+    Trait(TraitId),
     Function(FunctionId),
     Const(ConstId),
 }
@@ -107,6 +108,13 @@ pub enum Resolved {
     AssocConst(ConstId),
     /// `Self`, in an `impl` block.
     SelfType,
+    /// `S::f` where `S`'s inherent blocks have no `f`: the segments
+    /// before this one name a type, and this one an item that type
+    /// checking looks for among the traits it implements.
+    TypeRelative(usize),
+    /// `Tr::f`: function `f` of trait `Tr`, named by the segment before
+    /// it.
+    TraitItem(TraitId, FunctionId),
 }
 
 /// Why a path did not resolve.
@@ -261,6 +269,9 @@ impl ItemTree {
                     Some(Resolved::Primitive(name)) => {
                         return self.resolve_assoc(from, ImplTarget::Primitive(name), path, 1, ns);
                     }
+                    Some(Resolved::Def(Def::Trait(t))) => {
+                        return self.resolve_trait_item(t, path, 1, ns);
+                    }
                     Some(Resolved::SelfType) => return Ok(Resolved::SelfType),
                     _ => {
                         let message = if first == sym::std || first == sym::alloc {
@@ -317,6 +328,7 @@ impl ItemTree {
                     }
                     return self.resolve_assoc(from, ImplTarget::Struct(strukt), path, i + 1, ns);
                 }
+                Def::Trait(t) if !last => return self.resolve_trait_item(t, path, i + 1, ns),
                 def if last => return Ok(Resolved::Def(def)),
                 _ => {
                     let message = format!("expected module, found `{name}`");
@@ -335,6 +347,7 @@ impl ItemTree {
                 "unit struct"
             }
             Def::Struct(_) => "struct",
+            Def::Trait(_) => "trait",
             Def::Function(_) => "function",
             Def::Const(_) => "constant",
         };
@@ -355,10 +368,6 @@ impl ItemTree {
         index: usize,
         ns: Ns,
     ) -> Result<Resolved, ResolveError> {
-        let ty = match target {
-            ImplTarget::Struct(strukt) => format!("struct `{}`", self.structs[strukt].name),
-            ImplTarget::Primitive(name) => format!("type `{name}`"),
-        };
         let name = path.segments[index];
         if index + 1 != path.segments.len() {
             return Err(ResolveError::Failed {
@@ -373,19 +382,8 @@ impl ItemTree {
             });
         }
         let Some(item) = self.assoc_item(target, name) else {
-            let message = match target {
-                // Rust's `core` has many more.
-                ImplTarget::Primitive(ty) => {
-                    format!("`{ty}::{name}` is not supported yet")
-                }
-                ImplTarget::Struct(_) => format!(
-                    "no associated function or constant named `{name}` found for {ty} in the current scope"
-                ),
-            };
-            return Err(ResolveError::Failed {
-                at: At::Segment(index),
-                message,
-            });
+            // Perhaps a trait's, which type checking finds.
+            return Ok(Resolved::TypeRelative(index));
         };
         let (vis, what, resolved) = match item {
             AssocItem::Function(f) => {
@@ -411,6 +409,35 @@ impl ItemTree {
             });
         }
         Ok(resolved)
+    }
+
+    /// `Tr::name`, where segment `index` is `name`.
+    fn resolve_trait_item(
+        &self,
+        t: TraitId,
+        path: &Path,
+        index: usize,
+        ns: Ns,
+    ) -> Result<Resolved, ResolveError> {
+        let name = path.segments[index];
+        if index + 1 != path.segments.len() || ns != Ns::Values {
+            return Err(ResolveError::Failed {
+                at: At::Segment(index),
+                message: "associated types are not supported yet".into(),
+            });
+        }
+        let data = &self.traits[t];
+        match data.function(self, name) {
+            Some(f) => Ok(Resolved::TraitItem(t, f)),
+            None if data.unsupported.contains(&name) => Err(ResolveError::Reported),
+            None => Err(ResolveError::Failed {
+                at: At::Segment(index),
+                message: format!(
+                    "cannot find method or associated constant `{name}` in trait `{}`",
+                    data.name
+                ),
+            }),
+        }
     }
 
     /// A single name, in scope in `module`.
@@ -495,6 +522,7 @@ impl ItemTree {
         match def {
             Def::Module(m) => self.modules[m].vis,
             Def::Struct(s) => self.structs[s].loc.vis,
+            Def::Trait(t) => self.traits[t].loc.vis,
             Def::Function(f) => self.functions[f].loc.vis,
             Def::Const(c) => self.consts[c].loc.vis,
         }
@@ -557,6 +585,10 @@ fn define_items(items: &mut ItemTree) {
         };
         let binding = item(Def::Struct(id), s.loc.vis, s.loc.file, s.def_range);
         defined.push((s.loc.module, s.name, ns, binding));
+    }
+    for (id, t) in items.traits.iter() {
+        let binding = item(Def::Trait(id), t.loc.vis, t.loc.file, t.def_range);
+        defined.push((t.loc.module, t.name, &[Ns::Types], binding));
     }
     for (id, c) in items.consts.iter() {
         if let (None, Some(name)) = (c.owner, c.name) {
@@ -787,10 +819,93 @@ fn report_unresolved(items: &mut ItemTree, index: usize) {
     error(items, file, at, message);
 }
 
+impl ItemTree {
+    /// The trait a bound names, written in `module`, and an error about
+    /// it, with where it is, unless it was reported already: a private
+    /// trait is still the trait.
+    pub fn resolve_trait(
+        &self,
+        module: ModuleId,
+        bound: &crate::Bound,
+    ) -> (Option<TraitId>, Option<(TextRange, String)>) {
+        let path = &bound.path;
+        match self.resolve(module, path, Ns::Types) {
+            Err(e @ ResolveError::Private { .. }) => {
+                let range = e.range(path, bound.range);
+                let ResolveError::Private {
+                    resolved, message, ..
+                } = e
+                else {
+                    unreachable!()
+                };
+                let t = match resolved {
+                    Resolved::Def(Def::Trait(t)) => Some(t),
+                    _ => None,
+                };
+                (t, Some((range, message)))
+            }
+            resolved => match self.trait_of(path, bound.range, resolved) {
+                Ok(t) => (Some(t), None),
+                Err(e) => (None, e),
+            },
+        }
+    }
+
+    fn trait_of(
+        &self,
+        path: &Path,
+        range: TextRange,
+        resolved: Result<Resolved, ResolveError>,
+    ) -> Result<TraitId, Option<(TextRange, String)>> {
+        let last = path.segments.len().saturating_sub(1);
+        let at = path.range(last, range);
+        let name = path.segments.get(last).copied().unwrap_or(kw::Empty);
+        match resolved {
+            Ok(Resolved::Def(Def::Trait(t))) => Ok(t),
+            Ok(Resolved::Def(def)) => {
+                let what = match def {
+                    Def::Module(_) => "module",
+                    Def::Struct(_) => "struct",
+                    Def::Function(_) => "function",
+                    Def::Const(_) => "constant",
+                    Def::Trait(_) => unreachable!(),
+                };
+                Err(Some((at, format!("expected trait, found {what} `{name}`"))))
+            }
+            Ok(Resolved::Primitive(p)) => Err(Some((
+                at,
+                format!("expected trait, found builtin type `{p}`"),
+            ))),
+            Ok(Resolved::SelfType) => {
+                Err(Some((at, "expected trait, found self type `Self`".into())))
+            }
+            Ok(_) => Err(Some((at, format!("expected trait, found `{path}`")))),
+            Err(ResolveError::NotFound { module: None, .. }) => Err(Some((
+                at,
+                format!("cannot find trait `{name}` in this scope"),
+            ))),
+            Err(ResolveError::NotFound {
+                module: Some(m), ..
+            }) => Err(Some((
+                at,
+                format!("cannot find trait `{name}` in {}", self.in_module(m)),
+            ))),
+            Err(e @ ResolveError::Failed { .. }) => {
+                let range = e.range(path, range);
+                let ResolveError::Failed { message, .. } = e else {
+                    unreachable!()
+                };
+                Err(Some((range, message)))
+            }
+            Err(ResolveError::Private { .. } | ResolveError::Reported) => Err(None),
+        }
+    }
+}
+
 /// An associated item's name, `impl` block, position, file and range.
 type ItemInfo = (
     Option<Symbol>,
-    Option<crate::item_tree::ImplId>,
+    Option<crate::item_tree::Owner>,
     (FileId, u32),
     FileId,
     TextRange,
@@ -875,6 +990,19 @@ fn resolve_impls(items: &mut ItemTree) {
             d.file = file;
             items.diagnostics.push(d);
         };
+        if let Some(bound) = imp.trait_ref.clone() {
+            // The self type of a trait's block is resolved with
+            // signatures; it may be any type.
+            let (t, e) = items.resolve_trait(module, &bound);
+            if let Some((range, message)) = e {
+                error(items, range, message);
+            }
+            if let Some(t) = t {
+                items.impls[id].trait_ = Some(t);
+                items.trait_impls.entry(t).or_default().push(id);
+            }
+            continue;
+        }
         let target = match &imp.self_ty {
             TypeRef::Path(path)
                 if path

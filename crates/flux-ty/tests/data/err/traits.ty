@@ -1,0 +1,263 @@
+struct S {}
+struct NotTr {}
+struct W<T> { 0: T }
+fn m(&Self) -> i32
+fn f() -> i32
+fn m(&S) -> i32
+    self@0: &S
+fn take<T>(T) -> ()
+    _x@0: T
+fn take_ref<T>(&T) -> ()
+    _x@0: &T
+fn second<T>(i32, T) -> ()
+    _a@0: i32
+    _b@1: T
+fn twice<T>(T, T) -> ()
+    _a@0: T
+    _b@1: T
+fn make<T>() -> T
+fn turbofish<T>(T) -> ()
+    _x@0: T
+fn wrapped<T>(W<T>) -> ()
+    _w@0: W<T>
+fn where_bound<T>(T) -> ()
+    _x@0: T
+fn bound_at_argument() -> ()
+fn bound_at_callee() -> ()
+fn bound_at_call() -> ()
+    _x@0: NotTr
+fn bound_at_turbofish() -> ()
+    _y@0: NotTr
+fn bound_on_primitive() -> ()
+fn bound_on_compound() -> ()
+fn two_bounds<T>(T) -> ()
+    _x@0: T
+fn bound_twice() -> ()
+fn bound_at_qself() -> ()
+fn bound_at_trait_path() -> ()
+fn generic_caller<T>(T) -> ()
+    x@0: T
+fn generic_qself<T>(&T) -> i32
+    x@0: &T
+fn no_method(NotTr) -> ()
+    n@0: NotTr
+fn no_assoc_fn() -> ()
+fn unbounded<T>(T) -> ()
+    x@0: T
+fn unbounded_path<T>(&T) -> ()
+    x@0: &T
+fn assoc_fn_as_method(S) -> ()
+    s@0: S
+fn m(&W<T>) -> i32
+    self@0: &W<T>
+fn no_method_on_reference() -> ()
+fn qualified_wrong_argument<T>(&T) -> ()
+    x@0: &T
+fn unsatisfied_impl(W<NotTr>) -> ()
+    w@0: W<NotTr>
+fn blanket(&Self) -> ()
+    self@0: &Self
+fn blanket_fn() -> ()
+fn unsatisfied_blanket(NotTr) -> ()
+    n@0: NotTr
+fn hidden(&Self) -> ()
+    self@0: &Self
+fn hidden_fn() -> ()
+fn not_in_scope(S) -> ()
+    s@0: S
+fn same(&Self) -> ()
+    self@0: &Self
+fn same_fn() -> ()
+fn same(&Self) -> ()
+    self@0: &Self
+fn same_fn() -> ()
+fn b(&Self) -> ()
+    self@0: &Self
+fn ambiguous(S) -> ()
+    s@0: S
+fn ambiguous_bound<T>(T) -> ()
+    t@0: T
+fn ambiguous_super<T>(T) -> ()
+    t@0: T
+fn other_trait<T>(T) -> ()
+    t@0: T
+fn no_self_type() -> ()
+fn never() -> ()
+fn consume(Self) -> ()
+    self@0: Self
+fn bind(Self) -> ()
+    self@0: Self
+    _x@1: Self
+fn pass(Self) -> ()
+    self@0: Self
+fn conv(&Self) -> T
+fn conv(&S) -> bool
+    self@0: &S
+fn missing_trait_args<T>(T) -> ()
+    _t@0: T
+fn extra_trait_args<T>(T) -> ()
+    _t@0: T
+fn wants_i64<T>(T) -> ()
+    _t@0: T
+fn wrong_trait_argument() -> ()
+fn wrong_result(S) -> ()
+    s@0: S
+fn pairs(&Self) -> ()
+    self@0: &Self
+fn tuple_instance() -> ()
+fn arg_counts(&S) -> ()
+    s@0: &S
+fn p(&Self) -> ()
+    self@0: &Self
+fn get(&W<T>) -> ()
+    self@0: &W<T>
+fn new(T) -> W<T>
+    x@0: T
+fn checked(&W<T>) -> ()
+    self@0: &W<T>
+fn put<U>(&W<T>, U) -> ()
+    self@0: &W<T>
+    _u@1: U
+fn inherent_bounds(W<NotTr>) -> ()
+    w@0: W<NotTr>
+fn g<T>(&Self, T) -> ()
+    self@0: &Self
+    x@1: T
+fn method_generics(S) -> ()
+    s@0: S
+fn by_ref(Self) -> ()
+fn by_ref(&S) -> ()
+    self@0: &S
+fn through_ref(S) -> ()
+    s@0: S
+fn one(&Self) -> i32
+fn two(&Self, i32) -> i32
+fn three() -> ()
+fn provided(&Self) -> ()
+    self@0: &Self
+fn one(&NotTr) -> i32
+    self@0: &NotTr
+fn one(&W<i32>) -> u8
+    self@0: &W<i32>
+fn two(&W<i32>, u8) -> i32
+    self@0: &W<i32>
+    x@1: u8
+fn three() -> ()
+fn four(&W<i32>) -> ()
+    self@0: &W<i32>
+fn one(&mut W<u8>) -> i32
+    self@0: &mut W<u8>
+fn two(&W<u8>) -> i32
+    self@0: &W<u8>
+fn three(&W<u8>) -> ()
+    self@0: &W<u8>
+fn one() -> i32
+fn two(&W<bool>, i32, i32) -> i32
+    self@0: &W<bool>
+    x@1: i32
+    y@2: i32
+fn three() -> ()
+fn conv(&NotTr) -> i8
+    self@0: &NotTr
+fn make() -> Self
+fn make() -> i32
+fn one(W<u16>) -> i32
+    self@0: W<u16>
+fn two(&W<u16>, i32) -> ()
+    self@0: &W<u16>
+    x@1: i32
+fn three() -> ()
+fn g<T>(&Self, T) -> ()
+fn h(&Self) -> ()
+fn g(&S, i32) -> ()
+    self@0: &S
+    x@1: i32
+fn h<T>(&S) -> ()
+    self@0: &S
+fn main() -> ()
+error 824..829: the trait bound `NotTr: Tr` is not satisfied
+error 845..851: the trait bound `NotTr: Tr` is not satisfied
+error 868..873: the trait bound `NotTr: Tr` is not satisfied
+error 888..896: the trait bound `NotTr: Tr` is not satisfied
+error 915..920: the trait bound `NotTr: Tr` is not satisfied
+error 953..958: the trait bound `NotTr: Tr` is not satisfied
+error 1018..1024: the trait bound `NotTr: Tr` is not satisfied
+error 1071..1076: the trait bound `NotTr: Tr` is not satisfied
+error 1106..1111: the trait bound `NotTr: Tr` is not satisfied
+error 1154..1157: the trait bound `u8: Tr` is not satisfied
+error 1169..1173: the trait bound `bool: Tr` is not satisfied
+error 1263..1265: the trait bound `&S: Tr` is not satisfied
+error 1277..1283: the trait bound `(S, S): Tr` is not satisfied
+error 1439..1444: the trait bound `NotTr: Tr` is not satisfied
+error 1439..1444: the trait bound `NotTr: Other` is not satisfied
+error 1527..1532: the trait bound `NotTr: Tr` is not satisfied
+error 1559..1564: the trait bound `NotTr: Tr` is not satisfied
+error 1681..1687: the trait bound `NotTr: Tr` is not satisfied
+error 1801..1802: the trait bound `T: Tr` is not satisfied
+error 1849..1850: the trait bound `T: Tr` is not satisfied
+error 1963..1964: no method named `m` found for struct `NotTr` in the current scope
+error 2009..2010: no associated function or constant named `f` found for struct `NotTr` in the current scope
+error 2047..2048: no method named `m` found for type parameter `T` in the current scope
+error 2100..2101: no associated function or constant named `f` found for type parameter `T` in the current scope
+error 2120..2121: no associated function or constant named `m` found for type parameter `T` in the current scope
+error 2165..2166: no method named `f` found for struct `S` in the current scope
+error 2354..2355: no method named `m` found for reference `&NotTr` in the current scope
+error 2419..2420: mismatched types: expected `&S`, found `&T`
+error 2467..2468: the method `m` exists for struct `W<NotTr>`, but its trait bounds were not satisfied
+error 2481..2482: the method `m` exists for struct `W<{integer}>`, but its trait bounds were not satisfied
+error 2628..2635: the method `blanket` exists for struct `NotTr`, but its trait bounds were not satisfied
+error 2650..2660: the associated function or constant `blanket_fn` exists for struct `NotTr`, but its trait bounds were not satisfied
+error 2874..2880: no method named `hidden` found for struct `S` in the current scope
+error 2891..2900: no associated function or constant named `hidden_fn` found for struct `S` in the current scope
+error 3202..3206: multiple applicable items in scope
+error 3217..3224: multiple applicable items in scope
+error 3274..3278: multiple applicable items in scope
+error 3345..3349: multiple applicable items in scope
+error 3448..3449: no method named `b` found for type parameter `T` in the current scope
+error 3541..3548: cannot call associated function on trait without specifying the corresponding `impl` type
+error 3632..3633: the trait bound `S: Other` is not satisfied
+error 3700..3709: the trait bound `NotTr: Tr` is not satisfied
+error 3827..3831: the size for values of type `Self` cannot be known at compilation time
+error 3849..3853: the size for values of type `Self` cannot be known at compilation time
+error 3869..3871: the size for values of type `Self` cannot be known at compilation time
+error 3899..3903: the size for values of type `Self` cannot be known at compilation time
+error 4174..4178: missing generics for trait `Gen2`
+error 4194..4198: trait takes 1 generic argument but 2 generic arguments were supplied
+error 4247..4251: missing generics for trait `Gen2`
+error 4287..4289: trait takes 0 generic arguments but 1 generic argument was supplied
+error 4387..4388: the trait bound `S: Conv<i64>` is not satisfied
+error 4484..4489: mismatched types: expected `u8`, found `i32`
+error 4509..4518: mismatched types: expected `bool`, found `i32`
+error 4630..4635: no method named `pairs` found for tuple `(u8, u8)` in the current scope
+error 4717..4718: this method takes 0 arguments but 1 argument was supplied
+error 4735..4747: this function takes 0 arguments but 2 arguments were supplied
+error 4767..4772: this function takes 1 argument but 2 arguments were supplied
+error 4876..4880: no method named `nope` found for reference `&Self` in the current scope
+error 5184..5187: the method `get` exists for struct `W<NotTr>`, but its trait bounds were not satisfied
+error 5210..5215: the trait bound `NotTr: Tr` is not satisfied
+error 5242..5245: the associated function or constant `new` exists for struct `W<NotTr>`, but its trait bounds were not satisfied
+error 5260..5267: the trait bound `NotTr: Tr` is not satisfied
+error 5281..5286: the trait bound `NotTr: Tr` is not satisfied
+error 5301..5306: the trait bound `NotTr: Tr` is not satisfied
+error 5455..5456: multiple applicable items in scope
+error 5628..5629: the trait bound `S: ByRef` is not satisfied
+error 5795..5813: not all trait items implemented, missing: `two`, `three`
+error 5905..5907: method `one` has an incompatible type for trait
+error 5948..5950: method `two` has an incompatible type for trait
+error 6001..6018: method `four` is not a member of trait `Req`
+error 6054..6063: method `one` has an incompatible type for trait
+error 6102..6107: method `two` has 1 parameter but the declaration in trait `Req::two` has 2
+error 6139..6154: method `three` has a `&self` declaration in the impl, but not in the trait
+error 6188..6203: method `one` has a `&self` declaration in the trait, but not in the impl
+error 6234..6255: method `two` has 3 parameters but the declaration in trait `Req::two` has 2
+error 6352..6354: method `conv` has an incompatible type for trait
+error 6454..6457: method `make` has an incompatible type for trait
+error 6512..6516: method `one` has an incompatible type for trait
+error 6569..6569: method `two` has an incompatible type for trait
+error 6720..6720: method `g` has 0 type parameters but its trait declaration has 1 type parameter
+error 6749..6750: method `h` has 1 type parameter but its trait declaration has 0 type parameters
+error 6822..6837: conflicting implementations of trait `Over` for type `S`
+error 6872..6890: conflicting implementations of trait `Over` for type `W<S>`
+error 6931..6943: conflicting implementations of trait `Q` for type `S`
+error 7039..7061: implementing the trait `Safe` is not unsafe
+error 7066..7083: the trait `Unsafe` requires an `unsafe impl` declaration

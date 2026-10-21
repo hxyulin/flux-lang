@@ -4,6 +4,18 @@ struct DupStruct<T> { a: T }
 
 struct Default<T> { a: T }
 
+impl<T> S<T>;
+
+impl<T> S<T>;
+
+impl<T> T;
+
+impl<T> *const T;
+
+impl<T> (T, T);
+
+impl<T> S<T>;
+
 fn f() -> () {}
 
 fn dup_fn<T>(x@0: T) -> () {}
@@ -42,7 +54,7 @@ fn param_literal<T>() -> () {
 }
 
 fn param_assoc<T>() -> () {
-    <error>();
+    <T>::new();
 }
 
 unsafe extern fn foreign() -> ();
@@ -51,9 +63,9 @@ fn lifetime(x@0: &i32) -> () {}
 
 fn const_param() -> () {}
 
-fn bound<T>(x@0: T) -> () {}
+fn bound<T>(x@0: T) -> () where T: Copy {}
 
-fn where_clause<T>(x@0: T) -> () {}
+fn where_clause<T>(x@0: T) -> () where T: Copy {}
 
 fn main() -> () {}
 
@@ -68,7 +80,6 @@ error 615..617: type arguments are not allowed on local variable
 error 670..671: constant takes 0 generic arguments but 1 generic argument was supplied
 error 783..784: cannot find value `T` in this scope
 error 825..826: expected struct, variant or union type, found type parameter `T`
-error 869..872: no associated function or constant named `new` found for type parameter `T` in the current scope
 error 933..949: foreign items may not have type parameters
 error 1005..1014: no nominal type found for inherent implementation
 error 1019..1035: cannot define inherent `impl` for primitive types
@@ -76,7 +87,5 @@ error 1040..1054: cannot define inherent `impl` for primitive types
 error 1093..1095: lifetime parameters are not supported yet
 error 1101..1103: lifetimes are not supported yet
 error 1128..1142: const generics are not supported yet
-error 1162..1166: trait bounds are not supported yet
-error 1203..1221: `where` clauses are not supported yet
 error 1246..1249: defaults for type parameters are not supported yet
 error 1285..1302: associated constants in generic `impl` blocks are not supported yet

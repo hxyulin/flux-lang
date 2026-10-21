@@ -1,5 +1,9 @@
 struct S;
 
+impl S;
+
+impl S;
+
 fn not_an_earlier_ancestor() -> () {}
 
 fn not_an_ancestor() -> () {}

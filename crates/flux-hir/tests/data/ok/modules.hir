@@ -4,6 +4,10 @@ struct Token;
 
 struct Counter { value: i32 }
 
+impl Point;
+
+impl Counter;
+
 fn Point::new(x@0: i32, y@1: i32) -> Point {
     Point { x: x@0, y: y@1 }
 }

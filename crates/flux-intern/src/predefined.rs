@@ -173,6 +173,11 @@ predefined! {
         Ord,
         Iterator,
         IntoIterator,
+        // Lang item names, as `#[lang = "..."]` writes them.
+        sized,
+        copy,
+        clone,
+        drop,
         // Attributes and well-known names.
         main,
         derive,

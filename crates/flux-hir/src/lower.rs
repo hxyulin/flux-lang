@@ -18,7 +18,8 @@ use crate::item_tree::{
 use crate::item_tree::{check_attr, check_attrs, lower_type, unsupported};
 use crate::literal::{parse_int, unescape_c_str};
 use crate::{
-    ConstId, Diagnostic, FunctionId, ImplTarget, ItemTree, ModuleId, Path, StructId, StructKind,
+    Bound, ConstId, Diagnostic, FunctionId, ImplTarget, ItemTree, ModuleId, Owner, Path, StructId,
+    StructKind, TypeRef,
 };
 
 /// Where a pattern binds, for "cannot shadow" messages.
@@ -66,6 +67,52 @@ pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> 
         for param in list.params() {
             params.push(ctx.lower_pat(param.pat(), param.syntax(), PatSite::Param));
         }
+        // Each name may be bound by one parameter only. Most parameters
+        // are names, compared without allocating.
+        let name = |ctx: &Ctx<'_>, p: PatId| match ctx.pats[p] {
+            Pat::Bind(b) => Some(ctx.bindings[b].name),
+            _ => None,
+        };
+        let simple = params
+            .iter()
+            .all(|&p| matches!(ctx.pats[p], Pat::Bind(_) | Pat::Wild | Pat::Missing));
+        if simple {
+            for i in 1..params.len() {
+                let Some(n) = name(&ctx, params[i]) else {
+                    continue;
+                };
+                if params[..i].iter().any(|&q| name(&ctx, q) == Some(n)) {
+                    let range = ctx.source_map.pats.get(params[i]).copied();
+                    ctx.error(
+                        range.unwrap_or_default(),
+                        format!("identifier `{n}` is bound more than once in this parameter list"),
+                    );
+                }
+            }
+        } else if params.len() > 1 {
+            let mut binds = Vec::new();
+            let mut stack: Vec<PatId> = params.iter().rev().copied().collect();
+            while let Some(p) = stack.pop() {
+                if let Pat::Bind(b) = ctx.pats[p] {
+                    binds.push((ctx.bindings[b].name, p));
+                }
+                let first = stack.len();
+                stack.extend(ctx.pats[p].children());
+                stack[first..].reverse();
+            }
+            for i in 1..binds.len() {
+                let (name, p) = binds[i];
+                if binds[..i].iter().any(|&(n, _)| n == name) {
+                    let range = ctx.source_map.pats.get(p).copied().unwrap_or_default();
+                    ctx.error(
+                        range,
+                        format!(
+                            "identifier `{name}` is bound more than once in this parameter list"
+                        ),
+                    );
+                }
+            }
+        }
     }
     let root = match f.body() {
         Some(block) => ctx.lower_block(block),
@@ -80,6 +127,9 @@ struct Ctx<'a> {
     /// type: `self_target`, unless that did not resolve.
     in_impl: bool,
     self_target: Option<ImplTarget>,
+    /// In a trait or a trait's `impl` block, where `Self` may be any
+    /// type, and `Self::f` is left to type checking.
+    self_is_any: bool,
     /// The module the function is in, where its names are resolved.
     module: ModuleId,
     /// The generic parameters in scope: the `impl` block's, then the
@@ -99,26 +149,41 @@ struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    /// Lowering an item in `module`, in the `impl` block `owner`, with
-    /// its own generic parameters if it has any.
+    /// Lowering an item in `module`, in the `impl` block or trait
+    /// `owner`, with its own generic parameters if it has any.
     fn new(
         items: &'a ItemTree,
         module: ModuleId,
-        owner: Option<crate::item_tree::ImplId>,
+        owner: Option<Owner>,
         own: Option<&crate::Generics>,
     ) -> Ctx<'a> {
-        let generics = owner
-            .map(|owner| &items.impls[owner].generics)
+        let generics = items
+            .owner_generics(owner)
             .into_iter()
             .chain(own)
             .flat_map(|g| g.params.iter().map(|p| p.name))
             .collect();
+        let imp = owner.and_then(Owner::as_impl).map(|i| &items.impls[i]);
         Ctx {
             items,
             module,
             generics,
             in_impl: owner.is_some(),
-            self_target: owner.and_then(|owner| items.impls[owner].target),
+            // A trait's block for a struct may use its constructor as
+            // `Self`.
+            self_target: imp.and_then(|imp| {
+                imp.target.or_else(|| match &imp.self_ty {
+                    TypeRef::Path(path) => match items.resolve(imp.module, path, Ns::Types) {
+                        Ok(Resolved::Def(Def::Struct(s))) => Some(ImplTarget::Struct(s)),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+            }),
+            self_is_any: owner.is_some_and(|o| match o {
+                Owner::Trait(_) => true,
+                Owner::Impl(i) => items.impls[i].trait_ref.is_some(),
+            }),
             exprs: Arena::new(),
             pats: Arena::new(),
             bindings: Arena::new(),
@@ -682,6 +747,8 @@ impl<'a> Ctx<'a> {
         let res = self.resolve_value(&path, range, call);
         let last = path.segments.len() - 1;
         let (item, ty) = match res {
+            Res::Assoc { .. } if path.qself.is_none() && last > 0 => (Some(last), Some(last - 1)),
+            Res::Assoc { .. } => (Some(last), None),
             Res::Function(f) if self.items.functions[f].owner.is_some() && last > 0 => {
                 (Some(last), Some(last - 1))
             }
@@ -715,6 +782,30 @@ impl<'a> Ctx<'a> {
         let mut generics = self.path_generics(&path, range, item, ty, res);
         if self_type {
             generics.get_or_insert_default().self_type = true;
+        }
+        // `<T as Tr<A>>::f`: the trait's arguments.
+        if let Res::Assoc {
+            trait_: Some(_), ..
+        } = res
+            && let Some(trait_path) = path.qself.as_ref().and_then(|q| q.trait_.as_ref())
+        {
+            let last = trait_path.segments.len().saturating_sub(1);
+            for (i, args) in trait_path.args.iter().enumerate() {
+                let Some(args) = args else {
+                    continue;
+                };
+                if i == last {
+                    let segment = trait_path.range(i, range);
+                    generics.get_or_insert_default().ty = Some(self.segment_args(segment, args));
+                } else {
+                    let name = trait_path.segments[i];
+                    let at = args.ranges.first().copied().unwrap_or(args.range);
+                    self.error(
+                        at,
+                        format!("type arguments are not allowed on module `{name}`"),
+                    );
+                }
+            }
         }
         (res, generics)
     }
@@ -810,17 +901,21 @@ impl<'a> Ctx<'a> {
                 return Res::Struct(strukt);
             }
         }
-        // `T::f`: there are no associated items without trait bounds.
+        if path.qself.is_some() {
+            return self.resolve_qualified(path, range);
+        }
+        // `T::f`, and `Self::f` in a trait or a trait's block: an item of
+        // a trait, or of `Self`'s type, that type checking finds.
         if path.anchor == PathAnchor::Plain
             && path.segments.len() > 1
-            && self.generics.contains(&path.segments[0])
+            && (self.generics.contains(&path.segments[0])
+                || (path.segments[0] == kw::SelfUpper && self.self_is_any))
         {
-            let message = format!(
-                "no associated function or constant named `{}` found for type parameter `{}` in the current scope",
-                path.segments[1], path.segments[0]
-            );
-            self.error(path.range(1, range), message);
-            return Res::Err;
+            if path.segments.len() > 2 {
+                self.unsupported(path.range(1, range), "associated types");
+                return Res::Err;
+            }
+            return self.type_relative(path, 1, range);
         }
         // `Self::f`: an associated function of this block's type.
         let resolved = match (path.anchor, path.segments.first()) {
@@ -846,6 +941,12 @@ impl<'a> Ctx<'a> {
             _ => self.items.resolve(self.module, path, Ns::Values),
         };
         match self.reported(resolved, path, range) {
+            Ok(Resolved::TypeRelative(index)) => self.type_relative(path, index, range),
+            Ok(Resolved::TraitItem(t, _)) => Res::Assoc {
+                ty: None,
+                trait_: Some(t),
+                name: path.segments[path.segments.len() - 1],
+            },
             Ok(Resolved::Def(Def::Function(f)) | Resolved::Assoc(f)) => Res::Function(f),
             Ok(Resolved::Def(Def::Const(c)) | Resolved::AssocConst(c)) => Res::Const(c),
             Ok(Resolved::Def(Def::Struct(strukt))) => {
@@ -910,6 +1011,74 @@ impl<'a> Ctx<'a> {
                 self.error(range, message);
                 Res::Err
             }
+        }
+    }
+
+    /// `T::f`, where the segments before `index` name a type `T`, and
+    /// segment `index` is the last.
+    fn type_relative(&mut self, path: &Path, index: usize, range: TextRange) -> Res {
+        let prefix = Path {
+            segments: path.segments[..index].into(),
+            ranges: path.ranges[..index.min(path.ranges.len())].into(),
+            args: path.args[..index.min(path.args.len())].into(),
+            ..path.clone()
+        };
+        let ty_range = TextRange::new(
+            range.start(),
+            path.range(index - 1, range).end().max(range.start()),
+        );
+        let ty = self.types.alloc(TypeRef::Path(prefix));
+        self.source_map.types.insert(ty, ty_range);
+        Res::Assoc {
+            ty: Some(ty),
+            trait_: None,
+            name: path.segments[index],
+        }
+    }
+
+    /// `<T as Tr>::f` or `<T>::f`.
+    fn resolve_qualified(&mut self, path: &Path, range: TextRange) -> Res {
+        let qself = path.qself.as_ref().expect("a qualified path");
+        if path.segments.len() != 1 {
+            self.unsupported(path.range(0, range), "associated types");
+            return Res::Err;
+        }
+        let name = path.segments[0];
+        let trait_ = match &qself.trait_ {
+            None => None,
+            Some(trait_path) => {
+                let bound = Bound {
+                    path: trait_path.clone(),
+                    range: qself.range,
+                };
+                let (t, e) = self.items.resolve_trait(self.module, &bound);
+                if let Some((at, message)) = e {
+                    self.error(at, message);
+                }
+                let Some(t) = t else {
+                    return Res::Err;
+                };
+                let data = &self.items.traits[t];
+                if data.unsupported.contains(&name) {
+                    return Res::Err;
+                }
+                if data.function(self.items, name).is_none() {
+                    let message = format!(
+                        "cannot find method or associated constant `{name}` in trait `{}`",
+                        data.name
+                    );
+                    self.error(path.range(0, range), message);
+                    return Res::Err;
+                }
+                Some(t)
+            }
+        };
+        let ty = self.types.alloc(qself.ty.clone());
+        self.source_map.types.insert(ty, qself.ty_range);
+        Res::Assoc {
+            ty: Some(ty),
+            trait_,
+            name,
         }
     }
 

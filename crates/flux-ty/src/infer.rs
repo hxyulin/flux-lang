@@ -1,5 +1,7 @@
 //! Type inference for one body.
 
+mod solve;
+
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -12,11 +14,13 @@ use flux_hir::{
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
 
+use crate::traits::{Predicate, elaborate, predicates_of};
 use crate::ty::{InferVar, IntTy, Mutability, Ty, TyKind};
 use crate::{
     FnSig, Instance, Signatures, TypeScope, function_name, generic_names, impl_target,
     resolve_or_report, self_ty, wrong_arg_count,
 };
+use solve::{CallSite, Obligation};
 
 /// The types of one body.
 #[derive(Debug)]
@@ -70,6 +74,7 @@ pub fn infer_body(
         is_unsafe: data.is_unsafe,
         const_context: data.is_const.then_some("constant functions"),
         ret: sig.ret,
+        param_env: elaborate(sigs, &predicates_of(items, sigs, function)),
     };
     let mut ctx = Ctx::new(items, sigs, owner, body, source_map);
     for (i, &pat) in body.params.iter().enumerate() {
@@ -79,6 +84,9 @@ pub fn infer_body(
     ctx.expect(body.root, sig.ret);
     let ty = ctx.infer_expr(body.root);
     ctx.coerce(ty, sig.ret, body.root);
+    if let Some(flux_hir::Owner::Trait(_)) = data.owner {
+        ctx.check_unsized_self();
+    }
     ctx.finish()
 }
 
@@ -99,6 +107,11 @@ pub fn infer_const(
         is_unsafe: false,
         const_context: Some("constants"),
         ret,
+        param_env: data
+            .owner
+            .and_then(flux_hir::Owner::as_impl)
+            .and_then(|imp| sigs.impl_predicates.get(imp))
+            .map_or(Vec::new(), |p| elaborate(sigs, p)),
     };
     let mut ctx = Ctx::new(items, sigs, owner, body, source_map);
     ctx.expect(body.root, ret);
@@ -118,6 +131,8 @@ struct Owner {
     /// called.
     const_context: Option<&'static str>,
     ret: Ty,
+    /// The bounds in scope, with the supertraits they imply.
+    param_env: Vec<Predicate>,
 }
 
 impl<'a> Ctx<'a> {
@@ -151,6 +166,10 @@ impl<'a> Ctx<'a> {
             uninit_bindings: HashSet::new(),
             unsafe_depth: u32::from(owner.is_unsafe),
             ret: owner.ret,
+            param_env: owner.param_env,
+            obligations: Vec::new(),
+            traits_in_scope: None,
+            reported_unmet: HashSet::new(),
             deferred: Vec::new(),
             diagnostics: Vec::new(),
         }
@@ -257,6 +276,13 @@ struct Ctx<'a> {
     uninit_bindings: HashSet<BindingId>,
     unsafe_depth: u32,
     ret: Ty,
+    /// The bounds in scope, with the supertraits they imply.
+    param_env: Vec<Predicate>,
+    /// Trait obligations not yet met.
+    obligations: Vec<Obligation>,
+    traits_in_scope: Option<Vec<flux_hir::TraitId>>,
+    /// Unmet obligations reported, by range and message.
+    reported_unmet: HashSet<(TextRange, String)>,
     deferred: Vec<Deferred>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -515,6 +541,14 @@ impl Ctx<'_> {
     }
 
     fn mismatch(&mut self, expected: Ty, actual: Ty, range: TextRange) {
+        // The unknown parts are not reported again.
+        let mut unknown = Vec::new();
+        self.unknown_vars(expected, &mut unknown);
+        self.unknown_vars(actual, &mut unknown);
+        for var in unknown {
+            let root = self.root(var);
+            self.reported_vars.insert(root);
+        }
         let (expected, actual) = (self.describe(expected), self.describe(actual));
         self.error(
             range,
@@ -633,7 +667,7 @@ impl Ctx<'_> {
             return self.self_ty;
         }
         let written = generics.ty.clone()?;
-        let owner = self.items.functions[function].owner?;
+        let owner = self.items.impl_of(function)?;
         let TyKind::Adt(adt, _) = self.sigs.impls.get(owner)?.kind() else {
             return None;
         };
@@ -653,7 +687,7 @@ impl Ctx<'_> {
         let mut found = None;
         let mut count = 0;
         for f in candidates {
-            let applies = match (target, items.functions[f].owner) {
+            let applies = match (target, items.impl_of(f)) {
                 (Some(target), Some(owner)) => {
                     let impl_ty = sigs.impls.get(owner).copied().unwrap_or(Ty::ERROR);
                     self.impl_applies(impl_ty, target)
@@ -700,12 +734,24 @@ impl Ctx<'_> {
         expr: ExprId,
         function: FunctionId,
         target: Option<Ty>,
+        trait_args: Option<&[Ty]>,
         origin: TextRange,
     ) -> Vec<Ty> {
         let (items, sigs) = (self.items, self.sigs);
         let data = &items.functions[function];
         let mut args = Vec::new();
-        if let Some(owner) = data.owner {
+        if let Some(flux_hir::Owner::Trait(t)) = data.owner {
+            // `Self`, then the trait's parameters.
+            args.push(target.unwrap_or_else(|| self.new_var(false, origin)));
+            match trait_args {
+                Some(given) => args.extend_from_slice(given),
+                None => {
+                    let count = items.traits[t].generics.len();
+                    args.extend((0..count).map(|_| self.new_var(false, origin)));
+                }
+            }
+        }
+        if let Some(owner) = items.impl_of(function) {
             let count = items.impls[owner].generics.len();
             let vars: Vec<Ty> = (0..count).map(|_| self.new_var(false, origin)).collect();
             let impl_ty = sigs
@@ -721,6 +767,7 @@ impl Ctx<'_> {
             args.extend(vars);
         }
         let kind = match (data.owner, data.has_self) {
+            (Some(flux_hir::Owner::Trait(_)), false) => "associated function",
             (_, true) => "method",
             (Some(_), false) => "associated function",
             (None, false) => "function",
@@ -957,6 +1004,12 @@ impl Ctx<'_> {
                 .get(*binding)
                 .copied()
                 .unwrap_or(Ty::ERROR),
+            Expr::Path(Res::Assoc { ty, trait_, name }) => {
+                if self.resolve_assoc_fn(id, *ty, *trait_, *name).is_some() {
+                    self.error(self.range(id), "functions as values are not supported yet");
+                }
+                Ty::ERROR
+            }
             Expr::Path(Res::Function(_)) => {
                 self.error(self.range(id), "functions as values are not supported yet");
                 Ty::ERROR
@@ -1179,15 +1232,15 @@ impl Ctx<'_> {
     }
 
     fn infer_call(&mut self, id: ExprId, callee: ExprId, args: &[ExprId]) -> Ty {
-        let function = match self.body.exprs[callee] {
-            Expr::Path(Res::Function(function)) => function,
+        let found = match self.body.exprs[callee] {
+            Expr::Path(Res::Function(function)) => self.select_path_fn(callee, function),
+            Expr::Path(Res::Assoc { ty, trait_, name }) => {
+                self.resolve_assoc_fn(callee, ty, trait_, name)
+            }
             Expr::Path(Res::Struct(strukt)) => {
                 return self.infer_constructor(id, callee, strukt, args);
             }
-            Expr::Path(Res::Err) | Expr::Missing => {
-                self.infer_args(args);
-                return Ty::ERROR;
-            }
+            Expr::Path(Res::Err) | Expr::Missing => None,
             _ => {
                 let ty = self.infer_expr(callee);
                 let ty = self.describe(ty);
@@ -1195,56 +1248,22 @@ impl Ctx<'_> {
                     self.range(callee),
                     format!("expected function, found `{ty}`"),
                 );
-                self.infer_args(args);
-                return Ty::ERROR;
+                None
             }
         };
-        // A generic struct's blocks for different instances of it may
-        // each have a function of this name.
-        let items = self.items;
-        let data = &items.functions[function];
-        let target = self.path_target(callee, function);
-        let segment = self.source_map.segments.get(callee).copied();
-        let segment = segment.unwrap_or_else(|| self.range(callee));
-        let selected = match data.owner.and_then(|o| items.impls[o].target) {
-            Some(target_struct @ flux_hir::ImplTarget::Struct(s))
-                if !items.structs[s].generics.is_empty() =>
-            {
-                let candidates = items.assoc.get(&(target_struct, data.name));
-                let candidates = candidates.map_or(&[][..], |v| v);
-                let candidates = candidates.iter().filter_map(|&item| match item {
-                    flux_hir::AssocItem::Function(f) => Some(f),
-                    flux_hir::AssocItem::Const(_) => None,
-                });
-                self.select(candidates, target)
-            }
-            _ => Ok(function),
-        };
-        let function = match selected {
-            Ok(function) => function,
-            Err(0) => {
-                let what = target.map_or("this type".to_owned(), |t| {
-                    format!("struct `{}`", self.describe(t))
-                });
-                self.error(
-                    segment,
-                    format!(
-                        "no associated function or constant named `{}` found for {what} in the current scope",
-                        data.name
-                    ),
-                );
-                self.infer_args(args);
-                return Ty::ERROR;
-            }
-            Err(_) => {
-                self.error(segment, "multiple applicable items in scope");
-                self.infer_args(args);
-                return Ty::ERROR;
-            }
+        let Some((function, target, trait_args)) = found else {
+            self.infer_args(args);
+            return Ty::ERROR;
         };
         let data = &self.items.functions[function];
         let name = function_name(self.items, function);
-        let generic_args = self.instantiate_fn(callee, function, target, self.range(callee));
+        let generic_args = self.instantiate_fn(
+            callee,
+            function,
+            target,
+            trait_args.as_deref(),
+            self.range(callee),
+        );
         let sig = &sig_of(self.sigs, function, &generic_args);
         self.meet_expectation(id, sig.ret);
         let (want, got) = (sig.params.len(), args.len());
@@ -1278,6 +1297,26 @@ impl Ctx<'_> {
                 None => {}
             }
         }
+        let segment = self.source_map.segments.get(callee).copied();
+        let site = CallSite {
+            callee: segment.unwrap_or_else(|| self.range(callee)),
+            whole: self.range(id),
+            receiver: None,
+            args,
+            qself: self.qself_range(callee),
+            expr: callee,
+        };
+        let known = match self.body.exprs[callee] {
+            // `S::f`, `<S>::f`: found on a type written in the path.
+            Expr::Path(Res::Assoc { ty: Some(_), .. }) => target,
+            _ => target.filter(|_| {
+                self.body
+                    .generic_args
+                    .get(callee)
+                    .is_some_and(|g| g.ty.is_some())
+            }),
+        };
+        self.register_call_bounds(function, &generic_args, site, known);
         if data.is_unsafe && self.unsafe_depth == 0 {
             self.error(
                 self.range(id),
@@ -1300,6 +1339,68 @@ impl Ctx<'_> {
             );
         }
         sig.ret
+    }
+
+    /// The function a path names, `function` as resolved, and the type
+    /// its block must be for, if the path says: of a generic struct's
+    /// blocks with an associated function of one name, the one for that
+    /// type. `None` if there is none (reported).
+    fn select_path_fn(
+        &mut self,
+        callee: ExprId,
+        function: FunctionId,
+    ) -> Option<(FunctionId, Option<Ty>, Option<Vec<Ty>>)> {
+        let items = self.items;
+        let data = &items.functions[function];
+        let target = self.path_target(callee, function);
+        let segment = self.source_map.segments.get(callee).copied();
+        let segment = segment.unwrap_or_else(|| self.range(callee));
+        let selected = match items.impl_of(function).and_then(|o| items.impls[o].target) {
+            Some(target_struct @ flux_hir::ImplTarget::Struct(s))
+                if !items.structs[s].generics.is_empty() =>
+            {
+                let candidates = items.assoc.get(&(target_struct, data.name));
+                let candidates = candidates.map_or(&[][..], |v| v);
+                let candidates = candidates.iter().filter_map(|&item| match item {
+                    flux_hir::AssocItem::Function(f) => Some(f),
+                    flux_hir::AssocItem::Const(_) => None,
+                });
+                self.select(candidates, target)
+            }
+            _ => Ok(function),
+        };
+        match selected {
+            Ok(function) => Some((function, target, None)),
+            Err(0) => {
+                let what = target.map_or("this type".to_owned(), |t| {
+                    format!("struct `{}`", self.describe(t))
+                });
+                self.error(
+                    segment,
+                    format!(
+                        "no associated function or constant named `{}` found for {what} in the current scope",
+                        data.name
+                    ),
+                );
+                None
+            }
+            Err(_) => {
+                self.error(segment, "multiple applicable items in scope");
+                None
+            }
+        }
+    }
+
+    /// `<S as Tr>`'s `S` in a qualified path `callee`.
+    fn qself_range(&self, callee: ExprId) -> Option<TextRange> {
+        match self.body.exprs[callee] {
+            Expr::Path(Res::Assoc {
+                ty: Some(ty),
+                trait_: Some(_),
+                ..
+            }) => self.source_map.types.get(ty).copied(),
+            _ => None,
+        }
     }
 
     /// A function may be called only where every struct in its signature
@@ -1624,50 +1725,111 @@ impl Ctx<'_> {
             .and_then(|names| names.first())
             .copied()
             .unwrap_or_else(|| self.range(id));
-        let (base, derefs) = self.autoderef(receiver_ty);
-        if let Some(target) = impl_target(base) {
-            let items = self.items;
-            let candidates = items.assoc.get(&(target, method)).map_or(&[][..], |v| v);
-            let candidates = candidates.iter().filter_map(|&item| match item {
-                flux_hir::AssocItem::Function(f) if items.functions[f].has_self => Some(f),
+        // Each type the receiver dereferences to, outermost first, as
+        // rustc probes: methods whose `self` is that type, then a
+        // reference to it; at each, its inherent methods before those of
+        // traits.
+        let mut base = receiver_ty;
+        let mut derefs = 0;
+        // The first type the method exists for, if only through blocks
+        // whose bounds do not hold.
+        let mut unmet = None;
+        let items = self.items;
+        let traits = items.trait_fns.contains_key(&method);
+        let inherent = |ty: Ty| {
+            impl_target(ty)
+                .and_then(|t| items.assoc.get(&(t, method)))
+                .map_or(&[][..], |v| v)
+        };
+        loop {
+            // `&self` on a `&T` receiver passes it on.
+            let through = match base.kind() {
+                TyKind::Ref(m, pointee) => Some((self.shallow(pointee), derefs + 1, Some(m))),
                 _ => None,
-            });
-            match self.select(candidates, Some(base)) {
-                Ok(function) => {
-                    return self.check_method(id, function, (base, derefs), args, name_range);
-                }
-                Err(2..) => {
-                    self.error(name_range, "multiple applicable items in scope");
-                    return Ty::ERROR;
-                }
-                // flux's `core` has only some of the primitive types'
-                // methods.
-                _ if matches!(target, flux_hir::ImplTarget::Primitive(_)) => {
-                    let what = self.describe(receiver_ty);
-                    self.error(
-                        name_range,
-                        format!("the method `{method}` on `{what}` is not supported yet"),
-                    );
-                    return Ty::ERROR;
-                }
-                _ => {
-                    let what = self.describe(receiver_ty);
-                    let kind = if derefs > 0 { "reference" } else { "struct" };
-                    self.error(
-                        name_range,
-                        format!("no method named `{method}` found for {kind} `{what}` in the current scope"),
-                    );
-                    return Ty::ERROR;
+            };
+            let tries = [
+                Some((base, derefs, None)),
+                through,
+                Some((base, derefs, Some(Mutability::Not))),
+                Some((base, derefs, Some(Mutability::Mut))),
+            ];
+            for (ty, d, mode) in tries.into_iter().flatten() {
+                match self.probe_method(ty, mode, method, inherent(ty), traits) {
+                    Ok(Some((function, trait_args))) => {
+                        return self.check_method(
+                            id,
+                            receiver,
+                            function,
+                            (ty, d),
+                            trait_args,
+                            args,
+                            name_range,
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(()) => {
+                        self.error(name_range, "multiple applicable items in scope");
+                        return Ty::ERROR;
+                    }
                 }
             }
+            if unmet.is_none() && self.exists_unmet(base, method, true) {
+                unmet = Some(base);
+            }
+            match self.shallow(base).kind() {
+                TyKind::Ref(_, pointee) => {
+                    base = self.shallow(pointee);
+                    derefs += 1;
+                }
+                _ => break,
+            }
         }
-        if let TyKind::Param(param) = base.kind() {
+        if let Some(ty) = unmet {
+            let what = self.describe_kind(ty);
             self.error(
                 name_range,
                 format!(
-                    "no method named `{method}` found for type parameter `{}` in the current scope",
-                    param.name
+                    "the method `{method}` exists for {what}, but its trait bounds were not satisfied"
                 ),
+            );
+            return Ty::ERROR;
+        }
+        // A method some trait has is missing, as rustc would say;
+        // flux's `core` has only some of the primitive types' methods.
+        let in_some_trait = self.items.traits.values().any(|t| {
+            t.function(self.items, method)
+                .is_some_and(|f| self.items.functions[f].has_self)
+        });
+        let other = matches!(base.kind(), TyKind::Tuple(_) | TyKind::RawPtr(..));
+        if in_some_trait && (other || impl_target(base).is_some()) || base.has_params() {
+            let what = match base.kind() {
+                TyKind::Adt(adt, _)
+                    if receiver_ty == base && self.other_instance_has(base, method) =>
+                {
+                    let generics = &self.items.structs[adt.strukt].generics;
+                    format!("struct `{}{generics}`", adt.name)
+                }
+                _ => self.describe_kind(receiver_ty),
+            };
+            self.error(
+                name_range,
+                format!("no method named `{method}` found for {what} in the current scope"),
+            );
+            return Ty::ERROR;
+        }
+        if let Some(target) = impl_target(base) {
+            if matches!(target, flux_hir::ImplTarget::Primitive(_)) {
+                let what = self.describe(receiver_ty);
+                self.error(
+                    name_range,
+                    format!("the method `{method}` on `{what}` is not supported yet"),
+                );
+                return Ty::ERROR;
+            }
+            let what = self.describe_kind(receiver_ty);
+            self.error(
+                name_range,
+                format!("no method named `{method}` found for {what} in the current scope"),
             );
             return Ty::ERROR;
         }
@@ -1697,18 +1859,64 @@ impl Ctx<'_> {
         Ty::ERROR
     }
 
+    /// The method `name` whose `self` is `ty`, taken as `mode` says:
+    /// inherent, else of a trait (with the trait's generic arguments if
+    /// a bound gives them). `Err` if several are (E0034).
+    #[allow(clippy::type_complexity)]
+    fn probe_method(
+        &mut self,
+        ty: Ty,
+        mode: Option<Mutability>,
+        name: Symbol,
+        inherent: &[flux_hir::AssocItem],
+        traits: bool,
+    ) -> Result<Option<(FunctionId, Option<crate::GenericArgs>)>, ()> {
+        let items = self.items;
+        if !inherent.is_empty() {
+            let candidates = inherent.iter().filter_map(|&item| match item {
+                flux_hir::AssocItem::Function(f)
+                    if items.functions[f].has_self && self_mode(items, f) == mode =>
+                {
+                    Some(f)
+                }
+                _ => None,
+            });
+            match self.select(candidates, Some(ty)) {
+                Ok(function) => return Ok(Some((function, None))),
+                Err(2..) => return Err(()),
+                Err(_) => {}
+            }
+        }
+        if !traits {
+            return Ok(None);
+        }
+        let found: Vec<_> = self
+            .trait_items(ty, name, true)
+            .into_iter()
+            .filter(|&(f, _)| self_mode(items, f) == mode)
+            .collect();
+        match found.as_slice() {
+            [] => Ok(None),
+            [(function, trait_ref)] => Ok(Some((*function, trait_ref.map(|t| t.args)))),
+            _ => Err(()),
+        }
+    }
+
     /// A call of `function`, a method, on a receiver of type `base` once
     /// `derefs` references are taken off it.
+    #[allow(clippy::too_many_arguments)]
     fn check_method(
         &mut self,
         id: ExprId,
+        receiver: ExprId,
         function: FunctionId,
         (base, derefs): (Ty, u32),
+        trait_args: Option<&[Ty]>,
         args: &[ExprId],
         name_range: TextRange,
     ) -> Ty {
         let data = &self.items.functions[function];
-        let generic_args = self.instantiate_fn(id, function, Some(base), name_range);
+        let generic_args = self.instantiate_fn(id, function, Some(base), trait_args, name_range);
         if !self.items.is_visible(data.loc.vis, self.module) {
             self.error(name_range, format!("method `{}` is private", data.name));
         }
@@ -1724,12 +1932,20 @@ impl Ctx<'_> {
                 format!("cannot call non-const method `{name}` in {context}"),
             );
         }
+        // The bounds first: an `impl` block they select may tell the
+        // trait's generic arguments, and so the return type.
+        let site = CallSite {
+            callee: name_range,
+            whole: self.range(id),
+            receiver: Some(receiver),
+            args,
+            qself: None,
+            expr: id,
+        };
+        self.register_call_bounds(function, &generic_args, site, Some(base));
         let sig = &sig_of(self.sigs, function, &generic_args);
         self.meet_expectation(id, sig.ret);
-        let autoref = match sig.params[0].kind() {
-            TyKind::Ref(m, _) => Some(m),
-            _ => None,
-        };
+        let autoref = self_mode(self.items, function);
         self.methods.insert(
             id,
             Method {
@@ -1755,6 +1971,7 @@ impl Ctx<'_> {
             let ty = self.expr_types.get(arg).copied().unwrap_or(Ty::ERROR);
             self.coerce(ty, param, arg);
         }
+        self.select_obligations();
         if self.items.functions[function].is_unsafe && self.unsafe_depth == 0 {
             let name = self.items.function_path(&self.items.functions[function]);
             self.error(
@@ -1940,6 +2157,7 @@ impl Ctx<'_> {
 
     fn finish(mut self) -> InferenceResult {
         let mut reported = std::mem::take(&mut self.reported_vars);
+        self.finish_obligations(&mut reported);
         self.report_unknown_lets(&mut reported);
         let exprs: Vec<(ExprId, Ty)> = self.expr_types.iter().map(|(e, t)| (e, *t)).collect();
         for (expr, ty) in exprs {
@@ -2335,6 +2553,18 @@ impl Ctx<'_> {
 }
 
 /// `function`'s signature with generic arguments `args`.
+/// How method `f` takes `self`: by value (`None`) or by reference.
+fn self_mode(items: &ItemTree, f: FunctionId) -> Option<Mutability> {
+    match items.functions[f].params.first().map(|p| &p.ty) {
+        Some(flux_hir::TypeRef::Ref { mutable, .. }) => Some(if *mutable {
+            Mutability::Mut
+        } else {
+            Mutability::Not
+        }),
+        _ => None,
+    }
+}
+
 fn sig_of<'s>(sigs: &'s Signatures, function: FunctionId, args: &[Ty]) -> Cow<'s, FnSig> {
     let sig = &sigs[function];
     if args.is_empty() {

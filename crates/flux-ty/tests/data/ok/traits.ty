@@ -1,0 +1,139 @@
+struct S { x: i32 }
+struct W<T> { 0: T }
+struct Both {}
+fn area(&Self) -> i32
+fn make(i32) -> Self
+fn double(&Self) -> i32
+    self@0: &Self
+fn unit() -> Self
+fn area(&S) -> i32
+    self@0: &S
+fn make(i32) -> S
+    x@0: i32
+fn greet(&Self) -> i32
+    self@0: &Self
+fn greet(&S) -> i32
+    self@0: &S
+fn default_and_override(&S) -> i32
+    s@0: &S
+fn through_bound<T>(&T) -> i32
+    t@0: &T
+fn through_where<T>(T) -> T
+    t@0: T
+    n@1: i32
+fn paths<T>(&T, &S) -> i32
+    t@0: &T
+    s@1: &S
+    a@2: T
+    b@3: i32
+    c@4: T
+    d@5: i32
+    e@6: S
+    f@7: i32
+    g@8: i32
+    h@9: S
+    i@10: i32
+fn name(&Self) -> i32
+fn both(&Self) -> i32
+    self@0: &Self
+fn tag(&Self) -> i32
+    self@0: &Self
+fn name(&S) -> i32
+    self@0: &S
+fn supertraits<T>(&T) -> i32
+    t@0: &T
+fn into2(Self) -> T
+fn into2(i32) -> i64
+    self@0: i32
+fn into2(i32) -> bool
+    self@0: i32
+fn generic_trait() -> i64
+    a@0: i64
+    b@1: bool
+    c@2: i64
+fn generic_trait_bound<T>(T) -> i64
+    t@0: T
+fn pick<U>(&Self, U, U) -> U
+fn pick<U>(&bool, U, U) -> U
+    self@0: &bool
+    a@1: U
+    b@2: U
+fn generic_method() -> u8
+    x@0: u8
+    y@1: u8
+fn area(&W<T>) -> i32
+    self@0: &W<T>
+fn make(i32) -> W<T>
+    x@0: i32
+fn sum(Self) -> i32
+fn sum((i32, i32)) -> i32
+    self@0: (i32, i32)
+fn sum(&S) -> i32
+    self@0: &S
+fn quad(&Self) -> i32
+fn quad(&T) -> i32
+    self@0: &T
+fn impls(&S) -> i32
+    s@0: &S
+    w@1: W<W<S>>
+fn get(Both) -> u8
+    self@0: Both
+fn get(&Self) -> i32
+fn get(&Both) -> i32
+    self@0: &Both
+fn inherent_first() -> i32
+    a@0: u8
+    b@1: i32
+    c@2: i32
+fn hidden(&Self) -> i32
+    self@0: &Self
+fn in_scope(&S) -> i32
+    s@0: &S
+fn only(Self) -> i64
+fn only(i64) -> i64
+    self@0: i64
+fn literal_receiver() -> i64
+fn sized<T>(T) -> T
+    t@0: T
+fn bump(&mut Self) -> ()
+fn bump(&mut S) -> ()
+    self@0: &mut S
+fn receivers(S, &mut S) -> i32
+    s@0: S
+    r@1: &mut S
+fn m(&Self) -> i32
+fn f() -> i32
+fn via_self(&Self) -> i32
+    self@0: &Self
+fn m(&S) -> i32
+    self@0: &S
+fn s(&Self) -> i32
+    self@0: &Self
+fn super_paths<T>(&T) -> i32
+    t@0: &T
+fn g<U>(&Self, U) -> i32
+fn g<U>(&S, U) -> i32
+    self@0: &S
+    _u@1: U
+fn bounded_method<U>(&S, U) -> i32
+    s@0: &S
+    u@1: U
+fn conv(Self) -> T
+fn conv(W<T>) -> T
+    self@0: W<T>
+fn generic_conv() -> u8
+fn recurse<T>(&T, i32) -> i32
+    t@0: &T
+    n@1: i32
+fn m() -> i32
+fn m(&W<T>) -> u8
+    self@0: &W<T>
+fn m(&W<T>) -> i32
+    self@0: &W<T>
+fn names(&W<S>) -> i32
+    w@0: &W<S>
+    a@1: u8
+fn mutable(&mut S) -> i32
+    s@0: &mut S
+fn main() -> ()
+    s@0: S

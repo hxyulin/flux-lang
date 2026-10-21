@@ -48,7 +48,21 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         }
         let body = build(hir, typed, id);
         check(&body, hir.items.functions[id].loc.file);
-        queue.extend(body.callees());
+        for callee in body.callees() {
+            queue.push(callee);
+            // A trait's method may call any of its definitions.
+            if let Some(flux_hir::Owner::Trait(t)) = hir.items.functions[callee].owner {
+                let name = hir.items.functions[callee].name;
+                let impls = hir.items.trait_impls.get(&t).into_iter().flatten();
+                queue.extend(impls.flat_map(|&imp| {
+                    hir.items.impls[imp]
+                        .functions
+                        .iter()
+                        .copied()
+                        .filter(move |&f| hir.items.functions[f].name == name)
+                }));
+            }
+        }
         bodies.insert(id, body);
     }
     let mut const_values = ArenaMap::new();
@@ -78,6 +92,45 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         const_values,
         diagnostics,
     }
+}
+
+/// The initialization and borrow errors of the program's functions whose
+/// signatures and bodies have none of `errors`, for when others do:
+/// rustc borrow-checks every body that type-checked.
+pub fn check_clean_bodies(
+    hir: &Hir,
+    typed: &TypedFile,
+    errors: &[flux_hir::Diagnostic],
+) -> Vec<flux_hir::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (id, _) in hir.bodies.iter() {
+        let Some(result) = typed.bodies.get(id) else {
+            continue;
+        };
+        let data = &hir.items.functions[id];
+        let range = data.item_range;
+        let tainted = errors.iter().any(|d| {
+            d.file == data.loc.file
+                && range.start() <= d.range.start()
+                && d.range.end() <= range.end()
+        });
+        let sig = &typed.sigs[id];
+        if !hir.is_program(id)
+            || tainted
+            || !result.diagnostics.is_empty()
+            || sig.params.contains(&Ty::ERROR)
+            || sig.ret == Ty::ERROR
+        {
+            continue;
+        }
+        let body = build(hir, typed, id);
+        let found = crate::init::check(&body, &hir.items, &typed.sigs)
+            .into_iter()
+            .chain(crate::borrowck::check(&body, &hir.items, &typed.sigs));
+        let file = data.loc.file;
+        diagnostics.extend(found.map(|d| flux_hir::Diagnostic { file, ..d }));
+    }
+    diagnostics
 }
 
 /// Evaluates the constants: free ones always, as rustc does, and
@@ -516,7 +569,7 @@ impl Builder<'_> {
                 let operand = self.lower_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
             }
-            Expr::Missing | Expr::Path(Res::Function(_) | Res::Err) => {
+            Expr::Missing | Expr::Path(Res::Function(_) | Res::Assoc { .. } | Res::Err) => {
                 self.terminate(TerminatorKind::Unreachable, range);
             }
             Expr::Literal(_) => {
@@ -665,7 +718,7 @@ impl Builder<'_> {
                 self.terminate(TerminatorKind::Return, range);
             }
             Expr::Call { callee, args } => match body.exprs[*callee] {
-                Expr::Path(Res::Function(_)) => {
+                Expr::Path(Res::Function(_) | Res::Assoc { .. }) => {
                     let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
                     let instance = self.types.calls[*callee];
                     self.call(instance.function, instance.args, args, dest, range);

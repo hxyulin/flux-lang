@@ -128,8 +128,10 @@ fn run(command: Command) -> Result<bool, String> {
             let mut errors = db.syntax_errors();
             errors.extend(hir.diagnostics.iter().cloned());
             errors.extend(typed.diagnostics.iter().cloned());
-            if !report_all(&db, &mut errors) {
-                return Ok(false);
+            if !errors.is_empty() {
+                let more = flux_mir::check_clean_bodies(&hir, &typed, &errors);
+                errors.extend(more);
+                return Ok(report_all(&db, &mut errors));
             }
             let mir = flux_mir::build_file(&hir, &typed);
             print!("{}", mir.debug_dump(&hir));

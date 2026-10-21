@@ -1,0 +1,35 @@
+struct W<T> { 0: T }
+struct S {}
+struct S {}
+struct W<T> { 0: T }
+struct S { x: i32 }
+fn make(i32) -> Self
+fn make(i32) -> W<i32>
+    x@0: i32
+fn run() -> ()
+    _w@0: W<i32>
+fn q(&Self) -> i32
+fn q(&T) -> i32
+    self@0: &T
+fn q(&S) -> i32
+    self@0: &S
+fn run() -> ()
+fn m(&Self) -> i32
+fn m(&S) -> i32
+    self@0: &S
+fn m(&W<T>) -> i32
+    self@0: &W<T>
+fn m(&&T) -> i32
+    self@0: &&T
+fn m(&W<T>) -> u8
+    self@0: &W<T>
+fn names(&W<S>) -> u8
+    w@0: &W<S>
+fn printf(*const i8) -> i32
+fn get(Self) -> i32
+fn get(&S) -> i32
+    self@0: &S
+fn run() -> ()
+    s@0: S
+    r@1: &S
+fn main() -> ()

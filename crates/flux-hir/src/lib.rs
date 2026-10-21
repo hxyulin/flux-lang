@@ -33,9 +33,10 @@ pub use body::{
 };
 pub use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 pub use item_tree::{
-    AssocItem, Const, ConstId, CrateData, CrateId, Field, Function, FunctionId, GenericArgs,
-    GenericParam, Generics, Impl, ImplId, ImplTarget, ItemLoc, ItemTree, Module, ModuleId, Param,
-    Path, PathAnchor, Struct, StructId, StructKind, TypeRef, Visibility, is_primitive,
+    AssocItem, Bound, Const, ConstId, CrateData, CrateId, Field, Function, FunctionId, GenericArgs,
+    GenericParam, Generics, Impl, ImplId, ImplTarget, ItemLoc, ItemTree, Module, ModuleId, Owner,
+    Param, Path, PathAnchor, QSelf, Struct, StructId, StructKind, Trait, TraitId, TypeRef,
+    Visibility, WherePredicate, is_primitive,
 };
 pub use lower::{lower_body, lower_const};
 pub use source::{CORE_ROOT, FileId, SourceDb, SourceFile};

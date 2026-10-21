@@ -38,7 +38,7 @@ use flux_intern::Symbol;
 use flux_syntax::TextRange;
 use flux_ty::{GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind};
 
-pub use build::{build, build_file};
+pub use build::{build, build_file, check_clean_bodies};
 
 pub type Local = Idx<LocalDecl>;
 pub type BasicBlock = Idx<BasicBlockData>;

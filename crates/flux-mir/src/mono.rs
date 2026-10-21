@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use flux_hir::{Diagnostic, FunctionId, Hir};
 pub use flux_ty::Instance;
-use flux_ty::{Ty, TyKind, subst_list};
+use flux_ty::{Signatures, Ty, TyKind, subst_list};
 
 use crate::{Body, Constant, FileMir, Operand, Rvalue, StatementKind, TerminatorKind};
 
@@ -22,8 +22,9 @@ const RECURSION_LIMIT: u32 = 128;
 
 /// Every instance of a function with a body that the program needs, in
 /// the order they were found; or an error if a generic function needs
-/// instances of itself without end.
-pub fn collect(hir: &Hir, mir: &FileMir) -> Result<Vec<Instance>, Diagnostic> {
+/// instances of itself without end. A call of a trait's method is of
+/// the `impl` block's method for its types.
+pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instance>, Diagnostic> {
     let mut instances = Vec::new();
     let mut depths: HashMap<Instance, u32> = HashMap::new();
     for (function, _) in mir.bodies.iter() {
@@ -48,13 +49,14 @@ pub fn collect(hir: &Hir, mir: &FileMir) -> Result<Vec<Instance>, Diagnostic> {
             else {
                 continue;
             };
-            if mir.bodies.get(*func).is_none() {
-                continue;
-            }
             let callee = Instance {
                 function: *func,
                 args: Ty::list(&subst_list(generic_args, caller.args)),
             };
+            let callee = flux_ty::traits::resolve_instance(&hir.items, sigs, callee);
+            if mir.bodies.get(callee.function).is_none() {
+                continue;
+            }
             if depths.contains_key(&callee) {
                 continue;
             }
@@ -80,10 +82,7 @@ pub fn collect(hir: &Hir, mir: &FileMir) -> Result<Vec<Instance>, Diagnostic> {
 /// included.
 fn generic_count(hir: &Hir, function: FunctionId) -> usize {
     let data = &hir.items.functions[function];
-    let own = data.generics.len();
-    own + data
-        .owner
-        .map_or(0, |owner| hir.items.impls[owner].generics.len())
+    data.generics.len() + flux_ty::traits::owner_param_count(&hir.items, data.owner)
 }
 
 /// `f::<A, B>` as rustc writes an instance in messages, with types

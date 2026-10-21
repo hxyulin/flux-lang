@@ -1,0 +1,106 @@
+struct S;
+
+struct Clash;
+
+struct P;
+
+trait Tr;
+
+trait Sub: S;
+
+trait Sub2: Missing;
+
+trait Dup;
+
+trait Clash;
+
+trait Vis;
+
+trait Twice;
+
+trait Pat;
+
+trait Private;
+
+impl Tr for S;
+
+impl S for i32;
+
+impl Nope for S;
+
+impl Vis for S;
+
+impl Private for P;
+
+fn m(&Self) -> ();
+
+fn Tr::f() -> () {}
+
+fn <S as Tr>::m(self@0: &Self) -> () {}
+
+fn bound_struct<T>(_x@0: T) -> () where T: S {}
+
+fn bound_unknown<T>(_x@0: T) -> () where T: Unknown {}
+
+fn where_struct<T>(_x@0: T) -> () where T: S {}
+
+fn where_unknown<T>(_x@0: T) -> () where T: Gone, T: Tr {}
+
+fn qualified_struct() -> () {
+    <error>();
+}
+
+fn qualified_unknown() -> () {
+    <error>();
+}
+
+fn not_in_trait() -> () {
+    <error>();
+}
+
+fn not_in_trait_method(s@0: &S) -> () {
+    <error>(s@0);
+}
+
+fn a(&Self) -> ();
+
+fn a(&Self) -> ();
+
+fn Dup::b() -> () {}
+
+fn b(&Self) -> ();
+
+fn v(&Self) -> ();
+
+fn <S as Vis>::v(self@0: &Self) -> () {}
+
+fn Twice::twice(a@0: i32, a@1: i32) -> () {}
+
+fn once(i32, i32) -> ();
+
+fn pat(&Self, (i32, i32)) -> ();
+
+fn Pat::pat_ok(self@0: &Self, (a@1, b@2): (i32, i32)) -> () {}
+
+fn Private::p() -> () {}
+
+fn private_trait() -> () {
+    Private::p();
+}
+
+fn main() -> () {}
+
+error 220..221: expected trait, found struct `S`
+error 239..243: cannot find trait `Nope` in this scope
+error 505..506: expected trait, found struct `S`
+error 552..558: cannot find trait `Absent` in this scope
+error 665..669: cannot find method or associated constant `nope` in trait `Tr`
+error 723..728: cannot find method or associated constant `other` in trait `Tr`
+error 861..873: the name `a` is defined multiple times
+error 894..906: the name `b` is defined multiple times
+error 925..936: the name `Clash` is defined multiple times
+error 1006..1009: visibility qualifiers are not permitted here
+error 1047..1050: visibility qualifiers are not permitted here
+error 1156..1157: identifier `a` is bound more than once in this parameter list
+error 1255..1261: patterns aren't allowed in functions without bodies
+error 1473..1480: trait `Private` is private

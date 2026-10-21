@@ -209,6 +209,7 @@ dependencies = [
  "flux-arena",
  "flux-intern",
  "flux-syntax",
+ "rustc-hash",
 ]
 
 [[package]]

@@ -12,6 +12,8 @@ struct S;
 
 struct Hidden;
 
+impl S;
+
 fn private_fn() -> () {}
 
 fn f() -> () {}
