@@ -66,11 +66,13 @@ written in flux and compiled with every program, that defines the same
 names with the same meaning. So far it has the integer types' constants
 and methods, `mem::drop`, `convert::identity`, `marker::Sized`, the
 operator traits, `PartialEq`/`Eq`, `Copy` and `Clone`, and
-`Option`, `Result` and `PartialOrd` with enums. It is lowered and type-checked on every
-build (about a millisecond today), and only the functions a program
-calls are compiled; caching it is the first use for the incremental
-checking below. Output goes through `extern "C"` declarations of libc
-functions. Test programs written against that shared surface compile under
+`Option`, `Result` and `PartialOrd` with enums. Its front end (parsing,
+item tree, names, signatures, constants' values, and bodies as they are
+reached) is done once per process and shared by every compilation in
+it, and only the functions a program calls are type-checked and
+compiled. A single build still does that work, about a millisecond
+today; persisting it to disk is the next step (see below). Output goes
+through `extern "C"` declarations of libc functions. Test programs written against that shared surface compile under
 both flux and rustc, which keeps rustc usable as an oracle: compare exit
 codes and output.
 
@@ -79,7 +81,18 @@ codes and output.
 The aim is a warm daemon that rechecks only what an edit affects, at the
 granularity of a function body. Incrementality starts after parsing: a
 changed file is reparsed whole, which takes milliseconds, and the item
-tree decides what else must be redone. The remaining pieces:
+tree decides what else must be redone.
+
+Started: `core`, which no program can change, is an immutable artifact
+built once per process. A program's item tree continues `core`'s
+(whose items are shared, not copied, and keep their ids), and its
+signatures are resolved after `core`'s, so a compilation in a warm
+process costs only its own crate: about 35 µs for an empty program
+rather than 1.1 ms. `core`'s inference results are not shared yet:
+inferring a body consults every `impl` block of the traits it uses,
+the program's included, so sharing them needs either a check that a
+body's result does not depend on the program, or the dependency
+tracking below. The remaining pieces:
 
 1. **Stable item IDs.** Name items by path, not by their position in the
    tree, and hash each item's signature and body separately, so an edit
@@ -93,6 +106,13 @@ tree decides what else must be redone. The remaining pieces:
 4. **Parallelism.** Files parse independently; bodies type-check
    independently given the item tree. A skeleton parse that skips bodies by
    brace matching would also let bodies be parsed in parallel and on demand.
+5. **Persisting `core`.** Writing `core`'s item tree and signatures to
+   disk would let a single build skip building them too. `Symbol`s and
+   `Ty`s are handles into process-wide tables, so they would be written
+   as strings and type trees and re-interned on load (or `core`'s
+   names and types interned first, at fixed handles); `core`'s syntax
+   trees are needed only to lower the few bodies a program reaches, so
+   they could be parsed lazily, per file.
 
 ## Other ideas
 

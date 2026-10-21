@@ -29,7 +29,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     // functions only if something calls them.
     let mut queue: Vec<FunctionId> = Vec::new();
     let mut consts = ArenaMap::new();
-    for (id, _) in hir.const_bodies.iter() {
+    for (id, _) in hir.const_bodies() {
         let body = build_const(hir, typed, id);
         check(&body, hir.items.consts[id].loc.file);
         queue.extend(body.callees());
@@ -168,7 +168,7 @@ fn evaluate_consts(
 /// Builds the MIR of constant `konst`'s value: a body without
 /// parameters returning it.
 pub fn build_const(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Body {
-    let (body, source_map) = &hir.const_bodies[konst];
+    let (body, source_map) = hir.const_body(konst).expect("constants built have values");
     let sig = flux_ty::FnSig {
         params: Box::default(),
         ret: typed.sigs.consts[konst],

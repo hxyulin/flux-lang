@@ -22,12 +22,13 @@ mod ty;
 
 use std::fmt::Write;
 use std::ops::Index;
+use std::sync::OnceLock;
 
 use flux_arena::ArenaMap;
 use flux_hir::def_map::{Def, Ns, ResolveError, Resolved};
 use flux_hir::{
-    Const, Diagnostic, Function, FunctionId, Generics, Hir, Impl, ImplId, ImplTarget, ItemLoc,
-    ItemTree, ModuleId, Owner, Path, Struct, StructId, Trait, TypeRef,
+    Const, Core, Diagnostic, Function, FunctionId, Generics, Hir, Impl, ImplId, ImplTarget,
+    ItemCounts, ItemLoc, ItemTree, ModuleId, Owner, Path, Struct, StructId, Trait, TypeRef,
 };
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
@@ -69,7 +70,7 @@ impl FnSig {
 /// function's signature, each struct's field types, each `impl` block's
 /// type and trait, and the bounds of each item, in terms of their
 /// generic parameters.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Signatures {
     pub fns: ArenaMap<Function, FnSig>,
     pub structs: ArenaMap<Struct, &'static [Ty]>,
@@ -608,8 +609,14 @@ pub(crate) fn contains_ref(ty: Ty) -> bool {
 /// Reports names defined twice by blocks for overlapping instances of a
 /// generic struct, `impl<T> S<T>` and `impl S<i32>`; the item tree
 /// checked other types, and blocks for one generic struct that cannot
-/// overlap (`impl S<u8>` and `impl S<i32>`) may share names.
-fn duplicate_assoc_items(items: &ItemTree, sigs: &Signatures, diagnostics: &mut Vec<Diagnostic>) {
+/// overlap (`impl S<u8>` and `impl S<i32>`) may share names. Only pairs
+/// whose later block is from `from` on are checked.
+fn duplicate_assoc_items(
+    items: &ItemTree,
+    sigs: &Signatures,
+    diagnostics: &mut Vec<Diagnostic>,
+    from: usize,
+) {
     let generic: Vec<(ImplId, &Impl)> = items
         .impls
         .iter()
@@ -631,7 +638,10 @@ fn duplicate_assoc_items(items: &ItemTree, sigs: &Signatures, diagnostics: &mut 
     };
     for (i, &(a, first)) in generic.iter().enumerate() {
         for &(b, second) in &generic[i + 1..] {
-            if first.target != second.target || !overlap(sigs.impls[a], sigs.impls[b]) {
+            if b.index() < from
+                || first.target != second.target
+                || !overlap(sigs.impls[a], sigs.impls[b])
+            {
                 continue;
             }
             let later = names(second);
@@ -700,8 +710,47 @@ pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
 
 /// Like [`signatures`]; `check_core` checks `core`'s `impl` blocks
 /// against their traits too, which its tests do instead of every build.
+///
+/// `core`'s signatures are resolved once per process; a program's are
+/// resolved after them, unless `check_core` resolves everything again.
 pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Vec<Diagnostic>) {
-    let mut sigs = Signatures::default();
+    let core = items.core;
+    if check_core || core == ItemCounts::default() {
+        let checked = if check_core { 0 } else { core.impls };
+        return extend_signatures(items, Signatures::default(), ItemCounts::default(), checked);
+    }
+    let (sigs, mut diagnostics) = core_signatures().clone();
+    let (sigs, more) = extend_signatures(items, sigs, core, core.impls);
+    diagnostics.extend(more);
+    (sigs, diagnostics)
+}
+
+/// The signatures of [`Core`]'s items, its `impl` blocks unchecked as in
+/// every build, resolved the first time they are asked for.
+fn core_signatures() -> &'static (Signatures, Vec<Diagnostic>) {
+    static CORE: OnceLock<(Signatures, Vec<Diagnostic>)> = OnceLock::new();
+    CORE.get_or_init(|| {
+        let items = &Core::get().items;
+        let unchecked = items.impls.len() as u32;
+        extend_signatures(
+            items,
+            Signatures::default(),
+            ItemCounts::default(),
+            unchecked,
+        )
+    })
+}
+
+/// Resolves the signatures of `items` from `from` on, given `sigs`, the
+/// signatures of those before, which do not depend on them, and checks
+/// them; the `impl` blocks from `checked_impls` on are checked against
+/// their traits.
+fn extend_signatures(
+    items: &ItemTree,
+    mut sigs: Signatures,
+    from: ItemCounts,
+    checked_impls: u32,
+) -> (Signatures, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let mut error = |file, range, message: &str| {
         let mut d = Diagnostic::new(range, message);
@@ -724,7 +773,7 @@ pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Ve
         }
         ty
     }
-    for (id, s) in items.structs.iter() {
+    for (id, s) in items.structs.iter().skip(from.structs as usize) {
         let generics: Vec<Symbol> = s.generics.params.iter().map(|p| p.name).collect();
         let scope = TypeScope {
             self_ty: Some(Ty::adt(id, s.name, &params_of(&s.generics, 0))),
@@ -739,7 +788,7 @@ pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Ve
             .collect();
         sigs.structs.insert(id, Ty::list(&fields));
     }
-    for (id, imp) in items.impls.iter() {
+    for (id, imp) in items.impls.iter().skip(from.impls as usize) {
         let ty = impl_type(items, imp, &mut reported);
         sigs.impls.insert(id, ty);
     }
@@ -751,8 +800,8 @@ pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Ve
         }));
     };
     // Traits' defaults first: bounds anywhere may leave them out.
-    let mut defaults = traits::TraitDefaults::new();
-    for (id, t) in items.traits.iter() {
+    let mut defaults = std::mem::take(&mut sigs.trait_defaults);
+    for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let generics = generic_names(items, Some(Owner::Trait(id)), &Generics::default());
         let scope = TypeScope {
             self_ty: Some(Ty::param(0, kw::SelfUpper)),
@@ -781,7 +830,7 @@ pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Ve
         defaults.insert(id, resolved);
     }
     sigs.trait_defaults = defaults;
-    for (id, t) in items.traits.iter() {
+    for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let generics = generic_names(items, Some(Owner::Trait(id)), &Generics::default());
         let self_param = Ty::param(0, kw::SelfUpper);
         let bounds = [traits::trait_self_predicate(items, id)];
@@ -853,7 +902,7 @@ pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Ve
             sigs.trait_projections.insert(id, projections.into());
         }
     }
-    for (id, imp) in items.impls.iter() {
+    for (id, imp) in items.impls.iter().skip(from.impls as usize) {
         if imp.trait_ref.is_none() && imp.generics.predicates.is_empty() {
             continue;
         }
@@ -912,7 +961,7 @@ pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Ve
             sigs.impl_projections.insert(id, projections.into());
         }
     }
-    for (id, konst) in items.consts.iter() {
+    for (id, konst) in items.consts.iter().skip(from.consts as usize) {
         let generics = generic_names(items, konst.owner, &Generics::default());
         let scope = TypeScope {
             self_ty: self_ty(&sigs, konst.owner),
@@ -931,7 +980,7 @@ pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Ve
         );
         sigs.consts.insert(id, ty);
     }
-    for (id, function) in items.functions.iter() {
+    for (id, function) in items.functions.iter().skip(from.functions as usize) {
         let generics = generic_names(items, function.owner, &function.generics);
         let self_trait = items
             .impl_of(id)
@@ -996,7 +1045,7 @@ pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Ve
             sigs.fn_projections.insert(id, own.projections.into());
         }
     }
-    for (id, s) in items.structs.iter() {
+    for (id, s) in items.structs.iter().skip(from.structs as usize) {
         // Without `PhantomData`, a parameter must be a field's type.
         for (i, param) in s.generics.params.iter().enumerate() {
             let fields = sigs.structs[id];
@@ -1010,11 +1059,11 @@ pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Ve
             }
         }
     }
-    duplicate_assoc_items(items, &sigs, &mut reported);
-    traits::check_impls(items, &sigs, &mut reported, check_core);
-    sigs.cyclic = traits::check_supertrait_cycles(items, &sigs, &mut reported);
-    traits::check_trivial_bounds(items, &sigs, &mut reported);
-    for (id, imp) in items.impls.iter() {
+    duplicate_assoc_items(items, &sigs, &mut reported, from.impls as usize);
+    traits::check_impls(items, &sigs, &mut reported, checked_impls);
+    sigs.cyclic |= traits::check_supertrait_cycles(items, &sigs, &mut reported, from);
+    traits::check_trivial_bounds(items, &sigs, &mut reported, from);
+    for (id, imp) in items.impls.iter().skip(from.impls as usize) {
         let ty = sigs.impls[id];
         let trait_args = sigs.impl_traits.get(id).map_or(&[][..], |t| t.args);
         for (i, param) in imp.generics.params.iter().enumerate() {
@@ -1032,7 +1081,7 @@ pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Ve
             }
         }
     }
-    for (id, s) in items.structs.iter() {
+    for (id, s) in items.structs.iter().skip(from.structs as usize) {
         let ty = Ty::adt(id, s.name, &params_of(&s.generics, 0));
         if contains(&sigs, ty, id, &mut Vec::new()) {
             error(
@@ -1048,7 +1097,7 @@ pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Ve
             }
         }
     }
-    for (id, function) in items.functions.iter() {
+    for (id, function) in items.functions.iter().skip(from.functions as usize) {
         let sig = &sigs.fns[id];
         let params = function.params.iter().zip(&sig.params);
         if function.is_extern {
@@ -1294,7 +1343,7 @@ fn check(hir: &Hir, all: bool) -> TypedFile {
         }
     };
     let mut consts = ArenaMap::new();
-    for (id, (body, source_map)) in hir.const_bodies.iter() {
+    for (id, (body, source_map)) in hir.const_bodies() {
         let result = infer_const(items, &sigs, id, body, source_map);
         let file = items.consts[id].loc.file;
         diagnostics.extend(

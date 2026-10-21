@@ -13,9 +13,12 @@
 //!   to another thread or serialized, which suits IRs built in parallel or
 //!   cached between compilations. [`ArenaMap`] attaches extra data to the
 //!   values of an arena without changing it.
+//! - [`LayeredArena`] is an `Arena` whose first values are frozen and
+//!   shared by its copies, so many arenas can continue one large one
+//!   (every program's items continue `core`'s) without copying it.
 
 mod dropless;
 mod typed;
 
 pub use dropless::DroplessArena;
-pub use typed::{Arena, ArenaMap, Idx};
+pub use typed::{Arena, ArenaMap, Idx, LayeredArena};

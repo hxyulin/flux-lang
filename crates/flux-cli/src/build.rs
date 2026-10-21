@@ -53,8 +53,13 @@ impl Timings {
 /// program had errors, which were reported.
 pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result<bool, String> {
     let mut timings = Timings::default();
-    let mut db = SourceDb::new();
-    let root = timings.time("parse", || db.load(file))?;
+    // `core`'s files are parsed with the database.
+    let (mut db, root) = timings.time("parse", || {
+        let mut db = SourceDb::new();
+        let root = db.load(file);
+        (db, root)
+    });
+    let root = root?;
     let hir = timings.time("hir", || {
         flux_hir::lower(&mut db, root, Symbol::intern(&crate_name(file)))
     });

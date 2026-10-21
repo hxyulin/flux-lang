@@ -4,7 +4,7 @@
 
 use std::path::{Path as FsPath, PathBuf};
 
-use flux_arena::{Arena, Idx};
+use flux_arena::{Idx, LayeredArena};
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::ast::{self, AstChildren, AstNode};
 use flux_syntax::{NodeId, SyntaxElement, SyntaxKind, SyntaxNode, TextRange};
@@ -24,19 +24,20 @@ pub type TraitId = Idx<Trait>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CrateId(pub u32);
 
-/// Every item of every crate, without bodies.
-#[derive(Debug, Default)]
+/// Every item of every crate, without bodies. `core`'s items are frozen
+/// in [`Core`](crate::Core)'s tree and shared by every program's.
+#[derive(Debug, Clone, Default)]
 pub struct ItemTree {
     pub crates: Vec<CrateData>,
-    pub modules: Arena<Module>,
+    pub modules: LayeredArena<Module>,
     /// Free functions, functions in `extern` blocks, and the associated
     /// functions of `impl` blocks.
-    pub functions: Arena<Function>,
-    pub structs: Arena<Struct>,
-    pub traits: Arena<Trait>,
-    pub impls: Arena<Impl>,
+    pub functions: LayeredArena<Function>,
+    pub structs: LayeredArena<Struct>,
+    pub traits: LayeredArena<Trait>,
+    pub impls: LayeredArena<Impl>,
     /// Free and associated constants.
-    pub consts: Arena<Const>,
+    pub consts: LayeredArena<Const>,
     pub uses: Vec<Use>,
     /// What each module's names mean, imports included.
     pub def_map: DefMap,
@@ -50,9 +51,26 @@ pub struct ItemTree {
     /// The traits the compiler knows, by their `#[lang = "..."]` names.
     pub lang_traits: rustc_hash::FxHashMap<Symbol, TraitId>,
     pub diagnostics: Vec<Diagnostic>,
+    /// How many of each item came from [`Core`](crate::Core), built and
+    /// resolved before the program's: the items with smaller indices
+    /// are `core`'s. Zero in a tree without `core`, or `core`'s own.
+    pub core: ItemCounts,
 }
 
-#[derive(Debug)]
+/// How many items of each kind an [`ItemTree`] has: where the items a
+/// crate added start.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ItemCounts {
+    pub modules: u32,
+    pub functions: u32,
+    pub structs: u32,
+    pub traits: u32,
+    pub impls: u32,
+    pub consts: u32,
+    pub uses: u32,
+}
+
+#[derive(Debug, Clone)]
 pub struct CrateData {
     pub name: Symbol,
     pub root: ModuleId,
@@ -61,7 +79,7 @@ pub struct CrateData {
 }
 
 /// A module: a crate's root, `mod m { ... }` or `mod m;`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Module {
     /// The crate's name for a root.
     pub name: Symbol,
@@ -97,7 +115,7 @@ pub struct ItemLoc {
 
 /// An `impl` block: inherent, `impl S { ... }` or `impl<T> S<T> { ... }`,
 /// or of a trait, `impl Tr for S { ... }`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Impl {
     pub generics: Generics,
     /// `Tr` in `impl Tr for S`, as written.
@@ -123,7 +141,7 @@ pub struct Impl {
 }
 
 /// A constant: `const N: i32 = 5;`, free or in an `impl` block.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Const {
     /// `None` for `const _: T = ...;`, which is evaluated but has no name.
     pub name: Option<Symbol>,
@@ -164,7 +182,7 @@ impl Owner {
 }
 
 /// A trait: `trait Tr<T>: Super where ... { ... }`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Trait {
     pub name: Symbol,
     /// Its own parameters; `Self` is an implicit one before them.
@@ -202,7 +220,7 @@ impl Trait {
 }
 
 /// An associated type of a trait: `type Out: Bound;`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TraitType {
     pub name: Symbol,
     /// The bounds every type given for it must meet.
@@ -214,7 +232,7 @@ pub struct TraitType {
 
 /// An associated type's definition in a trait's `impl` block:
 /// `type Out = i32;`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImplType {
     pub name: Symbol,
     pub ty: TypeRef,
@@ -256,7 +274,7 @@ pub enum ImplTarget {
 }
 
 /// A struct: `struct S { a: i32 }`, `struct P(i32);` or `struct U;`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Struct {
     pub name: Symbol,
     pub generics: Generics,
@@ -279,7 +297,7 @@ pub enum StructKind {
     Unit,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Field {
     pub name: Symbol,
     pub ty: TypeRef,
@@ -298,7 +316,7 @@ impl Struct {
 }
 
 /// A function: one with a body, or one declared in an `extern` block.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Function {
     pub name: Symbol,
     /// Its own, not its `impl` block's.
@@ -343,7 +361,7 @@ pub struct Function {
     pub derived: Option<(StructId, Derive)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Param {
     pub ty: TypeRef,
     /// The type's range; `self`'s whole.
@@ -407,7 +425,7 @@ impl Generics {
 
 /// A `use` declaration's import of one name, or of all of a module's
 /// names (a glob).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Use {
     pub module: ModuleId,
     pub file: FileId,
@@ -655,25 +673,59 @@ impl std::fmt::Display for TypeRef {
 }
 
 impl ItemTree {
-    /// Collects the items of `core` and of the crate whose root is
-    /// `root`, reading the files of their modules, and resolves their
-    /// names.
+    /// Collects the items of the crate whose root is `root`, reading the
+    /// files of its modules, and resolves their names: after a copy of
+    /// `core`'s, if `with_core`.
     pub fn new(db: &mut SourceDb, root: FileId, crate_name: Symbol, with_core: bool) -> ItemTree {
+        let mut items = if with_core {
+            crate::Core::get().items.clone()
+        } else {
+            ItemTree::default()
+        };
+        items.core = items.counts();
+        items.add_crate(db, root, crate_name, false);
+        items
+    }
+
+    /// `core`'s items alone, frozen, for [`Core`](crate::Core).
+    pub(crate) fn core(db: &mut SourceDb) -> ItemTree {
         let mut items = ItemTree::default();
-        let core = with_core.then(|| db.load_core());
+        items.add_crate(db, FileId::CORE_ROOT, sym::core, true);
+        items.modules.freeze();
+        items.functions.freeze();
+        items.structs.freeze();
+        items.traits.freeze();
+        items.impls.freeze();
+        items.consts.freeze();
+        items
+    }
+
+    /// Collects a crate after the ones already here, and resolves its
+    /// names. It may implement their traits, but cannot change their
+    /// items or scopes: `core` sees no other crate.
+    fn add_crate(&mut self, db: &mut SourceDb, root: FileId, name: Symbol, is_core: bool) {
+        let from = self.counts();
         let mut collector = Collector {
             db,
-            items: &mut items,
+            items: self,
             derives: Vec::new(),
         };
-        if let Some(core) = core {
-            collector.collect_crate(core, sym::core, true);
-            collector.expand_derives();
-        }
-        collector.collect_crate(root, crate_name, false);
+        collector.collect_crate(root, name, is_core);
         collector.expand_derives();
-        crate::def_map::resolve(&mut items);
-        items
+        crate::def_map::resolve(self, from);
+    }
+
+    /// How many items of each kind it has.
+    pub fn counts(&self) -> ItemCounts {
+        ItemCounts {
+            modules: self.modules.len() as u32,
+            functions: self.functions.len() as u32,
+            structs: self.structs.len() as u32,
+            traits: self.traits.len() as u32,
+            impls: self.impls.len() as u32,
+            consts: self.consts.len() as u32,
+            uses: self.uses.len() as u32,
+        }
     }
 
     pub fn module_of(&self, krate: CrateId) -> ModuleId {

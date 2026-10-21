@@ -2,7 +2,7 @@
 //! library, which is built into the compiler.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use flux_syntax::Parse;
 
@@ -14,6 +14,9 @@ impl FileId {
     /// Not yet known: diagnostics are made with this and given their file
     /// by whoever knows it.
     pub const UNKNOWN: FileId = FileId(u32::MAX);
+
+    /// `core`'s root file, `lib.rs`, the first file of every [`SourceDb`].
+    pub const CORE_ROOT: FileId = FileId(0);
 }
 
 #[derive(Debug)]
@@ -23,9 +26,11 @@ pub struct SourceFile {
     pub parse: Parse,
 }
 
-/// Every file read so far. Files under [`CORE_ROOT`] come from the copy
-/// of `library/core` built into flux rather than from disk.
-#[derive(Debug, Default)]
+/// Every file read so far. `core`'s files, under [`CORE_ROOT`], come
+/// from the copy of `library/core` built into flux rather than from
+/// disk. They are parsed once per process and are the first files of
+/// every `SourceDb`, so their ids are the same in every compilation.
+#[derive(Debug)]
 pub struct SourceDb {
     files: Vec<Arc<SourceFile>>,
 }
@@ -58,9 +63,43 @@ const CORE_FILES: &[(&str, &str)] = &[
     ),
 ];
 
+/// `core`'s files, in [`CORE_FILES`] order, parsed in parallel the first
+/// time they are needed.
+pub(crate) fn core_files() -> &'static [Arc<SourceFile>] {
+    static FILES: OnceLock<Box<[Arc<SourceFile>]>> = OnceLock::new();
+    FILES.get_or_init(|| {
+        let root = Path::new(CORE_ROOT);
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = CORE_FILES
+                .iter()
+                .map(|&(name, text)| {
+                    scope.spawn(move || SourceFile {
+                        path: root.join(name),
+                        text: text.to_owned(),
+                        parse: flux_syntax::parse_source_file(text),
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|t| Arc::new(t.join().expect("parsing never panics")))
+                .collect()
+        })
+    })
+}
+
+impl Default for SourceDb {
+    fn default() -> SourceDb {
+        SourceDb::new()
+    }
+}
+
 impl SourceDb {
+    /// A database of `core`'s files only.
     pub fn new() -> SourceDb {
-        SourceDb::default()
+        SourceDb {
+            files: core_files().to_vec(),
+        }
     }
 
     /// Parses `text` as the file at `path`.
@@ -80,15 +119,12 @@ impl SourceDb {
         if let Some(id) = self.files.iter().position(|f| f.path == path) {
             return Ok(FileId(id as u32));
         }
-        let text = match path.strip_prefix(CORE_ROOT) {
-            Ok(relative) => CORE_FILES
-                .iter()
-                .find(|(name, _)| Path::new(name) == relative)
-                .map(|(_, text)| (*text).to_owned())
-                .ok_or_else(|| format!("{} is not part of core", path.display()))?,
-            Err(_) => std::fs::read_to_string(path)
-                .map_err(|e| format!("cannot read {}: {e}", path.display()))?,
-        };
+        // `core`'s files are all here already.
+        if path.starts_with(CORE_ROOT) {
+            return Err(format!("{} is not part of core", path.display()));
+        }
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         Ok(self.add(path, text))
     }
 
@@ -100,31 +136,6 @@ impl SourceDb {
                 .any(|(name, _)| Path::new(name) == relative),
             Err(_) => path.is_file(),
         }
-    }
-
-    /// `core`'s root file, loaded. All of `core`'s files are parsed
-    /// now, in parallel, since its modules will need them.
-    pub fn load_core(&mut self) -> FileId {
-        let root = Path::new(CORE_ROOT);
-        let parsed: Vec<SourceFile> = std::thread::scope(|scope| {
-            let threads: Vec<_> = CORE_FILES
-                .iter()
-                .filter(|(name, _)| !self.files.iter().any(|f| f.path == root.join(name)))
-                .map(|&(name, text)| {
-                    scope.spawn(move || SourceFile {
-                        path: root.join(name),
-                        text: text.to_owned(),
-                        parse: flux_syntax::parse_source_file(text),
-                    })
-                })
-                .collect();
-            threads
-                .into_iter()
-                .map(|t| t.join().expect("parsing never panics"))
-                .collect()
-        });
-        self.files.extend(parsed.into_iter().map(Arc::new));
-        self.load(&root.join("lib.rs")).expect("core is built in")
     }
 
     pub fn file(&self, id: FileId) -> &SourceFile {
