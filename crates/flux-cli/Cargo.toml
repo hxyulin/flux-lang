@@ -14,7 +14,9 @@ path = "src/main.rs"
 
 [dependencies]
 flux-hir.workspace = true
+flux-mir.workspace = true
 flux-syntax.workspace = true
+flux-ty.workspace = true
 clap = { version = "4", features = ["derive"] }
 
 [lints]

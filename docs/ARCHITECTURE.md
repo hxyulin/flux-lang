@@ -9,6 +9,7 @@ flux is a Cargo workspace:
 | [`flux-sourcegen`](../crates/flux-sourcegen/src/lib.rs) | Generates the typed AST from [`flux.ungram`](../crates/flux-syntax/flux.ungram) |
 | [`flux-hir`](../crates/flux-hir/src/lib.rs) | Item tree and HIR: function bodies with names resolved |
 | [`flux-ty`](../crates/flux-ty/src/lib.rs) | Type inference and checking |
+| [`flux-mir`](../crates/flux-mir/src/lib.rs) | MIR: control-flow graphs built from typed HIR |
 | [`flux-intern`](../crates/flux-intern/src/lib.rs) | Global, thread-safe string interning (`Symbol`) |
 | [`flux-arena`](../crates/flux-arena/src/lib.rs) | Bump allocation and typed index arenas |
 
@@ -187,6 +188,29 @@ except for the first assignment of a `let x;` binding. Telling a first
 assignment from a second (and use before initialization) needs control
 flow, so that check moves to MIR.
 
+## MIR
+
+[`flux-mir`](../crates/flux-mir/src/lib.rs) turns each type-checked body
+into a control-flow graph: basic blocks of assignments to locals, each
+ending in a terminator (`goto`, `switchInt`, a call, an assertion,
+`return`). `_0` holds the return value and `_1..=n` the parameters, and
+every intermediate value gets a temporary. This is where Rust's runtime
+semantics become explicit, so code generation never sees expressions:
+
+- `+`, `-`, `*` and unary `-` wrap, as rustc does without overflow
+  checks, and shift amounts are masked to the left operand's width.
+- `/` and `%` are preceded by assertions that the divisor is not zero
+  and, for signed types, that the operation is not `MIN / -1`. rustc
+  checks these even in release builds; a failed assertion aborts.
+- `&&` and `||` branch, and reading a local copies it into a temporary,
+  so `x + { x = 10; x }` adds the old `x`.
+- A call to a function returning `!` has no successor block.
+
+[`init`](../crates/flux-mir/src/init.rs) is the first piece of borrow
+checking: two forward dataflow analyses that report reading a possibly
+uninitialized local (E0381) and assigning an immutable one twice
+(E0384), with rustc's wording.
+
 ## Names and memory
 
 Identifiers will be stored as [`Symbol`](../crates/flux-intern/src/lib.rs)s:
@@ -243,3 +267,4 @@ Interning all 52.6M identifiers and lifetimes (938K distinct) takes
 | `flux-arena`, `flux-intern` unit tests | Allocation, alignment, threads; also run under Miri |
 | `flux-hir` `tests/hir.rs` | Snapshot HIR for `tests/data/{ok,err}`; lowering never panics on any parser fixture prefix |
 | `flux-ty` `tests/ty.rs` | Snapshot types and diagnostics for `tests/data/{ok,err}`; `main` rules; never panics |
+| `flux-mir` `tests/mir.rs` | Snapshot MIR and initialization errors for `tests/data/{ok,err}` |

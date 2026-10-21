@@ -1,0 +1,19 @@
+[package]
+name = "flux-mir"
+description = "Mid-level IR: control-flow graphs built from typed HIR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+[dependencies]
+flux-arena.workspace = true
+flux-hir.workspace = true
+flux-intern.workspace = true
+flux-syntax.workspace = true
+flux-ty.workspace = true
+
+[lints]
+workspace = true

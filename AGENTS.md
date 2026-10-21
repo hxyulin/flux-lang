@@ -16,9 +16,12 @@ flux is an experimental compiler for a subset of Rust (edition 2024). Use
 - `crates/flux-ty/`: type inference and checking per body. Fixtures in
   `tests/data/{ok,err}` with `.ty` snapshots; `ok/` fixtures must compile
   with rustc, and `err/` diagnostics should match rustc's.
+- `crates/flux-mir/`: MIR built from typed HIR, and the initialization
+  check. Fixtures in `tests/data/{ok,err}` with `.mir` snapshots.
 - `crates/flux-intern/`: global `Symbol` interner and predefined symbols.
 - `crates/flux-arena/`: `DroplessArena` and typed `Arena<T>`/`Idx<T>`.
-- `crates/flux-cli/`: the `flux` binary (`lex`, `parse`, `hir`, `check`).
+- `crates/flux-cli/`: the `flux` binary (`lex`, `parse`, `hir`, `mir`,
+  `check`).
 - `crates/flux-syntax/tests/data/parser/`: parser fixtures. `ok/` must parse
   cleanly, `err/` must report errors; each `.rs` has a `.rast` snapshot.
 - `examples/`: small programs for trying the CLI.

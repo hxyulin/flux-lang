@@ -45,6 +45,10 @@ parse file:
 hir file:
     cargo run -q -p flux-cli -- hir "{{file}}"
 
+# Type-check a file and print its MIR.
+mir file:
+    cargo run -q -p flux-cli -- mir "{{file}}"
+
 # Print the tokens of a file.
 lex file:
     cargo run -q -p flux-cli -- lex "{{file}}"

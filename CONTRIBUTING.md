@@ -37,6 +37,7 @@ just check
 | `crates/flux-syntax/examples/bench.rs` | Per-phase throughput benchmark |
 | `crates/flux-hir/` | Item tree and HIR lowering: names resolved, `while` desugared |
 | `crates/flux-ty/` | Type inference and checking, one body at a time |
+| `crates/flux-mir/` | MIR: control-flow graphs with explicit runtime checks; initialization check |
 | `crates/flux-intern/` | `Symbol` interning, predefined keywords and names |
 | `crates/flux-arena/` | `DroplessArena`, `Arena<T>`, `Idx<T>`, `ArenaMap` |
 
@@ -51,6 +52,7 @@ just bench <dir> [threads] # per-phase throughput over a directory
 just miri                  # run the crates with unsafe code under Miri (needs nightly)
 just parse <file>          # print a syntax tree
 just hir <file>            # print the HIR of a file
+just mir <file>            # type-check a file and print its MIR
 ```
 
 Every parser change needs a fixture. Put valid Rust in
