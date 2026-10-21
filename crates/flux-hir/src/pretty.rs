@@ -29,9 +29,9 @@ pub(crate) fn file(hir: &Hir) -> String {
             .collect();
         let fields = fields.join(", ");
         match s.kind {
-            StructKind::Record => writeln!(out, "struct {} {{ {fields} }}", s.name),
-            StructKind::Tuple => writeln!(out, "struct {}({fields});", s.name),
-            StructKind::Unit => writeln!(out, "struct {};", s.name),
+            StructKind::Record => writeln!(out, "struct {}{} {{ {fields} }}", s.name, s.generics),
+            StructKind::Tuple => writeln!(out, "struct {}{}({fields});", s.name, s.generics),
+            StructKind::Unit => writeln!(out, "struct {}{};", s.name, s.generics),
         }
         .unwrap();
         out.push('\n');
@@ -90,24 +90,7 @@ pub(crate) fn write_diagnostics(out: &mut String, hir: &Hir, diagnostics: &[Diag
 }
 
 fn type_ref(ty: &TypeRef) -> String {
-    match ty {
-        TypeRef::Path(path) => path.to_string(),
-        TypeRef::Tuple(fields) if fields.len() == 1 => format!("({},)", type_ref(&fields[0])),
-        TypeRef::Tuple(fields) => {
-            let fields: Vec<String> = fields.iter().map(type_ref).collect();
-            format!("({})", fields.join(", "))
-        }
-        TypeRef::Never => "!".to_owned(),
-        TypeRef::Ptr { mutable, pointee } => {
-            let mutability = if *mutable { "mut" } else { "const" };
-            format!("*{mutability} {}", type_ref(pointee))
-        }
-        TypeRef::Ref { mutable, pointee } => {
-            let mutability = if *mutable { "mut " } else { "" };
-            format!("&{mutability}{}", type_ref(pointee))
-        }
-        TypeRef::Error => "<error>".to_owned(),
-    }
+    ty.to_string()
 }
 
 struct Printer<'a> {
@@ -121,7 +104,8 @@ impl Printer<'_> {
     fn function(&mut self, function: &Function) {
         let unsafety = if function.is_unsafe { "unsafe " } else { "" };
         let name = self.hir.items.function_path(function);
-        write!(self.out, "{unsafety}fn {name}(").unwrap();
+        let generics = &function.generics;
+        write!(self.out, "{unsafety}fn {name}{generics}(").unwrap();
         for (i, &pat) in self.body.params.iter().enumerate() {
             if i > 0 {
                 self.out.push_str(", ");
@@ -136,6 +120,31 @@ impl Printer<'_> {
         write!(self.out, ") -> {} ", type_ref(&function.ret)).unwrap();
         self.expr(self.body.root);
         self.out.push('\n');
+    }
+
+    /// The generic arguments written in expression `id`: `::<A>` for the
+    /// item, then `[Self<B>]` for its type's, if any.
+    fn generic_args(&mut self, id: ExprId) {
+        let Some(generics) = self.body.generic_args.get(id) else {
+            return;
+        };
+        let list = |types: &[crate::TypeRefId]| {
+            let types: Vec<String> = types
+                .iter()
+                .map(|&t| type_ref(&self.body.types[t]))
+                .collect();
+            types.join(", ")
+        };
+        let (item, ty) = (
+            generics.item.as_ref().map(|a| list(&a.types)),
+            generics.ty.as_ref().map(|a| list(&a.types)),
+        );
+        if let Some(item) = item {
+            write!(self.out, "::<{item}>").unwrap();
+        }
+        if let Some(ty) = ty {
+            write!(self.out, "[Self<{ty}>]").unwrap();
+        }
     }
 
     fn newline(&mut self) {
@@ -238,9 +247,11 @@ impl Printer<'_> {
             Expr::Path(Res::Function(f)) => {
                 let function = &self.hir.items.functions[*f];
                 write!(self.out, "{}", self.hir.items.function_path(function)).unwrap();
+                self.generic_args(id);
             }
             Expr::Path(Res::Struct(s)) => {
                 write!(self.out, "{}", self.hir.items.structs[*s].name).unwrap();
+                self.generic_args(id);
             }
             Expr::Path(Res::Const(c)) => {
                 let name = self.hir.items.consts[*c].name;
@@ -365,7 +376,9 @@ impl Printer<'_> {
                 args,
             } => {
                 self.expr(*receiver);
-                write!(self.out, ".{method}(").unwrap();
+                write!(self.out, ".{method}").unwrap();
+                self.generic_args(id);
+                self.out.push('(');
                 self.exprs(args);
                 self.out.push(')');
             }
@@ -405,7 +418,9 @@ impl Printer<'_> {
                 fields,
                 spread,
             } => {
-                write!(self.out, "{} {{ ", self.hir.items.structs[*strukt].name).unwrap();
+                write!(self.out, "{}", self.hir.items.structs[*strukt].name).unwrap();
+                self.generic_args(id);
+                self.out.push_str(" { ");
                 for (i, (name, value)) in fields.iter().enumerate() {
                     if i > 0 {
                         self.out.push_str(", ");

@@ -876,6 +876,19 @@ fn resolve_impls(items: &mut ItemTree) {
             items.diagnostics.push(d);
         };
         let target = match &imp.self_ty {
+            TypeRef::Path(path)
+                if path
+                    .as_name()
+                    .is_some_and(|name| imp.generics.params.iter().any(|p| p.name == name)) =>
+            {
+                let range = imp.def_range;
+                error(
+                    items,
+                    range,
+                    "no nominal type found for inherent implementation".into(),
+                );
+                None
+            }
             TypeRef::Path(path) => match items.resolve(module, path, Ns::Types) {
                 Ok(Resolved::Def(Def::Struct(strukt))) => Some(ImplTarget::Struct(strukt)),
                 Err(ResolveError::Private {
@@ -941,16 +954,32 @@ fn resolve_impls(items: &mut ItemTree) {
             },
             TypeRef::Error => None,
             _ => {
-                let range = items.impls[id].self_range;
+                let range = items.impls[id].def_range;
                 error(
                     items,
                     range,
-                    "`impl` blocks for types other than structs are not supported yet".into(),
+                    "cannot define inherent `impl` for primitive types".into(),
                 );
                 None
             }
         };
         items.impls[id].target = target;
+    }
+    for imp in items.impls.values() {
+        let Some(target) = imp.target else {
+            continue;
+        };
+        let functions = imp.functions.iter().map(|&f| {
+            let name = items.functions[f].name;
+            (name, AssocItem::Function(f))
+        });
+        let consts = imp.consts.iter().filter_map(|&c| {
+            let name = items.consts[c].name?;
+            Some((name, AssocItem::Const(c)))
+        });
+        for (name, item) in functions.chain(consts).collect::<Vec<_>>() {
+            items.assoc.entry((target, name)).or_default().push(item);
+        }
     }
     // Duplicate associated items, per type: functions and constants
     // share a namespace.
@@ -964,7 +993,7 @@ fn resolve_impls(items: &mut ItemTree) {
     }
     let mut targets: Vec<_> = by_target.into_iter().collect();
     targets.sort_by_key(|(_, assoc)| assoc.first().map(|&a| item_info(items, a).2));
-    for (_, mut assoc) in targets {
+    for (target, mut assoc) in targets {
         assoc.sort_by_key(|&a| item_info(items, a).2);
         let mut seen: Vec<AssocItem> = Vec::new();
         for item in assoc {
@@ -983,6 +1012,14 @@ fn resolve_impls(items: &mut ItemTree) {
             // rustc reports the later definition when both are in one
             // block, and the earlier one otherwise.
             let (_, first_owner, _, first_file, first_range) = item_info(items, first);
+            // Blocks for different instances of a generic struct may
+            // define the same name; type checking sees which overlap.
+            if first_owner != owner
+                && let ImplTarget::Struct(strukt) = target
+                && !items.structs[strukt].generics.is_empty()
+            {
+                continue;
+            }
             let (file, range) = if first_owner == owner {
                 (file, range)
             } else {

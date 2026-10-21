@@ -38,6 +38,8 @@ pub struct ItemTree {
     pub uses: Vec<Use>,
     /// What each module's names mean, imports included.
     pub def_map: DefMap,
+    /// The associated items of each type, by name, in source order.
+    pub assoc: std::collections::HashMap<(ImplTarget, Symbol), Vec<AssocItem>>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -84,9 +86,10 @@ pub struct ItemLoc {
     pub vis: Visibility,
 }
 
-/// An inherent `impl` block: `impl S { ... }`.
+/// An inherent `impl` block: `impl S { ... }` or `impl<T> S<T> { ... }`.
 #[derive(Debug)]
 pub struct Impl {
+    pub generics: Generics,
     pub self_ty: TypeRef,
     /// The self type's range.
     pub self_range: TextRange,
@@ -119,7 +122,7 @@ pub struct Const {
 }
 
 /// An associated item of an `impl` block's type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssocItem {
     Function(FunctionId),
     Const(ConstId),
@@ -137,6 +140,7 @@ pub enum ImplTarget {
 #[derive(Debug)]
 pub struct Struct {
     pub name: Symbol,
+    pub generics: Generics,
     pub kind: StructKind,
     /// In declaration order; a tuple struct's are named `0`, `1`, ...
     pub fields: Box<[Field]>,
@@ -178,6 +182,8 @@ impl Struct {
 #[derive(Debug)]
 pub struct Function {
     pub name: Symbol,
+    /// Its own, not its `impl` block's.
+    pub generics: Generics,
     pub params: Box<[Param]>,
     pub ret: TypeRef,
     /// The return type's range, or the name's when it is implicitly `()`.
@@ -215,6 +221,44 @@ pub struct Param {
     pub range: TextRange,
 }
 
+/// An item's generic parameters: `<T, U>`. Only type parameters without
+/// bounds are supported.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Generics {
+    pub params: Box<[GenericParam]>,
+    /// From `<` to `>`; empty if there is no list.
+    pub range: TextRange,
+    /// Had lifetime parameters (reported as not supported).
+    pub has_lifetimes: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenericParam {
+    pub name: Symbol,
+    pub range: TextRange,
+}
+
+impl std::fmt::Display for Generics {
+    /// `<T, U>`, or nothing.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.params.is_empty() {
+            return Ok(());
+        }
+        let names: Vec<String> = self.params.iter().map(|p| p.name.to_string()).collect();
+        write!(f, "<{}>", names.join(", "))
+    }
+}
+
+impl Generics {
+    pub fn len(&self) -> usize {
+        self.params.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.params.is_empty()
+    }
+}
+
 /// A `use` declaration's import of one name, or of all of a module's
 /// names (a glob).
 #[derive(Debug)]
@@ -237,7 +281,8 @@ pub enum UseKind {
     Glob,
 }
 
-/// A path as written: `x`, `a::b::c`, `crate::m::f`, `super::f`, `::core::x`.
+/// A path as written: `x`, `a::b::c`, `crate::m::f`, `super::f`, `::core::x`,
+/// `Pair::<i32>::new`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Path {
     pub anchor: PathAnchor,
@@ -246,6 +291,19 @@ pub struct Path {
     pub ranges: Box<[TextRange]>,
     /// The ranges of the `crate`, `self` or `super`s before the names.
     pub anchor_ranges: Box<[TextRange]>,
+    /// The generic arguments after each segment, if any; empty if no
+    /// segment has them.
+    pub args: Box<[Option<GenericArgs>]>,
+}
+
+/// Generic arguments as written: `<A, B>` or `::<A, B>`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GenericArgs {
+    pub types: Box<[TypeRef]>,
+    /// Each type's range.
+    pub ranges: Box<[TextRange]>,
+    /// From `<` to `>`.
+    pub range: TextRange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -269,7 +327,13 @@ impl Path {
             segments: Box::new([name]),
             ranges: Box::default(),
             anchor_ranges: Box::default(),
+            args: Box::default(),
         }
+    }
+
+    /// The generic arguments after segment `i`, if any.
+    pub fn args(&self, i: usize) -> Option<&GenericArgs> {
+        self.args.get(i)?.as_ref()
     }
 
     /// Segment `i`'s range, or `whole` if unknown.
@@ -304,6 +368,16 @@ impl std::fmt::Display for Path {
                 f.write_str("::")?;
             }
             write!(f, "{segment}")?;
+            if let Some(args) = self.args(i) {
+                f.write_str("<")?;
+                for (j, ty) in args.types.iter().enumerate() {
+                    if j > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{ty}")?;
+                }
+                f.write_str(">")?;
+            }
         }
         Ok(())
     }
@@ -311,9 +385,10 @@ impl std::fmt::Display for Path {
 
 /// A type as written in the source, not yet resolved: `u8` is a path
 /// until type checking finds the primitive it names.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeRef {
-    /// A path without generic arguments: a struct, a primitive, `Self`.
+    /// A struct (with generic arguments), a primitive, `Self`, a generic
+    /// parameter.
     Path(Path),
     /// `()` or `(A, B)`.
     Tuple(Box<[TypeRef]>),
@@ -329,6 +404,8 @@ pub enum TypeRef {
         mutable: bool,
         pointee: Box<TypeRef>,
     },
+    /// `_`: a type to infer, in a body.
+    Infer,
     /// Unsupported or malformed; already reported.
     Error,
 }
@@ -336,6 +413,38 @@ pub enum TypeRef {
 impl TypeRef {
     pub fn unit() -> TypeRef {
         TypeRef::Tuple(Box::new([]))
+    }
+}
+
+impl std::fmt::Display for TypeRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeRef::Path(path) => write!(f, "{path}"),
+            TypeRef::Tuple(fields) => {
+                f.write_str("(")?;
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{field}")?;
+                }
+                if fields.len() == 1 {
+                    f.write_str(",")?;
+                }
+                f.write_str(")")
+            }
+            TypeRef::Never => f.write_str("!"),
+            TypeRef::Ptr { mutable, pointee } => {
+                let m = if *mutable { "mut" } else { "const" };
+                write!(f, "*{m} {pointee}")
+            }
+            TypeRef::Ref { mutable, pointee } => {
+                let m = if *mutable { "mut " } else { "" };
+                write!(f, "&{m}{pointee}")
+            }
+            TypeRef::Infer => f.write_str("_"),
+            TypeRef::Error => f.write_str("<error>"),
+        }
     }
 }
 
@@ -391,23 +500,28 @@ impl ItemTree {
         }
     }
 
-    /// The associated function or constant `name` of `target`.
+    /// Every associated function `name` of `target`: more than one only
+    /// for a generic struct, in blocks for different instances of it.
+    pub fn assoc_functions(&self, target: ImplTarget, name: Symbol) -> Vec<FunctionId> {
+        let items = self.assoc.get(&(target, name)).map_or(&[][..], |v| v);
+        items
+            .iter()
+            .filter_map(|&item| match item {
+                AssocItem::Function(f) => Some(f),
+                AssocItem::Const(_) => None,
+            })
+            .collect()
+    }
+
+    /// The associated function or constant `name` of `target`; a
+    /// function if there are both (reported).
     pub fn assoc_item(&self, target: ImplTarget, name: Symbol) -> Option<AssocItem> {
-        let impls = || {
-            self.impls
-                .values()
-                .filter(move |i| i.target == Some(target))
-        };
-        let function = impls()
-            .flat_map(|i| i.functions.iter().copied())
-            .find(|&f| self.functions[f].name == name);
-        if let Some(f) = function {
-            return Some(AssocItem::Function(f));
-        }
-        impls()
-            .flat_map(|i| i.consts.iter().copied())
-            .find(|&c| self.consts[c].name == Some(name))
-            .map(AssocItem::Const)
+        let items = self.assoc.get(&(target, name))?;
+        items
+            .iter()
+            .copied()
+            .find(|item| matches!(item, AssocItem::Function(_)))
+            .or_else(|| items.first().copied())
     }
 
     /// Whether code in `from` may name an item with visibility `vis`.
@@ -716,6 +830,7 @@ impl Collector<'_> {
                 segments: Box::default(),
                 ranges: Box::default(),
                 anchor_ranges: Box::default(),
+                args: Box::default(),
             };
             self.collect_use_tree(ctx, vis, &prefix, tree);
         }
@@ -829,13 +944,7 @@ impl Collector<'_> {
             unsupported(diagnostics, range, "trait implementations");
             return;
         }
-        if let Some(list) = imp.generic_param_list() {
-            unsupported(
-                diagnostics,
-                list.syntax().text_range(),
-                "generic `impl` blocks",
-            );
-        }
+        let generics = collect_generics(imp.generic_param_list(), false, diagnostics);
         if let Some(clause) = imp.where_clause() {
             unsupported(diagnostics, clause.syntax().text_range(), "`where` clauses");
         }
@@ -849,6 +958,7 @@ impl Collector<'_> {
         let self_range = imp.self_ty().map_or(range, |t| t.syntax().text_range());
         let def_range = TextRange::new(def_start(imp.syntax()), self_range.end());
         let id = self.items.impls.alloc(Impl {
+            generics,
             self_ty,
             self_range,
             def_range,
@@ -907,8 +1017,31 @@ impl Collector<'_> {
         let vis = self.visibility(ctx, f.visibility());
         let name = f.name()?;
         let diagnostics = &mut self.items.diagnostics;
-        if let Some(list) = f.generic_param_list() {
-            unsupported(diagnostics, list.syntax().text_range(), "generic functions");
+        let generics = collect_generics(f.generic_param_list(), false, diagnostics);
+        if in_extern_block && !generics.is_empty() {
+            diagnostics.push(Diagnostic::new(
+                TextRange::new(def_start(f.syntax()), f.syntax().text_range().end()),
+                "foreign items may not have type parameters",
+            ));
+        }
+        if let Some(owner) = owner {
+            // A method's parameters may not shadow its block's.
+            for param in generics.params.iter() {
+                if self.items.impls[owner]
+                    .generics
+                    .params
+                    .iter()
+                    .any(|p| p.name == param.name)
+                {
+                    diagnostics.push(Diagnostic::new(
+                        param.range,
+                        format!(
+                            "the name `{}` is already used for a generic parameter in this item's generic parameters",
+                            param.name
+                        ),
+                    ));
+                }
+            }
         }
         if let Some(clause) = f.where_clause() {
             unsupported(diagnostics, clause.syntax().text_range(), "`where` clauses");
@@ -1014,6 +1147,7 @@ impl Collector<'_> {
         Some(self.items.functions.alloc(Function {
             def_range: TextRange::new(def_start(f.syntax()), signature_end),
             name: Symbol::intern(name.text()),
+            generics,
             params: params.into(),
             ret,
             ret_range,
@@ -1059,6 +1193,15 @@ impl Collector<'_> {
             }
         };
 
+        if let Some(owner) = owner
+            && !self.items.impls[owner].generics.is_empty()
+        {
+            unsupported(
+                diagnostics,
+                c.syntax().text_range(),
+                "associated constants in generic `impl` blocks",
+            );
+        }
         let has_body = c.body().is_some();
         let def_start = def_start(c.syntax());
         let header_end = c.ty().map_or(name_end, |t| t.syntax().text_range().end());
@@ -1097,9 +1240,7 @@ impl Collector<'_> {
             return;
         };
         let diagnostics = &mut self.items.diagnostics;
-        if let Some(list) = s.generic_param_list() {
-            unsupported(diagnostics, list.syntax().text_range(), "generic structs");
-        }
+        let generics = collect_generics(s.generic_param_list(), true, diagnostics);
         if let Some(clause) = s.where_clause() {
             unsupported(diagnostics, clause.syntax().text_range(), "`where` clauses");
         }
@@ -1156,6 +1297,7 @@ impl Collector<'_> {
         let name_range = name.syntax().text_range();
         self.items.structs.alloc(Struct {
             name: Symbol::intern(name.text()),
+            generics,
             kind,
             fields: fields.into(),
             loc: ItemLoc {
@@ -1278,30 +1420,68 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
 }
 
 /// A path as written, without generic arguments; `None` (reported) if it
-/// has any or is malformed.
+/// has any or is malformed. For `use` declarations and visibilities.
 pub(crate) fn lower_path(path: ast::Path<'_>, diagnostics: &mut Vec<Diagnostic>) -> Option<Path> {
+    let lowered = lower_generic_path(path, diagnostics)?;
+    if !lowered.args.is_empty() {
+        unsupported(diagnostics, path.syntax().text_range(), "generic arguments");
+        return None;
+    }
+    Some(lowered)
+}
+
+/// A path as written, with any generic arguments; `None` (reported) if
+/// it is malformed.
+pub(crate) fn lower_generic_path(
+    path: ast::Path<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Path> {
     let mut segments = Vec::new();
     let mut current = Some(path);
     while let Some(p) = current {
         let segment = p.segment()?;
-        if segment.generic_arg_list().is_some() || segment.parenthesized_arg_list().is_some() {
-            unsupported(diagnostics, path.syntax().text_range(), "generic arguments");
+        if let Some(list) = segment.parenthesized_arg_list() {
+            unsupported(
+                diagnostics,
+                list.syntax().text_range(),
+                "parenthesized generic arguments",
+            );
             return None;
         }
         segments.push(segment);
         current = p.qualifier();
     }
     segments.reverse();
-    let mut anchor = if segments[0].colon2_token().is_some() {
+    // A leading `::`, not a turbofish's.
+    let leading = |segment: &ast::PathSegment<'_>| {
+        let colons = segment.colon2_token()?;
+        let name = segment.name_ref()?;
+        Some(colons.text_range().start() < name.syntax().text_range().start())
+    };
+    let mut anchor = if leading(&segments[0]) == Some(true) {
         PathAnchor::Global
     } else {
         PathAnchor::Plain
     };
     let count = segments.len();
     let (mut names, mut ranges, mut anchor_ranges) = (Vec::new(), Vec::new(), Vec::new());
+    let mut args = Vec::new();
     for (i, segment) in segments.iter().enumerate() {
         let name = segment.name_ref()?;
         let range = name.syntax().text_range();
+        let list = segment.generic_arg_list();
+        if let Some(list) = list
+            && (name.crate_token().is_some()
+                || name.super_token().is_some()
+                || (name.self_token().is_some() && count > 1))
+        {
+            unsupported(
+                diagnostics,
+                list.syntax().text_range(),
+                "generic arguments here",
+            );
+            return None;
+        }
         let misplaced = |what: &str, diagnostics: &mut Vec<Diagnostic>| {
             let message = format!("`{}` in paths can only be used in {what}", name.text());
             diagnostics.push(Diagnostic::new(range, message));
@@ -1336,14 +1516,124 @@ pub(crate) fn lower_path(path: ast::Path<'_>, diagnostics: &mut Vec<Diagnostic>)
         } else {
             names.push(Symbol::intern(name.text()));
             ranges.push(range);
+            // Most paths have no arguments, and get no list of them.
+            if let Some(list) = list {
+                args.resize(names.len() - 1, None);
+                args.push(Some(lower_generic_args(list, diagnostics)));
+            }
         }
+    }
+    if !args.is_empty() {
+        args.resize(names.len(), None);
     }
     Some(Path {
         anchor,
         segments: names.into(),
         ranges: ranges.into(),
         anchor_ranges: anchor_ranges.into(),
+        args: args.into(),
     })
+}
+
+/// `<A, B>`: type arguments only so far.
+pub(crate) fn lower_generic_args(
+    list: ast::GenericArgList<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> GenericArgs {
+    let mut types = Vec::new();
+    let mut ranges = Vec::new();
+    for arg in list.args() {
+        let range = arg.syntax().text_range();
+        let what = match arg {
+            ast::GenericArg::TypeArg(arg) => {
+                types.push(lower_type(arg.ty(), diagnostics));
+                ranges.push(range);
+                continue;
+            }
+            ast::GenericArg::LifetimeArg(_) => "lifetime arguments",
+            ast::GenericArg::ConstArg(_) => "const arguments",
+            ast::GenericArg::AssocTypeArg(_) => "associated type arguments",
+        };
+        unsupported(diagnostics, range, what);
+        types.push(TypeRef::Error);
+        ranges.push(range);
+    }
+    GenericArgs {
+        types: types.into(),
+        ranges: ranges.into(),
+        range: list.syntax().text_range(),
+    }
+}
+
+/// An item's generic parameter list: type parameters without bounds or
+/// defaults, with distinct names.
+fn collect_generics(
+    list: Option<ast::GenericParamList<'_>>,
+    defaults_allowed: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Generics {
+    let Some(list) = list else {
+        return Generics::default();
+    };
+    let mut params: Vec<GenericParam> = Vec::new();
+    let mut has_lifetimes = false;
+    for param in list.generic_params() {
+        let range = param.syntax().text_range();
+        let what = match param {
+            ast::GenericParam::TypeParam(param) => {
+                check_attrs(param.attrs(), diagnostics);
+                let Some(name) = param.name() else {
+                    continue;
+                };
+                if let Some(bounds) = param.type_bound_list()
+                    && bounds.bounds().next().is_some()
+                {
+                    unsupported(diagnostics, bounds.syntax().text_range(), "trait bounds");
+                }
+                if let Some(default) = param.default_type() {
+                    if defaults_allowed {
+                        unsupported(
+                            diagnostics,
+                            default.syntax().text_range(),
+                            "defaults for type parameters",
+                        );
+                    } else {
+                        diagnostics.push(Diagnostic::new(
+                            range,
+                            "defaults for generic parameters are not allowed here",
+                        ));
+                    }
+                }
+                let name_range = name.syntax().text_range();
+                let name = Symbol::intern(name.text());
+                if params.iter().any(|p| p.name == name) {
+                    diagnostics.push(Diagnostic::new(
+                        name_range,
+                        format!(
+                            "the name `{name}` is already used for a generic parameter in this item's generic parameters"
+                        ),
+                    ));
+                    continue;
+                }
+                params.push(GenericParam {
+                    name,
+                    range: name_range,
+                });
+                continue;
+            }
+            ast::GenericParam::LifetimeParam(_) => {
+                has_lifetimes = true;
+                "lifetime parameters"
+            }
+            ast::GenericParam::ConstParam(_) => "const generics",
+        };
+        unsupported(diagnostics, range, what);
+    }
+    Generics {
+        params: params.into(),
+        range: list.syntax().text_range(),
+        has_lifetimes,
+    }
 }
 
 /// Lowers a type as written. A missing type was already reported by the
@@ -1354,7 +1644,7 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
     };
     let what = match ty {
         ast::Type::PathType(path) => {
-            return match path.path().and_then(|p| lower_path(p, diagnostics)) {
+            return match path.path().and_then(|p| lower_generic_path(p, diagnostics)) {
                 Some(path) => TypeRef::Path(path),
                 None => TypeRef::Error,
             };
@@ -1373,7 +1663,7 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
         ast::Type::FnPtrType(_) => "function pointer types",
         ast::Type::ForType(_) => "higher-ranked types",
         ast::Type::ImplTraitType(_) => "`impl Trait` types",
-        ast::Type::InferType(_) => "inferred types (`_`)",
+        ast::Type::InferType(_) => return TypeRef::Infer,
         ast::Type::MacroType(_) => "macros",
         ast::Type::PtrType(ptr) => {
             let pointee = lower_type(ptr.ty(), diagnostics);

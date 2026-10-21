@@ -12,12 +12,13 @@
 
 use std::collections::HashMap;
 
-use flux_hir::{FunctionId, Hir, ImplTarget};
+use flux_hir::{Diagnostic, FunctionId, Hir, ImplTarget};
+use flux_mir::mono::Instance;
 use flux_mir::{
     BinOp, Body, Constant, FileMir, Local, Operand, Place, ProjectionElem, Rvalue, StatementKind,
     TerminatorKind, UnOp, projection_ty,
 };
-use flux_ty::{FnSig, IntTy, Signatures, Ty, TyKind, TypedFile};
+use flux_ty::{FnSig, GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind, TypedFile};
 use keel_frontend::{FunctionBuilder, Variable};
 use keel_ir::StackSlot;
 use keel_ir::{
@@ -26,8 +27,10 @@ use keel_ir::{
 };
 
 /// The keel module for a type-checked program and its MIR, `core`
-/// included.
-pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Module {
+/// included: one function per instance of a function the program needs.
+/// An error if a generic function needs instances of itself without end.
+pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Result<Module, Diagnostic> {
+    let instances = flux_mir::mono::collect(hir, mir)?;
     let mut module = Module::default();
     let items = &hir.items;
     let symbols: HashMap<FunctionId, String> = items
@@ -85,8 +88,14 @@ pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Module {
         strings: HashMap::new(),
         data: Vec::new(),
     };
-    for (id, body) in mir.bodies.iter() {
-        module.functions.push(ctx.function(id, body));
+    for instance in instances {
+        let body = &mir.bodies[instance.function];
+        let function = if instance.args.is_empty() {
+            ctx.function(instance, body)
+        } else {
+            ctx.function(instance, &flux_mir::mono::subst_body(body, instance.args))
+        };
+        module.functions.push(function);
     }
     module.data = ctx.data;
     if ctx.uses_abort && !declared_abort {
@@ -114,7 +123,72 @@ pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Module {
             .push(entry_point(&symbols[&id], &typed.sigs, &typed.sigs[id]));
     }
     module.sync_function_attrs();
-    module
+    Ok(module)
+}
+
+/// The symbol of `instance`: its function's, with a hash as a last
+/// segment, as rustc's legacy mangling does, if it has generic arguments
+/// or is in one of a generic struct's blocks, which may each have a
+/// function of its name. The hash covers the arguments and the block.
+fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: Instance) -> String {
+    let base = &symbols[&instance.function];
+    let items = &hir.items;
+    let block =
+        items.functions[instance.function]
+            .owner
+            .filter(|&owner| match items.impls[owner].target {
+                Some(ImplTarget::Struct(s)) => !items.structs[s].generics.is_empty(),
+                _ => false,
+            });
+    if instance.args.is_empty() && block.is_none() {
+        return base.clone();
+    }
+    // FNV-1a, over a structural encoding of the arguments.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for &byte in bytes {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+        }
+    };
+    if let Some(block) = block {
+        feed(&(block.index() as u32).to_le_bytes());
+    }
+    fn encode(ty: Ty, feed: &mut impl FnMut(&[u8])) {
+        match ty.kind() {
+            TyKind::Int(int) => feed(int.name().as_str().as_bytes()),
+            TyKind::Bool => feed(b"b"),
+            TyKind::Never => feed(b"!"),
+            TyKind::CStr => feed(b"CStr"),
+            TyKind::Tuple(elements) => {
+                feed(b"(");
+                elements.iter().for_each(|&e| encode(e, feed));
+                feed(b")");
+            }
+            TyKind::Adt(adt, args) => {
+                feed(b"S");
+                feed(&(adt.strukt.index() as u32).to_le_bytes());
+                args.iter().for_each(|&a| encode(a, feed));
+                feed(b";");
+            }
+            TyKind::RawPtr(m, pointee) | TyKind::Ref(m, pointee) => {
+                let pointer: &[u8] = if matches!(ty.kind(), TyKind::Ref(..)) {
+                    b"&"
+                } else {
+                    b"*"
+                };
+                feed(pointer);
+                feed(if m == Mutability::Mut { b"m" } else { b"c" });
+                encode(pointee, feed);
+            }
+            TyKind::Param(_) | TyKind::Infer(_) | TyKind::Error => {
+                unreachable!("instances are of concrete types")
+            }
+        }
+    }
+    for &arg in instance.args {
+        encode(arg, &mut feed);
+    }
+    format!("{}17h{hash:016x}E", &base[..base.len() - 1])
 }
 
 /// A legacy-style mangled name, `_ZN<len>crate<len>nameE` (with the
@@ -137,7 +211,8 @@ fn keel_type(ty: Ty) -> Option<Type> {
         // `&CStr` is a thin pointer here: flux needs only `as_ptr`.
         TyKind::RawPtr(..) | TyKind::Ref(..) => Some(Type::Ptr),
         TyKind::Tuple(_)
-        | TyKind::Adt(_)
+        | TyKind::Adt(..)
+        | TyKind::Param(_)
         | TyKind::Never
         | TyKind::CStr
         | TyKind::Infer(_)
@@ -324,10 +399,12 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn function(&mut self, id: FunctionId, body: &Body) -> Function {
-        let sig = &self.typed.sigs[id];
+    /// `instance`, whose MIR is `body` with its generic arguments
+    /// substituted.
+    fn function(&mut self, instance: Instance, body: &Body) -> Function {
+        let sig = &self.typed.sigs[instance.function].subst(instance.args);
         let mut function = Function::new(
-            self.symbols[&id].clone(),
+            instance_symbol(self.hir, self.symbols, instance),
             signature(&self.typed.sigs, sig, false),
         );
         function.attrs = attrs(sig);
@@ -387,7 +464,7 @@ struct Lower<'a, 'c, 'f> {
     /// Where to store the return value, and its layout, when it is
     /// returned through memory.
     sret: Option<(Value, Layout)>,
-    callees: HashMap<FunctionId, FuncRef>,
+    callees: HashMap<Instance, FuncRef>,
     /// Calls `abort`; shared by every failed assertion.
     panic_block: Option<Block>,
 }
@@ -752,12 +829,13 @@ impl Lower<'_, '_, '_> {
             }
             TerminatorKind::Call {
                 func,
+                generic_args,
                 args,
                 dest,
                 target,
             } => {
-                let callee = self.callee(*func);
-                let ret = self.ctx.typed.sigs[*func].ret;
+                let callee = self.callee(*func, generic_args);
+                let ret = self.ctx.typed.sigs[*func].ret.subst(generic_args);
                 let sret = match return_kind(self.sigs, ret) {
                     Return::Sret(layout) => {
                         let slot = self
@@ -845,14 +923,20 @@ impl Lower<'_, '_, '_> {
         self.b.ins().ptradd(pointer, offset)
     }
 
-    fn callee(&mut self, func: FunctionId) -> FuncRef {
-        if let Some(&callee) = self.callees.get(&func) {
+    fn callee(&mut self, func: FunctionId, generic_args: GenericArgs) -> FuncRef {
+        let instance = Instance {
+            function: func,
+            args: generic_args,
+        };
+        if let Some(&callee) = self.callees.get(&instance) {
             return callee;
         }
         let variadic = self.ctx.hir.items.functions[func].is_variadic;
-        let sig = signature(self.sigs, &self.ctx.typed.sigs[func], variadic);
-        let callee = self.b.import_function(&self.ctx.symbols[&func], sig);
-        self.callees.insert(func, callee);
+        let sig = self.ctx.typed.sigs[func].subst(generic_args);
+        let sig = signature(self.sigs, &sig, variadic);
+        let symbol = instance_symbol(self.ctx.hir, self.ctx.symbols, instance);
+        let callee = self.b.import_function(&symbol, sig);
+        self.callees.insert(instance, callee);
         callee
     }
 

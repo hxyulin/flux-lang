@@ -13,7 +13,8 @@ use crate::{
 pub(crate) fn file(mir: &FileMir, hir: &Hir) -> String {
     let mut out = String::new();
     for (id, body) in mir.bodies.iter().filter(|&(id, _)| hir.is_program(id)) {
-        let name = hir.items.function_path(&hir.items.functions[id]);
+        let function = &hir.items.functions[id];
+        let name = format!("{}{}", hir.items.function_path(function), function.generics);
         body_text(&mut out, hir, &name, body);
         out.push('\n');
     }
@@ -94,12 +95,17 @@ fn body_text(out: &mut String, hir: &Hir, name: &str, body: &Body) {
             }
             TerminatorKind::Call {
                 func,
+                generic_args,
                 args,
                 dest,
                 target,
             } => {
                 let args: Vec<String> = args.iter().map(|o| operand(hir, o)).collect();
-                let name = hir.items.functions[*func].name;
+                let mut name = hir.items.functions[*func].name.to_string();
+                if !generic_args.is_empty() {
+                    let types: Vec<String> = generic_args.iter().map(Ty::to_string).collect();
+                    name = format!("{name}::<{}>", types.join(", "));
+                }
                 let target = match target {
                     Some(bb) => format!("bb{}", bb.index()),
                     None => "!".to_owned(),

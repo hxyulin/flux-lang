@@ -153,6 +153,7 @@ impl<'a> Evaluator<'a> {
                     args,
                     dest,
                     target,
+                    ..
                 } => {
                     let args = args
                         .iter()

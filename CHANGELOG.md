@@ -45,10 +45,22 @@
   `unconditional_panic` lints. Programs are read as a set of files.
 - Add flux's own `core` library, written in flux and built into the
   compiler, with the integer types' constants and methods.
+- Support generics: type parameters on functions, structs and inherent
+  `impl` blocks, generic arguments in types and paths (turbofish), `_`
+  in types inside bodies, and blocks for different instances of a
+  struct with the same method names. Generic functions are checked once
+  and monomorphized in code generation. Diagnostics follow rustc's
+  (E0107, E0109, E0282, E0034, E0392, E0207, E0592, ...), and expected
+  types flow into calls and struct expressions as in rustc. `core` gains
+  `mem::drop` (in the prelude) and `convert::identity`.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 
 ### Performance
+
+- Read type kinds without a lock, from an append-only table of
+  write-once slots, and hash types with FxHash: type checking `core` and
+  a program takes about a third less time.
 
 - Build flat syntax trees (preorder node arrays over the lexer's token
   arrays) instead of rowan green trees: 5.5 ns/token to build instead of

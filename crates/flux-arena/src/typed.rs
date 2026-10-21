@@ -152,6 +152,10 @@ impl<T> Arena<T> {
         self.data.iter()
     }
 
+    pub fn values_mut(&mut self) -> std::slice::IterMut<'_, T> {
+        self.data.iter_mut()
+    }
+
     pub fn shrink_to_fit(&mut self) {
         self.data.shrink_to_fit();
     }

@@ -463,9 +463,37 @@ impl Checker<'_> {
             Some(TyKind::Ref(Mutability::Mut, _)) => "a mutable reference",
             _ => "a raw pointer",
         };
+        // rustc names a tuple struct rather than its field: `w`, not
+        // `w.0`.
+        let mut named = place.clone();
+        while let [base @ .., crate::ProjectionElem::Field(_)] = &*named.projection {
+            let base = Place {
+                local: named.local,
+                projection: base.into(),
+            };
+            let is_tuple_struct = match self.body.place_ty(&base, self.sigs).kind() {
+                TyKind::Adt(adt, _) => {
+                    self.items.structs[adt.strukt].kind == flux_hir::StructKind::Tuple
+                }
+                _ => false,
+            };
+            if !is_tuple_struct {
+                break;
+            }
+            named = base;
+        }
+        // And the reference it is behind: `w`, not `*w`.
+        if named.projection.len() < place.projection.len()
+            && let [base @ .., crate::ProjectionElem::Deref] = &*named.projection
+        {
+            named = Place {
+                local: named.local,
+                projection: base.into(),
+            };
+        }
         let message = format!(
             "cannot move out of `{}` which is behind {behind}",
-            self.name(place)
+            self.name(&named)
         );
         self.error(range, message);
     }

@@ -2,7 +2,7 @@ struct S;
 
 unsafe extern fn abs(i32) -> i32;
 
-fn generic(x@0: T) -> &str {
+fn generic<T>(x@0: T) -> &str {
     <missing>
 }
 
@@ -23,7 +23,6 @@ fn expressions(v@0: i32) -> () {
 fn declaration_only() -> ();
 
 error 11..21: `extern` blocks must be `unsafe` in edition 2024
-error 64..67: generic functions are not supported yet
 error 78..85: lifetimes are not supported yet
 error 96..102: string literals other than `c"..."` are not supported yet
 error 106..118: the `cfg` attribute is not supported yet

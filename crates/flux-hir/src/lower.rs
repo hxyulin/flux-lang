@@ -5,12 +5,16 @@ use flux_intern::{Symbol, kw};
 use flux_syntax::ast::{self, AstNode, LiteralKind};
 use flux_syntax::{SyntaxNode, SyntaxTree, TextRange};
 
+use flux_arena::ArenaMap;
+
 use crate::body::{
-    Binding, BindingId, Body, BodySourceMap, Expr, ExprId, Literal, LoopSource, Pat, PatId, Res,
-    Stmt,
+    Binding, BindingId, Body, BodySourceMap, Expr, ExprId, Literal, LoopSource, Pat, PatId,
+    PathGenerics, Res, SegmentArgs, Stmt,
 };
 use crate::def_map::{Def, Ns, ResolveError, Resolved};
-use crate::item_tree::{PathAnchor, lower_path};
+use crate::item_tree::{
+    GenericArgs, PathAnchor, lower_generic_args, lower_generic_path, lower_path,
+};
 use crate::item_tree::{check_attr, check_attrs, lower_type, unsupported};
 use crate::literal::{parse_int, unescape_c_str};
 use crate::{
@@ -37,7 +41,7 @@ pub struct LoweredBody {
 pub fn lower_const(tree: &SyntaxTree, items: &ItemTree, konst: ConstId) -> LoweredBody {
     let data = &items.consts[konst];
     let c = ast::Const::cast(tree.node(data.node)).expect("constants point at CONST nodes");
-    let mut ctx = Ctx::new(items, data.loc.module, data.owner);
+    let mut ctx = Ctx::new(items, data.loc.module, data.owner, None);
     let root = ctx.lower_opt(c.body(), c.syntax());
     ctx.finish(Vec::new(), root)
 }
@@ -47,7 +51,7 @@ pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> 
     let data = &items.functions[function];
     let node = tree.node(data.node);
     let f = ast::Fn::cast(node).expect("functions point at FN nodes");
-    let mut ctx = Ctx::new(items, data.loc.module, data.owner);
+    let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
     let mut params = Vec::new();
     if let Some(list) = f.param_list() {
         if let Some(param) = list.self_param().filter(|_| data.has_self) {
@@ -78,11 +82,15 @@ struct Ctx<'a> {
     self_target: Option<ImplTarget>,
     /// The module the function is in, where its names are resolved.
     module: ModuleId,
+    /// The generic parameters in scope: the `impl` block's, then the
+    /// function's.
+    generics: Vec<Symbol>,
     exprs: Arena<Expr>,
     pats: Arena<Pat>,
     bindings: Arena<Binding>,
     types: Arena<crate::TypeRef>,
     source_map: BodySourceMap,
+    generic_args: ArenaMap<Expr, PathGenerics>,
     /// Bindings in scope, innermost last; a block truncates it on exit.
     scopes: Vec<(Symbol, BindingId)>,
     /// The enclosing loops, innermost last.
@@ -91,15 +99,24 @@ struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    /// Lowering an item in `module`, and in the `impl` block `owner`.
+    /// Lowering an item in `module`, in the `impl` block `owner`, with
+    /// its own generic parameters if it has any.
     fn new(
         items: &'a ItemTree,
         module: ModuleId,
         owner: Option<crate::item_tree::ImplId>,
+        own: Option<&crate::Generics>,
     ) -> Ctx<'a> {
+        let generics = owner
+            .map(|owner| &items.impls[owner].generics)
+            .into_iter()
+            .chain(own)
+            .flat_map(|g| g.params.iter().map(|p| p.name))
+            .collect();
         Ctx {
             items,
             module,
+            generics,
             in_impl: owner.is_some(),
             self_target: owner.and_then(|owner| items.impls[owner].target),
             exprs: Arena::new(),
@@ -107,6 +124,7 @@ impl<'a> Ctx<'a> {
             bindings: Arena::new(),
             types: Arena::new(),
             source_map: BodySourceMap::default(),
+            generic_args: ArenaMap::new(),
             scopes: Vec::new(),
             loops: Vec::new(),
             diagnostics: Vec::new(),
@@ -121,6 +139,7 @@ impl<'a> Ctx<'a> {
                 bindings: self.bindings,
                 types: self.types,
                 params: params.into(),
+                generic_args: self.generic_args,
                 root,
             },
             source_map: self.source_map,
@@ -172,7 +191,7 @@ impl<'a> Ctx<'a> {
         }
         let hir = match expr {
             ast::Expr::Literal(literal) => self.lower_literal(literal),
-            ast::Expr::PathExpr(path) => Expr::Path(self.resolve_path(path, None)),
+            ast::Expr::PathExpr(path) => return self.lower_path_expr(path, None),
             ast::Expr::ParenExpr(paren) => return self.lower_opt(paren.expr(), syntax),
             ast::Expr::TupleExpr(tuple) => {
                 let fields = tuple.fields().map(|e| self.lower_expr(e)).collect();
@@ -220,8 +239,7 @@ impl<'a> Ctx<'a> {
                     // rustc's messages.
                     Some(ast::Expr::PathExpr(path)) => {
                         self.check_attrs(path.syntax());
-                        let res = self.resolve_path(path, Some(range));
-                        self.alloc_expr(Expr::Path(res), path.syntax().text_range())
+                        self.lower_path_expr(path, Some(range))
                     }
                     callee => self.lower_opt(callee, syntax),
                 };
@@ -287,9 +305,9 @@ impl<'a> Ctx<'a> {
             ast::Expr::MacroExpr(_) => self.unsupported_expr(range, "macros"),
             ast::Expr::MatchExpr(_) => self.unsupported_expr(range, "`match` expressions"),
             ast::Expr::MethodCallExpr(call) => {
-                if let Some(args) = call.generic_arg_list() {
-                    self.unsupported(args.syntax().text_range(), "generic arguments");
-                }
+                let generics = call
+                    .generic_arg_list()
+                    .map(|list| lower_generic_args(list, &mut self.diagnostics));
                 let receiver = self.lower_opt(call.receiver(), syntax);
                 let args = match call.arg_list() {
                     Some(list) => list.args().map(|e| self.lower_expr(e)).collect(),
@@ -308,6 +326,14 @@ impl<'a> Ctx<'a> {
                         self.source_map
                             .expr_fields
                             .insert(id, Box::new([name_range]));
+                        if let Some(generics) = generics {
+                            let item = self.segment_args(name_range, &generics);
+                            let generics = PathGenerics {
+                                item: Some(item),
+                                ..PathGenerics::default()
+                            };
+                            self.generic_args.insert(id, generics);
+                        }
                         return id;
                     }
                     None => Expr::Missing,
@@ -333,7 +359,13 @@ impl<'a> Ctx<'a> {
     /// `S { a: 1, b, ..base }`
     fn lower_record(&mut self, record: ast::RecordExpr<'_>) -> ExprId {
         let range = record.syntax().text_range();
-        let strukt = self.resolve_struct(record.path(), range);
+        let path = record
+            .path()
+            .and_then(|p| lower_generic_path(p, &mut self.diagnostics));
+        let path_range = record.path().map_or(range, |p| p.syntax().text_range());
+        let strukt = path
+            .as_ref()
+            .and_then(|path| self.resolve_struct_path(path, path_range));
         let mut fields = Vec::new();
         let mut name_ranges = Vec::new();
         let mut spread = None;
@@ -378,10 +410,21 @@ impl<'a> Ctx<'a> {
         if let Some(path) = record.path() {
             self.source_map.paths.insert(id, path.syntax().text_range());
         }
+        if let Some(path) = path {
+            let self_type = path.as_name() == Some(kw::SelfUpper);
+            let item = (!self_type).then_some(path.segments.len() - 1);
+            let mut generics = self.path_generics(&path, path_range, item, None, Res::Err);
+            if self_type {
+                generics.get_or_insert_default().self_type = true;
+            }
+            if let Some(generics) = generics {
+                self.generic_args.insert(id, generics);
+            }
+        }
         id
     }
 
-    /// The struct a path in a struct expression or pattern names.
+    /// The struct a path in a pattern names.
     fn resolve_struct(
         &mut self,
         path: Option<ast::Path<'_>>,
@@ -389,6 +432,22 @@ impl<'a> Ctx<'a> {
     ) -> Option<StructId> {
         let range = path.map_or(range, |p| p.syntax().text_range());
         let path = path.and_then(|p| lower_path(p, &mut self.diagnostics))?;
+        self.resolve_struct_path(&path, range)
+    }
+
+    /// The struct a path in a struct expression or pattern names.
+    fn resolve_struct_path(&mut self, path: &Path, range: TextRange) -> Option<StructId> {
+        if path.anchor == PathAnchor::Plain && self.generics.contains(&path.segments[0]) {
+            let message = match path.segments.len() {
+                1 => format!(
+                    "expected struct, variant or union type, found type parameter `{}`",
+                    path.segments[0]
+                ),
+                _ => "ambiguous associated type".to_owned(),
+            };
+            self.error(range, message);
+            return None;
+        }
         if path.as_name() == Some(kw::SelfUpper) {
             if !self.in_impl {
                 self.error(
@@ -399,8 +458,8 @@ impl<'a> Ctx<'a> {
             return self.self_struct();
         }
         match self.reported(
-            self.items.resolve(self.module, &path, Ns::Types),
-            &path,
+            self.items.resolve(self.module, path, Ns::Types),
+            path,
             range,
         ) {
             Ok(Resolved::Def(Def::Struct(strukt))) => Some(strukt),
@@ -417,7 +476,7 @@ impl<'a> Ctx<'a> {
                 let ResolveError::Failed { message, .. } = &e else {
                     unreachable!()
                 };
-                self.error(e.range(&path, range), message.clone());
+                self.error(e.range(path, range), message.clone());
                 None
             }
             result => {
@@ -588,14 +647,140 @@ impl<'a> Ctx<'a> {
         target
     }
 
-    fn resolve_path(&mut self, path: ast::PathExpr<'_>, call: Option<TextRange>) -> Res {
+    /// A path expression, called if `call` is the call's range.
+    fn lower_path_expr(&mut self, path: ast::PathExpr<'_>, call: Option<TextRange>) -> ExprId {
         let range = path.syntax().text_range();
-        match path
+        let segment = path
             .path()
-            .and_then(|p| lower_path(p, &mut self.diagnostics))
-        {
-            Some(path) => self.resolve_value(&path, range, call),
-            None => Res::Err,
+            .filter(|p| p.qualifier().is_some())
+            .and_then(|p| p.segment()?.name_ref())
+            .map(|n| n.syntax().text_range());
+        let (res, generics) = self.resolve_path(path, call);
+        let id = self.alloc_expr(Expr::Path(res), range);
+        if let Some(generics) = generics {
+            self.generic_args.insert(id, generics);
+        }
+        if let Some(segment) = segment {
+            self.source_map.segments.insert(id, segment);
+        }
+        id
+    }
+
+    /// A path expression's meaning and generic arguments.
+    fn resolve_path(
+        &mut self,
+        path: ast::PathExpr<'_>,
+        call: Option<TextRange>,
+    ) -> (Res, Option<PathGenerics>) {
+        let range = path.syntax().text_range();
+        let Some(path) = path
+            .path()
+            .and_then(|p| lower_generic_path(p, &mut self.diagnostics))
+        else {
+            return (Res::Err, None);
+        };
+        let res = self.resolve_value(&path, range, call);
+        let last = path.segments.len() - 1;
+        let (item, ty) = match res {
+            Res::Function(f) if self.items.functions[f].owner.is_some() && last > 0 => {
+                (Some(last), Some(last - 1))
+            }
+            Res::Function(_) | Res::Struct(_) => (Some(last), None),
+            Res::Const(c) if self.items.consts[c].owner.is_some() && last > 0 => {
+                (None, Some(last - 1))
+            }
+            Res::Local(_) | Res::Const(_) => (None, None),
+            Res::Err => return (res, None),
+        };
+        // `Self` has no generic arguments of its own.
+        let is_self = |i: usize| {
+            path.anchor == PathAnchor::Plain && i == 0 && path.segments[0] == kw::SelfUpper
+        };
+        let self_type = match res {
+            Res::Struct(_) => item.is_some_and(is_self),
+            _ => ty.is_some_and(is_self),
+        };
+        let ty = ty.filter(|&i| !is_self(i));
+        let item = item.filter(|&i| !is_self(i));
+        // A constant has no generic parameters.
+        let last_args = path.args(last).filter(|_| matches!(res, Res::Const(_)));
+        if let Some(args) = last_args {
+            let got = args.types.len();
+            let (s, verb) = if got == 1 { ("", "was") } else { ("s", "were") };
+            self.error(
+                path.range(last, range),
+                format!("constant takes 0 generic arguments but {got} generic argument{s} {verb} supplied"),
+            );
+        }
+        let mut generics = self.path_generics(&path, range, item, ty, res);
+        if self_type {
+            generics.get_or_insert_default().self_type = true;
+        }
+        (res, generics)
+    }
+
+    /// The generic arguments of `path`, which resolved to `res`, after its
+    /// `item` and `ty` segments, reporting any after other segments.
+    fn path_generics(
+        &mut self,
+        path: &Path,
+        range: TextRange,
+        item: Option<usize>,
+        ty: Option<usize>,
+        res: Res,
+    ) -> Option<PathGenerics> {
+        if path.args.is_empty() {
+            return None;
+        }
+        let mut generics = PathGenerics::default();
+        for (i, args) in path.args.iter().enumerate() {
+            let Some(args) = args else {
+                continue;
+            };
+            let segment = path.range(i, range);
+            if Some(i) == item {
+                generics.item = Some(self.segment_args(segment, args));
+            } else if Some(i) == ty {
+                generics.ty = Some(self.segment_args(segment, args));
+            } else {
+                let name = path.segments[i];
+                let last = i + 1 == path.segments.len();
+                let what = match res {
+                    // Reported with the constant's arguments.
+                    Res::Const(_) if last => continue,
+                    Res::Struct(_) if last && name == kw::SelfUpper => {
+                        "self constructor".to_owned()
+                    }
+                    _ if name == kw::SelfUpper => "self type".to_owned(),
+                    Res::Local(_) => "local variable".to_owned(),
+                    _ if crate::is_primitive(name) && i + 2 == path.segments.len() => {
+                        format!("builtin type `{name}`")
+                    }
+                    _ => format!("module `{name}`"),
+                };
+                let at = args.ranges.first().copied().unwrap_or(args.range);
+                self.error(at, format!("type arguments are not allowed on {what}"));
+            }
+        }
+        (generics.item.is_some() || generics.ty.is_some()).then_some(generics)
+    }
+
+    /// Generic arguments in an expression, as types of the body.
+    fn segment_args(&mut self, segment: TextRange, args: &GenericArgs) -> SegmentArgs {
+        let types = args
+            .types
+            .iter()
+            .zip(&args.ranges)
+            .map(|(ty, &range)| {
+                let id = self.types.alloc(ty.clone());
+                self.source_map.types.insert(id, range);
+                id
+            })
+            .collect();
+        SegmentArgs {
+            segment,
+            range: args.range,
+            types,
         }
     }
 
@@ -624,6 +809,18 @@ impl<'a> Ctx<'a> {
                 }
                 return Res::Struct(strukt);
             }
+        }
+        // `T::f`: there are no associated items without trait bounds.
+        if path.anchor == PathAnchor::Plain
+            && path.segments.len() > 1
+            && self.generics.contains(&path.segments[0])
+        {
+            let message = format!(
+                "no associated function or constant named `{}` found for type parameter `{}` in the current scope",
+                path.segments[1], path.segments[0]
+            );
+            self.error(path.range(1, range), message);
+            return Res::Err;
         }
         // `Self::f`: an associated function of this block's type.
         let resolved = match (path.anchor, path.segments.first()) {

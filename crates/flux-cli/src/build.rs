@@ -72,7 +72,14 @@ pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result
             let target = Target::host()
                 .ok_or("flux can only compile for arm64 macOS and x86-64 Linux hosts")?;
             let mut module =
-                timings.time("lower", || flux_codegen::lower_module(&hir, &typed, &mir));
+                match timings.time("lower", || flux_codegen::lower_module(&hir, &typed, &mir)) {
+                    Ok(module) => module,
+                    Err(d) => {
+                        errors.push(d);
+                        report_all(&db, &mut errors);
+                        return Ok(false);
+                    }
+                };
             let tier = if options.optimize {
                 OptimizationTier::Full
             } else {

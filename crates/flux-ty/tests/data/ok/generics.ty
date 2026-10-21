@@ -1,0 +1,72 @@
+struct Pair<T> { a: T, b: T }
+struct Wrap<T> { 0: T }
+struct Unit<T> { inner: Wrap<T> }
+struct Two<K, V> { key: K, value: V }
+fn id<T>(T) -> T
+    x@0: T
+fn pick<T>(bool, T, T) -> T
+    first@0: bool
+    a@1: T
+    b@2: T
+fn pair<A, B>(A, B) -> (A, B)
+    a@0: A
+    b@1: B
+fn make<T>(T, T) -> Pair<T>
+    x@0: T
+    y@1: T
+fn x2<T>(T) -> T
+    x@0: T
+fn infer() -> u8
+    a@0: u8
+    b@1: i64
+    c@2: i16
+    d@3: u32
+    e@4: bool
+    f@5: u16
+    g@6: (i8, u64)
+fn new(T, T) -> Pair<T>
+    a@0: T
+    b@1: T
+fn first(Pair<T>) -> T
+    self@0: Pair<T>
+fn set_first(&mut Pair<T>, T) -> ()
+    self@0: &mut Pair<T>
+    a@1: T
+fn convert<U>(Pair<T>, U, U) -> Pair<U>
+    self@0: Pair<T>
+    a@1: U
+    b@2: U
+    _old@3: Pair<T>
+fn with_other(Pair<T>, Pair<T>) -> Pair<Pair<T>>
+    self@0: Pair<T>
+    other@1: Pair<T>
+fn sum(&Pair<i32>) -> i32
+    self@0: &Pair<i32>
+fn sum(&Pair<u8>) -> u8
+    self@0: &Pair<u8>
+fn flip(Two<K, V>) -> Two<V, K>
+    self@0: Two<K, V>
+fn instances() -> i32
+    p@0: Pair<i32>
+    q@1: Pair<u8>
+    r@2: Pair<i64>
+    s@3: Pair<u16>
+    w@4: Wrap<bool>
+    u@5: Unit<u32>
+    t@6: Two<bool, u8>
+    big@7: i32
+fn placeholders() -> u64
+    p@0: Pair<u64>
+    q@1: Pair<i8>
+    w@2: Wrap<u64>
+fn methods() -> bool
+    p@0: Pair<i32>
+    r@1: i32
+    q@2: Pair<bool>
+    c@3: Pair<i32>
+    n@4: Pair<Pair<i32>>
+fn nested<T>(T, T) -> Pair<T>
+    x@0: T
+    y@1: T
+fn main() -> ()
+const ZERO: i32

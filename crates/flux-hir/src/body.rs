@@ -21,6 +21,10 @@ pub struct Body {
     pub types: Arena<TypeRef>,
     /// One pattern per parameter, in order.
     pub params: Box<[PatId]>,
+    /// The generic arguments written in a `Path`, `Record` or
+    /// `MethodCall` expression, for those that have any or go through
+    /// `Self`.
+    pub generic_args: ArenaMap<Expr, PathGenerics>,
     /// The function's block.
     pub root: ExprId,
 }
@@ -43,6 +47,9 @@ pub struct BodySourceMap {
     pub ops: ArenaMap<Expr, TextRange>,
     /// The path of a `Record` expression.
     pub paths: ArenaMap<Expr, TextRange>,
+    /// The last segment of a `Path` expression with more than one: the
+    /// name of an associated item.
+    pub segments: ArenaMap<Expr, TextRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +127,29 @@ pub enum Expr {
         fields: Box<[(Symbol, ExprId)]>,
         spread: Option<ExprId>,
     },
+}
+
+/// The generic arguments of an expression's path, by what they are for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PathGenerics {
+    /// For the type an associated item is of: `S::<A>::f`.
+    pub ty: Option<SegmentArgs>,
+    /// For the item named: `f::<A>`, `S::<A>(x)`, `S::<A> { .. }`, or
+    /// the method of `x.f::<A>()`.
+    pub item: Option<SegmentArgs>,
+    /// The type is `Self`, whose generic arguments are the `impl`
+    /// block's parameters: `Self::f`, `Self(x)`, `Self { .. }`.
+    pub self_type: bool,
+}
+
+/// The generic arguments after one segment of a path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegmentArgs {
+    /// The segment's name.
+    pub segment: TextRange,
+    /// From `<` to `>`.
+    pub range: TextRange,
+    pub types: Box<[TypeRefId]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

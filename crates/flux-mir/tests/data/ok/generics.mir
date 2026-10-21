@@ -1,0 +1,452 @@
+fn Pair::new(_1: T, _2: T) -> Pair<T> {
+    let mut _0: Pair<T>;
+    let _3: T;
+    let _4: T;
+
+    bb0: {
+        _3 = move _1;
+        _4 = move _2;
+        _0 = Pair { a: move _3, b: move _4 };
+        return;
+    }
+}
+
+fn Pair::into_a(_1: Pair<T>) -> T {
+    let mut _0: T;
+
+    bb0: {
+        _0 = move _1.0;
+        return;
+    }
+}
+
+fn Pair::set_a(_1: &mut Pair<T>, _2: T) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: T;
+
+    bb0: {
+        _4 = move _2;
+        (*_1).0 = move _4;
+        _3 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn Pair::replace_a(_1: &mut Pair<T>, _2: Pair<T>) -> T {
+    let mut _0: T;
+    let _3: T; // a
+    let _4: T; // b
+    let _5: ();
+    let _6: &mut Pair<T>;
+    let _7: T;
+
+    bb0: {
+        _3 = move _2.0;
+        _4 = move _2.1;
+        _6 = &two_phase (*_1);
+        _7 = move _3;
+        _5 = set_a::<T>(move _6, move _7) -> bb1;
+    }
+
+    bb1: {
+        _0 = move _4;
+        StorageDead(_4);
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn Pair::rebuild(_1: Pair<T>) -> Pair<T> {
+    let mut _0: Pair<T>;
+    let _2: T; // a
+    let _3: T; // b
+    let _4: T;
+    let _5: T;
+
+    bb0: {
+        _2 = move _1.0;
+        _3 = move _1.1;
+        _4 = move _3;
+        _5 = move _2;
+        _0 = Pair { a: move _4, b: move _5 };
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn Pair::total(_1: &Pair<i32>) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+    let _3: i32;
+
+    bb0: {
+        _2 = copy (*_1).0;
+        _3 = copy (*_1).1;
+        _0 = Add(copy _2, copy _3);
+        return;
+    }
+}
+
+fn Pair::bump(_1: &mut Pair<i32>, _2: i32) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: i32;
+    let _5: i32;
+
+    bb0: {
+        _4 = copy _2;
+        _5 = copy (*_1).0;
+        (*_1).0 = Add(copy _5, copy _4);
+        _3 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn id<T>(_1: T) -> T {
+    let mut _0: T;
+
+    bb0: {
+        _0 = move _1;
+        return;
+    }
+}
+
+fn moves<T>(_1: T, _2: T, _3: bool) -> Wrap<T> {
+    let mut _0: Wrap<T>;
+    let _4: T; // z
+    let _5: T;
+    let _6: T; // w
+    let _7: bool;
+    let _8: T;
+    let _9: T;
+
+    bb0: {
+        _5 = move _1;
+        _4 = id::<T>(move _5) -> bb1;
+    }
+
+    bb1: {
+        _7 = copy _3;
+        switchInt(copy _7) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb2: {
+        _6 = move _2;
+        goto -> bb4;
+    }
+
+    bb3: {
+        _8 = move _4;
+        _6 = id::<T>(move _8) -> bb5;
+    }
+
+    bb4: {
+        _9 = move _6;
+        _0 = Wrap(move _9);
+        StorageDead(_6);
+        StorageDead(_4);
+        return;
+    }
+
+    bb5: {
+        goto -> bb4;
+    }
+}
+
+fn move_then_reassign<T>(_1: T, _2: T) -> T {
+    let mut _0: T;
+    let _3: T; // _first
+    let _4: ();
+    let _5: T;
+
+    bb0: {
+        _3 = move _1;
+        _5 = move _2;
+        _1 = move _5;
+        _4 = const ();
+        _0 = move _1;
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn move_in_loop_once<T>(_1: T) -> Wrap<T> {
+    let mut _0: Wrap<T>;
+    let _2: !;
+    let _3: !;
+    let _4: T;
+
+    bb0: {
+        goto -> bb1;
+    }
+
+    bb1: {
+        _4 = move _1;
+        _0 = Wrap(move _4);
+        goto -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+
+    bb3: {
+        _2 = const ();
+        goto -> bb1;
+    }
+}
+
+fn partial<T>(_1: Pair<T>) -> Pair<T> {
+    let mut _0: Pair<T>;
+    let _2: T; // a
+    let _3: T;
+    let _4: T;
+
+    bb0: {
+        _2 = move _1.0;
+        _3 = move _1.1;
+        _4 = move _2;
+        _0 = Pair { a: move _3, b: move _4 };
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn nested_partial<T>(_1: Pair<Pair<T>>) -> T {
+    let mut _0: T;
+    let _2: Pair<T>; // inner
+    let _3: Pair<T>;
+
+    bb0: {
+        _2 = move _1.0;
+        PlaceMention(_1.1.0);
+        _3 = move _2;
+        _0 = into_a::<T>(move _3) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn borrows<T>(_1: Pair<T>, _2: T, _3: T) -> Pair<T> {
+    let mut _0: Pair<T>;
+    let _4: &T; // r
+    let _5: &T; // s
+    let _6: &T; // _r2
+    let _7: &T; // _s2
+    let _8: &mut T; // m
+    let _9: &T; // t
+    let _10: ();
+    let _11: T;
+    let _12: &T; // _t2
+    let _13: &mut T; // n
+    let _14: ();
+    let _15: T;
+
+    bb0: {
+        _4 = &_1.0;
+        _5 = &_1.1;
+        _6 = copy _4;
+        _7 = copy _5;
+        _8 = &mut _1.1;
+        _9 = &_1.0;
+        _11 = move _2;
+        (*_8) = move _11;
+        _10 = const ();
+        _12 = copy _9;
+        _13 = &mut _1.0;
+        _15 = move _3;
+        (*_13) = move _15;
+        _14 = const ();
+        _0 = move _1;
+        StorageDead(_13);
+        StorageDead(_12);
+        StorageDead(_9);
+        StorageDead(_8);
+        StorageDead(_7);
+        StorageDead(_6);
+        StorageDead(_5);
+        StorageDead(_4);
+        return;
+    }
+}
+
+fn methods(_1: i32) -> i32 {
+    let mut _0: i32;
+    let mut _2: Pair<i32>; // p
+    let _3: i32;
+    let _4: ();
+    let _5: &mut Pair<i32>;
+    let _6: i32;
+    let _7: &Pair<i32>;
+    let _8: ();
+    let _9: &mut Pair<i32>;
+    let _10: &mut Pair<i32>; // q
+    let _11: ();
+    let _12: &mut Pair<i32>;
+    let _13: i32;
+    let _14: &Pair<i32>;
+    let _15: ();
+    let _16: &mut Pair<i32>;
+    let _17: i32;
+    let _18: i32;
+    let _19: i32;
+    let _20: &Pair<i32>;
+    let _21: &Pair<i32>;
+    let _22: Pair<i32>;
+    let _23: Pair<i32>;
+    let _24: &Pair<i32>;
+
+    bb0: {
+        _3 = copy _1;
+        _2 = new::<i32>(copy _3, const 2_i32) -> bb1;
+    }
+
+    bb1: {
+        _5 = &two_phase _2;
+        _7 = &_2;
+        _6 = total(copy _7) -> bb2;
+    }
+
+    bb2: {
+        _4 = bump(move _5, copy _6) -> bb3;
+    }
+
+    bb3: {
+        _9 = &two_phase _2;
+        _8 = bump(move _9, const 1_i32) -> bb4;
+    }
+
+    bb4: {
+        _10 = &mut _2;
+        _12 = &two_phase (*_10);
+        _14 = &(*_10);
+        _13 = total(copy _14) -> bb5;
+    }
+
+    bb5: {
+        _11 = bump(move _12, copy _13) -> bb6;
+    }
+
+    bb6: {
+        _16 = &two_phase _2;
+        _18 = copy _2.0;
+        _17 = Add(copy _18, const 1_i32);
+        _15 = set_a::<i32>(move _16, copy _17) -> bb7;
+    }
+
+    bb7: {
+        _20 = &_2;
+        _21 = &(*_20);
+        _19 = total(copy _21) -> bb8;
+    }
+
+    bb8: {
+        _23 = move _2;
+        _22 = rebuild::<i32>(move _23) -> bb9;
+    }
+
+    bb9: {
+        _24 = &_22;
+        _0 = total(copy _24) -> bb10;
+    }
+
+    bb10: {
+        StorageDead(_10);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn generic_methods<T>(_1: Pair<T>, _2: T, _3: T, _4: Pair<T>) -> T {
+    let mut _0: T;
+    let _5: ();
+    let _6: &mut Pair<T>;
+    let _7: T;
+    let _8: &mut Pair<T>; // r
+    let _9: ();
+    let _10: &mut Pair<T>;
+    let _11: T;
+    let _12: T; // _b
+    let _13: &mut Pair<T>;
+    let _14: Pair<T>;
+    let _15: Pair<T>;
+
+    bb0: {
+        _6 = &two_phase _1;
+        _7 = move _2;
+        _5 = set_a::<T>(move _6, move _7) -> bb1;
+    }
+
+    bb1: {
+        _8 = &mut _1;
+        _10 = &two_phase (*_8);
+        _11 = move _3;
+        _9 = set_a::<T>(move _10, move _11) -> bb2;
+    }
+
+    bb2: {
+        _13 = &two_phase (*_8);
+        _14 = move _4;
+        _12 = replace_a::<T>(move _13, move _14) -> bb3;
+    }
+
+    bb3: {
+        _15 = move _1;
+        _0 = into_a::<T>(move _15) -> bb4;
+    }
+
+    bb4: {
+        StorageDead(_12);
+        StorageDead(_8);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: i32;
+    let _2: Pair<u8>; // p
+    let _3: u8;
+    let _4: Pair<u8>;
+    let _5: Pair<u8>;
+    let _6: Pair<u8>;
+    let _7: Pair<u8>;
+    let _8: Pair<u8>;
+
+    bb0: {
+        _1 = methods(const 1_i32) -> bb1;
+    }
+
+    bb1: {
+        _2 = new::<u8>(const 1_u8, const 2_u8) -> bb2;
+    }
+
+    bb2: {
+        _6 = move _2;
+        _5 = partial::<u8>(move _6) -> bb3;
+    }
+
+    bb3: {
+        _7 = move _5;
+        _4 = rebuild::<u8>(move _7) -> bb4;
+    }
+
+    bb4: {
+        _8 = move _4;
+        _3 = into_a::<u8>(move _8) -> bb5;
+    }
+
+    bb5: {
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+

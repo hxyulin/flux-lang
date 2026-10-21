@@ -29,13 +29,14 @@ mod build;
 pub mod eval;
 pub mod init;
 pub mod lint;
+pub mod mono;
 mod pretty;
 
 use flux_arena::{Arena, Idx};
 use flux_hir::{FunctionId, StructId};
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
-use flux_ty::{IntTy, Mutability, Signatures, Ty, TyKind};
+use flux_ty::{GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind};
 
 pub use build::{build, build_file};
 
@@ -115,7 +116,7 @@ pub fn place_name(
                 if matches!(place.projection.get(i + 1), Some(ProjectionElem::Field(_))) => {}
             ProjectionElem::Deref => text = format!("*{text}"),
             ProjectionElem::Field(field) => match ty.kind() {
-                TyKind::Adt(adt) => {
+                TyKind::Adt(adt, _) => {
                     let name = items.structs[adt.strukt].fields[field as usize].name;
                     text = format!("{text}.{name}");
                 }
@@ -367,6 +368,8 @@ pub enum TerminatorKind {
     /// `target`; `target` is `None` when `func` returns `!`.
     Call {
         func: FunctionId,
+        /// `func`'s generic arguments, in terms of the caller's.
+        generic_args: GenericArgs,
         args: Vec<Operand>,
         dest: Place,
         target: Option<BasicBlock>,

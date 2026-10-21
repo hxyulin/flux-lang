@@ -1,0 +1,82 @@
+struct S<T> { a: T }
+
+struct DupStruct<T> { a: T }
+
+struct Default<T> { a: T }
+
+fn f() -> () {}
+
+fn dup_fn<T>(x@0: T) -> () {}
+
+fn S::shadows_impl<T>(x@0: T) -> () {}
+
+fn S::other() -> () {}
+
+fn S::self_args() -> () {
+    let _ = S::other();
+}
+
+fn on_local() -> () {
+    let x@0 = 1;
+    let _ = x@0;
+}
+
+fn on_module() -> () {
+    f();
+}
+
+fn on_param(s@0: S<i32>) -> () {
+    let _ = s@0;
+}
+
+fn on_const() -> () {
+    let _ = C;
+}
+
+fn param_value<T>() -> () {
+    let _ = <error>;
+}
+
+fn param_literal<T>() -> () {
+    let _ = <missing>;
+}
+
+fn param_assoc<T>() -> () {
+    <error>();
+}
+
+unsafe extern fn foreign() -> ();
+
+fn lifetime(x@0: &i32) -> () {}
+
+fn const_param() -> () {}
+
+fn bound<T>(x@0: T) -> () {}
+
+fn where_clause<T>(x@0: T) -> () {}
+
+fn main() -> () {}
+
+error 200..201: the name `T` is already used for a generic parameter in this item's generic parameters
+error 233..234: the name `T` is already used for a generic parameter in this item's generic parameters
+error 259..260: the name `T` is already used for a generic parameter in this item's generic parameters
+error 306..307: the name `T` is already used for a generic parameter in this item's generic parameters
+error 415..418: type arguments are not allowed on self type
+error 528..530: type arguments are not allowed on local variable
+error 561..563: type arguments are not allowed on module `m`
+error 615..617: type arguments are not allowed on local variable
+error 670..671: constant takes 0 generic arguments but 1 generic argument was supplied
+error 783..784: cannot find value `T` in this scope
+error 825..826: expected struct, variant or union type, found type parameter `T`
+error 869..872: no associated function or constant named `new` found for type parameter `T` in the current scope
+error 933..949: foreign items may not have type parameters
+error 1005..1014: no nominal type found for inherent implementation
+error 1019..1035: cannot define inherent `impl` for primitive types
+error 1040..1054: cannot define inherent `impl` for primitive types
+error 1093..1095: lifetime parameters are not supported yet
+error 1101..1103: lifetimes are not supported yet
+error 1128..1142: const generics are not supported yet
+error 1162..1166: trait bounds are not supported yet
+error 1203..1221: `where` clauses are not supported yet
+error 1246..1249: defaults for type parameters are not supported yet
+error 1285..1302: associated constants in generic `impl` blocks are not supported yet
