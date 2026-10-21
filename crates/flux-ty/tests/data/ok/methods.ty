@@ -1,0 +1,46 @@
+struct Point { x: i32, y: i32 }
+struct Line { from: Point, to: Point }
+fn new(i32, i32) -> Point
+    x@0: i32
+    y@1: i32
+fn origin() -> Point
+fn sum(&Point) -> i32
+    self@0: &Point
+fn shift(&mut Point, i32) -> ()
+    self@0: &mut Point
+    d@1: i32
+fn moved(Point, i32) -> Point
+    self@0: Point
+    d@1: i32
+fn dot(Point, &Point) -> i64
+    self@0: Point
+    other@1: &Point
+fn len_x(&Line) -> i32
+    self@0: &Line
+    from@1: &Point
+    to@2: &Point
+fn first(&Point) -> i32
+    p@0: &Point
+fn set(&mut i32, i32) -> ()
+    p@0: &mut i32
+    v@1: i32
+fn run(bool) -> i64
+    flag@0: bool
+    p@1: Point
+    a@2: i32
+    shared@3: &Point
+    b@4: i32
+    b2@5: i32
+    unique@6: &mut Point
+    n@7: u8
+    rn@8: &mut u8
+    copy@9: u8
+    v@10: i32
+    tmp@11: &Point
+    c@12: i32
+    line@13: Line
+    d@14: i32
+    pick@15: &Point
+    e@16: i32
+    q@17: Point
+    f@18: i64

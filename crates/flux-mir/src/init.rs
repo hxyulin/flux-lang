@@ -1,12 +1,16 @@
 //! Definite initialization and moves: every place is assigned, and not
-//! moved out of, before it is read, and an immutable local is assigned at
-//! most once.
+//! moved out of, before it is read or borrowed, and an immutable local is
+//! assigned at most once.
 //!
 //! The analysis tracks *move paths*: each user local and parameter, and
 //! every field path into one that the body mentions (`s`, `s.inner`,
-//! `s.inner.x`). Three forward dataflow analyses over the control-flow
-//! graph, all joined by union, give for each path whether it *may be
-//! uninitialized* (never assigned, or moved out of), *may be moved* (to
+//! `s.inner.x`). Paths stop at a dereference: what a reference points to
+//! is not the function's to initialize or move (moving out of it is
+//! E0507, in [`borrowck`](crate::borrowck)), so using `(*r).a` uses `r`.
+//!
+//! Three forward dataflow analyses over the control-flow graph, all
+//! joined by union, give for each path whether it *may be uninitialized*
+//! (never assigned, moved out of, or out of scope), *may be moved* (to
 //! tell a use after move, E0382, from a use of an uninitialized binding,
 //! E0381) and *may be initialized* (assigning an immutable local again is
 //! E0384). Moving or assigning a path does the same to every path below
@@ -17,9 +21,12 @@ use std::collections::HashMap;
 
 use flux_hir::{Diagnostic, ItemTree};
 use flux_syntax::TextRange;
-use flux_ty::{Signatures, TyKind};
+use flux_ty::Signatures;
 
-use crate::{Body, Local, LocalKind, Operand, Place, Rvalue, StatementKind, TerminatorKind};
+use crate::{
+    Body, Local, LocalKind, Operand, Place, ProjectionElem, Rvalue, StatementKind, TerminatorKind,
+    place_name,
+};
 
 /// The diagnostics for `body`'s uses of uninitialized or moved places
 /// and its invalid assignments.
@@ -35,7 +42,7 @@ pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
         maybe_init: vec![true; n],
     };
     for (id, path) in paths.paths.iter().enumerate() {
-        if !paths.is_param(body, path.local) {
+        if !body.is_param(path.local) {
             start.maybe_uninit[id] = true;
             start.maybe_init[id] = false;
         }
@@ -48,17 +55,12 @@ pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
             .expect("queued blocks are reached");
         let data = &body.blocks[block];
         for statement in &data.statements {
-            let StatementKind::Assign(dest, rvalue) = &statement.kind;
-            for operand in rvalue_operands(rvalue) {
-                paths.effect_of_use(&mut state, operand);
+            for event in statement_events(&statement.kind) {
+                paths.apply(&mut state, &event);
             }
-            paths.effect_of_assign(&mut state, dest);
         }
-        for operand in terminator_operands(&data.terminator.kind) {
-            paths.effect_of_use(&mut state, operand);
-        }
-        if let TerminatorKind::Call { dest, .. } = &data.terminator.kind {
-            paths.effect_of_assign(&mut state, dest);
+        for event in terminator_events(&data.terminator.kind) {
+            paths.apply(&mut state, &event);
         }
         for successor in data.terminator.kind.successors() {
             let changed = match &mut entry[successor.index()] {
@@ -88,46 +90,71 @@ pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
             continue;
         };
         for statement in &data.statements {
-            let StatementKind::Assign(dest, rvalue) = &statement.kind;
-            for operand in rvalue_operands(rvalue) {
-                report.check_use(operand, &state, statement.range);
-                paths.effect_of_use(&mut state, operand);
+            for event in statement_events(&statement.kind) {
+                report.check(&event, &state, statement.range);
+                paths.apply(&mut state, &event);
             }
-            report.check_assign(dest, &state, statement.range);
-            paths.effect_of_assign(&mut state, dest);
         }
-        let range = data.terminator.range;
-        for operand in terminator_operands(&data.terminator.kind) {
-            report.check_use(operand, &state, range);
-            paths.effect_of_use(&mut state, operand);
+        for event in terminator_events(&data.terminator.kind) {
+            report.check(&event, &state, data.terminator.range);
+            paths.apply(&mut state, &event);
         }
     }
     report.diagnostics
 }
 
-fn rvalue_operands(rvalue: &Rvalue) -> Vec<&Operand> {
-    match rvalue {
-        Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(op, _) => vec![op],
-        Rvalue::BinaryOp(_, l, r) => vec![l, r],
-        Rvalue::Aggregate(_, ops) => ops.iter().collect(),
+/// What a statement or terminator does to places, in order.
+enum Event<'a> {
+    Read(&'a Place),
+    Move(&'a Place),
+    Borrow(&'a Place),
+    Assign(&'a Place),
+    StorageDead(Local),
+}
+
+fn operand_event(operand: &Operand) -> Option<Event<'_>> {
+    match operand {
+        Operand::Copy(place) => Some(Event::Read(place)),
+        Operand::Move(place) => Some(Event::Move(place)),
+        Operand::Const(_) => None,
     }
 }
 
-fn terminator_operands(kind: &TerminatorKind) -> Vec<&Operand> {
+fn statement_events(kind: &StatementKind) -> Vec<Event<'_>> {
     match kind {
-        TerminatorKind::SwitchInt { discr, .. } => vec![discr],
-        TerminatorKind::Call { args, .. } => args.iter().collect(),
-        TerminatorKind::Assert { cond, .. } => vec![cond],
-        TerminatorKind::Goto(_) | TerminatorKind::Return | TerminatorKind::Unreachable => {
-            Vec::new()
+        StatementKind::Assign(dest, rvalue) => {
+            let mut events: Vec<Event> = match rvalue {
+                Rvalue::Ref { place, .. } => vec![Event::Borrow(place)],
+                _ => rvalue
+                    .operands()
+                    .into_iter()
+                    .filter_map(operand_event)
+                    .collect(),
+            };
+            events.push(Event::Assign(dest));
+            events
         }
+        StatementKind::StorageDead(local) => vec![Event::StorageDead(*local)],
+        StatementKind::PlaceMention(_) => Vec::new(),
     }
+}
+
+fn terminator_events(kind: &TerminatorKind) -> Vec<Event<'_>> {
+    let mut events: Vec<Event> = kind
+        .operands()
+        .into_iter()
+        .filter_map(operand_event)
+        .collect();
+    if let TerminatorKind::Call { dest, .. } = kind {
+        events.push(Event::Assign(dest));
+    }
+    events
 }
 
 /// A user local or parameter, or a path of fields into one.
 struct MovePath {
     local: Local,
-    projection: Box<[u32]>,
+    fields: Box<[u32]>,
     parent: Option<usize>,
     children: Vec<usize>,
 }
@@ -135,6 +162,19 @@ struct MovePath {
 struct MovePaths {
     paths: Vec<MovePath>,
     ids: HashMap<(Local, Box<[u32]>), usize>,
+}
+
+/// The fields of `place` before its first dereference, and whether it
+/// has one.
+fn fields_before_deref(place: &Place) -> (Box<[u32]>, bool) {
+    let mut fields = Vec::new();
+    for elem in &place.projection {
+        match elem {
+            ProjectionElem::Field(field) => fields.push(*field),
+            ProjectionElem::Deref => return (fields.into(), true),
+        }
+    }
+    (fields.into(), false)
 }
 
 impl MovePaths {
@@ -146,68 +186,61 @@ impl MovePaths {
             ids: HashMap::new(),
         };
         for (local, decl) in body.locals.iter() {
-            if paths.is_param(body, local) || matches!(decl.kind, LocalKind::User { .. }) {
+            if body.is_param(local) || matches!(decl.kind, LocalKind::User { .. }) {
                 paths.insert(local, &[]);
             }
         }
         let mut add = |place: &Place| {
             if paths.ids.contains_key(&(place.local, Box::default())) {
-                paths.insert(place.local, &place.projection);
-            }
-        };
-        let add_operand = |add: &mut dyn FnMut(&Place), op: &Operand| {
-            if let Operand::Copy(place) | Operand::Move(place) = op {
-                add(place);
+                paths.insert(place.local, &fields_before_deref(place).0);
             }
         };
         for data in body.blocks.values() {
-            for statement in &data.statements {
-                let StatementKind::Assign(dest, rvalue) = &statement.kind;
-                add(dest);
-                for op in rvalue_operands(rvalue) {
-                    add_operand(&mut add, op);
+            let statement_events = data
+                .statements
+                .iter()
+                .flat_map(|s| statement_events(&s.kind));
+            for event in statement_events.chain(terminator_events(&data.terminator.kind)) {
+                match event {
+                    Event::Read(place)
+                    | Event::Move(place)
+                    | Event::Borrow(place)
+                    | Event::Assign(place) => add(place),
+                    Event::StorageDead(_) => {}
                 }
-            }
-            for op in terminator_operands(&data.terminator.kind) {
-                add_operand(&mut add, op);
-            }
-            if let TerminatorKind::Call { dest, .. } = &data.terminator.kind {
-                add(dest);
             }
         }
         paths
     }
 
-    fn is_param(&self, body: &Body, local: Local) -> bool {
-        (1..=body.param_count).contains(&local.index())
-    }
-
-    /// The path for `local` with `projection` and its prefixes.
-    fn insert(&mut self, local: Local, projection: &[u32]) -> usize {
-        if let Some(&id) = self.ids.get(&(local, projection.into())) {
+    /// The path for `local` with `fields` and its prefixes.
+    fn insert(&mut self, local: Local, fields: &[u32]) -> usize {
+        if let Some(&id) = self.ids.get(&(local, fields.into())) {
             return id;
         }
-        let parent = projection
+        let parent = fields
             .split_last()
             .map(|(_, prefix)| self.insert(local, prefix));
         let id = self.paths.len();
         self.paths.push(MovePath {
             local,
-            projection: projection.into(),
+            fields: fields.into(),
             parent,
             children: Vec::new(),
         });
         if let Some(parent) = parent {
             self.paths[parent].children.push(id);
         }
-        self.ids.insert((local, projection.into()), id);
+        self.ids.insert((local, fields.into()), id);
         id
     }
 
-    fn find(&self, place: &Place) -> Option<usize> {
-        self.ids
-            .get(&(place.local, place.projection.clone()))
-            .copied()
+    /// The path of `place`, or of the pointer it is behind, and whether
+    /// it is behind one.
+    fn find(&self, place: &Place) -> Option<(usize, bool)> {
+        let (fields, behind_deref) = fields_before_deref(place);
+        let path = self.ids.get(&(place.local, fields)).copied()?;
+        Some((path, behind_deref))
     }
 
     /// `path` and every path below it.
@@ -223,27 +256,38 @@ impl MovePaths {
         std::iter::successors(self.paths[path].parent, |&p| self.paths[p].parent)
     }
 
-    fn effect_of_use(&self, state: &mut State, operand: &Operand) {
-        if let Operand::Move(place) = operand
-            && let Some(path) = self.find(place)
-        {
-            let mut subtree = Vec::new();
-            self.subtree(path, &mut subtree);
-            for p in subtree {
+    fn apply(&self, state: &mut State, event: &Event) {
+        let (place, effect): (Option<&Place>, fn(&mut State, usize)) = match event {
+            Event::Move(place) => (Some(place), |state, p| {
                 state.maybe_uninit[p] = true;
                 state.maybe_moved[p] = true;
-            }
-        }
-    }
-
-    fn effect_of_assign(&self, state: &mut State, place: &Place) {
-        if let Some(path) = self.find(place) {
-            let mut subtree = Vec::new();
-            self.subtree(path, &mut subtree);
-            for p in subtree {
+            }),
+            Event::Assign(place) => (Some(place), |state, p| {
                 state.maybe_uninit[p] = false;
                 state.maybe_moved[p] = false;
                 state.maybe_init[p] = true;
+            }),
+            Event::StorageDead(local) => {
+                if let Some(&root) = self.ids.get(&(*local, Box::default())) {
+                    let mut subtree = Vec::new();
+                    self.subtree(root, &mut subtree);
+                    for p in subtree {
+                        state.maybe_uninit[p] = true;
+                        state.maybe_moved[p] = false;
+                        state.maybe_init[p] = false;
+                    }
+                }
+                return;
+            }
+            Event::Read(_) | Event::Borrow(_) => return,
+        };
+        // Moving out of or assigning through a pointer leaves the pointer
+        // as it was.
+        if let Some((path, false)) = place.and_then(|place| self.find(place)) {
+            let mut subtree = Vec::new();
+            self.subtree(path, &mut subtree);
+            for p in subtree {
+                effect(state, p);
             }
         }
     }
@@ -264,19 +308,32 @@ impl Report<'_> {
         self.diagnostics.push(Diagnostic { range, message });
     }
 
-    fn check_use(&mut self, operand: &Operand, state: &State, range: TextRange) {
-        let (Operand::Copy(place) | Operand::Move(place)) = operand else {
-            return;
-        };
-        let Some(path) = self.paths.find(place) else {
+    fn check(&mut self, event: &Event, state: &State, range: TextRange) {
+        match event {
+            Event::Read(place) | Event::Move(place) => self.check_use(place, false, state, range),
+            Event::Borrow(place) => self.check_use(place, true, state, range),
+            Event::Assign(place) => self.check_assign(place, state, range),
+            Event::StorageDead(_) => {}
+        }
+    }
+
+    /// A read, move or borrow of `place`, which must be initialized.
+    fn check_use(&mut self, place: &Place, borrow: bool, state: &State, range: TextRange) {
+        let Some((path, behind_deref)) = self.paths.find(place) else {
             return;
         };
         if self.reported[place.local.index()] {
             return;
         }
         let mut below = Vec::new();
-        self.paths.subtree(path, &mut below);
+        // Through a pointer only the pointer itself is used.
+        if !behind_deref {
+            self.paths.subtree(path, &mut below);
+        } else {
+            below.push(path);
+        }
         let above: Vec<usize> = self.paths.ancestors(path).collect();
+        let used = if borrow { "borrow" } else { "use" };
         // The outermost moved path containing the place, if any.
         let moved = above
             .iter()
@@ -284,10 +341,12 @@ impl Report<'_> {
             .chain([&path])
             .find(|&&p| state.maybe_moved[p]);
         let message = if let Some(&moved) = moved {
-            let name = self.path_name(moved);
-            format!("use of moved value: `{name}`")
+            format!("{used} of moved value: `{}`", self.path_name(moved))
         } else if below.iter().any(|&p| state.maybe_moved[p]) {
-            format!("use of partially moved value: `{}`", self.path_name(path))
+            format!(
+                "{used} of partially moved value: `{}`",
+                self.path_name(path)
+            )
         } else if above.iter().chain(&below).any(|&p| state.maybe_uninit[p]) {
             let root = self.local_name(place.local);
             let how = if state.maybe_init[path] {
@@ -304,9 +363,14 @@ impl Report<'_> {
     }
 
     fn check_assign(&mut self, place: &Place, state: &State, range: TextRange) {
-        let Some(path) = self.paths.find(place) else {
+        let Some((path, behind_deref)) = self.paths.find(place) else {
             return;
         };
+        if behind_deref {
+            // Assigning through a pointer reads the pointer; whether it
+            // may be written through is the borrow checker's question.
+            return self.check_use(place, false, state, range);
+        }
         let LocalKind::User { name, mutable } = self.body.locals[place.local].kind else {
             return;
         };
@@ -330,7 +394,7 @@ impl Report<'_> {
             }
             format!("partially assigned binding `{name}` isn't fully initialized")
         } else if !mutable {
-            let place = self.path_name(path);
+            let place = place_name(self.body, self.items, self.sigs, place);
             format!("cannot assign to `{place}`, as `{name}` is not declared as mutable")
         } else {
             return;
@@ -339,32 +403,21 @@ impl Report<'_> {
     }
 
     fn local_name(&self, local: Local) -> String {
-        match self.body.locals[local].kind {
-            LocalKind::User { name, .. } => name.to_string(),
-            _ => format!("_{}", local.index()),
-        }
+        place_name(self.body, self.items, self.sigs, &local.into())
     }
 
-    /// `s.inner.0`, as rustc writes places.
+    /// The place of a move path, as rustc writes it: `s.inner.0`.
     fn path_name(&self, path: usize) -> String {
         let path = &self.paths.paths[path];
-        let mut name = self.local_name(path.local);
-        let mut ty = self.body.locals[path.local].ty;
-        for &field in &path.projection {
-            match ty.kind() {
-                TyKind::Adt(adt) => {
-                    let field_name = self.items.structs[adt.strukt].fields[field as usize].name;
-                    name.push('.');
-                    name.push_str(field_name.as_str());
-                }
-                _ => name.push_str(&format!(".{field}")),
-            }
-            ty = self
-                .sigs
-                .fields(ty)
-                .map_or(flux_ty::Ty::ERROR, |fields| fields[field as usize]);
-        }
-        name
+        let place = Place {
+            local: path.local,
+            projection: path
+                .fields
+                .iter()
+                .map(|&f| ProjectionElem::Field(f))
+                .collect(),
+        };
+        place_name(self.body, self.items, self.sigs, &place)
     }
 }
 

@@ -47,8 +47,8 @@ error 333..338: literal out of range for `u8`
 error 356..359: literal out of range for `i8`
 error 374..379: literal out of range for `i8`
 error 421..427: call to unsafe function `abs` requires an `unsafe` block
-error 441..449: `calls` takes 0 arguments but 1 argument was supplied
-error 472..477: `abs` takes 1 argument but 0 arguments were supplied
+error 441..446: this function takes 0 arguments but 1 argument was supplied
+error 472..475: this function takes 1 argument but 0 arguments were supplied
 error 493..494: expected function, found `{integer}`
 error 545..550: cannot assign twice to immutable variable `x`
 error 556..562: cannot assign to immutable argument `p`

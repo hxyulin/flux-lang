@@ -1,7 +1,7 @@
 //! Lowers a function body from the typed AST to HIR.
 
 use flux_arena::Arena;
-use flux_intern::Symbol;
+use flux_intern::{Symbol, kw};
 use flux_syntax::ast::{self, AstNode, LiteralKind};
 use flux_syntax::{SyntaxNode, SyntaxTree, TextRange};
 
@@ -30,10 +30,13 @@ pub struct LoweredBody {
 
 /// Lowers the body of `function`, which must have one.
 pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> LoweredBody {
-    let node = tree.node(items.functions[function].node);
+    let data = &items.functions[function];
+    let node = tree.node(data.node);
     let f = ast::Fn::cast(node).expect("functions point at FN nodes");
     let mut ctx = Ctx {
         items,
+        in_impl: data.owner.is_some(),
+        self_struct: data.owner.and_then(|owner| items.impls[owner].strukt),
         exprs: Arena::new(),
         pats: Arena::new(),
         bindings: Arena::new(),
@@ -45,6 +48,15 @@ pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> 
     };
     let mut params = Vec::new();
     if let Some(list) = f.param_list() {
+        if let Some(param) = list.self_param().filter(|_| data.has_self) {
+            let binding = ctx.bindings.alloc(Binding {
+                name: kw::SelfLower,
+                mutable: param.amp_token().is_none() && param.mut_token().is_some(),
+            });
+            ctx.scopes.push((kw::SelfLower, binding));
+            let range = param.syntax().text_range();
+            params.push(ctx.alloc_pat(Pat::Bind(binding), range));
+        }
         for param in list.params() {
             params.push(ctx.lower_pat(param.pat(), param.syntax(), PatSite::Param));
         }
@@ -69,6 +81,10 @@ pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> 
 
 struct Ctx<'a> {
     items: &'a ItemTree,
+    /// Lowering a function in an `impl` block, where `Self` means its
+    /// type: `self_struct`, unless that did not resolve.
+    in_impl: bool,
+    self_struct: Option<StructId>,
     exprs: Arena<Expr>,
     pats: Arena<Pat>,
     bindings: Arena<Binding>,
@@ -182,6 +198,16 @@ impl Ctx<'_> {
                         );
                         self.alloc_expr(Expr::Path(Res::Err), path.syntax().text_range())
                     }
+                    // `f(x)` for an `f` that is nothing.
+                    Some(ast::Expr::PathExpr(path)) if self.names_nothing(path) => {
+                        let name = path.path().and_then(simple_path).unwrap_or_default();
+                        let path_range = path.syntax().text_range();
+                        self.error(
+                            path_range,
+                            format!("cannot find function `{name}` in this scope"),
+                        );
+                        self.alloc_expr(Expr::Path(Res::Err), path_range)
+                    }
                     callee => self.lower_opt(callee, syntax),
                 };
                 let args = match call.arg_list() {
@@ -255,17 +281,32 @@ impl Ctx<'_> {
                     None => Box::default(),
                 };
                 match call.name_ref() {
-                    Some(name) => Expr::MethodCall {
-                        receiver,
-                        method: Symbol::intern(name.text()),
-                        args,
-                    },
+                    Some(name) => {
+                        let method = Symbol::intern(name.text());
+                        let call = Expr::MethodCall {
+                            receiver,
+                            method,
+                            args,
+                        };
+                        let id = self.alloc_expr(call, range);
+                        let name_range = name.syntax().text_range();
+                        self.source_map
+                            .expr_fields
+                            .insert(id, Box::new([name_range]));
+                        return id;
+                    }
                     None => Expr::Missing,
                 }
             }
             ast::Expr::RangeExpr(_) => self.unsupported_expr(range, "ranges"),
             ast::Expr::RecordExpr(record) => return self.lower_record(record),
-            ast::Expr::RefExpr(_) => self.unsupported_expr(range, "references"),
+            ast::Expr::RefExpr(r) => {
+                let expr = self.lower_opt(r.expr(), syntax);
+                Expr::Ref {
+                    mutable: r.mut_token().is_some(),
+                    expr,
+                }
+            }
             ast::Expr::TryExpr(_) => self.unsupported_expr(range, "`?` expressions"),
             ast::Expr::UnderscoreExpr(_) => {
                 self.unsupported_expr(range, "destructuring assignments")
@@ -337,6 +378,15 @@ impl Ctx<'_> {
             return None;
         };
         let name = Symbol::intern(name);
+        if name == kw::SelfUpper {
+            if !self.in_impl {
+                self.error(
+                    range,
+                    "cannot find struct, variant or union type `Self` in this scope",
+                );
+            }
+            return self.self_struct;
+        }
         match self.items.struct_by_name(name) {
             Some((id, _)) => Some(id),
             None => {
@@ -497,11 +547,63 @@ impl Ctx<'_> {
 
     fn resolve_path(&mut self, path: ast::PathExpr<'_>) -> Res {
         let range = path.syntax().text_range();
-        let Some(name) = path.path().and_then(simple_path) else {
+        let Some(path) = path.path() else {
+            return Res::Err;
+        };
+        if let Some(name) = simple_path(path) {
+            return self.resolve_name(Symbol::intern(name), range);
+        }
+        // `S::f` or `Self::f`: an associated function.
+        let qualified = path
+            .qualifier()
+            .and_then(simple_path)
+            .zip(path.segment().filter(|s| s.generic_arg_list().is_none()))
+            .and_then(|(ty, segment)| Some((ty, segment.name_ref()?)))
+            .filter(|(_, name)| name.ident_token().is_some());
+        let Some((ty, name)) = qualified else {
             self.unsupported(range, "paths like this");
             return Res::Err;
         };
-        self.resolve_name(Symbol::intern(name), range)
+        let name_range = name.syntax().text_range();
+        let (ty, name) = (Symbol::intern(ty), Symbol::intern(name.text()));
+        let strukt = if ty == kw::SelfUpper {
+            self.self_type(range)
+        } else if let Some((strukt, _)) = self.items.struct_by_name(ty) {
+            Some(strukt)
+        } else if crate::item_tree::is_primitive(ty) {
+            self.unsupported(range, "associated items of primitive types");
+            None
+        } else {
+            self.error(
+                range,
+                format!("failed to resolve: use of undeclared type `{ty}`"),
+            );
+            None
+        };
+        let Some(strukt) = strukt else {
+            return Res::Err;
+        };
+        match self.items.assoc_function(strukt, name) {
+            Some(function) => Res::Function(function),
+            None => {
+                let ty = self.items.structs[strukt].name;
+                self.error(
+                    name_range,
+                    format!(
+                        "no associated function or constant named `{name}` found for struct `{ty}` in the current scope"
+                    ),
+                );
+                Res::Err
+            }
+        }
+    }
+
+    /// The struct `Self` names here.
+    fn self_type(&mut self, range: TextRange) -> Option<StructId> {
+        if !self.in_impl {
+            self.error(range, "cannot find type `Self` in this scope");
+        }
+        self.self_struct
     }
 
     /// Whether `path` names a struct with named fields and nothing in
@@ -519,11 +621,41 @@ impl Ctx<'_> {
                 .is_some_and(|(_, s)| s.kind == StructKind::Record)
     }
 
+    /// Whether `path` is a plain name that resolves to nothing.
+    fn names_nothing(&self, path: ast::PathExpr<'_>) -> bool {
+        let Some(name) = path.path().and_then(simple_path) else {
+            return false;
+        };
+        let name = Symbol::intern(name);
+        name != kw::SelfLower
+            && name != kw::SelfUpper
+            && !self.scopes.iter().any(|(n, _)| *n == name)
+            && self.items.function_by_name(name).is_none()
+            && self.items.struct_by_name(name).is_none()
+    }
+
     /// A name in the value namespace: a local, a function, or a tuple or
     /// unit struct.
     fn resolve_name(&mut self, name: Symbol, range: TextRange) -> Res {
         if let Some(&(_, binding)) = self.scopes.iter().rev().find(|(n, _)| *n == name) {
             return Res::Local(binding);
+        }
+        if name == kw::SelfLower {
+            self.error(range, "cannot find value `self` in this scope");
+            return Res::Err;
+        }
+        if name == kw::SelfUpper {
+            let Some(strukt) = self.self_type(range) else {
+                return Res::Err;
+            };
+            if self.items.structs[strukt].kind == StructKind::Record {
+                self.error(
+                    range,
+                    "the `Self` constructor can only be used with tuple or unit structs",
+                );
+                return Res::Err;
+            }
+            return Res::Struct(strukt);
         }
         if let Some((function, _)) = self.items.function_by_name(name) {
             return Res::Function(function);
@@ -766,7 +898,7 @@ impl Ctx<'_> {
     }
 }
 
-/// The name of a path with one plain segment: `x`, `S`.
+/// The name of a path with one plain segment: `x`, `S`, `self`, `Self`.
 fn simple_path(path: ast::Path<'_>) -> Option<&str> {
     path.qualifier()
         .is_none()
@@ -778,6 +910,8 @@ fn simple_path(path: ast::Path<'_>) -> Option<&str> {
                 && s.parenthesized_arg_list().is_none()
         })
         .and_then(|s| s.name_ref())
-        .filter(|n| n.ident_token().is_some())
+        .filter(|n| {
+            n.ident_token().is_some() || n.self_token().is_some() || n.self_type_token().is_some()
+        })
         .map(|n| n.text())
 }

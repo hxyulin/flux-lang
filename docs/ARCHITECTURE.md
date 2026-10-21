@@ -149,13 +149,17 @@ analysis. Semantic analysis will follow rustc's and rust-analyzer's split:
 [`flux-hir`](../crates/flux-hir/src/lib.rs) builds two things from a
 file's AST:
 
-- The **item tree**: every function's name and signature, with types as
-  written (`TypeRef::Path(u8)`), but no bodies. Everything outside a
-  body depends only on it.
+- The **item tree**: every function's, struct's and `impl` block's name
+  and signature, with types as written (`TypeRef::Path(u8)`), but no
+  bodies. Everything outside a body depends only on it. A method is a
+  function owned by an `impl` block whose first parameter is `self`, with
+  the type `Self`, `&Self` or `&mut Self`.
 - A **body** per function, lowered into arenas of expressions, patterns
   and bindings addressed by `Idx`. Names are resolved while lowering,
   through a stack of scopes and then the item tree, so an expression
-  `x` becomes `Res::Local(binding)` or `Res::Function(id)`. `break` and
+  `x` becomes `Res::Local(binding)` or `Res::Function(id)`, and `S::new`
+  the associated function `new` of the struct `S`. Method calls stay
+  unresolved until types are known. `break` and
   `continue` record the loop they leave. Parentheses disappear, and
   `while c { body }` becomes `loop { if c { body } else { break } }`, as
   in rustc. A source map gives every node's text range for diagnostics.
@@ -190,11 +194,23 @@ contain types:
   (rustc's deny-by-default `overflowing_literals`), the operand types of
   operators, casts, and unary `-` on unsigned types.
 
+A method call `x.m()` looks through `x`'s references for the struct with
+a method `m`, and records how the receiver is passed: dereferenced so
+many times, then borrowed for `&self` and `&mut self` or passed by
+value. A field access dereferences the same way. Where a `&mut T` is
+used as a reference (an argument, or a `let` with a type), it is
+reborrowed rather than moved, and may become a `&T`, as in rustc.
+
+Without lifetimes, references are checked only where each one lives in a
+single local assigned once: parameters, temporaries, and non-`mut`
+`let` bindings with a value. A reference anywhere else (in a tuple or
+struct, returned, in a `mut` binding) is reported as not supported yet.
+
 It also makes the checks rustc makes before borrow checking: calling an
-`unsafe` function needs an `unsafe` block, and assigning needs `mut`,
-except for the first assignment of a `let x;` binding. Telling a first
-assignment from a second (and use before initialization) needs control
-flow, so that check moves to MIR.
+`unsafe` function or dereferencing a raw pointer needs an `unsafe` block,
+and assigning a local needs `mut`, except for the first assignment of a
+`let x;` binding. Telling a first assignment from a second (and use
+before initialization) needs control flow, so that check moves to MIR.
 
 ## MIR
 
@@ -214,8 +230,12 @@ semantics become explicit, so code generation never sees expressions:
   so `x + { x = 10; x }` adds the old `x`.
 - A call to a function returning `!` has no successor block.
 - Values are read from *places*, a local and a path of field indices
-  (`_1.0.2`), and each read is a copy or, for a type that is not `Copy`,
-  a move. Tuples and structs are built whole by an aggregate rvalue;
+  and dereferences (`(*_1).0.2`), and each read is a copy or, for a type
+  that is not `Copy`, a move. `&place` makes a reference to a place, and
+  a method call is a plain call whose first argument is the receiver,
+  dereferenced and borrowed as type checking decided. A block's
+  bindings get a `StorageDead` where it ends, including where `break`
+  and `continue` leave it. Tuples and structs are built whole by an aggregate rvalue;
   a pattern like `let (a, S { b, .. }) = t;` reads each binding's part of
   `t` directly, so it moves only those parts, as in rustc.
 
@@ -230,6 +250,21 @@ uninitialized bindings (E0381) and of moved or partially moved values
 initialized or not `mut` (E0381, E0594), and assigning an immutable local
 twice (E0384).
 
+[`borrowck`](../crates/flux-mir/src/borrowck.rs) checks borrows with
+rustc's non-lexical lifetimes, simplified by flux's rule that a
+reference is assigned to a local only once. Each borrow is a *loan*;
+the local it is stored in holds it, and so does any local a copy or a
+reborrow of that reference goes into. A loan is live wherever a local
+holding it is live (may still be read), found by backward liveness. Each
+read, move, assignment and borrow of a place is checked against the live
+loans of places that contain it or are contained in it, so borrows of
+different fields never conflict, giving rustc's E0499, E0502, E0503,
+E0505 and E0506. A method receiver's `&mut` is two-phase: shared until
+the call, so `s.set(s.get())` is accepted. A loan still live where its
+local's scope ends is E0597. The pass also reports `&mut` borrows of
+non-`mut` bindings and anything written or mutably borrowed behind a
+`&` (E0596, E0594), and moves out of a reference (E0507).
+
 ## Code generation
 
 [`flux-codegen`](../crates/flux-codegen/src/lib.rs) does everything after
@@ -243,6 +278,10 @@ executable. No C compiler or system linker is involved.
   `FunctionBuilder` builds SSA form, so MIR's temporaries and whole
   aggregate copies cost nothing. A field is a range of its local's
   leaves.
+- A local that is borrowed lives in a stack slot instead, laid out as a
+  C struct of its fields, and so does whatever a pointer points to:
+  reading or writing a place there loads or stores each leaf at its
+  offset.
 - Aggregates are passed as one argument per leaf. keel functions return
   at most one value, so a function returning two or more leaves returns
   them through an `sret` pointer to a C struct of the leaves in the

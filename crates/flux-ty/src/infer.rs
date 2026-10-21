@@ -12,7 +12,7 @@ use flux_intern::Symbol;
 use flux_syntax::TextRange;
 
 use crate::ty::{InferVar, IntTy, Mutability, Ty, TyKind};
-use crate::{Signatures, function_name, resolve_or_report};
+use crate::{Signatures, function_name, resolve_or_report, self_ty};
 
 /// The types of one body.
 #[derive(Debug)]
@@ -23,7 +23,25 @@ pub struct InferenceResult {
     pub binding_types: ArenaMap<Binding, Ty>,
     /// The field each `Field` expression reads, by index.
     pub field_indices: ArenaMap<Expr, u32>,
+    /// How many references a `Field` expression's base is dereferenced
+    /// through first: one for `r.a` with `r: &S`.
+    pub field_derefs: ArenaMap<Expr, u32>,
+    /// The method each `MethodCall` calls, and how its receiver is passed.
+    pub methods: ArenaMap<Expr, Method>,
+    /// Expressions of type `&mut T` that are reborrowed where they are
+    /// used, rather than moved: `&*r` or `&mut *r` with this mutability.
+    /// rustc does this where a reference is expected.
+    pub reborrows: ArenaMap<Expr, Mutability>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// A resolved method call: the receiver is dereferenced `derefs` times,
+/// then borrowed (`autoref`) or passed by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Method {
+    pub function: FunctionId,
+    pub derefs: u32,
+    pub autoref: Option<Mutability>,
 }
 
 /// Infers the types of `function`'s body.
@@ -38,12 +56,16 @@ pub fn infer_body(
     let mut ctx = Ctx {
         items,
         sigs,
+        self_ty: self_ty(items, &items.functions[function]),
         body,
         source_map,
         vars: Vec::new(),
         expr_types: ArenaMap::new(),
         binding_types: ArenaMap::new(),
         field_indices: ArenaMap::new(),
+        field_derefs: ArenaMap::new(),
+        methods: ArenaMap::new(),
+        reborrows: ArenaMap::new(),
         loops: ArenaMap::new(),
         uninit_bindings: HashSet::new(),
         unsafe_depth: u32::from(items.functions[function].is_unsafe),
@@ -130,6 +152,8 @@ enum Deferred {
 struct Ctx<'a> {
     items: &'a ItemTree,
     sigs: &'a Signatures,
+    /// What `Self` means in this body.
+    self_ty: Option<Ty>,
     body: &'a Body,
     source_map: &'a BodySourceMap,
     /// Each variable's value and where it was created.
@@ -137,6 +161,9 @@ struct Ctx<'a> {
     expr_types: ArenaMap<Expr, Ty>,
     binding_types: ArenaMap<Binding, Ty>,
     field_indices: ArenaMap<Expr, u32>,
+    field_derefs: ArenaMap<Expr, u32>,
+    methods: ArenaMap<Expr, Method>,
+    reborrows: ArenaMap<Expr, Mutability>,
     loops: ArenaMap<Expr, LoopState>,
     /// `let x;` bindings, which may be assigned once without `mut`.
     uninit_bindings: HashSet<BindingId>,
@@ -258,6 +285,27 @@ impl Ctx<'_> {
             return;
         }
         let blamed = self.blame(expr);
+        // A `&mut T` where a reference is expected is reborrowed, and may
+        // become a `&T`.
+        if let (TyKind::Ref(Mutability::Mut, pointee), TyKind::Ref(m, expected_pointee)) =
+            (self.shallow(actual).kind(), self.shallow(expected).kind())
+        {
+            self.reborrows.insert(expr, m);
+            if !self.unify(pointee, expected_pointee) {
+                let range = self.range(blamed);
+                self.mismatch(expected, actual, range);
+            }
+            return;
+        }
+        if let (TyKind::Ref(..), TyKind::RawPtr(..)) =
+            (self.shallow(actual).kind(), self.shallow(expected).kind())
+        {
+            self.error(
+                self.range(blamed),
+                "coercing references to raw pointers is not supported yet",
+            );
+            return;
+        }
         // A tuple expression is checked element by element, as rustc
         // does, so a mismatch is reported at the element.
         if let Expr::Tuple(fields) = &self.body.exprs[blamed]
@@ -340,6 +388,7 @@ impl Ctx<'_> {
         resolve_or_report(
             self.items,
             &self.body.types[ty],
+            self.self_ty,
             range,
             &mut self.diagnostics,
         )
@@ -668,11 +717,19 @@ impl Ctx<'_> {
                 method,
                 args,
             } => self.infer_method_call(id, *receiver, *method, args),
+            Expr::Ref { mutable, expr } => {
+                let ty = self.infer_expr(*expr);
+                let m = if *mutable {
+                    Mutability::Mut
+                } else {
+                    Mutability::Not
+                };
+                Ty::new(TyKind::Ref(m, ty))
+            }
             Expr::Unary { op, operand } => {
                 let ty = self.infer_expr(*operand);
                 if *op == UnaryOp::Deref {
-                    self.error(self.range(id), "dereferencing is not supported yet");
-                    return Ty::ERROR;
+                    return self.infer_deref(id, ty);
                 }
                 self.deferred.push(Deferred::Unary {
                     expr: id,
@@ -801,12 +858,11 @@ impl Ctx<'_> {
         };
         if !arity_ok {
             let at_least = if data.is_variadic { "at least " } else { "" };
-            let plural = |n: usize| if n == 1 { "argument" } else { "arguments" };
             let verb = if got == 1 { "was" } else { "were" };
             self.error(
-                self.range(id),
+                self.range(callee),
                 format!(
-                    "`{name}` takes {at_least}{want} {} but {got} {} {verb} supplied",
+                    "this function takes {at_least}{want} argument{} but {got} argument{} {verb} supplied",
                     plural(want),
                     plural(got)
                 ),
@@ -867,9 +923,52 @@ impl Ctx<'_> {
     }
 
     /// `base.name`: a struct's field or a tuple's element.
+    /// `*expr` for an `expr` of type `ty`.
+    fn infer_deref(&mut self, id: ExprId, ty: Ty) -> Ty {
+        match self.shallow(ty).kind() {
+            TyKind::Ref(_, pointee) => pointee,
+            TyKind::RawPtr(_, pointee) => {
+                if self.unsafe_depth == 0 {
+                    self.error(
+                        self.range(id),
+                        "dereference of raw pointer is unsafe and requires unsafe block",
+                    );
+                }
+                pointee
+            }
+            TyKind::Error => Ty::ERROR,
+            TyKind::Infer(var) if !self.unknown(var).0 => {
+                self.error(self.range(id), "type annotations needed");
+                Ty::ERROR
+            }
+            _ => {
+                let ty = self.describe(ty);
+                self.error(
+                    self.range(id),
+                    format!("type `{ty}` cannot be dereferenced"),
+                );
+                Ty::ERROR
+            }
+        }
+    }
+
+    /// `ty` with references removed, and how many there were.
+    fn autoderef(&mut self, ty: Ty) -> (Ty, u32) {
+        let mut ty = self.shallow(ty);
+        let mut derefs = 0;
+        while let TyKind::Ref(_, pointee) = ty.kind() {
+            ty = self.shallow(pointee);
+            derefs += 1;
+        }
+        (ty, derefs)
+    }
+
     fn infer_field(&mut self, id: ExprId, base: ExprId, name: Symbol) -> Ty {
-        let base_ty = self.infer_expr(base);
-        let base_ty = self.shallow(base_ty);
+        let ty = self.infer_expr(base);
+        let (base_ty, derefs) = self.autoderef(ty);
+        if derefs > 0 {
+            self.field_derefs.insert(id, derefs);
+        }
         let (items, sigs) = (self.items, self.sigs);
         let range = self
             .source_map
@@ -915,8 +1014,20 @@ impl Ctx<'_> {
                 ty
             }
             None => {
-                let ty = self.describe(base_ty);
-                self.error(range, format!("no field `{name}` on type `{ty}`"));
+                // rustc names the type before dereferencing: `&S`.
+                let is_method = match base_ty.kind() {
+                    TyKind::Adt(adt) => items
+                        .assoc_function(adt.strukt, name)
+                        .is_some_and(|f| items.functions[f].has_self),
+                    _ => false,
+                };
+                let ty = self.describe(ty);
+                let message = if is_method {
+                    format!("attempted to take value of method `{name}` on type `{ty}`")
+                } else {
+                    format!("no field `{name}` on type `{ty}`")
+                };
+                self.error(range, message);
                 Ty::ERROR
             }
         }
@@ -1001,6 +1112,32 @@ impl Ctx<'_> {
         if receiver_ty == Ty::ERROR {
             return Ty::ERROR;
         }
+        let name_range = self
+            .source_map
+            .expr_fields
+            .get(id)
+            .and_then(|names| names.first())
+            .copied()
+            .unwrap_or_else(|| self.range(id));
+        let (base, derefs) = self.autoderef(receiver_ty);
+        if let TyKind::Adt(adt) = base.kind() {
+            let found = self.items.assoc_function(adt.strukt, method);
+            let data = found.map(|f| &self.items.functions[f]);
+            match (found, data) {
+                (Some(function), Some(data)) if data.has_self => {
+                    return self.check_method(id, function, derefs, args, name_range);
+                }
+                _ => {
+                    let what = self.describe(receiver_ty);
+                    let kind = if derefs > 0 { "reference" } else { "struct" };
+                    self.error(
+                        name_range,
+                        format!("no method named `{method}` found for {kind} `{what}` in the current scope"),
+                    );
+                    return Ty::ERROR;
+                }
+            }
+        }
         if receiver_ty == c_str_ref() && method.as_str() == "as_ptr" {
             if !args.is_empty() {
                 let got = args.len();
@@ -1017,11 +1154,64 @@ impl Ctx<'_> {
             return c_char_ptr();
         }
         let ty = self.describe(receiver_ty);
-        self.error(
-            self.range(id),
-            format!("the method `{method}` on `{ty}` is not supported yet"),
-        );
+        let message = match receiver_ty.kind() {
+            TyKind::Int(_) | TyKind::Bool | TyKind::Tuple(_) | TyKind::RawPtr(..) => {
+                format!("methods on `{ty}` are not supported yet")
+            }
+            _ => format!("the method `{method}` on `{ty}` is not supported yet"),
+        };
+        self.error(name_range, message);
         Ty::ERROR
+    }
+
+    /// A call of `function`, a method, on a receiver with `derefs`
+    /// references taken off it.
+    fn check_method(
+        &mut self,
+        id: ExprId,
+        function: FunctionId,
+        derefs: u32,
+        args: &[ExprId],
+        name_range: TextRange,
+    ) -> Ty {
+        let sig = &self.sigs[function];
+        let autoref = match sig.params[0].kind() {
+            TyKind::Ref(m, _) => Some(m),
+            _ => None,
+        };
+        self.methods.insert(
+            id,
+            Method {
+                function,
+                derefs,
+                autoref,
+            },
+        );
+        let params = &sig.params[1..];
+        if params.len() != args.len() {
+            let (want, got) = (params.len(), args.len());
+            let verb = if got == 1 { "was" } else { "were" };
+            self.error(
+                name_range,
+                format!(
+                    "this method takes {want} argument{} but {got} argument{} {verb} supplied",
+                    plural(want),
+                    plural(got)
+                ),
+            );
+        }
+        for (&arg, &param) in args.iter().zip(params) {
+            let ty = self.expr_types.get(arg).copied().unwrap_or(Ty::ERROR);
+            self.coerce(ty, param, arg);
+        }
+        if self.items.functions[function].is_unsafe && self.unsafe_depth == 0 {
+            let name = self.items.function_path(&self.items.functions[function]);
+            self.error(
+                self.range(id),
+                format!("call to unsafe function `{name}` requires an `unsafe` block"),
+            );
+        }
+        sig.ret
     }
 
     fn infer_binary(&mut self, id: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) -> Ty {
@@ -1036,7 +1226,9 @@ impl Ctx<'_> {
             BinaryOp::Cmp(_) => {
                 let ty = self.infer_expr(lhs);
                 let rhs_ty = self.infer_expr(rhs);
-                self.coerce(rhs_ty, ty, rhs);
+                if self.is_primitive_operand(ty) {
+                    self.coerce(rhs_ty, ty, rhs);
+                }
                 self.deferred.push(Deferred::Binary {
                     expr: id,
                     op,
@@ -1063,6 +1255,16 @@ impl Ctx<'_> {
         }
     }
 
+    /// Whether the operators on a left operand of type `ty` are the
+    /// built-in ones, whose right operand has the same type. Other types'
+    /// operators come from traits, which say what the right operand is.
+    fn is_primitive_operand(&mut self, ty: Ty) -> bool {
+        !matches!(
+            self.shallow(ty).kind(),
+            TyKind::Ref(..) | TyKind::Adt(_) | TyKind::Tuple([_, ..]) | TyKind::RawPtr(..)
+        )
+    }
+
     /// `lhs op rhs` for an arithmetic or bitwise `op`, also the compound
     /// assignment `lhs op= rhs` (then `lhs` was already inferred).
     fn infer_arith(
@@ -1083,8 +1285,18 @@ impl Ctx<'_> {
                 expr: rhs,
                 ty: rhs_ty,
             });
-        } else {
+        } else if self.is_primitive_operand(ty) {
             self.coerce(rhs_ty, ty, rhs);
+        } else {
+            // A trait would give the result's type; the deferred check
+            // reports the operator.
+            self.deferred.push(Deferred::Binary {
+                expr: id,
+                op,
+                ty,
+                rhs: rhs_ty,
+            });
+            return Ty::ERROR;
         }
         self.deferred.push(Deferred::Binary {
             expr: id,
@@ -1101,10 +1313,20 @@ impl Ctx<'_> {
     /// initialization, in MIR.
     fn check_place(&mut self, assignment: ExprId, lhs: ExprId, plain: bool) {
         match self.body.exprs[lhs] {
-            Expr::Field { expr, .. } => {
-                let mut base = expr;
-                while let Expr::Field { expr, .. } = self.body.exprs[base] {
-                    base = expr;
+            Expr::Field { .. }
+            | Expr::Unary {
+                op: UnaryOp::Deref, ..
+            } => {
+                // A field of a local, or anything behind a pointer.
+                let mut base = lhs;
+                loop {
+                    match self.body.exprs[base] {
+                        Expr::Field { expr, .. } => base = expr,
+                        Expr::Unary {
+                            op: UnaryOp::Deref, ..
+                        } => return,
+                        _ => break,
+                    }
                 }
                 if !matches!(
                     self.body.exprs[base],
@@ -1155,11 +1377,73 @@ impl Ctx<'_> {
             self.binding_types.insert(binding, ty);
         }
         self.run_deferred(&mut reported);
+        self.check_references();
         InferenceResult {
             expr_types: self.expr_types,
             binding_types: self.binding_types,
             field_indices: self.field_indices,
+            field_derefs: self.field_derefs,
+            methods: self.methods,
+            reborrows: self.reborrows,
             diagnostics: self.diagnostics,
+        }
+    }
+
+    /// Reports references where flux cannot check them yet. Without
+    /// lifetimes, a reference can be checked only while each one lives in
+    /// a single local that is assigned once: not in a `mut` binding, a
+    /// binding declared without a value, another type, or a `break`
+    /// value.
+    fn check_references(&mut self) {
+        let body = self.body;
+        for (pat, data) in body.pats.iter() {
+            let Pat::Bind(binding) = data else {
+                continue;
+            };
+            let ty = self
+                .binding_types
+                .get(*binding)
+                .copied()
+                .unwrap_or(Ty::ERROR);
+            if !crate::contains_ref(ty) {
+                continue;
+            }
+            let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
+            if body.bindings[*binding].mutable {
+                self.error(range, "`mut` bindings of references are not supported yet");
+            } else if self.uninit_bindings.contains(binding) {
+                self.error(
+                    range,
+                    "references in variables declared without a value are not supported yet",
+                );
+            }
+        }
+        let mut reported = false;
+        for (expr, data) in body.exprs.iter() {
+            let ty = self.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
+            let nested = match ty.kind() {
+                TyKind::Ref(_, pointee) => crate::contains_ref(pointee),
+                _ => crate::contains_ref(ty),
+            };
+            if nested && !reported {
+                reported = true;
+                self.error(
+                    self.range(expr),
+                    "references inside other types are not supported yet",
+                );
+            }
+            if let Expr::Break {
+                value: Some(value), ..
+            } = data
+            {
+                let ty = self.expr_types.get(*value).copied().unwrap_or(Ty::ERROR);
+                if crate::contains_ref(ty) {
+                    self.error(
+                        self.range(*value),
+                        "`break` with a reference is not supported yet",
+                    );
+                }
+            }
         }
     }
 
@@ -1277,7 +1561,14 @@ impl Ctx<'_> {
                             BinaryOp::Assign(_) => self.range(expr),
                             _ => self.source_map.ops.get(expr).copied().unwrap_or_default(),
                         };
-                        self.error(range, binary_error(op, ty, rhs));
+                        // `&i32 + i32` and `&a == &b` are valid, through
+                        // trait implementations.
+                        let message = if ty.is_pointer() || rhs.is_pointer() {
+                            "operators on references are not supported yet".to_owned()
+                        } else {
+                            binary_error(op, ty, rhs)
+                        };
+                        self.error(range, message);
                     }
                 }
                 Deferred::ShiftAmount { expr, ty } => {

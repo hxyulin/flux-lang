@@ -2,16 +2,16 @@ struct S;
 
 unsafe extern fn abs(i32) -> i32;
 
-fn generic(x@0: T) -> <error> {
+fn generic(x@0: T) -> &str {
     <missing>
 }
 
 fn attributes() -> () {}
 
 fn expressions(v@0: i32) -> () {
-    let r@1 = <missing>;
-    loop#1 {
-        break#1;
+    let r@1 = (&v@0);
+    loop#2 {
+        break#2;
     }
     <missing>
     <missing>
@@ -24,10 +24,9 @@ fn declaration_only() -> ();
 
 error 11..21: `extern` blocks must be `unsafe` in edition 2024
 error 64..67: generic functions are not supported yet
-error 77..89: reference types are not supported yet
+error 78..85: lifetimes are not supported yet
 error 96..102: string literals other than `c"..."` are not supported yet
 error 106..118: the `cfg` attribute is not supported yet
-error 176..178: references are not supported yet
 error 184..191: loop labels are not supported yet
 error 213..219: loop labels are not supported yet
 error 231..247: `for` loops are not supported yet

@@ -3,11 +3,11 @@
 use std::fmt::Write;
 
 use flux_hir::{FileHir, StructKind};
-use flux_ty::Ty;
+use flux_ty::{Mutability, Ty};
 
 use crate::{
-    AggregateKind, BinOp, Body, Constant, FileMir, LocalKind, Operand, Place, Rvalue,
-    StatementKind, TerminatorKind, UnOp,
+    AggregateKind, BinOp, Body, Constant, FileMir, LocalKind, Operand, Place, ProjectionElem,
+    Rvalue, StatementKind, TerminatorKind, UnOp,
 };
 
 pub(crate) fn file(mir: &FileMir, hir: &FileHir) -> String {
@@ -60,13 +60,20 @@ fn body_text(out: &mut String, hir: &FileHir, name: &str, body: &Body) {
     for (block, data) in body.blocks.iter() {
         writeln!(out, "\n    bb{}: {{", block.index()).unwrap();
         for statement in &data.statements {
-            let StatementKind::Assign(dest, rvalue) = &statement.kind;
-            writeln!(
-                out,
-                "        {} = {};",
-                place(dest),
-                rvalue_text(hir, rvalue)
-            )
+            match &statement.kind {
+                StatementKind::Assign(dest, rvalue) => writeln!(
+                    out,
+                    "        {} = {};",
+                    place(dest),
+                    rvalue_text(hir, rvalue)
+                ),
+                StatementKind::StorageDead(local) => {
+                    writeln!(out, "        StorageDead(_{});", local.index())
+                }
+                StatementKind::PlaceMention(p) => {
+                    writeln!(out, "        PlaceMention({});", place(p))
+                }
+            }
             .unwrap();
         }
         let terminator = match &data.terminator.kind {
@@ -151,6 +158,18 @@ fn rvalue_text(hir: &FileHir, rvalue: &Rvalue) -> String {
             format!("{op}({})", operand(o))
         }
         Rvalue::Cast(o, ty) => format!("{} as {ty}", operand(o)),
+        Rvalue::Ref {
+            mutability,
+            place: p,
+            two_phase,
+        } => {
+            let kind = match (mutability, two_phase) {
+                (Mutability::Not, _) => "&",
+                (Mutability::Mut, false) => "&mut ",
+                (Mutability::Mut, true) => "&two_phase ",
+            };
+            format!("{kind}{}", place(p))
+        }
         Rvalue::Aggregate(AggregateKind::Tuple, ops) => {
             let ops: Vec<String> = ops.iter().map(operand).collect();
             match ops.as_slice() {
@@ -183,8 +202,11 @@ fn rvalue_text(hir: &FileHir, rvalue: &Rvalue) -> String {
 /// `_1`, or `_1.0.2` for fields, by index.
 fn place(place: &Place) -> String {
     let mut text = format!("_{}", place.local.index());
-    for field in &place.projection {
-        text.push_str(&format!(".{field}"));
+    for elem in &place.projection {
+        match elem {
+            ProjectionElem::Field(field) => text.push_str(&format!(".{field}")),
+            ProjectionElem::Deref => text = format!("(*{text})"),
+        }
     }
     text
 }

@@ -22,18 +22,18 @@ subset. See [the supported language](LANGUAGE.md).
 
 ## 3. Semantics
 
-Started: name resolution, type inference, MIR and the part of borrow
-checking that needs no references (initialization and moves) for
-functions over integers, `bool`, raw pointers, tuples and structs. In
-order next:
+Started: name resolution, type inference, MIR and borrow checking for
+functions over integers, `bool`, raw pointers, tuples and structs, with
+methods and references that need no lifetimes (parameters, temporaries
+and locals assigned once). In order next:
 
-1. `impl` blocks and methods on user types, with references to locals
-   (`&self`, `&mut self`) and the borrow checking they need.
-2. Crates and modules, to compile flux's own `core` (below): `mod`,
+1. Crates and modules, to compile flux's own `core` (below): `mod`,
    multi-segment paths, the prelude, and `#[lang]` items and intrinsics,
    allowed only in `core`.
-3. Generics and monomorphization, then traits: operators on user types,
+2. Generics and monomorphization, then traits: operators on user types,
    `Copy`/`Clone`, `Drop`, `for` loops over `Iterator`.
+3. Lifetimes: references in structs and return values, which needs
+   region inference across function signatures.
 
 Each comes with fixtures that rustc must agree with.
 

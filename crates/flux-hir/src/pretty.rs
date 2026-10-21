@@ -81,6 +81,10 @@ fn type_ref(ty: &TypeRef) -> String {
             let mutability = if *mutable { "mut" } else { "const" };
             format!("*{mutability} {}", type_ref(pointee))
         }
+        TypeRef::Ref { mutable, pointee } => {
+            let mutability = if *mutable { "mut " } else { "" };
+            format!("&{mutability}{}", type_ref(pointee))
+        }
         TypeRef::Error => "<error>".to_owned(),
     }
 }
@@ -95,7 +99,8 @@ struct Printer<'a> {
 impl Printer<'_> {
     fn function(&mut self, function: &Function) {
         let unsafety = if function.is_unsafe { "unsafe " } else { "" };
-        write!(self.out, "{unsafety}fn {}(", function.name).unwrap();
+        let name = self.hir.items.function_path(function);
+        write!(self.out, "{unsafety}fn {name}(").unwrap();
         for (i, &pat) in self.body.params.iter().enumerate() {
             if i > 0 {
                 self.out.push_str(", ");
@@ -210,7 +215,8 @@ impl Printer<'_> {
                 write!(self.out, "{name}@{}", binding.index()).unwrap();
             }
             Expr::Path(Res::Function(f)) => {
-                write!(self.out, "{}", self.hir.items.functions[*f].name).unwrap();
+                let function = &self.hir.items.functions[*f];
+                write!(self.out, "{}", self.hir.items.function_path(function)).unwrap();
             }
             Expr::Path(Res::Struct(s)) => {
                 write!(self.out, "{}", self.hir.items.structs[*s].name).unwrap();
@@ -354,6 +360,11 @@ impl Printer<'_> {
                 self.out.push('(');
                 self.expr(*expr);
                 write!(self.out, " as {})", type_ref(&self.body.types[*ty])).unwrap();
+            }
+            Expr::Ref { mutable, expr } => {
+                self.out.push_str(if *mutable { "(&mut " } else { "(&" });
+                self.expr(*expr);
+                self.out.push(')');
             }
             Expr::Field { expr, name } => {
                 self.expr(*expr);

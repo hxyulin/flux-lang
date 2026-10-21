@@ -24,7 +24,7 @@ use std::ops::Index;
 
 use flux_arena::ArenaMap;
 use flux_hir::{Diagnostic, FileHir, Function, FunctionId, ItemTree, Struct, StructId, TypeRef};
-use flux_intern::{Symbol, sym};
+use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
 
 pub use infer::{InferenceResult, c_char_ptr, c_str_ref, infer_body};
@@ -65,9 +65,20 @@ impl Signatures {
 }
 
 /// Resolves a type as written: a primitive type or one of `items`'
-/// structs, which shadow primitive types of the same name.
-pub fn resolve_type(items: &ItemTree, ty: &TypeRef) -> Result<Ty, String> {
+/// structs, which shadow primitive types of the same name. `self_ty` is
+/// what `Self` means here, if anything.
+pub fn resolve_type(items: &ItemTree, ty: &TypeRef, self_ty: Option<Ty>) -> Result<Ty, String> {
+    let mutability = |mutable: bool| {
+        if mutable {
+            Mutability::Mut
+        } else {
+            Mutability::Not
+        }
+    };
     match ty {
+        TypeRef::Path(name) if *name == kw::SelfUpper => {
+            self_ty.ok_or_else(|| "cannot find type `Self` in this scope".to_owned())
+        }
         TypeRef::Path(name) => {
             if let Some((id, s)) = items.struct_by_name(*name) {
                 return Ok(Ty::adt(id, s.name));
@@ -86,33 +97,53 @@ pub fn resolve_type(items: &ItemTree, ty: &TypeRef) -> Result<Ty, String> {
         TypeRef::Tuple(fields) => {
             let fields = fields
                 .iter()
-                .map(|f| resolve_type(items, f))
+                .map(|f| resolve_type(items, f, self_ty))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Ty::tuple(&fields))
         }
         TypeRef::Never => Ok(Ty::NEVER),
         TypeRef::Ptr { mutable, pointee } => {
-            let mutability = if *mutable {
-                Mutability::Mut
-            } else {
-                Mutability::Not
-            };
-            Ok(Ty::raw_ptr(mutability, resolve_type(items, pointee)?))
+            let pointee = resolve_type(items, pointee, self_ty)?;
+            Ok(Ty::raw_ptr(mutability(*mutable), pointee))
+        }
+        TypeRef::Ref { mutable, pointee } => {
+            let pointee = resolve_type(items, pointee, self_ty)?;
+            Ok(Ty::new(TyKind::Ref(mutability(*mutable), pointee)))
         }
         TypeRef::Error => Ok(Ty::ERROR),
     }
 }
 
+/// What `Self` means in `function`: its `impl` block's type, if it is
+/// in one.
+pub fn self_ty(items: &ItemTree, function: &Function) -> Option<Ty> {
+    let strukt = function.owner.map(|owner| items.impls[owner].strukt)?;
+    Some(strukt.map_or(Ty::ERROR, |s| Ty::adt(s, items.structs[s].name)))
+}
+
 fn resolve_or_report(
     items: &ItemTree,
     ty: &TypeRef,
+    self_ty: Option<Ty>,
     range: TextRange,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Ty {
-    resolve_type(items, ty).unwrap_or_else(|message| {
+    resolve_type(items, ty, self_ty).unwrap_or_else(|message| {
         diagnostics.push(Diagnostic { range, message });
         Ty::ERROR
     })
+}
+
+/// Whether `ty` contains a reference. References are allowed only as
+/// parameters and in local variables so far, where flux can check them
+/// without lifetimes.
+pub(crate) fn contains_ref(ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::Ref(..) => true,
+        TyKind::RawPtr(_, pointee) => contains_ref(pointee),
+        TyKind::Tuple(elements) => elements.iter().any(|&e| contains_ref(e)),
+        _ => false,
+    }
 }
 
 /// The signature of every function and the field types of every struct
@@ -120,46 +151,89 @@ fn resolve_or_report(
 pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
     let mut sigs = Signatures::default();
     let mut diagnostics = Vec::new();
-    let mut resolve = |ty, range| resolve_or_report(items, ty, range, &mut diagnostics);
+    let mut error = |range, message: &str| {
+        diagnostics.push(Diagnostic {
+            range,
+            message: message.to_owned(),
+        })
+    };
+    let mut reported = Vec::new();
+    let mut resolve =
+        |ty, self_ty, range| resolve_or_report(items, ty, self_ty, range, &mut reported);
     for (id, s) in items.structs.iter() {
-        let fields = s.fields.iter().map(|f| resolve(&f.ty, f.range)).collect();
+        let self_ty = Some(Ty::adt(id, s.name));
+        let fields = s
+            .fields
+            .iter()
+            .map(|f| resolve(&f.ty, self_ty, f.range))
+            .collect();
         sigs.structs.insert(id, fields);
     }
     for (id, function) in items.functions.iter() {
+        let self_ty = self_ty(items, function);
         let params = function
             .params
             .iter()
-            .map(|p| resolve(&p.ty, p.range))
+            .map(|p| resolve(&p.ty, self_ty, p.range))
             .collect();
-        let ret = resolve(&function.ret, function.ret_range);
+        let ret = resolve(&function.ret, self_ty, function.ret_range);
         sigs.fns.insert(id, FnSig { params, ret });
     }
     for (id, s) in items.structs.iter() {
         if contains(&sigs, Ty::adt(id, s.name), id, &mut Vec::new()) {
-            diagnostics.push(Diagnostic {
-                range: s.def_range,
-                message: format!("recursive type `{}` has infinite size", s.name),
-            });
+            error(
+                s.def_range,
+                &format!("recursive type `{}` has infinite size", s.name),
+            );
         }
-    }
-    for function in items.functions.values() {
-        if function.is_extern {
-            let types = function
-                .params
-                .iter()
-                .map(|p| (&p.ty, p.range))
-                .chain([(&function.ret, function.ret_range)]);
-            for (ty, range) in types {
-                let ty = resolve_type(items, ty).unwrap_or(Ty::ERROR);
-                if !matches!(ty.kind(), TyKind::Tuple([])) && sigs.fields(ty).is_some() {
-                    diagnostics.push(Diagnostic {
-                        range,
-                        message: "passing structs and tuples to C is not supported yet".to_owned(),
-                    });
-                }
+        for (field, &ty) in s.fields.iter().zip(&sigs.structs[id]) {
+            if contains_ref(ty) {
+                error(field.range, "missing lifetime specifier");
             }
         }
     }
+    for (id, function) in items.functions.iter() {
+        let sig = &sigs.fns[id];
+        let params = function.params.iter().zip(&sig.params);
+        if function.is_extern {
+            for (param, &ty) in params.clone() {
+                if contains_ref(ty) {
+                    error(param.range, "passing references to C is not supported yet");
+                }
+            }
+            let types = params
+                .map(|(p, &ty)| (ty, p.range))
+                .chain([(sig.ret, function.ret_range)]);
+            for (ty, range) in types {
+                if !matches!(ty.kind(), TyKind::Tuple([])) && sigs.fields(ty).is_some() {
+                    error(
+                        range,
+                        "passing structs and tuples to C is not supported yet",
+                    );
+                }
+            }
+        } else {
+            for (param, &ty) in params {
+                if !matches!(ty.kind(), TyKind::Ref(..)) && contains_ref(ty) {
+                    error(
+                        param.range,
+                        "references inside other types are not supported yet",
+                    );
+                }
+            }
+        }
+        if contains_ref(sig.ret) {
+            if sig.params.iter().any(|&p| contains_ref(p)) {
+                error(
+                    function.ret_range,
+                    "returning references is not supported yet",
+                );
+            } else {
+                error(function.ret_range, "missing lifetime specifier");
+            }
+        }
+    }
+    diagnostics.extend(reported);
     (sigs, diagnostics)
 }
 
@@ -187,7 +261,7 @@ pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
     let main = items
         .functions
         .iter()
-        .find(|(_, f)| f.name == sym::main && !f.is_extern);
+        .find(|(_, f)| f.name == sym::main && !f.is_extern && f.owner.is_none());
     let Some((id, function)) = main else {
         return Some(Diagnostic {
             range: TextRange::empty(0),

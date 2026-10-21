@@ -130,7 +130,7 @@ fn compare_structs(S, S) -> bool
     x@0: S
     y@1: S
 fn add_tuples() -> ()
-    t@0: (i32, i32)
+    t@0: {error}
 fn main() -> ()
 error 357..358: struct `S` has no field named `b`
 error 423..426: struct `Two` has no field named `zzz`

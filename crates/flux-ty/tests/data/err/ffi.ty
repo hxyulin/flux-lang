@@ -16,9 +16,9 @@ fn pointers() -> ()
 error 200..205: can't pass `u8` to variadic function; cast it to `c_uint`
 error 239..243: can't pass `bool` to variadic function; cast it to `c_int`
 error 277..281: can't pass `i16` to variadic function; cast it to `c_int`
-error 336..344: `printf` takes at least 1 argument but 0 arguments were supplied
+error 336..342: this function takes at least 1 argument but 0 arguments were supplied
 error 409..420: `as_ptr` takes 0 arguments but 1 argument was supplied
-error 434..446: the method `to_bytes` on `&CStr` is not supported yet
-error 460..467: the method `abs` on `i32` is not supported yet
+error 436..444: the method `to_bytes` on `&CStr` is not supported yet
+error 462..465: methods on `i32` are not supported yet
 error 521..537: mismatched types: expected `*const u8`, found `*const i8`
 error 588..598: casts of pointers are not supported yet

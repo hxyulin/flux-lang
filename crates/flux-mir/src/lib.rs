@@ -11,15 +11,20 @@
 //!   is not `MIN / -1`; rustc checks these even in release builds.
 //! - `&&` and `||` are control flow; reads of a local are copied into a
 //!   temporary first, so later operands cannot change them.
-//! - Values are read from [`Place`]s, a local and a path of fields into
-//!   it, either copied or moved ([`Operand`]), and tuples and structs are
-//!   built whole ([`Rvalue::Aggregate`]).
+//! - Values are read from [`Place`]s, a local and a path of fields and
+//!   dereferences into it, either copied or moved ([`Operand`]); tuples
+//!   and structs are built whole ([`Rvalue::Aggregate`]), and references
+//!   by borrowing a place ([`Rvalue::Ref`]). Method calls are calls with
+//!   the receiver's auto-dereferences and auto-borrow explicit.
+//! - A block's bindings die at its end ([`StatementKind::StorageDead`]).
 //!
-//! [`build`] turns a type-checked body into MIR and checks that every
-//! place is initialized, and not moved out of, before it is read, and that
-//! immutable locals are assigned once ([`init`]): the part of borrow
-//! checking flux needs so far.
+//! [`build`] turns a type-checked body into MIR, and two passes check it
+//! as rustc's borrow checker does: [`init`], that every place is
+//! initialized, and not moved out of, before it is read, and that
+//! immutable locals are assigned once; and [`borrowck`], that borrows do
+//! not conflict with other uses of what they borrow.
 
+pub mod borrowck;
 mod build;
 pub mod init;
 mod pretty;
@@ -28,7 +33,7 @@ use flux_arena::{Arena, Idx};
 use flux_hir::{FunctionId, StructId};
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
-use flux_ty::{IntTy, Signatures, Ty};
+use flux_ty::{IntTy, Mutability, Signatures, Ty, TyKind};
 
 pub use build::{build, build_file};
 
@@ -60,14 +65,16 @@ impl Body {
         (1..=self.param_count as u32).map(Local::from_raw)
     }
 
+    pub fn is_param(&self, local: Local) -> bool {
+        (1..=self.param_count).contains(&local.index())
+    }
+
     pub fn place_ty(&self, place: &Place, sigs: &Signatures) -> Ty {
+        let local_ty = self.locals[place.local].ty;
         place
             .projection
             .iter()
-            .fold(self.locals[place.local].ty, |ty, &field| {
-                sigs.fields(ty)
-                    .map_or(Ty::ERROR, |fields| fields[field as usize])
-            })
+            .fold(local_ty, |ty, &elem| projection_ty(ty, elem, sigs))
     }
 
     pub fn operand_ty(&self, operand: &Operand, sigs: &Signatures) -> Ty {
@@ -78,22 +85,88 @@ impl Body {
     }
 }
 
-/// A local, or a field of one at any depth: `_1`, `_1.0.2`.
+/// `place` as rustc writes it in messages: `s.inner.0`, `*r`, and `r.a`
+/// for a field behind a reference.
+pub fn place_name(
+    body: &Body,
+    items: &flux_hir::ItemTree,
+    sigs: &Signatures,
+    place: &Place,
+) -> String {
+    let mut text = match body.locals[place.local].kind {
+        LocalKind::User { name, .. } => name.to_string(),
+        _ => format!("_{}", place.local.index()),
+    };
+    let mut ty = body.locals[place.local].ty;
+    for (i, &elem) in place.projection.iter().enumerate() {
+        match elem {
+            // A field of a reference's target is written as if the
+            // reference were the struct: `r.a`.
+            ProjectionElem::Deref
+                if matches!(place.projection.get(i + 1), Some(ProjectionElem::Field(_))) => {}
+            ProjectionElem::Deref => text = format!("*{text}"),
+            ProjectionElem::Field(field) => match ty.kind() {
+                TyKind::Adt(adt) => {
+                    let name = items.structs[adt.strukt].fields[field as usize].name;
+                    text = format!("{text}.{name}");
+                }
+                _ => text = format!("{text}.{field}"),
+            },
+        }
+        ty = projection_ty(ty, elem, sigs);
+    }
+    text
+}
+
+/// The type of `elem` of a value of type `ty`.
+pub fn projection_ty(ty: Ty, elem: ProjectionElem, sigs: &Signatures) -> Ty {
+    match (elem, ty.kind()) {
+        (ProjectionElem::Field(field), _) => sigs
+            .fields(ty)
+            .map_or(Ty::ERROR, |fields| fields[field as usize]),
+        (ProjectionElem::Deref, TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee)) => pointee,
+        (ProjectionElem::Deref, _) => Ty::ERROR,
+    }
+}
+
+/// A local, or a part of one or of what it points to: `_1`, `_1.0.2`,
+/// `(*_1).0`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Place {
     pub local: Local,
-    /// Field indices, outermost first.
-    pub projection: Box<[u32]>,
+    /// Outermost first.
+    pub projection: Box<[ProjectionElem]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProjectionElem {
+    /// A field of a tuple or struct, by index.
+    Field(u32),
+    /// What a reference or raw pointer points to.
+    Deref,
 }
 
 impl Place {
     pub fn field(&self, index: u32) -> Place {
+        self.project(ProjectionElem::Field(index))
+    }
+
+    pub fn deref(&self) -> Place {
+        self.project(ProjectionElem::Deref)
+    }
+
+    fn project(&self, elem: ProjectionElem) -> Place {
         let mut projection = self.projection.to_vec();
-        projection.push(index);
+        projection.push(elem);
         Place {
             local: self.local,
             projection: projection.into(),
         }
+    }
+
+    /// Whether the place is behind a pointer.
+    pub fn has_deref(&self) -> bool {
+        self.projection.contains(&ProjectionElem::Deref)
     }
 }
 
@@ -141,6 +214,11 @@ pub struct Statement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatementKind {
     Assign(Place, Rvalue),
+    /// The local's scope ends: it can no longer be used or borrowed.
+    StorageDead(Local),
+    /// `let _ = place;`: names the place without reading it, which keeps
+    /// the references it goes through alive.
+    PlaceMention(Place),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +231,14 @@ pub enum Rvalue {
     Cast(Operand, Ty),
     /// A tuple or struct from its fields, in declaration order.
     Aggregate(AggregateKind, Vec<Operand>),
+    /// `&place` or `&mut place`. A *two-phase* `&mut`, made for a method
+    /// call's receiver, acts as a shared borrow until the call, so that
+    /// the arguments may still read the place: `s.set(s.get())`.
+    Ref {
+        mutability: Mutability,
+        place: Place,
+        two_phase: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,5 +421,31 @@ impl FileMir {
     /// snapshot tests and `flux mir`.
     pub fn debug_dump(&self, hir: &flux_hir::FileHir) -> String {
         pretty::file(self, hir)
+    }
+}
+
+impl Rvalue {
+    /// The operands it reads.
+    pub fn operands(&self) -> Vec<&Operand> {
+        match self {
+            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(op, _) => vec![op],
+            Rvalue::BinaryOp(_, l, r) => vec![l, r],
+            Rvalue::Aggregate(_, ops) => ops.iter().collect(),
+            Rvalue::Ref { .. } => Vec::new(),
+        }
+    }
+}
+
+impl TerminatorKind {
+    /// The operands it reads.
+    pub fn operands(&self) -> Vec<&Operand> {
+        match self {
+            TerminatorKind::SwitchInt { discr, .. } => vec![discr],
+            TerminatorKind::Call { args, .. } => args.iter().collect(),
+            TerminatorKind::Assert { cond, .. } => vec![cond],
+            TerminatorKind::Goto(_) | TerminatorKind::Return | TerminatorKind::Unreachable => {
+                Vec::new()
+            }
+        }
     }
 }

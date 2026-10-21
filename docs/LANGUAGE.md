@@ -51,17 +51,22 @@ statement (`if c {} - 1` is two statements).
 Everything above parses, but only this part compiles so far; the rest is
 reported as "not supported yet":
 
-- **Items:** functions without generics, `where` clauses or `self`;
-  structs without generics (named-field, tuple and unit structs); and
+- **Items:** functions without generics or `where` clauses; structs
+  without generics (named-field, tuple and unit structs); inherent `impl`
+  blocks for them, with associated functions and methods (`self`,
+  `mut self`, `&self`, `&mut self`); and
   `unsafe extern "C"` blocks of function declarations, including
   C-variadic ones (`fn printf(format: *const i8, ...) -> i32;`). `pub`
   and `pub(crate)` are accepted and mean nothing in a one-file crate.
-- **Types:** single-segment paths (`i32`, `bool`, a struct), tuples, `!`,
-  and raw pointers (`*const T`, `*mut T`).
+- **Types:** single-segment paths (`i32`, `bool`, a struct, `Self`),
+  tuples, `!`, references without lifetimes (`&T`, `&mut T`) and raw
+  pointers (`*const T`, `*mut T`).
 - **Expressions:** integer, boolean and C string (`c"..."`, `cr"..."`)
   literals, local and function names, tuples, struct expressions
   (`S { a: 1, b, ..base }`), tuple struct constructors (`P(1, 2)`) and
-  unit structs, field accesses (`s.a`, `t.0`), blocks (including
+  unit structs, field accesses (`s.a`, `t.0`, through references),
+  associated function paths (`S::new`, `Self::new`), method calls,
+  borrows (`&x`, `&mut x`) and dereferences (`*r`), blocks (including
   `unsafe`), `if`/`else`, `loop`, `while`, unlabeled `break` (with a
   value) and `continue`, `return`, calls, unary and binary operators,
   assignments (to locals and their fields), `as` casts between
@@ -87,6 +92,15 @@ Values of tuples of `Copy` types are copied; structs are moved (there is
 no `#[derive(Clone, Copy)]` yet), and flux reports uses after a move,
 including partial moves of fields, as rustc's borrow checker does.
 Structs and tuples cannot be passed to C yet.
+
+References may be parameters, temporaries, and `let` bindings without
+`mut` that are given a value where they are declared. That is enough to
+borrow-check them without lifetimes, with rustc's rules and messages
+(non-lexical lifetimes, two-phase borrows for method receivers, borrows
+of distinct fields). Anywhere else (in tuples, structs or other
+references, as return values, in `mut` bindings) they are reported as
+not supported yet, and so are operators on references (`r + 1`; write
+`*r + 1`).
 
 At run time flux matches rustc with `-C overflow-checks=off -C
 panic=abort`: arithmetic wraps, shift amounts are masked to the type's
