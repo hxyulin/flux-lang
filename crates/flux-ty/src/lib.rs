@@ -25,28 +25,50 @@ use std::ops::Index;
 use flux_arena::ArenaMap;
 use flux_hir::def_map::{Def, Ns, ResolveError, Resolved};
 use flux_hir::{
-    Const, Diagnostic, Function, FunctionId, Hir, ImplId, ImplTarget, ItemLoc, ItemTree, ModuleId,
-    Struct, StructId, TypeRef,
+    Const, Diagnostic, Function, FunctionId, Generics, Hir, Impl, ImplId, ImplTarget, ItemLoc,
+    ItemTree, ModuleId, Path, Struct, StructId, TypeRef,
 };
 use flux_intern::{Symbol, sym};
 use flux_syntax::TextRange;
 
 pub use infer::{InferenceResult, Method, c_char_ptr, c_str_ref, infer_body, infer_const};
-pub use ty::{AdtId, InferVar, IntTy, Mutability, Ty, TyKind};
+pub use ty::{AdtId, GenericArgs, InferVar, IntTy, Mutability, ParamTy, Ty, TyKind, subst_list};
 
-/// A function's resolved signature.
+/// A function's resolved signature. A generic function's mentions its
+/// parameters, its `impl` block's first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnSig {
     pub params: Box<[Ty]>,
     pub ret: Ty,
 }
 
+/// A function with generic arguments for its parameters, its `impl`
+/// block's first: what a call calls, and, once monomorphized, a function
+/// in the output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Instance {
+    pub function: FunctionId,
+    pub args: GenericArgs,
+}
+
+impl FnSig {
+    /// The signature of the instance with generic arguments `args`.
+    pub fn subst(&self, args: &[Ty]) -> FnSig {
+        FnSig {
+            params: self.params.iter().map(|p| p.subst(args)).collect(),
+            ret: self.ret.subst(args),
+        }
+    }
+}
+
 /// Everything about a file's items that bodies depend on: each
-/// function's signature and each struct's field types.
+/// function's signature, each struct's field types, and each `impl`
+/// block's type, in terms of their generic parameters.
 #[derive(Debug, Default)]
 pub struct Signatures {
     pub fns: ArenaMap<Function, FnSig>,
-    pub structs: ArenaMap<Struct, Box<[Ty]>>,
+    pub structs: ArenaMap<Struct, &'static [Ty]>,
+    pub impls: ArenaMap<Impl, Ty>,
     pub consts: ArenaMap<Const, Ty>,
 }
 
@@ -60,24 +82,80 @@ impl Index<FunctionId> for Signatures {
 
 impl Signatures {
     /// The types of the fields of `ty`, a tuple or struct.
-    pub fn fields(&self, ty: Ty) -> Option<&[Ty]> {
+    pub fn fields(&self, ty: Ty) -> Option<&'static [Ty]> {
         match ty.kind() {
             TyKind::Tuple(elements) => Some(elements),
-            TyKind::Adt(adt) => Some(&self.structs[adt.strukt]),
+            TyKind::Adt(adt, args) => Some(self.field_types(adt.strukt, args)),
             _ => None,
         }
     }
+
+    /// The types of the fields of `strukt` with generic arguments `args`.
+    pub fn field_types(&self, strukt: StructId, args: &[Ty]) -> &'static [Ty] {
+        let fields = self.structs[strukt];
+        if args.is_empty() {
+            return fields;
+        }
+        Ty::list(&subst_list(fields, args))
+    }
+}
+
+/// What the names in a type mean besides items: `Self`, if anything,
+/// and the generic parameters in scope, by index.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TypeScope<'a> {
+    pub self_ty: Option<Ty>,
+    pub generics: &'a [Symbol],
+    /// In an item's signature, where `_` is not allowed, what rustc
+    /// calls such items ("functions"); `None` in a body, where `_` is a
+    /// type to infer.
+    pub signature_of: Option<&'static str>,
+}
+
+impl TypeScope<'_> {
+    /// The generic parameter called `name`, if one is in scope.
+    pub fn param(&self, name: Symbol) -> Option<Ty> {
+        let index = self.generics.iter().rposition(|&n| n == name)?;
+        Some(Ty::param(index as u32, name))
+    }
+}
+
+/// The names of the generic parameters of an item in `impl` block
+/// `owner` with its own `generics`: the block's, then its own.
+pub fn generic_names(items: &ItemTree, owner: Option<ImplId>, own: &Generics) -> Vec<Symbol> {
+    owner
+        .map(|o| &items.impls[o].generics)
+        .into_iter()
+        .chain([own])
+        .flat_map(|g| g.params.iter().map(|p| p.name))
+        .collect()
+}
+
+/// "1 generic argument", "2 generic arguments".
+fn generic_arguments(n: usize) -> String {
+    format!("{n} generic argument{}", if n == 1 { "" } else { "s" })
+}
+
+/// rustc's error for `got` generic arguments where a `kind` (struct,
+/// function, ...) takes `want`.
+pub fn wrong_arg_count(kind: &str, want: usize, got: usize) -> String {
+    let verb = if got == 1 { "was" } else { "were" };
+    format!(
+        "{kind} takes {} but {} {verb} supplied",
+        generic_arguments(want),
+        generic_arguments(got)
+    )
 }
 
 /// Resolves a type as written in `module`: a struct, a primitive type,
-/// or `Self`, which means `self_ty` here, if anything. Errors go to
-/// `errors`, at the part of the type they are about within `range`, and
-/// make the type an error unless they are about privacy.
+/// a generic parameter, or `Self`. Errors go to `errors`, at the part of
+/// the type they are about within `range`, and make the type an error
+/// unless they are about privacy.
 pub fn resolve_type(
     items: &ItemTree,
     module: ModuleId,
     ty: &TypeRef,
-    self_ty: Option<Ty>,
+    scope: TypeScope<'_>,
     range: TextRange,
     errors: &mut Vec<(TextRange, String)>,
 ) -> Ty {
@@ -94,6 +172,34 @@ pub fn resolve_type(
     };
     match ty {
         TypeRef::Path(path) => {
+            let last = path.segments.len().saturating_sub(1);
+            // Generic arguments are only for the type itself, not the
+            // modules before it.
+            for i in 0..last {
+                if let Some(args) = path.args(i) {
+                    let name = path.segments[i];
+                    errors.push((
+                        args.ranges.first().copied().unwrap_or(args.range),
+                        format!("type arguments are not allowed on module `{name}`"),
+                    ));
+                }
+            }
+            let args = path.args(last);
+            // Arguments to something that takes none.
+            let no_args = |errors: &mut Vec<(TextRange, String)>, what: String| {
+                if let Some(args) = args {
+                    errors.push((
+                        args.ranges.first().copied().unwrap_or(args.range),
+                        format!("type arguments are not allowed on {what}"),
+                    ));
+                }
+            };
+            if let Some(name) = path.as_name()
+                && let Some(param) = scope.param(name)
+            {
+                no_args(errors, format!("type parameter `{name}`"));
+                return param;
+            }
             let resolved = match items.resolve(module, path, Ns::Types) {
                 Err(e @ ResolveError::Private { .. }) => {
                     let ResolveError::Private {
@@ -107,27 +213,35 @@ pub fn resolve_type(
                 }
                 result => result,
             };
-            let last = path.range(path.segments.len().saturating_sub(1), range);
+            let last_range = path.range(last, range);
             match resolved {
-                Ok(Resolved::SelfType) => match self_ty {
-                    Some(ty) => ty,
-                    None => fail(
-                        errors,
-                        range,
-                        "cannot find type `Self` in this scope".to_owned(),
-                    ),
-                },
-                Ok(Resolved::Def(Def::Struct(id))) => Ty::adt(id, items.structs[id].name),
-                Ok(Resolved::Primitive(name)) => match primitive(name) {
-                    Ok(ty) => ty,
-                    Err(message) => fail(errors, range, message),
-                },
+                Ok(Resolved::SelfType) => {
+                    no_args(errors, "self type".to_owned());
+                    match scope.self_ty {
+                        Some(ty) => ty,
+                        None => fail(
+                            errors,
+                            range,
+                            "cannot find type `Self` in this scope".to_owned(),
+                        ),
+                    }
+                }
+                Ok(Resolved::Def(Def::Struct(id))) => {
+                    struct_type(items, module, id, path, scope, range, errors)
+                }
+                Ok(Resolved::Primitive(name)) => {
+                    no_args(errors, format!("builtin type `{name}`"));
+                    match primitive(name) {
+                        Ok(ty) => ty,
+                        Err(message) => fail(errors, range, message),
+                    }
+                }
                 Ok(Resolved::Def(Def::Module(m))) => fail(
                     errors,
-                    last,
+                    last_range,
                     format!("expected type, found module `{}`", items.modules[m].name),
                 ),
-                Ok(_) => fail(errors, last, format!("expected type, found `{path}`")),
+                Ok(_) => fail(errors, last_range, format!("expected type, found `{path}`")),
                 Err(e @ ResolveError::NotFound { .. }) => {
                     let ResolveError::NotFound { segment, module } = e else {
                         unreachable!()
@@ -158,7 +272,7 @@ pub fn resolve_type(
         TypeRef::Tuple(fields) => {
             let fields: Vec<Ty> = fields
                 .iter()
-                .map(|f| resolve_type(items, module, f, self_ty, range, errors))
+                .map(|f| resolve_type(items, module, f, scope, range, errors))
                 .collect();
             if fields.contains(&Ty::ERROR) {
                 return Ty::ERROR;
@@ -167,21 +281,70 @@ pub fn resolve_type(
         }
         TypeRef::Never => Ty::NEVER,
         TypeRef::Ptr { mutable, pointee } => {
-            let pointee = resolve_type(items, module, pointee, self_ty, range, errors);
+            let pointee = resolve_type(items, module, pointee, scope, range, errors);
             if pointee == Ty::ERROR {
                 return Ty::ERROR;
             }
             Ty::raw_ptr(mutability(*mutable), pointee)
         }
         TypeRef::Ref { mutable, pointee } => {
-            let pointee = resolve_type(items, module, pointee, self_ty, range, errors);
+            let pointee = resolve_type(items, module, pointee, scope, range, errors);
             if pointee == Ty::ERROR {
                 return Ty::ERROR;
             }
             Ty::new(TyKind::Ref(mutability(*mutable), pointee))
         }
+        TypeRef::Infer => match scope.signature_of {
+            Some(items) => fail(
+                errors,
+                range,
+                format!(
+                    "the placeholder `_` is not allowed within types on item signatures for {items}"
+                ),
+            ),
+            None => Ty::infer(ty::InferVar::PLACEHOLDER),
+        },
         TypeRef::Error => Ty::ERROR,
     }
+}
+
+/// Struct `strukt`, named by `path`, with the generic arguments written
+/// after its last segment, which must be one for each of its
+/// parameters.
+pub fn struct_type(
+    items: &ItemTree,
+    module: ModuleId,
+    strukt: StructId,
+    path: &Path,
+    scope: TypeScope<'_>,
+    range: TextRange,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Ty {
+    let def = &items.structs[strukt];
+    let last = path.segments.len().saturating_sub(1);
+    let at = path.range(last, range);
+    let want = def.generics.len();
+    let Some(written) = path.args(last) else {
+        if want == 0 {
+            return Ty::adt(strukt, def.name, &[]);
+        }
+        errors.push((at, format!("missing generics for struct `{}`", def.name)));
+        return Ty::ERROR;
+    };
+    let args: Vec<Ty> = written
+        .types
+        .iter()
+        .zip(&written.ranges)
+        .map(|(ty, &range)| resolve_type(items, module, ty, scope, range, errors))
+        .collect();
+    if args.len() != want {
+        errors.push((at, wrong_arg_count("struct", want, args.len())));
+        return Ty::ERROR;
+    }
+    if args.contains(&Ty::ERROR) {
+        return Ty::ERROR;
+    }
+    Ty::adt(strukt, def.name, &args)
 }
 
 /// The primitive type called `name`.
@@ -195,18 +358,10 @@ pub fn primitive(name: Symbol) -> Result<Ty, String> {
     }
 }
 
-/// The type of `target`, an `impl` block's type.
-pub fn target_ty(items: &ItemTree, target: ImplTarget) -> Ty {
-    match target {
-        ImplTarget::Struct(s) => Ty::adt(s, items.structs[s].name),
-        ImplTarget::Primitive(name) => primitive(name).unwrap_or(Ty::ERROR),
-    }
-}
-
 /// The `impl` blocks' type for methods on `ty`, if it has any.
 pub fn impl_target(ty: Ty) -> Option<ImplTarget> {
     match ty.kind() {
-        TyKind::Adt(adt) => Some(ImplTarget::Struct(adt.strukt)),
+        TyKind::Adt(adt, _) => Some(ImplTarget::Struct(adt.strukt)),
         TyKind::Int(int) => Some(ImplTarget::Primitive(int.name())),
         TyKind::Bool => Some(ImplTarget::Primitive(sym::bool)),
         _ => None,
@@ -214,21 +369,20 @@ pub fn impl_target(ty: Ty) -> Option<ImplTarget> {
 }
 
 /// What `Self` means in an item in the `impl` block `owner`, if any.
-pub fn self_ty(items: &ItemTree, owner: Option<ImplId>) -> Option<Ty> {
-    let target = owner.map(|owner| items.impls[owner].target)?;
-    Some(target.map_or(Ty::ERROR, |t| target_ty(items, t)))
+pub fn self_ty(sigs: &Signatures, owner: Option<ImplId>) -> Option<Ty> {
+    owner.map(|owner| sigs.impls.get(owner).copied().unwrap_or(Ty::ERROR))
 }
 
 fn resolve_or_report(
     items: &ItemTree,
     module: ModuleId,
     ty: &TypeRef,
-    self_ty: Option<Ty>,
+    scope: TypeScope<'_>,
     range: TextRange,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Ty {
     let mut errors = Vec::new();
-    let ty = resolve_type(items, module, ty, self_ty, range, &mut errors);
+    let ty = resolve_type(items, module, ty, scope, range, &mut errors);
     diagnostics.extend(
         errors
             .into_iter()
@@ -244,9 +398,98 @@ pub(crate) fn contains_ref(ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Ref(..) => true,
         TyKind::RawPtr(_, pointee) => contains_ref(pointee),
-        TyKind::Tuple(elements) => elements.iter().any(|&e| contains_ref(e)),
+        TyKind::Tuple(elements) | TyKind::Adt(_, elements) => {
+            elements.iter().any(|&e| contains_ref(e))
+        }
         _ => false,
     }
+}
+
+/// Reports names defined twice by blocks for overlapping instances of a
+/// generic struct, `impl<T> S<T>` and `impl S<i32>`; the item tree
+/// checked other types, and blocks for one generic struct that cannot
+/// overlap (`impl S<u8>` and `impl S<i32>`) may share names.
+fn duplicate_assoc_items(items: &ItemTree, sigs: &Signatures, diagnostics: &mut Vec<Diagnostic>) {
+    let generic: Vec<(ImplId, &Impl)> = items
+        .impls
+        .iter()
+        .filter(|(_, imp)| match imp.target {
+            Some(ImplTarget::Struct(s)) => !items.structs[s].generics.is_empty(),
+            _ => false,
+        })
+        .collect();
+    let names = |imp: &Impl| -> Vec<(Symbol, TextRange)> {
+        let functions = imp.functions.iter().map(|&f| {
+            let f = &items.functions[f];
+            (f.name, f.def_range)
+        });
+        let consts = imp.consts.iter().filter_map(|&c| {
+            let c = &items.consts[c];
+            Some((c.name?, c.def_range))
+        });
+        functions.chain(consts).collect()
+    };
+    for (i, &(a, first)) in generic.iter().enumerate() {
+        for &(b, second) in &generic[i + 1..] {
+            if first.target != second.target || !overlap(sigs.impls[a], sigs.impls[b]) {
+                continue;
+            }
+            let later = names(second);
+            // rustc reports the earlier definition.
+            for (name, range) in names(first) {
+                if later.iter().any(|&(n, _)| n == name) {
+                    diagnostics.push(Diagnostic {
+                        file: first.file,
+                        range,
+                        message: format!("duplicate definitions with name `{name}`"),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Whether two `impl` blocks' types, each in terms of its own
+/// parameters, may be the same type.
+fn overlap(a: Ty, b: Ty) -> bool {
+    match (a.kind(), b.kind()) {
+        (TyKind::Param(_) | TyKind::Error, _) | (_, TyKind::Param(_) | TyKind::Error) => true,
+        (TyKind::Adt(x, xs), TyKind::Adt(y, ys)) => {
+            x == y && xs.iter().zip(ys).all(|(&a, &b)| overlap(a, b))
+        }
+        (TyKind::Tuple(xs), TyKind::Tuple(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(&a, &b)| overlap(a, b))
+        }
+        (TyKind::Ref(m, x), TyKind::Ref(n, y)) | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
+            m == n && overlap(x, y)
+        }
+        _ => a == b,
+    }
+}
+
+/// Whether `ty` mentions generic parameter `index`.
+fn mentions_param(ty: Ty, index: u32) -> bool {
+    if !ty.has_params() {
+        return false;
+    }
+    match ty.kind() {
+        TyKind::Param(param) => param.index == index,
+        TyKind::RawPtr(_, t) | TyKind::Ref(_, t) => mentions_param(t, index),
+        TyKind::Tuple(list) | TyKind::Adt(_, list) => {
+            list.iter().any(|&t| mentions_param(t, index))
+        }
+        _ => false,
+    }
+}
+
+/// The parameters of `generics` as types, numbered from `first`.
+pub fn params_of(generics: &Generics, first: usize) -> Vec<Ty> {
+    generics
+        .params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| Ty::param((first + i) as u32, p.name))
+        .collect()
 }
 
 /// The signature of every function and the field types of every struct
@@ -260,48 +503,120 @@ pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
         diagnostics.push(d);
     };
     let mut reported = Vec::new();
-    let mut resolve = |loc: ItemLoc, ty, self_ty, range| {
+    fn resolve(
+        items: &ItemTree,
+        loc: ItemLoc,
+        ty: &TypeRef,
+        scope: TypeScope<'_>,
+        range: TextRange,
+        reported: &mut Vec<Diagnostic>,
+    ) -> Ty {
         let start = reported.len();
-        let ty = resolve_or_report(items, loc.module, ty, self_ty, range, &mut reported);
+        let ty = resolve_or_report(items, loc.module, ty, scope, range, reported);
         for d in &mut reported[start..] {
             d.file = loc.file;
         }
         ty
-    };
+    }
     for (id, s) in items.structs.iter() {
-        let self_ty = Some(Ty::adt(id, s.name));
-        let fields = s
+        let generics: Vec<Symbol> = s.generics.params.iter().map(|p| p.name).collect();
+        let scope = TypeScope {
+            self_ty: Some(Ty::adt(id, s.name, &params_of(&s.generics, 0))),
+            generics: &generics,
+            signature_of: Some("structs"),
+        };
+        let fields: Vec<Ty> = s
             .fields
             .iter()
-            .map(|f| resolve(s.loc, &f.ty, self_ty, f.range))
+            .map(|f| resolve(items, s.loc, &f.ty, scope, f.range, &mut reported))
             .collect();
-        sigs.structs.insert(id, fields);
+        sigs.structs.insert(id, Ty::list(&fields));
+    }
+    for (id, imp) in items.impls.iter() {
+        let ty = impl_type(items, imp, &mut reported);
+        sigs.impls.insert(id, ty);
     }
     for (id, konst) in items.consts.iter() {
-        let self_ty = self_ty(items, konst.owner);
-        let ty = resolve(konst.loc, &konst.ty, self_ty, konst.ty_range);
+        let generics = generic_names(items, konst.owner, &Generics::default());
+        let scope = TypeScope {
+            self_ty: self_ty(&sigs, konst.owner),
+            generics: &generics,
+            signature_of: Some("constants"),
+        };
+        let ty = resolve(
+            items,
+            konst.loc,
+            &konst.ty,
+            scope,
+            konst.ty_range,
+            &mut reported,
+        );
         sigs.consts.insert(id, ty);
     }
     for (id, function) in items.functions.iter() {
-        let self_ty = self_ty(items, function.owner);
+        let generics = generic_names(items, function.owner, &function.generics);
+        let scope = TypeScope {
+            self_ty: self_ty(&sigs, function.owner),
+            generics: &generics,
+            signature_of: Some("functions"),
+        };
         let params = function
             .params
             .iter()
-            .map(|p| resolve(function.loc, &p.ty, self_ty, p.range))
+            .map(|p| resolve(items, function.loc, &p.ty, scope, p.range, &mut reported))
             .collect();
-        let ret = resolve(function.loc, &function.ret, self_ty, function.ret_range);
+        let ret = resolve(
+            items,
+            function.loc,
+            &function.ret,
+            scope,
+            function.ret_range,
+            &mut reported,
+        );
         sigs.fns.insert(id, FnSig { params, ret });
     }
     for (id, s) in items.structs.iter() {
-        if contains(&sigs, Ty::adt(id, s.name), id, &mut Vec::new()) {
+        // Without `PhantomData`, a parameter must be a field's type.
+        for (i, param) in s.generics.params.iter().enumerate() {
+            let fields = sigs.structs[id];
+            if !fields.iter().any(|&f| mentions_param(f, i as u32)) && !fields.contains(&Ty::ERROR)
+            {
+                error(
+                    s.loc.file,
+                    param.range,
+                    &format!("type parameter `{}` is never used", param.name),
+                );
+            }
+        }
+    }
+    duplicate_assoc_items(items, &sigs, &mut reported);
+    for (id, imp) in items.impls.iter() {
+        let ty = sigs.impls[id];
+        for (i, param) in imp.generics.params.iter().enumerate() {
+            if ty != Ty::ERROR && !mentions_param(ty, i as u32) {
+                error(
+                    imp.file,
+                    param.range,
+                    &format!(
+                        "the type parameter `{}` is not constrained by the impl trait, self type, or predicates",
+                        param.name
+                    ),
+                );
+            }
+        }
+    }
+    for (id, s) in items.structs.iter() {
+        let ty = Ty::adt(id, s.name, &params_of(&s.generics, 0));
+        if contains(&sigs, ty, id, &mut Vec::new()) {
             error(
                 s.loc.file,
                 s.def_range,
                 &format!("recursive type `{}` has infinite size", s.name),
             );
         }
-        for (field, &ty) in s.fields.iter().zip(&sigs.structs[id]) {
-            if contains_ref(ty) {
+        for (field, &ty) in s.fields.iter().zip(sigs.structs[id]) {
+            // With lifetime parameters, already reported.
+            if contains_ref(ty) && !s.generics.has_lifetimes {
                 error(s.loc.file, field.range, "missing lifetime specifier");
             }
         }
@@ -366,7 +681,7 @@ pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
 /// another `strukt` by value; `seen` guards against cycles that do not
 /// involve `strukt`.
 fn contains(sigs: &Signatures, ty: Ty, strukt: StructId, seen: &mut Vec<StructId>) -> bool {
-    if let TyKind::Adt(adt) = ty.kind() {
+    if let TyKind::Adt(adt, _) = ty.kind() {
         if adt.strukt == strukt && !seen.is_empty() {
             return true;
         }
@@ -379,6 +694,37 @@ fn contains(sigs: &Signatures, ty: Ty, strukt: StructId, seen: &mut Vec<StructId
     fields
         .iter()
         .any(|&field| contains(sigs, field, strukt, seen))
+}
+
+/// The type of `impl` block `imp` (`S<T>` in `impl<T> S<T>`), in terms of
+/// its parameters; an error if its path did not resolve (reported).
+fn impl_type(items: &ItemTree, imp: &Impl, diagnostics: &mut Vec<Diagnostic>) -> Ty {
+    let generics: Vec<Symbol> = imp.generics.params.iter().map(|p| p.name).collect();
+    let scope = TypeScope {
+        self_ty: None,
+        generics: &generics,
+        signature_of: Some("implementations"),
+    };
+    let mut errors = Vec::new();
+    let ty = match (imp.target, &imp.self_ty) {
+        (Some(ImplTarget::Struct(strukt)), TypeRef::Path(path)) => struct_type(
+            items,
+            imp.module,
+            strukt,
+            path,
+            scope,
+            imp.self_range,
+            &mut errors,
+        ),
+        (Some(ImplTarget::Primitive(name)), _) => primitive(name).unwrap_or(Ty::ERROR),
+        _ => Ty::ERROR,
+    };
+    diagnostics.extend(errors.into_iter().map(|(at, message)| Diagnostic {
+        file: imp.file,
+        range: at,
+        message,
+    }));
+    ty
 }
 
 /// Checks that a program's `main` exists and has the right shape.
@@ -398,7 +744,14 @@ pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
         return Some(d);
     };
     let sig = &sigs[id];
-    let message = if function.is_unsafe {
+    let message = if !function.generics.is_empty() {
+        let mut d = Diagnostic::new(
+            function.generics.range,
+            "`main` function is not allowed to have generic parameters",
+        );
+        d.file = function.loc.file;
+        return Some(d);
+    } else if function.is_unsafe {
         "`main` function is not allowed to be `unsafe`".to_owned()
     } else if !sig.params.is_empty() {
         "`main` function cannot take parameters".to_owned()
@@ -471,12 +824,18 @@ impl TypedFile {
             let fields: Vec<String> = s
                 .fields
                 .iter()
-                .zip(&self.sigs.structs[id])
+                .zip(self.sigs.structs[id])
                 .map(|(f, ty)| format!("{}: {ty}", f.name))
                 .collect();
             match fields.as_slice() {
-                [] => writeln!(out, "struct {} {{}}", s.name),
-                _ => writeln!(out, "struct {} {{ {} }}", s.name, fields.join(", ")),
+                [] => writeln!(out, "struct {}{} {{}}", s.name, s.generics),
+                _ => writeln!(
+                    out,
+                    "struct {}{} {{ {} }}",
+                    s.name,
+                    s.generics,
+                    fields.join(", ")
+                ),
             }
             .unwrap();
         }
@@ -488,8 +847,9 @@ impl TypedFile {
             let params: Vec<String> = sig.params.iter().map(Ty::to_string).collect();
             writeln!(
                 out,
-                "fn {}({}) -> {}",
+                "fn {}{}({}) -> {}",
                 function.name,
+                function.generics,
                 params.join(", "),
                 sig.ret
             )

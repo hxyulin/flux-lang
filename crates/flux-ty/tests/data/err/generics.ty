@@ -1,0 +1,156 @@
+struct Pair<T> { a: T, b: T }
+struct Wrap<T> { 0: T }
+struct Plain { x: i32 }
+struct Unused<T> { x: i32 }
+struct Unit<T> {}
+struct Hidden<T> { a: T }
+struct Open<T> { a: T, b: T }
+fn new(T, T) -> Pair<T>
+    a@0: T
+    b@1: T
+fn get(Pair<T>) -> T
+    self@0: Pair<T>
+fn plain(&Plain) -> i32
+    self@0: &Plain
+fn id<T>(T) -> T
+    x@0: T
+fn two<A, B>(A, B) -> A
+    a@0: A
+    _b@1: B
+fn too_many_on_fn() -> ()
+fn too_few_on_fn() -> ()
+fn too_many_on_struct({error}) -> ()
+    p@0: {error}
+fn too_few_on_struct({error}) -> ()
+    p@0: {error}
+fn args_on_plain({error}) -> ()
+    p@0: {error}
+fn args_on_plain_method(Plain) -> ()
+    p@0: Plain
+fn too_many_on_literal() -> ()
+fn too_many_on_tuple_struct() -> ()
+fn args_on_primitive(i32) -> ()
+    x@0: i32
+fn args_on_param<T>(T) -> ()
+    x@0: T
+fn diverge<T>() -> T
+fn not_inferred() -> ()
+    x@0: {error}
+fn not_inferred_statement() -> ()
+fn placeholder_turbofish() -> ()
+fn placeholder_not_inferred() -> ()
+    p@0: Pair<{error}>
+fn param_vs_concrete<T>(T) -> i32
+    x@0: T
+fn concrete_vs_param<T>() -> T
+fn param_vs_param<T, U>(T) -> U
+    x@0: T
+fn instance_mismatch(Pair<i32>) -> Pair<u8>
+    p@0: Pair<i32>
+fn arg_mismatch() -> ()
+fn turbofish_mismatch() -> ()
+fn annotation_mismatch() -> ()
+fn field_mismatch() -> ()
+fn wrap_mismatch(Wrap<Wrap<i32>>) -> Wrap<i32>
+    w@0: Wrap<Wrap<i32>>
+fn add<T>(T, T) -> T
+    a@0: T
+    b@1: T
+fn compare<T>(T, T) -> bool
+    a@0: T
+    b@1: T
+fn negate<T>(T) -> T
+    a@0: T
+fn cast<T>(T) -> i32
+    a@0: T
+fn field<T>(T) -> i32
+    a@0: T
+fn method<T>(T) -> ()
+    a@0: T
+fn deref<T>(T) -> ()
+    a@0: T
+fn call<T>(T) -> ()
+    a@0: T
+fn total(&Pair<i32>) -> i32
+    self@0: &Pair<i32>
+fn total(&Pair<u8>) -> u8
+    self@0: &Pair<u8>
+fn only_u8(&Pair<u8>) -> ()
+    self@0: &Pair<u8>
+fn ambiguous_instance() -> ()
+    p@0: Pair<i32>
+fn wrong_instance(Pair<bool>) -> ()
+    p@0: Pair<bool>
+fn no_total(Pair<bool>) -> ()
+    p@0: Pair<bool>
+fn dup(&Pair<T>) -> ()
+    self@0: &Pair<T>
+fn dup(&Pair<i32>) -> ()
+    self@0: &Pair<i32>
+fn open() -> Open<i32>
+fn nested() -> Open<Open<u8>>
+fn secret(Open<T>) -> T
+    self@0: Open<T>
+fn private_struct(Hidden<i32>) -> ()
+    h@0: Hidden<i32>
+fn private_field() -> i32
+fn private_nested_field() -> u8
+fn private_method() -> i32
+fn assign_call(i32) -> ()
+    x@0: i32
+fn assign_literal(Pair<i32>) -> ()
+    p@0: Pair<i32>
+fn reference_argument() -> ()
+    x@0: i32
+fn reference_in_instance(Pair<&i32>) -> ()
+    p@0: Pair<&i32>
+fn reference_in_literal() -> ()
+    x@0: i32
+fn main() -> ()
+error 490..492: function takes 1 generic argument but 2 generic arguments were supplied
+error 544..547: function takes 2 generic arguments but 1 generic argument was supplied
+error 590..594: struct takes 1 generic argument but 2 generic arguments were supplied
+error 633..637: missing generics for struct `Pair`
+error 663..668: struct takes 0 generic arguments but 1 generic argument was supplied
+error 729..734: method takes 0 generic arguments but 1 generic argument was supplied
+error 786..790: struct takes 1 generic argument but 2 generic arguments were supplied
+error 865..869: struct takes 1 generic argument but 2 generic arguments were supplied
+error 916..918: type arguments are not allowed on builtin type `i32`
+error 950..952: type arguments are not allowed on type parameter `T`
+error 1023..1024: type parameter `T` is never used
+error 1055..1056: type parameter `T` is never used
+error 1065..1066: the type parameter `T` is not constrained by the impl trait, self type, or predicates
+error 1181..1182: type annotations needed
+error 1233..1240: type annotations needed
+error 1284..1285: type annotations needed
+error 1350..1357: type annotations needed
+error 1469..1470: mismatched types: expected `i32`, found `T`
+error 1511..1512: mismatched types: expected `T`, found `{integer}`
+error 1557..1558: mismatched types: expected `U`, found `T`
+error 1615..1616: mismatched types: expected `Pair<u8>`, found `Pair<i32>`
+error 1668..1671: mismatched types: expected `i32`, found `u8`
+error 1724..1728: mismatched types: expected `u8`, found `bool`
+error 1801..1802: mismatched types: expected `bool`, found `{integer}`
+error 1864..1869: mismatched types: expected `u8`, found `bool`
+error 1932..1933: mismatched types: expected `Wrap<i32>`, found `Wrap<Wrap<i32>>`
+error 2024..2025: cannot add `T` to `T`
+error 2073..2075: binary operation `==` cannot be applied to type `T`
+error 2111..2113: cannot apply unary operator `-` to type `T`
+error 2147..2155: non-primitive cast: `T` as `i32`
+error 2192..2193: no field `x` on type `T`
+error 2224..2226: no method named `go` found for type parameter `T` in the current scope
+error 2265..2267: type `T` cannot be dereferenced
+error 2295..2296: expected function, found `T`
+error 2628..2633: multiple applicable items in scope
+error 2681..2688: no method named `only_u8` found for struct `Pair<bool>` in the current scope
+error 2730..2735: no method named `total` found for struct `Pair<bool>` in the current scope
+error 2814..2827: duplicate definitions with name `dup`
+error 3375..3381: struct `Hidden` is private
+error 3434..3435: field `b` of struct `Open` is private
+error 3491..3492: field `b` of struct `Open` is private
+error 3539..3545: method `secret` is private
+error 3663..3666: mismatched types: expected `i32`, found `u8`
+error 3743..3746: mismatched types: expected `i32`, found `u8`
+error 3882..3884: calls returning references are not supported yet
+error 3921..3931: references inside other types are not supported yet
+error 3992..4013: references inside other types are not supported yet

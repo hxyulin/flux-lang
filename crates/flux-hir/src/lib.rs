@@ -28,14 +28,14 @@ mod pretty;
 mod source;
 
 pub use body::{
-    Binding, BindingId, Body, BodySourceMap, Expr, ExprId, Literal, LoopSource, Pat, PatId, Res,
-    Stmt, TypeRefId,
+    Binding, BindingId, Body, BodySourceMap, Expr, ExprId, Literal, LoopSource, Pat, PatId,
+    PathGenerics, Res, SegmentArgs, Stmt, TypeRefId,
 };
 pub use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 pub use item_tree::{
-    AssocItem, Const, ConstId, CrateData, CrateId, Field, Function, FunctionId, ImplId, ImplTarget,
-    ItemLoc, ItemTree, Module, ModuleId, Param, Path, PathAnchor, Struct, StructId, StructKind,
-    TypeRef, Visibility, is_primitive,
+    AssocItem, Const, ConstId, CrateData, CrateId, Field, Function, FunctionId, GenericArgs,
+    GenericParam, Generics, Impl, ImplId, ImplTarget, ItemLoc, ItemTree, Module, ModuleId, Param,
+    Path, PathAnchor, Struct, StructId, StructKind, TypeRef, Visibility, is_primitive,
 };
 pub use lower::{lower_body, lower_const};
 pub use source::{CORE_ROOT, FileId, SourceDb, SourceFile};

@@ -14,14 +14,14 @@ same under both.
 ## Status
 
 flux compiles its first programs: modules and functions over integers,
-`bool`, tuples and structs, with methods, references checked by a borrow
-checker, constants evaluated at compile time, C strings, and calls to C
-through `unsafe extern "C"` (including `printf`), down to native arm64
-macOS executables through keel. flux has its own small `core` library,
-written in flux. Programs in
+`bool`, tuples and structs, with methods, generics (monomorphized),
+references checked by a borrow checker, constants evaluated at compile
+time, C strings, and calls to C through `unsafe extern "C"` (including
+`printf`), down to native arm64 macOS executables through keel. flux has
+its own small `core` library, written in flux. Programs in
 [`tests/run`](tests/run) are built by both rustc and flux and must behave
 identically. Everything else in Rust is on the [roadmap](docs/ROADMAP.md):
-generics and traits come next, so that `core` can grow.
+traits come next, so that `core` can grow.
 
 The parser covers much more of Rust than the later stages: it handles
 all of its own sources and keel's, and parses 1 GiB of crates.io sources

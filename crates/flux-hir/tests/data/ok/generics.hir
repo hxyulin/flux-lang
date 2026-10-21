@@ -1,0 +1,62 @@
+struct Pair<T> { a: T, b: T }
+
+struct Wrap<T>(T);
+
+struct Two<K, V> { key: K, value: V }
+
+struct T;
+
+fn id<T>(x@0: T) -> T {
+    x@0
+}
+
+fn first<A, B>(a@0: A, _b@1: B) -> A {
+    a@0
+}
+
+fn Pair::new(a@0: T, b@1: T) -> Self {
+    Pair { a: a@0, b: b@1 }
+}
+
+fn Pair::into_a(self@0: Self) -> T {
+    self@0.a
+}
+
+fn Pair::swap(self@0: Self) -> Pair<T> {
+    Pair { a: self@0.b, b: self@0.a }
+}
+
+fn Pair::sum(self@0: &Self) -> i32 {
+    (self@0.a + self@0.b)
+}
+
+fn Two::value(self@0: Self) -> V {
+    self@0.value
+}
+
+fn shadow<T>(x@0: T) -> T {
+    x@0
+}
+
+fn args(p@0: Pair<i32>, w@1: Wrap<u8>) -> Two<i32, u8> {
+    let n@2 = id::<i32>(p@0.a);
+    let q@3 = Pair::new[Self<i32>](n@2, 2);
+    let r@4: Pair<i32> = Pair::new(1, 2);
+    let s@5 = Pair::<u8> { a: 1, b: 2 };
+    let _t@6: Pair<_> = Pair { a: true, b: false };
+    let _u@7 = first::<_, bool>(1u8, true);
+    let _v@8 = (q@3.swap().into_a() + r@4.sum());
+    let _w@9 = Wrap::<u8>(s@5.a);
+    Two { key: id(p@0.b), value: w@1.0 }
+}
+
+fn nested(x@0: Pair<Pair<i32>>, y@1: (Wrap<bool>, &Pair<u8>)) -> u8 {
+    let _z@2: Wrap<Pair<i32>> = Wrap(x@0.a);
+    y@1.1.a
+}
+
+fn main() -> () {
+    let _ = id(T);
+    let _ = shadow(1);
+}
+

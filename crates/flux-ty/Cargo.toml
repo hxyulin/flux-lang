@@ -13,6 +13,7 @@ flux-arena.workspace = true
 flux-hir.workspace = true
 flux-intern.workspace = true
 flux-syntax.workspace = true
+rustc-hash = "2"
 
 [lints]
 workspace = true

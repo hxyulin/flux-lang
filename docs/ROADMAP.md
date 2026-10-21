@@ -26,10 +26,11 @@ Started: name resolution across modules and `use` imports with
 privacy, type inference, constants and their compile-time evaluation,
 MIR and borrow checking, for functions over integers, `bool`, raw
 pointers, tuples and structs, with methods and references that need no
-lifetimes (parameters, temporaries and locals assigned once). In order
+lifetimes (parameters, temporaries and locals assigned once), and
+generic functions, structs and `impl` blocks, monomorphized. In order
 next:
 
-1. Generics and monomorphization, then traits: operators on user types,
+1. Traits: bounds on type parameters, operators on user types,
    `Copy`/`Clone`, `Drop`, `for` loops over `Iterator`. Then `core` can
    define `Option`, `CStr` (now built into the compiler) and the pointer
    methods, through `#[lang]` items and intrinsics.
@@ -62,8 +63,8 @@ intrinsics, unstable features), so flux cannot compile them. flux
 provides its own small core library, [`library/core`](../library/core),
 written in flux and compiled with every program, that defines the same
 names with the same meaning. So far it has the integer types' constants
-and methods; `Option`, `Result`, the operator traits, `Copy` and `Sized`
-need generics and traits first. It is lowered and type-checked on every
+and methods, `mem::drop` and `convert::identity`; `Option`, `Result`,
+the operator traits, `Copy` and `Sized` need traits (and enums) first. It is lowered and type-checked on every
 build (about a millisecond today), and only the functions a program
 calls are compiled; caching it is the first use for the incremental
 checking below. Output goes through `extern "C"` declarations of libc

@@ -150,11 +150,11 @@ analysis. Semantic analysis will follow rustc's and rust-analyzer's split:
 program's files:
 
 - The **item tree**: every crate's modules, and every function's,
-  struct's, constant's and `impl` block's name and signature, with types
-  as written (`TypeRef::Path(u8)`), but no bodies. Everything outside a
-  body depends only on it. A method is a function owned by an `impl`
-  block whose first parameter is `self`, with the type `Self`, `&Self` or
-  `&mut Self`.
+  struct's, constant's and `impl` block's name, generic parameters and
+  signature, with types as written (`TypeRef::Path(u8)`,
+  `Pair<T>`), but no bodies. Everything outside a body depends only on
+  it. A method is a function owned by an `impl` block whose first
+  parameter is `self`, with the type `Self`, `&Self` or `&mut Self`.
 - The **def map** ([`def_map`](../crates/flux-hir/src/def_map.rs)): what
   each module's names mean, in Rust's two namespaces (types and values),
   from its items and its `use` imports. Imports are resolved together,
@@ -169,7 +169,9 @@ program's files:
   expressions, patterns and bindings addressed by `Idx`. Names are resolved while lowering,
   through a stack of scopes and then the item tree, so an expression
   `x` becomes `Res::Local(binding)` or `Res::Function(id)`, and `S::new`
-  the associated function `new` of the struct `S`. Method calls stay
+  the associated function `new` of the struct `S`. Generic arguments
+  written in a path are kept by what they are for: `S::<A>::f::<B>`
+  has `A` for `S` and `B` for `f`. Method calls stay
   unresolved until types are known. `break` and
   `continue` record the loop they leave. Parentheses disappear, and
   `while c { body }` becomes `loop { if c { body } else { break } }`, as
@@ -197,7 +199,27 @@ the item tree, then infers each body on its own against them.
 A `Ty` is a 4-byte handle into one process-wide table of `TyKind`s, like
 `Symbol` for names: types compare and hash as integers, and a type made
 of types (`*const T`) stays `Copy`. The primitive types are interned
-first, so `Ty::BOOL` and `Ty::int(IntTy::U8)` are constants.
+first, so `Ty::BOOL` and `Ty::int(IntTy::U8)` are constants. Interning
+takes a lock, but reading a type's kind does not: kinds live in
+write-once slots of an append-only table, as symbols' strings do.
+
+A generic item's signature mentions its parameters (`TyKind::Param`, by
+index, an `impl` block's before a function's own), and a struct type
+carries its arguments (`Pair<i32>`). Each use of a generic item gets new
+variables for its parameters, or the types written for them
+(`id::<u8>`), and `Ty::subst` gives the use's signature. A call of an
+associated function also unifies its block's type (`Pair<T>` in
+`impl<T> Pair<T>`) with the type it is called on, so blocks for
+different instances of a struct (`impl Pair<i32>`, `impl Pair<u8>`) may
+each have a function of the same name; the one whose block may be for
+the receiver's type is called, and two are E0034. Each call records the
+function and generic arguments it calls. Without trait bounds a
+parameter has no operators, methods or fields, and is never `Copy`.
+
+Where the type an expression must have is known before it is inferred
+(a `let` with a type, an argument, a field, a return value), it is
+noted, and a call or struct expression unifies its result with it first,
+as rustc does: `let x: u8 = id(1i32)` is a mismatch at `1i32`.
 
 Inference is unification over type variables, structural for types that
 contain types:
@@ -260,7 +282,9 @@ semantics become explicit, so code generation never sees expressions:
   `t` directly, so it moves only those parts, as in rustc.
 
 Only reachable code is built: every function of the program, and the
-functions of `core` that something calls. A constant's value is MIR too,
+functions of `core` that something calls. A generic function is built
+and checked once, in terms of its parameters; its calls record their
+generic arguments in terms of its own. A constant's value is MIR too,
 which [`eval`](../crates/flux-mir/src/eval.rs) runs at compile time, with
 any `const fn` it calls, so constants support every expression form.
 Division by zero is an error there (E0080, with rustc's messages), and
@@ -342,6 +366,17 @@ executable. No C compiler or system linker is involved.
   (`_ZN3fib3fibE`, `_ZN4core3num3i323absE` for `core::num::i32::abs`), so
   they cannot collide with C names or each other. The C `main` is a wrapper that calls the Rust
   `main` and returns 0. A failed MIR assertion calls `abort`.
+
+Generic functions are *monomorphized*:
+[`mono`](../crates/flux-mir/src/mono.rs) collects the instances the
+program needs, starting from the functions that are not generic and
+following calls, with each call's arguments substituted by its caller's,
+as rustc's collector does; one more than 128 calls deep is rustc's
+"reached the recursion limit" error (`f::<(T, i32)>` calling itself).
+Each instance is a copy of the function's MIR with its arguments
+substituted, compiled like any other function, and its symbol is the
+function's with a hash of the arguments as the last segment, as in
+rustc's legacy mangling.
 
 Only arm64 macOS can link so far: Linux needs glibc's startup objects
 passed to keel's ELF linker. `flux build --timings` prints each phase's

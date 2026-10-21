@@ -3,13 +3,21 @@
 //! A [`Ty`] is a 4-byte handle into one process-wide table of [`TyKind`]s,
 //! so types compare and hash as integers, and a type that contains types
 //! (`*const T`, `(A, B)`) stays `Copy`. The primitive types are interned
-//! first, so [`Ty::BOOL`] and [`Ty::int`] are constants. A tuple's element
-//! list is interned too, and lives for the rest of the process, like the
-//! table.
+//! first, so [`Ty::BOOL`] and [`Ty::int`] are constants. Lists of types (a
+//! tuple's elements, a struct's generic arguments) are interned too, and
+//! live for the rest of the process, like the table.
+//!
+//! A generic item's types mention its parameters ([`TyKind::Param`]);
+//! [`Ty::subst`] replaces them with the arguments of one use of it.
+//!
+//! Interning takes a lock, but reading a type's kind does not: kinds
+//! live in an append-only table of write-once slots, as the symbol
+//! interner's strings do, since type checking reads them constantly.
 
-use std::collections::HashMap;
 use std::fmt;
-use std::sync::{LazyLock, RwLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
+
+use rustc_hash::FxHashMap;
 
 use flux_hir::StructId;
 use flux_intern::{Symbol, sym};
@@ -25,8 +33,10 @@ pub enum TyKind {
     Bool,
     /// `(A, B)`; `()` is the empty tuple, [`Ty::UNIT`].
     Tuple(&'static [Ty]),
-    /// A struct.
-    Adt(AdtId),
+    /// A struct, with its generic arguments.
+    Adt(AdtId, GenericArgs),
+    /// A generic parameter of the item whose types these are.
+    Param(ParamTy),
     /// `!`
     Never,
     /// `*const T` and `*mut T`.
@@ -72,15 +82,77 @@ pub struct AdtId {
     pub name: Symbol,
 }
 
+/// The generic arguments of a use of a generic item: one type per
+/// parameter, in order, the `impl` block's first for an associated item.
+pub type GenericArgs = &'static [Ty];
+
+/// A generic parameter: the `index`th of its item's, counting the `impl`
+/// block's first, as in [`GenericArgs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParamTy {
+    pub index: u32,
+    pub name: Symbol,
+}
+
 /// A type variable of one body's inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InferVar(pub(crate) u32);
 
-struct Table {
-    kinds: Vec<TyKind>,
-    ids: HashMap<TyKind, u32>,
-    lists: HashMap<Box<[Ty]>, &'static [Ty]>,
+impl InferVar {
+    /// `_` written in a type in a body, before inference gives it a
+    /// variable of its own.
+    pub(crate) const PLACEHOLDER: InferVar = InferVar(u32::MAX);
 }
+
+/// The interning side: what each kind's and list's index is.
+struct Table {
+    len: u32,
+    ids: FxHashMap<TyKind, u32>,
+    lists: FxHashMap<Box<[Ty]>, &'static [Ty]>,
+}
+
+/// Each type's kind and flags ([`HAS_PARAM`], [`HAS_INFER`]), by index,
+/// written once when it is interned. Bucket `b` holds `FIRST << b`
+/// slots, so the table grows without moving what it holds.
+struct Kinds {
+    buckets: [OnceLock<Box<[Slot]>>; BUCKETS],
+}
+
+type Slot = OnceLock<(TyKind, u8)>;
+
+const FIRST: u32 = 64;
+const BUCKETS: usize = 26;
+
+impl Kinds {
+    /// The bucket and slot of index `i`.
+    fn locate(i: u32) -> (usize, usize) {
+        let n = i / FIRST + 1;
+        let bucket = (31 - n.leading_zeros()) as usize;
+        let start = FIRST * ((1 << bucket) - 1);
+        (bucket, (i - start) as usize)
+    }
+
+    fn get(&self, i: u32) -> Option<(TyKind, u8)> {
+        let (bucket, slot) = Kinds::locate(i);
+        self.buckets[bucket].get()?[slot].get().copied()
+    }
+
+    fn set(&self, i: u32, value: (TyKind, u8)) {
+        let (bucket, slot) = Kinds::locate(i);
+        let slots = self.buckets[bucket]
+            .get_or_init(|| (0..FIRST << bucket).map(|_| OnceLock::new()).collect());
+        slots[slot].set(value).expect("each type is written once");
+    }
+}
+
+static KINDS: Kinds = Kinds {
+    buckets: [const { OnceLock::new() }; BUCKETS],
+};
+
+/// The type contains a generic parameter.
+const HAS_PARAM: u8 = 1;
+/// The type contains an inference variable.
+const HAS_INFER: u8 = 2;
 
 /// Interned in this order, so the constants below are their indices.
 const PREDEFINED: [TyKind; 4] = [
@@ -92,17 +164,36 @@ const PREDEFINED: [TyKind; 4] = [
 
 static TABLE: LazyLock<RwLock<Table>> = LazyLock::new(|| {
     let mut table = Table {
-        kinds: Vec::new(),
-        ids: HashMap::new(),
-        lists: HashMap::new(),
+        len: 0,
+        ids: FxHashMap::default(),
+        lists: FxHashMap::default(),
     };
     let ints = IntTy::ALL.map(TyKind::Int);
     for kind in PREDEFINED.into_iter().chain(ints) {
-        table.ids.insert(kind, table.kinds.len() as u32);
-        table.kinds.push(kind);
+        table.insert(kind);
     }
     RwLock::new(table)
 });
+
+impl Table {
+    fn insert(&mut self, kind: TyKind) -> u32 {
+        let of = |ty: Ty| KINDS.get(ty.0).map_or(0, |(_, flags)| flags);
+        let flags = match kind {
+            TyKind::Param(_) => HAS_PARAM,
+            TyKind::Infer(_) => HAS_INFER,
+            TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().fold(0, |f, &t| f | of(t)),
+            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) => of(t),
+            TyKind::Int(_) | TyKind::Bool | TyKind::Never | TyKind::CStr | TyKind::Error => 0,
+        };
+        let id = self.len;
+        self.len += 1;
+        // Written before the index is published, so whoever has the
+        // index finds it.
+        KINDS.set(id, (kind, flags));
+        self.ids.insert(kind, id);
+        id
+    }
+}
 
 impl Ty {
     pub const ERROR: Ty = Ty(0);
@@ -123,14 +214,22 @@ impl Ty {
         if let Some(&id) = table.ids.get(&kind) {
             return Ty(id);
         }
-        let id = table.kinds.len() as u32;
-        table.kinds.push(kind);
-        table.ids.insert(kind, id);
-        Ty(id)
+        Ty(table.insert(kind))
     }
 
     pub fn kind(self) -> TyKind {
-        TABLE.read().unwrap().kinds[self.0 as usize]
+        self.entry().0
+    }
+
+    fn entry(self) -> (TyKind, u8) {
+        match KINDS.get(self.0) {
+            Some(entry) => entry,
+            // The predefined types exist before anything is interned.
+            None => {
+                LazyLock::force(&TABLE);
+                KINDS.get(self.0).expect("types are interned before use")
+            }
+        }
     }
 
     pub fn infer(var: InferVar) -> Ty {
@@ -141,35 +240,74 @@ impl Ty {
         Ty::new(TyKind::RawPtr(mutability, pointee))
     }
 
-    pub fn tuple(elements: &[Ty]) -> Ty {
-        let interned = TABLE.read().unwrap().lists.get(elements).copied();
-        let elements = match interned {
-            Some(list) => list,
+    /// `types`, interned.
+    pub fn list(types: &[Ty]) -> &'static [Ty] {
+        if types.is_empty() {
+            return &[];
+        }
+        if let Some(&list) = TABLE.read().unwrap().lists.get(types) {
+            return list;
+        }
+        let mut table = TABLE.write().unwrap();
+        match table.lists.get(types) {
+            Some(&list) => list,
             None => {
-                let mut table = TABLE.write().unwrap();
-                match table.lists.get(elements) {
-                    Some(&list) => list,
-                    None => {
-                        let list: &'static [Ty] = Box::leak(elements.into());
-                        table.lists.insert(elements.into(), list);
-                        list
-                    }
-                }
+                let list: &'static [Ty] = Box::leak(types.into());
+                table.lists.insert(types.into(), list);
+                list
             }
-        };
-        Ty::new(TyKind::Tuple(elements))
+        }
     }
 
-    pub fn adt(strukt: StructId, name: Symbol) -> Ty {
-        Ty::new(TyKind::Adt(AdtId { strukt, name }))
+    pub fn tuple(elements: &[Ty]) -> Ty {
+        Ty::new(TyKind::Tuple(Ty::list(elements)))
+    }
+
+    pub fn adt(strukt: StructId, name: Symbol, args: &[Ty]) -> Ty {
+        Ty::new(TyKind::Adt(AdtId { strukt, name }, Ty::list(args)))
+    }
+
+    pub fn param(index: u32, name: Symbol) -> Ty {
+        Ty::new(TyKind::Param(ParamTy { index, name }))
+    }
+
+    fn flags(self) -> u8 {
+        self.entry().1
+    }
+
+    /// Whether the type mentions a generic parameter.
+    pub fn has_params(self) -> bool {
+        self.flags() & HAS_PARAM != 0
+    }
+
+    /// Whether the type contains an inference variable.
+    pub fn has_infer(self) -> bool {
+        self.flags() & HAS_INFER != 0
+    }
+
+    /// The type with each generic parameter replaced by its argument in
+    /// `args`.
+    pub fn subst(self, args: &[Ty]) -> Ty {
+        if !self.has_params() {
+            return self;
+        }
+        match self.kind() {
+            TyKind::Param(param) => args.get(param.index as usize).copied().unwrap_or(Ty::ERROR),
+            TyKind::Tuple(elements) => Ty::tuple(&subst_list(elements, args)),
+            TyKind::Adt(adt, list) => Ty::new(TyKind::Adt(adt, Ty::list(&subst_list(list, args)))),
+            TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, pointee.subst(args)),
+            TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, pointee.subst(args))),
+            _ => self,
+        }
     }
 
     /// Whether values of this type are copied rather than moved. Structs
-    /// are not, until flux has `#[derive(Clone, Copy)]`.
+    /// are not, until flux has `#[derive(Clone, Copy)]`, and neither are
+    /// generic parameters, until they can be bounded by `Copy`.
     pub fn is_copy(self) -> bool {
         match self.kind() {
             TyKind::Tuple(elements) => elements.iter().all(|t| t.is_copy()),
-            TyKind::Adt(_) => false,
+            TyKind::Adt(..) | TyKind::Param(_) => false,
             TyKind::Ref(Mutability::Mut, _) => false,
             _ => true,
         }
@@ -191,6 +329,11 @@ impl Ty {
     pub fn is_pointer(self) -> bool {
         matches!(self.kind(), TyKind::RawPtr(..) | TyKind::Ref(..))
     }
+}
+
+/// Each of `list` substituted with `args`.
+pub fn subst_list(list: &[Ty], args: &[Ty]) -> Vec<Ty> {
+    list.iter().map(|t| t.subst(args)).collect()
 }
 
 impl fmt::Debug for Ty {
@@ -282,7 +425,18 @@ impl fmt::Display for Ty {
                 }
                 f.write_str(")")
             }
-            TyKind::Adt(adt) => write!(f, "{}", adt.name),
+            TyKind::Adt(adt, []) => write!(f, "{}", adt.name),
+            TyKind::Adt(adt, args) => {
+                write!(f, "{}<", adt.name)?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{arg}")?;
+                }
+                f.write_str(">")
+            }
+            TyKind::Param(param) => write!(f, "{}", param.name),
             TyKind::Never => f.write_str("!"),
             TyKind::RawPtr(Mutability::Not, pointee) => write!(f, "*const {pointee}"),
             TyKind::RawPtr(Mutability::Mut, pointee) => write!(f, "*mut {pointee}"),

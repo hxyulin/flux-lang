@@ -7,7 +7,7 @@ use flux_hir::{
 };
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
-use flux_ty::{InferenceResult, IntTy, Mutability, Ty, TyKind, TypedFile};
+use flux_ty::{GenericArgs, InferenceResult, IntTy, Mutability, Ty, TyKind, TypedFile};
 
 use crate::{
     AggregateKind, AssertMessage, BasicBlock, BasicBlockData, BinOp, Body, Constant, FileMir,
@@ -665,9 +665,10 @@ impl Builder<'_> {
                 self.terminate(TerminatorKind::Return, range);
             }
             Expr::Call { callee, args } => match body.exprs[*callee] {
-                Expr::Path(Res::Function(func)) => {
+                Expr::Path(Res::Function(_)) => {
                     let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
-                    self.call(func, args, dest, range);
+                    let instance = self.types.calls[*callee];
+                    self.call(instance.function, instance.args, args, dest, range);
                 }
                 Expr::Path(Res::Struct(strukt)) => {
                     let operands = args.iter().map(|&arg| self.lower_operand(arg)).collect();
@@ -705,7 +706,8 @@ impl Builder<'_> {
                 self.assign(&temp.into(), rvalue, receiver_range);
                 let mut operands = vec![self.read(temp.into())];
                 operands.extend(args.iter().map(|&arg| self.lower_operand(arg)));
-                self.call(method.function, operands, dest, range);
+                let instance = self.types.calls[expr];
+                self.call(instance.function, instance.args, operands, dest, range);
             }
             Expr::MethodCall { receiver, args, .. } => {
                 // Only `CStr::as_ptr` type-checks: the reference is the
@@ -766,13 +768,22 @@ impl Builder<'_> {
         }
     }
 
-    /// Calls `func`, storing the result in `dest`.
-    fn call(&mut self, func: FunctionId, args: Vec<Operand>, dest: &Place, range: TextRange) {
-        let returns = self.typed.sigs[func].ret != Ty::NEVER;
+    /// Calls `func` with generic arguments `generic_args`, storing the
+    /// result in `dest`.
+    fn call(
+        &mut self,
+        func: FunctionId,
+        generic_args: GenericArgs,
+        args: Vec<Operand>,
+        dest: &Place,
+        range: TextRange,
+    ) {
+        let returns = self.typed.sigs[func].ret.subst(generic_args) != Ty::NEVER;
         let target = returns.then(|| self.new_block());
         self.terminate(
             TerminatorKind::Call {
                 func,
+                generic_args,
                 args,
                 dest: dest.clone(),
                 target,
