@@ -19,6 +19,8 @@ enum Command {
     Parse { file: PathBuf },
     /// Print the HIR of a file: its items and lowered function bodies.
     Hir { file: PathBuf },
+    /// Type-check a file and print the MIR of its functions.
+    Mir { file: PathBuf },
     /// Report syntax errors in files.
     Check {
         #[arg(required = true)]
@@ -79,6 +81,40 @@ fn run(command: Command) -> Result<bool, String> {
                 report(&file, &text, d.range, &d.message);
             }
             Ok(parse.errors().is_empty() && hir.diagnostics.is_empty())
+        }
+        Command::Mir { file } => {
+            let text = read(&file)?;
+            let parse = flux_syntax::parse_source_file(&text);
+            let hir = flux_hir::lower_file(&parse);
+            let typed = flux_ty::check_file(&hir);
+            let errors: Vec<_> = parse
+                .errors()
+                .iter()
+                .map(|e| (e.range, e.message.as_str()))
+                .chain(
+                    hir.diagnostics
+                        .iter()
+                        .map(|d| (d.range, d.message.as_str())),
+                )
+                .chain(
+                    typed
+                        .diagnostics
+                        .iter()
+                        .map(|d| (d.range, d.message.as_str())),
+                )
+                .collect();
+            for (range, message) in &errors {
+                report(&file, &text, *range, message);
+            }
+            if !errors.is_empty() {
+                return Ok(false);
+            }
+            let mir = flux_mir::build_file(&hir, &typed);
+            print!("{}", mir.debug_dump(&hir));
+            for d in &mir.diagnostics {
+                report(&file, &text, d.range, &d.message);
+            }
+            Ok(mir.diagnostics.is_empty())
         }
         Command::Check { files } => {
             let mut ok = true;

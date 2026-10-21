@@ -108,7 +108,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "flux-hir",
+ "flux-mir",
  "flux-syntax",
+ "flux-ty",
 ]
 
 [[package]]
@@ -127,6 +129,17 @@ dependencies = [
  "flux-arena",
  "hashbrown",
  "rustc-hash",
+]
+
+[[package]]
+name = "flux-mir"
+version = "0.1.0"
+dependencies = [
+ "flux-arena",
+ "flux-hir",
+ "flux-intern",
+ "flux-syntax",
+ "flux-ty",
 ]
 
 [[package]]

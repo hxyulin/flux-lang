@@ -1,0 +1,131 @@
+fn unassigned() -> i32 {
+    let mut _0: i32;
+    let _1: i32; // x
+    let _2: i32;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = Add(copy _2, const 1_i32);
+        return;
+    }
+}
+
+fn conditional(_1: bool) -> i32 {
+    let mut _0: i32;
+    let _2: i32; // x
+    let _3: ();
+    let _4: bool;
+    let _5: ();
+
+    bb0: {
+        _4 = copy _1;
+        switchInt(copy _4) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _2 = const 1_i32;
+        _5 = const ();
+        _3 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _3 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _0 = copy _2;
+        return;
+    }
+}
+
+fn twice(_1: bool) -> i32 {
+    let mut _0: i32;
+    let _2: i32; // x
+    let _3: ();
+    let _4: ();
+    let _5: bool;
+    let _6: ();
+
+    bb0: {
+        _2 = const 1_i32;
+        _3 = const ();
+        _5 = copy _1;
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _2 = const 2_i32;
+        _6 = const ();
+        _4 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _4 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _0 = copy _2;
+        return;
+    }
+}
+
+fn in_loop() -> () {
+    let mut _0: ();
+    let _1: i32; // x
+    let _2: ();
+    let _3: ();
+
+    bb0: {
+        goto -> bb1;
+    }
+
+    bb1: {
+        _1 = const 1_i32;
+        _3 = const ();
+        _2 = const ();
+        goto -> bb1;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn after_loop() -> i32 {
+    let mut _0: i32;
+    let _1: i32; // x
+    let _2: ();
+    let _3: !;
+    let _4: ();
+    let _5: !;
+
+    bb0: {
+        goto -> bb1;
+    }
+
+    bb1: {
+        _1 = const 1_i32;
+        _4 = const ();
+        _2 = const ();
+        goto -> bb2;
+    }
+
+    bb2: {
+        _0 = copy _1;
+        return;
+    }
+
+    bb3: {
+        _3 = const ();
+        goto -> bb1;
+    }
+}
+
+error 45..46: used binding `x` isn't initialized
+error 140..141: used binding `x` is possibly-uninitialized
+error 223..224: cannot assign twice to immutable variable `x`
+error 295..296: cannot assign twice to immutable variable `x`

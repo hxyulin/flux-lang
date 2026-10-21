@@ -18,6 +18,9 @@
   with names resolved, and `flux hir` to print it.
 - Add `flux-ty`: type inference and checking for HIR bodies, with
   diagnostics matching rustc's for the supported subset.
+- Add `flux-mir`: MIR built from typed HIR, with wrapping arithmetic,
+  masked shifts and division checks explicit, and checks for
+  uninitialized and reassigned locals. `flux mir` prints it.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 
