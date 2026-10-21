@@ -17,6 +17,8 @@ enum Command {
     Lex { file: PathBuf },
     /// Print the syntax tree of a file.
     Parse { file: PathBuf },
+    /// Print the HIR of a file: its items and lowered function bodies.
+    Hir { file: PathBuf },
     /// Report syntax errors in files.
     Check {
         #[arg(required = true)]
@@ -64,6 +66,19 @@ fn run(command: Command) -> Result<bool, String> {
                 report(&file, &text, error.range, &error.message);
             }
             Ok(parse.errors().is_empty())
+        }
+        Command::Hir { file } => {
+            let text = read(&file)?;
+            let parse = flux_syntax::parse_source_file(&text);
+            for error in parse.errors() {
+                report(&file, &text, error.range, &error.message);
+            }
+            let hir = flux_hir::lower_file(&parse);
+            print!("{}", hir.debug_dump());
+            for d in &hir.diagnostics {
+                report(&file, &text, d.range, &d.message);
+            }
+            Ok(parse.errors().is_empty() && hir.diagnostics.is_empty())
         }
         Command::Check { files } => {
             let mut ok = true;

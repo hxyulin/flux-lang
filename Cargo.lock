@@ -107,6 +107,16 @@ name = "flux-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "flux-hir",
+ "flux-syntax",
+]
+
+[[package]]
+name = "flux-hir"
+version = "0.1.0"
+dependencies = [
+ "flux-arena",
+ "flux-intern",
  "flux-syntax",
 ]
 

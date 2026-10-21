@@ -46,6 +46,22 @@ parameters, return types); `_` in assignments; attributes on expressions.
 statements, following Rust's rule that a block-like expression ends a
 statement (`if c {} - 1` is two statements).
 
+## Beyond syntax
+
+Everything above parses, but only this part lowers to HIR so far; the
+rest is reported as "not supported yet":
+
+- **Items:** functions without generics, `where` clauses or `self`, and
+  `unsafe extern "C"` blocks of function declarations.
+- **Types:** single-segment paths (`i32`, `bool`), tuples, `!`.
+- **Expressions:** integer and boolean literals, local and function
+  names, tuples, blocks (including `unsafe`), `if`/`else`, `loop`,
+  `while`, unlabeled `break` (with a value) and `continue`, `return`,
+  calls, unary and binary operators, assignments, `as` casts.
+- **Patterns:** `x`, `mut x`, `_`.
+- **Attributes:** only `allow`, `warn`, `deny`, `expect`, `inline`,
+  `cold`, `must_use` and `doc`, which are ignored.
+
 ## Deliberately rejected
 
 - **Pre-2024 editions.** `gen` and `try` are reserved keywords, so

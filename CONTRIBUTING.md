@@ -35,6 +35,7 @@ just check
 | `crates/flux-cli/` | `flux` command-line driver |
 | `crates/flux-syntax/tests/` | Snapshot, robustness, self-hosting and corpus tests |
 | `crates/flux-syntax/examples/bench.rs` | Per-phase throughput benchmark |
+| `crates/flux-hir/` | Item tree and HIR lowering: names resolved, `while` desugared |
 | `crates/flux-intern/` | `Symbol` interning, predefined keywords and names |
 | `crates/flux-arena/` | `DroplessArena`, `Arena<T>`, `Idx<T>`, `ArenaMap` |
 
@@ -48,6 +49,7 @@ just corpus <dir>          # parse a directory of Rust, report panics and common
 just bench <dir> [threads] # per-phase throughput over a directory
 just miri                  # run the crates with unsafe code under Miri (needs nightly)
 just parse <file>          # print a syntax tree
+just hir <file>            # print the HIR of a file
 ```
 
 Every parser change needs a fixture. Put valid Rust in

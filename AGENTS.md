@@ -10,9 +10,12 @@ flux is an experimental compiler for a subset of Rust (edition 2024). Use
   typed AST (`src/ast/`), generated from `flux.ungram`.
 - `crates/flux-sourcegen/`: generates `src/ast/generated.rs`; its tests
   check that parsed trees match `flux.ungram`.
+- `crates/flux-hir/`: item tree and HIR: function bodies lowered from the
+  AST with names resolved. Fixtures in `tests/data/{ok,err}` with `.hir`
+  snapshots; `ok/` fixtures must also compile with rustc.
 - `crates/flux-intern/`: global `Symbol` interner and predefined symbols.
 - `crates/flux-arena/`: `DroplessArena` and typed `Arena<T>`/`Idx<T>`.
-- `crates/flux-cli/`: the `flux` binary (`lex`, `parse`, `check`).
+- `crates/flux-cli/`: the `flux` binary (`lex`, `parse`, `hir`, `check`).
 - `crates/flux-syntax/tests/data/parser/`: parser fixtures. `ok/` must parse
   cleanly, `err/` must report errors; each `.rs` has a `.rast` snapshot.
 - `examples/`: small programs for trying the CLI.
@@ -40,6 +43,8 @@ flux is an experimental compiler for a subset of Rust (edition 2024). Use
   `// SAFETY:` comment; changes there must pass `just miri`.
 - Keep error messages short and lowercase, naming what was expected:
   "expected a type", "expected `;`".
+- Syntax outside the supported subset must be reported ("X are not
+  supported yet") where it is lowered, never ignored.
 
 ## Verification
 
