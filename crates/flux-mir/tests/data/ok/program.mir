@@ -130,6 +130,7 @@ fn main() -> () {
 
     bb9: {
         _0 = const ();
+        StorageDead(_1);
         return;
     }
 }

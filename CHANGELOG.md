@@ -34,6 +34,11 @@
   and checks moves, including partial moves, with rustc's messages
   (E0382, E0381, E0594). Code generation splits aggregates into scalars
   and returns them through `sret`.
+- Support inherent `impl` blocks with associated functions and methods,
+  `Self`, references (`&T`, `&mut T`, `&x`, `*r`) with auto-ref and
+  auto-deref, and a borrow checker with rustc's non-lexical lifetimes
+  and messages for the references flux can check without lifetimes.
+  Borrowed locals live in stack slots.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 

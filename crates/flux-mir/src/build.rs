@@ -7,12 +7,12 @@ use flux_hir::{
 };
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
-use flux_ty::{InferenceResult, IntTy, Ty, TypedFile};
+use flux_ty::{InferenceResult, IntTy, Mutability, Ty, TyKind, TypedFile};
 
 use crate::{
     AggregateKind, AssertMessage, BasicBlock, BasicBlockData, BinOp, Body, Constant, FileMir,
     Local, LocalDecl, LocalKind, Operand, Place, Rvalue, Statement, StatementKind, Terminator,
-    TerminatorKind, UnOp,
+    TerminatorKind, UnOp, projection_ty,
 };
 
 /// Builds every body of a file and checks initialization. The file must
@@ -23,6 +23,7 @@ pub fn build_file(hir: &FileHir, typed: &TypedFile) -> FileMir {
     for (id, _) in hir.bodies.iter() {
         let body = build(hir, typed, id);
         diagnostics.extend(crate::init::check(&body, &hir.items, &typed.sigs));
+        diagnostics.extend(crate::borrowck::check(&body, &hir.items, &typed.sigs));
         bodies.insert(id, body);
     }
     diagnostics.sort_by_key(|d: &flux_hir::Diagnostic| (d.range.start(), d.range.end()));
@@ -48,6 +49,7 @@ pub fn build(hir: &FileHir, typed: &TypedFile, function: FunctionId) -> Body {
         current: None,
         binding_locals: ArenaMap::new(),
         loops: ArenaMap::new(),
+        scopes: Vec::new(),
         c_strings: Vec::new(),
     };
     b.locals.alloc(LocalDecl {
@@ -115,6 +117,9 @@ struct LoopScope {
     continue_block: BasicBlock,
     /// Where `break value` stores the value.
     dest: Place,
+    /// How many scopes were open outside the loop; leaving it ends the
+    /// others.
+    scope_depth: usize,
 }
 
 struct Builder<'a> {
@@ -132,14 +137,21 @@ struct Builder<'a> {
     current: Option<BasicBlock>,
     binding_locals: ArenaMap<Binding, Local>,
     loops: ArenaMap<Expr, LoopScope>,
+    /// The bindings of each enclosing block, innermost last; they die
+    /// when it ends.
+    scopes: Vec<Vec<Local>>,
     c_strings: Vec<Box<[u8]>>,
 }
 
-/// Whether `expr` denotes a place: a local or a field of one.
+/// Whether `expr` denotes a place: a local, a field of one, or what a
+/// pointer points to.
 fn is_place(body: &flux_hir::Body, expr: ExprId) -> bool {
     match body.exprs[expr] {
         Expr::Path(Res::Local(_)) => true,
         Expr::Field { expr, .. } => is_place(body, expr),
+        Expr::Unary {
+            op: UnaryOp::Deref, ..
+        } => true,
         _ => false,
     }
 }
@@ -209,12 +221,34 @@ impl Builder<'_> {
 
     fn place_ty(&self, place: &Place) -> Ty {
         let local_ty = self.locals[place.local].ty;
-        place.projection.iter().fold(local_ty, |ty, &field| {
-            self.typed
-                .sigs
-                .fields(ty)
-                .map_or(Ty::ERROR, |fields| fields[field as usize])
+        place.projection.iter().fold(local_ty, |ty, &elem| {
+            projection_ty(ty, elem, &self.typed.sigs)
         })
+    }
+
+    /// Ends the scopes of `locals`, if the code is reachable.
+    fn storage_dead(&mut self, locals: &[Local], range: TextRange) {
+        if self.current.is_none() {
+            return;
+        }
+        let block = self.block();
+        for &local in locals.iter().rev() {
+            self.blocks[block.index()].0.push(Statement {
+                kind: StatementKind::StorageDead(local),
+                range,
+            });
+        }
+    }
+
+    /// Ends the scopes inside a loop that `break` or `continue` leaves.
+    fn leave_scopes(&mut self, depth: usize, range: TextRange) {
+        let locals: Vec<Local> = self.scopes[depth..]
+            .iter()
+            .rev()
+            .flatten()
+            .copied()
+            .collect();
+        self.storage_dead(&locals, range);
     }
 
     fn terminate(&mut self, kind: TerminatorKind, range: TextRange) {
@@ -250,10 +284,18 @@ impl Builder<'_> {
             Expr::Path(Res::Local(binding)) if self.binding_locals.get(binding).is_some() => {
                 self.binding_locals[binding].into()
             }
-            Expr::Field { expr: base, .. } if is_place(self.body, base) => {
-                let base = self.lower_place(base);
-                base.field(self.field_index(expr))
+            Expr::Field { expr: base, .. } => {
+                let mut place = self.lower_place(base);
+                let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
+                for _ in 0..derefs {
+                    place = place.deref();
+                }
+                place.field(self.field_index(expr))
             }
+            Expr::Unary {
+                op: UnaryOp::Deref,
+                operand,
+            } => self.lower_place(operand).deref(),
             _ => {
                 let temp = self.temp(self.expr_ty(expr));
                 self.lower_into(expr, &temp.into());
@@ -285,8 +327,29 @@ impl Builder<'_> {
         }
     }
 
-    /// Evaluates `expr` and stores its value in `dest`.
+    /// Evaluates `expr` and stores its value in `dest`, reborrowing it if
+    /// type checking said so.
     fn lower_into(&mut self, expr: ExprId, dest: &Place) {
+        let Some(&mutability) = self.types.reborrows.get(expr) else {
+            return self.lower_value(expr, dest);
+        };
+        let place = if is_place(self.body, expr) {
+            self.lower_place(expr)
+        } else {
+            let temp = self.temp(self.expr_ty(expr));
+            self.lower_value(expr, &temp.into());
+            temp.into()
+        };
+        let rvalue = Rvalue::Ref {
+            mutability,
+            place: place.deref(),
+            two_phase: false,
+        };
+        self.assign(dest, rvalue, self.range(expr));
+    }
+
+    /// Evaluates `expr` and stores its value in `dest`.
+    fn lower_value(&mut self, expr: ExprId, dest: &Place) {
         let range = self.range(expr);
         let body = self.body;
         match &body.exprs[expr] {
@@ -313,17 +376,36 @@ impl Builder<'_> {
                     range,
                 );
             }
-            Expr::Path(Res::Local(_)) | Expr::Field { .. } if is_place(body, expr) => {
+            Expr::Path(Res::Local(binding)) if self.binding_locals.get(*binding).is_none() => {
+                self.terminate(TerminatorKind::Unreachable, range);
+            }
+            // Reads of places, including fields of values that are not
+            // places: `make().x`.
+            Expr::Path(Res::Local(_))
+            | Expr::Field { .. }
+            | Expr::Unary {
+                op: UnaryOp::Deref, ..
+            } => {
                 let place = self.lower_place(expr);
                 let operand = self.read(place);
                 self.assign(dest, Rvalue::Use(operand), range);
             }
-            Expr::Path(Res::Local(_)) => self.terminate(TerminatorKind::Unreachable, range),
-            Expr::Field { expr: base, .. } => {
-                // A field of a value that is not a place: `make().x`.
-                let base = self.lower_place(*base);
-                let operand = self.read(base.field(self.field_index(expr)));
-                self.assign(dest, Rvalue::Use(operand), range);
+            Expr::Ref {
+                mutable,
+                expr: inner,
+            } => {
+                let place = self.lower_place(*inner);
+                let mutability = if *mutable {
+                    Mutability::Mut
+                } else {
+                    Mutability::Not
+                };
+                let rvalue = Rvalue::Ref {
+                    mutability,
+                    place,
+                    two_phase: false,
+                };
+                self.assign(dest, rvalue, range);
             }
             Expr::Record {
                 strukt,
@@ -331,6 +413,7 @@ impl Builder<'_> {
                 spread,
             } => self.lower_record(*strukt, fields, *spread, dest, range),
             Expr::Block { stmts, tail, .. } => {
+                self.scopes.push(Vec::new());
                 for stmt in stmts.iter() {
                     self.lower_stmt(stmt);
                 }
@@ -338,6 +421,8 @@ impl Builder<'_> {
                     Some(tail) => self.lower_into(*tail, dest),
                     None => self.assign_unit(dest, range),
                 }
+                let scope = self.scopes.pop().unwrap_or_default();
+                self.storage_dead(&scope, range);
             }
             Expr::If {
                 condition,
@@ -380,6 +465,7 @@ impl Builder<'_> {
                         break_block: exit,
                         continue_block: head,
                         dest: dest.clone(),
+                        scope_depth: self.scopes.len(),
                     },
                 );
                 self.lower_operand(*loop_body);
@@ -397,10 +483,14 @@ impl Builder<'_> {
                     Some(value) => self.lower_into(*value, &scope.dest),
                     None => self.assign_unit(&scope.dest, range),
                 }
+                self.leave_scopes(scope.scope_depth, range);
                 self.goto(scope.break_block, range);
             }
             Expr::Continue { target } => match target.and_then(|t| self.loops.get(t).cloned()) {
-                Some(scope) => self.goto(scope.continue_block, range),
+                Some(scope) => {
+                    self.leave_scopes(scope.scope_depth, range);
+                    self.goto(scope.continue_block, range);
+                }
                 None => self.terminate(TerminatorKind::Unreachable, range),
             },
             Expr::Return { value } => {
@@ -414,18 +504,7 @@ impl Builder<'_> {
             Expr::Call { callee, args } => match body.exprs[*callee] {
                 Expr::Path(Res::Function(func)) => {
                     let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
-                    let returns = self.typed.sigs[func].ret != Ty::NEVER;
-                    let target = returns.then(|| self.new_block());
-                    self.terminate(
-                        TerminatorKind::Call {
-                            func,
-                            args,
-                            dest: dest.clone(),
-                            target,
-                        },
-                        range,
-                    );
-                    self.current = target;
+                    self.call(func, args, dest, range);
                 }
                 Expr::Path(Res::Struct(strukt)) => {
                     let operands = args.iter().map(|&arg| self.lower_operand(arg)).collect();
@@ -437,6 +516,34 @@ impl Builder<'_> {
                 }
                 _ => self.terminate(TerminatorKind::Unreachable, range),
             },
+            Expr::MethodCall { receiver, args, .. }
+                if let Some(&method) = self.types.methods.get(expr) =>
+            {
+                let receiver_range = self.range(*receiver);
+                let mut place = self.lower_place(*receiver);
+                for _ in 0..method.derefs {
+                    place = place.deref();
+                }
+                // The receiver is passed through a temporary, so errors
+                // about it point at it rather than at the whole call.
+                let ty = match method.autoref {
+                    Some(m) => Ty::new(TyKind::Ref(m, self.place_ty(&place))),
+                    None => self.place_ty(&place),
+                };
+                let temp = self.temp(ty);
+                let rvalue = match method.autoref {
+                    Some(mutability) => Rvalue::Ref {
+                        mutability,
+                        place,
+                        two_phase: mutability == Mutability::Mut,
+                    },
+                    None => Rvalue::Use(self.read(place)),
+                };
+                self.assign(&temp.into(), rvalue, receiver_range);
+                let mut operands = vec![self.read(temp.into())];
+                operands.extend(args.iter().map(|&arg| self.lower_operand(arg)));
+                self.call(method.function, operands, dest, range);
+            }
             Expr::MethodCall { receiver, args, .. } => {
                 // Only `CStr::as_ptr` type-checks: the reference is the
                 // pointer.
@@ -450,11 +557,7 @@ impl Builder<'_> {
                 let operand = self.lower_operand(*operand);
                 let op = match op {
                     UnaryOp::Neg => UnOp::Neg,
-                    UnaryOp::Not => UnOp::Not,
-                    UnaryOp::Deref => {
-                        self.terminate(TerminatorKind::Unreachable, range);
-                        return;
-                    }
+                    _ => UnOp::Not,
                 };
                 self.assign(dest, Rvalue::UnaryOp(op, operand), range);
             }
@@ -491,6 +594,22 @@ impl Builder<'_> {
                 self.assign(dest, Rvalue::Cast(operand, ty), range);
             }
         }
+    }
+
+    /// Calls `func`, storing the result in `dest`.
+    fn call(&mut self, func: FunctionId, args: Vec<Operand>, dest: &Place, range: TextRange) {
+        let returns = self.typed.sigs[func].ret != Ty::NEVER;
+        let target = returns.then(|| self.new_block());
+        self.terminate(
+            TerminatorKind::Call {
+                func,
+                args,
+                dest: dest.clone(),
+                target,
+            },
+            range,
+        );
+        self.current = target;
     }
 
     /// `S { a: 1, b, ..base }`: the given fields in source order, then
@@ -542,7 +661,15 @@ impl Builder<'_> {
                         self.lower_into(init, &local.into());
                     }
                     // `let _ = place;` does not read the place.
-                    Pat::Wild if is_place(self.body, init) => {}
+                    Pat::Wild if is_place(self.body, init) => {
+                        let place = self.lower_place(init);
+                        let range = self.range(init);
+                        let block = self.block();
+                        self.blocks[block.index()].0.push(Statement {
+                            kind: StatementKind::PlaceMention(place),
+                            range,
+                        });
+                    }
                     _ => {
                         let place = self.lower_place(init);
                         self.destructure(pat, &place, self.range(init));
@@ -575,6 +702,9 @@ impl Builder<'_> {
                 },
             });
             self.binding_locals.insert(binding, local);
+            if let Some(scope) = self.scopes.last_mut() {
+                scope.push(local);
+            }
         }
     }
 

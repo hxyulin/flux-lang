@@ -1,0 +1,100 @@
+struct S { a: i32 }
+struct Holder { r: &i32 }
+fn new() -> S
+fn make(i32) -> S
+    a@0: i32
+fn get(&S) -> i32
+    self@0: &S
+fn set(&mut S, i32) -> ()
+    self@0: &mut S
+    a@1: i32
+fn missing_field(&S) -> i32
+    self@0: &S
+fn no_method(S) -> ()
+    s@0: S
+fn no_method_ref(S) -> ()
+    s@0: S
+    r@1: &S
+fn assoc_as_method(S) -> ()
+    s@0: S
+fn field_as_method(S) -> i32
+    s@0: S
+fn method_value(S) -> i32
+    s@0: S
+fn too_few(S) -> ()
+    s@0: S
+fn too_many(S) -> i32
+    s@0: S
+fn assoc_too_few() -> S
+fn ufcs_too_many(S) -> i32
+    s@0: S
+fn ufcs_no_autoref(S) -> i32
+    s@0: S
+fn wrong_arg(S) -> ()
+    s@0: S
+fn takes_mut(&mut S) -> ()
+    s@0: &mut S
+fn shared_for_mut(S) -> ()
+    s@0: S
+fn int_for_ref(&mut i32) -> ()
+    r@0: &mut i32
+    _x@1: &mut i32
+fn deref_int() -> i32
+    x@0: i32
+fn field_through_ref(&S) -> i32
+    s@0: &S
+fn ref_in_mut_binding(i32) -> i32
+    x@0: i32
+    r@1: &i32
+fn ref_declared_later(i32) -> i32
+    x@0: i32
+    r@1: &i32
+fn ref_in_tuple(i32) -> i32
+    x@0: i32
+    t@1: (&i32, i32)
+fn ref_to_ref(i32) -> i32
+    x@0: i32
+    r@1: &&i32
+fn returns_ref(&i32) -> &i32
+    r@0: &i32
+fn add_refs(i32) -> i32
+    x@0: i32
+    r@1: &i32
+fn break_ref(i32) -> i32
+    x@0: i32
+    r@1: &i32
+fn reassign_ref_local() -> i32
+    x@0: i32
+    y@1: i32
+    r@2: &i32
+fn reassign_ref_param(&mut i32, &mut i32) -> i32
+    r@0: &mut i32
+    s@1: &mut i32
+fn no_lifetime() -> &i32
+error 289..290: no field `b` on type `&S`
+error 327..330: no method named `foo` found for struct `S` in the current scope
+error 384..387: no method named `foo` found for reference `&S` in the current scope
+error 427..430: no method named `new` found for struct `S` in the current scope
+error 477..478: no method named `a` found for struct `S` in the current scope
+error 521..524: attempted to take value of method `get` on type `S`
+error 557..560: this method takes 1 argument but 0 arguments were supplied
+error 600..603: this method takes 0 arguments but 1 argument was supplied
+error 640..647: this function takes 1 argument but 0 arguments were supplied
+error 689..695: this function takes 1 argument but 2 arguments were supplied
+error 751..752: mismatched types: expected `&S`, found `S`
+error 792..796: mismatched types: expected `i32`, found `bool`
+error 884..886: mismatched types: expected `&mut S`, found `&S`
+error 957..958: mismatched types: expected `&mut i32`, found `{integer}`
+error 1006..1008: type `{integer}` cannot be dereferenced
+error 1055..1056: no field `b` on type `&S`
+error 1107..1112: `mut` bindings of references are not supported yet
+error 1176..1177: references in variables declared without a value are not supported yet
+error 1246..1253: references inside other types are not supported yet
+error 1310..1313: references inside other types are not supported yet
+error 1353..1357: returning references is not supported yet
+error 1420..1421: operators on references are not supported yet
+error 1490..1492: `break` with a reference is not supported yet
+error 1594..1600: cannot assign twice to immutable variable `r`
+error 1673..1678: cannot assign to immutable argument `r`
+error 1713..1717: missing lifetime specifier
+error 1742..1746: missing lifetime specifier

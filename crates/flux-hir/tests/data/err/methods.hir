@@ -1,0 +1,64 @@
+struct S { a: i32 }
+
+fn S::new() -> Self {
+    S { a: 0 }
+}
+
+fn S::get(self@0: &Self) -> i32 {
+    self@0.a
+}
+
+fn S::twice(self@0: &Self) -> i32 {
+    (<error>() * 2)
+}
+
+fn S::no_receiver() -> i32 {
+    <error>.a
+}
+
+fn S::get(self@0: &Self) -> i32 {
+    0
+}
+
+fn S::new() -> S {
+    S { a: 1 }
+}
+
+fn f() -> () {}
+
+fn g() -> () {}
+
+fn free() -> () {}
+
+fn free_ref() -> () {}
+
+fn self_value() -> i32 {
+    <error>
+}
+
+fn self_type(s@0: Self) -> () {}
+
+fn self_ctor() -> () {
+    let _ = <missing>;
+}
+
+fn unknown_assoc() -> () {
+    <error>();
+}
+
+fn S::via_self() -> i32 {
+    <error>()
+}
+
+error 39..55: duplicate definitions with name `new`
+error 173..176: cannot find function `get` in this scope
+error 228..232: cannot find value `self` in this scope
+error 246..266: duplicate definitions with name `get`
+error 350..357: cannot find type `Missing` in this scope
+error 377..385: cannot define inherent `impl` for primitive types
+error 413..417: `self` parameter is only allowed in associated functions
+error 435..440: `self` parameter is only allowed in associated functions
+error 475..479: cannot find value `self` in this scope
+error 538..542: cannot find struct, variant or union type `Self` in this scope
+error 584..588: no associated function or constant named `nope` found for struct `S` in the current scope
+error 645..652: no associated function or constant named `missing` found for struct `S` in the current scope

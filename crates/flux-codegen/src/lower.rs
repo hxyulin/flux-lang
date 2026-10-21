@@ -3,7 +3,9 @@
 //! keel has no aggregate values, so a tuple or struct is split into its
 //! scalar *leaves*, in field order, each a keel variable of its own: a
 //! local of type `(i32, (bool, u64))` is three variables, and a field is a
-//! range of its local's leaves. Aggregates cross calls as one argument per
+//! range of its local's leaves. A local that is borrowed needs an address
+//! instead, so it lives in a stack slot, laid out as a C struct of its
+//! fields; so does whatever a pointer points to. Aggregates cross calls as one argument per
 //! leaf; a function returning two or more leaves returns them through
 //! memory the caller provides (`sret`), laid out as a C struct of the
 //! leaves, which keel returns in registers where the platform allows.
@@ -12,10 +14,12 @@ use std::collections::HashMap;
 
 use flux_hir::{FileHir, FunctionId};
 use flux_mir::{
-    BinOp, Body, Constant, FileMir, Operand, Place, Rvalue, StatementKind, TerminatorKind, UnOp,
+    BinOp, Body, Constant, FileMir, Local, Operand, Place, ProjectionElem, Rvalue, StatementKind,
+    TerminatorKind, UnOp, projection_ty,
 };
 use flux_ty::{FnSig, IntTy, Signatures, Ty, TyKind, TypedFile};
 use keel_frontend::{FunctionBuilder, Variable};
+use keel_ir::StackSlot;
 use keel_ir::{
     AbiParam, ArgExt, Block, BlockCall, DataInit, DataItem, DataObject, FuncDecl, FuncRef,
     Function, FunctionAttrs, IntCC, Layout, MemoryFlags, Module, Purpose, Signature, Type, Value,
@@ -33,7 +37,15 @@ pub fn lower_module(hir: &FileHir, typed: &TypedFile, mir: &FileMir, crate_name:
             let name = if f.is_extern {
                 f.name.to_string()
             } else {
-                mangle(crate_name, f.name.as_str())
+                // An associated function's path includes its type:
+                // `crate::S::new`.
+                let owner = f.owner.and_then(|i| hir.items.impls[i].strukt);
+                let mut path = vec![crate_name];
+                if let Some(strukt) = owner {
+                    path.push(hir.items.structs[strukt].name.as_str());
+                }
+                path.push(f.name.as_str());
+                mangle(&path)
             };
             (id, name)
         })
@@ -72,10 +84,12 @@ pub fn lower_module(hir: &FileHir, typed: &TypedFile, mir: &FileMir, crate_name:
             sig: Signature::new(&[], &[]),
         });
     }
-    let main =
-        hir.items.functions.iter().find(|(id, f)| {
-            f.name.as_str() == "main" && !f.is_extern && mir.bodies.get(*id).is_some()
-        });
+    let main = hir.items.functions.iter().find(|(id, f)| {
+        f.name.as_str() == "main"
+            && !f.is_extern
+            && f.owner.is_none()
+            && mir.bodies.get(*id).is_some()
+    });
     if let Some((id, _)) = main {
         module
             .functions
@@ -85,10 +99,16 @@ pub fn lower_module(hir: &FileHir, typed: &TypedFile, mir: &FileMir, crate_name:
     module
 }
 
-/// A legacy-style mangled name, `_ZN<len>crate<len>nameE`, which
+/// A legacy-style mangled name, `_ZN<len>crate<len>nameE` (with the
+/// type's name between for an associated function), which
 /// demanglers show as `crate::name`.
-fn mangle(crate_name: &str, name: &str) -> String {
-    format!("_ZN{}{crate_name}{}{name}E", crate_name.len(), name.len())
+fn mangle(path: &[&str]) -> String {
+    let mut symbol = "_ZN".to_owned();
+    for segment in path {
+        symbol.push_str(&format!("{}{segment}", segment.len()));
+    }
+    symbol.push('E');
+    symbol
 }
 
 /// The keel type of a scalar: an integer, `bool` or pointer.
@@ -132,6 +152,47 @@ fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
         Some(fields) => fields.iter().map(|&f| leaf_count(sigs, f)).sum(),
         None => usize::from(keel_type(ty).is_some()),
     }
+}
+
+/// How a value of `ty` is laid out in memory: a C struct of its fields,
+/// recursively, with `()` and `!` empty.
+fn layout(sigs: &Signatures, ty: Ty) -> Layout {
+    match sigs.fields(ty) {
+        Some(fields) => Layout::Struct(fields.iter().map(|&f| layout(sigs, f)).collect()),
+        None => match keel_type(ty) {
+            Some(scalar) => Layout::Scalar(scalar),
+            None => Layout::Struct(Vec::new()),
+        },
+    }
+}
+
+/// The offset of field `index` in a value of `ty`, as [`layout`] places
+/// it.
+fn field_offset(sigs: &Signatures, ty: Ty, index: u32) -> u64 {
+    let fields = sigs.fields(ty).expect("fields are of aggregates");
+    let mut offset: u64 = 0;
+    for (i, &field) in fields.iter().enumerate() {
+        let field = layout(sigs, field);
+        offset = offset.next_multiple_of(field.align());
+        if i == index as usize {
+            break;
+        }
+        offset += field.size();
+    }
+    offset
+}
+
+/// Where a place's value is.
+#[derive(Clone, Copy)]
+enum Location {
+    /// Leaves `start..start + len` of a local held in variables.
+    Vars {
+        local: Local,
+        start: usize,
+        len: usize,
+    },
+    /// In memory, at an address.
+    Memory(Value),
 }
 
 /// How a function returning `ret` returns it: nothing, one value, or
@@ -258,6 +319,7 @@ impl Ctx<'_> {
             b: FunctionBuilder::new(&mut function),
             blocks: Vec::new(),
             vars: Vec::new(),
+            slots: Vec::new(),
             sret: None,
             callees: HashMap::new(),
             panic_block: None,
@@ -297,8 +359,11 @@ struct Lower<'a, 'c, 'f> {
     b: FunctionBuilder<'f>,
     /// The keel block for each MIR block.
     blocks: Vec<Block>,
-    /// The keel variables of each MIR local, one per leaf.
+    /// The keel variables of each MIR local held in variables, one per
+    /// leaf.
     vars: Vec<Box<[Variable]>>,
+    /// The stack slot of each local that is borrowed.
+    slots: Vec<Option<StackSlot>>,
     /// Where to store the return value, and its layout, when it is
     /// returned through memory.
     sret: Option<(Value, Layout)>,
@@ -312,19 +377,37 @@ impl Lower<'_, '_, '_> {
         let body = self.body;
         let sigs = self.sigs;
         self.blocks = body.blocks.iter().map(|_| self.b.create_block()).collect();
-        self.vars = body
-            .locals
-            .values()
-            .map(|decl| {
-                leaves_of(sigs, decl.ty)
+        // Locals whose own storage is borrowed need an address.
+        let mut borrowed = vec![false; body.locals.len()];
+        for data in body.blocks.values() {
+            for statement in &data.statements {
+                if let StatementKind::Assign(_, Rvalue::Ref { place, .. }) = &statement.kind
+                    && !place.has_deref()
+                {
+                    borrowed[place.local.index()] = true;
+                }
+            }
+        }
+        for (local, decl) in body.locals.iter() {
+            if borrowed[local.index()] {
+                let layout = layout(sigs, decl.ty);
+                let slot = self
+                    .b
+                    .create_stack_slot(layout.size().max(1) as u32, layout.align() as u32);
+                self.slots.push(Some(slot));
+                self.vars.push(Box::default());
+            } else {
+                let vars = leaves_of(sigs, decl.ty)
                     .into_iter()
                     .map(|leaf| {
                         self.b
                             .declare_var(keel_type(leaf).expect("leaves are scalars"))
                     })
-                    .collect()
-            })
-            .collect();
+                    .collect();
+                self.slots.push(None);
+                self.vars.push(vars);
+            }
+        }
         let entry = self.blocks[0];
         self.b.switch_to_block(entry);
         if let Return::Sret(layout) = return_kind(sigs, body.locals[Body::RETURN].ty) {
@@ -333,18 +416,22 @@ impl Lower<'_, '_, '_> {
         }
         for param in body.params() {
             let leaves = leaves_of(sigs, body.locals[param].ty);
-            for (i, leaf) in leaves.into_iter().enumerate() {
-                let ty = keel_type(leaf).expect("leaves are scalars");
-                let value = self.b.append_block_param(entry, ty);
-                self.b.def_var(self.vars[param.index()][i], value);
-            }
+            let values: Vec<Value> = leaves
+                .into_iter()
+                .map(|leaf| {
+                    let ty = keel_type(leaf).expect("leaves are scalars");
+                    self.b.append_block_param(entry, ty)
+                })
+                .collect();
+            self.write(&param.into(), &values);
         }
         for (block, data) in body.blocks.iter() {
             self.b.switch_to_block(self.blocks[block.index()]);
             for statement in &data.statements {
-                let StatementKind::Assign(dest, rvalue) = &statement.kind;
-                let values = self.rvalue(rvalue);
-                self.write(dest, &values);
+                if let StatementKind::Assign(dest, rvalue) = &statement.kind {
+                    let values = self.rvalue(rvalue);
+                    self.write(dest, &values);
+                }
             }
             self.terminator(&data.terminator.kind);
         }
@@ -358,34 +445,80 @@ impl Lower<'_, '_, '_> {
         self.b.finalize();
     }
 
-    /// The variables of `place`'s leaves.
-    fn place_vars(&self, place: &Place) -> &[Variable] {
+    /// Where `place`'s value is, and its type. Going through a pointer
+    /// reads the pointer.
+    fn locate(&mut self, place: &Place) -> (Location, Ty) {
+        let sigs = self.sigs;
         let mut ty = self.body.locals[place.local].ty;
-        let mut start = 0;
-        for &field in &place.projection {
-            let fields = self
-                .sigs
-                .fields(ty)
-                .expect("projections go through aggregates");
-            start += fields[..field as usize]
-                .iter()
-                .map(|&f| leaf_count(self.sigs, f))
-                .sum::<usize>();
-            ty = fields[field as usize];
+        let mut location = match self.slots[place.local.index()] {
+            Some(slot) => Location::Memory(self.b.ins().stack_addr(slot)),
+            None => Location::Vars {
+                local: place.local,
+                start: 0,
+                len: self.vars[place.local.index()].len(),
+            },
+        };
+        for &elem in &place.projection {
+            let elem_ty = projection_ty(ty, elem, sigs);
+            location = match (elem, location) {
+                (ProjectionElem::Field(field), Location::Vars { local, start, .. }) => {
+                    let fields = sigs.fields(ty).expect("fields are of aggregates");
+                    let before: usize = fields[..field as usize]
+                        .iter()
+                        .map(|&f| leaf_count(sigs, f))
+                        .sum();
+                    Location::Vars {
+                        local,
+                        start: start + before,
+                        len: leaf_count(sigs, elem_ty),
+                    }
+                }
+                (ProjectionElem::Field(field), Location::Memory(address)) => {
+                    let offset = field_offset(sigs, ty, field);
+                    Location::Memory(self.offset(address, offset))
+                }
+                (ProjectionElem::Deref, location) => {
+                    let pointer = self.load(location, ty)[0];
+                    Location::Memory(pointer)
+                }
+            };
+            ty = elem_ty;
         }
-        let vars = &self.vars[place.local.index()];
-        &vars[start..start + leaf_count(self.sigs, ty)]
+        (location, ty)
+    }
+
+    /// The leaves of the `ty` at `location`.
+    fn load(&mut self, location: Location, ty: Ty) -> Vec<Value> {
+        match location {
+            Location::Vars { local, start, len } => {
+                let vars = self.vars[local.index()][start..start + len].to_vec();
+                vars.into_iter().map(|var| self.b.use_var(var)).collect()
+            }
+            Location::Memory(address) => self.load_leaves(address, &layout(self.sigs, ty)),
+        }
     }
 
     fn read(&mut self, place: &Place) -> Vec<Value> {
-        let vars = self.place_vars(place).to_vec();
-        vars.into_iter().map(|var| self.b.use_var(var)).collect()
+        let (location, ty) = self.locate(place);
+        self.load(location, ty)
     }
 
     fn write(&mut self, place: &Place, values: &[Value]) {
-        let vars = self.place_vars(place).to_vec();
-        for (var, &value) in vars.into_iter().zip(values) {
-            self.b.def_var(var, value);
+        let (location, ty) = self.locate(place);
+        match location {
+            Location::Vars { local, start, len } => {
+                let vars = self.vars[local.index()][start..start + len].to_vec();
+                for (var, &value) in vars.into_iter().zip(values) {
+                    self.b.def_var(var, value);
+                }
+            }
+            Location::Memory(address) => {
+                let leaves = layout(self.sigs, ty).leaves();
+                for ((offset, ty), &value) in leaves.into_iter().zip(values) {
+                    let address = self.offset(address, offset);
+                    self.b.ins().store_with_flags(value, address, aligned(ty));
+                }
+            }
         }
     }
 
@@ -444,13 +577,19 @@ impl Lower<'_, '_, '_> {
             Rvalue::Aggregate(_, operands) => {
                 operands.iter().flat_map(|o| self.operand(o)).collect()
             }
+            Rvalue::Ref { place, .. } => match self.locate(place).0 {
+                Location::Memory(address) => vec![address],
+                Location::Vars { .. } => unreachable!("borrowed locals are in memory"),
+            },
             _ => self.scalar_rvalue(rvalue).into_iter().collect(),
         }
     }
 
     fn scalar_rvalue(&mut self, rvalue: &Rvalue) -> Option<Value> {
         match rvalue {
-            Rvalue::Use(_) | Rvalue::Aggregate(..) => unreachable!("not scalar operations"),
+            Rvalue::Use(_) | Rvalue::Aggregate(..) | Rvalue::Ref { .. } => {
+                unreachable!("not scalar operations")
+            }
             Rvalue::UnaryOp(op, operand) => {
                 let ty = self.body.operand_ty(operand, self.sigs);
                 let value = self.scalar(operand)?;

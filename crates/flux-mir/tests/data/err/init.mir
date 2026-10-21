@@ -6,6 +6,7 @@ fn unassigned() -> i32 {
     bb0: {
         _2 = copy _1;
         _0 = Add(copy _2, const 1_i32);
+        StorageDead(_1);
         return;
     }
 }
@@ -36,6 +37,7 @@ fn conditional(_1: bool) -> i32 {
 
     bb3: {
         _0 = copy _2;
+        StorageDead(_2);
         return;
     }
 }
@@ -69,6 +71,7 @@ fn twice(_1: bool) -> i32 {
 
     bb3: {
         _0 = copy _2;
+        StorageDead(_2);
         return;
     }
 }
@@ -91,6 +94,7 @@ fn in_loop() -> () {
     }
 
     bb2: {
+        StorageDead(_1);
         return;
     }
 }
@@ -116,6 +120,7 @@ fn after_loop() -> i32 {
 
     bb2: {
         _0 = copy _1;
+        StorageDead(_1);
         return;
     }
 

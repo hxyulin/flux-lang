@@ -30,6 +30,7 @@ fn partial_move_then_copy_field(_1: S) -> i32 {
 
     bb1: {
         _0 = copy _1.1;
+        StorageDead(_2);
         return;
     }
 }
@@ -48,6 +49,7 @@ fn partial_move_by_pattern(_1: S) -> i32 {
 
     bb1: {
         _0 = copy _1.1;
+        StorageDead(_2);
         return;
     }
 }
@@ -91,6 +93,8 @@ fn let_underscore_after_move(_1: S) -> () {
     }
 
     bb1: {
+        PlaceMention(_1.1);
+        PlaceMention(_1);
         _0 = const ();
         return;
     }
@@ -206,6 +210,10 @@ fn copy_tuples(_1: (i32, (bool, u8))) -> u8 {
     }
 
     bb6: {
+        StorageDead(_5);
+        StorageDead(_4);
+        StorageDead(_3);
+        StorageDead(_2);
         return;
     }
 }
@@ -233,6 +241,7 @@ fn functional_update_copy_only(_1: S) -> i32 {
 
     bb2: {
         _0 = const 0_i32;
+        StorageDead(_2);
         return;
     }
 }
@@ -251,6 +260,7 @@ fn functional_update_moves_inner(_1: S) -> i32 {
 
     bb1: {
         _0 = copy _1.1;
+        StorageDead(_2);
         return;
     }
 }
@@ -306,6 +316,8 @@ fn deferred_init(_1: bool) -> i32 {
         _16 = copy _11.0;
         _17 = copy _11.1;
         _0 = Add(copy _16, copy _17);
+        StorageDead(_11);
+        StorageDead(_2);
         return;
     }
 }
@@ -334,6 +346,9 @@ fn moved_into_tuple_field(_1: S) -> i32 {
         _8 = copy _5;
         _9 = copy _2.1;
         _0 = Add(copy _8, copy _9);
+        StorageDead(_5);
+        StorageDead(_4);
+        StorageDead(_2);
         return;
     }
 }

@@ -1,0 +1,90 @@
+struct Counter { n: i32, step: i32 }
+
+struct Wrapper { inner: Counter }
+
+fn Counter::new(step@0: i32) -> Self {
+    Counter { n: 0, step: step@0 }
+}
+
+fn Counter::zero() -> Counter {
+    Counter::new(0)
+}
+
+fn Counter::get(self@0: &Self) -> i32 {
+    self@0.n
+}
+
+fn Counter::bump(self@0: &mut Self) -> () {
+    (self@0.n += self@0.step);
+}
+
+fn Counter::reset(mut self@0: Self) -> Self {
+    (self@0.n = 0);
+    self@0
+}
+
+fn Counter::into_n(self@0: Self) -> i32 {
+    self@0.n
+}
+
+fn Counter::total(self@0: &Self, other@1: &Self) -> i32 {
+    (self@0.get() + other@1.get())
+}
+
+fn Counter::copy_from(self@0: &mut Self, other@1: &Counter) -> () {
+    (self@0.n = other@1.n);
+    (self@0.step = (*other@1).step);
+}
+
+fn Counter::twice(self@0: &mut Self) -> () {
+    self@0.bump();
+    Counter::bump(self@0);
+    Counter::bump(self@0);
+}
+
+fn Wrapper::make() -> Self {
+    let inner@0 = Counter::new(2);
+    Wrapper { inner: inner@0 }
+}
+
+fn Wrapper::peek(self@0: &Self) -> i32 {
+    self@0.inner.get()
+}
+
+fn Wrapper::poke(self@0: &mut Self) -> () {
+    self@0.inner.bump();
+}
+
+fn read(r@0: &i32) -> i32 {
+    (*r@0)
+}
+
+fn write(r@0: &mut i32, v@1: i32) -> () {
+    ((*r@0) = v@1);
+}
+
+fn main_like() -> i32 {
+    let mut c@0 = Counter::new(3);
+    c@0.bump();
+    let r@1 = (&c@0);
+    let a@2 = ((r@1.get() + Counter::get(r@1)) + Counter::get((&c@0)));
+    let m@3 = (&mut c@0);
+    m@3.bump();
+    (*m@3).bump();
+    (m@3.n += 1);
+    let mut x@4 = 5;
+    let rx@5 = (&mut x@4);
+    ((*rx@5) += 1);
+    write((&mut x@4), 7);
+    let b@6 = (read((&x@4)) + read((&1)));
+    let mut z@7 = Counter::zero();
+    z@7.copy_from((&c@0));
+    z@7.twice();
+    let d@8 = z@7.total((&c@0));
+    let mut w@9 = Wrapper::make();
+    w@9.poke();
+    let e@10 = ((w@9.peek() + (&w@9).peek()) + w@9.inner.n);
+    let f@11 = c@0.reset().into_n();
+    ((((a@2 + b@6) + d@8) + e@10) + f@11)
+}
+

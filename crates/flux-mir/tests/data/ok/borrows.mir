@@ -1,0 +1,1551 @@
+fn get(_1: &S) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy (*_1).0;
+        return;
+    }
+}
+
+fn set(_1: &mut S, _2: i32) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: i32;
+
+    bb0: {
+        _4 = copy _2;
+        (*_1).0 = copy _4;
+        _3 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn add(_1: &mut S, _2: i32) -> i32 {
+    let mut _0: i32;
+    let _3: ();
+    let _4: i32;
+    let _5: i32;
+
+    bb0: {
+        _4 = copy _2;
+        _5 = copy (*_1).0;
+        (*_1).0 = Add(copy _5, copy _4);
+        _3 = const ();
+        _0 = copy (*_1).0;
+        return;
+    }
+}
+
+fn both(_1: &mut S) -> i32 {
+    let mut _0: i32;
+    let _2: &mut i32; // x
+    let _3: &i32; // y
+    let _4: ();
+    let _5: i32;
+    let _6: i32;
+    let _7: ();
+    let _8: &mut S;
+    let _9: &S;
+
+    bb0: {
+        _2 = &mut (*_1).0;
+        _3 = &(*_1).1;
+        _5 = copy (*_3);
+        _6 = copy (*_2);
+        (*_2) = Add(copy _6, copy _5);
+        _4 = const ();
+        _8 = &two_phase (*_1);
+        _7 = set(move _8, const 1_i32) -> bb1;
+    }
+
+    bb1: {
+        _9 = &(*_1);
+        _0 = get(copy _9) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn add_to(_1: &mut i32, _2: &i32) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: i32;
+    let _5: i32;
+
+    bb0: {
+        _4 = copy (*_2);
+        _5 = copy (*_1);
+        (*_1) = Add(copy _5, copy _4);
+        _3 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn swap_add(_1: &mut i32, _2: &mut i32) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: i32;
+    let _5: i32;
+    let _6: ();
+
+    bb0: {
+        _4 = copy (*_2);
+        _5 = copy (*_1);
+        (*_1) = Add(copy _5, copy _4);
+        _3 = const ();
+        (*_2) = const 0_i32;
+        _6 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn inc(_1: &mut S) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: i32;
+
+    bb0: {
+        _3 = copy (*_1).0;
+        (*_1).0 = Add(copy _3, const 1_i32);
+        _2 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn two_phase(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: ();
+    let _3: &mut S;
+    let _4: i32;
+    let _5: &S;
+    let _6: ();
+    let _7: &mut S;
+    let _8: i32;
+    let _9: i32;
+    let _10: &mut S;
+
+    bb0: {
+        _3 = &two_phase _1;
+        _5 = &_1;
+        _4 = get(copy _5) -> bb1;
+    }
+
+    bb1: {
+        _2 = set(move _3, copy _4) -> bb2;
+    }
+
+    bb2: {
+        _7 = &two_phase _1;
+        _9 = copy _1.0;
+        _8 = Add(copy _9, const 1_i32);
+        _6 = set(move _7, copy _8) -> bb3;
+    }
+
+    bb3: {
+        _10 = &two_phase _1;
+        _0 = add(move _10, const 1_i32) -> bb4;
+    }
+
+    bb4: {
+        return;
+    }
+}
+
+fn two_phase_through_ref(_1: &mut S) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: &mut S;
+    let _4: i32;
+    let _5: i32;
+    let _6: &S;
+    let _7: ();
+    let _8: &mut S;
+    let _9: i32;
+
+    bb0: {
+        _3 = &two_phase (*_1);
+        _6 = &(*_1);
+        _5 = get(copy _6) -> bb1;
+    }
+
+    bb1: {
+        _4 = Add(copy _5, const 1_i32);
+        _2 = set(move _3, copy _4) -> bb2;
+    }
+
+    bb2: {
+        _8 = &two_phase (*_1);
+        _9 = copy (*_1).0;
+        _7 = set(move _8, copy _9) -> bb3;
+    }
+
+    bb3: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn disjoint_fields(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: ();
+    let _3: &mut i32;
+    let _4: &mut i32;
+    let _5: &i32;
+    let _6: &mut i32; // x
+    let _7: &mut i32; // y
+    let _8: ();
+    let _9: &mut i32;
+    let _10: &mut i32;
+
+    bb0: {
+        _4 = &mut _1.0;
+        _3 = &mut (*_4);
+        _5 = &_1.1;
+        _2 = add_to(move _3, copy _5) -> bb1;
+    }
+
+    bb1: {
+        _6 = &mut _1.0;
+        _7 = &mut _1.1;
+        _9 = &mut (*_6);
+        _10 = &mut (*_7);
+        _8 = swap_add(move _9, move _10) -> bb2;
+    }
+
+    bb2: {
+        _0 = copy _1.0;
+        StorageDead(_7);
+        StorageDead(_6);
+        return;
+    }
+}
+
+fn disjoint_through_ref(_1: &mut S) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: &mut i32;
+    let _4: &mut i32;
+    let _5: &mut i32;
+    let _6: &mut i32;
+
+    bb0: {
+        _4 = &mut (*_1).0;
+        _3 = &mut (*_4);
+        _6 = &mut (*_1).1;
+        _5 = &mut (*_6);
+        _2 = swap_add(move _3, move _5) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn nested_fields(_1: Big) -> i32 {
+    let mut _0: i32;
+    let _2: &mut S; // s
+    let _3: ();
+    let _4: ();
+    let _5: i32;
+    let _6: &i32; // n
+    let _7: ();
+    let _8: i32;
+    let _9: i32;
+    let _10: i32;
+
+    bb0: {
+        _2 = &mut _1.0;
+        _1.1 = const 3_i32;
+        _3 = const ();
+        _5 = copy _1.1;
+        (*_2).0 = copy _5;
+        _4 = const ();
+        _6 = &_1.1;
+        _8 = copy (*_6);
+        _1.0.1 = copy _8;
+        _7 = const ();
+        _9 = copy _1.0.0;
+        _10 = copy _1.0.1;
+        _0 = Add(copy _9, copy _10);
+        StorageDead(_6);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn mutate_after_last_use(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: &i32; // r
+    let _3: i32; // y
+    let _4: ();
+    let _5: i32;
+    let _6: i32;
+
+    bb0: {
+        _2 = &_1;
+        _3 = copy (*_2);
+        _6 = copy _3;
+        _5 = Add(copy _6, const 1_i32);
+        _1 = copy _5;
+        _4 = const ();
+        _0 = copy _1;
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn mutate_after_unused_borrow(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: &i32; // _r
+    let _3: ();
+    let _4: i32;
+
+    bb0: {
+        _2 = &_1;
+        _4 = copy _1;
+        _1 = Add(copy _4, const 1_i32);
+        _3 = const ();
+        _0 = copy _1;
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn mut_borrow_then_original(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: &mut S; // r
+    let _3: ();
+    let _4: ();
+    let _5: i32;
+
+    bb0: {
+        _2 = &mut _1;
+        (*_2).0 = const 2_i32;
+        _3 = const ();
+        _5 = copy _1.0;
+        _1.0 = Add(copy _5, const 1_i32);
+        _4 = const ();
+        _0 = copy _1.0;
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn reborrow_then_original(_1: &mut S) -> i32 {
+    let mut _0: i32;
+    let _2: &mut S; // r2
+    let _3: ();
+    let _4: ();
+    let _5: &S; // r3
+    let _6: i32; // v
+    let _7: ();
+    let _8: i32;
+
+    bb0: {
+        _2 = &mut (*_1);
+        (*_2).0 = const 1_i32;
+        _3 = const ();
+        (*_1).0 = const 2_i32;
+        _4 = const ();
+        _5 = &(*_1);
+        _6 = copy (*_5).0;
+        _8 = copy _6;
+        (*_1).1 = copy _8;
+        _7 = const ();
+        _0 = copy (*_1).0;
+        StorageDead(_6);
+        StorageDead(_5);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn implicit_reborrow(_1: &mut S) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: &mut S;
+    let _4: ();
+    let _5: &mut S;
+    let _6: ();
+    let _7: i32;
+
+    bb0: {
+        _3 = &mut (*_1);
+        _2 = inc(move _3) -> bb1;
+    }
+
+    bb1: {
+        _5 = &mut (*_1);
+        _4 = inc(move _5) -> bb2;
+    }
+
+    bb2: {
+        _7 = copy (*_1).0;
+        (*_1).0 = Add(copy _7, const 1_i32);
+        _6 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn annotated_reborrow(_1: &mut S) -> i32 {
+    let mut _0: i32;
+    let _2: &mut S; // r2
+    let _3: ();
+    let _4: ();
+
+    bb0: {
+        _2 = &mut (*_1);
+        (*_2).0 = const 1_i32;
+        _3 = const ();
+        (*_1).0 = const 2_i32;
+        _4 = const ();
+        _0 = copy (*_1).0;
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn let_underscore_deref(_1: &Big) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        PlaceMention((*_1));
+        PlaceMention((*_1).0);
+        _0 = copy (*_1).1;
+        return;
+    }
+}
+
+fn copy_out(_1: &S) -> i32 {
+    let mut _0: i32;
+    let _2: i32; // x
+    let _3: i32; // y
+    let _4: &i32;
+    let _5: i32;
+    let _6: i32;
+
+    bb0: {
+        _2 = copy (*_1).0;
+        _4 = &(*_1).1;
+        _3 = copy (*_4);
+        _5 = copy _2;
+        _6 = copy _3;
+        _0 = Add(copy _5, copy _6);
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn borrows_in_loop(_1: i32) -> i32 {
+    let mut _0: i32;
+    let mut _2: i32; // i
+    let _3: ();
+    let _4: ();
+    let _5: bool;
+    let _6: i32;
+    let _7: &mut i32; // r
+    let _8: ();
+    let _9: i32;
+    let _10: &i32; // s
+    let _11: ();
+    let _12: i32;
+    let _13: i32;
+    let _14: ();
+    let _15: ();
+    let _16: &i32; // r
+    let _17: i32; // y
+    let _18: ();
+    let _19: i32;
+    let _20: i32;
+    let _21: i32;
+    let _22: bool;
+    let _23: i32;
+    let _24: !;
+
+    bb0: {
+        _2 = const 0_i32;
+        goto -> bb1;
+    }
+
+    bb1: {
+        _6 = copy _2;
+        _5 = Lt(copy _6, const 3_i32);
+        switchInt(copy _5) -> [0: bb4, otherwise: bb3];
+    }
+
+    bb2: {
+        goto -> bb6;
+    }
+
+    bb3: {
+        _7 = &mut _1;
+        _9 = copy (*_7);
+        (*_7) = Add(copy _9, const 1_i32);
+        _8 = const ();
+        _10 = &_1;
+        _12 = copy (*_10);
+        _13 = copy _2;
+        _2 = Add(copy _13, copy _12);
+        _11 = const ();
+        _4 = const ();
+        StorageDead(_10);
+        StorageDead(_7);
+        goto -> bb5;
+    }
+
+    bb4: {
+        _3 = const ();
+        goto -> bb2;
+    }
+
+    bb5: {
+        goto -> bb1;
+    }
+
+    bb6: {
+        _16 = &_1;
+        _17 = copy (*_16);
+        _20 = copy _17;
+        _19 = Add(copy _20, const 1_i32);
+        _21 = copy _1;
+        _1 = Add(copy _21, copy _19);
+        _18 = const ();
+        _23 = copy _1;
+        _22 = Gt(copy _23, const 10_i32);
+        switchInt(copy _22) -> [0: bb9, otherwise: bb8];
+    }
+
+    bb7: {
+        _0 = copy _1;
+        StorageDead(_2);
+        return;
+    }
+
+    bb8: {
+        _14 = const ();
+        StorageDead(_17);
+        StorageDead(_16);
+        goto -> bb7;
+    }
+
+    bb9: {
+        _15 = const ();
+        goto -> bb10;
+    }
+
+    bb10: {
+        StorageDead(_17);
+        StorageDead(_16);
+        goto -> bb6;
+    }
+
+    bb11: {
+        _15 = const ();
+        goto -> bb10;
+    }
+}
+
+fn loop_then_break(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: &i32; // r
+    let _3: ();
+    let _4: !;
+    let _5: i32; // y
+    let _6: ();
+    let _7: i32;
+    let _8: i32;
+    let _9: i32;
+    let _10: !;
+
+    bb0: {
+        _2 = &_1;
+        goto -> bb1;
+    }
+
+    bb1: {
+        _5 = copy (*_2);
+        _8 = copy _5;
+        _7 = Add(copy _8, const 1_i32);
+        _9 = copy _1;
+        _1 = Add(copy _9, copy _7);
+        _6 = const ();
+        _3 = const ();
+        StorageDead(_5);
+        goto -> bb2;
+    }
+
+    bb2: {
+        _0 = copy _1;
+        StorageDead(_2);
+        return;
+    }
+
+    bb3: {
+        _4 = const ();
+        StorageDead(_5);
+        goto -> bb1;
+    }
+}
+
+fn loop_reads_ref(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: &i32; // r
+    let mut _3: i32; // n
+    let _4: ();
+    let _5: ();
+    let _6: ();
+    let _7: i32;
+    let _8: i32;
+    let _9: i32;
+    let _10: bool;
+    let _11: i32;
+    let _12: !;
+    let _13: ();
+    let _14: i32;
+    let _15: i32;
+
+    bb0: {
+        _2 = &_1;
+        _3 = const 0_i32;
+        goto -> bb1;
+    }
+
+    bb1: {
+        _8 = copy (*_2);
+        _7 = Add(copy _8, const 1_i32);
+        _9 = copy _3;
+        _3 = Add(copy _9, copy _7);
+        _6 = const ();
+        _11 = copy _3;
+        _10 = Gt(copy _11, const 5_i32);
+        switchInt(copy _10) -> [0: bb4, otherwise: bb3];
+    }
+
+    bb2: {
+        _14 = copy _3;
+        _15 = copy _1;
+        _1 = Add(copy _15, copy _14);
+        _13 = const ();
+        _0 = copy _1;
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+
+    bb3: {
+        _4 = const ();
+        goto -> bb2;
+    }
+
+    bb4: {
+        _5 = const ();
+        goto -> bb5;
+    }
+
+    bb5: {
+        goto -> bb1;
+    }
+
+    bb6: {
+        _5 = const ();
+        goto -> bb5;
+    }
+}
+
+fn use_in_branch(_1: i32, _2: bool) -> i32 {
+    let mut _0: i32;
+    let _3: &i32; // r
+    let _4: ();
+    let _5: bool;
+    let _6: ();
+    let _7: i32;
+    let _8: i32;
+    let _9: ();
+    let _10: i32;
+
+    bb0: {
+        _3 = &_1;
+        _5 = copy _2;
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _8 = copy (*_3);
+        _7 = Add(copy _8, const 1_i32);
+        _1 = copy _7;
+        _6 = const ();
+        _4 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _4 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _10 = copy _1;
+        _1 = Add(copy _10, const 1_i32);
+        _9 = const ();
+        _0 = copy _1;
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn dead_in_then(_1: i32, _2: bool) -> i32 {
+    let mut _0: i32;
+    let _3: &i32; // r
+    let _4: ();
+    let _5: bool;
+    let _6: ();
+    let _7: ();
+    let _8: i32;
+    let _9: i32;
+
+    bb0: {
+        _3 = &_1;
+        _5 = copy _2;
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _1 = const 5_i32;
+        _6 = const ();
+        _4 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _9 = copy (*_3);
+        _8 = Add(copy _9, const 1_i32);
+        _1 = copy _8;
+        _7 = const ();
+        _4 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _0 = copy _1;
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn dead_after_else(_1: i32, _2: bool) -> i32 {
+    let mut _0: i32;
+    let _3: &i32; // r
+    let _4: ();
+    let _5: bool;
+    let _6: i32; // y
+    let _7: i32;
+    let _8: i32;
+    let _9: ();
+    let _10: i32;
+
+    bb0: {
+        _3 = &_1;
+        _5 = copy _2;
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _1 = const 5_i32;
+        _4 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _6 = copy (*_3);
+        _8 = copy _6;
+        _7 = Add(copy _8, const 1_i32);
+        _1 = copy _7;
+        _4 = const ();
+        StorageDead(_6);
+        goto -> bb3;
+    }
+
+    bb3: {
+        _10 = copy _1;
+        _1 = Add(copy _10, const 1_i32);
+        _9 = const ();
+        _0 = copy _1;
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn borrowed_if(_1: i32, _2: i32, _3: bool) -> i32 {
+    let mut _0: i32;
+    let _4: &i32; // r
+    let _5: bool;
+    let _6: i32; // z
+    let _7: ();
+    let _8: i32;
+    let _9: i32;
+
+    bb0: {
+        _5 = copy _3;
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _4 = &_1;
+        goto -> bb3;
+    }
+
+    bb2: {
+        _4 = &_2;
+        goto -> bb3;
+    }
+
+    bb3: {
+        _6 = copy (*_4);
+        _1 = const 2_i32;
+        _7 = const ();
+        _8 = copy _1;
+        _9 = copy _6;
+        _0 = Add(copy _8, copy _9);
+        StorageDead(_6);
+        StorageDead(_4);
+        return;
+    }
+}
+
+fn diverging_branch(_1: S, _2: bool) -> i32 {
+    let mut _0: i32;
+    let _3: &S; // r
+    let _4: ();
+    let _5: bool;
+    let _6: &mut S; // m
+    let _7: ();
+    let _8: i32;
+
+    bb0: {
+        _3 = &_1;
+        _5 = copy _2;
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _6 = &mut _1;
+        (*_6).0 = const 1_i32;
+        _7 = const ();
+        _8 = copy (*_6).0;
+        _4 = exit(copy _8) -> !;
+    }
+
+    bb2: {
+        _4 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _0 = copy (*_3).0;
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn temporaries(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: &S; // r
+    let _3: S;
+    let _4: i32;
+    let _5: &i32; // t
+    let _6: S;
+    let _7: &mut i32; // u
+    let _8: i32;
+    let _9: ();
+    let _10: i32;
+    let _11: i32;
+    let _12: i32;
+    let _13: &S;
+    let _14: i32;
+    let _15: i32;
+
+    bb0: {
+        _4 = copy _1;
+        _3 = S { a: copy _4, b: const 1_i32 };
+        _2 = &_3;
+        _6 = S { a: const 1_i32, b: const 2_i32 };
+        _5 = &_6.0;
+        _8 = const 5_i32;
+        _7 = &mut _8;
+        _10 = copy (*_7);
+        (*_7) = Add(copy _10, const 1_i32);
+        _9 = const ();
+        _13 = &(*_2);
+        _12 = get(copy _13) -> bb1;
+    }
+
+    bb1: {
+        _14 = copy (*_5);
+        _11 = Add(copy _12, copy _14);
+        _15 = copy (*_7);
+        _0 = Add(copy _11, copy _15);
+        StorageDead(_7);
+        StorageDead(_5);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn method_result_then_mutate(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: i32; // v
+    let _3: &S;
+    let _4: ();
+    let _5: i32;
+    let _6: i32;
+    let _7: i32; // w
+    let _8: &S;
+    let _9: &S;
+    let _10: &mut S;
+    let _11: i32;
+
+    bb0: {
+        _3 = &_1;
+        _2 = get(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _6 = copy _2;
+        _5 = Add(copy _6, const 1_i32);
+        _1.0 = copy _5;
+        _4 = const ();
+        _8 = &_1;
+        _9 = &(*_8);
+        _7 = get(copy _9) -> bb2;
+    }
+
+    bb2: {
+        _10 = &two_phase _1;
+        _11 = copy _7;
+        _0 = add(move _10, copy _11) -> bb3;
+    }
+
+    bb3: {
+        StorageDead(_7);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn self_methods(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: &mut S;
+
+    bb0: {
+        _2 = &two_phase _1;
+        _0 = both(move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn bump(_1: &mut T) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: i32;
+
+    bb0: {
+        _3 = copy (*_1).0;
+        (*_1).0 = Add(copy _3, const 1_i32);
+        _2 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn make_w() -> W {
+    let mut _0: W;
+    let _1: T;
+
+    bb0: {
+        _1 = T { v: const 2_i32 };
+        _0 = W { a: const 1_i32, inner: move _1 };
+        return;
+    }
+}
+
+fn field_borrow_move_other(_1: W) -> i32 {
+    let mut _0: i32;
+    let _2: &i32; // r
+    let _3: T; // t
+    let _4: i32;
+    let _5: i32;
+
+    bb0: {
+        _2 = &_1.0;
+        _3 = move _1.1;
+        _4 = copy (*_2);
+        _5 = copy _3.0;
+        _0 = Add(copy _4, copy _5);
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn move_then_reinit(_1: W) -> i32 {
+    let mut _0: i32;
+    let _2: W; // t
+    let _3: ();
+    let _4: W;
+    let _5: &W; // r
+    let _6: i32;
+    let _7: i32;
+
+    bb0: {
+        _2 = move _1;
+        _4 = make_w() -> bb1;
+    }
+
+    bb1: {
+        _1 = move _4;
+        _3 = const ();
+        _5 = &_1;
+        _6 = copy (*_5).0;
+        _7 = copy _2.0;
+        _0 = Add(copy _6, copy _7);
+        StorageDead(_5);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn read_then_assign_from_mut_ref(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: &mut i32; // r
+    let _3: ();
+    let _4: i32;
+
+    bb0: {
+        _2 = &mut _1;
+        _4 = copy (*_2);
+        _1 = copy _4;
+        _3 = const ();
+        _0 = copy _1;
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn disjoint_tuple_fields() -> i32 {
+    let mut _0: i32;
+    let mut _1: (i32, i32); // t
+    let _2: &mut i32; // r
+    let _3: ();
+    let _4: ();
+    let _5: i32;
+    let _6: i32;
+
+    bb0: {
+        _1 = (const 1_i32, const 2_i32);
+        _2 = &mut _1.0;
+        _1.1 = const 3_i32;
+        _3 = const ();
+        (*_2) = const 1_i32;
+        _4 = const ();
+        _5 = copy _1.0;
+        _6 = copy _1.1;
+        _0 = Add(copy _5, copy _6);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn borrow_in_condition(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: ();
+    let _3: bool;
+    let _4: &mut i32; // r
+    let _5: ();
+    let _6: i32;
+    let _7: i32;
+
+    bb0: {
+        _4 = &mut _1;
+        _6 = copy (*_4);
+        (*_4) = Add(copy _6, const 1_i32);
+        _5 = const ();
+        _7 = copy (*_4);
+        _3 = Gt(copy _7, const 0_i32);
+        StorageDead(_4);
+        switchInt(copy _3) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _1 = const 1_i32;
+        _2 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _2 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _0 = copy _1;
+        return;
+    }
+}
+
+fn break_value_from_ref(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: i32; // v
+    let _3: !;
+    let _4: &i32; // r
+    let _5: !;
+    let _6: ();
+    let _7: i32;
+    let _8: i32;
+
+    bb0: {
+        goto -> bb1;
+    }
+
+    bb1: {
+        _4 = &_1;
+        _2 = copy (*_4);
+        StorageDead(_4);
+        goto -> bb2;
+    }
+
+    bb2: {
+        _1 = const 1_i32;
+        _6 = const ();
+        _7 = copy _1;
+        _8 = copy _2;
+        _0 = Add(copy _7, copy _8);
+        StorageDead(_2);
+        return;
+    }
+
+    bb3: {
+        _3 = const ();
+        StorageDead(_4);
+        goto -> bb1;
+    }
+}
+
+fn diverging_mutation(_1: i32, _2: bool) -> i32 {
+    let mut _0: i32;
+    let _3: &mut i32; // r
+    let _4: ();
+    let _5: bool;
+    let _6: ();
+    let _7: i32;
+    let _8: ();
+
+    bb0: {
+        _3 = &mut _1;
+        _5 = copy _2;
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _1 = const 1_i32;
+        _6 = const ();
+        _7 = copy _1;
+        _4 = exit(copy _7) -> !;
+    }
+
+    bb2: {
+        _4 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        (*_3) = const 2_i32;
+        _8 = const ();
+        _0 = copy _1;
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn method_on_other_field(_1: W) -> i32 {
+    let mut _0: i32;
+    let _2: &i32; // r
+    let _3: ();
+    let _4: &mut T;
+    let _5: &mut T; // m
+    let _6: i32; // a
+    let _7: ();
+    let _8: &mut T;
+    let _9: i32;
+    let _10: i32;
+
+    bb0: {
+        _2 = &_1.0;
+        _4 = &two_phase _1.1;
+        _3 = bump(move _4) -> bb1;
+    }
+
+    bb1: {
+        _5 = &mut _1.1;
+        _6 = copy _1.0;
+        _8 = &two_phase (*_5);
+        _7 = bump(move _8) -> bb2;
+    }
+
+    bb2: {
+        _9 = copy (*_2);
+        _10 = copy _6;
+        _0 = Add(copy _9, copy _10);
+        StorageDead(_6);
+        StorageDead(_5);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn conditional_mut_refs(_1: i32, _2: i32, _3: bool) -> i32 {
+    let mut _0: i32;
+    let _4: &mut i32; // r
+    let _5: bool;
+    let _6: ();
+    let _7: i32;
+    let _8: i32;
+    let _9: i32;
+
+    bb0: {
+        _5 = copy _3;
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _4 = &mut _1;
+        goto -> bb3;
+    }
+
+    bb2: {
+        _4 = &mut _2;
+        goto -> bb3;
+    }
+
+    bb3: {
+        _7 = copy (*_4);
+        (*_4) = Add(copy _7, const 1_i32);
+        _6 = const ();
+        _8 = copy _1;
+        _9 = copy _2;
+        _0 = Add(copy _8, copy _9);
+        StorageDead(_4);
+        return;
+    }
+}
+
+fn borrow_per_iteration(_1: i32) -> i32 {
+    let mut _0: i32;
+    let mut _2: i32; // i
+    let _3: ();
+    let _4: ();
+    let _5: bool;
+    let _6: i32;
+    let _7: &i32; // r
+    let _8: ();
+    let _9: bool;
+    let _10: i32;
+    let _11: ();
+    let _12: ();
+    let _13: i32;
+    let _14: i32;
+    let _15: ();
+    let _16: i32;
+
+    bb0: {
+        _2 = const 0_i32;
+        goto -> bb1;
+    }
+
+    bb1: {
+        _6 = copy _2;
+        _5 = Lt(copy _6, const 3_i32);
+        switchInt(copy _5) -> [0: bb4, otherwise: bb3];
+    }
+
+    bb2: {
+        _0 = copy _2;
+        StorageDead(_2);
+        return;
+    }
+
+    bb3: {
+        _7 = &_1;
+        _10 = copy _2;
+        _9 = Eq(copy _10, const 1_i32);
+        switchInt(copy _9) -> [0: bb7, otherwise: bb6];
+    }
+
+    bb4: {
+        _3 = const ();
+        goto -> bb2;
+    }
+
+    bb5: {
+        goto -> bb1;
+    }
+
+    bb6: {
+        _1 = const 0_i32;
+        _11 = const ();
+        _8 = const ();
+        goto -> bb8;
+    }
+
+    bb7: {
+        _13 = copy (*_7);
+        _14 = copy _2;
+        _2 = Add(copy _14, copy _13);
+        _12 = const ();
+        _8 = const ();
+        goto -> bb8;
+    }
+
+    bb8: {
+        _16 = copy _2;
+        _2 = Add(copy _16, const 1_i32);
+        _15 = const ();
+        _4 = const ();
+        StorageDead(_7);
+        goto -> bb5;
+    }
+}
+
+fn mut_ref_then_shared(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: &mut S; // r
+    let _3: ();
+    let _4: &S; // r2
+
+    bb0: {
+        _2 = &mut _1;
+        (*_2).0 = const 1_i32;
+        _3 = const ();
+        _4 = &_1;
+        _0 = copy (*_4).0;
+        StorageDead(_4);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn other_field_through_ref(_1: &mut S) -> i32 {
+    let mut _0: i32;
+    let _2: &i32; // b
+    let _3: ();
+
+    bb0: {
+        _2 = &(*_1).1;
+        (*_1).0 = const 1_i32;
+        _3 = const ();
+        _0 = copy (*_2);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn fields_through_ref(_1: &mut W) -> i32 {
+    let mut _0: i32;
+    let _2: &mut T; // r
+    let _3: ();
+    let _4: &mut T;
+    let _5: &i32; // a
+    let _6: &mut i32; // v
+    let _7: ();
+    let _8: i32;
+    let _9: i32;
+
+    bb0: {
+        _2 = &mut (*_1).1;
+        _4 = &two_phase (*_2);
+        _3 = bump(move _4) -> bb1;
+    }
+
+    bb1: {
+        _5 = &(*_1).0;
+        _6 = &mut (*_1).1.0;
+        _8 = copy (*_5);
+        _9 = copy (*_6);
+        (*_6) = Add(copy _9, copy _8);
+        _7 = const ();
+        _0 = copy (*_6);
+        StorageDead(_6);
+        StorageDead(_5);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn temporary_receivers() -> i32 {
+    let mut _0: i32;
+    let _1: ();
+    let _2: W;
+    let _3: &mut T;
+    let _4: &mut W; // r
+    let _5: W;
+    let _6: ();
+    let _7: &mut i32; // q
+    let _8: W;
+    let _9: ();
+    let _10: i32;
+    let _11: &T; // k
+    let _12: W;
+    let _13: i32;
+    let _14: i32;
+    let _15: i32;
+    let _16: i32;
+
+    bb0: {
+        _2 = make_w() -> bb1;
+    }
+
+    bb1: {
+        _3 = &two_phase _2.1;
+        _1 = bump(move _3) -> bb2;
+    }
+
+    bb2: {
+        _5 = make_w() -> bb3;
+    }
+
+    bb3: {
+        _4 = &mut _5;
+        (*_4).0 = const 1_i32;
+        _6 = const ();
+        _8 = make_w() -> bb4;
+    }
+
+    bb4: {
+        _7 = &mut _8.0;
+        _10 = copy (*_7);
+        (*_7) = Add(copy _10, const 1_i32);
+        _9 = const ();
+        _12 = make_w() -> bb5;
+    }
+
+    bb5: {
+        _11 = &_12.1;
+        _14 = copy (*_4).0;
+        _15 = copy (*_7);
+        _13 = Add(copy _14, copy _15);
+        _16 = copy (*_11).0;
+        _0 = Add(copy _13, copy _16);
+        StorageDead(_11);
+        StorageDead(_7);
+        StorageDead(_4);
+        return;
+    }
+}
+
+fn nested_derefs(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: i32; // y
+    let _3: &mut i32;
+    let _4: &mut i32;
+    let _5: ();
+    let _6: &mut i32;
+    let _7: i32;
+    let _8: &i32;
+    let _9: &i32;
+    let _10: i32;
+
+    bb0: {
+        _4 = &mut _1;
+        _3 = &mut (*_4);
+        _2 = copy (*_3);
+        _6 = &mut _1;
+        (*_6) = const 3_i32;
+        _5 = const ();
+        _9 = &_1;
+        _8 = &(*_9);
+        _7 = copy (*_8);
+        _10 = copy _2;
+        _0 = Add(copy _7, copy _10);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn copy_shared_refs(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: &S; // r
+    let _3: &S; // r2
+    let _4: &S; // r3
+    let _5: i32;
+    let _6: i32;
+    let _7: i32;
+    let _8: i32;
+    let _9: &S;
+
+    bb0: {
+        _2 = &_1;
+        _3 = copy _2;
+        _4 = &(*_3);
+        _6 = copy (*_2).0;
+        _7 = copy (*_3).0;
+        _5 = Add(copy _6, copy _7);
+        _9 = &(*_4);
+        _8 = get(copy _9) -> bb1;
+    }
+
+    bb1: {
+        _0 = Add(copy _5, copy _8);
+        StorageDead(_4);
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn block_value_borrow(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: i32; // v
+    let _3: &mut S; // r
+    let _4: ();
+    let _5: ();
+    let _6: &mut S;
+    let _7: i32;
+    let _8: &S;
+
+    bb0: {
+        _3 = &mut _1;
+        (*_3).0 = const 3_i32;
+        _4 = const ();
+        _2 = copy (*_3).0;
+        StorageDead(_3);
+        _6 = &two_phase _1;
+        _7 = copy _2;
+        _5 = set(move _6, copy _7) -> bb1;
+    }
+
+    bb1: {
+        _8 = &_1;
+        _0 = get(copy _8) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_2);
+        return;
+    }
+}
+

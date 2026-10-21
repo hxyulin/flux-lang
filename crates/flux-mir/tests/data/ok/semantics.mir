@@ -133,6 +133,7 @@ fn evaluation_order() -> i32 {
         _4 = const ();
         _3 = copy _1;
         _0 = Add(copy _2, copy _3);
+        StorageDead(_1);
         return;
     }
 }
@@ -166,6 +167,7 @@ fn deferred(_1: bool) -> u32 {
 
     bb3: {
         _0 = copy _2;
+        StorageDead(_2);
         return;
     }
 }

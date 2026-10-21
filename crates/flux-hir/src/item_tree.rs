@@ -1,7 +1,7 @@
 //! The items of a file and their signatures.
 
 use flux_arena::{Arena, Idx};
-use flux_intern::Symbol;
+use flux_intern::{Symbol, kw, sym};
 use flux_syntax::ast::{self, AstChildren, AstNode};
 use flux_syntax::{NodeId, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxTree, TextRange};
 
@@ -9,13 +9,30 @@ use crate::Diagnostic;
 
 pub type FunctionId = Idx<Function>;
 pub type StructId = Idx<Struct>;
+pub type ImplId = Idx<Impl>;
 
 /// A file's items, without bodies.
 #[derive(Debug, Default)]
 pub struct ItemTree {
+    /// Free functions, functions in `extern` blocks, and the associated
+    /// functions of `impl` blocks.
     pub functions: Arena<Function>,
     pub structs: Arena<Struct>,
+    pub impls: Arena<Impl>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// An inherent `impl` block: `impl S { ... }`.
+#[derive(Debug)]
+pub struct Impl {
+    pub self_ty: TypeRef,
+    /// The self type's range.
+    pub self_range: TextRange,
+    /// `impl T`, where rustc reports errors about the whole block.
+    pub def_range: TextRange,
+    /// The struct it is for; `None` if that did not resolve (reported).
+    pub strukt: Option<StructId>,
+    pub functions: Vec<FunctionId>,
 }
 
 /// A struct: `struct S { a: i32 }`, `struct P(i32);` or `struct U;`.
@@ -72,6 +89,10 @@ pub struct Function {
     pub is_extern: bool,
     /// Takes more arguments after `params`, like C's `printf(fmt, ...)`.
     pub is_variadic: bool,
+    /// The `impl` block it is in, if any.
+    pub owner: Option<ImplId>,
+    /// Has a `self` parameter, which is `params[0]`: a method.
+    pub has_self: bool,
     pub has_body: bool,
     /// The `FN` node, for lowering its body.
     pub node: NodeId,
@@ -103,6 +124,11 @@ pub enum TypeRef {
         mutable: bool,
         pointee: Box<TypeRef>,
     },
+    /// `&T` or `&mut T`.
+    Ref {
+        mutable: bool,
+        pointee: Box<TypeRef>,
+    },
     /// Unsupported or malformed; already reported.
     Error,
 }
@@ -122,11 +148,34 @@ impl ItemTree {
             items.collect_item(item);
         }
         items.check_duplicates();
+        items.resolve_impls();
         items
     }
 
+    /// The free or `extern` function called `name`.
     pub fn function_by_name(&self, name: Symbol) -> Option<(FunctionId, &Function)> {
-        self.functions.iter().find(|(_, f)| f.name == name)
+        self.functions
+            .iter()
+            .find(|(_, f)| f.name == name && f.owner.is_none())
+    }
+
+    /// `f`, or `S::f` for an associated function.
+    pub fn function_path(&self, function: &Function) -> String {
+        let owner = function.owner.and_then(|i| self.impls[i].strukt);
+        match owner {
+            Some(strukt) => format!("{}::{}", self.structs[strukt].name, function.name),
+            None => function.name.to_string(),
+        }
+    }
+
+    /// The associated function `name` of `strukt`, from any of its
+    /// `impl` blocks.
+    pub fn assoc_function(&self, strukt: StructId, name: Symbol) -> Option<FunctionId> {
+        self.impls
+            .values()
+            .filter(|i| i.strukt == Some(strukt))
+            .flat_map(|i| i.functions.iter().copied())
+            .find(|&f| self.functions[f].name == name)
     }
 
     pub fn struct_by_name(&self, name: Symbol) -> Option<(StructId, &Struct)> {
@@ -136,7 +185,11 @@ impl ItemTree {
     fn collect_item(&mut self, item: ast::Item<'_>) {
         let what = match item {
             ast::Item::Fn(f) => {
-                self.collect_fn(f, false);
+                self.collect_fn(f, false, None);
+                return;
+            }
+            ast::Item::Impl(imp) => {
+                self.collect_impl(imp);
                 return;
             }
             ast::Item::ExternBlock(block) => {
@@ -146,7 +199,6 @@ impl ItemTree {
             ast::Item::Const(_) => "constants",
             ast::Item::Enum(_) => "enums",
             ast::Item::ExternCrate(_) => "`extern crate` declarations",
-            ast::Item::Impl(_) => "`impl` blocks",
             ast::Item::MacroCall(_) => "macros",
             ast::Item::Module(_) => "modules",
             ast::Item::Static(_) => "statics",
@@ -161,12 +213,135 @@ impl ItemTree {
         self.unsupported(item.syntax().text_range(), what);
     }
 
-    fn collect_fn(&mut self, f: ast::Fn<'_>, in_extern_block: bool) {
-        check_attrs(f.attrs(), &mut self.diagnostics);
-        check_visibility(f.visibility(), &mut self.diagnostics);
-        let Some(name) = f.name() else {
+    fn collect_impl(&mut self, imp: ast::Impl<'_>) {
+        let diagnostics = &mut self.diagnostics;
+        check_attrs(imp.attrs(), diagnostics);
+        let range = imp.syntax().text_range();
+        if imp.for_token().is_some() {
+            unsupported(diagnostics, range, "trait implementations");
+            return;
+        }
+        if let Some(list) = imp.generic_param_list() {
+            unsupported(
+                diagnostics,
+                list.syntax().text_range(),
+                "generic `impl` blocks",
+            );
+        }
+        if let Some(clause) = imp.where_clause() {
+            unsupported(diagnostics, clause.syntax().text_range(), "`where` clauses");
+        }
+        if let Some(token) = imp.unsafe_token() {
+            diagnostics.push(Diagnostic::new(
+                token.text_range(),
+                "inherent impls cannot be unsafe",
+            ));
+        }
+        let self_ty = lower_type(imp.self_ty(), diagnostics);
+        let self_range = imp.self_ty().map_or(range, |t| t.syntax().text_range());
+        let def_range = TextRange::new(def_start(imp.syntax()), self_range.end());
+        let id = self.impls.alloc(Impl {
+            self_ty,
+            self_range,
+            def_range,
+            strukt: None,
+            functions: Vec::new(),
+        });
+        let Some(list) = imp.assoc_item_list() else {
             return;
         };
+        check_attrs(list.attrs(), &mut self.diagnostics);
+        for item in list.items() {
+            let what = match item {
+                ast::Item::Fn(f) => {
+                    if let Some(function) = self.collect_fn(f, false, Some(id)) {
+                        self.impls[id].functions.push(function);
+                    }
+                    continue;
+                }
+                ast::Item::Const(_) => "associated constants",
+                ast::Item::TypeAlias(_) => "associated types",
+                ast::Item::MacroCall(_) => "macros",
+                _ => "items like this in `impl` blocks",
+            };
+            self.unsupported(item.syntax().text_range(), what);
+        }
+    }
+
+    /// Finds the struct each `impl` block is for, once every struct is
+    /// known, and checks that its associated functions have distinct
+    /// names.
+    fn resolve_impls(&mut self) {
+        let ids: Vec<ImplId> = self.impls.iter().map(|(id, _)| id).collect();
+        for id in ids {
+            let range = self.impls[id].self_range;
+            let strukt = match &self.impls[id].self_ty {
+                TypeRef::Path(name) => match self.struct_by_name(*name) {
+                    Some((strukt, _)) => Some(strukt),
+                    None if is_primitive(*name) => {
+                        let message = "cannot define inherent `impl` for primitive types";
+                        let range = self.impls[id].def_range;
+                        self.diagnostics.push(Diagnostic::new(range, message));
+                        None
+                    }
+                    None => {
+                        let message = format!("cannot find type `{name}` in this scope");
+                        self.diagnostics.push(Diagnostic::new(range, message));
+                        None
+                    }
+                },
+                TypeRef::Error => None,
+                _ => {
+                    self.unsupported(range, "`impl` blocks for types other than structs");
+                    None
+                }
+            };
+            self.impls[id].strukt = strukt;
+        }
+        let structs: Vec<StructId> = self.structs.iter().map(|(id, _)| id).collect();
+        for strukt in structs {
+            let mut seen: Vec<FunctionId> = Vec::new();
+            let functions: Vec<FunctionId> = self
+                .impls
+                .values()
+                .filter(|i| i.strukt == Some(strukt))
+                .flat_map(|i| i.functions.iter().copied())
+                .collect();
+            for f in functions {
+                let function = &self.functions[f];
+                let first = seen
+                    .iter()
+                    .copied()
+                    .find(|&s| self.functions[s].name == function.name);
+                match first {
+                    Some(first) => {
+                        let message =
+                            format!("duplicate definitions with name `{}`", function.name);
+                        // rustc reports the later definition when both are in
+                        // one block, and the earlier one otherwise.
+                        let first = &self.functions[first];
+                        let range = if first.owner == function.owner {
+                            function.def_range
+                        } else {
+                            first.def_range
+                        };
+                        self.diagnostics.push(Diagnostic::new(range, message));
+                    }
+                    None => seen.push(f),
+                }
+            }
+        }
+    }
+
+    fn collect_fn(
+        &mut self,
+        f: ast::Fn<'_>,
+        in_extern_block: bool,
+        owner: Option<ImplId>,
+    ) -> Option<FunctionId> {
+        check_attrs(f.attrs(), &mut self.diagnostics);
+        check_visibility(f.visibility(), &mut self.diagnostics);
+        let name = f.name()?;
         let diagnostics = &mut self.diagnostics;
         if let Some(list) = f.generic_param_list() {
             unsupported(diagnostics, list.syntax().text_range(), "generic functions");
@@ -184,9 +359,32 @@ impl ItemTree {
         }
         let mut params = Vec::new();
         let mut is_variadic = false;
+        let mut has_self = false;
         if let Some(list) = f.param_list() {
             if let Some(param) = list.self_param() {
-                unsupported(diagnostics, param.syntax().text_range(), "methods");
+                let range = param.syntax().text_range();
+                check_attrs(param.attrs(), diagnostics);
+                if owner.is_none() {
+                    diagnostics.push(Diagnostic::new(
+                        range,
+                        "`self` parameter is only allowed in associated functions",
+                    ));
+                } else if param.ty().is_some() {
+                    unsupported(diagnostics, range, "`self` parameters with a type");
+                } else if let Some(lifetime) = param.lifetime() {
+                    unsupported(diagnostics, lifetime.syntax().text_range(), "lifetimes");
+                } else {
+                    let self_ty = TypeRef::Path(kw::SelfUpper);
+                    let ty = match param.amp_token() {
+                        Some(_) => TypeRef::Ref {
+                            mutable: param.mut_token().is_some(),
+                            pointee: Box::new(self_ty),
+                        },
+                        None => self_ty,
+                    };
+                    params.push(Param { ty, range });
+                    has_self = true;
+                }
             }
             let count = list.params().count();
             for (i, param) in list.params().enumerate() {
@@ -224,12 +422,18 @@ impl ItemTree {
             None => (TypeRef::unit(), name.syntax().text_range()),
         };
         let has_body = f.body().is_some();
+        if owner.is_some() && !has_body {
+            self.diagnostics.push(Diagnostic::new(
+                name.syntax().text_range(),
+                "associated function in `impl` without body",
+            ));
+        }
         if in_extern_block && has_body {
             self.diagnostics.push(Diagnostic::new(
                 name.syntax().text_range(),
                 "functions in `extern` blocks cannot have bodies",
             ));
-        } else if !in_extern_block && !has_body {
+        } else if !in_extern_block && !has_body && owner.is_none() {
             self.diagnostics.push(Diagnostic::new(
                 name.syntax().text_range(),
                 "free function without a body",
@@ -244,7 +448,7 @@ impl ItemTree {
         .flatten()
         .next()
         .map_or(0, |n| n.text_range().end());
-        self.functions.alloc(Function {
+        Some(self.functions.alloc(Function {
             def_range: TextRange::new(def_start(f.syntax()), signature_end),
             name: Symbol::intern(name.text()),
             params: params.into(),
@@ -253,10 +457,12 @@ impl ItemTree {
             is_unsafe: in_extern_block || f.unsafe_token().is_some(),
             is_extern: in_extern_block,
             is_variadic,
+            owner,
+            has_self,
             has_body: has_body && !in_extern_block,
             node: f.syntax().id(),
             name_range: name.syntax().text_range(),
-        });
+        }))
     }
 
     fn collect_struct(&mut self, s: ast::Struct<'_>) {
@@ -349,7 +555,9 @@ impl ItemTree {
         };
         for item in list.items() {
             match item {
-                ast::Item::Fn(f) => self.collect_fn(f, true),
+                ast::Item::Fn(f) => {
+                    self.collect_fn(f, true, None);
+                }
                 ast::Item::Static(_) => self.unsupported(item.syntax().text_range(), "statics"),
                 _ => self.diagnostics.push(Diagnostic::new(
                     item.syntax().text_range(),
@@ -369,7 +577,7 @@ impl ItemTree {
             let in_values = s.kind != StructKind::Record;
             defined.push((s.def_range, s.name, true, in_values));
         }
-        for f in self.functions.values() {
+        for f in self.functions.values().filter(|f| f.owner.is_none()) {
             defined.push((f.def_range, f.name, false, true));
         }
         defined.sort_by_key(|&(range, ..)| range.start());
@@ -504,9 +712,42 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
                 pointee: Box::new(pointee),
             };
         }
-        ast::Type::RefType(_) => "reference types",
+        ast::Type::RefType(r) => {
+            if let Some(lifetime) = r.lifetime() {
+                unsupported(diagnostics, lifetime.syntax().text_range(), "lifetimes");
+            }
+            let pointee = lower_type(r.ty(), diagnostics);
+            return TypeRef::Ref {
+                mutable: r.mut_token().is_some(),
+                pointee: Box::new(pointee),
+            };
+        }
         ast::Type::SliceType(_) => "slice types",
     };
     unsupported(diagnostics, ty.syntax().text_range(), what);
     TypeRef::Error
+}
+
+/// Whether `name` is a primitive type's.
+pub(crate) fn is_primitive(name: Symbol) -> bool {
+    [
+        sym::bool,
+        sym::char,
+        sym::str,
+        sym::f32,
+        sym::f64,
+        sym::i8,
+        sym::i16,
+        sym::i32,
+        sym::i64,
+        sym::i128,
+        sym::isize,
+        sym::u8,
+        sym::u16,
+        sym::u32,
+        sym::u64,
+        sym::u128,
+        sym::usize,
+    ]
+    .contains(&name)
 }

@@ -33,7 +33,8 @@ pub struct BodySourceMap {
     pub pats: ArenaMap<Pat, TextRange>,
     pub types: ArenaMap<TypeRef, TextRange>,
     /// The field names of a `Field` expression (one) or a `Record`
-    /// expression (one per field, in order).
+    /// expression (one per field, in order), and the method name of a
+    /// `MethodCall`.
     pub expr_fields: ArenaMap<Expr, Box<[TextRange]>>,
     /// Each field of a `Record` pattern: its name, and the whole field
     /// (`a: b`).
@@ -107,6 +108,11 @@ pub enum Expr {
     Field {
         expr: ExprId,
         name: Symbol,
+    },
+    /// `&expr` or `&mut expr`.
+    Ref {
+        mutable: bool,
+        expr: ExprId,
     },
     /// `S { a: 1, b, ..base }`, in source order.
     Record {
