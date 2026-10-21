@@ -184,7 +184,8 @@ program's files:
 
 A program has two crates: flux's own `core`
 ([`library/core`](../library/core/src/lib.rs)), built into the compiler
-and compiled with every program, and the program itself, whose files are
+and compiled with every program (its files parsed in parallel, its
+bodies lowered and type-checked only where the program reaches them), and the program itself, whose files are
 read as its `mod` declarations name them (`m.rs` or `m/mod.rs`). Both
 crates' items share one item tree, with each module knowing its crate.
 Only `core` may write `impl` blocks for primitive types, which is how
@@ -233,7 +234,17 @@ is left is reported (E0277, rustc's spans). Probing for a method tries
 each type the receiver dereferences to, inherent methods first, then
 the traits in scope whose blocks may apply, bounds included; trying an
 `impl` block unifies in a snapshot of the variables, rolled back
-after. Outside bodies, where every type is known up to rigid parameters,
+after.
+
+An associated type is an alias, `<T as Tr>::Out` (`TyKind::Alias`),
+*normalized* to what it is where that is known: from a bound in scope
+(`T: Tr<Out = i32>`) or from the `impl` block for its types. One whose
+`Self` is not yet known becomes a variable, replaced when it is; one of
+a type parameter without a binding stays, a type of its own. Operators
+on types other than integers and `bool` are calls of their traits'
+methods, found through `#[lang]` names (`a + b` is `Add::add(a, b)`, its
+type `<A as Add<B>>::Output`), and so are monomorphized like any other
+trait call. Outside bodies, where every type is known up to rigid parameters,
 [`traits`](../crates/flux-ty/src/traits.rs) answers whether a predicate
 holds by matching `impl` headers, which checks supertraits, overlapping
 blocks (E0119, with bounds that rule types out) and blocks' methods

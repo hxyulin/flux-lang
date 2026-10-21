@@ -30,10 +30,8 @@ lifetimes (parameters, temporaries and locals assigned once), generic
 functions, structs and `impl` blocks, monomorphized, and traits with
 bounds, statically dispatched. In order next:
 
-1. More of traits: associated types and constants, defaults for trait
-   parameters, and the operator traits on user types (`Add`,
-   `PartialEq`, ...) as `#[lang]` items in `core`; `Copy` and `Clone`,
-   with `#[derive]`; `Drop`; bounds on structs. Then `core` can define
+1. More of traits: `Copy` and `Clone`, with `#[derive]`; `Drop`;
+   associated constants; bounds on structs. Then `core` can define
    the pointer methods and `CStr` (now built into the compiler) through
    lang items and intrinsics. `for` loops over `Iterator` need `Option`,
    so they come with enums.
@@ -66,9 +64,9 @@ intrinsics, unstable features), so flux cannot compile them. flux
 provides its own small core library, [`library/core`](../library/core),
 written in flux and compiled with every program, that defines the same
 names with the same meaning. So far it has the integer types' constants
-and methods, `mem::drop`, `convert::identity` and `marker::Sized`; the
-operator traits, `Copy` and `Clone` come next, now that traits exist,
-and `Option` and `Result` with enums. It is lowered and type-checked on every
+and methods, `mem::drop`, `convert::identity`, `marker::Sized`, the
+operator traits and `PartialEq`/`Eq`; `Copy` and `Clone` come next, and
+`Option`, `Result` and `PartialOrd` with enums. It is lowered and type-checked on every
 build (about a millisecond today), and only the functions a program
 calls are compiled; caching it is the first use for the incremental
 checking below. Output goes through `extern "C"` declarations of libc

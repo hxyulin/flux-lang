@@ -43,25 +43,13 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     );
     let mut bodies = ArenaMap::new();
     while let Some(id) = queue.pop() {
-        if bodies.get(id).is_some() || hir.bodies.get(id).is_none() {
+        if bodies.get(id).is_some() || hir.body(id).is_none() || typed.bodies.get(id).is_none() {
             continue;
         }
         let body = build(hir, typed, id);
         check(&body, hir.items.functions[id].loc.file);
         for callee in body.callees() {
-            queue.push(callee);
-            // A trait's method may call any of its definitions.
-            if let Some(flux_hir::Owner::Trait(t)) = hir.items.functions[callee].owner {
-                let name = hir.items.functions[callee].name;
-                let impls = hir.items.trait_impls.get(&t).into_iter().flatten();
-                queue.extend(impls.flat_map(|&imp| {
-                    hir.items.impls[imp]
-                        .functions
-                        .iter()
-                        .copied()
-                        .filter(move |&f| hir.items.functions[f].name == name)
-                }));
-            }
+            queue.extend(flux_ty::call_targets(&hir.items, callee));
         }
         bodies.insert(id, body);
     }
@@ -200,8 +188,15 @@ pub fn build_const(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Body {
 /// Builds the MIR of `function`. Its body must have lowered and
 /// type-checked without errors; anything erroneous becomes unreachable.
 pub fn build(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Body {
-    let (body, source_map) = &hir.bodies[function];
+    let (body, source_map) = hir.body(function).expect("functions built have bodies");
+    // Its associated types as its bounds and `impl` blocks say.
+    let env = flux_ty::traits::projections_of(&hir.items, &typed.sigs, function);
+    let norm = |ty| flux_ty::traits::normalize(&hir.items, &typed.sigs, &env, ty);
     let sig = &typed.sigs[function];
+    let sig = &flux_ty::FnSig {
+        params: sig.params.iter().map(|&p| norm(p)).collect(),
+        ret: norm(sig.ret),
+    };
     let data = &hir.items.functions[function];
     let mut built = build_body(
         hir,
@@ -771,6 +766,11 @@ impl Builder<'_> {
                 }
                 self.assign(dest, Rvalue::Use(receiver), range);
             }
+            Expr::Unary { .. } | Expr::Binary { .. }
+                if let Some(&instance) = self.types.overloads.get(expr) =>
+            {
+                self.lower_overloaded(expr, instance, dest, range);
+            }
             Expr::Unary {
                 op: UnaryOp::Neg,
                 operand: inner,
@@ -819,6 +819,64 @@ impl Builder<'_> {
                 self.assign(dest, Rvalue::Cast(operand, ty), range);
             }
         }
+    }
+
+    /// An operator on a type other than the integers and `bool`: a call
+    /// of its trait's method, `instance`, with the operands by value, by
+    /// reference for comparisons (`PartialEq::eq(&a, &b)`), and the left
+    /// one by mutable reference for compound assignments.
+    fn lower_overloaded(
+        &mut self,
+        expr: ExprId,
+        instance: flux_ty::Instance,
+        dest: &Place,
+        range: TextRange,
+    ) {
+        let args = match self.body.exprs[expr] {
+            Expr::Unary { operand, .. } => vec![self.lower_operand(operand)],
+            Expr::Binary {
+                op: BinaryOp::Cmp(_),
+                lhs,
+                rhs,
+            } if self.types.compared_refs.get(expr).is_some() => {
+                vec![self.lower_operand(lhs), self.lower_operand(rhs)]
+            }
+            Expr::Binary {
+                op: BinaryOp::Cmp(_),
+                lhs,
+                rhs,
+            } => vec![
+                self.borrow(lhs, Mutability::Not),
+                self.borrow(rhs, Mutability::Not),
+            ],
+            Expr::Binary {
+                op: BinaryOp::Assign(_),
+                lhs,
+                rhs,
+            } => {
+                let lhs = self.borrow(lhs, Mutability::Mut);
+                vec![lhs, self.lower_operand(rhs)]
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                vec![self.lower_operand(lhs), self.lower_operand(rhs)]
+            }
+            _ => unreachable!("only operators are overloaded"),
+        };
+        self.call(instance.function, instance.args, args, dest, range);
+    }
+
+    /// A reference to what `expr` denotes, in a temporary.
+    fn borrow(&mut self, expr: ExprId, mutability: Mutability) -> Operand {
+        let range = self.range(expr);
+        let place = self.lower_place(expr);
+        let temp = self.temp(Ty::new(TyKind::Ref(mutability, self.place_ty(&place))));
+        let rvalue = Rvalue::Ref {
+            mutability,
+            place,
+            two_phase: mutability == Mutability::Mut,
+        };
+        self.assign(&temp.into(), rvalue, range);
+        self.read(temp.into())
     }
 
     /// Calls `func` with generic arguments `generic_args`, storing the

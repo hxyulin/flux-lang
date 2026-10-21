@@ -55,7 +55,8 @@ reported as "not supported yet":
   tuple and unit structs); inherent `impl` blocks for them, with
   associated functions, methods (`self`, `mut self`, `&self`,
   `&mut self`) and constants; traits with required and provided methods
-  and associated functions, generic parameters (without defaults) and
+  and associated functions, associated types (`type Out: Bound;`),
+  generic parameters (with defaults, `trait Add<Rhs = Self>`) and
   supertraits, and `impl` blocks of them for any type (`impl Tr for S`,
   `impl<T: Tr> Tr for W<T>`, `impl Tr for i32`, `impl Tr for &S`,
   blanket `impl<T: A> B for T`); type parameters on all of these, with
@@ -71,7 +72,8 @@ reported as "not supported yet":
   may be `pub`, `pub(crate)`, `pub(super)`, `pub(self)` or
   `pub(in path)`, and flux checks privacy as rustc does.
 - **Types:** paths (`i32`, `bool`, `Self`, `m::S`, `crate::m::S`,
-  `Pair<i32>`, a type parameter `T`), tuples, `!`, references without
+  `Pair<i32>`, a type parameter `T`), associated types (`T::Out`,
+  `Self::Out`, `<T as Tr>::Out`), tuples, `!`, references without
   lifetimes (`&T`, `&mut T`), raw pointers (`*const T`, `*mut T`), and
   `_` inside bodies (`let p: Pair<_> = ...`).
 - **Expressions:** integer, boolean and C string (`c"..."`, `cr"..."`)
@@ -92,7 +94,9 @@ reported as "not supported yet":
   tuple structs and unit structs, with `..` rest patterns. Patterns are
   irrefutable: `let` and parameters only.
 - **Attributes:** only `allow`, `warn`, `deny`, `expect`, `inline`,
-  `cold`, `must_use` and `doc`, which are ignored.
+  `cold`, `must_use` and `doc`, which are ignored, and
+  `#[diagnostic::on_unimplemented(message = "...")]` on traits, whose
+  message reports their unmet bounds, as in rustc.
 
 Type checking follows rustc for this subset: the integer types, `bool`,
 tuples, structs and `!`; integer literals default to `i32`; no implicit
@@ -112,8 +116,12 @@ Structs and tuples cannot be passed to C yet.
 
 Generic items are checked once, in terms of their parameters, and
 compiled once per set of arguments the program uses them with
-(monomorphization). A type parameter has the methods of the traits its
-bounds name, and no operators or fields; it is moved, never copied.
+(monomorphization). A type parameter has the methods and operators of
+the traits its bounds name, and no fields; it is moved, never copied.
+An associated type is what the `impl` block for its types says, or what
+a bound says (`T: Tr<Out = i32>`, also inside a bound on an associated
+type: `type N: Add<Output = i32>;`); otherwise, for a type parameter, it
+is a type of its own, as in rustc.
 Blocks for different instances of a struct (`impl Pair<i32>` and
 `impl Pair<u8>`) may define the same name, and the type a method is
 called on picks one.
@@ -127,10 +135,16 @@ A call of a generic function or method must meet its bounds, and an
 signatures; flux reports what rustc does where they do not (E0277,
 E0599, E0046, E0053, ...), and conflicting `impl` blocks of a trait.
 Calls of trait methods are static: each calls the method of the
-`impl` block for its types, chosen when the program is compiled. There
-are no trait objects (`dyn Tr`) or `impl Trait` types, no associated
-types or constants in traits, and the operator traits, `Copy`, `Clone`,
-`Drop` and `#[derive]` are not supported yet. `Sized` is, as a bound:
+`impl` block for its types, chosen when the program is compiled.
+Operators on other types than integers and `bool` call the methods of
+`core::ops`'s traits (`Add`, `AddAssign`, `Neg`, ...) and
+`core::cmp::PartialEq` (`==`, `!=`), which `core` implements for the
+integers and `bool` too, so generic code can use them; `&a == &b`
+compares `a` and `b`. There are no trait objects (`dyn Tr`) or
+`impl Trait` types, no generic associated types or associated constants
+in traits, and `PartialOrd` (so `<` on other types), `Copy`, `Clone`,
+`Drop` and `#[derive]` are not supported yet, nor are operators on
+references to integers (`&a + &b`, `-&a`). `Sized` is, as a bound:
 every type flux has is sized, but a trait's provided methods must say
 `where Self: Sized` to take or hold `Self` by value, as in rustc.
 
@@ -144,8 +158,10 @@ Every program can use flux's own `core` library, which has the parts of
 Rust's that flux supports so far: the integer types' constants (`MIN`,
 `MAX`, `BITS`) and methods such as `abs`, `pow`, `wrapping_add`,
 `count_ones`, `rotate_left`, `min` and `max`, `core::mem::drop` (also in
-the prelude, as `drop`), `core::convert::identity` and
-`core::marker::Sized` (in the prelude). Anything else in
+the prelude, as `drop`), `core::convert::identity`,
+`core::marker::Sized`, the operator traits of `core::ops` and
+`core::cmp::{PartialEq, Eq}` (`Sized`, `PartialEq` and `Eq` in the
+prelude). Anything else in
 `core` is reported as not supported yet, and so is `std`.
 
 References may be parameters, temporaries, and `let` bindings without

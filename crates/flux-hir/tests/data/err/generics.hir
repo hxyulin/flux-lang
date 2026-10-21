@@ -87,5 +87,5 @@ error 1040..1054: cannot define inherent `impl` for primitive types
 error 1093..1095: lifetime parameters are not supported yet
 error 1101..1103: lifetimes are not supported yet
 error 1128..1142: const generics are not supported yet
-error 1246..1249: defaults for type parameters are not supported yet
+error 1246..1249: defaults for type parameters of structs are not supported yet
 error 1285..1302: associated constants in generic `impl` blocks are not supported yet

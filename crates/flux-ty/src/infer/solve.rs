@@ -17,7 +17,7 @@ use flux_syntax::TextRange;
 
 use super::Ctx;
 use crate::traits::{Predicate, TraitRef, owner_param_count, predicates_of};
-use crate::ty::{IntTy, Ty, TyKind};
+use crate::ty::{AliasTy, IntTy, Ty, TyKind};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Obligation {
@@ -46,6 +46,27 @@ pub(super) enum ObligationKind {
     /// `Self: Tr` for `Tr::f()`, whose `Self` must become known; `range`
     /// is the call's, where rustc reports it if it does not.
     TraitCall { range: TextRange },
+    /// An operator's trait, for operands of these types: "cannot add `S`
+    /// to `S`".
+    Operator { op: Op, lhs: Ty, rhs: Ty },
+}
+
+/// An operator, for messages.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Op {
+    Binary(flux_hir::BinaryOp),
+    Unary(flux_hir::UnaryOp),
+}
+
+/// An associated type whose `Self` was not known when it was met: `var`
+/// stands for it until it is. If `expected` is set (from a bound's
+/// `Tr<Out = u8>`), a mismatch is rustc's E0271 at `range`.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PendingProjection {
+    pub alias: AliasTy,
+    pub var: Ty,
+    pub range: TextRange,
+    pub expected: bool,
 }
 
 enum Selection {
@@ -70,8 +91,57 @@ pub(super) struct CallSite<'s> {
     pub expr: ExprId,
 }
 
+impl<'a> Ctx<'a> {
+    /// The signature of `function` called with generic arguments `args`,
+    /// its associated types normalized.
+    pub(super) fn instance_sig(
+        &mut self,
+        function: FunctionId,
+        args: &[Ty],
+    ) -> std::borrow::Cow<'a, crate::FnSig> {
+        let sigs = self.sigs;
+        let sig = &sigs[function];
+        let has_aliases = sig.ret.has_aliases() || sig.params.iter().any(|p| p.has_aliases());
+        if args.is_empty() && !has_aliases {
+            return std::borrow::Cow::Borrowed(sig);
+        }
+        let sig = sig.subst(args);
+        if !has_aliases {
+            return std::borrow::Cow::Owned(sig);
+        }
+        let origin = TextRange::default();
+        std::borrow::Cow::Owned(crate::FnSig {
+            params: sig
+                .params
+                .iter()
+                .map(|&p| self.normalize(p, origin))
+                .collect(),
+            ret: self.normalize(sig.ret, origin),
+        })
+    }
+}
+
 impl Ctx<'_> {
     pub(super) fn register(&mut self, pred: Predicate, range: TextRange, kind: ObligationKind) {
+        // `<S as Tr>::Out: Marker` is about what `Out` is.
+        let pred =
+            if pred.self_ty.has_aliases() || pred.trait_ref.args.iter().any(|a| a.has_aliases()) {
+                let args: Vec<Ty> = pred
+                    .trait_ref
+                    .args
+                    .iter()
+                    .map(|&a| self.normalize(a, range))
+                    .collect();
+                Predicate {
+                    self_ty: self.normalize(pred.self_ty, range),
+                    trait_ref: TraitRef {
+                        args: Ty::list(&args),
+                        ..pred.trait_ref
+                    },
+                }
+            } else {
+                pred
+            };
         self.obligations.push(Obligation {
             pred,
             root: pred,
@@ -92,8 +162,8 @@ impl Ctx<'_> {
     /// that cannot be met.
     pub(super) fn select_obligations(&mut self) {
         loop {
+            let mut progress = self.select_projections();
             let pending = std::mem::take(&mut self.obligations);
-            let mut progress = false;
             for ob in pending {
                 match self.select_predicate(ob.pred) {
                     Selection::Met(nested) => {
@@ -117,6 +187,188 @@ impl Ctx<'_> {
                 break;
             }
         }
+    }
+
+    /// Replaces the variables of pending associated types whose `Self` is
+    /// now known; whether any was.
+    fn select_projections(&mut self) -> bool {
+        let pending = std::mem::take(&mut self.projections);
+        let mut progress = false;
+        for p in pending {
+            let args: Vec<Ty> = p.alias.args.iter().map(|&a| self.shallow(a)).collect();
+            let alias = AliasTy {
+                args: Ty::list(&args),
+                ..p.alias
+            };
+            // Known, without an `impl` block or a bound that says what
+            // it is: an associated type of a generic parameter, rigid.
+            let found = self.try_normalize(alias).or_else(|| {
+                (!self.has_unknown(Ty::alias(alias)))
+                    .then(|| self.normalize(Ty::alias(alias), p.range))
+            });
+            match found {
+                Some(ty) => {
+                    progress = true;
+                    let ty = self.normalize(ty, p.range);
+                    if !self.unify(p.var, ty) {
+                        let message = format!(
+                            "type mismatch resolving `{} == {}`",
+                            self.describe(Ty::alias(alias)),
+                            self.describe(p.var)
+                        );
+                        if p.expected {
+                            self.error(p.range, message);
+                        } else {
+                            self.mismatch(p.var, ty, p.range);
+                        }
+                    }
+                }
+                None => self.projections.push(PendingProjection { alias, ..p }),
+            }
+        }
+        progress
+    }
+
+    /// `ty` with each associated type in it replaced by what it is, where
+    /// that is known: from the bounds in scope or the `impl` block for its
+    /// types. One whose `Self` is not known yet becomes a variable;
+    /// one of a generic parameter without a binding stays.
+    pub(super) fn normalize(&mut self, ty: Ty, origin: TextRange) -> Ty {
+        if !ty.has_aliases() {
+            return ty;
+        }
+        match ty.kind() {
+            TyKind::Alias(alias) => {
+                let args: Vec<Ty> = alias
+                    .args
+                    .iter()
+                    .map(|&a| self.normalize(a, origin))
+                    .collect();
+                let alias = AliasTy {
+                    args: Ty::list(&args),
+                    ..alias
+                };
+                if let Some(ty) = self.try_normalize(alias) {
+                    return self.normalize(ty, origin);
+                }
+                let self_ty = self.shallow(args[0]);
+                // A known type that does not implement the trait
+                // (reported where it is written).
+                if !self_ty.has_params() && !self_ty.has_aliases() && !self.has_unknown(self_ty) {
+                    return Ty::ERROR;
+                }
+                if self.has_unknown(self_ty) {
+                    let var = self.new_var(false, origin);
+                    self.projections.push(PendingProjection {
+                        alias,
+                        var,
+                        range: origin,
+                        expected: false,
+                    });
+                    return var;
+                }
+                Ty::alias(alias)
+            }
+            TyKind::Tuple(list) => {
+                let list: Vec<Ty> = list.iter().map(|&t| self.normalize(t, origin)).collect();
+                Ty::tuple(&list)
+            }
+            TyKind::Adt(adt, list) => {
+                let list: Vec<Ty> = list.iter().map(|&t| self.normalize(t, origin)).collect();
+                Ty::adt(adt.strukt, adt.name, &list)
+            }
+            TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, self.normalize(t, origin))),
+            TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.normalize(t, origin)),
+            _ => ty,
+        }
+    }
+
+    /// What `alias` is, if a bound in scope or one `impl` block says.
+    fn try_normalize(&mut self, alias: AliasTy) -> Option<Ty> {
+        let target = Ty::alias(alias);
+        for p in self.env_projections.clone() {
+            if p.alias.trait_ == alias.trait_
+                && p.alias.name == alias.name
+                && self.probe(|cx| cx.unify(Ty::alias(p.alias), target))
+            {
+                self.unify(Ty::alias(p.alias), target);
+                return Some(p.ty);
+            }
+        }
+        let self_ty = self.shallow(alias.args[0]);
+        if let TyKind::Infer(var) = self_ty.kind()
+            && !self.unknown(var).0
+        {
+            return None;
+        }
+        let pred = Predicate {
+            self_ty,
+            trait_ref: TraitRef {
+                trait_: alias.trait_,
+                name: alias.trait_name,
+                args: Ty::list(&alias.args[1..]),
+            },
+        };
+        let impls = self
+            .items
+            .trait_impls
+            .get(&alias.trait_)
+            .map_or(&[][..], |v| v);
+        let found: Vec<ImplId> = impls
+            .iter()
+            .copied()
+            .filter(|&imp| self.probe(|cx| cx.unify_impl(imp, pred).is_some()))
+            .collect();
+        let [imp] = found.as_slice() else {
+            return None;
+        };
+        let args = self.unify_impl(*imp, pred)?;
+        let ty = crate::traits::impl_type(self.sigs, *imp, alias.name)?;
+        Some(ty.subst(&args))
+    }
+
+    /// For a type written in a body, `<S as Tr>::Out` needs `S: Tr`.
+    pub(super) fn require_alias_traits(&mut self, ty: Ty, range: TextRange) {
+        match ty.kind() {
+            TyKind::Alias(alias) => {
+                let pred = Predicate {
+                    self_ty: alias.args[0],
+                    trait_ref: TraitRef {
+                        trait_: alias.trait_,
+                        name: alias.trait_name,
+                        args: Ty::list(&alias.args[1..]),
+                    },
+                };
+                let at = self.qself_type_range(range);
+                self.register(pred, at, ObligationKind::Bound);
+                for &a in alias.args {
+                    self.require_alias_traits(a, range);
+                }
+            }
+            TyKind::Tuple(list) | TyKind::Adt(_, list) => {
+                for &t in list {
+                    self.require_alias_traits(t, range);
+                }
+            }
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => self.require_alias_traits(t, range),
+            _ => {}
+        }
+    }
+
+    /// `S` in a type `<S as Tr>::Out` written at `range`, where rustc
+    /// reports `S: Tr` unmet; `range` if it is not such a type.
+    fn qself_type_range(&self, range: TextRange) -> TextRange {
+        self.body
+            .types
+            .iter()
+            .find_map(|(id, ty)| {
+                let flux_hir::TypeRef::Path(path) = ty else {
+                    return None;
+                };
+                let qself = path.qself.as_ref()?;
+                (self.source_map.types.get(id) == Some(&range)).then_some(qself.ty_range)
+            })
+            .unwrap_or(range)
     }
 
     /// Once the body is inferred: integer variables in waiting
@@ -170,6 +422,11 @@ impl Ctx<'_> {
                     self.int_vars(t, out);
                 }
             }
+            TyKind::Alias(alias) => {
+                for &t in alias.args {
+                    self.int_vars(t, out);
+                }
+            }
             TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => self.int_vars(t, out),
             _ => {}
         }
@@ -183,6 +440,20 @@ impl Ctx<'_> {
                 "the size for values of type `{}` cannot be known at compilation time",
                 self.describe(ob.root.self_ty)
             ),
+            ObligationKind::Operator { op, lhs, rhs } => {
+                let (lhs, rhs) = (self.describe(lhs), self.describe(rhs));
+                match op {
+                    Op::Binary(op) => super::binary_error(op, &lhs, &rhs),
+                    Op::Unary(op) => {
+                        let text = if op == flux_hir::UnaryOp::Neg {
+                            "-"
+                        } else {
+                            "!"
+                        };
+                        format!("cannot apply unary operator `{text}` to type `{lhs}`")
+                    }
+                }
+            }
             ObligationKind::ItemBounds { what, name, ty } => {
                 format!(
                     "the {what} `{name}` exists for {}, but its trait bounds were not satisfied",
@@ -190,23 +461,8 @@ impl Ctx<'_> {
                 )
             }
             _ => {
-                let self_ty = self.describe(ob.root.self_ty);
-                let args: Vec<String> = ob
-                    .root
-                    .trait_ref
-                    .args
-                    .iter()
-                    .map(|&a| self.describe(a))
-                    .collect();
-                let args = if args.is_empty() {
-                    String::new()
-                } else {
-                    format!("<{}>", args.join(", "))
-                };
-                format!(
-                    "the trait bound `{self_ty}: {}{args}` is not satisfied",
-                    self.trait_path(ob.root.trait_ref.trait_)
-                )
+                let path = self.trait_path(ob.root.trait_ref.trait_);
+                crate::traits::unmet_message(self.items, ob.root, &mut |t| self.describe(t), &path)
             }
         };
         if self.reported_unmet.insert((ob.range, message.clone())) {
@@ -376,7 +632,7 @@ impl Ctx<'_> {
 
     /// Whether `ty: t` (with `args`, if given) may hold, unifying as it
     /// goes; call it in a probe.
-    fn may_hold(&mut self, ty: Ty, t: TraitId, args: Option<&[Ty]>, depth: u32) -> bool {
+    pub(super) fn may_hold(&mut self, ty: Ty, t: TraitId, args: Option<&[Ty]>, depth: u32) -> bool {
         let ty = self.shallow(ty);
         if ty == Ty::ERROR || matches!(ty.kind(), TyKind::Infer(v) if !self.unknown(v).0) {
             return true;
@@ -696,7 +952,16 @@ impl Ctx<'_> {
             Some(Owner::Trait(_)) => true,
             None => false,
         };
-        if own == 0 && !owner_bounds {
+        let projections = sigs
+            .fn_projections
+            .get(function)
+            .is_some_and(|p| !p.is_empty())
+            || match data.owner {
+                Some(Owner::Impl(imp)) => sigs.impl_projections.get(imp).is_some(),
+                Some(Owner::Trait(t)) => sigs.trait_projections.get(t).is_some(),
+                None => false,
+            };
+        if own == 0 && !owner_bounds && !projections {
             return;
         }
         let preds = predicates_of(items, sigs, function);
@@ -741,6 +1006,32 @@ impl Ctx<'_> {
                 _ => (self.bound_range(function, *p, site), ObligationKind::Bound),
             };
             self.register(pred, range, kind);
+        }
+        // `T: Tr<Out = u8>`: what the arguments' associated types must be.
+        let projections = crate::traits::declared_projections(items, sigs, function);
+        for p in projections {
+            let range = self.bound_range(
+                function,
+                Predicate {
+                    self_ty: p.alias.args[0],
+                    trait_ref: TraitRef {
+                        trait_: p.alias.trait_,
+                        name: p.alias.trait_name,
+                        args: Ty::list(&p.alias.args[1..]),
+                    },
+                },
+                site,
+            );
+            let p = p.subst(args);
+            let expected = self.normalize(p.ty, range);
+            let var = self.new_var(false, range);
+            self.unify(var, expected);
+            self.projections.push(PendingProjection {
+                alias: p.alias,
+                var,
+                range,
+                expected: true,
+            });
         }
         self.select_obligations();
     }

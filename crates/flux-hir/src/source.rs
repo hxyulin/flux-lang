@@ -36,6 +36,7 @@ pub const CORE_ROOT: &str = "<core>";
 /// `library/core/src`, relative to [`CORE_ROOT`].
 const CORE_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/core/src/lib.rs")),
+    ("cmp.rs", include_str!("../../../library/core/src/cmp.rs")),
     (
         "convert.rs",
         include_str!("../../../library/core/src/convert.rs"),
@@ -46,6 +47,7 @@ const CORE_FILES: &[(&str, &str)] = &[
     ),
     ("mem.rs", include_str!("../../../library/core/src/mem.rs")),
     ("num.rs", include_str!("../../../library/core/src/num.rs")),
+    ("ops.rs", include_str!("../../../library/core/src/ops.rs")),
     (
         "prelude.rs",
         include_str!("../../../library/core/src/prelude.rs"),
@@ -96,10 +98,29 @@ impl SourceDb {
         }
     }
 
-    /// `core`'s root file, loaded.
+    /// `core`'s root file, loaded. All of `core`'s files are parsed
+    /// now, in parallel, since its modules will need them.
     pub fn load_core(&mut self) -> FileId {
-        self.load(&Path::new(CORE_ROOT).join("lib.rs"))
-            .expect("core is built in")
+        let root = Path::new(CORE_ROOT);
+        let parsed: Vec<SourceFile> = std::thread::scope(|scope| {
+            let threads: Vec<_> = CORE_FILES
+                .iter()
+                .filter(|(name, _)| !self.files.iter().any(|f| f.path == root.join(name)))
+                .map(|&(name, text)| {
+                    scope.spawn(move || SourceFile {
+                        path: root.join(name),
+                        text: text.to_owned(),
+                        parse: flux_syntax::parse_source_file(text),
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|t| t.join().expect("parsing never panics"))
+                .collect()
+        });
+        self.files.extend(parsed.into_iter().map(Arc::new));
+        self.load(&root.join("lib.rs")).expect("core is built in")
     }
 
     pub fn file(&self, id: FileId) -> &SourceFile {

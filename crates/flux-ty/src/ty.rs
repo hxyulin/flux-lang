@@ -19,7 +19,7 @@ use std::sync::{LazyLock, OnceLock, RwLock};
 
 use rustc_hash::FxHashMap;
 
-use flux_hir::StructId;
+use flux_hir::{StructId, TraitId};
 use flux_intern::{Symbol, sym};
 
 /// A type: a handle to its [`TyKind`].
@@ -37,6 +37,9 @@ pub enum TyKind {
     Adt(AdtId, GenericArgs),
     /// A generic parameter of the item whose types these are.
     Param(ParamTy),
+    /// `<T as Tr>::Out`: a trait's associated type for a type, where it
+    /// cannot be replaced by what it is (yet).
+    Alias(AliasTy),
     /// `!`
     Never,
     /// `*const T` and `*mut T`.
@@ -80,6 +83,22 @@ pub enum IntTy {
 pub struct AdtId {
     pub strukt: StructId,
     pub name: Symbol,
+}
+
+/// `<T as Tr<A>>::Out`: associated type `name` of trait `trait_`, with
+/// `args` its `Self` then the trait's own arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AliasTy {
+    pub trait_: TraitId,
+    pub trait_name: Symbol,
+    pub name: Symbol,
+    pub args: GenericArgs,
+}
+
+impl AliasTy {
+    pub fn self_ty(self) -> Ty {
+        self.args[0]
+    }
 }
 
 /// The generic arguments of a use of a generic item: one type per
@@ -153,6 +172,8 @@ static KINDS: Kinds = Kinds {
 const HAS_PARAM: u8 = 1;
 /// The type contains an inference variable.
 const HAS_INFER: u8 = 2;
+/// The type contains an associated type.
+const HAS_ALIAS: u8 = 4;
 
 /// Interned in this order, so the constants below are their indices.
 const PREDEFINED: [TyKind; 4] = [
@@ -182,6 +203,7 @@ impl Table {
             TyKind::Param(_) => HAS_PARAM,
             TyKind::Infer(_) => HAS_INFER,
             TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().fold(0, |f, &t| f | of(t)),
+            TyKind::Alias(alias) => alias.args.iter().fold(HAS_ALIAS, |f, &t| f | of(t)),
             TyKind::RawPtr(_, t) | TyKind::Ref(_, t) => of(t),
             TyKind::Int(_) | TyKind::Bool | TyKind::Never | TyKind::CStr | TyKind::Error => 0,
         };
@@ -285,6 +307,15 @@ impl Ty {
         self.flags() & HAS_INFER != 0
     }
 
+    /// Whether the type contains an associated type.
+    pub fn has_aliases(self) -> bool {
+        self.flags() & HAS_ALIAS != 0
+    }
+
+    pub fn alias(alias: AliasTy) -> Ty {
+        Ty::new(TyKind::Alias(alias))
+    }
+
     /// The type with each generic parameter replaced by its argument in
     /// `args`.
     pub fn subst(self, args: &[Ty]) -> Ty {
@@ -295,6 +326,10 @@ impl Ty {
             TyKind::Param(param) => args.get(param.index as usize).copied().unwrap_or(Ty::ERROR),
             TyKind::Tuple(elements) => Ty::tuple(&subst_list(elements, args)),
             TyKind::Adt(adt, list) => Ty::new(TyKind::Adt(adt, Ty::list(&subst_list(list, args)))),
+            TyKind::Alias(alias) => Ty::alias(AliasTy {
+                args: Ty::list(&subst_list(alias.args, args)),
+                ..alias
+            }),
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, pointee.subst(args)),
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, pointee.subst(args))),
             _ => self,
@@ -307,7 +342,7 @@ impl Ty {
     pub fn is_copy(self) -> bool {
         match self.kind() {
             TyKind::Tuple(elements) => elements.iter().all(|t| t.is_copy()),
-            TyKind::Adt(..) | TyKind::Param(_) => false,
+            TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) => false,
             TyKind::Ref(Mutability::Mut, _) => false,
             _ => true,
         }
@@ -437,6 +472,14 @@ impl fmt::Display for Ty {
                 f.write_str(">")
             }
             TyKind::Param(param) => write!(f, "{}", param.name),
+            TyKind::Alias(alias) => {
+                write!(f, "<{} as {}", alias.args[0], alias.trait_name)?;
+                if alias.args.len() > 1 {
+                    let args: Vec<String> = alias.args[1..].iter().map(Ty::to_string).collect();
+                    write!(f, "<{}>", args.join(", "))?;
+                }
+                write!(f, ">::{}", alias.name)
+            }
             TyKind::Never => f.write_str("!"),
             TyKind::RawPtr(Mutability::Not, pointee) => write!(f, "*const {pointee}"),
             TyKind::RawPtr(Mutability::Mut, pointee) => write!(f, "*mut {pointee}"),

@@ -1,0 +1,125 @@
+struct S {}
+struct NotShape {}
+struct A {}
+struct B {}
+struct C {}
+struct E {}
+struct W<T> { 0: T }
+struct D {}
+struct Bytes {}
+struct Odd {}
+struct Odds {}
+struct Header {}
+fn area(&Self) -> i32
+fn area(&S) -> i32
+    self@0: &S
+fn get(&Self) -> <Self as Tr>::Out
+fn get(&S) -> i32
+    self@0: &S
+fn m(&Self) -> ()
+fn unbounded<T>({error}) -> ()
+    _x@0: {error}
+fn not_in_bound<T>({error}) -> ()
+    _x@0: {error}
+fn get(&Self) -> {error}
+fn unknown_binding<T>(T) -> ()
+    _x@0: T
+fn bound_without_types<T>({error}) -> ()
+    _x@0: {error}
+fn ambiguous_bounds<T>({error}) -> ()
+    _x@0: {error}
+fn concrete_shorthand() -> ()
+    _x@0: {error}
+fn inherent_self(&S) -> {error}
+    self@0: &S
+fn qualified_unknown() -> ()
+    _x@0: {error}
+fn qualified_not_impl() -> ()
+    _x@0: {error}
+fn area(&A) -> i32
+    self@0: &A
+fn get(&C) -> i32
+    self@0: &C
+fn Out() -> ()
+fn get(&D) -> u8
+    self@0: &D
+fn wants_u8<T>(T) -> ()
+    _x@0: T
+fn wants_u8_turbofish<T>() -> ()
+fn binding_mismatch() -> ()
+fn binding_mismatch_generic<U>(U) -> ()
+    u@0: U
+fn rigid_vs_i32<T>(T) -> i32
+    x@0: T
+fn rigid_vs_param<T>(T) -> T
+    x@0: T
+fn param_vs_rigid<T>(T) -> <T as Tr>::Out
+    x@0: T
+fn two_params<T, U>(T, U) -> <T as Tr>::Out
+    _a@0: T
+    b@1: U
+fn unbounded_qself<T>({error}) -> ()
+    _x@0: {error}
+fn two_traits<T>(&T) -> <T as Other>::Out
+    x@0: &T
+fn binding_vs_u8<T>(T) -> u8
+    x@0: T
+fn binding_vs_bool<T>() -> <T as Tr>::Out
+fn normalized_vs_u8() -> ()
+    _x@0: u8
+    _y@1: i32
+fn convert(&Self) -> T
+fn convert(&S) -> bool
+    self@0: &S
+fn too_many<T>(T) -> ()
+    _x@0: T
+fn wants_u8_out<T>(T) -> ()
+    _x@0: T
+fn rigid_binding<U>(U) -> ()
+    u@0: U
+fn add(Odd, i32) -> u8
+    self@0: Odd
+    _rhs@1: i32
+fn binding_on_struct({error}) -> ()
+    _x@0: {error}
+fn main() -> ()
+error 726..729: associated type `Out` not found for `T`
+error 765..769: associated type `Nope` not found for `T`
+error 819..823: associated type `Nope` not found for `Self`
+error 853..857: associated type `Nope` not found for `Tr`
+error 919..922: associated type `Out` not found for `T`
+error 1011..1017: ambiguous associated type `Out` in bounds of `T`
+error 1119..1125: ambiguous associated type
+error 1174..1183: ambiguous associated type
+error 1318..1322: cannot find associated type `Nope` in trait `Tr`
+error 1438..1446: the trait bound `NotShape: Tr` is not satisfied
+error 1585..1600: type `Out` is not a member of trait `Shape`
+error 1649..1667: not all trait items implemented, missing: `m`
+error 1674..1687: item `m` is an associated type, which doesn't match its trait `NoTypes`
+error 1691..1704: not all trait items implemented, missing: `Out`
+error 1811..1827: not all trait items implemented, missing: `Out`
+error 1834..1845: item `Out` is an associated method, which doesn't match its trait `Other`
+error 1994..2002: the trait bound `NotShape: Shape` is not satisfied
+error 2108..2109: the trait bound `T: Shape` is not satisfied
+error 2309..2311: method `get` has an incompatible type for trait
+error 2518..2519: type mismatch resolving `<S as Tr>::Out == u8`
+error 2547..2548: type mismatch resolving `<S as Tr>::Out == u8`
+error 2623..2624: type mismatch resolving `<U as Tr>::Out == u8`
+error 2720..2727: mismatched types: expected `i32`, found `<T as Tr>::Out`
+error 2773..2780: mismatched types: expected `T`, found `<T as Tr>::Out`
+error 2831..2832: mismatched types: expected `<T as Tr>::Out`, found `T`
+error 2893..2900: mismatched types: expected `<T as Tr>::Out`, found `<U as Tr>::Out`
+error 2935..2938: associated type `Out` not found for `T`
+error 3007..3014: mismatched types: expected `<T as Other>::Out`, found `<T as Tr>::Out`
+error 3129..3136: mismatched types: expected `u8`, found `i32`
+error 3195..3199: mismatched types: expected `i32`, found `bool`
+error 3244..3251: mismatched types: expected `u8`, found `i32`
+error 3282..3286: mismatched types: expected `i32`, found `bool`
+error 3540..3544: method `convert` has an incompatible type for trait
+error 3584..3591: trait takes at most 1 generic argument but 2 generic arguments were supplied
+error 3797..3798: type mismatch resolving `<U as Rigid>::Out == u8`
+error 4101..4103: cannot add `i32` to `u8`
+error 4284..4287: type mismatch resolving `<Odd as Add<i32>>::Output == i32`
+error 4365..4366: struct takes 1 generic argument but 0 generic arguments were supplied
+error 4367..4376: associated item constraints are not allowed here
+error 4410..4419: associated item constraints are not allowed here

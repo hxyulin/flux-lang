@@ -118,14 +118,16 @@ fn truncated(ty: Ty, depth: u32) -> String {
 
 /// `body`, of a generic function, with generic arguments `args`
 /// substituted for its parameters.
-pub fn subst_body(body: &Body, args: &[Ty]) -> Body {
+pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Body {
     let mut body = body.clone();
+    let items = &hir.items;
+    let subst = |ty: Ty| flux_ty::traits::instance_ty(items, sigs, ty, args);
     for local in body.locals.values_mut() {
-        local.ty = local.ty.subst(args);
+        local.ty = subst(local.ty);
     }
     let operand = |op: &mut Operand| {
         if let Operand::Const(Constant::Item { ty, .. }) = op {
-            *ty = ty.subst(args);
+            *ty = subst(*ty);
         }
     };
     for data in body.blocks.values_mut() {
@@ -137,7 +139,7 @@ pub fn subst_body(body: &Body, args: &[Ty]) -> Body {
                 Rvalue::Use(op) | Rvalue::UnaryOp(_, op) => operand(op),
                 Rvalue::Cast(op, ty) => {
                     operand(op);
-                    *ty = ty.subst(args);
+                    *ty = subst(*ty);
                 }
                 Rvalue::BinaryOp(_, l, r) => {
                     operand(l);
@@ -153,7 +155,8 @@ pub fn subst_body(body: &Body, args: &[Ty]) -> Body {
                 args: call_args,
                 ..
             } => {
-                *generic_args = Ty::list(&subst_list(generic_args, args));
+                let list: Vec<Ty> = generic_args.iter().map(|&a| subst(a)).collect();
+                *generic_args = Ty::list(&list);
                 call_args.iter_mut().for_each(operand);
             }
             TerminatorKind::SwitchInt { discr, .. } => operand(discr),

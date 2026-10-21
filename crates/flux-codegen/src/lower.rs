@@ -99,7 +99,10 @@ pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Result<Modul
         let function = if instance.args.is_empty() {
             ctx.function(instance, body)
         } else {
-            ctx.function(instance, &flux_mir::mono::subst_body(body, instance.args))
+            ctx.function(
+                instance,
+                &flux_mir::mono::subst_body(hir, &typed.sigs, body, instance.args),
+            )
         };
         module.functions.push(function);
     }
@@ -187,7 +190,7 @@ fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: I
                 feed(if m == Mutability::Mut { b"m" } else { b"c" });
                 encode(pointee, feed);
             }
-            TyKind::Param(_) | TyKind::Infer(_) | TyKind::Error => {
+            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Infer(_) | TyKind::Error => {
                 unreachable!("instances are of concrete types")
             }
         }
@@ -220,6 +223,7 @@ fn keel_type(ty: Ty) -> Option<Type> {
         TyKind::Tuple(_)
         | TyKind::Adt(..)
         | TyKind::Param(_)
+        | TyKind::Alias(_)
         | TyKind::Never
         | TyKind::CStr
         | TyKind::Infer(_)
@@ -409,7 +413,12 @@ impl Ctx<'_> {
     /// `instance`, whose MIR is `body` with its generic arguments
     /// substituted.
     fn function(&mut self, instance: Instance, body: &Body) -> Function {
-        let sig = &self.typed.sigs[instance.function].subst(instance.args);
+        let sig = &flux_ty::traits::instance_sig(
+            &self.hir.items,
+            &self.typed.sigs,
+            instance.function,
+            instance.args,
+        );
         let mut function = Function::new(
             instance_symbol(self.hir, self.symbols, instance),
             signature(&self.typed.sigs, sig, false),
@@ -842,7 +851,12 @@ impl Lower<'_, '_, '_> {
                 target,
             } => {
                 let callee = self.callee(*func, generic_args);
-                let ret = self.ctx.typed.sigs[*func].ret.subst(generic_args);
+                let ret = flux_ty::traits::instance_ty(
+                    &self.ctx.hir.items,
+                    &self.ctx.typed.sigs,
+                    self.ctx.typed.sigs[*func].ret,
+                    generic_args,
+                );
                 let sret = match return_kind(self.sigs, ret) {
                     Return::Sret(layout) => {
                         let slot = self
@@ -942,7 +956,12 @@ impl Lower<'_, '_, '_> {
             return callee;
         }
         let variadic = self.ctx.hir.items.functions[func].is_variadic;
-        let sig = self.ctx.typed.sigs[func].subst(generic_args);
+        let sig = flux_ty::traits::instance_sig(
+            &self.ctx.hir.items,
+            &self.ctx.typed.sigs,
+            func,
+            generic_args,
+        );
         let sig = signature(self.sigs, &sig, variadic);
         let symbol = instance_symbol(self.ctx.hir, self.ctx.symbols, instance);
         let callee = self.b.import_function(&symbol, sig);

@@ -1,0 +1,188 @@
+struct V { 0: i32, 1: i32 }
+struct Bits { 0: u8 }
+struct Flag { 0: bool }
+struct W<T> { 0: T }
+fn add(V, V) -> V
+    self@0: V
+    rhs@1: V
+fn sub(V, V) -> V
+    self@0: V
+    rhs@1: V
+fn mul(V, i32) -> V
+    self@0: V
+    k@1: i32
+fn mul(V, V) -> i32
+    self@0: V
+    rhs@1: V
+fn div(V, i32) -> V
+    self@0: V
+    k@1: i32
+fn rem(V, i32) -> V
+    self@0: V
+    k@1: i32
+fn neg(V) -> V
+    self@0: V
+fn bitand(Bits, Bits) -> Bits
+    self@0: Bits
+    rhs@1: Bits
+fn bitor(Bits, Bits) -> Bits
+    self@0: Bits
+    rhs@1: Bits
+fn bitxor(Bits, Bits) -> Bits
+    self@0: Bits
+    rhs@1: Bits
+fn shl(Bits, u32) -> Bits
+    self@0: Bits
+    n@1: u32
+fn shr(Bits, u32) -> Bits
+    self@0: Bits
+    n@1: u32
+fn not(Bits) -> Bits
+    self@0: Bits
+fn not(Flag) -> bool
+    self@0: Flag
+fn add_assign(&mut V, V) -> ()
+    self@0: &mut V
+    rhs@1: V
+fn sub_assign(&mut V, V) -> ()
+    self@0: &mut V
+    rhs@1: V
+fn mul_assign(&mut V, i32) -> ()
+    self@0: &mut V
+    k@1: i32
+fn div_assign(&mut V, i32) -> ()
+    self@0: &mut V
+    k@1: i32
+fn rem_assign(&mut V, i32) -> ()
+    self@0: &mut V
+    k@1: i32
+fn bitand_assign(&mut Bits, Bits) -> ()
+    self@0: &mut Bits
+    rhs@1: Bits
+fn bitor_assign(&mut Bits, Bits) -> ()
+    self@0: &mut Bits
+    rhs@1: Bits
+fn bitxor_assign(&mut Bits, Bits) -> ()
+    self@0: &mut Bits
+    rhs@1: Bits
+fn shl_assign(&mut Bits, u32) -> ()
+    self@0: &mut Bits
+    n@1: u32
+fn shr_assign(&mut Bits, u32) -> ()
+    self@0: &mut Bits
+    n@1: u32
+fn eq(&V, &V) -> bool
+    self@0: &V
+    other@1: &V
+fn eq(&Bits, &i32) -> bool
+    self@0: &Bits
+    other@1: &i32
+fn add(W<T>, W<T>) -> W<T>
+    self@0: W<T>
+    rhs@1: W<T>
+fn eq(&W<T>, &W<T>) -> bool
+    self@0: &W<T>
+    other@1: &W<T>
+fn arithmetic() -> V
+    a@0: V
+    b@1: V
+    c@2: V
+    d@3: i32
+fn chains() -> V
+fn bits() -> Bits
+    a@0: Bits
+    b@1: Bits
+fn unary() -> bool
+    v@0: V
+    b@1: bool
+fn compound() -> V
+    v@0: V
+fn compound_bits() -> Bits
+    b@0: Bits
+fn compound_places(&mut V, &mut W<V>) -> ()
+    r@0: &mut V
+    w@1: &mut W<V>
+fn equality() -> bool
+    a@0: V
+    b@1: V
+    r@2: &V
+fn generic_struct() -> bool
+    w@0: W<V>
+    n@1: W<i32>
+fn sum3<T>(T, T, T) -> T
+    a@0: T
+    b@1: T
+    c@2: T
+fn add_output<T>(T, T) -> <T as Add<T>>::Output
+    a@0: T
+    b@1: T
+fn add_where<T, U>(T, U) -> <T as Add<U>>::Output
+    a@0: T
+    b@1: U
+fn negate<T>(T) -> T
+    x@0: T
+fn invert<T>(T) -> <T as Not>::Output
+    x@0: T
+fn accumulate<T>(T, T, T) -> T
+    acc@0: T
+    x@1: T
+    y@2: T
+fn same<T>(&T, &T) -> bool
+    a@0: &T
+    b@1: &T
+fn same_values<T>(T, T) -> bool
+    a@0: T
+    b@1: T
+fn same_eq<T>(&T, &T) -> bool
+    a@0: &T
+    b@1: &T
+fn mixed<T>(&T) -> bool
+    a@0: &T
+fn arith<T>(T, T, T, T, T) -> T
+    a@0: T
+    b@1: T
+    c@2: T
+    d@3: T
+    e@4: T
+fn logic<T>(T, T, T, T) -> <T as Not>::Output
+    a@0: T
+    b@1: T
+    c@2: T
+    d@3: T
+fn shifts<T>(T) -> T
+    x@0: T
+fn compound_generic<T>(T, T, T, T) -> T
+    x@0: T
+    a@1: T
+    b@2: T
+    c@3: T
+fn integer_impls() -> i64
+    a@0: i64
+    b@1: i64
+    c@2: i64
+    d@3: i64
+fn generic_calls() -> i32
+    v@0: V
+    n@1: i32
+    m@2: i64
+    k@3: V
+    neg@4: i32
+    b@5: bool
+    acc@6: u16
+    eq@7: bool
+    eq2@8: bool
+fn get(&Self) -> <Self as Tr>::Out
+fn get(&V) -> i32
+    self@0: &V
+fn get(&Bits) -> V
+    self@0: &Bits
+fn add_gets<T>(&T) -> i32
+    a@0: &T
+fn binding_ops<T>(&T) -> i32
+    a@0: &T
+fn projections() -> i32
+    a@0: i32
+    b@1: V
+fn main() -> ()
+    v@0: V
+    w@1: W<V>

@@ -1,0 +1,40 @@
+struct S;
+
+struct G<T>(T);
+
+trait Tr;
+
+trait Two;
+
+trait WithDefault;
+
+trait Defaults<T, U>;
+
+trait Defaults2<T, U, V>;
+
+trait Three;
+
+impl Two for S;
+
+impl S;
+
+impl Three for S;
+
+fn m(&Self, T, U) -> ();
+
+fn m(&Self, T, U, V) -> ();
+
+fn binding_in_expr() -> () {
+    let _ = G::<>(1);
+}
+
+fn main() -> () {}
+
+error 164..173: the name `Out` is defined multiple times
+error 243..255: duplicate definitions with name `A`:
+error 355..370: associated type defaults are unstable
+error 387..407: inherent associated types are unstable
+error 476..477: generic parameters with a default must be trailing
+error 541..542: generic parameters with a default must be trailing
+error 731..738: associated type in `impl` without body
+error 838..847: associated item constraints are not allowed here

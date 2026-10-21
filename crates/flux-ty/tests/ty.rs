@@ -148,3 +148,19 @@ fn corpus_checking_never_panics() {
     }
     println!("checked {files} files");
 }
+
+/// `core`'s bodies are lowered and checked only where programs reach
+/// them, so check all of them here.
+#[test]
+fn core_is_clean() {
+    let (_, _, hir) = flux_hir::lower_text("main.rs", "fn main() {}\n");
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    for (id, f) in hir.items.functions.iter() {
+        if f.has_body && !hir.is_program(id) {
+            let lowered = hir.lower_core_body(id);
+            assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        }
+    }
+    let typed = flux_ty::check_file_all(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+}
