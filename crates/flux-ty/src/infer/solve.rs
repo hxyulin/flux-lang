@@ -27,6 +27,8 @@ pub(super) struct Obligation {
     pub root: Predicate,
     pub range: TextRange,
     pub kind: ObligationKind,
+    /// How many `impl` blocks' bounds it is from `root`.
+    pub depth: u32,
 }
 
 /// How an unmet obligation is reported.
@@ -147,6 +149,7 @@ impl Ctx<'_> {
             root: pred,
             range,
             kind,
+            depth: 0,
         });
     }
 
@@ -172,8 +175,23 @@ impl Ctx<'_> {
                             ObligationKind::TraitCall { .. } => ObligationKind::Bound,
                             kind => kind,
                         };
+                        // A bound that needs itself, or ever larger types,
+                        // overflows, as in rustc.
+                        if ob.depth > 128 && !nested.is_empty() {
+                            let root = self.describe_predicate(ob.root);
+                            self.error(
+                                ob.range,
+                                format!("overflow evaluating the requirement `{root}`"),
+                            );
+                            continue;
+                        }
                         for pred in nested {
-                            self.obligations.push(Obligation { pred, kind, ..ob });
+                            self.obligations.push(Obligation {
+                                pred,
+                                kind,
+                                depth: ob.depth + 1,
+                                ..ob
+                            });
                         }
                     }
                     Selection::Ambiguous => self.obligations.push(ob),
@@ -385,9 +403,12 @@ impl Ctx<'_> {
             }
         }
         self.select_obligations();
-        // As in rustc, a body with errors reports no ambiguity: what is
-        // unknown is likely so because of them.
-        let tainted = !self.diagnostics.is_empty();
+        // As in rustc, a body with errors, or with values of types that
+        // are (from its signature or a struct's), reports no ambiguity:
+        // what is unknown is likely so because of them.
+        let tainted =
+            !self.diagnostics.is_empty() || self.expr_types.iter().any(|(_, &t)| t == Ty::ERROR);
+        self.tainted = tainted;
         for ob in std::mem::take(&mut self.obligations) {
             if tainted {
                 continue;
@@ -470,6 +491,18 @@ impl Ctx<'_> {
         }
     }
 
+    /// `S: Tr<A>`, as rustc shows a bound in messages.
+    fn describe_predicate(&mut self, p: Predicate) -> String {
+        let args: Vec<String> = p.trait_ref.args.iter().map(|&a| self.describe(a)).collect();
+        let args = if args.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", args.join(", "))
+        };
+        let path = self.trait_path(p.trait_ref.trait_);
+        format!("{}: {path}{args}", self.describe(p.self_ty))
+    }
+
     /// A trait as rustc names it in messages: by its path from the crate
     /// root (`m::Tr`) if it is the program's, else by its name.
     fn trait_path(&self, t: TraitId) -> String {
@@ -514,6 +547,9 @@ impl Ctx<'_> {
         if self.items.traits[t].lang == Some(flux_intern::sym::sized)
             && self_ty != Ty::param(0, flux_intern::kw::SelfUpper)
         {
+            return Selection::Met(Vec::new());
+        }
+        if crate::traits::is_builtin_copy(self.items, t, self_ty) {
             return Selection::Met(Vec::new());
         }
         let env: Vec<Predicate> = self
@@ -638,8 +674,10 @@ impl Ctx<'_> {
             return true;
         }
         // Deep enough, or (from `has_impl_header`) bounds aside.
-        let check_bounds = depth < 8;
-        if self.items.traits[t].lang == Some(flux_intern::sym::sized) {
+        let check_bounds = depth < 64;
+        if self.items.traits[t].lang == Some(flux_intern::sym::sized)
+            || crate::traits::is_builtin_copy(self.items, t, ty)
+        {
             return true;
         }
         let in_env = self.param_env.iter().any(|p| {

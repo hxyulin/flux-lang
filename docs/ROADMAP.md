@@ -27,11 +27,11 @@ privacy, type inference, constants and their compile-time evaluation,
 MIR and borrow checking, for functions over integers, `bool`, raw
 pointers, tuples and structs, with methods and references that need no
 lifetimes (parameters, temporaries and locals assigned once), generic
-functions, structs and `impl` blocks, monomorphized, and traits with
-bounds, statically dispatched. In order next:
+functions, structs and `impl` blocks, monomorphized, traits with
+bounds, statically dispatched, associated types, overloaded operators,
+and `Copy`/`Clone`/`PartialEq`/`Eq` with `#[derive]`. In order next:
 
-1. More of traits: `Copy` and `Clone`, with `#[derive]`; `Drop`;
-   associated constants; bounds on structs. Then `core` can define
+1. More of traits: `Drop`; associated constants; bounds on structs. Then `core` can define
    the pointer methods and `CStr` (now built into the compiler) through
    lang items and intrinsics. `for` loops over `Iterator` need `Option`,
    so they come with enums.
@@ -65,7 +65,7 @@ provides its own small core library, [`library/core`](../library/core),
 written in flux and compiled with every program, that defines the same
 names with the same meaning. So far it has the integer types' constants
 and methods, `mem::drop`, `convert::identity`, `marker::Sized`, the
-operator traits and `PartialEq`/`Eq`; `Copy` and `Clone` come next, and
+operator traits, `PartialEq`/`Eq`, `Copy` and `Clone`, and
 `Option`, `Result` and `PartialOrd` with enums. It is lowered and type-checked on every
 build (about a millisecond today), and only the functions a program
 calls are compiled; caching it is the first use for the incremental

@@ -12,7 +12,12 @@ pub trait PartialEq<Rhs = Self> {
 }
 
 /// Equality that is reflexive: `a == a` for every `a`.
-pub trait Eq: PartialEq {}
+#[lang = "total_eq"]
+pub trait Eq: PartialEq {
+    /// What `#[derive(Eq)]` defines, to check that each field is `Eq`.
+    #[doc(hidden)]
+    fn assert_receiver_is_total_eq(&self) {}
+}
 
 impl PartialEq for i8 { fn eq(&self, other: &i8) -> bool { *self == *other } fn ne(&self, other: &i8) -> bool { *self != *other } }
 impl Eq for i8 {}

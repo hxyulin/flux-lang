@@ -94,7 +94,8 @@ reported as "not supported yet":
   tuple structs and unit structs, with `..` rest patterns. Patterns are
   irrefutable: `let` and parameters only.
 - **Attributes:** only `allow`, `warn`, `deny`, `expect`, `inline`,
-  `cold`, `must_use` and `doc`, which are ignored, and
+  `cold`, `must_use` and `doc`, which are ignored, `derive` on structs,
+  and
   `#[diagnostic::on_unimplemented(message = "...")]` on traits, whose
   message reports their unmet bounds, as in rustc.
 
@@ -109,9 +110,14 @@ in rustc, arguments after a variadic function's `...` must be at least
 32 bits wide or pointers: `u8`, `i16` and `bool` need a cast to
 `c_int`/`c_uint` first.
 
-Values of tuples of `Copy` types are copied; structs are moved (there is
-no `#[derive(Clone, Copy)]` yet), and flux reports uses after a move,
-including partial moves of fields, as rustc's borrow checker does.
+Values of `Copy` types are copied: integers, `bool`, raw pointers,
+shared references, tuples of `Copy` types, structs that implement
+`Copy` and type parameters bounded by it. Other values are moved, and
+flux reports uses after a move, including partial moves of fields, as
+rustc's borrow checker does. `#[derive(Clone, Copy, PartialEq, Eq)]`
+implements those traits for a struct as rustc does (for a generic one,
+where its parameters implement them); other derives are not supported
+yet.
 Structs and tuples cannot be passed to C yet.
 
 Generic items are checked once, in terms of their parameters, and
@@ -142,8 +148,8 @@ Operators on other types than integers and `bool` call the methods of
 integers and `bool` too, so generic code can use them; `&a == &b`
 compares `a` and `b`. There are no trait objects (`dyn Tr`) or
 `impl Trait` types, no generic associated types or associated constants
-in traits, and `PartialOrd` (so `<` on other types), `Copy`, `Clone`,
-`Drop` and `#[derive]` are not supported yet, nor are operators on
+in traits, and `PartialOrd` (so `<` on other types) and `Drop` are
+not supported yet, nor are operators on
 references to integers (`&a + &b`, `-&a`). `Sized` is, as a bound:
 every type flux has is sized, but a trait's provided methods must say
 `where Self: Sized` to take or hold `Self` by value, as in rustc.

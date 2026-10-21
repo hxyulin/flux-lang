@@ -21,8 +21,7 @@ time, C strings, and calls to C through `unsafe extern "C"` (including
 its own small `core` library, written in flux. Programs in
 [`tests/run`](tests/run) are built by both rustc and flux and must behave
 identically. Everything else in Rust is on the [roadmap](docs/ROADMAP.md):
-`Copy`, `Clone` and `Drop` come next, then enums, so that `core` can
-grow.
+`Drop` comes next, then enums, so that `core` can grow.
 
 The parser covers much more of Rust than the later stages: it handles
 all of its own sources and keel's, and parses 1 GiB of crates.io sources

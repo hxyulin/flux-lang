@@ -1,0 +1,106 @@
+struct S;
+
+struct Bare;
+
+struct Value;
+
+struct Debugged;
+
+struct Mixed;
+
+struct Ordered;
+
+struct ByPath;
+
+struct LeadingComma;
+
+struct DoubleComma;
+
+struct WithArguments;
+
+struct NoComma;
+
+struct Literal;
+
+struct Brackets;
+
+struct Unknown;
+
+struct Fields { x: i32 }
+
+trait Tr;
+
+impl Tr for i32;
+
+impl S;
+
+impl ::core::clone::Clone for Mixed;
+
+impl ::core::marker::Copy for Mixed;
+
+impl ::core::cmp::PartialEq for Ordered;
+
+impl ::core::cmp::Eq for Ordered;
+
+impl ::core::clone::Clone for LeadingComma;
+
+impl ::core::clone::Clone for DoubleComma;
+
+impl ::core::cmp::PartialEq for DoubleComma;
+
+fn function() -> () {}
+
+fn S::method(self@0: &Self) -> () {}
+
+fn parameter(_x@0: i32) -> () {}
+
+fn main() -> () {}
+
+fn <Mixed as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+    (*self@0)
+}
+
+fn <Ordered as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+    true
+}
+
+fn <Ordered as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {}
+
+fn <LeadingComma as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+    LeadingComma {  }
+}
+
+fn <DoubleComma as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+    DoubleComma {  }
+}
+
+fn <DoubleComma as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+    true
+}
+
+error 337..353: `derive` may only be applied to `struct`s, `enum`s and `union`s
+error 372..388: `derive` may only be applied to `struct`s, `enum`s and `union`s
+error 402..418: `derive` may only be applied to `struct`s, `enum`s and `union`s
+error 439..455: `derive` may only be applied to `struct`s, `enum`s and `union`s
+error 471..487: `derive` may only be applied to `struct`s, `enum`s and `union`s
+error 507..527: `derive` may only be applied to `struct`s, `enum`s and `union`s
+error 590..606: `derive` may only be applied to `struct`s, `enum`s and `union`s
+error 667..676: malformed `derive` attribute input
+error 691..710: malformed `derive` attribute input
+error 803..808: deriving `Debug` is not supported yet
+error 845..852: deriving `Default` is not supported yet
+error 860..864: deriving `Hash` is not supported yet
+error 891..901: deriving `PartialOrd` is not supported yet
+error 903..906: deriving `Ord` is not supported yet
+error 1003..1021: paths in `derive` are not supported yet
+error 1023..1045: paths in `derive` are not supported yet
+error 1064..1151: enums are not supported yet
+error 1206..1207: expected identifier, found `,`
+error 1252..1253: expected identifier, found `,`
+error 1300..1303: traits in `#[derive(...)]` don't accept arguments
+error 1344..1348: expected one of `(`, `,`, `::`, or `=`, found `Copy`
+error 1377..1384: expected path to a trait, found literal
+error 1412..1419: wrong meta list delimiters
+error 1448..1452: cannot find derive macro `Nope` in this scope
+error 1593..1599: expected non-macro attribute, found attribute macro `derive`
+error 1638..1644: expected non-macro attribute, found attribute macro `derive`

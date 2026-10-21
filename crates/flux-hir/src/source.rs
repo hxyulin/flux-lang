@@ -36,6 +36,10 @@ pub const CORE_ROOT: &str = "<core>";
 /// `library/core/src`, relative to [`CORE_ROOT`].
 const CORE_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/core/src/lib.rs")),
+    (
+        "clone.rs",
+        include_str!("../../../library/core/src/clone.rs"),
+    ),
     ("cmp.rs", include_str!("../../../library/core/src/cmp.rs")),
     (
         "convert.rs",

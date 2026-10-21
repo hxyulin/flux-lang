@@ -70,6 +70,10 @@
   as `core`'s operator traits do. `core`'s bodies are lowered and
   type-checked only where the program reaches them, and its files are
   parsed in parallel.
+- Support `Copy` and `Clone` (`core::marker`, `core::clone`, in the
+  prelude): values of types that implement `Copy` are copied, others
+  moved, and E0204 checks `Copy` impls. `#[derive(Clone, Copy,
+  PartialEq, Eq)]` on structs implements them as rustc does.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 

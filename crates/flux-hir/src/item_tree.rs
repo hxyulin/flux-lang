@@ -336,6 +336,11 @@ pub struct Function {
     pub item_range: TextRange,
     /// `(x: i32)`
     pub param_list: TextRange,
+    /// Made by `#[derive]` on this struct, with a body made for its
+    /// fields: `clone`, `eq` or `Eq`'s check. `Derive::Copy` is a `clone`
+    /// that copies, for a struct without parameters that derives `Copy`
+    /// too, as rustc's does.
+    pub derived: Option<(StructId, Derive)>,
 }
 
 #[derive(Debug)]
@@ -659,11 +664,14 @@ impl ItemTree {
         let mut collector = Collector {
             db,
             items: &mut items,
+            derives: Vec::new(),
         };
         if let Some(core) = core {
             collector.collect_crate(core, sym::core, true);
+            collector.expand_derives();
         }
         collector.collect_crate(root, crate_name, false);
+        collector.expand_derives();
         crate::def_map::resolve(&mut items);
         items
     }
@@ -776,6 +784,9 @@ impl ItemTree {
 struct Collector<'a> {
     db: &'a mut SourceDb,
     items: &'a mut ItemTree,
+    /// The `#[derive]`s of a crate's structs, made into `impl` blocks
+    /// after its other items, as rustc expands them.
+    derives: Vec<(Ctx, StructId, Derive, TextRange, NodeId)>,
 }
 
 /// What collecting is inside of.
@@ -1574,7 +1585,7 @@ impl Collector<'_> {
         if let Some(list) = f.param_list() {
             if let Some(param) = list.self_param() {
                 let range = param.syntax().text_range();
-                check_attrs(param.attrs(), diagnostics);
+                check_inert_attrs(param.attrs(), diagnostics);
                 if owner.is_none() {
                     diagnostics.push(Diagnostic::new(
                         range,
@@ -1603,7 +1614,7 @@ impl Collector<'_> {
             }
             let count = list.params().count();
             for (i, param) in list.params().enumerate() {
-                check_attrs(param.attrs(), diagnostics);
+                check_inert_attrs(param.attrs(), diagnostics);
                 if let Some(dots) = param.dot3_token() {
                     let message = if !in_extern_block {
                         Some("`...` is not supported for non-extern functions")
@@ -1706,6 +1717,7 @@ impl Collector<'_> {
                 has_body: has_body && !in_extern_block,
                 node: f.syntax().id(),
                 name_range: name.syntax().text_range(),
+                derived: None,
             }),
         )
     }
@@ -1775,7 +1787,14 @@ impl Collector<'_> {
     }
 
     fn collect_struct(&mut self, ctx: Ctx, s: ast::Struct<'_>) {
-        check_attrs(s.attrs(), &mut self.items.diagnostics);
+        let mut derives = Vec::new();
+        for attr in s.attrs() {
+            if attr_name(attr) == Some("derive") {
+                derive_attr(attr, &mut derives, &mut self.items.diagnostics);
+            } else {
+                check_attr(attr, &mut self.items.diagnostics);
+            }
+        }
         let vis = self.visibility(ctx, s.visibility());
         let Some(name) = s.name() else {
             return;
@@ -1804,7 +1823,7 @@ impl Collector<'_> {
         let mut fields = Vec::new();
         let kind = if let Some(list) = s.record_field_list() {
             for field in list.fields() {
-                check_attrs(field.attrs(), &mut self.items.diagnostics);
+                check_inert_attrs(field.attrs(), &mut self.items.diagnostics);
                 let field_vis = self.visibility(ctx, field.visibility());
                 let diagnostics = &mut self.items.diagnostics;
                 let Some(field_name) = field.name() else {
@@ -1835,7 +1854,7 @@ impl Collector<'_> {
             StructKind::Record
         } else if let Some(list) = s.tuple_field_list() {
             for (i, field) in list.fields().enumerate() {
-                check_attrs(field.attrs(), &mut self.items.diagnostics);
+                check_inert_attrs(field.attrs(), &mut self.items.diagnostics);
                 let field_vis = self.visibility(ctx, field.visibility());
                 let range = field.syntax().text_range();
                 fields.push(Field {
@@ -1852,7 +1871,7 @@ impl Collector<'_> {
             StructKind::Unit
         };
         let name_range = name.syntax().text_range();
-        self.items.structs.alloc(Struct {
+        let id = self.items.structs.alloc(Struct {
             name: Symbol::intern(name.text()),
             generics,
             kind,
@@ -1865,6 +1884,159 @@ impl Collector<'_> {
             name_range,
             def_range: TextRange::new(def_start(s.syntax()), name_range.end()),
         });
+        for (derive, range) in derives {
+            self.derives.push((ctx, id, derive, range, s.syntax().id()));
+        }
+    }
+
+    fn expand_derives(&mut self) {
+        let derives = std::mem::take(&mut self.derives);
+        for &(ctx, strukt, derive, range, node) in &derives {
+            let copies = derive == Derive::Clone
+                && self.items.structs[strukt].generics.params.is_empty()
+                && derives.iter().any(|d| d.1 == strukt && d.2 == Derive::Copy);
+            self.derive(ctx, strukt, derive, copies, range, node);
+        }
+    }
+
+    /// The `impl` block `#[derive(Tr)]` (written at `range`) makes for
+    /// struct `strukt`, whose node is `node`: rustc's `impl<T: Clone>
+    /// Clone for S<T>`, with a method whose body is made from the fields.
+    fn derive(
+        &mut self,
+        ctx: Ctx,
+        strukt: StructId,
+        derive: Derive,
+        copies: bool,
+        range: TextRange,
+        node: NodeId,
+    ) {
+        let s = &self.items.structs[strukt];
+        let (module, name) = match derive {
+            Derive::Clone => ("clone", "Clone"),
+            Derive::Copy => ("marker", "Copy"),
+            Derive::PartialEq => ("cmp", "PartialEq"),
+            Derive::Eq => ("cmp", "Eq"),
+        };
+        let trait_path = Path {
+            anchor: PathAnchor::Global,
+            qself: None,
+            segments: Box::new([
+                Symbol::intern("core"),
+                Symbol::intern(module),
+                Symbol::intern(name),
+            ]),
+            ranges: Box::default(),
+            anchor_ranges: Box::default(),
+            args: Box::default(),
+        };
+        let bound = Bound {
+            path: trait_path,
+            range,
+        };
+        let params: Box<[GenericParam]> = s
+            .generics
+            .params
+            .iter()
+            .map(|p| GenericParam {
+                name: p.name,
+                range: p.range,
+                default: None,
+            })
+            .collect();
+        let predicates = params
+            .iter()
+            .map(|p| WherePredicate {
+                ty: TypeRef::Path(Path::single(p.name)),
+                ty_range: p.range,
+                bound: bound.clone(),
+            })
+            .collect();
+        let mut self_path = Path::single(s.name);
+        self_path.ranges = Box::new([s.name_range]);
+        if !params.is_empty() {
+            self_path.args = Box::new([Some(GenericArgs {
+                types: params
+                    .iter()
+                    .map(|p| TypeRef::Path(Path::single(p.name)))
+                    .collect(),
+                ranges: params.iter().map(|p| p.range).collect(),
+                bindings: Box::default(),
+                range: s.generics.range,
+            })]);
+        }
+        let generics = Generics {
+            params,
+            predicates,
+            range: s.generics.range,
+            has_lifetimes: s.generics.has_lifetimes,
+        };
+        let name_range = s.name_range;
+        let id = self.items.impls.alloc(Impl {
+            generics,
+            trait_ref: Some(bound),
+            trait_: None,
+            is_unsafe: false,
+            self_ty: TypeRef::Path(self_path),
+            self_range: name_range,
+            def_range: range,
+            module: ctx.module,
+            file: ctx.file,
+            target: None,
+            functions: Vec::new(),
+            consts: Vec::new(),
+            types: Vec::new(),
+        });
+        let self_ty = || TypeRef::Path(Path::single(kw::SelfUpper));
+        let self_ref = || Param {
+            ty: TypeRef::Ref {
+                mutable: false,
+                pointee: Box::new(self_ty()),
+            },
+            range,
+            whole: range,
+        };
+        let (method, params, ret) = match derive {
+            Derive::Copy => return,
+            Derive::Clone => ("clone", vec![self_ref()], self_ty()),
+            Derive::PartialEq => (
+                "eq",
+                vec![self_ref(), self_ref()],
+                TypeRef::Path(Path::single(Symbol::intern("bool"))),
+            ),
+            Derive::Eq => (
+                "assert_receiver_is_total_eq",
+                vec![self_ref()],
+                TypeRef::unit(),
+            ),
+        };
+        let function = self.items.functions.alloc(Function {
+            name: Symbol::intern(method),
+            generics: Generics::default(),
+            params: params.into(),
+            ret,
+            ret_range: range,
+            loc: ItemLoc {
+                module: ctx.module,
+                file: ctx.file,
+                vis: Visibility::Public,
+            },
+            is_unsafe: false,
+            is_extern: false,
+            is_const: false,
+            inherits_overflow_checks: false,
+            is_variadic: false,
+            owner: Some(Owner::Impl(id)),
+            has_self: true,
+            has_body: true,
+            node,
+            name_range: range,
+            def_range: range,
+            item_range: range,
+            param_list: range,
+            derived: Some((strukt, if copies { Derive::Copy } else { derive })),
+        });
+        self.items.impls[id].functions.push(function);
     }
 
     fn collect_extern_block(&mut self, ctx: Ctx, block: ast::ExternBlock<'_>) {
@@ -1961,12 +2133,34 @@ fn attr_name(attr: ast::Attr<'_>) -> Option<&str> {
         .map(|n| n.text())
 }
 
+/// [`check_attrs`] for fields and parameters, where rustc rejects
+/// `#[derive]` as an attribute macro rather than a misplaced derive.
+fn check_inert_attrs(attrs: AstChildren<'_, ast::Attr<'_>>, diagnostics: &mut Vec<Diagnostic>) {
+    for attr in attrs {
+        let path = attr.meta().and_then(|m| m.path());
+        match path {
+            Some(path) if attr_name(attr) == Some("derive") => diagnostics.push(Diagnostic::new(
+                path.syntax().text_range(),
+                "expected non-macro attribute, found attribute macro `derive`",
+            )),
+            _ => check_attr(attr, diagnostics),
+        }
+    }
+}
+
 pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) {
     const IGNORED: &[&str] = &[
         "allow", "warn", "deny", "expect", "inline", "cold", "must_use", "doc",
     ];
     let name = attr_name(attr);
     if name.is_some_and(|n| IGNORED.contains(&n)) {
+        return;
+    }
+    if name == Some("derive") {
+        diagnostics.push(Diagnostic::new(
+            attr.syntax().text_range(),
+            "`derive` may only be applied to `struct`s, `enum`s and `union`s",
+        ));
         return;
     }
     let message = match name {
@@ -2180,6 +2374,138 @@ pub(crate) fn lower_generic_args(
         ranges: ranges.into(),
         bindings: bindings.into(),
         range: list.syntax().text_range(),
+    }
+}
+
+/// A trait `#[derive]` implements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Derive {
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+}
+
+/// The traits `#[derive(...)]` names, with their ranges; others, and
+/// malformed lists, are reported as rustc does.
+fn derive_attr(
+    attr: ast::Attr<'_>,
+    out: &mut Vec<(Derive, TextRange)>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let meta = attr.meta();
+    let Some(tree) = meta.and_then(|m| m.token_tree()) else {
+        diagnostics.push(Diagnostic::new(
+            attr.syntax().text_range(),
+            "malformed `derive` attribute input",
+        ));
+        return;
+    };
+    if tree.l_paren_token().is_none() {
+        diagnostics.push(Diagnostic::new(
+            tree.syntax().text_range(),
+            "wrong meta list delimiters",
+        ));
+        return;
+    }
+    let mut error = |range: TextRange, message: String| {
+        diagnostics.push(Diagnostic::new(range, message));
+    };
+    // Items between commas: a trait's name, or a path to one.
+    let mut item: Vec<SyntaxElement<'_>> = Vec::new();
+    let mut items = Vec::new();
+    for element in tree.syntax().children_with_tokens() {
+        match element.kind() {
+            k if k.is_trivia() => {}
+            SyntaxKind::L_PAREN | SyntaxKind::R_PAREN => {}
+            SyntaxKind::COMMA => {
+                if item.is_empty() {
+                    error(
+                        element.text_range(),
+                        "expected identifier, found `,`".into(),
+                    );
+                }
+                items.push(std::mem::take(&mut item));
+            }
+            _ => item.push(element),
+        }
+    }
+    items.push(item);
+    for item in items {
+        let Some(&first) = item.first() else {
+            continue;
+        };
+        if first.kind().is_literal() {
+            error(
+                first.text_range(),
+                "expected path to a trait, found literal".into(),
+            );
+            continue;
+        }
+        // `Tr`, `a::Tr` or `::a::Tr`; in a token tree, `::` is two `:`s.
+        let mut path_len = 0;
+        let mut want_ident = true;
+        let mut single = true;
+        while let Some(&e) = item.get(path_len) {
+            let sep = e.kind() == SyntaxKind::COLON
+                && item
+                    .get(path_len + 1)
+                    .is_some_and(|n| n.kind() == SyntaxKind::COLON);
+            if sep && (path_len == 0 || !want_ident) {
+                path_len += 2;
+                want_ident = true;
+                single = false;
+            } else if want_ident && e.kind() == SyntaxKind::IDENT {
+                path_len += 1;
+                want_ident = false;
+            } else {
+                break;
+            }
+        }
+        if let Some(&next) = item.get(path_len) {
+            if next.kind() == SyntaxKind::TOKEN_TREE {
+                error(
+                    next.text_range(),
+                    "traits in `#[derive(...)]` don't accept arguments".into(),
+                );
+            } else {
+                let text = next.into_token().map_or("", |t| t.text());
+                error(
+                    next.text_range(),
+                    format!("expected one of `(`, `,`, `::`, or `=`, found `{text}`"),
+                );
+            }
+            continue;
+        }
+        let range = TextRange::new(
+            first.text_range().start(),
+            item[path_len - 1].text_range().end(),
+        );
+        let name = match item.as_slice() {
+            [only] if single => only.into_token().map_or("", |t| t.text()),
+            _ => {
+                error(range, "paths in `derive` are not supported yet".into());
+                continue;
+            }
+        };
+        let derive = match name {
+            "Clone" => Derive::Clone,
+            "Copy" => Derive::Copy,
+            "PartialEq" => Derive::PartialEq,
+            "Eq" => Derive::Eq,
+            "Debug" | "Default" | "Hash" | "PartialOrd" | "Ord" => {
+                error(range, format!("deriving `{name}` is not supported yet"));
+                continue;
+            }
+            _ => {
+                error(
+                    range,
+                    format!("cannot find derive macro `{name}` in this scope"),
+                );
+                continue;
+            }
+        };
+        out.push((derive, range));
     }
 }
 

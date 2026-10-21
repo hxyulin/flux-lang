@@ -157,6 +157,10 @@ program's files:
   owned by an `impl` block or a trait whose first parameter is `self`,
   with the type `Self`, `&Self` or `&mut Self`. Each trait knows its
   `impl` blocks, and each name the traits with a function of it.
+  `#[derive(Clone)]` and friends become `impl` blocks here, after the
+  crate's other items as in rustc, each with a method marked as derived
+  (`Function::derived`), whose body is built from the struct's fields
+  rather than lowered from syntax.
 - The **def map** ([`def_map`](../crates/flux-hir/src/def_map.rs)): what
   each module's names mean, in Rust's two namespaces (types and values),
   from its items and its `use` imports. Imports are resolved together,
@@ -220,7 +224,8 @@ different instances of a struct (`impl Pair<i32>`, `impl Pair<u8>`) may
 each have a function of the same name; the one whose block may be for
 the receiver's type is called, and two are E0034. Each call records the
 function and generic arguments it calls. A parameter has the methods of
-its bounds' traits, no operators or fields, and is never `Copy`.
+its bounds' traits, no operators or fields, and is `Copy` only if a
+bound says so.
 
 A trait's items are generic over its parameters with an implicit
 `Self` first, so a call of a trait's method, `x.m()` or `Tr::m(x)`, is
@@ -307,7 +312,8 @@ semantics become explicit, so code generation never sees expressions:
 - A call to a function returning `!` has no successor block.
 - Values are read from *places*, a local and a path of field indices
   and dereferences (`(*_1).0.2`), and each read is a copy or, for a type
-  that is not `Copy`, a move. `&place` makes a reference to a place, and
+  that is not `Copy` (asked of the trait solver, with the function's
+  bounds, for structs and parameters), a move. `&place` makes a reference to a place, and
   a method call is a plain call whose first argument is the receiver,
   dereferenced and borrowed as type checking decided. A block's
   bindings get a `StorageDead` where it ends, including where `break`

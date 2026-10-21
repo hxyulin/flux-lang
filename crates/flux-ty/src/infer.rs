@@ -188,6 +188,7 @@ impl<'a> Ctx<'a> {
             loops: ArenaMap::new(),
             reported_vars: HashSet::new(),
             uninit_bindings: HashSet::new(),
+            tainted: false,
             unsafe_depth: u32::from(owner.is_unsafe),
             ret: owner.ret,
             param_env: owner.param_env,
@@ -303,6 +304,9 @@ struct Ctx<'a> {
     reported_vars: HashSet<InferVar>,
     /// `let x;` bindings, which may be assigned once without `mut`.
     uninit_bindings: HashSet<BindingId>,
+    /// Has errors, or values of erroneous types, once inference is done:
+    /// variables left unknown are then not reported.
+    tainted: bool,
     unsafe_depth: u32,
     ret: Ty,
     /// The bounds in scope, with the supertraits they imply.
@@ -2734,7 +2738,7 @@ impl Ctx<'_> {
                         diverging: true, ..
                     } => Ty::NEVER,
                     _ => {
-                        if reported.insert(var) {
+                        if reported.insert(var) && !self.tainted {
                             self.error(origin, "type annotations needed");
                         }
                         Ty::ERROR

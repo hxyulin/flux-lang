@@ -173,7 +173,6 @@ pub fn build_const(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Body {
         params: Box::default(),
         ret: typed.sigs.consts[konst],
     };
-    let module = hir.items.consts[konst].loc.module;
     build_body(
         hir,
         typed,
@@ -181,7 +180,7 @@ pub fn build_const(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Body {
         source_map,
         &typed.consts[konst],
         &sig,
-        module,
+        Item::Const(konst),
     )
 }
 
@@ -205,10 +204,17 @@ pub fn build(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Body {
         source_map,
         &typed.bodies[function],
         sig,
-        data.loc.module,
+        Item::Function(function),
     );
     built.inherits_overflow_checks = data.inherits_overflow_checks;
     built
+}
+
+/// What a body is of.
+#[derive(Clone, Copy)]
+enum Item {
+    Function(FunctionId),
+    Const(ConstId),
 }
 
 fn build_body(
@@ -218,8 +224,20 @@ fn build_body(
     source_map: &flux_hir::BodySourceMap,
     types: &InferenceResult,
     sig: &flux_ty::FnSig,
-    module: flux_hir::ModuleId,
+    item: Item,
 ) -> Body {
+    let module = match item {
+        Item::Function(f) => hir.items.functions[f].loc.module,
+        Item::Const(c) => hir.items.consts[c].loc.module,
+    };
+    // The bounds in scope, for what is `Copy`.
+    let env = match item {
+        Item::Function(f) => flux_ty::traits::elaborate(
+            &typed.sigs,
+            &flux_ty::traits::predicates_of(&hir.items, &typed.sigs, f),
+        ),
+        Item::Const(_) => Vec::new(),
+    };
     let mut b = Builder {
         typed,
         items: &hir.items,
@@ -233,6 +251,7 @@ fn build_body(
         loops: ArenaMap::new(),
         scopes: Vec::new(),
         c_strings: Vec::new(),
+        env,
     };
     b.locals.alloc(LocalDecl {
         ty: sig.ret,
@@ -325,6 +344,8 @@ struct Builder<'a> {
     /// when it ends.
     scopes: Vec<Vec<Local>>,
     c_strings: Vec<Box<[u8]>>,
+    /// The bounds in scope, elaborated: what is `Copy`.
+    env: Vec<flux_ty::Predicate>,
 }
 
 /// Whether `expr` denotes a place: a local, a field of one, or what a
@@ -396,7 +417,8 @@ impl Builder<'_> {
 
     /// Reads `place`: copies a `Copy` value, moves any other.
     fn read(&self, place: Place) -> Operand {
-        if self.place_ty(&place).is_copy() {
+        let ty = self.place_ty(&place);
+        if flux_ty::traits::is_copy(self.items, &self.typed.sigs, &self.env, ty) {
             Operand::Copy(place)
         } else {
             Operand::Move(place)
