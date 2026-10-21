@@ -27,7 +27,9 @@ pub use body::{
     Stmt, TypeRefId,
 };
 pub use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
-pub use item_tree::{Function, FunctionId, ItemTree, Param, TypeRef};
+pub use item_tree::{
+    Field, Function, FunctionId, ItemTree, Param, Struct, StructId, StructKind, TypeRef,
+};
 pub use lower::lower_body;
 
 use flux_arena::ArenaMap;

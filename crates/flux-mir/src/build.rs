@@ -2,15 +2,17 @@
 
 use flux_arena::{Arena, ArenaMap};
 use flux_hir::{
-    ArithOp, BinaryOp, Binding, CmpOp, Expr, ExprId, FileHir, FunctionId, Literal, LogicOp, Pat,
-    PatId, Res, Stmt, UnaryOp,
+    ArithOp, BinaryOp, Binding, CmpOp, Expr, ExprId, FileHir, FunctionId, ItemTree, Literal,
+    LogicOp, Pat, PatId, Res, Stmt, StructId, UnaryOp,
 };
+use flux_intern::Symbol;
 use flux_syntax::TextRange;
 use flux_ty::{InferenceResult, IntTy, Ty, TypedFile};
 
 use crate::{
-    AssertMessage, BasicBlock, BasicBlockData, BinOp, Body, Constant, FileMir, Local, LocalDecl,
-    LocalKind, Operand, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnOp,
+    AggregateKind, AssertMessage, BasicBlock, BasicBlockData, BinOp, Body, Constant, FileMir,
+    Local, LocalDecl, LocalKind, Operand, Place, Rvalue, Statement, StatementKind, Terminator,
+    TerminatorKind, UnOp,
 };
 
 /// Builds every body of a file and checks initialization. The file must
@@ -20,7 +22,7 @@ pub fn build_file(hir: &FileHir, typed: &TypedFile) -> FileMir {
     let mut diagnostics = Vec::new();
     for (id, _) in hir.bodies.iter() {
         let body = build(hir, typed, id);
-        diagnostics.extend(crate::init::check(&body));
+        diagnostics.extend(crate::init::check(&body, &hir.items, &typed.sigs));
         bodies.insert(id, body);
     }
     diagnostics.sort_by_key(|d: &flux_hir::Diagnostic| (d.range.start(), d.range.end()));
@@ -37,6 +39,7 @@ pub fn build(hir: &FileHir, typed: &TypedFile, function: FunctionId) -> Body {
     let sig = &typed.sigs[function];
     let mut b = Builder {
         typed,
+        items: &hir.items,
         body,
         source_map,
         types: &typed.bodies[function],
@@ -61,14 +64,26 @@ pub fn build(hir: &FileHir, typed: &TypedFile, function: FunctionId) -> Body {
             })
         })
         .collect();
-    for (&pat, &local) in body.params.iter().zip(&params) {
-        if let Pat::Bind(binding) = body.pats[pat] {
-            b.binding_locals.insert(binding, local);
-        }
-    }
     let entry = b.new_block();
     b.current = Some(entry);
-    b.lower_into(body.root, Body::RETURN);
+    for (&pat, &local) in body.params.iter().zip(&params) {
+        match body.pats[pat] {
+            Pat::Bind(binding) => {
+                let data = &body.bindings[binding];
+                b.locals[local].kind = LocalKind::User {
+                    name: data.name,
+                    mutable: data.mutable,
+                };
+                b.binding_locals.insert(binding, local);
+            }
+            _ => {
+                b.declare_bindings(pat);
+                let range = b.pat_range(pat);
+                b.destructure(pat, &local.into(), range);
+            }
+        }
+    }
+    b.lower_into(body.root, &Body::RETURN.into());
     let range = b.range(body.root);
     b.terminate(TerminatorKind::Return, range);
 
@@ -94,16 +109,17 @@ pub fn build(hir: &FileHir, typed: &TypedFile, function: FunctionId) -> Body {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct LoopScope {
     break_block: BasicBlock,
     continue_block: BasicBlock,
     /// Where `break value` stores the value.
-    dest: Local,
+    dest: Place,
 }
 
 struct Builder<'a> {
     typed: &'a TypedFile,
+    items: &'a ItemTree,
     body: &'a flux_hir::Body,
     source_map: &'a flux_hir::BodySourceMap,
     types: &'a InferenceResult,
@@ -119,9 +135,22 @@ struct Builder<'a> {
     c_strings: Vec<Box<[u8]>>,
 }
 
+/// Whether `expr` denotes a place: a local or a field of one.
+fn is_place(body: &flux_hir::Body, expr: ExprId) -> bool {
+    match body.exprs[expr] {
+        Expr::Path(Res::Local(_)) => true,
+        Expr::Field { expr, .. } => is_place(body, expr),
+        _ => false,
+    }
+}
+
 impl Builder<'_> {
     fn range(&self, expr: ExprId) -> TextRange {
         self.source_map.exprs.get(expr).copied().unwrap_or_default()
+    }
+
+    fn pat_range(&self, pat: PatId) -> TextRange {
+        self.source_map.pats.get(pat).copied().unwrap_or_default()
     }
 
     fn expr_ty(&self, expr: ExprId) -> Ty {
@@ -157,12 +186,35 @@ impl Builder<'_> {
         })
     }
 
-    fn assign(&mut self, dest: Local, rvalue: Rvalue, range: TextRange) {
+    fn assign(&mut self, dest: &Place, rvalue: Rvalue, range: TextRange) {
         let block = self.block();
         self.blocks[block.index()].0.push(Statement {
-            kind: StatementKind::Assign(dest, rvalue),
+            kind: StatementKind::Assign(dest.clone(), rvalue),
             range,
         });
+    }
+
+    fn assign_unit(&mut self, dest: &Place, range: TextRange) {
+        self.assign(dest, Rvalue::Use(Operand::Const(Constant::Unit)), range);
+    }
+
+    /// Reads `place`: copies a `Copy` value, moves any other.
+    fn read(&self, place: Place) -> Operand {
+        if self.place_ty(&place).is_copy() {
+            Operand::Copy(place)
+        } else {
+            Operand::Move(place)
+        }
+    }
+
+    fn place_ty(&self, place: &Place) -> Ty {
+        let local_ty = self.locals[place.local].ty;
+        place.projection.iter().fold(local_ty, |ty, &field| {
+            self.typed
+                .sigs
+                .fields(ty)
+                .map_or(Ty::ERROR, |fields| fields[field as usize])
+        })
     }
 
     fn terminate(&mut self, kind: TerminatorKind, range: TextRange) {
@@ -185,10 +237,40 @@ impl Builder<'_> {
             Expr::Tuple(fields) if fields.is_empty() => Operand::Const(Constant::Unit),
             _ => {
                 let temp = self.temp(self.expr_ty(expr));
-                self.lower_into(expr, temp);
-                Operand::Copy(temp)
+                self.lower_into(expr, &temp.into());
+                self.read(temp.into())
             }
         }
+    }
+
+    /// The place `expr` denotes: itself if it is a place expression,
+    /// otherwise a temporary holding its value.
+    fn lower_place(&mut self, expr: ExprId) -> Place {
+        match self.body.exprs[expr] {
+            Expr::Path(Res::Local(binding)) if self.binding_locals.get(binding).is_some() => {
+                self.binding_locals[binding].into()
+            }
+            Expr::Field { expr: base, .. } if is_place(self.body, base) => {
+                let base = self.lower_place(base);
+                base.field(self.field_index(expr))
+            }
+            _ => {
+                let temp = self.temp(self.expr_ty(expr));
+                self.lower_into(expr, &temp.into());
+                temp.into()
+            }
+        }
+    }
+
+    fn field_index(&self, expr: ExprId) -> u32 {
+        self.types.field_indices.get(expr).copied().unwrap_or(0)
+    }
+
+    /// The index of `strukt`'s field `name`.
+    fn struct_field(&self, strukt: StructId, name: Symbol) -> u32 {
+        self.items.structs[strukt]
+            .field(name)
+            .map_or(0, |(i, _)| i as u32)
     }
 
     fn constant(&mut self, literal: &Literal, expr: ExprId) -> Constant {
@@ -204,32 +286,57 @@ impl Builder<'_> {
     }
 
     /// Evaluates `expr` and stores its value in `dest`.
-    fn lower_into(&mut self, expr: ExprId, dest: Local) {
+    fn lower_into(&mut self, expr: ExprId, dest: &Place) {
         let range = self.range(expr);
         let body = self.body;
         match &body.exprs[expr] {
             Expr::Missing | Expr::Path(Res::Function(_) | Res::Err) => {
                 self.terminate(TerminatorKind::Unreachable, range);
             }
-            // Only `()` type-checks so far.
-            Expr::Tuple(fields) if !fields.is_empty() => {
-                self.terminate(TerminatorKind::Unreachable, range);
-            }
-            Expr::Literal(_) | Expr::Tuple(_) => {
+            Expr::Literal(_) => {
                 let operand = self.lower_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
             }
-            Expr::Path(Res::Local(binding)) => match self.binding_locals.get(*binding) {
-                Some(&local) => self.assign(dest, Rvalue::Use(Operand::Copy(local)), range),
-                None => self.terminate(TerminatorKind::Unreachable, range),
-            },
+            Expr::Tuple(fields) => {
+                let operands = fields.iter().map(|&f| self.lower_operand(f)).collect();
+                self.assign(
+                    dest,
+                    Rvalue::Aggregate(AggregateKind::Tuple, operands),
+                    range,
+                );
+            }
+            Expr::Path(Res::Struct(strukt)) => {
+                // Only unit structs type-check as values.
+                self.assign(
+                    dest,
+                    Rvalue::Aggregate(AggregateKind::Struct(*strukt), Vec::new()),
+                    range,
+                );
+            }
+            Expr::Path(Res::Local(_)) | Expr::Field { .. } if is_place(body, expr) => {
+                let place = self.lower_place(expr);
+                let operand = self.read(place);
+                self.assign(dest, Rvalue::Use(operand), range);
+            }
+            Expr::Path(Res::Local(_)) => self.terminate(TerminatorKind::Unreachable, range),
+            Expr::Field { expr: base, .. } => {
+                // A field of a value that is not a place: `make().x`.
+                let base = self.lower_place(*base);
+                let operand = self.read(base.field(self.field_index(expr)));
+                self.assign(dest, Rvalue::Use(operand), range);
+            }
+            Expr::Record {
+                strukt,
+                fields,
+                spread,
+            } => self.lower_record(*strukt, fields, *spread, dest, range),
             Expr::Block { stmts, tail, .. } => {
                 for stmt in stmts.iter() {
                     self.lower_stmt(stmt);
                 }
                 match tail {
                     Some(tail) => self.lower_into(*tail, dest),
-                    None => self.assign(dest, Rvalue::Use(Operand::Const(Constant::Unit)), range),
+                    None => self.assign_unit(dest, range),
                 }
             }
             Expr::If {
@@ -255,7 +362,7 @@ impl Builder<'_> {
                 self.current = Some(else_block);
                 match else_branch {
                     Some(else_branch) => self.lower_into(*else_branch, dest),
-                    None => self.assign(dest, Rvalue::Use(Operand::Const(Constant::Unit)), range),
+                    None => self.assign_unit(dest, range),
                 }
                 self.goto(join, range);
                 self.current = Some(join);
@@ -272,7 +379,7 @@ impl Builder<'_> {
                     LoopScope {
                         break_block: exit,
                         continue_block: head,
-                        dest,
+                        dest: dest.clone(),
                     },
                 );
                 self.lower_operand(*loop_body);
@@ -281,55 +388,55 @@ impl Builder<'_> {
                 self.current = Some(exit);
             }
             Expr::Break { value, target } => {
-                let scope = target.and_then(|t| self.loops.get(t).copied());
+                let scope = target.and_then(|t| self.loops.get(t).cloned());
                 let Some(scope) = scope else {
                     self.terminate(TerminatorKind::Unreachable, range);
                     return;
                 };
                 match value {
-                    Some(value) => self.lower_into(*value, scope.dest),
-                    None => self.assign(
-                        scope.dest,
-                        Rvalue::Use(Operand::Const(Constant::Unit)),
-                        range,
-                    ),
+                    Some(value) => self.lower_into(*value, &scope.dest),
+                    None => self.assign_unit(&scope.dest, range),
                 }
                 self.goto(scope.break_block, range);
             }
-            Expr::Continue { target } => match target.and_then(|t| self.loops.get(t).copied()) {
+            Expr::Continue { target } => match target.and_then(|t| self.loops.get(t).cloned()) {
                 Some(scope) => self.goto(scope.continue_block, range),
                 None => self.terminate(TerminatorKind::Unreachable, range),
             },
             Expr::Return { value } => {
+                let ret = Body::RETURN.into();
                 match value {
-                    Some(value) => self.lower_into(*value, Body::RETURN),
-                    None => self.assign(
-                        Body::RETURN,
-                        Rvalue::Use(Operand::Const(Constant::Unit)),
-                        range,
-                    ),
+                    Some(value) => self.lower_into(*value, &ret),
+                    None => self.assign_unit(&ret, range),
                 }
                 self.terminate(TerminatorKind::Return, range);
             }
-            Expr::Call { callee, args } => {
-                let Expr::Path(Res::Function(func)) = body.exprs[*callee] else {
-                    self.terminate(TerminatorKind::Unreachable, range);
-                    return;
-                };
-                let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
-                let returns = self.typed.sigs[func].ret != Ty::NEVER;
-                let target = returns.then(|| self.new_block());
-                self.terminate(
-                    TerminatorKind::Call {
-                        func,
-                        args,
+            Expr::Call { callee, args } => match body.exprs[*callee] {
+                Expr::Path(Res::Function(func)) => {
+                    let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                    let returns = self.typed.sigs[func].ret != Ty::NEVER;
+                    let target = returns.then(|| self.new_block());
+                    self.terminate(
+                        TerminatorKind::Call {
+                            func,
+                            args,
+                            dest: dest.clone(),
+                            target,
+                        },
+                        range,
+                    );
+                    self.current = target;
+                }
+                Expr::Path(Res::Struct(strukt)) => {
+                    let operands = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                    self.assign(
                         dest,
-                        target,
-                    },
-                    range,
-                );
-                self.current = target;
-            }
+                        Rvalue::Aggregate(AggregateKind::Struct(strukt), operands),
+                        range,
+                    );
+                }
+                _ => self.terminate(TerminatorKind::Unreachable, range),
+            },
             Expr::MethodCall { receiver, args, .. } => {
                 // Only `CStr::as_ptr` type-checks: the reference is the
                 // pointer.
@@ -375,7 +482,7 @@ impl Builder<'_> {
                 }
                 BinaryOp::Assign(arith) => {
                     self.lower_assign(*arith, *lhs, *rhs, range);
-                    self.assign(dest, Rvalue::Use(Operand::Const(Constant::Unit)), range);
+                    self.assign_unit(dest, range);
                 }
             },
             Expr::Cast { expr: inner, .. } => {
@@ -386,16 +493,59 @@ impl Builder<'_> {
         }
     }
 
+    /// `S { a: 1, b, ..base }`: the given fields in source order, then
+    /// the rest read from `base`, which is moved out of only for fields
+    /// that are not `Copy`.
+    fn lower_record(
+        &mut self,
+        strukt: StructId,
+        fields: &[(Symbol, ExprId)],
+        spread: Option<ExprId>,
+        dest: &Place,
+        range: TextRange,
+    ) {
+        let count = self.items.structs[strukt].fields.len();
+        let mut operands: Vec<Option<Operand>> = vec![None; count];
+        for &(name, value) in fields {
+            let operand = self.lower_operand(value);
+            operands[self.struct_field(strukt, name) as usize] = Some(operand);
+        }
+        if let Some(base) = spread {
+            let base = self.lower_place(base);
+            for (i, operand) in operands.iter_mut().enumerate() {
+                if operand.is_none() {
+                    *operand = Some(self.read(base.field(i as u32)));
+                }
+            }
+        }
+        let operands = operands
+            .into_iter()
+            .map(|o| o.unwrap_or(Operand::Const(Constant::Unit)))
+            .collect();
+        self.assign(
+            dest,
+            Rvalue::Aggregate(AggregateKind::Struct(strukt), operands),
+            range,
+        );
+    }
+
     fn lower_stmt(&mut self, stmt: &Stmt) {
         match *stmt {
             Stmt::Let { pat, init, .. } => {
-                let local = self.bind(pat);
-                if let Some(init) = init {
-                    match local {
-                        Some(local) => self.lower_into(init, local),
-                        None => {
-                            self.lower_operand(init);
-                        }
+                self.declare_bindings(pat);
+                let Some(init) = init else {
+                    return;
+                };
+                match self.body.pats[pat] {
+                    Pat::Bind(binding) => {
+                        let local = self.binding_locals[binding];
+                        self.lower_into(init, &local.into());
+                    }
+                    // `let _ = place;` does not read the place.
+                    Pat::Wild if is_place(self.body, init) => {}
+                    _ => {
+                        let place = self.lower_place(init);
+                        self.destructure(pat, &place, self.range(init));
                     }
                 }
             }
@@ -405,27 +555,60 @@ impl Builder<'_> {
         }
     }
 
-    /// The local for a `let` pattern's binding, if it has one.
-    fn bind(&mut self, pat: PatId) -> Option<Local> {
-        let Pat::Bind(binding) = self.body.pats[pat] else {
-            return None;
-        };
-        let data = &self.body.bindings[binding];
-        let ty = self
-            .types
-            .binding_types
-            .get(binding)
-            .copied()
-            .unwrap_or(Ty::ERROR);
-        let local = self.locals.alloc(LocalDecl {
-            ty,
-            kind: LocalKind::User {
-                name: data.name,
-                mutable: data.mutable,
-            },
-        });
-        self.binding_locals.insert(binding, local);
-        Some(local)
+    /// A local for each binding in `pat`.
+    fn declare_bindings(&mut self, pat: PatId) {
+        let mut bindings = Vec::new();
+        self.body.pat_bindings(pat, &mut bindings);
+        for binding in bindings {
+            let data = &self.body.bindings[binding];
+            let ty = self
+                .types
+                .binding_types
+                .get(binding)
+                .copied()
+                .unwrap_or(Ty::ERROR);
+            let local = self.locals.alloc(LocalDecl {
+                ty,
+                kind: LocalKind::User {
+                    name: data.name,
+                    mutable: data.mutable,
+                },
+            });
+            self.binding_locals.insert(binding, local);
+        }
+    }
+
+    /// Binds `pat`'s bindings to the parts of the value in `place` they
+    /// match.
+    fn destructure(&mut self, pat: PatId, place: &Place, range: TextRange) {
+        match &self.body.pats[pat] {
+            Pat::Missing | Pat::Wild | Pat::Unit(_) => {}
+            Pat::Bind(binding) => {
+                let local = self.binding_locals[*binding];
+                let operand = self.read(place.clone());
+                self.assign(&local.into(), Rvalue::Use(operand), range);
+            }
+            Pat::Tuple { pats, rest } | Pat::TupleStruct { pats, rest, .. } => {
+                let count = self
+                    .typed
+                    .sigs
+                    .fields(self.place_ty(place))
+                    .map_or(0, |f| f.len());
+                for (i, &field) in pats.iter().enumerate() {
+                    let index = match rest {
+                        Some(rest) if i >= *rest as usize => count - (pats.len() - i),
+                        _ => i,
+                    };
+                    self.destructure(field, &place.field(index as u32), range);
+                }
+            }
+            Pat::Record { strukt, fields, .. } => {
+                for &(name, field) in fields.iter() {
+                    let index = self.struct_field(*strukt, name);
+                    self.destructure(field, &place.field(index), range);
+                }
+            }
+        }
     }
 
     /// `a && b` is `if a { b } else { false }`; `a || b` is
@@ -435,7 +618,7 @@ impl Builder<'_> {
         op: LogicOp,
         lhs: ExprId,
         rhs: ExprId,
-        dest: Local,
+        dest: &Place,
         range: TextRange,
     ) {
         let l = self.lower_operand(lhs);
@@ -467,25 +650,32 @@ impl Builder<'_> {
         self.current = Some(join);
     }
 
+    /// `place = rhs` and `place op= rhs`. The right side is evaluated
+    /// first, and the assignment itself carries the whole expression's
+    /// range, where rustc reports assignment errors.
     fn lower_assign(&mut self, op: Option<ArithOp>, lhs: ExprId, rhs: ExprId, range: TextRange) {
-        let Expr::Path(Res::Local(binding)) = self.body.exprs[lhs] else {
+        if !is_place(self.body, lhs) {
             self.terminate(TerminatorKind::Unreachable, range);
             return;
-        };
-        let Some(&local) = self.binding_locals.get(binding) else {
-            self.terminate(TerminatorKind::Unreachable, range);
-            return;
-        };
+        }
         match op {
-            None => self.lower_into(rhs, local),
+            None => {
+                let value = self.lower_operand(rhs);
+                let place = self.lower_place(lhs);
+                self.assign(&place, Rvalue::Use(value), range);
+            }
             Some(arith) => {
-                // For primitive types the right side is evaluated first.
                 let r = self.lower_operand(rhs);
-                let ty = self.locals[local].ty;
+                let place = self.lower_place(lhs);
+                let ty = self.place_ty(&place);
                 let current = self.temp(ty);
-                self.assign(current, Rvalue::Use(Operand::Copy(local)), range);
-                let rvalue = self.arith(arith, Operand::Copy(current), r, ty, range);
-                self.assign(local, rvalue, range);
+                self.assign(
+                    &current.into(),
+                    Rvalue::Use(Operand::Copy(place.clone())),
+                    range,
+                );
+                let rvalue = self.arith(arith, Operand::Copy(current.into()), r, ty, range);
+                self.assign(&place, rvalue, range);
             }
         }
     }
@@ -540,8 +730,12 @@ impl Builder<'_> {
         if divisor.is_none() || divisor == Some(0) {
             let is_zero = self.temp(Ty::BOOL);
             let zero = Operand::Const(Constant::int(0, int));
-            self.assign(is_zero, Rvalue::BinaryOp(BinOp::Eq, r.clone(), zero), range);
-            self.assert(Operand::Copy(is_zero), false, zero_msg, range);
+            self.assign(
+                &is_zero.into(),
+                Rvalue::BinaryOp(BinOp::Eq, r.clone(), zero),
+                range,
+            );
+            self.assert(Operand::Copy(is_zero.into()), false, zero_msg, range);
         }
         let may_be_minus_one = match (divisor, minus_one) {
             (Some(bits), Constant::Int { bits: m, .. }) => bits == m,
@@ -555,24 +749,28 @@ impl Builder<'_> {
             };
             let is_minus_one = self.temp(Ty::BOOL);
             self.assign(
-                is_minus_one,
+                &is_minus_one.into(),
                 Rvalue::BinaryOp(BinOp::Eq, r.clone(), Operand::Const(minus_one)),
                 range,
             );
             let is_min = self.temp(Ty::BOOL);
             let min = Operand::Const(Constant::int(min, int));
-            self.assign(is_min, Rvalue::BinaryOp(BinOp::Eq, l.clone(), min), range);
+            self.assign(
+                &is_min.into(),
+                Rvalue::BinaryOp(BinOp::Eq, l.clone(), min),
+                range,
+            );
             let overflows = self.temp(Ty::BOOL);
             self.assign(
-                overflows,
+                &overflows.into(),
                 Rvalue::BinaryOp(
                     BinOp::BitAnd,
-                    Operand::Copy(is_minus_one),
-                    Operand::Copy(is_min),
+                    Operand::Copy(is_minus_one.into()),
+                    Operand::Copy(is_min.into()),
                 ),
                 range,
             );
-            self.assert(Operand::Copy(overflows), false, overflow_msg, range);
+            self.assert(Operand::Copy(overflows.into()), false, overflow_msg, range);
         }
     }
 

@@ -11,20 +11,24 @@
 //!   is not `MIN / -1`; rustc checks these even in release builds.
 //! - `&&` and `||` are control flow; reads of a local are copied into a
 //!   temporary first, so later operands cannot change them.
+//! - Values are read from [`Place`]s, a local and a path of fields into
+//!   it, either copied or moved ([`Operand`]), and tuples and structs are
+//!   built whole ([`Rvalue::Aggregate`]).
 //!
 //! [`build`] turns a type-checked body into MIR and checks that every
-//! local is initialized before it is read and that immutable locals are
-//! assigned once ([`init`]), the part of borrow checking flux needs so far.
+//! place is initialized, and not moved out of, before it is read, and that
+//! immutable locals are assigned once ([`init`]): the part of borrow
+//! checking flux needs so far.
 
 mod build;
 pub mod init;
 mod pretty;
 
 use flux_arena::{Arena, Idx};
-use flux_hir::FunctionId;
+use flux_hir::{FunctionId, StructId};
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
-use flux_ty::{IntTy, Ty};
+use flux_ty::{IntTy, Signatures, Ty};
 
 pub use build::{build, build_file};
 
@@ -56,10 +60,48 @@ impl Body {
         (1..=self.param_count as u32).map(Local::from_raw)
     }
 
-    pub fn operand_ty(&self, operand: &Operand) -> Ty {
+    pub fn place_ty(&self, place: &Place, sigs: &Signatures) -> Ty {
+        place
+            .projection
+            .iter()
+            .fold(self.locals[place.local].ty, |ty, &field| {
+                sigs.fields(ty)
+                    .map_or(Ty::ERROR, |fields| fields[field as usize])
+            })
+    }
+
+    pub fn operand_ty(&self, operand: &Operand, sigs: &Signatures) -> Ty {
         match operand {
-            Operand::Copy(local) => self.locals[*local].ty,
+            Operand::Copy(place) | Operand::Move(place) => self.place_ty(place, sigs),
             Operand::Const(constant) => constant.ty(),
+        }
+    }
+}
+
+/// A local, or a field of one at any depth: `_1`, `_1.0.2`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Place {
+    pub local: Local,
+    /// Field indices, outermost first.
+    pub projection: Box<[u32]>,
+}
+
+impl Place {
+    pub fn field(&self, index: u32) -> Place {
+        let mut projection = self.projection.to_vec();
+        projection.push(index);
+        Place {
+            local: self.local,
+            projection: projection.into(),
+        }
+    }
+}
+
+impl From<Local> for Place {
+    fn from(local: Local) -> Place {
+        Place {
+            local,
+            projection: Box::default(),
         }
     }
 }
@@ -73,8 +115,9 @@ pub struct LocalDecl {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalKind {
     Return,
+    /// A parameter whose pattern is not a single binding.
     Param,
-    /// A `let` binding or a parameter's binding.
+    /// A binding, of a `let` or a parameter.
     User {
         name: Symbol,
         mutable: bool,
@@ -97,7 +140,7 @@ pub struct Statement {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatementKind {
-    Assign(Local, Rvalue),
+    Assign(Place, Rvalue),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,11 +151,22 @@ pub enum Rvalue {
     /// An integer-to-integer or `bool`-to-integer cast: truncates, or
     /// extends by the source's signedness.
     Cast(Operand, Ty),
+    /// A tuple or struct from its fields, in declaration order.
+    Aggregate(AggregateKind, Vec<Operand>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateKind {
+    Tuple,
+    Struct(StructId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operand {
-    Copy(Local),
+    /// Reads a value of a `Copy` type.
+    Copy(Place),
+    /// Reads a value of another type, leaving the place uninitialized.
+    Move(Place),
     Const(Constant),
 }
 
@@ -213,7 +267,7 @@ pub enum TerminatorKind {
     Call {
         func: FunctionId,
         args: Vec<Operand>,
-        dest: Local,
+        dest: Place,
         target: Option<BasicBlock>,
     },
     /// Continues at `target` if `cond` is `expected`; otherwise panics,

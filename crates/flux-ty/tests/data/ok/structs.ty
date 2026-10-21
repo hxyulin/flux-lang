@@ -1,0 +1,46 @@
+struct Unit {}
+struct Point { x: i32, y: i32 }
+struct Pair { 0: u8, 1: bool }
+struct Mixed { small: u8, big: i64, flag: bool, point: Point, pair: Pair }
+fn make(i64) -> Mixed
+    n@0: i64
+    point@1: Point
+    pair@2: Pair
+    small@3: u8
+fn fields(Mixed) -> i64
+    m@0: Mixed
+    a@1: u8
+    b@2: i32
+    c@3: u8
+    d@4: bool
+    e@5: (i64, (u8, bool))
+    f@6: u8
+    g@7: (u8, bool)
+fn update(Mixed) -> Mixed
+    base@0: Mixed
+    tail@1: i64
+    m@2: Mixed
+    unit@3: Unit
+    unit2@4: Unit
+fn patterns(Mixed, (u16, (i8, bool), u32)) -> u32
+    m@0: Mixed
+    t@1: (u16, (i8, bool), u32)
+    small@2: u8
+    x@3: i32
+    p@4: u8
+    first@5: u16
+    second@6: i8
+    flag@7: bool
+    last@8: u32
+    acc@9: u32
+    on@10: bool
+fn tuples() -> (i32, (bool, u64))
+    inner@0: (bool, u64)
+    unit@1: ()
+    one@2: (u8,)
+    n@3: u8
+fn mutate(Point, (i32, i32)) -> i32
+    p@0: Point
+    t@1: (i32, i32)
+fn main() -> ()
+    m@0: Mixed

@@ -1,0 +1,71 @@
+struct S { a: i32 }
+
+struct P(i32, i32);
+
+struct U;
+
+struct E {  }
+
+struct D { a: i32 }
+
+struct Twice { a: i32 }
+
+struct Twice(i32);
+
+struct V;
+
+fn V() -> () {}
+
+fn named_as_value() -> () {
+    let s@0 = <error>;
+}
+
+fn named_called() -> () {
+    let s@0 = <error>(1);
+}
+
+fn unknown_struct() -> () {
+    let n@0 = <missing>;
+}
+
+fn tuple_pattern_on_named(s@0: S) -> () {
+    let <missing> = s@0;
+}
+
+fn shadow_unit() -> () {
+    let mut U@0 = 1;
+}
+
+fn shadow_tuple_struct() -> () {
+    let P@0 = 1;
+}
+
+fn param_shadows(P@0: i32) -> () {}
+
+fn rest_twice(t@0: (i32, i32, i32)) -> () {
+    let (a@1, .., b@2) = t@0;
+}
+
+fn braces_as_value() -> () {
+    let e@0 = <error>;
+}
+
+fn shorthand_unknown_local() -> () {
+    let s@0 = S { a: <error> };
+}
+
+fn main() -> () {}
+
+error 98..103: field `a` is already declared
+error 138..150: the name `Twice` is defined multiple times
+error 169..175: the name `V` is defined multiple times
+error 214..215: cannot find value `S` in this scope
+error 252..256: cannot find function, tuple struct or tuple variant `S` in this scope
+error 295..299: cannot find struct, variant or union type `Nope` in this scope
+error 355..359: cannot find tuple struct or tuple variant `S` in this scope
+error 399..400: let bindings cannot shadow unit structs
+error 444..445: let bindings cannot shadow tuple structs
+error 471..472: function parameters cannot shadow tuple structs
+error 538..540: `..` can only be used once per tuple pattern
+error 585..586: cannot find value `E` in this scope
+error 638..639: cannot find value `a` in this scope

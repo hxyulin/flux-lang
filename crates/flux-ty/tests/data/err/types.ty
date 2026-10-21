@@ -27,9 +27,9 @@ fn mutability(i32) -> ()
 fn loops() -> ()
     v@0: u8
 fn returns() -> u8
-fn types({error}, {error}) -> {error}
+fn types({error}, (i32, i32)) -> {error}
     x@0: {error}
-    y@1: {error}
+    y@1: (i32, i32)
     a@2: bool
     b@3: i32
     c@4: {error}
@@ -40,7 +40,7 @@ error 156..157: mismatched types: expected `bool`, found `{integer}`
 error 179..180: mismatched types: expected `bool`, found `{integer}`
 error 186..190: mismatched types: expected `i32`, found `bool`
 error 238..240: cannot apply unary operator `-` to type `u32`
-error 254..259: cannot apply binary operator `+` to type `bool`
+error 256..257: cannot add `bool` to `bool`
 error 273..276: cannot apply unary operator `!` to type `()`
 error 296..300: mismatched types: expected `u8`, found `i32`
 error 333..338: literal out of range for `u8`
@@ -50,16 +50,15 @@ error 421..427: call to unsafe function `abs` requires an `unsafe` block
 error 441..449: `calls` takes 0 arguments but 1 argument was supplied
 error 472..477: `abs` takes 1 argument but 0 arguments were supplied
 error 493..494: expected function, found `{integer}`
-error 545..546: cannot assign twice to immutable variable `x`
-error 556..557: cannot assign twice to immutable variable `p`
-error 590..591: cannot assign twice to immutable variable `y`
+error 545..550: cannot assign twice to immutable variable `x`
+error 556..562: cannot assign to immutable argument `p`
+error 590..596: cannot assign twice to immutable variable `y`
 error 602..603: invalid left-hand side of assignment
 error 650..657: `break` with value from a `while` loop
 error 681..713: mismatched types: expected `u8`, found `bool`
 error 762..768: mismatched types: expected `u8`, found `()`
 error 787..790: literal out of range for `u8`
 error 807..810: `str` is not supported yet
-error 815..825: tuples are not supported yet
 error 830..833: cannot find type `Vec` in this scope
 error 848..857: cannot cast `i32` as `bool`
 error 871..880: non-primitive cast: `()` as `i32`

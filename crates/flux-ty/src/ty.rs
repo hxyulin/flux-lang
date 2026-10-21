@@ -2,13 +2,16 @@
 //!
 //! A [`Ty`] is a 4-byte handle into one process-wide table of [`TyKind`]s,
 //! so types compare and hash as integers, and a type that contains types
-//! (`*const T`) stays `Copy`. The primitive types are interned first, so
-//! [`Ty::BOOL`] and [`Ty::int`] are constants.
+//! (`*const T`, `(A, B)`) stays `Copy`. The primitive types are interned
+//! first, so [`Ty::BOOL`] and [`Ty::int`] are constants. A tuple's element
+//! list is interned too, and lives for the rest of the process, like the
+//! table.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{LazyLock, RwLock};
 
+use flux_hir::StructId;
 use flux_intern::{Symbol, sym};
 
 /// A type: a handle to its [`TyKind`].
@@ -20,8 +23,10 @@ pub struct Ty(u32);
 pub enum TyKind {
     Int(IntTy),
     Bool,
-    /// `()`
-    Unit,
+    /// `(A, B)`; `()` is the empty tuple, [`Ty::UNIT`].
+    Tuple(&'static [Ty]),
+    /// A struct.
+    Adt(AdtId),
     /// `!`
     Never,
     /// `*const T` and `*mut T`.
@@ -60,6 +65,13 @@ pub enum IntTy {
     Usize,
 }
 
+/// A struct, and its name for messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AdtId {
+    pub strukt: StructId,
+    pub name: Symbol,
+}
+
 /// A type variable of one body's inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InferVar(pub(crate) u32);
@@ -67,15 +79,22 @@ pub struct InferVar(pub(crate) u32);
 struct Table {
     kinds: Vec<TyKind>,
     ids: HashMap<TyKind, u32>,
+    lists: HashMap<Box<[Ty]>, &'static [Ty]>,
 }
 
 /// Interned in this order, so the constants below are their indices.
-const PREDEFINED: [TyKind; 4] = [TyKind::Error, TyKind::Unit, TyKind::Bool, TyKind::Never];
+const PREDEFINED: [TyKind; 4] = [
+    TyKind::Error,
+    TyKind::Tuple(&[]),
+    TyKind::Bool,
+    TyKind::Never,
+];
 
 static TABLE: LazyLock<RwLock<Table>> = LazyLock::new(|| {
     let mut table = Table {
         kinds: Vec::new(),
         ids: HashMap::new(),
+        lists: HashMap::new(),
     };
     let ints = IntTy::ALL.map(TyKind::Int);
     for kind in PREDEFINED.into_iter().chain(ints) {
@@ -120,6 +139,40 @@ impl Ty {
 
     pub fn raw_ptr(mutability: Mutability, pointee: Ty) -> Ty {
         Ty::new(TyKind::RawPtr(mutability, pointee))
+    }
+
+    pub fn tuple(elements: &[Ty]) -> Ty {
+        let interned = TABLE.read().unwrap().lists.get(elements).copied();
+        let elements = match interned {
+            Some(list) => list,
+            None => {
+                let mut table = TABLE.write().unwrap();
+                match table.lists.get(elements) {
+                    Some(&list) => list,
+                    None => {
+                        let list: &'static [Ty] = Box::leak(elements.into());
+                        table.lists.insert(elements.into(), list);
+                        list
+                    }
+                }
+            }
+        };
+        Ty::new(TyKind::Tuple(elements))
+    }
+
+    pub fn adt(strukt: StructId, name: Symbol) -> Ty {
+        Ty::new(TyKind::Adt(AdtId { strukt, name }))
+    }
+
+    /// Whether values of this type are copied rather than moved. Structs
+    /// are not, until flux has `#[derive(Clone, Copy)]`.
+    pub fn is_copy(self) -> bool {
+        match self.kind() {
+            TyKind::Tuple(elements) => elements.iter().all(|t| t.is_copy()),
+            TyKind::Adt(_) => false,
+            TyKind::Ref(Mutability::Mut, _) => false,
+            _ => true,
+        }
     }
 
     /// The integer type, if this is one.
@@ -218,7 +271,18 @@ impl fmt::Display for Ty {
         match self.kind() {
             TyKind::Int(int) => write!(f, "{}", int.name()),
             TyKind::Bool => f.write_str("bool"),
-            TyKind::Unit => f.write_str("()"),
+            TyKind::Tuple([one]) => write!(f, "({one},)"),
+            TyKind::Tuple(elements) => {
+                f.write_str("(")?;
+                for (i, element) in elements.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{element}")?;
+                }
+                f.write_str(")")
+            }
+            TyKind::Adt(adt) => write!(f, "{}", adt.name),
             TyKind::Never => f.write_str("!"),
             TyKind::RawPtr(Mutability::Not, pointee) => write!(f, "*const {pointee}"),
             TyKind::RawPtr(Mutability::Mut, pointee) => write!(f, "*mut {pointee}"),
@@ -244,5 +308,10 @@ mod tests {
         assert_eq!(p, Ty::raw_ptr(Mutability::Not, Ty::int(IntTy::I8)));
         assert_ne!(p, Ty::raw_ptr(Mutability::Mut, Ty::int(IntTy::I8)));
         assert_eq!(p.to_string(), "*const i8");
+        assert_eq!(Ty::tuple(&[]), Ty::UNIT);
+        let pair = Ty::tuple(&[Ty::BOOL, p]);
+        assert_eq!(pair, Ty::tuple(&[Ty::BOOL, p]));
+        assert_eq!(pair.to_string(), "(bool, *const i8)");
+        assert_eq!(Ty::tuple(&[Ty::BOOL]).to_string(), "(bool,)");
     }
 }

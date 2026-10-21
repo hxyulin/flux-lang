@@ -5,14 +5,14 @@ use std::collections::HashSet;
 use flux_arena::ArenaMap;
 use flux_hir::{
     ArithOp, BinaryOp, Binding, BindingId, Body, BodySourceMap, CmpOp, Diagnostic, Expr, ExprId,
-    Function, FunctionId, ItemTree, Literal, LogicOp, LoopSource, Pat, PatId, Res, Stmt, TypeRefId,
-    UnaryOp,
+    FunctionId, ItemTree, Literal, LogicOp, LoopSource, Pat, PatId, Res, Stmt, StructId,
+    StructKind, TypeRefId, UnaryOp,
 };
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
 
 use crate::ty::{InferVar, IntTy, Mutability, Ty, TyKind};
-use crate::{FnSig, function_name, resolve_or_report};
+use crate::{Signatures, function_name, resolve_or_report};
 
 /// The types of one body.
 #[derive(Debug)]
@@ -21,13 +21,15 @@ pub struct InferenceResult {
     /// (`f` in `f(x)`), which has no value of its own.
     pub expr_types: ArenaMap<Expr, Ty>,
     pub binding_types: ArenaMap<Binding, Ty>,
+    /// The field each `Field` expression reads, by index.
+    pub field_indices: ArenaMap<Expr, u32>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
 /// Infers the types of `function`'s body.
 pub fn infer_body(
     items: &ItemTree,
-    sigs: &ArenaMap<Function, FnSig>,
+    sigs: &Signatures,
     function: FunctionId,
     body: &Body,
     source_map: &BodySourceMap,
@@ -41,6 +43,7 @@ pub fn infer_body(
         vars: Vec::new(),
         expr_types: ArenaMap::new(),
         binding_types: ArenaMap::new(),
+        field_indices: ArenaMap::new(),
         loops: ArenaMap::new(),
         uninit_bindings: HashSet::new(),
         unsafe_depth: u32::from(items.functions[function].is_unsafe),
@@ -50,7 +53,7 @@ pub fn infer_body(
     };
     for (i, &pat) in body.params.iter().enumerate() {
         let ty = sig.params.get(i).copied().unwrap_or(Ty::ERROR);
-        ctx.bind_pat(pat, ty, false);
+        ctx.check_pat(pat, ty, false);
     }
     let ty = ctx.infer_expr(body.root);
     ctx.coerce(ty, sig.ret, body.root);
@@ -105,6 +108,7 @@ enum Deferred {
         expr: ExprId,
         op: BinaryOp,
         ty: Ty,
+        rhs: Ty,
     },
     /// The right operand of `<<` or `>>`, which may be any integer type.
     ShiftAmount {
@@ -125,13 +129,14 @@ enum Deferred {
 
 struct Ctx<'a> {
     items: &'a ItemTree,
-    sigs: &'a ArenaMap<Function, FnSig>,
+    sigs: &'a Signatures,
     body: &'a Body,
     source_map: &'a BodySourceMap,
     /// Each variable's value and where it was created.
     vars: Vec<(VarValue, TextRange)>,
     expr_types: ArenaMap<Expr, Ty>,
     binding_types: ArenaMap<Binding, Ty>,
+    field_indices: ArenaMap<Expr, u32>,
     loops: ArenaMap<Expr, LoopState>,
     /// `let x;` bindings, which may be assigned once without `mut`.
     uninit_bindings: HashSet<BindingId>,
@@ -217,6 +222,15 @@ impl Ctx<'_> {
             (_, TyKind::Infer(var)) => self.bind_var(var, a),
             (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y))
             | (TyKind::Ref(m, x), TyKind::Ref(n, y)) => m == n && self.unify(x, y),
+            (TyKind::Tuple(xs), TyKind::Tuple(ys)) => {
+                // Every element is unified, even after a mismatch, so that
+                // each learns what it can.
+                let mut ok = xs.len() == ys.len();
+                for (&x, &y) in xs.iter().zip(ys) {
+                    ok &= self.unify(x, y);
+                }
+                ok
+            }
             _ => false,
         }
     }
@@ -243,13 +257,33 @@ impl Ctx<'_> {
             }
             return;
         }
+        let blamed = self.blame(expr);
+        // A tuple expression is checked element by element, as rustc
+        // does, so a mismatch is reported at the element.
+        if let Expr::Tuple(fields) = &self.body.exprs[blamed]
+            && let TyKind::Tuple(elements) = self.shallow(expected).kind()
+        {
+            if fields.len() == elements.len() {
+                for (&field, &element) in fields.iter().zip(elements) {
+                    let ty = self.expr_types.get(field).copied().unwrap_or(Ty::ERROR);
+                    self.coerce(ty, element, field);
+                }
+            } else {
+                let (want, got) = (elements.len(), fields.len());
+                self.error(
+                    self.range(blamed),
+                    format!(
+                        "mismatched types: expected a tuple with {want} element{}, found one with {got} element{}",
+                        plural(want),
+                        plural(got)
+                    ),
+                );
+            }
+            return;
+        }
         if !self.unify(actual, expected) {
-            let (expected, actual) = (self.describe(expected), self.describe(actual));
-            let range = self.range(self.blame(expr));
-            self.error(
-                range,
-                format!("mismatched types: expected `{expected}`, found `{actual}`"),
-            );
+            let range = self.range(blamed);
+            self.mismatch(expected, actual, range);
         }
     }
 
@@ -281,21 +315,220 @@ impl Ctx<'_> {
                 let m = if m == Mutability::Mut { "mut " } else { "" };
                 format!("&{m}{}", self.describe(pointee))
             }
+            TyKind::Tuple(elements) if !elements.is_empty() => {
+                let elements: Vec<String> = elements.iter().map(|&e| self.describe(e)).collect();
+                if elements.len() == 1 {
+                    format!("({},)", elements[0])
+                } else {
+                    format!("({})", elements.join(", "))
+                }
+            }
             _ => ty.to_string(),
         }
     }
 
-    fn resolve_type_ref(&mut self, ty: TypeRefId) -> Ty {
-        let range = self.source_map.types.get(ty).copied().unwrap_or_default();
-        resolve_or_report(&self.body.types[ty], range, &mut self.diagnostics)
+    fn mismatch(&mut self, expected: Ty, actual: Ty, range: TextRange) {
+        let (expected, actual) = (self.describe(expected), self.describe(actual));
+        self.error(
+            range,
+            format!("mismatched types: expected `{expected}`, found `{actual}`"),
+        );
     }
 
-    fn bind_pat(&mut self, pat: PatId, ty: Ty, uninit: bool) {
-        if let Pat::Bind(binding) = self.body.pats[pat] {
-            self.binding_types.insert(binding, ty);
-            if uninit {
-                self.uninit_bindings.insert(binding);
+    fn resolve_type_ref(&mut self, ty: TypeRefId) -> Ty {
+        let range = self.source_map.types.get(ty).copied().unwrap_or_default();
+        resolve_or_report(
+            self.items,
+            &self.body.types[ty],
+            range,
+            &mut self.diagnostics,
+        )
+    }
+
+    fn struct_ty(&self, strukt: StructId) -> Ty {
+        Ty::adt(strukt, self.items.structs[strukt].name)
+    }
+
+    // Patterns.
+
+    /// Checks `pat` against a value of type `expected` and gives its
+    /// bindings their types; `uninit` for a `let` without a value.
+    fn check_pat(&mut self, pat: PatId, expected: Ty, uninit: bool) {
+        let (body, items, sigs) = (self.body, self.items, self.sigs);
+        let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
+        match &body.pats[pat] {
+            Pat::Missing | Pat::Wild => {}
+            Pat::Bind(binding) => {
+                self.binding_types.insert(*binding, expected);
+                if uninit {
+                    self.uninit_bindings.insert(*binding);
+                }
             }
+            Pat::Tuple { pats, rest } => {
+                let elements = match self.shallow(expected).kind() {
+                    TyKind::Tuple(elements) => {
+                        let fits = match rest {
+                            Some(_) => pats.len() <= elements.len(),
+                            None => pats.len() == elements.len(),
+                        };
+                        if !fits {
+                            let (want, got) = (elements.len(), pats.len());
+                            self.error(
+                                range,
+                                format!(
+                                    "mismatched types: expected a tuple with {want} element{}, found one with {got} element{}",
+                                    plural(want),
+                                    plural(got)
+                                ),
+                            );
+                        }
+                        fits.then_some(elements)
+                    }
+                    TyKind::Error => None,
+                    TyKind::Infer(_) if rest.is_none() => {
+                        let vars: Vec<Ty> = pats
+                            .iter()
+                            .map(|&p| {
+                                let range = self.source_map.pats.get(p).copied();
+                                self.new_var(false, range.unwrap_or_default())
+                            })
+                            .collect();
+                        let tuple = Ty::tuple(&vars);
+                        self.unify(expected, tuple);
+                        Some(tuple_elements(tuple))
+                    }
+                    TyKind::Infer(_) => {
+                        self.error(range, "type annotations needed");
+                        None
+                    }
+                    _ => {
+                        let found: Vec<&str> = pats.iter().map(|_| "_").collect();
+                        let found = match found.len() {
+                            1 => "(_,)".to_owned(),
+                            _ => format!("({})", found.join(", ")),
+                        };
+                        let expected = self.describe(expected);
+                        self.error(
+                            range,
+                            format!("mismatched types: expected `{expected}`, found `{found}`"),
+                        );
+                        None
+                    }
+                };
+                self.check_tuple_pats(pats, *rest, elements, uninit);
+            }
+            Pat::TupleStruct { strukt, pats, rest } => {
+                let ty = self.struct_ty(*strukt);
+                let fields = &sigs.structs[*strukt];
+                if !self.unify(ty, expected) {
+                    self.mismatch(expected, ty, range);
+                }
+                let fits = match rest {
+                    Some(_) => pats.len() <= fields.len(),
+                    None => pats.len() == fields.len(),
+                };
+                if !fits {
+                    let (want, got) = (fields.len(), pats.len());
+                    // rustc points at the fields, not the whole pattern.
+                    let range = pats
+                        .first()
+                        .and_then(|&p| self.source_map.pats.get(p).copied())
+                        .unwrap_or(range);
+                    self.error(
+                        range,
+                        format!(
+                            "this pattern has {got} field{}, but the corresponding tuple struct has {want} field{}",
+                            plural(got),
+                            plural(want)
+                        ),
+                    );
+                }
+                self.check_tuple_pats(pats, *rest, fits.then_some(fields), uninit);
+            }
+            Pat::Record {
+                strukt,
+                fields,
+                rest,
+            } => {
+                let ty = self.struct_ty(*strukt);
+                if !self.unify(ty, expected) {
+                    self.mismatch(expected, ty, range);
+                }
+                let def = &items.structs[*strukt];
+                let names = self.source_map.pat_fields.get(pat);
+                let mut mentioned = Vec::new();
+                for (i, &(name, field_pat)) in fields.iter().enumerate() {
+                    let (name_range, field_range) = names
+                        .and_then(|n| n.get(i))
+                        .copied()
+                        .unwrap_or((range, range));
+                    let field_ty = match def.field(name) {
+                        _ if mentioned.contains(&name) => {
+                            self.error(
+                                field_range,
+                                format!("field `{name}` bound multiple times in the pattern"),
+                            );
+                            Ty::ERROR
+                        }
+                        Some((index, _)) => sigs.structs[*strukt][index],
+                        None => {
+                            let message = format!(
+                                "struct `{}` does not have a field named `{name}`",
+                                def.name
+                            );
+                            self.error(name_range, message);
+                            Ty::ERROR
+                        }
+                    };
+                    mentioned.push(name);
+                    self.check_pat(field_pat, field_ty, uninit);
+                }
+                if !rest {
+                    let missing: Vec<Symbol> = def
+                        .fields
+                        .iter()
+                        .map(|f| f.name)
+                        .filter(|name| !mentioned.contains(name))
+                        .collect();
+                    if !missing.is_empty() {
+                        // Unlike struct expressions, every field is listed.
+                        let names: Vec<String> = missing.iter().map(|n| format!("`{n}`")).collect();
+                        let message = format!(
+                            "pattern does not mention field{} {}",
+                            plural(names.len()),
+                            names.join(", ")
+                        );
+                        self.error(range, message);
+                    }
+                }
+            }
+            Pat::Unit(strukt) => {
+                let ty = self.struct_ty(*strukt);
+                if !self.unify(ty, expected) {
+                    self.mismatch(expected, ty, range);
+                }
+            }
+        }
+    }
+
+    /// The fields of a tuple or tuple struct pattern against the types of
+    /// `elements`, if they fit.
+    fn check_tuple_pats(
+        &mut self,
+        pats: &[PatId],
+        rest: Option<u32>,
+        elements: Option<&[Ty]>,
+        uninit: bool,
+    ) {
+        for (i, &pat) in pats.iter().enumerate() {
+            let ty = match (elements, rest) {
+                (Some(elements), Some(rest)) if i >= rest as usize => {
+                    elements[elements.len() - (pats.len() - i)]
+                }
+                (Some(elements), _) => elements[i],
+                (None, _) => Ty::ERROR,
+            };
+            self.check_pat(pat, ty, uninit);
         }
     }
 
@@ -332,18 +565,24 @@ impl Ctx<'_> {
                 self.error(self.range(id), "functions as values are not supported yet");
                 Ty::ERROR
             }
-            Expr::Path(Res::Err) => Ty::ERROR,
-            Expr::Tuple(fields) => {
-                for &field in fields.iter() {
-                    self.infer_expr(field);
-                }
-                if fields.is_empty() {
-                    Ty::UNIT
-                } else {
-                    self.error(self.range(id), "tuples are not supported yet");
+            Expr::Path(Res::Struct(strukt)) => match self.items.structs[*strukt].kind {
+                StructKind::Unit => self.struct_ty(*strukt),
+                _ => {
+                    self.error(self.range(id), "functions as values are not supported yet");
                     Ty::ERROR
                 }
+            },
+            Expr::Path(Res::Err) => Ty::ERROR,
+            Expr::Tuple(fields) => {
+                let elements: Vec<Ty> = fields.iter().map(|&f| self.infer_expr(f)).collect();
+                Ty::tuple(&elements)
             }
+            Expr::Field { expr, name } => self.infer_field(id, *expr, *name),
+            Expr::Record {
+                strukt,
+                fields,
+                spread,
+            } => self.infer_record(id, *strukt, fields, *spread),
             Expr::Block {
                 stmts,
                 tail,
@@ -485,7 +724,7 @@ impl Ctx<'_> {
                             self.new_var(false, range.unwrap_or_default())
                         }
                     };
-                    self.bind_pat(pat, ty, init.is_none());
+                    self.check_pat(pat, ty, init.is_none());
                 }
                 Stmt::Expr {
                     expr,
@@ -533,6 +772,9 @@ impl Ctx<'_> {
     fn infer_call(&mut self, id: ExprId, callee: ExprId, args: &[ExprId]) -> Ty {
         let function = match self.body.exprs[callee] {
             Expr::Path(Res::Function(function)) => function,
+            Expr::Path(Res::Struct(strukt)) => {
+                return self.infer_constructor(callee, strukt, args);
+            }
             Expr::Path(Res::Err) | Expr::Missing => {
                 self.infer_args(args);
                 return Ty::ERROR;
@@ -589,6 +831,161 @@ impl Ctx<'_> {
         sig.ret
     }
 
+    /// `P(a, b)`, a tuple struct's constructor.
+    fn infer_constructor(&mut self, callee: ExprId, strukt: StructId, args: &[ExprId]) -> Ty {
+        let def = &self.items.structs[strukt];
+        let sigs = self.sigs;
+        if def.kind != StructKind::Tuple {
+            let name = def.name;
+            self.error(
+                self.range(callee),
+                format!("expected function, found struct `{name}`"),
+            );
+            self.infer_args(args);
+            return Ty::ERROR;
+        }
+        let fields = &sigs.structs[strukt];
+        if fields.len() != args.len() {
+            let (want, got) = (fields.len(), args.len());
+            let verb = if got == 1 { "was" } else { "were" };
+            self.error(
+                self.range(callee),
+                format!(
+                    "this struct takes {want} argument{} but {got} argument{} {verb} supplied",
+                    plural(want),
+                    plural(got)
+                ),
+            );
+        }
+        for (i, &arg) in args.iter().enumerate() {
+            let ty = self.infer_expr(arg);
+            if let Some(&field) = fields.get(i) {
+                self.coerce(ty, field, arg);
+            }
+        }
+        self.struct_ty(strukt)
+    }
+
+    /// `base.name`: a struct's field or a tuple's element.
+    fn infer_field(&mut self, id: ExprId, base: ExprId, name: Symbol) -> Ty {
+        let base_ty = self.infer_expr(base);
+        let base_ty = self.shallow(base_ty);
+        let (items, sigs) = (self.items, self.sigs);
+        let range = self
+            .source_map
+            .expr_fields
+            .get(id)
+            .and_then(|names| names.first())
+            .copied()
+            .unwrap_or_else(|| self.range(id));
+        let found = match base_ty.kind() {
+            TyKind::Tuple(elements) => name
+                .as_str()
+                .parse::<usize>()
+                .ok()
+                .filter(|i| i.to_string() == name.as_str())
+                .and_then(|i| Some((i, *elements.get(i)?))),
+            TyKind::Adt(adt) => items.structs[adt.strukt]
+                .field(name)
+                .map(|(i, _)| (i, sigs.structs[adt.strukt][i])),
+            TyKind::Error => return Ty::ERROR,
+            TyKind::Int(_) | TyKind::Bool => {
+                self.error(
+                    range,
+                    format!("`{base_ty}` is a primitive type and therefore doesn't have fields"),
+                );
+                return Ty::ERROR;
+            }
+            TyKind::Infer(var) if self.unknown(var).0 => {
+                self.error(
+                    range,
+                    "`{integer}` is a primitive type and therefore doesn't have fields",
+                );
+                return Ty::ERROR;
+            }
+            TyKind::Infer(_) => {
+                self.error(self.range(base), "type annotations needed");
+                return Ty::ERROR;
+            }
+            _ => None,
+        };
+        match found {
+            Some((index, ty)) => {
+                self.field_indices.insert(id, index as u32);
+                ty
+            }
+            None => {
+                let ty = self.describe(base_ty);
+                self.error(range, format!("no field `{name}` on type `{ty}`"));
+                Ty::ERROR
+            }
+        }
+    }
+
+    /// `S { a: 1, b, ..base }`
+    fn infer_record(
+        &mut self,
+        id: ExprId,
+        strukt: StructId,
+        fields: &[(Symbol, ExprId)],
+        spread: Option<ExprId>,
+    ) -> Ty {
+        let (items, sigs) = (self.items, self.sigs);
+        let def = &items.structs[strukt];
+        let ty = self.struct_ty(strukt);
+        let range = self.range(id);
+        let names = self.source_map.expr_fields.get(id);
+        let mut seen = Vec::new();
+        let mut unknown = false;
+        for (i, &(name, value)) in fields.iter().enumerate() {
+            let value_ty = self.infer_expr(value);
+            let name_range = names.and_then(|n| n.get(i)).copied().unwrap_or(range);
+            if seen.contains(&name) {
+                self.error(
+                    name_range,
+                    format!("field `{name}` specified more than once"),
+                );
+                continue;
+            }
+            seen.push(name);
+            match def.field(name) {
+                Some((index, _)) => self.coerce(value_ty, sigs.structs[strukt][index], value),
+                None => {
+                    unknown = true;
+                    self.error(
+                        name_range,
+                        format!("struct `{}` has no field named `{name}`", def.name),
+                    );
+                }
+            }
+        }
+        match spread {
+            Some(base) => {
+                let base_ty = self.infer_expr(base);
+                self.coerce(base_ty, ty, base);
+            }
+            None => {
+                let missing: Vec<Symbol> = def
+                    .fields
+                    .iter()
+                    .map(|f| f.name)
+                    .filter(|name| !seen.contains(name))
+                    .collect();
+                // rustc reports unknown fields instead of missing ones.
+                if !missing.is_empty() && !unknown {
+                    let message = format!(
+                        "missing {} in initializer of `{}`",
+                        list_fields(&missing),
+                        def.name
+                    );
+                    let path = self.source_map.paths.get(id).copied();
+                    self.error(path.unwrap_or(range), message);
+                }
+            }
+        }
+        ty
+    }
+
     /// Only `CStr::as_ptr` exists so far, until flux has `impl` blocks and
     /// its own core library.
     fn infer_method_call(
@@ -640,12 +1037,17 @@ impl Ctx<'_> {
                 let ty = self.infer_expr(lhs);
                 let rhs_ty = self.infer_expr(rhs);
                 self.coerce(rhs_ty, ty, rhs);
-                self.deferred.push(Deferred::Binary { expr: id, op, ty });
+                self.deferred.push(Deferred::Binary {
+                    expr: id,
+                    op,
+                    ty,
+                    rhs: rhs_ty,
+                });
                 Ty::BOOL
             }
             BinaryOp::Arith(arith) => self.infer_arith(id, op, arith, lhs, rhs),
             BinaryOp::Assign(arith) => {
-                self.check_place(lhs, arith.is_none());
+                self.check_place(id, lhs, arith.is_none());
                 let ty = self.infer_expr(lhs);
                 match arith {
                     None => {
@@ -684,23 +1086,52 @@ impl Ctx<'_> {
         } else {
             self.coerce(rhs_ty, ty, rhs);
         }
-        self.deferred.push(Deferred::Binary { expr: id, op, ty });
+        self.deferred.push(Deferred::Binary {
+            expr: id,
+            op,
+            ty,
+            rhs: rhs_ty,
+        });
         ty
     }
 
-    /// The left side of an assignment must be a local; one without `mut`
-    /// only if it was declared without a value (`let x; x = 1;`).
-    fn check_place(&mut self, lhs: ExprId, plain: bool) {
+    /// The left side of an assignment must be a local or a field of one;
+    /// a local without `mut` only if it was declared without a value
+    /// (`let x; x = 1;`). Assignments to fields are checked with
+    /// initialization, in MIR.
+    fn check_place(&mut self, assignment: ExprId, lhs: ExprId, plain: bool) {
         match self.body.exprs[lhs] {
+            Expr::Field { expr, .. } => {
+                let mut base = expr;
+                while let Expr::Field { expr, .. } = self.body.exprs[base] {
+                    base = expr;
+                }
+                if !matches!(
+                    self.body.exprs[base],
+                    Expr::Path(Res::Local(_) | Res::Err) | Expr::Missing
+                ) {
+                    self.error(
+                        self.range(lhs),
+                        "assigning to fields of temporaries is not supported yet",
+                    );
+                }
+            }
             Expr::Path(Res::Local(binding)) => {
                 let data = &self.body.bindings[binding];
                 let first_assignment = plain && self.uninit_bindings.contains(&binding);
                 if !data.mutable && !first_assignment {
                     let name = data.name;
-                    self.error(
-                        self.range(lhs),
-                        format!("cannot assign twice to immutable variable `{name}`"),
-                    );
+                    let is_param = self
+                        .body
+                        .params
+                        .iter()
+                        .any(|&p| self.body.pats[p] == Pat::Bind(binding));
+                    let message = if is_param {
+                        format!("cannot assign to immutable argument `{name}`")
+                    } else {
+                        format!("cannot assign twice to immutable variable `{name}`")
+                    };
+                    self.error(self.range(assignment), message);
                 }
             }
             Expr::Path(Res::Err) | Expr::Missing => {}
@@ -727,6 +1158,7 @@ impl Ctx<'_> {
         InferenceResult {
             expr_types: self.expr_types,
             binding_types: self.binding_types,
+            field_indices: self.field_indices,
             diagnostics: self.diagnostics,
         }
     }
@@ -756,6 +1188,13 @@ impl Ctx<'_> {
             }
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, self.resolve(pointee, reported)),
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, self.resolve(pointee, reported))),
+            TyKind::Tuple(elements) => {
+                let elements: Vec<Ty> = elements
+                    .iter()
+                    .map(|&e| self.resolve(e, reported))
+                    .collect();
+                Ty::tuple(&elements)
+            }
             _ => ty,
         }
     }
@@ -809,11 +1248,22 @@ impl Ctx<'_> {
                         );
                     }
                 }
-                Deferred::Binary { expr, op, ty } => {
+                Deferred::Binary { expr, op, ty, rhs } => {
                     let ty = self.resolve(ty, reported);
+                    let rhs = self.resolve(rhs, reported);
                     let ok = match (op, ty.kind()) {
                         (_, TyKind::Error | TyKind::Never) => true,
-                        (BinaryOp::Cmp(_), TyKind::Int(_) | TyKind::Bool | TyKind::Unit) => true,
+                        (BinaryOp::Cmp(_), TyKind::Int(_) | TyKind::Bool | TyKind::Tuple([])) => {
+                            true
+                        }
+                        (BinaryOp::Cmp(_), TyKind::Tuple(_)) => {
+                            self.error(self.range(expr), "comparing tuples is not supported yet");
+                            true
+                        }
+                        (BinaryOp::Cmp(_), TyKind::RawPtr(..)) => {
+                            self.error(self.range(expr), "comparing pointers is not supported yet");
+                            true
+                        }
                         (BinaryOp::Arith(op) | BinaryOp::Assign(Some(op)), TyKind::Bool) => {
                             matches!(op, ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor)
                         }
@@ -821,13 +1271,13 @@ impl Ctx<'_> {
                         _ => false,
                     };
                     if !ok {
-                        self.error(
-                            self.range(expr),
-                            format!(
-                                "cannot apply binary operator `{}` to type `{ty}`",
-                                op_text(op)
-                            ),
-                        );
+                        // rustc points at the operator, except for compound
+                        // assignments.
+                        let range = match op {
+                            BinaryOp::Assign(_) => self.range(expr),
+                            _ => self.source_map.ops.get(expr).copied().unwrap_or_default(),
+                        };
+                        self.error(range, binary_error(op, ty, rhs));
                     }
                 }
                 Deferred::ShiftAmount { expr, ty } => {
@@ -879,7 +1329,12 @@ impl Ctx<'_> {
                         ty.kind(),
                         TyKind::Int(_) | TyKind::RawPtr(..) | TyKind::Error | TyKind::Never
                     );
-                    if let Some(cast_to) = cast_to {
+                    if matches!(ty.kind(), TyKind::Adt(_) | TyKind::Tuple([_, ..])) {
+                        self.error(
+                            self.range(expr),
+                            format!("passing `{ty}` to a variadic function is not supported yet"),
+                        );
+                    } else if let Some(cast_to) = cast_to {
                         self.error(
                             self.range(expr),
                             format!(
@@ -894,6 +1349,57 @@ impl Ctx<'_> {
                     }
                 }
             }
+        }
+    }
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// The elements of a tuple type.
+fn tuple_elements(ty: Ty) -> &'static [Ty] {
+    match ty.kind() {
+        TyKind::Tuple(elements) => elements,
+        _ => &[],
+    }
+}
+
+/// Field names as rustc lists them: "field `a`", "fields `a` and `b`",
+/// "fields `a`, `b` and `c`", "fields `a`, `b`, `c` and 2 other fields".
+fn list_fields(names: &[Symbol]) -> String {
+    let quoted: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+    match quoted.as_slice() {
+        [only] => format!("field {only}"),
+        [init @ .., last] if quoted.len() <= 3 => format!("fields {} and {last}", init.join(", ")),
+        _ => {
+            let others = quoted.len() - 3;
+            format!(
+                "fields {} and {others} other field{}",
+                quoted[..3].join(", "),
+                plural(others)
+            )
+        }
+    }
+}
+
+/// rustc's message for an operator its operand types do not support.
+fn binary_error(op: BinaryOp, lhs: Ty, rhs: Ty) -> String {
+    let op_str = op_text(op);
+    match op {
+        BinaryOp::Arith(ArithOp::Add) => format!("cannot add `{rhs}` to `{lhs}`"),
+        BinaryOp::Arith(ArithOp::Sub) => format!("cannot subtract `{rhs}` from `{lhs}`"),
+        BinaryOp::Arith(ArithOp::Mul) => format!("cannot multiply `{lhs}` by `{rhs}`"),
+        BinaryOp::Arith(ArithOp::Div) => format!("cannot divide `{lhs}` by `{rhs}`"),
+        BinaryOp::Arith(ArithOp::Rem) => {
+            format!("cannot calculate the remainder of `{lhs}` divided by `{rhs}`")
+        }
+        BinaryOp::Arith(_) => format!("no implementation for `{lhs} {op_str} {rhs}`"),
+        BinaryOp::Assign(_) => {
+            format!("binary assignment operation `{op_str}` cannot be applied to type `{lhs}`")
+        }
+        BinaryOp::Cmp(_) | BinaryOp::Logic(_) => {
+            format!("binary operation `{op_str}` cannot be applied to type `{lhs}`")
         }
     }
 }

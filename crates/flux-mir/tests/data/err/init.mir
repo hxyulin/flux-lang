@@ -127,5 +127,5 @@ fn after_loop() -> i32 {
 
 error 45..46: used binding `x` isn't initialized
 error 140..141: used binding `x` is possibly-uninitialized
-error 223..224: cannot assign twice to immutable variable `x`
-error 295..296: cannot assign twice to immutable variable `x`
+error 219..224: cannot assign twice to immutable variable `x`
+error 291..296: cannot assign twice to immutable variable `x`

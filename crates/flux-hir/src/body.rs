@@ -5,7 +5,7 @@ use flux_intern::Symbol;
 use flux_syntax::TextRange;
 use flux_syntax::ast::{BinaryOp, UnaryOp};
 
-use crate::{FunctionId, TypeRef};
+use crate::{FunctionId, StructId, TypeRef};
 
 pub type ExprId = Idx<Expr>;
 pub type PatId = Idx<Pat>;
@@ -32,6 +32,16 @@ pub struct BodySourceMap {
     pub exprs: ArenaMap<Expr, TextRange>,
     pub pats: ArenaMap<Pat, TextRange>,
     pub types: ArenaMap<TypeRef, TextRange>,
+    /// The field names of a `Field` expression (one) or a `Record`
+    /// expression (one per field, in order).
+    pub expr_fields: ArenaMap<Expr, Box<[TextRange]>>,
+    /// Each field of a `Record` pattern: its name, and the whole field
+    /// (`a: b`).
+    pub pat_fields: ArenaMap<Pat, Box<[(TextRange, TextRange)]>>,
+    /// The operator of a `Binary` expression.
+    pub ops: ArenaMap<Expr, TextRange>,
+    /// The path of a `Record` expression.
+    pub paths: ArenaMap<Expr, TextRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +103,17 @@ pub enum Expr {
         expr: ExprId,
         ty: TypeRefId,
     },
+    /// `expr.name`, also `tuple.0`; resolved during type checking.
+    Field {
+        expr: ExprId,
+        name: Symbol,
+    },
+    /// `S { a: 1, b, ..base }`, in source order.
+    Record {
+        strukt: StructId,
+        fields: Box<[(Symbol, ExprId)]>,
+        spread: Option<ExprId>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +141,8 @@ pub enum Literal {
 pub enum Res {
     Local(BindingId),
     Function(FunctionId),
+    /// A tuple struct's constructor or a unit struct's value.
+    Struct(StructId),
     /// Unresolved; already reported.
     Err,
 }
@@ -145,6 +168,49 @@ pub enum Pat {
     Wild,
     /// `x` or `mut x`.
     Bind(BindingId),
+    /// `(a, b)`; `rest` is the position of `..`, as in `(a, .., z)`.
+    Tuple {
+        pats: Box<[PatId]>,
+        rest: Option<u32>,
+    },
+    /// `P(a, b)`, with `..` like a tuple pattern.
+    TupleStruct {
+        strukt: StructId,
+        pats: Box<[PatId]>,
+        rest: Option<u32>,
+    },
+    /// `S { a, b: x, .. }`
+    Record {
+        strukt: StructId,
+        fields: Box<[(Symbol, PatId)]>,
+        rest: bool,
+    },
+    /// A unit struct: `U`.
+    Unit(StructId),
+}
+
+impl Pat {
+    /// The patterns directly inside this one.
+    pub fn children(&self) -> impl Iterator<Item = PatId> + '_ {
+        let (pats, fields): (&[PatId], &[(Symbol, PatId)]) = match self {
+            Pat::Tuple { pats, .. } | Pat::TupleStruct { pats, .. } => (pats, &[]),
+            Pat::Record { fields, .. } => (&[], fields),
+            Pat::Missing | Pat::Wild | Pat::Bind(_) | Pat::Unit(_) => (&[], &[]),
+        };
+        pats.iter().copied().chain(fields.iter().map(|&(_, p)| p))
+    }
+}
+
+impl Body {
+    /// Every binding in `pat`, in source order.
+    pub fn pat_bindings(&self, pat: PatId, out: &mut Vec<BindingId>) {
+        if let Pat::Bind(binding) = self.pats[pat] {
+            out.push(binding);
+        }
+        for child in self.pats[pat].children() {
+            self.pat_bindings(child, out);
+        }
+    }
 }
 
 /// A local variable.
