@@ -1,0 +1,18 @@
+[package]
+name = "flux-ty"
+description = "Type inference and checking for the flux compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+[dependencies]
+flux-arena.workspace = true
+flux-hir.workspace = true
+flux-intern.workspace = true
+flux-syntax.workspace = true
+
+[lints]
+workspace = true

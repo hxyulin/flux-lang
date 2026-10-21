@@ -62,6 +62,12 @@ rest is reported as "not supported yet":
 - **Attributes:** only `allow`, `warn`, `deny`, `expect`, `inline`,
   `cold`, `must_use` and `doc`, which are ignored.
 
+Type checking follows rustc for this subset: the integer types, `bool`,
+`()` and `!`; integer literals default to `i32`; no implicit
+conversions; operators need operands of the same type, except shifts;
+`as` converts between integers and from `bool`. `isize` and `usize` are
+64 bits.
+
 ## Deliberately rejected
 
 - **Pre-2024 editions.** `gen` and `try` are reserved keywords, so

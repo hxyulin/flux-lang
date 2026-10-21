@@ -6,6 +6,7 @@ members = [
     "crates/flux-syntax",
     "crates/flux-sourcegen",
     "crates/flux-hir",
+    "crates/flux-ty",
     "crates/flux-cli",
 ]
 
@@ -20,6 +21,7 @@ flux-arena = { path = "crates/flux-arena" }
 flux-intern = { path = "crates/flux-intern" }
 flux-syntax = { path = "crates/flux-syntax" }
 flux-hir = { path = "crates/flux-hir" }
+flux-ty = { path = "crates/flux-ty" }
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "deny"

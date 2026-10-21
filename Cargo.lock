@@ -147,6 +147,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "flux-ty"
+version = "0.1.0"
+dependencies = [
+ "flux-arena",
+ "flux-hir",
+ "flux-intern",
+ "flux-syntax",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

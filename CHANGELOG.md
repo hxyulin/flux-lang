@@ -16,6 +16,8 @@
   the grammar.
 - Add `flux-hir`: the item tree and HIR lowering of function bodies,
   with names resolved, and `flux hir` to print it.
+- Add `flux-ty`: type inference and checking for HIR bodies, with
+  diagnostics matching rustc's for the supported subset.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 

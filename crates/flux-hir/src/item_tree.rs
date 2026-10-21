@@ -22,6 +22,8 @@ pub struct Function {
     pub name: Symbol,
     pub params: Box<[Param]>,
     pub ret: TypeRef,
+    /// The return type's range, or the name's when it is implicitly `()`.
+    pub ret_range: TextRange,
     /// Declared `unsafe fn`, or inside an `unsafe extern` block: calling
     /// it needs an `unsafe` block.
     pub is_unsafe: bool,
@@ -37,6 +39,7 @@ pub struct Function {
 #[derive(Debug)]
 pub struct Param {
     pub ty: TypeRef,
+    pub range: TextRange,
 }
 
 /// A type as written in the source, not yet resolved: `u8` is a path
@@ -133,12 +136,19 @@ impl ItemTree {
                 }
                 params.push(Param {
                     ty: lower_type(param.ty(), diagnostics),
+                    range: param
+                        .ty()
+                        .map_or(param.syntax().text_range(), |t| t.syntax().text_range()),
                 });
             }
         }
-        let ret = match f.ret_type() {
-            Some(ret) => lower_type(ret.ty(), diagnostics),
-            None => TypeRef::unit(),
+        let (ret, ret_range) = match f.ret_type() {
+            Some(ret) => (
+                lower_type(ret.ty(), diagnostics),
+                ret.ty()
+                    .map_or(ret.syntax().text_range(), |t| t.syntax().text_range()),
+            ),
+            None => (TypeRef::unit(), name.syntax().text_range()),
         };
         let has_body = f.body().is_some();
         if in_extern_block && has_body {
@@ -156,6 +166,7 @@ impl ItemTree {
             name: Symbol::intern(name.text()),
             params: params.into(),
             ret,
+            ret_range,
             is_unsafe: in_extern_block || f.unsafe_token().is_some(),
             is_extern: in_extern_block,
             has_body: has_body && !in_extern_block,
