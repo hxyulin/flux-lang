@@ -42,6 +42,7 @@ error 186..190: mismatched types: expected `i32`, found `bool`
 error 238..240: cannot apply unary operator `-` to type `u32`
 error 256..257: cannot add `bool` to `bool`
 error 273..276: cannot apply unary operator `!` to type `()`
+error 294..295: cannot add `i32` to `u8`
 error 296..300: mismatched types: expected `u8`, found `i32`
 error 333..338: literal out of range for `u8`
 error 356..359: literal out of range for `i8`

@@ -1,0 +1,129 @@
+struct S {}
+struct P { 0: i32, 1: i32 }
+struct W<T> { 0: T }
+struct Box1 {}
+struct Nv { 0: i32 }
+fn get(&Self) -> <Self as Tr>::Out
+fn get(&S) -> i32
+    self@0: &S
+fn get(&P) -> <P as Tr>::Out
+    self@0: &P
+fn get(&i32) -> u8
+    self@0: &i32
+fn get(&W<T>) -> <T as Tr>::Out
+    self@0: &W<T>
+fn concrete(&S, &P) -> i32
+    s@0: &S
+    p@1: &P
+    a@2: i32
+    b@3: bool
+    c@4: u8
+    d@5: i32
+    e@6: bool
+fn forms<T>(&T) -> <T as Tr>::Out
+    t@0: &T
+    a@1: <T as Tr>::Out
+    b@2: <T as Tr>::Out
+    c@3: <T as Tr>::Out
+    d@4: <T as Tr>::Out
+fn forms_where<T>(&T) -> <T as Tr>::Out
+    t@0: &T
+fn pass<T>(&T) -> <T as Tr>::Out
+    t@0: &T
+fn wrapped<T>(&W<T>) -> <T as Tr>::Out
+    w@0: &W<T>
+fn instantiate(&S) -> i32
+    s@0: &S
+    a@1: i32
+    b@2: u8
+    c@3: bool
+fn bound_binding<T>(&T) -> i32
+    t@0: &T
+fn where_binding<T>(&T) -> i32
+    t@0: &T
+    x@1: i32
+fn call_binding(&S) -> i32
+    s@0: &S
+fn area(&Self) -> i32
+fn area(&S) -> i32
+    self@0: &S
+fn item(&Self) -> <Self as Holder>::Item
+fn item_area(&Self) -> i32
+    self@0: &Self
+fn item(&Box1) -> S
+    self@0: &Box1
+fn holder_area<H>(&H) -> i32
+    h@0: &H
+fn count(&Self) -> <Self as Counter>::Count
+fn twice(&Self) -> (<Self as Counter>::Count, <Self as Counter>::Count)
+    self@0: &Self
+fn count(&S) -> u64
+    self@0: &S
+fn counts(&S) -> u64
+    s@0: &S
+    a@1: u64
+    b@2: u64
+fn other(&Self) -> <Self as Other>::Out
+fn other(&S) -> bool
+    self@0: &S
+fn two_traits<T>(&T) -> (<T as Tr>::Out, <T as Other>::Out)
+    t@0: &T
+fn two_traits_concrete(&S) -> i32
+    s@0: &S
+    a@1: i32
+    b@2: bool
+fn sub(&Self) -> <Self as Tr>::Out
+    self@0: &Self
+fn through_super<T>(&T) -> <T as Tr>::Out
+    t@0: &T
+fn convert(&Self) -> T
+fn convert(&S) -> i32
+    self@0: &S
+fn convert(&S) -> bool
+    self@0: &S
+fn convert_default<T>(&T) -> i32
+    t@0: &T
+fn convert_explicit<T>(&T) -> bool
+    t@0: &T
+fn convert_concrete(&S) -> i32
+    s@0: &S
+    a@1: i32
+    b@2: bool
+    c@3: i32
+    d@4: bool
+fn combine(Self, Rhs) -> <Self as Combine<Rhs>>::Output
+fn combine(i32, i32) -> i64
+    self@0: i32
+    rhs@1: i32
+fn combine(i32, bool) -> i32
+    self@0: i32
+    rhs@1: bool
+fn combine_self<T>(T, T) -> <T as Combine<T>>::Output
+    a@0: T
+    b@1: T
+fn combine_bound<T>(T, T) -> i64
+    a@0: T
+    b@1: T
+fn combine_concrete() -> i64
+    a@0: i64
+    b@1: i32
+fn where_shorthand<T>(&T, &T) -> <T as Tr>::Out
+    a@0: &T
+    b@1: &T
+fn marked<T>(&T) -> ()
+    _x@0: &T
+fn n(&Self) -> <Self as Num>::N
+fn n(&Nv) -> i32
+    self@0: &Nv
+fn eq_ns<T>(&T, &T) -> bool
+    a@0: &T
+    b@1: &T
+fn add_n<T>(&T) -> i32
+    a@0: &T
+fn inner(&Self) -> <Self as Nested>::Inner
+fn inner(&S) -> S
+    self@0: &S
+fn nested<T>(&T) -> <<T as Nested>::Inner as Nested>::Inner
+    x@0: &T
+fn main() -> ()
+    s@0: S

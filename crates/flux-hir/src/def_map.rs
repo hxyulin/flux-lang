@@ -145,6 +145,8 @@ pub enum At {
     Segment(usize),
     /// The `n`th `crate`, `self` or `super` before the names.
     Anchor(usize),
+    /// The whole path.
+    Whole,
 }
 
 impl ResolveError {
@@ -161,6 +163,7 @@ impl ResolveError {
             ResolveError::Failed {
                 at: At::Anchor(n), ..
             } => path.anchor_ranges.get(*n).copied().unwrap_or(whole),
+            ResolveError::Failed { at: At::Whole, .. } => whole,
             ResolveError::Reported => whole,
         }
     }
@@ -375,10 +378,11 @@ impl ItemTree {
                 message: "ambiguous associated type".into(),
             });
         }
+        // `S::Out` needs `<S as Tr>::Out`.
         if ns != Ns::Values {
             return Err(ResolveError::Failed {
-                at: At::Segment(index),
-                message: "associated types are not supported yet".into(),
+                at: At::Whole,
+                message: "ambiguous associated type".into(),
             });
         }
         let Some(item) = self.assoc_item(target, name) else {
@@ -422,8 +426,8 @@ impl ItemTree {
         let name = path.segments[index];
         if index + 1 != path.segments.len() || ns != Ns::Values {
             return Err(ResolveError::Failed {
-                at: At::Segment(index),
-                message: "associated types are not supported yet".into(),
+                at: At::Whole,
+                message: "ambiguous associated type".into(),
             });
         }
         let data = &self.traits[t];

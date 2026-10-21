@@ -33,12 +33,13 @@ pub use body::{
 };
 pub use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 pub use item_tree::{
-    AssocItem, Bound, Const, ConstId, CrateData, CrateId, Field, Function, FunctionId, GenericArgs,
-    GenericParam, Generics, Impl, ImplId, ImplTarget, ItemLoc, ItemTree, Module, ModuleId, Owner,
-    Param, Path, PathAnchor, QSelf, Struct, StructId, StructKind, Trait, TraitId, TypeRef,
-    Visibility, WherePredicate, is_primitive,
+    AssocBinding, AssocItem, Bound, Const, ConstId, CrateData, CrateId, Field, Function,
+    FunctionId, GenericArgs, GenericParam, Generics, Impl, ImplId, ImplTarget, ImplType, ItemLoc,
+    ItemTree, MISPLACED_BINDING, Module, ModuleId, Owner, Param, Path, PathAnchor, QSelf, Struct,
+    StructId, StructKind, Trait, TraitId, TraitType, TypeRef, Visibility, WherePredicate,
+    is_primitive,
 };
-pub use lower::{lower_body, lower_const};
+pub use lower::{LoweredBody, lower_body, lower_const};
 pub use source::{CORE_ROOT, FileId, SourceDb, SourceFile};
 
 use flux_arena::ArenaMap;
@@ -70,11 +71,17 @@ impl Diagnostic {
 }
 
 /// A whole program lowered: its item tree and the body of every function
-/// that has one.
+/// that has one. `core`'s bodies are lowered when first asked for
+/// ([`Hir::body`]): a program uses few of them.
 #[derive(Debug)]
 pub struct Hir {
     pub items: ItemTree,
+    /// The program's function bodies.
     pub bodies: ArenaMap<Function, (Body, BodySourceMap)>,
+    /// `core`'s, by function index, once lowered.
+    core_bodies: Box<[std::sync::OnceLock<(Body, BodySourceMap)>]>,
+    /// Every file, for lowering `core`'s bodies.
+    files: Vec<std::sync::Arc<SourceFile>>,
     /// The value of every constant that has one.
     pub const_bodies: ArenaMap<Const, (Body, BodySourceMap)>,
     /// From the item tree and every body, by file and position.
@@ -92,7 +99,7 @@ fn lower_with(db: &mut SourceDb, root: FileId, crate_name: Symbol, with_core: bo
     let mut diagnostics = items.diagnostics.clone();
     let mut bodies = ArenaMap::new();
     for (id, function) in items.functions.iter() {
-        if function.has_body {
+        if function.has_body && items.in_main_crate(function.loc.module) {
             let tree = db.file(function.loc.file).parse.tree();
             let lowered = lower_body(tree, &items, id);
             diagnostics.extend(lowered.diagnostics.into_iter().map(|mut d| {
@@ -115,9 +122,15 @@ fn lower_with(db: &mut SourceDb, root: FileId, crate_name: Symbol, with_core: bo
         }
     }
     Diagnostic::sort(&mut diagnostics);
+    let core_bodies = (0..items.functions.len())
+        .map(|_| std::sync::OnceLock::new())
+        .collect();
+    let files = db.files().map(|(id, _)| db.shared(id)).collect();
     Hir {
         items,
         bodies,
+        core_bodies,
+        files,
         const_bodies,
         diagnostics,
     }
@@ -153,6 +166,32 @@ impl Hir {
     /// with a file number for files other than the program's root.
     pub fn write_diagnostics(&self, out: &mut String, diagnostics: &[Diagnostic]) {
         pretty::write_diagnostics(out, self, diagnostics);
+    }
+
+    /// The body of `function`, if it has one: the program's, or `core`'s,
+    /// lowered now if it was not yet.
+    pub fn body(&self, function: FunctionId) -> Option<&(Body, BodySourceMap)> {
+        if let Some(body) = self.bodies.get(function) {
+            return Some(body);
+        }
+        let data = &self.items.functions[function];
+        if !data.has_body || self.is_program(function) {
+            return None;
+        }
+        let slot = &self.core_bodies[function.index()];
+        Some(slot.get_or_init(|| {
+            let lowered = self.lower_core_body(function);
+            debug_assert!(lowered.diagnostics.is_empty(), "core lowers cleanly");
+            (lowered.body, lowered.source_map)
+        }))
+    }
+
+    /// Lowers `core`'s function `function` again, with its diagnostics:
+    /// for tests that check `core` itself.
+    pub fn lower_core_body(&self, function: FunctionId) -> LoweredBody {
+        let data = &self.items.functions[function];
+        let tree = self.files[data.loc.file.0 as usize].parse.tree();
+        lower_body(tree, &self.items, function)
     }
 
     /// Whether `function` is the program's, rather than `core`'s.

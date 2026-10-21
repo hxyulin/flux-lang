@@ -1,0 +1,112 @@
+struct S;
+
+struct W<T>(T);
+
+struct Flag;
+
+trait Named;
+
+trait Tr;
+
+trait Convert<T>;
+
+impl Named for S;
+
+impl Tr for S;
+
+impl<T> Tr for W<T> where T: Tr;
+
+impl Convert for S;
+
+impl Convert<bool> for S;
+
+impl Tr for Flag;
+
+impl Convert for Flag;
+
+impl Convert<bool> for Flag;
+
+fn name(&Self) -> i32;
+
+fn <S as Named>::name(self@0: &Self) -> i32 {
+    3
+}
+
+fn get(&Self) -> Self::Out;
+
+fn inner(&Self) -> Self::Inner;
+
+fn Tr::both(self@0: &Self) -> (Self::Out, <Self as Tr>::Out) {
+    (self@0.get(), self@0.get())
+}
+
+fn convert(&Self) -> T;
+
+fn <S as Tr>::get(self@0: &Self) -> Self::Out {
+    1
+}
+
+fn <S as Tr>::inner(self@0: &Self) -> S {
+    S
+}
+
+fn <W<T> as Tr>::get(self@0: &Self) -> <T as Tr>::Out {
+    self@0.0.get()
+}
+
+fn <W<T> as Tr>::inner(self@0: &Self) -> T::Inner {
+    self@0.0.inner()
+}
+
+fn <S as Convert>::convert(self@0: &Self) -> i32 {
+    2
+}
+
+fn <S as Convert<bool>>::convert(self@0: &Self) -> bool {
+    true
+}
+
+fn <Flag as Tr>::get(self@0: &Self) -> bool {
+    true
+}
+
+fn <Flag as Tr>::inner(self@0: &Self) -> S {
+    S
+}
+
+fn <Flag as Convert>::convert(self@0: &Self) -> i32 {
+    4
+}
+
+fn <Flag as Convert<bool>>::convert(self@0: &Self) -> bool {
+    true
+}
+
+fn forms<T>(t@0: &T) -> <T>::Out where T: Tr {
+    let a@1: T::Out = t@0.get();
+    let b@2: <T as Tr>::Out = a@1;
+    let _c@3: i32 = <T::Inner as Named>::name((&t@0.inner()));
+    b@2
+}
+
+fn bindings<T, U>(t@0: &T, u@1: &U) -> i32 where T: Tr<Out = i32>, U: Tr<Out = bool>, U: Convert, U: Convert<bool> {
+    let n@2: i32 = u@1.convert();
+    let b@3: bool = Convert::convert[Self<bool>](u@1);
+    if (b@3 && u@1.get()) {
+        (t@0.get() + n@2)
+    } else {
+        0
+    }
+}
+
+fn concrete() -> i32 {
+    let x@0: <S as Tr>::Out = S.get();
+    let y@1: <W<S> as Tr>::Out = W(S).get();
+    ((x@0 + y@1) + <S as Convert>::convert((&S)))
+}
+
+fn main() -> () {
+    let _ = ((forms((&S)) + concrete()) + bindings((&S), (&Flag)));
+    let _ = S.both();
+}
+

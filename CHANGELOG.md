@@ -62,6 +62,14 @@
   E0053, E0050, E0185, E0186, E0049, E0119, E0199, E0200, E0391).
   Calls of trait methods are resolved to `impl` blocks when generic
   code is monomorphized. `core` gains `marker::Sized`.
+- Support associated types (in traits, `impl` blocks, bounds' bindings
+  and paths: `T::Out`, `<T as Tr>::Out`), defaults for trait parameters,
+  and operators on user types through `core::ops` and
+  `core::cmp::PartialEq`, which `core` implements for the integers and
+  `bool`. Traits may carry `#[diagnostic::on_unimplemented]` messages,
+  as `core`'s operator traits do. `core`'s bodies are lowered and
+  type-checked only where the program reaches them, and its files are
+  parsed in parallel.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 

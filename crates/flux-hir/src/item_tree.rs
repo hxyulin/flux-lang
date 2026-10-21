@@ -47,6 +47,8 @@ pub struct ItemTree {
     pub trait_impls: rustc_hash::FxHashMap<TraitId, Vec<ImplId>>,
     /// The traits with a function of each name.
     pub trait_fns: rustc_hash::FxHashMap<Symbol, Vec<TraitId>>,
+    /// The traits the compiler knows, by their `#[lang = "..."]` names.
+    pub lang_traits: rustc_hash::FxHashMap<Symbol, TraitId>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -116,6 +118,8 @@ pub struct Impl {
     pub target: Option<ImplTarget>,
     pub functions: Vec<FunctionId>,
     pub consts: Vec<ConstId>,
+    /// A trait's block's associated types.
+    pub types: Vec<ImplType>,
 }
 
 /// A constant: `const N: i32 = 5;`, free or in an `impl` block.
@@ -173,7 +177,12 @@ pub struct Trait {
     /// `#[lang = "name"]`, which only `core` may write: a trait the
     /// compiler knows.
     pub lang: Option<Symbol>,
+    /// `message` in `#[diagnostic::on_unimplemented(message = "...")]`:
+    /// how a bound on it that does not hold is reported, with `{Self}`
+    /// and its parameters' names standing for their types.
+    pub on_unimplemented: Option<Box<str>>,
     pub functions: Vec<FunctionId>,
+    pub types: Vec<TraitType>,
     /// The names of its items flux does not support (reported), which
     /// paths to them do not report again.
     pub unsupported: Vec<Symbol>,
@@ -190,6 +199,28 @@ impl Trait {
             .copied()
             .find(|&f| items.functions[f].name == name)
     }
+}
+
+/// An associated type of a trait: `type Out: Bound;`.
+#[derive(Debug)]
+pub struct TraitType {
+    pub name: Symbol,
+    /// The bounds every type given for it must meet.
+    pub bounds: Box<[Bound]>,
+    pub name_range: TextRange,
+    /// The whole item.
+    pub item_range: TextRange,
+}
+
+/// An associated type's definition in a trait's `impl` block:
+/// `type Out = i32;`.
+#[derive(Debug)]
+pub struct ImplType {
+    pub name: Symbol,
+    pub ty: TypeRef,
+    pub ty_range: TextRange,
+    pub name_range: TextRange,
+    pub item_range: TextRange,
 }
 
 /// A trait bound as written: `Tr` or `Tr<A>` in `T: Tr`, or the trait of
@@ -329,10 +360,23 @@ pub struct Generics {
     pub has_lifetimes: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenericParam {
     pub name: Symbol,
     pub range: TextRange,
+    /// `= Self` in `trait Add<Rhs = Self>`: traits' parameters only.
+    pub default: Option<(TypeRef, TextRange)>,
+}
+
+/// Where defaults for type parameters may be written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Defaults {
+    /// A trait's: supported.
+    Trait,
+    /// A struct's: valid Rust, not supported yet.
+    Struct,
+    /// Functions' and `impl` blocks': an error.
+    No,
 }
 
 impl std::fmt::Display for Generics {
@@ -411,8 +455,40 @@ pub struct GenericArgs {
     pub types: Box<[TypeRef]>,
     /// Each type's range.
     pub ranges: Box<[TextRange]>,
+    /// `Out = i32` in `Tr<Out = i32>`, after the types.
+    pub bindings: Box<[AssocBinding]>,
     /// From `<` to `>`.
     pub range: TextRange,
+}
+
+/// `Out = i32` in a trait's generic arguments: what one of its associated
+/// types is.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AssocBinding {
+    pub name: Symbol,
+    pub ty: TypeRef,
+    pub name_range: TextRange,
+    pub ty_range: TextRange,
+}
+
+impl AssocBinding {
+    /// From its name to the end of its type.
+    pub fn range(&self) -> TextRange {
+        TextRange::new(self.name_range.start(), self.ty_range.end())
+    }
+}
+
+/// rustc's E0229, for `Out = i32` in generic arguments that are not a
+/// trait bound's.
+pub const MISPLACED_BINDING: &str = "associated item constraints are not allowed here";
+
+impl GenericArgs {
+    /// Reports each of its bindings: they belong in trait bounds only.
+    pub fn reject_bindings(&self, diagnostics: &mut Vec<Diagnostic>) {
+        for b in self.bindings.iter() {
+            diagnostics.push(Diagnostic::new(b.range(), MISPLACED_BINDING));
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -430,6 +506,14 @@ pub enum PathAnchor {
 }
 
 impl Path {
+    /// Reports the bindings in any of its segments' generic arguments,
+    /// for a path that is not a trait bound.
+    pub fn reject_bindings(&self, diagnostics: &mut Vec<Diagnostic>) {
+        for args in self.args.iter().flatten() {
+            args.reject_bindings(diagnostics);
+        }
+    }
+
     pub fn single(name: Symbol) -> Path {
         Path {
             anchor: PathAnchor::Plain,
@@ -486,12 +570,13 @@ impl std::fmt::Display for Path {
             write!(f, "{segment}")?;
             if let Some(args) = self.args(i) {
                 f.write_str("<")?;
-                for (j, ty) in args.types.iter().enumerate() {
-                    if j > 0 {
-                        f.write_str(", ")?;
-                    }
-                    write!(f, "{ty}")?;
-                }
+                let types = args.types.iter().map(|t| t.to_string());
+                let bindings = args
+                    .bindings
+                    .iter()
+                    .map(|b| format!("{} = {}", b.name, b.ty));
+                let all: Vec<String> = types.chain(bindings).collect();
+                f.write_str(&all.join(", "))?;
                 f.write_str(">")?;
             }
         }
@@ -913,10 +998,143 @@ impl Collector<'_> {
         trait_vis
     }
 
+    /// `type Out: Bound;` in trait `id`.
+    fn collect_trait_type(&mut self, id: TraitId, t: ast::TypeAlias<'_>) {
+        let diagnostics = &mut self.items.diagnostics;
+        check_attrs(t.attrs(), diagnostics);
+        let Some(name) = t.name() else {
+            return;
+        };
+        let item_range = TextRange::new(def_start(t.syntax()), t.syntax().text_range().end());
+        if let Some(vis) = t.visibility() {
+            diagnostics.push(Diagnostic::new(
+                vis.syntax().text_range(),
+                "visibility qualifiers are not permitted here",
+            ));
+        }
+        if let Some(list) = t.generic_param_list() {
+            unsupported(
+                diagnostics,
+                list.syntax().text_range(),
+                "generic associated types",
+            );
+        }
+        if let Some(clause) = t.where_clauses().next() {
+            unsupported(
+                diagnostics,
+                clause.syntax().text_range(),
+                "`where` clauses on associated types",
+            );
+        }
+        if t.ty().is_some() {
+            diagnostics.push(Diagnostic::new(
+                item_range,
+                "associated type defaults are unstable",
+            ));
+        }
+        let mut bounds = Vec::new();
+        if let Some(list) = t.type_bound_list() {
+            lower_bounds(list, &mut bounds, diagnostics);
+        }
+        let name_range = name.syntax().text_range();
+        let name = Symbol::intern(name.text());
+        let data = &mut self.items.traits[id];
+        if data.types.iter().any(|ty| ty.name == name) {
+            diagnostics.push(Diagnostic::new(
+                item_range,
+                format!("the name `{name}` is defined multiple times"),
+            ));
+            return;
+        }
+        data.types.push(TraitType {
+            name,
+            bounds: bounds.into(),
+            name_range,
+            item_range,
+        });
+    }
+
+    /// `type Out = T;` in `impl` block `id`.
+    fn collect_impl_type(&mut self, id: ImplId, t: ast::TypeAlias<'_>, is_trait_impl: bool) {
+        let diagnostics = &mut self.items.diagnostics;
+        check_attrs(t.attrs(), diagnostics);
+        let item_range = TextRange::new(def_start(t.syntax()), t.syntax().text_range().end());
+        let Some(name) = t.name() else {
+            return;
+        };
+        if !is_trait_impl {
+            diagnostics.push(Diagnostic::new(
+                item_range,
+                "inherent associated types are unstable",
+            ));
+            return;
+        }
+        if let Some(vis) = t.visibility() {
+            diagnostics.push(Diagnostic::new(
+                vis.syntax().text_range(),
+                "visibility qualifiers are not permitted here",
+            ));
+        }
+        let generic = t.generic_param_list();
+        if let Some(list) = generic {
+            unsupported(
+                diagnostics,
+                list.syntax().text_range(),
+                "generic associated types",
+            );
+        }
+        if let Some(list) = t.type_bound_list() {
+            diagnostics.push(Diagnostic::new(
+                list.syntax().text_range(),
+                "bounds on `type`s in `impl`s have no effect",
+            ));
+        }
+        let (ty, ty_range) = match t.ty() {
+            Some(ty) => {
+                let range = ty.syntax().text_range();
+                match generic {
+                    // Reported; defined, as far as the trait is concerned.
+                    Some(_) => (TypeRef::Error, range),
+                    None => (lower_type(Some(ty), diagnostics), range),
+                }
+            }
+            None => {
+                // Reported; defined too.
+                diagnostics.push(Diagnostic::new(
+                    item_range,
+                    "associated type in `impl` without body",
+                ));
+                (TypeRef::Error, item_range)
+            }
+        };
+        let name_range = name.syntax().text_range();
+        let name = Symbol::intern(name.text());
+        let imp = &mut self.items.impls[id];
+        if imp.types.iter().any(|t| t.name == name) {
+            diagnostics.push(Diagnostic::new(
+                item_range,
+                format!("duplicate definitions with name `{name}`:"),
+            ));
+            return;
+        }
+        imp.types.push(ImplType {
+            name,
+            ty,
+            ty_range,
+            name_range,
+            item_range,
+        });
+    }
+
     fn collect_trait(&mut self, ctx: Ctx, t: ast::Trait<'_>) {
         let is_core = self.items.is_core(ctx.module);
         let mut lang = None;
+        let mut on_unimplemented = None;
         for attr in t.attrs() {
+            if let Some(message) = on_unimplemented_attr(attr) {
+                on_unimplemented = message;
+                continue;
+            }
             match lang_attr(attr) {
                 Some(name) if is_core => lang = Some(name),
                 _ => check_attr(attr, &mut self.items.diagnostics),
@@ -927,8 +1145,12 @@ impl Collector<'_> {
             return;
         };
         let diagnostics = &mut self.items.diagnostics;
-        let generics =
-            collect_generics(t.generic_param_list(), t.where_clause(), true, diagnostics);
+        let generics = collect_generics(
+            t.generic_param_list(),
+            t.where_clause(),
+            Defaults::Trait,
+            diagnostics,
+        );
         let mut supertraits = Vec::new();
         if let Some(list) = t.type_bound_list() {
             lower_bounds(list, &mut supertraits, diagnostics);
@@ -945,11 +1167,16 @@ impl Collector<'_> {
             },
             is_unsafe: t.unsafe_token().is_some(),
             lang,
+            on_unimplemented,
             functions: Vec::new(),
+            types: Vec::new(),
             unsupported: Vec::new(),
             name_range,
             def_range: TextRange::new(def_start(t.syntax()), name_range.end()),
         });
+        if let Some(lang) = lang {
+            self.items.lang_traits.insert(lang, id);
+        }
         let Some(list) = t.assoc_item_list() else {
             return;
         };
@@ -992,12 +1219,8 @@ impl Collector<'_> {
                     "associated constants in traits"
                 }
                 ast::Item::TypeAlias(t) => {
-                    if let Some(name) = t.name() {
-                        self.items.traits[id]
-                            .unsupported
-                            .push(Symbol::intern(name.text()));
-                    }
-                    "associated types"
+                    self.collect_trait_type(id, t);
+                    continue;
                 }
                 ast::Item::MacroCall(_) => "macros",
                 _ => "items like this in traits",
@@ -1208,7 +1431,7 @@ impl Collector<'_> {
         let generics = collect_generics(
             imp.generic_param_list(),
             imp.where_clause(),
-            false,
+            Defaults::No,
             diagnostics,
         );
         let trait_ref = match imp.trait_ty() {
@@ -1248,6 +1471,7 @@ impl Collector<'_> {
             target: None,
             functions: Vec::new(),
             consts: Vec::new(),
+            types: Vec::new(),
         });
         let Some(list) = imp.assoc_item_list() else {
             return;
@@ -1270,7 +1494,10 @@ impl Collector<'_> {
                     }
                     continue;
                 }
-                ast::Item::TypeAlias(_) => "associated types",
+                ast::Item::TypeAlias(t) => {
+                    self.collect_impl_type(id, t, is_trait_impl);
+                    continue;
+                }
                 ast::Item::MacroCall(_) => "macros",
                 _ => "items like this in `impl` blocks",
             };
@@ -1308,8 +1535,12 @@ impl Collector<'_> {
             None => Vec::new(),
         };
         let diagnostics = &mut self.items.diagnostics;
-        let generics =
-            collect_generics(f.generic_param_list(), f.where_clause(), false, diagnostics);
+        let generics = collect_generics(
+            f.generic_param_list(),
+            f.where_clause(),
+            Defaults::No,
+            diagnostics,
+        );
         if in_extern_block && !generics.is_empty() {
             diagnostics.push(Diagnostic::new(
                 TextRange::new(def_start(f.syntax()), f.syntax().text_range().end()),
@@ -1550,7 +1781,8 @@ impl Collector<'_> {
             return;
         };
         let diagnostics = &mut self.items.diagnostics;
-        let generics = collect_generics(s.generic_param_list(), None, true, diagnostics);
+        let generics =
+            collect_generics(s.generic_param_list(), None, Defaults::Struct, diagnostics);
         if let Some(clause) = s.where_clause() {
             unsupported(
                 diagnostics,
@@ -1906,6 +2138,7 @@ pub(crate) fn lower_generic_args(
 ) -> GenericArgs {
     let mut types = Vec::new();
     let mut ranges = Vec::new();
+    let mut bindings = Vec::new();
     for arg in list.args() {
         let range = arg.syntax().text_range();
         let what = match arg {
@@ -1914,9 +2147,29 @@ pub(crate) fn lower_generic_args(
                 ranges.push(range);
                 continue;
             }
+            ast::GenericArg::AssocTypeArg(arg) if arg.eq_token().is_some() => {
+                let Some(name) = arg.name_ref() else {
+                    continue;
+                };
+                if let Some(list) = arg.generic_arg_list() {
+                    unsupported(
+                        diagnostics,
+                        list.syntax().text_range(),
+                        "generic associated types",
+                    );
+                    continue;
+                }
+                bindings.push(AssocBinding {
+                    name: Symbol::intern(name.text()),
+                    ty: lower_type(arg.ty(), diagnostics),
+                    name_range: name.syntax().text_range(),
+                    ty_range: arg.ty().map_or(range, |t| t.syntax().text_range()),
+                });
+                continue;
+            }
             ast::GenericArg::LifetimeArg(_) => "lifetime arguments",
             ast::GenericArg::ConstArg(_) => "const arguments",
-            ast::GenericArg::AssocTypeArg(_) => "associated type arguments",
+            ast::GenericArg::AssocTypeArg(_) => "associated type bounds",
         };
         unsupported(diagnostics, range, what);
         types.push(TypeRef::Error);
@@ -1925,8 +2178,44 @@ pub(crate) fn lower_generic_args(
     GenericArgs {
         types: types.into(),
         ranges: ranges.into(),
+        bindings: bindings.into(),
         range: list.syntax().text_range(),
     }
+}
+
+/// `#[diagnostic::on_unimplemented(...)]`'s `message`, if it has one;
+/// `None` for any other attribute. Its other options only label spans,
+/// which flux does not show.
+fn on_unimplemented_attr(attr: ast::Attr<'_>) -> Option<Option<Box<str>>> {
+    let path = attr.meta()?.path()?;
+    let qualifier = path.qualifier()?;
+    fn name<'t>(p: ast::Path<'t>) -> Option<&'t str> {
+        p.segment().and_then(|s| s.name_ref()).map(|n| n.text())
+    }
+    if qualifier.qualifier().is_some()
+        || name(qualifier) != Some("diagnostic")
+        || name(path) != Some("on_unimplemented")
+    {
+        return None;
+    }
+    let text = attr.meta()?.syntax().text();
+    let Some(at) = text.find("message") else {
+        return Some(None);
+    };
+    let rest = text[at + "message".len()..]
+        .trim_start()
+        .strip_prefix('=')?;
+    let rest = rest.trim_start().strip_prefix('"')?;
+    let mut message = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(Some(message.into())),
+            '\\' => message.extend(chars.next()),
+            c => message.push(c),
+        }
+    }
+    Some(None)
 }
 
 /// `#[lang = "name"]`'s name.
@@ -1986,7 +2275,7 @@ fn lower_bounds(
 fn collect_generics(
     list: Option<ast::GenericParamList<'_>>,
     where_clause: Option<ast::WhereClause<'_>>,
-    defaults_allowed: bool,
+    defaults: Defaults,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Generics {
     let mut predicates = Vec::new();
@@ -2031,6 +2320,9 @@ fn collect_generics(
     };
     let mut params: Vec<GenericParam> = Vec::new();
     let mut has_lifetimes = false;
+    // Parameters with defaults so far, which no parameter without one
+    // may follow.
+    let mut defaulted: Vec<TextRange> = Vec::new();
     for param in list.generic_params() {
         let range = param.syntax().text_range();
         let what = match param {
@@ -2050,21 +2342,36 @@ fn collect_generics(
                         bound,
                     }));
                 }
-                if let Some(default) = param.default_type() {
-                    if defaults_allowed {
-                        unsupported(
+                let name_range = name.syntax().text_range();
+                let mut default = None;
+                if let Some(ty) = param.default_type() {
+                    let ty_range = ty.syntax().text_range();
+                    match defaults {
+                        Defaults::Trait => {
+                            default = Some((lower_type(Some(ty), diagnostics), ty_range));
+                        }
+                        Defaults::Struct => unsupported(
                             diagnostics,
-                            default.syntax().text_range(),
-                            "defaults for type parameters",
-                        );
-                    } else {
-                        diagnostics.push(Diagnostic::new(
+                            ty_range,
+                            "defaults for type parameters of structs",
+                        ),
+                        Defaults::No => diagnostics.push(Diagnostic::new(
                             range,
                             "defaults for generic parameters are not allowed here",
-                        ));
+                        )),
                     }
+                    if defaults != Defaults::No {
+                        defaulted.push(name_range);
+                    }
+                } else if defaults != Defaults::No
+                    && let Some(&earlier) = defaulted.first()
+                {
+                    diagnostics.push(Diagnostic::new(
+                        earlier,
+                        "generic parameters with a default must be trailing",
+                    ));
+                    defaulted.clear();
                 }
-                let name_range = name.syntax().text_range();
                 let name = Symbol::intern(name.text());
                 if params.iter().any(|p| p.name == name) {
                     diagnostics.push(Diagnostic::new(
@@ -2078,6 +2385,7 @@ fn collect_generics(
                 params.push(GenericParam {
                     name,
                     range: name_range,
+                    default,
                 });
                 continue;
             }

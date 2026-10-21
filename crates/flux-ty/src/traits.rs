@@ -16,7 +16,7 @@ use flux_hir::{
 use flux_intern::{Symbol, kw};
 use flux_syntax::TextRange;
 
-use crate::ty::{GenericArgs, Ty, TyKind};
+use crate::ty::{AliasTy, GenericArgs, Ty, TyKind};
 use crate::{Instance, Signatures, TypeScope, resolve_type, wrong_arg_count};
 
 /// A trait with generic arguments for its own parameters, not `Self`:
@@ -78,92 +78,276 @@ impl fmt::Display for Predicate {
     }
 }
 
+/// How rustc reports that `p` does not hold: by its trait's
+/// `#[diagnostic::on_unimplemented]` message if it has one ("cannot add
+/// `i32` to `u8`"), else "the trait bound `S: Tr` is not satisfied".
+/// `describe` shows types; `path` is the trait as messages name it.
+pub fn unmet_message(
+    items: &ItemTree,
+    p: Predicate,
+    describe: &mut dyn FnMut(Ty) -> String,
+    path: &str,
+) -> String {
+    let data = &items.traits[p.trait_ref.trait_];
+    let Some(template) = &data.on_unimplemented else {
+        let args: Vec<String> = p.trait_ref.args.iter().map(|&a| describe(a)).collect();
+        let args = if args.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", args.join(", "))
+        };
+        return format!(
+            "the trait bound `{}: {path}{args}` is not satisfied",
+            describe(p.self_ty)
+        );
+    };
+    let mut out = String::new();
+    let mut rest = &template[..];
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        rest = &rest[open + 1..];
+        let Some(close) = rest.find('}') else {
+            out.push('{');
+            break;
+        };
+        let name = &rest[..close];
+        rest = &rest[close + 1..];
+        let param = data
+            .generics
+            .params
+            .iter()
+            .position(|g| g.name.as_str() == name);
+        match (name, param) {
+            ("Self", _) => out.push_str(&describe(p.self_ty)),
+            ("This", _) => out.push_str(path),
+            (_, Some(i)) if i < p.trait_ref.args.len() => {
+                out.push_str(&describe(p.trait_ref.args[i]));
+            }
+            _ => {
+                out.push('{');
+                out.push_str(name);
+                out.push('}');
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// [`unmet_message`] for a check outside a body, which names types
+/// and traits as they print.
+fn unmet(items: &ItemTree, p: Predicate) -> String {
+    unmet_message(
+        items,
+        p,
+        &mut |t| t.to_string(),
+        items.traits[p.trait_ref.trait_].name.as_str(),
+    )
+}
+
+/// `<T as Tr>::Out == ty`: what an associated type is, from a bound's
+/// `Tr<Out = ty>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Projection {
+    pub alias: AliasTy,
+    pub ty: Ty,
+}
+
+impl Projection {
+    pub fn subst(self, args: &[Ty]) -> Projection {
+        let alias = match Ty::alias(self.alias).subst(args).kind() {
+            TyKind::Alias(alias) => alias,
+            _ => unreachable!("substituting keeps an alias one"),
+        };
+        Projection {
+            alias,
+            ty: self.ty.subst(args),
+        }
+    }
+}
+
+impl fmt::Display for Projection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} == {}", Ty::alias(self.alias), self.ty)
+    }
+}
+
 /// A trait's resolved header.
 #[derive(Debug, Clone, Default)]
 pub struct TraitSig {
     /// `Sup` in `trait Tr: Sup`, in terms of the trait's parameters,
     /// `Self` first.
     pub supertraits: Box<[TraitRef]>,
+    /// The default of each of its own parameters, if it has one, in terms
+    /// of the parameters before it: `Self` in `trait Add<Rhs = Self>`.
+    pub defaults: Box<[Option<Ty>]>,
+    /// The bounds on its associated types: `Bound` in `type Out: Bound;`,
+    /// by name.
+    pub type_bounds: Box<[(Symbol, TraitRef)]>,
+    /// What `Self: Tr` says its associated types and its supertraits' are:
+    /// `Out = i32` in `trait Tr: Sup<Out = i32>` or `type N: Add<Output = i32>;`.
+    pub implied: Box<[Projection]>,
 }
 
-/// The trait bound `bound`, written in `module`: its trait, with the
-/// generic arguments written after its last segment, one for each of the
-/// trait's parameters. `None` if it did not resolve (reported in
-/// `errors`).
+/// The default of each trait's parameters, for bounds that leave them out.
+pub type TraitDefaults = flux_arena::ArenaMap<flux_hir::Trait, Box<[Option<Ty>]>>;
+
+/// Resolved bounds: what types implement, and what associated types are.
+#[derive(Debug, Clone, Default)]
+pub struct Bounds {
+    pub predicates: Vec<Predicate>,
+    pub projections: Vec<Projection>,
+}
+
+/// The trait bound `bound` on `self_ty`, written in `module`: its trait,
+/// with the generic arguments written after its last segment, one for
+/// each of the trait's parameters, and the associated types it binds.
+/// `None` if it did not resolve (reported in `errors`).
 pub fn resolve_bound(
     items: &ItemTree,
     module: ModuleId,
     bound: &Bound,
+    self_ty: Ty,
     scope: TypeScope<'_>,
     errors: &mut Vec<(TextRange, String)>,
-) -> Option<TraitRef> {
+) -> Option<(TraitRef, Vec<Projection>)> {
     let (t, error) = items.resolve_trait(module, bound);
     if let Some(error) = error {
         errors.push(error);
     }
-    trait_ref(items, module, t?, bound, scope, errors)
+    trait_ref(items, module, t?, bound, self_ty, scope, errors)
 }
 
-/// Trait `t`, named by `bound`, with the generic arguments written after
-/// its last segment.
+/// Trait `t`, named by `bound` for `self_ty`, with the generic arguments
+/// written after its last segment, the defaults of those left out, and
+/// the associated types it binds.
 pub fn trait_ref(
     items: &ItemTree,
     module: ModuleId,
     t: TraitId,
     bound: &Bound,
+    self_ty: Ty,
     scope: TypeScope<'_>,
     errors: &mut Vec<(TextRange, String)>,
-) -> Option<TraitRef> {
+) -> Option<(TraitRef, Vec<Projection>)> {
     let data = &items.traits[t];
     let path = &bound.path;
     let last = path.segments.len().saturating_sub(1);
     let at = path.range(last, bound.range);
     let want = data.generics.len();
-    let args: Vec<Ty> = match path.args(last) {
-        Some(written) => written
+    let written = path.args(last);
+    let mut args: Vec<Ty> = written.map_or(Vec::new(), |written| {
+        written
             .types
             .iter()
             .zip(&written.ranges)
             .map(|(ty, &range)| resolve_type(items, module, ty, scope, range, errors))
-            .collect(),
-        None if want == 0 => Vec::new(),
-        None => {
-            errors.push((at, format!("missing generics for trait `{}`", data.name)));
-            return None;
-        }
-    };
-    if args.len() != want {
-        errors.push((at, wrong_arg_count("trait", want, args.len())));
+            .collect()
+    });
+    let defaults = scope.defaults.and_then(|d| d.get(t)).map_or(&[][..], |d| d);
+    let required = data
+        .generics
+        .params
+        .iter()
+        .take_while(|p| p.default.is_none())
+        .count();
+    if args.len() > want {
+        let message = if required < want {
+            let n = want;
+            format!(
+                "trait takes at most {n} generic argument{} but {} generic argument{} {} supplied",
+                if n == 1 { "" } else { "s" },
+                args.len(),
+                if args.len() == 1 { "" } else { "s" },
+                if args.len() == 1 { "was" } else { "were" }
+            )
+        } else {
+            wrong_arg_count("trait", want, args.len())
+        };
+        errors.push((at, message));
         return None;
+    }
+    if args.len() < required {
+        if args.is_empty() {
+            errors.push((at, format!("missing generics for trait `{}`", data.name)));
+        } else {
+            errors.push((at, wrong_arg_count("trait", want, args.len())));
+        }
+        return None;
+    }
+    // The defaults of those left out, in terms of `Self` and the ones
+    // before.
+    while args.len() < want {
+        let i = args.len();
+        let default = defaults.get(i).copied().flatten().unwrap_or(Ty::ERROR);
+        let before: Vec<Ty> = std::iter::once(self_ty)
+            .chain(args.iter().copied())
+            .collect();
+        args.push(default.subst(&before));
     }
     if args.contains(&Ty::ERROR) {
         return None;
     }
-    Some(TraitRef {
+    let trait_ref = TraitRef {
         trait_: t,
         name: data.name,
         args: Ty::list(&args),
-    })
+    };
+    let mut projections = Vec::new();
+    for binding in written.map_or(&[][..], |w| &w.bindings) {
+        if !data.types.iter().any(|ty| ty.name == binding.name) {
+            errors.push((
+                binding.name_range,
+                format!(
+                    "associated type `{}` not found for `{}`",
+                    binding.name, data.name
+                ),
+            ));
+            continue;
+        }
+        let ty = resolve_type(items, module, &binding.ty, scope, binding.ty_range, errors);
+        projections.push(Projection {
+            alias: alias_of(trait_ref, self_ty, binding.name),
+            ty,
+        });
+    }
+    Some((trait_ref, projections))
 }
 
-/// The predicates of `generics`, the bounds in its list and `where`
-/// clause, written in `module`; those that did not resolve are left out
-/// (reported in `errors`).
+/// `<self_ty as trait_ref>::name`.
+pub fn alias_of(trait_ref: TraitRef, self_ty: Ty, name: Symbol) -> AliasTy {
+    let args: Vec<Ty> = std::iter::once(self_ty)
+        .chain(trait_ref.args.iter().copied())
+        .collect();
+    AliasTy {
+        trait_: trait_ref.trait_,
+        trait_name: trait_ref.name,
+        name,
+        args: Ty::list(&args),
+    }
+}
+
+/// The bounds of `generics`, in its list and `where` clause, written in
+/// `module`; those that did not resolve are left out (reported in
+/// `errors`).
 pub fn resolve_predicates(
     items: &ItemTree,
     module: ModuleId,
     generics: &Generics,
     scope: TypeScope<'_>,
     errors: &mut Vec<(TextRange, String)>,
-) -> Vec<Predicate> {
-    let mut out = Vec::new();
+) -> Bounds {
+    let mut out = Bounds::default();
     for p in generics.predicates.iter() {
         let self_ty = resolve_type(items, module, &p.ty, scope, p.ty_range, errors);
-        let Some(trait_ref) = resolve_bound(items, module, &p.bound, scope, errors) else {
+        let Some((trait_ref, projections)) =
+            resolve_bound(items, module, &p.bound, self_ty, scope, errors)
+        else {
             continue;
         };
         if self_ty != Ty::ERROR {
-            out.push(trait_ref.with_self(self_ty));
+            out.predicates.push(trait_ref.with_self(self_ty));
+            out.projections.extend(projections);
         }
     }
     out
@@ -193,12 +377,15 @@ pub fn trait_self_predicate(items: &ItemTree, t: TraitId) -> Predicate {
     }
 }
 
-/// The bounds a function's body may rely on: its owner's (`Self: Tr` in
-/// a trait), then its own, in terms of all its parameters, not yet
-/// elaborated with supertraits.
-pub fn predicates_of(items: &ItemTree, sigs: &Signatures, function: FunctionId) -> Vec<Predicate> {
+/// The bounds of an associated item's owner: an `impl` block's, or a
+/// trait's (`Self: Tr` first).
+pub fn owner_predicates(
+    items: &ItemTree,
+    sigs: &Signatures,
+    owner: Option<Owner>,
+) -> Vec<Predicate> {
     let mut out = Vec::new();
-    match items.functions[function].owner {
+    match owner {
         Some(Owner::Impl(imp)) => {
             out.extend(sigs.impl_predicates.get(imp).into_iter().flatten().copied());
         }
@@ -208,8 +395,64 @@ pub fn predicates_of(items: &ItemTree, sigs: &Signatures, function: FunctionId) 
         }
         None => {}
     }
+    out
+}
+
+/// The bounds a function's body may rely on: its owner's (`Self: Tr` in
+/// a trait), then its own, in terms of all its parameters, not yet
+/// elaborated with supertraits.
+pub fn predicates_of(items: &ItemTree, sigs: &Signatures, function: FunctionId) -> Vec<Predicate> {
+    let mut out = owner_predicates(items, sigs, items.functions[function].owner);
     out.extend(
         sigs.fn_predicates
+            .get(function)
+            .into_iter()
+            .flatten()
+            .copied(),
+    );
+    out
+}
+
+/// What the bounds in scope in `function` say associated types are: its
+/// owner's, then its own, then what their traits imply.
+pub fn projections_of(
+    items: &ItemTree,
+    sigs: &Signatures,
+    function: FunctionId,
+) -> Vec<Projection> {
+    let mut out = declared_projections(items, sigs, function);
+    out.extend(implied_projections(
+        sigs,
+        &elaborate(sigs, &predicates_of(items, sigs, function)),
+    ));
+    out
+}
+
+/// The associated types the bounds of `function` and its block bind,
+/// as written: what a call must show.
+pub fn declared_projections(
+    items: &ItemTree,
+    sigs: &Signatures,
+    function: FunctionId,
+) -> Vec<Projection> {
+    let mut out = Vec::new();
+    match items.functions[function].owner {
+        Some(Owner::Impl(imp)) => {
+            out.extend(
+                sigs.impl_projections
+                    .get(imp)
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            );
+        }
+        Some(Owner::Trait(t)) => {
+            out.extend(sigs.trait_projections.get(t).into_iter().flatten().copied());
+        }
+        None => {}
+    }
+    out.extend(
+        sigs.fn_projections
             .get(function)
             .into_iter()
             .flatten()
@@ -237,8 +480,46 @@ pub fn elaborate(sigs: &Signatures, predicates: &[Predicate]) -> Vec<Predicate> 
         for sup in sig.supertraits.iter().rev() {
             stack.push(sup.subst(&args).with_self(p.self_ty));
         }
+        // `T: Tr` with `type Out: Bound` in `Tr` gives `T::Out: Bound`,
+        // to a depth: `type Inner: Tr;` would go on forever.
+        if alias_depth(p.self_ty) >= 4 {
+            continue;
+        }
+        for &(name, bound) in sig.type_bounds.iter().rev() {
+            let alias = alias_of(p.trait_ref, p.self_ty, name);
+            stack.push(bound.subst(&args).with_self(Ty::alias(alias)));
+        }
     }
     out
+}
+
+/// What the associated types in `env`, elaborated bounds, are by what
+/// their traits say: `T::N as Add>::Output == i32` from `T: Num` with
+/// `type N: Add<Output = i32>;` in `Num`.
+pub fn implied_projections(sigs: &Signatures, env: &[Predicate]) -> Vec<Projection> {
+    let mut out = Vec::new();
+    for p in env {
+        let Some(sig) = sigs.traits.get(p.trait_ref.trait_) else {
+            continue;
+        };
+        if sig.implied.is_empty() {
+            continue;
+        }
+        let args: Vec<Ty> = std::iter::once(p.self_ty)
+            .chain(p.trait_ref.args.iter().copied())
+            .collect();
+        out.extend(sig.implied.iter().map(|q| q.subst(&args)));
+    }
+    out
+}
+
+/// How deeply associated types nest in `ty`'s outermost one:
+/// 2 for `<T::A as Tr>::B`.
+fn alias_depth(ty: Ty) -> u32 {
+    match ty.kind() {
+        TyKind::Alias(alias) => 1 + alias_depth(alias.args[0]),
+        _ => 0,
+    }
 }
 
 /// Binds the parameters in `pattern` (an `impl` block's header, in terms
@@ -267,8 +548,99 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
         (TyKind::Ref(m, x), TyKind::Ref(n, y)) | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
             m == n && match_ty(x, y, binds)
         }
+        (TyKind::Alias(a), TyKind::Alias(b)) => {
+            a.trait_ == b.trait_
+                && a.name == b.name
+                && a.args
+                    .iter()
+                    .zip(b.args)
+                    .all(|(&x, &y)| match_ty(x, y, binds))
+        }
         _ => pattern == ty,
     }
+}
+
+/// What `impl` block `imp` says its associated type `name` is, in terms
+/// of its parameters.
+pub fn impl_type(sigs: &Signatures, imp: ImplId, name: Symbol) -> Option<Ty> {
+    let types = sigs.impl_types.get(imp)?;
+    types.iter().find(|(n, _)| *n == name).map(|&(_, ty)| ty)
+}
+
+/// `ty` with each associated type replaced by what it is, where that is
+/// known: from `env`, the bounds in scope, or from the `impl` block for
+/// its types. The others stay, as types of their own.
+pub fn normalize(items: &ItemTree, sigs: &Signatures, env: &[Projection], ty: Ty) -> Ty {
+    normalize_at(items, sigs, env, ty, 0)
+}
+
+fn normalize_at(items: &ItemTree, sigs: &Signatures, env: &[Projection], ty: Ty, depth: u32) -> Ty {
+    if !ty.has_aliases() || depth > 64 {
+        return ty;
+    }
+    let go = |t: Ty| normalize_at(items, sigs, env, t, depth + 1);
+    match ty.kind() {
+        TyKind::Alias(alias) => {
+            let args: Vec<Ty> = alias.args.iter().map(|&a| go(a)).collect();
+            let alias = AliasTy {
+                args: Ty::list(&args),
+                ..alias
+            };
+            if let Some(p) = env.iter().find(|p| p.alias == alias) {
+                return go(p.ty);
+            }
+            let goal = Predicate {
+                self_ty: args[0],
+                trait_ref: TraitRef {
+                    trait_: alias.trait_,
+                    name: alias.trait_name,
+                    args: Ty::list(&args[1..]),
+                },
+            };
+            let impls = items.trait_impls.get(&alias.trait_).into_iter().flatten();
+            for &imp in impls {
+                if let Some(impl_args) = match_impl(items, sigs, imp, goal)
+                    && let Some(t) = impl_type(sigs, imp, alias.name)
+                {
+                    return go(t.subst(&impl_args));
+                }
+            }
+            Ty::alias(alias)
+        }
+        TyKind::Tuple(list) => Ty::tuple(&list.iter().map(|&t| go(t)).collect::<Vec<_>>()),
+        TyKind::Adt(adt, list) => {
+            let list: Vec<Ty> = list.iter().map(|&t| go(t)).collect();
+            Ty::adt(adt.strukt, adt.name, &list)
+        }
+        TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
+        TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
+        _ => ty,
+    }
+}
+
+/// The signature of `function` with generic arguments `args`, its
+/// associated types normalized: an instance's, for code generation.
+pub fn instance_sig(
+    items: &ItemTree,
+    sigs: &Signatures,
+    function: FunctionId,
+    args: &[Ty],
+) -> crate::FnSig {
+    let sig = &sigs[function];
+    crate::FnSig {
+        params: sig
+            .params
+            .iter()
+            .map(|&p| instance_ty(items, sigs, p, args))
+            .collect(),
+        ret: instance_ty(items, sigs, sig.ret, args),
+    }
+}
+
+/// `ty` with generic arguments `args` substituted and its associated
+/// types normalized: a type of an instance, for code generation.
+pub fn instance_ty(items: &ItemTree, sigs: &Signatures, ty: Ty, args: &[Ty]) -> Ty {
+    normalize(items, sigs, &[], ty.subst(args))
 }
 
 /// The generic arguments for which `impl` block `imp`'s header is
@@ -335,6 +707,16 @@ fn holds_at(
 /// known types, the method of the `impl` block for them, or the trait's
 /// own default; any other function is itself.
 pub fn resolve_instance(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Instance {
+    let instance = Instance {
+        args: Ty::list(
+            &instance
+                .args
+                .iter()
+                .map(|&a| normalize(items, sigs, &[], a))
+                .collect::<Vec<_>>(),
+        ),
+        ..instance
+    };
     let data = &items.functions[instance.function];
     let Some(Owner::Trait(t)) = data.owner else {
         return instance;
@@ -376,11 +758,20 @@ pub fn resolve_instance(items: &ItemTree, sigs: &Signatures, instance: Instance)
 /// its required methods and no others, with its signatures; that they
 /// are `unsafe` exactly when it is; that their types implement its
 /// supertraits; and that no two of them overlap.
-pub fn check_impls(items: &ItemTree, sigs: &Signatures, diagnostics: &mut Vec<Diagnostic>) {
+pub fn check_impls(
+    items: &ItemTree,
+    sigs: &Signatures,
+    diagnostics: &mut Vec<Diagnostic>,
+    check_core: bool,
+) {
     for (id, imp) in items.impls.iter() {
         let Some(t) = imp.trait_ else {
             continue;
         };
+        // `core`'s are checked by its tests, not on every build.
+        if !check_core && !items.in_main_crate(imp.module) {
+            continue;
+        }
         let mut error = |range: TextRange, message: String| {
             diagnostics.push(Diagnostic {
                 file: imp.file,
@@ -403,10 +794,18 @@ pub fn check_impls(items: &ItemTree, sigs: &Signatures, diagnostics: &mut Vec<Di
             ),
             _ => {}
         }
+        let has_type = |name| data.types.iter().any(|t| t.name == name);
         for &f in &imp.functions {
             let function = &items.functions[f];
             match data.function(items, function.name) {
                 Some(required) => check_method(items, sigs, id, f, required, &mut error),
+                None if has_type(function.name) => error(
+                    function.item_range,
+                    format!(
+                        "item `{}` is an associated method, which doesn't match its trait `{}`",
+                        function.name, data.name
+                    ),
+                ),
                 None => error(
                     function.item_range,
                     format!(
@@ -416,7 +815,29 @@ pub fn check_impls(items: &ItemTree, sigs: &Signatures, diagnostics: &mut Vec<Di
                 ),
             }
         }
-        let missing: Vec<String> = data
+        for ty in &imp.types {
+            if has_type(ty.name) {
+                check_type_bounds(items, sigs, id, ty, &mut error);
+            } else if data.function(items, ty.name).is_some() {
+                error(
+                    ty.item_range,
+                    format!(
+                        "item `{}` is an associated type, which doesn't match its trait `{}`",
+                        ty.name, data.name
+                    ),
+                );
+            } else {
+                error(
+                    ty.item_range,
+                    format!(
+                        "type `{}` is not a member of trait `{}`",
+                        ty.name, data.name
+                    ),
+                );
+            }
+        }
+        // Required functions and types not defined, in the trait's order.
+        let mut missing: Vec<(u32, Symbol)> = data
             .functions
             .iter()
             .map(|&f| &items.functions[f])
@@ -426,8 +847,16 @@ pub fn check_impls(items: &ItemTree, sigs: &Signatures, diagnostics: &mut Vec<Di
                     .iter()
                     .any(|&g| items.functions[g].name == f.name)
             })
-            .map(|f| format!("`{}`", f.name))
+            .map(|f| (f.def_range.start(), f.name))
             .collect();
+        missing.extend(
+            data.types
+                .iter()
+                .filter(|t| !imp.types.iter().any(|u| u.name == t.name))
+                .map(|t| (t.item_range.start(), t.name)),
+        );
+        missing.sort_by_key(|&(at, _)| at);
+        let missing: Vec<String> = missing.iter().map(|(_, n)| format!("`{n}`")).collect();
         if !missing.is_empty() {
             error(
                 imp.def_range,
@@ -447,15 +876,95 @@ pub fn check_impls(items: &ItemTree, sigs: &Signatures, diagnostics: &mut Vec<Di
             for sup in sigs.traits.get(t).map_or(&[][..], |s| &s.supertraits) {
                 let goal = sup.subst(&args).with_self(self_ty);
                 if !holds(items, sigs, &env, goal) {
-                    error(
-                        imp.self_range,
-                        format!("the trait bound `{goal}` is not satisfied"),
-                    );
+                    error(imp.self_range, unmet(items, goal));
                 }
             }
         }
     }
-    check_overlap(items, sigs, diagnostics);
+    check_overlap(items, sigs, diagnostics, check_core);
+}
+
+/// Checks that associated type `ty` of trait `impl` block `imp` meets the
+/// bounds its trait puts on it.
+fn check_type_bounds(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: ImplId,
+    ty: &flux_hir::ImplType,
+    error: &mut impl FnMut(TextRange, String),
+) {
+    let (Some(&trait_ref), Some(&self_ty), Some(t)) = (
+        sigs.impl_traits.get(imp),
+        sigs.impls.get(imp),
+        impl_type(sigs, imp, ty.name),
+    ) else {
+        return;
+    };
+    let Some(sig) = sigs.traits.get(trait_ref.trait_) else {
+        return;
+    };
+    let args: Vec<Ty> = std::iter::once(self_ty)
+        .chain(trait_ref.args.iter().copied())
+        .collect();
+    let env = elaborate(sigs, sigs.impl_predicates.get(imp).map_or(&[], |p| p));
+    let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+    let t = normalize(items, sigs, projections, t);
+    for &(name, bound) in sig.type_bounds.iter() {
+        if name != ty.name {
+            continue;
+        }
+        let goal = bound.subst(&args).with_self(t);
+        let goal = Predicate {
+            self_ty: goal.self_ty,
+            trait_ref: TraitRef {
+                args: Ty::list(
+                    &goal
+                        .trait_ref
+                        .args
+                        .iter()
+                        .map(|&a| normalize(items, sigs, projections, a))
+                        .collect::<Vec<_>>(),
+                ),
+                ..goal.trait_ref
+            },
+        };
+        if !holds(items, sigs, &env, goal) {
+            error(ty.ty_range, unmet(items, goal));
+            return;
+        }
+    }
+    // `type Out: Add<Output = i32>;`: the type's `Output` must be `i32`.
+    let self_param = Ty::param(0, flux_intern::kw::SelfUpper);
+    for q in sig.implied.iter() {
+        let TyKind::Alias(of) = q.alias.args[0].kind() else {
+            continue;
+        };
+        if of.trait_ != trait_ref.trait_ || of.name != ty.name || of.args[0] != self_param {
+            continue;
+        }
+        let q = q.subst(&args);
+        let alias = AliasTy {
+            args: Ty::list(
+                &q.alias
+                    .args
+                    .iter()
+                    .map(|&a| normalize(items, sigs, projections, a))
+                    .collect::<Vec<_>>(),
+            ),
+            ..q.alias
+        };
+        let found = normalize(items, sigs, projections, Ty::alias(alias));
+        let expected = normalize(items, sigs, projections, q.ty);
+        if found != expected && found != Ty::ERROR && expected != Ty::ERROR {
+            error(
+                ty.ty_range,
+                format!(
+                    "type mismatch resolving `{} == {expected}`",
+                    Ty::alias(alias)
+                ),
+            );
+        }
+    }
 }
 
 /// Checks method `f` of trait `impl` block `imp` against the trait's
@@ -531,13 +1040,28 @@ fn check_method(
     let (Some(&self_ty), Some(trait_ref)) = (sigs.impls.get(imp), sigs.impl_traits.get(imp)) else {
         return;
     };
+    // Without all of the trait's types (reported), its signatures cannot
+    // be compared.
+    let defined = |name| items.impls[imp].types.iter().any(|ty| ty.name == name);
+    if !items.traits[t].types.iter().all(|ty| defined(ty.name)) {
+        return;
+    }
     // The trait's signature for this block: its `Self` and parameters
     // replaced by the block's, and the method's own by this method's.
     let first = items.impls[imp].generics.len();
     let mut args = vec![self_ty];
     args.extend_from_slice(trait_ref.args);
     args.extend(crate::params_of(&function.generics, first));
-    let (sig, expected) = (&sigs[f], sigs[required].subst(&args));
+    let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+    let norm = |sig: &crate::FnSig| crate::FnSig {
+        params: sig
+            .params
+            .iter()
+            .map(|&p| normalize(items, sigs, projections, p))
+            .collect(),
+        ret: normalize(items, sigs, projections, sig.ret),
+    };
+    let (sig, expected) = (&norm(&sigs[f]), norm(&sigs[required].subst(&args)));
     let types = sig.params.iter().zip(&expected.params);
     let ranges = function.params.iter().map(|p| p.range);
     let ret_range =
@@ -708,7 +1232,7 @@ pub fn check_trivial_bounds(
                 diagnostics.push(Diagnostic {
                     file,
                     range: TextRange::new(written.ty_range.start(), written.bound.range.end()),
-                    message: format!("the trait bound `{p}` is not satisfied"),
+                    message: unmet(items, p),
                 });
             }
         }
@@ -728,11 +1252,19 @@ pub fn check_trivial_bounds(
 }
 
 /// Reports `impl` blocks of one trait for types that may be the same.
-fn check_overlap(items: &ItemTree, sigs: &Signatures, diagnostics: &mut Vec<Diagnostic>) {
+fn check_overlap(
+    items: &ItemTree,
+    sigs: &Signatures,
+    diagnostics: &mut Vec<Diagnostic>,
+    check_core: bool,
+) {
     let mut traits: Vec<(&TraitId, &Vec<ImplId>)> = items.trait_impls.iter().collect();
     traits.sort_by_key(|(t, _)| t.index());
     for (_, impls) in traits {
         for (i, &later) in impls.iter().enumerate() {
+            if !check_core && !items.in_main_crate(items.impls[later].module) {
+                continue;
+            }
             let (Some(&b), Some(b_ref)) = (sigs.impls.get(later), sigs.impl_traits.get(later))
             else {
                 continue;

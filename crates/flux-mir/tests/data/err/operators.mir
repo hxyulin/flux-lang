@@ -1,0 +1,503 @@
+fn <V as Add>::add(_1: V, _2: V) -> V {
+    let mut _0: V;
+    let _3: i32;
+    let _4: i32;
+    let _5: i32;
+
+    bb0: {
+        _4 = copy _1.0;
+        _5 = copy _2.0;
+        _3 = Add(copy _4, copy _5);
+        _0 = V(copy _3);
+        return;
+    }
+}
+
+fn <V as Neg>::neg(_1: V) -> V {
+    let mut _0: V;
+    let _2: i32;
+    let _3: i32;
+
+    bb0: {
+        _3 = copy _1.0;
+        _2 = Neg(copy _3);
+        _0 = V(copy _2);
+        return;
+    }
+}
+
+fn <V as AddAssign>::add_assign(_1: &mut V, _2: V) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: i32;
+    let _5: i32;
+
+    bb0: {
+        _4 = copy _2.0;
+        _5 = copy (*_1).0;
+        (*_1).0 = Add(copy _5, copy _4);
+        _3 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn <V as PartialEq>::eq(_1: &V, _2: &V) -> bool {
+    let mut _0: bool;
+    let _3: i32;
+    let _4: i32;
+
+    bb0: {
+        _3 = copy (*_1).0;
+        _4 = copy (*_2).0;
+        _0 = Eq(copy _3, copy _4);
+        return;
+    }
+}
+
+fn use_after_add(_1: V, _2: V) -> i32 {
+    let mut _0: i32;
+    let _3: V; // _c
+    let _4: V;
+    let _5: V;
+
+    bb0: {
+        _4 = move _1;
+        _5 = move _2;
+        _3 = add::<V, V>(move _4, move _5) -> bb1;
+    }
+
+    bb1: {
+        _0 = copy _1.0;
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn add_self(_1: V) -> V {
+    let mut _0: V;
+    let _2: V;
+    let _3: V;
+
+    bb0: {
+        _2 = move _1;
+        _3 = move _1;
+        _0 = add::<V, V>(move _2, move _3) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn add_self_generic<T>(_1: T) -> T {
+    let mut _0: T;
+    let _2: T;
+    let _3: T;
+
+    bb0: {
+        _2 = move _1;
+        _3 = move _1;
+        _0 = add::<T, T>(move _2, move _3) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn use_after_neg(_1: V) -> V {
+    let mut _0: V;
+    let _2: V; // _b
+    let _3: V;
+
+    bb0: {
+        _3 = move _1;
+        _2 = neg::<V>(move _3) -> bb1;
+    }
+
+    bb1: {
+        _0 = move _1;
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn compare_after_move(_1: V, _2: V) -> bool {
+    let mut _0: bool;
+    let _3: V; // _c
+    let _4: V;
+    let _5: V;
+    let _6: &V;
+    let _7: &V;
+
+    bb0: {
+        _4 = move _1;
+        _5 = V(const 1_i32);
+        _3 = add::<V, V>(move _4, move _5) -> bb1;
+    }
+
+    bb1: {
+        _6 = &_1;
+        _7 = &_2;
+        _0 = eq::<V, V>(copy _6, copy _7) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn compound_after_move(_1: V, _2: V) -> () {
+    let mut _0: ();
+    let _3: V; // _c
+    let _4: V;
+    let _5: ();
+    let _6: &mut V;
+    let _7: V;
+
+    bb0: {
+        _4 = move _1;
+        _3 = neg::<V>(move _4) -> bb1;
+    }
+
+    bb1: {
+        _6 = &two_phase _2;
+        _7 = move _1;
+        _5 = add_assign::<V, V>(move _6, move _7) -> bb2;
+    }
+
+    bb2: {
+        _0 = const ();
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn add_in_loop(_1: V) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: V; // _b
+    let _4: V;
+    let _5: V;
+
+    bb0: {
+        goto -> bb1;
+    }
+
+    bb1: {
+        _4 = move _1;
+        _5 = V(const 1_i32);
+        _3 = add::<V, V>(move _4, move _5) -> bb3;
+    }
+
+    bb2: {
+        return;
+    }
+
+    bb3: {
+        _2 = const ();
+        StorageDead(_3);
+        goto -> bb1;
+    }
+}
+
+fn partial_move(_1: Pair) -> Pair {
+    let mut _0: Pair;
+    let _2: V; // _c
+    let _3: V;
+    let _4: V;
+
+    bb0: {
+        _3 = move _1.0;
+        _4 = V(const 1_i32);
+        _2 = add::<V, V>(move _3, move _4) -> bb1;
+    }
+
+    bb1: {
+        _0 = move _1;
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn add_behind_ref(_1: &V) -> V {
+    let mut _0: V;
+    let _2: V;
+    let _3: V;
+
+    bb0: {
+        _2 = move (*_1);
+        _3 = V(const 1_i32);
+        _0 = add::<V, V>(move _2, move _3) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn neg_behind_ref(_1: &V) -> V {
+    let mut _0: V;
+    let _2: V;
+
+    bb0: {
+        _2 = move (*_1);
+        _0 = neg::<V>(move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn add_field_behind_ref(_1: &Pair) -> V {
+    let mut _0: V;
+    let _2: V;
+    let _3: V;
+
+    bb0: {
+        _2 = move (*_1).0;
+        _3 = V(const 1_i32);
+        _0 = add::<V, V>(move _2, move _3) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn compound_through_shared(_1: &V) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: &mut V;
+    let _4: V;
+
+    bb0: {
+        _3 = &two_phase (*_1);
+        _4 = V(const 1_i32);
+        _2 = add_assign::<V, V>(move _3, move _4) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn compound_self(_1: V) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: &mut V;
+    let _4: V;
+
+    bb0: {
+        _3 = &two_phase _1;
+        _4 = move _1;
+        _2 = add_assign::<V, V>(move _3, move _4) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn compound_moved_field(_1: Pair) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: &mut V;
+    let _4: V;
+    let _5: ();
+    let _6: &mut V;
+    let _7: V;
+
+    bb0: {
+        _3 = &two_phase _1.0;
+        _4 = move _1.1;
+        _2 = add_assign::<V, V>(move _3, move _4) -> bb1;
+    }
+
+    bb1: {
+        _6 = &two_phase _1.1;
+        _7 = move _1.0;
+        _5 = add_assign::<V, V>(move _6, move _7) -> bb2;
+    }
+
+    bb2: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn move_while_borrowed(_1: V) -> i32 {
+    let mut _0: i32;
+    let _2: &V; // r
+    let _3: V; // _c
+    let _4: V;
+    let _5: V;
+
+    bb0: {
+        _2 = &_1;
+        _4 = move _1;
+        _5 = V(const 1_i32);
+        _3 = add::<V, V>(move _4, move _5) -> bb1;
+    }
+
+    bb1: {
+        _0 = copy (*_2).0;
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn compare_while_mutably_borrowed(_1: V, _2: V) -> i32 {
+    let mut _0: i32;
+    let _3: &mut V; // r
+    let _4: bool; // _e
+    let _5: &V;
+    let _6: &V;
+
+    bb0: {
+        _3 = &mut _1;
+        _5 = &_1;
+        _6 = &_2;
+        _4 = eq::<V, V>(copy _5, copy _6) -> bb1;
+    }
+
+    bb1: {
+        _0 = copy (*_3).0;
+        StorageDead(_4);
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn compound_while_borrowed(_1: V) -> i32 {
+    let mut _0: i32;
+    let _2: &V; // r
+    let _3: ();
+    let _4: &mut V;
+    let _5: V;
+
+    bb0: {
+        _2 = &_1;
+        _4 = &two_phase _1;
+        _5 = V(const 1_i32);
+        _3 = add_assign::<V, V>(move _4, move _5) -> bb1;
+    }
+
+    bb1: {
+        _0 = copy (*_2).0;
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn uninitialized(_1: V) -> V {
+    let mut _0: V;
+    let _2: V; // a
+    let _3: V;
+    let _4: V;
+
+    bb0: {
+        _3 = move _2;
+        _4 = move _1;
+        _0 = add::<V, V>(move _3, move _4) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn compound_immutable_arg(_1: V) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: &mut V;
+    let _4: V;
+
+    bb0: {
+        _3 = &two_phase _1;
+        _4 = V(const 1_i32);
+        _2 = add_assign::<V, V>(move _3, move _4) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn compound_immutable_local() -> () {
+    let mut _0: ();
+    let _1: V; // b
+    let _2: ();
+    let _3: &mut V;
+    let _4: V;
+
+    bb0: {
+        _1 = V(const 1_i32);
+        _3 = &two_phase _1;
+        _4 = V(const 1_i32);
+        _2 = add_assign::<V, V>(move _3, move _4) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn compound_immutable_generic<T>(_1: T, _2: T) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: &mut T;
+    let _5: T;
+
+    bb0: {
+        _4 = &two_phase _1;
+        _5 = move _2;
+        _3 = add_assign::<T, T>(move _4, move _5) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 756..759: use of moved value: `a`
+error 796..797: use of moved value: `a`
+error 862..863: use of moved value: `a`
+error 918..919: use of moved value: `a`
+error 994..995: borrow of moved value: `a`
+error 1071..1072: use of moved value: `a`
+error 1128..1129: use of moved value: `a`
+error 1211..1212: use of partially moved value: `p`
+error 1297..1299: cannot move out of `*r` which is behind a shared reference
+error 1347..1349: cannot move out of `*r` which is behind a shared reference
+error 1398..1401: cannot move out of `p` which is behind a shared reference
+error 1551..1553: cannot borrow `*r` as mutable, as it is behind a `&` reference
+error 1604..1605: cannot move out of `a` because it is borrowed
+error 1669..1672: borrow of moved value: `p.1`
+error 1787..1788: cannot move out of `a` because it is borrowed
+error 1900..1901: cannot borrow `a` as immutable because it is also borrowed as mutable
+error 1985..1994: cannot borrow `a` as mutable because it is also borrowed as immutable
+error 2097..2098: used binding `a` isn't initialized
+error 2232..2233: cannot borrow `a` as mutable, as it is not declared as mutable
+error 2300..2301: cannot borrow `b` as mutable, as it is not declared as mutable
+error 2376..2377: cannot borrow `a` as mutable, as it is not declared as mutable

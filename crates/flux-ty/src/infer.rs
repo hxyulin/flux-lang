@@ -2,7 +2,6 @@
 
 mod solve;
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 
 use flux_arena::ArenaMap;
@@ -45,6 +44,15 @@ pub struct InferenceResult {
     /// associated functions of a generic struct with one name, the one
     /// for the type it is called on.
     pub calls: ArenaMap<Expr, Instance>,
+    /// The trait method each operator on a type other than the integers
+    /// and `bool` calls: `Add::add` for `a + b`, `PartialEq::eq` for
+    /// `a == b`, `AddAssign::add_assign` for `a += b`, `Neg::neg` for
+    /// `-a`.
+    pub overloads: ArenaMap<Expr, Instance>,
+    /// Comparisons of references, `&a == &b`, whose operands are passed
+    /// as they are: `PartialEq::eq::<A, B>(a, b)`, as `core`'s impl for
+    /// references would.
+    pub compared_refs: ArenaMap<Expr, ()>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -75,15 +83,23 @@ pub fn infer_body(
         const_context: data.is_const.then_some("constant functions"),
         ret: sig.ret,
         param_env: elaborate(sigs, &predicates_of(items, sigs, function)),
+        env_projections: crate::traits::projections_of(items, sigs, function),
+        self_trait: items
+            .impl_of(function)
+            .and_then(|imp| sigs.impl_traits.get(imp).copied()),
     };
     let mut ctx = Ctx::new(items, sigs, owner, body, source_map);
+    let origin = data.def_range;
+    let ret = ctx.normalize(sig.ret, origin);
+    ctx.ret = ret;
     for (i, &pat) in body.params.iter().enumerate() {
         let ty = sig.params.get(i).copied().unwrap_or(Ty::ERROR);
+        let ty = ctx.normalize(ty, origin);
         ctx.check_pat(pat, ty, false);
     }
-    ctx.expect(body.root, sig.ret);
+    ctx.expect(body.root, ret);
     let ty = ctx.infer_expr(body.root);
-    ctx.coerce(ty, sig.ret, body.root);
+    ctx.coerce(ty, ret, body.root);
     if let Some(flux_hir::Owner::Trait(_)) = data.owner {
         ctx.check_unsized_self();
     }
@@ -112,6 +128,8 @@ pub fn infer_const(
             .and_then(flux_hir::Owner::as_impl)
             .and_then(|imp| sigs.impl_predicates.get(imp))
             .map_or(Vec::new(), |p| elaborate(sigs, p)),
+        env_projections: Vec::new(),
+        self_trait: None,
     };
     let mut ctx = Ctx::new(items, sigs, owner, body, source_map);
     ctx.expect(body.root, ret);
@@ -133,6 +151,10 @@ struct Owner {
     ret: Ty,
     /// The bounds in scope, with the supertraits they imply.
     param_env: Vec<Predicate>,
+    /// What the bounds in scope say associated types are.
+    env_projections: Vec<crate::Projection>,
+    /// In a trait's `impl` block, its trait.
+    self_trait: Option<crate::TraitRef>,
 }
 
 impl<'a> Ctx<'a> {
@@ -160,6 +182,8 @@ impl<'a> Ctx<'a> {
             methods: ArenaMap::new(),
             reborrows: ArenaMap::new(),
             calls: ArenaMap::new(),
+            overloads: ArenaMap::new(),
+            compared_refs: ArenaMap::new(),
             expected: ArenaMap::new(),
             loops: ArenaMap::new(),
             reported_vars: HashSet::new(),
@@ -167,6 +191,9 @@ impl<'a> Ctx<'a> {
             unsafe_depth: u32::from(owner.is_unsafe),
             ret: owner.ret,
             param_env: owner.param_env,
+            env_projections: owner.env_projections,
+            self_trait: owner.self_trait,
+            projections: Vec::new(),
             obligations: Vec::new(),
             traits_in_scope: None,
             reported_unmet: HashSet::new(),
@@ -265,6 +292,8 @@ struct Ctx<'a> {
     methods: ArenaMap<Expr, Method>,
     reborrows: ArenaMap<Expr, Mutability>,
     calls: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
+    overloads: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
+    compared_refs: ArenaMap<Expr, ()>,
     /// The type the context of an expression wants, where known before
     /// it is inferred: a call or struct expression's generic arguments
     /// follow from it, so mismatches are reported at its parts.
@@ -278,6 +307,13 @@ struct Ctx<'a> {
     ret: Ty,
     /// The bounds in scope, with the supertraits they imply.
     param_env: Vec<Predicate>,
+    /// What the bounds in scope say associated types are.
+    env_projections: Vec<crate::Projection>,
+    /// In a trait's `impl` block, its trait: `Self::Out` is its type.
+    self_trait: Option<crate::TraitRef>,
+    /// Associated types whose `Self` is not known yet, each standing for
+    /// a variable until it is.
+    projections: Vec<solve::PendingProjection>,
     /// Trait obligations not yet met.
     obligations: Vec<Obligation>,
     traits_in_scope: Option<Vec<flux_hir::TraitId>>,
@@ -376,6 +412,13 @@ impl Ctx<'_> {
             (TyKind::Adt(a, xs), TyKind::Adt(b, ys)) if a == b => {
                 let mut ok = true;
                 for (&x, &y) in xs.iter().zip(ys) {
+                    ok &= self.unify(x, y);
+                }
+                ok
+            }
+            (TyKind::Alias(a), TyKind::Alias(b)) if a.trait_ == b.trait_ && a.name == b.name => {
+                let mut ok = true;
+                for (&x, &y) in a.args.iter().zip(b.args) {
                     ok &= self.unify(x, y);
                 }
                 ok
@@ -503,6 +546,14 @@ impl Ctx<'_> {
             (TyKind::Adt(a, xs), TyKind::Adt(b, ys)) => {
                 a == b && xs.iter().zip(ys).all(|(&x, &y)| self.can_unify(x, y))
             }
+            (TyKind::Alias(a), TyKind::Alias(b)) => {
+                a.trait_ == b.trait_
+                    && a.name == b.name
+                    && a.args
+                        .iter()
+                        .zip(b.args)
+                        .all(|(&x, &y)| self.can_unify(x, y))
+            }
             _ => false,
         }
     }
@@ -536,6 +587,18 @@ impl Ctx<'_> {
                 let args: Vec<String> = args.iter().map(|&a| self.describe(a)).collect();
                 format!("{}<{}>", adt.name, args.join(", "))
             }
+            TyKind::Alias(alias) => {
+                let args: Vec<String> = alias.args.iter().map(|&a| self.describe(a)).collect();
+                let trait_args = if args.len() > 1 {
+                    format!("<{}>", args[1..].join(", "))
+                } else {
+                    String::new()
+                };
+                format!(
+                    "<{} as {}{trait_args}>::{}",
+                    args[0], alias.trait_name, alias.name
+                )
+            }
             _ => ty.to_string(),
         }
     }
@@ -562,6 +625,9 @@ impl Ctx<'_> {
             self_ty: self.self_ty,
             generics: &self.generics,
             signature_of: None,
+            bounds: &self.param_env,
+            self_trait: self.self_trait,
+            defaults: Some(&self.sigs.trait_defaults),
         };
         let ty = resolve_or_report(
             self.items,
@@ -571,7 +637,11 @@ impl Ctx<'_> {
             range,
             &mut self.diagnostics,
         );
-        self.fill_placeholders(ty, range)
+        let ty = self.fill_placeholders(ty, range);
+        if ty.has_aliases() {
+            self.require_alias_traits(ty, range);
+        }
+        self.normalize(ty, range)
     }
 
     /// `ty` with each `_` in it a new variable.
@@ -1135,6 +1205,28 @@ impl Ctx<'_> {
                 if *op == UnaryOp::Deref {
                     return self.infer_deref(id, ty);
                 }
+                if let Some(ty) = self.overload_unary(id, *op, ty) {
+                    return ty;
+                }
+                // `-&1` and `!&true` are valid, through `core`'s impls for
+                // references.
+                if let TyKind::Ref(_, pointee) = self.shallow(ty).kind() {
+                    let pointee = self.shallow(pointee);
+                    let valid = match (op, pointee.kind()) {
+                        (UnaryOp::Neg, TyKind::Int(int)) => int.is_signed(),
+                        (UnaryOp::Neg, TyKind::Infer(var)) => self.unknown(var).0,
+                        (UnaryOp::Not, TyKind::Int(_) | TyKind::Bool) => true,
+                        (UnaryOp::Not, TyKind::Infer(var)) => self.unknown(var).0,
+                        _ => false,
+                    };
+                    if valid {
+                        self.error(
+                            self.range(id),
+                            "operators on references are not supported yet",
+                        );
+                        return Ty::ERROR;
+                    }
+                }
                 self.deferred.push(Deferred::Unary {
                     expr: id,
                     op: *op,
@@ -1264,7 +1356,7 @@ impl Ctx<'_> {
             trait_args.as_deref(),
             self.range(callee),
         );
-        let sig = &sig_of(self.sigs, function, &generic_args);
+        let sig = &self.instance_sig(function, &generic_args);
         self.meet_expectation(id, sig.ret);
         let (want, got) = (sig.params.len(), args.len());
         let arity_ok = if data.is_variadic {
@@ -1920,7 +2012,7 @@ impl Ctx<'_> {
         if !self.items.is_visible(data.loc.vis, self.module) {
             self.error(name_range, format!("method `{}` is private", data.name));
         }
-        let sig = &sig_of(self.sigs, function, &generic_args);
+        let sig = &self.instance_sig(function, &generic_args);
         self.check_signature_privacy(sig, id);
         if let Some(context) = self.const_context
             && !data.is_const
@@ -1943,7 +2035,7 @@ impl Ctx<'_> {
             expr: id,
         };
         self.register_call_bounds(function, &generic_args, site, Some(base));
-        let sig = &sig_of(self.sigs, function, &generic_args);
+        let sig = &self.instance_sig(function, &generic_args);
         self.meet_expectation(id, sig.ret);
         let autoref = self_mode(self.items, function);
         self.methods.insert(
@@ -1994,8 +2086,8 @@ impl Ctx<'_> {
             BinaryOp::Cmp(_) => {
                 let ty = self.infer_expr(lhs);
                 let rhs_ty = self.infer_expr(rhs);
-                if self.no_operator(id, op, ty, rhs_ty) {
-                    return Ty::BOOL;
+                if let Some(ty) = self.overload(id, op, ty, (rhs, rhs_ty)) {
+                    return ty;
                 }
                 if self.is_primitive_operand(ty) {
                     self.coerce(rhs_ty, ty, rhs);
@@ -2010,7 +2102,9 @@ impl Ctx<'_> {
             }
             BinaryOp::Arith(arith) => self.infer_arith(id, op, arith, lhs, rhs),
             BinaryOp::Assign(arith) => {
-                self.check_place(id, lhs, arith.is_none());
+                if arith.is_none() {
+                    self.check_place(id, lhs, true);
+                }
                 let ty = self.infer_expr(lhs);
                 match arith {
                     None => {
@@ -2020,6 +2114,11 @@ impl Ctx<'_> {
                     }
                     Some(arith) => {
                         self.infer_arith(id, op, arith, lhs, rhs);
+                        // An overloaded one borrows `lhs` mutably, which
+                        // the borrow check checks.
+                        if self.overloads.get(id).is_none() {
+                            self.check_place(id, lhs, false);
+                        }
                     }
                 }
                 Ty::UNIT
@@ -2027,21 +2126,271 @@ impl Ctx<'_> {
         }
     }
 
-    /// Reports `lhs op rhs` where `lhs` is a struct or generic parameter,
-    /// which have no operators until flux has traits; then rather than
-    /// once types are final, so an integer literal is `{integer}` in the
-    /// message, as in rustc's.
-    fn no_operator(&mut self, id: ExprId, op: BinaryOp, lhs: Ty, rhs: Ty) -> bool {
-        if !matches!(self.shallow(lhs).kind(), TyKind::Adt(..) | TyKind::Param(_)) {
-            return false;
+    /// `lhs op rhs` where `lhs` is a struct, a generic parameter or an
+    /// associated type: a call of the method of the operator's trait
+    /// (`Add::add`, `PartialEq::eq`, `AddAssign::add_assign`), whose
+    /// bound `L: Add<R>` is an obligation, with the type of the result;
+    /// `None` for the built-in operators. As in rustc, the right operand
+    /// is checked against what the `impl` block selected says it is.
+    fn overload(
+        &mut self,
+        id: ExprId,
+        op: BinaryOp,
+        lhs: Ty,
+        (rhs, rhs_ty): (ExprId, Ty),
+    ) -> Option<Ty> {
+        let operand = self.shallow(lhs);
+        let overloadable = match operand.kind() {
+            TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) => true,
+            // `&a + &b` on integers needs `core`'s impls for references.
+            TyKind::Ref(_, pointee) => matches!(
+                self.shallow(pointee).kind(),
+                TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_)
+            ),
+            _ => false,
+        };
+        let op_range = self.source_map.ops.get(id).copied().unwrap_or_default();
+        if let BinaryOp::Cmp(_) = op
+            && let Some(message) = self.cmp_ref_error(op, operand, rhs_ty)
+        {
+            self.error(op_range, message);
+            return Some(Ty::BOOL);
         }
-        let (lhs, rhs) = (self.describe(lhs), self.describe(rhs));
+        if !overloadable {
+            // An integer or `bool` on the left and another type on the
+            // right: no `impl` block of `core`'s takes it.
+            let other = matches!(
+                self.shallow(rhs_ty).kind(),
+                TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_)
+            );
+            let primitive = self.is_primitive_operand(operand) && operand != Ty::ERROR;
+            // Unless the program implements it: `impl Add<S> for i32`.
+            if other
+                && primitive
+                && let Some((t, function)) = self.lang_fn(op)
+                && self.probe(|cx| cx.may_hold(lhs, t, Some(&[rhs_ty]), 0))
+            {
+                let range = match op {
+                    BinaryOp::Assign(_) => self.range(id),
+                    _ => op_range,
+                };
+                let trait_ref = crate::TraitRef {
+                    trait_: t,
+                    name: self.items.traits[t].name,
+                    args: Ty::list(&[rhs_ty]),
+                };
+                self.register(
+                    trait_ref.with_self(lhs),
+                    range,
+                    solve::ObligationKind::Bound,
+                );
+                self.overloads.insert(id, (function, vec![lhs, rhs_ty]));
+                self.select_obligations();
+                return Some(match op {
+                    BinaryOp::Cmp(_) => Ty::BOOL,
+                    BinaryOp::Assign(_) => Ty::UNIT,
+                    _ => self.output(trait_ref, lhs, range),
+                });
+            }
+            if other && primitive && !matches!(op, BinaryOp::Assign(_)) {
+                let (l, r) = (self.describe(lhs), self.describe(rhs_ty));
+                let message = match op {
+                    BinaryOp::Cmp(_) => format!("can't compare `{l}` with `{r}`"),
+                    _ => binary_error(op, &l, &r),
+                };
+                self.error(op_range, message);
+                return Some(match op {
+                    BinaryOp::Cmp(_) => Ty::BOOL,
+                    _ => Ty::ERROR,
+                });
+            }
+            // Two integer types: `core` has no `impl Add<u8> for i32`.
+            if let (Some(a), Some(b), BinaryOp::Arith(arith)) =
+                (operand.as_int(), self.shallow(rhs_ty).as_int(), op)
+                && a != b
+                && !matches!(arith, ArithOp::Shl | ArithOp::Shr)
+            {
+                let (l, r) = (self.describe(lhs), self.describe(rhs_ty));
+                self.error(op_range, binary_error(op, &l, &r));
+            }
+            return None;
+        }
         let range = match op {
             BinaryOp::Assign(_) => self.range(id),
             _ => self.source_map.ops.get(id).copied().unwrap_or_default(),
         };
-        self.error(range, binary_error(op, &lhs, &rhs));
-        true
+        let result = match op {
+            BinaryOp::Cmp(_) => Ty::BOOL,
+            BinaryOp::Assign(_) => Ty::UNIT,
+            _ => Ty::ERROR,
+        };
+        // `&a == &b` compares `a` with `b`.
+        let (mut lhs_cmp, mut rhs_cmp) = (lhs, rhs_ty);
+        if let (BinaryOp::Cmp(_), TyKind::Ref(_, a), TyKind::Ref(_, b)) =
+            (op, operand.kind(), self.shallow(rhs_ty).kind())
+        {
+            (lhs_cmp, rhs_cmp) = (a, b);
+            self.compared_refs.insert(id, ());
+        }
+        let Some((t, function)) = self.lang_fn(op) else {
+            let (lhs, rhs) = (self.describe(lhs), self.describe(rhs_ty));
+            self.error(range, binary_error(op, &lhs, &rhs));
+            return Some(result);
+        };
+        // Reported if not: its result is then an error.
+        let holds = self.may_implement(lhs_cmp, t);
+        // `&a == &b` where `a` has some `PartialEq`: through `core`'s
+        // `impl PartialEq<&B> for &A where A: PartialEq<B>`, whose bound
+        // is what fails.
+        if holds && lhs_cmp != lhs {
+            let trait_ref = crate::TraitRef {
+                trait_: t,
+                name: self.items.traits[t].name,
+                args: Ty::list(&[rhs_cmp]),
+            };
+            self.register(
+                trait_ref.with_self(lhs_cmp),
+                range,
+                solve::ObligationKind::Bound,
+            );
+            self.overloads
+                .insert(id, (function, vec![lhs_cmp, rhs_cmp]));
+            self.select_obligations();
+            return Some(result);
+        }
+        let r = self.new_var(false, self.range(rhs));
+        let trait_ref = crate::TraitRef {
+            trait_: t,
+            name: self.items.traits[t].name,
+            args: Ty::list(&[r]),
+        };
+        self.register(
+            trait_ref.with_self(lhs_cmp),
+            range,
+            solve::ObligationKind::Operator {
+                op: solve::Op::Binary(op),
+                lhs,
+                rhs: rhs_ty,
+            },
+        );
+        self.select_obligations();
+        if matches!(self.shallow(r).kind(), TyKind::Infer(_)) {
+            self.unify(r, rhs_cmp);
+        } else if rhs_cmp == rhs_ty {
+            self.coerce(rhs_ty, r, rhs);
+        } else if !self.unify(r, rhs_cmp) {
+            let range = self.range(rhs);
+            self.mismatch(Ty::new(TyKind::Ref(Mutability::Not, r)), rhs_ty, range);
+        }
+        self.overloads.insert(id, (function, vec![lhs_cmp, r]));
+        self.select_obligations();
+        Some(match op {
+            BinaryOp::Arith(_) if holds => self.output(trait_ref, lhs, range),
+            _ => result,
+        })
+    }
+
+    /// The trait of operator `op` and its method: `Add` and `Add::add`.
+    fn lang_fn(&self, op: BinaryOp) -> Option<(flux_hir::TraitId, FunctionId)> {
+        let (lang, method) = lang_method(op)?;
+        let t = *self.items.lang_traits.get(&Symbol::intern(lang))?;
+        let f = self.items.traits[t].function(self.items, Symbol::intern(method))?;
+        Some((t, f))
+    }
+
+    /// rustc's error for comparing `lhs` with `rhs` where `core`'s impls
+    /// for references cannot apply: a reference with something else
+    /// ("can't compare `&S` with `S`", or E0369 if the referent has no
+    /// `PartialEq` at all), or an integer of unknown type with a
+    /// reference, which rustc names by its fallback type.
+    fn cmp_ref_error(&mut self, op: BinaryOp, lhs: Ty, rhs: Ty) -> Option<String> {
+        let rhs = self.shallow(rhs);
+        let unknown = |cx: &mut Self, ty: Ty| match ty.kind() {
+            TyKind::Infer(var) => Some(cx.unknown(var).0),
+            _ => None,
+        };
+        let is_ref = |ty: Ty| matches!(ty.kind(), TyKind::Ref(..));
+        let eq = *self.items.lang_traits.get(&Symbol::intern("eq"))?;
+        match lhs.kind() {
+            TyKind::Ref(_, pointee) if !is_ref(rhs) && unknown(self, rhs) != Some(false) => {
+                if rhs == Ty::ERROR || pointee == Ty::ERROR {
+                    return None;
+                }
+                let (l, r) = (self.describe(lhs), self.describe(rhs));
+                Some(if self.may_implement(pointee, eq) {
+                    format!("can't compare `{l}` with `{r}`")
+                } else {
+                    binary_error(op, &l, &r)
+                })
+            }
+            TyKind::Infer(_) if unknown(self, lhs) == Some(true) && is_ref(rhs) => {
+                Some(format!("can't compare `i32` with `{}`", self.describe(rhs)))
+            }
+            _ => None,
+        }
+    }
+
+    /// `-a` or `!a` where `a` is a struct, a generic parameter or an
+    /// associated type: `Neg::neg(a)` or `Not::not(a)`.
+    fn overload_unary(&mut self, id: ExprId, op: UnaryOp, ty: Ty) -> Option<Ty> {
+        if !matches!(
+            self.shallow(ty).kind(),
+            TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_)
+        ) {
+            return None;
+        }
+        let range = self.range(id);
+        let (lang, method, text) = match op {
+            UnaryOp::Neg => ("neg", "neg", "-"),
+            UnaryOp::Not => ("not", "not", "!"),
+            UnaryOp::Deref => return None,
+        };
+        let found = self
+            .items
+            .lang_traits
+            .get(&Symbol::intern(lang))
+            .and_then(|&t| {
+                Some((
+                    t,
+                    self.items.traits[t].function(self.items, Symbol::intern(method))?,
+                ))
+            });
+        let Some((t, function)) = found else {
+            let ty = self.describe(ty);
+            self.error(
+                range,
+                format!("cannot apply unary operator `{text}` to type `{ty}`"),
+            );
+            return Some(Ty::ERROR);
+        };
+        let holds = self.may_implement(ty, t);
+        let trait_ref = crate::TraitRef {
+            trait_: t,
+            name: self.items.traits[t].name,
+            args: &[],
+        };
+        self.register(
+            trait_ref.with_self(ty),
+            range,
+            solve::ObligationKind::Operator {
+                op: solve::Op::Unary(op),
+                lhs: ty,
+                rhs: ty,
+            },
+        );
+        self.overloads.insert(id, (function, vec![ty]));
+        self.select_obligations();
+        Some(if holds {
+            self.output(trait_ref, ty, range)
+        } else {
+            Ty::ERROR
+        })
+    }
+
+    /// `<ty as Tr>::Output`, normalized.
+    fn output(&mut self, trait_ref: crate::TraitRef, ty: Ty, range: TextRange) -> Ty {
+        let alias = crate::traits::alias_of(trait_ref, ty, Symbol::intern("Output"));
+        self.normalize(Ty::alias(alias), range)
     }
 
     /// Whether the operators on a left operand of type `ty` are the
@@ -2069,8 +2418,8 @@ impl Ctx<'_> {
             None => self.infer_expr(lhs),
         };
         let rhs_ty = self.infer_expr(rhs);
-        if self.no_operator(id, op, ty, rhs_ty) {
-            return Ty::ERROR;
+        if let Some(ty) = self.overload(id, op, ty, (rhs, rhs_ty)) {
+            return ty;
         }
         if matches!(arith, ArithOp::Shl | ArithOp::Shr) {
             self.deferred.push(Deferred::ShiftAmount {
@@ -2192,6 +2541,20 @@ impl Ctx<'_> {
             }
             calls.insert(expr, Instance { function, args });
         }
+        let overloaded: Vec<(ExprId, (FunctionId, Vec<Ty>))> = self
+            .overloads
+            .iter()
+            .map(|(e, call)| (e, call.clone()))
+            .collect();
+        let mut overloads = ArenaMap::new();
+        for (expr, (function, args)) in overloaded {
+            let args: Vec<Ty> = args
+                .iter()
+                .map(|&a| self.resolve(a, &mut reported))
+                .collect();
+            let args = Ty::list(&args);
+            overloads.insert(expr, Instance { function, args });
+        }
         self.run_deferred(&mut reported);
         self.check_references();
         InferenceResult {
@@ -2202,6 +2565,8 @@ impl Ctx<'_> {
             methods: self.methods,
             reborrows: self.reborrows,
             calls,
+            overloads,
+            compared_refs: self.compared_refs,
             diagnostics: self.diagnostics,
         }
     }
@@ -2284,6 +2649,11 @@ impl Ctx<'_> {
             }
             TyKind::Tuple(list) | TyKind::Adt(_, list) => {
                 for &t in list {
+                    self.unknown_vars(t, out);
+                }
+            }
+            TyKind::Alias(alias) => {
+                for &t in alias.args {
                     self.unknown_vars(t, out);
                 }
             }
@@ -2385,6 +2755,17 @@ impl Ctx<'_> {
             TyKind::Adt(adt, args) if ty.has_infer() => {
                 let args: Vec<Ty> = args.iter().map(|&a| self.resolve(a, reported)).collect();
                 Ty::adt(adt.strukt, adt.name, &args)
+            }
+            TyKind::Alias(alias) if ty.has_infer() => {
+                let args: Vec<Ty> = alias
+                    .args
+                    .iter()
+                    .map(|&a| self.resolve(a, reported))
+                    .collect();
+                Ty::alias(crate::AliasTy {
+                    args: Ty::list(&args),
+                    ..alias
+                })
             }
             _ => ty,
         }
@@ -2565,15 +2946,6 @@ fn self_mode(items: &ItemTree, f: FunctionId) -> Option<Mutability> {
     }
 }
 
-fn sig_of<'s>(sigs: &'s Signatures, function: FunctionId, args: &[Ty]) -> Cow<'s, FnSig> {
-    let sig = &sigs[function];
-    if args.is_empty() {
-        Cow::Borrowed(sig)
-    } else {
-        Cow::Owned(sig.subst(args))
-    }
-}
-
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
@@ -2605,6 +2977,35 @@ fn list_fields(names: &[Symbol]) -> String {
 }
 
 /// rustc's message for an operator its operand types do not support.
+/// The `lang` name of the trait for `op` on types other than integers
+/// and `bool`, and its method's name; `None` if flux has none.
+fn lang_method(op: BinaryOp) -> Option<(&'static str, &'static str)> {
+    Some(match op {
+        BinaryOp::Arith(arith) | BinaryOp::Assign(Some(arith)) => {
+            let names = match arith {
+                ArithOp::Add => ("add", "add_assign"),
+                ArithOp::Sub => ("sub", "sub_assign"),
+                ArithOp::Mul => ("mul", "mul_assign"),
+                ArithOp::Div => ("div", "div_assign"),
+                ArithOp::Rem => ("rem", "rem_assign"),
+                ArithOp::BitAnd => ("bitand", "bitand_assign"),
+                ArithOp::BitOr => ("bitor", "bitor_assign"),
+                ArithOp::BitXor => ("bitxor", "bitxor_assign"),
+                ArithOp::Shl => ("shl", "shl_assign"),
+                ArithOp::Shr => ("shr", "shr_assign"),
+            };
+            if matches!(op, BinaryOp::Assign(_)) {
+                (names.1, names.1)
+            } else {
+                (names.0, names.0)
+            }
+        }
+        BinaryOp::Cmp(CmpOp::Eq) => ("eq", "eq"),
+        BinaryOp::Cmp(CmpOp::Ne) => ("eq", "ne"),
+        _ => return None,
+    })
+}
+
 fn binary_error(op: BinaryOp, lhs: &dyn std::fmt::Display, rhs: &dyn std::fmt::Display) -> String {
     let op_str = op_text(op);
     match op {

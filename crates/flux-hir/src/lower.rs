@@ -370,9 +370,11 @@ impl<'a> Ctx<'a> {
             ast::Expr::MacroExpr(_) => self.unsupported_expr(range, "macros"),
             ast::Expr::MatchExpr(_) => self.unsupported_expr(range, "`match` expressions"),
             ast::Expr::MethodCallExpr(call) => {
-                let generics = call
-                    .generic_arg_list()
-                    .map(|list| lower_generic_args(list, &mut self.diagnostics));
+                let generics = call.generic_arg_list().map(|list| {
+                    let args = lower_generic_args(list, &mut self.diagnostics);
+                    args.reject_bindings(&mut self.diagnostics);
+                    args
+                });
                 let receiver = self.lower_opt(call.receiver(), syntax);
                 let args = match call.arg_list() {
                     Some(list) => list.args().map(|e| self.lower_expr(e)).collect(),
@@ -427,6 +429,9 @@ impl<'a> Ctx<'a> {
         let path = record
             .path()
             .and_then(|p| lower_generic_path(p, &mut self.diagnostics));
+        if let Some(path) = &path {
+            path.reject_bindings(&mut self.diagnostics);
+        }
         let path_range = record.path().map_or(range, |p| p.syntax().text_range());
         let strukt = path
             .as_ref()
@@ -744,6 +749,7 @@ impl<'a> Ctx<'a> {
         else {
             return (Res::Err, None);
         };
+        path.reject_bindings(&mut self.diagnostics);
         let res = self.resolve_value(&path, range, call);
         let last = path.segments.len() - 1;
         let (item, ty) = match res {

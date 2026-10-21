@@ -1,0 +1,203 @@
+struct S { 0: i32 }
+struct V { 0: i32 }
+struct N { 0: i32 }
+struct A { 0: i32 }
+struct B { 0: i32 }
+struct C { 0: i32 }
+fn add(V, V) -> V
+    self@0: V
+    rhs@1: V
+fn sub(V, i32) -> i32
+    self@0: V
+    rhs@1: i32
+fn eq(&V, &V) -> bool
+    self@0: &V
+    other@1: &V
+fn eq(&N, &i32) -> bool
+    self@0: &N
+    other@1: &i32
+fn binary_without_impl() -> ()
+    _a@0: {error}
+    _b@1: {error}
+    _c@2: {error}
+    _d@3: {error}
+    _e@4: {error}
+    _f@5: {error}
+    _g@6: {error}
+    _h@7: {error}
+    _i@8: {error}
+    _j@9: {error}
+    _k@10: bool
+    _l@11: bool
+fn compound_without_impl(S, V) -> ()
+    s@0: S
+    v@1: V
+fn unary_without_impl() -> ()
+    _a@0: {error}
+    _b@1: {error}
+    _c@2: {error}
+fn references(&V, &V) -> ()
+    a@0: &V
+    b@1: &V
+    _c@2: {error}
+    _d@3: {error}
+fn value_and_reference(V, V) -> ()
+    a@0: V
+    b@1: V
+    _e@2: bool
+fn wrong_rhs() -> ()
+    _a@0: V
+    _b@1: i32
+    _c@2: i32
+    _d@3: bool
+fn one_direction() -> ()
+    _a@0: bool
+    _b@1: bool
+    _c@2: bool
+fn integer_on_left() -> ()
+    _a@0: {error}
+    _b@1: bool
+    _c@2: {error}
+fn output_mismatch() -> ()
+    _a@0: V
+    _b@1: i32
+    _c@2: V
+fn without_bound<T>(T, T) -> ()
+    a@0: T
+    b@1: T
+    _c@2: {error}
+fn unary_without_bound<T>(T, T) -> ()
+    x@0: T
+    y@1: T
+    _a@2: {error}
+    _b@3: {error}
+fn eq_without_bound<T>(&T, &T) -> bool
+    a@0: &T
+    b@1: &T
+fn compound_without_bound<T>(T, T) -> ()
+    a@0: T
+    b@1: T
+fn add_bound_not_add_assign<T>(T, T) -> ()
+    a@0: T
+    b@1: T
+fn output_is_rigid<T>(T, T) -> T
+    a@0: T
+    b@1: T
+fn neg_output_is_rigid<T>(T) -> T
+    x@0: T
+fn rhs_is_self<T>(T) -> T
+    a@0: T
+fn other_bound<T>(T, T) -> T
+    a@0: T
+    b@1: T
+fn projection_without_bound<T>(T) -> ()
+    x@0: T
+    _y@1: {error}
+fn get(&Self) -> <Self as Tr>::Out
+fn add(A, i32) -> A
+    self@0: A
+    rhs@1: i32
+fn add(B, B) -> B
+    self@0: B
+    rhs@1: B
+fn eq(&C, C) -> bool
+    self@0: &C
+    other@1: C
+fn mixed_integers() -> ()
+    _a@0: i32
+    _b@1: u32
+fn reference_and_value(C, &C, &i32, &bool) -> ()
+    b@0: C
+    r@1: &C
+    i@2: &i32
+    flag@3: &bool
+    _a@4: bool
+    _b@5: bool
+    _c@6: bool
+    _d@7: bool
+    _e@8: bool
+fn referents(&C, &N, &N, &S, &S, &i32) -> ()
+    r@0: &C
+    n@1: &N
+    m@2: &N
+    s@3: &S
+    t@4: &S
+    i@5: &i32
+    _a@6: bool
+    _b@7: bool
+    _c@8: bool
+fn unary_on_references(&i32, &bool) -> ()
+    x@0: &i32
+    b@1: &bool
+    _a@2: i32
+    _b@3: bool
+fn main() -> ()
+error 899..900: cannot add `S` to `S`
+error 925..926: cannot subtract `S` from `S`
+error 951..952: cannot multiply `S` by `S`
+error 977..978: cannot divide `S` by `S`
+error 1003..1004: cannot calculate the remainder of `S` divided by `S`
+error 1029..1030: no implementation for `S & S`
+error 1055..1056: no implementation for `S | S`
+error 1081..1082: no implementation for `S ^ S`
+error 1107..1109: no implementation for `S << S`
+error 1134..1136: no implementation for `S >> S`
+error 1161..1163: binary operation `==` cannot be applied to type `S`
+error 1188..1190: binary operation `!=` cannot be applied to type `S`
+error 1372..1381: binary assignment operation `+=` cannot be applied to type `S`
+error 1387..1396: binary assignment operation `-=` cannot be applied to type `S`
+error 1402..1411: binary assignment operation `*=` cannot be applied to type `S`
+error 1417..1426: binary assignment operation `/=` cannot be applied to type `S`
+error 1432..1441: binary assignment operation `%=` cannot be applied to type `S`
+error 1447..1456: binary assignment operation `&=` cannot be applied to type `S`
+error 1462..1471: binary assignment operation `|=` cannot be applied to type `S`
+error 1477..1486: binary assignment operation `^=` cannot be applied to type `S`
+error 1492..1502: binary assignment operation `<<=` cannot be applied to type `S`
+error 1508..1518: binary assignment operation `>>=` cannot be applied to type `S`
+error 1524..1533: binary assignment operation `+=` cannot be applied to type `V`
+error 1632..1637: cannot apply unary operator `-` to type `S`
+error 1652..1657: cannot apply unary operator `!` to type `S`
+error 1672..1677: cannot apply unary operator `-` to type `V`
+error 1797..1798: cannot add `&V` to `&V`
+error 1821..1822: cannot add `&V` to `&V`
+error 1955..1957: mismatched types: expected `V`, found `&V`
+error 2059..2060: mismatched types: expected `V`, found `{integer}`
+error 2082..2085: mismatched types: expected `i32`, found `u8`
+error 2107..2111: mismatched types: expected `i32`, found `V`
+error 2134..2135: mismatched types: expected `V`, found `{integer}`
+error 2231..2235: mismatched types: expected `i32`, found `N`
+error 2252..2254: can't compare `{integer}` with `N`
+error 2282..2285: mismatched types: expected `i32`, found `u8`
+error 2374..2375: cannot add `V` to `{integer}`
+error 2397..2399: can't compare `{integer}` with `V`
+error 2423..2424: cannot subtract `V` from `u8`
+error 2518..2526: mismatched types: expected `V`, found `i32`
+error 2546..2557: mismatched types: expected `i32`, found `V`
+error 2575..2587: mismatched types: expected `V`, found `bool`
+error 2715..2716: cannot add `T` to `T`
+error 2776..2778: cannot apply unary operator `-` to type `T`
+error 2793..2795: cannot apply unary operator `!` to type `T`
+error 2853..2855: binary operation `==` cannot be applied to type `&T`
+error 2912..2918: binary assignment operation `+=` cannot be applied to type `T`
+error 2993..2999: binary assignment operation `+=` cannot be applied to type `T`
+error 3054..3059: mismatched types: expected `T`, found `<T as Add<T>>::Output`
+error 3111..3113: mismatched types: expected `T`, found `<T as Neg>::Output`
+error 3173..3174: mismatched types: expected `T`, found `{integer}`
+error 3238..3239: cannot subtract `T` from `T`
+error 3309..3310: cannot add `{integer}` to `<T as Tr>::Out`
+error 3500..3503: method `add` has an incompatible type for trait
+error 3561..3575: not all trait items implemented, missing: `Output`
+error 3708..3709: method `eq` has an incompatible type for trait
+error 3847..3848: cannot add `u8` to `i32`
+error 3849..3852: mismatched types: expected `i32`, found `u8`
+error 3867..3872: cannot apply unary operator `-` to type `u32`
+error 4152..4154: can't compare `&C` with `C`
+error 4173..4175: can't compare `&C` with `C`
+error 4194..4196: can't compare `&i32` with `{integer}`
+error 4218..4220: can't compare `&bool` with `bool`
+error 4242..4244: can't compare `i32` with `&i32`
+error 4325..4327: binary operation `==` cannot be applied to type `&S`
+error 4346..4348: can't compare `N` with `N`
+error 4367..4369: can't compare `C` with `i32`
+error 4511..4513: operators on references are not supported yet
+error 4534..4536: operators on references are not supported yet
