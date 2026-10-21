@@ -5,6 +5,9 @@
 //! names. The integer types and `bool` implement them too, so that
 //! generic code can use them; the impls are written out for each type,
 //! since flux has no macros.
+//!
+//! `Drop` is here too, as in Rust: the code that runs when a value goes
+//! out of scope.
 
 /// The `+` operator: addition.
 #[lang = "add"]
@@ -154,6 +157,15 @@ pub trait Shr<Rhs = Self> {
 #[diagnostic::on_unimplemented(message = "no implementation for `{Self} >>= {Rhs}`")]
 pub trait ShrAssign<Rhs = Self> {
     fn shr_assign(&mut self, rhs: Rhs);
+}
+
+/// Code run when a value is dropped: when its binding goes out of
+/// scope, when a temporary's statement ends, or when it is overwritten.
+/// It runs before the value's fields are dropped, and may not be called
+/// directly; `drop(x)` drops `x` early.
+#[lang = "drop"]
+pub trait Drop {
+    fn drop(&mut self);
 }
 
 /// The unary `-` operator.

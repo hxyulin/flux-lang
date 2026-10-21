@@ -11,7 +11,8 @@
 use std::fmt;
 
 use flux_hir::{
-    Bound, Diagnostic, FunctionId, Generics, ImplId, ItemCounts, ItemTree, ModuleId, Owner, TraitId,
+    Bound, Diagnostic, FunctionId, Generics, ImplId, ItemCounts, ItemTree, ModuleId, Owner,
+    StructId, TraitId,
 };
 use flux_intern::{Symbol, kw};
 use flux_syntax::TextRange;
@@ -729,7 +730,7 @@ pub fn is_copy(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -
         TyKind::Tuple(elements) => elements.iter().all(|&t| is_copy(items, sigs, env, t)),
         TyKind::Ref(Mutability::Mut, _) => false,
         TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) => {
-            let Some(&copy) = items.lang_traits.get(&Symbol::intern("copy")) else {
+            let Some(&copy) = items.lang_traits.get(&flux_intern::sym::copy) else {
                 return false;
             };
             let goal = Predicate {
@@ -744,6 +745,44 @@ pub fn is_copy(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -
         }
         _ => true,
     }
+}
+
+/// The `impl Drop` block of `strukt`, if it has one.
+pub fn drop_impl(items: &ItemTree, sigs: &Signatures, strukt: StructId) -> Option<ImplId> {
+    let drop = *items.lang_traits.get(&flux_intern::sym::drop)?;
+    items.trait_impls.get(&drop)?.iter().copied().find(|&imp| {
+        matches!(sigs.impls.get(imp).map(|t| t.kind()), Some(TyKind::Adt(adt, _)) if adt.strukt == strukt)
+    })
+}
+
+/// Whether dropping a `ty` runs code, given `env`, the elaborated bounds
+/// in scope: it is, or has a part that is, a struct with a `Drop` impl,
+/// or a type parameter that is not `Copy`, which may be one.
+pub fn needs_drop(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::Tuple(elements) => elements.iter().any(|&e| needs_drop(items, sigs, env, e)),
+        TyKind::Adt(adt, args) => {
+            drop_impl(items, sigs, adt.strukt).is_some()
+                || sigs.structs[adt.strukt]
+                    .iter()
+                    .any(|f| needs_drop(items, sigs, env, f.subst(args)))
+        }
+        TyKind::Param(_) | TyKind::Alias(_) => !is_copy(items, sigs, env, ty),
+        _ => false,
+    }
+}
+
+/// Whether `function` is a destructor: `Drop::drop`, or an `impl Drop`
+/// block's `drop`, which may not be called directly.
+pub fn is_destructor(items: &ItemTree, function: FunctionId) -> bool {
+    let data = &items.functions[function];
+    let t = match data.owner {
+        Some(Owner::Trait(t)) => Some(t),
+        Some(Owner::Impl(imp)) => items.impls[imp].trait_,
+        None => None,
+    };
+    t.and_then(|t| items.traits[t].lang)
+        .is_some_and(|lang| lang == flux_intern::sym::drop)
 }
 
 /// The function a call of `instance` calls: for a trait's method with
@@ -812,8 +851,15 @@ pub fn check_impls(
     // As in rustc, a trait with conflicting impls, or `Copy` with one
     // for a type that cannot be, has its impls checked no further.
     let mut skipped = check_overlap(items, sigs, diagnostics, checked);
+    if !items
+        .lang_traits
+        .get(&flux_intern::sym::drop)
+        .is_some_and(|d| skipped.contains(d))
+    {
+        check_drop_impls(items, sigs, diagnostics, checked);
+    }
     if check_copy_impls(items, sigs, diagnostics, checked)
-        && let Some(&copy) = items.lang_traits.get(&Symbol::intern("copy"))
+        && let Some(&copy) = items.lang_traits.get(&flux_intern::sym::copy)
     {
         skipped.push(copy);
     }
@@ -1328,12 +1374,17 @@ fn check_overlap(
             else {
                 continue;
             };
+            // A type that did not resolve was reported already.
+            if b == Ty::ERROR {
+                continue;
+            }
             let earlier = impls[..i].iter().find(|&&a| {
                 let (Some(&a_ty), Some(a_ref)) = (sigs.impls.get(a), sigs.impl_traits.get(a))
                 else {
                     return false;
                 };
-                crate::overlap(a_ty, b)
+                a_ty != Ty::ERROR
+                    && crate::overlap(a_ty, b)
                     && a_ref
                         .args
                         .iter()
@@ -1376,7 +1427,7 @@ fn check_copy_impls(
     diagnostics: &mut Vec<Diagnostic>,
     checked: u32,
 ) -> bool {
-    let Some(&copy) = items.lang_traits.get(&Symbol::intern("copy")) else {
+    let Some(&copy) = items.lang_traits.get(&flux_intern::sym::copy) else {
         return false;
     };
     let mut any = false;
@@ -1400,7 +1451,113 @@ fn check_copy_impls(
                 message: "the trait `Copy` cannot be implemented for this type".into(),
             });
             any = true;
+        } else if let TyKind::Adt(adt, _) = self_ty.kind()
+            && drop_impl(items, sigs, adt.strukt).is_some()
+        {
+            diagnostics.push(Diagnostic {
+                file: imp.file,
+                range: imp.self_range,
+                message: "the trait `Copy` cannot be implemented for this type; the type has a destructor".into(),
+            });
+            any = true;
         }
     }
     any
+}
+
+/// `p`'s trait as rustc writes it, without the trailing arguments that
+/// are their defaults: `PartialEq`, not `PartialEq<T>`, for `T: PartialEq`.
+fn written_trait_ref(sigs: &Signatures, p: Predicate) -> String {
+    let defaults = sigs
+        .traits
+        .get(p.trait_ref.trait_)
+        .map_or(&[][..], |t| &t.defaults);
+    let args = p.trait_ref.args;
+    let mut len = args.len();
+    while len > 0 {
+        let before: Vec<Ty> = std::iter::once(p.self_ty)
+            .chain(args[..len - 1].iter().copied())
+            .collect();
+        match defaults.get(len - 1).copied().flatten() {
+            Some(default) if default.subst(&before) == args[len - 1] => len -= 1,
+            _ => break,
+        }
+    }
+    TraitRef {
+        args: Ty::list(&args[..len]),
+        ..p.trait_ref
+    }
+    .to_string()
+}
+
+/// Reports `Drop` impls for anything but a struct (E0120), for a struct
+/// with arguments other than distinct type parameters (E0366), or with
+/// bounds the struct does not have (E0367): a value is dropped the same
+/// way whatever its type's arguments are.
+fn check_drop_impls(
+    items: &ItemTree,
+    sigs: &Signatures,
+    diagnostics: &mut Vec<Diagnostic>,
+    checked: u32,
+) {
+    let Some(&drop) = items.lang_traits.get(&flux_intern::sym::drop) else {
+        return;
+    };
+    for &id in items.trait_impls.get(&drop).into_iter().flatten() {
+        let imp = &items.impls[id];
+        if id.index() < checked as usize {
+            continue;
+        }
+        let Some(&self_ty) = sigs.impls.get(id) else {
+            continue;
+        };
+        let mut error = |range, message: &str| {
+            diagnostics.push(Diagnostic {
+                file: imp.file,
+                range,
+                message: message.into(),
+            });
+        };
+        let TyKind::Adt(_, args) = self_ty.kind() else {
+            if self_ty != Ty::ERROR {
+                error(
+                    imp.self_range,
+                    "the `Drop` trait may only be implemented for local structs, enums, and unions",
+                );
+            }
+            continue;
+        };
+        let mut seen = Vec::new();
+        let specialized = args.iter().any(|&a| match a.kind() {
+            TyKind::Param(param) if !seen.contains(&param.index) => {
+                seen.push(param.index);
+                false
+            }
+            _ => true,
+        });
+        if specialized {
+            error(imp.def_range, "`Drop` impls cannot be specialized");
+            continue;
+        }
+        // Structs have no bounds yet, so any bound is one too many.
+        let predicates = sigs.impl_predicates.get(id).map_or(&[][..], |p| p);
+        if predicates.len() == imp.generics.predicates.len() {
+            for (written, &p) in imp.generics.predicates.iter().zip(predicates) {
+                // Bounds that hold anyway: `T: Sized`, `i32: Copy`.
+                let sized = items.traits[p.trait_ref.trait_].lang == Some(flux_intern::sym::sized);
+                let has_params =
+                    p.self_ty.has_params() || p.trait_ref.args.iter().any(|a| a.has_params());
+                if sized || !has_params && holds(items, sigs, &[], p) {
+                    continue;
+                }
+                let p = format!("{}: {}", p.self_ty, written_trait_ref(sigs, p));
+                error(
+                    written.bound.range,
+                    &format!(
+                        "`Drop` impl requires `{p}` but the struct it is implemented for does not"
+                    ),
+                );
+            }
+        }
+    }
 }

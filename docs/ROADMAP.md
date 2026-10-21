@@ -29,9 +29,10 @@ pointers, tuples and structs, with methods and references that need no
 lifetimes (parameters, temporaries and locals assigned once), generic
 functions, structs and `impl` blocks, monomorphized, traits with
 bounds, statically dispatched, associated types, overloaded operators,
-and `Copy`/`Clone`/`PartialEq`/`Eq` with `#[derive]`. In order next:
+`Copy`/`Clone`/`PartialEq`/`Eq` with `#[derive]`, and `Drop`, with
+rustc's drop order and drop flags. In order next:
 
-1. More of traits: `Drop`; associated constants; bounds on structs. Then `core` can define
+1. More of traits: associated constants; bounds on structs. Then `core` can define
    the pointer methods and `CStr` (now built into the compiler) through
    lang items and intrinsics. `for` loops over `Iterator` need `Option`,
    so they come with enums.
@@ -65,7 +66,7 @@ provides its own small core library, [`library/core`](../library/core),
 written in flux and compiled with every program, that defines the same
 names with the same meaning. So far it has the integer types' constants
 and methods, `mem::drop`, `convert::identity`, `marker::Sized`, the
-operator traits, `PartialEq`/`Eq`, `Copy` and `Clone`, and
+operator traits, `PartialEq`/`Eq`, `Copy`, `Clone` and `Drop`, and
 `Option`, `Result` and `PartialOrd` with enums. Its front end (parsing,
 item tree, names, signatures, constants' values, and bodies as they are
 reached) is done once per process and shared by every compilation in

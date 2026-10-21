@@ -12,6 +12,10 @@ fn take<T>(_1: T) -> () {
 
     bb0: {
         _0 = const ();
+        drop(_1) -> bb1;
+    }
+
+    bb1: {
         return;
     }
 }
@@ -100,7 +104,15 @@ fn generic_param<T>(_1: Pair<T>) -> () {
         _2 = move _1;
         _3 = move _1;
         _0 = const ();
+        drop(_3) -> bb1;
+    }
+
+    bb1: {
         StorageDead(_3);
+        drop(_2) -> bb2;
+    }
+
+    bb2: {
         StorageDead(_2);
         return;
     }
@@ -166,6 +178,10 @@ fn generic_deref<T>(_1: &T, _2: &Pair<Owned>) -> () {
         _4 = move (*_2);
         _0 = const ();
         StorageDead(_4);
+        drop(_3) -> bb1;
+    }
+
+    bb1: {
         StorageDead(_3);
         return;
     }

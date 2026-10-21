@@ -4,17 +4,25 @@
 //!
 //! A generic function's MIR is built and checked once, in terms of its
 //! parameters; code is generated once per instance. The instances are
-//! found from the functions that are not generic, through their calls,
-//! as rustc's collector does, so a generic function nothing calls has
-//! none.
+//! found from the functions that are not generic, through their calls
+//! and the `Drop` impls their drops run, as rustc's collector does, so a
+//! generic function nothing calls has none.
+//!
+//! A drop of a value is expanded here, once its type is known, into its
+//! *drop glue*: calls of `Drop::drop` for each part of it whose type has
+//! a `Drop` impl, the outer before the inner and fields in order.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
-use flux_hir::{Diagnostic, FunctionId, Hir};
+use flux_hir::{Diagnostic, FunctionId, Hir, ItemTree};
 pub use flux_ty::Instance;
-use flux_ty::{Signatures, Ty, TyKind, subst_list};
+use flux_ty::{Mutability, Signatures, Ty, TyKind, subst_list};
 
-use crate::{Body, Constant, FileMir, Operand, Rvalue, StatementKind, TerminatorKind};
+use crate::{
+    BasicBlockData, Body, Constant, FileMir, LocalDecl, LocalKind, Operand, Place, Rvalue,
+    Statement, StatementKind, Terminator, TerminatorKind,
+};
 
 /// rustc's `recursion_limit`: how deep a chain of instances, each
 /// found in the one before, may be.
@@ -43,39 +51,169 @@ pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instan
         let depth = depths[&caller];
         let body = &mir.bodies[caller.function];
         for data in body.blocks.values() {
-            let TerminatorKind::Call {
-                func, generic_args, ..
-            } = &data.terminator.kind
-            else {
-                continue;
+            let callees = match &data.terminator.kind {
+                TerminatorKind::Call {
+                    func, generic_args, ..
+                } => vec![Instance {
+                    function: *func,
+                    args: Ty::list(&subst_list(generic_args, caller.args)),
+                }],
+                TerminatorKind::Drop { place, .. } => {
+                    let ty = body.place_ty(place, sigs);
+                    let ty = flux_ty::traits::instance_ty(&hir.items, sigs, ty, caller.args);
+                    let mut glue = Vec::new();
+                    drop_glue(&hir.items, sigs, place.clone(), ty, &mut glue);
+                    let drop = drop_fn(&hir.items);
+                    glue.into_iter()
+                        .filter_map(|(_, ty)| {
+                            Some(Instance {
+                                function: drop?,
+                                args: Ty::list(&[ty]),
+                            })
+                        })
+                        .collect()
+                }
+                _ => continue,
             };
-            let callee = Instance {
-                function: *func,
-                args: Ty::list(&subst_list(generic_args, caller.args)),
-            };
-            let callee = flux_ty::traits::resolve_instance(&hir.items, sigs, callee);
-            if mir.bodies.get(callee.function).is_none() {
-                continue;
+            for callee in callees {
+                let callee = flux_ty::traits::resolve_instance(&hir.items, sigs, callee);
+                if mir.bodies.get(callee.function).is_none() {
+                    continue;
+                }
+                if depths.contains_key(&callee) {
+                    continue;
+                }
+                if depth + 1 > RECURSION_LIMIT {
+                    let mut d = Diagnostic::new(
+                        data.terminator.range,
+                        format!(
+                            "reached the recursion limit while instantiating `{}`",
+                            instance_name(hir, callee)
+                        ),
+                    );
+                    d.file = hir.items.functions[caller.function].loc.file;
+                    return Err(d);
+                }
+                depths.insert(callee, depth + 1);
+                instances.push(callee);
             }
-            if depths.contains_key(&callee) {
-                continue;
-            }
-            if depth + 1 > RECURSION_LIMIT {
-                let mut d = Diagnostic::new(
-                    data.terminator.range,
-                    format!(
-                        "reached the recursion limit while instantiating `{}`",
-                        instance_name(hir, callee)
-                    ),
-                );
-                d.file = hir.items.functions[caller.function].loc.file;
-                return Err(d);
-            }
-            depths.insert(callee, depth + 1);
-            instances.push(callee);
         }
     }
     Ok(instances)
+}
+
+/// The MIR of `instance`, of a function whose MIR is `body`: with its
+/// generic arguments substituted and its drops expanded.
+pub fn instance_body<'b>(
+    hir: &Hir,
+    sigs: &Signatures,
+    body: &'b Body,
+    args: &[Ty],
+) -> Cow<'b, Body> {
+    let mut body = if args.is_empty() {
+        Cow::Borrowed(body)
+    } else {
+        Cow::Owned(subst_body(hir, sigs, body, args))
+    };
+    let drops = body
+        .blocks
+        .values()
+        .any(|data| matches!(data.terminator.kind, TerminatorKind::Drop { .. }));
+    if drops {
+        expand_drops(&hir.items, sigs, body.to_mut());
+    }
+    body
+}
+
+/// `Drop::drop`.
+fn drop_fn(items: &ItemTree) -> Option<FunctionId> {
+    let drop = flux_intern::sym::drop;
+    let t = *items.lang_traits.get(&drop)?;
+    items.traits[t].function(items, drop)
+}
+
+/// The parts of a `ty` at `place` whose types have a `Drop` impl, in the
+/// order dropping it runs theirs: a struct's own, then its fields', in
+/// order.
+fn drop_glue(
+    items: &ItemTree,
+    sigs: &Signatures,
+    place: Place,
+    ty: Ty,
+    out: &mut Vec<(Place, Ty)>,
+) {
+    match ty.kind() {
+        TyKind::Adt(adt, _) => {
+            if flux_ty::traits::drop_impl(items, sigs, adt.strukt).is_some() {
+                out.push((place.clone(), ty));
+            }
+        }
+        TyKind::Tuple(_) => {}
+        _ => return,
+    }
+    for (i, &field) in sigs.fields(ty).unwrap_or_default().iter().enumerate() {
+        drop_glue(items, sigs, place.field(i as u32), field, out);
+    }
+}
+
+/// Replaces each drop in `body`, whose types are known, with its drop
+/// glue: `Drop::drop(&mut place)` for each part that has a `Drop` impl.
+pub fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
+    let Some(drop) = drop_fn(items) else {
+        return;
+    };
+    let unit = body.locals.alloc(LocalDecl {
+        ty: Ty::UNIT,
+        kind: LocalKind::Temp,
+    });
+    let blocks: Vec<_> = body.blocks.iter().map(|(b, _)| b).collect();
+    for block in blocks {
+        let range = body.blocks[block].terminator.range;
+        let TerminatorKind::Drop { place, target } = body.blocks[block].terminator.kind.clone()
+        else {
+            continue;
+        };
+        let ty = body.place_ty(&place, sigs);
+        let mut glue = Vec::new();
+        drop_glue(items, sigs, place, ty, &mut glue);
+        let mut next = target;
+        let mut first = (Vec::new(), TerminatorKind::Goto(target));
+        for (i, (place, ty)) in glue.into_iter().enumerate().rev() {
+            let pointer = body.locals.alloc(LocalDecl {
+                ty: Ty::new(TyKind::Ref(Mutability::Mut, ty)),
+                kind: LocalKind::Temp,
+            });
+            let borrow = Statement {
+                kind: StatementKind::Assign(
+                    pointer.into(),
+                    Rvalue::Ref {
+                        mutability: Mutability::Mut,
+                        place,
+                        two_phase: false,
+                    },
+                ),
+                range,
+            };
+            let call = TerminatorKind::Call {
+                func: drop,
+                generic_args: Ty::list(&[ty]),
+                args: vec![Operand::Move(pointer.into())],
+                dest: unit.into(),
+                target: Some(next),
+            };
+            if i == 0 {
+                first = (vec![borrow], call);
+            } else {
+                next = body.blocks.alloc(BasicBlockData {
+                    statements: vec![borrow],
+                    terminator: Terminator { kind: call, range },
+                });
+            }
+        }
+        let data = &mut body.blocks[block];
+        data.statements.extend(first.0);
+        data.terminator.kind = first.1;
+    }
 }
 
 /// How many generic parameters `function` has, its `impl` block's
@@ -161,7 +299,10 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
             }
             TerminatorKind::SwitchInt { discr, .. } => operand(discr),
             TerminatorKind::Assert { cond, .. } => operand(cond),
-            TerminatorKind::Goto(_) | TerminatorKind::Return | TerminatorKind::Unreachable => {}
+            TerminatorKind::Goto(_)
+            | TerminatorKind::Drop { .. }
+            | TerminatorKind::Return
+            | TerminatorKind::Unreachable => {}
         }
     }
     body

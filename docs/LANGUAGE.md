@@ -118,6 +118,23 @@ rustc's borrow checker does. `#[derive(Clone, Copy, PartialEq, Eq)]`
 implements those traits for a struct as rustc does (for a generic one,
 where its parameters implement them); other derives are not supported
 yet.
+
+Values are dropped as in rustc: a binding at the end of its block, in
+reverse order of declaration, then the function's parameters; a
+temporary at the end of its statement (a block's tail expression's
+before the block's bindings, as edition 2024 does), or at the end of the
+block when a `let` borrows it (`let r = &make();`); a value about to be
+overwritten by an assignment. Dropping a value runs its type's `Drop`
+impl, if it has one, then drops its fields in order. A value moved out
+is not dropped, one moved out on some paths only is dropped where it
+was not, and a struct with some fields moved out drops the rest. As in
+rustc, `drop` may not be called directly (E0040), fields may not be
+moved out of a struct with a `Drop` impl (E0509), a `Drop` impl must be
+for a struct, with distinct type parameters as its arguments (E0120,
+E0366), and no bounds yet (E0367, since structs cannot have bounds yet),
+`Copy` is not for types with destructors (E0184), constants and
+`const fn`s may not drop values whose `drop` runs code (E0493), and a
+temporary may not be dropped while borrowed (E0716).
 Structs and tuples cannot be passed to C yet.
 
 Generic items are checked once, in terms of their parameters, and
@@ -148,7 +165,7 @@ Operators on other types than integers and `bool` call the methods of
 integers and `bool` too, so generic code can use them; `&a == &b`
 compares `a` and `b`. There are no trait objects (`dyn Tr`) or
 `impl Trait` types, no generic associated types or associated constants
-in traits, and `PartialOrd` (so `<` on other types) and `Drop` are
+in traits, and `PartialOrd` (so `<` on other types) is
 not supported yet, nor are operators on
 references to integers (`&a + &b`, `-&a`). `Sized` is, as a bound:
 every type flux has is sized, but a trait's provided methods must say
@@ -165,8 +182,9 @@ Rust's that flux supports so far: the integer types' constants (`MIN`,
 `MAX`, `BITS`) and methods such as `abs`, `pow`, `wrapping_add`,
 `count_ones`, `rotate_left`, `min` and `max`, `core::mem::drop` (also in
 the prelude, as `drop`), `core::convert::identity`,
-`core::marker::Sized`, the operator traits of `core::ops` and
-`core::cmp::{PartialEq, Eq}` (`Sized`, `PartialEq` and `Eq` in the
+`core::marker::{Sized, Copy}`, `core::clone::Clone`, the operator
+traits of `core::ops` with `Drop`, and `core::cmp::{PartialEq, Eq}`
+(`Sized`, `Copy`, `Clone`, `Drop`, `PartialEq` and `Eq` in the
 prelude). Anything else in
 `core` is reported as not supported yet, and so is `std`.
 

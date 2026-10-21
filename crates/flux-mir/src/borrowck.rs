@@ -39,6 +39,15 @@ use crate::{
 pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
     let loans = collect_loans(body);
     let holds = holders(body, &loans);
+    // The locals holding each loan, few, for finding the live loans.
+    let mut held_by: Vec<Vec<Local>> = vec![Vec::new(); loans.len()];
+    for (local, held) in holds.iter().enumerate() {
+        for (id, &h) in held.iter().enumerate() {
+            if h {
+                held_by[id].push(Local::from_raw(local as u32));
+            }
+        }
+    }
     let live_out = liveness(body);
     let mut checker = Checker {
         body,
@@ -46,8 +55,10 @@ pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
         sigs,
         loans: &loans,
         holds: &holds,
+        held_by: &held_by,
         diagnostics: Vec::new(),
         reported_dead: vec![false; loans.len()],
+        in_aggregate: false,
     };
     for (block, data) in body.blocks.iter() {
         // The locals live after each statement, found walking backwards.
@@ -195,8 +206,11 @@ fn terminator_transfer(kind: &TerminatorKind, live: &mut [bool]) {
     for operand in kind.operands() {
         operand_uses(operand, &mut uses);
     }
-    if let TerminatorKind::Call { dest, .. } = kind {
-        place_uses(dest, &mut uses);
+    match kind {
+        TerminatorKind::Call { dest, .. } => place_uses(dest, &mut uses),
+        // Dropping a value may use the references in it.
+        TerminatorKind::Drop { place, .. } => uses.push(place.local),
+        _ => {}
     }
     for local in uses {
         live[local.index()] = true;
@@ -249,9 +263,12 @@ struct Checker<'a> {
     sigs: &'a Signatures,
     loans: &'a [(Loan, Local)],
     holds: &'a [Vec<bool>],
+    held_by: &'a [Vec<Local>],
     diagnostics: Vec<Diagnostic>,
     /// Loans already reported for outliving what they borrow.
     reported_dead: Vec<bool>,
+    /// Checking the operands of an aggregate.
+    in_aggregate: bool,
 }
 
 /// Whether one place contains the other: they are the same local and
@@ -282,11 +299,7 @@ impl Checker<'_> {
     fn live_loans(&self, live: &[bool], except: Option<usize>) -> Vec<usize> {
         (0..self.loans.len())
             .filter(|&id| Some(id) != except)
-            .filter(|&id| {
-                live.iter()
-                    .enumerate()
-                    .any(|(local, &l)| l && self.holds[local][id])
-            })
+            .filter(|&id| self.held_by[id].iter().any(|h| live[h.index()]))
             .collect()
     }
 
@@ -323,6 +336,7 @@ impl Checker<'_> {
                         self.access(place, access, &live, range);
                     }
                     _ => {
+                        self.in_aggregate = matches!(rvalue, Rvalue::Aggregate(..));
                         for operand in rvalue.operands() {
                             self.operand(operand, &live, range);
                         }
@@ -350,9 +364,22 @@ impl Checker<'_> {
     }
 
     fn terminator(&mut self, kind: &TerminatorKind, range: TextRange, live_after: &[bool]) {
+        self.in_aggregate = false;
         let live = self.live_loans(live_after, None);
         for operand in kind.operands() {
             self.operand(operand, &live, range);
+        }
+        // A temporary dropped while a reference to it is still to be
+        // used (E0716); a binding's scope ending is E0597, at its
+        // `StorageDead`.
+        if let TerminatorKind::Drop { place, .. } = kind
+            && self.body.locals[place.local].kind == LocalKind::Temp
+            && !place.has_deref()
+            && live
+                .iter()
+                .any(|&id| overlaps(place, &self.loans[id].0.place))
+        {
+            self.error(range, "temporary value dropped while borrowed".into());
         }
         let TerminatorKind::Call { args, dest, .. } = kind else {
             return;
@@ -390,6 +417,16 @@ impl Checker<'_> {
             Operand::Move(place) => {
                 if place.has_deref() {
                     self.check_move_out(place, range);
+                } else if let Some(ty) = self.drop_owner(place) {
+                    let message = format!(
+                        "cannot move out of type `{ty}`, which implements the `Drop` trait"
+                    );
+                    // Once per field `..base` moves, but once per pattern.
+                    if self.in_aggregate {
+                        self.diagnostics.push(Diagnostic::new(range, message));
+                    } else {
+                        self.error(range, message);
+                    }
                 } else {
                     self.access(place, Access::Move, live, range);
                 }
@@ -413,6 +450,10 @@ impl Checker<'_> {
             return self.error(range, message);
         }
         self.access(place, Access::Write, live, range);
+    }
+
+    fn drop_owner(&self, place: &Place) -> Option<Ty> {
+        drop_owner(self.body, self.items, self.sigs, place)
     }
 
     /// The type of the pointer the last dereference in `place` goes
@@ -533,6 +574,32 @@ impl Checker<'_> {
             return self.error(range, message);
         }
     }
+}
+
+/// The outermost struct `place` is a field of, if it has a `Drop` impl:
+/// its fields may not be moved out of (E0509), since its `drop` will
+/// see them.
+pub(crate) fn drop_owner(
+    body: &Body,
+    items: &ItemTree,
+    sigs: &Signatures,
+    place: &Place,
+) -> Option<Ty> {
+    (0..place.projection.len()).find_map(|len| {
+        let base = Place {
+            local: place.local,
+            projection: place.projection[..len].into(),
+        };
+        let ty = body.place_ty(&base, sigs);
+        match ty.kind() {
+            TyKind::Adt(adt, _)
+                if flux_ty::traits::drop_impl(items, sigs, adt.strukt).is_some() =>
+            {
+                Some(ty)
+            }
+            _ => None,
+        }
+    })
 }
 
 /// "a `&` reference" or "a `*const` pointer".

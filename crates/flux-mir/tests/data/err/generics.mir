@@ -16,6 +16,10 @@ fn Pair::into_a(_1: Pair<T>) -> T {
 
     bb0: {
         _0 = move _1.0;
+        drop(_1.1) -> bb1;
+    }
+
+    bb1: {
         return;
     }
 }
@@ -27,6 +31,10 @@ fn Pair::set_a(_1: &mut Pair<T>, _2: T) -> () {
 
     bb0: {
         _4 = move _2;
+        drop((*_1).0) -> bb1;
+    }
+
+    bb1: {
         (*_1).0 = move _4;
         _3 = const ();
         _0 = const ();
@@ -50,6 +58,10 @@ fn Pair::set_through_shared(_1: &Pair<T>, _2: T) -> () {
 
     bb0: {
         _4 = move _2;
+        drop((*_1).0) -> bb1;
+    }
+
+    bb1: {
         (*_1).0 = move _4;
         _3 = const ();
         _0 = const ();
@@ -118,6 +130,10 @@ fn take<T>(_1: T) -> () {
 
     bb0: {
         _0 = const ();
+        drop(_1) -> bb1;
+    }
+
+    bb1: {
         return;
     }
 }
@@ -163,6 +179,10 @@ fn after_let<T>(_1: T) -> T {
         _2 = move _1;
         _3 = move _2;
         _0 = move _1;
+        drop(_3) -> bb1;
+    }
+
+    bb1: {
         StorageDead(_3);
         StorageDead(_2);
         return;
@@ -205,8 +225,10 @@ fn in_while<T>(_1: T, _2: i32) -> () {
     let _9: T;
     let _10: ();
     let _11: i32;
+    let _12: bool;
 
     bb0: {
+        _12 = const true;
         _3 = const 0_i32;
         goto -> bb1;
     }
@@ -220,11 +242,12 @@ fn in_while<T>(_1: T, _2: i32) -> () {
 
     bb2: {
         StorageDead(_3);
-        return;
+        switchInt(copy _12) -> [0: bb9, otherwise: bb10];
     }
 
     bb3: {
         _9 = move _1;
+        _12 = const false;
         _8 = id::<T>(move _9) -> bb6;
     }
 
@@ -242,8 +265,25 @@ fn in_while<T>(_1: T, _2: i32) -> () {
         _3 = Add(copy _11, const 1_i32);
         _10 = const ();
         _4 = const ();
+        drop(_8) -> bb7;
+    }
+
+    bb7: {
         StorageDead(_8);
         goto -> bb5;
+    }
+
+    bb8: {
+        return;
+    }
+
+    bb9: {
+        _12 = const false;
+        goto -> bb8;
+    }
+
+    bb10: {
+        drop(_1) -> bb9;
     }
 }
 
@@ -288,6 +328,10 @@ fn struct_after_move<T>(_1: Pair<T>) -> Pair<T> {
         _2 = move _1;
         PlaceMention(_2);
         _0 = move _1;
+        drop(_2) -> bb1;
+    }
+
+    bb1: {
         StorageDead(_2);
         return;
     }
@@ -312,6 +356,10 @@ fn field_twice<T>(_1: Pair<T>) -> () {
 
     bb2: {
         _0 = const ();
+        drop(_1.1) -> bb3;
+    }
+
+    bb3: {
         return;
     }
 }
@@ -344,6 +392,10 @@ fn method_after_field<T>(_1: Pair<T>) -> T {
     }
 
     bb1: {
+        drop(_2) -> bb2;
+    }
+
+    bb2: {
         StorageDead(_2);
         return;
     }
@@ -381,6 +433,10 @@ fn nested_field<T>(_1: Pair<Pair<T>>) -> Pair<Pair<T>> {
     bb0: {
         _2 = move _1.0.1;
         _0 = move _1;
+        drop(_2) -> bb1;
+    }
+
+    bb1: {
         StorageDead(_2);
         return;
     }
@@ -543,12 +599,20 @@ fn assign_while_borrowed<T>(_1: Pair<T>, _2: T) -> () {
     bb0: {
         _3 = &_1.0;
         _5 = move _2;
+        drop(_1.0) -> bb1;
+    }
+
+    bb1: {
         _1.0 = move _5;
         _4 = const ();
         _6 = copy _3;
         _0 = const ();
         StorageDead(_6);
         StorageDead(_3);
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
         return;
     }
 }
@@ -570,6 +634,10 @@ fn two_mut<T>(_1: Pair<T>) -> () {
         StorageDead(_4);
         StorageDead(_3);
         StorageDead(_2);
+        drop(_1) -> bb1;
+    }
+
+    bb1: {
         return;
     }
 }
@@ -594,6 +662,10 @@ fn mut_method_while_borrowed<T>(_1: Pair<T>, _2: T) -> () {
         _0 = const ();
         StorageDead(_7);
         StorageDead(_3);
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
         return;
     }
 }
@@ -612,6 +684,10 @@ fn not_mut<T>(_1: Pair<T>, _2: T) -> () {
 
     bb1: {
         _0 = const ();
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
         return;
     }
 }
@@ -623,9 +699,17 @@ fn not_mut_field<T>(_1: Pair<T>, _2: T) -> () {
 
     bb0: {
         _4 = move _2;
+        drop(_1.0) -> bb1;
+    }
+
+    bb1: {
         _1.0 = move _4;
         _3 = const ();
         _0 = const ();
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
         return;
     }
 }

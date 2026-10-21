@@ -19,11 +19,12 @@ use crate::{
 /// have no diagnostics from lowering or type checking.
 pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut diagnostics = Vec::new();
-    let mut check = |body: &Body, file| {
-        let found = crate::init::check(body, &hir.items, &typed.sigs)
-            .into_iter()
-            .chain(crate::borrowck::check(body, &hir.items, &typed.sigs));
-        diagnostics.extend(found.map(|d| flux_hir::Diagnostic { file, ..d }));
+    let mut check = |body: &Body, file, is_const| {
+        diagnostics.extend(
+            check_body(hir, typed, body, is_const)
+                .into_iter()
+                .map(|d| flux_hir::Diagnostic { file, ..d }),
+        );
     };
     // Every constant, and every function of the program; `core`'s
     // functions only if something calls them.
@@ -31,7 +32,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut consts = ArenaMap::new();
     for (id, _) in hir.const_bodies() {
         let body = build_const(hir, typed, id);
-        check(&body, hir.items.consts[id].loc.file);
+        check(&body, hir.items.consts[id].loc.file, true);
         queue.extend(body.callees());
         consts.insert(id, body);
     }
@@ -47,7 +48,8 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
             continue;
         }
         let body = build(hir, typed, id);
-        check(&body, hir.items.functions[id].loc.file);
+        let data = &hir.items.functions[id];
+        check(&body, data.loc.file, data.is_const);
         for callee in body.callees() {
             queue.extend(flux_ty::call_targets(&hir.items, callee));
         }
@@ -112,13 +114,30 @@ pub fn check_clean_bodies(
             continue;
         }
         let body = build(hir, typed, id);
-        let found = crate::init::check(&body, &hir.items, &typed.sigs)
-            .into_iter()
-            .chain(crate::borrowck::check(&body, &hir.items, &typed.sigs));
         let file = data.loc.file;
-        diagnostics.extend(found.map(|d| flux_hir::Diagnostic { file, ..d }));
+        diagnostics.extend(
+            check_body(hir, typed, &body, data.is_const)
+                .into_iter()
+                .map(|d| flux_hir::Diagnostic { file, ..d }),
+        );
     }
     diagnostics
+}
+
+/// A body's initialization and borrow errors, and if it is of a
+/// constant or `const fn`, its drops that would run code.
+fn check_body(
+    hir: &Hir,
+    typed: &TypedFile,
+    body: &Body,
+    is_const: bool,
+) -> Vec<flux_hir::Diagnostic> {
+    let mut found = crate::init::check(body, &hir.items, &typed.sigs);
+    found.extend(crate::borrowck::check(body, &hir.items, &typed.sigs));
+    if is_const {
+        found.extend(crate::drops::check_const(body));
+    }
+    found
 }
 
 /// Evaluates the constants: free ones always, as rustc does, and
@@ -249,9 +268,16 @@ fn build_body(
         current: None,
         binding_locals: ArenaMap::new(),
         loops: ArenaMap::new(),
-        scopes: Vec::new(),
+        scopes: vec![Scope {
+            kind: ScopeKind::Function,
+            locals: Vec::new(),
+        }],
         c_strings: Vec::new(),
         env,
+        extended_refs: Vec::new(),
+        extend_at: None,
+        extending: false,
+        needs_drop: Default::default(),
     };
     b.locals.alloc(LocalDecl {
         ty: sig.ret,
@@ -270,6 +296,8 @@ fn build_body(
     let entry = b.new_block();
     b.current = Some(entry);
     for (&pat, &local) in body.params.iter().zip(&params) {
+        let range = b.pat_range(pat);
+        b.scopes[0].locals.push((local, range));
         match body.pats[pat] {
             Pat::Bind(binding) => {
                 let data = &body.bindings[binding];
@@ -281,13 +309,22 @@ fn build_body(
             }
             _ => {
                 b.declare_bindings(pat);
-                let range = b.pat_range(pat);
                 b.destructure(pat, &local.into(), range);
             }
         }
     }
-    b.lower_into(body.root, &Body::RETURN.into());
     let range = b.range(body.root);
+    // A constant's value keeps what it borrows, which is never dropped.
+    if let Item::Const(_) = item {
+        let mut extended = Vec::new();
+        b.extending_refs(body.root, &mut extended);
+        b.extended_refs = extended;
+        b.extend_at = Some((usize::MAX, 0));
+    }
+    b.scoped(ScopeKind::Temps, range, |b| {
+        b.lower_into(body.root, &Body::RETURN.into());
+    });
+    b.leave_scopes(0, false, range);
     b.terminate(TerminatorKind::Return, range);
 
     let blocks = b
@@ -304,14 +341,36 @@ fn build_body(
     for block in blocks {
         arena.alloc(block);
     }
-    Body {
+    let mut built = Body {
         locals: b.locals,
         blocks: arena,
         param_count: params.len(),
         c_strings: b.c_strings,
         in_core: hir.items.is_core(module),
         inherits_overflow_checks: false,
-    }
+        live_drops: Vec::new(),
+    };
+    crate::drops::elaborate(&mut built, &hir.items, &typed.sigs, &b.env);
+    built
+}
+
+/// A scope whose locals are dropped, in reverse order, when it ends.
+struct Scope {
+    kind: ScopeKind,
+    /// Each with where it was made: its binding, or its expression.
+    locals: Vec<(Local, TextRange)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScopeKind {
+    /// The parameters, which drop after everything else.
+    Function,
+    /// A block's bindings, which also die (`StorageDead`), and the
+    /// temporaries extended to live as long as them.
+    Block,
+    /// The temporaries of a statement, of a block's tail (dropped before
+    /// its bindings, as in edition 2024), or of a condition.
+    Temps,
 }
 
 #[derive(Clone)]
@@ -340,12 +399,24 @@ struct Builder<'a> {
     current: Option<BasicBlock>,
     binding_locals: ArenaMap<Binding, Local>,
     loops: ArenaMap<Expr, LoopScope>,
-    /// The bindings of each enclosing block, innermost last; they die
-    /// when it ends.
-    scopes: Vec<Vec<Local>>,
+    /// The enclosing scopes, innermost last.
+    scopes: Vec<Scope>,
     c_strings: Vec<Box<[u8]>>,
-    /// The bounds in scope, elaborated: what is `Copy`.
+    /// The bounds in scope, elaborated: what is `Copy`, and what needs
+    /// dropping.
     env: Vec<flux_ty::Predicate>,
+    /// In a `let` initializer, the borrows whose temporaries live as long
+    /// as the `let`'s bindings: `&make()` in `let r = &make();`.
+    extended_refs: Vec<ExprId>,
+    /// Where those temporaries go: a block scope, and the position of the
+    /// `let`'s bindings in it, before which they are dropped.
+    extend_at: Option<(usize, usize)>,
+    /// Lowering the place of one of those borrows: its temporary is
+    /// extended.
+    extending: bool,
+    /// Whether each type asked about needs dropping, which may take the
+    /// trait solver.
+    needs_drop: std::cell::RefCell<rustc_hash::FxHashMap<Ty, bool>>,
 }
 
 /// Whether `expr` denotes a place: a local, a field of one, or what a
@@ -403,6 +474,59 @@ impl Builder<'_> {
         })
     }
 
+    /// A temporary holding `expr`'s value, evaluated now, and dropped
+    /// where the innermost scope ends if its type needs it: after the
+    /// temporaries made while evaluating it, as rustc schedules drops
+    /// once a value exists.
+    fn temp_for(&mut self, expr: ExprId) -> Local {
+        let ty = self.expr_ty(expr);
+        let temp = self.temp(ty);
+        self.lower_into(expr, &temp.into());
+        if self.needs_drop(ty) {
+            let range = self.range(expr);
+            let scope = self.scopes.last_mut().expect("bodies have a scope");
+            scope.locals.push((temp, range));
+        }
+        temp
+    }
+
+    fn needs_drop(&self, ty: Ty) -> bool {
+        if let Some(&known) = self.needs_drop.borrow().get(&ty) {
+            return known;
+        }
+        let needs = flux_ty::traits::needs_drop(self.items, &self.typed.sigs, &self.env, ty);
+        self.needs_drop.borrow_mut().insert(ty, needs);
+        needs
+    }
+
+    /// Runs `f` in a new scope of `kind`, then ends it.
+    fn scoped<R>(
+        &mut self,
+        kind: ScopeKind,
+        range: TextRange,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.scopes.push(Scope {
+            kind,
+            locals: Vec::new(),
+        });
+        let result = f(self);
+        let depth = self.scopes.len() - 1;
+        self.leave_scopes(depth, true, range);
+        self.scopes.pop();
+        result
+    }
+
+    /// Drops `place` here.
+    fn drop_place(&mut self, place: Place, range: TextRange) {
+        if self.current.is_none() {
+            return;
+        }
+        let target = self.new_block();
+        self.terminate(TerminatorKind::Drop { place, target }, range);
+        self.current = Some(target);
+    }
+
     fn assign(&mut self, dest: &Place, rvalue: Rvalue, range: TextRange) {
         let block = self.block();
         self.blocks[block.index()].0.push(Statement {
@@ -432,29 +556,33 @@ impl Builder<'_> {
         })
     }
 
-    /// Ends the scopes of `locals`, if the code is reachable.
-    fn storage_dead(&mut self, locals: &[Local], range: TextRange) {
-        if self.current.is_none() {
-            return;
-        }
-        let block = self.block();
-        for &local in locals.iter().rev() {
-            self.blocks[block.index()].0.push(Statement {
-                kind: StatementKind::StorageDead(local),
-                range,
-            });
-        }
-    }
-
-    /// Ends the scopes inside a loop that `break` or `continue` leaves.
-    fn leave_scopes(&mut self, depth: usize, range: TextRange) {
-        let locals: Vec<Local> = self.scopes[depth..]
+    /// Leaves the scopes from `depth` in, if the code is reachable:
+    /// drops their locals, innermost first, and with `kill`, ends their
+    /// bindings' storage, at `range`.
+    fn leave_scopes(&mut self, depth: usize, kill: bool, range: TextRange) {
+        let locals: Vec<(Local, TextRange, bool)> = self.scopes[depth..]
             .iter()
             .rev()
-            .flatten()
-            .copied()
+            .flat_map(|scope| {
+                let block = scope.kind == ScopeKind::Block;
+                scope.locals.iter().rev().map(move |&(l, r)| (l, r, block))
+            })
             .collect();
-        self.storage_dead(&locals, range);
+        for (local, at, block) in locals {
+            if self.current.is_none() {
+                return;
+            }
+            if self.needs_drop(self.locals[local].ty) {
+                self.drop_place(local.into(), at);
+            }
+            if kill && block && matches!(self.locals[local].kind, LocalKind::User { .. }) {
+                let block = self.block();
+                self.blocks[block.index()].0.push(Statement {
+                    kind: StatementKind::StorageDead(local),
+                    range,
+                });
+            }
+        }
     }
 
     fn terminate(&mut self, kind: TerminatorKind, range: TextRange) {
@@ -499,8 +627,7 @@ impl Builder<'_> {
                 })
             }
             _ => {
-                let temp = self.temp(self.expr_ty(expr));
-                self.lower_into(expr, &temp.into());
+                let temp = self.temp_for(expr);
                 self.read(temp.into())
             }
         }
@@ -526,8 +653,21 @@ impl Builder<'_> {
                 operand,
             } => self.lower_place(operand).deref(),
             _ => {
-                let temp = self.temp(self.expr_ty(expr));
-                self.lower_into(expr, &temp.into());
+                let temp = match (std::mem::take(&mut self.extending), self.extend_at) {
+                    (true, Some((scope, at))) => {
+                        let ty = self.expr_ty(expr);
+                        let temp = self.temp(ty);
+                        self.lower_into(expr, &temp.into());
+                        if self.needs_drop(ty) && scope != usize::MAX {
+                            let range = self.range(expr);
+                            let at = at.min(self.scopes[scope].locals.len());
+                            self.scopes[scope].locals.insert(at, (temp, range));
+                            self.extend_at = Some((scope, at + 1));
+                        }
+                        temp
+                    }
+                    _ => self.temp_for(expr),
+                };
                 temp.into()
             }
         }
@@ -627,7 +767,9 @@ impl Builder<'_> {
                 mutable,
                 expr: inner,
             } => {
+                self.extending = self.extended_refs.contains(&expr);
                 let place = self.lower_place(*inner);
+                self.extending = false;
                 let mutability = if *mutable {
                     Mutability::Mut
                 } else {
@@ -646,23 +788,24 @@ impl Builder<'_> {
                 spread,
             } => self.lower_record(*strukt, fields, *spread, dest, range),
             Expr::Block { stmts, tail, .. } => {
-                self.scopes.push(Vec::new());
-                for stmt in stmts.iter() {
-                    self.lower_stmt(stmt);
-                }
-                match tail {
-                    Some(tail) => self.lower_into(*tail, dest),
-                    None => self.assign_unit(dest, range),
-                }
-                let scope = self.scopes.pop().unwrap_or_default();
-                self.storage_dead(&scope, range);
+                self.scoped(ScopeKind::Block, range, |b| {
+                    for stmt in stmts.iter() {
+                        b.scoped(ScopeKind::Temps, range, |b| b.lower_stmt(stmt));
+                    }
+                    match tail {
+                        Some(tail) => {
+                            b.scoped(ScopeKind::Temps, range, |b| b.lower_into(*tail, dest));
+                        }
+                        None => b.assign_unit(dest, range),
+                    }
+                });
             }
             Expr::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
-                let cond = self.lower_operand(*condition);
+                let cond = self.scoped(ScopeKind::Temps, range, |b| b.lower_operand(*condition));
                 let then_block = self.new_block();
                 let else_block = self.new_block();
                 let join = self.new_block();
@@ -716,12 +859,12 @@ impl Builder<'_> {
                     Some(value) => self.lower_into(*value, &scope.dest),
                     None => self.assign_unit(&scope.dest, range),
                 }
-                self.leave_scopes(scope.scope_depth, range);
+                self.leave_scopes(scope.scope_depth, true, range);
                 self.goto(scope.break_block, range);
             }
             Expr::Continue { target } => match target.and_then(|t| self.loops.get(t).cloned()) {
                 Some(scope) => {
-                    self.leave_scopes(scope.scope_depth, range);
+                    self.leave_scopes(scope.scope_depth, true, range);
                     self.goto(scope.continue_block, range);
                 }
                 None => self.terminate(TerminatorKind::Unreachable, range),
@@ -732,6 +875,7 @@ impl Builder<'_> {
                     Some(value) => self.lower_into(*value, &ret),
                     None => self.assign_unit(&ret, range),
                 }
+                self.leave_scopes(0, false, range);
                 self.terminate(TerminatorKind::Return, range);
             }
             Expr::Call { callee, args } => match body.exprs[*callee] {
@@ -765,6 +909,12 @@ impl Builder<'_> {
                     None => self.place_ty(&place),
                 };
                 let temp = self.temp(ty);
+                // A receiver taken by value is moved in now, so it is
+                // dropped if an argument leaves first.
+                if method.autoref.is_none() && self.needs_drop(ty) {
+                    let scope = self.scopes.last_mut().expect("bodies have a scope");
+                    scope.locals.push((temp, receiver_range));
+                }
                 let rvalue = match method.autoref {
                     Some(mutability) => Rvalue::Ref {
                         mutability,
@@ -965,42 +1115,121 @@ impl Builder<'_> {
     fn lower_stmt(&mut self, stmt: &Stmt) {
         match *stmt {
             Stmt::Let { pat, init, .. } => {
+                let scope = self
+                    .scopes
+                    .iter()
+                    .rposition(|s| s.kind != ScopeKind::Temps)
+                    .expect("bodies have a scope");
+                let at = self.scopes[scope].locals.len();
                 self.declare_bindings(pat);
                 let Some(init) = init else {
                     return;
                 };
-                match self.body.pats[pat] {
-                    Pat::Bind(binding) => {
-                        let local = self.binding_locals[binding];
-                        self.lower_into(init, &local.into());
-                    }
-                    // `let _ = place;` does not read the place.
-                    Pat::Wild if is_place(self.body, init) => {
-                        let place = self.lower_place(init);
-                        let range = self.range(init);
-                        let block = self.block();
-                        self.blocks[block.index()].0.push(Statement {
-                            kind: StatementKind::PlaceMention(place),
-                            range,
-                        });
-                    }
-                    _ => {
-                        let place = self.lower_place(init);
-                        self.destructure(pat, &place, self.range(init));
-                    }
-                }
+                let mut extended = Vec::new();
+                self.extending_refs(init, &mut extended);
+                let saved = (
+                    std::mem::replace(&mut self.extended_refs, extended),
+                    self.extend_at.replace((scope, at)),
+                );
+                self.lower_let(pat, init);
+                (self.extended_refs, self.extend_at) = saved;
             }
             Stmt::Expr { expr, .. } => {
-                self.lower_operand(expr);
+                // A value no one uses is dropped at the end of the
+                // statement.
+                if self.needs_drop(self.expr_ty(expr)) {
+                    self.temp_for(expr);
+                } else {
+                    self.lower_operand(expr);
+                }
             }
         }
     }
 
-    /// A local for each binding in `pat`.
+    /// The borrows in `expr` whose temporaries live as long as a `let`'s
+    /// bindings when `expr` is its initializer: those it evaluates to, or
+    /// to a tuple, struct or borrow of, as rustc extends them.
+    fn extending_refs(&self, expr: ExprId, out: &mut Vec<ExprId>) {
+        match &self.body.exprs[expr] {
+            Expr::Ref { expr: inner, .. } => {
+                out.push(expr);
+                self.extended_operand(*inner, out);
+            }
+            Expr::Tuple(fields) => {
+                for &field in fields.iter() {
+                    self.extending_refs(field, out);
+                }
+            }
+            Expr::Record { fields, .. } => {
+                for &(_, field) in fields.iter() {
+                    self.extending_refs(field, out);
+                }
+            }
+            Expr::Block {
+                tail: Some(tail), ..
+            } => self.extending_refs(*tail, out),
+            Expr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.extending_refs(*then_branch, out);
+                if let Some(else_branch) = else_branch {
+                    self.extending_refs(*else_branch, out);
+                }
+            }
+            Expr::Cast { expr: inner, .. } => self.extending_refs(*inner, out),
+            _ => {}
+        }
+    }
+
+    /// `let pat = init;`.
+    /// The borrows in the operand of an extended borrow, which are
+    /// extended too, through dereferences and fields: `&*&make()`,
+    /// `&(&make()).0`, but not `&{ &make() }.0`.
+    fn extended_operand(&self, expr: ExprId, out: &mut Vec<ExprId>) {
+        match &self.body.exprs[expr] {
+            Expr::Unary {
+                op: UnaryOp::Deref,
+                operand: inner,
+            }
+            | Expr::Field { expr: inner, .. } => self.extended_operand(*inner, out),
+            Expr::Ref { expr: inner, .. } => {
+                out.push(expr);
+                self.extended_operand(*inner, out);
+            }
+            _ => {}
+        }
+    }
+
+    fn lower_let(&mut self, pat: PatId, init: ExprId) {
+        match self.body.pats[pat] {
+            Pat::Bind(binding) => {
+                let local = self.binding_locals[binding];
+                self.lower_into(init, &local.into());
+            }
+            // `let _ = place;` does not read the place.
+            Pat::Wild if is_place(self.body, init) => {
+                let place = self.lower_place(init);
+                let range = self.range(init);
+                let block = self.block();
+                self.blocks[block.index()].0.push(Statement {
+                    kind: StatementKind::PlaceMention(place),
+                    range,
+                });
+            }
+            _ => {
+                let place = self.lower_place(init);
+                self.destructure(pat, &place, self.range(init));
+            }
+        }
+    }
+
+    /// A local for each binding in `pat`, in the innermost block's scope.
     fn declare_bindings(&mut self, pat: PatId) {
         let mut bindings = Vec::new();
-        self.body.pat_bindings(pat, &mut bindings);
-        for binding in bindings {
+        self.binding_pats(pat, &mut bindings);
+        for (binding, range) in bindings {
             let data = &self.body.bindings[binding];
             let ty = self
                 .types
@@ -1016,9 +1245,23 @@ impl Builder<'_> {
                 },
             });
             self.binding_locals.insert(binding, local);
-            if let Some(scope) = self.scopes.last_mut() {
-                scope.push(local);
-            }
+            let scope = self
+                .scopes
+                .iter_mut()
+                .rev()
+                .find(|s| s.kind != ScopeKind::Temps)
+                .expect("bodies have a scope");
+            scope.locals.push((local, range));
+        }
+    }
+
+    /// The bindings in `pat`, each with its pattern's range.
+    fn binding_pats(&self, pat: PatId, out: &mut Vec<(flux_hir::BindingId, TextRange)>) {
+        if let Pat::Bind(binding) = self.body.pats[pat] {
+            out.push((binding, self.pat_range(pat)));
+        }
+        for child in self.body.pats[pat].children() {
+            self.binding_pats(child, out);
         }
     }
 
@@ -1065,7 +1308,7 @@ impl Builder<'_> {
         dest: &Place,
         range: TextRange,
     ) {
-        let l = self.lower_operand(lhs);
+        let l = self.scoped(ScopeKind::Temps, range, |b| b.lower_operand(lhs));
         let rhs_block = self.new_block();
         let short_block = self.new_block();
         let join = self.new_block();
@@ -1082,7 +1325,7 @@ impl Builder<'_> {
             range,
         );
         self.current = Some(rhs_block);
-        self.lower_into(rhs, dest);
+        self.scoped(ScopeKind::Temps, range, |b| b.lower_into(rhs, dest));
         self.goto(join, range);
         self.current = Some(short_block);
         self.assign(
@@ -1106,6 +1349,17 @@ impl Builder<'_> {
             None => {
                 let value = self.lower_operand(rhs);
                 let place = self.lower_place(lhs);
+                if self.needs_drop(self.place_ty(&place)) {
+                    // A whole binding's drop is its own, wherever it is.
+                    let declared = self.scopes.iter().find_map(|scope| {
+                        let found = scope.locals.iter().find(|&&(l, _)| l == place.local);
+                        found
+                            .filter(|_| place.projection.is_empty())
+                            .map(|&(_, r)| r)
+                    });
+                    let range = declared.unwrap_or_else(|| self.range(lhs));
+                    self.drop_place(place.clone(), range);
+                }
                 self.assign(&place, Rvalue::Use(value), range);
             }
             Some(arith) => {

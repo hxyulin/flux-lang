@@ -336,7 +336,16 @@ semantics become explicit, so code generation never sees expressions:
   a method call is a plain call whose first argument is the receiver,
   dereferenced and borrowed as type checking decided. A block's
   bindings get a `StorageDead` where it ends, including where `break`
-  and `continue` leave it. Tuples and structs are built whole by an aggregate rvalue;
+  and `continue` leave it.
+- Values are dropped (a `drop` terminator) where their scope ends:
+  bindings at the end of their block, in reverse order, then
+  parameters; temporaries at the end of their statement, of a block's
+  tail expression (before the block's bindings, as in edition 2024) or
+  of a condition, unless a `let` borrows them, which moves them to its
+  block's scope; and a place before it is overwritten. `break`,
+  `continue` and `return` drop what they leave. Only types that may need
+  it are dropped: a struct with a `Drop` impl or such a field, and a
+  type parameter that is not `Copy`. Tuples and structs are built whole by an aggregate rvalue;
   a pattern like `let (a, S { b, .. }) = t;` reads each binding's part of
   `t` directly, so it moves only those parts, as in rustc.
 
@@ -388,7 +397,24 @@ E0505 and E0506. A method receiver's `&mut` is two-phase: shared until
 the call, so `s.set(s.get())` is accepted. A loan still live where its
 local's scope ends is E0597. The pass also reports `&mut` borrows of
 non-`mut` bindings and anything written or mutably borrowed behind a
-`&` (E0596, E0594), and moves out of a reference (E0507).
+`&` (E0596, E0594), and moves out of a reference (E0507) or of a field
+of a struct with a `Drop` impl (E0509), which moves nothing, so the
+value is not also "moved" for `init`. A drop reads the value, so it
+keeps the references in it live, and a temporary dropped while a
+reference to it is still to be used is E0716.
+
+[`drops`](../crates/flux-mir/src/drops.rs) then *elaborates* the drops, as
+rustc's `ElaborateDrops` does: with `init`'s analysis over the dropped
+locals, where a drop moves out of its place, and a fourth bit for
+whether a path holds a value now, each drop of a value moved out on
+every path goes; one of a value initialized on every path stays; one of
+a value moved out on some paths only is guarded by a *drop flag*, a
+`bool` set where the path is assigned and cleared where it is moved out
+of, dropped, or goes out of scope; and a struct or tuple with some fields
+moved out is dropped field by field, each the same way (a struct with a
+`Drop` impl cannot be, by E0509). In a constant or `const fn`, a drop
+that may find a value, even part of one, is E0493, as rustc checks
+before elaborating: `Drop` impls cannot run at compile time.
 
 ## Code generation
 
@@ -433,7 +459,10 @@ following calls, with each call's arguments substituted by its caller's,
 as rustc's collector does; one more than 128 calls deep is rustc's
 "reached the recursion limit" error (`f::<(T, i32)>` calling itself).
 Each instance is a copy of the function's MIR with its arguments
-substituted, compiled like any other function, and its symbol is the
+substituted and its drops expanded into *drop glue*, a call of
+`Drop::drop` with a borrow of each part of the value whose type has a
+`Drop` impl, the struct before its fields and fields in order (the
+collector follows these calls too), compiled like any other function, and its symbol is the
 function's with a hash of the arguments as the last segment, as in
 rustc's legacy mangling. A call of a trait's method stays one in MIR;
 once its types are known, `traits::resolve_instance` makes it a call of

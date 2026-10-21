@@ -132,7 +132,9 @@ impl<'a> Evaluator<'a> {
             }
             let range = data.terminator.range;
             block = match &data.terminator.kind {
-                TerminatorKind::Goto(target) => *target,
+                // What a constant drops runs no code: anything else is
+                // E0493, reported before evaluation.
+                TerminatorKind::Goto(target) | TerminatorKind::Drop { target, .. } => *target,
                 TerminatorKind::SwitchInt {
                     discr,
                     targets,
