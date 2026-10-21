@@ -1,0 +1,17 @@
+[package]
+name = "flux-intern"
+description = "Global, thread-safe string interning for the flux compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+[dependencies]
+flux-arena.workspace = true
+hashbrown = { version = "0.17", default-features = false }
+rustc-hash = "2"
+
+[lints]
+workspace = true

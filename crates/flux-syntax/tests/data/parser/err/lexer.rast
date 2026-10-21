@@ -1,0 +1,27 @@
+SOURCE_FILE@0..38
+  FN@0..38
+    FN_KW@0..2 "fn"
+    WHITESPACE@2..3 " "
+    NAME@3..4
+      IDENT@3..4 "f"
+    PARAM_LIST@4..6
+      L_PAREN@4..5 "("
+      R_PAREN@5..6 ")"
+    WHITESPACE@6..7 " "
+    BLOCK_EXPR@7..38
+      L_CURLY@7..8 "{"
+      WHITESPACE@8..13 "\n    "
+      LET_STMT@13..38
+        LET_KW@13..16 "let"
+        WHITESPACE@16..17 " "
+        IDENT_PAT@17..18
+          NAME@17..18
+            IDENT@17..18 "a"
+        WHITESPACE@18..19 " "
+        EQ@19..20 "="
+        WHITESPACE@20..21 " "
+        LITERAL@21..38
+          STRING@21..38 "\"unterminated;\n}\n"
+error 21..38: unterminated string literal
+error 38..38: expected `;`
+error 38..38: expected `}`

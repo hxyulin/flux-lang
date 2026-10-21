@@ -1,0 +1,61 @@
+SOURCE_FILE@0..144
+  FN@0..143
+    FN_KW@0..2 "fn"
+    WHITESPACE@2..3 " "
+    NAME@3..4
+      IDENT@3..4 "f"
+    PARAM_LIST@4..6
+      L_PAREN@4..5 "("
+      R_PAREN@5..6 ")"
+    WHITESPACE@6..7 " "
+    BLOCK_EXPR@7..143
+      L_CURLY@7..8 "{"
+      WHITESPACE@8..13 "\n    "
+      COMMENT@13..82 "// Like rustc, a stru ..."
+      WHITESPACE@82..87 "\n    "
+      COMMENT@87..111 "// the body of the `if`."
+      WHITESPACE@111..116 "\n    "
+      EXPR_STMT@116..138
+        IF_EXPR@116..138
+          IF_KW@116..118 "if"
+          WHITESPACE@118..119 " "
+          BIN_EXPR@119..129
+            PATH_EXPR@119..120
+              PATH@119..120
+                PATH_SEGMENT@119..120
+                  NAME_REF@119..120
+                    IDENT@119..120 "p"
+            WHITESPACE@120..121 " "
+            EQ2@121..123 "=="
+            WHITESPACE@123..124 " "
+            PATH_EXPR@124..129
+              PATH@124..129
+                PATH_SEGMENT@124..129
+                  NAME_REF@124..129
+                    IDENT@124..129 "Point"
+          WHITESPACE@129..130 " "
+          BLOCK_EXPR@130..138
+            L_CURLY@130..131 "{"
+            WHITESPACE@131..132 " "
+            EXPR_STMT@132..133
+              PATH_EXPR@132..133
+                PATH@132..133
+                  PATH_SEGMENT@132..133
+                    NAME_REF@132..133
+                      IDENT@132..133 "x"
+            ERROR@133..134
+              COLON@133..134 ":"
+            WHITESPACE@134..135 " "
+            LITERAL@135..136
+              INT_NUMBER@135..136 "1"
+            WHITESPACE@136..137 " "
+            R_CURLY@137..138 "}"
+      WHITESPACE@138..139 " "
+      BLOCK_EXPR@139..141
+        L_CURLY@139..140 "{"
+        R_CURLY@140..141 "}"
+      WHITESPACE@141..142 "\n"
+      R_CURLY@142..143 "}"
+  WHITESPACE@143..144 "\n"
+error 133..133: expected `;`
+error 133..133: expected an expression

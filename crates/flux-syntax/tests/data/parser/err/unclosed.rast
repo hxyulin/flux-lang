@@ -1,0 +1,52 @@
+SOURCE_FILE@0..55
+  FN@0..54
+    FN_KW@0..2 "fn"
+    WHITESPACE@2..3 " "
+    NAME@3..4
+      IDENT@3..4 "f"
+    PARAM_LIST@4..6
+      L_PAREN@4..5 "("
+      R_PAREN@5..6 ")"
+    WHITESPACE@6..7 " "
+    BLOCK_EXPR@7..54
+      L_CURLY@7..8 "{"
+      WHITESPACE@8..13 "\n    "
+      EXPR_STMT@13..32
+        IF_EXPR@13..32
+          IF_KW@13..15 "if"
+          WHITESPACE@15..16 " "
+          PATH_EXPR@16..17
+            PATH@16..17
+              PATH_SEGMENT@16..17
+                NAME_REF@16..17
+                  IDENT@16..17 "x"
+          WHITESPACE@17..18 " "
+          BLOCK_EXPR@18..32
+            L_CURLY@18..19 "{"
+            WHITESPACE@19..28 "\n        "
+            CALL_EXPR@28..30
+              PATH_EXPR@28..29
+                PATH@28..29
+                  PATH_SEGMENT@28..29
+                    NAME_REF@28..29
+                      IDENT@28..29 "y"
+              ARG_LIST@29..30
+                L_PAREN@29..30 "("
+            WHITESPACE@30..31 "\n"
+            R_CURLY@31..32 "}"
+      WHITESPACE@32..34 "\n\n"
+      FN@34..54
+        FN_KW@34..36 "fn"
+        WHITESPACE@36..37 " "
+        NAME@37..49
+          IDENT@37..49 "still_parsed"
+        PARAM_LIST@49..51
+          L_PAREN@49..50 "("
+          R_PAREN@50..51 ")"
+        WHITESPACE@51..52 " "
+        BLOCK_EXPR@52..54
+          L_CURLY@52..53 "{"
+          R_CURLY@53..54 "}"
+  WHITESPACE@54..55 "\n"
+error 30..30: expected `)`
+error 54..54: expected `}`
