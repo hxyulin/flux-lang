@@ -24,7 +24,11 @@ pub(crate) fn file(hir: &FileHir) -> String {
                 p.function(function);
             }
             None => {
-                let params: Vec<String> = function.params.iter().map(|p| type_ref(&p.ty)).collect();
+                let mut params: Vec<String> =
+                    function.params.iter().map(|p| type_ref(&p.ty)).collect();
+                if function.is_variadic {
+                    params.push("...".to_owned());
+                }
                 let unsafety = if function.is_unsafe { "unsafe " } else { "" };
                 let external = if function.is_extern { "extern " } else { "" };
                 writeln!(
@@ -54,6 +58,10 @@ fn type_ref(ty: &TypeRef) -> String {
             format!("({})", fields.join(", "))
         }
         TypeRef::Never => "!".to_owned(),
+        TypeRef::Ptr { mutable, pointee } => {
+            let mutability = if *mutable { "mut" } else { "const" };
+            format!("*{mutability} {}", type_ref(pointee))
+        }
         TypeRef::Error => "<error>".to_owned(),
     }
 }
@@ -123,6 +131,9 @@ impl Printer<'_> {
                 }
             }
             Expr::Literal(Literal::Bool(value)) => write!(self.out, "{value}").unwrap(),
+            Expr::Literal(Literal::CStr(bytes)) => {
+                write!(self.out, "c\"{}\"", bytes.escape_ascii()).unwrap();
+            }
             Expr::Path(Res::Local(binding)) => {
                 let name = self.body.bindings[*binding].name;
                 write!(self.out, "{name}@{}", binding.index()).unwrap();
@@ -235,6 +246,16 @@ impl Printer<'_> {
             Expr::Call { callee, args } => {
                 self.expr(*callee);
                 self.out.push('(');
+                self.exprs(args);
+                self.out.push(')');
+            }
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                self.expr(*receiver);
+                write!(self.out, ".{method}(").unwrap();
                 self.exprs(args);
                 self.out.push(')');
             }

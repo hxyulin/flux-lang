@@ -14,7 +14,8 @@ same under both.
 ## Status
 
 flux compiles its first programs: functions over integers and `bool`,
-with locals, loops, recursion and calls to C through `unsafe extern "C"`,
+with locals, loops, recursion, C strings, and calls to C through
+`unsafe extern "C"` (including `printf`),
 down to native arm64 macOS executables through keel. Programs in
 [`tests/run`](tests/run) are built by both rustc and flux and must behave
 identically. Everything else in Rust is on the [roadmap](docs/ROADMAP.md):

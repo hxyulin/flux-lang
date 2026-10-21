@@ -48,6 +48,14 @@ fn body_text(out: &mut String, hir: &FileHir, name: &str, body: &Body) {
         }
         out.push('\n');
     }
+    for (i, bytes) in body.c_strings.iter().enumerate() {
+        writeln!(
+            out,
+            "    const c_str{i}: &CStr = c\"{}\";",
+            bytes.escape_ascii()
+        )
+        .unwrap();
+    }
     for (block, data) in body.blocks.iter() {
         writeln!(out, "\n    bb{}: {{", block.index()).unwrap();
         for statement in &data.statements {
@@ -162,9 +170,10 @@ fn constant_text(constant: Constant) -> String {
             } else {
                 bits.to_string()
             };
-            format!("{value}_{}", Ty::Int(ty))
+            format!("{value}_{}", Ty::int(ty))
         }
         Constant::Bool(value) => value.to_string(),
         Constant::Unit => "()".to_owned(),
+        Constant::CStr(index) => format!("c_str{index}"),
     }
 }

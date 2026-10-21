@@ -18,6 +18,7 @@
 
 mod body;
 mod item_tree;
+mod literal;
 mod lower;
 mod pretty;
 

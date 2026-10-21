@@ -6,11 +6,11 @@ use flux_hir::{FileHir, FunctionId};
 use flux_mir::{
     BinOp, Body, Constant, FileMir, Local, Operand, Rvalue, StatementKind, TerminatorKind, UnOp,
 };
-use flux_ty::{FnSig, IntTy, Ty, TypedFile};
+use flux_ty::{FnSig, IntTy, Ty, TyKind, TypedFile};
 use keel_frontend::{FunctionBuilder, Variable};
 use keel_ir::{
-    AbiParam, ArgExt, Block, BlockCall, FuncDecl, FuncRef, Function, FunctionAttrs, IntCC, Module,
-    Signature, Type, Value,
+    AbiParam, ArgExt, Block, BlockCall, DataInit, DataItem, DataObject, FuncDecl, FuncRef,
+    Function, FunctionAttrs, IntCC, Module, Signature, Type, Value,
 };
 
 /// The keel module for a type-checked file and its MIR. `crate_name`
@@ -37,18 +37,22 @@ pub fn lower_module(hir: &FileHir, typed: &TypedFile, mir: &FileMir, crate_name:
             module.decls.push(FuncDecl {
                 attrs: attrs(&typed.sigs[id]),
                 name: symbols[&id].clone(),
-                sig: signature(&typed.sigs[id]),
+                sig: signature(&typed.sigs[id], function.is_variadic),
             });
         }
     }
     let mut ctx = Ctx {
+        hir,
         typed,
         symbols: &symbols,
         uses_abort: false,
+        strings: HashMap::new(),
+        data: Vec::new(),
     };
     for (id, body) in mir.bodies.iter() {
         module.functions.push(ctx.function(id, body));
     }
+    module.data = ctx.data;
     if ctx.uses_abort && !declared_abort {
         module.decls.push(FuncDecl {
             attrs: FunctionAttrs {
@@ -81,10 +85,12 @@ fn mangle(crate_name: &str, name: &str) -> String {
 
 /// The keel type of a value of `ty`; `None` for types without a value.
 fn keel_type(ty: Ty) -> Option<Type> {
-    match ty {
-        Ty::Int(int) => Some(int_type(int)),
-        Ty::Bool => Some(Type::I8),
-        Ty::Unit | Ty::Never | Ty::Infer(_) | Ty::Error => None,
+    match ty.kind() {
+        TyKind::Int(int) => Some(int_type(int)),
+        TyKind::Bool => Some(Type::I8),
+        // `&CStr` is a thin pointer here: flux needs only `as_ptr`.
+        TyKind::RawPtr(..) | TyKind::Ref(..) => Some(Type::Ptr),
+        TyKind::Unit | TyKind::Never | TyKind::CStr | TyKind::Infer(_) | TyKind::Error => None,
     }
 }
 
@@ -98,11 +104,9 @@ fn int_type(int: IntTy) -> Type {
     }
 }
 
+/// The width of an integer or `bool` value.
 fn bits(ty: Ty) -> u32 {
-    match ty {
-        Ty::Int(int) => int.bits(),
-        _ => 8,
-    }
+    ty.as_int().map_or(8, IntTy::bits)
 }
 
 /// How a value of `ty` crosses a call: narrow integers are extended by
@@ -110,24 +114,26 @@ fn bits(ty: Ty) -> u32 {
 fn abi_param(ty: Ty) -> Option<AbiParam> {
     let mut param = AbiParam::new(keel_type(ty)?);
     if matches!(param.ty, Type::I8 | Type::I16) {
-        param.ext = match ty {
-            Ty::Int(int) if int.is_signed() => ArgExt::Sext,
-            _ => ArgExt::Uext,
+        param.ext = if ty.is_signed_int() {
+            ArgExt::Sext
+        } else {
+            ArgExt::Uext
         };
     }
     Some(param)
 }
 
-fn signature(sig: &FnSig) -> Signature {
+fn signature(sig: &FnSig, variadic: bool) -> Signature {
     let mut signature = Signature::new(&[], &[]);
     signature.params = sig.params.iter().filter_map(|&ty| abi_param(ty)).collect();
     signature.returns = abi_param(sig.ret).into_iter().collect();
+    signature.variadic = variadic;
     signature
 }
 
 fn attrs(sig: &FnSig) -> FunctionAttrs {
     FunctionAttrs {
-        noreturn: sig.ret == Ty::Never,
+        noreturn: sig.ret == Ty::NEVER,
         // Flux has no unwinding: a panic aborts.
         nounwind: true,
         ..FunctionAttrs::default()
@@ -145,9 +151,9 @@ fn entry_point(rust_main: &str, sig: &FnSig) -> Function {
     b.switch_to_block(entry);
     b.append_block_param(entry, Type::I32);
     b.append_block_param(entry, Type::Ptr);
-    let callee = b.import_function(rust_main, signature(sig));
+    let callee = b.import_function(rust_main, signature(sig, false));
     b.ins().call(callee, &[]);
-    if sig.ret == Ty::Never {
+    if sig.ret == Ty::NEVER {
         b.ins().trap();
     } else {
         let zero = b.ins().iconst(Type::I32, 0);
@@ -159,15 +165,19 @@ fn entry_point(rust_main: &str, sig: &FnSig) -> Function {
 }
 
 struct Ctx<'a> {
+    hir: &'a FileHir,
     typed: &'a TypedFile,
     symbols: &'a HashMap<FunctionId, String>,
     uses_abort: bool,
+    /// The data object holding each distinct C string, by its bytes.
+    strings: HashMap<Box<[u8]>, String>,
+    data: Vec<DataObject>,
 }
 
 impl Ctx<'_> {
     fn function(&mut self, id: FunctionId, body: &Body) -> Function {
         let sig = &self.typed.sigs[id];
-        let mut function = Function::new(self.symbols[&id].clone(), signature(sig));
+        let mut function = Function::new(self.symbols[&id].clone(), signature(sig, false));
         function.attrs = attrs(sig);
         let lower = Lower {
             ctx: self,
@@ -180,6 +190,29 @@ impl Ctx<'_> {
         };
         lower.body();
         function
+    }
+
+    /// The name of the read-only data object holding `bytes` and a
+    /// terminating NUL, shared by identical strings.
+    fn c_string(&mut self, bytes: &[u8]) -> String {
+        if let Some(name) = self.strings.get(bytes) {
+            return name.clone();
+        }
+        let name = format!("__flux_str{}", self.data.len());
+        let mut contents = bytes.to_vec();
+        contents.push(0);
+        self.data.push(DataObject {
+            name: name.clone(),
+            thread_local: false,
+            local: true,
+            init: Some(DataInit {
+                constant: true,
+                align: 1,
+                items: vec![DataItem::Bytes(contents)],
+            }),
+        });
+        self.strings.insert(bytes.into(), name.clone());
+        name
     }
 }
 
@@ -250,6 +283,11 @@ impl Lower<'_, '_, '_> {
                 Some(self.b.ins().iconst(Type::I8, i64::from(*value)))
             }
             Operand::Const(Constant::Unit) => None,
+            Operand::Const(Constant::CStr(index)) => {
+                let name = self.ctx.c_string(&self.body.c_strings[*index as usize]);
+                let data = self.b.import_data(&name);
+                Some(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)))
+            }
         }
     }
 
@@ -281,13 +319,13 @@ impl Lower<'_, '_, '_> {
             Rvalue::UnaryOp(op, operand) => {
                 let ty = self.body.operand_ty(operand);
                 let value = self.operand(operand)?;
-                Some(match (op, ty) {
-                    (UnOp::Neg, _) => self.b.ins().ineg(value),
-                    (UnOp::Not, Ty::Bool) => {
+                Some(match op {
+                    UnOp::Neg => self.b.ins().ineg(value),
+                    UnOp::Not if ty == Ty::BOOL => {
                         let one = self.b.ins().iconst(Type::I8, 1);
                         self.b.ins().xor(value, one)
                     }
-                    (UnOp::Not, _) => self.b.ins().bnot(value),
+                    UnOp::Not => self.b.ins().bnot(value),
                 })
             }
             Rvalue::BinaryOp(op, l, r) => self.binary(*op, l, r),
@@ -300,7 +338,7 @@ impl Lower<'_, '_, '_> {
                     value
                 } else if to_bits < from_bits {
                     self.b.ins().trunc(to_ty, value)
-                } else if matches!(from, Ty::Int(int) if int.is_signed()) {
+                } else if from.is_signed_int() {
                     self.b.ins().sext(to_ty, value)
                 } else {
                     self.b.ins().uext(to_ty, value)
@@ -311,8 +349,8 @@ impl Lower<'_, '_, '_> {
 
     fn binary(&mut self, op: BinOp, l: &Operand, r: &Operand) -> Option<Value> {
         let ty = self.body.operand_ty(l);
-        let signed = matches!(ty, Ty::Int(int) if int.is_signed());
-        if ty == Ty::Unit {
+        let signed = ty.is_signed_int();
+        if ty == Ty::UNIT {
             // `() == ()`: the only value of `()` equals itself.
             let equal = matches!(op, BinOp::Eq | BinOp::Le | BinOp::Ge);
             return Some(self.b.ins().iconst(Type::I8, i64::from(equal)));
@@ -449,7 +487,8 @@ impl Lower<'_, '_, '_> {
         if let Some(&callee) = self.callees.get(&func) {
             return callee;
         }
-        let sig = signature(&self.ctx.typed.sigs[func]);
+        let variadic = self.ctx.hir.items.functions[func].is_variadic;
+        let sig = signature(&self.ctx.typed.sigs[func], variadic);
         let callee = self.b.import_function(&self.ctx.symbols[&func], sig);
         self.callees.insert(func, callee);
         callee

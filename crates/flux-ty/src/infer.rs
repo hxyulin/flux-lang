@@ -8,9 +8,10 @@ use flux_hir::{
     Function, FunctionId, ItemTree, Literal, LogicOp, LoopSource, Pat, PatId, Res, Stmt, TypeRefId,
     UnaryOp,
 };
+use flux_intern::Symbol;
 use flux_syntax::TextRange;
 
-use crate::ty::{InferVar, IntTy, Ty};
+use crate::ty::{InferVar, IntTy, Mutability, Ty, TyKind};
 use crate::{FnSig, function_name, resolve_or_report};
 
 /// The types of one body.
@@ -48,12 +49,23 @@ pub fn infer_body(
         diagnostics: Vec::new(),
     };
     for (i, &pat) in body.params.iter().enumerate() {
-        let ty = sig.params.get(i).copied().unwrap_or(Ty::Error);
+        let ty = sig.params.get(i).copied().unwrap_or(Ty::ERROR);
         ctx.bind_pat(pat, ty, false);
     }
     let ty = ctx.infer_expr(body.root);
     ctx.coerce(ty, sig.ret, body.root);
     ctx.finish()
+}
+
+/// The type of `c"..."`: `&'static CStr`.
+pub fn c_str_ref() -> Ty {
+    Ty::new(TyKind::Ref(Mutability::Not, Ty::new(TyKind::CStr)))
+}
+
+/// What `CStr::as_ptr` returns: `*const c_char`, which is `*const i8` on
+/// both targets flux supports.
+pub fn c_char_ptr() -> Ty {
+    Ty::raw_ptr(Mutability::Not, Ty::int(IntTy::I8))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -104,6 +116,11 @@ enum Deferred {
         from: Ty,
         to: Ty,
     },
+    /// An argument passed through a variadic function's `...`.
+    VariadicArg {
+        expr: ExprId,
+        ty: Ty,
+    },
 }
 
 struct Ctx<'a> {
@@ -147,7 +164,7 @@ impl Ctx<'_> {
             },
             origin,
         ));
-        Ty::Infer(var)
+        Ty::infer(var)
     }
 
     fn root(&mut self, var: InferVar) -> InferVar {
@@ -161,45 +178,34 @@ impl Ctx<'_> {
         }
     }
 
-    /// `ty` with known variables replaced, one level deep (types have no
-    /// structure yet, so that is all of it).
+    fn unknown(&self, var: InferVar) -> (bool, bool) {
+        match self.vars[var.0 as usize].0 {
+            VarValue::Unknown { int, diverging } => (int, diverging),
+            _ => unreachable!("roots of unresolved variables are unknown"),
+        }
+    }
+
+    /// `ty` with a known variable at the top replaced by its value.
     fn shallow(&mut self, ty: Ty) -> Ty {
-        let Ty::Infer(var) = ty else {
+        let TyKind::Infer(var) = ty.kind() else {
             return ty;
         };
         let root = self.root(var);
         match self.vars[root.0 as usize].0 {
-            VarValue::Known(ty) => ty,
-            _ => Ty::Infer(root),
+            VarValue::Known(ty) => self.shallow(ty),
+            _ => Ty::infer(root),
         }
     }
 
     fn unify(&mut self, a: Ty, b: Ty) -> bool {
         let (a, b) = (self.shallow(a), self.shallow(b));
-        match (a, b) {
-            _ if a == b => true,
-            (Ty::Error, _) | (_, Ty::Error) => true,
-            (Ty::Infer(x), Ty::Infer(y)) => {
-                let (
-                    VarValue::Unknown {
-                        int: xi,
-                        diverging: xd,
-                    },
-                    _,
-                ) = self.vars[x.0 as usize]
-                else {
-                    unreachable!("roots are unknown")
-                };
-                let (
-                    VarValue::Unknown {
-                        int: yi,
-                        diverging: yd,
-                    },
-                    _,
-                ) = self.vars[y.0 as usize]
-                else {
-                    unreachable!("roots are unknown")
-                };
+        if a == b {
+            return true;
+        }
+        match (a.kind(), b.kind()) {
+            (TyKind::Error, _) | (_, TyKind::Error) => true,
+            (TyKind::Infer(x), TyKind::Infer(y)) => {
+                let ((xi, xd), (yi, yd)) = (self.unknown(x), self.unknown(y));
                 self.vars[x.0 as usize].0 = VarValue::Link(y);
                 self.vars[y.0 as usize].0 = VarValue::Unknown {
                     int: xi || yi,
@@ -207,27 +213,29 @@ impl Ctx<'_> {
                 };
                 true
             }
-            (Ty::Infer(var), ty) | (ty, Ty::Infer(var)) => {
-                let VarValue::Unknown { int, .. } = self.vars[var.0 as usize].0 else {
-                    unreachable!("roots are unknown")
-                };
-                if int && !matches!(ty, Ty::Int(_)) {
-                    return false;
-                }
-                self.vars[var.0 as usize].0 = VarValue::Known(ty);
-                true
-            }
+            (TyKind::Infer(var), _) => self.bind_var(var, b),
+            (_, TyKind::Infer(var)) => self.bind_var(var, a),
+            (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y))
+            | (TyKind::Ref(m, x), TyKind::Ref(n, y)) => m == n && self.unify(x, y),
             _ => false,
         }
+    }
+
+    fn bind_var(&mut self, var: InferVar, ty: Ty) -> bool {
+        let (int, _) = self.unknown(var);
+        if int && ty.as_int().is_none() {
+            return false;
+        }
+        self.vars[var.0 as usize].0 = VarValue::Known(ty);
+        true
     }
 
     /// Checks that a value of type `actual` (from `expr`) can be used where
     /// `expected` is: `!` coerces to anything, other types must unify.
     fn coerce(&mut self, actual: Ty, expected: Ty, expr: ExprId) {
-        if self.shallow(actual) == Ty::Never {
-            if let Ty::Infer(var) = self.shallow(expected)
-                && let VarValue::Unknown { int, .. } = self.vars[var.0 as usize].0
-            {
+        if self.shallow(actual) == Ty::NEVER {
+            if let TyKind::Infer(var) = self.shallow(expected).kind() {
+                let (int, _) = self.unknown(var);
                 self.vars[var.0 as usize].0 = VarValue::Unknown {
                     int,
                     diverging: true,
@@ -256,14 +264,24 @@ impl Ctx<'_> {
         }
     }
 
-    /// A type for messages: `{integer}` for an integer variable.
+    /// A type for messages: known variables replaced, `{integer}` for an
+    /// integer variable and `_` for any other.
     fn describe(&mut self, ty: Ty) -> String {
-        match self.shallow(ty) {
-            Ty::Infer(var) => match self.vars[var.0 as usize].0 {
-                VarValue::Unknown { int: true, .. } => "{integer}".to_owned(),
+        let ty = self.shallow(ty);
+        match ty.kind() {
+            TyKind::Infer(var) => match self.unknown(var) {
+                (true, _) => "{integer}".to_owned(),
                 _ => "_".to_owned(),
             },
-            ty => ty.to_string(),
+            TyKind::RawPtr(m, pointee) => {
+                let m = if m == Mutability::Mut { "mut" } else { "const" };
+                format!("*{m} {}", self.describe(pointee))
+            }
+            TyKind::Ref(m, pointee) => {
+                let m = if m == Mutability::Mut { "mut " } else { "" };
+                format!("&{m}{}", self.describe(pointee))
+            }
+            _ => ty.to_string(),
         }
     }
 
@@ -292,15 +310,16 @@ impl Ctx<'_> {
     fn infer_expr_inner(&mut self, id: ExprId) -> Ty {
         let body = self.body;
         match &body.exprs[id] {
-            Expr::Missing => Ty::Error,
-            Expr::Literal(Literal::Bool(_)) => Ty::Bool,
+            Expr::Missing => Ty::ERROR,
+            Expr::Literal(Literal::Bool(_)) => Ty::BOOL,
+            Expr::Literal(Literal::CStr(_)) => c_str_ref(),
             Expr::Literal(Literal::Int { value, suffix }) => {
                 self.deferred.push(Deferred::IntLiteral {
                     expr: id,
                     value: *value,
                 });
                 match suffix.and_then(IntTy::from_name) {
-                    Some(int) => Ty::Int(int),
+                    Some(int) => Ty::int(int),
                     None => self.new_var(true, self.range(id)),
                 }
             }
@@ -308,21 +327,21 @@ impl Ctx<'_> {
                 .binding_types
                 .get(*binding)
                 .copied()
-                .unwrap_or(Ty::Error),
+                .unwrap_or(Ty::ERROR),
             Expr::Path(Res::Function(_)) => {
                 self.error(self.range(id), "functions as values are not supported yet");
-                Ty::Error
+                Ty::ERROR
             }
-            Expr::Path(Res::Err) => Ty::Error,
+            Expr::Path(Res::Err) => Ty::ERROR,
             Expr::Tuple(fields) => {
                 for &field in fields.iter() {
                     self.infer_expr(field);
                 }
                 if fields.is_empty() {
-                    Ty::Unit
+                    Ty::UNIT
                 } else {
                     self.error(self.range(id), "tuples are not supported yet");
-                    Ty::Error
+                    Ty::ERROR
                 }
             }
             Expr::Block {
@@ -341,12 +360,12 @@ impl Ctx<'_> {
                 else_branch,
             } => {
                 let cond = self.infer_expr(*condition);
-                self.coerce(cond, Ty::Bool, *condition);
+                self.coerce(cond, Ty::BOOL, *condition);
                 let then_ty = self.infer_expr(*then_branch);
                 match else_branch {
                     None => {
-                        self.coerce(then_ty, Ty::Unit, *then_branch);
-                        Ty::Unit
+                        self.coerce(then_ty, Ty::UNIT, *then_branch);
+                        Ty::UNIT
                     }
                     Some(else_branch) => {
                         let else_ty = self.infer_expr(*else_branch);
@@ -359,7 +378,7 @@ impl Ctx<'_> {
                 source,
             } => {
                 let ty = match source {
-                    LoopSource::While => Ty::Unit,
+                    LoopSource::While => Ty::UNIT,
                     LoopSource::Loop => self.new_var(false, self.range(id)),
                 };
                 self.loops.insert(
@@ -371,13 +390,13 @@ impl Ctx<'_> {
                     },
                 );
                 let body_ty = self.infer_expr(*loop_body);
-                self.coerce(body_ty, Ty::Unit, *loop_body);
+                self.coerce(body_ty, Ty::UNIT, *loop_body);
                 let state = self.loops.remove(id).expect("inserted above");
                 match source {
-                    LoopSource::While => Ty::Unit,
+                    LoopSource::While => Ty::UNIT,
                     // A `loop` that nothing breaks out of never finishes.
                     LoopSource::Loop if state.broken => ty,
-                    LoopSource::Loop => Ty::Never,
+                    LoopSource::Loop => Ty::NEVER,
                 }
             }
             Expr::Break { value, target } => {
@@ -387,29 +406,34 @@ impl Ctx<'_> {
                     if state.source == LoopSource::While && value.is_some() {
                         self.error(self.range(id), "`break` with value from a `while` loop");
                     } else {
-                        self.coerce(value_ty.unwrap_or(Ty::Unit), state.ty, value.unwrap_or(id));
+                        self.coerce(value_ty.unwrap_or(Ty::UNIT), state.ty, value.unwrap_or(id));
                     }
                     if let Some(state) = self.loops.get_mut(target) {
                         state.broken = true;
                     }
                 }
-                Ty::Never
+                Ty::NEVER
             }
-            Expr::Continue { .. } => Ty::Never,
+            Expr::Continue { .. } => Ty::NEVER,
             Expr::Return { value } => {
                 let ty = match value {
                     Some(value) => self.infer_expr(*value),
-                    None => Ty::Unit,
+                    None => Ty::UNIT,
                 };
                 self.coerce(ty, self.ret, value.unwrap_or(id));
-                Ty::Never
+                Ty::NEVER
             }
             Expr::Call { callee, args } => self.infer_call(id, *callee, args),
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => self.infer_method_call(id, *receiver, *method, args),
             Expr::Unary { op, operand } => {
                 let ty = self.infer_expr(*operand);
                 if *op == UnaryOp::Deref {
                     self.error(self.range(id), "dereferencing is not supported yet");
-                    return Ty::Error;
+                    return Ty::ERROR;
                 }
                 self.deferred.push(Deferred::Unary {
                     expr: id,
@@ -428,7 +452,7 @@ impl Ctx<'_> {
                     body.exprs[*expr],
                     Expr::Literal(Literal::Int { suffix: None, .. })
                 );
-                if bare_literal && matches!(to, Ty::Int(_)) {
+                if bare_literal && to.as_int().is_some() {
                     self.unify(from, to);
                 }
                 self.deferred.push(Deferred::Cast { expr: id, from, to });
@@ -447,12 +471,12 @@ impl Ctx<'_> {
                         (Some(declared), Some(init)) => {
                             let ty = self.infer_expr(init);
                             self.coerce(ty, declared, init);
-                            diverges |= self.shallow(ty) == Ty::Never;
+                            diverges |= self.shallow(ty) == Ty::NEVER;
                             declared
                         }
                         (None, Some(init)) => {
                             let ty = self.infer_expr(init);
-                            diverges |= self.shallow(ty) == Ty::Never;
+                            diverges |= self.shallow(ty) == Ty::NEVER;
                             ty
                         }
                         (Some(declared), None) => declared,
@@ -470,34 +494,39 @@ impl Ctx<'_> {
                     let ty = self.infer_expr(expr);
                     // A block-like statement without `;` must be `()`.
                     if !has_semicolon {
-                        self.coerce(ty, Ty::Unit, expr);
+                        self.coerce(ty, Ty::UNIT, expr);
                     }
-                    diverges |= self.shallow(ty) == Ty::Never;
+                    diverges |= self.shallow(ty) == Ty::NEVER;
                 }
             }
         }
         match tail {
             Some(tail) => self.infer_expr(tail),
-            None if diverges => Ty::Never,
-            None => Ty::Unit,
+            None if diverges => Ty::NEVER,
+            None => Ty::UNIT,
         }
     }
 
     /// The type of an `if` with both branches: the branches' common type,
     /// where a `!` branch takes the other's type.
     fn join(&mut self, then_ty: Ty, else_ty: Ty, expr: ExprId) -> Ty {
-        match (self.shallow(then_ty), self.shallow(else_ty)) {
-            (Ty::Never, _) => else_ty,
-            (_, Ty::Never) => then_ty,
-            _ if self.unify(then_ty, else_ty) => then_ty,
-            _ => {
-                let (a, b) = (self.describe(then_ty), self.describe(else_ty));
-                self.error(
-                    self.range(expr),
-                    format!("`if` and `else` have incompatible types: `{a}` and `{b}`"),
-                );
-                Ty::Error
-            }
+        if self.shallow(then_ty) == Ty::NEVER {
+            return else_ty;
+        }
+        if self.shallow(else_ty) == Ty::NEVER || self.unify(then_ty, else_ty) {
+            return then_ty;
+        }
+        let (a, b) = (self.describe(then_ty), self.describe(else_ty));
+        self.error(
+            self.range(expr),
+            format!("`if` and `else` have incompatible types: `{a}` and `{b}`"),
+        );
+        Ty::ERROR
+    }
+
+    fn infer_args(&mut self, args: &[ExprId]) {
+        for &arg in args {
+            self.infer_expr(arg);
         }
     }
 
@@ -505,10 +534,8 @@ impl Ctx<'_> {
         let function = match self.body.exprs[callee] {
             Expr::Path(Res::Function(function)) => function,
             Expr::Path(Res::Err) | Expr::Missing => {
-                for &arg in args {
-                    self.infer_expr(arg);
-                }
-                return Ty::Error;
+                self.infer_args(args);
+                return Ty::ERROR;
             }
             _ => {
                 let ty = self.infer_expr(callee);
@@ -517,22 +544,27 @@ impl Ctx<'_> {
                     self.range(callee),
                     format!("expected function, found `{ty}`"),
                 );
-                for &arg in args {
-                    self.infer_expr(arg);
-                }
-                return Ty::Error;
+                self.infer_args(args);
+                return Ty::ERROR;
             }
         };
         let sig = &self.sigs[function];
+        let data = &self.items.functions[function];
         let name = function_name(self.items, function);
-        if args.len() != sig.params.len() {
-            let (want, got) = (sig.params.len(), args.len());
+        let (want, got) = (sig.params.len(), args.len());
+        let arity_ok = if data.is_variadic {
+            got >= want
+        } else {
+            got == want
+        };
+        if !arity_ok {
+            let at_least = if data.is_variadic { "at least " } else { "" };
             let plural = |n: usize| if n == 1 { "argument" } else { "arguments" };
             let verb = if got == 1 { "was" } else { "were" };
             self.error(
                 self.range(id),
                 format!(
-                    "`{name}` takes {want} {} but {got} {} {verb} supplied",
+                    "`{name}` takes {at_least}{want} {} but {got} {} {verb} supplied",
                     plural(want),
                     plural(got)
                 ),
@@ -540,11 +572,15 @@ impl Ctx<'_> {
         }
         for (i, &arg) in args.iter().enumerate() {
             let ty = self.infer_expr(arg);
-            if let Some(&param) = sig.params.get(i) {
-                self.coerce(ty, param, arg);
+            match sig.params.get(i) {
+                Some(&param) => self.coerce(ty, param, arg),
+                None if data.is_variadic => {
+                    self.deferred.push(Deferred::VariadicArg { expr: arg, ty });
+                }
+                None => {}
             }
         }
-        if self.items.functions[function].is_unsafe && self.unsafe_depth == 0 {
+        if data.is_unsafe && self.unsafe_depth == 0 {
             self.error(
                 self.range(id),
                 format!("call to unsafe function `{name}` requires an `unsafe` block"),
@@ -553,21 +589,59 @@ impl Ctx<'_> {
         sig.ret
     }
 
+    /// Only `CStr::as_ptr` exists so far, until flux has `impl` blocks and
+    /// its own core library.
+    fn infer_method_call(
+        &mut self,
+        id: ExprId,
+        receiver: ExprId,
+        method: Symbol,
+        args: &[ExprId],
+    ) -> Ty {
+        let receiver_ty = self.infer_expr(receiver);
+        self.infer_args(args);
+        let receiver_ty = self.shallow(receiver_ty);
+        if receiver_ty == Ty::ERROR {
+            return Ty::ERROR;
+        }
+        if receiver_ty == c_str_ref() && method.as_str() == "as_ptr" {
+            if !args.is_empty() {
+                let got = args.len();
+                let verb = if got == 1 {
+                    "argument was"
+                } else {
+                    "arguments were"
+                };
+                self.error(
+                    self.range(id),
+                    format!("`as_ptr` takes 0 arguments but {got} {verb} supplied"),
+                );
+            }
+            return c_char_ptr();
+        }
+        let ty = self.describe(receiver_ty);
+        self.error(
+            self.range(id),
+            format!("the method `{method}` on `{ty}` is not supported yet"),
+        );
+        Ty::ERROR
+    }
+
     fn infer_binary(&mut self, id: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) -> Ty {
         match op {
             BinaryOp::Logic(_) => {
                 for operand in [lhs, rhs] {
                     let ty = self.infer_expr(operand);
-                    self.coerce(ty, Ty::Bool, operand);
+                    self.coerce(ty, Ty::BOOL, operand);
                 }
-                Ty::Bool
+                Ty::BOOL
             }
             BinaryOp::Cmp(_) => {
                 let ty = self.infer_expr(lhs);
                 let rhs_ty = self.infer_expr(rhs);
                 self.coerce(rhs_ty, ty, rhs);
                 self.deferred.push(Deferred::Binary { expr: id, op, ty });
-                Ty::Bool
+                Ty::BOOL
             }
             BinaryOp::Arith(arith) => self.infer_arith(id, op, arith, lhs, rhs),
             BinaryOp::Assign(arith) => {
@@ -582,7 +656,7 @@ impl Ctx<'_> {
                         self.infer_arith(id, op, arith, lhs, rhs);
                     }
                 }
-                Ty::Unit
+                Ty::UNIT
             }
         }
     }
@@ -657,28 +731,33 @@ impl Ctx<'_> {
         }
     }
 
-    /// `ty` with every variable replaced: integer variables default to
-    /// `i32`, diverging ones to `!`, and any other unknown variable is
-    /// reported once and becomes an error.
+    /// `ty` with every variable replaced, at any depth: integer variables
+    /// default to `i32`, diverging ones to `!`, and any other unknown
+    /// variable is reported once and becomes an error.
     fn resolve(&mut self, ty: Ty, reported: &mut HashSet<InferVar>) -> Ty {
-        let Ty::Infer(var) = self.shallow(ty) else {
-            return self.shallow(ty);
-        };
-        let (value, origin) = self.vars[var.0 as usize];
-        let ty = match value {
-            VarValue::Unknown { int: true, .. } => Ty::Int(IntTy::I32),
-            VarValue::Unknown {
-                diverging: true, ..
-            } => Ty::Never,
-            _ => {
-                if reported.insert(var) {
-                    self.error(origin, "type annotations needed");
-                }
-                Ty::Error
+        let ty = self.shallow(ty);
+        match ty.kind() {
+            TyKind::Infer(var) => {
+                let (value, origin) = self.vars[var.0 as usize];
+                let ty = match value {
+                    VarValue::Unknown { int: true, .. } => Ty::int(IntTy::I32),
+                    VarValue::Unknown {
+                        diverging: true, ..
+                    } => Ty::NEVER,
+                    _ => {
+                        if reported.insert(var) {
+                            self.error(origin, "type annotations needed");
+                        }
+                        Ty::ERROR
+                    }
+                };
+                self.vars[var.0 as usize].0 = VarValue::Known(ty);
+                ty
             }
-        };
-        self.vars[var.0 as usize].0 = VarValue::Known(ty);
-        ty
+            TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, self.resolve(pointee, reported)),
+            TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, self.resolve(pointee, reported))),
+            _ => ty,
+        }
     }
 
     fn run_deferred(&mut self, reported: &mut HashSet<InferVar>) {
@@ -698,7 +777,7 @@ impl Ctx<'_> {
         for deferred in std::mem::take(&mut self.deferred) {
             match deferred {
                 Deferred::IntLiteral { expr, value } => {
-                    let Some(&Ty::Int(int)) = self.expr_types.get(expr) else {
+                    let Some(int) = self.expr_types.get(expr).and_then(|ty| ty.as_int()) else {
                         continue;
                     };
                     let max = int.max();
@@ -716,10 +795,10 @@ impl Ctx<'_> {
                 }
                 Deferred::Unary { expr, op, ty } => {
                     let ty = self.resolve(ty, reported);
-                    let ok = match (op, ty) {
-                        (_, Ty::Error | Ty::Never) => true,
-                        (UnaryOp::Neg, Ty::Int(int)) => int.is_signed(),
-                        (UnaryOp::Not, Ty::Int(_) | Ty::Bool) => true,
+                    let ok = match (op, ty.kind()) {
+                        (_, TyKind::Error | TyKind::Never) => true,
+                        (UnaryOp::Neg, TyKind::Int(int)) => int.is_signed(),
+                        (UnaryOp::Not, TyKind::Int(_) | TyKind::Bool) => true,
                         _ => false,
                     };
                     if !ok {
@@ -732,13 +811,13 @@ impl Ctx<'_> {
                 }
                 Deferred::Binary { expr, op, ty } => {
                     let ty = self.resolve(ty, reported);
-                    let ok = match (op, ty) {
-                        (_, Ty::Error | Ty::Never) => true,
-                        (BinaryOp::Cmp(_), Ty::Int(_) | Ty::Bool | Ty::Unit) => true,
-                        (BinaryOp::Arith(op) | BinaryOp::Assign(Some(op)), Ty::Bool) => {
+                    let ok = match (op, ty.kind()) {
+                        (_, TyKind::Error | TyKind::Never) => true,
+                        (BinaryOp::Cmp(_), TyKind::Int(_) | TyKind::Bool | TyKind::Unit) => true,
+                        (BinaryOp::Arith(op) | BinaryOp::Assign(Some(op)), TyKind::Bool) => {
                             matches!(op, ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor)
                         }
-                        (_, Ty::Int(_)) => true,
+                        (_, TyKind::Int(_)) => true,
                         _ => false,
                     };
                     if !ok {
@@ -753,7 +832,7 @@ impl Ctx<'_> {
                 }
                 Deferred::ShiftAmount { expr, ty } => {
                     let ty = self.resolve(ty, reported);
-                    if !matches!(ty, Ty::Int(_) | Ty::Error | Ty::Never) {
+                    if !matches!(ty.kind(), TyKind::Int(_) | TyKind::Error | TyKind::Never) {
                         self.error(
                             self.range(expr),
                             format!("cannot shift by a value of type `{ty}`"),
@@ -762,18 +841,56 @@ impl Ctx<'_> {
                 }
                 Deferred::Cast { expr, from, to } => {
                     let from = self.resolve(from, reported);
-                    let ok = match (from, to) {
-                        (Ty::Error | Ty::Never, _) | (_, Ty::Error) => true,
-                        (Ty::Int(_) | Ty::Bool, Ty::Int(_)) => true,
+                    let ok = match (from.kind(), to.kind()) {
+                        (TyKind::Error | TyKind::Never, _) | (_, TyKind::Error) => true,
+                        (TyKind::Int(_) | TyKind::Bool, TyKind::Int(_)) => true,
                         _ => from == to,
                     };
                     if !ok {
-                        let message = if to == Ty::Bool && matches!(from, Ty::Int(_)) {
+                        let message = if from.is_pointer() || to.is_pointer() {
+                            "casts of pointers are not supported yet".to_owned()
+                        } else if to == Ty::BOOL && from.as_int().is_some() {
                             format!("cannot cast `{from}` as `bool`")
                         } else {
                             format!("non-primitive cast: `{from}` as `{to}`")
                         };
                         self.error(self.range(expr), message);
+                    }
+                }
+                Deferred::VariadicArg { expr, ty } => {
+                    let ty = self.resolve(ty, reported);
+                    // C promotes narrower arguments to `int`, and rustc makes
+                    // the caller write that conversion.
+                    let cast_to = match ty.kind() {
+                        TyKind::Int(int) if int.bits() < 32 => {
+                            Some(if int.is_signed() { "c_int" } else { "c_uint" })
+                        }
+                        TyKind::Bool => Some("c_int"),
+                        TyKind::Int(int) if int.bits() == 128 => {
+                            self.error(
+                                self.range(expr),
+                                format!("passing `{ty}` to a variadic function is not supported"),
+                            );
+                            None
+                        }
+                        _ => None,
+                    };
+                    let ok = matches!(
+                        ty.kind(),
+                        TyKind::Int(_) | TyKind::RawPtr(..) | TyKind::Error | TyKind::Never
+                    );
+                    if let Some(cast_to) = cast_to {
+                        self.error(
+                            self.range(expr),
+                            format!(
+                                "can't pass `{ty}` to variadic function; cast it to `{cast_to}`"
+                            ),
+                        );
+                    } else if !ok {
+                        self.error(
+                            self.range(expr),
+                            format!("can't pass `{ty}` to variadic function"),
+                        );
                     }
                 }
             }

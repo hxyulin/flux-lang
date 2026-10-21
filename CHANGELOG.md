@@ -24,6 +24,10 @@
 - Add `flux-codegen`: MIR to keel IR, native objects and signed arm64
   macOS executables, all in-process through keel. `flux build` and
   `flux run` compile programs, and `tests/run` checks them against rustc.
+- Support C strings (`c"..."`, `cr"..."`) with `CStr::as_ptr`, raw pointer
+  types, and calls to C-variadic functions such as `printf`, with
+  rustc's rules for variadic arguments.
+- Intern types: `Ty` is a 4-byte handle, so types can contain types.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 

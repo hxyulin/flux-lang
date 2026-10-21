@@ -29,6 +29,8 @@ pub struct Function {
     pub is_unsafe: bool,
     /// Declared in an `extern` block, so defined elsewhere (in C).
     pub is_extern: bool,
+    /// Takes more arguments after `params`, like C's `printf(fmt, ...)`.
+    pub is_variadic: bool,
     pub has_body: bool,
     /// The `FN` node, for lowering its body.
     pub node: NodeId,
@@ -52,6 +54,11 @@ pub enum TypeRef {
     Tuple(Box<[TypeRef]>),
     /// `!`
     Never,
+    /// `*const T` or `*mut T`.
+    Ptr {
+        mutable: bool,
+        pointee: Box<TypeRef>,
+    },
     /// Unsupported or malformed; already reported.
     Error,
 }
@@ -124,14 +131,28 @@ impl ItemTree {
             unsupported(diagnostics, abi.syntax().text_range(), "`extern` functions");
         }
         let mut params = Vec::new();
+        let mut is_variadic = false;
         if let Some(list) = f.param_list() {
             if let Some(param) = list.self_param() {
                 unsupported(diagnostics, param.syntax().text_range(), "methods");
             }
-            for param in list.params() {
+            let count = list.params().count();
+            for (i, param) in list.params().enumerate() {
                 check_attrs(param.attrs(), diagnostics);
                 if let Some(dots) = param.dot3_token() {
-                    unsupported(diagnostics, dots.text_range(), "variadic functions");
+                    let message = if !in_extern_block {
+                        Some("`...` is not supported for non-extern functions")
+                    } else if i + 1 != count {
+                        Some("`...` must be the last argument of a C-variadic function")
+                    } else {
+                        None
+                    };
+                    match message {
+                        Some(message) => {
+                            diagnostics.push(Diagnostic::new(dots.text_range(), message))
+                        }
+                        None => is_variadic = true,
+                    }
                     continue;
                 }
                 params.push(Param {
@@ -169,6 +190,7 @@ impl ItemTree {
             ret_range,
             is_unsafe: in_extern_block || f.unsafe_token().is_some(),
             is_extern: in_extern_block,
+            is_variadic,
             has_body: has_body && !in_extern_block,
             node: f.syntax().id(),
             name_range: name.syntax().text_range(),
@@ -302,7 +324,13 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
         ast::Type::ImplTraitType(_) => "`impl Trait` types",
         ast::Type::InferType(_) => "inferred types (`_`)",
         ast::Type::MacroType(_) => "macros",
-        ast::Type::PtrType(_) => "raw pointer types",
+        ast::Type::PtrType(ptr) => {
+            let pointee = lower_type(ptr.ty(), diagnostics);
+            return TypeRef::Ptr {
+                mutable: ptr.mut_token().is_some(),
+                pointee: Box::new(pointee),
+            };
+        }
         ast::Type::RefType(_) => "reference types",
         ast::Type::SliceType(_) => "slice types",
     };

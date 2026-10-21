@@ -45,6 +45,7 @@ pub fn build(hir: &FileHir, typed: &TypedFile, function: FunctionId) -> Body {
         current: None,
         binding_locals: ArenaMap::new(),
         loops: ArenaMap::new(),
+        c_strings: Vec::new(),
     };
     b.locals.alloc(LocalDecl {
         ty: sig.ret,
@@ -89,6 +90,7 @@ pub fn build(hir: &FileHir, typed: &TypedFile, function: FunctionId) -> Body {
         locals: b.locals,
         blocks: arena,
         param_count: params.len(),
+        c_strings: b.c_strings,
     }
 }
 
@@ -114,6 +116,7 @@ struct Builder<'a> {
     current: Option<BasicBlock>,
     binding_locals: ArenaMap<Binding, Local>,
     loops: ArenaMap<Expr, LoopScope>,
+    c_strings: Vec<Box<[u8]>>,
 }
 
 impl Builder<'_> {
@@ -126,7 +129,7 @@ impl Builder<'_> {
             .expr_types
             .get(expr)
             .copied()
-            .unwrap_or(Ty::Error)
+            .unwrap_or(Ty::ERROR)
     }
 
     fn new_block(&mut self) -> BasicBlock {
@@ -178,7 +181,7 @@ impl Builder<'_> {
     /// into a new temporary.
     fn lower_operand(&mut self, expr: ExprId) -> Operand {
         match &self.body.exprs[expr] {
-            Expr::Literal(literal) => Operand::Const(self.constant(*literal, expr)),
+            Expr::Literal(literal) => Operand::Const(self.constant(literal, expr)),
             Expr::Tuple(fields) if fields.is_empty() => Operand::Const(Constant::Unit),
             _ => {
                 let temp = self.temp(self.expr_ty(expr));
@@ -188,10 +191,14 @@ impl Builder<'_> {
         }
     }
 
-    fn constant(&self, literal: Literal, expr: ExprId) -> Constant {
-        match (literal, self.expr_ty(expr)) {
-            (Literal::Int { value, .. }, Ty::Int(ty)) => Constant::int(value as i128, ty),
-            (Literal::Bool(value), _) => Constant::Bool(value),
+    fn constant(&mut self, literal: &Literal, expr: ExprId) -> Constant {
+        match (literal, self.expr_ty(expr).as_int()) {
+            (Literal::Int { value, .. }, Some(ty)) => Constant::int(*value as i128, ty),
+            (Literal::Bool(value), _) => Constant::Bool(*value),
+            (Literal::CStr(bytes), _) => {
+                self.c_strings.push(bytes.clone());
+                Constant::CStr(self.c_strings.len() as u32 - 1)
+            }
             _ => Constant::Unit,
         }
     }
@@ -310,7 +317,7 @@ impl Builder<'_> {
                     return;
                 };
                 let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
-                let returns = self.typed.sigs[func].ret != Ty::Never;
+                let returns = self.typed.sigs[func].ret != Ty::NEVER;
                 let target = returns.then(|| self.new_block());
                 self.terminate(
                     TerminatorKind::Call {
@@ -322,6 +329,15 @@ impl Builder<'_> {
                     range,
                 );
                 self.current = target;
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                // Only `CStr::as_ptr` type-checks: the reference is the
+                // pointer.
+                let receiver = self.lower_operand(*receiver);
+                for &arg in args.iter() {
+                    self.lower_operand(arg);
+                }
+                self.assign(dest, Rvalue::Use(receiver), range);
             }
             Expr::Unary { op, operand } => {
                 let operand = self.lower_operand(*operand);
@@ -400,7 +416,7 @@ impl Builder<'_> {
             .binding_types
             .get(binding)
             .copied()
-            .unwrap_or(Ty::Error);
+            .unwrap_or(Ty::ERROR);
         let local = self.locals.alloc(LocalDecl {
             ty,
             kind: LocalKind::User {
@@ -488,7 +504,7 @@ impl Builder<'_> {
             ArithOp::BitOr => BinOp::BitOr,
             ArithOp::BitAnd => BinOp::BitAnd,
         };
-        if let (BinOp::Div | BinOp::Rem, Ty::Int(int)) = (op, ty) {
+        if let (BinOp::Div | BinOp::Rem, Some(int)) = (op, ty.as_int()) {
             self.check_division(op, &l, &r, int, range);
         }
         Rvalue::BinaryOp(op, l, r)
@@ -522,7 +538,7 @@ impl Builder<'_> {
         };
         let minus_one = Constant::int(-1, int);
         if divisor.is_none() || divisor == Some(0) {
-            let is_zero = self.temp(Ty::Bool);
+            let is_zero = self.temp(Ty::BOOL);
             let zero = Operand::Const(Constant::int(0, int));
             self.assign(is_zero, Rvalue::BinaryOp(BinOp::Eq, r.clone(), zero), range);
             self.assert(Operand::Copy(is_zero), false, zero_msg, range);
@@ -537,16 +553,16 @@ impl Builder<'_> {
             } else {
                 -(1i128 << (int.bits() - 1))
             };
-            let is_minus_one = self.temp(Ty::Bool);
+            let is_minus_one = self.temp(Ty::BOOL);
             self.assign(
                 is_minus_one,
                 Rvalue::BinaryOp(BinOp::Eq, r.clone(), Operand::Const(minus_one)),
                 range,
             );
-            let is_min = self.temp(Ty::Bool);
+            let is_min = self.temp(Ty::BOOL);
             let min = Operand::Const(Constant::int(min, int));
             self.assign(is_min, Rvalue::BinaryOp(BinOp::Eq, l.clone(), min), range);
-            let overflows = self.temp(Ty::Bool);
+            let overflows = self.temp(Ty::BOOL);
             self.assign(
                 overflows,
                 Rvalue::BinaryOp(

@@ -10,6 +10,7 @@ use crate::body::{
     Stmt,
 };
 use crate::item_tree::{check_attr, check_attrs, lower_type, unsupported};
+use crate::literal::{parse_int, unescape_c_str};
 use crate::{Diagnostic, FunctionId, ItemTree};
 
 /// A lowered body with its source map and diagnostics.
@@ -201,7 +202,24 @@ impl Ctx<'_> {
             ast::Expr::LetExpr(_) => self.unsupported_expr(range, "`let` conditions"),
             ast::Expr::MacroExpr(_) => self.unsupported_expr(range, "macros"),
             ast::Expr::MatchExpr(_) => self.unsupported_expr(range, "`match` expressions"),
-            ast::Expr::MethodCallExpr(_) => self.unsupported_expr(range, "method calls"),
+            ast::Expr::MethodCallExpr(call) => {
+                if let Some(args) = call.generic_arg_list() {
+                    self.unsupported(args.syntax().text_range(), "generic arguments");
+                }
+                let receiver = self.lower_opt(call.receiver(), syntax);
+                let args = match call.arg_list() {
+                    Some(list) => list.args().map(|e| self.lower_expr(e)).collect(),
+                    None => Box::default(),
+                };
+                match call.name_ref() {
+                    Some(name) => Expr::MethodCall {
+                        receiver,
+                        method: Symbol::intern(name.text()),
+                        args,
+                    },
+                    None => Expr::Missing,
+                }
+            }
             ast::Expr::RangeExpr(_) => self.unsupported_expr(range, "ranges"),
             ast::Expr::RecordExpr(_) => self.unsupported_expr(range, "struct expressions"),
             ast::Expr::RefExpr(_) => self.unsupported_expr(range, "references"),
@@ -400,8 +418,15 @@ impl Ctx<'_> {
             Some(LiteralKind::Float) => self.unsupported_expr(range, "floating-point numbers"),
             Some(LiteralKind::Char) => self.unsupported_expr(range, "`char` literals"),
             Some(LiteralKind::Byte) => self.unsupported_expr(range, "byte literals"),
-            Some(LiteralKind::String | LiteralKind::ByteString | LiteralKind::CString) => {
-                self.unsupported_expr(range, "string literals")
+            Some(LiteralKind::CString) => match unescape_c_str(token.text()) {
+                Ok(bytes) => Expr::Literal(Literal::CStr(bytes.into())),
+                Err(message) => {
+                    self.error(range, message);
+                    Expr::Missing
+                }
+            },
+            Some(LiteralKind::String | LiteralKind::ByteString) => {
+                self.unsupported_expr(range, "string literals other than `c\"...\"`")
             }
             None => Expr::Missing,
         }
@@ -455,69 +480,5 @@ impl Ctx<'_> {
             }
         };
         self.alloc_pat(hir, range)
-    }
-}
-
-/// Parses an integer literal: `1_000`, `0xff_u8`, `0b1010`.
-fn parse_int(text: &str) -> Result<Literal, String> {
-    let (radix, rest) = match text.get(..2) {
-        Some("0x") => (16, &text[2..]),
-        Some("0o") => (8, &text[2..]),
-        Some("0b") => (2, &text[2..]),
-        _ => (10, text),
-    };
-    let digits_end = rest
-        .find(|c: char| !(c.is_digit(radix) || c == '_'))
-        .unwrap_or(rest.len());
-    let (digits, suffix) = rest.split_at(digits_end);
-    let suffix = match suffix {
-        "" => None,
-        "f32" | "f64" if radix == 10 => {
-            return Err("floating-point numbers are not supported yet".to_owned());
-        }
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
-        | "isize" => Some(Symbol::intern(suffix)),
-        _ => return Err(format!("invalid suffix `{suffix}` for number literal")),
-    };
-    let mut value: u128 = 0;
-    let mut any_digit = false;
-    for c in digits.chars().filter(|&c| c != '_') {
-        let digit = c.to_digit(radix).expect("digits were checked") as u128;
-        value = value
-            .checked_mul(radix as u128)
-            .and_then(|v| v.checked_add(digit))
-            .ok_or("integer literal is too large")?;
-        any_digit = true;
-    }
-    if !any_digit {
-        return Err("no valid digits found for number".to_owned());
-    }
-    Ok(Literal::Int { value, suffix })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn integer_literals() {
-        let int = |text| match parse_int(text) {
-            Ok(Literal::Int { value, suffix }) => Ok((value, suffix.map(Symbol::as_str))),
-            Ok(other) => panic!("{other:?}"),
-            Err(message) => Err(message),
-        };
-        assert_eq!(int("0"), Ok((0, None)));
-        assert_eq!(int("1_000"), Ok((1000, None)));
-        assert_eq!(int("0xff_u8"), Ok((255, Some("u8"))));
-        assert_eq!(int("0b1010i64"), Ok((10, Some("i64"))));
-        assert_eq!(int("0o17"), Ok((15, None)));
-        assert_eq!(
-            int("340282366920938463463374607431768211455"),
-            Ok((u128::MAX, None))
-        );
-        assert!(int("340282366920938463463374607431768211456").is_err());
-        assert!(int("1u7").is_err());
-        assert!(int("0x").is_err());
-        assert!(int("1f32").is_err());
     }
 }

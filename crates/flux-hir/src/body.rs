@@ -72,6 +72,12 @@ pub enum Expr {
         callee: ExprId,
         args: Box<[ExprId]>,
     },
+    /// `receiver.method(args)`; resolved during type checking.
+    MethodCall {
+        receiver: ExprId,
+        method: Symbol,
+        args: Box<[ExprId]>,
+    },
     Unary {
         op: UnaryOp,
         operand: ExprId,
@@ -97,7 +103,7 @@ pub enum LoopSource {
     While,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal {
     /// An integer, with its suffix (`u8` in `1u8`) if any.
     Int {
@@ -105,6 +111,8 @@ pub enum Literal {
         suffix: Option<Symbol>,
     },
     Bool(bool),
+    /// `c"..."`: the bytes, escapes decoded, without the terminating NUL.
+    CStr(Box<[u8]>),
 }
 
 /// What a name refers to.

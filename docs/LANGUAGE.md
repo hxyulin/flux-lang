@@ -52,12 +52,16 @@ Everything above parses, but only this part compiles so far; the rest is
 reported as "not supported yet":
 
 - **Items:** functions without generics, `where` clauses or `self`, and
-  `unsafe extern "C"` blocks of function declarations.
-- **Types:** single-segment paths (`i32`, `bool`), tuples, `!`.
-- **Expressions:** integer and boolean literals, local and function
-  names, tuples, blocks (including `unsafe`), `if`/`else`, `loop`,
-  `while`, unlabeled `break` (with a value) and `continue`, `return`,
-  calls, unary and binary operators, assignments, `as` casts.
+  `unsafe extern "C"` blocks of function declarations, including
+  C-variadic ones (`fn printf(format: *const i8, ...) -> i32;`).
+- **Types:** single-segment paths (`i32`, `bool`), tuples, `!`, and raw
+  pointers (`*const T`, `*mut T`).
+- **Expressions:** integer, boolean and C string (`c"..."`, `cr"..."`)
+  literals, local and function names, tuples, blocks (including
+  `unsafe`), `if`/`else`, `loop`, `while`, unlabeled `break` (with a
+  value) and `continue`, `return`, calls, unary and binary operators,
+  assignments, `as` casts between integers, and one method:
+  `CStr::as_ptr`.
 - **Patterns:** `x`, `mut x`, `_`.
 - **Attributes:** only `allow`, `warn`, `deny`, `expect`, `inline`,
   `cold`, `must_use` and `doc`, which are ignored.
@@ -66,7 +70,11 @@ Type checking follows rustc for this subset: the integer types, `bool`,
 `()` and `!`; integer literals default to `i32`; no implicit
 conversions; operators need operands of the same type, except shifts;
 `as` converts between integers and from `bool`. `isize` and `usize` are
-64 bits.
+64 bits. `c"..."` is a `&'static CStr`, and `.as_ptr()` gives the
+`*const c_char` (`*const i8` on both targets) that C functions take. As
+in rustc, arguments after a variadic function's `...` must be at least
+32 bits wide or pointers: `u8`, `i16` and `bool` need a cast to
+`c_int`/`c_uint` first.
 
 At run time flux matches rustc with `-C overflow-checks=off -C
 panic=abort`: arithmetic wraps, shift amounts are masked to the type's

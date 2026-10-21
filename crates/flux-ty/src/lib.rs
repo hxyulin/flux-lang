@@ -26,8 +26,8 @@ use flux_hir::{Diagnostic, FileHir, Function, FunctionId, ItemTree, TypeRef};
 use flux_intern::{Symbol, sym};
 use flux_syntax::TextRange;
 
-pub use infer::{InferenceResult, infer_body};
-pub use ty::{InferVar, IntTy, Ty};
+pub use infer::{InferenceResult, c_char_ptr, c_str_ref, infer_body};
+pub use ty::{InferVar, IntTy, Mutability, Ty, TyKind};
 
 /// A function's resolved signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,25 +39,33 @@ pub struct FnSig {
 /// Resolves a type as written. Only primitive types exist so far.
 pub fn resolve_type(ty: &TypeRef) -> Result<Ty, String> {
     match ty {
-        TypeRef::Path(name) if *name == sym::bool => Ok(Ty::Bool),
+        TypeRef::Path(name) if *name == sym::bool => Ok(Ty::BOOL),
         TypeRef::Path(name) => match IntTy::from_name(*name) {
-            Some(int) => Ok(Ty::Int(int)),
+            Some(int) => Ok(Ty::int(int)),
             None if [sym::char, sym::str, sym::f32, sym::f64].contains(name) => {
                 Err(format!("`{name}` is not supported yet"))
             }
             None => Err(format!("cannot find type `{name}` in this scope")),
         },
-        TypeRef::Tuple(fields) if fields.is_empty() => Ok(Ty::Unit),
+        TypeRef::Tuple(fields) if fields.is_empty() => Ok(Ty::UNIT),
         TypeRef::Tuple(_) => Err("tuples are not supported yet".to_owned()),
-        TypeRef::Never => Ok(Ty::Never),
-        TypeRef::Error => Ok(Ty::Error),
+        TypeRef::Never => Ok(Ty::NEVER),
+        TypeRef::Ptr { mutable, pointee } => {
+            let mutability = if *mutable {
+                Mutability::Mut
+            } else {
+                Mutability::Not
+            };
+            Ok(Ty::raw_ptr(mutability, resolve_type(pointee)?))
+        }
+        TypeRef::Error => Ok(Ty::ERROR),
     }
 }
 
 fn resolve_or_report(ty: &TypeRef, range: TextRange, diagnostics: &mut Vec<Diagnostic>) -> Ty {
     resolve_type(ty).unwrap_or_else(|message| {
         diagnostics.push(Diagnostic { range, message });
-        Ty::Error
+        Ty::ERROR
     })
 }
 
@@ -94,7 +102,7 @@ pub fn check_main(items: &ItemTree, sigs: &ArenaMap<Function, FnSig>) -> Option<
         "`main` function is not allowed to be `unsafe`".to_owned()
     } else if !sig.params.is_empty() {
         "`main` function cannot take parameters".to_owned()
-    } else if !matches!(sig.ret, Ty::Unit | Ty::Never | Ty::Error) {
+    } else if ![Ty::UNIT, Ty::NEVER, Ty::ERROR].contains(&sig.ret) {
         format!("`main` has invalid return type `{}`", sig.ret)
     } else {
         return None;
@@ -153,7 +161,7 @@ impl TypedFile {
                         .binding_types
                         .get(binding)
                         .copied()
-                        .unwrap_or(Ty::Error);
+                        .unwrap_or(Ty::ERROR);
                     writeln!(out, "    {}@{}: {ty}", data.name, binding.index()).unwrap();
                 }
             }
