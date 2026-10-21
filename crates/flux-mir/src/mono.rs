@@ -31,19 +31,25 @@ const RECURSION_LIMIT: u32 = 128;
 /// Every instance of a function with a body that the program needs, in
 /// the order they were found; or an error if a generic function needs
 /// instances of itself without end. A call of a trait's method is of
-/// the `impl` block's method for its types.
+/// the `impl` block's method for its types. As rustc does for a program,
+/// they are found from `main`: other functions nothing calls are not
+/// built, nor are the instances only they need.
 pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instance>, Diagnostic> {
     let mut instances = Vec::new();
     let mut depths: HashMap<Instance, u32> = HashMap::new();
-    for (function, _) in mir.bodies.iter() {
-        if generic_count(hir, function) == 0 {
-            let instance = Instance {
-                function,
-                args: &[],
-            };
-            depths.insert(instance, 0);
-            instances.push(instance);
-        }
+    let items = &hir.items;
+    let root = items.module_of(items.main_crate());
+    let main = mir.bodies.iter().map(|(id, _)| id).find(|&id| {
+        let f = &items.functions[id];
+        f.name.as_str() == "main" && f.loc.module == root && f.owner.is_none()
+    });
+    if let Some(function) = main {
+        let instance = Instance {
+            function,
+            args: &[],
+        };
+        depths.insert(instance, 0);
+        instances.push(instance);
     }
     let mut next = 0;
     while let Some(&caller) = instances.get(next) {
@@ -216,13 +222,6 @@ pub fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
     }
 }
 
-/// How many generic parameters `function` has, its `impl` block's
-/// included.
-fn generic_count(hir: &Hir, function: FunctionId) -> usize {
-    let data = &hir.items.functions[function];
-    data.generics.len() + flux_ty::traits::owner_param_count(&hir.items, data.owner)
-}
-
 /// `f::<A, B>` as rustc writes an instance in messages, with types
 /// nested more than nine deep written `_`.
 fn instance_name(hir: &Hir, instance: Instance) -> String {
@@ -264,8 +263,14 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
         local.ty = subst(local.ty);
     }
     let operand = |op: &mut Operand| {
-        if let Operand::Const(Constant::Item { ty, .. }) = op {
+        if let Operand::Const(Constant::Item {
+            ty,
+            args: item_args,
+            ..
+        }) = op
+        {
             *ty = subst(*ty);
+            *item_args = Ty::list(&item_args.iter().map(|&a| subst(a)).collect::<Vec<_>>());
         }
     };
     for data in body.blocks.values_mut() {

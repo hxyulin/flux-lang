@@ -1,0 +1,27 @@
+fn sides<T>() -> u32 {
+    let mut _0: u32;
+    let _1: u32;
+
+    bb0: {
+        _1 = Add(const <T as Shape>::SIDES, const <T as Shape>::DOUBLE);
+        _0 = Add(copy _1, const Wrap::INNER::<T>);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: u32;
+    let _2: u32;
+
+    bb0: {
+        _2 = sides::<Square>() -> bb1;
+    }
+
+    bb1: {
+        _1 = Add(copy _2, const <Square as Shape>::DOUBLE);
+        _0 = const ();
+        return;
+    }
+}
+

@@ -28,10 +28,11 @@ pub(crate) fn file(hir: &Hir) -> String {
             })
             .collect();
         let fields = fields.join(", ");
+        let (name, generics, bounds) = (s.name, &s.generics, where_clause(&s.generics));
         match s.kind {
-            StructKind::Record => writeln!(out, "struct {}{} {{ {fields} }}", s.name, s.generics),
-            StructKind::Tuple => writeln!(out, "struct {}{}({fields});", s.name, s.generics),
-            StructKind::Unit => writeln!(out, "struct {}{};", s.name, s.generics),
+            StructKind::Record => writeln!(out, "struct {name}{generics}{bounds} {{ {fields} }}"),
+            StructKind::Tuple => writeln!(out, "struct {name}{generics}({fields}){bounds};"),
+            StructKind::Unit => writeln!(out, "struct {name}{generics}{bounds};"),
         }
         .unwrap();
         out.push('\n');

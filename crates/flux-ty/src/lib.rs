@@ -27,8 +27,9 @@ use std::sync::OnceLock;
 use flux_arena::ArenaMap;
 use flux_hir::def_map::{Def, Ns, ResolveError, Resolved};
 use flux_hir::{
-    Const, Core, Diagnostic, Function, FunctionId, Generics, Hir, Impl, ImplId, ImplTarget,
-    ItemCounts, ItemLoc, ItemTree, ModuleId, Owner, Path, Struct, StructId, Trait, TypeRef,
+    Const, ConstId, Core, Diagnostic, Function, FunctionId, Generics, Hir, Impl, ImplId,
+    ImplTarget, ItemCounts, ItemLoc, ItemTree, ModuleId, Owner, Path, Struct, StructId, Trait,
+    TypeRef,
 };
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
@@ -53,6 +54,16 @@ pub struct FnSig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Instance {
     pub function: FunctionId,
+    pub args: GenericArgs,
+}
+
+/// A constant with generic arguments for its owner's parameters: a
+/// trait's, `Self` first, or its `impl` block's. What a path to an
+/// associated constant names; which value it is follows once the
+/// arguments are known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConstInstance {
+    pub konst: ConstId,
     pub args: GenericArgs,
 }
 
@@ -82,11 +93,14 @@ pub struct Signatures {
     /// The bounds of each `impl` block, trait and function, their own
     /// only: a function's are after its owner's.
     pub impl_predicates: ArenaMap<Impl, Box<[Predicate]>>,
+    /// The bounds of each struct, which every type naming it must meet.
+    pub struct_predicates: ArenaMap<Struct, Box<[Predicate]>>,
     pub trait_predicates: ArenaMap<Trait, Box<[Predicate]>>,
     pub fn_predicates: ArenaMap<Function, Box<[Predicate]>>,
     /// What the bounds of each `impl` block, trait and function say
     /// associated types are (`T: Tr<Out = i32>`), their own only.
     pub impl_projections: ArenaMap<Impl, Box<[Projection]>>,
+    pub struct_projections: ArenaMap<Struct, Box<[Projection]>>,
     pub trait_projections: ArenaMap<Trait, Box<[Projection]>>,
     pub fn_projections: ArenaMap<Function, Box<[Projection]>>,
     /// The associated types each trait's `impl` block defines, by name.
@@ -116,13 +130,78 @@ impl Signatures {
         }
     }
 
-    /// The types of the fields of `strukt` with generic arguments `args`.
+    /// The types of the fields of `strukt` with generic arguments `args`,
+    /// with the associated types they name (`T::Out`) normalized where
+    /// `args` make them known.
     pub fn field_types(&self, strukt: StructId, args: &[Ty]) -> &'static [Ty] {
         let fields = self.structs[strukt];
         if args.is_empty() {
             return fields;
         }
-        Ty::list(&subst_list(fields, args))
+        let fields = subst_list(fields, args);
+        if !fields.iter().any(|f| f.has_aliases()) {
+            return Ty::list(&fields);
+        }
+        let fields: Vec<Ty> = fields.iter().map(|&f| self.normalize_known(f, 0)).collect();
+        Ty::list(&fields)
+    }
+
+    /// `ty` with each associated type of known types replaced by what
+    /// their trait's `impl` block for them says it is.
+    fn normalize_known(&self, ty: Ty, depth: u32) -> Ty {
+        if !ty.has_aliases() || depth > 64 {
+            return ty;
+        }
+        let go = |t: Ty| self.normalize_known(t, depth + 1);
+        match ty.kind() {
+            TyKind::Alias(alias) => {
+                let args: Vec<Ty> = alias.args.iter().map(|&a| go(a)).collect();
+                let alias = ty::AliasTy {
+                    args: Ty::list(&args),
+                    ..alias
+                };
+                for (imp, trait_ref) in self.impl_traits.iter() {
+                    if trait_ref.trait_ != alias.trait_ {
+                        continue;
+                    }
+                    // Every parameter of a trait's block is in its header.
+                    let header =
+                        std::iter::once(self.impls[imp]).chain(trait_ref.args.iter().copied());
+                    let count = header.clone().map(max_param).max().unwrap_or(0);
+                    let mut binds = vec![None; count as usize];
+                    let matches = header
+                        .zip(&args)
+                        .all(|(x, &y)| traits::match_ty(x, y, &mut binds));
+                    if matches && let Some(t) = traits::impl_type(self, imp, alias.name) {
+                        let binds: Vec<Ty> =
+                            binds.into_iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
+                        return go(t.subst(&binds));
+                    }
+                }
+                Ty::alias(alias)
+            }
+            TyKind::Tuple(list) => Ty::tuple(&list.iter().map(|&t| go(t)).collect::<Vec<_>>()),
+            TyKind::Adt(adt, list) => {
+                let list: Vec<Ty> = list.iter().map(|&t| go(t)).collect();
+                Ty::adt(adt.strukt, adt.name, &list)
+            }
+            TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
+            TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
+            _ => ty,
+        }
+    }
+}
+
+/// One more than the largest index of a generic parameter in `ty`, or 0.
+fn max_param(ty: Ty) -> u32 {
+    match ty.kind() {
+        TyKind::Param(p) => p.index + 1,
+        TyKind::Tuple(list) | TyKind::Adt(_, list) => {
+            list.iter().map(|&t| max_param(t)).max().unwrap_or(0)
+        }
+        TyKind::Alias(alias) => alias.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
+        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => max_param(t),
+        _ => 0,
     }
 }
 
@@ -433,9 +512,14 @@ fn assoc_type(
     // `Self::Out` in a trait's `impl` block: the block's own.
     if let Some(trait_ref) = scope.self_trait
         && Some(self_ty) == scope.self_ty
-        && has_type(trait_ref.trait_)
     {
-        return Ty::alias(traits::alias_of(trait_ref, self_ty, name));
+        if has_type(trait_ref.trait_) {
+            return Ty::alias(traits::alias_of(trait_ref, self_ty, name));
+        }
+        if path.qself.is_none() && path.segments[0] == kw::SelfUpper {
+            errors.push((at, format!("associated type `{name}` not found for `Self`")));
+            return Ty::ERROR;
+        }
     }
     if !matches!(self_ty.kind(), TyKind::Param(_)) {
         errors.push((range, "ambiguous associated type".into()));
@@ -692,6 +776,17 @@ fn mentions_param(ty: Ty, index: u32) -> bool {
     }
 }
 
+/// Whether `ty` uses generic parameter `index`, through associated types
+/// (`T::Out`) too, as a struct's fields may.
+fn uses_param(ty: Ty, index: u32) -> bool {
+    match ty.kind() {
+        TyKind::Alias(alias) => alias.args.iter().any(|&t| uses_param(t, index)),
+        TyKind::RawPtr(_, t) | TyKind::Ref(_, t) => uses_param(t, index),
+        TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().any(|&t| uses_param(t, index)),
+        _ => mentions_param(ty, index),
+    }
+}
+
 /// The parameters of `generics` as types, numbered from `first`.
 pub fn params_of(generics: &Generics, first: usize) -> Vec<Ty> {
     generics
@@ -772,21 +867,6 @@ fn extend_signatures(
             d.file = loc.file;
         }
         ty
-    }
-    for (id, s) in items.structs.iter().skip(from.structs as usize) {
-        let generics: Vec<Symbol> = s.generics.params.iter().map(|p| p.name).collect();
-        let scope = TypeScope {
-            self_ty: Some(Ty::adt(id, s.name, &params_of(&s.generics, 0))),
-            generics: &generics,
-            signature_of: Some("structs"),
-            ..TypeScope::default()
-        };
-        let fields: Vec<Ty> = s
-            .fields
-            .iter()
-            .map(|f| resolve(items, s.loc, &f.ty, scope, f.range, &mut reported))
-            .collect();
-        sigs.structs.insert(id, Ty::list(&fields));
     }
     for (id, imp) in items.impls.iter().skip(from.impls as usize) {
         let ty = impl_type(items, imp, &mut reported);
@@ -902,6 +982,38 @@ fn extend_signatures(
             sigs.trait_projections.insert(id, projections.into());
         }
     }
+    // Structs' bounds, then their fields, in which `T::Out` may name
+    // the associated type of a bound on `T`.
+    for (id, s) in items.structs.iter().skip(from.structs as usize) {
+        let generics: Vec<Symbol> = s.generics.params.iter().map(|p| p.name).collect();
+        let scope = TypeScope {
+            self_ty: Some(Ty::adt(id, s.name, &params_of(&s.generics, 0))),
+            generics: &generics,
+            signature_of: Some("structs"),
+            defaults: Some(&sigs.trait_defaults),
+            ..TypeScope::default()
+        };
+        let mut errors = Vec::new();
+        let own = resolve_predicates(items, &sigs, s.loc.module, &s.generics, scope, &mut errors);
+        in_file(errors, s.loc.file, &mut reported);
+        let bounds = traits::elaborate(&sigs, &own.predicates);
+        let scope = TypeScope {
+            bounds: &bounds,
+            ..scope
+        };
+        let fields: Vec<Ty> = s
+            .fields
+            .iter()
+            .map(|f| resolve(items, s.loc, &f.ty, scope, f.range, &mut reported))
+            .collect();
+        sigs.structs.insert(id, Ty::list(&fields));
+        if !own.predicates.is_empty() {
+            sigs.struct_predicates.insert(id, own.predicates.into());
+        }
+        if !own.projections.is_empty() {
+            sigs.struct_projections.insert(id, own.projections.into());
+        }
+    }
     for (id, imp) in items.impls.iter().skip(from.impls as usize) {
         if imp.trait_ref.is_none() && imp.generics.predicates.is_empty() {
             continue;
@@ -963,12 +1075,21 @@ fn extend_signatures(
     }
     for (id, konst) in items.consts.iter().skip(from.consts as usize) {
         let generics = generic_names(items, konst.owner, &Generics::default());
+        // Its owner's bounds, for `Self::A` or `T::A` in its type.
+        let bounds = traits::elaborate(&sigs, &traits::owner_predicates(items, &sigs, konst.owner));
         let scope = TypeScope {
             self_ty: self_ty(&sigs, konst.owner),
             generics: &generics,
-            signature_of: Some("constants"),
+            signature_of: Some(match konst.owner {
+                Some(_) => "associated constants",
+                None => "constants",
+            }),
+            bounds: &bounds,
+            self_trait: konst
+                .owner
+                .and_then(Owner::as_impl)
+                .and_then(|imp| sigs.impl_traits.get(imp).copied()),
             defaults: Some(&sigs.trait_defaults),
-            ..TypeScope::default()
         };
         let ty = resolve(
             items,
@@ -1049,8 +1170,7 @@ fn extend_signatures(
         // Without `PhantomData`, a parameter must be a field's type.
         for (i, param) in s.generics.params.iter().enumerate() {
             let fields = sigs.structs[id];
-            if !fields.iter().any(|&f| mentions_param(f, i as u32)) && !fields.contains(&Ty::ERROR)
-            {
+            if !fields.iter().any(|&f| uses_param(f, i as u32)) && !fields.contains(&Ty::ERROR) {
                 error(
                     s.loc.file,
                     param.range,
@@ -1059,6 +1179,7 @@ fn extend_signatures(
             }
         }
     }
+    traits::check_well_formed(items, &sigs, from, &mut reported);
     duplicate_assoc_items(items, &sigs, &mut reported, from.impls as usize);
     traits::check_impls(items, &sigs, &mut reported, checked_impls);
     sigs.cyclic |= traits::check_supertrait_cycles(items, &sigs, &mut reported, from);

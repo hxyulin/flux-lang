@@ -11,9 +11,9 @@
 use std::collections::HashMap;
 
 use flux_arena::ArenaMap;
-use flux_hir::{ConstId, FunctionId};
+use flux_hir::{ConstId, FunctionId, ItemTree};
 use flux_syntax::TextRange;
-use flux_ty::IntTy;
+use flux_ty::{ConstInstance, GenericArgs, IntTy, Signatures, Ty, subst_list};
 
 use crate::{
     AssertMessage, BinOp, Body, Constant, Operand, Place, ProjectionElem, Rvalue, StatementKind,
@@ -41,6 +41,30 @@ pub struct EvalError {
     pub nested: bool,
 }
 
+/// The values of constants: of those without generic parameters by
+/// item, and of the instances of others that code without generic
+/// parameters names.
+#[derive(Debug, Default)]
+pub struct ConstValues {
+    pub items: ArenaMap<flux_hir::Const, Value>,
+    pub instances: HashMap<ConstInstance, Value>,
+}
+
+impl ConstValues {
+    /// The value of constant `id` with generic arguments `args`, if it
+    /// was evaluated.
+    pub fn get(&self, id: ConstId, args: GenericArgs) -> Option<&Value> {
+        if args.is_empty() {
+            self.items.get(id)
+        } else {
+            self.instances.get(&ConstInstance { konst: id, args })
+        }
+    }
+}
+
+/// How deep constants may need others: rustc's query depth limit.
+const CONST_DEPTH_LIMIT: usize = 128;
+
 /// How many statements a constant may run before evaluation gives up;
 /// rustc allows loops of millions of iterations.
 const STEP_LIMIT: u64 = 50_000_000;
@@ -48,65 +72,103 @@ const STEP_LIMIT: u64 = 50_000_000;
 /// included.
 const DEPTH_LIMIT: u32 = 127;
 
-/// Evaluates constants on demand, each once.
+/// Evaluates constants on demand, each instance once.
 pub struct Evaluator<'a> {
+    pub items: &'a ItemTree,
+    pub sigs: &'a Signatures,
     pub functions: &'a ArenaMap<flux_hir::Function, Body>,
     pub consts: &'a ArenaMap<flux_hir::Const, Body>,
     /// Each constant's name, for messages.
     pub names: &'a dyn Fn(ConstId) -> String,
-    values: HashMap<ConstId, Result<Value, EvalError>>,
-    in_progress: Vec<ConstId>,
+    values: HashMap<ConstInstance, Result<Value, EvalError>>,
+    in_progress: Vec<ConstInstance>,
+    /// The constants whose own value failed, in the order they did,
+    /// with why: what [`Self::eval_instance`]'s callers report.
+    pub failures: Vec<(ConstInstance, EvalError)>,
     steps: u64,
 }
 
 impl<'a> Evaluator<'a> {
     pub fn new(
+        items: &'a ItemTree,
+        sigs: &'a Signatures,
         functions: &'a ArenaMap<flux_hir::Function, Body>,
         consts: &'a ArenaMap<flux_hir::Const, Body>,
         names: &'a dyn Fn(ConstId) -> String,
     ) -> Evaluator<'a> {
         Evaluator {
+            items,
+            sigs,
             functions,
             consts,
             names,
             values: HashMap::new(),
             in_progress: Vec::new(),
+            failures: Vec::new(),
             steps: 0,
         }
     }
 
-    /// The value of constant `id`, evaluated if it was not already.
+    /// The value of constant `id`, which has no generic parameters,
+    /// evaluated if it was not already.
     pub fn eval_const(&mut self, id: ConstId) -> Result<Value, EvalError> {
-        if let Some(result) = self.values.get(&id) {
+        self.eval_instance(ConstInstance {
+            konst: id,
+            args: &[],
+        })
+    }
+
+    /// The value of constant `c` with its generic arguments, which must
+    /// be known types: a trait's for them is its `impl` block's, or the
+    /// trait's default.
+    pub fn eval_instance(&mut self, c: ConstInstance) -> Result<Value, EvalError> {
+        let c = flux_ty::traits::resolve_const(self.items, self.sigs, c);
+        if let Some(result) = self.values.get(&c) {
             return result.clone();
         }
-        let Some(body) = self.consts.get(id) else {
+        let Some(body) = self.consts.get(c.konst) else {
             return Err(error(
                 TextRange::default(),
                 "constant without a value".to_owned(),
             ));
         };
-        if self.in_progress.contains(&id) {
+        if self.in_progress.contains(&c) {
             let message = format!(
                 "cycle detected when const-evaluating `{}`",
-                (self.names)(id)
+                (self.names)(c.konst)
             );
             return Err(error(TextRange::default(), message));
         }
-        self.in_progress.push(id);
+        // `const A: u32 = W::<W<T>>::A;` needs ever more instances.
+        if self.in_progress.len() >= CONST_DEPTH_LIMIT {
+            return Err(error(
+                TextRange::default(),
+                "queries overflow the depth limit!".to_owned(),
+            ));
+        }
+        self.in_progress.push(c);
+        let steps = self.steps;
         self.steps = 0;
         // A constant's own arithmetic is always checked.
-        let result = self.run(body, Vec::new(), 0, true);
+        let result = self.run(body, Vec::new(), c.args, 0, true);
+        self.steps = steps;
         self.in_progress.pop();
-        self.values.insert(id, result.clone());
+        if let Err(e) = &result
+            && !e.nested
+        {
+            self.failures.push((c, e.clone()));
+        }
+        self.values.insert(c, result.clone());
         result
     }
 
-    /// Runs `body`; `checked` if overflow there is an error.
+    /// Runs `body`, of an item with generic arguments `generics`;
+    /// `checked` if overflow there is an error.
     fn run(
         &mut self,
         body: &Body,
         args: Vec<Value>,
+        generics: GenericArgs,
         depth: u32,
         checked: bool,
     ) -> Result<Value, EvalError> {
@@ -126,7 +188,8 @@ impl<'a> Evaluator<'a> {
                     ));
                 }
                 if let StatementKind::Assign(dest, rvalue) = &statement.kind {
-                    let value = self.rvalue(&locals, rvalue, statement.range, !checked)?;
+                    let value =
+                        self.rvalue(&locals, generics, rvalue, statement.range, !checked)?;
                     write(&mut locals, dest, value, statement.range)?;
                 }
             }
@@ -140,7 +203,7 @@ impl<'a> Evaluator<'a> {
                     targets,
                     otherwise,
                 } => {
-                    let value = match self.operand(&locals, discr, range)? {
+                    let value = match self.operand(&locals, generics, discr, range)? {
                         Value::Int { bits, .. } => bits,
                         Value::Bool(b) => u128::from(b),
                         Value::Aggregate(_) => unreachable!("switches on scalars"),
@@ -152,16 +215,20 @@ impl<'a> Evaluator<'a> {
                 }
                 TerminatorKind::Call {
                     func,
+                    generic_args,
                     args,
                     dest,
                     target,
-                    ..
                 } => {
                     let args = args
                         .iter()
-                        .map(|a| self.operand(&locals, a, range))
+                        .map(|a| self.operand(&locals, generics, a, range))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let value = self.call(*func, args, depth, range, checked)?;
+                    let callee = flux_ty::Instance {
+                        function: *func,
+                        args: Ty::list(&subst_list(generic_args, generics)),
+                    };
+                    let value = self.call(callee, args, depth, range, checked)?;
                     write(&mut locals, dest, value, range)?;
                     match target {
                         Some(target) => *target,
@@ -174,11 +241,11 @@ impl<'a> Evaluator<'a> {
                     msg,
                     target,
                 } => {
-                    let Value::Bool(value) = self.operand(&locals, cond, range)? else {
+                    let Value::Bool(value) = self.operand(&locals, generics, cond, range)? else {
                         unreachable!("assertions test booleans")
                     };
                     if value != *expected {
-                        let message = self.assert_message(&locals, msg, range)?;
+                        let message = self.assert_message(&locals, generics, msg, range)?;
                         return Err(error(range, message));
                     }
                     *target
@@ -199,12 +266,14 @@ impl<'a> Evaluator<'a> {
     /// call.
     fn call(
         &mut self,
-        func: FunctionId,
+        instance: flux_ty::Instance,
         args: Vec<Value>,
         depth: u32,
         range: TextRange,
         checked: bool,
     ) -> Result<Value, EvalError> {
+        let instance = flux_ty::traits::resolve_instance(self.items, self.sigs, instance);
+        let func: FunctionId = instance.function;
         let Some(callee) = self.functions.get(func) else {
             return Err(error(
                 range,
@@ -220,18 +289,19 @@ impl<'a> Evaluator<'a> {
         // A function's own arithmetic follows `-C overflow-checks`, off in
         // flux, unless it inherits its caller's.
         let checked = checked && callee.inherits_overflow_checks;
-        self.run(callee, args, depth + 1, checked)
+        self.run(callee, args, instance.args, depth + 1, checked)
             .map_err(|e| EvalError { range, ..e })
     }
 
     fn assert_message(
         &mut self,
         locals: &[Option<Value>],
+        generics: GenericArgs,
         msg: &AssertMessage,
         range: TextRange,
     ) -> Result<String, EvalError> {
         let mut show = |op: &Operand| -> Result<String, EvalError> {
-            Ok(show(&self.operand(locals, op, range)?))
+            Ok(show(&self.operand(locals, generics, op, range)?))
         };
         Ok(match msg {
             AssertMessage::DivisionByZero(l) => format!("attempt to divide `{}` by zero", show(l)?),
@@ -259,6 +329,7 @@ impl<'a> Evaluator<'a> {
     fn operand(
         &mut self,
         locals: &[Option<Value>],
+        generics: GenericArgs,
         operand: &Operand,
         range: TextRange,
     ) -> Result<Value, EvalError> {
@@ -272,16 +343,22 @@ impl<'a> Evaluator<'a> {
                     range,
                     "C strings in constants are not supported yet".to_owned(),
                 )),
-                Constant::Item { id, .. } => {
-                    let steps = self.steps;
-                    // A cycle is reported at every constant in it, as rustc does.
-                    let result = self.eval_const(id).map_err(|e| EvalError {
-                        range,
-                        nested: !e.message.starts_with("cycle detected"),
-                        ..e
-                    });
-                    self.steps = steps;
-                    result
+                Constant::Item { id, args, .. } => {
+                    let c = ConstInstance {
+                        konst: id,
+                        args: Ty::list(&subst_list(args, generics)),
+                    };
+                    // A cycle is reported at every constant in it; running
+                    // out of depth, once, at the outermost.
+                    let outermost = self.in_progress.len() == 1;
+                    self.eval_instance(c).map_err(|e| {
+                        let nested = if e.message.starts_with("queries overflow") {
+                            !outermost
+                        } else {
+                            !e.message.starts_with("cycle detected")
+                        };
+                        EvalError { range, nested, ..e }
+                    })
                 }
             },
         }
@@ -290,15 +367,16 @@ impl<'a> Evaluator<'a> {
     fn rvalue(
         &mut self,
         locals: &[Option<Value>],
+        generics: GenericArgs,
         rvalue: &Rvalue,
         range: TextRange,
         wrapping: bool,
     ) -> Result<Value, EvalError> {
         match rvalue {
-            Rvalue::Use(op) => self.operand(locals, op, range),
+            Rvalue::Use(op) => self.operand(locals, generics, op, range),
             Rvalue::Aggregate(_, ops) => Ok(Value::Aggregate(
                 ops.iter()
-                    .map(|op| self.operand(locals, op, range))
+                    .map(|op| self.operand(locals, generics, op, range))
                     .collect::<Result<_, _>>()?,
             )),
             Rvalue::Ref { .. } => Err(error(
@@ -306,7 +384,7 @@ impl<'a> Evaluator<'a> {
                 "references in constants are not supported yet".to_owned(),
             )),
             Rvalue::Cast(op, to) => {
-                let value = self.operand(locals, op, range)?;
+                let value = self.operand(locals, generics, op, range)?;
                 let bits = match value {
                     Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                     Value::Bool(b) => u128::from(b),
@@ -318,29 +396,34 @@ impl<'a> Evaluator<'a> {
                     ty: to,
                 })
             }
-            Rvalue::UnaryOp(op, operand) => match (op, self.operand(locals, operand, range)?) {
-                (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
-                (UnOp::Not, Value::Int { bits, ty }) => Ok(Value::Int {
-                    bits: truncate(!bits, ty),
-                    ty,
-                }),
-                (UnOp::Neg, value @ Value::Int { bits, ty }) => {
-                    if ty.is_signed() && bits == min_bits(ty) && !wrapping {
-                        return Err(error(
-                            range,
-                            format!("attempt to negate `{}`, which would overflow", show(&value)),
-                        ));
-                    }
-                    Ok(Value::Int {
-                        bits: truncate(bits.wrapping_neg(), ty),
+            Rvalue::UnaryOp(op, operand) => {
+                match (op, self.operand(locals, generics, operand, range)?) {
+                    (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+                    (UnOp::Not, Value::Int { bits, ty }) => Ok(Value::Int {
+                        bits: truncate(!bits, ty),
                         ty,
-                    })
+                    }),
+                    (UnOp::Neg, value @ Value::Int { bits, ty }) => {
+                        if ty.is_signed() && bits == min_bits(ty) && !wrapping {
+                            return Err(error(
+                                range,
+                                format!(
+                                    "attempt to negate `{}`, which would overflow",
+                                    show(&value)
+                                ),
+                            ));
+                        }
+                        Ok(Value::Int {
+                            bits: truncate(bits.wrapping_neg(), ty),
+                            ty,
+                        })
+                    }
+                    _ => unreachable!("type checking allows no other unary operations"),
                 }
-                _ => unreachable!("type checking allows no other unary operations"),
-            },
+            }
             Rvalue::BinaryOp(op, l, r) => {
-                let l = self.operand(locals, l, range)?;
-                let r = self.operand(locals, r, range)?;
+                let l = self.operand(locals, generics, l, range)?;
+                let r = self.operand(locals, generics, r, range)?;
                 let result = if wrapping {
                     wrapping_binary(*op, &l, &r)
                 } else {

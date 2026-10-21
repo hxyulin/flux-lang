@@ -1,0 +1,27 @@
+struct S;
+
+struct V;
+
+trait Dup;
+
+trait Tr;
+
+impl Tr for S;
+
+impl V;
+
+fn Dup::Y() -> () {}
+
+fn <S as Tr>::B() -> () {}
+
+fn main() -> () {
+    let y@0 = <error>;
+}
+
+error 314..327: the name `X` is defined multiple times
+error 346..358: the name `Y` is defined multiple times
+error 428..431: visibility qualifiers are not permitted here
+error 453..469: duplicate definitions with name `B`:
+error 474..483: duplicate definitions with name `B`:
+error 511..524: associated constant in `impl` without body
+error 563..564: cannot find method or associated constant `Z` in trait `Tr`

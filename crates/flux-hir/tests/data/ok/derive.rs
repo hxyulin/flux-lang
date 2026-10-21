@@ -1,6 +1,6 @@
 // `#[derive]` on structs: each of `Clone`, `Copy`, `PartialEq` and `Eq`
 // becomes an `impl` block of the trait from `core`, generic over the
-// struct's parameters with a bound of the trait on each, with a method
+// struct's parameters with its bounds and one of the trait on each, with a method
 // whose body is made from the fields: `clone` clones each field, `eq`
 // compares them with `==` joined by `&&` (`true` without fields), and
 // `Eq`'s check calls `assert_receiver_is_total_eq` on each.
@@ -33,6 +33,13 @@ struct Two<A, B> {
     a: A,
     b: B,
 }
+
+// The struct's bounds stay: each parameter's, then the trait's, then the
+// `where` clause.
+#[derive(Clone, PartialEq)]
+struct Bounded<T: Copy, U>(T, U)
+where
+    U: Eq;
 
 // One trait per attribute, a trailing comma, other attributes and doc
 // comments around the derive, and a derive on a `pub` struct in a module.

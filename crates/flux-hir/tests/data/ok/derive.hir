@@ -12,6 +12,8 @@ struct Pair<T>(T, T);
 
 struct Two<A, B> { a: A, b: B }
 
+struct Bounded<T, U>(T, U) where T: Copy, U: Eq;
+
 struct Split { inner: Point }
 
 struct Square { side: u32 }
@@ -51,6 +53,10 @@ impl<T> ::core::marker::Copy for Pair<T> where T: ::core::marker::Copy;
 impl<A, B> ::core::cmp::PartialEq for Two<A, B> where A: ::core::cmp::PartialEq, B: ::core::cmp::PartialEq;
 
 impl<A, B> ::core::cmp::Eq for Two<A, B> where A: ::core::cmp::Eq, B: ::core::cmp::Eq;
+
+impl<T, U> ::core::clone::Clone for Bounded<T, U> where T: Copy, T: ::core::clone::Clone, U: ::core::clone::Clone, U: Eq;
+
+impl<T, U> ::core::cmp::PartialEq for Bounded<T, U> where T: Copy, T: ::core::cmp::PartialEq, U: ::core::cmp::PartialEq, U: Eq;
 
 impl ::core::clone::Clone for Split;
 
@@ -126,6 +132,14 @@ fn <Two<A, B> as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> b
 fn <Two<A, B> as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
     Eq::assert_receiver_is_total_eq((&self@0.a));
     Eq::assert_receiver_is_total_eq((&self@0.b));
+}
+
+fn <Bounded<T, U> as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+    Bounded { 0: Clone::clone((&self@0.0)), 1: Clone::clone((&self@0.1)) }
+}
+
+fn <Bounded<T, U> as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+    ((self@0.0 == other@1.0) && (self@0.1 == other@1.1))
 }
 
 fn <Split as ::core::clone::Clone>::clone(self@0: &Self) -> Self {

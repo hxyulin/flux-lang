@@ -1,0 +1,38 @@
+fn unused() -> u8 {
+    let mut _0: u8;
+
+    bb0: {
+        _0 = const <Broken as Tr>::HALF;
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: u8; // a
+    let _2: u8; // b
+    let _3: u8; // c
+    let _4: bool;
+
+    bb0: {
+        _1 = const W::INV::<Zero>;
+        _2 = Add(const <Max as Tr>::N, const 1_u8);
+        _4 = Eq(const <Zero as Tr>::N, const 0_u8);
+        assert(!copy _4, "attempt to divide by zero") -> bb1;
+    }
+
+    bb1: {
+        _3 = Div(const 10_u8, const <Zero as Tr>::N);
+        _0 = const ();
+        StorageDead(_3);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+error 496..501: attempt to divide `1_u8` by zero
+error 496..501: this operation will panic at runtime
+error 562..571: attempt to divide `10_u8` by zero
+error 676..686: this arithmetic operation will overflow
+error 700..712: this operation will panic at runtime

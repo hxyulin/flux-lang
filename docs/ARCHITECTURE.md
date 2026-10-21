@@ -274,6 +274,21 @@ holds by matching `impl` headers, which checks supertraits, overlapping
 blocks (E0119, with bounds that rule types out) and blocks' methods
 against their traits (E0046, E0053, ...).
 
+A struct's bounds are not assumed where it is named, as in rustc: each
+type in a signature must meet the bounds of the structs it names, given
+the item's own bounds (checked by `traits`), and in a body, a type
+written in an annotation or path, and the type a constructor or struct
+expression builds, adds them as obligations, reported at the value
+whose field's type has the bound's parameter, as rustc points. A field
+may name a bound's associated type (`made: S::Out`); field types are
+normalized once the struct's arguments are known.
+
+An associated constant of a trait is generic over the trait's
+parameters, `Self` first, and one of a generic `impl` block over the
+block's; a path to either (`T::N`, `<S as Tr>::N`, `Self::N`) records
+its generic arguments, as a call does, with `Self: Tr` or the block's
+bounds as obligations.
+
 Where the type an expression must have is known before it is inferred
 (a `let` with a type, an argument, a field, a return value), it is
 noted, and a call or struct expression unifies its result with it first,
@@ -360,9 +375,20 @@ so is overflow in a constant's own initializer ("attempt to compute
 `i32::MAX + 1_i32`, which would overflow"). A `const fn`'s arithmetic
 wraps, as rustc compiles functions with flux's `-C overflow-checks=off`,
 unless it is marked `#[rustc_inherit_overflow_checks]`, as `core`'s
-`abs` and `pow` are: then it is checked where its caller's is. Free constants are evaluated even if unused, as in
-rustc; associated ones where they are used. Uses of a constant refer to
-it, and code generation emits its value.
+`abs` and `pow` are: then it is checked where its caller's is. Uses of a
+constant refer to it with its generic arguments, and code generation
+emits its value. The value of a trait's constant, or one of a generic
+block, depends on its arguments: for them, it is the `impl` block's
+constant or the trait's default (`traits::resolve_const`), which is
+evaluated with the arguments passed on to the constants and `const fn`s
+it uses. As in rustc, the constants evaluated are the free ones and
+those that code without generic parameters names, with the arguments
+it gives, whether that code is used or not; errors (E0080) are reported
+at the constant that failed, and the lint below knows their values.
+Those that generic code names are evaluated by code generation for the
+instances it builds, so their errors come from `flux build` only, as
+rustc reports them only in a full build; more than 128 constants deep
+is rustc's "queries overflow the depth limit!".
 
 [`lint`](../crates/flux-mir/src/lint.rs) reports what rustc's
 deny-by-default `arithmetic_overflow` and `unconditional_panic` lints do,
@@ -454,8 +480,8 @@ executable. No C compiler or system linker is involved.
 
 Generic functions are *monomorphized*:
 [`mono`](../crates/flux-mir/src/mono.rs) collects the instances the
-program needs, starting from the functions that are not generic and
-following calls, with each call's arguments substituted by its caller's,
+program needs, starting from `main` and following calls (so, as in
+rustc, a function nothing calls is not built), with each call's arguments substituted by its caller's,
 as rustc's collector does; one more than 128 calls deep is rustc's
 "reached the recursion limit" error (`f::<(T, i32)>` calling itself).
 Each instance is a copy of the function's MIR with its arguments

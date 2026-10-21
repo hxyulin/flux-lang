@@ -6,6 +6,10 @@ struct Swapped<A, B> { 0: A, 1: B }
 struct Bounded<T> { 0: T }
 struct Where<T> { 0: T }
 struct Implied<T> { 0: T }
+struct Shared<A, B> { 0: A, 1: B }
+struct Fewer<T> { 0: T }
+struct Shaped<S> { 0: S }
+struct Fixed<S> { 0: S }
 fn drop(&mut Noisy) -> ()
     self@0: &mut Noisy
 fn drop(&mut Copied) -> ()
@@ -22,17 +26,28 @@ fn drop(&mut Where<T>) -> ()
     self@0: &mut Where<T>
 fn drop(&mut Implied<T>) -> ()
     self@0: &mut Implied<T>
+fn drop(&mut Shared<Y, X>) -> ()
+    self@0: &mut Shared<Y, X>
+fn drop(&mut Fewer<T>) -> ()
+    self@0: &mut Fewer<T>
+fn drop(&mut Shaped<S>) -> ()
+    self@0: &mut Shaped<S>
+fn drop(&mut Fixed<S>) -> ()
+    self@0: &mut Fixed<S>
 fn main() -> ()
     n@0: Noisy
 fn clone(&Copied) -> Copied
     self@0: &Copied
-error 563..569: the trait `Copy` cannot be implemented for this type; the type has a destructor
-error 651..681: `Drop` impls cannot be specialized
-error 740..768: `Drop` impls cannot be specialized
-error 925..929: `Drop` impl requires `T: Copy` but the struct it is implemented for does not
-error 1042..1047: `Drop` impl requires `T: Clone` but the struct it is implemented for does not
-error 1050..1059: `Drop` impl requires `T: PartialEq` but the struct it is implemented for does not
-error 1263..1267: explicit use of destructor method
-error 1275..1285: explicit use of destructor method
-error 1299..1310: explicit use of destructor method
-error 1324..1345: explicit use of destructor method
+error 627..633: the trait `Copy` cannot be implemented for this type; the type has a destructor
+error 715..745: `Drop` impls cannot be specialized
+error 804..832: `Drop` impls cannot be specialized
+error 989..993: `Drop` impl requires `T: Copy` but the struct it is implemented for does not
+error 1106..1111: `Drop` impl requires `T: Clone` but the struct it is implemented for does not
+error 1114..1123: `Drop` impl requires `T: PartialEq` but the struct it is implemented for does not
+error 1408..1412: `Drop` impl requires `Y: Copy` but the struct it is implemented for does not
+error 1542..1551: `Drop` impl requires `T: PartialEq` but the struct it is implemented for does not
+error 1725..1734: `Drop` impl requires `<S as Shape>::Out == i32` but the struct it is implemented for does not
+error 1943..1947: explicit use of destructor method
+error 1955..1965: explicit use of destructor method
+error 1979..1990: explicit use of destructor method
+error 2004..2025: explicit use of destructor method

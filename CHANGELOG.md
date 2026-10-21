@@ -82,6 +82,24 @@
   drop their remaining fields. Drop glue is built when generic code is
   monomorphized. E0040, E0120, E0184, E0366, E0367, E0493 and E0509
   are reported as rustc does.
+- Support bounds on structs, in their parameter lists and `where`
+  clauses: fields may name the bounds' associated types, and as in
+  rustc every type that names a struct must meet its bounds, in
+  signatures, `impl` headers, annotations, paths, constructors and struct
+  expressions (E0277, E0271), at rustc's positions. Derives keep a
+  struct's bounds, and `Drop` impls may repeat them.
+- Support associated constants in traits, with or without defaults, in
+  their `impl` blocks and in generic inherent blocks, through `T::N`,
+  `S::N`, `Self::N` and `<T as Tr>::N`. A constant whose value depends
+  on generic arguments is evaluated for the instances that use it, so
+  its errors are reported by `flux build`, as rustc reports them only in
+  full builds. E0046, E0107, E0201, E0220, E0323, E0326, E0438 and
+  E0790 are reported as rustc does.
+- Build instances from `main`, as rustc does: generic code that only
+  unused functions call is not instantiated.
+- Report duplicate items in `impl` blocks of traits (E0201), which
+  produced invalid keel IR.
+- Find inherent functions through qualified paths (`<S>::new()`).
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 

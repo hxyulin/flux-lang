@@ -29,8 +29,12 @@ use keel_ir::{
 /// The keel module for a type-checked program and its MIR, `core`
 /// included: one function per instance of a function the program needs.
 /// An error if a generic function needs instances of itself without end.
-pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Result<Module, Diagnostic> {
-    let instances = flux_mir::mono::collect(hir, &typed.sigs, mir)?;
+pub fn lower_module(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+) -> Result<Module, Vec<Diagnostic>> {
+    let instances = flux_mir::mono::collect(hir, &typed.sigs, mir).map_err(|d| vec![d])?;
     let mut module = Module::default();
     let items = &hir.items;
     let symbols: HashMap<FunctionId, String> = items
@@ -85,10 +89,23 @@ pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Result<Modul
             });
         }
     }
+    let names = |id: flux_hir::ConstId| {
+        items.consts[id]
+            .name
+            .map_or("_".to_owned(), |n| n.to_string())
+    };
     let mut ctx = Ctx {
         hir,
         typed,
         const_values: &mir.const_values,
+        evaluator: flux_mir::eval::Evaluator::new(
+            items,
+            &typed.sigs,
+            &mir.bodies,
+            &mir.consts,
+            &names,
+        ),
+        instance_values: HashMap::new(),
         symbols: &symbols,
         uses_abort: false,
         strings: HashMap::new(),
@@ -99,6 +116,23 @@ pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Result<Modul
         let body = flux_mir::mono::instance_body(hir, &typed.sigs, body, instance.args);
         let function = ctx.function(instance, &body);
         module.functions.push(function);
+    }
+    // Constants whose values depend on generic arguments fail only
+    // once code needs them, as in rustc.
+    if !ctx.evaluator.failures.is_empty() {
+        let mut errors: Vec<Diagnostic> = ctx
+            .evaluator
+            .failures
+            .iter()
+            .map(|(c, e)| {
+                let mut d = Diagnostic::new(e.range, e.message.clone());
+                d.file = items.consts[c.konst].loc.file;
+                d
+            })
+            .collect();
+        Diagnostic::sort(&mut errors);
+        errors.dedup();
+        return Err(errors);
     }
     module.data = ctx.data;
     if ctx.uses_abort && !declared_abort {
@@ -394,8 +428,12 @@ fn entry_point(rust_main: &str, sigs: &Signatures, sig: &FnSig) -> Function {
 struct Ctx<'a> {
     hir: &'a Hir,
     typed: &'a TypedFile,
-    /// Each constant's value.
-    const_values: &'a flux_arena::ArenaMap<flux_hir::Const, flux_mir::eval::Value>,
+    /// The values of constants that code without generic parameters
+    /// names.
+    const_values: &'a flux_mir::eval::ConstValues,
+    /// Evaluates the others, for the instances that use them.
+    evaluator: flux_mir::eval::Evaluator<'a>,
+    instance_values: HashMap<flux_ty::ConstInstance, flux_mir::eval::Value>,
     symbols: &'a HashMap<FunctionId, String>,
     uses_abort: bool,
     /// The data object holding each distinct C string, by its bytes.
@@ -633,14 +671,35 @@ impl Lower<'_, '_, '_> {
     fn operand(&mut self, operand: &Operand) -> Vec<Value> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self.read(place),
-            Operand::Const(Constant::Item { id, .. }) => {
-                let value = &self.ctx.const_values[*id];
+            Operand::Const(Constant::Item { id, args, ty }) => {
+                let c = flux_ty::ConstInstance { konst: *id, args };
+                let known = self.ctx.const_values.get(*id, args);
+                let value = match known.or_else(|| self.ctx.instance_values.get(&c)) {
+                    Some(value) => value.clone(),
+                    None => match self.ctx.evaluator.eval_instance(c) {
+                        Ok(value) => {
+                            self.ctx.instance_values.insert(c, value.clone());
+                            value
+                        }
+                        // Reported once code generation is done.
+                        Err(_) => return self.zeroes(*ty),
+                    },
+                };
                 let mut leaves = Vec::new();
-                self.value_leaves(value, &mut leaves);
+                self.value_leaves(&value, &mut leaves);
                 leaves
             }
             Operand::Const(constant) => self.constant(*constant).into_iter().collect(),
         }
+    }
+
+    /// Zero leaves of type `ty`: a value for code that is never output.
+    fn zeroes(&mut self, ty: Ty) -> Vec<Value> {
+        leaves_of(self.sigs, ty)
+            .into_iter()
+            .filter_map(keel_type)
+            .map(|t| self.b.ins().iconst(t, 0))
+            .collect()
     }
 
     /// A constant item's value as leaves.

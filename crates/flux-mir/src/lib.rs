@@ -291,9 +291,12 @@ pub enum Constant {
     /// A `c"..."` literal: a pointer to NUL-terminated static bytes, the
     /// body's `c_strings[index]`.
     CStr(u32),
-    /// The value of a constant item, of type `ty`.
+    /// The value of a constant item, of type `ty`, with generic
+    /// arguments for its owner's parameters (`Self` first, for a
+    /// trait's): which value it is follows once they are known.
     Item {
         id: flux_hir::ConstId,
+        args: GenericArgs,
         ty: Ty,
     },
 }
@@ -459,8 +462,9 @@ pub struct FileMir {
     pub bodies: flux_arena::ArenaMap<flux_hir::Function, Body>,
     /// Each constant's value, as MIR.
     pub consts: flux_arena::ArenaMap<flux_hir::Const, Body>,
-    /// Each constant's evaluated value.
-    pub const_values: flux_arena::ArenaMap<flux_hir::Const, eval::Value>,
+    /// The values of the constants without generic parameters, and of
+    /// the instances of others that code without any names.
+    pub const_values: eval::ConstValues,
     pub diagnostics: Vec<flux_hir::Diagnostic>,
 }
 
@@ -484,12 +488,12 @@ impl Body {
             .collect()
     }
 
-    /// The constant items the body uses.
-    pub fn const_items(&self) -> Vec<flux_hir::ConstId> {
+    /// The constant items the body uses, with their generic arguments.
+    pub fn const_items(&self) -> Vec<flux_ty::ConstInstance> {
         let mut found = Vec::new();
         let mut operand = |op: &Operand| {
-            if let Operand::Const(Constant::Item { id, .. }) = op {
-                found.push(*id);
+            if let Operand::Const(Constant::Item { id, args, .. }) = op {
+                found.push(flux_ty::ConstInstance { konst: *id, args });
             }
         };
         for data in self.blocks.values() {

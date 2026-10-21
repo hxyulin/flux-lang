@@ -1,0 +1,38 @@
+struct Square { 0: i32 }
+struct Cached<S> { shape: S, made: <S as Shape>::Out }
+struct Both<A, B> { a: A, b: B, sum: <B as Shape>::Out }
+struct Made<S> { 0: <S as Shape>::Out }
+struct Pair<S> { 0: S, 1: <S as Shape>::Out }
+struct Deep<T> { 0: Cached<T> }
+fn area(&Self) -> i32
+fn make(&Self) -> <Self as Shape>::Out
+fn area(&Square) -> i32
+    self@0: &Square
+fn make(&Square) -> i32
+    self@0: &Square
+fn clone(&Square) -> Square
+    self@0: &Square
+fn eq(&Square, &Square) -> bool
+    self@0: &Square
+    other@1: &Square
+fn new(S) -> Cached<S>
+    shape@0: S
+    made@1: <S as Shape>::Out
+fn twice(&Cached<S>) -> i32
+    self@0: &Cached<S>
+fn area<T>(&Cached<T>) -> i32
+    c@0: &Cached<T>
+fn deep<T>(Deep<T>) -> Cached<T>
+    d@0: Deep<T>
+fn main() -> ()
+    c@0: Cached<Square>
+    n@1: i32
+    both@2: Both<Square, Square>
+    d@3: Cached<Square>
+    pair@4: Pair<Square>
+    explicit@5: Cached<Square>
+fn clone(&Pair<S>) -> Pair<S>
+    self@0: &Pair<S>
+fn eq(&Pair<S>, &Pair<S>) -> bool
+    self@0: &Pair<S>
+    other@1: &Pair<S>
