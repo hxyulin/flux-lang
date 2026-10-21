@@ -1,0 +1,110 @@
+struct Braced {  }
+
+struct Unit;
+
+struct Tuple(i32);
+
+struct Mixed(i32, i32);
+
+struct Open(i32);
+
+struct S;
+
+struct Hidden;
+
+fn private_fn() -> () {}
+
+fn f() -> () {}
+
+fn only_m() -> () {}
+
+fn also_only_m() -> () {}
+
+fn uses() -> () {
+    only_m();
+    also_only_m();
+    let _ = Braced {  };
+    let _ = Unit;
+    let _ = Tuple(1);
+    let _ = Mixed(1, 2);
+    let _ = C;
+}
+
+fn S::new() -> S {
+    S
+}
+
+fn S::make() -> S {
+    S::new()
+}
+
+fn S::x() -> i32 {
+    X
+}
+
+fn S::method(self@0: &Self) -> () {}
+
+fn S::call(self@0: &Self) -> () {
+    self@0.method()
+}
+
+fn crate_fn() -> () {
+    only_m();
+}
+
+fn private() -> () {}
+
+fn crate_only() -> () {}
+
+fn uses() -> () {
+    private();
+    crate_only();
+    let _ = Hidden;
+}
+
+fn main() -> () {
+    uses();
+    crate_fn();
+    uses();
+    let _ = S::make();
+    let _ = S::x();
+    S.call();
+    private_fn();
+    let _a@0 = Braced {  };
+    let _b@1: m::Braced = Braced {  };
+    let _c@2 = Unit;
+    let _d@3 = Tuple(1);
+    let _e@4 = Mixed(1, 2);
+    let _f@5 = Open(1);
+    let Tuple(_) = Tuple(2);
+    let _g@6 = C;
+    f();
+    only_m();
+    also_only_m();
+    let _h@7 = S::new();
+    let _i@8 = X;
+    S::method((&S));
+    private_fn();
+}
+
+error 1142..1166: `private` is private, and cannot be re-exported
+error 1180..1212: `crate_only` is only public within the crate, and cannot be re-exported outside
+error 1226..1252: `hidden` is private, and cannot be re-exported
+error 1266..1293: `crate_mod` is only public within the crate, and cannot be re-exported outside
+error 1307..1330: `Hidden` is private, and cannot be re-exported
+error 1434..1444: function `private_fn` is private
+error 1588..1598: function `private_fn` is private
+error 1618..1624: struct `Braced` is private
+error 1656..1662: struct `Braced` is private
+error 1683..1687: unit struct `Unit` is private
+error 1705..1710: tuple struct constructor `Tuple` is private
+error 1731..1736: tuple struct constructor `Mixed` is private
+error 1780..1785: tuple struct constructor `Tuple` is private
+error 1794..1799: tuple struct constructor `Tuple` is private
+error 1820..1821: constant `C` is private
+error 1830..1835: module `inner` is private
+error 1852..1858: function `only_m` is private
+error 1872..1883: function `also_only_m` is private
+error 1906..1909: associated function `new` is private
+error 1932..1933: associated constant `X` is private
+error 1945..1951: method `method` is private

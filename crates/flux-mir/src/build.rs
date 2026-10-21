@@ -2,7 +2,7 @@
 
 use flux_arena::{Arena, ArenaMap};
 use flux_hir::{
-    ArithOp, BinaryOp, Binding, CmpOp, Expr, ExprId, FileHir, FunctionId, ItemTree, Literal,
+    ArithOp, BinaryOp, Binding, CmpOp, ConstId, Expr, ExprId, FunctionId, Hir, ItemTree, Literal,
     LogicOp, Pat, PatId, Res, Stmt, StructId, UnaryOp,
 };
 use flux_intern::Symbol;
@@ -17,33 +17,167 @@ use crate::{
 
 /// Builds every body of a file and checks initialization. The file must
 /// have no diagnostics from lowering or type checking.
-pub fn build_file(hir: &FileHir, typed: &TypedFile) -> FileMir {
-    let mut bodies = ArenaMap::new();
+pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut diagnostics = Vec::new();
-    for (id, _) in hir.bodies.iter() {
+    let mut check = |body: &Body, file| {
+        let found = crate::init::check(body, &hir.items, &typed.sigs)
+            .into_iter()
+            .chain(crate::borrowck::check(body, &hir.items, &typed.sigs));
+        diagnostics.extend(found.map(|d| flux_hir::Diagnostic { file, ..d }));
+    };
+    // Every constant, and every function of the program; `core`'s
+    // functions only if something calls them.
+    let mut queue: Vec<FunctionId> = Vec::new();
+    let mut consts = ArenaMap::new();
+    for (id, _) in hir.const_bodies.iter() {
+        let body = build_const(hir, typed, id);
+        check(&body, hir.items.consts[id].loc.file);
+        queue.extend(body.callees());
+        consts.insert(id, body);
+    }
+    queue.extend(
+        hir.bodies
+            .iter()
+            .map(|(id, _)| id)
+            .filter(|&id| hir.is_program(id)),
+    );
+    let mut bodies = ArenaMap::new();
+    while let Some(id) = queue.pop() {
+        if bodies.get(id).is_some() || hir.bodies.get(id).is_none() {
+            continue;
+        }
         let body = build(hir, typed, id);
-        diagnostics.extend(crate::init::check(&body, &hir.items, &typed.sigs));
-        diagnostics.extend(crate::borrowck::check(&body, &hir.items, &typed.sigs));
+        check(&body, hir.items.functions[id].loc.file);
+        queue.extend(body.callees());
         bodies.insert(id, body);
     }
-    diagnostics.sort_by_key(|d: &flux_hir::Diagnostic| (d.range.start(), d.range.end()));
+    let mut const_values = ArenaMap::new();
+    if diagnostics.is_empty() {
+        diagnostics.extend(evaluate_consts(hir, &bodies, &consts, &mut const_values));
+        // rustc lints associated constants even where they are unused.
+        let linted = bodies
+            .iter()
+            .map(|(id, body)| (hir.items.functions[id].loc.file, body))
+            .chain(consts.iter().filter_map(|(id, body)| {
+                let data = &hir.items.consts[id];
+                data.owner.map(|_| (data.loc.file, body))
+            }));
+        for (file, body) in linted {
+            let found = crate::lint::check(body, &typed.sigs, &const_values);
+            diagnostics.extend(
+                found
+                    .into_iter()
+                    .map(|d| flux_hir::Diagnostic { file, ..d }),
+            );
+        }
+    }
+    flux_hir::Diagnostic::sort(&mut diagnostics);
     FileMir {
         bodies,
+        consts,
+        const_values,
         diagnostics,
     }
 }
 
+/// Evaluates the constants: free ones always, as rustc does, and
+/// associated ones where they are used. Errors are E0080, at the
+/// constant's value.
+fn evaluate_consts(
+    hir: &Hir,
+    bodies: &ArenaMap<flux_hir::Function, Body>,
+    consts: &ArenaMap<flux_hir::Const, Body>,
+    values: &mut ArenaMap<flux_hir::Const, crate::eval::Value>,
+) -> Vec<flux_hir::Diagnostic> {
+    let names = |id: ConstId| {
+        hir.items.consts[id]
+            .name
+            .map_or("_".to_owned(), |n| n.to_string())
+    };
+    let mut evaluator = crate::eval::Evaluator::new(bodies, consts, &names);
+    let mut used = std::collections::HashSet::new();
+    for body in bodies
+        .iter()
+        .map(|(_, b)| b)
+        .chain(consts.iter().map(|(_, b)| b))
+    {
+        used.extend(body.const_items());
+    }
+    let mut diagnostics = Vec::new();
+    for (id, data) in hir.items.consts.iter() {
+        if consts.get(id).is_none() {
+            continue;
+        }
+        let wanted = data.owner.is_none() || used.contains(&id);
+        match evaluator.eval_const(id) {
+            Ok(value) => {
+                values.insert(id, value);
+            }
+            Err(e) if wanted && !e.nested => {
+                let mut d = flux_hir::Diagnostic::new(e.range, e.message);
+                d.file = data.loc.file;
+                diagnostics.push(d);
+            }
+            Err(_) => {}
+        }
+    }
+    diagnostics
+}
+
+/// Builds the MIR of constant `konst`'s value: a body without
+/// parameters returning it.
+pub fn build_const(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Body {
+    let (body, source_map) = &hir.const_bodies[konst];
+    let sig = flux_ty::FnSig {
+        params: Box::default(),
+        ret: typed.sigs.consts[konst],
+    };
+    let module = hir.items.consts[konst].loc.module;
+    build_body(
+        hir,
+        typed,
+        body,
+        source_map,
+        &typed.consts[konst],
+        &sig,
+        module,
+    )
+}
+
 /// Builds the MIR of `function`. Its body must have lowered and
 /// type-checked without errors; anything erroneous becomes unreachable.
-pub fn build(hir: &FileHir, typed: &TypedFile, function: FunctionId) -> Body {
+pub fn build(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Body {
     let (body, source_map) = &hir.bodies[function];
     let sig = &typed.sigs[function];
+    let data = &hir.items.functions[function];
+    let mut built = build_body(
+        hir,
+        typed,
+        body,
+        source_map,
+        &typed.bodies[function],
+        sig,
+        data.loc.module,
+    );
+    built.inherits_overflow_checks = data.inherits_overflow_checks;
+    built
+}
+
+fn build_body(
+    hir: &Hir,
+    typed: &TypedFile,
+    body: &flux_hir::Body,
+    source_map: &flux_hir::BodySourceMap,
+    types: &InferenceResult,
+    sig: &flux_ty::FnSig,
+    module: flux_hir::ModuleId,
+) -> Body {
     let mut b = Builder {
         typed,
         items: &hir.items,
         body,
         source_map,
-        types: &typed.bodies[function],
+        types,
         locals: Arena::new(),
         blocks: Vec::new(),
         current: None,
@@ -108,6 +242,8 @@ pub fn build(hir: &FileHir, typed: &TypedFile, function: FunctionId) -> Body {
         blocks: arena,
         param_count: params.len(),
         c_strings: b.c_strings,
+        in_core: hir.items.is_core(module),
+        inherits_overflow_checks: false,
     }
 }
 
@@ -269,6 +405,29 @@ impl Builder<'_> {
         match &self.body.exprs[expr] {
             Expr::Literal(literal) => Operand::Const(self.constant(literal, expr)),
             Expr::Tuple(fields) if fields.is_empty() => Operand::Const(Constant::Unit),
+            // A negated literal is one constant, as in rustc: `-128i8`
+            // does not negate 128.
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } if matches!(
+                self.body.exprs[*operand],
+                Expr::Literal(Literal::Int { .. })
+            ) =>
+            {
+                let (Expr::Literal(Literal::Int { value, .. }), Some(ty)) =
+                    (&self.body.exprs[*operand], self.expr_ty(expr).as_int())
+                else {
+                    unreachable!("checked above")
+                };
+                Operand::Const(Constant::int((*value as i128).wrapping_neg(), ty))
+            }
+            Expr::Path(Res::Const(id)) if self.types.reborrows.get(expr).is_none() => {
+                Operand::Const(Constant::Item {
+                    id: *id,
+                    ty: self.expr_ty(expr),
+                })
+            }
             _ => {
                 let temp = self.temp(self.expr_ty(expr));
                 self.lower_into(expr, &temp.into());
@@ -353,6 +512,10 @@ impl Builder<'_> {
         let range = self.range(expr);
         let body = self.body;
         match &body.exprs[expr] {
+            Expr::Path(Res::Const(_)) => {
+                let operand = self.lower_operand(expr);
+                self.assign(dest, Rvalue::Use(operand), range);
+            }
             Expr::Missing | Expr::Path(Res::Function(_) | Res::Err) => {
                 self.terminate(TerminatorKind::Unreachable, range);
             }
@@ -552,6 +715,13 @@ impl Builder<'_> {
                     self.lower_operand(arg);
                 }
                 self.assign(dest, Rvalue::Use(receiver), range);
+            }
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                operand: inner,
+            } if matches!(body.exprs[*inner], Expr::Literal(Literal::Int { .. })) => {
+                let operand = self.lower_operand(expr);
+                self.assign(dest, Rvalue::Use(operand), range);
             }
             Expr::Unary { op, operand } => {
                 let operand = self.lower_operand(*operand);
@@ -842,13 +1012,13 @@ impl Builder<'_> {
     ) {
         let (zero_msg, overflow_msg) = if op == BinOp::Div {
             (
-                AssertMessage::DivisionByZero,
-                AssertMessage::DivisionOverflow,
+                AssertMessage::DivisionByZero(l.clone()),
+                AssertMessage::DivisionOverflow(l.clone(), r.clone()),
             )
         } else {
             (
-                AssertMessage::RemainderByZero,
-                AssertMessage::RemainderOverflow,
+                AssertMessage::RemainderByZero(l.clone()),
+                AssertMessage::RemainderOverflow(l.clone(), r.clone()),
             )
         };
         // A constant divisor needs only the checks it could fail.

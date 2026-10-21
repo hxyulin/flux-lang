@@ -1,0 +1,49 @@
+struct S { a: i32, b: i32, c: i32 }
+struct T { 0: i32, 1: i32 }
+struct Knob { go: i32, hidden: i32 }
+struct P {}
+struct Leaky { p: P }
+fn make() -> S
+fn make_t() -> T
+fn knob() -> Knob
+fn leak() -> P
+fn leaky() -> Leaky
+fn secret(&S) -> i32
+    self@0: &S
+fn open(&S) -> i32
+    self@0: &S
+fn hidden_new() -> S
+fn new() -> S
+fn go(&Knob) -> i32
+    self@0: &Knob
+fn total(&Knob) -> i32
+    self@0: &Knob
+fn peek(&S) -> i32
+    s@0: &S
+fn main() -> ()
+    s@0: S
+    t@1: T
+    n@2: Knob
+    _ok@3: i32
+    _c@4: S
+    _d@5: S
+    a@6: i32
+    _e@7: Knob
+    _f@8: T
+    _x@9: i32
+    _y@10: i32
+    a@11: i32
+    b@12: i32
+    c@13: i32
+    _k@14: P
+    l@15: Leaky
+    _p@16: P
+    _sum@17: i32
+error 1474..1475: fields `a` and `b` of struct `S` are private
+error 1514..1515: fields `a` and `b` of struct `S` are private
+error 1580..1586: field `hidden` of struct `Knob` is private
+error 1613..1614: field `0` of struct `T` is private
+error 1642..1643: field `a` of struct `S` is private
+error 1689..1690: fields `a` and `b` of struct `S` are private
+error 1749..1758: type `P` is private
+error 1773..1782: type `P` is private

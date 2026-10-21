@@ -7,13 +7,18 @@ use std::fmt::Write;
 use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 
 use crate::{
-    Body, Expr, ExprId, FileHir, Function, Literal, LoopSource, Pat, PatId, Res, Stmt, StructKind,
-    TypeRef,
+    Body, Diagnostic, Expr, ExprId, Function, Hir, Literal, LoopSource, Pat, PatId, Res, Stmt,
+    StructKind, TypeRef,
 };
 
-pub(crate) fn file(hir: &FileHir) -> String {
+pub(crate) fn file(hir: &Hir) -> String {
     let mut out = String::new();
-    for s in hir.items.structs.values() {
+    let items = &hir.items;
+    for s in items
+        .structs
+        .values()
+        .filter(|s| items.in_main_crate(s.loc.module))
+    {
         let fields: Vec<String> = s
             .fields
             .iter()
@@ -31,7 +36,11 @@ pub(crate) fn file(hir: &FileHir) -> String {
         .unwrap();
         out.push('\n');
     }
-    for (id, function) in hir.items.functions.iter() {
+    let functions = items
+        .functions
+        .iter()
+        .filter(|(_, f)| items.in_main_crate(f.loc.module));
+    for (id, function) in functions {
         match hir.bodies.get(id) {
             Some((body, _)) => {
                 let mut p = Printer {
@@ -62,15 +71,27 @@ pub(crate) fn file(hir: &FileHir) -> String {
         }
         out.push('\n');
     }
-    for d in &hir.diagnostics {
-        writeln!(out, "error {:?}: {}", d.range, d.message).unwrap();
-    }
+    write_diagnostics(&mut out, hir, &hir.diagnostics);
     out
+}
+
+/// `error 12..34: message`, with the file's number for files other than
+/// the program's root.
+pub(crate) fn write_diagnostics(out: &mut String, hir: &Hir, diagnostics: &[Diagnostic]) {
+    let items = &hir.items;
+    let root = items.modules[items.module_of(items.main_crate())].file;
+    for d in diagnostics {
+        if d.file == root {
+            writeln!(out, "error {:?}: {}", d.range, d.message).unwrap();
+        } else {
+            writeln!(out, "error file{} {:?}: {}", d.file.0, d.range, d.message).unwrap();
+        }
+    }
 }
 
 fn type_ref(ty: &TypeRef) -> String {
     match ty {
-        TypeRef::Path(name) => name.to_string(),
+        TypeRef::Path(path) => path.to_string(),
         TypeRef::Tuple(fields) if fields.len() == 1 => format!("({},)", type_ref(&fields[0])),
         TypeRef::Tuple(fields) => {
             let fields: Vec<String> = fields.iter().map(type_ref).collect();
@@ -90,7 +111,7 @@ fn type_ref(ty: &TypeRef) -> String {
 }
 
 struct Printer<'a> {
-    hir: &'a FileHir,
+    hir: &'a Hir,
     body: &'a Body,
     out: &'a mut String,
     indent: usize,
@@ -220,6 +241,15 @@ impl Printer<'_> {
             }
             Expr::Path(Res::Struct(s)) => {
                 write!(self.out, "{}", self.hir.items.structs[*s].name).unwrap();
+            }
+            Expr::Path(Res::Const(c)) => {
+                let name = self.hir.items.consts[*c].name;
+                write!(
+                    self.out,
+                    "{}",
+                    name.map_or("_".to_owned(), |n| n.to_string())
+                )
+                .unwrap();
             }
             Expr::Path(Res::Err) => self.out.push_str("<error>"),
             Expr::Tuple(fields) => {

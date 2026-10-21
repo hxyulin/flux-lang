@@ -10,16 +10,21 @@ flux is an experimental compiler for a subset of Rust (edition 2024). Use
   typed AST (`src/ast/`), generated from `flux.ungram`.
 - `crates/flux-sourcegen/`: generates `src/ast/generated.rs`; its tests
   check that parsed trees match `flux.ungram`.
-- `crates/flux-hir/`: item tree and HIR: function bodies lowered from the
-  AST with names resolved. Fixtures in `tests/data/{ok,err}` with `.hir`
+- `crates/flux-hir/`: source files, item tree, def map (modules, imports,
+  privacy) and HIR: bodies lowered from the AST with names resolved.
+  Fixtures in `tests/data/{ok,err}` with `.hir`
   snapshots; `ok/` fixtures must also compile with rustc.
 - `crates/flux-ty/`: type inference and checking per body. Fixtures in
   `tests/data/{ok,err}` with `.ty` snapshots; `ok/` fixtures must compile
   with rustc, and `err/` diagnostics should match rustc's.
-- `crates/flux-mir/`: MIR built from typed HIR, and the initialization
-  check. Fixtures in `tests/data/{ok,err}` with `.mir` snapshots.
+- `crates/flux-mir/`: MIR built from typed HIR, the initialization and
+  borrow checks, constant evaluation and rustc's overflow lints.
+  Fixtures in `tests/data/{ok,err}` with `.mir` snapshots.
 - `crates/flux-codegen/`: MIR to keel IR, objects and executables, through
   keel (a git dependency pinned in the root `Cargo.toml`).
+- `library/core/`: flux's own `core`, written in flux and built into the
+  compiler; every program can use it. It may define methods on primitive
+  types, which no other crate may.
 - `tests/run/`: programs compiled with both rustc and flux, whose output and
   exit status must match (`cargo test -p flux-cli --test run`, arm64 macOS).
 - `crates/flux-intern/`: global `Symbol` interner and predefined symbols.

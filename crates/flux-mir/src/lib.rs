@@ -26,7 +26,9 @@
 
 pub mod borrowck;
 mod build;
+pub mod eval;
 pub mod init;
+pub mod lint;
 mod pretty;
 
 use flux_arena::{Arena, Idx};
@@ -51,6 +53,13 @@ pub struct Body {
     /// The bytes of each C string constant, without the terminating NUL;
     /// [`Constant::CStr`] indexes this.
     pub c_strings: Vec<Box<[u8]>>,
+    /// `core`'s code, which the overflow lints leave alone.
+    pub in_core: bool,
+    /// Its arithmetic is checked for overflow during constant evaluation
+    /// when its caller's is (`#[rustc_inherit_overflow_checks]`). Other
+    /// functions' wrap, as flux compiles them with overflow checks off;
+    /// constants' are always checked.
+    pub inherits_overflow_checks: bool,
 }
 
 impl Body {
@@ -268,6 +277,11 @@ pub enum Constant {
     /// A `c"..."` literal: a pointer to NUL-terminated static bytes, the
     /// body's `c_strings[index]`.
     CStr(u32),
+    /// The value of a constant item, of type `ty`.
+    Item {
+        id: flux_hir::ConstId,
+        ty: Ty,
+    },
 }
 
 impl Constant {
@@ -277,6 +291,7 @@ impl Constant {
             Constant::Bool(_) => Ty::BOOL,
             Constant::Unit => Ty::UNIT,
             Constant::CStr(_) => flux_ty::c_str_ref(),
+            Constant::Item { ty, .. } => ty,
         }
     }
 
@@ -369,24 +384,28 @@ pub enum TerminatorKind {
     Unreachable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why an assertion fails, with the operands of the operation it
+/// guards, for constant evaluation's messages.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssertMessage {
-    DivisionByZero,
-    RemainderByZero,
-    DivisionOverflow,
-    RemainderOverflow,
+    DivisionByZero(Operand),
+    RemainderByZero(Operand),
+    DivisionOverflow(Operand, Operand),
+    RemainderOverflow(Operand, Operand),
 }
 
 impl AssertMessage {
     /// rustc's panic message.
-    pub fn text(self) -> &'static str {
+    pub fn text(&self) -> &'static str {
         match self {
-            AssertMessage::DivisionByZero => "attempt to divide by zero",
-            AssertMessage::RemainderByZero => {
+            AssertMessage::DivisionByZero(_) => "attempt to divide by zero",
+            AssertMessage::RemainderByZero(_) => {
                 "attempt to calculate the remainder with a divisor of zero"
             }
-            AssertMessage::DivisionOverflow => "attempt to divide with overflow",
-            AssertMessage::RemainderOverflow => "attempt to calculate the remainder with overflow",
+            AssertMessage::DivisionOverflow(..) => "attempt to divide with overflow",
+            AssertMessage::RemainderOverflow(..) => {
+                "attempt to calculate the remainder with overflow"
+            }
         }
     }
 }
@@ -413,14 +432,54 @@ impl TerminatorKind {
 #[derive(Debug)]
 pub struct FileMir {
     pub bodies: flux_arena::ArenaMap<flux_hir::Function, Body>,
+    /// Each constant's value, as MIR.
+    pub consts: flux_arena::ArenaMap<flux_hir::Const, Body>,
+    /// Each constant's evaluated value.
+    pub const_values: flux_arena::ArenaMap<flux_hir::Const, eval::Value>,
     pub diagnostics: Vec<flux_hir::Diagnostic>,
 }
 
 impl FileMir {
     /// Every body in a textual form like rustc's `-Zdump-mir`. Used by
     /// snapshot tests and `flux mir`.
-    pub fn debug_dump(&self, hir: &flux_hir::FileHir) -> String {
+    pub fn debug_dump(&self, hir: &flux_hir::Hir) -> String {
         pretty::file(self, hir)
+    }
+}
+
+impl Body {
+    /// The functions the body calls.
+    pub fn callees(&self) -> Vec<FunctionId> {
+        self.blocks
+            .values()
+            .filter_map(|data| match &data.terminator.kind {
+                TerminatorKind::Call { func, .. } => Some(*func),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The constant items the body uses.
+    pub fn const_items(&self) -> Vec<flux_hir::ConstId> {
+        let mut found = Vec::new();
+        let mut operand = |op: &Operand| {
+            if let Operand::Const(Constant::Item { id, .. }) = op {
+                found.push(*id);
+            }
+        };
+        for data in self.blocks.values() {
+            for statement in &data.statements {
+                if let StatementKind::Assign(_, rvalue) = &statement.kind {
+                    rvalue.operands().into_iter().for_each(&mut operand);
+                }
+            }
+            data.terminator
+                .kind
+                .operands()
+                .into_iter()
+                .for_each(&mut operand);
+        }
+        found
     }
 }
 

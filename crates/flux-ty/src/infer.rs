@@ -4,15 +4,15 @@ use std::collections::HashSet;
 
 use flux_arena::ArenaMap;
 use flux_hir::{
-    ArithOp, BinaryOp, Binding, BindingId, Body, BodySourceMap, CmpOp, Diagnostic, Expr, ExprId,
-    FunctionId, ItemTree, Literal, LogicOp, LoopSource, Pat, PatId, Res, Stmt, StructId,
+    ArithOp, BinaryOp, Binding, BindingId, Body, BodySourceMap, CmpOp, ConstId, Diagnostic, Expr,
+    ExprId, FunctionId, ItemTree, Literal, LogicOp, LoopSource, Pat, PatId, Res, Stmt, StructId,
     StructKind, TypeRefId, UnaryOp,
 };
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
 
 use crate::ty::{InferVar, IntTy, Mutability, Ty, TyKind};
-use crate::{Signatures, function_name, resolve_or_report, self_ty};
+use crate::{Signatures, function_name, impl_target, resolve_or_report, self_ty};
 
 /// The types of one body.
 #[derive(Debug)]
@@ -53,26 +53,15 @@ pub fn infer_body(
     source_map: &BodySourceMap,
 ) -> InferenceResult {
     let sig = &sigs[function];
-    let mut ctx = Ctx {
-        items,
-        sigs,
-        self_ty: self_ty(items, &items.functions[function]),
-        body,
-        source_map,
-        vars: Vec::new(),
-        expr_types: ArenaMap::new(),
-        binding_types: ArenaMap::new(),
-        field_indices: ArenaMap::new(),
-        field_derefs: ArenaMap::new(),
-        methods: ArenaMap::new(),
-        reborrows: ArenaMap::new(),
-        loops: ArenaMap::new(),
-        uninit_bindings: HashSet::new(),
-        unsafe_depth: u32::from(items.functions[function].is_unsafe),
+    let data = &items.functions[function];
+    let owner = Owner {
+        module: data.loc.module,
+        self_ty: self_ty(items, data.owner),
+        is_unsafe: data.is_unsafe,
+        const_context: data.is_const.then_some("constant functions"),
         ret: sig.ret,
-        deferred: Vec::new(),
-        diagnostics: Vec::new(),
     };
+    let mut ctx = Ctx::new(items, sigs, owner, body, source_map);
     for (i, &pat) in body.params.iter().enumerate() {
         let ty = sig.params.get(i).copied().unwrap_or(Ty::ERROR);
         ctx.check_pat(pat, ty, false);
@@ -80,6 +69,73 @@ pub fn infer_body(
     let ty = ctx.infer_expr(body.root);
     ctx.coerce(ty, sig.ret, body.root);
     ctx.finish()
+}
+
+/// Infers the types of constant `konst`'s value.
+pub fn infer_const(
+    items: &ItemTree,
+    sigs: &Signatures,
+    konst: ConstId,
+    body: &Body,
+    source_map: &BodySourceMap,
+) -> InferenceResult {
+    let data = &items.consts[konst];
+    let ret = sigs.consts[konst];
+    let owner = Owner {
+        module: data.loc.module,
+        self_ty: self_ty(items, data.owner),
+        is_unsafe: false,
+        const_context: Some("constants"),
+        ret,
+    };
+    let mut ctx = Ctx::new(items, sigs, owner, body, source_map);
+    let ty = ctx.infer_expr(body.root);
+    ctx.coerce(ty, ret, body.root);
+    ctx.finish()
+}
+
+/// What a body belongs to, as far as inference cares.
+struct Owner {
+    module: flux_hir::ModuleId,
+    self_ty: Option<Ty>,
+    is_unsafe: bool,
+    /// "constants" or "constant functions", where only `const fn`s may be
+    /// called.
+    const_context: Option<&'static str>,
+    ret: Ty,
+}
+
+impl<'a> Ctx<'a> {
+    fn new(
+        items: &'a ItemTree,
+        sigs: &'a Signatures,
+        owner: Owner,
+        body: &'a Body,
+        source_map: &'a BodySourceMap,
+    ) -> Ctx<'a> {
+        Ctx {
+            items,
+            sigs,
+            self_ty: owner.self_ty,
+            module: owner.module,
+            const_context: owner.const_context,
+            body,
+            source_map,
+            vars: Vec::new(),
+            expr_types: ArenaMap::new(),
+            binding_types: ArenaMap::new(),
+            field_indices: ArenaMap::new(),
+            field_derefs: ArenaMap::new(),
+            methods: ArenaMap::new(),
+            reborrows: ArenaMap::new(),
+            loops: ArenaMap::new(),
+            uninit_bindings: HashSet::new(),
+            unsafe_depth: u32::from(owner.is_unsafe),
+            ret: owner.ret,
+            deferred: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
 }
 
 /// The type of `c"..."`: `&'static CStr`.
@@ -154,6 +210,10 @@ struct Ctx<'a> {
     sigs: &'a Signatures,
     /// What `Self` means in this body.
     self_ty: Option<Ty>,
+    /// The function's module, where the types in its body are resolved.
+    module: flux_hir::ModuleId,
+    /// In a constant or `const fn`: what to call it in E0015.
+    const_context: Option<&'static str>,
     body: &'a Body,
     source_map: &'a BodySourceMap,
     /// Each variable's value and where it was created.
@@ -180,6 +240,7 @@ impl Ctx<'_> {
 
     fn error(&mut self, range: TextRange, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic {
+            file: flux_hir::FileId::UNKNOWN,
             range,
             message: message.into(),
         });
@@ -387,6 +448,7 @@ impl Ctx<'_> {
         let range = self.source_map.types.get(ty).copied().unwrap_or_default();
         resolve_or_report(
             self.items,
+            self.module,
             &self.body.types[ty],
             self.self_ty,
             range,
@@ -505,6 +567,7 @@ impl Ctx<'_> {
                 }
                 let def = &items.structs[*strukt];
                 let names = self.source_map.pat_fields.get(pat);
+                let mut private = Vec::new();
                 let mut mentioned = Vec::new();
                 for (i, &(name, field_pat)) in fields.iter().enumerate() {
                     let (name_range, field_range) = names
@@ -529,9 +592,16 @@ impl Ctx<'_> {
                             Ty::ERROR
                         }
                     };
+                    if let Some((_, field)) = def.field(name)
+                        && !items.is_visible(field.vis, self.module)
+                        && !mentioned.contains(&name)
+                    {
+                        private.push((name, name_range));
+                    }
                     mentioned.push(name);
                     self.check_pat(field_pat, field_ty, uninit);
                 }
+                self.private_fields(def.name, &private);
                 if !rest {
                     let missing: Vec<Symbol> = def
                         .fields
@@ -621,6 +691,7 @@ impl Ctx<'_> {
                     Ty::ERROR
                 }
             },
+            Expr::Path(Res::Const(c)) => self.sigs.consts.get(*c).copied().unwrap_or(Ty::ERROR),
             Expr::Path(Res::Err) => Ty::ERROR,
             Expr::Tuple(fields) => {
                 let elements: Vec<Ty> = fields.iter().map(|&f| self.infer_expr(f)).collect();
@@ -884,7 +955,50 @@ impl Ctx<'_> {
                 format!("call to unsafe function `{name}` requires an `unsafe` block"),
             );
         }
+        self.check_signature_privacy(function, id);
+        if let Some(context) = self.const_context
+            && !data.is_const
+        {
+            let what = if data.owner.is_some() {
+                "associated function"
+            } else {
+                "function"
+            };
+            let name = self.items.function_path(data);
+            self.error(
+                self.range(id),
+                format!("cannot call non-const {what} `{name}` in {context}"),
+            );
+        }
         sig.ret
+    }
+
+    /// A function may be called only where every struct in its signature
+    /// is visible: `pub fn f() -> P` with a private `P` is callable only
+    /// where `P` is.
+    fn check_signature_privacy(&mut self, function: FunctionId, call: ExprId) {
+        fn structs(ty: Ty, out: &mut Vec<StructId>) {
+            match ty.kind() {
+                TyKind::Adt(adt) => out.push(adt.strukt),
+                TyKind::Tuple(elements) => elements.iter().for_each(|&e| structs(e, out)),
+                TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => structs(t, out),
+                _ => {}
+            }
+        }
+        let sig = &self.sigs[function];
+        let mut found = Vec::new();
+        for &ty in sig.params.iter().chain([&sig.ret]) {
+            structs(ty, &mut found);
+        }
+        let hidden = found.into_iter().find(|&s| {
+            !self
+                .items
+                .is_visible(self.items.structs[s].loc.vis, self.module)
+        });
+        if let Some(s) = hidden {
+            let name = self.items.structs[s].name;
+            self.error(self.range(call), format!("type `{name}` is private"));
+        }
     }
 
     /// `P(a, b)`, a tuple struct's constructor.
@@ -1011,13 +1125,22 @@ impl Ctx<'_> {
         match found {
             Some((index, ty)) => {
                 self.field_indices.insert(id, index as u32);
+                if let TyKind::Adt(adt) = base_ty.kind() {
+                    let def = &items.structs[adt.strukt];
+                    if !items.is_visible(def.fields[index].vis, self.module) {
+                        self.error(
+                            range,
+                            format!("field `{name}` of struct `{}` is private", def.name),
+                        );
+                    }
+                }
                 ty
             }
             None => {
                 // rustc names the type before dereferencing: `&S`.
                 let is_method = match base_ty.kind() {
                     TyKind::Adt(adt) => items
-                        .assoc_function(adt.strukt, name)
+                        .assoc_function(flux_hir::ImplTarget::Struct(adt.strukt), name)
                         .is_some_and(|f| items.functions[f].has_self),
                     _ => false,
                 };
@@ -1048,9 +1171,16 @@ impl Ctx<'_> {
         let names = self.source_map.expr_fields.get(id);
         let mut seen = Vec::new();
         let mut unknown = false;
+        let mut private = Vec::new();
         for (i, &(name, value)) in fields.iter().enumerate() {
             let value_ty = self.infer_expr(value);
             let name_range = names.and_then(|n| n.get(i)).copied().unwrap_or(range);
+            if let Some((_, field)) = def.field(name)
+                && !items.is_visible(field.vis, self.module)
+                && !seen.contains(&name)
+            {
+                private.push((name, name_range));
+            }
             if seen.contains(&name) {
                 self.error(
                     name_range,
@@ -1074,6 +1204,13 @@ impl Ctx<'_> {
             Some(base) => {
                 let base_ty = self.infer_expr(base);
                 self.coerce(base_ty, ty, base);
+                // The fields taken from `base` must be visible too.
+                let base_range = self.range(base);
+                for field in def.fields.iter() {
+                    if !seen.contains(&field.name) && !items.is_visible(field.vis, self.module) {
+                        private.push((field.name, base_range));
+                    }
+                }
             }
             None => {
                 let missing: Vec<Symbol> = def
@@ -1094,7 +1231,22 @@ impl Ctx<'_> {
                 }
             }
         }
+        self.private_fields(def.name, &private);
         ty
+    }
+
+    /// Reports the fields of struct `name` that are private here, in one
+    /// error, as rustc does.
+    fn private_fields(&mut self, name: Symbol, private: &[(Symbol, TextRange)]) {
+        let Some(&(_, range)) = private.first() else {
+            return;
+        };
+        let names: Vec<Symbol> = private.iter().map(|&(n, _)| n).collect();
+        let message = match names.as_slice() {
+            [one] => format!("field `{one}` of struct `{name}` is private"),
+            _ => format!("{} of struct `{name}` are private", list_fields(&names)),
+        };
+        self.error(range, message);
     }
 
     /// Only `CStr::as_ptr` exists so far, until flux has `impl` blocks and
@@ -1120,12 +1272,22 @@ impl Ctx<'_> {
             .copied()
             .unwrap_or_else(|| self.range(id));
         let (base, derefs) = self.autoderef(receiver_ty);
-        if let TyKind::Adt(adt) = base.kind() {
-            let found = self.items.assoc_function(adt.strukt, method);
+        if let Some(target) = impl_target(base) {
+            let found = self.items.assoc_function(target, method);
             let data = found.map(|f| &self.items.functions[f]);
             match (found, data) {
                 (Some(function), Some(data)) if data.has_self => {
                     return self.check_method(id, function, derefs, args, name_range);
+                }
+                // flux's `core` has only some of the primitive types'
+                // methods.
+                _ if matches!(target, flux_hir::ImplTarget::Primitive(_)) => {
+                    let what = self.describe(receiver_ty);
+                    self.error(
+                        name_range,
+                        format!("the method `{method}` on `{what}` is not supported yet"),
+                    );
+                    return Ty::ERROR;
                 }
                 _ => {
                     let what = self.describe(receiver_ty);
@@ -1174,6 +1336,21 @@ impl Ctx<'_> {
         args: &[ExprId],
         name_range: TextRange,
     ) -> Ty {
+        let data = &self.items.functions[function];
+        if !self.items.is_visible(data.loc.vis, self.module) {
+            self.error(name_range, format!("method `{}` is private", data.name));
+        }
+        self.check_signature_privacy(function, id);
+        if let Some(context) = self.const_context
+            && !data.is_const
+        {
+            let name = self.items.function_path(data);
+            let range = TextRange::new(name_range.start(), self.range(id).end());
+            self.error(
+                range,
+                format!("cannot call non-const method `{name}` in {context}"),
+            );
+        }
         let sig = &self.sigs[function];
         let autoref = match sig.params[0].kind() {
             TyKind::Ref(m, _) => Some(m),

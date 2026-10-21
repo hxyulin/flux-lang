@@ -22,18 +22,20 @@ subset. See [the supported language](LANGUAGE.md).
 
 ## 3. Semantics
 
-Started: name resolution, type inference, MIR and borrow checking for
-functions over integers, `bool`, raw pointers, tuples and structs, with
-methods and references that need no lifetimes (parameters, temporaries
-and locals assigned once). In order next:
+Started: name resolution across modules and `use` imports with
+privacy, type inference, constants and their compile-time evaluation,
+MIR and borrow checking, for functions over integers, `bool`, raw
+pointers, tuples and structs, with methods and references that need no
+lifetimes (parameters, temporaries and locals assigned once). In order
+next:
 
-1. Crates and modules, to compile flux's own `core` (below): `mod`,
-   multi-segment paths, the prelude, and `#[lang]` items and intrinsics,
-   allowed only in `core`.
-2. Generics and monomorphization, then traits: operators on user types,
-   `Copy`/`Clone`, `Drop`, `for` loops over `Iterator`.
-3. Lifetimes: references in structs and return values, which needs
+1. Generics and monomorphization, then traits: operators on user types,
+   `Copy`/`Clone`, `Drop`, `for` loops over `Iterator`. Then `core` can
+   define `Option`, `CStr` (now built into the compiler) and the pointer
+   methods, through `#[lang]` items and intrinsics.
+2. Lifetimes: references in structs and return values, which needs
    region inference across function signatures.
+3. Items inside function bodies, enums and `match`.
 
 Each comes with fixtures that rustc must agree with.
 
@@ -56,10 +58,15 @@ scalar replacement of aggregates (iterators, closures, `Option`).
 ## A core library instead of std
 
 rustc's `std` and `core` depend on compiler internals (lang items,
-intrinsics, unstable features), so flux cannot compile them. flux will
-provide its own small core library, written in flux, that defines the same
-names (`Option`, `Result`, the operator traits, `Copy`, `Sized`) with the
-same meaning. Output goes through `extern "C"` declarations of libc
+intrinsics, unstable features), so flux cannot compile them. flux
+provides its own small core library, [`library/core`](../library/core),
+written in flux and compiled with every program, that defines the same
+names with the same meaning. So far it has the integer types' constants
+and methods; `Option`, `Result`, the operator traits, `Copy` and `Sized`
+need generics and traits first. It is lowered and type-checked on every
+build (about a millisecond today), and only the functions a program
+calls are compiled; caching it is the first use for the incremental
+checking below. Output goes through `extern "C"` declarations of libc
 functions. Test programs written against that shared surface compile under
 both flux and rustc, which keeps rustc usable as an oracle: compare exit
 codes and output.

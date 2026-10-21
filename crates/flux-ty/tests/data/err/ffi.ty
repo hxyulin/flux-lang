@@ -9,7 +9,7 @@ fn methods(i32) -> ()
     s@1: &CStr
     a@2: *const i8
     b@3: {error}
-    c@4: {error}
+    c@4: i32
 fn pointers() -> ()
     p@0: *const i8
     n@1: usize
@@ -19,6 +19,5 @@ error 277..281: can't pass `i16` to variadic function; cast it to `c_int`
 error 336..342: this function takes at least 1 argument but 0 arguments were supplied
 error 409..420: `as_ptr` takes 0 arguments but 1 argument was supplied
 error 436..444: the method `to_bytes` on `&CStr` is not supported yet
-error 462..465: methods on `i32` are not supported yet
 error 521..537: mismatched types: expected `*const u8`, found `*const i8`
 error 588..598: casts of pointers are not supported yet

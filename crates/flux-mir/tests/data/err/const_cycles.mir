@@ -1,0 +1,26 @@
+fn looped() -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = const LOOPED;
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: i32;
+    let _2: i32;
+
+    bb0: {
+        _2 = Add(const A, const SELF);
+        _1 = Add(copy _2, const LOOPED);
+        _0 = const ();
+        return;
+    }
+}
+
+error 249..254: cycle detected when const-evaluating `A`
+error 271..272: cycle detected when const-evaluating `A`
+error 292..300: cycle detected when const-evaluating `SELF`
+error 364..372: cycle detected when const-evaluating `LOOPED`

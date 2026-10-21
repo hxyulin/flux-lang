@@ -1,0 +1,40 @@
+struct S;
+
+fn not_an_earlier_ancestor() -> () {}
+
+fn not_an_ancestor() -> () {}
+
+fn relative() -> () {}
+
+fn unresolved() -> () {}
+
+fn fine() -> () {}
+
+fn uses() -> () {
+    not_an_earlier_ancestor();
+    not_an_ancestor();
+    relative();
+    unresolved();
+    fine();
+}
+
+fn above_root() -> () {}
+
+fn main() -> () {
+    uses();
+    above_root();
+    let _s@0 = S;
+    let _n@1 = (NO_BODY + ASSOC_NO_BODY);
+}
+
+error 229..242: visibilities can only be restricted to ancestor modules
+error 294..295: cannot find `b` in the crate root
+error 332..333: relative paths are not supported in visibilities in 2018 edition or later
+error 370..374: cannot find `nope` in the crate root
+error 589..594: too many leading `super` keywords within `crate`
+error 627..630: visibility qualifiers are not permitted here
+error 642..653: file not found for module `missing`
+error 656..675: free constant item without body
+error 690..715: associated constant in `impl` without body
+error 723..727: imports need to be explicitly named
+error 733..738: imports need to be explicitly named

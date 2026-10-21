@@ -1,0 +1,331 @@
+fn unknown(_1: bool, _2: u8, _3: i32) -> i32 {
+    let mut _0: i32;
+    let mut _4: u8; // z
+    let _5: ();
+    let _6: bool;
+    let _7: ();
+    let _8: u8; // a
+    let _9: u8;
+    let _10: u8; // b
+    let _11: u8;
+    let _12: i32; // q
+    let _13: i32;
+    let _14: bool;
+    let _15: bool;
+    let _16: bool;
+    let _17: bool;
+    let mut _18: u8; // i
+    let _19: ();
+    let _20: ();
+    let _21: bool;
+    let _22: u8;
+    let _23: ();
+    let _24: u8;
+    let _25: u8; // e
+    let _26: u8;
+    let mut _27: u8; // k
+    let _28: &mut u8; // r
+    let _29: ();
+    let _30: u8; // f
+    let _31: u8;
+    let _32: i32;
+    let _33: i32;
+    let _34: i32;
+    let _35: i32;
+    let _36: u8;
+    let _37: i32;
+    let _38: u8;
+    let _39: i32;
+    let _40: i32;
+    let _41: u8;
+    let _42: i32;
+    let _43: u8;
+
+    bb0: {
+        _4 = const 250_u8;
+        _6 = copy _1;
+        switchInt(copy _6) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _4 = const 1_u8;
+        _7 = const ();
+        _5 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _5 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _9 = copy _4;
+        _8 = Add(copy _9, const 10_u8);
+        _11 = copy _2;
+        _10 = Add(copy _11, const 255_u8);
+        _13 = copy _3;
+        _14 = Eq(copy _13, const 0_i32);
+        assert(!copy _14, "attempt to divide by zero") -> bb4;
+    }
+
+    bb4: {
+        _15 = Eq(copy _13, const -1_i32);
+        _16 = Eq(const 100_i32, const -2147483648_i32);
+        _17 = BitAnd(copy _15, copy _16);
+        assert(!copy _17, "attempt to divide with overflow") -> bb5;
+    }
+
+    bb5: {
+        _12 = Div(const 100_i32, copy _13);
+        _18 = const 0_u8;
+        goto -> bb6;
+    }
+
+    bb6: {
+        _22 = copy _18;
+        _21 = Lt(copy _22, const 5_u8);
+        switchInt(copy _21) -> [0: bb9, otherwise: bb8];
+    }
+
+    bb7: {
+        _26 = copy _18;
+        _25 = Mul(copy _26, const 30_u8);
+        _27 = const 255_u8;
+        _28 = &mut _27;
+        (*_28) = const 0_u8;
+        _29 = const ();
+        _31 = copy _27;
+        _30 = Add(copy _31, const 1_u8);
+        _36 = copy _8;
+        _35 = copy _36 as i32;
+        _38 = copy _10;
+        _37 = copy _38 as i32;
+        _34 = Add(copy _35, copy _37);
+        _39 = copy _12;
+        _33 = Add(copy _34, copy _39);
+        _41 = copy _25;
+        _40 = copy _41 as i32;
+        _32 = Add(copy _33, copy _40);
+        _43 = copy _30;
+        _42 = copy _43 as i32;
+        _0 = Add(copy _32, copy _42);
+        StorageDead(_30);
+        StorageDead(_28);
+        StorageDead(_27);
+        StorageDead(_25);
+        StorageDead(_18);
+        StorageDead(_12);
+        StorageDead(_10);
+        StorageDead(_8);
+        StorageDead(_4);
+        return;
+    }
+
+    bb8: {
+        _24 = copy _18;
+        _18 = Add(copy _24, const 1_u8);
+        _23 = const ();
+        _20 = const ();
+        goto -> bb10;
+    }
+
+    bb9: {
+        _19 = const ();
+        goto -> bb7;
+    }
+
+    bb10: {
+        goto -> bb6;
+    }
+}
+
+fn wrapping() -> u64 {
+    let mut _0: u64;
+    let _1: u8; // a
+    let _2: u8;
+    let _3: u8;
+    let _4: u16; // b
+    let _5: u16;
+    let _6: u16;
+    let _7: i32; // c
+    let _8: i32;
+    let _9: i32;
+    let _10: i64; // d
+    let _11: i64;
+    let _12: i64;
+    let _13: u32; // e
+    let _14: u32;
+    let _15: u32;
+    let _16: u64;
+    let _17: u64;
+    let _18: u64;
+    let _19: u64;
+    let _20: u8;
+    let _21: u64;
+    let _22: u16;
+    let _23: u64;
+    let _24: u32;
+    let _25: i32;
+    let _26: u64;
+    let _27: u32;
+    let _28: i64;
+    let _29: u64;
+    let _30: u32;
+
+    bb0: {
+        _2 = const MAX;
+        _3 = copy _2;
+        _1 = wrapping_add(copy _3, const 1_u8) -> bb1;
+    }
+
+    bb1: {
+        _5 = const 0_u16;
+        _6 = copy _5;
+        _4 = wrapping_sub(copy _6, const 1_u16) -> bb2;
+    }
+
+    bb2: {
+        _8 = const MIN;
+        _9 = copy _8;
+        _7 = wrapping_neg(copy _9) -> bb3;
+    }
+
+    bb3: {
+        _11 = const MAX;
+        _12 = copy _11;
+        _10 = wrapping_mul(copy _12, const 2_i64) -> bb4;
+    }
+
+    bb4: {
+        _14 = const 1_u32;
+        _15 = copy _14;
+        _13 = rotate_left(copy _15, const 33_u32) -> bb5;
+    }
+
+    bb5: {
+        _20 = copy _1;
+        _19 = copy _20 as u64;
+        _22 = copy _4;
+        _21 = copy _22 as u64;
+        _18 = Add(copy _19, copy _21);
+        _25 = copy _7;
+        _24 = copy _25 as u32;
+        _23 = copy _24 as u64;
+        _17 = Add(copy _18, copy _23);
+        _28 = copy _10;
+        _27 = copy _28 as u32;
+        _26 = copy _27 as u64;
+        _16 = Add(copy _17, copy _26);
+        _30 = copy _13;
+        _29 = copy _30 as u64;
+        _0 = Add(copy _16, copy _29);
+        StorageDead(_13);
+        StorageDead(_10);
+        StorageDead(_7);
+        StorageDead(_4);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn edges() -> i64 {
+    let mut _0: i64;
+    let _1: i32; // a
+    let _2: i32;
+    let _3: i32; // b
+    let _4: i8; // c
+    let _5: u64; // d
+    let _6: i8; // e
+    let _7: u8; // m
+    let _8: u8; // f
+    let _9: u8;
+    let _10: i64;
+    let _11: i64;
+    let _12: i64;
+    let _13: i64;
+    let _14: i64;
+    let _15: i32;
+    let _16: i64;
+    let _17: i32;
+    let _18: i64;
+    let _19: i8;
+    let _20: i64;
+    let _21: u64;
+    let _22: u64;
+    let _23: i64;
+    let _24: i8;
+    let _25: i64;
+    let _26: u8;
+
+    bb0: {
+        _2 = Sub(const MAX, const 1_i32);
+        _1 = Add(copy _2, const 1_i32);
+        _3 = Div(const MIN, const 1_i32);
+        _4 = const -128_i8;
+        _5 = Shl(const 1_u64, const 63_i32);
+        _6 = Rem(const MIN, const 1_i8);
+        _7 = const 255_u8;
+        _9 = copy _7;
+        _8 = Sub(copy _9, const 255_u8);
+        _15 = copy _1;
+        _14 = copy _15 as i64;
+        _17 = copy _3;
+        _16 = copy _17 as i64;
+        _13 = Add(copy _14, copy _16);
+        _19 = copy _4;
+        _18 = copy _19 as i64;
+        _12 = Add(copy _13, copy _18);
+        _22 = copy _5;
+        _21 = Shr(copy _22, const 63_i32);
+        _20 = copy _21 as i64;
+        _11 = Add(copy _12, copy _20);
+        _24 = copy _6;
+        _23 = copy _24 as i64;
+        _10 = Add(copy _11, copy _23);
+        _26 = copy _8;
+        _25 = copy _26 as i64;
+        _0 = Add(copy _10, copy _25);
+        StorageDead(_8);
+        StorageDead(_7);
+        StorageDead(_6);
+        StorageDead(_5);
+        StorageDead(_4);
+        StorageDead(_3);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: i64;
+    let _2: i64;
+    let _3: i64;
+    let _4: i32;
+    let _5: i64;
+    let _6: u64;
+    let _7: i64;
+
+    bb0: {
+        _4 = unknown(const true, const 0_u8, const 1_i32) -> bb1;
+    }
+
+    bb1: {
+        _3 = copy _4 as i64;
+        _6 = wrapping() -> bb2;
+    }
+
+    bb2: {
+        _5 = copy _6 as i64;
+        _2 = Add(copy _3, copy _5);
+        _7 = edges() -> bb3;
+    }
+
+    bb3: {
+        _1 = Add(copy _2, copy _7);
+        _0 = const ();
+        return;
+    }
+}
+

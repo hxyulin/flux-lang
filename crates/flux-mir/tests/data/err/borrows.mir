@@ -1,4 +1,4 @@
-fn get(_1: &S) -> i32 {
+fn S::get(_1: &S) -> i32 {
     let mut _0: i32;
 
     bb0: {
@@ -7,7 +7,7 @@ fn get(_1: &S) -> i32 {
     }
 }
 
-fn set(_1: &mut S, _2: i32) -> () {
+fn S::set(_1: &mut S, _2: i32) -> () {
     let mut _0: ();
     let _3: ();
     let _4: i32;
@@ -21,7 +21,7 @@ fn set(_1: &mut S, _2: i32) -> () {
     }
 }
 
-fn add(_1: &mut S, _2: i32) -> i32 {
+fn S::add(_1: &mut S, _2: i32) -> i32 {
     let mut _0: i32;
     let _3: ();
     let _4: i32;
@@ -37,7 +37,7 @@ fn add(_1: &mut S, _2: i32) -> i32 {
     }
 }
 
-fn take(_1: S) -> i32 {
+fn S::take(_1: S) -> i32 {
     let mut _0: i32;
 
     bb0: {
@@ -46,7 +46,7 @@ fn take(_1: S) -> i32 {
     }
 }
 
-fn both(_1: &mut S, _2: &i32) -> () {
+fn S::both(_1: &mut S, _2: &i32) -> () {
     let mut _0: ();
     let _3: ();
     let _4: i32;
@@ -62,7 +62,7 @@ fn both(_1: &mut S, _2: &i32) -> () {
     }
 }
 
-fn assign_through_shared_self(_1: &S) -> () {
+fn S::assign_through_shared_self(_1: &S) -> () {
     let mut _0: ();
     let _2: ();
 
@@ -74,7 +74,7 @@ fn assign_through_shared_self(_1: &S) -> () {
     }
 }
 
-fn mut_method_from_shared_self(_1: &S) -> i32 {
+fn S::mut_method_from_shared_self(_1: &S) -> i32 {
     let mut _0: i32;
     let _2: ();
     let _3: &mut S;
@@ -90,7 +90,7 @@ fn mut_method_from_shared_self(_1: &S) -> i32 {
     }
 }
 
-fn by_value_from_shared_self(_1: &S) -> i32 {
+fn S::by_value_from_shared_self(_1: &S) -> i32 {
     let mut _0: i32;
     let _2: S;
 
@@ -104,7 +104,7 @@ fn by_value_from_shared_self(_1: &S) -> i32 {
     }
 }
 
-fn assign_by_value_self(_1: S) -> i32 {
+fn S::assign_by_value_self(_1: S) -> i32 {
     let mut _0: i32;
     let _2: ();
 
@@ -116,7 +116,7 @@ fn assign_by_value_self(_1: S) -> i32 {
     }
 }
 
-fn two_mut_self(_1: &mut S) -> () {
+fn S::two_mut_self(_1: &mut S) -> () {
     let mut _0: ();
     let _2: ();
     let _3: &mut S;
@@ -138,7 +138,7 @@ fn two_mut_self(_1: &mut S) -> () {
     }
 }
 
-fn use_self_after_move(_1: S) -> i32 {
+fn S::use_self_after_move(_1: S) -> i32 {
     let mut _0: i32;
     let _2: i32; // n
     let _3: S;
@@ -159,7 +159,7 @@ fn use_self_after_move(_1: S) -> i32 {
     }
 }
 
-fn move_inner(_1: &W) -> T {
+fn W::move_inner(_1: &W) -> T {
     let mut _0: T;
 
     bb0: {

@@ -1,0 +1,72 @@
+struct S;
+
+struct T;
+
+fn f() -> () {}
+
+fn g() -> () {}
+
+fn up() -> () {
+    <error>();
+}
+
+fn main() -> () {
+    f();
+    g();
+    up();
+    let _s@0 = S;
+    let _t@1 = T;
+    <error>();
+    <error>();
+    <error>();
+    let _a@2 = <error>;
+    let _b@3: m::Missing = S;
+    let _c@4: nope::Missing = T;
+    <error>();
+    let _d@5: Unknown = T;
+    <error>();
+    <error>();
+    <error>();
+    <error>();
+    <error>();
+    <error>();
+    <error>();
+    <error>();
+    <error>();
+    <error>();
+    <error>();
+    let _e@6 = <error>;
+    let _f@7: m = T;
+    let _g@8 = <missing>;
+    let _h@9 = <error>;
+    <error>();
+    S {  };
+    <missing>;
+    <error>();
+    let _i@10 = <error>;
+}
+
+error 136..141: too many leading `super` keywords within `crate::m::n`
+error 292..296: cannot find module or crate `nope` in this scope
+error 310..314: cannot find `nope` in `m`
+error 328..335: cannot find function `missing` in module `m`
+error 355..362: cannot find value `MISSING` in module `m`
+error 430..437: cannot find function `unknown` in this scope
+error 477..481: cannot find function `nope` in the crate root
+error 496..500: cannot find `nope` in the crate root
+error 517..521: cannot find function `nope` in module `self`
+error 529..534: too many leading `super` keywords within `crate`
+error 548..553: `crate` in paths can only be used in start position
+error 567..572: `super` in paths can only be used in start position
+error 586..590: `self` in paths can only be used in start position or last position
+error 603..604: cannot find `m` in the list of imported crates
+error 617..618: cannot find crate `f` in the list of imported crates
+error 632..636: `core::nope` is not supported yet
+error 644..645: cannot find function `m` in this scope
+error 662..663: cannot find value `m` in this scope
+error 697..698: expected struct, variant or union type, found module `m`
+error 719..720: cannot find value `n` in module `m`
+error 726..727: cannot find function `f` in this scope
+error 751..755: cannot find struct, variant or union type `Nope` in module `m`
+error 767..774: no associated function or constant named `missing` found for struct `T` in the current scope
+error 794..801: no associated function or constant named `MISSING` found for struct `T` in the current scope

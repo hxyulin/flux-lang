@@ -28,8 +28,8 @@ fn check_dir(name: &str, expect_errors: bool) {
     let mut failures = Vec::new();
     for path in fixtures(name) {
         let text = fs::read_to_string(&path).unwrap();
-        let parse = flux_syntax::parse_source_file(&text);
-        let hir = flux_hir::lower_file(&parse);
+        let (db, root, hir) = flux_hir::lower_text(&path, &text);
+        let parse = &db.file(root).parse;
         let typed = flux_ty::check_file(&hir);
         assert!(
             parse.errors().is_empty() && hir.diagnostics.is_empty() && typed.diagnostics.is_empty(),

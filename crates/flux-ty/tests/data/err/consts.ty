@@ -1,0 +1,49 @@
+struct S { value: i32 }
+fn double(i32) -> i32
+    x@0: i32
+fn triple(i32) -> i32
+    x@0: i32
+fn make(i32) -> S
+    value@0: i32
+fn new() -> S
+fn get(&S) -> i32
+    self@0: &S
+fn peek(&S) -> i32
+    self@0: &S
+fn calls_plain(i32) -> i32
+    x@0: i32
+fn calls_core(i32) -> i32
+    x@0: i32
+fn main() -> ()
+    _all@0: i32
+    _wrong@1: (i32, (i32, bool), i32, u8, bool)
+const BAD: i32
+const GOOD: i32
+const A: i32
+const B: i32
+const C: i32
+const D: i32
+const E: i32
+const F: i32
+const WRONG: i32
+const WRONG_TUPLE: (i32, bool)
+const WRONG_STRUCT: S
+const NARROW: u8
+const MISMATCH: bool
+error 451..460: cannot call non-const function `double` in constants
+error 533..542: cannot call non-const function `double` in constants
+error 566..575: cannot call non-const function `double` in constants
+error 593..601: cannot call non-const associated function `S::new` in constants
+error 635..640: cannot call non-const method `S::get` in constants
+error 662..668: cannot call non-const method `i32::max` in constants
+error 709..714: cannot call non-const method `S::get` in constants
+error 717..726: cannot call non-const function `double` in constants
+error 773..782: cannot call non-const function `double` in constant functions
+error 785..793: cannot call non-const associated function `S::new` in constant functions
+error 794..799: cannot call non-const method `S::get` in constant functions
+error 858..865: cannot call non-const method `i32::min` in constant functions
+error 888..892: mismatched types: expected `i32`, found `bool`
+error 931..932: mismatched types: expected `bool`, found `{integer}`
+error 959..960: mismatched types: expected `S`, found `{integer}`
+error 981..982: mismatched types: expected `u8`, found `i32`
+error 1021..1022: mismatched types: expected `bool`, found `{integer}`

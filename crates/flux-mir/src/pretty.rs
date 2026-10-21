@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use flux_hir::{FileHir, StructKind};
+use flux_hir::{Hir, StructKind};
 use flux_ty::{Mutability, Ty};
 
 use crate::{
@@ -10,20 +10,18 @@ use crate::{
     Rvalue, StatementKind, TerminatorKind, UnOp,
 };
 
-pub(crate) fn file(mir: &FileMir, hir: &FileHir) -> String {
+pub(crate) fn file(mir: &FileMir, hir: &Hir) -> String {
     let mut out = String::new();
-    for (id, body) in mir.bodies.iter() {
-        let name = hir.items.functions[id].name;
-        body_text(&mut out, hir, &name.to_string(), body);
+    for (id, body) in mir.bodies.iter().filter(|&(id, _)| hir.is_program(id)) {
+        let name = hir.items.function_path(&hir.items.functions[id]);
+        body_text(&mut out, hir, &name, body);
         out.push('\n');
     }
-    for d in &mir.diagnostics {
-        writeln!(out, "error {:?}: {}", d.range, d.message).unwrap();
-    }
+    hir.write_diagnostics(&mut out, &mir.diagnostics);
     out
 }
 
-fn body_text(out: &mut String, hir: &FileHir, name: &str, body: &Body) {
+fn body_text(out: &mut String, hir: &Hir, name: &str, body: &Body) {
     let params: Vec<String> = body
         .params()
         .map(|p| format!("_{}: {}", p.index(), body.locals[p].ty))
@@ -88,7 +86,11 @@ fn body_text(out: &mut String, hir: &FileHir, name: &str, body: &Body) {
                     .map(|(value, bb)| format!("{value}: bb{}", bb.index()))
                     .collect();
                 arms.push(format!("otherwise: bb{}", otherwise.index()));
-                format!("switchInt({}) -> [{}]", operand(discr), arms.join(", "))
+                format!(
+                    "switchInt({}) -> [{}]",
+                    operand(hir, discr),
+                    arms.join(", ")
+                )
             }
             TerminatorKind::Call {
                 func,
@@ -96,7 +98,7 @@ fn body_text(out: &mut String, hir: &FileHir, name: &str, body: &Body) {
                 dest,
                 target,
             } => {
-                let args: Vec<String> = args.iter().map(operand).collect();
+                let args: Vec<String> = args.iter().map(|o| operand(hir, o)).collect();
                 let name = hir.items.functions[*func].name;
                 let target = match target {
                     Some(bb) => format!("bb{}", bb.index()),
@@ -113,7 +115,7 @@ fn body_text(out: &mut String, hir: &FileHir, name: &str, body: &Body) {
                 let not = if *expected { "" } else { "!" };
                 format!(
                     "assert({not}{}, \"{}\") -> bb{}",
-                    operand(cond),
+                    operand(hir, cond),
                     msg.text(),
                     target.index()
                 )
@@ -126,9 +128,9 @@ fn body_text(out: &mut String, hir: &FileHir, name: &str, body: &Body) {
     out.push_str("}\n");
 }
 
-fn rvalue_text(hir: &FileHir, rvalue: &Rvalue) -> String {
+fn rvalue_text(hir: &Hir, rvalue: &Rvalue) -> String {
     match rvalue {
-        Rvalue::Use(op) => operand(op),
+        Rvalue::Use(op) => operand(hir, op),
         Rvalue::BinaryOp(op, l, r) => {
             let op = match op {
                 BinOp::Add => "Add",
@@ -148,16 +150,16 @@ fn rvalue_text(hir: &FileHir, rvalue: &Rvalue) -> String {
                 BinOp::Gt => "Gt",
                 BinOp::Ge => "Ge",
             };
-            format!("{op}({}, {})", operand(l), operand(r))
+            format!("{op}({}, {})", operand(hir, l), operand(hir, r))
         }
         Rvalue::UnaryOp(op, o) => {
             let op = match op {
                 UnOp::Neg => "Neg",
                 UnOp::Not => "Not",
             };
-            format!("{op}({})", operand(o))
+            format!("{op}({})", operand(hir, o))
         }
-        Rvalue::Cast(o, ty) => format!("{} as {ty}", operand(o)),
+        Rvalue::Cast(o, ty) => format!("{} as {ty}", operand(hir, o)),
         Rvalue::Ref {
             mutability,
             place: p,
@@ -171,7 +173,7 @@ fn rvalue_text(hir: &FileHir, rvalue: &Rvalue) -> String {
             format!("{kind}{}", place(p))
         }
         Rvalue::Aggregate(AggregateKind::Tuple, ops) => {
-            let ops: Vec<String> = ops.iter().map(operand).collect();
+            let ops: Vec<String> = ops.iter().map(|o| operand(hir, o)).collect();
             match ops.as_slice() {
                 [one] => format!("({one},)"),
                 _ => format!("({})", ops.join(", ")),
@@ -182,7 +184,7 @@ fn rvalue_text(hir: &FileHir, rvalue: &Rvalue) -> String {
             match s.kind {
                 StructKind::Unit => s.name.to_string(),
                 StructKind::Tuple => {
-                    let ops: Vec<String> = ops.iter().map(operand).collect();
+                    let ops: Vec<String> = ops.iter().map(|o| operand(hir, o)).collect();
                     format!("{}({})", s.name, ops.join(", "))
                 }
                 StructKind::Record => {
@@ -190,7 +192,7 @@ fn rvalue_text(hir: &FileHir, rvalue: &Rvalue) -> String {
                         .fields
                         .iter()
                         .zip(ops)
-                        .map(|(f, op)| format!("{}: {}", f.name, operand(op)))
+                        .map(|(f, op)| format!("{}: {}", f.name, operand(hir, op)))
                         .collect();
                     format!("{} {{ {} }}", s.name, fields.join(", "))
                 }
@@ -211,15 +213,15 @@ fn place(place: &Place) -> String {
     text
 }
 
-fn operand(operand: &Operand) -> String {
+fn operand(hir: &Hir, operand: &Operand) -> String {
     match operand {
         Operand::Copy(p) => format!("copy {}", place(p)),
         Operand::Move(p) => format!("move {}", place(p)),
-        Operand::Const(constant) => format!("const {}", constant_text(*constant)),
+        Operand::Const(constant) => format!("const {}", constant_text(hir, *constant)),
     }
 }
 
-fn constant_text(constant: Constant) -> String {
+fn constant_text(hir: &Hir, constant: Constant) -> String {
     match constant {
         Constant::Int { bits, ty } => {
             let width = ty.bits();
@@ -236,5 +238,9 @@ fn constant_text(constant: Constant) -> String {
         Constant::Bool(value) => value.to_string(),
         Constant::Unit => "()".to_owned(),
         Constant::CStr(index) => format!("c_str{index}"),
+        Constant::Item { id, .. } => {
+            let name = hir.items.consts[id].name;
+            name.map_or("_".to_owned(), |n| n.to_string())
+        }
     }
 }
