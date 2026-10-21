@@ -1,0 +1,23 @@
+[package]
+name = "flux-codegen"
+description = "Lowers flux MIR to keel IR, then to objects and executables"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+[dependencies]
+flux-hir.workspace = true
+flux-mir.workspace = true
+flux-ty.workspace = true
+keel-asm.workspace = true
+keel-codegen.workspace = true
+keel-frontend.workspace = true
+keel-ir.workspace = true
+keel-link.workspace = true
+keel-opt.workspace = true
+
+[lints]
+workspace = true

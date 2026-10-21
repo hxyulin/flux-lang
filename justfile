@@ -49,6 +49,10 @@ hir file:
 mir file:
     cargo run -q -p flux-cli -- mir "{{file}}"
 
+# Compile a program with flux and run it.
+run file:
+    cargo run -q -p flux-cli -- run "{{file}}"
+
 # Print the tokens of a file.
 lex file:
     cargo run -q -p flux-cli -- lex "{{file}}"

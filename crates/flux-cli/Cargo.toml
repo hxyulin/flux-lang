@@ -13,6 +13,7 @@ name = "flux"
 path = "src/main.rs"
 
 [dependencies]
+flux-codegen.workspace = true
 flux-hir.workspace = true
 flux-mir.workspace = true
 flux-syntax.workspace = true

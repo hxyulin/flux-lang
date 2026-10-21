@@ -21,6 +21,9 @@
 - Add `flux-mir`: MIR built from typed HIR, with wrapping arithmetic,
   masked shifts and division checks explicit, and checks for
   uninitialized and reassigned locals. `flux mir` prints it.
+- Add `flux-codegen`: MIR to keel IR, native objects and signed arm64
+  macOS executables, all in-process through keel. `flux build` and
+  `flux run` compile programs, and `tests/run` checks them against rustc.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 

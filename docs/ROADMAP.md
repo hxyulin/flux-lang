@@ -29,6 +29,12 @@ rustc must agree with.
 
 ## 4. Code generation through keel
 
+Started: functions over integers and `bool` compile to arm64 macOS
+executables through keel, checked against rustc by `tests/run`. Next:
+linking on x86-64 Linux, and a way to compare keel's output with
+Cranelift's and LLVM's on the same IR.
+
+
 Lower the IR to `keel-ir` in-process using keel's SSA builder, starting with
 `panic=abort`. Since keel has Cranelift and LLVM bridges, the same IR can be
 compiled by all three backends to compare compile time and runtime on

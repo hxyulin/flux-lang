@@ -48,8 +48,8 @@ statement (`if c {} - 1` is two statements).
 
 ## Beyond syntax
 
-Everything above parses, but only this part lowers to HIR so far; the
-rest is reported as "not supported yet":
+Everything above parses, but only this part compiles so far; the rest is
+reported as "not supported yet":
 
 - **Items:** functions without generics, `where` clauses or `self`, and
   `unsafe extern "C"` blocks of function declarations.
@@ -67,6 +67,11 @@ Type checking follows rustc for this subset: the integer types, `bool`,
 conversions; operators need operands of the same type, except shifts;
 `as` converts between integers and from `bool`. `isize` and `usize` are
 64 bits.
+
+At run time flux matches rustc with `-C overflow-checks=off -C
+panic=abort`: arithmetic wraps, shift amounts are masked to the type's
+width, and division by zero or `MIN / -1` aborts. Programs call C through
+`unsafe extern "C"` blocks; there is no standard library yet.
 
 ## Deliberately rejected
 

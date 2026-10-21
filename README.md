@@ -13,19 +13,24 @@ same under both.
 
 ## Status
 
-flux is at its first stage: a lexer and an error-recovering parser that
-produce lossless syntax trees, with a typed AST over them. Name resolution,
-type checking, borrow checking and code generation are on the
-[roadmap](docs/ROADMAP.md).
+flux compiles its first programs: functions over integers and `bool`,
+with locals, loops, recursion and calls to C through `unsafe extern "C"`,
+down to native arm64 macOS executables through keel. Programs in
+[`tests/run`](tests/run) are built by both rustc and flux and must behave
+identically. Everything else in Rust is on the [roadmap](docs/ROADMAP.md):
+structs, enums, references, generics and traits come next.
 
-The parser handles all of its own sources and keel's, and parses 1 GiB of
-crates.io sources without a panic and with every tree reproducing its file
-exactly. Most of the syntax errors there are deliberate: older editions'
+The parser covers much more of Rust than the later stages: it handles
+all of its own sources and keel's, and parses 1 GiB of crates.io sources
+without a panic and with every tree reproducing its file exactly. Most of the syntax errors there are deliberate: older editions'
 keywords and features outside the [supported subset](docs/LANGUAGE.md).
 
 ## Try it
 
 ```sh
+cargo run -p flux-cli -- run tests/run/fib.rs      # compile and run a program
+cargo run -p flux-cli -- build tests/run/fib.rs    # write an executable, ./fib
+cargo run -p flux-cli -- mir tests/run/fib.rs      # print its MIR
 cargo run -p flux-cli -- parse examples/hello.rs   # print the syntax tree
 cargo run -p flux-cli -- lex examples/hello.rs     # print the tokens
 cargo run -p flux-cli -- check examples/*.rs        # report syntax errors
