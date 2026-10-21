@@ -18,6 +18,15 @@ jobs:
       # rust-toolchain.toml selects stable with rustfmt and clippy.
       - run: just check
 
+  # Compiles and runs tests/run with rustc and flux and compares them.
+  # Executables link only on arm64 macOS so far.
+  programs:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p flux-cli --test run
+
   miri:
     runs-on: ubuntu-latest
     steps:

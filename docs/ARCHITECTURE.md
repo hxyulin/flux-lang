@@ -10,6 +10,7 @@ flux is a Cargo workspace:
 | [`flux-hir`](../crates/flux-hir/src/lib.rs) | Item tree and HIR: function bodies with names resolved |
 | [`flux-ty`](../crates/flux-ty/src/lib.rs) | Type inference and checking |
 | [`flux-mir`](../crates/flux-mir/src/lib.rs) | MIR: control-flow graphs built from typed HIR |
+| [`flux-codegen`](../crates/flux-codegen/src/lib.rs) | MIR to keel IR, objects and executables |
 | [`flux-intern`](../crates/flux-intern/src/lib.rs) | Global, thread-safe string interning (`Symbol`) |
 | [`flux-arena`](../crates/flux-arena/src/lib.rs) | Bump allocation and typed index arenas |
 
@@ -211,6 +212,29 @@ checking: two forward dataflow analyses that report reading a possibly
 uninitialized local (E0381) and assigning an immutable one twice
 (E0384), with rustc's wording.
 
+## Code generation
+
+[`flux-codegen`](../crates/flux-codegen/src/lib.rs) does everything after
+MIR in-process with [keel](https://github.com/hxyulin/keel): MIR to keel
+IR, keel's optimizer (`-O` runs its full pipeline), keel's code generator
+and assembler to a native object, and keel's linker to a signed
+executable. No C compiler or system linker is involved.
+
+- Each MIR local becomes a keel variable, and keel's `FunctionBuilder`
+  builds SSA form, so MIR's temporaries cost nothing.
+- `bool` is an `i8` holding 0 or 1; `()` and `!` have no value and
+  disappear from signatures. Narrow integers are extended by signedness
+  at calls, as Apple's arm64 ABI requires of C callers.
+- keel takes shift amounts modulo the width, which is exactly Rust's
+  masked shift; the amount is converted to the shifted value's type.
+- Rust functions get mangled symbols (`_ZN3fib3fibE`), so they cannot
+  collide with C names. The C `main` is a wrapper that calls the Rust
+  `main` and returns 0. A failed MIR assertion calls `abort`.
+
+Only arm64 macOS can link so far: Linux needs glibc's startup objects
+passed to keel's ELF linker. `flux build --timings` prints each phase's
+time.
+
 ## Names and memory
 
 Identifiers will be stored as [`Symbol`](../crates/flux-intern/src/lib.rs)s:
@@ -268,3 +292,4 @@ Interning all 52.6M identifiers and lifetimes (938K distinct) takes
 | `flux-hir` `tests/hir.rs` | Snapshot HIR for `tests/data/{ok,err}`; lowering never panics on any parser fixture prefix |
 | `flux-ty` `tests/ty.rs` | Snapshot types and diagnostics for `tests/data/{ok,err}`; `main` rules; never panics |
 | `flux-mir` `tests/mir.rs` | Snapshot MIR and initialization errors for `tests/data/{ok,err}` |
+| `flux-cli` `tests/run.rs` | Every program in `tests/run`, built with rustc and with flux (with and without `-O`), produces the same output and exit status |

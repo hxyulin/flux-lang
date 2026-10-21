@@ -8,6 +8,7 @@ members = [
     "crates/flux-hir",
     "crates/flux-ty",
     "crates/flux-mir",
+    "crates/flux-codegen",
     "crates/flux-cli",
 ]
 
@@ -24,6 +25,17 @@ flux-syntax = { path = "crates/flux-syntax" }
 flux-hir = { path = "crates/flux-hir" }
 flux-ty = { path = "crates/flux-ty" }
 flux-mir = { path = "crates/flux-mir" }
+flux-codegen = { path = "crates/flux-codegen" }
+
+# keel, pinned to a commit on its main branch. To build against a local
+# checkout, add a `[patch."https://github.com/hxyulin/keel"]` section to
+# `.cargo/config.toml` (git-ignored); see CONTRIBUTING.md.
+keel-asm = { git = "https://github.com/hxyulin/keel", rev = "ce110d440d84c80cef3532a8b50de2789f2c9f46" }
+keel-codegen = { git = "https://github.com/hxyulin/keel", rev = "ce110d440d84c80cef3532a8b50de2789f2c9f46" }
+keel-frontend = { git = "https://github.com/hxyulin/keel", rev = "ce110d440d84c80cef3532a8b50de2789f2c9f46" }
+keel-ir = { git = "https://github.com/hxyulin/keel", rev = "ce110d440d84c80cef3532a8b50de2789f2c9f46" }
+keel-link = { git = "https://github.com/hxyulin/keel", rev = "ce110d440d84c80cef3532a8b50de2789f2c9f46" }
+keel-opt = { git = "https://github.com/hxyulin/keel", rev = "ce110d440d84c80cef3532a8b50de2789f2c9f46" }
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "deny"

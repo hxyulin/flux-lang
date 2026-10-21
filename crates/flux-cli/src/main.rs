@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod build;
+
 use clap::{Parser, Subcommand};
 use flux_syntax::{LexedStr, TextRange};
 
@@ -26,10 +28,53 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// Compile a program to an executable.
+    Build {
+        file: PathBuf,
+        /// Where to write the executable; the file's name without `.rs` by
+        /// default.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        #[command(flatten)]
+        options: BuildOptions,
+    },
+    /// Compile a program and run it, exiting with its exit code.
+    Run {
+        file: PathBuf,
+        #[command(flatten)]
+        options: BuildOptions,
+        /// Arguments for the program.
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+}
+
+#[derive(clap::Args, Clone, Copy)]
+struct BuildOptions {
+    /// Optimize with keel's full pipeline.
+    #[arg(short = 'O')]
+    optimize: bool,
+    /// Print how long each phase took.
+    #[arg(long)]
+    timings: bool,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Command::Run {
+        file,
+        options,
+        args,
+    } = &cli.command
+    {
+        return match build::run(file, *options, args) {
+            Ok(code) => code,
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::from(2)
+            }
+        };
+    }
     match run(cli.command) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
@@ -116,6 +161,15 @@ fn run(command: Command) -> Result<bool, String> {
             }
             Ok(mir.diagnostics.is_empty())
         }
+        Command::Build {
+            file,
+            output,
+            options,
+        } => {
+            let output = output.unwrap_or_else(|| PathBuf::from(build::crate_name(&file)));
+            build::build(&file, &output, options)
+        }
+        Command::Run { .. } => unreachable!("handled in main"),
         Command::Check { files } => {
             let mut ok = true;
             for file in &files {
@@ -136,7 +190,7 @@ fn read(file: &PathBuf) -> Result<String, String> {
 }
 
 /// Prints `file:line:column: error: message`.
-fn report(file: &std::path::Path, text: &str, range: TextRange, message: &str) {
+pub(crate) fn report(file: &std::path::Path, text: &str, range: TextRange, message: &str) {
     let (line, column) = line_column(text, range.start());
     eprintln!("{}:{line}:{column}: error: {message}", file.display());
 }

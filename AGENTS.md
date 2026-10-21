@@ -18,10 +18,14 @@ flux is an experimental compiler for a subset of Rust (edition 2024). Use
   with rustc, and `err/` diagnostics should match rustc's.
 - `crates/flux-mir/`: MIR built from typed HIR, and the initialization
   check. Fixtures in `tests/data/{ok,err}` with `.mir` snapshots.
+- `crates/flux-codegen/`: MIR to keel IR, objects and executables, through
+  keel (a git dependency pinned in the root `Cargo.toml`).
+- `tests/run/`: programs compiled with both rustc and flux, whose output and
+  exit status must match (`cargo test -p flux-cli --test run`, arm64 macOS).
 - `crates/flux-intern/`: global `Symbol` interner and predefined symbols.
 - `crates/flux-arena/`: `DroplessArena` and typed `Arena<T>`/`Idx<T>`.
 - `crates/flux-cli/`: the `flux` binary (`lex`, `parse`, `hir`, `mir`,
-  `check`).
+  `check`, `build`, `run`).
 - `crates/flux-syntax/tests/data/parser/`: parser fixtures. `ok/` must parse
   cleanly, `err/` must report errors; each `.rs` has a `.rast` snapshot.
 - `examples/`: small programs for trying the CLI.
@@ -61,6 +65,8 @@ Run checks appropriate to the change before finishing:
   run `just snapshots`, and read the `.rast` diff to confirm the new tree.
   `cargo test -p flux-sourcegen` then checks the tree against
   `flux.ungram`.
+- Semantic or codegen changes: add a program to `tests/run` that exercises
+  them (results visible in output or the exit code) and run the harness.
 - Larger grammar changes: `just corpus ~/.cargo/registry/src` and compare the
   error summary before and after; panics and lossy trees fail it.
 

@@ -38,6 +38,8 @@ just check
 | `crates/flux-hir/` | Item tree and HIR lowering: names resolved, `while` desugared |
 | `crates/flux-ty/` | Type inference and checking, one body at a time |
 | `crates/flux-mir/` | MIR: control-flow graphs with explicit runtime checks; initialization check |
+| `crates/flux-codegen/` | MIR to keel IR, native objects and executables |
+| `crates/flux-cli/tests/run.rs`, `tests/run/` | Programs built with rustc and flux; output and exit status must match |
 | `crates/flux-intern/` | `Symbol` interning, predefined keywords and names |
 | `crates/flux-arena/` | `DroplessArena`, `Arena<T>`, `Idx<T>`, `ArenaMap` |
 
@@ -53,6 +55,7 @@ just miri                  # run the crates with unsafe code under Miri (needs n
 just parse <file>          # print a syntax tree
 just hir <file>            # print the HIR of a file
 just mir <file>            # type-check a file and print its MIR
+just run <file>            # compile a program with flux and run it
 ```
 
 Every parser change needs a fixture. Put valid Rust in
@@ -80,6 +83,31 @@ For grammar work, `just corpus ~/.cargo/registry/src` parses every crate
 you have downloaded. Compare its summary before and after a change; it
 fails on any panic or malformed tree, or on a tree without errors that
 does not match `flux.ungram`.
+
+Programs in `tests/run` are compiled with rustc (`-C overflow-checks=off
+-C panic=abort`) and with flux, with and without `-O`, and must produce
+the same output and exit status: `cargo test -p flux-cli --test run`.
+This needs arm64 macOS, where flux can link executables so far. Write
+programs so rustc cannot fold them at compile time (pass values through
+function parameters), or its overflow lints reject them.
+
+## Working on keel at the same time
+
+flux depends on [keel](https://github.com/hxyulin/keel) through git,
+pinned to a commit in the root `Cargo.toml`. To build against a local
+checkout instead, create `.cargo/config.toml` (git-ignored):
+
+```toml
+[patch."https://github.com/hxyulin/keel"]
+keel-asm = { path = "../keel/crates/keel-asm" }
+keel-codegen = { path = "../keel/crates/keel-codegen" }
+keel-frontend = { path = "../keel/crates/keel-frontend" }
+keel-ir = { path = "../keel/crates/keel-ir" }
+keel-link = { path = "../keel/crates/keel-link" }
+keel-opt = { path = "../keel/crates/keel-opt" }
+```
+
+Update the pinned commit once the keel changes are on keel's `main`.
 
 ## Issues and pull requests
 
