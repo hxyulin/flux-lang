@@ -16,6 +16,10 @@ fn Pair::into_a(_1: Pair<T>) -> T {
 
     bb0: {
         _0 = move _1.0;
+        drop(_1.1) -> bb1;
+    }
+
+    bb1: {
         return;
     }
 }
@@ -27,6 +31,10 @@ fn Pair::set_a(_1: &mut Pair<T>, _2: T) -> () {
 
     bb0: {
         _4 = move _2;
+        drop((*_1).0) -> bb1;
+    }
+
+    bb1: {
         (*_1).0 = move _4;
         _3 = const ();
         _0 = const ();
@@ -123,10 +131,14 @@ fn moves<T>(_1: T, _2: T, _3: bool) -> Wrap<T> {
     let _7: bool;
     let _8: T;
     let _9: T;
+    let _10: bool;
+    let _11: bool;
 
     bb0: {
+        _10 = const true;
+        _11 = const false;
         _5 = move _1;
-        _4 = id::<T>(move _5) -> bb1;
+        _4 = id::<T>(move _5) -> bb8;
     }
 
     bb1: {
@@ -136,11 +148,13 @@ fn moves<T>(_1: T, _2: T, _3: bool) -> Wrap<T> {
 
     bb2: {
         _6 = move _2;
+        _10 = const false;
         goto -> bb4;
     }
 
     bb3: {
         _8 = move _4;
+        _11 = const false;
         _6 = id::<T>(move _8) -> bb5;
     }
 
@@ -148,12 +162,44 @@ fn moves<T>(_1: T, _2: T, _3: bool) -> Wrap<T> {
         _9 = move _6;
         _0 = Wrap(move _9);
         StorageDead(_6);
-        StorageDead(_4);
-        return;
+        switchInt(copy _11) -> [0: bb9, otherwise: bb10];
     }
 
     bb5: {
         goto -> bb4;
+    }
+
+    bb6: {
+        StorageDead(_4);
+        _11 = const false;
+        switchInt(copy _10) -> [0: bb11, otherwise: bb12];
+    }
+
+    bb7: {
+        return;
+    }
+
+    bb8: {
+        _11 = const true;
+        goto -> bb1;
+    }
+
+    bb9: {
+        _11 = const false;
+        goto -> bb6;
+    }
+
+    bb10: {
+        drop(_4) -> bb9;
+    }
+
+    bb11: {
+        _10 = const false;
+        goto -> bb7;
+    }
+
+    bb12: {
+        drop(_2) -> bb11;
     }
 }
 
@@ -169,6 +215,10 @@ fn move_then_reassign<T>(_1: T, _2: T) -> T {
         _1 = move _5;
         _4 = const ();
         _0 = move _1;
+        drop(_3) -> bb1;
+    }
+
+    bb1: {
         StorageDead(_3);
         return;
     }
@@ -230,6 +280,10 @@ fn nested_partial<T>(_1: Pair<Pair<T>>) -> T {
 
     bb1: {
         StorageDead(_2);
+        drop(_1.1) -> bb2;
+    }
+
+    bb2: {
         return;
     }
 }
@@ -257,11 +311,19 @@ fn borrows<T>(_1: Pair<T>, _2: T, _3: T) -> Pair<T> {
         _8 = &mut _1.1;
         _9 = &_1.0;
         _11 = move _2;
+        drop((*_8)) -> bb1;
+    }
+
+    bb1: {
         (*_8) = move _11;
         _10 = const ();
         _12 = copy _9;
         _13 = &mut _1.0;
         _15 = move _3;
+        drop((*_13)) -> bb2;
+    }
+
+    bb2: {
         (*_13) = move _15;
         _14 = const ();
         _0 = move _1;
@@ -403,6 +465,10 @@ fn generic_methods<T>(_1: Pair<T>, _2: T, _3: T, _4: Pair<T>) -> T {
     }
 
     bb4: {
+        drop(_12) -> bb5;
+    }
+
+    bb5: {
         StorageDead(_12);
         StorageDead(_8);
         return;

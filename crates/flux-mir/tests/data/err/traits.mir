@@ -216,6 +216,10 @@ fn set_generic<T>(_1: T) -> () {
 
     bb1: {
         _0 = const ();
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
         return;
     }
 }

@@ -157,6 +157,11 @@ impl<T> Arena<T> {
         self.data.iter_mut()
     }
 
+    /// The values, in allocation order.
+    pub fn into_values(self) -> std::vec::IntoIter<T> {
+        self.data.into_iter()
+    }
+
     pub fn shrink_to_fit(&mut self) {
         self.data.shrink_to_fit();
     }

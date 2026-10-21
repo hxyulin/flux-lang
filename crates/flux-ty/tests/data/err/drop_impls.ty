@@ -1,0 +1,38 @@
+struct Noisy { 0: i32 }
+struct Copied {}
+struct Specialized<T> { 0: T }
+struct Twice<A, B> { 0: A, 1: B }
+struct Swapped<A, B> { 0: A, 1: B }
+struct Bounded<T> { 0: T }
+struct Where<T> { 0: T }
+struct Implied<T> { 0: T }
+fn drop(&mut Noisy) -> ()
+    self@0: &mut Noisy
+fn drop(&mut Copied) -> ()
+    self@0: &mut Copied
+fn drop(&mut Specialized<i32>) -> ()
+    self@0: &mut Specialized<i32>
+fn drop(&mut Twice<T, T>) -> ()
+    self@0: &mut Twice<T, T>
+fn drop(&mut Swapped<B, A>) -> ()
+    self@0: &mut Swapped<B, A>
+fn drop(&mut Bounded<T>) -> ()
+    self@0: &mut Bounded<T>
+fn drop(&mut Where<T>) -> ()
+    self@0: &mut Where<T>
+fn drop(&mut Implied<T>) -> ()
+    self@0: &mut Implied<T>
+fn main() -> ()
+    n@0: Noisy
+fn clone(&Copied) -> Copied
+    self@0: &Copied
+error 563..569: the trait `Copy` cannot be implemented for this type; the type has a destructor
+error 651..681: `Drop` impls cannot be specialized
+error 740..768: `Drop` impls cannot be specialized
+error 925..929: `Drop` impl requires `T: Copy` but the struct it is implemented for does not
+error 1042..1047: `Drop` impl requires `T: Clone` but the struct it is implemented for does not
+error 1050..1059: `Drop` impl requires `T: PartialEq` but the struct it is implemented for does not
+error 1263..1267: explicit use of destructor method
+error 1275..1285: explicit use of destructor method
+error 1299..1310: explicit use of destructor method
+error 1324..1345: explicit use of destructor method

@@ -126,6 +126,9 @@ fn body_text(out: &mut String, hir: &Hir, name: &str, body: &Body) {
                     target.index()
                 )
             }
+            TerminatorKind::Drop { place: p, target } => {
+                format!("drop({}) -> bb{}", place(p), target.index())
+            }
             TerminatorKind::Return => "return".to_owned(),
             TerminatorKind::Unreachable => "unreachable".to_owned(),
         };

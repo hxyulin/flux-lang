@@ -230,6 +230,7 @@ dependencies = [
  "flux-intern",
  "flux-syntax",
  "flux-ty",
+ "rustc-hash",
 ]
 
 [[package]]

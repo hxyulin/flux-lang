@@ -17,6 +17,12 @@
 //!   by borrowing a place ([`Rvalue::Ref`]). Method calls are calls with
 //!   the receiver's auto-dereferences and auto-borrow explicit.
 //! - A block's bindings die at its end ([`StatementKind::StorageDead`]).
+//! - Values are dropped ([`TerminatorKind::Drop`]) where their scope
+//!   ends, bindings at the end of their block in reverse order and
+//!   temporaries at the end of their statement, and before a place is
+//!   overwritten. [`drops`] removes the drops of values moved out and
+//!   makes those of values that may have been conditional, on *drop
+//!   flags*; code generation expands each into calls of `Drop::drop`.
 //!
 //! [`build`] turns a type-checked body into MIR, and two passes check it
 //! as rustc's borrow checker does: [`init`], that every place is
@@ -26,6 +32,7 @@
 
 pub mod borrowck;
 mod build;
+pub mod drops;
 pub mod eval;
 pub mod init;
 pub mod lint;
@@ -61,6 +68,12 @@ pub struct Body {
     /// functions' wrap, as flux compiles them with overflow checks off;
     /// constants' are always checked.
     pub inherits_overflow_checks: bool,
+    /// The drops as built that may find a value, with where it was made
+    /// and the type of the place dropped, before [`drops`] split or
+    /// guarded them: what E0493 reports in a constant or `const fn`,
+    /// which may not drop anything whose `drop` runs code, even part of
+    /// it.
+    pub live_drops: Vec<(TextRange, Ty)>,
 }
 
 impl Body {
@@ -374,6 +387,13 @@ pub enum TerminatorKind {
         dest: Place,
         target: Option<BasicBlock>,
     },
+    /// Drops the value in `place`, if its type needs it: runs its
+    /// `Drop` impl, then drops its fields in order. After [`drops`],
+    /// the place is initialized here.
+    Drop {
+        place: Place,
+        target: BasicBlock,
+    },
     /// Continues at `target` if `cond` is `expected`; otherwise panics,
     /// which aborts the program.
     Assert {
@@ -425,7 +445,9 @@ impl TerminatorKind {
                 .chain(Some(*otherwise))
                 .collect(),
             TerminatorKind::Call { target, .. } => target.iter().copied().collect(),
-            TerminatorKind::Assert { target, .. } => vec![*target],
+            TerminatorKind::Assert { target, .. } | TerminatorKind::Drop { target, .. } => {
+                vec![*target]
+            }
             TerminatorKind::Return | TerminatorKind::Unreachable => Vec::new(),
         }
     }
@@ -505,9 +527,10 @@ impl TerminatorKind {
             TerminatorKind::SwitchInt { discr, .. } => vec![discr],
             TerminatorKind::Call { args, .. } => args.iter().collect(),
             TerminatorKind::Assert { cond, .. } => vec![cond],
-            TerminatorKind::Goto(_) | TerminatorKind::Return | TerminatorKind::Unreachable => {
-                Vec::new()
-            }
+            TerminatorKind::Goto(_)
+            | TerminatorKind::Drop { .. }
+            | TerminatorKind::Return
+            | TerminatorKind::Unreachable => Vec::new(),
         }
     }
 }

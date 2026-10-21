@@ -74,10 +74,22 @@
   prelude): values of types that implement `Copy` are copied, others
   moved, and E0204 checks `Copy` impls. `#[derive(Clone, Copy,
   PartialEq, Eq)]` on structs implements them as rustc does.
+- Support `Drop` (`core::ops`, in the prelude): bindings, parameters and
+  temporaries are dropped where rustc drops them, in rustc's order, with
+  edition 2024's rules for tail expressions and rustc's lifetime
+  extension of temporaries a `let` borrows; values moved out on some
+  paths only are dropped through drop flags, and partially moved ones
+  drop their remaining fields. Drop glue is built when generic code is
+  monomorphized. E0040, E0120, E0184, E0366, E0367, E0493 and E0509
+  are reported as rustc does.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 
 ### Performance
+
+- Find the loans live at each point from the few locals that hold each
+  one, rather than from every local: borrow checking takes a fifth of
+  the time it did on generic code.
 
 - Build `core`'s front end once per process: its parsed files, its item
   tree with names resolved, its signatures, its constants' values and

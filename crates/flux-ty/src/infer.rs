@@ -1352,6 +1352,9 @@ impl Ctx<'_> {
             return Ty::ERROR;
         };
         let data = &self.items.functions[function];
+        if crate::traits::is_destructor(self.items, function) {
+            self.error(self.range(callee), "explicit use of destructor method");
+        }
         let name = function_name(self.items, function);
         let generic_args = self.instantiate_fn(
             callee,
@@ -2012,6 +2015,9 @@ impl Ctx<'_> {
         name_range: TextRange,
     ) -> Ty {
         let data = &self.items.functions[function];
+        if crate::traits::is_destructor(self.items, function) {
+            self.error(name_range, "explicit use of destructor method");
+        }
         let generic_args = self.instantiate_fn(id, function, Some(base), trait_args, name_range);
         if !self.items.is_visible(data.loc.vis, self.module) {
             self.error(name_range, format!("method `{}` is private", data.name));

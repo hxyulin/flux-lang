@@ -1,0 +1,316 @@
+fn <Noisy as Drop>::drop(_1: &mut Noisy) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn <Owner as Drop>::drop(_1: &mut Owner) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn <Wrap<T> as Drop>::drop(_1: &mut Wrap<T>) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn generic<T>(_1: T) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        drop(_1) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn moved(_1: Noisy) -> i32 {
+    let mut _0: i32;
+    let _2: Noisy; // kept
+
+    bb0: {
+        _2 = move _1;
+        _0 = const 4_i32;
+        drop(_2) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn passed(_1: Noisy) -> Noisy {
+    let mut _0: Noisy;
+
+    bb0: {
+        _0 = move _1;
+        return;
+    }
+}
+
+fn partly(_1: (Noisy, i32)) -> Noisy {
+    let mut _0: Noisy;
+
+    bb0: {
+        _0 = move _1.0;
+        return;
+    }
+}
+
+fn reassigned(_1: Noisy, _2: Noisy) -> Noisy {
+    let mut _0: Noisy;
+    let _3: ();
+    let _4: Noisy;
+
+    bb0: {
+        _4 = move _2;
+        drop(_1) -> bb1;
+    }
+
+    bb1: {
+        _1 = move _4;
+        _3 = const ();
+        _0 = move _1;
+        return;
+    }
+}
+
+fn <Two as Drop>::drop(_1: &mut Two) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn spread(_1: Two) -> () {
+    let mut _0: ();
+    let _2: Two; // moved
+    let _3: Two; // again
+
+    bb0: {
+        _2 = Two { a: move _1.0, b: move _1.1, count: const 1_i32 };
+        _3 = move _1;
+        _0 = const ();
+        drop(_3) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_3);
+        drop(_2) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn dropped_while_borrowed() -> i32 {
+    let mut _0: i32;
+    let _1: i32; // x
+    let _2: &Noisy;
+    let _3: Noisy;
+
+    bb0: {
+        _3 = Noisy(const 10_i32);
+        _2 = &_3;
+        drop(_3) -> bb1;
+    }
+
+    bb1: {
+        _1 = copy (*_2).0;
+        _0 = copy _1;
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: Owner; // o
+    let _2: Noisy;
+    let _3: Noisy; // inner
+    let _4: Owner; // o2
+    let _5: Noisy;
+    let _6: Noisy; // bound
+    let _7: Wrap<Noisy>; // w
+    let _8: Noisy;
+    let _9: Noisy; // n
+    let _10: Owner; // o3
+    let _11: Noisy;
+    let _12: i32; // count
+    let _13: Owner; // o4
+    let _14: Plain; // p
+    let _15: Owner;
+    let _16: Noisy;
+    let _17: Noisy; // deep
+    let _18: bool;
+    let _19: bool;
+    let _20: bool;
+    let _21: bool;
+    let _22: bool;
+
+    bb0: {
+        _18 = const false;
+        _19 = const false;
+        _20 = const false;
+        _21 = const false;
+        _22 = const false;
+        _2 = Noisy(const 2_i32);
+        _1 = Owner { inner: move _2, count: const 3_i32 };
+        _18 = const true;
+        _3 = move _1.0;
+        _5 = Noisy(const 2_i32);
+        _4 = Owner { inner: move _5, count: const 3_i32 };
+        _19 = const true;
+        _6 = move _4.0;
+        _8 = Noisy(const 1_i32);
+        _7 = Wrap(move _8);
+        _20 = const true;
+        _9 = move _7.0;
+        _11 = Noisy(const 2_i32);
+        _10 = Owner { inner: move _11, count: const 3_i32 };
+        _21 = const true;
+        _12 = copy _10.1;
+        _13 = Owner { inner: move _10.0, count: const 4_i32 };
+        _16 = Noisy(const 5_i32);
+        _15 = Owner { inner: move _16, count: const 6_i32 };
+        _14 = Plain { owner: move _15 };
+        _22 = const true;
+        _17 = move _14.0.0;
+        _0 = const ();
+        drop(_17) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_17);
+        switchInt(copy _22) -> [0: bb11, otherwise: bb12];
+    }
+
+    bb2: {
+        StorageDead(_14);
+        _22 = const false;
+        drop(_13) -> bb3;
+    }
+
+    bb3: {
+        StorageDead(_13);
+        StorageDead(_12);
+        switchInt(copy _21) -> [0: bb13, otherwise: bb14];
+    }
+
+    bb4: {
+        StorageDead(_10);
+        _21 = const false;
+        drop(_9) -> bb5;
+    }
+
+    bb5: {
+        StorageDead(_9);
+        switchInt(copy _20) -> [0: bb15, otherwise: bb16];
+    }
+
+    bb6: {
+        StorageDead(_7);
+        _20 = const false;
+        drop(_6) -> bb7;
+    }
+
+    bb7: {
+        StorageDead(_6);
+        switchInt(copy _19) -> [0: bb17, otherwise: bb18];
+    }
+
+    bb8: {
+        StorageDead(_4);
+        _19 = const false;
+        drop(_3) -> bb9;
+    }
+
+    bb9: {
+        StorageDead(_3);
+        switchInt(copy _18) -> [0: bb19, otherwise: bb20];
+    }
+
+    bb10: {
+        StorageDead(_1);
+        _18 = const false;
+        return;
+    }
+
+    bb11: {
+        _22 = const false;
+        goto -> bb2;
+    }
+
+    bb12: {
+        drop(_14.0) -> bb11;
+    }
+
+    bb13: {
+        _21 = const false;
+        goto -> bb4;
+    }
+
+    bb14: {
+        drop(_10) -> bb13;
+    }
+
+    bb15: {
+        _20 = const false;
+        goto -> bb6;
+    }
+
+    bb16: {
+        drop(_7) -> bb15;
+    }
+
+    bb17: {
+        _19 = const false;
+        goto -> bb8;
+    }
+
+    bb18: {
+        drop(_4) -> bb17;
+    }
+
+    bb19: {
+        _18 = const false;
+        goto -> bb10;
+    }
+
+    bb20: {
+        drop(_1) -> bb19;
+    }
+}
+
+error 935..937: destructor of `Noisy` cannot be evaluated at compile-time
+error 980..982: destructor of `T` cannot be evaluated at compile-time
+error 1033..1037: destructor of `Noisy` cannot be evaluated at compile-time
+error 1114..1115: destructor of `(Noisy, i32)` cannot be evaluated at compile-time
+error 1173..1178: destructor of `Noisy` cannot be evaluated at compile-time
+error 1383..1406: cannot move out of type `Two`, which implements the `Drop` trait
+error 1383..1406: cannot move out of type `Two`, which implements the `Drop` trait
+error 1484..1493: temporary value dropped while borrowed
+error 1606..1613: cannot move out of type `Owner`, which implements the `Drop` trait
+error 1723..1725: cannot move out of type `Owner`, which implements the `Drop` trait
+error 1773..1774: cannot move out of type `Wrap<Noisy>`, which implements the `Drop` trait
+error 1886..1910: cannot move out of type `Owner`, which implements the `Drop` trait
+error 2039..2052: cannot move out of type `Owner`, which implements the `Drop` trait

@@ -467,6 +467,10 @@ fn compound_immutable_generic<T>(_1: T, _2: T) -> () {
 
     bb1: {
         _0 = const ();
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
         return;
     }
 }

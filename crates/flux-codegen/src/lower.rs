@@ -96,14 +96,8 @@ pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Result<Modul
     };
     for instance in instances {
         let body = &mir.bodies[instance.function];
-        let function = if instance.args.is_empty() {
-            ctx.function(instance, body)
-        } else {
-            ctx.function(
-                instance,
-                &flux_mir::mono::subst_body(hir, &typed.sigs, body, instance.args),
-            )
-        };
+        let body = flux_mir::mono::instance_body(hir, &typed.sigs, body, instance.args);
+        let function = ctx.function(instance, &body);
         module.functions.push(function);
     }
     module.data = ctx.data;
@@ -921,6 +915,7 @@ impl Lower<'_, '_, '_> {
             TerminatorKind::Unreachable => {
                 self.b.ins().trap();
             }
+            TerminatorKind::Drop { .. } => unreachable!("drops are expanded into calls"),
         }
     }
 

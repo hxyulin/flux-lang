@@ -484,11 +484,15 @@ fn generic_eq<T>(_1: &T, _2: T) -> bool {
     }
 
     bb4: {
-        return;
+        drop(_2) -> bb6;
     }
 
     bb5: {
         goto -> bb4;
+    }
+
+    bb6: {
+        return;
     }
 }
 
