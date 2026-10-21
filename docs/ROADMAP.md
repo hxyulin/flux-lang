@@ -12,8 +12,8 @@ subset. See [the supported language](LANGUAGE.md).
 
 ## 2. Typed syntax and item structure
 
-- A typed AST layer over `SyntaxNode` (`ast::Fn<'t>`, `ast::Expr<'t>`,
-  ...), generated from a grammar description rather than written by hand.
+- Done: a typed AST over `SyntaxNode` (`ast::Fn<'t>`, `ast::Expr<'t>`,
+  ...), generated from `flux.ungram`, with trees checked against it.
 - An *item tree*: each file's items with their signatures but not their
   bodies, and stable IDs for items based on their path rather than their
   offset. Editing one function body must not change any other item's ID.

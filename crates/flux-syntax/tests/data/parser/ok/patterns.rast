@@ -561,7 +561,7 @@ SOURCE_FILE@0..761
                 R_CURLY@624..625 "}"
             WHITESPACE@625..634 "\n        "
             MATCH_ARM@634..650
-              MACRO_CALL@634..644
+              MACRO_PAT@634..644
                 PATH@634..641
                   PATH_SEGMENT@634..641
                     NAME_REF@634..641

@@ -1,0 +1,20 @@
+[package]
+name = "flux-sourcegen"
+description = "Generates flux-syntax's typed AST from its grammar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+# No dependency on flux-syntax, so the AST can be regenerated even when a
+# grammar change leaves flux-syntax unable to compile.
+[dependencies]
+ungrammar = "1.16.1"
+
+[dev-dependencies]
+flux-syntax.workspace = true
+
+[lints]
+workspace = true

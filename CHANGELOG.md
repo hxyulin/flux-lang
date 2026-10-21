@@ -11,6 +11,11 @@
   expressions and statements in the [supported subset](docs/LANGUAGE.md),
   producing lossless syntax trees.
 - Add `flux lex`, `flux parse` and `flux check`.
+- Add a typed AST (`flux_syntax::ast`) generated from `flux.ungram` by the
+  new `flux-sourcegen` crate, whose tests check that parsed trees match
+  the grammar.
+- Give macro calls a node kind per position: `MACRO_CALL` (items),
+  `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 
 ### Performance
 

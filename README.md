@@ -14,8 +14,9 @@ same under both.
 ## Status
 
 flux is at its first stage: a lexer and an error-recovering parser that
-produce lossless syntax trees. Name resolution, type checking, borrow
-checking and code generation are on the [roadmap](docs/ROADMAP.md).
+produce lossless syntax trees, with a typed AST over them. Name resolution,
+type checking, borrow checking and code generation are on the
+[roadmap](docs/ROADMAP.md).
 
 The parser handles all of its own sources and keel's, and parses 1 GiB of
 crates.io sources without a panic and with every tree reproducing its file

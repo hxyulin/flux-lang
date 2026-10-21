@@ -6,7 +6,10 @@ flux is an experimental compiler for a subset of Rust (edition 2024). Use
 
 ## Sources
 
-- `crates/flux-syntax/`: syntax kinds, lexer, parser and tree building.
+- `crates/flux-syntax/`: syntax kinds, lexer, parser, tree building, and the
+  typed AST (`src/ast/`), generated from `flux.ungram`.
+- `crates/flux-sourcegen/`: generates `src/ast/generated.rs`; its tests
+  check that parsed trees match `flux.ungram`.
 - `crates/flux-intern/`: global `Symbol` interner and predefined symbols.
 - `crates/flux-arena/`: `DroplessArena` and typed `Arena<T>`/`Idx<T>`.
 - `crates/flux-cli/`: the `flux` binary (`lex`, `parse`, `check`).
@@ -24,7 +27,12 @@ flux is an experimental compiler for a subset of Rust (edition 2024). Use
 - flux accepts only valid Rust. When the parser accepts something rustc
   rejects (or the reverse), that is a bug unless docs/LANGUAGE.md lists it.
 - Add grammar in the module for its construct (`items.rs`, `expressions.rs`,
-  ...). New node kinds go in `syntax_kind.rs` under the matching section.
+  ...). New node kinds go in `syntax_kind.rs` under the matching section,
+  and in `flux.ungram`; then run `just sourcegen`. Never edit
+  `ast/generated.rs` by hand; accessors the generator cannot produce go in
+  `ast/ext.rs`.
+- Type checking does not happen on the AST: the AST is a typed view of
+  syntax, and semantic analysis works on HIR lowered from it.
 - Performance is a design goal: prefer flat arrays, 32-bit indices and
   interned symbols to pointers and owned strings, and measure claims with
   `just bench` (run it more than once; it varies by a few percent).
@@ -40,6 +48,8 @@ Run checks appropriate to the change before finishing:
 - `just check`: format, clippy, tests, and `flux check` over the workspace.
 - Parser changes: add or extend a fixture in `tests/data/parser/{ok,err}`,
   run `just snapshots`, and read the `.rast` diff to confirm the new tree.
+  `cargo test -p flux-sourcegen` then checks the tree against
+  `flux.ungram`.
 - Larger grammar changes: `just corpus ~/.cargo/registry/src` and compare the
   error summary before and after; panics and lossy trees fail it.
 

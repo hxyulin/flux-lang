@@ -5,7 +5,8 @@ flux is a Cargo workspace:
 | Crate | Role |
 | --- | --- |
 | [`flux-cli`](../crates/flux-cli/src/main.rs) | The `flux` binary: files, arguments, diagnostics, exit codes |
-| [`flux-syntax`](../crates/flux-syntax/src/lib.rs) | Source text to lossless syntax trees |
+| [`flux-syntax`](../crates/flux-syntax/src/lib.rs) | Source text to lossless syntax trees, and the typed AST over them |
+| [`flux-sourcegen`](../crates/flux-sourcegen/src/lib.rs) | Generates the typed AST from [`flux.ungram`](../crates/flux-syntax/flux.ungram) |
 | [`flux-intern`](../crates/flux-intern/src/lib.rs) | Global, thread-safe string interning (`Symbol`) |
 | [`flux-arena`](../crates/flux-arena/src/lib.rs) | Bump allocation and typed index arenas |
 
@@ -99,6 +100,45 @@ took two thirds of parse time. flux's incremental design does not need
 the sharing: it reparses a changed file whole (milliseconds even for large
 files) and reuses work *after* parsing, keyed by item. The same tree is
 meant to serve a language server too, rather than a second frontend.
+
+## The typed AST
+
+[`ast`](../crates/flux-syntax/src/ast.rs) gives the tree Rust types: a
+struct per node kind (`ast::Fn`, `ast::BinExpr`) and an enum per position
+(`ast::Item`, `ast::Expr`, `ast::Pat`, `ast::Type`). Each wraps a
+`SyntaxNode`, is `Copy`, and finds its children on demand: nothing is
+converted or allocated. Accessors return `Option` or iterators, because a
+tree with errors can lack any part.
+
+The node structs are generated from
+[`flux.ungram`](../crates/flux-syntax/flux.ungram), which states what each
+node may contain. Children that share a type and differ only by position
+(`BinExpr::lhs` and `rhs`, an `if`'s condition and branches) are written
+by hand in [`ext.rs`](../crates/flux-syntax/src/ast/ext.rs); the
+generated code checks they exist. flux-sourcegen's tests check that every
+tree parsed from the fixtures and the workspace (and, with `just corpus`,
+every error-free file of a corpus) matches the grammar, so the AST and
+the parser cannot silently drift apart.
+
+Macro calls get a kind per position (`MACRO_CALL` for items,
+`MACRO_EXPR`, `MACRO_TYPE`, `MACRO_PAT`) so that, for example, a `let`
+statement's pattern, type and initializer stay distinguishable.
+
+### Where type checking happens
+
+"Typed" means the AST's nodes have Rust types, not that the program has
+been type-checked. The AST mirrors the source, with every parenthesis and
+spelling variant, which is right for diagnostics and tools and wrong for
+analysis. Semantic analysis will follow rustc's and rust-analyzer's split:
+
+1. **Item tree:** each file's items and signatures, with path-based IDs.
+2. **HIR:** each body lowered from the AST into an arena of expressions
+   and patterns with names resolved and sugar removed (`for` to `loop`
+   and `match`, `?` to a `match`, `if let` chains to `match`), keeping a
+   map back to AST nodes for diagnostics.
+3. **Type inference and trait solving** on HIR bodies, one body at a time,
+   given the item tree's signatures.
+4. **MIR** for borrow checking and lowering to keel.
 
 ## Names and memory
 

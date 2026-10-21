@@ -151,6 +151,8 @@ pub enum SyntaxKind {
     ATTR,
     META,
     TOKEN_TREE,
+    /// A macro call in item position; see also `MACRO_EXPR`, `MACRO_TYPE`
+    /// and `MACRO_PAT`.
     MACRO_CALL,
     VISIBILITY,
     NAME,
@@ -221,6 +223,7 @@ pub enum SyntaxKind {
     FOR_TYPE,
     IMPL_TRAIT_TYPE,
     DYN_TRAIT_TYPE,
+    MACRO_TYPE,
 
     // Patterns.
     IDENT_PAT,
@@ -238,6 +241,7 @@ pub enum SyntaxKind {
     OR_PAT,
     REST_PAT,
     PAREN_PAT,
+    MACRO_PAT,
 
     // Expressions.
     LITERAL,
@@ -276,6 +280,7 @@ pub enum SyntaxKind {
     RECORD_EXPR_FIELD_LIST,
     RECORD_EXPR_FIELD,
     UNDERSCORE_EXPR,
+    MACRO_EXPR,
 
     // Statements.
     LET_STMT,

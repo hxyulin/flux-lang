@@ -148,7 +148,7 @@ fn path_pat(p: &mut Parser<'_>) {
             } else {
                 p.error("expected `(`, `[` or `{`");
             }
-            m.complete(p, MACRO_CALL);
+            m.complete(p, MACRO_PAT);
         }
         _ => {
             let lhs = m.complete(p, PATH_PAT);
