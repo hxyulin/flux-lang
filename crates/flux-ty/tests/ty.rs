@@ -74,6 +74,23 @@ fn err_fixtures() {
     check_dir("err", true);
 }
 
+/// `core`'s signatures are resolved once per process and a program's
+/// after them; that gives what resolving everything again does.
+#[test]
+fn shared_core_signatures() {
+    for path in fixtures("ok").into_iter().chain(fixtures("err")) {
+        let text = fs::read_to_string(&path).unwrap();
+        let (_, _, hir) = flux_hir::lower_text(&path, &text);
+        let (shared, mut shared_diagnostics) = flux_ty::signatures(&hir.items);
+        let (all, mut all_diagnostics) = flux_ty::signatures_checked(&hir.items, true);
+        let name = path.display();
+        assert_eq!(format!("{shared:?}"), format!("{all:?}"), "{name}");
+        flux_hir::Diagnostic::sort(&mut shared_diagnostics);
+        flux_hir::Diagnostic::sort(&mut all_diagnostics);
+        assert_eq!(shared_diagnostics, all_diagnostics, "{name}");
+    }
+}
+
 fn main_error(text: &str) -> Option<String> {
     let (_, _, hir) = flux_hir::lower_text("main.rs", text);
     let (sigs, _) = flux_ty::signatures(&hir.items);

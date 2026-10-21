@@ -19,8 +19,8 @@ use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
 
 use crate::item_tree::{
-    AssocItem, ConstId, ImplTarget, ItemTree, ModuleId, Path, PathAnchor, StructKind, TraitId,
-    TypeRef, UseKind, Visibility, is_primitive,
+    AssocItem, ConstId, ImplTarget, ItemCounts, ItemTree, ModuleId, Path, PathAnchor, StructKind,
+    TraitId, TypeRef, UseKind, Visibility, is_primitive,
 };
 use crate::{Diagnostic, FileId, FunctionId, StructId};
 
@@ -85,7 +85,7 @@ impl Scope {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DefMap {
     /// Each module's scope, by module index.
     pub scopes: Vec<Scope>,
@@ -533,13 +533,18 @@ impl ItemTree {
     }
 }
 
-/// Builds every module's scope and resolves imports and `impl` blocks.
-pub(crate) fn resolve(items: &mut ItemTree) {
-    items.def_map.scopes = vec![Scope::default(); items.modules.len()];
-    define_items(items);
+/// Builds the scopes of the modules from `from` on and resolves the
+/// imports and `impl` blocks from there; those before are resolved
+/// already, in crates that cannot see the new one.
+pub(crate) fn resolve(items: &mut ItemTree, from: ItemCounts) {
+    items
+        .def_map
+        .scopes
+        .resize(items.modules.len(), Scope::default());
+    define_items(items, from);
     items.def_map.prelude = find_prelude(items);
-    resolve_imports(items);
-    resolve_impls(items);
+    resolve_imports(items, from.uses as usize);
+    resolve_impls(items, from.impls as usize);
     // An import into both namespaces reports its problems once.
     let mut seen = std::collections::HashSet::new();
     items
@@ -562,8 +567,9 @@ fn define(items: &mut ItemTree, module: ModuleId, name: Symbol, ns: Ns, binding:
     }
 }
 
-/// Puts each item in its module's scope, reporting names defined twice.
-fn define_items(items: &mut ItemTree) {
+/// Puts each item from `from` on in its module's scope, reporting names
+/// defined twice.
+fn define_items(items: &mut ItemTree, from: ItemCounts) {
     // Module, name, namespaces and binding of each item.
     let mut defined: Vec<(ModuleId, Symbol, &[Ns], Binding)> = Vec::new();
     let item = |def, vis, file, range| Binding {
@@ -573,7 +579,7 @@ fn define_items(items: &mut ItemTree) {
         file,
         range,
     };
-    for (id, m) in items.modules.iter() {
+    for (id, m) in items.modules.iter().skip(from.modules as usize) {
         if let Some(parent) = m.parent {
             let file = items.modules[parent].file;
             let file = if m.def_range.is_empty() { m.file } else { file };
@@ -581,7 +587,7 @@ fn define_items(items: &mut ItemTree) {
             defined.push((parent, m.name, &[Ns::Types], binding));
         }
     }
-    for (id, s) in items.structs.iter() {
+    for (id, s) in items.structs.iter().skip(from.structs as usize) {
         let ns: &[Ns] = if s.kind == StructKind::Record {
             &[Ns::Types]
         } else {
@@ -590,17 +596,17 @@ fn define_items(items: &mut ItemTree) {
         let binding = item(Def::Struct(id), s.loc.vis, s.loc.file, s.def_range);
         defined.push((s.loc.module, s.name, ns, binding));
     }
-    for (id, t) in items.traits.iter() {
+    for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let binding = item(Def::Trait(id), t.loc.vis, t.loc.file, t.def_range);
         defined.push((t.loc.module, t.name, &[Ns::Types], binding));
     }
-    for (id, c) in items.consts.iter() {
+    for (id, c) in items.consts.iter().skip(from.consts as usize) {
         if let (None, Some(name)) = (c.owner, c.name) {
             let binding = item(Def::Const(id), c.loc.vis, c.loc.file, c.def_range);
             defined.push((c.loc.module, name, &[Ns::Values], binding));
         }
     }
-    for (id, f) in items.functions.iter() {
+    for (id, f) in items.functions.iter().skip(from.functions as usize) {
         if f.owner.is_none() {
             let binding = item(Def::Function(id), f.loc.vis, f.loc.file, f.def_range);
             defined.push((f.loc.module, f.name, &[Ns::Values], binding));
@@ -635,12 +641,13 @@ fn find_prelude(items: &ItemTree) -> Option<ModuleId> {
     )
 }
 
-/// Resolves every `use`, repeating until no import makes progress.
-fn resolve_imports(items: &mut ItemTree) {
-    let mut pending: Vec<usize> = (0..items.uses.len())
+/// Resolves every `use` from `from` on, repeating until no import makes
+/// progress.
+fn resolve_imports(items: &mut ItemTree, from: usize) {
+    let mut pending: Vec<usize> = (from..items.uses.len())
         .filter(|&i| items.uses[i].kind != UseKind::Glob)
         .collect();
-    let globs: Vec<usize> = (0..items.uses.len())
+    let globs: Vec<usize> = (from..items.uses.len())
         .filter(|&i| items.uses[i].kind == UseKind::Glob)
         .collect();
     loop {
@@ -982,10 +989,10 @@ fn apply_glob(items: &mut ItemTree, index: usize) -> bool {
     changed
 }
 
-/// Finds the type of each `impl` block, and checks that each type's
-/// associated functions have distinct names.
-fn resolve_impls(items: &mut ItemTree) {
-    let ids: Vec<_> = items.impls.iter().map(|(id, _)| id).collect();
+/// Finds the type of each `impl` block from `from` on, and checks that
+/// the associated functions of their types have distinct names.
+fn resolve_impls(items: &mut ItemTree, from: usize) {
+    let ids: Vec<_> = items.impls.iter().skip(from).map(|(id, _)| id).collect();
     for id in ids {
         let imp = &items.impls[id];
         let (module, file) = (imp.module, imp.file);
@@ -1097,7 +1104,7 @@ fn resolve_impls(items: &mut ItemTree) {
         };
         items.impls[id].target = target;
     }
-    for imp in items.impls.values() {
+    for imp in items.impls.values().skip(from) {
         let Some(target) = imp.target else {
             continue;
         };
@@ -1113,12 +1120,18 @@ fn resolve_impls(items: &mut ItemTree) {
             items.assoc.entry((target, name)).or_default().push(item);
         }
     }
-    // Duplicate associated items, per type: functions and constants
-    // share a namespace.
-    let mut by_target: HashMap<ImplTarget, Vec<AssocItem>> = HashMap::new();
+    // Duplicate associated items, per type with new blocks: functions and
+    // constants share a namespace.
+    let mut by_target: HashMap<ImplTarget, Vec<AssocItem>> = items
+        .impls
+        .values()
+        .skip(from)
+        .filter_map(|imp| Some((imp.target?, Vec::new())))
+        .collect();
     for imp in items.impls.values() {
-        if let Some(target) = imp.target {
-            let entry = by_target.entry(target).or_default();
+        if let Some(target) = imp.target
+            && let Some(entry) = by_target.get_mut(&target)
+        {
             entry.extend(imp.functions.iter().map(|&f| AssocItem::Function(f)));
             entry.extend(imp.consts.iter().map(|&c| AssocItem::Const(c)));
         }

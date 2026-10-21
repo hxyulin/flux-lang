@@ -188,12 +188,26 @@ program's files:
 
 A program has two crates: flux's own `core`
 ([`library/core`](../library/core/src/lib.rs)), built into the compiler
-and compiled with every program (its files parsed in parallel, its
-bodies lowered and type-checked only where the program reaches them), and the program itself, whose files are
+and compiled with every program, and the program itself, whose files are
 read as its `mod` declarations name them (`m.rs` or `m/mod.rs`). Both
 crates' items share one item tree, with each module knowing its crate.
 Only `core` may write `impl` blocks for primitive types, which is how
 `i32::MAX` and `x.abs()` exist.
+
+`core` cannot name the program, so its part of the front end is the
+same in every compilation, and is done once per process, the first
+time it is needed: [`Core`](../crates/flux-hir/src/library.rs) holds
+its files, parsed in parallel, which are the first files of every
+`SourceDb`; its item tree, with names resolved; its constants' values;
+and its function bodies, lowered when first asked for (a program uses
+few of them). A program's item tree starts as a copy of `core`'s and
+adds the program's crate after it, so `core`'s items keep their ids,
+and `ItemTree::core` says where they end. The copy is cheap: item
+arenas are [`LayeredArena`](../crates/flux-arena/src/typed.rs)s, whose
+frozen part, `core`'s items, is shared through an `Arc`, and only the
+tables a program may add to (the def map, each type's associated items,
+each trait's `impl` blocks) are copied. Resolving the program's names
+touches only its own modules, imports and `impl` blocks.
 
 Bodies depend only on the item tree, so they lower independently (and
 in parallel, later). Syntax outside the [supported subset](LANGUAGE.md)
@@ -204,7 +218,12 @@ program's meaning (`allow`, `inline`, `doc`, ...).
 ## Types
 
 [`flux-ty`](../crates/flux-ty/src/lib.rs) resolves every signature from
-the item tree, then infers each body on its own against them.
+the item tree, then infers each body on its own against them. `core`'s
+signatures are resolved once per process, from `Core`'s item tree, and
+a program's are resolved after a copy of them, in the same order, so
+they see the same `core` as if everything were resolved together (a
+test checks this for every fixture). `core`'s `impl` blocks are checked
+against their traits by its tests, not on every build.
 
 A `Ty` is a 4-byte handle into one process-wide table of `TyKind`s, like
 `Symbol` for names: types compare and hash as integers, and a type made
@@ -469,6 +488,13 @@ mostly for nodes (0.69 per token, trivia included).
 Interning all 52.6M identifiers and lifetimes (938K distinct) takes
 12 ns/name on one thread, and 74 ms in total on 18.
 
+Building `core`'s part of the front end (parsing, item tree, constants,
+signatures) takes about 1.2 ms, once per process. A compilation in a
+process that has built it, such as the test suites, starts from it:
+copying its item tree takes about 5 µs and its signatures 9 µs, so
+lowering and type-checking an empty program takes about 35 µs instead
+of 1.1 ms. A single `flux build` still builds `core` once.
+
 ## Testing
 
 | Test | Checks |
@@ -480,6 +506,6 @@ Interning all 52.6M identifiers and lifetimes (938K distinct) takes
 | `tests/corpus.rs` (opt-in) | No panics or malformed trees over a directory, with an error summary |
 | `flux-arena`, `flux-intern` unit tests | Allocation, alignment, threads; also run under Miri |
 | `flux-hir` `tests/hir.rs` | Snapshot HIR for `tests/data/{ok,err}`; lowering never panics on any parser fixture prefix |
-| `flux-ty` `tests/ty.rs` | Snapshot types and diagnostics for `tests/data/{ok,err}`; `main` rules; never panics |
+| `flux-ty` `tests/ty.rs` | Snapshot types and diagnostics for `tests/data/{ok,err}`; `main` rules; `core` is clean; signatures resolved after `core`'s shared ones match resolving everything; never panics |
 | `flux-mir` `tests/mir.rs` | Snapshot MIR and initialization errors for `tests/data/{ok,err}` |
 | `flux-cli` `tests/run.rs` | Every program in `tests/run`, built with rustc and with flux (with and without `-O`), produces the same output and exit status |

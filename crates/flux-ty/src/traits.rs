@@ -11,7 +11,7 @@
 use std::fmt;
 
 use flux_hir::{
-    Bound, Diagnostic, FunctionId, Generics, ImplId, ItemTree, ModuleId, Owner, TraitId,
+    Bound, Diagnostic, FunctionId, Generics, ImplId, ItemCounts, ItemTree, ModuleId, Owner, TraitId,
 };
 use flux_intern::{Symbol, kw};
 use flux_syntax::TextRange;
@@ -800,17 +800,19 @@ pub fn resolve_instance(items: &ItemTree, sigs: &Signatures, instance: Instance)
 /// Checks each trait's `impl` blocks against the trait: that they define
 /// its required methods and no others, with its signatures; that they
 /// are `unsafe` exactly when it is; that their types implement its
-/// supertraits; and that no two of them overlap.
+/// supertraits; and that no two of them overlap. Only the blocks from
+/// index `checked` on are checked: `core`'s are checked by its tests,
+/// not on every build.
 pub fn check_impls(
     items: &ItemTree,
     sigs: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
-    check_core: bool,
+    checked: u32,
 ) {
     // As in rustc, a trait with conflicting impls, or `Copy` with one
     // for a type that cannot be, has its impls checked no further.
-    let mut skipped = check_overlap(items, sigs, diagnostics, check_core);
-    if check_copy_impls(items, sigs, diagnostics, check_core)
+    let mut skipped = check_overlap(items, sigs, diagnostics, checked);
+    if check_copy_impls(items, sigs, diagnostics, checked)
         && let Some(&copy) = items.lang_traits.get(&Symbol::intern("copy"))
     {
         skipped.push(copy);
@@ -819,8 +821,7 @@ pub fn check_impls(
         let Some(t) = imp.trait_ else {
             continue;
         };
-        // `core`'s are checked by its tests, not on every build.
-        if !check_core && !items.in_main_crate(imp.module) || skipped.contains(&t) {
+        if id.index() < checked as usize || skipped.contains(&t) {
             continue;
         }
         let mut error = |range: TextRange, message: String| {
@@ -1190,15 +1191,18 @@ fn self_text(ty: &flux_hir::TypeRef) -> &'static str {
 }
 
 /// Reports traits that are their own supertraits, through any others,
-/// once per cycle, at the first trait's bound that leads into it.
+/// once per cycle, at the first trait's bound that leads into it. Only
+/// cycles through the traits from `from` on are looked for: the traits
+/// before cannot name them.
 pub fn check_supertrait_cycles(
     items: &ItemTree,
     sigs: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
+    from: ItemCounts,
 ) -> bool {
     let mut in_cycle: Vec<TraitId> = Vec::new();
     let mut found_any = false;
-    for (start, data) in items.traits.iter() {
+    for (start, data) in items.traits.iter().skip(from.traits as usize) {
         if in_cycle.contains(&start) {
             continue;
         }
@@ -1265,11 +1269,13 @@ fn reaches(
 }
 
 /// Reports bounds on types without generic parameters that do not hold,
-/// such as `where S: Tr` for an `S` that does not implement `Tr`.
+/// such as `where S: Tr` for an `S` that does not implement `Tr`, on the
+/// functions and `impl` blocks from `from` on.
 pub fn check_trivial_bounds(
     items: &ItemTree,
     sigs: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
+    from: ItemCounts,
 ) {
     let mut check = |generics: &Generics, predicates: &[Predicate], file| {
         // Predicates follow the written bounds, less those that did not
@@ -1287,13 +1293,13 @@ pub fn check_trivial_bounds(
             }
         }
     };
-    for (id, f) in items.functions.iter() {
+    for (id, f) in items.functions.iter().skip(from.functions as usize) {
         let predicates = sigs.fn_predicates.get(id).map_or(&[][..], |p| p);
         if predicates.len() == f.generics.predicates.len() {
             check(&f.generics, predicates, f.loc.file);
         }
     }
-    for (id, imp) in items.impls.iter() {
+    for (id, imp) in items.impls.iter().skip(from.impls as usize) {
         let predicates = sigs.impl_predicates.get(id).map_or(&[][..], |p| p);
         if predicates.len() == imp.generics.predicates.len() {
             check(&imp.generics, predicates, imp.file);
@@ -1308,14 +1314,14 @@ fn check_overlap(
     items: &ItemTree,
     sigs: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
-    check_core: bool,
+    checked: u32,
 ) -> Vec<TraitId> {
     let mut conflicted = Vec::new();
     let mut traits: Vec<(&TraitId, &Vec<ImplId>)> = items.trait_impls.iter().collect();
     traits.sort_by_key(|(t, _)| t.index());
     for (_, impls) in traits {
         for (i, &later) in impls.iter().enumerate() {
-            if !check_core && !items.in_main_crate(items.impls[later].module) {
+            if later.index() < checked as usize {
                 continue;
             }
             let (Some(&b), Some(b_ref)) = (sigs.impls.get(later), sigs.impl_traits.get(later))
@@ -1368,7 +1374,7 @@ fn check_copy_impls(
     items: &ItemTree,
     sigs: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
-    check_core: bool,
+    checked: u32,
 ) -> bool {
     let Some(&copy) = items.lang_traits.get(&Symbol::intern("copy")) else {
         return false;
@@ -1376,7 +1382,7 @@ fn check_copy_impls(
     let mut any = false;
     for &id in items.trait_impls.get(&copy).into_iter().flatten() {
         let imp = &items.impls[id];
-        if !check_core && !items.in_main_crate(imp.module) {
+        if id.index() < checked as usize {
             continue;
         }
         let Some(&self_ty) = sigs.impls.get(id) else {

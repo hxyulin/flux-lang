@@ -79,6 +79,13 @@
 
 ### Performance
 
+- Build `core`'s front end once per process: its parsed files, its item
+  tree with names resolved, its signatures, its constants' values and
+  its bodies as they are reached. A program's item tree continues
+  `core`'s, sharing its items through the new `LayeredArena`, and its
+  signatures are resolved after `core`'s. Lowering and type-checking an
+  empty program in a process that has built `core` takes about 35 µs
+  instead of 1.1 ms; a single `flux build` is unchanged.
 - Read type kinds without a lock, from an append-only table of
   write-once slots, and hash types with FxHash: type checking `core` and
   a program takes about a third less time.

@@ -4,7 +4,7 @@
 //!   signatures, but not their bodies, and what each module's names mean
 //!   ([`def_map`]). Everything outside a body depends only on it. A
 //!   compilation has two crates: flux's own `core`, built into the
-//!   compiler, and the program.
+//!   compiler and lowered once per process ([`Core`]), and the program.
 //! - A [`Body`] is one function's code, lowered from the typed AST into
 //!   arenas of expressions, patterns and bindings. Names are resolved
 //!   during lowering ([`Res`]), `while` becomes `loop`, and parentheses
@@ -22,6 +22,7 @@
 mod body;
 pub mod def_map;
 mod item_tree;
+mod library;
 mod literal;
 mod lower;
 mod pretty;
@@ -34,11 +35,12 @@ pub use body::{
 pub use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 pub use item_tree::{
     AssocBinding, AssocItem, Bound, Const, ConstId, CrateData, CrateId, Derive, Field, Function,
-    FunctionId, GenericArgs, GenericParam, Generics, Impl, ImplId, ImplTarget, ImplType, ItemLoc,
-    ItemTree, MISPLACED_BINDING, Module, ModuleId, Owner, Param, Path, PathAnchor, QSelf, Struct,
-    StructId, StructKind, Trait, TraitId, TraitType, TypeRef, Visibility, WherePredicate,
-    is_primitive,
+    FunctionId, GenericArgs, GenericParam, Generics, Impl, ImplId, ImplTarget, ImplType,
+    ItemCounts, ItemLoc, ItemTree, MISPLACED_BINDING, Module, ModuleId, Owner, Param, Path,
+    PathAnchor, QSelf, Struct, StructId, StructKind, Trait, TraitId, TraitType, TypeRef,
+    Visibility, WherePredicate, is_primitive,
 };
+pub use library::Core;
 pub use lower::{LoweredBody, lower_body, lower_const};
 pub use source::{CORE_ROOT, FileId, SourceDb, SourceFile};
 
@@ -71,25 +73,20 @@ impl Diagnostic {
 }
 
 /// A whole program lowered: its item tree and the body of every function
-/// that has one. `core`'s bodies are lowered when first asked for
-/// ([`Hir::body`]): a program uses few of them.
+/// and constant of the program that has one. `core`'s come from [`Core`].
 #[derive(Debug)]
 pub struct Hir {
     pub items: ItemTree,
     /// The program's function bodies.
     pub bodies: ArenaMap<Function, (Body, BodySourceMap)>,
-    /// `core`'s, by function index, once lowered.
-    core_bodies: Box<[std::sync::OnceLock<(Body, BodySourceMap)>]>,
-    /// Every file, for lowering `core`'s bodies.
-    files: Vec<std::sync::Arc<SourceFile>>,
-    /// The value of every constant that has one.
-    pub const_bodies: ArenaMap<Const, (Body, BodySourceMap)>,
+    /// The value of every constant of the program that has one.
+    const_bodies: ArenaMap<Const, (Body, BodySourceMap)>,
     /// From the item tree and every body, by file and position.
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Builds the item tree of `core` and of the crate whose root file is
-/// `root`, and lowers every body.
+/// Builds the item tree of the crate whose root file is `root`, after
+/// `core`'s, and lowers every body.
 pub fn lower(db: &mut SourceDb, root: FileId, crate_name: Symbol) -> Hir {
     lower_with(db, root, crate_name, true)
 }
@@ -97,9 +94,13 @@ pub fn lower(db: &mut SourceDb, root: FileId, crate_name: Symbol) -> Hir {
 fn lower_with(db: &mut SourceDb, root: FileId, crate_name: Symbol, with_core: bool) -> Hir {
     let items = ItemTree::new(db, root, crate_name, with_core);
     let mut diagnostics = items.diagnostics.clone();
+    if with_core {
+        diagnostics.extend(Core::get().diagnostics.iter().cloned());
+    }
     let mut bodies = ArenaMap::new();
-    for (id, function) in items.functions.iter() {
-        if function.has_body && items.in_main_crate(function.loc.module) {
+    let functions = items.functions.iter().skip(items.core.functions as usize);
+    for (id, function) in functions {
+        if function.has_body {
             let tree = db.file(function.loc.file).parse.tree();
             let lowered = lower_body(tree, &items, id);
             diagnostics.extend(lowered.diagnostics.into_iter().map(|mut d| {
@@ -109,11 +110,28 @@ fn lower_with(db: &mut SourceDb, root: FileId, crate_name: Symbol, with_core: bo
             bodies.insert(id, (lowered.body, lowered.source_map));
         }
     }
+    let const_bodies = lower_consts(db, &items, items.core.consts as usize, &mut diagnostics);
+    Diagnostic::sort(&mut diagnostics);
+    Hir {
+        items,
+        bodies,
+        const_bodies,
+        diagnostics,
+    }
+}
+
+/// Lowers the value of every constant from `from` on that has one.
+fn lower_consts(
+    db: &SourceDb,
+    items: &ItemTree,
+    from: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ArenaMap<Const, (Body, BodySourceMap)> {
     let mut const_bodies = ArenaMap::new();
-    for (id, konst) in items.consts.iter() {
+    for (id, konst) in items.consts.iter().skip(from) {
         if konst.has_body {
             let tree = db.file(konst.loc.file).parse.tree();
-            let lowered = lower_const(tree, &items, id);
+            let lowered = lower_const(tree, items, id);
             diagnostics.extend(lowered.diagnostics.into_iter().map(|mut d| {
                 d.file = konst.loc.file;
                 d
@@ -121,19 +139,7 @@ fn lower_with(db: &mut SourceDb, root: FileId, crate_name: Symbol, with_core: bo
             const_bodies.insert(id, (lowered.body, lowered.source_map));
         }
     }
-    Diagnostic::sort(&mut diagnostics);
-    let core_bodies = (0..items.functions.len())
-        .map(|_| std::sync::OnceLock::new())
-        .collect();
-    let files = db.files().map(|(id, _)| db.shared(id)).collect();
-    Hir {
-        items,
-        bodies,
-        core_bodies,
-        files,
-        const_bodies,
-        diagnostics,
-    }
+    const_bodies
 }
 
 /// Lowers `text` as the root file, at `path`, of a program called `main`;
@@ -174,24 +180,30 @@ impl Hir {
         if let Some(body) = self.bodies.get(function) {
             return Some(body);
         }
-        let data = &self.items.functions[function];
-        if !data.has_body || self.is_program(function) {
+        if self.is_program(function) {
             return None;
         }
-        let slot = &self.core_bodies[function.index()];
-        Some(slot.get_or_init(|| {
-            let lowered = self.lower_core_body(function);
-            debug_assert!(lowered.diagnostics.is_empty(), "core lowers cleanly");
-            (lowered.body, lowered.source_map)
-        }))
+        Core::get().body(function)
     }
 
     /// Lowers `core`'s function `function` again, with its diagnostics:
     /// for tests that check `core` itself.
     pub fn lower_core_body(&self, function: FunctionId) -> LoweredBody {
-        let data = &self.items.functions[function];
-        let tree = self.files[data.loc.file.0 as usize].parse.tree();
-        lower_body(tree, &self.items, function)
+        Core::get().lower_body(function)
+    }
+
+    /// The value of constant `konst`, if it has one.
+    pub fn const_body(&self, konst: ConstId) -> Option<&(Body, BodySourceMap)> {
+        if konst.index() < self.items.core.consts as usize {
+            return Core::get().const_body(konst);
+        }
+        self.const_bodies.get(konst)
+    }
+
+    /// Every constant's value, `core`'s first.
+    pub fn const_bodies(&self) -> impl Iterator<Item = (ConstId, &(Body, BodySourceMap))> {
+        let core = (self.items.core.consts > 0).then(|| Core::get().const_bodies.iter());
+        core.into_iter().flatten().chain(self.const_bodies.iter())
     }
 
     /// Whether `function` is the program's, rather than `core`'s.
