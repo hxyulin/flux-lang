@@ -1,4 +1,4 @@
-fn get(_1: &S) -> i32 {
+fn S::get(_1: &S) -> i32 {
     let mut _0: i32;
 
     bb0: {
@@ -7,7 +7,7 @@ fn get(_1: &S) -> i32 {
     }
 }
 
-fn set(_1: &mut S, _2: i32) -> () {
+fn S::set(_1: &mut S, _2: i32) -> () {
     let mut _0: ();
     let _3: ();
     let _4: i32;
@@ -21,7 +21,7 @@ fn set(_1: &mut S, _2: i32) -> () {
     }
 }
 
-fn add(_1: &mut S, _2: i32) -> i32 {
+fn S::add(_1: &mut S, _2: i32) -> i32 {
     let mut _0: i32;
     let _3: ();
     let _4: i32;
@@ -37,7 +37,7 @@ fn add(_1: &mut S, _2: i32) -> i32 {
     }
 }
 
-fn both(_1: &mut S) -> i32 {
+fn S::both(_1: &mut S) -> i32 {
     let mut _0: i32;
     let _2: &mut i32; // x
     let _3: &i32; // y
@@ -958,7 +958,7 @@ fn self_methods(_1: S) -> i32 {
     }
 }
 
-fn bump(_1: &mut T) -> () {
+fn T::bump(_1: &mut T) -> () {
     let mut _0: ();
     let _2: ();
     let _3: i32;

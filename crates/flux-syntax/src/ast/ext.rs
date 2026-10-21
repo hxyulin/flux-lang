@@ -37,15 +37,22 @@ fn first_token(node: SyntaxNode<'_>) -> Option<SyntaxToken<'_>> {
 }
 
 impl<'t> Name<'t> {
+    /// The name, without the `r#` of a raw identifier: `r#match` is
+    /// `match`.
     pub fn text(self) -> &'t str {
-        first_token(self.syntax).map_or("", SyntaxToken::text)
+        unraw(first_token(self.syntax).map_or("", SyntaxToken::text))
     }
 }
 
 impl<'t> NameRef<'t> {
+    /// The name, without the `r#` of a raw identifier.
     pub fn text(self) -> &'t str {
-        first_token(self.syntax).map_or("", SyntaxToken::text)
+        unraw(first_token(self.syntax).map_or("", SyntaxToken::text))
     }
+}
+
+fn unraw(text: &str) -> &str {
+    text.strip_prefix("r#").unwrap_or(text)
 }
 
 impl<'t> Lifetime<'t> {

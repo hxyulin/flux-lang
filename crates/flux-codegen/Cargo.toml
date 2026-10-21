@@ -9,6 +9,7 @@ readme = "README.md"
 publish = false
 
 [dependencies]
+flux-arena.workspace = true
 flux-hir.workspace = true
 flux-mir.workspace = true
 flux-ty.workspace = true

@@ -1,0 +1,61 @@
+struct S;
+
+struct S;
+
+struct Dup;
+
+struct Twice;
+
+fn f() -> () {}
+
+fn g() -> () {}
+
+fn f() -> () {}
+
+fn f() -> () {}
+
+fn g() -> () {}
+
+fn local() -> () {}
+
+fn call() -> () {
+    <error>();
+}
+
+fn Twice::same() -> () {}
+
+fn Twice::same() -> () {}
+
+fn main() -> () {
+    f();
+    call();
+    g();
+    Twice::same();
+}
+
+error 294..298: unresolved import `nope`
+error 307..315: unresolved import `empty::x`
+error 328..329: unresolved import `empty::y`
+error 338..352: unresolved import `crate::missing`
+error 358..370: unresolved import `self::absent`
+error 376..389: unresolved import `missing_crate`
+error 402..409: unresolved import `a::nothing`
+error 424..425: unresolved import `empty::p`
+error 427..428: unresolved import `empty::q`
+error 435..440: too many leading `super` keywords within `crate`
+error 457..461: unresolved import `a::f`
+error 468..475: unresolved import `a::g`
+error 484..485: unresolved import `a::S`
+error 507..511: the name `S` is defined multiple times
+error 531..539: the name `inner` is defined multiple times
+error 560..569: the name `h` is defined multiple times
+error 587..593: the name `K` is defined multiple times
+error 607..619: the name `N` is defined multiple times
+error 644..657: the name `local` is defined multiple times
+error 674..683: the name `empty` is defined multiple times
+error 779..780: `g` is ambiguous
+error 819..836: unresolved import `crate::cycle_b::r`
+error 867..884: unresolved import `crate::cycle_a::r`
+error 902..911: the name `clash` is defined multiple times
+error 927..934: the name `Dup` is defined multiple times
+error 971..980: duplicate definitions with name `same`

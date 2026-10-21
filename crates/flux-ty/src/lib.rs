@@ -23,11 +23,15 @@ use std::fmt::Write;
 use std::ops::Index;
 
 use flux_arena::ArenaMap;
-use flux_hir::{Diagnostic, FileHir, Function, FunctionId, ItemTree, Struct, StructId, TypeRef};
-use flux_intern::{Symbol, kw, sym};
+use flux_hir::def_map::{Def, Ns, ResolveError, Resolved};
+use flux_hir::{
+    Const, Diagnostic, Function, FunctionId, Hir, ImplId, ImplTarget, ItemLoc, ItemTree, ModuleId,
+    Struct, StructId, TypeRef,
+};
+use flux_intern::{Symbol, sym};
 use flux_syntax::TextRange;
 
-pub use infer::{InferenceResult, c_char_ptr, c_str_ref, infer_body};
+pub use infer::{InferenceResult, Method, c_char_ptr, c_str_ref, infer_body, infer_const};
 pub use ty::{AdtId, InferVar, IntTy, Mutability, Ty, TyKind};
 
 /// A function's resolved signature.
@@ -43,6 +47,7 @@ pub struct FnSig {
 pub struct Signatures {
     pub fns: ArenaMap<Function, FnSig>,
     pub structs: ArenaMap<Struct, Box<[Ty]>>,
+    pub consts: ArenaMap<Const, Ty>,
 }
 
 impl Index<FunctionId> for Signatures {
@@ -64,10 +69,18 @@ impl Signatures {
     }
 }
 
-/// Resolves a type as written: a primitive type or one of `items`'
-/// structs, which shadow primitive types of the same name. `self_ty` is
-/// what `Self` means here, if anything.
-pub fn resolve_type(items: &ItemTree, ty: &TypeRef, self_ty: Option<Ty>) -> Result<Ty, String> {
+/// Resolves a type as written in `module`: a struct, a primitive type,
+/// or `Self`, which means `self_ty` here, if anything. Errors go to
+/// `errors`, at the part of the type they are about within `range`, and
+/// make the type an error unless they are about privacy.
+pub fn resolve_type(
+    items: &ItemTree,
+    module: ModuleId,
+    ty: &TypeRef,
+    self_ty: Option<Ty>,
+    range: TextRange,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Ty {
     let mutability = |mutable: bool| {
         if mutable {
             Mutability::Mut
@@ -75,63 +88,153 @@ pub fn resolve_type(items: &ItemTree, ty: &TypeRef, self_ty: Option<Ty>) -> Resu
             Mutability::Not
         }
     };
+    let fail = |errors: &mut Vec<(TextRange, String)>, at: TextRange, message: String| {
+        errors.push((at, message));
+        Ty::ERROR
+    };
     match ty {
-        TypeRef::Path(name) if *name == kw::SelfUpper => {
-            self_ty.ok_or_else(|| "cannot find type `Self` in this scope".to_owned())
-        }
-        TypeRef::Path(name) => {
-            if let Some((id, s)) = items.struct_by_name(*name) {
-                return Ok(Ty::adt(id, s.name));
-            }
-            if *name == sym::bool {
-                return Ok(Ty::BOOL);
-            }
-            match IntTy::from_name(*name) {
-                Some(int) => Ok(Ty::int(int)),
-                None if [sym::char, sym::str, sym::f32, sym::f64].contains(name) => {
-                    Err(format!("`{name}` is not supported yet"))
+        TypeRef::Path(path) => {
+            let resolved = match items.resolve(module, path, Ns::Types) {
+                Err(e @ ResolveError::Private { .. }) => {
+                    let ResolveError::Private {
+                        message, resolved, ..
+                    } = &e
+                    else {
+                        unreachable!()
+                    };
+                    errors.push((e.range(path, range), message.clone()));
+                    Ok(*resolved)
                 }
-                None => Err(format!("cannot find type `{name}` in this scope")),
+                result => result,
+            };
+            let last = path.range(path.segments.len().saturating_sub(1), range);
+            match resolved {
+                Ok(Resolved::SelfType) => match self_ty {
+                    Some(ty) => ty,
+                    None => fail(
+                        errors,
+                        range,
+                        "cannot find type `Self` in this scope".to_owned(),
+                    ),
+                },
+                Ok(Resolved::Def(Def::Struct(id))) => Ty::adt(id, items.structs[id].name),
+                Ok(Resolved::Primitive(name)) => match primitive(name) {
+                    Ok(ty) => ty,
+                    Err(message) => fail(errors, range, message),
+                },
+                Ok(Resolved::Def(Def::Module(m))) => fail(
+                    errors,
+                    last,
+                    format!("expected type, found module `{}`", items.modules[m].name),
+                ),
+                Ok(_) => fail(errors, last, format!("expected type, found `{path}`")),
+                Err(e @ ResolveError::NotFound { .. }) => {
+                    let ResolveError::NotFound { segment, module } = e else {
+                        unreachable!()
+                    };
+                    let name = path.segments[segment];
+                    let place = match module {
+                        Some(module) => items.in_module(module),
+                        None => "this scope".to_owned(),
+                    };
+                    fail(
+                        errors,
+                        e.range(path, range),
+                        format!("cannot find type `{name}` in {place}"),
+                    )
+                }
+                Err(ResolveError::Reported) => Ty::ERROR,
+                Err(e) => {
+                    let at = e.range(path, range);
+                    let (ResolveError::Failed { message, .. }
+                    | ResolveError::Private { message, .. }) = e
+                    else {
+                        unreachable!()
+                    };
+                    fail(errors, at, message)
+                }
             }
         }
         TypeRef::Tuple(fields) => {
-            let fields = fields
+            let fields: Vec<Ty> = fields
                 .iter()
-                .map(|f| resolve_type(items, f, self_ty))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(Ty::tuple(&fields))
+                .map(|f| resolve_type(items, module, f, self_ty, range, errors))
+                .collect();
+            if fields.contains(&Ty::ERROR) {
+                return Ty::ERROR;
+            }
+            Ty::tuple(&fields)
         }
-        TypeRef::Never => Ok(Ty::NEVER),
+        TypeRef::Never => Ty::NEVER,
         TypeRef::Ptr { mutable, pointee } => {
-            let pointee = resolve_type(items, pointee, self_ty)?;
-            Ok(Ty::raw_ptr(mutability(*mutable), pointee))
+            let pointee = resolve_type(items, module, pointee, self_ty, range, errors);
+            if pointee == Ty::ERROR {
+                return Ty::ERROR;
+            }
+            Ty::raw_ptr(mutability(*mutable), pointee)
         }
         TypeRef::Ref { mutable, pointee } => {
-            let pointee = resolve_type(items, pointee, self_ty)?;
-            Ok(Ty::new(TyKind::Ref(mutability(*mutable), pointee)))
+            let pointee = resolve_type(items, module, pointee, self_ty, range, errors);
+            if pointee == Ty::ERROR {
+                return Ty::ERROR;
+            }
+            Ty::new(TyKind::Ref(mutability(*mutable), pointee))
         }
-        TypeRef::Error => Ok(Ty::ERROR),
+        TypeRef::Error => Ty::ERROR,
     }
 }
 
-/// What `Self` means in `function`: its `impl` block's type, if it is
-/// in one.
-pub fn self_ty(items: &ItemTree, function: &Function) -> Option<Ty> {
-    let strukt = function.owner.map(|owner| items.impls[owner].strukt)?;
-    Some(strukt.map_or(Ty::ERROR, |s| Ty::adt(s, items.structs[s].name)))
+/// The primitive type called `name`.
+pub fn primitive(name: Symbol) -> Result<Ty, String> {
+    if name == sym::bool {
+        return Ok(Ty::BOOL);
+    }
+    match IntTy::from_name(name) {
+        Some(int) => Ok(Ty::int(int)),
+        None => Err(format!("`{name}` is not supported yet")),
+    }
+}
+
+/// The type of `target`, an `impl` block's type.
+pub fn target_ty(items: &ItemTree, target: ImplTarget) -> Ty {
+    match target {
+        ImplTarget::Struct(s) => Ty::adt(s, items.structs[s].name),
+        ImplTarget::Primitive(name) => primitive(name).unwrap_or(Ty::ERROR),
+    }
+}
+
+/// The `impl` blocks' type for methods on `ty`, if it has any.
+pub fn impl_target(ty: Ty) -> Option<ImplTarget> {
+    match ty.kind() {
+        TyKind::Adt(adt) => Some(ImplTarget::Struct(adt.strukt)),
+        TyKind::Int(int) => Some(ImplTarget::Primitive(int.name())),
+        TyKind::Bool => Some(ImplTarget::Primitive(sym::bool)),
+        _ => None,
+    }
+}
+
+/// What `Self` means in an item in the `impl` block `owner`, if any.
+pub fn self_ty(items: &ItemTree, owner: Option<ImplId>) -> Option<Ty> {
+    let target = owner.map(|owner| items.impls[owner].target)?;
+    Some(target.map_or(Ty::ERROR, |t| target_ty(items, t)))
 }
 
 fn resolve_or_report(
     items: &ItemTree,
+    module: ModuleId,
     ty: &TypeRef,
     self_ty: Option<Ty>,
     range: TextRange,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Ty {
-    resolve_type(items, ty, self_ty).unwrap_or_else(|message| {
-        diagnostics.push(Diagnostic { range, message });
-        Ty::ERROR
-    })
+    let mut errors = Vec::new();
+    let ty = resolve_type(items, module, ty, self_ty, range, &mut errors);
+    diagnostics.extend(
+        errors
+            .into_iter()
+            .map(|(at, message)| Diagnostic::new(at, message)),
+    );
+    ty
 }
 
 /// Whether `ty` contains a reference. References are allowed only as
@@ -151,44 +254,55 @@ pub(crate) fn contains_ref(ty: Ty) -> bool {
 pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
     let mut sigs = Signatures::default();
     let mut diagnostics = Vec::new();
-    let mut error = |range, message: &str| {
-        diagnostics.push(Diagnostic {
-            range,
-            message: message.to_owned(),
-        })
+    let mut error = |file, range, message: &str| {
+        let mut d = Diagnostic::new(range, message);
+        d.file = file;
+        diagnostics.push(d);
     };
     let mut reported = Vec::new();
-    let mut resolve =
-        |ty, self_ty, range| resolve_or_report(items, ty, self_ty, range, &mut reported);
+    let mut resolve = |loc: ItemLoc, ty, self_ty, range| {
+        let start = reported.len();
+        let ty = resolve_or_report(items, loc.module, ty, self_ty, range, &mut reported);
+        for d in &mut reported[start..] {
+            d.file = loc.file;
+        }
+        ty
+    };
     for (id, s) in items.structs.iter() {
         let self_ty = Some(Ty::adt(id, s.name));
         let fields = s
             .fields
             .iter()
-            .map(|f| resolve(&f.ty, self_ty, f.range))
+            .map(|f| resolve(s.loc, &f.ty, self_ty, f.range))
             .collect();
         sigs.structs.insert(id, fields);
     }
+    for (id, konst) in items.consts.iter() {
+        let self_ty = self_ty(items, konst.owner);
+        let ty = resolve(konst.loc, &konst.ty, self_ty, konst.ty_range);
+        sigs.consts.insert(id, ty);
+    }
     for (id, function) in items.functions.iter() {
-        let self_ty = self_ty(items, function);
+        let self_ty = self_ty(items, function.owner);
         let params = function
             .params
             .iter()
-            .map(|p| resolve(&p.ty, self_ty, p.range))
+            .map(|p| resolve(function.loc, &p.ty, self_ty, p.range))
             .collect();
-        let ret = resolve(&function.ret, self_ty, function.ret_range);
+        let ret = resolve(function.loc, &function.ret, self_ty, function.ret_range);
         sigs.fns.insert(id, FnSig { params, ret });
     }
     for (id, s) in items.structs.iter() {
         if contains(&sigs, Ty::adt(id, s.name), id, &mut Vec::new()) {
             error(
+                s.loc.file,
                 s.def_range,
                 &format!("recursive type `{}` has infinite size", s.name),
             );
         }
         for (field, &ty) in s.fields.iter().zip(&sigs.structs[id]) {
             if contains_ref(ty) {
-                error(field.range, "missing lifetime specifier");
+                error(s.loc.file, field.range, "missing lifetime specifier");
             }
         }
     }
@@ -198,7 +312,11 @@ pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
         if function.is_extern {
             for (param, &ty) in params.clone() {
                 if contains_ref(ty) {
-                    error(param.range, "passing references to C is not supported yet");
+                    error(
+                        function.loc.file,
+                        param.range,
+                        "passing references to C is not supported yet",
+                    );
                 }
             }
             let types = params
@@ -207,6 +325,7 @@ pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
             for (ty, range) in types {
                 if !matches!(ty.kind(), TyKind::Tuple([])) && sigs.fields(ty).is_some() {
                     error(
+                        function.loc.file,
                         range,
                         "passing structs and tuples to C is not supported yet",
                     );
@@ -216,6 +335,7 @@ pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
             for (param, &ty) in params {
                 if !matches!(ty.kind(), TyKind::Ref(..)) && contains_ref(ty) {
                     error(
+                        function.loc.file,
                         param.range,
                         "references inside other types are not supported yet",
                     );
@@ -225,11 +345,16 @@ pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
         if contains_ref(sig.ret) {
             if sig.params.iter().any(|&p| contains_ref(p)) {
                 error(
+                    function.loc.file,
                     function.ret_range,
                     "returning references is not supported yet",
                 );
             } else {
-                error(function.ret_range, "missing lifetime specifier");
+                error(
+                    function.loc.file,
+                    function.ret_range,
+                    "missing lifetime specifier",
+                );
             }
         }
     }
@@ -258,15 +383,19 @@ fn contains(sigs: &Signatures, ty: Ty, strukt: StructId, seen: &mut Vec<StructId
 
 /// Checks that a program's `main` exists and has the right shape.
 pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
-    let main = items
-        .functions
-        .iter()
-        .find(|(_, f)| f.name == sym::main && !f.is_extern && f.owner.is_none());
+    let krate = items.main_crate();
+    let root = items.module_of(krate);
+    let main = items.functions.iter().find(|(_, f)| {
+        f.name == sym::main && !f.is_extern && f.owner.is_none() && f.loc.module == root
+    });
     let Some((id, function)) = main else {
-        return Some(Diagnostic {
-            range: TextRange::empty(0),
-            message: "`main` function not found".to_owned(),
-        });
+        let name = items.crates[krate.0 as usize].name;
+        let mut d = Diagnostic::new(
+            TextRange::empty(0),
+            format!("`main` function not found in crate `{name}`"),
+        );
+        d.file = items.modules[root].file;
+        return Some(d);
     };
     let sig = &sigs[id];
     let message = if function.is_unsafe {
@@ -278,10 +407,9 @@ pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
     } else {
         return None;
     };
-    Some(Diagnostic {
-        range: function.name_range,
-        message,
-    })
+    let mut d = Diagnostic::new(function.name_range, message);
+    d.file = function.loc.file;
+    Some(d)
 }
 
 /// A file with every body inferred.
@@ -289,23 +417,43 @@ pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
 pub struct TypedFile {
     pub sigs: Signatures,
     pub bodies: ArenaMap<Function, InferenceResult>,
+    pub consts: ArenaMap<Const, InferenceResult>,
     /// From signatures and every body, in source order.
     pub diagnostics: Vec<Diagnostic>,
 }
 
 /// Infers every body of `hir`.
-pub fn check_file(hir: &FileHir) -> TypedFile {
+pub fn check_file(hir: &Hir) -> TypedFile {
     let (sigs, mut diagnostics) = signatures(&hir.items);
     let mut bodies = ArenaMap::new();
     for (id, (body, source_map)) in hir.bodies.iter() {
         let result = infer_body(&hir.items, &sigs, id, body, source_map);
-        diagnostics.extend(result.diagnostics.iter().cloned());
+        let file = hir.items.functions[id].loc.file;
+        diagnostics.extend(
+            result
+                .diagnostics
+                .iter()
+                .map(|d| Diagnostic { file, ..d.clone() }),
+        );
         bodies.insert(id, result);
     }
-    diagnostics.sort_by_key(|d| (d.range.start(), d.range.end()));
+    let mut consts = ArenaMap::new();
+    for (id, (body, source_map)) in hir.const_bodies.iter() {
+        let result = infer_const(&hir.items, &sigs, id, body, source_map);
+        let file = hir.items.consts[id].loc.file;
+        diagnostics.extend(
+            result
+                .diagnostics
+                .iter()
+                .map(|d| Diagnostic { file, ..d.clone() }),
+        );
+        consts.insert(id, result);
+    }
+    Diagnostic::sort(&mut diagnostics);
     TypedFile {
         sigs,
         bodies,
+        consts,
         diagnostics,
     }
 }
@@ -313,9 +461,13 @@ pub fn check_file(hir: &FileHir) -> TypedFile {
 impl TypedFile {
     /// Each function's signature and the type of each of its bindings,
     /// then the diagnostics. Used by snapshot tests.
-    pub fn debug_dump(&self, hir: &FileHir) -> String {
+    pub fn debug_dump(&self, hir: &Hir) -> String {
         let mut out = String::new();
-        for (id, s) in hir.items.structs.iter() {
+        let items = &hir.items;
+        for (id, s) in items.structs.iter() {
+            if !items.in_main_crate(s.loc.module) {
+                continue;
+            }
             let fields: Vec<String> = s
                 .fields
                 .iter()
@@ -328,7 +480,10 @@ impl TypedFile {
             }
             .unwrap();
         }
-        for (id, function) in hir.items.functions.iter() {
+        for (id, function) in items.functions.iter() {
+            if !hir.is_program(id) {
+                continue;
+            }
             let sig = &self.sigs[id];
             let params: Vec<String> = sig.params.iter().map(Ty::to_string).collect();
             writeln!(
@@ -350,9 +505,13 @@ impl TypedFile {
                 }
             }
         }
-        for d in &self.diagnostics {
-            writeln!(out, "error {:?}: {}", d.range, d.message).unwrap();
+        for (id, konst) in items.consts.iter() {
+            if items.in_main_crate(konst.loc.module) {
+                let name = konst.name.map_or("_".to_owned(), |n| n.to_string());
+                writeln!(out, "const {name}: {}", self.sigs.consts[id]).unwrap();
+            }
         }
+        hir.write_diagnostics(&mut out, &self.diagnostics);
         out
     }
 }

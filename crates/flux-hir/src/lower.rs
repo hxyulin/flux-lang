@@ -9,9 +9,13 @@ use crate::body::{
     Binding, BindingId, Body, BodySourceMap, Expr, ExprId, Literal, LoopSource, Pat, PatId, Res,
     Stmt,
 };
+use crate::def_map::{Def, Ns, ResolveError, Resolved};
+use crate::item_tree::{PathAnchor, lower_path};
 use crate::item_tree::{check_attr, check_attrs, lower_type, unsupported};
 use crate::literal::{parse_int, unescape_c_str};
-use crate::{Diagnostic, FunctionId, ItemTree, StructId, StructKind};
+use crate::{
+    ConstId, Diagnostic, FunctionId, ImplTarget, ItemTree, ModuleId, Path, StructId, StructKind,
+};
 
 /// Where a pattern binds, for "cannot shadow" messages.
 #[derive(Clone, Copy)]
@@ -28,24 +32,22 @@ pub struct LoweredBody {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Lowers the value of constant `konst`, which must have one: a body
+/// without parameters.
+pub fn lower_const(tree: &SyntaxTree, items: &ItemTree, konst: ConstId) -> LoweredBody {
+    let data = &items.consts[konst];
+    let c = ast::Const::cast(tree.node(data.node)).expect("constants point at CONST nodes");
+    let mut ctx = Ctx::new(items, data.loc.module, data.owner);
+    let root = ctx.lower_opt(c.body(), c.syntax());
+    ctx.finish(Vec::new(), root)
+}
+
 /// Lowers the body of `function`, which must have one.
 pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> LoweredBody {
     let data = &items.functions[function];
     let node = tree.node(data.node);
     let f = ast::Fn::cast(node).expect("functions point at FN nodes");
-    let mut ctx = Ctx {
-        items,
-        in_impl: data.owner.is_some(),
-        self_struct: data.owner.and_then(|owner| items.impls[owner].strukt),
-        exprs: Arena::new(),
-        pats: Arena::new(),
-        bindings: Arena::new(),
-        types: Arena::new(),
-        source_map: BodySourceMap::default(),
-        scopes: Vec::new(),
-        loops: Vec::new(),
-        diagnostics: Vec::new(),
-    };
+    let mut ctx = Ctx::new(items, data.loc.module, data.owner);
     let mut params = Vec::new();
     if let Some(list) = f.param_list() {
         if let Some(param) = list.self_param().filter(|_| data.has_self) {
@@ -65,26 +67,17 @@ pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> 
         Some(block) => ctx.lower_block(block),
         None => ctx.alloc_expr(Expr::Missing, f.syntax().text_range()),
     };
-    LoweredBody {
-        body: Body {
-            exprs: ctx.exprs,
-            pats: ctx.pats,
-            bindings: ctx.bindings,
-            types: ctx.types,
-            params: params.into(),
-            root,
-        },
-        source_map: ctx.source_map,
-        diagnostics: ctx.diagnostics,
-    }
+    ctx.finish(params, root)
 }
 
 struct Ctx<'a> {
     items: &'a ItemTree,
     /// Lowering a function in an `impl` block, where `Self` means its
-    /// type: `self_struct`, unless that did not resolve.
+    /// type: `self_target`, unless that did not resolve.
     in_impl: bool,
-    self_struct: Option<StructId>,
+    self_target: Option<ImplTarget>,
+    /// The module the function is in, where its names are resolved.
+    module: ModuleId,
     exprs: Arena<Expr>,
     pats: Arena<Pat>,
     bindings: Arena<Binding>,
@@ -97,7 +90,43 @@ struct Ctx<'a> {
     diagnostics: Vec<Diagnostic>,
 }
 
-impl Ctx<'_> {
+impl<'a> Ctx<'a> {
+    /// Lowering an item in `module`, and in the `impl` block `owner`.
+    fn new(
+        items: &'a ItemTree,
+        module: ModuleId,
+        owner: Option<crate::item_tree::ImplId>,
+    ) -> Ctx<'a> {
+        Ctx {
+            items,
+            module,
+            in_impl: owner.is_some(),
+            self_target: owner.and_then(|owner| items.impls[owner].target),
+            exprs: Arena::new(),
+            pats: Arena::new(),
+            bindings: Arena::new(),
+            types: Arena::new(),
+            source_map: BodySourceMap::default(),
+            scopes: Vec::new(),
+            loops: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn finish(self, params: Vec<PatId>, root: ExprId) -> LoweredBody {
+        LoweredBody {
+            body: Body {
+                exprs: self.exprs,
+                pats: self.pats,
+                bindings: self.bindings,
+                types: self.types,
+                params: params.into(),
+                root,
+            },
+            source_map: self.source_map,
+            diagnostics: self.diagnostics,
+        }
+    }
     fn alloc_expr(&mut self, expr: Expr, range: TextRange) -> ExprId {
         let id = self.exprs.alloc(expr);
         self.source_map.exprs.insert(id, range);
@@ -143,7 +172,7 @@ impl Ctx<'_> {
         }
         let hir = match expr {
             ast::Expr::Literal(literal) => self.lower_literal(literal),
-            ast::Expr::PathExpr(path) => Expr::Path(self.resolve_path(path)),
+            ast::Expr::PathExpr(path) => Expr::Path(self.resolve_path(path, None)),
             ast::Expr::ParenExpr(paren) => return self.lower_opt(paren.expr(), syntax),
             ast::Expr::TupleExpr(tuple) => {
                 let fields = tuple.fields().map(|e| self.lower_expr(e)).collect();
@@ -187,26 +216,12 @@ impl Ctx<'_> {
             }
             ast::Expr::CallExpr(call) => {
                 let callee = match call.expr() {
-                    // `S(1)` for a struct with named fields.
-                    Some(ast::Expr::PathExpr(path)) if self.names_record_struct(path) => {
-                        let name = path.path().and_then(simple_path).unwrap_or_default();
-                        self.error(
-                            range,
-                            format!(
-                                "cannot find function, tuple struct or tuple variant `{name}` in this scope"
-                            ),
-                        );
-                        self.alloc_expr(Expr::Path(Res::Err), path.syntax().text_range())
-                    }
-                    // `f(x)` for an `f` that is nothing.
-                    Some(ast::Expr::PathExpr(path)) if self.names_nothing(path) => {
-                        let name = path.path().and_then(simple_path).unwrap_or_default();
-                        let path_range = path.syntax().text_range();
-                        self.error(
-                            path_range,
-                            format!("cannot find function `{name}` in this scope"),
-                        );
-                        self.alloc_expr(Expr::Path(Res::Err), path_range)
+                    // A callee's path is resolved knowing it is called, for
+                    // rustc's messages.
+                    Some(ast::Expr::PathExpr(path)) => {
+                        self.check_attrs(path.syntax());
+                        let res = self.resolve_path(path, Some(range));
+                        self.alloc_expr(Expr::Path(res), path.syntax().text_range())
                     }
                     callee => self.lower_opt(callee, syntax),
                 };
@@ -373,26 +388,54 @@ impl Ctx<'_> {
         range: TextRange,
     ) -> Option<StructId> {
         let range = path.map_or(range, |p| p.syntax().text_range());
-        let Some(name) = path.and_then(simple_path) else {
-            self.unsupported(range, "paths like this");
-            return None;
-        };
-        let name = Symbol::intern(name);
-        if name == kw::SelfUpper {
+        let path = path.and_then(|p| lower_path(p, &mut self.diagnostics))?;
+        if path.as_name() == Some(kw::SelfUpper) {
             if !self.in_impl {
                 self.error(
                     range,
                     "cannot find struct, variant or union type `Self` in this scope",
                 );
             }
-            return self.self_struct;
+            return self.self_struct();
         }
-        match self.items.struct_by_name(name) {
-            Some((id, _)) => Some(id),
-            None => {
+        match self.reported(
+            self.items.resolve(self.module, &path, Ns::Types),
+            &path,
+            range,
+        ) {
+            Ok(Resolved::Def(Def::Struct(strukt))) => Some(strukt),
+            Ok(Resolved::Def(Def::Module(m))) => {
+                let last = path.segments.len() - 1;
+                let message = format!(
+                    "expected struct, variant or union type, found module `{}`",
+                    self.items.modules[m].name
+                );
+                self.error(path.range(last, range), message);
+                None
+            }
+            Err(e @ ResolveError::Failed { .. }) => {
+                let ResolveError::Failed { message, .. } = &e else {
+                    unreachable!()
+                };
+                self.error(e.range(&path, range), message.clone());
+                None
+            }
+            result => {
+                let segment = match &result {
+                    Err(e) => e.segment(),
+                    Ok(_) => path.segments.len() - 1,
+                };
+                let place = match result {
+                    Err(ResolveError::NotFound {
+                        module: Some(module),
+                        ..
+                    }) => self.items.in_module(module),
+                    _ => "this scope".to_owned(),
+                };
+                let name = path.segments[segment];
                 self.error(
-                    range,
-                    format!("cannot find struct, variant or union type `{name}` in this scope"),
+                    path.range(segment, range),
+                    format!("cannot find struct, variant or union type `{name}` in {place}"),
                 );
                 None
             }
@@ -545,56 +588,177 @@ impl Ctx<'_> {
         target
     }
 
-    fn resolve_path(&mut self, path: ast::PathExpr<'_>) -> Res {
+    fn resolve_path(&mut self, path: ast::PathExpr<'_>, call: Option<TextRange>) -> Res {
         let range = path.syntax().text_range();
-        let Some(path) = path.path() else {
-            return Res::Err;
-        };
-        if let Some(name) = simple_path(path) {
-            return self.resolve_name(Symbol::intern(name), range);
+        match path
+            .path()
+            .and_then(|p| lower_path(p, &mut self.diagnostics))
+        {
+            Some(path) => self.resolve_value(&path, range, call),
+            None => Res::Err,
         }
-        // `S::f` or `Self::f`: an associated function.
-        let qualified = path
-            .qualifier()
-            .and_then(simple_path)
-            .zip(path.segment().filter(|s| s.generic_arg_list().is_none()))
-            .and_then(|(ty, segment)| Some((ty, segment.name_ref()?)))
-            .filter(|(_, name)| name.ident_token().is_some());
-        let Some((ty, name)) = qualified else {
-            self.unsupported(range, "paths like this");
-            return Res::Err;
+    }
+
+    /// A path in the value namespace: a local, a function, an associated
+    /// function, or a tuple or unit struct. `call` is the call's range if
+    /// it is called, which changes rustc's messages.
+    fn resolve_value(&mut self, path: &Path, range: TextRange, call: Option<TextRange>) -> Res {
+        if let Some(name) = path.as_name() {
+            if let Some(&(_, binding)) = self.scopes.iter().rev().find(|(n, _)| *n == name) {
+                return Res::Local(binding);
+            }
+            if name == kw::SelfLower {
+                self.error(range, "cannot find value `self` in this scope");
+                return Res::Err;
+            }
+            if name == kw::SelfUpper {
+                let Some(strukt) = self.self_type(range) else {
+                    return Res::Err;
+                };
+                if self.items.structs[strukt].kind == StructKind::Record {
+                    self.error(
+                        range,
+                        "the `Self` constructor can only be used with tuple or unit structs",
+                    );
+                    return Res::Err;
+                }
+                return Res::Struct(strukt);
+            }
+        }
+        // `Self::f`: an associated function of this block's type.
+        let resolved = match (path.anchor, path.segments.first()) {
+            (PathAnchor::Plain, Some(&first))
+                if first == kw::SelfUpper && path.segments.len() > 1 =>
+            {
+                match self.self_target {
+                    Some(target) => {
+                        self.items
+                            .resolve_assoc(self.module, target, path, 1, Ns::Values)
+                    }
+                    None => {
+                        if !self.in_impl {
+                            self.error(
+                                path.range(0, range),
+                                "cannot find type `Self` in this scope",
+                            );
+                        }
+                        return Res::Err;
+                    }
+                }
+            }
+            _ => self.items.resolve(self.module, path, Ns::Values),
         };
-        let name_range = name.syntax().text_range();
-        let (ty, name) = (Symbol::intern(ty), Symbol::intern(name.text()));
-        let strukt = if ty == kw::SelfUpper {
-            self.self_type(range)
-        } else if let Some((strukt, _)) = self.items.struct_by_name(ty) {
-            Some(strukt)
-        } else if crate::item_tree::is_primitive(ty) {
-            self.unsupported(range, "associated items of primitive types");
-            None
-        } else {
-            self.error(
-                range,
-                format!("failed to resolve: use of undeclared type `{ty}`"),
-            );
-            None
-        };
-        let Some(strukt) = strukt else {
-            return Res::Err;
-        };
-        match self.items.assoc_function(strukt, name) {
-            Some(function) => Res::Function(function),
-            None => {
-                let ty = self.items.structs[strukt].name;
-                self.error(
-                    name_range,
-                    format!(
-                        "no associated function or constant named `{name}` found for struct `{ty}` in the current scope"
-                    ),
-                );
+        match self.reported(resolved, path, range) {
+            Ok(Resolved::Def(Def::Function(f)) | Resolved::Assoc(f)) => Res::Function(f),
+            Ok(Resolved::Def(Def::Const(c)) | Resolved::AssocConst(c)) => Res::Const(c),
+            Ok(Resolved::Def(Def::Struct(strukt))) => {
+                let s = &self.items.structs[strukt];
+                let private = s.kind == StructKind::Tuple
+                    && s.fields
+                        .iter()
+                        .any(|f| !self.items.is_visible(f.vis, self.module));
+                if private {
+                    let last = path.segments.len() - 1;
+                    let message = format!("tuple struct constructor `{}` is private", s.name);
+                    self.error(path.range(last, range), message);
+                }
+                Res::Struct(strukt)
+            }
+            Ok(Resolved::SelfType) => self.resolve_value(&Path::single(kw::SelfUpper), range, call),
+            Ok(_) => {
+                self.unsupported(range, "paths like this");
                 Res::Err
             }
+            Err(e @ ResolveError::Failed { .. }) => {
+                let ResolveError::Failed { message, .. } = &e else {
+                    unreachable!()
+                };
+                self.error(e.range(path, range), message.clone());
+                Res::Err
+            }
+            Err(ResolveError::Private { .. } | ResolveError::Reported) => Res::Err,
+            Err(ResolveError::NotFound { segment, module }) => {
+                // A struct with named fields is only in the type namespace.
+                let is_struct = matches!(
+                    self.items.resolve(self.module, path, Ns::Types),
+                    Ok(Resolved::Def(Def::Struct(_)))
+                );
+                let name = path.segments[segment];
+                let place = match module {
+                    // rustc's wording for `self::f`.
+                    Some(_) if path.anchor == PathAnchor::SelfModule && segment == 0 => {
+                        "module `self`".to_owned()
+                    }
+                    Some(module) => self.items.in_module(module),
+                    None => "this scope".to_owned(),
+                };
+                let (message, range) = match call {
+                    // rustc reports the whole call for a struct called like
+                    // a function.
+                    Some(call) if is_struct => (
+                        format!(
+                            "cannot find function, tuple struct or tuple variant `{name}` in {place}"
+                        ),
+                        call,
+                    ),
+                    Some(_) => (
+                        format!("cannot find function `{name}` in {place}"),
+                        path.range(segment, range),
+                    ),
+                    None => (
+                        format!("cannot find value `{name}` in {place}"),
+                        path.range(segment, range),
+                    ),
+                };
+                self.error(range, message);
+                Res::Err
+            }
+        }
+    }
+
+    /// A tuple struct's constructor is private wherever any of its fields
+    /// is.
+    fn check_constructor_privacy(
+        &mut self,
+        strukt: StructId,
+        path: Option<ast::Path<'_>>,
+        range: TextRange,
+    ) {
+        let s = &self.items.structs[strukt];
+        if s.kind == StructKind::Tuple
+            && s.fields
+                .iter()
+                .any(|f| !self.items.is_visible(f.vis, self.module))
+        {
+            let message = format!("tuple struct constructor `{}` is private", s.name);
+            let range = path
+                .and_then(|p| p.segment())
+                .and_then(|s| s.name_ref())
+                .map_or(range, |n| n.syntax().text_range());
+            self.error(range, message);
+        }
+    }
+
+    /// Reports a private item in `path` and carries on with it, as rustc
+    /// does.
+    fn reported(
+        &mut self,
+        result: Result<Resolved, ResolveError>,
+        path: &Path,
+        range: TextRange,
+    ) -> Result<Resolved, ResolveError> {
+        match result {
+            Err(e @ ResolveError::Private { .. }) => {
+                let ResolveError::Private {
+                    message, resolved, ..
+                } = &e
+                else {
+                    unreachable!()
+                };
+                self.error(e.range(path, range), message.clone());
+                Ok(*resolved)
+            }
+            result => result,
         }
     }
 
@@ -603,72 +767,19 @@ impl Ctx<'_> {
         if !self.in_impl {
             self.error(range, "cannot find type `Self` in this scope");
         }
-        self.self_struct
+        self.self_struct()
     }
 
-    /// Whether `path` names a struct with named fields and nothing in
-    /// the value namespace.
-    fn names_record_struct(&self, path: ast::PathExpr<'_>) -> bool {
-        let Some(name) = path.path().and_then(simple_path) else {
-            return false;
-        };
-        let name = Symbol::intern(name);
-        !self.scopes.iter().any(|(n, _)| *n == name)
-            && self.items.function_by_name(name).is_none()
-            && self
-                .items
-                .struct_by_name(name)
-                .is_some_and(|(_, s)| s.kind == StructKind::Record)
+    fn self_struct(&self) -> Option<StructId> {
+        match self.self_target {
+            Some(ImplTarget::Struct(strukt)) => Some(strukt),
+            _ => None,
+        }
     }
 
-    /// Whether `path` is a plain name that resolves to nothing.
-    fn names_nothing(&self, path: ast::PathExpr<'_>) -> bool {
-        let Some(name) = path.path().and_then(simple_path) else {
-            return false;
-        };
-        let name = Symbol::intern(name);
-        name != kw::SelfLower
-            && name != kw::SelfUpper
-            && !self.scopes.iter().any(|(n, _)| *n == name)
-            && self.items.function_by_name(name).is_none()
-            && self.items.struct_by_name(name).is_none()
-    }
-
-    /// A name in the value namespace: a local, a function, or a tuple or
-    /// unit struct.
+    /// A name in the value namespace.
     fn resolve_name(&mut self, name: Symbol, range: TextRange) -> Res {
-        if let Some(&(_, binding)) = self.scopes.iter().rev().find(|(n, _)| *n == name) {
-            return Res::Local(binding);
-        }
-        if name == kw::SelfLower {
-            self.error(range, "cannot find value `self` in this scope");
-            return Res::Err;
-        }
-        if name == kw::SelfUpper {
-            let Some(strukt) = self.self_type(range) else {
-                return Res::Err;
-            };
-            if self.items.structs[strukt].kind == StructKind::Record {
-                self.error(
-                    range,
-                    "the `Self` constructor can only be used with tuple or unit structs",
-                );
-                return Res::Err;
-            }
-            return Res::Struct(strukt);
-        }
-        if let Some((function, _)) = self.items.function_by_name(name) {
-            return Res::Function(function);
-        }
-        if let Some((id, s)) = self.items.struct_by_name(name) {
-            if s.kind != StructKind::Record {
-                return Res::Struct(id);
-            }
-            self.error(range, format!("cannot find value `{name}` in this scope"));
-            return Res::Err;
-        }
-        self.error(range, format!("cannot find value `{name}` in this scope"));
-        Res::Err
+        self.resolve_value(&Path::single(name), range, None)
     }
 
     fn lower_literal(&mut self, literal: ast::Literal<'_>) -> Expr {
@@ -733,6 +844,9 @@ impl Ctx<'_> {
             }
             ast::Pat::TupleStructPat(tuple) => {
                 let strukt = self.resolve_struct(tuple.path(), range);
+                if let Some(strukt) = strukt {
+                    self.check_constructor_privacy(strukt, tuple.path(), range);
+                }
                 let (pats, rest) = self.lower_tuple_fields(tuple.fields(), site);
                 let Some(strukt) = strukt else {
                     return self.alloc_pat(Pat::Missing, range);
@@ -805,10 +919,15 @@ impl Ctx<'_> {
     ) -> Pat {
         let range = name.syntax().text_range();
         let name = Symbol::intern(name.text());
-        let shadowed = self
-            .items
-            .struct_by_name(name)
-            .filter(|(_, s)| s.kind != StructKind::Record);
+        let shadowed = match self.items.lookup(self.module, name, Ns::Values) {
+            Some(Resolved::Def(Def::Struct(id))) => Some((id, &self.items.structs[id])),
+            // A constant's name is a pattern matching only its value.
+            Some(Resolved::Def(Def::Const(_))) => {
+                self.unsupported(range, "constant patterns");
+                return Pat::Missing;
+            }
+            _ => None,
+        };
         if let Some((id, s)) = shadowed {
             if s.kind == StructKind::Unit && ident.mut_token().is_none() {
                 return Pat::Unit(id);
@@ -896,22 +1015,4 @@ impl Ctx<'_> {
         self.source_map.pat_fields.insert(id, name_ranges.into());
         id
     }
-}
-
-/// The name of a path with one plain segment: `x`, `S`, `self`, `Self`.
-fn simple_path(path: ast::Path<'_>) -> Option<&str> {
-    path.qualifier()
-        .is_none()
-        .then(|| path.segment())
-        .flatten()
-        .filter(|s| {
-            s.colon2_token().is_none()
-                && s.generic_arg_list().is_none()
-                && s.parenthesized_arg_list().is_none()
-        })
-        .and_then(|s| s.name_ref())
-        .filter(|n| {
-            n.ident_token().is_some() || n.self_token().is_some() || n.self_type_token().is_some()
-        })
-        .map(|n| n.text())
 }

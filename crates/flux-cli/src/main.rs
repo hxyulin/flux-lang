@@ -4,6 +4,7 @@ use std::process::ExitCode;
 mod build;
 
 use clap::{Parser, Subcommand};
+use flux_hir::{Diagnostic, Hir, SourceDb};
 use flux_syntax::{LexedStr, TextRange};
 
 #[derive(Parser)]
@@ -115,51 +116,25 @@ fn run(command: Command) -> Result<bool, String> {
             Ok(parse.errors().is_empty())
         }
         Command::Hir { file } => {
-            let text = read(&file)?;
-            let parse = flux_syntax::parse_source_file(&text);
-            for error in parse.errors() {
-                report(&file, &text, error.range, &error.message);
-            }
-            let hir = flux_hir::lower_file(&parse);
+            let (db, hir) = load(&file)?;
             print!("{}", hir.debug_dump());
-            for d in &hir.diagnostics {
-                report(&file, &text, d.range, &d.message);
-            }
-            Ok(parse.errors().is_empty() && hir.diagnostics.is_empty())
+            let mut errors = db.syntax_errors();
+            errors.extend(hir.diagnostics.iter().cloned());
+            Ok(report_all(&db, &mut errors))
         }
         Command::Mir { file } => {
-            let text = read(&file)?;
-            let parse = flux_syntax::parse_source_file(&text);
-            let hir = flux_hir::lower_file(&parse);
+            let (db, hir) = load(&file)?;
             let typed = flux_ty::check_file(&hir);
-            let errors: Vec<_> = parse
-                .errors()
-                .iter()
-                .map(|e| (e.range, e.message.as_str()))
-                .chain(
-                    hir.diagnostics
-                        .iter()
-                        .map(|d| (d.range, d.message.as_str())),
-                )
-                .chain(
-                    typed
-                        .diagnostics
-                        .iter()
-                        .map(|d| (d.range, d.message.as_str())),
-                )
-                .collect();
-            for (range, message) in &errors {
-                report(&file, &text, *range, message);
-            }
-            if !errors.is_empty() {
+            let mut errors = db.syntax_errors();
+            errors.extend(hir.diagnostics.iter().cloned());
+            errors.extend(typed.diagnostics.iter().cloned());
+            if !report_all(&db, &mut errors) {
                 return Ok(false);
             }
             let mir = flux_mir::build_file(&hir, &typed);
             print!("{}", mir.debug_dump(&hir));
-            for d in &mir.diagnostics {
-                report(&file, &text, d.range, &d.message);
-            }
-            Ok(mir.diagnostics.is_empty())
+            let mut errors = mir.diagnostics.clone();
+            Ok(report_all(&db, &mut errors))
         }
         Command::Build {
             file,
@@ -183,6 +158,27 @@ fn run(command: Command) -> Result<bool, String> {
             Ok(ok)
         }
     }
+}
+
+/// Reads the program whose root is `file`, with its modules' files, and
+/// lowers it.
+fn load(file: &std::path::Path) -> Result<(SourceDb, Hir), String> {
+    let mut db = SourceDb::new();
+    let root = db.load(file)?;
+    let name = flux_intern::Symbol::intern(&build::crate_name(file));
+    let hir = flux_hir::lower(&mut db, root, name);
+    Ok((db, hir))
+}
+
+/// Reports `diagnostics` in order of file and position; whether there
+/// were none.
+pub(crate) fn report_all(db: &SourceDb, diagnostics: &mut [Diagnostic]) -> bool {
+    Diagnostic::sort(diagnostics);
+    for d in diagnostics.iter() {
+        let f = db.file(d.file);
+        report(&f.path, &f.text, d.range, &d.message);
+    }
+    diagnostics.is_empty()
 }
 
 fn read(file: &PathBuf) -> Result<String, String> {

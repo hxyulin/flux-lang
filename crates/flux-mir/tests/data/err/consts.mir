@@ -1,0 +1,109 @@
+fn inc(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = Add(copy _2, const 1_i32);
+        return;
+    }
+}
+
+fn div(_1: i32, _2: i32) -> i32 {
+    let mut _0: i32;
+    let _3: i32;
+    let _4: i32;
+    let _5: bool;
+    let _6: bool;
+    let _7: bool;
+    let _8: bool;
+
+    bb0: {
+        _3 = copy _1;
+        _4 = copy _2;
+        _5 = Eq(copy _4, const 0_i32);
+        assert(!copy _5, "attempt to divide by zero") -> bb1;
+    }
+
+    bb1: {
+        _6 = Eq(copy _4, const -1_i32);
+        _7 = Eq(copy _3, const -2147483648_i32);
+        _8 = BitAnd(copy _6, copy _7);
+        assert(!copy _8, "attempt to divide with overflow") -> bb2;
+    }
+
+    bb2: {
+        _0 = Div(copy _3, copy _4);
+        return;
+    }
+}
+
+fn deep(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+    let _3: i32;
+
+    bb0: {
+        _3 = copy _1;
+        _2 = inc(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _0 = Mul(copy _2, const 2_i32);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: i32; // _a
+    let _2: i32;
+    let _3: i32;
+    let _4: i32;
+    let _5: i32;
+    let _6: i32;
+    let _7: S; // _s
+
+    bb0: {
+        _6 = Add(const ADD, const NEG);
+        _5 = Add(copy _6, const USED);
+        _4 = Add(copy _5, const VIA_SELF);
+        _3 = Add(copy _4, const USES_BAD);
+        _2 = Add(copy _3, const FROM_BASE);
+        _1 = Add(copy _2, const FROM_ZERO);
+        _7 = S;
+        _0 = const ();
+        StorageDead(_7);
+        StorageDead(_1);
+        return;
+    }
+}
+
+error 63..75: attempt to compute `i32::MAX + 1_i32`, which would overflow
+error 93..98: attempt to compute `0_u8 - 1_u8`, which would overflow
+error 117..129: attempt to compute `i64::MAX * 2_i64`, which would overflow
+error 148..157: attempt to negate `i32::MIN`, which would overflow
+error 178..187: attempt to negate `i8::MIN`, which would overflow
+error 206..213: attempt to shift left by `32_i32`, which would overflow
+error 232..239: attempt to shift right by `64_i32`, which would overflow
+error 262..269: attempt to shift left by `-1_i32`, which would overflow
+error 293..298: attempt to divide `1_i32` by zero
+error 322..327: attempt to calculate the remainder of `7_u64` with a divisor of zero
+error 350..363: attempt to compute `i32::MIN / -1_i32`, which would overflow
+error 385..396: attempt to compute `i8::MIN % -1_i8`, which would overflow
+error 415..427: attempt to compute `u64::MAX + 1_u64`, which would overflow
+error 449..473: attempt to compute `2147483646_i32 + 2_i32`, which would overflow
+error 495..514: attempt to compute `u16::MAX * u16::MAX`, which would overflow
+error 531..543: attempt to compute `i32::MAX + 1_i32`, which would overflow
+error 666..674: attempt to compute `i32::MAX + 1_i32`, which would overflow
+error 720..729: attempt to divide `10_i32` by zero
+error 748..760: attempt to compute `i32::MIN - 1_i32`, which would overflow
+error 1056..1068: attempt to divide `1_i32` by zero
+error 1204..1210: attempt to compute `128_u8 * 2_u8`, which would overflow
+error 1335..1348: attempt to negate `i8::MIN`, which would overflow
+error 1367..1379: attempt to compute `32768_i32 * 65536_i32`, which would overflow
+error 1401..1419: attempt to calculate the remainder of `7_i32` with a divisor of zero
+error 1464..1476: attempt to compute `i32::MAX + 1_i32`, which would overflow
+error 1464..1476: this arithmetic operation will overflow
+error 1504..1518: attempt to compute `1073741823_i32 * 3_i32`, which would overflow
+error 1504..1518: this arithmetic operation will overflow

@@ -6,9 +6,10 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use flux_codegen::{OptimizationTier, Target};
-use flux_syntax::TextRange;
+use flux_hir::SourceDb;
+use flux_intern::Symbol;
 
-use crate::{BuildOptions, read, report};
+use crate::{BuildOptions, report_all};
 
 /// The crate name for a file: its stem, with anything that cannot appear
 /// in an identifier replaced by `_`.
@@ -51,36 +52,27 @@ impl Timings {
 /// Compiles `file` to an executable at `output`. `Ok(false)` means the
 /// program had errors, which were reported.
 pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result<bool, String> {
-    let text = read(&file.to_path_buf())?;
     let mut timings = Timings::default();
-    let parse = timings.time("parse", || flux_syntax::parse_source_file(&text));
-    let hir = timings.time("hir", || flux_hir::lower_file(&parse));
+    let mut db = SourceDb::new();
+    let root = timings.time("parse", || db.load(file))?;
+    let hir = timings.time("hir", || {
+        flux_hir::lower(&mut db, root, Symbol::intern(&crate_name(file)))
+    });
     let typed = timings.time("types", || flux_ty::check_file(&hir));
-    let mut errors: Vec<(TextRange, String)> = parse
-        .errors()
-        .iter()
-        .map(|e| (e.range, e.message.clone()))
-        .chain(hir.diagnostics.iter().map(|d| (d.range, d.message.clone())))
-        .chain(
-            typed
-                .diagnostics
-                .iter()
-                .map(|d| (d.range, d.message.clone())),
-        )
-        .collect();
+    let mut errors = db.syntax_errors();
+    errors.extend(hir.diagnostics.iter().cloned());
+    errors.extend(typed.diagnostics.iter().cloned());
     if let Some(d) = flux_ty::check_main(&hir.items, &typed.sigs) {
-        errors.push((d.range, d.message));
+        errors.push(d);
     }
     if errors.is_empty() {
         let mir = timings.time("mir", || flux_mir::build_file(&hir, &typed));
-        errors.extend(mir.diagnostics.iter().map(|d| (d.range, d.message.clone())));
+        errors.extend(mir.diagnostics.iter().cloned());
         if errors.is_empty() {
             let target = Target::host()
                 .ok_or("flux can only compile for arm64 macOS and x86-64 Linux hosts")?;
-            let crate_name = crate_name(file);
-            let mut module = timings.time("lower", || {
-                flux_codegen::lower_module(&hir, &typed, &mir, &crate_name)
-            });
+            let mut module =
+                timings.time("lower", || flux_codegen::lower_module(&hir, &typed, &mir));
             let tier = if options.optimize {
                 OptimizationTier::Full
             } else {
@@ -97,10 +89,7 @@ pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result
             }
         }
     }
-    errors.sort_by_key(|(range, _)| (range.start(), range.end()));
-    for (range, message) in &errors {
-        report(file, &text, *range, message);
-    }
+    report_all(&db, &mut errors);
     if options.timings {
         timings.print();
     }

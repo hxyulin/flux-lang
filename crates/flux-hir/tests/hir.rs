@@ -27,14 +27,14 @@ fn check_dir(name: &str, expect_errors: bool) {
     let mut failures = Vec::new();
     for path in fixtures(name) {
         let text = fs::read_to_string(&path).unwrap();
-        let parse = flux_syntax::parse_source_file(&text);
+        let (db, root, hir) = flux_hir::lower_text(&path, &text);
+        let parse = &db.file(root).parse;
         assert!(
             parse.errors().is_empty(),
             "{} has syntax errors:\n{:#?}",
             path.display(),
             parse.errors()
         );
-        let hir = flux_hir::lower_file(&parse);
         let actual = hir.debug_dump();
         if hir.diagnostics.is_empty() == expect_errors {
             failures.push(format!(
@@ -84,8 +84,7 @@ fn lowering_never_panics() {
             }
             let text = fs::read_to_string(&path).unwrap();
             for (i, _) in text.char_indices() {
-                let parse = flux_syntax::parse_source_file(&text[..i]);
-                flux_hir::lower_file(&parse);
+                flux_hir::lower_text_bare("fuzz.rs", &text[..i]);
             }
         }
     }
@@ -109,8 +108,7 @@ fn corpus_lowering_never_panics() {
             } else if path.extension().is_some_and(|ext| ext == "rs")
                 && let Ok(text) = fs::read_to_string(&path)
             {
-                let parse = flux_syntax::parse_source_file(&text);
-                flux_hir::lower_file(&parse);
+                flux_hir::lower_text_bare(path, &text);
                 files += 1;
             }
         }

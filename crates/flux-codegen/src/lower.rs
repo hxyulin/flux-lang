@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use flux_hir::{FileHir, FunctionId};
+use flux_hir::{FunctionId, Hir, ImplTarget};
 use flux_mir::{
     BinOp, Body, Constant, FileMir, Local, Operand, Place, ProjectionElem, Rvalue, StatementKind,
     TerminatorKind, UnOp, projection_ty,
@@ -25,24 +25,37 @@ use keel_ir::{
     Function, FunctionAttrs, IntCC, Layout, MemoryFlags, Module, Purpose, Signature, Type, Value,
 };
 
-/// The keel module for a type-checked file and its MIR. `crate_name`
-/// prefixes the Rust functions' symbols.
-pub fn lower_module(hir: &FileHir, typed: &TypedFile, mir: &FileMir, crate_name: &str) -> Module {
+/// The keel module for a type-checked program and its MIR, `core`
+/// included.
+pub fn lower_module(hir: &Hir, typed: &TypedFile, mir: &FileMir) -> Module {
     let mut module = Module::default();
-    let symbols: HashMap<FunctionId, String> = hir
-        .items
+    let items = &hir.items;
+    let symbols: HashMap<FunctionId, String> = items
         .functions
         .iter()
         .map(|(id, f)| {
             let name = if f.is_extern {
                 f.name.to_string()
             } else {
-                // An associated function's path includes its type:
-                // `crate::S::new`.
-                let owner = f.owner.and_then(|i| hir.items.impls[i].strukt);
-                let mut path = vec![crate_name];
-                if let Some(strukt) = owner {
-                    path.push(hir.items.structs[strukt].name.as_str());
+                // The function's path: its crate, its modules, and its
+                // type for an associated function, `krate::m::S::new`,
+                // where `S` is in `m` wherever the `impl` block is.
+                let target = f.owner.and_then(|i| items.impls[i].target);
+                let module = match target {
+                    Some(ImplTarget::Struct(s)) => items.structs[s].loc.module,
+                    _ => f.loc.module,
+                };
+                let mut path = Vec::new();
+                let mut m = Some(module);
+                while let Some(id) = m {
+                    path.push(items.modules[id].name.as_str());
+                    m = items.modules[id].parent;
+                }
+                path.reverse();
+                match target {
+                    Some(ImplTarget::Struct(s)) => path.push(items.structs[s].name.as_str()),
+                    Some(ImplTarget::Primitive(name)) => path.push(name.as_str()),
+                    None => {}
                 }
                 path.push(f.name.as_str());
                 mangle(&path)
@@ -51,8 +64,10 @@ pub fn lower_module(hir: &FileHir, typed: &TypedFile, mir: &FileMir, crate_name:
         })
         .collect();
     let mut declared_abort = false;
+    let mut declared = std::collections::HashSet::new();
     for (id, function) in hir.items.functions.iter() {
-        if function.is_extern {
+        // The same C function may be declared in several modules.
+        if function.is_extern && declared.insert(symbols[&id].clone()) {
             declared_abort |= function.name.as_str() == "abort";
             module.decls.push(FuncDecl {
                 attrs: attrs(&typed.sigs[id]),
@@ -64,6 +79,7 @@ pub fn lower_module(hir: &FileHir, typed: &TypedFile, mir: &FileMir, crate_name:
     let mut ctx = Ctx {
         hir,
         typed,
+        const_values: &mir.const_values,
         symbols: &symbols,
         uses_abort: false,
         strings: HashMap::new(),
@@ -84,8 +100,10 @@ pub fn lower_module(hir: &FileHir, typed: &TypedFile, mir: &FileMir, crate_name:
             sig: Signature::new(&[], &[]),
         });
     }
-    let main = hir.items.functions.iter().find(|(id, f)| {
+    let root = items.module_of(items.main_crate());
+    let main = items.functions.iter().find(|(id, f)| {
         f.name.as_str() == "main"
+            && f.loc.module == root
             && !f.is_extern
             && f.owner.is_none()
             && mir.bodies.get(*id).is_some()
@@ -294,8 +312,10 @@ fn entry_point(rust_main: &str, sigs: &Signatures, sig: &FnSig) -> Function {
 }
 
 struct Ctx<'a> {
-    hir: &'a FileHir,
+    hir: &'a Hir,
     typed: &'a TypedFile,
+    /// Each constant's value.
+    const_values: &'a flux_arena::ArenaMap<flux_hir::Const, flux_mir::eval::Value>,
     symbols: &'a HashMap<FunctionId, String>,
     uses_abort: bool,
     /// The data object holding each distinct C string, by its bytes.
@@ -526,7 +546,28 @@ impl Lower<'_, '_, '_> {
     fn operand(&mut self, operand: &Operand) -> Vec<Value> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self.read(place),
+            Operand::Const(Constant::Item { id, .. }) => {
+                let value = &self.ctx.const_values[*id];
+                let mut leaves = Vec::new();
+                self.value_leaves(value, &mut leaves);
+                leaves
+            }
             Operand::Const(constant) => self.constant(*constant).into_iter().collect(),
+        }
+    }
+
+    /// A constant item's value as leaves.
+    fn value_leaves(&mut self, value: &flux_mir::eval::Value, out: &mut Vec<Value>) {
+        match value {
+            flux_mir::eval::Value::Int { bits, ty } => out.push(self.int_const(*bits, *ty)),
+            flux_mir::eval::Value::Bool(b) => {
+                out.push(self.b.ins().iconst(Type::I8, i64::from(*b)))
+            }
+            flux_mir::eval::Value::Aggregate(fields) => {
+                for field in fields {
+                    self.value_leaves(field, out);
+                }
+            }
         }
     }
 
@@ -545,6 +586,7 @@ impl Lower<'_, '_, '_> {
                 let data = self.b.import_data(&name);
                 Some(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)))
             }
+            Constant::Item { .. } => unreachable!("handled by `operand`"),
         }
     }
 

@@ -39,6 +39,12 @@
   auto-deref, and a borrow checker with rustc's non-lexical lifetimes
   and messages for the references flux can check without lifetimes.
   Borrowed locals live in stack slots.
+- Support modules (inline and in files), `use` imports (groups, renames,
+  globs, re-exports), visibility and privacy, constants and `const fn`
+  with compile-time evaluation, and rustc's `arithmetic_overflow` and
+  `unconditional_panic` lints. Programs are read as a set of files.
+- Add flux's own `core` library, written in flux and built into the
+  compiler, with the integer types' constants and methods.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 

@@ -1,0 +1,252 @@
+fn factorial(_1: u64) -> u64 {
+    let mut _0: u64;
+    let mut _2: u64; // acc
+    let mut _3: u64; // i
+    let _4: ();
+    let _5: ();
+    let _6: bool;
+    let _7: u64;
+    let _8: u64;
+    let _9: ();
+    let _10: u64;
+    let _11: u64;
+    let _12: ();
+    let _13: u64;
+
+    bb0: {
+        _2 = const 1_u64;
+        _3 = const 2_u64;
+        goto -> bb1;
+    }
+
+    bb1: {
+        _7 = copy _3;
+        _8 = copy _1;
+        _6 = Le(copy _7, copy _8);
+        switchInt(copy _6) -> [0: bb4, otherwise: bb3];
+    }
+
+    bb2: {
+        _0 = copy _2;
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+
+    bb3: {
+        _10 = copy _3;
+        _11 = copy _2;
+        _2 = Mul(copy _11, copy _10);
+        _9 = const ();
+        _13 = copy _3;
+        _3 = Add(copy _13, const 1_u64);
+        _12 = const ();
+        _5 = const ();
+        goto -> bb5;
+    }
+
+    bb4: {
+        _4 = const ();
+        goto -> bb2;
+    }
+
+    bb5: {
+        goto -> bb1;
+    }
+}
+
+fn add_checked(_1: i32, _2: i32) -> i32 {
+    let mut _0: i32;
+    let _3: bool;
+    let _4: bool;
+    let _5: i32;
+    let _6: i32;
+    let _7: i32;
+    let _8: i32;
+    let _9: i32;
+    let _10: i32;
+
+    bb0: {
+        _5 = copy _2;
+        _4 = Gt(copy _5, const 0_i32);
+        switchInt(copy _4) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _6 = copy _1;
+        _8 = copy _2;
+        _7 = Sub(const MAX, copy _8);
+        _3 = Gt(copy _6, copy _7);
+        goto -> bb3;
+    }
+
+    bb2: {
+        _3 = const false;
+        goto -> bb3;
+    }
+
+    bb3: {
+        switchInt(copy _3) -> [0: bb5, otherwise: bb4];
+    }
+
+    bb4: {
+        _0 = const 0_i32;
+        goto -> bb6;
+    }
+
+    bb5: {
+        _9 = copy _1;
+        _10 = copy _2;
+        _0 = Add(copy _9, copy _10);
+        goto -> bb6;
+    }
+
+    bb6: {
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: i64; // a
+    let _2: i64;
+    let _3: i64;
+    let _4: i64;
+    let _5: i64;
+    let _6: i64;
+    let _7: i64;
+    let _8: i64;
+    let _9: i64;
+    let _10: i64; // b
+    let _11: i64;
+    let _12: i64;
+    let _13: i64;
+    let _14: i64;
+    let _15: i64;
+    let _16: i64;
+    let _17: i64;
+    let _18: i64;
+    let _19: i64; // b
+    let _20: i64;
+    let _21: i64;
+    let _22: i64;
+    let _23: i64;
+    let _24: i64;
+    let _25: i64;
+    let _26: i64;
+    let _27: i64;
+    let _28: u64; // c
+    let _29: u64;
+    let _30: u64;
+    let _31: u64;
+    let _32: u64;
+    let _33: u64;
+    let _34: u64;
+    let _35: bool;
+    let _36: u64;
+    let _37: u64;
+    let _38: u64;
+    let _39: u64;
+    let _40: u128;
+    let _41: i32; // d
+    let _42: i32;
+    let _43: i32;
+    let _44: i32;
+    let _45: i32;
+    let _46: i32;
+    let _47: i32;
+    let _48: i32;
+    let _49: i32;
+    let _50: i32;
+    let _51: u64; // e
+    let _52: u64;
+    let _53: u64;
+    let _54: u64;
+    let _55: u64;
+    let _56: u64;
+    let _57: u64;
+    let _58: u64;
+    let _59: (i64, i64, u64, i32, u64); // _all
+    let _60: i64;
+    let _61: i64;
+    let _62: u64;
+    let _63: i32;
+    let _64: u64;
+
+    bb0: {
+        _5 = const MAX_MINUS as i64;
+        _6 = const MIN_PLUS as i64;
+        _4 = Add(copy _5, copy _6);
+        _7 = const NEG_MAX as i64;
+        _3 = Add(copy _4, copy _7);
+        _8 = const NEG_LITERAL as i64;
+        _2 = Add(copy _3, copy _8);
+        _9 = const MIN_DIV as i64;
+        _1 = Add(copy _2, copy _9);
+        _14 = const MIN_DIV_NEG2 as i64;
+        _15 = const MIN_REM as i64;
+        _13 = Add(copy _14, copy _15);
+        _16 = const NEG_DIV as i64;
+        _12 = Add(copy _13, copy _16);
+        _17 = const NEG_REM as i64;
+        _11 = Add(copy _12, copy _17);
+        _18 = const CHAIN as i64;
+        _10 = Add(copy _11, copy _18);
+        _23 = copy _10;
+        _24 = const NEG_WRAP as i64;
+        _22 = Add(copy _23, copy _24);
+        _25 = const ABS as i64;
+        _21 = Add(copy _22, copy _25);
+        _26 = const POW as i64;
+        _20 = Add(copy _21, copy _26);
+        _27 = const EUCLID as i64;
+        _19 = Add(copy _20, copy _27);
+        _33 = const SHL_MAX as u64;
+        _35 = Eq(const SHR_MAX, const -1_i64);
+        _34 = copy _35 as u64;
+        _32 = Add(copy _33, copy _34);
+        _36 = const SHL_WIDE as u64;
+        _31 = Add(copy _32, copy _36);
+        _37 = Div(const U_MAX, const 4_u64);
+        _30 = Add(copy _31, copy _37);
+        _38 = const U_SUB as u64;
+        _29 = Add(copy _30, copy _38);
+        _40 = Shr(const BIG, const 120_i32);
+        _39 = copy _40 as u64;
+        _28 = Add(copy _29, copy _39);
+        _46 = const MUL_EDGE as i32;
+        _47 = const MUL_NEG as i32;
+        _45 = Add(copy _46, copy _47);
+        _48 = const CAST_WRAP as i32;
+        _44 = Add(copy _45, copy _48);
+        _49 = const CAST_SIGN as i32;
+        _43 = Add(copy _44, copy _49);
+        _50 = const WRAPS as i32;
+        _42 = Add(copy _43, copy _50);
+        _41 = Add(copy _42, const UNREACHED);
+        _55 = const SHORT as u64;
+        _54 = Add(copy _55, const LOOP);
+        _56 = const NESTED as u64;
+        _53 = Add(copy _54, copy _56);
+        _57 = const NEXT as u64;
+        _52 = Add(copy _53, copy _57);
+        _58 = const HALF as u64;
+        _51 = Add(copy _52, copy _58);
+        _60 = copy _1;
+        _61 = copy _19;
+        _62 = copy _28;
+        _63 = copy _41;
+        _64 = copy _51;
+        _59 = (copy _60, copy _61, copy _62, copy _63, copy _64);
+        _0 = const ();
+        StorageDead(_59);
+        StorageDead(_51);
+        StorageDead(_41);
+        StorageDead(_28);
+        StorageDead(_19);
+        StorageDead(_10);
+        StorageDead(_1);
+        return;
+    }
+}
+

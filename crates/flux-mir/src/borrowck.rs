@@ -271,7 +271,7 @@ impl Checker<'_> {
         if self.diagnostics.iter().any(|d| d.range == range) {
             return;
         }
-        self.diagnostics.push(Diagnostic { range, message });
+        self.diagnostics.push(Diagnostic::new(range, message));
     }
 
     fn name(&self, place: &Place) -> String {

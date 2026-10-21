@@ -1,0 +1,36 @@
+struct S { a: i32, b: i32, c: i32 }
+struct T { 0: i32, 1: i32 }
+struct Knob { go: i32, hidden: i32 }
+struct P {}
+struct Leaky { p: P }
+fn make() -> S
+fn make_t() -> T
+fn knob() -> Knob
+fn leak() -> P
+fn leaky() -> Leaky
+fn secret(&S) -> i32
+    self@0: &S
+fn open(&S) -> i32
+    self@0: &S
+fn hidden_new() -> S
+fn new() -> S
+fn go(&Knob) -> i32
+    self@0: &Knob
+fn total(&Knob) -> i32
+    self@0: &Knob
+fn peek(&S) -> i32
+    s@0: &S
+fn main() -> ()
+    s@0: S
+    t@1: T
+    n@2: Knob
+    _ok@3: i32
+    _a@4: i32
+    _b@5: i32
+    _g@6: i32
+    _i@7: i32
+error 1571..1572: field `a` of struct `S` is private
+error 1580..1581: field `b` of struct `S` is private
+error 1602..1603: field `0` of struct `T` is private
+error 1620..1626: method `secret` is private
+error 1645..1647: method `go` is private

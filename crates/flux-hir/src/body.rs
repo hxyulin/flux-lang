@@ -5,7 +5,7 @@ use flux_intern::Symbol;
 use flux_syntax::TextRange;
 use flux_syntax::ast::{BinaryOp, UnaryOp};
 
-use crate::{FunctionId, StructId, TypeRef};
+use crate::{ConstId, FunctionId, StructId, TypeRef};
 
 pub type ExprId = Idx<Expr>;
 pub type PatId = Idx<Pat>;
@@ -149,6 +149,8 @@ pub enum Res {
     Function(FunctionId),
     /// A tuple struct's constructor or a unit struct's value.
     Struct(StructId),
+    /// A constant, free or associated.
+    Const(ConstId),
     /// Unresolved; already reported.
     Err,
 }

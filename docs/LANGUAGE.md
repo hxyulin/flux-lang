@@ -51,21 +51,26 @@ statement (`if c {} - 1` is two statements).
 Everything above parses, but only this part compiles so far; the rest is
 reported as "not supported yet":
 
-- **Items:** functions without generics or `where` clauses; structs
-  without generics (named-field, tuple and unit structs); inherent `impl`
-  blocks for them, with associated functions and methods (`self`,
-  `mut self`, `&self`, `&mut self`); and
+- **Items:** functions without generics or `where` clauses, including
+  `const fn`; structs without generics (named-field, tuple and unit
+  structs); inherent `impl` blocks for them, with associated functions,
+  methods (`self`, `mut self`, `&self`, `&mut self`) and constants;
+  constants (`const N: i32 = 5;`); modules, inline (`mod m { }`) and in
+  files (`mod m;` as `m.rs` or `m/mod.rs`); `use` declarations, with
+  groups, renames, globs, `self`, `super` and `crate`; and
   `unsafe extern "C"` blocks of function declarations, including
-  C-variadic ones (`fn printf(format: *const i8, ...) -> i32;`). `pub`
-  and `pub(crate)` are accepted and mean nothing in a one-file crate.
-- **Types:** single-segment paths (`i32`, `bool`, a struct, `Self`),
+  C-variadic ones (`fn printf(format: *const i8, ...) -> i32;`). Items
+  may be `pub`, `pub(crate)`, `pub(super)`, `pub(self)` or
+  `pub(in path)`, and flux checks privacy as rustc does.
+- **Types:** paths (`i32`, `bool`, `Self`, `m::S`, `crate::m::S`),
   tuples, `!`, references without lifetimes (`&T`, `&mut T`) and raw
   pointers (`*const T`, `*mut T`).
 - **Expressions:** integer, boolean and C string (`c"..."`, `cr"..."`)
   literals, local and function names, tuples, struct expressions
   (`S { a: 1, b, ..base }`), tuple struct constructors (`P(1, 2)`) and
   unit structs, field accesses (`s.a`, `t.0`, through references),
-  associated function paths (`S::new`, `Self::new`), method calls,
+  paths to items in modules and associated items (`m::f`, `S::new`,
+  `Self::X`, `i32::MAX`), method calls,
   borrows (`&x`, `&mut x`) and dereferences (`*r`), blocks (including
   `unsafe`), `if`/`else`, `loop`, `while`, unlabeled `break` (with a
   value) and `continue`, `return`, calls, unary and binary operators,
@@ -92,6 +97,18 @@ Values of tuples of `Copy` types are copied; structs are moved (there is
 no `#[derive(Clone, Copy)]` yet), and flux reports uses after a move,
 including partial moves of fields, as rustc's borrow checker does.
 Structs and tuples cannot be passed to C yet.
+
+Constants are evaluated at compile time, calls to `const fn`s included,
+and overflow or division by zero there is an error, as in rustc. So is
+arithmetic in ordinary code that rustc can tell overflows, such as
+`let x: u8 = 255; x + 1` (its deny-by-default `arithmetic_overflow`
+lint), even with overflow checks off.
+
+Every program can use flux's own `core` library, which has the parts of
+Rust's that flux supports so far: the integer types' constants (`MIN`,
+`MAX`, `BITS`) and methods such as `abs`, `pow`, `wrapping_add`,
+`count_ones`, `rotate_left`, `min` and `max`. Anything else in `core` is
+reported as not supported yet, and so is `std`.
 
 References may be parameters, temporaries, and `let` bindings without
 `mut` that are given a value where they are declared. That is enough to

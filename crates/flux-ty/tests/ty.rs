@@ -28,8 +28,8 @@ fn check_dir(name: &str, expect_errors: bool) {
     let mut failures = Vec::new();
     for path in fixtures(name) {
         let text = fs::read_to_string(&path).unwrap();
-        let parse = flux_syntax::parse_source_file(&text);
-        let hir = flux_hir::lower_file(&parse);
+        let (db, root, hir) = flux_hir::lower_text(&path, &text);
+        let parse = &db.file(root).parse;
         assert!(
             parse.errors().is_empty() && hir.diagnostics.is_empty(),
             "{} must parse and lower cleanly:\n{:#?}\n{:#?}",
@@ -75,8 +75,7 @@ fn err_fixtures() {
 }
 
 fn main_error(text: &str) -> Option<String> {
-    let parse = flux_syntax::parse_source_file(text);
-    let hir = flux_hir::lower_file(&parse);
+    let (_, _, hir) = flux_hir::lower_text("main.rs", text);
     let (sigs, _) = flux_ty::signatures(&hir.items);
     flux_ty::check_main(&hir.items, &sigs).map(|d| d.message)
 }
@@ -87,7 +86,7 @@ fn main_function() {
     assert_eq!(main_error("fn main() -> ! { loop {} }"), None);
     assert_eq!(
         main_error("fn f() {}").as_deref(),
-        Some("`main` function not found")
+        Some("`main` function not found in crate `main`")
     );
     assert_eq!(
         main_error("fn main(x: i32) {}").as_deref(),
@@ -116,8 +115,7 @@ fn checking_never_panics() {
             }
             let text = fs::read_to_string(&path).unwrap();
             for (i, _) in text.char_indices() {
-                let parse = flux_syntax::parse_source_file(&text[..i]);
-                let hir = flux_hir::lower_file(&parse);
+                let (_, _, hir) = flux_hir::lower_text_bare("fuzz.rs", &text[..i]);
                 flux_ty::check_file(&hir);
             }
         }
@@ -142,8 +140,7 @@ fn corpus_checking_never_panics() {
             } else if path.extension().is_some_and(|ext| ext == "rs")
                 && let Ok(text) = fs::read_to_string(&path)
             {
-                let parse = flux_syntax::parse_source_file(&text);
-                let hir = flux_hir::lower_file(&parse);
+                let (_, _, hir) = flux_hir::lower_text_bare(path, &text);
                 flux_ty::check_file(&hir);
                 files += 1;
             }

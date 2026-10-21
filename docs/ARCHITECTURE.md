@@ -147,15 +147,26 @@ analysis. Semantic analysis will follow rustc's and rust-analyzer's split:
 ## HIR
 
 [`flux-hir`](../crates/flux-hir/src/lib.rs) builds two things from a
-file's AST:
+program's files:
 
-- The **item tree**: every function's, struct's and `impl` block's name
-  and signature, with types as written (`TypeRef::Path(u8)`), but no
-  bodies. Everything outside a body depends only on it. A method is a
-  function owned by an `impl` block whose first parameter is `self`, with
-  the type `Self`, `&Self` or `&mut Self`.
-- A **body** per function, lowered into arenas of expressions, patterns
-  and bindings addressed by `Idx`. Names are resolved while lowering,
+- The **item tree**: every crate's modules, and every function's,
+  struct's, constant's and `impl` block's name and signature, with types
+  as written (`TypeRef::Path(u8)`), but no bodies. Everything outside a
+  body depends only on it. A method is a function owned by an `impl`
+  block whose first parameter is `self`, with the type `Self`, `&Self` or
+  `&mut Self`.
+- The **def map** ([`def_map`](../crates/flux-hir/src/def_map.rs)): what
+  each module's names mean, in Rust's two namespaces (types and values),
+  from its items and its `use` imports. Imports are resolved together,
+  repeating until nothing changes, since one can depend on another; a
+  glob brings in every name visible to the importer, below explicit
+  names, and a name two globs disagree on is an error where it is used.
+  A path is resolved segment by segment through modules, checking each
+  item's visibility from where the path is written; a name not in a
+  module's scope comes from the prelude, then from crates (`core`), then
+  from the primitive types.
+- A **body** per function and constant, lowered into arenas of
+  expressions, patterns and bindings addressed by `Idx`. Names are resolved while lowering,
   through a stack of scopes and then the item tree, so an expression
   `x` becomes `Res::Local(binding)` or `Res::Function(id)`, and `S::new`
   the associated function `new` of the struct `S`. Method calls stay
@@ -163,6 +174,14 @@ file's AST:
   `continue` record the loop they leave. Parentheses disappear, and
   `while c { body }` becomes `loop { if c { body } else { break } }`, as
   in rustc. A source map gives every node's text range for diagnostics.
+
+A program has two crates: flux's own `core`
+([`library/core`](../library/core/src/lib.rs)), built into the compiler
+and compiled with every program, and the program itself, whose files are
+read as its `mod` declarations name them (`m.rs` or `m/mod.rs`). Both
+crates' items share one item tree, with each module knowing its crate.
+Only `core` may write `impl` blocks for primitive types, which is how
+`i32::MAX` and `x.abs()` exist.
 
 Bodies depend only on the item tree, so they lower independently (and
 in parallel, later). Syntax outside the [supported subset](LANGUAGE.md)
@@ -208,8 +227,9 @@ struct, returned, in a `mut` binding) is reported as not supported yet.
 
 It also makes the checks rustc makes before borrow checking: calling an
 `unsafe` function or dereferencing a raw pointer needs an `unsafe` block,
-and assigning a local needs `mut`, except for the first assignment of a
-`let x;` binding. Telling a first assignment from a second (and use
+a constant or `const fn` may call only `const fn`s, a field, method or
+type must be visible where it is used, and assigning a local needs `mut`,
+except for the first assignment of a `let x;` binding. Telling a first assignment from a second (and use
 before initialization) needs control flow, so that check moves to MIR.
 
 ## MIR
@@ -238,6 +258,28 @@ semantics become explicit, so code generation never sees expressions:
   and `continue` leave it. Tuples and structs are built whole by an aggregate rvalue;
   a pattern like `let (a, S { b, .. }) = t;` reads each binding's part of
   `t` directly, so it moves only those parts, as in rustc.
+
+Only reachable code is built: every function of the program, and the
+functions of `core` that something calls. A constant's value is MIR too,
+which [`eval`](../crates/flux-mir/src/eval.rs) runs at compile time, with
+any `const fn` it calls, so constants support every expression form.
+Division by zero is an error there (E0080, with rustc's messages), and
+so is overflow in a constant's own initializer ("attempt to compute
+`i32::MAX + 1_i32`, which would overflow"). A `const fn`'s arithmetic
+wraps, as rustc compiles functions with flux's `-C overflow-checks=off`,
+unless it is marked `#[rustc_inherit_overflow_checks]`, as `core`'s
+`abs` and `pow` are: then it is checked where its caller's is. Free constants are evaluated even if unused, as in
+rustc; associated ones where they are used. Uses of a constant refer to
+it, and code generation emits its value.
+
+[`lint`](../crates/flux-mir/src/lint.rs) reports what rustc's
+deny-by-default `arithmetic_overflow` and `unconditional_panic` lints do,
+even with overflow checks off: `let x: u8 = 255; x + 1` does not compile.
+Like rustc's `KnownPanicsLint`, it propagates known values once through
+the blocks in reverse postorder: a local assigned once keeps its value
+everywhere, one assigned more often only in the block that assigned it,
+and a borrowed one never has a known value. A negated literal is one
+constant, as in rustc, so `-128i8` does not negate 128.
 
 [`init`](../crates/flux-mir/src/init.rs) is the first piece of borrow
 checking. It tracks *move paths*, each user local and every field path
@@ -296,8 +338,9 @@ executable. No C compiler or system linker is involved.
 - Calls to C-variadic functions use a variadic keel signature, which
   gives the platform's convention (on Apple arm64, variadic arguments go
   on the stack).
-- Rust functions get mangled symbols (`_ZN3fib3fibE`), so they cannot
-  collide with C names. The C `main` is a wrapper that calls the Rust
+- Rust functions get mangled symbols from their whole path
+  (`_ZN3fib3fibE`, `_ZN4core3num3i323absE` for `core::num::i32::abs`), so
+  they cannot collide with C names or each other. The C `main` is a wrapper that calls the Rust
   `main` and returns 0. A failed MIR assertion calls `abort`.
 
 Only arm64 macOS can link so far: Linux needs glibc's startup objects

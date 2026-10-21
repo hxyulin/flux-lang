@@ -305,7 +305,7 @@ struct Report<'a> {
 
 impl Report<'_> {
     fn error(&mut self, range: TextRange, message: String) {
-        self.diagnostics.push(Diagnostic { range, message });
+        self.diagnostics.push(Diagnostic::new(range, message));
     }
 
     fn check(&mut self, event: &Event, state: &State, range: TextRange) {

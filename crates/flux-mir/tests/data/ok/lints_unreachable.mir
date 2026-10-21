@@ -1,0 +1,156 @@
+fn dead_literal() -> () {
+    let mut _0: ();
+    let _1: u8;
+
+    bb0: {
+        switchInt(const false) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _1 = Add(const 255_u8, const 1_u8);
+        _0 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _0 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        return;
+    }
+}
+
+fn dead_local() -> () {
+    let mut _0: ();
+    let _1: u8; // x
+    let _2: u8;
+    let _3: u8;
+
+    bb0: {
+        switchInt(const false) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _1 = const 255_u8;
+        _3 = copy _1;
+        _2 = Add(copy _3, const 1_u8);
+        _0 = const ();
+        StorageDead(_1);
+        goto -> bb3;
+    }
+
+    bb2: {
+        _0 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        return;
+    }
+}
+
+fn known_condition() -> i32 {
+    let mut _0: i32;
+    let _1: i32; // y
+    let _2: ();
+    let _3: bool;
+    let _4: i32;
+    let _5: !;
+    let _6: i32;
+    let _7: i32;
+    let _8: bool;
+    let _9: bool;
+    let _10: bool;
+    let _11: bool;
+    let _12: bool; // c
+    let _13: ();
+    let _14: bool;
+    let _15: i32;
+
+    bb0: {
+        _1 = const 10_i32;
+        _4 = copy _1;
+        _3 = Gt(copy _4, const 20_i32);
+        switchInt(copy _3) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _7 = copy _1;
+        _6 = Sub(copy _7, const 10_i32);
+        _8 = Eq(copy _6, const 0_i32);
+        assert(!copy _8, "attempt to divide by zero") -> bb4;
+    }
+
+    bb2: {
+        _2 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _12 = const false;
+        _14 = copy _12;
+        switchInt(copy _14) -> [0: bb8, otherwise: bb7];
+    }
+
+    bb4: {
+        _9 = Eq(copy _6, const -1_i32);
+        _10 = Eq(const 1_i32, const -2147483648_i32);
+        _11 = BitAnd(copy _9, copy _10);
+        assert(!copy _11, "attempt to divide with overflow") -> bb5;
+    }
+
+    bb5: {
+        _0 = Div(const 1_i32, copy _6);
+        return;
+    }
+
+    bb6: {
+        _2 = const ();
+        goto -> bb3;
+    }
+
+    bb7: {
+        _15 = Add(const MAX, const 1_i32);
+        _13 = const ();
+        goto -> bb9;
+    }
+
+    bb8: {
+        _13 = const ();
+        goto -> bb9;
+    }
+
+    bb9: {
+        _0 = const 0_i32;
+        StorageDead(_12);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: ();
+    let _2: ();
+    let _3: i32;
+
+    bb0: {
+        _1 = dead_literal() -> bb1;
+    }
+
+    bb1: {
+        _2 = dead_local() -> bb2;
+    }
+
+    bb2: {
+        _3 = known_condition() -> bb3;
+    }
+
+    bb3: {
+        _0 = const ();
+        return;
+    }
+}
+

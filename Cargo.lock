@@ -180,6 +180,7 @@ dependencies = [
  "clap",
  "flux-codegen",
  "flux-hir",
+ "flux-intern",
  "flux-mir",
  "flux-syntax",
  "flux-ty",
@@ -189,6 +190,7 @@ dependencies = [
 name = "flux-codegen"
 version = "0.1.0"
 dependencies = [
+ "flux-arena",
  "flux-hir",
  "flux-mir",
  "flux-ty",

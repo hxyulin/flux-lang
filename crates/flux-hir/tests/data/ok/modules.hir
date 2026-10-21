@@ -1,0 +1,108 @@
+struct Point { x: i32, y: i32 }
+
+struct Token;
+
+struct Counter { value: i32 }
+
+fn Point::new(x@0: i32, y@1: i32) -> Point {
+    Point { x: x@0, y: y@1 }
+}
+
+fn origin() -> Point {
+    Point::new(0, ZERO)
+}
+
+fn three() -> i32 {
+    (double(1) + 1)
+}
+
+fn clamp(x@0: i32, lo@1: i32, hi@2: i32) -> i32 {
+    x@0.max(lo@1).min(hi@2)
+}
+
+fn double(x@0: i32) -> i32 {
+    (x@0 * 2)
+}
+
+fn halve(x@0: i32) -> i32 {
+    (x@0 / 2)
+}
+
+fn negate(x@0: i32) -> i32 {
+    (-x@0)
+}
+
+fn inc(x@0: i32) -> i32 {
+    (helper(x@0) + helper(1))
+}
+
+fn quiet() -> i32 {
+    0
+}
+
+fn quieter() -> i32 {
+    quiet()
+}
+
+fn deepest() -> i32 {
+    helper(quieter())
+}
+
+fn up() -> i32 {
+    3
+}
+
+fn helper(x@0: i32) -> i32 {
+    x@0
+}
+
+fn mixed(x@0: i32) -> i32 {
+    ((((halve(x@0) + negate(x@0)) + inc(x@0)) + deepest()) + up())
+}
+
+fn from_a() -> i32 {
+    1
+}
+
+fn from_b() -> i32 {
+    2
+}
+
+fn private() -> i32 {
+    4
+}
+
+fn exposed() -> i32 {
+    private()
+}
+
+fn get() -> i32 {
+    (exposed() + local())
+}
+
+fn local() -> i32 {
+    5
+}
+
+fn Counter::new() -> Counter {
+    Counter { value: START }
+}
+
+fn Counter::bump(self@0: Self) -> Counter {
+    Counter { value: (self@0.value + STEP) }
+}
+
+fn main() -> () {
+    let a@0 = ((double(LIMIT) + mixed(DOUBLED)) + double(1));
+    let p@1 = Point::new(1, 2);
+    let o@2 = origin();
+    let b@3 = (clamp((p@1.x + o@2.y), 0, LIMIT) + three());
+    let c@4 = (((from_a() + from_b()) + from_a()) + from_b());
+    let d@5 = (exposed() + get());
+    let _t@6 = Token;
+    let e@7 = (Counter::new().bump().value + STEP);
+    let f@8 = ((MAX.wrapping_add(1).min(0) + i32::max(3, 4)) + MIN.max(0));
+    let g@9 = ((((((WIDE as i32) + (BITS as i32)) + (SMALLEST as i32)) + ABS) + (POWER as i32)) + (ONES as i32));
+    let _sum@10 = ((((((a@0 + b@3) + c@4) + d@5) + e@7) + f@8) + g@9);
+}
+

@@ -1,0 +1,50 @@
+struct Point { x: i32, y: i32 }
+struct Counter { value: u32 }
+fn new(u32) -> Counter
+    value@0: u32
+fn next(Counter) -> Counter
+    self@0: Counter
+fn get(&Counter) -> u32
+    self@0: &Counter
+fn square(i32) -> i32
+    x@0: i32
+fn choose(bool, i32, i32) -> i32
+    c@0: bool
+    a@1: i32
+    b@2: i32
+fn sum_to(u32) -> u32
+    n@0: u32
+    total@1: u32
+    i@2: u32
+fn uses_consts() -> u32
+fn main() -> ()
+    p@0: i32
+    q@1: i64
+    r@2: u32
+    s@3: u32
+    _all@4: (i64, bool, ())
+const ANSWER: i32
+const NEGATIVE: i64
+const BYTE: u8
+const FLAG: bool
+const PAIR: (i32, bool)
+const NESTED: ((u8, u16), ())
+const ORIGIN: Point
+const ZERO: i32
+const SHIFTED: u32
+const MASKED: u64
+const LIMITS: (i8, u128, isize, usize)
+const SQUARE: i32
+const CHOSEN: i32
+const LOOPED: u32
+const METHODS: u32
+const SIGNED: i32
+const WRAPPED: u8
+const ROTATED: u16
+const DIFF: u32
+const BLOCK: i32
+const CAST: u8
+const TYPED: Counter
+const START: u32
+const STEP: u32
+const ZERO: Counter
