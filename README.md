@@ -13,13 +13,14 @@ same under both.
 
 ## Status
 
-flux compiles its first programs: functions over integers and `bool`,
-with locals, loops, recursion, C strings, and calls to C through
-`unsafe extern "C"` (including `printf`),
-down to native arm64 macOS executables through keel. Programs in
+flux compiles its first programs: functions over integers, `bool`,
+tuples and structs, with locals, loops, recursion, moves, C strings, and
+calls to C through `unsafe extern "C"` (including `printf`), down to
+native arm64 macOS executables through keel. Programs in
 [`tests/run`](tests/run) are built by both rustc and flux and must behave
 identically. Everything else in Rust is on the [roadmap](docs/ROADMAP.md):
-structs, enums, references, generics and traits come next.
+methods and references, modules and flux's own `core`, generics and
+traits come next.
 
 The parser covers much more of Rust than the later stages: it handles
 all of its own sources and keel's, and parses 1 GiB of crates.io sources

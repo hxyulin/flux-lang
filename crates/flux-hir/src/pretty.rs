@@ -7,11 +7,30 @@ use std::fmt::Write;
 use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 
 use crate::{
-    Body, Expr, ExprId, FileHir, Function, Literal, LoopSource, Pat, PatId, Res, Stmt, TypeRef,
+    Body, Expr, ExprId, FileHir, Function, Literal, LoopSource, Pat, PatId, Res, Stmt, StructKind,
+    TypeRef,
 };
 
 pub(crate) fn file(hir: &FileHir) -> String {
     let mut out = String::new();
+    for s in hir.items.structs.values() {
+        let fields: Vec<String> = s
+            .fields
+            .iter()
+            .map(|f| match s.kind {
+                StructKind::Tuple => type_ref(&f.ty),
+                _ => format!("{}: {}", f.name, type_ref(&f.ty)),
+            })
+            .collect();
+        let fields = fields.join(", ");
+        match s.kind {
+            StructKind::Record => writeln!(out, "struct {} {{ {fields} }}", s.name),
+            StructKind::Tuple => writeln!(out, "struct {}({fields});", s.name),
+            StructKind::Unit => writeln!(out, "struct {};", s.name),
+        }
+        .unwrap();
+        out.push('\n');
+    }
     for (id, function) in hir.items.functions.iter() {
         match hir.bodies.get(id) {
             Some((body, _)) => {
@@ -109,6 +128,58 @@ impl Printer<'_> {
                 let mutability = if b.mutable { "mut " } else { "" };
                 write!(self.out, "{mutability}{}@{}", b.name, binding.index()).unwrap();
             }
+            Pat::Tuple { pats, rest } => {
+                self.out.push('(');
+                self.tuple_pats(pats, *rest);
+                if pats.len() == 1 && rest.is_none() {
+                    self.out.push(',');
+                }
+                self.out.push(')');
+            }
+            Pat::TupleStruct { strukt, pats, rest } => {
+                write!(self.out, "{}(", self.hir.items.structs[*strukt].name).unwrap();
+                self.tuple_pats(pats, *rest);
+                self.out.push(')');
+            }
+            Pat::Record {
+                strukt,
+                fields,
+                rest,
+            } => {
+                write!(self.out, "{} {{ ", self.hir.items.structs[*strukt].name).unwrap();
+                for (i, (name, pat)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.out.push_str(", ");
+                    }
+                    write!(self.out, "{name}: ").unwrap();
+                    self.pat(*pat);
+                }
+                if *rest {
+                    self.out
+                        .push_str(if fields.is_empty() { ".." } else { ", .." });
+                }
+                self.out.push_str(" }");
+            }
+            Pat::Unit(strukt) => {
+                write!(self.out, "{}", self.hir.items.structs[*strukt].name).unwrap();
+            }
+        }
+    }
+
+    fn tuple_pats(&mut self, pats: &[PatId], rest: Option<u32>) {
+        let mut first = true;
+        for i in 0..=pats.len() {
+            if rest == Some(i as u32) {
+                self.out.push_str(if first { ".." } else { ", .." });
+                first = false;
+            }
+            if let Some(&pat) = pats.get(i) {
+                if !first {
+                    self.out.push_str(", ");
+                }
+                self.pat(pat);
+                first = false;
+            }
         }
     }
 
@@ -140,6 +211,9 @@ impl Printer<'_> {
             }
             Expr::Path(Res::Function(f)) => {
                 write!(self.out, "{}", self.hir.items.functions[*f].name).unwrap();
+            }
+            Expr::Path(Res::Struct(s)) => {
+                write!(self.out, "{}", self.hir.items.structs[*s].name).unwrap();
             }
             Expr::Path(Res::Err) => self.out.push_str("<error>"),
             Expr::Tuple(fields) => {
@@ -280,6 +354,30 @@ impl Printer<'_> {
                 self.out.push('(');
                 self.expr(*expr);
                 write!(self.out, " as {})", type_ref(&self.body.types[*ty])).unwrap();
+            }
+            Expr::Field { expr, name } => {
+                self.expr(*expr);
+                write!(self.out, ".{name}").unwrap();
+            }
+            Expr::Record {
+                strukt,
+                fields,
+                spread,
+            } => {
+                write!(self.out, "{} {{ ", self.hir.items.structs[*strukt].name).unwrap();
+                for (i, (name, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.out.push_str(", ");
+                    }
+                    write!(self.out, "{name}: ").unwrap();
+                    self.expr(*value);
+                }
+                if let Some(spread) = spread {
+                    self.out
+                        .push_str(if fields.is_empty() { ".." } else { ", .." });
+                    self.expr(*spread);
+                }
+                self.out.push_str(" }");
             }
         }
     }

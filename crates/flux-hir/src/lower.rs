@@ -11,7 +11,14 @@ use crate::body::{
 };
 use crate::item_tree::{check_attr, check_attrs, lower_type, unsupported};
 use crate::literal::{parse_int, unescape_c_str};
-use crate::{Diagnostic, FunctionId, ItemTree};
+use crate::{Diagnostic, FunctionId, ItemTree, StructId, StructKind};
+
+/// Where a pattern binds, for "cannot shadow" messages.
+#[derive(Clone, Copy)]
+enum PatSite {
+    Let,
+    Param,
+}
 
 /// A lowered body with its source map and diagnostics.
 #[derive(Debug)]
@@ -39,7 +46,7 @@ pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> 
     let mut params = Vec::new();
     if let Some(list) = f.param_list() {
         for param in list.params() {
-            params.push(ctx.lower_pat(param.pat(), param.syntax()));
+            params.push(ctx.lower_pat(param.pat(), param.syntax(), PatSite::Param));
         }
     }
     let root = match f.body() {
@@ -163,7 +170,20 @@ impl Ctx<'_> {
                 Expr::Return { value }
             }
             ast::Expr::CallExpr(call) => {
-                let callee = self.lower_opt(call.expr(), syntax);
+                let callee = match call.expr() {
+                    // `S(1)` for a struct with named fields.
+                    Some(ast::Expr::PathExpr(path)) if self.names_record_struct(path) => {
+                        let name = path.path().and_then(simple_path).unwrap_or_default();
+                        self.error(
+                            range,
+                            format!(
+                                "cannot find function, tuple struct or tuple variant `{name}` in this scope"
+                            ),
+                        );
+                        self.alloc_expr(Expr::Path(Res::Err), path.syntax().text_range())
+                    }
+                    callee => self.lower_opt(callee, syntax),
+                };
                 let args = match call.arg_list() {
                     Some(list) => list.args().map(|e| self.lower_expr(e)).collect(),
                     None => Box::default(),
@@ -180,9 +200,13 @@ impl Ctx<'_> {
             ast::Expr::BinExpr(bin) => {
                 let lhs = self.lower_opt(bin.lhs(), syntax);
                 let rhs = self.lower_opt(bin.rhs(), syntax);
-                match bin.op_kind() {
-                    Some(op) => Expr::Binary { op, lhs, rhs },
-                    None => Expr::Missing,
+                match (bin.op_kind(), bin.op()) {
+                    (Some(op), Some(token)) => {
+                        let id = self.alloc_expr(Expr::Binary { op, lhs, rhs }, range);
+                        self.source_map.ops.insert(id, token.text_range());
+                        return id;
+                    }
+                    _ => Expr::Missing,
                 }
             }
             ast::Expr::CastExpr(cast) => {
@@ -196,7 +220,26 @@ impl Ctx<'_> {
             ast::Expr::ArrayExpr(_) => self.unsupported_expr(range, "arrays"),
             ast::Expr::AwaitExpr(_) => self.unsupported_expr(range, "`.await` expressions"),
             ast::Expr::ClosureExpr(_) => self.unsupported_expr(range, "closures"),
-            ast::Expr::FieldExpr(_) => self.unsupported_expr(range, "field accesses"),
+            ast::Expr::FieldExpr(field) => {
+                let base = self.lower_opt(field.expr(), syntax);
+                match field.name_ref() {
+                    Some(name) => {
+                        let name_range = name.syntax().text_range();
+                        let id = self.alloc_expr(
+                            Expr::Field {
+                                expr: base,
+                                name: Symbol::intern(name.text()),
+                            },
+                            range,
+                        );
+                        self.source_map
+                            .expr_fields
+                            .insert(id, Box::new([name_range]));
+                        return id;
+                    }
+                    None => Expr::Missing,
+                }
+            }
             ast::Expr::ForExpr(_) => self.unsupported_expr(range, "`for` loops"),
             ast::Expr::IndexExpr(_) => self.unsupported_expr(range, "index expressions"),
             ast::Expr::LetExpr(_) => self.unsupported_expr(range, "`let` conditions"),
@@ -221,7 +264,7 @@ impl Ctx<'_> {
                 }
             }
             ast::Expr::RangeExpr(_) => self.unsupported_expr(range, "ranges"),
-            ast::Expr::RecordExpr(_) => self.unsupported_expr(range, "struct expressions"),
+            ast::Expr::RecordExpr(record) => return self.lower_record(record),
             ast::Expr::RefExpr(_) => self.unsupported_expr(range, "references"),
             ast::Expr::TryExpr(_) => self.unsupported_expr(range, "`?` expressions"),
             ast::Expr::UnderscoreExpr(_) => {
@@ -229,6 +272,81 @@ impl Ctx<'_> {
             }
         };
         self.alloc_expr(hir, range)
+    }
+
+    /// `S { a: 1, b, ..base }`
+    fn lower_record(&mut self, record: ast::RecordExpr<'_>) -> ExprId {
+        let range = record.syntax().text_range();
+        let strukt = self.resolve_struct(record.path(), range);
+        let mut fields = Vec::new();
+        let mut name_ranges = Vec::new();
+        let mut spread = None;
+        if let Some(list) = record.record_expr_field_list() {
+            for field in list.fields() {
+                check_attrs(field.attrs(), &mut self.diagnostics);
+                let Some(name) = field.name_ref() else {
+                    continue;
+                };
+                let name_range = name.syntax().text_range();
+                let symbol = Symbol::intern(name.text());
+                let expr = match field.expr() {
+                    Some(expr) => self.lower_expr(expr),
+                    // `S { a }` is `S { a: a }`.
+                    None => {
+                        let res = self.resolve_name(symbol, name_range);
+                        self.alloc_expr(Expr::Path(res), name_range)
+                    }
+                };
+                fields.push((symbol, expr));
+                name_ranges.push(name_range);
+            }
+            if list.dot2_token().is_some() {
+                match list.spread() {
+                    Some(base) => spread = Some(self.lower_expr(base)),
+                    None => self.unsupported(range, "default field values"),
+                }
+            }
+        }
+        let Some(strukt) = strukt else {
+            return self.alloc_expr(Expr::Missing, range);
+        };
+        let id = self.alloc_expr(
+            Expr::Record {
+                strukt,
+                fields: fields.into(),
+                spread,
+            },
+            range,
+        );
+        self.source_map.expr_fields.insert(id, name_ranges.into());
+        if let Some(path) = record.path() {
+            self.source_map.paths.insert(id, path.syntax().text_range());
+        }
+        id
+    }
+
+    /// The struct a path in a struct expression or pattern names.
+    fn resolve_struct(
+        &mut self,
+        path: Option<ast::Path<'_>>,
+        range: TextRange,
+    ) -> Option<StructId> {
+        let range = path.map_or(range, |p| p.syntax().text_range());
+        let Some(name) = path.and_then(simple_path) else {
+            self.unsupported(range, "paths like this");
+            return None;
+        };
+        let name = Symbol::intern(name);
+        match self.items.struct_by_name(name) {
+            Some((id, _)) => Some(id),
+            None => {
+                self.error(
+                    range,
+                    format!("cannot find struct, variant or union type `{name}` in this scope"),
+                );
+                None
+            }
+        }
     }
 
     fn unsupported_expr(&mut self, range: TextRange, what: &str) -> Expr {
@@ -279,7 +397,7 @@ impl Ctx<'_> {
                         self.source_map.types.insert(id, range);
                         id
                     });
-                    let pat = self.lower_pat(let_stmt.pat(), let_stmt.syntax());
+                    let pat = self.lower_pat(let_stmt.pat(), let_stmt.syntax(), PatSite::Let);
                     stmts.push(Stmt::Let { pat, ty, init });
                 }
                 ast::Stmt::ExprStmt(expr_stmt) => {
@@ -379,23 +497,43 @@ impl Ctx<'_> {
 
     fn resolve_path(&mut self, path: ast::PathExpr<'_>) -> Res {
         let range = path.syntax().text_range();
-        let name = path
-            .path()
-            .filter(|p| p.qualifier().is_none())
-            .and_then(|p| p.segment())
-            .filter(|s| s.colon2_token().is_none() && s.generic_arg_list().is_none())
-            .and_then(|s| s.name_ref())
-            .filter(|n| n.ident_token().is_some());
-        let Some(name) = name else {
+        let Some(name) = path.path().and_then(simple_path) else {
             self.unsupported(range, "paths like this");
             return Res::Err;
         };
-        let name = Symbol::intern(name.text());
+        self.resolve_name(Symbol::intern(name), range)
+    }
+
+    /// Whether `path` names a struct with named fields and nothing in
+    /// the value namespace.
+    fn names_record_struct(&self, path: ast::PathExpr<'_>) -> bool {
+        let Some(name) = path.path().and_then(simple_path) else {
+            return false;
+        };
+        let name = Symbol::intern(name);
+        !self.scopes.iter().any(|(n, _)| *n == name)
+            && self.items.function_by_name(name).is_none()
+            && self
+                .items
+                .struct_by_name(name)
+                .is_some_and(|(_, s)| s.kind == StructKind::Record)
+    }
+
+    /// A name in the value namespace: a local, a function, or a tuple or
+    /// unit struct.
+    fn resolve_name(&mut self, name: Symbol, range: TextRange) -> Res {
         if let Some(&(_, binding)) = self.scopes.iter().rev().find(|(n, _)| *n == name) {
             return Res::Local(binding);
         }
         if let Some((function, _)) = self.items.function_by_name(name) {
             return Res::Function(function);
+        }
+        if let Some((id, s)) = self.items.struct_by_name(name) {
+            if s.kind != StructKind::Record {
+                return Res::Struct(id);
+            }
+            self.error(range, format!("cannot find value `{name}` in this scope"));
+            return Res::Err;
         }
         self.error(range, format!("cannot find value `{name}` in this scope"));
         Res::Err
@@ -432,7 +570,12 @@ impl Ctx<'_> {
         }
     }
 
-    fn lower_pat(&mut self, pat: Option<ast::Pat<'_>>, parent: SyntaxNode<'_>) -> PatId {
+    fn lower_pat(
+        &mut self,
+        pat: Option<ast::Pat<'_>>,
+        parent: SyntaxNode<'_>,
+        site: PatSite,
+    ) -> PatId {
         let Some(pat) = pat else {
             return self.alloc_pat(Pat::Missing, parent.text_range());
         };
@@ -446,33 +589,71 @@ impl Ctx<'_> {
                     self.unsupported(sub.syntax().text_range(), "`@` patterns");
                 }
                 match ident.name() {
-                    Some(name) => {
-                        let name = Symbol::intern(name.text());
-                        let binding = self.bindings.alloc(Binding {
-                            name,
-                            mutable: ident.mut_token().is_some(),
-                        });
-                        self.scopes.push((name, binding));
-                        Pat::Bind(binding)
-                    }
+                    Some(name) => self.lower_ident_pat(name, ident, site),
                     None => Pat::Missing,
                 }
             }
             ast::Pat::WildcardPat(_) => Pat::Wild,
-            ast::Pat::ParenPat(paren) => return self.lower_pat(paren.pat(), pat.syntax()),
+            ast::Pat::ParenPat(paren) => return self.lower_pat(paren.pat(), pat.syntax(), site),
+            ast::Pat::TuplePat(tuple) => {
+                let (pats, rest) = self.lower_tuple_fields(tuple.fields(), site);
+                Pat::Tuple { pats, rest }
+            }
+            ast::Pat::TupleStructPat(tuple) => {
+                let strukt = self.resolve_struct(tuple.path(), range);
+                let (pats, rest) = self.lower_tuple_fields(tuple.fields(), site);
+                let Some(strukt) = strukt else {
+                    return self.alloc_pat(Pat::Missing, range);
+                };
+                let s = &self.items.structs[strukt];
+                if s.kind != StructKind::Tuple {
+                    let message = format!(
+                        "cannot find tuple struct or tuple variant `{}` in this scope",
+                        s.name
+                    );
+                    self.error(range, message);
+                    Pat::Missing
+                } else {
+                    Pat::TupleStruct { strukt, pats, rest }
+                }
+            }
+            ast::Pat::RecordPat(record) => return self.lower_record_pat(record, site),
+            ast::Pat::PathPat(path) => {
+                let strukt = self.resolve_struct(path.path(), range);
+                match strukt {
+                    Some(strukt) if self.items.structs[strukt].kind == StructKind::Unit => {
+                        Pat::Unit(strukt)
+                    }
+                    Some(strukt) => {
+                        let s = &self.items.structs[strukt];
+                        let what = if s.kind == StructKind::Tuple {
+                            "tuple struct"
+                        } else {
+                            "struct"
+                        };
+                        let message = format!(
+                            "expected unit struct, unit variant or constant, found {what} `{}`",
+                            s.name
+                        );
+                        self.error(range, message);
+                        Pat::Missing
+                    }
+                    None => Pat::Missing,
+                }
+            }
             ast::Pat::LiteralPat(_) | ast::Pat::RangePat(_) => {
                 self.unsupported(range, "literal and range patterns");
                 Pat::Missing
             }
+            ast::Pat::RestPat(_) => {
+                self.error(range, "`..` patterns are not allowed here");
+                Pat::Missing
+            }
             _ => {
                 let what = match pat {
-                    ast::Pat::TuplePat(_) => "tuple patterns",
-                    ast::Pat::RecordPat(_) | ast::Pat::TupleStructPat(_) => "struct patterns",
-                    ast::Pat::PathPat(_) => "path patterns",
                     ast::Pat::SlicePat(_) => "slice patterns",
                     ast::Pat::RefPat(_) => "reference patterns",
                     ast::Pat::OrPat(_) => "or-patterns",
-                    ast::Pat::RestPat(_) => "rest patterns",
                     _ => "macros",
                 };
                 self.unsupported(range, what);
@@ -481,4 +662,122 @@ impl Ctx<'_> {
         };
         self.alloc_pat(hir, range)
     }
+
+    /// `x`, `mut x`, or a unit struct's name, which is a pattern matching
+    /// it rather than a new binding.
+    fn lower_ident_pat(
+        &mut self,
+        name: ast::Name<'_>,
+        ident: ast::IdentPat<'_>,
+        site: PatSite,
+    ) -> Pat {
+        let range = name.syntax().text_range();
+        let name = Symbol::intern(name.text());
+        let shadowed = self
+            .items
+            .struct_by_name(name)
+            .filter(|(_, s)| s.kind != StructKind::Record);
+        if let Some((id, s)) = shadowed {
+            if s.kind == StructKind::Unit && ident.mut_token().is_none() {
+                return Pat::Unit(id);
+            }
+            let site = match site {
+                PatSite::Let => "let bindings",
+                PatSite::Param => "function parameters",
+            };
+            let what = if s.kind == StructKind::Unit {
+                "unit structs"
+            } else {
+                "tuple structs"
+            };
+            self.error(range, format!("{site} cannot shadow {what}"));
+        }
+        let binding = self.bindings.alloc(Binding {
+            name,
+            mutable: ident.mut_token().is_some(),
+        });
+        self.scopes.push((name, binding));
+        Pat::Bind(binding)
+    }
+
+    /// The fields of a tuple or tuple struct pattern, and where `..` is.
+    fn lower_tuple_fields(
+        &mut self,
+        fields: ast::AstChildren<'_, ast::Pat<'_>>,
+        site: PatSite,
+    ) -> (Box<[PatId]>, Option<u32>) {
+        let mut pats = Vec::new();
+        let mut rest = None;
+        for field in fields {
+            if let ast::Pat::RestPat(dots) = field {
+                if rest.is_some() {
+                    self.error(
+                        dots.syntax().text_range(),
+                        "`..` can only be used once per tuple pattern",
+                    );
+                }
+                rest.get_or_insert(pats.len() as u32);
+                continue;
+            }
+            let parent = field.syntax();
+            pats.push(self.lower_pat(Some(field), parent, site));
+        }
+        (pats.into(), rest)
+    }
+
+    /// `S { a, b: x, .. }`
+    fn lower_record_pat(&mut self, record: ast::RecordPat<'_>, site: PatSite) -> PatId {
+        let range = record.syntax().text_range();
+        let strukt = self.resolve_struct(record.path(), range);
+        let mut fields = Vec::new();
+        let mut name_ranges = Vec::new();
+        let mut rest = false;
+        if let Some(list) = record.record_pat_field_list() {
+            rest = list.rest_pat().is_some();
+            for field in list.fields() {
+                check_attrs(field.attrs(), &mut self.diagnostics);
+                let (name, name_range) = match (field.name_ref(), field.pat()) {
+                    (Some(name), _) => (name.text(), name.syntax().text_range()),
+                    // `S { a }` and `S { mut a }` bind the field `a`.
+                    (None, Some(ast::Pat::IdentPat(ident))) => match ident.name() {
+                        Some(name) => (name.text(), name.syntax().text_range()),
+                        None => continue,
+                    },
+                    _ => continue,
+                };
+                let pat = self.lower_pat(field.pat(), field.syntax(), site);
+                fields.push((Symbol::intern(name), pat));
+                name_ranges.push((name_range, field.syntax().text_range()));
+            }
+        }
+        let Some(strukt) = strukt else {
+            return self.alloc_pat(Pat::Missing, range);
+        };
+        let id = self.alloc_pat(
+            Pat::Record {
+                strukt,
+                fields: fields.into(),
+                rest,
+            },
+            range,
+        );
+        self.source_map.pat_fields.insert(id, name_ranges.into());
+        id
+    }
+}
+
+/// The name of a path with one plain segment: `x`, `S`.
+fn simple_path(path: ast::Path<'_>) -> Option<&str> {
+    path.qualifier()
+        .is_none()
+        .then(|| path.segment())
+        .flatten()
+        .filter(|s| {
+            s.colon2_token().is_none()
+                && s.generic_arg_list().is_none()
+                && s.parenthesized_arg_list().is_none()
+        })
+        .and_then(|s| s.name_ref())
+        .filter(|n| n.ident_token().is_some())
+        .map(|n| n.text())
 }

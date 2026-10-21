@@ -28,6 +28,12 @@
   types, and calls to C-variadic functions such as `printf`, with
   rustc's rules for variadic arguments.
 - Intern types: `Ty` is a 4-byte handle, so types can contain types.
+- Support structs (named-field, tuple and unit) and tuples: struct
+  expressions with `..base`, field access and assignment, and tuple and
+  struct patterns in `let` and parameters. MIR reads values from places
+  and checks moves, including partial moves, with rustc's messages
+  (E0382, E0381, E0594). Code generation splits aggregates into scalars
+  and returns them through `sret`.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 

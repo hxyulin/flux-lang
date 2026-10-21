@@ -3,17 +3,58 @@
 use flux_arena::{Arena, Idx};
 use flux_intern::Symbol;
 use flux_syntax::ast::{self, AstChildren, AstNode};
-use flux_syntax::{NodeId, SyntaxTree, TextRange};
+use flux_syntax::{NodeId, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxTree, TextRange};
 
 use crate::Diagnostic;
 
 pub type FunctionId = Idx<Function>;
+pub type StructId = Idx<Struct>;
 
 /// A file's items, without bodies.
 #[derive(Debug, Default)]
 pub struct ItemTree {
     pub functions: Arena<Function>,
+    pub structs: Arena<Struct>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// A struct: `struct S { a: i32 }`, `struct P(i32);` or `struct U;`.
+#[derive(Debug)]
+pub struct Struct {
+    pub name: Symbol,
+    pub kind: StructKind,
+    /// In declaration order; a tuple struct's are named `0`, `1`, ...
+    pub fields: Box<[Field]>,
+    pub name_range: TextRange,
+    /// `struct S`, where rustc reports errors about the whole struct.
+    pub def_range: TextRange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructKind {
+    /// `struct S { a: i32 }`
+    Record,
+    /// `struct P(i32);`, which also defines the function `P`.
+    Tuple,
+    /// `struct U;`, which also defines the constant `U`.
+    Unit,
+}
+
+#[derive(Debug)]
+pub struct Field {
+    pub name: Symbol,
+    pub ty: TypeRef,
+    /// The type's range.
+    pub range: TextRange,
+    pub name_range: TextRange,
+    /// `a: i32`
+    pub def_range: TextRange,
+}
+
+impl Struct {
+    pub fn field(&self, name: Symbol) -> Option<(usize, &Field)> {
+        self.fields.iter().enumerate().find(|(_, f)| f.name == name)
+    }
 }
 
 /// A function: one with a body, or one declared in an `extern` block.
@@ -36,6 +77,9 @@ pub struct Function {
     pub node: NodeId,
     /// The name's range, for diagnostics.
     pub name_range: TextRange,
+    /// From the first keyword to the end of the signature, where rustc
+    /// reports errors about the whole function: `fn f(x: i32) -> i32`.
+    pub def_range: TextRange,
 }
 
 #[derive(Debug)]
@@ -85,6 +129,10 @@ impl ItemTree {
         self.functions.iter().find(|(_, f)| f.name == name)
     }
 
+    pub fn struct_by_name(&self, name: Symbol) -> Option<(StructId, &Struct)> {
+        self.structs.iter().find(|(_, s)| s.name == name)
+    }
+
     fn collect_item(&mut self, item: ast::Item<'_>) {
         let what = match item {
             ast::Item::Fn(f) => {
@@ -102,7 +150,10 @@ impl ItemTree {
             ast::Item::MacroCall(_) => "macros",
             ast::Item::Module(_) => "modules",
             ast::Item::Static(_) => "statics",
-            ast::Item::Struct(_) => "structs",
+            ast::Item::Struct(s) => {
+                self.collect_struct(s);
+                return;
+            }
             ast::Item::Trait(_) => "traits",
             ast::Item::TypeAlias(_) => "type aliases",
             ast::Item::Use(_) => "`use` declarations",
@@ -112,6 +163,7 @@ impl ItemTree {
 
     fn collect_fn(&mut self, f: ast::Fn<'_>, in_extern_block: bool) {
         check_attrs(f.attrs(), &mut self.diagnostics);
+        check_visibility(f.visibility(), &mut self.diagnostics);
         let Some(name) = f.name() else {
             return;
         };
@@ -183,7 +235,17 @@ impl ItemTree {
                 "free function without a body",
             ));
         }
+        let signature_end = [
+            f.ret_type().map(|r| r.syntax()),
+            f.param_list().map(|p| p.syntax()),
+            Some(name.syntax()),
+        ]
+        .into_iter()
+        .flatten()
+        .next()
+        .map_or(0, |n| n.text_range().end());
         self.functions.alloc(Function {
+            def_range: TextRange::new(def_start(f.syntax()), signature_end),
             name: Symbol::intern(name.text()),
             params: params.into(),
             ret,
@@ -194,6 +256,76 @@ impl ItemTree {
             has_body: has_body && !in_extern_block,
             node: f.syntax().id(),
             name_range: name.syntax().text_range(),
+        });
+    }
+
+    fn collect_struct(&mut self, s: ast::Struct<'_>) {
+        let diagnostics = &mut self.diagnostics;
+        check_attrs(s.attrs(), diagnostics);
+        check_visibility(s.visibility(), diagnostics);
+        let Some(name) = s.name() else {
+            return;
+        };
+        if let Some(list) = s.generic_param_list() {
+            unsupported(diagnostics, list.syntax().text_range(), "generic structs");
+        }
+        if let Some(clause) = s.where_clause() {
+            unsupported(diagnostics, clause.syntax().text_range(), "`where` clauses");
+        }
+        let mut fields = Vec::new();
+        let kind = if let Some(list) = s.record_field_list() {
+            for field in list.fields() {
+                check_attrs(field.attrs(), diagnostics);
+                check_visibility(field.visibility(), diagnostics);
+                let Some(field_name) = field.name() else {
+                    continue;
+                };
+                let field_name_range = field_name.syntax().text_range();
+                let field_name = Symbol::intern(field_name.text());
+                let def_range =
+                    TextRange::new(def_start(field.syntax()), field.syntax().text_range().end());
+                if fields.iter().any(|f: &Field| f.name == field_name) {
+                    diagnostics.push(Diagnostic::new(
+                        def_range,
+                        format!("field `{field_name}` is already declared"),
+                    ));
+                    continue;
+                }
+                fields.push(Field {
+                    name: field_name,
+                    ty: lower_type(field.ty(), diagnostics),
+                    range: field
+                        .ty()
+                        .map_or(field_name_range, |t| t.syntax().text_range()),
+                    name_range: field_name_range,
+                    def_range,
+                });
+            }
+            StructKind::Record
+        } else if let Some(list) = s.tuple_field_list() {
+            for (i, field) in list.fields().enumerate() {
+                check_attrs(field.attrs(), diagnostics);
+                check_visibility(field.visibility(), diagnostics);
+                let range = field.syntax().text_range();
+                fields.push(Field {
+                    name: Symbol::intern(&i.to_string()),
+                    ty: lower_type(field.ty(), diagnostics),
+                    range: field.ty().map_or(range, |t| t.syntax().text_range()),
+                    name_range: range,
+                    def_range: range,
+                });
+            }
+            StructKind::Tuple
+        } else {
+            StructKind::Unit
+        };
+        let name_range = name.syntax().text_range();
+        self.structs.alloc(Struct {
+            name: Symbol::intern(name.text()),
+            kind,
+            fields: fields.into(),
+            name_range,
+            def_range: TextRange::new(def_start(s.syntax()), name_range.end()),
         });
     }
 
@@ -227,16 +359,35 @@ impl ItemTree {
         }
     }
 
+    /// Structs share the type namespace; functions and the constructors
+    /// of tuple and unit structs share the value namespace.
     fn check_duplicates(&mut self) {
-        let mut seen: Vec<Symbol> = Vec::new();
-        for function in self.functions.values() {
-            if seen.contains(&function.name) {
+        let mut types: Vec<Symbol> = Vec::new();
+        let mut values: Vec<Symbol> = Vec::new();
+        let mut defined = Vec::new();
+        for s in self.structs.values() {
+            let in_values = s.kind != StructKind::Record;
+            defined.push((s.def_range, s.name, true, in_values));
+        }
+        for f in self.functions.values() {
+            defined.push((f.def_range, f.name, false, true));
+        }
+        defined.sort_by_key(|&(range, ..)| range.start());
+        for (range, name, in_types, in_values) in defined {
+            let duplicate =
+                (in_types && types.contains(&name)) || (in_values && values.contains(&name));
+            if duplicate {
                 self.diagnostics.push(Diagnostic::new(
-                    function.name_range,
-                    format!("the name `{}` is defined multiple times", function.name),
+                    range,
+                    format!("the name `{name}` is defined multiple times"),
                 ));
-            } else {
-                seen.push(function.name);
+                continue;
+            }
+            if in_types {
+                types.push(name);
+            }
+            if in_values {
+                values.push(name);
             }
         }
     }
@@ -251,6 +402,28 @@ pub(crate) fn unsupported(diagnostics: &mut Vec<Diagnostic>, range: TextRange, w
         range,
         format!("{what} are not supported yet"),
     ));
+}
+
+/// Where an item starts, after its attributes: rustc's spans for items
+/// leave them out.
+fn def_start(node: SyntaxNode<'_>) -> u32 {
+    node.children_with_tokens()
+        .find(|e| !e.kind().is_trivia() && e.kind() != SyntaxKind::ATTR)
+        .map_or(node.text_range(), SyntaxElement::text_range)
+        .start()
+}
+
+/// `pub` and `pub(crate)` mean nothing in a single-module crate.
+fn check_visibility(vis: Option<ast::Visibility<'_>>, diagnostics: &mut Vec<Diagnostic>) {
+    if let Some(vis) = vis
+        && (vis.l_paren_token().is_some() && vis.crate_token().is_none())
+    {
+        unsupported(
+            diagnostics,
+            vis.syntax().text_range(),
+            "visibilities like this",
+        );
+    }
 }
 
 /// Attributes that cannot change what a program means are allowed and

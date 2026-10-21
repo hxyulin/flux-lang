@@ -213,11 +213,22 @@ semantics become explicit, so code generation never sees expressions:
 - `&&` and `||` branch, and reading a local copies it into a temporary,
   so `x + { x = 10; x }` adds the old `x`.
 - A call to a function returning `!` has no successor block.
+- Values are read from *places*, a local and a path of field indices
+  (`_1.0.2`), and each read is a copy or, for a type that is not `Copy`,
+  a move. Tuples and structs are built whole by an aggregate rvalue;
+  a pattern like `let (a, S { b, .. }) = t;` reads each binding's part of
+  `t` directly, so it moves only those parts, as in rustc.
 
 [`init`](../crates/flux-mir/src/init.rs) is the first piece of borrow
-checking: two forward dataflow analyses that report reading a possibly
-uninitialized local (E0381) and assigning an immutable one twice
-(E0384), with rustc's wording.
+checking. It tracks *move paths*, each user local and every field path
+into one that the body mentions, through three forward dataflow analyses:
+which paths may be uninitialized, which may have been moved out of, and
+which may have been assigned. Moving or assigning a path does the same to
+every path below it. From these it reports, with rustc's wording, uses of
+uninitialized bindings (E0381) and of moved or partially moved values
+(E0382), assignments to a field of a binding that is not fully
+initialized or not `mut` (E0381, E0594), and assigning an immutable local
+twice (E0384).
 
 ## Code generation
 
@@ -227,8 +238,15 @@ IR, keel's optimizer (`-O` runs its full pipeline), keel's code generator
 and assembler to a native object, and keel's linker to a signed
 executable. No C compiler or system linker is involved.
 
-- Each MIR local becomes a keel variable, and keel's `FunctionBuilder`
-  builds SSA form, so MIR's temporaries cost nothing.
+- Each MIR local becomes keel variables, one per scalar *leaf* of its
+  type in field order (a `(i32, (bool, u64))` is three), and keel's
+  `FunctionBuilder` builds SSA form, so MIR's temporaries and whole
+  aggregate copies cost nothing. A field is a range of its local's
+  leaves.
+- Aggregates are passed as one argument per leaf. keel functions return
+  at most one value, so a function returning two or more leaves returns
+  them through an `sret` pointer to a C struct of the leaves in the
+  caller's frame; keel returns small ones in registers.
 - `bool` is an `i8` holding 0 or 1; `()` and `!` have no value and
   disappear from signatures. Narrow integers are extended by signedness
   at calls, as Apple's arm64 ABI requires of C callers.

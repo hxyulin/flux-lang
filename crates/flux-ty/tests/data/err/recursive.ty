@@ -1,0 +1,7 @@
+struct List { head: i32, tail: List }
+struct T { 0: i32, 1: (T, i32) }
+struct Ok { list: Wrapper }
+struct Wrapper { 0: i32 }
+fn main() -> ()
+error 0..11: recursive type `List` has infinite size
+error 48..56: recursive type `T` has infinite size

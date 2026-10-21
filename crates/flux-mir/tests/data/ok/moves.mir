@@ -1,0 +1,444 @@
+fn take(_1: S) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn take_inner(_1: Inner) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn partial_move_then_copy_field(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: Inner; // inner
+    let _3: ();
+    let _4: Inner;
+
+    bb0: {
+        _2 = move _1.0;
+        _4 = move _2;
+        _3 = take_inner(move _4) -> bb1;
+    }
+
+    bb1: {
+        _0 = copy _1.1;
+        return;
+    }
+}
+
+fn partial_move_by_pattern(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: Inner; // inner
+    let _3: ();
+    let _4: Inner;
+
+    bb0: {
+        _2 = move _1.0;
+        _4 = move _2;
+        _3 = take_inner(move _4) -> bb1;
+    }
+
+    bb1: {
+        _0 = copy _1.1;
+        return;
+    }
+}
+
+fn reassign_moved_field(_1: S) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: Inner;
+    let _4: ();
+    let _5: Inner;
+    let _6: ();
+    let _7: S;
+
+    bb0: {
+        _3 = move _1.0;
+        _2 = take_inner(move _3) -> bb1;
+    }
+
+    bb1: {
+        _5 = Inner { x: const 1_i32 };
+        _1.0 = move _5;
+        _4 = const ();
+        _7 = move _1;
+        _6 = take(move _7) -> bb2;
+    }
+
+    bb2: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn let_underscore_after_move(_1: S) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: S;
+
+    bb0: {
+        _3 = move _1;
+        _2 = take(move _3) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn move_in_branch_then_reassign(_1: bool, _2: S) -> i32 {
+    let mut _0: i32;
+    let _3: ();
+    let _4: bool;
+    let _5: ();
+    let _6: S;
+    let _7: ();
+    let _8: S;
+    let _9: Inner;
+
+    bb0: {
+        _4 = copy _1;
+        switchInt(copy _4) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _6 = move _2;
+        _5 = take(move _6) -> bb4;
+    }
+
+    bb2: {
+        _3 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _0 = copy _2.0.0;
+        return;
+    }
+
+    bb4: {
+        _9 = Inner { x: const 2_i32 };
+        _8 = S { inner: move _9, n: const 3_i32 };
+        _2 = move _8;
+        _7 = const ();
+        _3 = const ();
+        goto -> bb3;
+    }
+}
+
+fn move_then_reassign_whole(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: ();
+    let _3: S;
+    let _4: ();
+    let _5: S;
+    let _6: Inner;
+
+    bb0: {
+        _3 = move _1;
+        _2 = take(move _3) -> bb1;
+    }
+
+    bb1: {
+        _6 = Inner { x: const 4_i32 };
+        _5 = S { inner: move _6, n: const 5_i32 };
+        _1 = move _5;
+        _4 = const ();
+        _0 = copy _1.1;
+        return;
+    }
+}
+
+fn copy_tuples(_1: (i32, (bool, u8))) -> u8 {
+    let mut _0: u8;
+    let _2: (i32, (bool, u8)); // a
+    let _3: (i32, (bool, u8)); // b
+    let _4: (bool, u8); // c
+    let _5: (bool, u8); // d
+    let _6: bool;
+    let _7: bool;
+    let _8: u8;
+    let _9: u8;
+
+    bb0: {
+        _2 = copy _1;
+        _3 = copy _1;
+        _4 = copy _2.1;
+        _5 = copy _4;
+        _7 = copy _4.0;
+        switchInt(copy _7) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _6 = copy _5.0;
+        goto -> bb3;
+    }
+
+    bb2: {
+        _6 = const false;
+        goto -> bb3;
+    }
+
+    bb3: {
+        switchInt(copy _6) -> [0: bb5, otherwise: bb4];
+    }
+
+    bb4: {
+        _8 = copy _2.1.1;
+        _9 = copy _3.1.1;
+        _0 = Add(copy _8, copy _9);
+        goto -> bb6;
+    }
+
+    bb5: {
+        _0 = copy _1.1.1;
+        goto -> bb6;
+    }
+
+    bb6: {
+        return;
+    }
+}
+
+fn functional_update_copy_only(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: S; // t
+    let _3: Inner;
+    let _4: ();
+    let _5: S;
+    let _6: ();
+    let _7: S;
+
+    bb0: {
+        _3 = Inner { x: const 6_i32 };
+        _2 = S { inner: move _3, n: copy _1.1 };
+        _5 = move _2;
+        _4 = take(move _5) -> bb1;
+    }
+
+    bb1: {
+        _7 = move _1;
+        _6 = take(move _7) -> bb2;
+    }
+
+    bb2: {
+        _0 = const 0_i32;
+        return;
+    }
+}
+
+fn functional_update_moves_inner(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: S; // t
+    let _3: ();
+    let _4: S;
+
+    bb0: {
+        _2 = S { inner: move _1.0, n: const 7_i32 };
+        _4 = move _2;
+        _3 = take(move _4) -> bb1;
+    }
+
+    bb1: {
+        _0 = copy _1.1;
+        return;
+    }
+}
+
+fn deferred_init(_1: bool) -> i32 {
+    let mut _0: i32;
+    let _2: S; // s
+    let _3: ();
+    let _4: bool;
+    let _5: ();
+    let _6: S;
+    let _7: Inner;
+    let _8: ();
+    let _9: S;
+    let _10: Inner;
+    let _11: (i32, i32); // t
+    let _12: ();
+    let _13: (i32, i32);
+    let _14: i32;
+    let _15: i32;
+    let _16: i32;
+    let _17: i32;
+
+    bb0: {
+        _4 = copy _1;
+        switchInt(copy _4) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _7 = Inner { x: const 8_i32 };
+        _6 = S { inner: move _7, n: const 9_i32 };
+        _2 = move _6;
+        _5 = const ();
+        _3 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _10 = Inner { x: const 10_i32 };
+        _9 = S { inner: move _10, n: const 11_i32 };
+        _2 = move _9;
+        _8 = const ();
+        _3 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _14 = copy _2.1;
+        _15 = copy _2.0.0;
+        _13 = (copy _14, copy _15);
+        _11 = copy _13;
+        _12 = const ();
+        _16 = copy _11.0;
+        _17 = copy _11.1;
+        _0 = Add(copy _16, copy _17);
+        return;
+    }
+}
+
+fn moved_into_tuple_field(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: (S, i32); // t
+    let _3: S;
+    let _4: S; // inner_s
+    let _5: i32; // n
+    let _6: ();
+    let _7: S;
+    let _8: i32;
+    let _9: i32;
+
+    bb0: {
+        _3 = move _1;
+        _2 = (move _3, const 1_i32);
+        _4 = move _2.0;
+        _5 = copy _2.1;
+        _7 = move _4;
+        _6 = take(move _7) -> bb1;
+    }
+
+    bb1: {
+        _8 = copy _5;
+        _9 = copy _2.1;
+        _0 = Add(copy _8, copy _9);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: i32;
+    let _2: S;
+    let _3: Inner;
+    let _4: i32;
+    let _5: S;
+    let _6: Inner;
+    let _7: ();
+    let _8: S;
+    let _9: Inner;
+    let _10: ();
+    let _11: S;
+    let _12: Inner;
+    let _13: i32;
+    let _14: S;
+    let _15: Inner;
+    let _16: i32;
+    let _17: S;
+    let _18: Inner;
+    let _19: u8;
+    let _20: (i32, (bool, u8));
+    let _21: (bool, u8);
+    let _22: i32;
+    let _23: S;
+    let _24: Inner;
+    let _25: i32;
+    let _26: S;
+    let _27: Inner;
+    let _28: i32;
+    let _29: i32;
+    let _30: S;
+    let _31: Inner;
+
+    bb0: {
+        _3 = Inner { x: const 1_i32 };
+        _2 = S { inner: move _3, n: const 2_i32 };
+        _1 = partial_move_then_copy_field(move _2) -> bb1;
+    }
+
+    bb1: {
+        _6 = Inner { x: const 1_i32 };
+        _5 = S { inner: move _6, n: const 2_i32 };
+        _4 = partial_move_by_pattern(move _5) -> bb2;
+    }
+
+    bb2: {
+        _9 = Inner { x: const 1_i32 };
+        _8 = S { inner: move _9, n: const 2_i32 };
+        _7 = reassign_moved_field(move _8) -> bb3;
+    }
+
+    bb3: {
+        _12 = Inner { x: const 1_i32 };
+        _11 = S { inner: move _12, n: const 2_i32 };
+        _10 = let_underscore_after_move(move _11) -> bb4;
+    }
+
+    bb4: {
+        _15 = Inner { x: const 1_i32 };
+        _14 = S { inner: move _15, n: const 2_i32 };
+        _13 = move_in_branch_then_reassign(const true, move _14) -> bb5;
+    }
+
+    bb5: {
+        _18 = Inner { x: const 1_i32 };
+        _17 = S { inner: move _18, n: const 2_i32 };
+        _16 = move_then_reassign_whole(move _17) -> bb6;
+    }
+
+    bb6: {
+        _21 = (const true, const 2_u8);
+        _20 = (const 1_i32, copy _21);
+        _19 = copy_tuples(copy _20) -> bb7;
+    }
+
+    bb7: {
+        _24 = Inner { x: const 1_i32 };
+        _23 = S { inner: move _24, n: const 2_i32 };
+        _22 = functional_update_copy_only(move _23) -> bb8;
+    }
+
+    bb8: {
+        _27 = Inner { x: const 1_i32 };
+        _26 = S { inner: move _27, n: const 2_i32 };
+        _25 = functional_update_moves_inner(move _26) -> bb9;
+    }
+
+    bb9: {
+        _28 = deferred_init(const false) -> bb10;
+    }
+
+    bb10: {
+        _31 = Inner { x: const 1_i32 };
+        _30 = S { inner: move _31, n: const 2_i32 };
+        _29 = moved_into_tuple_field(move _30) -> bb11;
+    }
+
+    bb11: {
+        _0 = const ();
+        return;
+    }
+}
+

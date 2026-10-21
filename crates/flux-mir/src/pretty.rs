@@ -2,11 +2,12 @@
 
 use std::fmt::Write;
 
-use flux_hir::FileHir;
+use flux_hir::{FileHir, StructKind};
 use flux_ty::Ty;
 
 use crate::{
-    BinOp, Body, Constant, FileMir, LocalKind, Operand, Rvalue, StatementKind, TerminatorKind, UnOp,
+    AggregateKind, BinOp, Body, Constant, FileMir, LocalKind, Operand, Place, Rvalue,
+    StatementKind, TerminatorKind, UnOp,
 };
 
 pub(crate) fn file(mir: &FileMir, hir: &FileHir) -> String {
@@ -35,7 +36,7 @@ fn body_text(out: &mut String, hir: &FileHir, name: &str, body: &Body) {
     )
     .unwrap();
     for (local, decl) in body.locals.iter() {
-        if matches!(decl.kind, LocalKind::Param) {
+        if body.params().any(|p| p == local) {
             continue;
         }
         let mutability = match decl.kind {
@@ -60,7 +61,13 @@ fn body_text(out: &mut String, hir: &FileHir, name: &str, body: &Body) {
         writeln!(out, "\n    bb{}: {{", block.index()).unwrap();
         for statement in &data.statements {
             let StatementKind::Assign(dest, rvalue) = &statement.kind;
-            writeln!(out, "        _{} = {};", dest.index(), rvalue_text(rvalue)).unwrap();
+            writeln!(
+                out,
+                "        {} = {};",
+                place(dest),
+                rvalue_text(hir, rvalue)
+            )
+            .unwrap();
         }
         let terminator = match &data.terminator.kind {
             TerminatorKind::Goto(target) => format!("goto -> bb{}", target.index()),
@@ -88,11 +95,7 @@ fn body_text(out: &mut String, hir: &FileHir, name: &str, body: &Body) {
                     Some(bb) => format!("bb{}", bb.index()),
                     None => "!".to_owned(),
                 };
-                format!(
-                    "_{} = {name}({}) -> {target}",
-                    dest.index(),
-                    args.join(", ")
-                )
+                format!("{} = {name}({}) -> {target}", place(dest), args.join(", "))
             }
             TerminatorKind::Assert {
                 cond,
@@ -116,7 +119,7 @@ fn body_text(out: &mut String, hir: &FileHir, name: &str, body: &Body) {
     out.push_str("}\n");
 }
 
-fn rvalue_text(rvalue: &Rvalue) -> String {
+fn rvalue_text(hir: &FileHir, rvalue: &Rvalue) -> String {
     match rvalue {
         Rvalue::Use(op) => operand(op),
         Rvalue::BinaryOp(op, l, r) => {
@@ -148,12 +151,48 @@ fn rvalue_text(rvalue: &Rvalue) -> String {
             format!("{op}({})", operand(o))
         }
         Rvalue::Cast(o, ty) => format!("{} as {ty}", operand(o)),
+        Rvalue::Aggregate(AggregateKind::Tuple, ops) => {
+            let ops: Vec<String> = ops.iter().map(operand).collect();
+            match ops.as_slice() {
+                [one] => format!("({one},)"),
+                _ => format!("({})", ops.join(", ")),
+            }
+        }
+        Rvalue::Aggregate(AggregateKind::Struct(strukt), ops) => {
+            let s = &hir.items.structs[*strukt];
+            match s.kind {
+                StructKind::Unit => s.name.to_string(),
+                StructKind::Tuple => {
+                    let ops: Vec<String> = ops.iter().map(operand).collect();
+                    format!("{}({})", s.name, ops.join(", "))
+                }
+                StructKind::Record => {
+                    let fields: Vec<String> = s
+                        .fields
+                        .iter()
+                        .zip(ops)
+                        .map(|(f, op)| format!("{}: {}", f.name, operand(op)))
+                        .collect();
+                    format!("{} {{ {} }}", s.name, fields.join(", "))
+                }
+            }
+        }
     }
+}
+
+/// `_1`, or `_1.0.2` for fields, by index.
+fn place(place: &Place) -> String {
+    let mut text = format!("_{}", place.local.index());
+    for field in &place.projection {
+        text.push_str(&format!(".{field}"));
+    }
+    text
 }
 
 fn operand(operand: &Operand) -> String {
     match operand {
-        Operand::Copy(local) => format!("copy _{}", local.index()),
+        Operand::Copy(p) => format!("copy {}", place(p)),
+        Operand::Move(p) => format!("move {}", place(p)),
         Operand::Const(constant) => format!("const {}", constant_text(*constant)),
     }
 }

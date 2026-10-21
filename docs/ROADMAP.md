@@ -22,15 +22,27 @@ subset. See [the supported language](LANGUAGE.md).
 
 ## 3. Semantics
 
-Name resolution, then type inference and trait solving for a small subset:
-structs, enums, generics with simple trait bounds, references. Then a
-MIR-like IR and a borrow checker over it. Each comes with fixtures that
-rustc must agree with.
+Started: name resolution, type inference, MIR and the part of borrow
+checking that needs no references (initialization and moves) for
+functions over integers, `bool`, raw pointers, tuples and structs. In
+order next:
+
+1. `impl` blocks and methods on user types, with references to locals
+   (`&self`, `&mut self`) and the borrow checking they need.
+2. Crates and modules, to compile flux's own `core` (below): `mod`,
+   multi-segment paths, the prelude, and `#[lang]` items and intrinsics,
+   allowed only in `core`.
+3. Generics and monomorphization, then traits: operators on user types,
+   `Copy`/`Clone`, `Drop`, `for` loops over `Iterator`.
+
+Each comes with fixtures that rustc must agree with.
 
 ## 4. Code generation through keel
 
-Started: functions over integers and `bool` compile to arm64 macOS
-executables through keel, checked against rustc by `tests/run`. Next:
+Started: functions over integers, `bool`, raw pointers, tuples and
+structs compile to arm64 macOS executables through keel, checked against
+rustc by `tests/run`. Aggregates are split into scalar variables, so they
+need no memory until references exist. Next:
 linking on x86-64 Linux, and a way to compare keel's output with
 Cranelift's and LLVM's on the same IR.
 

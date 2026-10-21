@@ -1,16 +1,24 @@
 //! MIR to keel IR.
+//!
+//! keel has no aggregate values, so a tuple or struct is split into its
+//! scalar *leaves*, in field order, each a keel variable of its own: a
+//! local of type `(i32, (bool, u64))` is three variables, and a field is a
+//! range of its local's leaves. Aggregates cross calls as one argument per
+//! leaf; a function returning two or more leaves returns them through
+//! memory the caller provides (`sret`), laid out as a C struct of the
+//! leaves, which keel returns in registers where the platform allows.
 
 use std::collections::HashMap;
 
 use flux_hir::{FileHir, FunctionId};
 use flux_mir::{
-    BinOp, Body, Constant, FileMir, Local, Operand, Rvalue, StatementKind, TerminatorKind, UnOp,
+    BinOp, Body, Constant, FileMir, Operand, Place, Rvalue, StatementKind, TerminatorKind, UnOp,
 };
-use flux_ty::{FnSig, IntTy, Ty, TyKind, TypedFile};
+use flux_ty::{FnSig, IntTy, Signatures, Ty, TyKind, TypedFile};
 use keel_frontend::{FunctionBuilder, Variable};
 use keel_ir::{
     AbiParam, ArgExt, Block, BlockCall, DataInit, DataItem, DataObject, FuncDecl, FuncRef,
-    Function, FunctionAttrs, IntCC, Module, Signature, Type, Value,
+    Function, FunctionAttrs, IntCC, Layout, MemoryFlags, Module, Purpose, Signature, Type, Value,
 };
 
 /// The keel module for a type-checked file and its MIR. `crate_name`
@@ -37,7 +45,7 @@ pub fn lower_module(hir: &FileHir, typed: &TypedFile, mir: &FileMir, crate_name:
             module.decls.push(FuncDecl {
                 attrs: attrs(&typed.sigs[id]),
                 name: symbols[&id].clone(),
-                sig: signature(&typed.sigs[id], function.is_variadic),
+                sig: signature(&typed.sigs, &typed.sigs[id], function.is_variadic),
             });
         }
     }
@@ -71,7 +79,7 @@ pub fn lower_module(hir: &FileHir, typed: &TypedFile, mir: &FileMir, crate_name:
     if let Some((id, _)) = main {
         module
             .functions
-            .push(entry_point(&symbols[&id], &typed.sigs[id]));
+            .push(entry_point(&symbols[&id], &typed.sigs, &typed.sigs[id]));
     }
     module.sync_function_attrs();
     module
@@ -83,15 +91,66 @@ fn mangle(crate_name: &str, name: &str) -> String {
     format!("_ZN{}{crate_name}{}{name}E", crate_name.len(), name.len())
 }
 
-/// The keel type of a value of `ty`; `None` for types without a value.
+/// The keel type of a scalar: an integer, `bool` or pointer.
 fn keel_type(ty: Ty) -> Option<Type> {
     match ty.kind() {
         TyKind::Int(int) => Some(int_type(int)),
         TyKind::Bool => Some(Type::I8),
         // `&CStr` is a thin pointer here: flux needs only `as_ptr`.
         TyKind::RawPtr(..) | TyKind::Ref(..) => Some(Type::Ptr),
-        TyKind::Unit | TyKind::Never | TyKind::CStr | TyKind::Infer(_) | TyKind::Error => None,
+        TyKind::Tuple(_)
+        | TyKind::Adt(_)
+        | TyKind::Never
+        | TyKind::CStr
+        | TyKind::Infer(_)
+        | TyKind::Error => None,
     }
+}
+
+/// The scalar leaves of a value of `ty`, in field order: none for `()`
+/// and `!`, one for a scalar.
+fn leaves(sigs: &Signatures, ty: Ty, out: &mut Vec<Ty>) {
+    match sigs.fields(ty) {
+        Some(fields) => {
+            for &field in fields {
+                leaves(sigs, field, out);
+            }
+        }
+        None if keel_type(ty).is_some() => out.push(ty),
+        None => {}
+    }
+}
+
+fn leaves_of(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
+    let mut out = Vec::new();
+    leaves(sigs, ty, &mut out);
+    out
+}
+
+fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
+    match sigs.fields(ty) {
+        Some(fields) => fields.iter().map(|&f| leaf_count(sigs, f)).sum(),
+        None => usize::from(keel_type(ty).is_some()),
+    }
+}
+
+/// How a function returning `ret` returns it: nothing, one value, or
+/// through memory with this layout.
+enum Return {
+    Values(Vec<AbiParam>),
+    Sret(Layout),
+}
+
+fn return_kind(sigs: &Signatures, ret: Ty) -> Return {
+    let leaves = leaves_of(sigs, ret);
+    if leaves.len() <= 1 {
+        return Return::Values(leaves.into_iter().filter_map(abi_param).collect());
+    }
+    let fields = leaves
+        .iter()
+        .map(|&leaf| Layout::Scalar(keel_type(leaf).expect("leaves are scalars")))
+        .collect();
+    Return::Sret(Layout::Struct(fields))
 }
 
 fn int_type(int: IntTy) -> Type {
@@ -123,10 +182,19 @@ fn abi_param(ty: Ty) -> Option<AbiParam> {
     Some(param)
 }
 
-fn signature(sig: &FnSig, variadic: bool) -> Signature {
+fn signature(sigs: &Signatures, sig: &FnSig, variadic: bool) -> Signature {
     let mut signature = Signature::new(&[], &[]);
-    signature.params = sig.params.iter().filter_map(|&ty| abi_param(ty)).collect();
-    signature.returns = abi_param(sig.ret).into_iter().collect();
+    match return_kind(sigs, sig.ret) {
+        Return::Values(returns) => signature.returns = returns,
+        Return::Sret(layout) => signature.params.push(AbiParam {
+            purpose: Purpose::Sret(layout),
+            ..AbiParam::new(Type::Ptr)
+        }),
+    }
+    for &param in &sig.params {
+        let params = leaves_of(sigs, param).into_iter().filter_map(abi_param);
+        signature.params.extend(params);
+    }
     signature.variadic = variadic;
     signature
 }
@@ -141,7 +209,7 @@ fn attrs(sig: &FnSig) -> FunctionAttrs {
 }
 
 /// `int main(int argc, char **argv)`: calls the Rust `main` and returns 0.
-fn entry_point(rust_main: &str, sig: &FnSig) -> Function {
+fn entry_point(rust_main: &str, sigs: &Signatures, sig: &FnSig) -> Function {
     let mut function = Function::new(
         "main",
         Signature::new(&[Type::I32, Type::Ptr], &[Type::I32]),
@@ -151,7 +219,7 @@ fn entry_point(rust_main: &str, sig: &FnSig) -> Function {
     b.switch_to_block(entry);
     b.append_block_param(entry, Type::I32);
     b.append_block_param(entry, Type::Ptr);
-    let callee = b.import_function(rust_main, signature(sig, false));
+    let callee = b.import_function(rust_main, signature(sigs, sig, false));
     b.ins().call(callee, &[]);
     if sig.ret == Ty::NEVER {
         b.ins().trap();
@@ -177,14 +245,20 @@ struct Ctx<'a> {
 impl Ctx<'_> {
     fn function(&mut self, id: FunctionId, body: &Body) -> Function {
         let sig = &self.typed.sigs[id];
-        let mut function = Function::new(self.symbols[&id].clone(), signature(sig, false));
+        let mut function = Function::new(
+            self.symbols[&id].clone(),
+            signature(&self.typed.sigs, sig, false),
+        );
         function.attrs = attrs(sig);
+        let typed = self.typed;
         let lower = Lower {
             ctx: self,
+            sigs: &typed.sigs,
             body,
             b: FunctionBuilder::new(&mut function),
             blocks: Vec::new(),
             vars: Vec::new(),
+            sret: None,
             callees: HashMap::new(),
             panic_block: None,
         };
@@ -218,12 +292,16 @@ impl Ctx<'_> {
 
 struct Lower<'a, 'c, 'f> {
     ctx: &'c mut Ctx<'a>,
+    sigs: &'a Signatures,
     body: &'c Body,
     b: FunctionBuilder<'f>,
     /// The keel block for each MIR block.
     blocks: Vec<Block>,
-    /// The keel variable for each MIR local with a value.
-    vars: Vec<Option<Variable>>,
+    /// The keel variables of each MIR local, one per leaf.
+    vars: Vec<Box<[Variable]>>,
+    /// Where to store the return value, and its layout, when it is
+    /// returned through memory.
+    sret: Option<(Value, Layout)>,
     callees: HashMap<FunctionId, FuncRef>,
     /// Calls `abort`; shared by every failed assertion.
     panic_block: Option<Block>,
@@ -232,31 +310,41 @@ struct Lower<'a, 'c, 'f> {
 impl Lower<'_, '_, '_> {
     fn body(mut self) {
         let body = self.body;
+        let sigs = self.sigs;
         self.blocks = body.blocks.iter().map(|_| self.b.create_block()).collect();
         self.vars = body
             .locals
             .values()
-            .map(|decl| keel_type(decl.ty).map(|ty| self.b.declare_var(ty)))
+            .map(|decl| {
+                leaves_of(sigs, decl.ty)
+                    .into_iter()
+                    .map(|leaf| {
+                        self.b
+                            .declare_var(keel_type(leaf).expect("leaves are scalars"))
+                    })
+                    .collect()
+            })
             .collect();
         let entry = self.blocks[0];
         self.b.switch_to_block(entry);
+        if let Return::Sret(layout) = return_kind(sigs, body.locals[Body::RETURN].ty) {
+            let pointer = self.b.append_block_param(entry, Type::Ptr);
+            self.sret = Some((pointer, layout));
+        }
         for param in body.params() {
-            if let (Some(var), Some(ty)) =
-                (self.vars[param.index()], keel_type(body.locals[param].ty))
-            {
+            let leaves = leaves_of(sigs, body.locals[param].ty);
+            for (i, leaf) in leaves.into_iter().enumerate() {
+                let ty = keel_type(leaf).expect("leaves are scalars");
                 let value = self.b.append_block_param(entry, ty);
-                self.b.def_var(var, value);
+                self.b.def_var(self.vars[param.index()][i], value);
             }
         }
         for (block, data) in body.blocks.iter() {
             self.b.switch_to_block(self.blocks[block.index()]);
             for statement in &data.statements {
                 let StatementKind::Assign(dest, rvalue) = &statement.kind;
-                if let Some(value) = self.rvalue(rvalue)
-                    && let Some(var) = self.vars[dest.index()]
-                {
-                    self.b.def_var(var, value);
-                }
+                let values = self.rvalue(rvalue);
+                self.write(dest, &values);
             }
             self.terminator(&data.terminator.kind);
         }
@@ -270,21 +358,57 @@ impl Lower<'_, '_, '_> {
         self.b.finalize();
     }
 
-    fn local(&mut self, local: Local) -> Option<Value> {
-        let var = self.vars[local.index()]?;
-        Some(self.b.use_var(var))
+    /// The variables of `place`'s leaves.
+    fn place_vars(&self, place: &Place) -> &[Variable] {
+        let mut ty = self.body.locals[place.local].ty;
+        let mut start = 0;
+        for &field in &place.projection {
+            let fields = self
+                .sigs
+                .fields(ty)
+                .expect("projections go through aggregates");
+            start += fields[..field as usize]
+                .iter()
+                .map(|&f| leaf_count(self.sigs, f))
+                .sum::<usize>();
+            ty = fields[field as usize];
+        }
+        let vars = &self.vars[place.local.index()];
+        &vars[start..start + leaf_count(self.sigs, ty)]
     }
 
-    fn operand(&mut self, operand: &Operand) -> Option<Value> {
+    fn read(&mut self, place: &Place) -> Vec<Value> {
+        let vars = self.place_vars(place).to_vec();
+        vars.into_iter().map(|var| self.b.use_var(var)).collect()
+    }
+
+    fn write(&mut self, place: &Place, values: &[Value]) {
+        let vars = self.place_vars(place).to_vec();
+        for (var, &value) in vars.into_iter().zip(values) {
+            self.b.def_var(var, value);
+        }
+    }
+
+    /// An operand's leaves.
+    fn operand(&mut self, operand: &Operand) -> Vec<Value> {
         match operand {
-            Operand::Copy(local) => self.local(*local),
-            Operand::Const(Constant::Int { bits, ty }) => Some(self.int_const(*bits, *ty)),
-            Operand::Const(Constant::Bool(value)) => {
-                Some(self.b.ins().iconst(Type::I8, i64::from(*value)))
-            }
-            Operand::Const(Constant::Unit) => None,
-            Operand::Const(Constant::CStr(index)) => {
-                let name = self.ctx.c_string(&self.body.c_strings[*index as usize]);
+            Operand::Copy(place) | Operand::Move(place) => self.read(place),
+            Operand::Const(constant) => self.constant(*constant).into_iter().collect(),
+        }
+    }
+
+    /// A scalar operand's value; `None` for `()`.
+    fn scalar(&mut self, operand: &Operand) -> Option<Value> {
+        self.operand(operand).first().copied()
+    }
+
+    fn constant(&mut self, constant: Constant) -> Option<Value> {
+        match constant {
+            Constant::Int { bits, ty } => Some(self.int_const(bits, ty)),
+            Constant::Bool(value) => Some(self.b.ins().iconst(Type::I8, i64::from(value))),
+            Constant::Unit => None,
+            Constant::CStr(index) => {
+                let name = self.ctx.c_string(&self.body.c_strings[index as usize]);
                 let data = self.b.import_data(&name);
                 Some(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)))
             }
@@ -313,12 +437,23 @@ impl Lower<'_, '_, '_> {
         self.b.ins().iconst(ty, as_signed)
     }
 
-    fn rvalue(&mut self, rvalue: &Rvalue) -> Option<Value> {
+    /// An rvalue's leaves.
+    fn rvalue(&mut self, rvalue: &Rvalue) -> Vec<Value> {
         match rvalue {
             Rvalue::Use(operand) => self.operand(operand),
+            Rvalue::Aggregate(_, operands) => {
+                operands.iter().flat_map(|o| self.operand(o)).collect()
+            }
+            _ => self.scalar_rvalue(rvalue).into_iter().collect(),
+        }
+    }
+
+    fn scalar_rvalue(&mut self, rvalue: &Rvalue) -> Option<Value> {
+        match rvalue {
+            Rvalue::Use(_) | Rvalue::Aggregate(..) => unreachable!("not scalar operations"),
             Rvalue::UnaryOp(op, operand) => {
-                let ty = self.body.operand_ty(operand);
-                let value = self.operand(operand)?;
+                let ty = self.body.operand_ty(operand, self.sigs);
+                let value = self.scalar(operand)?;
                 Some(match op {
                     UnOp::Neg => self.b.ins().ineg(value),
                     UnOp::Not if ty == Ty::BOOL => {
@@ -330,8 +465,8 @@ impl Lower<'_, '_, '_> {
             }
             Rvalue::BinaryOp(op, l, r) => self.binary(*op, l, r),
             Rvalue::Cast(operand, to) => {
-                let from = self.body.operand_ty(operand);
-                let value = self.operand(operand)?;
+                let from = self.body.operand_ty(operand, self.sigs);
+                let value = self.scalar(operand)?;
                 let to_ty = keel_type(*to)?;
                 let (from_bits, to_bits) = (bits(from), bits(*to));
                 Some(if from_bits == to_bits {
@@ -348,15 +483,15 @@ impl Lower<'_, '_, '_> {
     }
 
     fn binary(&mut self, op: BinOp, l: &Operand, r: &Operand) -> Option<Value> {
-        let ty = self.body.operand_ty(l);
+        let ty = self.body.operand_ty(l, self.sigs);
         let signed = ty.is_signed_int();
         if ty == Ty::UNIT {
             // `() == ()`: the only value of `()` equals itself.
             let equal = matches!(op, BinOp::Eq | BinOp::Le | BinOp::Ge);
             return Some(self.b.ins().iconst(Type::I8, i64::from(equal)));
         }
-        let a = self.operand(l)?;
-        let mut b = self.operand(r)?;
+        let a = self.scalar(l)?;
+        let mut b = self.scalar(r)?;
         let cmp = |signed_cc, unsigned_cc| if signed { signed_cc } else { unsigned_cc };
         Some(match op {
             BinOp::Add => self.b.ins().iadd(a, b),
@@ -372,7 +507,8 @@ impl Lower<'_, '_, '_> {
             BinOp::Shl | BinOp::Shr => {
                 // keel takes shift amounts modulo the width, which is
                 // Rust's masking; the amount needs the shifted value's type.
-                let (amount_bits, value_bits) = (bits(self.body.operand_ty(r)), bits(ty));
+                let amount_ty = self.body.operand_ty(r, self.sigs);
+                let (amount_bits, value_bits) = (bits(amount_ty), bits(ty));
                 let value_ty = keel_type(ty)?;
                 if amount_bits > value_bits {
                     b = self.b.ins().trunc(value_ty, b);
@@ -404,7 +540,7 @@ impl Lower<'_, '_, '_> {
                 targets,
                 otherwise,
             } => {
-                let Some(value) = self.operand(discr) else {
+                let Some(value) = self.scalar(discr) else {
                     self.b.ins().jump(self.blocks[otherwise.index()], &[]);
                     return;
                 };
@@ -440,12 +576,26 @@ impl Lower<'_, '_, '_> {
                 target,
             } => {
                 let callee = self.callee(*func);
-                let args: Vec<Value> = args.iter().filter_map(|a| self.operand(a)).collect();
-                let call = self.b.ins().call(callee, &args);
-                let result = self.b.function().inst_results(call).first().copied();
-                if let (Some(result), Some(var)) = (result, self.vars[dest.index()]) {
-                    self.b.def_var(var, result);
+                let ret = self.ctx.typed.sigs[*func].ret;
+                let sret = match return_kind(self.sigs, ret) {
+                    Return::Sret(layout) => {
+                        let slot = self
+                            .b
+                            .create_stack_slot(layout.size() as u32, layout.align() as u32);
+                        Some((self.b.ins().stack_addr(slot), layout))
+                    }
+                    Return::Values(_) => None,
+                };
+                let mut values: Vec<Value> = sret.iter().map(|(pointer, _)| *pointer).collect();
+                for arg in args {
+                    values.extend(self.operand(arg));
                 }
+                let call = self.b.ins().call(callee, &values);
+                let results = match &sret {
+                    Some((pointer, layout)) => self.load_leaves(*pointer, layout),
+                    None => self.b.function().inst_results(call).to_vec(),
+                };
+                self.write(dest, &results);
                 match target {
                     Some(target) => {
                         self.b.ins().jump(self.blocks[target.index()], &[]);
@@ -463,7 +613,7 @@ impl Lower<'_, '_, '_> {
             } => {
                 let target = self.blocks[target.index()];
                 let panic = self.panic_block();
-                let Some(cond) = self.operand(cond) else {
+                let Some(cond) = self.scalar(cond) else {
                     self.b.ins().jump(target, &[]);
                     return;
                 };
@@ -474,8 +624,19 @@ impl Lower<'_, '_, '_> {
                 }
             }
             TerminatorKind::Return => {
-                let value = self.local(Body::RETURN);
-                self.b.ins().return_(value.as_slice());
+                let values = self.read(&Body::RETURN.into());
+                match self.sret.clone() {
+                    Some((pointer, layout)) => {
+                        for ((offset, ty), value) in layout.leaves().into_iter().zip(values) {
+                            let address = self.offset(pointer, offset);
+                            self.b.ins().store_with_flags(value, address, aligned(ty));
+                        }
+                        self.b.ins().return_(&[]);
+                    }
+                    None => {
+                        self.b.ins().return_(&values);
+                    }
+                }
             }
             TerminatorKind::Unreachable => {
                 self.b.ins().trap();
@@ -483,12 +644,32 @@ impl Lower<'_, '_, '_> {
         }
     }
 
+    /// The leaves of a value laid out as `layout` at `pointer`.
+    fn load_leaves(&mut self, pointer: Value, layout: &Layout) -> Vec<Value> {
+        layout
+            .leaves()
+            .into_iter()
+            .map(|(offset, ty)| {
+                let address = self.offset(pointer, offset);
+                self.b.ins().load_with_flags(ty, address, aligned(ty))
+            })
+            .collect()
+    }
+
+    fn offset(&mut self, pointer: Value, offset: u64) -> Value {
+        if offset == 0 {
+            return pointer;
+        }
+        let offset = self.b.ins().iconst(Type::I64, offset as i64);
+        self.b.ins().ptradd(pointer, offset)
+    }
+
     fn callee(&mut self, func: FunctionId) -> FuncRef {
         if let Some(&callee) = self.callees.get(&func) {
             return callee;
         }
         let variadic = self.ctx.hir.items.functions[func].is_variadic;
-        let sig = signature(&self.ctx.typed.sigs[func], variadic);
+        let sig = signature(self.sigs, &self.ctx.typed.sigs[func], variadic);
         let callee = self.b.import_function(&self.ctx.symbols[&func], sig);
         self.callees.insert(func, callee);
         callee
@@ -502,5 +683,14 @@ impl Lower<'_, '_, '_> {
         let block = self.b.create_block();
         self.panic_block = Some(block);
         block
+    }
+}
+
+/// Flags for an access to a `ty` in memory laid out by a [`Layout`],
+/// which places each scalar at its natural alignment, its size.
+fn aligned(ty: Type) -> MemoryFlags {
+    MemoryFlags {
+        align: Layout::Scalar(ty).align() as u32,
+        ..MemoryFlags::default()
     }
 }

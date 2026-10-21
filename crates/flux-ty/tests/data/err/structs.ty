@@ -1,0 +1,180 @@
+struct S { a: i32 }
+struct Four { a: i32, b: i32, c: i32, d: i32 }
+struct Five { a: i32, b: i32, c: i32, d: i32, e: i32 }
+struct Two { a: i32, b: bool }
+struct P { 0: i32, 1: i32 }
+struct Q { 0: i32, 1: i32 }
+struct U {}
+struct A { x: i32 }
+struct B { x: i32 }
+fn unknown_field() -> ()
+    s@0: S
+fn unknown_field_with_unassigned() -> ()
+    s@0: Two
+fn missing_one() -> ()
+    s@0: Two
+fn missing_two() -> ()
+    s@0: Four
+fn missing_three() -> ()
+    s@0: Four
+fn missing_four() -> ()
+    s@0: Five
+fn missing_five() -> ()
+    s@0: Five
+fn missing_tuple_fields() -> ()
+    p@0: P
+fn field_twice() -> ()
+    s@0: S
+fn no_field(S) -> ()
+    s@0: S
+    n@1: {error}
+fn no_field_tuple_index() -> ()
+    t@0: (i32, i32)
+    n@1: {error}
+fn no_field_tuple_struct_index(P) -> ()
+    p@0: P
+    n@1: {error}
+fn no_field_unit(()) -> ()
+    u@0: ()
+    n@1: {error}
+fn no_field_named_on_tuple() -> ()
+    t@0: (i32, i32)
+    n@1: {error}
+fn no_field_unit_struct(U) -> ()
+    u@0: U
+    n@1: {error}
+fn no_field_raw_pointer(*const S) -> ()
+    p@0: *const S
+    n@1: {error}
+fn primitive_literal() -> ()
+    n@0: {error}
+fn primitive_i32(i32) -> ()
+    n@0: i32
+    m@1: {error}
+fn primitive_tuple_index(i32) -> ()
+    n@0: i32
+    m@1: {error}
+fn primitive_bool(bool) -> ()
+    b@0: bool
+    m@1: {error}
+fn primitive_nested(S) -> ()
+    s@0: S
+    m@1: {error}
+fn tuple_struct_too_few() -> ()
+    p@0: P
+fn tuple_struct_too_many() -> ()
+    p@0: P
+fn unit_struct_called() -> ()
+    u@0: {error}
+fn pattern_missing_one(Two) -> ()
+    s@0: Two
+    a@1: i32
+fn pattern_missing_several(Five) -> ()
+    s@0: Five
+    a@1: i32
+fn pattern_missing_in_param(Two) -> ()
+    a@0: i32
+fn pattern_no_such_field(S) -> ()
+    s@0: S
+    a@1: i32
+    z@2: {error}
+fn pattern_no_such_field_rest(S) -> ()
+    s@0: S
+    z@1: {error}
+fn pattern_named_on_tuple_struct(P) -> ()
+    p@0: P
+    z@1: {error}
+fn pattern_field_twice(S) -> ()
+    s@0: S
+    a@1: i32
+    b@2: {error}
+fn tuple_pattern_too_few() -> ()
+    a@0: {error}
+    b@1: {error}
+fn tuple_pattern_too_many() -> ()
+    a@0: {error}
+    b@1: {error}
+    c@2: {error}
+fn tuple_struct_pattern_too_few(P) -> ()
+    p@0: P
+    a@1: {error}
+fn tuple_struct_pattern_too_many(P) -> ()
+    p@0: P
+    a@1: {error}
+    b@2: {error}
+    c@3: {error}
+fn tuple_struct_pattern_wrong_struct(P) -> ()
+    p@0: P
+    a@1: i32
+    b@2: i32
+fn mismatched_struct_types() -> ()
+    a@0: A
+fn takes_a(A) -> ()
+    a@0: A
+fn mismatched_struct_arg() -> ()
+fn mismatched_field_type() -> ()
+    s@0: S
+fn mismatched_tuple_element() -> ()
+    t@0: (i32, bool)
+fn mismatched_tuple_arity() -> ()
+    t@0: (i32, i32)
+fn one_tuple_vs_paren() -> ()
+    t@0: (i32,)
+    u@1: (i32,)
+fn functional_update_wrong_type(B) -> ()
+    b@0: B
+    a@1: A
+fn tuple_struct_constructor_as_value() -> ()
+    p@0: P
+fn compare_structs(S, S) -> bool
+    x@0: S
+    y@1: S
+fn add_tuples() -> ()
+    t@0: (i32, i32)
+fn main() -> ()
+error 357..358: struct `S` has no field named `b`
+error 423..426: struct `Two` has no field named `zzz`
+error 467..470: missing field `b` in initializer of `Two`
+error 515..519: missing fields `b` and `c` in initializer of `Four`
+error 572..576: missing fields `b`, `c` and `d` in initializer of `Four`
+error 622..626: missing fields `b`, `c`, `d` and 1 other field in initializer of `Five`
+error 672..676: missing fields `a`, `b`, `c` and 2 other fields in initializer of `Five`
+error 724..725: missing fields `0` and `1` in initializer of `P`
+error 774..775: field `a` specified more than once
+error 819..820: no field `b` on type `S`
+error 887..888: no field `5` on type `({integer}, {integer})`
+error 946..947: no field `2` on type `P`
+error 992..993: no field `0` on type `()`
+error 1063..1064: no field `x` on type `({integer}, {integer})`
+error 1115..1116: no field `x` on type `U`
+error 1174..1175: no field `a` on type `*const S`
+error 1219..1220: `{integer}` is a primitive type and therefore doesn't have fields
+error 1266..1267: `i32` is a primitive type and therefore doesn't have fields
+error 1321..1322: `i32` is a primitive type and therefore doesn't have fields
+error 1370..1371: `bool` is a primitive type and therefore doesn't have fields
+error 1420..1421: `i32` is a primitive type and therefore doesn't have fields
+error 1466..1467: this struct takes 2 arguments but 1 argument was supplied
+error 1516..1517: this struct takes 2 arguments but 3 arguments were supplied
+error 1569..1570: expected function, found struct `U`
+error 1618..1627: pattern does not mention field `b`
+error 1682..1692: pattern does not mention fields `b`, `c`, `d`, `e`
+error 1729..1738: pattern does not mention field `b`
+error 1797..1798: struct `S` does not have a field named `z`
+error 1859..1860: struct `S` does not have a field named `z`
+error 1928..1929: struct `P` does not have a field named `x`
+error 1993..1997: field `a` bound multiple times in the pattern
+error 2045..2051: mismatched types: expected a tuple with 3 elements, found one with 2 elements
+error 2106..2115: mismatched types: expected a tuple with 2 elements, found one with 3 elements
+error 2179..2180: this pattern has 1 field, but the corresponding tuple struct has 2 fields
+error 2241..2242: this pattern has 3 fields, but the corresponding tuple struct has 2 fields
+error 2311..2318: mismatched types: expected `P`, found `Q`
+error 2373..2383: mismatched types: expected `A`, found `B`
+error 2450..2460: mismatched types: expected `A`, found `B`
+error 2514..2518: mismatched types: expected `i32`, found `bool`
+error 2586..2587: mismatched types: expected `bool`, found `{integer}`
+error 2647..2656: mismatched types: expected a tuple with 2 elements, found one with 3 elements
+error 2733..2734: mismatched types: expected `(i32,)`, found `{integer}`
+error 2797..2798: mismatched types: expected `A`, found `B`
+error 2861..2862: functions as values are not supported yet
+error 2914..2916: binary operation `==` cannot be applied to type `S`
+error 2959..2960: cannot add `(i32, i32)` to `(i32, i32)`
