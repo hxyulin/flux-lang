@@ -33,7 +33,7 @@ pub use body::{
 };
 pub use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 pub use item_tree::{
-    AssocBinding, AssocItem, Bound, Const, ConstId, CrateData, CrateId, Field, Function,
+    AssocBinding, AssocItem, Bound, Const, ConstId, CrateData, CrateId, Derive, Field, Function,
     FunctionId, GenericArgs, GenericParam, Generics, Impl, ImplId, ImplTarget, ImplType, ItemLoc,
     ItemTree, MISPLACED_BINDING, Module, ModuleId, Owner, Param, Path, PathAnchor, QSelf, Struct,
     StructId, StructKind, Trait, TraitId, TraitType, TypeRef, Visibility, WherePredicate,

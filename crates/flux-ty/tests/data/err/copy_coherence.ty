@@ -1,0 +1,23 @@
+struct OnlyClone {}
+struct Twice {}
+struct ByValue {}
+struct MissingClone {}
+struct CopyField { 0: OnlyClone }
+struct CopyAlone {}
+struct W<T> { 0: T }
+fn clone(&Twice) -> Twice
+    self@0: &Twice
+fn clone(ByValue) -> ByValue
+    self@0: ByValue
+fn clone(&W<T>) -> W<T>
+    self@0: &W<T>
+fn main() -> ()
+fn clone(&OnlyClone) -> OnlyClone
+    self@0: &OnlyClone
+fn clone(&Twice) -> Twice
+    self@0: &Twice
+fn clone(&CopyField) -> CopyField
+    self@0: &CopyField
+error 269..274: conflicting implementations of trait `Clone` for type `Twice`
+error 552..561: the trait `Copy` cannot be implemented for this type
+error 741..745: the trait `Copy` cannot be implemented for this type

@@ -2,7 +2,7 @@
 
 use flux_arena::Arena;
 use flux_intern::{Symbol, kw};
-use flux_syntax::ast::{self, AstNode, LiteralKind};
+use flux_syntax::ast::{self, AstNode, BinaryOp, CmpOp, LiteralKind, LogicOp};
 use flux_syntax::{SyntaxNode, SyntaxTree, TextRange};
 
 use flux_arena::ArenaMap;
@@ -18,8 +18,8 @@ use crate::item_tree::{
 use crate::item_tree::{check_attr, check_attrs, lower_type, unsupported};
 use crate::literal::{parse_int, unescape_c_str};
 use crate::{
-    Bound, ConstId, Diagnostic, FunctionId, ImplTarget, ItemTree, ModuleId, Owner, Path, StructId,
-    StructKind, TypeRef,
+    Bound, ConstId, Derive, Diagnostic, FunctionId, ImplTarget, ItemTree, ModuleId, Owner, Path,
+    StructId, StructKind, TypeRef,
 };
 
 /// Where a pattern binds, for "cannot shadow" messages.
@@ -50,6 +50,9 @@ pub fn lower_const(tree: &SyntaxTree, items: &ItemTree, konst: ConstId) -> Lower
 /// Lowers the body of `function`, which must have one.
 pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> LoweredBody {
     let data = &items.functions[function];
+    if let Some((strukt, derive)) = data.derived {
+        return derived_body(items, function, strukt, derive);
+    }
     let node = tree.node(data.node);
     let f = ast::Fn::cast(node).expect("functions point at FN nodes");
     let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
@@ -118,6 +121,207 @@ pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> 
         Some(block) => ctx.lower_block(block),
         None => ctx.alloc_expr(Expr::Missing, f.syntax().text_range()),
     };
+    ctx.finish(params, root)
+}
+
+/// The body of the method `#[derive]` makes for `strukt`, from its
+/// fields: `S { a: Clone::clone(&self.a), .. }` for `Clone`,
+/// `self.a == other.a && ..` for `PartialEq`, and a call of
+/// `Eq::assert_receiver_is_total_eq(&self.a)` per field for `Eq`. Each
+/// field's part is at the field, where rustc reports one that does not
+/// implement the trait.
+fn derived_body(
+    items: &ItemTree,
+    function: FunctionId,
+    strukt: StructId,
+    derive: Derive,
+) -> LoweredBody {
+    let data = &items.functions[function];
+    let s = &items.structs[strukt];
+    let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
+    let mut params = Vec::new();
+    let mut bindings = Vec::new();
+    for name in [kw::SelfLower, Symbol::intern("other")]
+        .into_iter()
+        .take(data.params.len())
+    {
+        let binding = ctx.bindings.alloc(Binding {
+            name,
+            mutable: false,
+        });
+        params.push(ctx.alloc_pat(Pat::Bind(binding), data.def_range));
+        bindings.push(binding);
+    }
+    // `binding.field`, at the field.
+    let field_of = |ctx: &mut Ctx<'_>, binding: BindingId, field: &crate::Field| {
+        let at = field.def_range;
+        let base = ctx.alloc_expr(Expr::Path(Res::Local(binding)), at);
+        let place = ctx.alloc_expr(
+            Expr::Field {
+                expr: base,
+                name: field.name,
+            },
+            at,
+        );
+        ctx.source_map
+            .expr_fields
+            .insert(place, Box::new([field.name_range]));
+        place
+    };
+    // `Tr::method(&self.field)`, for the lang trait `lang`.
+    let call = |ctx: &mut Ctx<'_>, lang: &str, method: &str, field: &crate::Field| {
+        let at = field.def_range;
+        let place = field_of(ctx, bindings[0], field);
+        let arg = ctx.alloc_expr(
+            Expr::Ref {
+                mutable: false,
+                expr: place,
+            },
+            at,
+        );
+        let res = match items.lang_traits.get(&Symbol::intern(lang)) {
+            Some(&t) => Res::Assoc {
+                ty: None,
+                trait_: Some(t),
+                name: Symbol::intern(method),
+            },
+            None => Res::Err,
+        };
+        let callee = ctx.alloc_expr(Expr::Path(res), at);
+        ctx.source_map.segments.insert(callee, at);
+        ctx.alloc_expr(
+            Expr::Call {
+                callee,
+                args: Box::new([arg]),
+            },
+            at,
+        )
+    };
+    let whole = s.name_range;
+    let (stmts, tail) = match derive {
+        Derive::Clone => {
+            let fields: Box<[(Symbol, ExprId)]> = s
+                .fields
+                .iter()
+                .map(|f| (f.name, call(&mut ctx, "clone", "clone", f)))
+                .collect();
+            let record = ctx.alloc_expr(
+                Expr::Record {
+                    strukt,
+                    fields,
+                    spread: None,
+                },
+                whole,
+            );
+            let names: Box<[TextRange]> = s.fields.iter().map(|f| f.name_range).collect();
+            ctx.source_map.expr_fields.insert(record, names);
+            ctx.source_map.paths.insert(record, whole);
+            (Vec::new(), Some(record))
+        }
+        Derive::PartialEq => {
+            let mut all: Option<ExprId> = None;
+            for f in s.fields.iter() {
+                let lhs = field_of(&mut ctx, bindings[0], f);
+                let rhs = field_of(&mut ctx, bindings[1], f);
+                let eq = ctx.alloc_expr(
+                    Expr::Binary {
+                        op: BinaryOp::Cmp(CmpOp::Eq),
+                        lhs,
+                        rhs,
+                    },
+                    f.def_range,
+                );
+                ctx.source_map.ops.insert(eq, f.def_range);
+                all = Some(match all {
+                    None => eq,
+                    Some(prev) => {
+                        let and = ctx.alloc_expr(
+                            Expr::Binary {
+                                op: BinaryOp::Logic(LogicOp::And),
+                                lhs: prev,
+                                rhs: eq,
+                            },
+                            f.def_range,
+                        );
+                        ctx.source_map.ops.insert(and, f.def_range);
+                        and
+                    }
+                });
+            }
+            let tail =
+                all.unwrap_or_else(|| ctx.alloc_expr(Expr::Literal(Literal::Bool(true)), whole));
+            (Vec::new(), Some(tail))
+        }
+        Derive::Eq => {
+            let stmts = s
+                .fields
+                .iter()
+                .map(|f| Stmt::Expr {
+                    expr: call(&mut ctx, "total_eq", "assert_receiver_is_total_eq", f),
+                    has_semicolon: true,
+                })
+                .collect();
+            (stmts, None)
+        }
+        Derive::Copy => {
+            // `{ assert_param_is_clone(&self.a); ..; *self }`
+            let path = Path {
+                anchor: PathAnchor::Global,
+                qself: None,
+                segments: ["core", "clone", "assert_param_is_clone"]
+                    .map(Symbol::intern)
+                    .into(),
+                ranges: Box::default(),
+                anchor_ranges: Box::default(),
+                args: Box::default(),
+            };
+            let res = match items.resolve(data.loc.module, &path, Ns::Values) {
+                Ok(Resolved::Def(Def::Function(f))) => Res::Function(f),
+                _ => Res::Err,
+            };
+            let mut stmts = Vec::new();
+            for f in s.fields.iter() {
+                let at = f.def_range;
+                let place = field_of(&mut ctx, bindings[0], f);
+                let arg = ctx.alloc_expr(
+                    Expr::Ref {
+                        mutable: false,
+                        expr: place,
+                    },
+                    at,
+                );
+                let callee = ctx.alloc_expr(Expr::Path(res), at);
+                let call = ctx.alloc_expr(
+                    Expr::Call {
+                        callee,
+                        args: Box::new([arg]),
+                    },
+                    at,
+                );
+                stmts.push(Stmt::Expr {
+                    expr: call,
+                    has_semicolon: true,
+                });
+            }
+            let this = ctx.alloc_expr(Expr::Path(Res::Local(bindings[0])), whole);
+            let copy = ctx.alloc_expr(
+                Expr::Unary {
+                    op: ast::UnaryOp::Deref,
+                    operand: this,
+                },
+                whole,
+            );
+            (stmts, Some(copy))
+        }
+    };
+    let root = ctx.alloc_expr(
+        Expr::Block {
+            stmts: stmts.into(),
+            tail,
+            is_unsafe: false,
+        },
+        whole,
+    );
     ctx.finish(params, root)
 }
 

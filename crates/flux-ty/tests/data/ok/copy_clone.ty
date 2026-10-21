@@ -1,0 +1,113 @@
+struct Point { x: i32, y: i32 }
+struct Pair<T> { 0: T, 1: T }
+struct Named { id: u8, at: Point }
+struct Unit {}
+struct Empty {}
+struct Two<A, B> { a: A, b: B }
+struct Handle { 0: u32 }
+struct Id { 0: u64 }
+struct Wrap<T> { 0: T }
+fn clone(&Handle) -> Handle
+    self@0: &Handle
+fn clone(&Id) -> Id
+    self@0: &Id
+fn clone(&Wrap<T>) -> Wrap<T>
+    self@0: &Wrap<T>
+fn clones(Point, &Point, &Handle) -> (Point, Point, Handle, Handle)
+    p@0: Point
+    r@1: &Point
+    h@2: &Handle
+    a@3: Point
+    b@4: Point
+    c@5: Handle
+    d@6: Handle
+    _e@7: Point
+    _f@8: Handle
+fn copies(&Point, &mut Id, &Wrap<i32>) -> (Point, Id, i32)
+    r@0: &Point
+    m@1: &mut Id
+    w@2: &Wrap<i32>
+    p@3: Point
+    i@4: Id
+fn dup<T>(T) -> (T, T)
+    t@0: T
+fn dup_ref<T>(&T) -> (T, T)
+    t@0: &T
+fn clone_ref<T>(&T) -> T
+    t@0: &T
+fn dup_where<T>(T) -> (T, T)
+    t@0: T
+fn first(&Pair<T>) -> T
+    self@0: &Pair<T>
+fn second(&Pair<T>) -> T
+    self@0: &Pair<T>
+fn pairs<T>(Pair<T>, &Pair<T>) -> (Pair<T>, bool, bool)
+    a@0: Pair<T>
+    b@1: &Pair<T>
+    c@2: Pair<T>
+fn twos(&Two<i32, Unit>) -> Two<i32, Unit>
+    t@0: &Two<i32, Unit>
+fn via_super<T>(&T) -> (T, T)
+    t@0: &T
+fn get(&Self) -> <Self as Source>::Item
+fn twice<S>(&S) -> (<S as Source>::Item, <S as Source>::Item)
+    s@0: &S
+    item@1: <S as Source>::Item
+fn same<T>(&T, &T) -> bool
+    a@0: &T
+    b@1: &T
+fn compare(Point, &Point, &Named, Empty) -> (bool, bool, bool, bool, bool)
+    p@0: Point
+    q@1: &Point
+    n@2: &Named
+    e@3: Empty
+    a@4: bool
+    b@5: bool
+    c@6: bool
+    d@7: bool
+    f@8: bool
+fn explicit(&Point, &Point) -> (bool, bool)
+    p@0: &Point
+    q@1: &Point
+fn primitives(&(i32, bool, ())) -> ((i32, bool, ()), u8)
+    t@0: &(i32, bool, ())
+fn reset(&mut Point, &Point) -> ()
+    p@0: &mut Point
+    q@1: &Point
+fn main() -> ()
+fn clone(&Point) -> Point
+    self@0: &Point
+fn eq(&Point, &Point) -> bool
+    self@0: &Point
+    other@1: &Point
+fn assert_receiver_is_total_eq(&Point) -> ()
+    self@0: &Point
+fn clone(&Pair<T>) -> Pair<T>
+    self@0: &Pair<T>
+fn eq(&Pair<T>, &Pair<T>) -> bool
+    self@0: &Pair<T>
+    other@1: &Pair<T>
+fn clone(&Named) -> Named
+    self@0: &Named
+fn eq(&Named, &Named) -> bool
+    self@0: &Named
+    other@1: &Named
+fn assert_receiver_is_total_eq(&Named) -> ()
+    self@0: &Named
+fn clone(&Unit) -> Unit
+    self@0: &Unit
+fn eq(&Unit, &Unit) -> bool
+    self@0: &Unit
+    other@1: &Unit
+fn assert_receiver_is_total_eq(&Unit) -> ()
+    self@0: &Unit
+fn clone(&Empty) -> Empty
+    self@0: &Empty
+fn eq(&Empty, &Empty) -> bool
+    self@0: &Empty
+    other@1: &Empty
+fn clone(&Two<A, B>) -> Two<A, B>
+    self@0: &Two<A, B>
+fn eq(&Two<A, B>, &Two<A, B>) -> bool
+    self@0: &Two<A, B>
+    other@1: &Two<A, B>

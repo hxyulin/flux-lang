@@ -16,7 +16,7 @@ use flux_hir::{
 use flux_intern::{Symbol, kw};
 use flux_syntax::TextRange;
 
-use crate::ty::{AliasTy, GenericArgs, Ty, TyKind};
+use crate::ty::{AliasTy, GenericArgs, Mutability, Ty, TyKind};
 use crate::{Instance, Signatures, TypeScope, resolve_type, wrong_arg_count};
 
 /// A trait with generic arguments for its own parameters, not `Self`:
@@ -672,35 +672,78 @@ pub fn match_impl(
 /// which generic parameters are rigid: from a bound, or from an `impl`
 /// block whose own bounds hold.
 pub fn holds(items: &ItemTree, sigs: &Signatures, env: &[Predicate], goal: Predicate) -> bool {
-    holds_at(items, sigs, env, goal, 0)
+    holds_at(items, sigs, env, goal, &mut Vec::new())
 }
 
+/// [`holds`], within the goals `stack` is proving. As in rustc, a goal
+/// that needs itself does not hold, nor does one that needs ever larger
+/// types.
 fn holds_at(
     items: &ItemTree,
     sigs: &Signatures,
     env: &[Predicate],
     goal: Predicate,
-    depth: u32,
+    stack: &mut Vec<Predicate>,
 ) -> bool {
     if goal.self_ty == Ty::ERROR || goal.trait_ref.args.contains(&Ty::ERROR) {
         return true;
     }
-    if env.contains(&goal) || depth > 64 {
+    if env.contains(&goal) {
         return true;
     }
-    if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized) {
+    if stack.len() > 256 || stack.contains(&goal) {
+        return false;
+    }
+    if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized)
+        || is_builtin_copy(items, goal.trait_ref.trait_, goal.self_ty)
+    {
         return true;
     }
     let impls = items.trait_impls.get(&goal.trait_ref.trait_);
-    impls.into_iter().flatten().any(|&imp| {
+    stack.push(goal);
+    let holds = impls.into_iter().flatten().any(|&imp| {
         let Some(args) = match_impl(items, sigs, imp, goal) else {
             return false;
         };
         let nested = sigs.impl_predicates.get(imp).into_iter().flatten();
         nested
             .copied()
-            .all(|p| holds_at(items, sigs, env, p.subst(&args), depth + 1))
-    })
+            .all(|p| holds_at(items, sigs, env, p.subst(&args), stack))
+    });
+    stack.pop();
+    holds
+}
+
+/// Whether `ty: t` holds by the compiler's say: shared references are
+/// `Copy` and `Clone`, which `core` cannot write until functions may
+/// return references.
+pub fn is_builtin_copy(items: &ItemTree, t: TraitId, ty: Ty) -> bool {
+    matches!(ty.kind(), TyKind::Ref(Mutability::Not, _))
+        && matches!(items.traits[t].lang, Some(l) if l.as_str() == "copy" || l.as_str() == "clone")
+}
+
+/// Whether values of `ty` are copied rather than moved, given `env`, the
+/// elaborated bounds in scope: those of types that implement `Copy`.
+pub fn is_copy(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::Tuple(elements) => elements.iter().all(|&t| is_copy(items, sigs, env, t)),
+        TyKind::Ref(Mutability::Mut, _) => false,
+        TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) => {
+            let Some(&copy) = items.lang_traits.get(&Symbol::intern("copy")) else {
+                return false;
+            };
+            let goal = Predicate {
+                self_ty: ty,
+                trait_ref: TraitRef {
+                    trait_: copy,
+                    name: items.traits[copy].name,
+                    args: Ty::list(&[]),
+                },
+            };
+            holds(items, sigs, env, goal)
+        }
+        _ => true,
+    }
 }
 
 /// The function a call of `instance` calls: for a trait's method with
@@ -764,12 +807,20 @@ pub fn check_impls(
     diagnostics: &mut Vec<Diagnostic>,
     check_core: bool,
 ) {
+    // As in rustc, a trait with conflicting impls, or `Copy` with one
+    // for a type that cannot be, has its impls checked no further.
+    let mut skipped = check_overlap(items, sigs, diagnostics, check_core);
+    if check_copy_impls(items, sigs, diagnostics, check_core)
+        && let Some(&copy) = items.lang_traits.get(&Symbol::intern("copy"))
+    {
+        skipped.push(copy);
+    }
     for (id, imp) in items.impls.iter() {
         let Some(t) = imp.trait_ else {
             continue;
         };
         // `core`'s are checked by its tests, not on every build.
-        if !check_core && !items.in_main_crate(imp.module) {
+        if !check_core && !items.in_main_crate(imp.module) || skipped.contains(&t) {
             continue;
         }
         let mut error = |range: TextRange, message: String| {
@@ -881,7 +932,6 @@ pub fn check_impls(
             }
         }
     }
-    check_overlap(items, sigs, diagnostics, check_core);
 }
 
 /// Checks that associated type `ty` of trait `impl` block `imp` meets the
@@ -1252,12 +1302,15 @@ pub fn check_trivial_bounds(
 }
 
 /// Reports `impl` blocks of one trait for types that may be the same.
+/// Reports `impl` blocks of a trait that overlap an earlier one (E0119);
+/// gives the traits that have any.
 fn check_overlap(
     items: &ItemTree,
     sigs: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
     check_core: bool,
-) {
+) -> Vec<TraitId> {
+    let mut conflicted = Vec::new();
     let mut traits: Vec<(&TraitId, &Vec<ImplId>)> = items.trait_impls.iter().collect();
     traits.sort_by_key(|(t, _)| t.index());
     for (_, impls) in traits {
@@ -1301,6 +1354,47 @@ fn check_overlap(
                     b_ref.name
                 ),
             });
+            if !conflicted.contains(&b_ref.trait_) {
+                conflicted.push(b_ref.trait_);
+            }
         }
     }
+    conflicted
+}
+
+/// Reports `Copy` impls for structs with a field that is not `Copy`
+/// (E0204); whether there are any.
+fn check_copy_impls(
+    items: &ItemTree,
+    sigs: &Signatures,
+    diagnostics: &mut Vec<Diagnostic>,
+    check_core: bool,
+) -> bool {
+    let Some(&copy) = items.lang_traits.get(&Symbol::intern("copy")) else {
+        return false;
+    };
+    let mut any = false;
+    for &id in items.trait_impls.get(&copy).into_iter().flatten() {
+        let imp = &items.impls[id];
+        if !check_core && !items.in_main_crate(imp.module) {
+            continue;
+        }
+        let Some(&self_ty) = sigs.impls.get(id) else {
+            continue;
+        };
+        let env = elaborate(sigs, sigs.impl_predicates.get(id).map_or(&[], |p| p));
+        if let TyKind::Adt(adt, args) = self_ty.kind()
+            && sigs.structs[adt.strukt]
+                .iter()
+                .any(|f| !is_copy(items, sigs, &env, f.subst(args)))
+        {
+            diagnostics.push(Diagnostic {
+                file: imp.file,
+                range: imp.self_range,
+                message: "the trait `Copy` cannot be implemented for this type".into(),
+            });
+            any = true;
+        }
+    }
+    any
 }

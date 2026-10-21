@@ -4,6 +4,7 @@
 //! Every program can name it as `core`, and gets `prelude::rust_2024`
 //! imported, as rustc does with its own.
 
+pub mod clone;
 pub mod cmp;
 pub mod convert;
 pub mod marker;

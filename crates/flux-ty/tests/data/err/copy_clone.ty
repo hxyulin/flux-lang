@@ -1,0 +1,129 @@
+struct NoTraits {}
+struct OnlyPartialEq {}
+struct OnlyClone {}
+struct W<T> { 0: T }
+struct CloneField { a: i32, b: NoTraits }
+struct CopyField { a: i32, b: OnlyClone }
+struct EqField { 0: i32, 1: NoTraits }
+struct TotalField { a: u8, b: OnlyPartialEq }
+struct EqAlone {}
+struct Twice {}
+struct Holds { 0: OnlyClone }
+struct Gen<T> { 0: T }
+struct Unbounded<T> { 0: T }
+struct ByValue {}
+struct WrongReturn {}
+struct Missing {}
+struct Unresolved { x: Missing }
+struct Deep<T> { 0: T }
+fn eq(&Twice, &Twice) -> bool
+    self@0: &Twice
+    _other@1: &Twice
+fn clone(&Holds) -> Holds
+    self@0: &Holds
+fn clone(&Gen<T>) -> Gen<T>
+    self@0: &Gen<T>
+fn clone(&Unbounded<T>) -> Unbounded<T>
+    self@0: &Unbounded<T>
+fn clone(ByValue) -> ByValue
+    self@0: ByValue
+fn clone(&WrongReturn) -> i32
+    self@0: &WrongReturn
+fn no_clone(NoTraits, W<NoTraits>) -> ()
+    s@0: NoTraits
+    w@1: W<NoTraits>
+    _a@2: {error}
+    _b@3: {error}
+fn param<T>(T) -> T
+    t@0: T
+fn need_copy<T>(T) -> ()
+    _t@0: T
+fn need_clone<T>(T) -> ()
+    _t@0: T
+fn bounds(W<NoTraits>, NoTraits, OnlyClone) -> ()
+    w@0: W<NoTraits>
+    n@1: NoTraits
+    c@2: OnlyClone
+fn get(&W<T>) -> T
+    self@0: &W<T>
+fn unmet_impl_bound(W<OnlyClone>) -> ()
+    w@0: W<OnlyClone>
+fn compare(NoTraits, W<NoTraits>, &W<i32>, W<i32>) -> ()
+    a@0: NoTraits
+    w@1: W<NoTraits>
+    p@2: &W<i32>
+    q@3: W<i32>
+    _a@4: bool
+    _b@5: bool
+    _c@6: bool
+fn wrong_type(&W<i32>) -> W<u8>
+    w@0: &W<i32>
+fn deep(&Deep<Deep<Deep<Deep<Deep<Deep<Deep<Deep<Deep<NoTraits>>>>>>>>>) -> bool
+    x@0: &Deep<Deep<Deep<Deep<Deep<Deep<Deep<Deep<Deep<NoTraits>>>>>>>>>
+fn main() -> ()
+fn eq(&OnlyPartialEq, &OnlyPartialEq) -> bool
+    self@0: &OnlyPartialEq
+    other@1: &OnlyPartialEq
+fn clone(&OnlyClone) -> OnlyClone
+    self@0: &OnlyClone
+fn clone(&W<T>) -> W<T>
+    self@0: &W<T>
+fn eq(&W<T>, &W<T>) -> bool
+    self@0: &W<T>
+    other@1: &W<T>
+fn assert_receiver_is_total_eq(&W<T>) -> ()
+    self@0: &W<T>
+fn clone(&CloneField) -> CloneField
+    self@0: &CloneField
+fn clone(&CopyField) -> CopyField
+    self@0: &CopyField
+fn eq(&EqField, &EqField) -> bool
+    self@0: &EqField
+    other@1: &EqField
+fn eq(&TotalField, &TotalField) -> bool
+    self@0: &TotalField
+    other@1: &TotalField
+fn assert_receiver_is_total_eq(&TotalField) -> ()
+    self@0: &TotalField
+fn assert_receiver_is_total_eq(&EqAlone) -> ()
+    self@0: &EqAlone
+fn eq(&Twice, &Twice) -> bool
+    self@0: &Twice
+    other@1: &Twice
+fn clone(&Unresolved) -> Unresolved
+    self@0: &Unresolved
+fn eq(&Unresolved, &Unresolved) -> bool
+    self@0: &Unresolved
+    other@1: &Unresolved
+fn assert_receiver_is_total_eq(&Unresolved) -> ()
+    self@0: &Unresolved
+fn clone(&Deep<T>) -> Deep<T>
+    self@0: &Deep<T>
+fn eq(&Deep<T>, &Deep<T>) -> bool
+    self@0: &Deep<T>
+    other@1: &Deep<T>
+error 790..801: the trait bound `NoTraits: Clone` is not satisfied
+error 894..903: the trait `Copy` cannot be implemented for this type
+error 1043..1051: binary operation `==` cannot be applied to type `NoTraits`
+error 1169..1185: the trait bound `OnlyPartialEq: Eq` is not satisfied
+error 1245..1252: can't compare `EqAlone` with `EqAlone`
+error 1314..1323: conflicting implementations of trait `PartialEq` for type `Twice`
+error 1659..1664: the trait `Copy` cannot be implemented for this type
+error 1986..1998: the trait `Copy` cannot be implemented for this type
+error 2107..2111: method `clone` has an incompatible type for trait
+error 2224..2227: method `clone` has an incompatible type for trait
+error 2266..2288: not all trait items implemented, missing: `clone`
+error 2485..2490: no method named `clone` found for struct `NoTraits` in the current scope
+error 2509..2514: the method `clone` exists for struct `W<NoTraits>`, but its trait bounds were not satisfied
+error 2552..2557: no method named `clone` found for type parameter `T` in the current scope
+error 2737..2738: the trait bound `W<NoTraits>: Copy` is not satisfied
+error 2756..2757: the trait bound `NoTraits: Clone` is not satisfied
+error 2774..2775: the trait bound `OnlyClone: Copy` is not satisfied
+error 2969..2972: the method `get` exists for struct `W<OnlyClone>`, but its trait bounds were not satisfied
+error 3176..3178: binary operation `==` cannot be applied to type `NoTraits`
+error 3197..3199: binary operation `==` cannot be applied to type `W<NoTraits>`
+error 3218..3220: can't compare `&W<i32>` with `W<i32>`
+error 3312..3321: mismatched types: expected `W<u8>`, found `W<i32>`
+error 3461..3471: binary operation `==` cannot be applied to type `Missing`
+error 3461..3471: the trait bound `Missing: Eq` is not satisfied
+error 3716..3718: binary operation `==` cannot be applied to type `&Deep<Deep<Deep<Deep<Deep<Deep<Deep<Deep<Deep<NoTraits>>>>>>>>>`

@@ -63,5 +63,4 @@ error 807..810: `str` is not supported yet
 error 830..833: cannot find type `Vec` in this scope
 error 848..857: cannot cast `i32` as `bool`
 error 871..880: non-primitive cast: `()` as `i32`
-error 890..891: type annotations needed
 error 897..905: functions as values are not supported yet

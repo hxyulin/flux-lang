@@ -336,18 +336,6 @@ impl Ty {
         }
     }
 
-    /// Whether values of this type are copied rather than moved. Structs
-    /// are not, until flux has `#[derive(Clone, Copy)]`, and neither are
-    /// generic parameters, until they can be bounded by `Copy`.
-    pub fn is_copy(self) -> bool {
-        match self.kind() {
-            TyKind::Tuple(elements) => elements.iter().all(|t| t.is_copy()),
-            TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) => false,
-            TyKind::Ref(Mutability::Mut, _) => false,
-            _ => true,
-        }
-    }
-
     /// The integer type, if this is one.
     pub fn as_int(self) -> Option<IntTy> {
         match self.kind() {
