@@ -16,6 +16,7 @@
 //! assert_eq!(parse.root().to_string(), "fn main() {}");
 //! ```
 
+pub mod ast;
 mod build;
 pub mod lexer;
 pub mod parser;
@@ -52,6 +53,11 @@ impl Parse {
 
     pub fn root(&self) -> SyntaxNode<'_> {
         self.tree.root()
+    }
+
+    /// The root as a typed node.
+    pub fn source_file(&self) -> ast::SourceFile<'_> {
+        ast::AstNode::cast(self.root()).expect("the root is a SOURCE_FILE")
     }
 
     pub fn errors(&self) -> &[SyntaxError] {

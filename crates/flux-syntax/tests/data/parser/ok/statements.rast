@@ -172,7 +172,7 @@ SOURCE_FILE@0..323
             R_CURLY@203..204 "}"
       WHITESPACE@204..209 "\n    "
       EXPR_STMT@209..221
-        MACRO_CALL@209..220
+        MACRO_EXPR@209..220
           PATH@209..214
             PATH_SEGMENT@209..214
               NAME_REF@209..214
@@ -185,7 +185,7 @@ SOURCE_FILE@0..323
         SEMICOLON@220..221 ";"
       WHITESPACE@221..226 "\n    "
       EXPR_STMT@226..234
-        MACRO_CALL@226..233
+        MACRO_EXPR@226..233
           PATH@226..229
             PATH_SEGMENT@226..229
               NAME_REF@226..229
@@ -198,7 +198,7 @@ SOURCE_FILE@0..323
         SEMICOLON@233..234 ";"
       WHITESPACE@234..239 "\n    "
       EXPR_STMT@239..244
-        MACRO_CALL@239..244
+        MACRO_EXPR@239..244
           PATH@239..240
             PATH_SEGMENT@239..240
               NAME_REF@239..240

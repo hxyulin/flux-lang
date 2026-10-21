@@ -18,9 +18,14 @@ check:
 snapshots:
     UPDATE_EXPECT=1 cargo test -p flux-syntax --test parser
 
+# Regenerate the typed AST from crates/flux-syntax/flux.ungram.
+sourcegen:
+    cargo run -q -p flux-sourcegen
+
 # Parse every .rs file under a directory and summarize errors. Usage: just corpus ~/.cargo/registry/src
 corpus dir:
     FLUX_CORPUS="{{dir}}" cargo test -p flux-syntax --release --test corpus -- --ignored --nocapture
+    FLUX_CORPUS="{{dir}}" cargo test -p flux-sourcegen --release --test ast -- --ignored
 
 # Per-phase parser throughput over every .rs file under a directory. Usage: just bench ~/.cargo/registry/src 18
 bench dir threads="1":

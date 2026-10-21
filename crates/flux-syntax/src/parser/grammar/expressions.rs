@@ -572,7 +572,7 @@ fn path_expr(p: &mut Parser<'_>, r: Restrictions) -> (CompletedMarker, BlockLike
             } else {
                 p.error("expected `(`, `[` or `{`");
             }
-            (m.complete(p, MACRO_CALL), blocklike)
+            (m.complete(p, MACRO_EXPR), blocklike)
         }
         T!['{'] if !r.forbid_structs => {
             record_expr_field_list(p);

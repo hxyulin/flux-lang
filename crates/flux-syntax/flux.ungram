@@ -1,0 +1,547 @@
+// The shape of flux syntax trees, in ungrammar notation.
+//
+// This describes the trees the parser builds, not the language: it is
+// looser than Rust's grammar, and the parser's error recovery can produce
+// trees it does not allow. `tests/sourcegen.rs` generates the typed AST
+// (`src/ast/generated.rs`) from it, and checks that every tree in the
+// fixtures and the workspace matches it.
+//
+//   Name = Rule      a node, or an enum when Rule is `A | B | ...`
+//   'text'           a token
+//   label:Rule       names an accessor; overlapping labeled children are
+//                    hand-written in `src/ast/ext.rs`
+//   A? A* (A | B)    optional, repeated, alternatives
+//
+// Unlabeled children of the same type form one list: `Expr ';' Expr` gives
+// `exprs()`.
+
+//*************************//
+// Names, paths, macros    //
+//*************************//
+
+Name =
+  'ident'
+
+NameRef =
+  'ident' | 'int_number' | 'self' | 'super' | 'crate' | 'Self'
+
+Lifetime =
+  'lifetime_ident'
+
+Path =
+  (qualifier:Path '::')? segment:PathSegment
+
+PathSegment =
+  '::'? NameRef ('::'? GenericArgList | ParenthesizedArgList RetType?)?
+| '<' self_ty:Type ('as' trait_ty:PathType)? '>'
+
+GenericArgList =
+  '<' args:(GenericArg (',' GenericArg)* ','?)? '>'
+
+GenericArg =
+  TypeArg
+| LifetimeArg
+| ConstArg
+| AssocTypeArg
+
+TypeArg =
+  Type
+
+LifetimeArg =
+  Lifetime
+
+ConstArg =
+  Expr
+
+AssocTypeArg =
+  NameRef GenericArgList? ('=' Type | ':' TypeBoundList)
+
+ParenthesizedArgList =
+  '(' (Type (',' Type)* ','?)? ')'
+
+TokenTree =
+  ('(' | '[' | '{') TokenTree* (')' | ']' | '}')
+
+Attr =
+  '#' '!'? '[' Meta ']'
+
+Meta =
+  ('unsafe' '(')? Path ('=' Expr | TokenTree)? ')'?
+
+//*************************//
+// Items                   //
+//*************************//
+
+SourceFile =
+  Attr* Item*
+
+Item =
+  Const
+| Enum
+| ExternBlock
+| ExternCrate
+| Fn
+| Impl
+| MacroCall
+| Module
+| Static
+| Struct
+| Trait
+| TypeAlias
+| Use
+
+MacroCall =
+  Attr* Path '!' Name? TokenTree ';'?
+
+Visibility =
+  'pub' ('(' ('crate' | 'self' | 'super' | 'in' Path) ')')?
+
+Fn =
+  Attr* Visibility?
+  'const'? 'async'? 'unsafe'? Abi?
+  'fn' Name GenericParamList? ParamList RetType? WhereClause?
+  (body:BlockExpr | ';')
+
+Abi =
+  'extern' 'string'?
+
+ParamList =
+  '(' SelfParam? (Param (',' Param)* ','?)? ')'
+| '|' (Param (',' Param)* ','?)? '|'
+| '||'
+
+SelfParam =
+  Attr* ('&' Lifetime?)? 'mut'? 'self' (':' Type)?
+
+Param =
+  Attr* (Pat ':')? (Type | '...')
+
+RetType =
+  '->' Type
+
+Struct =
+  Attr* Visibility? 'struct' Name GenericParamList?
+  ( WhereClause? (RecordFieldList | ';')
+  | TupleFieldList WhereClause? ';')
+
+RecordFieldList =
+  '{' fields:(RecordField (',' RecordField)* ','?)? '}'
+
+RecordField =
+  Attr* Visibility? Name ':' Type
+
+TupleFieldList =
+  '(' fields:(TupleField (',' TupleField)* ','?)? ')'
+
+TupleField =
+  Attr* Visibility? Type
+
+Enum =
+  Attr* Visibility? 'enum' Name GenericParamList? WhereClause? VariantList
+
+VariantList =
+  '{' variants:(Variant (',' Variant)* ','?)? '}'
+
+Variant =
+  Attr* Name (RecordFieldList | TupleFieldList)? ('=' Expr)?
+
+Impl =
+  Attr* Visibility? 'unsafe'? 'impl' GenericParamList?
+  (trait_ty:Type 'for')? self_ty:Type WhereClause? AssocItemList
+
+Trait =
+  Attr* Visibility? 'unsafe'? 'trait' Name GenericParamList?
+  (':' TypeBoundList)? WhereClause? AssocItemList
+
+AssocItemList =
+  '{' Attr* Item* '}'
+
+// `type T: Bound where ... = Type where ...;`: the second where clause is
+// where generic associated types put theirs.
+TypeAlias =
+  Attr* Visibility? 'type' Name GenericParamList? (':' TypeBoundList)?
+  WhereClause? ('=' Type WhereClause?)? ';'
+
+Const =
+  Attr* Visibility? 'const' (Name | '_') ':' Type ('=' body:Expr)? ';'
+
+Static =
+  Attr* Visibility? 'static' 'mut'? Name ':' Type ('=' body:Expr)? ';'
+
+Module =
+  Attr* Visibility? 'mod' Name (ItemList | ';')
+
+ItemList =
+  '{' Attr* Item* '}'
+
+Use =
+  Attr* Visibility? 'use' UseTree ';'
+
+UseTree =
+  (Path? '::')? ('*' | UseTreeList)
+| Path Rename?
+
+UseTreeList =
+  '{' (UseTree (',' UseTree)* ','?)? '}'
+
+Rename =
+  'as' (Name | '_')
+
+ExternCrate =
+  Attr* Visibility? 'extern' 'crate' NameRef Rename? ';'
+
+ExternBlock =
+  Attr* 'unsafe'? Abi ExternItemList
+
+ExternItemList =
+  '{' Attr* Item* '}'
+
+//*************************//
+// Generics                //
+//*************************//
+
+GenericParamList =
+  '<' (GenericParam (',' GenericParam)* ','?)? '>'
+
+GenericParam =
+  TypeParam
+| LifetimeParam
+| ConstParam
+
+TypeParam =
+  Attr* Name (':' TypeBoundList)? ('=' default_type:Type)?
+
+LifetimeParam =
+  Attr* Lifetime (':' TypeBoundList)?
+
+ConstParam =
+  Attr* 'const' Name ':' Type ('=' default_val:ConstArg)?
+
+WhereClause =
+  'where' predicates:(WherePred (',' WherePred)* ','?)?
+
+WherePred =
+  ('for' GenericParamList)? (Lifetime | Type) ':' TypeBoundList
+
+TypeBoundList =
+  bounds:(TypeBound ('+' TypeBound)* '+'?)?
+
+TypeBound =
+  '('?
+  ( Lifetime
+  | 'use' UseBoundGenericArgs
+  | '?'? ('for' GenericParamList)? PathType)
+  ')'?
+
+UseBoundGenericArgs =
+  '<' ((Lifetime | NameRef) ','?)* '>'
+
+//*************************//
+// Types                   //
+//*************************//
+
+Type =
+  ArrayType
+| DynTraitType
+| FnPtrType
+| ForType
+| ImplTraitType
+| InferType
+| MacroType
+| NeverType
+| ParenType
+| PathType
+| PtrType
+| RefType
+| SliceType
+| TupleType
+
+ArrayType =
+  '[' Type ';' Expr ']'
+
+DynTraitType =
+  'dyn' TypeBoundList
+
+FnPtrType =
+  'unsafe'? Abi? 'fn' ParamList RetType?
+
+ForType =
+  'for' GenericParamList Type
+
+ImplTraitType =
+  'impl' TypeBoundList
+
+InferType =
+  '_'
+
+MacroType =
+  Path '!' TokenTree
+
+NeverType =
+  '!'
+
+ParenType =
+  '(' Type ')'
+
+PathType =
+  Path
+
+PtrType =
+  '*' ('const' | 'mut') Type
+
+RefType =
+  '&' Lifetime? 'mut'? Type
+
+SliceType =
+  '[' Type ']'
+
+TupleType =
+  '(' fields:(Type (',' Type)* ','?)? ')'
+
+//*************************//
+// Patterns                //
+//*************************//
+
+Pat =
+  IdentPat
+| LiteralPat
+| MacroPat
+| OrPat
+| ParenPat
+| PathPat
+| RangePat
+| RecordPat
+| RefPat
+| RestPat
+| SlicePat
+| TuplePat
+| TupleStructPat
+| WildcardPat
+
+IdentPat =
+  'ref'? 'mut'? Name ('@' Pat)?
+
+LiteralPat =
+  '-'? Literal
+
+MacroPat =
+  Path '!' TokenTree
+
+OrPat =
+  '|'? (Pat ('|' Pat)*)
+
+ParenPat =
+  '(' Pat ')'
+
+PathPat =
+  Path
+
+RangePat =
+  start:Pat? op:('..' | '..=' | '...') end:Pat?
+
+RecordPat =
+  Path RecordPatFieldList
+
+RecordPatFieldList =
+  '{' fields:(RecordPatField (',' RecordPatField)* ','?)? RestPat? '}'
+
+RecordPatField =
+  Attr* (NameRef ':')? Pat
+
+RefPat =
+  '&' 'mut'? Pat
+
+RestPat =
+  '..'
+
+SlicePat =
+  '[' (Pat (',' Pat)* ','?)? ']'
+
+TuplePat =
+  '(' fields:(Pat (',' Pat)* ','?)? ')'
+
+TupleStructPat =
+  Path '(' fields:(Pat (',' Pat)* ','?)? ')'
+
+WildcardPat =
+  '_'
+
+//*************************//
+// Statements              //
+//*************************//
+
+Stmt =
+  LetStmt
+| ExprStmt
+| Item
+
+LetStmt =
+  Attr* 'let' Pat (':' Type)? ('=' initializer:Expr LetElse?)? ';'
+
+LetElse =
+  'else' BlockExpr
+
+ExprStmt =
+  Attr* Expr ';'?
+
+//*************************//
+// Expressions             //
+//*************************//
+
+Expr =
+  ArrayExpr
+| AwaitExpr
+| BinExpr
+| BlockExpr
+| BreakExpr
+| CallExpr
+| CastExpr
+| ClosureExpr
+| ContinueExpr
+| FieldExpr
+| ForExpr
+| IfExpr
+| IndexExpr
+| LetExpr
+| Literal
+| LoopExpr
+| MacroExpr
+| MatchExpr
+| MethodCallExpr
+| ParenExpr
+| PathExpr
+| PrefixExpr
+| RangeExpr
+| RecordExpr
+| RefExpr
+| ReturnExpr
+| TryExpr
+| TupleExpr
+| UnderscoreExpr
+| WhileExpr
+
+Literal =
+  Attr* value:(
+    'int_number' | 'float_number' | 'char' | 'byte' | 'string'
+  | 'byte_string' | 'c_string' | 'true' | 'false'
+  )
+
+PathExpr =
+  Attr* Path
+
+MacroExpr =
+  Attr* Path '!' Name? TokenTree
+
+// The statements of a block, then the expression it evaluates to, if any.
+// A `;` on its own is an empty statement.
+BlockExpr =
+  Attr* Label? ('unsafe' | 'const' | 'async')? 'move'?
+  '{' Attr* (Stmt | ';')* tail_expr:Expr? '}'
+
+Label =
+  Lifetime ':'
+
+ParenExpr =
+  Attr* '(' Expr ')'
+
+TupleExpr =
+  Attr* '(' fields:(Expr (',' Expr)* ','?)? ')'
+
+// `[a, b, c]`, or `[value; count]` when there is a `;`.
+ArrayExpr =
+  Attr* '[' ((Expr (',' Expr)* ','?)? | Expr ';' Expr) ']'
+
+RecordExpr =
+  Attr* Path RecordExprFieldList
+
+RecordExprFieldList =
+  '{' fields:(RecordExprField (',' RecordExprField)* ','?)? ('..' spread:Expr?)? '}'
+
+RecordExprField =
+  Attr* NameRef (':' Expr)?
+
+PrefixExpr =
+  Attr* op:('-' | '!' | '*') Expr
+
+RefExpr =
+  Attr* '&' 'mut'? Expr
+
+BinExpr =
+  Attr* lhs:Expr
+  op:(
+    '||' | '&&'
+  | '==' | '!=' | '<=' | '>=' | '<' | '>'
+  | '+' | '*' | '-' | '/' | '%' | '<<' | '>>' | '^' | '|' | '&'
+  | '=' | '+=' | '/=' | '*=' | '%=' | '>>=' | '<<=' | '-=' | '|=' | '&=' | '^='
+  )
+  rhs:Expr
+
+CastExpr =
+  Attr* Expr 'as' Type
+
+RangeExpr =
+  Attr* start:Expr? op:('..' | '..=') end:Expr?
+
+CallExpr =
+  Attr* Expr ArgList
+
+ArgList =
+  '(' args:(Expr (',' Expr)* ','?)? ')'
+
+MethodCallExpr =
+  Attr* receiver:Expr '.' NameRef ('::' GenericArgList)? ArgList
+
+FieldExpr =
+  Attr* Expr '.' NameRef
+
+IndexExpr =
+  Attr* base:Expr '[' index:Expr ']'
+
+TryExpr =
+  Attr* Expr '?'
+
+AwaitExpr =
+  Attr* Expr '.' 'await'
+
+ClosureExpr =
+  Attr* 'async'? 'move'? ParamList RetType? body:Expr
+
+IfExpr =
+  Attr* 'if' condition:Expr then_branch:BlockExpr
+  ('else' else_branch:(IfExpr | BlockExpr))?
+
+LetExpr =
+  Attr* 'let' Pat '=' Expr
+
+LoopExpr =
+  Attr* Label? 'loop' loop_body:BlockExpr
+
+WhileExpr =
+  Attr* Label? 'while' condition:Expr loop_body:BlockExpr
+
+ForExpr =
+  Attr* Label? 'for' Pat 'in' iterable:Expr loop_body:BlockExpr
+
+MatchExpr =
+  Attr* 'match' Expr MatchArmList
+
+MatchArmList =
+  '{' Attr* arms:MatchArm* '}'
+
+MatchArm =
+  Attr* Pat MatchGuard? '=>' Expr ','?
+
+MatchGuard =
+  'if' condition:Expr
+
+BreakExpr =
+  Attr* 'break' Lifetime? Expr?
+
+ContinueExpr =
+  Attr* 'continue' Lifetime?
+
+ReturnExpr =
+  Attr* 'return' Expr?
+
+UnderscoreExpr =
+  Attr* '_'

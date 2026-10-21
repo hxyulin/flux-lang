@@ -111,7 +111,7 @@ fn path_or_macro_type(p: &mut Parser<'_>) {
         } else {
             p.error("expected `(`, `[` or `{`");
         }
-        m.complete(p, MACRO_CALL);
+        m.complete(p, MACRO_TYPE);
     } else {
         m.complete(p, PATH_TYPE);
     }

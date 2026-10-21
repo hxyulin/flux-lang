@@ -29,6 +29,9 @@ just check
 | `crates/flux-syntax/src/parser/` | Tokens to events; `grammar/` holds one module per construct |
 | `crates/flux-syntax/src/build.rs` | Events and tokens to a syntax tree, placing trivia |
 | `crates/flux-syntax/src/tree.rs` | `SyntaxTree`, `SyntaxNode`, `SyntaxToken` and navigation |
+| `crates/flux-syntax/flux.ungram` | The shape of every node, from which the typed AST is generated |
+| `crates/flux-syntax/src/ast/` | Typed AST: `generated.rs` (do not edit) and hand-written `ext.rs` |
+| `crates/flux-sourcegen/` | AST generator; its tests check trees against the grammar |
 | `crates/flux-cli/` | `flux` command-line driver |
 | `crates/flux-syntax/tests/` | Snapshot, robustness, self-hosting and corpus tests |
 | `crates/flux-syntax/examples/bench.rs` | Per-phase throughput benchmark |
@@ -40,6 +43,7 @@ just check
 ```sh
 just check                 # formatting, clippy, tests, flux check on the workspace
 just snapshots             # rewrite parser snapshots after an intended change
+just sourcegen             # regenerate the typed AST from flux.ungram
 just corpus <dir>          # parse a directory of Rust, report panics and common errors
 just bench <dir> [threads] # per-phase throughput over a directory
 just miri                  # run the crates with unsafe code under Miri (needs nightly)
@@ -62,9 +66,15 @@ especially with many threads.
 measured reason. Every `unsafe` block needs a `// SAFETY:` comment, and
 changes to those crates must pass `just miri`.
 
+A new node kind, or a change to what a node contains, also needs
+`flux.ungram` updated and `just sourcegen` run. `cargo test -p
+flux-sourcegen` fails if any tree in the fixtures or the workspace has a
+child its rule does not mention, or if the generated code is stale.
+
 For grammar work, `just corpus ~/.cargo/registry/src` parses every crate
 you have downloaded. Compare its summary before and after a change; it
-fails on any panic or malformed tree.
+fails on any panic or malformed tree, or on a tree without errors that
+does not match `flux.ungram`.
 
 ## Issues and pull requests
 

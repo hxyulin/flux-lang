@@ -120,6 +120,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "flux-sourcegen"
+version = "0.1.0"
+dependencies = [
+ "flux-syntax",
+ "ungrammar",
+]
+
+[[package]]
 name = "flux-syntax"
 version = "0.1.0"
 dependencies = [
@@ -198,6 +206,12 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "ungrammar"
+version = "1.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3e5df347f0bf3ec1d670aad6ca5c6a1859cd9ea61d2113125794654ccced68f"
 
 [[package]]
 name = "unicode-ident"
