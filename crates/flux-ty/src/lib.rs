@@ -17,6 +17,7 @@
 //! assignments need a `mut` binding.
 
 mod infer;
+pub mod traits;
 mod ty;
 
 use std::fmt::Write;
@@ -26,12 +27,13 @@ use flux_arena::ArenaMap;
 use flux_hir::def_map::{Def, Ns, ResolveError, Resolved};
 use flux_hir::{
     Const, Diagnostic, Function, FunctionId, Generics, Hir, Impl, ImplId, ImplTarget, ItemLoc,
-    ItemTree, ModuleId, Path, Struct, StructId, TypeRef,
+    ItemTree, ModuleId, Owner, Path, Struct, StructId, Trait, TypeRef,
 };
-use flux_intern::{Symbol, sym};
+use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
 
 pub use infer::{InferenceResult, Method, c_char_ptr, c_str_ref, infer_body, infer_const};
+pub use traits::{Predicate, TraitRef, TraitSig};
 pub use ty::{AdtId, GenericArgs, InferVar, IntTy, Mutability, ParamTy, Ty, TyKind, subst_list};
 
 /// A function's resolved signature. A generic function's mentions its
@@ -62,14 +64,26 @@ impl FnSig {
 }
 
 /// Everything about a file's items that bodies depend on: each
-/// function's signature, each struct's field types, and each `impl`
-/// block's type, in terms of their generic parameters.
+/// function's signature, each struct's field types, each `impl` block's
+/// type and trait, and the bounds of each item, in terms of their
+/// generic parameters.
 #[derive(Debug, Default)]
 pub struct Signatures {
     pub fns: ArenaMap<Function, FnSig>,
     pub structs: ArenaMap<Struct, &'static [Ty]>,
     pub impls: ArenaMap<Impl, Ty>,
     pub consts: ArenaMap<Const, Ty>,
+    pub traits: ArenaMap<Trait, TraitSig>,
+    /// The trait each trait's `impl` block implements, if it resolved.
+    pub impl_traits: ArenaMap<Impl, TraitRef>,
+    /// The bounds of each `impl` block, trait and function, their own
+    /// only: a function's are after its owner's.
+    pub impl_predicates: ArenaMap<Impl, Box<[Predicate]>>,
+    pub trait_predicates: ArenaMap<Trait, Box<[Predicate]>>,
+    pub fn_predicates: ArenaMap<Function, Box<[Predicate]>>,
+    /// A trait is its own supertrait (reported): rustc stops before
+    /// type checking bodies.
+    pub cyclic: bool,
 }
 
 impl Index<FunctionId> for Signatures {
@@ -120,15 +134,22 @@ impl TypeScope<'_> {
     }
 }
 
-/// The names of the generic parameters of an item in `impl` block
-/// `owner` with its own `generics`: the block's, then its own.
-pub fn generic_names(items: &ItemTree, owner: Option<ImplId>, own: &Generics) -> Vec<Symbol> {
-    owner
-        .map(|o| &items.impls[o].generics)
-        .into_iter()
-        .chain([own])
-        .flat_map(|g| g.params.iter().map(|p| p.name))
-        .collect()
+/// The names of the generic parameters of an item in `owner` with its
+/// own `generics`: an `impl` block's, or a trait's `Self` and its own,
+/// then the item's.
+pub fn generic_names(items: &ItemTree, owner: Option<Owner>, own: &Generics) -> Vec<Symbol> {
+    let mut names = Vec::new();
+    if let Some(Owner::Trait(_)) = owner {
+        names.push(kw::SelfUpper);
+    }
+    names.extend(
+        items
+            .owner_generics(owner)
+            .into_iter()
+            .chain([own])
+            .flat_map(|g| g.params.iter().map(|p| p.name)),
+    );
+    names
 }
 
 /// "1 generic argument", "2 generic arguments".
@@ -200,6 +221,18 @@ pub fn resolve_type(
                 no_args(errors, format!("type parameter `{name}`"));
                 return param;
             }
+            // `T::Out`, `Self::Out`, `<T as Tr>::Out`.
+            let first = path.segments.first().copied();
+            let relative = path.anchor == flux_hir::PathAnchor::Plain
+                && path.segments.len() > 1
+                && first.is_some_and(|f| scope.param(f).is_some() || f == kw::SelfUpper);
+            if path.qself.is_some() || relative {
+                return fail(
+                    errors,
+                    range,
+                    "associated types are not supported yet".to_owned(),
+                );
+            }
             let resolved = match items.resolve(module, path, Ns::Types) {
                 Err(e @ ResolveError::Private { .. }) => {
                     let ResolveError::Private {
@@ -236,6 +269,12 @@ pub fn resolve_type(
                         Err(message) => fail(errors, range, message),
                     }
                 }
+                // A bare trait is a trait object in edition 2015 only.
+                Ok(Resolved::Def(Def::Trait(_))) => fail(
+                    errors,
+                    last_range,
+                    "expected a type, found a trait".to_owned(),
+                ),
                 Ok(Resolved::Def(Def::Module(m))) => fail(
                     errors,
                     last_range,
@@ -368,9 +407,13 @@ pub fn impl_target(ty: Ty) -> Option<ImplTarget> {
     }
 }
 
-/// What `Self` means in an item in the `impl` block `owner`, if any.
-pub fn self_ty(sigs: &Signatures, owner: Option<ImplId>) -> Option<Ty> {
-    owner.map(|owner| sigs.impls.get(owner).copied().unwrap_or(Ty::ERROR))
+/// What `Self` means in an item in `owner`, if any: an `impl` block's
+/// type, or a trait's first parameter.
+pub fn self_ty(sigs: &Signatures, owner: Option<Owner>) -> Option<Ty> {
+    match owner? {
+        Owner::Impl(imp) => Some(sigs.impls.get(imp).copied().unwrap_or(Ty::ERROR)),
+        Owner::Trait(_) => Some(Ty::param(0, kw::SelfUpper)),
+    }
 }
 
 fn resolve_or_report(
@@ -536,6 +579,68 @@ pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
         let ty = impl_type(items, imp, &mut reported);
         sigs.impls.insert(id, ty);
     }
+    let in_file = |errors: Vec<(TextRange, String)>, file, reported: &mut Vec<Diagnostic>| {
+        reported.extend(errors.into_iter().map(|(range, message)| Diagnostic {
+            file,
+            range,
+            message,
+        }));
+    };
+    for (id, t) in items.traits.iter() {
+        let generics = generic_names(items, Some(Owner::Trait(id)), &Generics::default());
+        let scope = TypeScope {
+            self_ty: Some(Ty::param(0, kw::SelfUpper)),
+            generics: &generics,
+            signature_of: Some("traits"),
+        };
+        let mut errors = Vec::new();
+        let mut supertraits: Vec<TraitRef> = t
+            .supertraits
+            .iter()
+            .filter_map(|b| traits::resolve_bound(items, t.loc.module, b, scope, &mut errors))
+            .collect();
+        let mut predicates = Vec::new();
+        // `where Self: Sup` is a supertrait too.
+        for p in traits::resolve_predicates(items, t.loc.module, &t.generics, scope, &mut errors) {
+            if p.self_ty == Ty::param(0, kw::SelfUpper) {
+                supertraits.push(p.trait_ref);
+            } else {
+                predicates.push(p);
+            }
+        }
+        in_file(errors, t.loc.file, &mut reported);
+        sigs.traits.insert(
+            id,
+            TraitSig {
+                supertraits: supertraits.into(),
+            },
+        );
+        sigs.trait_predicates.insert(id, predicates.into());
+    }
+    for (id, imp) in items.impls.iter() {
+        if imp.trait_ref.is_none() && imp.generics.predicates.is_empty() {
+            continue;
+        }
+        let generics = generic_names(items, Some(Owner::Impl(id)), &Generics::default());
+        let scope = TypeScope {
+            self_ty: Some(sigs.impls[id]),
+            generics: &generics,
+            signature_of: Some("implementations"),
+        };
+        let mut errors = Vec::new();
+        if let (Some(t), Some(bound)) = (imp.trait_, &imp.trait_ref)
+            && let Some(trait_ref) =
+                traits::trait_ref(items, imp.module, t, bound, scope, &mut errors)
+        {
+            sigs.impl_traits.insert(id, trait_ref);
+        }
+        let predicates =
+            traits::resolve_predicates(items, imp.module, &imp.generics, scope, &mut errors);
+        in_file(errors, imp.file, &mut reported);
+        if !predicates.is_empty() {
+            sigs.impl_predicates.insert(id, predicates.into());
+        }
+    }
     for (id, konst) in items.consts.iter() {
         let generics = generic_names(items, konst.owner, &Generics::default());
         let scope = TypeScope {
@@ -574,6 +679,18 @@ pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
             &mut reported,
         );
         sigs.fns.insert(id, FnSig { params, ret });
+        if !function.generics.predicates.is_empty() {
+            let mut errors = Vec::new();
+            let predicates = traits::resolve_predicates(
+                items,
+                function.loc.module,
+                &function.generics,
+                scope,
+                &mut errors,
+            );
+            in_file(errors, function.loc.file, &mut reported);
+            sigs.fn_predicates.insert(id, predicates.into());
+        }
     }
     for (id, s) in items.structs.iter() {
         // Without `PhantomData`, a parameter must be a field's type.
@@ -590,10 +707,16 @@ pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
         }
     }
     duplicate_assoc_items(items, &sigs, &mut reported);
+    traits::check_impls(items, &sigs, &mut reported);
+    sigs.cyclic = traits::check_supertrait_cycles(items, &sigs, &mut reported);
+    traits::check_trivial_bounds(items, &sigs, &mut reported);
     for (id, imp) in items.impls.iter() {
         let ty = sigs.impls[id];
+        let trait_args = sigs.impl_traits.get(id).map_or(&[][..], |t| t.args);
         for (i, param) in imp.generics.params.iter().enumerate() {
-            if ty != Ty::ERROR && !mentions_param(ty, i as u32) {
+            let constrained = mentions_param(ty, i as u32)
+                || trait_args.iter().any(|&a| mentions_param(a, i as u32));
+            if ty != Ty::ERROR && !constrained {
                 error(
                     imp.file,
                     param.range,
@@ -706,6 +829,23 @@ fn impl_type(items: &ItemTree, imp: &Impl, diagnostics: &mut Vec<Diagnostic>) ->
         signature_of: Some("implementations"),
     };
     let mut errors = Vec::new();
+    if imp.trait_ref.is_some() {
+        let ty = resolve_or_report(
+            items,
+            imp.module,
+            &imp.self_ty,
+            scope,
+            imp.self_range,
+            diagnostics,
+        );
+        for d in diagnostics
+            .iter_mut()
+            .filter(|d| d.file == flux_hir::FileId::UNKNOWN)
+        {
+            d.file = imp.file;
+        }
+        return ty;
+    }
     let ty = match (imp.target, &imp.self_ty) {
         (Some(ImplTarget::Struct(strukt)), TypeRef::Path(path)) => struct_type(
             items,
@@ -775,10 +915,41 @@ pub struct TypedFile {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Whether a trait path in a bound or an `impl` block did not resolve:
+/// rustc stops before type checking then.
+fn unresolved_trait(items: &ItemTree) -> bool {
+    let unresolved =
+        |module, bound: &flux_hir::Bound| items.resolve_trait(module, bound).0.is_none();
+    let in_generics = |module, generics: &Generics| {
+        generics
+            .predicates
+            .iter()
+            .any(|p| unresolved(module, &p.bound))
+    };
+    items.impls.values().any(|imp| {
+        (imp.trait_ref.is_some() && imp.trait_.is_none()) || in_generics(imp.module, &imp.generics)
+    }) || items.traits.values().any(|t| {
+        in_generics(t.loc.module, &t.generics)
+            || t.supertraits.iter().any(|b| unresolved(t.loc.module, b))
+    }) || items
+        .functions
+        .values()
+        .any(|f| in_generics(f.loc.module, &f.generics))
+}
+
 /// Infers every body of `hir`.
 pub fn check_file(hir: &Hir) -> TypedFile {
     let (sigs, mut diagnostics) = signatures(&hir.items);
     let mut bodies = ArenaMap::new();
+    if sigs.cyclic || unresolved_trait(&hir.items) {
+        Diagnostic::sort(&mut diagnostics);
+        return TypedFile {
+            sigs,
+            bodies,
+            consts: ArenaMap::new(),
+            diagnostics,
+        };
+    }
     for (id, (body, source_map)) in hir.bodies.iter() {
         let result = infer_body(&hir.items, &sigs, id, body, source_map);
         let file = hir.items.functions[id].loc.file;

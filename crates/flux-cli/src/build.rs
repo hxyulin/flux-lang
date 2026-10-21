@@ -65,7 +65,10 @@ pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result
     if let Some(d) = flux_ty::check_main(&hir.items, &typed.sigs) {
         errors.push(d);
     }
-    if errors.is_empty() {
+    if !errors.is_empty() {
+        let more = flux_mir::check_clean_bodies(&hir, &typed, &errors);
+        errors.extend(more);
+    } else {
         let mir = timings.time("mir", || flux_mir::build_file(&hir, &typed));
         errors.extend(mir.diagnostics.iter().cloned());
         if errors.is_empty() {

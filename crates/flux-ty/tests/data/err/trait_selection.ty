@@ -1,0 +1,51 @@
+struct S {}
+struct W<T> { 0: T }
+struct S {}
+struct S {}
+struct S {}
+fn only(&Self) -> ()
+    self@0: &Self
+fn run() -> ()
+fn int(Self) -> ()
+fn int(u8) -> ()
+    self@0: u8
+fn int(i64) -> ()
+    self@0: i64
+fn run() -> ()
+fn m(&Self) -> ()
+fn mutate(&mut Self) -> ()
+fn m(&S) -> ()
+    self@0: &S
+fn mutate(&mut S) -> ()
+    self@0: &mut S
+fn run() -> ()
+    s@0: S
+fn conv(&Self) -> T
+fn conv(&S) -> bool
+    self@0: &S
+fn run() -> ()
+    _x@0: i64
+fn g<U>(&Self, U) -> ()
+fn g<U>(&S, U) -> ()
+    self@0: &S
+    _u@1: U
+fn make() -> Self
+fn a(&Self) -> ()
+    self@0: &Self
+    _x@1: Self
+fn b(&Self) -> ()
+    self@0: &Self
+fn sized(&Self) -> ()
+fn c(&Self) -> ()
+    self@0: &Self
+fn main() -> ()
+error 528..532: no method named `only` found for struct `W<T>` in the current scope
+error 875..878: the trait bound `i32: case_03::Int` is not satisfied
+error 1269..1271: mismatched types: expected `&mut _`, found `&S`
+error 1288..1289: mismatched types: expected `&_`, found `S`
+error 1747..1755: mismatched types: expected `i64`, found `bool`
+error 2062..2067: impl has stricter requirements than trait
+error 2467..2469: the size for values of type `Self` cannot be known at compilation time
+error 2472..2484: the size for values of type `Self` cannot be known at compilation time
+error 2531..2543: the size for values of type `Self` cannot be known at compilation time
+error 2681..2686: the size for values of type `Self` cannot be known at compilation time

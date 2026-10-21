@@ -1,0 +1,5 @@
+fn main() -> ()
+error 125..126: cycle detected when computing the super clauses of `A`
+error 160..166: cycle detected when computing the super clauses of `Itself`
+error 199..200: cycle detected when computing the super clauses of `E`
+error 302..303: cycle detected when computing the super clauses of `H`

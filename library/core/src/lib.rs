@@ -5,6 +5,7 @@
 //! imported, as rustc does with its own.
 
 pub mod convert;
+pub mod marker;
 pub mod mem;
 pub mod num;
 pub mod prelude;

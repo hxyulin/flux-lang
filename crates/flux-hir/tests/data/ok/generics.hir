@@ -6,6 +6,12 @@ struct Two<K, V> { key: K, value: V }
 
 struct T;
 
+impl<T> Pair<T>;
+
+impl Pair<i32>;
+
+impl<K, V> Two<K, V>;
+
 fn id<T>(x@0: T) -> T {
     x@0
 }

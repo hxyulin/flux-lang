@@ -2,6 +2,12 @@ struct Counter { n: i32, step: i32 }
 
 struct Wrapper { inner: Counter }
 
+impl Counter;
+
+impl Counter;
+
+impl Wrapper;
+
 fn Counter::new(step@0: i32) -> Self {
     Counter { n: 0, step: step@0 }
 }

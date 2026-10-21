@@ -42,8 +42,8 @@ fn main() -> () {
     <error>();
     S {  };
     <missing>;
-    <error>();
-    let _i@10 = <error>;
+    <T>::missing();
+    let _i@10 = <T>::MISSING;
 }
 
 error 136..141: too many leading `super` keywords within `crate::m::n`
@@ -68,5 +68,3 @@ error 697..698: expected struct, variant or union type, found module `m`
 error 719..720: cannot find value `n` in module `m`
 error 726..727: cannot find function `f` in this scope
 error 751..755: cannot find struct, variant or union type `Nope` in module `m`
-error 767..774: no associated function or constant named `missing` found for struct `T` in the current scope
-error 794..801: no associated function or constant named `MISSING` found for struct `T` in the current scope

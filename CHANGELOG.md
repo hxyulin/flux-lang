@@ -53,6 +53,15 @@
   (E0107, E0109, E0282, E0034, E0392, E0207, E0592, ...), and expected
   types flow into calls and struct expressions as in rustc. `core` gains
   `mem::drop` (in the prelude) and `convert::identity`.
+- Support traits: required and provided methods, generic traits,
+  supertraits, `impl` blocks of traits for any type (blanket ones
+  included), trait bounds and `where` clauses, method calls through
+  bounds and traits in scope, and `T::f`, `Tr::f` and `<T as Tr>::f`
+  paths. Bounds are checked at calls with rustc's spans (E0277), and
+  `impl` blocks against their traits and each other (E0046, E0407,
+  E0053, E0050, E0185, E0186, E0049, E0119, E0199, E0200, E0391).
+  Calls of trait methods are resolved to `impl` blocks when generic
+  code is monomorphized. `core` gains `marker::Sized`.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 

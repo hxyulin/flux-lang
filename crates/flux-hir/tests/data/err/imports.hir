@@ -6,6 +6,10 @@ struct Dup;
 
 struct Twice;
 
+impl Twice;
+
+impl Twice;
+
 fn f() -> () {}
 
 fn g() -> () {}

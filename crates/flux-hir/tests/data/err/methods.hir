@@ -1,5 +1,15 @@
 struct S { a: i32 }
 
+impl S;
+
+impl S;
+
+impl Missing;
+
+impl i32;
+
+impl S;
+
 fn S::new() -> Self {
     S { a: 0 }
 }
@@ -43,11 +53,11 @@ fn self_ctor() -> () {
 }
 
 fn unknown_assoc() -> () {
-    <error>();
+    <S>::nope();
 }
 
 fn S::via_self() -> i32 {
-    <error>()
+    <Self>::missing()
 }
 
 error 39..55: duplicate definitions with name `new`
@@ -60,5 +70,3 @@ error 413..417: `self` parameter is only allowed in associated functions
 error 435..440: `self` parameter is only allowed in associated functions
 error 475..479: cannot find value `self` in this scope
 error 538..542: cannot find struct, variant or union type `Self` in this scope
-error 584..588: no associated function or constant named `nope` found for struct `S` in the current scope
-error 645..652: no associated function or constant named `missing` found for struct `S` in the current scope

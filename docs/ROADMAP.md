@@ -26,14 +26,17 @@ Started: name resolution across modules and `use` imports with
 privacy, type inference, constants and their compile-time evaluation,
 MIR and borrow checking, for functions over integers, `bool`, raw
 pointers, tuples and structs, with methods and references that need no
-lifetimes (parameters, temporaries and locals assigned once), and
-generic functions, structs and `impl` blocks, monomorphized. In order
-next:
+lifetimes (parameters, temporaries and locals assigned once), generic
+functions, structs and `impl` blocks, monomorphized, and traits with
+bounds, statically dispatched. In order next:
 
-1. Traits: bounds on type parameters, operators on user types,
-   `Copy`/`Clone`, `Drop`, `for` loops over `Iterator`. Then `core` can
-   define `Option`, `CStr` (now built into the compiler) and the pointer
-   methods, through `#[lang]` items and intrinsics.
+1. More of traits: associated types and constants, defaults for trait
+   parameters, and the operator traits on user types (`Add`,
+   `PartialEq`, ...) as `#[lang]` items in `core`; `Copy` and `Clone`,
+   with `#[derive]`; `Drop`; bounds on structs. Then `core` can define
+   the pointer methods and `CStr` (now built into the compiler) through
+   lang items and intrinsics. `for` loops over `Iterator` need `Option`,
+   so they come with enums.
 2. Lifetimes: references in structs and return values, which needs
    region inference across function signatures.
 3. Items inside function bodies, enums and `match`.
@@ -63,8 +66,9 @@ intrinsics, unstable features), so flux cannot compile them. flux
 provides its own small core library, [`library/core`](../library/core),
 written in flux and compiled with every program, that defines the same
 names with the same meaning. So far it has the integer types' constants
-and methods, `mem::drop` and `convert::identity`; `Option`, `Result`,
-the operator traits, `Copy` and `Sized` need traits (and enums) first. It is lowered and type-checked on every
+and methods, `mem::drop`, `convert::identity` and `marker::Sized`; the
+operator traits, `Copy` and `Clone` come next, now that traits exist,
+and `Option` and `Result` with enums. It is lowered and type-checked on every
 build (about a millisecond today), and only the functions a program
 calls are compiled; caching it is the first use for the incremental
 checking below. Output goes through `extern "C"` declarations of libc

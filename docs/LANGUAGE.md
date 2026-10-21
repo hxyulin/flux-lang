@@ -54,10 +54,15 @@ reported as "not supported yet":
 - **Items:** functions, including `const fn`; structs (named-field,
   tuple and unit structs); inherent `impl` blocks for them, with
   associated functions, methods (`self`, `mut self`, `&self`,
-  `&mut self`) and constants; type parameters on all of these, without
-  bounds or defaults (`fn id<T>(x: T) -> T`, `struct Pair<T>`,
-  `impl<T> Pair<T>`, `impl Pair<i32>`), but not on associated constants'
-  blocks;
+  `&mut self`) and constants; traits with required and provided methods
+  and associated functions, generic parameters (without defaults) and
+  supertraits, and `impl` blocks of them for any type (`impl Tr for S`,
+  `impl<T: Tr> Tr for W<T>`, `impl Tr for i32`, `impl Tr for &S`,
+  blanket `impl<T: A> B for T`); type parameters on all of these, with
+  trait bounds in their lists and `where` clauses (`fn f<T: A + B>`,
+  `where T: Tr<u8>`), without defaults (`fn id<T>(x: T) -> T`,
+  `struct Pair<T>`, `impl<T> Pair<T>`, `impl Pair<i32>`), but not on
+  associated constants' blocks, and without bounds on structs;
   constants (`const N: i32 = 5;`); modules, inline (`mod m { }`) and in
   files (`mod m;` as `m.rs` or `m/mod.rs`); `use` declarations, with
   groups, renames, globs, `self`, `super` and `crate`; and
@@ -74,7 +79,9 @@ reported as "not supported yet":
   (`S { a: 1, b, ..base }`), tuple struct constructors (`P(1, 2)`) and
   unit structs, field accesses (`s.a`, `t.0`, through references),
   paths to items in modules and associated items (`m::f`, `S::new`,
-  `Self::X`, `i32::MAX`), generic arguments in paths and method calls
+  `Self::X`, `i32::MAX`), trait items through a type, a trait or both
+  (`T::f`, `S::f`, `Tr::f`, `<T as Tr>::f`, `<T>::f`), generic arguments
+  in paths and method calls
   (`id::<u8>`, `Pair::<i32>::new`, `x.m::<u8>()`), method calls,
   borrows (`&x`, `&mut x`) and dereferences (`*r`), blocks (including
   `unsafe`), `if`/`else`, `loop`, `while`, unlabeled `break` (with a
@@ -105,10 +112,27 @@ Structs and tuples cannot be passed to C yet.
 
 Generic items are checked once, in terms of their parameters, and
 compiled once per set of arguments the program uses them with
-(monomorphization). Without traits, a type parameter has no operators,
-methods or fields, and is moved, never copied. Blocks for different
-instances of a struct (`impl Pair<i32>` and `impl Pair<u8>`) may define
-the same name, and the type a method is called on picks one.
+(monomorphization). A type parameter has the methods of the traits its
+bounds name, and no operators or fields; it is moved, never copied.
+Blocks for different instances of a struct (`impl Pair<i32>` and
+`impl Pair<u8>`) may define the same name, and the type a method is
+called on picks one.
+
+Methods are found as rustc finds them: on the receiver's type, then on
+each type it dereferences to, the type's own methods before those of
+traits, and those of traits only if the trait is in scope (defined or
+imported in the module, or in the prelude) or bounds a type parameter.
+A call of a generic function or method must meet its bounds, and an
+`impl` block must define its trait's required methods with its
+signatures; flux reports what rustc does where they do not (E0277,
+E0599, E0046, E0053, ...), and conflicting `impl` blocks of a trait.
+Calls of trait methods are static: each calls the method of the
+`impl` block for its types, chosen when the program is compiled. There
+are no trait objects (`dyn Tr`) or `impl Trait` types, no associated
+types or constants in traits, and the operator traits, `Copy`, `Clone`,
+`Drop` and `#[derive]` are not supported yet. `Sized` is, as a bound:
+every type flux has is sized, but a trait's provided methods must say
+`where Self: Sized` to take or hold `Self` by value, as in rustc.
 
 Constants are evaluated at compile time, calls to `const fn`s included,
 and overflow or division by zero there is an error, as in rustc. So is
@@ -120,7 +144,8 @@ Every program can use flux's own `core` library, which has the parts of
 Rust's that flux supports so far: the integer types' constants (`MIN`,
 `MAX`, `BITS`) and methods such as `abs`, `pow`, `wrapping_add`,
 `count_ones`, `rotate_left`, `min` and `max`, `core::mem::drop` (also in
-the prelude, as `drop`) and `core::convert::identity`. Anything else in
+the prelude, as `drop`), `core::convert::identity` and
+`core::marker::Sized` (in the prelude). Anything else in
 `core` is reported as not supported yet, and so is `std`.
 
 References may be parameters, temporaries, and `let` bindings without

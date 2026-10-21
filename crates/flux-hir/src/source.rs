@@ -40,6 +40,10 @@ const CORE_FILES: &[(&str, &str)] = &[
         "convert.rs",
         include_str!("../../../library/core/src/convert.rs"),
     ),
+    (
+        "marker.rs",
+        include_str!("../../../library/core/src/marker.rs"),
+    ),
     ("mem.rs", include_str!("../../../library/core/src/mem.rs")),
     ("num.rs", include_str!("../../../library/core/src/num.rs")),
     (

@@ -150,11 +150,13 @@ analysis. Semantic analysis will follow rustc's and rust-analyzer's split:
 program's files:
 
 - The **item tree**: every crate's modules, and every function's,
-  struct's, constant's and `impl` block's name, generic parameters and
-  signature, with types as written (`TypeRef::Path(u8)`,
-  `Pair<T>`), but no bodies. Everything outside a body depends only on
-  it. A method is a function owned by an `impl` block whose first
-  parameter is `self`, with the type `Self`, `&Self` or `&mut Self`.
+  struct's, trait's, constant's and `impl` block's name, generic
+  parameters, bounds and signature, with types and traits as written
+  (`TypeRef::Path(u8)`, `Pair<T>`, `T: Tr<u8>`), but no bodies.
+  Everything outside a body depends only on it. A method is a function
+  owned by an `impl` block or a trait whose first parameter is `self`,
+  with the type `Self`, `&Self` or `&mut Self`. Each trait knows its
+  `impl` blocks, and each name the traits with a function of it.
 - The **def map** ([`def_map`](../crates/flux-hir/src/def_map.rs)): what
   each module's names mean, in Rust's two namespaces (types and values),
   from its items and its `use` imports. Imports are resolved together,
@@ -169,7 +171,10 @@ program's files:
   expressions, patterns and bindings addressed by `Idx`. Names are resolved while lowering,
   through a stack of scopes and then the item tree, so an expression
   `x` becomes `Res::Local(binding)` or `Res::Function(id)`, and `S::new`
-  the associated function `new` of the struct `S`. Generic arguments
+  the associated function `new` of the struct `S`. A path whose item
+  depends on types, such as `T::f`, `<T as Tr>::f`, `Tr::f`, or `S::f`
+  for an `f` that `S`'s own blocks lack, is left to type checking
+  (`Res::Assoc`). Generic arguments
   written in a path are kept by what they are for: `S::<A>::f::<B>`
   has `A` for `S` and `B` for `f`. Method calls stay
   unresolved until types are known. `break` and
@@ -213,8 +218,26 @@ associated function also unifies its block's type (`Pair<T>` in
 different instances of a struct (`impl Pair<i32>`, `impl Pair<u8>`) may
 each have a function of the same name; the one whose block may be for
 the receiver's type is called, and two are E0034. Each call records the
-function and generic arguments it calls. Without trait bounds a
-parameter has no operators, methods or fields, and is never `Copy`.
+function and generic arguments it calls. A parameter has the methods of
+its bounds' traits, no operators or fields, and is never `Copy`.
+
+A trait's items are generic over its parameters with an implicit
+`Self` first, so a call of a trait's method, `x.m()` or `Tr::m(x)`, is
+a call of the trait's function with `Self` the receiver's type. The
+call's bounds (and `Self: Tr` itself) become *obligations*, met by a
+bound in scope or by the one `impl` block of the trait whose header
+unifies with it, whose own bounds become obligations in turn; one with
+an unknown `Self`, or more than one block that may apply, waits until
+types are known, and integer variables take their default before what
+is left is reported (E0277, rustc's spans). Probing for a method tries
+each type the receiver dereferences to, inherent methods first, then
+the traits in scope whose blocks may apply, bounds included; trying an
+`impl` block unifies in a snapshot of the variables, rolled back
+after. Outside bodies, where every type is known up to rigid parameters,
+[`traits`](../crates/flux-ty/src/traits.rs) answers whether a predicate
+holds by matching `impl` headers, which checks supertraits, overlapping
+blocks (E0119, with bounds that rule types out) and blocks' methods
+against their traits (E0046, E0053, ...).
 
 Where the type an expression must have is known before it is inferred
 (a `let` with a type, an argument, a field, a return value), it is
@@ -376,7 +399,10 @@ as rustc's collector does; one more than 128 calls deep is rustc's
 Each instance is a copy of the function's MIR with its arguments
 substituted, compiled like any other function, and its symbol is the
 function's with a hash of the arguments as the last segment, as in
-rustc's legacy mangling.
+rustc's legacy mangling. A call of a trait's method stays one in MIR;
+once its types are known, `traits::resolve_instance` makes it a call of
+the method of the `impl` block for them, or of the trait's provided
+method with `Self` substituted, as rustc's `Instance::resolve` does.
 
 Only arm64 macOS can link so far: Linux needs glibc's startup objects
 passed to keel's ELF linker. `flux build --timings` prints each phase's

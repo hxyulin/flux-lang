@@ -1,0 +1,185 @@
+struct S { x: i32 }
+
+struct W<T>(T);
+
+trait Shape;
+
+trait Consume;
+
+trait Convert<T>;
+
+trait Named: Shape;
+
+trait Both where Self: Named, Self: Consume;
+
+trait Patterns;
+
+trait Area2;
+
+trait Hidden;
+
+trait Deep;
+
+impl Shape for S;
+
+impl Consume for S;
+
+impl Named for S;
+
+impl Both for S;
+
+impl Convert<bool> for S;
+
+impl Patterns for S;
+
+impl<T> Shape for W<T> where T: Shape;
+
+impl Consume for i32;
+
+impl Consume for (i32, i32);
+
+impl Consume for &S;
+
+impl<T> Area2 for T where T: Shape;
+
+impl<T> W<T> where T: Shape;
+
+impl Hidden for super::S;
+
+impl m::inner::Deep for S;
+
+fn area(&Self) -> i32;
+
+fn new() -> Self;
+
+fn Shape::double(self@0: &Self) -> i32 {
+    (self@0.area() * 2)
+}
+
+fn Shape::zero() -> i32 {
+    0
+}
+
+fn consume(Self) -> i32;
+
+fn Consume::consume_twice(self@0: Self) -> i32 where Self: Sized {
+    self@0.consume()
+}
+
+fn convert(&Self) -> T;
+
+fn Convert::with<U>(self@0: &Self, u@1: U) -> U {
+    u@1
+}
+
+fn name(&Self) -> i32;
+
+fn Patterns::sum(self@0: &Self, (a@1, b@2): (i32, i32)) -> i32 {
+    (a@1 + b@2)
+}
+
+fn <S as Shape>::area(self@0: &Self) -> i32 {
+    self@0.x
+}
+
+fn <S as Shape>::new() -> Self {
+    S { x: <Self>::zero() }
+}
+
+fn <S as Consume>::consume(self@0: Self) -> i32 {
+    self@0.x
+}
+
+fn <S as Named>::name(self@0: &Self) -> i32 {
+    1
+}
+
+fn <S as Convert<bool>>::convert(self@0: &Self) -> bool {
+    (self@0.x > 0)
+}
+
+fn <W<T> as Shape>::area(self@0: &Self) -> i32 {
+    self@0.0.area()
+}
+
+fn <W<T> as Shape>::new() -> Self {
+    W(<T>::new())
+}
+
+fn <i32 as Consume>::consume(self@0: Self) -> i32 {
+    self@0
+}
+
+fn <(i32, i32) as Consume>::consume(self@0: Self) -> i32 {
+    (self@0.0 + self@0.1)
+}
+
+fn <&S as Consume>::consume(self@0: Self) -> i32 {
+    self@0.x
+}
+
+fn area2(&Self) -> i32;
+
+fn <T as Area2>::area2(self@0: &Self) -> i32 {
+    (self@0.area() + self@0.area())
+}
+
+fn bound<T>(x@0: &T) -> i32 where T: Shape {
+    x@0.area()
+}
+
+fn bounds<T, U>(x@0: T, u@1: &U) -> i32 where T: Shape, T: Consume, U: Convert<bool> {
+    let _b@2: bool = u@1.convert();
+    x@0.consume()
+}
+
+fn where_clause<T>(x@0: T) -> i32 where T: Consume, T: Sized {
+    x@0.consume()
+}
+
+fn where_on_concrete() -> i32 where S: Shape {
+    0
+}
+
+fn W::inner_area(self@0: &Self) -> i32 {
+    self@0.0.area()
+}
+
+fn paths<T>(s@0: &S, t@1: &T) -> i32 where T: Shape {
+    let _a@2: T = <T>::new();
+    let _b@3: S = <S>::new();
+    let _c@4 = <T as Shape>::area(t@1);
+    let _d@5 = <S as Shape>::new();
+    let _e@6 = <T>::zero();
+    let _f@7 = Shape::area(s@0);
+    let _g@8 = <S as Convert>::convert[Self<bool>](s@0);
+    let _h@9 = Shape::double(t@1);
+    <S>::zero()
+}
+
+fn Hidden::hidden(self@0: &Self) -> i32 {
+    7
+}
+
+fn deep(&Self) -> i32;
+
+fn <S as m::inner::Deep>::deep(self@0: &Self) -> i32 {
+    3
+}
+
+fn in_scope(s@0: &S) -> i32 {
+    ((s@0.hidden() + s@0.deep()) + Deep::deep(s@0))
+}
+
+fn generic_method(s@0: &S) -> u8 {
+    s@0.with::<u8>(1)
+}
+
+fn main() -> () {
+    let s@0 = S { x: 1 };
+    let _ = (((bound((&s@0)) + paths((&s@0), (&s@0))) + in_scope((&s@0))) + where_on_concrete());
+    let _ = ((bounds(S { x: 2 }, (&s@0)) + where_clause(3)) + (generic_method((&s@0)) as i32));
+    let _ = ((W(S { x: 4 }).inner_area() + (1, 2).consume()) + Consume::consume((&s@0)));
+    let _ = (((s@0.area2() + s@0.sum((1, 2))) + s@0.name()) + s@0.consume_twice());
+}
+

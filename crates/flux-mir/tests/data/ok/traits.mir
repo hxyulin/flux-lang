@@ -1,0 +1,550 @@
+fn Tr::twice(_1: &Self) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+    let _3: &Self;
+    let _4: i32;
+    let _5: &Self;
+
+    bb0: {
+        _3 = &(*_1);
+        _2 = get::<Self>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _5 = &(*_1);
+        _4 = get::<Self>(copy _5) -> bb2;
+    }
+
+    bb2: {
+        _0 = Add(copy _2, copy _4);
+        return;
+    }
+}
+
+fn Tr::remake(_1: Self) -> Self {
+    let mut _0: Self;
+    let _2: i32; // n
+    let _3: Self;
+    let _4: i32;
+
+    bb0: {
+        _3 = move _1;
+        _2 = take::<Self>(move _3) -> bb1;
+    }
+
+    bb1: {
+        _4 = copy _2;
+        _0 = make::<Self>(copy _4) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn <S as Tr>::get(_1: &S) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy (*_1).0;
+        return;
+    }
+}
+
+fn <S as Tr>::set(_1: &mut S, _2: i32) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: i32;
+
+    bb0: {
+        _4 = copy _2;
+        (*_1).0 = copy _4;
+        _3 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn <S as Tr>::take(_1: S) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy _1.0;
+        return;
+    }
+}
+
+fn <S as Tr>::make(_1: i32) -> S {
+    let mut _0: S;
+    let _2: i32;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = S { x: copy _2 };
+        return;
+    }
+}
+
+fn <W<T> as Tr>::get(_1: &W<T>) -> i32 {
+    let mut _0: i32;
+    let _2: &T;
+
+    bb0: {
+        _2 = &(*_1).0;
+        _0 = get::<T>(copy _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn <W<T> as Tr>::set(_1: &mut W<T>, _2: i32) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: &mut T;
+    let _5: i32;
+
+    bb0: {
+        _4 = &two_phase (*_1).0;
+        _5 = copy _2;
+        _3 = set::<T>(move _4, copy _5) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn <W<T> as Tr>::take(_1: W<T>) -> i32 {
+    let mut _0: i32;
+    let _2: T;
+
+    bb0: {
+        _2 = move _1.0;
+        _0 = take::<T>(move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn <W<T> as Tr>::make(_1: i32) -> W<T> {
+    let mut _0: W<T>;
+    let _2: T;
+    let _3: i32;
+
+    bb0: {
+        _3 = copy _1;
+        _2 = make::<T>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _0 = W(move _2);
+        return;
+    }
+}
+
+fn <i32 as Tr>::get(_1: &i32) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy (*_1);
+        return;
+    }
+}
+
+fn <i32 as Tr>::set(_1: &mut i32, _2: i32) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: i32;
+
+    bb0: {
+        _4 = copy _2;
+        (*_1) = copy _4;
+        _3 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn <i32 as Tr>::take(_1: i32) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy _1;
+        return;
+    }
+}
+
+fn <i32 as Tr>::make(_1: i32) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy _1;
+        return;
+    }
+}
+
+fn receivers(_1: S) -> i32 {
+    let mut _0: i32;
+    let _2: i32; // a
+    let _3: &S;
+    let _4: ();
+    let _5: &mut S;
+    let _6: &mut S; // r
+    let _7: ();
+    let _8: &mut S;
+    let _9: i32; // b
+    let _10: &S;
+    let _11: i32;
+    let _12: i32;
+    let _13: i32;
+    let _14: i32;
+    let _15: S;
+
+    bb0: {
+        _3 = &_1;
+        _2 = get::<S>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _5 = &two_phase _1;
+        _4 = set::<S>(move _5, const 2_i32) -> bb2;
+    }
+
+    bb2: {
+        _6 = &mut _1;
+        _8 = &two_phase (*_6);
+        _7 = set::<S>(move _8, const 3_i32) -> bb3;
+    }
+
+    bb3: {
+        _10 = &(*_6);
+        _9 = get::<S>(copy _10) -> bb4;
+    }
+
+    bb4: {
+        _12 = copy _2;
+        _13 = copy _9;
+        _11 = Add(copy _12, copy _13);
+        _15 = move _1;
+        _14 = take::<S>(move _15) -> bb5;
+    }
+
+    bb5: {
+        _0 = Add(copy _11, copy _14);
+        StorageDead(_9);
+        StorageDead(_6);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn generic<T>(_1: T) -> i32 {
+    let mut _0: i32;
+    let _2: ();
+    let _3: &mut T;
+    let _4: i32; // a
+    let _5: i32;
+    let _6: &T;
+    let _7: i32;
+    let _8: &T;
+    let _9: i32;
+    let _10: i32;
+    let _11: T;
+    let _12: T;
+    let _13: T;
+
+    bb0: {
+        _3 = &two_phase _1;
+        _2 = set::<T>(move _3, const 1_i32) -> bb1;
+    }
+
+    bb1: {
+        _6 = &_1;
+        _5 = get::<T>(copy _6) -> bb2;
+    }
+
+    bb2: {
+        _8 = &_1;
+        _7 = twice::<T>(copy _8) -> bb3;
+    }
+
+    bb3: {
+        _4 = Add(copy _5, copy _7);
+        _9 = copy _4;
+        _12 = move _1;
+        _11 = remake::<T>(move _12) -> bb4;
+    }
+
+    bb4: {
+        _13 = move _11;
+        _10 = take::<T>(move _13) -> bb5;
+    }
+
+    bb5: {
+        _0 = Add(copy _9, copy _10);
+        StorageDead(_4);
+        return;
+    }
+}
+
+fn paths<T>(_1: &T) -> i32 {
+    let mut _0: i32;
+    let _2: S; // s
+    let _3: i32; // a
+    let _4: &S;
+    let _5: i32; // b
+    let _6: &T;
+    let _7: i32; // c
+    let _8: &T;
+    let _9: i32; // d
+    let _10: i32;
+    let _11: i32;
+    let _12: i32;
+    let _13: i32;
+    let _14: i32;
+    let _15: i32;
+    let _16: i32;
+    let _17: i32;
+    let _18: S;
+
+    bb0: {
+        _2 = make::<S>(const 1_i32) -> bb1;
+    }
+
+    bb1: {
+        _4 = &_2;
+        _3 = get::<S>(copy _4) -> bb2;
+    }
+
+    bb2: {
+        _6 = copy _1;
+        _5 = get::<T>(copy _6) -> bb3;
+    }
+
+    bb3: {
+        _8 = copy _1;
+        _7 = get::<T>(copy _8) -> bb4;
+    }
+
+    bb4: {
+        _9 = take::<i32>(const 4_i32) -> bb5;
+    }
+
+    bb5: {
+        _13 = copy _3;
+        _14 = copy _5;
+        _12 = Add(copy _13, copy _14);
+        _15 = copy _7;
+        _11 = Add(copy _12, copy _15);
+        _16 = copy _9;
+        _10 = Add(copy _11, copy _16);
+        _18 = move _2;
+        _17 = take::<S>(move _18) -> bb6;
+    }
+
+    bb6: {
+        _0 = Add(copy _10, copy _17);
+        StorageDead(_9);
+        StorageDead(_7);
+        StorageDead(_5);
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn copy_receiver() -> i32 {
+    let mut _0: i32;
+    let _1: i32; // n
+    let _2: i32; // a
+    let _3: i32;
+    let _4: i32;
+    let _5: i32;
+    let _6: i32;
+    let _7: i32;
+    let _8: i32;
+    let _9: i32;
+    let _10: &i32;
+
+    bb0: {
+        _1 = const 5_i32;
+        _3 = copy _1;
+        _2 = take::<i32>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _5 = copy _2;
+        _7 = copy _1;
+        _6 = take::<i32>(copy _7) -> bb2;
+    }
+
+    bb2: {
+        _4 = Add(copy _5, copy _6);
+        _9 = const 6_i32;
+        _10 = &_9;
+        _8 = get::<i32>(copy _10) -> bb3;
+    }
+
+    bb3: {
+        _0 = Add(copy _4, copy _8);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn nested(_1: &mut W<W<S>>) -> i32 {
+    let mut _0: i32;
+    let _2: ();
+    let _3: &mut W<W<S>>;
+    let _4: ();
+    let _5: &mut W<S>;
+    let _6: i32;
+    let _7: &W<W<S>>;
+    let _8: i32;
+    let _9: &S;
+
+    bb0: {
+        _3 = &two_phase (*_1);
+        _2 = set::<W<W<S>>>(move _3, const 7_i32) -> bb1;
+    }
+
+    bb1: {
+        _5 = &two_phase (*_1).0;
+        _4 = set::<W<S>>(move _5, const 8_i32) -> bb2;
+    }
+
+    bb2: {
+        _7 = &(*_1);
+        _6 = get::<W<W<S>>>(copy _7) -> bb3;
+    }
+
+    bb3: {
+        _9 = &(*_1).0.0;
+        _8 = get::<S>(copy _9) -> bb4;
+    }
+
+    bb4: {
+        _0 = Add(copy _6, copy _8);
+        return;
+    }
+}
+
+fn <T as Doubled>::doubled(_1: &T) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+    let _3: &T;
+
+    bb0: {
+        _3 = &(*_1);
+        _2 = get::<T>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _0 = Mul(copy _2, const 2_i32);
+        return;
+    }
+}
+
+fn blanket(_1: &S) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+    let _3: &S;
+    let _4: i32;
+    let _5: i32;
+    let _6: &i32;
+
+    bb0: {
+        _3 = &(*_1);
+        _2 = doubled::<S>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _5 = const 3_i32;
+        _6 = &_5;
+        _4 = doubled::<i32>(copy _6) -> bb2;
+    }
+
+    bb2: {
+        _0 = Add(copy _2, copy _4);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: i32;
+    let _2: i32;
+    let _3: i32;
+    let _4: S;
+    let _5: i32;
+    let _6: W<S>;
+    let _7: S;
+    let _8: i32;
+    let _9: &i32;
+    let _10: i32;
+    let _11: i32;
+    let _12: i32;
+    let _13: i32;
+    let _14: i32;
+    let _15: &mut W<W<S>>;
+    let _16: &mut W<W<S>>;
+    let _17: W<W<S>>;
+    let _18: W<S>;
+    let _19: S;
+    let _20: i32;
+    let _21: &S;
+    let _22: S;
+
+    bb0: {
+        _4 = S { x: const 1_i32 };
+        _3 = receivers(move _4) -> bb1;
+    }
+
+    bb1: {
+        _7 = S { x: const 2_i32 };
+        _6 = W(move _7);
+        _5 = generic::<W<S>>(move _6) -> bb2;
+    }
+
+    bb2: {
+        _2 = Add(copy _3, copy _5);
+        _10 = const 4_i32;
+        _9 = &_10;
+        _8 = paths::<i32>(copy _9) -> bb3;
+    }
+
+    bb3: {
+        _1 = Add(copy _2, copy _8);
+        _13 = copy_receiver() -> bb4;
+    }
+
+    bb4: {
+        _19 = S { x: const 3_i32 };
+        _18 = W(move _19);
+        _17 = W(move _18);
+        _16 = &mut _17;
+        _15 = &mut (*_16);
+        _14 = nested(move _15) -> bb5;
+    }
+
+    bb5: {
+        _12 = Add(copy _13, copy _14);
+        _22 = S { x: const 4_i32 };
+        _21 = &_22;
+        _20 = blanket(copy _21) -> bb6;
+    }
+
+    bb6: {
+        _11 = Add(copy _12, copy _20);
+        _0 = const ();
+        return;
+    }
+}
+

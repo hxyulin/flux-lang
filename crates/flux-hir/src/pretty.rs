@@ -36,6 +36,31 @@ pub(crate) fn file(hir: &Hir) -> String {
         .unwrap();
         out.push('\n');
     }
+    for t in items
+        .traits
+        .values()
+        .filter(|t| items.in_main_crate(t.loc.module))
+    {
+        let unsafety = if t.is_unsafe { "unsafe " } else { "" };
+        write!(out, "{unsafety}trait {}{}", t.name, t.generics).unwrap();
+        let supertraits: Vec<String> = t.supertraits.iter().map(|b| b.path.to_string()).collect();
+        if !supertraits.is_empty() {
+            write!(out, ": {}", supertraits.join(" + ")).unwrap();
+        }
+        writeln!(out, "{};\n", where_clause(&t.generics)).unwrap();
+    }
+    for imp in items
+        .impls
+        .values()
+        .filter(|i| items.in_main_crate(i.module))
+    {
+        let unsafety = if imp.is_unsafe { "unsafe " } else { "" };
+        write!(out, "{unsafety}impl{} ", imp.generics).unwrap();
+        if let Some(t) = &imp.trait_ref {
+            write!(out, "{} for ", t.path).unwrap();
+        }
+        writeln!(out, "{}{};\n", imp.self_ty, where_clause(&imp.generics)).unwrap();
+    }
     let functions = items
         .functions
         .iter()
@@ -93,6 +118,19 @@ fn type_ref(ty: &TypeRef) -> String {
     ty.to_string()
 }
 
+/// ` where T: A, U: B`, or nothing.
+fn where_clause(generics: &crate::Generics) -> String {
+    if generics.predicates.is_empty() {
+        return String::new();
+    }
+    let predicates: Vec<String> = generics
+        .predicates
+        .iter()
+        .map(|p| format!("{}: {}", p.ty, p.bound.path))
+        .collect();
+    format!(" where {}", predicates.join(", "))
+}
+
 struct Printer<'a> {
     hir: &'a Hir,
     body: &'a Body,
@@ -117,7 +155,13 @@ impl Printer<'_> {
                 .map_or(TypeRef::Error, |p| p.ty.clone());
             write!(self.out, ": {}", type_ref(&ty)).unwrap();
         }
-        write!(self.out, ") -> {} ", type_ref(&function.ret)).unwrap();
+        write!(
+            self.out,
+            ") -> {}{} ",
+            type_ref(&function.ret),
+            where_clause(generics)
+        )
+        .unwrap();
         self.expr(self.body.root);
         self.out.push('\n');
     }
@@ -261,6 +305,21 @@ impl Printer<'_> {
                     name.map_or("_".to_owned(), |n| n.to_string())
                 )
                 .unwrap();
+            }
+            Expr::Path(Res::Assoc { ty, trait_, name }) => {
+                let trait_ = trait_.map(|t| self.hir.items.traits[t].name);
+                match (ty, trait_) {
+                    (Some(ty), Some(t)) => {
+                        write!(self.out, "<{} as {t}>", type_ref(&self.body.types[*ty])).unwrap()
+                    }
+                    (Some(ty), None) => {
+                        write!(self.out, "<{}>", type_ref(&self.body.types[*ty])).unwrap()
+                    }
+                    (None, Some(t)) => write!(self.out, "{t}").unwrap(),
+                    (None, None) => {}
+                }
+                write!(self.out, "::{name}").unwrap();
+                self.generic_args(id);
             }
             Expr::Path(Res::Err) => self.out.push_str("<error>"),
             Expr::Tuple(fields) => {
