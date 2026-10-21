@@ -169,8 +169,15 @@ program's meaning (`allow`, `inline`, `doc`, ...).
 ## Types
 
 [`flux-ty`](../crates/flux-ty/src/lib.rs) resolves every signature from
-the item tree, then infers each body on its own against them. Inference
-is unification over type variables:
+the item tree, then infers each body on its own against them.
+
+A `Ty` is a 4-byte handle into one process-wide table of `TyKind`s, like
+`Symbol` for names: types compare and hash as integers, and a type made
+of types (`*const T`) stays `Copy`. The primitive types are interned
+first, so `Ty::BOOL` and `Ty::int(IntTy::U8)` are constants.
+
+Inference is unification over type variables, structural for types that
+contain types:
 
 - An unsuffixed integer literal gets an *integer variable*, which only
   unifies with integer types and defaults to `i32`. As in rustc, a
@@ -227,6 +234,11 @@ executable. No C compiler or system linker is involved.
   at calls, as Apple's arm64 ABI requires of C callers.
 - keel takes shift amounts modulo the width, which is exactly Rust's
   masked shift; the amount is converted to the shifted value's type.
+- Pointers, including `&CStr`, are keel `ptr`s. Each distinct C string
+  becomes a module-local, read-only data object ending in a NUL byte.
+- Calls to C-variadic functions use a variadic keel signature, which
+  gives the platform's convention (on Apple arm64, variadic arguments go
+  on the stack).
 - Rust functions get mangled symbols (`_ZN3fib3fibE`), so they cannot
   collide with C names. The C `main` is a wrapper that calls the Rust
   `main` and returns 0. A failed MIR assertion calls `abort`.

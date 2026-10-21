@@ -15,7 +15,7 @@ fn expressions(v@0: i32) -> () {
     <missing>
     let f@2 = <missing>;
     let <missing> = (1, 2);
-    <missing>;
+    v@0.method();
 }
 
 fn declaration_only() -> ();
@@ -24,7 +24,7 @@ error 0..9: structs are not supported yet
 error 11..21: `extern` blocks must be `unsafe` in edition 2024
 error 64..67: generic functions are not supported yet
 error 77..89: reference types are not supported yet
-error 96..102: string literals are not supported yet
+error 96..102: string literals other than `c"..."` are not supported yet
 error 106..118: the `cfg` attribute is not supported yet
 error 176..178: references are not supported yet
 error 184..191: loop labels are not supported yet
@@ -33,5 +33,4 @@ error 231..247: `for` loops are not supported yet
 error 252..283: `match` expressions are not supported yet
 error 296..299: floating-point numbers are not supported yet
 error 309..315: tuple patterns are not supported yet
-error 330..340: method calls are not supported yet
 error 348..364: free function without a body

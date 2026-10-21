@@ -1,0 +1,39 @@
+fn length() -> usize {
+    let mut _0: usize;
+    let _1: *const i8; // text
+    let _2: *const i8;
+    const c_str0: &CStr = c"caf\xc3\xa9\t\"x\"";
+
+    bb0: {
+        _1 = const c_str0;
+        _2 = copy _1;
+        _0 = strlen(copy _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn print(_1: i64) -> () {
+    let mut _0: ();
+    let _2: i32;
+    let _3: *const i8;
+    let _4: i64;
+    let _5: *const i8;
+    const c_str0: &CStr = c"%lld %s\n";
+    const c_str1: &CStr = c"raw \"text\"";
+
+    bb0: {
+        _3 = const c_str0;
+        _4 = copy _1;
+        _5 = const c_str1;
+        _2 = printf(copy _3, copy _4, copy _5) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+}
+

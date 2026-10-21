@@ -1,0 +1,19 @@
+unsafe extern fn printf(*const i8, ...) -> i32;
+
+unsafe extern fn strlen(*const i8) -> usize;
+
+unsafe extern fn fill_bytes(*mut u8, i32, usize) -> *mut u8;
+
+fn length() -> usize {
+    let text@0: *const i8 = c"caf\xc3\xa9\t\"x\"".as_ptr();
+    unsafe {
+        strlen(text@0)
+    }
+}
+
+fn print(value@0: i64) -> () {
+    unsafe {
+        printf(c"%lld %s\n".as_ptr(), value@0, c"raw \"text\"".as_ptr());
+    }
+}
+

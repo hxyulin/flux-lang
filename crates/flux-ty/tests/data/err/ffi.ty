@@ -1,0 +1,24 @@
+fn printf(*const i8) -> i32
+fn takes_bytes(*const u8) -> ()
+fn variadic_args(u8, bool, i16) -> ()
+    small@0: u8
+    flag@1: bool
+    wide@2: i16
+fn methods(i32) -> ()
+    x@0: i32
+    s@1: &CStr
+    a@2: *const i8
+    b@3: {error}
+    c@4: {error}
+fn pointers() -> ()
+    p@0: *const i8
+    n@1: usize
+error 200..205: can't pass `u8` to variadic function; cast it to `c_uint`
+error 239..243: can't pass `bool` to variadic function; cast it to `c_int`
+error 277..281: can't pass `i16` to variadic function; cast it to `c_int`
+error 336..344: `printf` takes at least 1 argument but 0 arguments were supplied
+error 409..420: `as_ptr` takes 0 arguments but 1 argument was supplied
+error 434..446: the method `to_bytes` on `&CStr` is not supported yet
+error 460..467: the method `abs` on `i32` is not supported yet
+error 521..537: mismatched types: expected `*const u8`, found `*const i8`
+error 588..598: casts of pointers are not supported yet

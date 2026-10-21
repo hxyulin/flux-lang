@@ -39,6 +39,9 @@ pub struct Body {
     pub locals: Arena<LocalDecl>,
     pub blocks: Arena<BasicBlockData>,
     pub param_count: usize,
+    /// The bytes of each C string constant, without the terminating NUL;
+    /// [`Constant::CStr`] indexes this.
+    pub c_strings: Vec<Box<[u8]>>,
 }
 
 impl Body {
@@ -122,14 +125,18 @@ pub enum Constant {
     },
     Bool(bool),
     Unit,
+    /// A `c"..."` literal: a pointer to NUL-terminated static bytes, the
+    /// body's `c_strings[index]`.
+    CStr(u32),
 }
 
 impl Constant {
     pub fn ty(self) -> Ty {
         match self {
-            Constant::Int { ty, .. } => Ty::Int(ty),
-            Constant::Bool(_) => Ty::Bool,
-            Constant::Unit => Ty::Unit,
+            Constant::Int { ty, .. } => Ty::int(ty),
+            Constant::Bool(_) => Ty::BOOL,
+            Constant::Unit => Ty::UNIT,
+            Constant::CStr(_) => flux_ty::c_str_ref(),
         }
     }
 
