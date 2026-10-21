@@ -1,0 +1,67 @@
+fn abs(i32) -> i32
+fn mismatches(bool) -> i32
+    flag@0: bool
+    a@1: u8
+    b@2: {error}
+    c@3: bool
+fn operators(u32, bool) -> ()
+    x@0: u32
+    f@1: bool
+    a@2: u32
+    b@3: bool
+    c@4: ()
+    d@5: u8
+fn literals() -> ()
+    a@0: u8
+    b@1: i8
+    c@2: i8
+    d@3: i8
+fn calls() -> ()
+    x@0: ()
+    y@1: i32
+    z@2: {error}
+fn mutability(i32) -> ()
+    p@0: i32
+    x@1: i32
+    y@2: i32
+fn loops() -> ()
+    v@0: u8
+fn returns() -> u8
+fn types({error}, {error}) -> {error}
+    x@0: {error}
+    y@1: {error}
+    a@2: bool
+    b@3: i32
+    c@4: {error}
+fn fn_value() -> ()
+error 101..105: mismatched types: expected `u8`, found `bool`
+error 119..147: `if` and `else` have incompatible types: `{integer}` and `bool`
+error 156..157: mismatched types: expected `bool`, found `{integer}`
+error 179..180: mismatched types: expected `bool`, found `{integer}`
+error 186..190: mismatched types: expected `i32`, found `bool`
+error 238..240: cannot apply unary operator `-` to type `u32`
+error 254..259: cannot apply binary operator `+` to type `bool`
+error 273..276: cannot apply unary operator `!` to type `()`
+error 296..300: mismatched types: expected `u8`, found `i32`
+error 333..338: literal out of range for `u8`
+error 356..359: literal out of range for `i8`
+error 374..379: literal out of range for `i8`
+error 421..427: call to unsafe function `abs` requires an `unsafe` block
+error 441..449: `calls` takes 0 arguments but 1 argument was supplied
+error 472..477: `abs` takes 1 argument but 0 arguments were supplied
+error 493..494: expected function, found `{integer}`
+error 545..546: cannot assign twice to immutable variable `x`
+error 556..557: cannot assign twice to immutable variable `p`
+error 590..591: cannot assign twice to immutable variable `y`
+error 602..603: invalid left-hand side of assignment
+error 650..657: `break` with value from a `while` loop
+error 681..713: mismatched types: expected `u8`, found `bool`
+error 762..768: mismatched types: expected `u8`, found `()`
+error 787..790: literal out of range for `u8`
+error 807..810: `str` is not supported yet
+error 815..825: tuples are not supported yet
+error 830..833: cannot find type `Vec` in this scope
+error 848..857: cannot cast `i32` as `bool`
+error 871..880: non-primitive cast: `()` as `i32`
+error 890..891: type annotations needed
+error 897..905: functions as values are not supported yet

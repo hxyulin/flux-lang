@@ -8,6 +8,7 @@ flux is a Cargo workspace:
 | [`flux-syntax`](../crates/flux-syntax/src/lib.rs) | Source text to lossless syntax trees, and the typed AST over them |
 | [`flux-sourcegen`](../crates/flux-sourcegen/src/lib.rs) | Generates the typed AST from [`flux.ungram`](../crates/flux-syntax/flux.ungram) |
 | [`flux-hir`](../crates/flux-hir/src/lib.rs) | Item tree and HIR: function bodies with names resolved |
+| [`flux-ty`](../crates/flux-ty/src/lib.rs) | Type inference and checking |
 | [`flux-intern`](../crates/flux-intern/src/lib.rs) | Global, thread-safe string interning (`Symbol`) |
 | [`flux-arena`](../crates/flux-arena/src/lib.rs) | Bump allocation and typed index arenas |
 
@@ -163,6 +164,29 @@ becomes `Expr::Missing` with a "not supported yet" error; flux never
 silently ignores code, and ignores only attributes that cannot change a
 program's meaning (`allow`, `inline`, `doc`, ...).
 
+## Types
+
+[`flux-ty`](../crates/flux-ty/src/lib.rs) resolves every signature from
+the item tree, then infers each body on its own against them. Inference
+is unification over type variables:
+
+- An unsuffixed integer literal gets an *integer variable*, which only
+  unifies with integer types and defaults to `i32`. As in rustc, a
+  literal directly under `as` takes the cast's type, so `300 as u8` is an
+  out-of-range literal.
+- `!` coerces to any type rather than unifying with it, so
+  `if c { 1 } else { return }` is an integer. A variable that only `!`
+  flows into falls back to `!` (edition 2024's never-type fallback).
+- Checks that need final types run after inference: literal ranges
+  (rustc's deny-by-default `overflowing_literals`), the operand types of
+  operators, casts, and unary `-` on unsigned types.
+
+It also makes the checks rustc makes before borrow checking: calling an
+`unsafe` function needs an `unsafe` block, and assigning needs `mut`,
+except for the first assignment of a `let x;` binding. Telling a first
+assignment from a second (and use before initialization) needs control
+flow, so that check moves to MIR.
+
 ## Names and memory
 
 Identifiers will be stored as [`Symbol`](../crates/flux-intern/src/lib.rs)s:
@@ -218,3 +242,4 @@ Interning all 52.6M identifiers and lifetimes (938K distinct) takes
 | `tests/corpus.rs` (opt-in) | No panics or malformed trees over a directory, with an error summary |
 | `flux-arena`, `flux-intern` unit tests | Allocation, alignment, threads; also run under Miri |
 | `flux-hir` `tests/hir.rs` | Snapshot HIR for `tests/data/{ok,err}`; lowering never panics on any parser fixture prefix |
+| `flux-ty` `tests/ty.rs` | Snapshot types and diagnostics for `tests/data/{ok,err}`; `main` rules; never panics |

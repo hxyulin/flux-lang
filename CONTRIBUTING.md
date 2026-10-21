@@ -36,6 +36,7 @@ just check
 | `crates/flux-syntax/tests/` | Snapshot, robustness, self-hosting and corpus tests |
 | `crates/flux-syntax/examples/bench.rs` | Per-phase throughput benchmark |
 | `crates/flux-hir/` | Item tree and HIR lowering: names resolved, `while` desugared |
+| `crates/flux-ty/` | Type inference and checking, one body at a time |
 | `crates/flux-intern/` | `Symbol` interning, predefined keywords and names |
 | `crates/flux-arena/` | `DroplessArena`, `Arena<T>`, `Idx<T>`, `ArenaMap` |
 
