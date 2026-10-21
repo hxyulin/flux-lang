@@ -14,6 +14,8 @@
 - Add a typed AST (`flux_syntax::ast`) generated from `flux.ungram` by the
   new `flux-sourcegen` crate, whose tests check that parsed trees match
   the grammar.
+- Add `flux-hir`: the item tree and HIR lowering of function bodies,
+  with names resolved, and `flux hir` to print it.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 

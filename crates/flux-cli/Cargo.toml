@@ -13,6 +13,7 @@ name = "flux"
 path = "src/main.rs"
 
 [dependencies]
+flux-hir.workspace = true
 flux-syntax.workspace = true
 clap = { version = "4", features = ["derive"] }
 

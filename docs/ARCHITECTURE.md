@@ -7,6 +7,7 @@ flux is a Cargo workspace:
 | [`flux-cli`](../crates/flux-cli/src/main.rs) | The `flux` binary: files, arguments, diagnostics, exit codes |
 | [`flux-syntax`](../crates/flux-syntax/src/lib.rs) | Source text to lossless syntax trees, and the typed AST over them |
 | [`flux-sourcegen`](../crates/flux-sourcegen/src/lib.rs) | Generates the typed AST from [`flux.ungram`](../crates/flux-syntax/flux.ungram) |
+| [`flux-hir`](../crates/flux-hir/src/lib.rs) | Item tree and HIR: function bodies with names resolved |
 | [`flux-intern`](../crates/flux-intern/src/lib.rs) | Global, thread-safe string interning (`Symbol`) |
 | [`flux-arena`](../crates/flux-arena/src/lib.rs) | Bump allocation and typed index arenas |
 
@@ -140,6 +141,28 @@ analysis. Semantic analysis will follow rustc's and rust-analyzer's split:
    given the item tree's signatures.
 4. **MIR** for borrow checking and lowering to keel.
 
+## HIR
+
+[`flux-hir`](../crates/flux-hir/src/lib.rs) builds two things from a
+file's AST:
+
+- The **item tree**: every function's name and signature, with types as
+  written (`TypeRef::Path(u8)`), but no bodies. Everything outside a
+  body depends only on it.
+- A **body** per function, lowered into arenas of expressions, patterns
+  and bindings addressed by `Idx`. Names are resolved while lowering,
+  through a stack of scopes and then the item tree, so an expression
+  `x` becomes `Res::Local(binding)` or `Res::Function(id)`. `break` and
+  `continue` record the loop they leave. Parentheses disappear, and
+  `while c { body }` becomes `loop { if c { body } else { break } }`, as
+  in rustc. A source map gives every node's text range for diagnostics.
+
+Bodies depend only on the item tree, so they lower independently (and
+in parallel, later). Syntax outside the [supported subset](LANGUAGE.md)
+becomes `Expr::Missing` with a "not supported yet" error; flux never
+silently ignores code, and ignores only attributes that cannot change a
+program's meaning (`allow`, `inline`, `doc`, ...).
+
 ## Names and memory
 
 Identifiers will be stored as [`Symbol`](../crates/flux-intern/src/lib.rs)s:
@@ -194,3 +217,4 @@ Interning all 52.6M identifiers and lifetimes (938K distinct) takes
 | `tests/parser.rs` `workspace_sources_parse_without_errors` | flux parses its own sources |
 | `tests/corpus.rs` (opt-in) | No panics or malformed trees over a directory, with an error summary |
 | `flux-arena`, `flux-intern` unit tests | Allocation, alignment, threads; also run under Miri |
+| `flux-hir` `tests/hir.rs` | Snapshot HIR for `tests/data/{ok,err}`; lowering never panics on any parser fixture prefix |

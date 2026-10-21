@@ -1,0 +1,31 @@
+unsafe extern fn putchar(i32) -> i32;
+
+unsafe extern fn exit(i32) -> !;
+
+fn fib(n@0: i64) -> i64 {
+    if (n@0 < 2) {
+        n@0
+    } else {
+        (fib((n@0 - 1)) + fib((n@0 - 2)))
+    }
+}
+
+fn print_digit(d@0: i64) -> () {
+    unsafe {
+        putchar((48 + (d@0 as i32)));
+    }
+}
+
+fn main() -> () {
+    let mut i@0 = 0;
+    loop#1 /* while */ if (i@0 < 10) {
+        print_digit((fib(i@0) % 10));
+        (i@0 += 1);
+    } else {
+        break#1
+    }
+    unsafe {
+        exit(((fib(20) % 256) as i32));
+    }
+}
+

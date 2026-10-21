@@ -1,0 +1,19 @@
+fn f(a@0: i32) -> i32 {
+    {
+        let inner@1 = 1;
+    }
+    ((<error> + <error>) + a@0)
+}
+
+fn g() -> () {
+    break;
+    continue;
+}
+
+fn f() -> () {}
+
+error 61..66: cannot find value `inner` in this scope
+error 69..76: cannot find value `missing` in this scope
+error 97..102: `break` outside of a loop
+error 108..116: `continue` outside of a loop
+error 124..125: the name `f` is defined multiple times

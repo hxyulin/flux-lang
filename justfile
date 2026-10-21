@@ -40,6 +40,10 @@ miri:
 parse file:
     cargo run -q -p flux-cli -- parse "{{file}}"
 
+# Print the HIR of a file: items and lowered function bodies.
+hir file:
+    cargo run -q -p flux-cli -- hir "{{file}}"
+
 # Print the tokens of a file.
 lex file:
     cargo run -q -p flux-cli -- lex "{{file}}"
