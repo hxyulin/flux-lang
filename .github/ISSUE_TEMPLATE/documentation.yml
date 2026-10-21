@@ -1,0 +1,22 @@
+name: Documentation problem
+description: Report unclear docs, broken examples or missing guidance.
+labels: [documentation]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Page or example
+      description: Link the affected documentation or name the file.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is unclear or incorrect?
+    validations:
+      required: true
+  - type: textarea
+    id: improvement
+    attributes:
+      label: Suggested improvement
+      description: Optional wording, example or missing explanation.

@@ -1,0 +1,42 @@
+name: Bug report
+description: Report a lexer, parser, diagnostic or CLI problem.
+labels: [bug]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does the problem occur?
+      options:
+        - Lexing or parsing
+        - Diagnostics
+        - CLI
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproducing source and command
+      description: Include the smallest Rust source that shows the problem and the flux command you ran.
+      placeholder: Paste the source and the command here.
+    validations:
+      required: true
+  - type: textarea
+    id: rustc
+    attributes:
+      label: What rustc does
+      description: Whether rustc (edition 2024) accepts the source, and its output or error if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What flux does
+      description: The tree, errors or crash you got.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `flux --version`, or the commit you built.

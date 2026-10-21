@@ -1,0 +1,65 @@
+SOURCE_FILE@0..61
+  FN@0..60
+    FN_KW@0..2 "fn"
+    WHITESPACE@2..3 " "
+    NAME@3..4
+      IDENT@3..4 "f"
+    PARAM_LIST@4..6
+      L_PAREN@4..5 "("
+      R_PAREN@5..6 ")"
+    WHITESPACE@6..7 " "
+    BLOCK_EXPR@7..60
+      L_CURLY@7..8 "{"
+      WHITESPACE@8..13 "\n    "
+      LET_STMT@13..22
+        LET_KW@13..16 "let"
+        WHITESPACE@16..17 " "
+        IDENT_PAT@17..18
+          NAME@17..18
+            IDENT@17..18 "x"
+        WHITESPACE@18..19 " "
+        EQ@19..20 "="
+        WHITESPACE@20..21 " "
+        LITERAL@21..22
+          INT_NUMBER@21..22 "1"
+      WHITESPACE@22..27 "\n    "
+      LET_STMT@27..37
+        LET_KW@27..30 "let"
+        WHITESPACE@30..31 " "
+        IDENT_PAT@31..32
+          NAME@31..32
+            IDENT@31..32 "y"
+        WHITESPACE@32..33 " "
+        EQ@33..34 "="
+        WHITESPACE@34..35 " "
+        LITERAL@35..36
+          INT_NUMBER@35..36 "2"
+        SEMICOLON@36..37 ";"
+      WHITESPACE@37..42 "\n    "
+      EXPR_STMT@42..47
+        CALL_EXPR@42..47
+          PATH_EXPR@42..45
+            PATH@42..45
+              PATH_SEGMENT@42..45
+                NAME_REF@42..45
+                  IDENT@42..45 "foo"
+          ARG_LIST@45..47
+            L_PAREN@45..46 "("
+            R_PAREN@46..47 ")"
+      WHITESPACE@47..52 "\n    "
+      EXPR_STMT@52..58
+        CALL_EXPR@52..57
+          PATH_EXPR@52..55
+            PATH@52..55
+              PATH_SEGMENT@52..55
+                NAME_REF@52..55
+                  IDENT@52..55 "bar"
+          ARG_LIST@55..57
+            L_PAREN@55..56 "("
+            R_PAREN@56..57 ")"
+        SEMICOLON@57..58 ";"
+      WHITESPACE@58..59 "\n"
+      R_CURLY@59..60 "}"
+  WHITESPACE@60..61 "\n"
+error 22..22: expected `;`
+error 47..47: expected `;`

@@ -1,0 +1,12 @@
+[package]
+name = "flux-arena"
+description = "Bump and typed index arenas for the flux compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+[lints]
+workspace = true

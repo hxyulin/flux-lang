@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest a language feature, tool or API improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: What are you trying to compile or do?
+      description: Describe a concrete use case and the current limitation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Sample Rust source, a command, or an API example helps show the intended result.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or related work
+      description: Optional workarounds, how rustc or other compilers handle it, or tradeoffs.

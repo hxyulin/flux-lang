@@ -1,0 +1,43 @@
+SOURCE_FILE@0..31
+  ERROR@0..1
+    R_CURLY@0..1 "}"
+  WHITESPACE@1..2 "\n"
+  FN@2..22
+    FN_KW@2..4 "fn"
+    WHITESPACE@4..5 " "
+    NAME@5..6
+      IDENT@5..6 "f"
+    PARAM_LIST@6..8
+      L_PAREN@6..7 "("
+      R_PAREN@7..8 ")"
+    WHITESPACE@8..9 " "
+    BLOCK_EXPR@9..22
+      L_CURLY@9..10 "{"
+      WHITESPACE@10..11 " "
+      LET_STMT@11..20
+        LET_KW@11..14 "let"
+        WHITESPACE@14..15 " "
+        IDENT_PAT@15..16
+          NAME@15..16
+            IDENT@15..16 "x"
+        WHITESPACE@16..17 " "
+        EQ@17..18 "="
+        WHITESPACE@18..19 " "
+        SEMICOLON@19..20 ";"
+      WHITESPACE@20..21 " "
+      R_CURLY@21..22 "}"
+  WHITESPACE@22..23 "\n"
+  ERROR@23..30
+    ATTR@23..30
+      POUND@23..24 "#"
+      L_BRACK@24..25 "["
+      META@25..29
+        PATH@25..29
+          PATH_SEGMENT@25..29
+            NAME_REF@25..29
+              IDENT@25..29 "attr"
+      R_BRACK@29..30 "]"
+  WHITESPACE@30..31 "\n"
+error 0..0: unmatched `}`
+error 18..18: expected an expression
+error 30..30: expected an item after attributes

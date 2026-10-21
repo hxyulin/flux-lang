@@ -1,0 +1,43 @@
+SOURCE_FILE@0..36
+  FN@0..11
+    FN_KW@0..2 "fn"
+    WHITESPACE@2..3 " "
+    NAME@3..6
+      GEN_KW@3..6 "gen"
+    PARAM_LIST@6..8
+      L_PAREN@6..7 "("
+      R_PAREN@7..8 ")"
+    WHITESPACE@8..9 " "
+    BLOCK_EXPR@9..11
+      L_CURLY@9..10 "{"
+      R_CURLY@10..11 "}"
+  WHITESPACE@11..12 "\n"
+  FN@12..35
+    FN_KW@12..14 "fn"
+    WHITESPACE@14..15 " "
+    NAME@15..16
+      IDENT@15..16 "f"
+    PARAM_LIST@16..18
+      L_PAREN@16..17 "("
+      R_PAREN@17..18 ")"
+    WHITESPACE@18..19 " "
+    BLOCK_EXPR@19..35
+      L_CURLY@19..20 "{"
+      WHITESPACE@20..21 " "
+      LET_STMT@21..33
+        LET_KW@21..24 "let"
+        WHITESPACE@24..25 " "
+        IDENT_PAT@25..28
+          NAME@25..28
+            TRY_KW@25..28 "try"
+        WHITESPACE@28..29 " "
+        EQ@29..30 "="
+        WHITESPACE@30..31 " "
+        LITERAL@31..32
+          INT_NUMBER@31..32 "1"
+        SEMICOLON@32..33 ";"
+      WHITESPACE@33..34 " "
+      R_CURLY@34..35 "}"
+  WHITESPACE@35..36 "\n"
+error 3..3: reserved keywords cannot be used as names
+error 25..25: reserved keywords cannot be used as names
