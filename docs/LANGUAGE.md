@@ -62,8 +62,10 @@ reported as "not supported yet":
   blanket `impl<T: A> B for T`); type parameters on all of these, with
   trait bounds in their lists and `where` clauses (`fn f<T: A + B>`,
   `where T: Tr<u8>`), without defaults (`fn id<T>(x: T) -> T`,
-  `struct Pair<T>`, `impl<T> Pair<T>`, `impl Pair<i32>`), but not on
-  associated constants' blocks, and without bounds on structs;
+  `struct Pair<T>`, `impl<T> Pair<T>`, `impl Pair<i32>`), structs
+  included (`struct W<T: Tr>`, `where` clauses); associated constants
+  in traits, with or without a default, in their `impl` blocks and in
+  generic inherent blocks (`const N: u32;`, `const N: u32 = 1;`);
   constants (`const N: i32 = 5;`); modules, inline (`mod m { }`) and in
   files (`mod m;` as `m.rs` or `m/mod.rs`); `use` declarations, with
   groups, renames, globs, `self`, `super` and `crate`; and
@@ -81,8 +83,9 @@ reported as "not supported yet":
   (`S { a: 1, b, ..base }`), tuple struct constructors (`P(1, 2)`) and
   unit structs, field accesses (`s.a`, `t.0`, through references),
   paths to items in modules and associated items (`m::f`, `S::new`,
-  `Self::X`, `i32::MAX`), trait items through a type, a trait or both
-  (`T::f`, `S::f`, `Tr::f`, `<T as Tr>::f`, `<T>::f`), generic arguments
+  `Self::X`, `i32::MAX`), trait items, functions and constants, through
+  a type, a trait or both (`T::f`, `S::N`, `Tr::f`, `<T as Tr>::N`,
+  `<T>::f`), generic arguments
   in paths and method calls
   (`id::<u8>`, `Pair::<i32>::new`, `x.m::<u8>()`), method calls,
   borrows (`&x`, `&mut x`) and dereferences (`*r`), blocks (including
@@ -131,7 +134,7 @@ was not, and a struct with some fields moved out drops the rest. As in
 rustc, `drop` may not be called directly (E0040), fields may not be
 moved out of a struct with a `Drop` impl (E0509), a `Drop` impl must be
 for a struct, with distinct type parameters as its arguments (E0120,
-E0366), and no bounds yet (E0367, since structs cannot have bounds yet),
+E0366), and only the bounds the struct has or implies (E0367),
 `Copy` is not for types with destructors (E0184), constants and
 `const fn`s may not drop values whose `drop` runs code (E0493), and a
 temporary may not be dropped while borrowed (E0716).
@@ -149,6 +152,24 @@ Blocks for different instances of a struct (`impl Pair<i32>` and
 `impl Pair<u8>`) may define the same name, and the type a method is
 called on picks one.
 
+A struct's bounds must hold wherever it is named, and are not assumed
+there, as in rustc: `fn f<T>(w: W<T>)` with `struct W<T: Tr>` needs
+`T: Tr` too (E0277, or E0271 for `Tr<Out = i32>`), and so do `impl`
+blocks for it, annotations and paths in bodies, and the values its
+constructor and struct expressions are given. Its fields may name its
+bounds' associated types (`made: S::Out`). `#[derive]` keeps its bounds.
+
+An associated constant of a trait is the `impl` block's for the type it
+is named on, or the trait's default, which may use the block's other
+constants (`const DOUBLE: u32 = Self::SIDES * 2;`), and whose type
+may be one of its associated types (`const N: Self::Repr;`). Like one of
+a generic block, it has a value per type. As in rustc, one that code
+without generic parameters names is evaluated, and its errors (such as
+overflow) reported, whether that code is used or not; one that generic
+code names is evaluated for the instances `main` reaches, so its errors
+are reported only by `flux build`, as rustc reports them only in a full
+build.
+
 Methods are found as rustc finds them: on the receiver's type, then on
 each type it dereferences to, the type's own methods before those of
 traits, and those of traits only if the trait is in scope (defined or
@@ -164,8 +185,8 @@ Operators on other types than integers and `bool` call the methods of
 `core::cmp::PartialEq` (`==`, `!=`), which `core` implements for the
 integers and `bool` too, so generic code can use them; `&a == &b`
 compares `a` and `b`. There are no trait objects (`dyn Tr`) or
-`impl Trait` types, no generic associated types or associated constants
-in traits, and `PartialOrd` (so `<` on other types) is
+`impl Trait` types, no generic associated types, and `PartialOrd` (so
+`<` on other types) is
 not supported yet, nor are operators on
 references to integers (`&a + &b`, `-&a`). `Sized` is, as a bound:
 every type flux has is sized, but a trait's provided methods must say

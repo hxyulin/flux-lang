@@ -90,8 +90,4 @@ struct Default<T = i32> {
     a: T,
 }
 
-impl<T> S<T> {
-    const N: i32 = 1;
-}
-
 fn main() {}

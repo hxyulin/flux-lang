@@ -55,9 +55,15 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         }
         bodies.insert(id, body);
     }
-    let mut const_values = ArenaMap::new();
+    let mut const_values = crate::eval::ConstValues::default();
     if diagnostics.is_empty() {
-        diagnostics.extend(evaluate_consts(hir, &bodies, &consts, &mut const_values));
+        diagnostics.extend(evaluate_consts(
+            hir,
+            typed,
+            &bodies,
+            &consts,
+            &mut const_values,
+        ));
         // rustc lints associated constants even where they are unused.
         let linted = bodies
             .iter()
@@ -140,48 +146,89 @@ fn check_body(
     found
 }
 
-/// Evaluates the constants: free ones always, as rustc does, and
-/// associated ones where they are used. Errors are E0080, at the
-/// constant's value.
+/// Evaluates the constants rustc evaluates: free ones, and those that
+/// code without generic parameters names, with the arguments it gives,
+/// whether it is used or not. Errors are E0080, at the value of the
+/// constant that failed. The other constants without generic parameters
+/// are evaluated for their values only; those with some, for the
+/// instances code generation needs.
 fn evaluate_consts(
     hir: &Hir,
+    typed: &TypedFile,
     bodies: &ArenaMap<flux_hir::Function, Body>,
     consts: &ArenaMap<flux_hir::Const, Body>,
-    values: &mut ArenaMap<flux_hir::Const, crate::eval::Value>,
+    values: &mut crate::eval::ConstValues,
 ) -> Vec<flux_hir::Diagnostic> {
+    let items = &hir.items;
     let names = |id: ConstId| {
-        hir.items.consts[id]
+        items.consts[id]
             .name
             .map_or("_".to_owned(), |n| n.to_string())
     };
-    let mut evaluator = crate::eval::Evaluator::new(bodies, consts, &names);
-    let mut used = std::collections::HashSet::new();
-    for body in bodies
+    let mut evaluator = crate::eval::Evaluator::new(items, &typed.sigs, bodies, consts, &names);
+    let mut wanted: Vec<flux_ty::ConstInstance> = items
+        .consts
         .iter()
-        .map(|(_, b)| b)
-        .chain(consts.iter().map(|(_, b)| b))
-    {
-        used.extend(body.const_items());
-    }
-    let mut diagnostics = Vec::new();
-    for (id, data) in hir.items.consts.iter() {
-        if consts.get(id).is_none() {
-            continue;
+        .filter(|&(id, data)| data.owner.is_none() && consts.get(id).is_some())
+        .map(|(konst, _)| flux_ty::ConstInstance { konst, args: &[] })
+        .collect();
+    let concrete = bodies
+        .iter()
+        .filter(|&(id, _)| {
+            let data = &items.functions[id];
+            data.generics.is_empty() && flux_ty::traits::owner_param_count(items, data.owner) == 0
+        })
+        .map(|(_, body)| body)
+        .chain(
+            consts
+                .iter()
+                .filter(|&(id, _)| !is_generic_const(items, id))
+                .map(|(_, body)| body),
+        );
+    for body in concrete {
+        for c in body.const_items() {
+            if !c.args.iter().any(|a| a.has_params()) && !wanted.contains(&c) {
+                wanted.push(c);
+            }
         }
-        let wanted = data.owner.is_none() || used.contains(&id);
-        match evaluator.eval_const(id) {
-            Ok(value) => {
-                values.insert(id, value);
+    }
+    for &c in &wanted {
+        if let Ok(value) = evaluator.eval_instance(c) {
+            if c.args.is_empty() {
+                values.items.insert(c.konst, value);
+            } else {
+                values.instances.insert(c, value);
             }
-            Err(e) if wanted && !e.nested => {
-                let mut d = flux_hir::Diagnostic::new(e.range, e.message);
-                d.file = data.loc.file;
-                diagnostics.push(d);
-            }
-            Err(_) => {}
+        }
+    }
+    let mut diagnostics: Vec<flux_hir::Diagnostic> = Vec::new();
+    for (c, e) in &evaluator.failures {
+        let mut d = flux_hir::Diagnostic::new(e.range, e.message.clone());
+        d.file = items.consts[c.konst].loc.file;
+        if !diagnostics.contains(&d) {
+            diagnostics.push(d);
+        }
+    }
+    for (id, _) in items.consts.iter() {
+        if consts.get(id).is_some()
+            && !is_generic_const(items, id)
+            && values.items.get(id).is_none()
+            && let Ok(value) = evaluator.eval_const(id)
+        {
+            values.items.insert(id, value);
         }
     }
     diagnostics
+}
+
+/// Whether constant `id` has generic parameters: one of a trait, or of
+/// a generic `impl` block.
+fn is_generic_const(items: &flux_hir::ItemTree, id: ConstId) -> bool {
+    match items.consts[id].owner {
+        Some(flux_hir::Owner::Trait(_)) => true,
+        Some(flux_hir::Owner::Impl(imp)) => !items.impls[imp].generics.is_empty(),
+        None => false,
+    }
 }
 
 /// Builds the MIR of constant `konst`'s value: a body without
@@ -257,6 +304,10 @@ fn build_body(
         ),
         Item::Const(_) => Vec::new(),
     };
+    let projections = match item {
+        Item::Function(f) => flux_ty::traits::projections_of(&hir.items, &typed.sigs, f),
+        Item::Const(_) => Vec::new(),
+    };
     let mut b = Builder {
         typed,
         items: &hir.items,
@@ -274,6 +325,7 @@ fn build_body(
         }],
         c_strings: Vec::new(),
         env,
+        projections,
         extended_refs: Vec::new(),
         extend_at: None,
         extending: false,
@@ -405,6 +457,9 @@ struct Builder<'a> {
     /// The bounds in scope, elaborated: what is `Copy`, and what needs
     /// dropping.
     env: Vec<flux_ty::Predicate>,
+    /// What the bounds in scope say associated types are: the types of
+    /// fields like `T::Out`.
+    projections: Vec<flux_ty::traits::Projection>,
     /// In a `let` initializer, the borrows whose temporaries live as long
     /// as the `let`'s bindings: `&make()` in `let r = &make();`.
     extended_refs: Vec<ExprId>,
@@ -552,7 +607,12 @@ impl Builder<'_> {
     fn place_ty(&self, place: &Place) -> Ty {
         let local_ty = self.locals[place.local].ty;
         place.projection.iter().fold(local_ty, |ty, &elem| {
-            projection_ty(ty, elem, &self.typed.sigs)
+            let ty = projection_ty(ty, elem, &self.typed.sigs);
+            if ty.has_aliases() {
+                flux_ty::traits::normalize(self.items, &self.typed.sigs, &self.projections, ty)
+            } else {
+                ty
+            }
         })
     }
 
@@ -620,9 +680,13 @@ impl Builder<'_> {
                 };
                 Operand::Const(Constant::int((*value as i128).wrapping_neg(), ty))
             }
-            Expr::Path(Res::Const(id)) if self.types.reborrows.get(expr).is_none() => {
+            Expr::Path(res @ (Res::Const(_) | Res::Assoc { .. }))
+                if self.types.reborrows.get(expr).is_none()
+                    && let Some(c) = self.const_of(expr, *res) =>
+            {
                 Operand::Const(Constant::Item {
-                    id: *id,
+                    id: c.konst,
+                    args: c.args,
                     ty: self.expr_ty(expr),
                 })
             }
@@ -717,12 +781,28 @@ impl Builder<'_> {
         self.assign(dest, rvalue, self.range(expr));
     }
 
+    /// The constant path `expr`, resolved as `res`, names: with its
+    /// owner's generic arguments if it has any.
+    fn const_of(&self, expr: ExprId, res: Res) -> Option<flux_ty::ConstInstance> {
+        if let Some(&c) = self.types.consts.get(expr) {
+            return Some(c);
+        }
+        match res {
+            Res::Const(konst) => Some(flux_ty::ConstInstance { konst, args: &[] }),
+            _ => None,
+        }
+    }
+
     /// Evaluates `expr` and stores its value in `dest`.
     fn lower_value(&mut self, expr: ExprId, dest: &Place) {
         let range = self.range(expr);
         let body = self.body;
         match &body.exprs[expr] {
             Expr::Path(Res::Const(_)) => {
+                let operand = self.lower_operand(expr);
+                self.assign(dest, Rvalue::Use(operand), range);
+            }
+            Expr::Path(Res::Assoc { .. }) if self.types.consts.get(expr).is_some() => {
                 let operand = self.lower_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
             }

@@ -984,9 +984,15 @@ impl<'a> Ctx<'a> {
         if let Some(args) = last_args {
             let got = args.types.len();
             let (s, verb) = if got == 1 { ("", "was") } else { ("s", "were") };
+            let what = match res {
+                Res::Const(c) if self.items.consts[c].owner.is_some() => "associated constant",
+                _ => "constant",
+            };
             self.error(
                 path.range(last, range),
-                format!("constant takes 0 generic arguments but {got} generic argument{s} {verb} supplied"),
+                format!(
+                    "{what} takes 0 generic arguments but {got} generic argument{s} {verb} supplied"
+                ),
             );
         }
         let mut generics = self.path_generics(&path, range, item, ty, res);
@@ -1269,10 +1275,7 @@ impl<'a> Ctx<'a> {
                     return Res::Err;
                 };
                 let data = &self.items.traits[t];
-                if data.unsupported.contains(&name) {
-                    return Res::Err;
-                }
-                if data.function(self.items, name).is_none() {
+                if data.value(self.items, name).is_none() {
                     let message = format!(
                         "cannot find method or associated constant `{name}` in trait `{}`",
                         data.name

@@ -11,7 +11,7 @@
 
 use std::collections::HashSet;
 
-use flux_hir::{ExprId, FunctionId, ImplId, Owner, TraitId};
+use flux_hir::{AssocItem, ExprId, FunctionId, ImplId, Owner, TraitId};
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
 
@@ -45,9 +45,10 @@ pub(super) enum ObligationKind {
         name: Symbol,
         ty: Ty,
     },
-    /// `Self: Tr` for `Tr::f()`, whose `Self` must become known; `range`
-    /// is the call's, where rustc reports it if it does not.
-    TraitCall { range: TextRange },
+    /// `Self: Tr` for `Tr::f()` or `Tr::N`, whose `Self` must become
+    /// known; `range` is the call's or path's, where rustc reports it if
+    /// it does not.
+    TraitCall { range: TextRange, constant: bool },
     /// An operator's trait, for operands of these types: "cannot add `S`
     /// to `S`".
     Operator { op: Op, lhs: Ty, rhs: Ty },
@@ -124,26 +125,141 @@ impl<'a> Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    pub(super) fn register(&mut self, pred: Predicate, range: TextRange, kind: ObligationKind) {
-        // `<S as Tr>::Out: Marker` is about what `Out` is.
-        let pred =
-            if pred.self_ty.has_aliases() || pred.trait_ref.args.iter().any(|a| a.has_aliases()) {
-                let args: Vec<Ty> = pred
-                    .trait_ref
-                    .args
-                    .iter()
-                    .map(|&a| self.normalize(a, range))
-                    .collect();
-                Predicate {
-                    self_ty: self.normalize(pred.self_ty, range),
-                    trait_ref: TraitRef {
-                        args: Ty::list(&args),
-                        ..pred.trait_ref
-                    },
+    /// The bounds of each struct `ty` names, which a type at `range` must
+    /// meet; `written` if it is written there. As in rustc, a struct type
+    /// a written type already needed is not checked again, nor in a
+    /// constant's value one its type names.
+    pub(super) fn register_wf(&mut self, ty: Ty, range: TextRange, written: bool) {
+        match ty.kind() {
+            TyKind::Adt(adt, args) => {
+                for &arg in args {
+                    self.register_wf(arg, range, written);
                 }
-            } else {
-                pred
+                let known = self.known(ty);
+                if written && !self.written_wf.insert(known)
+                    || !written && self.signature_wf.contains(&known)
+                {
+                    return;
+                }
+                let preds = self.sigs.struct_predicates.get(adt.strukt);
+                for p in preds.into_iter().flatten() {
+                    self.register(p.subst(args), range, ObligationKind::Bound);
+                }
+                let projections = self.sigs.struct_projections.get(adt.strukt);
+                for p in projections.into_iter().flatten() {
+                    self.register_projection(p.subst(args), range);
+                }
+            }
+            TyKind::Tuple(elements) => {
+                for &e in elements {
+                    self.register_wf(e, range, written);
+                }
+            }
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => self.register_wf(t, range, written),
+            _ => {}
+        }
+    }
+
+    /// Notes the struct types `ty`, a constant's type, names: what is
+    /// reported with the constant is not reported again in its value.
+    pub(super) fn signature_wf(&mut self, ty: Ty) {
+        match ty.kind() {
+            TyKind::Adt(_, args) => {
+                for &arg in args {
+                    self.signature_wf(arg);
+                }
+                self.written_wf.insert(ty);
+                self.signature_wf.insert(ty);
+            }
+            TyKind::Tuple(elements) => elements.iter().for_each(|&e| self.signature_wf(e)),
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => self.signature_wf(t),
+            _ => {}
+        }
+    }
+
+    /// The bounds of struct `ty`, built by a constructor or struct
+    /// expression whose field values are `values` (by field index): each
+    /// where rustc reports it, at the one value whose field's type has
+    /// the bound's parameter, else at `fallback`.
+    pub(super) fn register_struct_bounds(
+        &mut self,
+        ty: Ty,
+        values: &[Option<ExprId>],
+        fallback: TextRange,
+    ) {
+        let TyKind::Adt(adt, args) = ty.kind() else {
+            return;
+        };
+        let sigs = self.sigs;
+        let fields = sigs.structs[adt.strukt];
+        let range = |this: &Self, self_ty: Ty| {
+            let Some(param) = first_param(self_ty) else {
+                return fallback;
             };
+            let mut found = fields
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| mentions(**f, param));
+            match (found.next(), found.next()) {
+                (Some((i, _)), None) => match values.get(i) {
+                    Some(Some(value)) => this.range(*value),
+                    _ => fallback,
+                },
+                _ => fallback,
+            }
+        };
+        for p in sigs.struct_predicates.get(adt.strukt).into_iter().flatten() {
+            let at = range(self, p.self_ty);
+            self.register(p.subst(args), at, ObligationKind::Bound);
+        }
+        for p in sigs
+            .struct_projections
+            .get(adt.strukt)
+            .into_iter()
+            .flatten()
+        {
+            let at = range(self, p.alias.args[0]);
+            self.register_projection(p.subst(args), at);
+        }
+    }
+
+    /// What a bound says an associated type is (`S: Shape<Out = i32>`),
+    /// at `range` if it is not.
+    fn register_projection(&mut self, p: crate::traits::Projection, range: TextRange) {
+        let expected = self.normalize(p.ty, range);
+        let var = self.new_var(false, range);
+        self.unify(var, expected);
+        self.projections.push(PendingProjection {
+            alias: p.alias,
+            var,
+            range,
+            expected: true,
+        });
+    }
+
+    /// `pred` with its associated types normalized: `<S as Tr>::Out:
+    /// Marker` is about what `Out` is.
+    fn normalize_predicate(&mut self, pred: Predicate, range: TextRange) -> Predicate {
+        if !pred.self_ty.has_aliases() && !pred.trait_ref.args.iter().any(|a| a.has_aliases()) {
+            return pred;
+        }
+        let args: Vec<Ty> = pred
+            .trait_ref
+            .args
+            .iter()
+            .map(|&a| self.normalize(a, range))
+            .collect();
+        Predicate {
+            self_ty: self.normalize(pred.self_ty, range),
+            trait_ref: TraitRef {
+                args: Ty::list(&args),
+                ..pred.trait_ref
+            },
+        }
+    }
+
+    pub(super) fn register(&mut self, pred: Predicate, range: TextRange, kind: ObligationKind) {
+        let pred = self.normalize_predicate(pred, range);
         self.obligations.push(Obligation {
             pred,
             root: pred,
@@ -156,8 +272,10 @@ impl Ctx<'_> {
     /// Whether `f` holds, leaving the variables as they were.
     pub(super) fn probe(&mut self, f: impl FnOnce(&mut Self) -> bool) -> bool {
         let snapshot = self.vars.clone();
+        let projections = self.projections.len();
         let result = f(self);
         self.vars = snapshot;
+        self.projections.truncate(projections);
         result
     }
 
@@ -186,6 +304,7 @@ impl Ctx<'_> {
                             continue;
                         }
                         for pred in nested {
+                            let pred = self.normalize_predicate(pred, ob.range);
                             self.obligations.push(Obligation {
                                 pred,
                                 kind,
@@ -421,13 +540,15 @@ impl Ctx<'_> {
             }
             reported.extend(unknown.iter().copied());
             match ob.kind {
-                ObligationKind::TraitCall { range }
+                ObligationKind::TraitCall { range, constant }
                     if matches!(self_ty.kind(), TyKind::Infer(_)) =>
                 {
-                    self.error(
-                        range,
-                        "cannot call associated function on trait without specifying the corresponding `impl` type",
-                    );
+                    let message = if constant {
+                        "cannot refer to the associated constant on trait without specifying the corresponding `impl` type"
+                    } else {
+                        "cannot call associated function on trait without specifying the corresponding `impl` type"
+                    };
+                    self.error(range, message);
                 }
                 _ => self.error(ob.range, "type annotations needed"),
             }
@@ -588,7 +709,7 @@ impl Ctx<'_> {
                         };
                         let nested = cx.sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
                         nested.iter().all(|p| {
-                            let p = p.subst(&args);
+                            let p = cx.normalize_predicate(p.subst(&args), TextRange::default());
                             let args: Vec<Ty> = p.trait_ref.args.to_vec();
                             cx.may_hold(p.self_ty, p.trait_ref.trait_, Some(&args), 1)
                         })
@@ -659,10 +780,12 @@ impl Ctx<'_> {
         }
         let in_scope = self.traits_in_scope().to_vec();
         in_scope.into_iter().any(|t| {
-            items.traits[t]
-                .function(items, name)
-                .is_some_and(|f| !methods || items.functions[f].has_self)
-                && self.has_impl_header(ty, t)
+            let has = match items.traits[t].value(items, name) {
+                Some(AssocItem::Function(f)) => !methods || items.functions[f].has_self,
+                Some(AssocItem::Const(_)) => !methods,
+                None => false,
+            };
+            has && self.has_impl_header(ty, t)
         })
     }
 
@@ -714,7 +837,7 @@ impl Ctx<'_> {
                 }
                 let nested = cx.sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
                 nested.iter().all(|p| {
-                    let p = p.subst(&vars);
+                    let p = cx.normalize_predicate(p.subst(&vars), TextRange::default());
                     let args: Vec<Ty> = p.trait_ref.args.to_vec();
                     cx.may_hold(p.self_ty, p.trait_ref.trait_, Some(&args), depth + 1)
                 })
@@ -744,27 +867,46 @@ impl Ctx<'_> {
         self.traits_in_scope.as_deref().unwrap_or_default()
     }
 
-    /// The trait items called `name` that may be called on `ty`: from
-    /// the bounds in scope on it, and from the traits in scope that it
-    /// may implement; with the trait's generic arguments when a bound
-    /// gives them. `methods` for those with `self` only.
+    /// The methods called `name` of the traits in scope that `ty` may
+    /// implement; with the trait's generic arguments when a bound gives
+    /// them. `methods` for those with `self` only.
     pub(super) fn trait_items(
         &mut self,
         ty: Ty,
         name: Symbol,
         methods: bool,
     ) -> Vec<(FunctionId, Option<TraitRef>)> {
+        self.trait_values(ty, name, methods)
+            .into_iter()
+            .filter_map(|(item, t)| match item {
+                AssocItem::Function(f) => Some((f, t)),
+                AssocItem::Const(_) => None,
+            })
+            .collect()
+    }
+
+    /// The functions and constants called `name` of the traits in scope
+    /// that `ty` may implement, as [`Self::trait_items`]; functions only
+    /// if `methods`, and those with `self`.
+    fn trait_values(
+        &mut self,
+        ty: Ty,
+        name: Symbol,
+        methods: bool,
+    ) -> Vec<(AssocItem, Option<TraitRef>)> {
         let ty = self.shallow(ty);
         let items = self.items;
         if !items.trait_fns.contains_key(&name) {
             return Vec::new();
         }
-        let wanted = |t: TraitId| {
-            items.traits[t]
-                .function(items, name)
-                .filter(|&f| !methods || items.functions[f].has_self)
+        let wanted = |t: TraitId| match items.traits[t].value(items, name)? {
+            AssocItem::Function(f) if !methods || items.functions[f].has_self => {
+                Some(AssocItem::Function(f))
+            }
+            AssocItem::Const(c) if !methods => Some(AssocItem::Const(c)),
+            _ => None,
         };
-        let mut found: Vec<(FunctionId, Option<TraitRef>)> = Vec::new();
+        let mut found: Vec<(AssocItem, Option<TraitRef>)> = Vec::new();
         if ty.has_params() {
             for p in self.param_env.clone() {
                 if p.self_ty == ty
@@ -795,17 +937,17 @@ impl Ctx<'_> {
         found
     }
 
-    /// The function an associated path `callee` names: `T::f`, `S::f`,
-    /// `<T as Tr>::f`, `<T>::f` or `Tr::f`, with the type it is called on
-    /// (`Self`, for a trait's) and the trait's generic arguments, if
+    /// The function or constant an associated path `callee` names: `T::f`,
+    /// `S::f`, `<T as Tr>::f`, `<T>::f` or `Tr::f`, with the type it is
+    /// on (`Self`, for a trait's) and the trait's generic arguments, if
     /// known. `None` if there is none (reported).
-    pub(super) fn resolve_assoc_fn(
+    pub(super) fn resolve_assoc(
         &mut self,
         callee: ExprId,
         ty: Option<flux_hir::TypeRefId>,
         trait_: Option<TraitId>,
         name: Symbol,
-    ) -> Option<(FunctionId, Option<Ty>, Option<Vec<Ty>>)> {
+    ) -> Option<(AssocItem, Option<Ty>, Option<Vec<Ty>>)> {
         let segment = self.source_map.segments.get(callee).copied();
         let segment = segment.unwrap_or_else(|| self.range(callee));
         let self_ty = ty.map(|t| self.resolve_path_type(t));
@@ -814,7 +956,7 @@ impl Ctx<'_> {
         }
         if let Some(t) = trait_ {
             let items = self.items;
-            let function = items.traits[t].function(items, name)?;
+            let item = items.traits[t].value(items, name)?;
             let written = self
                 .body
                 .generic_args
@@ -839,24 +981,39 @@ impl Ctx<'_> {
                 }
                 None => None,
             };
-            return Some((function, self_ty, trait_args));
+            return Some((item, self_ty, trait_args));
         }
         let self_ty = self.shallow(self_ty?);
-        let found = self.trait_items(self_ty, name, false);
-        match found.as_slice() {
-            [(function, trait_ref)] => {
-                Some((*function, Some(self_ty), trait_ref.map(|t| t.args.to_vec())))
+        // `<S>::f`: the type's own items come before its traits'.
+        if let Some(target) = crate::impl_target(self_ty) {
+            let candidates = self.items.assoc_functions(target, name);
+            if !candidates.is_empty() {
+                return match self.select(candidates.into_iter(), Some(self_ty)) {
+                    Ok(function) => Some((AssocItem::Function(function), Some(self_ty), None)),
+                    Err(0) => {
+                        let message = format!(
+                            "no associated function or constant named `{name}` found for {} in the current scope",
+                            self.describe_kind(self_ty)
+                        );
+                        self.error(segment, message);
+                        None
+                    }
+                    Err(_) => {
+                        self.error(segment, "multiple applicable items in scope");
+                        None
+                    }
+                };
             }
+            if let Some(AssocItem::Const(c)) = self.items.assoc_item(target, name) {
+                return Some((AssocItem::Const(c), Some(self_ty), None));
+            }
+        }
+        let found = self.trait_values(self_ty, name, false);
+        match found.as_slice() {
+            [(item, trait_ref)] => Some((*item, Some(self_ty), trait_ref.map(|t| t.args.to_vec()))),
             [] => {
                 let items = self.items;
-                // An unsupported item of a trait (reported).
-                if items.traits.values().any(|t| t.unsupported.contains(&name)) {
-                    return None;
-                }
-                let in_some_trait = items
-                    .traits
-                    .values()
-                    .any(|t| t.function(items, name).is_some());
+                let in_some_trait = items.trait_fns.contains_key(&name);
                 if self.exists_unmet(self_ty, name, false) {
                     let message = format!(
                         "the associated function or constant `{name}` exists for {}, but its trait bounds were not satisfied",
@@ -882,6 +1039,70 @@ impl Ctx<'_> {
                 None
             }
         }
+    }
+
+    /// Registers the bounds a path to constant `konst` with generic
+    /// arguments `args` needs: its trait's, for `Self`, or its block's;
+    /// `target` is the type it was found on, if known.
+    pub(super) fn register_const_bounds(
+        &mut self,
+        expr: ExprId,
+        konst: flux_hir::ConstId,
+        args: &[Ty],
+        target: Option<Ty>,
+    ) {
+        let (items, sigs) = (self.items, self.sigs);
+        let data = &items.consts[konst];
+        let Some(name) = data.name else {
+            return;
+        };
+        let segment = self.source_map.segments.get(expr).copied();
+        let segment = segment.unwrap_or_else(|| self.range(expr));
+        let known = target.filter(|&t| !self.has_unknown(t));
+        let item_bounds = |ty| ObligationKind::ItemBounds {
+            what: "associated function or constant",
+            name,
+            ty,
+        };
+        match data.owner {
+            Some(Owner::Trait(t)) => {
+                let pred = crate::traits::trait_self_predicate(items, t).subst(args);
+                let qself = match self.body.exprs[expr] {
+                    flux_hir::Expr::Path(flux_hir::Res::Assoc {
+                        ty: Some(ty),
+                        trait_: Some(_),
+                        ..
+                    }) => self.source_map.types.get(ty).copied(),
+                    _ => None,
+                };
+                let (range, kind) = match (qself, known) {
+                    (Some(qself), _) => (qself, ObligationKind::Bound),
+                    (None, Some(ty)) => (segment, item_bounds(ty)),
+                    (None, None) => (
+                        segment,
+                        ObligationKind::TraitCall {
+                            range: self.range(expr),
+                            constant: true,
+                        },
+                    ),
+                };
+                self.register(pred, range, kind);
+                for p in sigs.trait_predicates.get(t).into_iter().flatten() {
+                    self.register(p.subst(args), segment, ObligationKind::Bound);
+                }
+            }
+            Some(Owner::Impl(imp)) => {
+                for p in sigs.impl_predicates.get(imp).into_iter().flatten() {
+                    let kind = match known {
+                        Some(ty) => item_bounds(ty),
+                        None => ObligationKind::Bound,
+                    };
+                    self.register(p.subst(args), segment, kind);
+                }
+            }
+            None => {}
+        }
+        self.select_obligations();
     }
 
     /// In a trait's provided method, `Self` may be unsized unless a bound
@@ -1030,7 +1251,10 @@ impl Ctx<'_> {
                     (None, None) if site.receiver.is_some() => (site.callee, ObligationKind::Bound),
                     (None, None) => (
                         self.bound_range(function, *p, site),
-                        ObligationKind::TraitCall { range: site.whole },
+                        ObligationKind::TraitCall {
+                            range: site.whole,
+                            constant: false,
+                        },
                     ),
                 },
                 (Some(Owner::Impl(_)), Some(ty)) if k < owner_count => (
@@ -1060,16 +1284,7 @@ impl Ctx<'_> {
                 },
                 site,
             );
-            let p = p.subst(args);
-            let expected = self.normalize(p.ty, range);
-            let var = self.new_var(false, range);
-            self.unify(var, expected);
-            self.projections.push(PendingProjection {
-                alias: p.alias,
-                var,
-                range,
-                expected: true,
-            });
+            self.register_projection(p.subst(args), range);
         }
         self.select_obligations();
     }
@@ -1136,7 +1351,7 @@ impl Ctx<'_> {
 }
 
 /// The first generic parameter `ty` mentions.
-fn first_param(ty: Ty) -> Option<u32> {
+pub(super) fn first_param(ty: Ty) -> Option<u32> {
     match ty.kind() {
         TyKind::Param(p) => Some(p.index),
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => first_param(t),

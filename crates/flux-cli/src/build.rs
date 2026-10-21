@@ -82,8 +82,8 @@ pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result
             let mut module =
                 match timings.time("lower", || flux_codegen::lower_module(&hir, &typed, &mir)) {
                     Ok(module) => module,
-                    Err(d) => {
-                        errors.push(d);
+                    Err(found) => {
+                        errors.extend(found);
                         report_all(&db, &mut errors);
                         return Ok(false);
                     }

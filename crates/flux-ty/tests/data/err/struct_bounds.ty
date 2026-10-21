@@ -1,0 +1,104 @@
+struct W<T> { 0: T }
+struct V<T> { x: T }
+struct P<T> { 0: T, 1: T }
+struct R<T> { a: i32, b: (T, i32) }
+struct Fixed<S> { 0: S }
+struct Holder { w: W<u8> }
+struct Trivial { x: i32 }
+struct B<T> { 0: T }
+struct NotCopy {}
+struct S {}
+fn f<T>(W<T>) -> ()
+    w@0: W<T>
+fn g(W<u8>) -> V<bool>
+    x@0: W<u8>
+fn fixed(Fixed<i32>) -> ()
+    f@0: Fixed<i32>
+fn m(&W<T>) -> ()
+    self@0: &W<T>
+fn q(&Self, W<u32>) -> ()
+fn new(T) -> W<T>
+    t@0: T
+fn drop(&mut V<T>) -> ()
+    self@0: &mut V<T>
+fn generic<T>(T) -> ()
+    t@0: T
+    w@1: W<T>
+fn id<T>(T) -> T
+    t@0: T
+fn nested(&W<u8>, (i32, W<u16>), W<W<u32>>) -> ()
+    a@0: &W<u8>
+    b@1: (i32, W<u16>)
+    c@2: W<W<u32>>
+fn leaf(B<NotCopy>) -> ()
+    b@0: B<NotCopy>
+fn in_bounds<T, X, Y>() -> ()
+fn wrong_trait(Fixed<bool>) -> ()
+    f@0: Fixed<bool>
+fn take(&Self, W<Self>) -> ()
+fn take(&S, u8) -> ()
+    self@0: &S
+    w@1: u8
+fn main() -> ()
+    p@0: u64
+    a@1: W<u8>
+    b@2: W<u64>
+    c@3: V<u8>
+    d@4: W<i8>
+    ok@5: W<i32>
+    p@6: P<u8>
+    r@7: R<u8>
+    s@8: R<u16>
+    n@9: W<u8>
+    m@10: W<u16>
+    i@11: W<u32>
+    e@12: Fixed<i32>
+    h@13: Fixed<i32>
+error 1052..1057: the trait bound `u8: Tr` is not satisfied
+error 1087..1093: the trait bound `u8: Tr` is not satisfied
+error 1123..1127: the trait bound `T: Tr` is not satisfied
+error 1141..1146: the trait bound `u8: Tr` is not satisfied
+error 1151..1158: the trait bound `bool: Tr` is not satisfied
+error 1188..1198: type mismatch resolving `<i32 as Shape>::Out == i32`
+error 1212..1216: the trait bound `T: Tr` is not satisfied
+error 1229..1233: the trait bound `T: Tr` is not satisfied
+error 1246..1252: the trait bound `u16: Tr` is not satisfied
+error 1286..1292: the trait bound `u32: Tr` is not satisfied
+error 1383..1387: the trait bound `T: Tr` is not satisfied
+error 1394..1412: the trait bound `T: Tr` is not satisfied
+error 1407..1411: the trait bound `T: Tr` is not satisfied
+error 1453..1457: the trait bound `T: Tr` is not satisfied
+error 1455..1456: the trait bound `T: Tr` is not satisfied
+error 1507..1512: the trait bound `u8: Tr` is not satisfied
+error 1523..1529: the trait bound `u16: Tr` is not satisfied
+error 1535..1544: the trait bound `W<u32>: Tr` is not satisfied
+error 1537..1543: the trait bound `u32: Tr` is not satisfied
+error 1654..1664: the trait bound `NotCopy: Copy` is not satisfied
+error 1721..1733: the trait bound `u8: Tr` is not satisfied
+error 1749..1759: the trait bound `u16: Tr` is not satisfied
+error 1780..1785: the trait bound `T: Tr` is not satisfied
+error 1810..1821: the trait bound `bool: Shape` is not satisfied
+error 1963..1965: method `take` has an incompatible type for trait
+error 1993..1997: the trait bound `u64: Tr` is not satisfied
+error 2000..2007: the trait bound `u64: Tr` is not satisfied
+error 2002..2006: the trait bound `u64: Tr` is not satisfied
+error 2021..2027: the trait bound `u8: Tr` is not satisfied
+error 2023..2026: the trait bound `u8: Tr` is not satisfied
+error 2040..2046: the trait bound `u64: Tr` is not satisfied
+error 2077..2080: the trait bound `u8: Tr` is not satisfied
+error 2096..2106: the trait bound `i8: Tr` is not satisfied
+error 2104..2105: the trait bound `i8: Tr` is not satisfied
+error 2142..2143: the trait bound `u8: Tr` is not satisfied
+error 2142..2153: the trait bound `u8: Tr` is not satisfied
+error 2180..2188: the trait bound `u8: Tr` is not satisfied
+error 2203..2209: the trait bound `u16: Tr` is not satisfied
+error 2219..2225: the trait bound `u16: Tr` is not satisfied
+error 2247..2254: the trait bound `u8: Tr` is not satisfied
+error 2256..2259: the associated function or constant `new` exists for struct `W<u8>`, but its trait bounds were not satisfied
+error 2277..2283: the trait bound `u16: Tr` is not satisfied
+error 2286..2289: the associated function or constant `new` exists for struct `W<u16>`, but its trait bounds were not satisfied
+error 2306..2327: the trait bound `u32: Tr` is not satisfied
+error 2311..2317: the trait bound `u32: Tr` is not satisfied
+error 2340..2350: type mismatch resolving `<i32 as Shape>::Out == i32`
+error 2374..2385: type mismatch resolving `<i32 as Shape>::Out == i32`
+error 2380..2384: type mismatch resolving `<i32 as Shape>::Out == i32`

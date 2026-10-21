@@ -6,9 +6,9 @@ use std::collections::HashSet;
 
 use flux_arena::ArenaMap;
 use flux_hir::{
-    ArithOp, BinaryOp, Binding, BindingId, Body, BodySourceMap, CmpOp, ConstId, Diagnostic, Expr,
-    ExprId, FunctionId, Generics, ItemTree, Literal, LogicOp, LoopSource, Pat, PatId, Res,
-    SegmentArgs, Stmt, StructId, StructKind, TypeRefId, UnaryOp,
+    ArithOp, AssocItem, BinaryOp, Binding, BindingId, Body, BodySourceMap, CmpOp, ConstId,
+    Diagnostic, Expr, ExprId, FunctionId, Generics, ItemTree, Literal, LogicOp, LoopSource, Pat,
+    PatId, Res, SegmentArgs, Stmt, StructId, StructKind, TypeRefId, UnaryOp,
 };
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
@@ -16,8 +16,8 @@ use flux_syntax::TextRange;
 use crate::traits::{Predicate, elaborate, predicates_of};
 use crate::ty::{InferVar, IntTy, Mutability, Ty, TyKind};
 use crate::{
-    FnSig, Instance, Signatures, TypeScope, function_name, generic_names, impl_target,
-    resolve_or_report, self_ty, wrong_arg_count,
+    ConstInstance, FnSig, Instance, Signatures, TypeScope, function_name, generic_names,
+    impl_target, resolve_or_report, self_ty, wrong_arg_count,
 };
 use solve::{CallSite, Obligation};
 
@@ -49,6 +49,11 @@ pub struct InferenceResult {
     /// `a == b`, `AddAssign::add_assign` for `a += b`, `Neg::neg` for
     /// `-a`.
     pub overloads: ArenaMap<Expr, Instance>,
+    /// The associated constant each path to one of a trait or a generic
+    /// `impl` block names (`T::N`, `<S as Tr>::N`, `Self::N`), with its
+    /// owner's generic arguments. Paths to other constants name them
+    /// alone.
+    pub consts: ArenaMap<Expr, ConstInstance>,
     /// Comparisons of references, `&a == &b`, whose operands are passed
     /// as they are: `PartialEq::eq::<A, B>(a, b)`, as `core`'s impl for
     /// references would.
@@ -123,15 +128,21 @@ pub fn infer_const(
         is_unsafe: false,
         const_context: Some("constants"),
         ret,
-        param_env: data
+        param_env: elaborate(
+            sigs,
+            &crate::traits::owner_predicates(items, sigs, data.owner),
+        ),
+        env_projections: crate::traits::owner_projections(items, sigs, data.owner),
+        self_trait: data
             .owner
             .and_then(flux_hir::Owner::as_impl)
-            .and_then(|imp| sigs.impl_predicates.get(imp))
-            .map_or(Vec::new(), |p| elaborate(sigs, p)),
-        env_projections: Vec::new(),
-        self_trait: None,
+            .and_then(|imp| sigs.impl_traits.get(imp).copied()),
     };
     let mut ctx = Ctx::new(items, sigs, owner, body, source_map);
+    // What the constant's type needs is reported with it, not again in
+    // its value, as rustc does.
+    ctx.signature_wf(ret);
+    let ret = ctx.normalize(ret, data.def_range);
     ctx.expect(body.root, ret);
     let ty = ctx.infer_expr(body.root);
     ctx.coerce(ty, ret, body.root);
@@ -183,6 +194,7 @@ impl<'a> Ctx<'a> {
             reborrows: ArenaMap::new(),
             calls: ArenaMap::new(),
             overloads: ArenaMap::new(),
+            consts: ArenaMap::new(),
             compared_refs: ArenaMap::new(),
             expected: ArenaMap::new(),
             loops: ArenaMap::new(),
@@ -198,6 +210,8 @@ impl<'a> Ctx<'a> {
             obligations: Vec::new(),
             traits_in_scope: None,
             reported_unmet: HashSet::new(),
+            written_wf: HashSet::new(),
+            signature_wf: HashSet::new(),
             deferred: Vec::new(),
             diagnostics: Vec::new(),
         }
@@ -294,6 +308,7 @@ struct Ctx<'a> {
     reborrows: ArenaMap<Expr, Mutability>,
     calls: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     overloads: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
+    consts: ArenaMap<Expr, (ConstId, Vec<Ty>)>,
     compared_refs: ArenaMap<Expr, ()>,
     /// The type the context of an expression wants, where known before
     /// it is inferred: a call or struct expression's generic arguments
@@ -323,6 +338,11 @@ struct Ctx<'a> {
     traits_in_scope: Option<Vec<flux_hir::TraitId>>,
     /// Unmet obligations reported, by range and message.
     reported_unmet: HashSet<(TextRange, String)>,
+    /// The struct types written in the body, and in a constant, those its
+    /// type names, whose bounds are checked once.
+    written_wf: HashSet<Ty>,
+    /// In a constant, the struct types its type names.
+    signature_wf: HashSet<Ty>,
     deferred: Vec<Deferred>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -381,6 +401,27 @@ impl Ctx<'_> {
         match self.vars[root.0 as usize].0 {
             VarValue::Known(ty) => self.shallow(ty),
             _ => Ty::infer(root),
+        }
+    }
+
+    /// `ty` with every known variable replaced, at any depth.
+    fn known(&mut self, ty: Ty) -> Ty {
+        let ty = self.shallow(ty);
+        if !ty.has_infer() {
+            return ty;
+        }
+        match ty.kind() {
+            TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, self.known(pointee)),
+            TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, self.known(pointee))),
+            TyKind::Tuple(elements) => {
+                let elements: Vec<Ty> = elements.iter().map(|&e| self.known(e)).collect();
+                Ty::tuple(&elements)
+            }
+            TyKind::Adt(adt, args) => {
+                let args: Vec<Ty> = args.iter().map(|&a| self.known(a)).collect();
+                Ty::adt(adt.strukt, adt.name, &args)
+            }
+            _ => ty,
         }
     }
 
@@ -645,7 +686,20 @@ impl Ctx<'_> {
         if ty.has_aliases() {
             self.require_alias_traits(ty, range);
         }
-        self.normalize(ty, range)
+        let ty = self.normalize(ty, range);
+        self.register_wf(ty, range, true);
+        ty
+    }
+
+    /// The types of the fields of `ty`, a tuple or struct, with the
+    /// associated types they name normalized; none for other types.
+    fn fields_of(&mut self, ty: Ty, range: TextRange) -> &'static [Ty] {
+        let fields = self.sigs.fields(ty).unwrap_or(&[]);
+        if !fields.iter().any(|f| f.has_aliases()) {
+            return fields;
+        }
+        let fields: Vec<Ty> = fields.iter().map(|&f| self.normalize(f, range)).collect();
+        Ty::list(&fields)
     }
 
     /// `ty` with each `_` in it a new variable.
@@ -736,23 +790,179 @@ impl Ctx<'_> {
     /// path `expr` naming it says: `S<A>` in `S::<A>::f`, `Self` in
     /// `Self::f`, or nothing.
     fn path_target(&mut self, expr: ExprId, function: FunctionId) -> Option<Ty> {
+        let owner = self.items.impl_of(function)?;
+        self.impl_path_target(expr, owner)
+    }
+
+    /// [`Self::path_target`] for an item of `impl` block `owner`.
+    fn impl_path_target(&mut self, expr: ExprId, owner: flux_hir::ImplId) -> Option<Ty> {
         let generics = self.body.generic_args.get(expr)?;
         if generics.self_type {
             return self.self_ty;
         }
         let written = generics.ty.clone()?;
-        let owner = self.items.impl_of(function)?;
         let TyKind::Adt(adt, _) = self.sigs.impls.get(owner)?.kind() else {
             return None;
         };
         let want = self.items.structs[adt.strukt].generics.len();
         let args = self.own_args("struct", want, Some(&written), self.range(expr));
-        Some(Ty::adt(adt.strukt, adt.name, &args))
+        let ty = Ty::adt(adt.strukt, adt.name, &args);
+        // `W::<u8>`, which must meet `W`'s bounds.
+        let range = TextRange::new(self.range(expr).start(), written.range.end());
+        self.register_wf(ty, range, true);
+        Some(ty)
+    }
+
+    /// "expected function, found `i32`", for a call of `callee`, of type
+    /// `ty`.
+    fn not_callable(&mut self, callee: ExprId, ty: Ty) {
+        if ty == Ty::ERROR {
+            return;
+        }
+        let ty = self.describe(ty);
+        self.error(
+            self.range(callee),
+            format!("expected function, found `{ty}`"),
+        );
+    }
+
+    /// The type of a path to constant `konst`, resolved by name: one of
+    /// a generic `impl` block is for the type the path says, or one to
+    /// infer.
+    fn path_const(&mut self, expr: ExprId, konst: ConstId) -> Ty {
+        let items = self.items;
+        let Some(owner) = items.consts[konst].owner.and_then(flux_hir::Owner::as_impl) else {
+            return self.sigs.consts.get(konst).copied().unwrap_or(Ty::ERROR);
+        };
+        if items.impls[owner].generics.is_empty() {
+            return self.sigs.consts.get(konst).copied().unwrap_or(Ty::ERROR);
+        }
+        let target = self.impl_path_target(expr, owner);
+        // Of blocks for different instances of a struct with a constant
+        // of one name, the one for the type the path says.
+        let name = items.consts[konst].name;
+        let konst = match (items.impls[owner].target, name) {
+            (Some(target_struct), Some(name)) => {
+                let candidates = items.assoc.get(&(target_struct, name));
+                let candidates: Vec<ConstId> = candidates
+                    .map_or(&[][..], |v| v)
+                    .iter()
+                    .filter_map(|&item| match item {
+                        AssocItem::Const(c) => Some(c),
+                        AssocItem::Function(_) => None,
+                    })
+                    .collect();
+                let mut found = candidates.iter().copied().filter(|&c| {
+                    let imp = items.consts[c].owner.and_then(flux_hir::Owner::as_impl);
+                    match (target, imp) {
+                        (Some(target), Some(imp)) => {
+                            let impl_ty = self.sigs.impls.get(imp).copied().unwrap_or(Ty::ERROR);
+                            self.impl_applies(impl_ty, target)
+                        }
+                        _ => true,
+                    }
+                });
+                match (found.next(), found.next()) {
+                    (Some(c), None) => c,
+                    (None, _) => {
+                        let what = target.map_or("this type".to_owned(), |t| {
+                            format!("struct `{}`", self.describe(t))
+                        });
+                        let segment = self.source_map.segments.get(expr).copied();
+                        self.error(
+                            segment.unwrap_or_else(|| self.range(expr)),
+                            format!(
+                                "no associated function or constant named `{name}` found for {what} in the current scope"
+                            ),
+                        );
+                        return Ty::ERROR;
+                    }
+                    (Some(_), Some(_)) => {
+                        let segment = self.source_map.segments.get(expr).copied();
+                        self.error(
+                            segment.unwrap_or_else(|| self.range(expr)),
+                            "multiple applicable items in scope",
+                        );
+                        return Ty::ERROR;
+                    }
+                }
+            }
+            _ => konst,
+        };
+        self.instantiate_const(expr, konst, target, None)
+    }
+
+    /// The type of associated constant `konst` as path `expr` names it,
+    /// for type `target` if known (`Self`, for a trait's) and the trait's
+    /// arguments if given, whose generic arguments it records.
+    fn instantiate_const(
+        &mut self,
+        expr: ExprId,
+        konst: ConstId,
+        target: Option<Ty>,
+        trait_args: Option<&[Ty]>,
+    ) -> Ty {
+        let (items, sigs) = (self.items, self.sigs);
+        let data = &items.consts[konst];
+        let range = self.range(expr);
+        // A constant has no generic parameters of its own.
+        let written = self
+            .body
+            .generic_args
+            .get(expr)
+            .and_then(|g| g.item.as_ref());
+        if let Some(written) = written.filter(|w| !w.types.is_empty()) {
+            let got = written.types.len();
+            let (s, verb) = if got == 1 { ("", "was") } else { ("s", "were") };
+            self.error(
+                written.segment,
+                format!(
+                    "associated constant takes 0 generic arguments but {got} generic argument{s} {verb} supplied"
+                ),
+            );
+        }
+        let mut args = Vec::new();
+        match data.owner {
+            Some(flux_hir::Owner::Trait(t)) => {
+                args.push(target.unwrap_or_else(|| self.new_var(false, range)));
+                match trait_args {
+                    Some(given) => args.extend_from_slice(given),
+                    None => {
+                        let count = items.traits[t].generics.len();
+                        args.extend((0..count).map(|_| self.new_var(false, range)));
+                    }
+                }
+            }
+            Some(flux_hir::Owner::Impl(imp)) => {
+                let count = items.impls[imp].generics.len();
+                let vars: Vec<Ty> = (0..count).map(|_| self.new_var(false, range)).collect();
+                let impl_ty = sigs
+                    .impls
+                    .get(imp)
+                    .copied()
+                    .unwrap_or(Ty::ERROR)
+                    .subst(&vars);
+                if let Some(target) = target {
+                    self.unify(impl_ty, target);
+                }
+                args.extend(vars);
+            }
+            None => {}
+        }
+        self.register_const_bounds(expr, konst, &args, target);
+        self.consts.insert(expr, (konst, args.clone()));
+        let ty = sigs
+            .consts
+            .get(konst)
+            .copied()
+            .unwrap_or(Ty::ERROR)
+            .subst(&args);
+        self.normalize(ty, range)
     }
 
     /// The one of `candidates`, associated functions with one name, whose
     /// block may be for `target`: `Err` with how many are if not one.
-    fn select(
+    pub(super) fn select(
         &mut self,
         candidates: impl Iterator<Item = FunctionId>,
         target: Option<Ty>,
@@ -862,7 +1072,7 @@ impl Ctx<'_> {
     /// Checks `pat` against a value of type `expected` and gives its
     /// bindings their types; `uninit` for a `let` without a value.
     fn check_pat(&mut self, pat: PatId, expected: Ty, uninit: bool) {
-        let (body, items, sigs) = (self.body, self.items, self.sigs);
+        let (body, items) = (self.body, self.items);
         let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
         match &body.pats[pat] {
             Pat::Missing | Pat::Wild => {}
@@ -927,7 +1137,8 @@ impl Ctx<'_> {
             }
             Pat::TupleStruct { strukt, pats, rest } => {
                 let ty = self.instantiate_struct(*strukt, None, range);
-                let fields = sigs.fields(ty).unwrap_or(&[]);
+                let fields = self.fields_of(ty, range);
+                self.register_struct_bounds(ty, &[], range);
                 if !self.unify(ty, expected) {
                     self.mismatch(expected, ty, range);
                 }
@@ -959,10 +1170,11 @@ impl Ctx<'_> {
                 rest,
             } => {
                 let ty = self.instantiate_struct(*strukt, None, range);
+                self.register_struct_bounds(ty, &[], range);
                 if !self.unify(ty, expected) {
                     self.mismatch(expected, ty, range);
                 }
-                let field_types = sigs.fields(ty).unwrap_or(&[]);
+                let field_types = self.fields_of(ty, range);
                 let def = &items.structs[*strukt];
                 let names = self.source_map.pat_fields.get(pat);
                 let mut private = Vec::new();
@@ -1079,10 +1291,16 @@ impl Ctx<'_> {
                 .copied()
                 .unwrap_or(Ty::ERROR),
             Expr::Path(Res::Assoc { ty, trait_, name }) => {
-                if self.resolve_assoc_fn(id, *ty, *trait_, *name).is_some() {
-                    self.error(self.range(id), "functions as values are not supported yet");
+                match self.resolve_assoc(id, *ty, *trait_, *name) {
+                    Some((AssocItem::Const(c), target, trait_args)) => {
+                        self.instantiate_const(id, c, target, trait_args.as_deref())
+                    }
+                    Some((AssocItem::Function(_), ..)) => {
+                        self.error(self.range(id), "functions as values are not supported yet");
+                        Ty::ERROR
+                    }
+                    None => Ty::ERROR,
                 }
-                Ty::ERROR
             }
             Expr::Path(Res::Function(_)) => {
                 self.error(self.range(id), "functions as values are not supported yet");
@@ -1095,7 +1313,7 @@ impl Ctx<'_> {
                     Ty::ERROR
                 }
             },
-            Expr::Path(Res::Const(c)) => self.sigs.consts.get(*c).copied().unwrap_or(Ty::ERROR),
+            Expr::Path(Res::Const(c)) => self.path_const(id, *c),
             Expr::Path(Res::Err) => Ty::ERROR,
             Expr::Tuple(fields) => {
                 let elements: Vec<Ty> = fields.iter().map(|&f| self.infer_expr(f)).collect();
@@ -1331,7 +1549,17 @@ impl Ctx<'_> {
         let found = match self.body.exprs[callee] {
             Expr::Path(Res::Function(function)) => self.select_path_fn(callee, function),
             Expr::Path(Res::Assoc { ty, trait_, name }) => {
-                self.resolve_assoc_fn(callee, ty, trait_, name)
+                match self.resolve_assoc(callee, ty, trait_, name) {
+                    Some((AssocItem::Function(f), target, trait_args)) => {
+                        Some((f, target, trait_args))
+                    }
+                    Some((AssocItem::Const(c), target, trait_args)) => {
+                        let ty = self.instantiate_const(callee, c, target, trait_args.as_deref());
+                        self.not_callable(callee, ty);
+                        None
+                    }
+                    None => None,
+                }
             }
             Expr::Path(Res::Struct(strukt)) => {
                 return self.infer_constructor(id, callee, strukt, args);
@@ -1339,11 +1567,7 @@ impl Ctx<'_> {
             Expr::Path(Res::Err) | Expr::Missing => None,
             _ => {
                 let ty = self.infer_expr(callee);
-                let ty = self.describe(ty);
-                self.error(
-                    self.range(callee),
-                    format!("expected function, found `{ty}`"),
-                );
+                self.not_callable(callee, ty);
                 None
             }
         };
@@ -1365,6 +1589,15 @@ impl Ctx<'_> {
         );
         let sig = &self.instance_sig(function, &generic_args);
         self.meet_expectation(id, sig.ret);
+        // What the function's own arguments make of its return type must
+        // meet its structs' bounds; its block's were checked with it.
+        let first_own = crate::traits::owner_param_count(self.items, data.owner) as u32;
+        let ret = self.sigs.fns[function].ret;
+        if (first_own..first_own + data.generics.len() as u32)
+            .any(|i| crate::mentions_param(ret, i))
+        {
+            self.register_wf(sig.ret, self.range(id), false);
+        }
         let (want, got) = (sig.params.len(), args.len());
         let arity_ok = if data.is_variadic {
             got >= want
@@ -1542,7 +1775,6 @@ impl Ctx<'_> {
         args: &[ExprId],
     ) -> Ty {
         let def = &self.items.structs[strukt];
-        let sigs = self.sigs;
         if def.kind != StructKind::Tuple {
             let name = def.name;
             self.error(
@@ -1554,7 +1786,7 @@ impl Ctx<'_> {
         }
         let ty = self.instantiate_struct(strukt, Some(callee), self.range(callee));
         self.meet_expectation(call, ty);
-        let fields = sigs.fields(ty).unwrap_or(&[]);
+        let fields = self.fields_of(ty, self.range(callee));
         if fields.len() != args.len() {
             let (want, got) = (fields.len(), args.len());
             let verb = if got == 1 { "was" } else { "were" };
@@ -1576,6 +1808,10 @@ impl Ctx<'_> {
                 self.coerce(ty, field, arg);
             }
         }
+        // As rustc, at the argument, then the whole call.
+        let values: Vec<Option<ExprId>> = args.iter().map(|&a| Some(a)).collect();
+        self.register_struct_bounds(ty, &values, self.range(callee));
+        self.register_wf(ty, self.range(call), false);
         ty
     }
 
@@ -1647,7 +1883,8 @@ impl Ctx<'_> {
                 .and_then(|i| Some((i, *elements.get(i)?))),
             TyKind::Adt(adt, args) => items.structs[adt.strukt]
                 .field(name)
-                .map(|(i, _)| (i, sigs.field_types(adt.strukt, args)[i])),
+                .map(|(i, _)| (i, sigs.field_types(adt.strukt, args)[i]))
+                .map(|(i, ty)| (i, self.normalize(ty, range))),
             TyKind::Error => return Ty::ERROR,
             TyKind::Int(_) | TyKind::Bool => {
                 self.error(
@@ -1711,13 +1948,13 @@ impl Ctx<'_> {
         fields: &[(Symbol, ExprId)],
         spread: Option<ExprId>,
     ) -> Ty {
-        let (items, sigs) = (self.items, self.sigs);
+        let items = self.items;
         let def = &items.structs[strukt];
         let range = self.range(id);
         let origin = self.source_map.paths.get(id).copied().unwrap_or(range);
         let ty = self.instantiate_struct(strukt, Some(id), origin);
         self.meet_expectation(id, ty);
-        let field_types = sigs.fields(ty).unwrap_or(&[]);
+        let field_types = self.fields_of(ty, range);
         let names = self.source_map.expr_fields.get(id);
         let mut seen = Vec::new();
         let mut unknown = false;
@@ -1785,6 +2022,17 @@ impl Ctx<'_> {
             }
         }
         self.private_fields(def.name, &private);
+        let values: Vec<Option<ExprId>> = def
+            .fields
+            .iter()
+            .map(|f| {
+                fields
+                    .iter()
+                    .find(|(name, _)| *name == f.name)
+                    .map(|&(_, v)| v)
+            })
+            .collect();
+        self.register_struct_bounds(ty, &values, origin);
         ty
     }
 
@@ -2565,6 +2813,22 @@ impl Ctx<'_> {
             let args = Ty::list(&args);
             overloads.insert(expr, Instance { function, args });
         }
+        let used: Vec<(ExprId, (ConstId, Vec<Ty>))> =
+            self.consts.iter().map(|(e, c)| (e, c.clone())).collect();
+        let mut consts = ArenaMap::new();
+        for (expr, (konst, args)) in used {
+            let args: Vec<Ty> = args
+                .iter()
+                .map(|&a| self.resolve(a, &mut reported))
+                .collect();
+            consts.insert(
+                expr,
+                ConstInstance {
+                    konst,
+                    args: Ty::list(&args),
+                },
+            );
+        }
         self.run_deferred(&mut reported);
         self.check_references();
         InferenceResult {
@@ -2576,6 +2840,7 @@ impl Ctx<'_> {
             reborrows: self.reborrows,
             calls,
             overloads,
+            consts,
             compared_refs: self.compared_refs,
             diagnostics: self.diagnostics,
         }

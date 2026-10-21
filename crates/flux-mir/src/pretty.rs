@@ -247,9 +247,37 @@ fn constant_text(hir: &Hir, constant: Constant) -> String {
         Constant::Bool(value) => value.to_string(),
         Constant::Unit => "()".to_owned(),
         Constant::CStr(index) => format!("c_str{index}"),
-        Constant::Item { id, .. } => {
+        Constant::Item { id, args, .. } => {
             let name = hir.items.consts[id].name;
-            name.map_or("_".to_owned(), |n| n.to_string())
+            let name = name.map_or("_".to_owned(), |n| n.to_string());
+            let items = &hir.items;
+            match items.consts[id].owner {
+                // `<T as Tr>::N`
+                Some(flux_hir::Owner::Trait(t)) if !args.is_empty() => {
+                    let trait_args: Vec<String> = args[1..].iter().map(|a| a.to_string()).collect();
+                    let trait_args = if trait_args.is_empty() {
+                        String::new()
+                    } else {
+                        format!("<{}>", trait_args.join(", "))
+                    };
+                    format!(
+                        "<{} as {}{trait_args}>::{name}",
+                        args[0], items.traits[t].name
+                    )
+                }
+                // `W::N::<T>`, with the block's arguments.
+                Some(flux_hir::Owner::Impl(imp)) if !args.is_empty() => {
+                    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                    let owner = match items.impls[imp].target {
+                        Some(flux_hir::ImplTarget::Struct(s)) => {
+                            format!("{}::", items.structs[s].name)
+                        }
+                        _ => String::new(),
+                    };
+                    format!("{owner}{name}::<{}>", args.join(", "))
+                }
+                _ => name,
+            }
         }
     }
 }

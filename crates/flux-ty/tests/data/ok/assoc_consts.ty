@@ -1,0 +1,27 @@
+struct Square {}
+struct Wrap<T> { 0: T }
+fn sides(&Self) -> u32
+    self@0: &Self
+fn sides(&Wrap<T>) -> u32
+    self@0: &Wrap<T>
+fn sides<T>() -> u32
+fn main() -> ()
+    a@0: u32
+    b@1: (u32, bool)
+    c@2: u32
+    one@3: u8
+    wide@4: i64
+    size@5: u16
+const SIDES: u32
+const DOUBLE: u32
+const PAIR: (u32, bool)
+const SIZE: <Self as Sized2>::Repr
+const SIZE: <Square as Sized2>::Repr
+const ONE: T
+const SIDES: u32
+const ONE: u8
+const ONE: i64
+const SIDES: u32
+const SIDES: u32
+const DOUBLE: u32
+const EIGHT: u32

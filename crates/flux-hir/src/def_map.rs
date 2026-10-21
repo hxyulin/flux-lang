@@ -112,9 +112,9 @@ pub enum Resolved {
     /// before this one name a type, and this one an item that type
     /// checking looks for among the traits it implements.
     TypeRelative(usize),
-    /// `Tr::f`: function `f` of trait `Tr`, named by the segment before
-    /// it.
-    TraitItem(TraitId, FunctionId),
+    /// `Tr::f`: function or constant `f` of trait `Tr`, named by the
+    /// segment before it.
+    TraitItem(TraitId, AssocItem),
 }
 
 /// Why a path did not resolve.
@@ -431,9 +431,8 @@ impl ItemTree {
             });
         }
         let data = &self.traits[t];
-        match data.function(self, name) {
-            Some(f) => Ok(Resolved::TraitItem(t, f)),
-            None if data.unsupported.contains(&name) => Err(ResolveError::Reported),
+        match data.value(self, name) {
+            Some(item) => Ok(Resolved::TraitItem(t, item)),
             None => Err(ResolveError::Failed {
                 at: At::Segment(index),
                 message: format!(

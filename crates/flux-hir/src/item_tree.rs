@@ -46,7 +46,7 @@ pub struct ItemTree {
     pub assoc: rustc_hash::FxHashMap<(ImplTarget, Symbol), Vec<AssocItem>>,
     /// The `impl` blocks of each trait, in source order.
     pub trait_impls: rustc_hash::FxHashMap<TraitId, Vec<ImplId>>,
-    /// The traits with a function of each name.
+    /// The traits with a function or constant of each name.
     pub trait_fns: rustc_hash::FxHashMap<Symbol, Vec<TraitId>>,
     /// The traits the compiler knows, by their `#[lang = "..."]` names.
     pub lang_traits: rustc_hash::FxHashMap<Symbol, TraitId>,
@@ -156,6 +156,8 @@ pub struct Const {
     pub has_body: bool,
     /// `const N: i32`, where rustc reports errors about the constant.
     pub def_range: TextRange,
+    /// The whole item.
+    pub item_range: TextRange,
 }
 
 /// What an associated item is in.
@@ -200,10 +202,8 @@ pub struct Trait {
     /// and its parameters' names standing for their types.
     pub on_unimplemented: Option<Box<str>>,
     pub functions: Vec<FunctionId>,
+    pub consts: Vec<ConstId>,
     pub types: Vec<TraitType>,
-    /// The names of its items flux does not support (reported), which
-    /// paths to them do not report again.
-    pub unsupported: Vec<Symbol>,
     pub name_range: TextRange,
     /// `trait Tr`, where rustc reports errors about the whole trait.
     pub def_range: TextRange,
@@ -216,6 +216,21 @@ impl Trait {
             .iter()
             .copied()
             .find(|&f| items.functions[f].name == name)
+    }
+
+    /// Its constant called `name`, if any.
+    pub fn konst(&self, items: &ItemTree, name: Symbol) -> Option<ConstId> {
+        self.consts
+            .iter()
+            .copied()
+            .find(|&c| items.consts[c].name == Some(name))
+    }
+
+    /// Its function or constant called `name`, if any.
+    pub fn value(&self, items: &ItemTree, name: Symbol) -> Option<AssocItem> {
+        self.function(items, name)
+            .map(AssocItem::Function)
+            .or_else(|| self.konst(items, name).map(AssocItem::Const))
     }
 }
 
@@ -1232,8 +1247,8 @@ impl Collector<'_> {
             lang,
             on_unimplemented,
             functions: Vec::new(),
+            consts: Vec::new(),
             types: Vec::new(),
-            unsupported: Vec::new(),
             name_range,
             def_range: TextRange::new(def_start(t.syntax()), name_range.end()),
         });
@@ -1249,10 +1264,8 @@ impl Collector<'_> {
                 ast::Item::Fn(f) => {
                     if let Some(function) = self.collect_fn(ctx, f, false, Some(Owner::Trait(id))) {
                         let data = &self.items.functions[function];
-                        let duplicate = self.items.traits[id]
-                            .functions
-                            .iter()
-                            .any(|&g| self.items.functions[g].name == data.name);
+                        let duplicate =
+                            self.items.traits[id].value(self.items, data.name).is_some();
                         if duplicate {
                             // rustc's span has a bodiless item's `;`.
                             let range = if data.has_body {
@@ -1274,12 +1287,23 @@ impl Collector<'_> {
                     continue;
                 }
                 ast::Item::Const(c) => {
-                    if let Some(name) = c.name() {
-                        self.items.traits[id]
-                            .unsupported
-                            .push(Symbol::intern(name.text()));
+                    let Some(konst) = self.collect_const(ctx, c, Some(Owner::Trait(id))) else {
+                        continue;
+                    };
+                    let data = &self.items.consts[konst];
+                    let Some(name) = data.name else {
+                        continue;
+                    };
+                    if self.items.traits[id].value(self.items, name).is_some() {
+                        self.items.diagnostics.push(Diagnostic::new(
+                            data.item_range,
+                            format!("the name `{name}` is defined multiple times"),
+                        ));
+                    } else {
+                        self.items.traits[id].consts.push(konst);
+                        self.items.trait_fns.entry(name).or_default().push(id);
                     }
-                    "associated constants in traits"
+                    continue;
                 }
                 ast::Item::TypeAlias(t) => {
                     self.collect_trait_type(id, t);
@@ -1544,16 +1568,28 @@ impl Collector<'_> {
             let what = match item {
                 ast::Item::Fn(f) => {
                     if let Some(function) = self.collect_fn(ctx, f, false, Some(Owner::Impl(id))) {
-                        self.items.impls[id].functions.push(function);
+                        let (name, range) = {
+                            let data = &self.items.functions[function];
+                            (data.name, data.item_range)
+                        };
+                        if !(is_trait_impl && self.duplicate_value(id, name, range)) {
+                            self.items.impls[id].functions.push(function);
+                        }
                     }
                     continue;
                 }
-                ast::Item::Const(_) if is_trait_impl => {
-                    "associated constants in trait implementations"
-                }
                 ast::Item::Const(c) => {
-                    if let Some(konst) = self.collect_const(ctx, c, Some(id)) {
-                        self.items.impls[id].consts.push(konst);
+                    if let Some(konst) = self.collect_const(ctx, c, Some(Owner::Impl(id))) {
+                        let (name, range) = {
+                            let data = &self.items.consts[konst];
+                            (data.name, data.item_range)
+                        };
+                        let duplicate = name.is_some_and(|name| {
+                            is_trait_impl && self.duplicate_value(id, name, range)
+                        });
+                        if !duplicate {
+                            self.items.impls[id].consts.push(konst);
+                        }
                     }
                     continue;
                 }
@@ -1570,6 +1606,28 @@ impl Collector<'_> {
                 what,
             );
         }
+    }
+
+    /// Whether trait `impl` block `id` already has a function or constant
+    /// called `name`, reported at `range` (E0201): they share a namespace.
+    fn duplicate_value(&mut self, id: ImplId, name: Symbol, range: TextRange) -> bool {
+        let imp = &self.items.impls[id];
+        let items = &self.items;
+        let exists = imp
+            .functions
+            .iter()
+            .any(|&f| items.functions[f].name == name)
+            || imp
+                .consts
+                .iter()
+                .any(|&c| items.consts[c].name == Some(name));
+        if exists {
+            self.items.diagnostics.push(Diagnostic::new(
+                range,
+                format!("duplicate definitions with name `{name}`:"),
+            ));
+        }
+        exists
     }
 
     fn collect_fn(
@@ -1778,10 +1836,10 @@ impl Collector<'_> {
         &mut self,
         ctx: Ctx,
         c: ast::Const<'_>,
-        owner: Option<ImplId>,
+        owner: Option<Owner>,
     ) -> Option<ConstId> {
         check_attrs(c.attrs(), &mut self.items.diagnostics);
-        let vis = self.item_visibility(ctx, c.visibility(), owner.map(Owner::Impl));
+        let vis = self.item_visibility(ctx, c.visibility(), owner);
         let name = c.name();
         let name_end = name
             .map(|n| n.syntax().text_range().end())
@@ -1798,25 +1856,19 @@ impl Collector<'_> {
             }
         };
 
-        if let Some(owner) = owner
-            && !self.items.impls[owner].generics.is_empty()
-        {
-            unsupported(
-                diagnostics,
-                c.syntax().text_range(),
-                "associated constants in generic `impl` blocks",
-            );
-        }
         let has_body = c.body().is_some();
         let def_start = def_start(c.syntax());
         let header_end = c.ty().map_or(name_end, |t| t.syntax().text_range().end());
+        let item_range = TextRange::new(def_start, c.syntax().text_range().end());
         if !has_body {
             let message = match owner {
-                Some(_) => "associated constant in `impl` without body",
-                None => "free constant item without body",
+                Some(Owner::Trait(_)) => None,
+                Some(Owner::Impl(_)) => Some("associated constant in `impl` without body"),
+                None => Some("free constant item without body"),
             };
-            let range = TextRange::new(def_start, c.syntax().text_range().end());
-            diagnostics.push(Diagnostic::new(range, message));
+            if let Some(message) = message {
+                diagnostics.push(Diagnostic::new(item_range, message));
+            }
         }
         Some(
             self.items.consts.alloc(Const {
@@ -1830,10 +1882,11 @@ impl Collector<'_> {
                     file: ctx.file,
                     vis,
                 },
-                owner: owner.map(Owner::Impl),
+                owner,
                 node: c.syntax().id(),
                 has_body,
                 def_range: TextRange::new(def_start, header_end),
+                item_range,
             }),
         )
     }
@@ -1852,26 +1905,12 @@ impl Collector<'_> {
             return;
         };
         let diagnostics = &mut self.items.diagnostics;
-        let generics =
-            collect_generics(s.generic_param_list(), None, Defaults::Struct, diagnostics);
-        if let Some(clause) = s.where_clause() {
-            unsupported(
-                diagnostics,
-                clause.syntax().text_range(),
-                "`where` clauses on structs",
-            );
-        }
-        if let Some(p) = generics.predicates.first() {
-            let range = TextRange::new(
-                p.bound.range.start(),
-                generics
-                    .predicates
-                    .last()
-                    .map_or(p.bound.range, |p| p.bound.range)
-                    .end(),
-            );
-            unsupported(diagnostics, range, "trait bounds on structs");
-        }
+        let generics = collect_generics(
+            s.generic_param_list(),
+            s.where_clause(),
+            Defaults::Struct,
+            diagnostics,
+        );
         let mut fields = Vec::new();
         let kind = if let Some(list) = s.record_field_list() {
             for field in list.fields() {
@@ -1996,14 +2035,39 @@ impl Collector<'_> {
                 default: None,
             })
             .collect();
-        let predicates = params
-            .iter()
-            .map(|p| WherePredicate {
-                ty: TypeRef::Path(Path::single(p.name)),
-                ty_range: p.range,
+        // As rustc expands it: each parameter's own bounds and the
+        // trait's, then the struct's `where` clause.
+        let inline = |p: &WherePredicate| p.ty_range.end() <= s.generics.range.end();
+        let mut predicates = Vec::new();
+        for param in params.iter() {
+            let ty = TypeRef::Path(Path::single(param.name));
+            predicates.extend(
+                s.generics
+                    .predicates
+                    .iter()
+                    .filter(|p| inline(p) && p.ty == ty)
+                    .cloned(),
+            );
+            predicates.push(WherePredicate {
+                ty,
+                ty_range: param.range,
                 bound: bound.clone(),
-            })
-            .collect();
+            });
+        }
+        predicates.extend(s.generics.predicates.iter().filter(|p| !inline(p)).cloned());
+        // And the trait for each field type's associated types of the
+        // parameters (`T::Out`), which a bound on `T` cannot give.
+        let mut projections = Vec::new();
+        for field in s.fields.iter() {
+            param_projections(&field.ty, &params, &mut projections);
+        }
+        for ty in projections {
+            predicates.push(WherePredicate {
+                ty,
+                ty_range: range,
+                bound: bound.clone(),
+            });
+        }
         let mut self_path = Path::single(s.name);
         self_path.ranges = Box::new([s.name_range]);
         if !params.is_empty() {
@@ -2019,7 +2083,7 @@ impl Collector<'_> {
         }
         let generics = Generics {
             params,
-            predicates,
+            predicates: predicates.into(),
             range: s.generics.range,
             has_lifetimes: s.generics.has_lifetimes,
         };
@@ -2426,6 +2490,44 @@ pub(crate) fn lower_generic_args(
         ranges: ranges.into(),
         bindings: bindings.into(),
         range: list.syntax().text_range(),
+    }
+}
+
+/// The associated types of `params` that `ty` names (`T::Out`,
+/// `<T as Tr>::Out`), each once, into `out`.
+fn param_projections(ty: &TypeRef, params: &[GenericParam], out: &mut Vec<TypeRef>) {
+    let is_param = |p: &Path| {
+        p.qself.is_none() && p.segments.len() == 1 && params.iter().any(|g| g.name == p.segments[0])
+    };
+    match ty {
+        TypeRef::Path(path) => {
+            let of_param = match &path.qself {
+                Some(qself) => matches!(&qself.ty, TypeRef::Path(p) if is_param(p)),
+                None => {
+                    path.segments.len() > 1 && params.iter().any(|g| g.name == path.segments[0])
+                }
+            };
+            if of_param {
+                if !out.contains(ty) {
+                    out.push(ty.clone());
+                }
+                return;
+            }
+            for args in path.args.iter().flatten() {
+                for arg in args.types.iter() {
+                    param_projections(arg, params, out);
+                }
+            }
+        }
+        TypeRef::Tuple(elements) => {
+            for e in elements.iter() {
+                param_projections(e, params, out);
+            }
+        }
+        TypeRef::Ptr { pointee, .. } | TypeRef::Ref { pointee, .. } => {
+            param_projections(pointee, params, out);
+        }
+        TypeRef::Never | TypeRef::Infer | TypeRef::Error => {}
     }
 }
 

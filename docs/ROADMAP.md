@@ -28,14 +28,14 @@ MIR and borrow checking, for functions over integers, `bool`, raw
 pointers, tuples and structs, with methods and references that need no
 lifetimes (parameters, temporaries and locals assigned once), generic
 functions, structs and `impl` blocks, monomorphized, traits with
-bounds, statically dispatched, associated types, overloaded operators,
-`Copy`/`Clone`/`PartialEq`/`Eq` with `#[derive]`, and `Drop`, with
-rustc's drop order and drop flags. In order next:
+bounds, statically dispatched, associated types and constants,
+overloaded operators, `Copy`/`Clone`/`PartialEq`/`Eq` with `#[derive]`,
+`Drop`, with rustc's drop order and drop flags, and bounds on structs.
+In order next:
 
-1. More of traits: associated constants; bounds on structs. Then `core` can define
-   the pointer methods and `CStr` (now built into the compiler) through
-   lang items and intrinsics. `for` loops over `Iterator` need `Option`,
-   so they come with enums.
+1. `core` defines the pointer methods and `CStr` (now built into the
+   compiler) through lang items and intrinsics. `for` loops over
+   `Iterator` need `Option`, so they come with enums.
 2. Lifetimes: references in structs and return values, which needs
    region inference across function signatures.
 3. Items inside function bodies, enums and `match`.
@@ -66,8 +66,8 @@ provides its own small core library, [`library/core`](../library/core),
 written in flux and compiled with every program, that defines the same
 names with the same meaning. So far it has the integer types' constants
 and methods, `mem::drop`, `convert::identity`, `marker::Sized`, the
-operator traits, `PartialEq`/`Eq`, `Copy`, `Clone` and `Drop`, and
-`Option`, `Result` and `PartialOrd` with enums. Its front end (parsing,
+operator traits, `PartialEq`/`Eq`, `Copy`, `Clone` and `Drop`;
+`Option`, `Result` and `PartialOrd` come with enums. Its front end (parsing,
 item tree, names, signatures, constants' values, and bodies as they are
 reached) is done once per process and shared by every compilation in
 it, and only the functions a program calls are type-checked and

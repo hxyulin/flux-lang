@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 
-use flux_arena::ArenaMap;
 use flux_hir::Diagnostic;
 use flux_syntax::TextRange;
 
@@ -35,7 +34,7 @@ enum Mode {
 pub fn check(
     body: &Body,
     sigs: &flux_ty::Signatures,
-    consts: &ArenaMap<flux_hir::Const, Value>,
+    consts: &crate::eval::ConstValues,
 ) -> Vec<Diagnostic> {
     if body.in_core {
         return Vec::new();
@@ -190,7 +189,7 @@ fn reverse_postorder(body: &Body) -> Vec<BasicBlock> {
 fn operand(
     op: &Operand,
     known: &HashMap<Local, Value>,
-    consts: &ArenaMap<flux_hir::Const, Value>,
+    consts: &crate::eval::ConstValues,
 ) -> Option<Value> {
     match op {
         Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => {
@@ -202,7 +201,7 @@ fn operand(
             ty: *ty,
         }),
         Operand::Const(Constant::Bool(b)) => Some(Value::Bool(*b)),
-        Operand::Const(Constant::Item { id, .. }) => match consts.get(*id)? {
+        Operand::Const(Constant::Item { id, args, .. }) => match consts.get(*id, args)? {
             value @ (Value::Int { .. } | Value::Bool(_)) => Some(value.clone()),
             Value::Aggregate(_) => None,
         },
@@ -217,7 +216,7 @@ fn evaluate(
     sigs: &flux_ty::Signatures,
     rvalue: &Rvalue,
     known: &HashMap<Local, Value>,
-    consts: &ArenaMap<flux_hir::Const, Value>,
+    consts: &crate::eval::ConstValues,
     range: TextRange,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Value> {
