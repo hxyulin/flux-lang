@@ -892,6 +892,28 @@ types are, and a type that is `Copy` for some lifetimes only where a
 value of it is copied. A borrowed constant expression (`&5`, `&[1, 2]`) lives
 forever, as rustc promotes it.
 
+Values are laid out in memory as rustc lays them out, so
+`core::mem::{size_of, align_of, size_of_val, align_of_val}` (in the
+prelude, as in rustc; `const fn`s, for sized types) give rustc's sizes:
+struct and tuple fields reordered to leave little padding (in
+declaration order with `#[repr(C)]`, on structs too now; other `repr`s of
+structs are not supported yet), enums' tags as small as their
+discriminants allow, and niches (`Option<&T>`, `Option<bool>`,
+`Option<NonNull<T>>` take no more room than what they hold). `core::ptr`
+has `null`, `null_mut`, `eq`, `read`, `write`, `copy`,
+`copy_nonoverlapping`, `write_bytes`, `swap`, `replace`,
+`drop_in_place` and `NonNull` (`new`, `new_unchecked`, `dangling`,
+`as_ptr`, `as_ref`, `as_mut`, `cast`, `add`, `read`, `write`), and raw
+pointers have `is_null`, `cast`, `cast_mut`/`cast_const`, `addr`,
+`add`, `sub`, `offset`, `wrapping_add`, `wrapping_sub`, `offset_from`,
+`read`, `write`, `replace`, `swap`, `drop_in_place`, `write_bytes`,
+`copy_to`, `copy_from` (and their `_nonoverlapping` forms), `as_ref`
+and `as_mut`; a `*mut T` coerces to a `*const T`. `core::mem` has
+`forget`, `ManuallyDrop` (with `Deref`) and `MaybeUninit` (`new`,
+`uninit`, `zeroed`, `write`, `as_ptr`, `as_mut_ptr`, `assume_init` and
+its `_read`, `_ref`, `_mut` and `_drop` forms). Pointer arithmetic and
+casts of integers to pointers are not supported in constants yet.
+
 At run time flux matches rustc with `-C overflow-checks=off -C
 panic=abort`: arithmetic wraps, shift amounts are masked to the type's
 width, and division by zero or `MIN / -1` panics. Programs print with

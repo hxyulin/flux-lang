@@ -4,17 +4,21 @@
 //! scalar *leaves*, in field order, each a keel variable of its own: a
 //! local of type `(i32, (bool, u64))` is three variables, and a field is a
 //! range of its local's leaves. A local that is borrowed needs an address
-//! instead, so it lives in a stack slot, laid out as a C struct of its
-//! fields; so does whatever a pointer points to. Aggregates cross calls as one argument per
-//! leaf; a function returning two or more leaves returns them through
-//! memory the caller provides (`sret`), laid out as a C struct of the
-//! leaves, which keel returns in registers where the platform allows.
+//! instead, so it lives in a stack slot, laid out as rustc lays its type
+//! out ([`flux_mir::layout`]); so does whatever a pointer points to.
+//! Aggregates cross calls as one argument per leaf; a function returning
+//! two or more leaves returns them through memory the caller provides
+//! (`sret`), laid out as a C struct of the leaves, which keel returns in
+//! registers where the platform allows.
 //!
-//! An enum is its discriminant, an `isize`, then the fields of each of its
-//! variants in turn, as if it were a struct of them all: only the
-//! variant it holds has meaningful leaves. Where the fields of one
-//! variant could share another's would be smaller, but nothing observes
-//! the size yet.
+//! An enum's leaves are its discriminant, of its `repr` type (`isize`
+//! without one), then the fields of each of its variants in turn: only
+//! the variant it holds has meaningful leaves. In memory, its variants
+//! share their bytes, so storing one stores only the fields of the
+//! variant its discriminant says (a `switch` where several variants have
+//! fields), then its tag, which loading decodes: a direct tag is
+//! extended, a niche (`Option<&T>`'s null) compared with the values it
+//! gives other variants.
 //!
 //! A value that contains an array (a *memory* type) is indexed at run
 //! time, so it always lives in memory: its locals are stack slots, and
@@ -27,6 +31,7 @@
 use std::collections::HashMap;
 
 use flux_hir::{Diagnostic, FunctionId, Hir, ImplTarget, Owner};
+use flux_mir::layout::{Layouts, Shape, TagEncoding};
 use flux_mir::mono::Instance;
 use flux_mir::{
     AggregateKind, AssertMessage, BinOp, Body, Constant, FileMir, Local, Operand, Place, PlaceTy,
@@ -95,6 +100,7 @@ pub fn lower_module(
         .collect();
     let mut declared_abort = false;
     let mut declared = std::collections::HashSet::new();
+    let layouts = Layouts::new(items, &typed.sigs, &mir.discriminants);
     for (id, function) in hir.items.functions.iter() {
         // The same C function may be declared in several modules.
         if function.is_extern && declared.insert(symbols[&id].clone()) {
@@ -102,7 +108,7 @@ pub fn lower_module(
             module.decls.push(FuncDecl {
                 attrs: attrs(&typed.sigs[id]),
                 name: symbols[&id].clone(),
-                sig: signature(&typed.sigs, &typed.sigs[id], function.is_variadic),
+                sig: signature(&typed.sigs, &layouts, &typed.sigs[id], function.is_variadic),
             });
         }
     }
@@ -146,6 +152,7 @@ pub fn lower_module(
         vtables: HashMap::new(),
         promoted: HashMap::new(),
         data: Vec::new(),
+        layouts,
     };
     for instance in instances {
         let body = flux_mir::mono::body_of(hir, &typed.sigs, mir, instance);
@@ -224,7 +231,12 @@ pub fn lower_module(
             args: &[],
         };
         let sig = &typed.sigs[id];
-        let main_sig = ctx_signature(&typed.sigs, sig, ctx.reified.contains(&instance));
+        let main_sig = ctx_signature(
+            &typed.sigs,
+            &ctx.layouts,
+            sig,
+            ctx.reified.contains(&instance),
+        );
         let flush = items
             .lang_fns
             .get(&flux_intern::Symbol::intern("flush_stdout"))
@@ -234,7 +246,7 @@ pub fn lower_module(
                     function: f,
                     args: &[],
                 };
-                let flush_sig = ctx_signature(&typed.sigs, &typed.sigs[f], false);
+                let flush_sig = ctx_signature(&typed.sigs, &ctx.layouts, &typed.sigs[f], false);
                 (instance_symbol(hir, &symbols, instance), flush_sig)
             });
         let entry = entry_point(&symbols[&id], &main_sig, sig.ret == Ty::NEVER, flush);
@@ -410,6 +422,17 @@ fn discriminant(sigs: &Signatures, ty: Ty) -> flux_ty::IntTy {
     sigs.discriminant_ty(ty).unwrap_or(flux_ty::IntTy::Isize)
 }
 
+/// The unsigned integer type of a tag `bytes` wide.
+fn tag_int(bytes: u8) -> IntTy {
+    match bytes {
+        1 => IntTy::U8,
+        2 => IntTy::U16,
+        4 => IntTy::U32,
+        8 => IntTy::U64,
+        _ => IntTy::U128,
+    }
+}
+
 /// Whether values of `ty` contain an array, so live in memory.
 fn is_memory(sigs: &Signatures, ty: Ty) -> bool {
     match ty.kind() {
@@ -506,46 +529,16 @@ fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
     }
 }
 
-/// How a value of `ty` is laid out in memory: a C struct of its fields,
-/// recursively, with `()` and `!` empty; an enum as a struct of its
-/// discriminant and a struct of each variant's fields.
-fn layout(sigs: &Signatures, ty: Ty) -> Layout {
-    if let TyKind::Array(elem, len) = ty.kind() {
-        return Layout::Array(Box::new(layout(sigs, elem)), array_len(len) as u32);
-    }
-    if is_fat(ty) {
-        let meta = if is_dyn_ptr(ty) { Type::Ptr } else { Type::I64 };
-        return Layout::Struct(vec![Layout::Scalar(Type::Ptr), Layout::Scalar(meta)]);
-    }
-    if let Some(variants) = sigs.variants(ty) {
-        let mut members = vec![Layout::Scalar(int_type(discriminant(sigs, ty)))];
-        members.extend(variants.iter().map(|fields| struct_layout(sigs, fields)));
-        return Layout::Struct(members);
-    }
-    match sigs.fields(ty) {
-        Some(fields) => struct_layout(sigs, fields),
-        None => match keel_type(ty) {
-            Some(scalar) => Layout::Scalar(scalar),
-            None => Layout::Struct(Vec::new()),
-        },
-    }
-}
-
-fn struct_layout(sigs: &Signatures, fields: &[Ty]) -> Layout {
-    Layout::Struct(fields.iter().map(|&f| layout(sigs, f)).collect())
-}
-
-/// The offset of member `index` of a C struct of `members`.
-fn member_offset(members: &[Layout], index: usize) -> u64 {
-    let mut offset: u64 = 0;
-    for (i, member) in members.iter().enumerate() {
-        offset = offset.next_multiple_of(member.align());
-        if i == index {
-            break;
+/// A keel layout of `size` bytes aligned to `align`, for an `sret`
+/// pointer to a value of a memory type: keel needs only its bytes.
+fn bytes_layout(size: u64, align: u64) -> Layout {
+    for scalar in [Type::I64, Type::I32, Type::I16] {
+        let bytes = Layout::Scalar(scalar).size();
+        if align >= bytes && size.is_multiple_of(bytes) {
+            return Layout::Array(Box::new(Layout::Scalar(scalar)), (size / bytes) as u32);
         }
-        offset += member.size();
     }
-    offset
+    Layout::Array(Box::new(Layout::Scalar(Type::I8)), size as u32)
 }
 
 /// The fields of a value of `place`'s type: of the variant it was
@@ -577,14 +570,14 @@ enum Return {
     Memory(Layout),
 }
 
-fn return_kind(sigs: &Signatures, ret: Ty) -> Return {
+fn return_kind(sigs: &Signatures, layouts: &Layouts, ret: Ty) -> Return {
     if is_memory(sigs, ret) {
-        let layout = layout(sigs, ret);
+        let layout = layouts.of(ret);
         // Nothing to return (`[T; 0]`): keel has no empty `sret`.
-        if layout.size() == 0 {
+        if layout.size == 0 {
             return Return::Values(Vec::new());
         }
-        return Return::Memory(layout);
+        return Return::Memory(bytes_layout(layout.size, layout.align));
     }
     let leaves = leaves_of(sigs, ret);
     if leaves.len() <= 1 {
@@ -629,9 +622,9 @@ fn abi_param(ty: Ty) -> Option<AbiParam> {
     Some(param)
 }
 
-fn signature(sigs: &Signatures, sig: &FnSig, variadic: bool) -> Signature {
+fn signature(sigs: &Signatures, layouts: &Layouts, sig: &FnSig, variadic: bool) -> Signature {
     let mut signature = Signature::new(&[], &[]);
-    match return_kind(sigs, sig.ret) {
+    match return_kind(sigs, layouts, sig.ret) {
         Return::Values(returns) => signature.returns = returns,
         Return::Sret(layout) | Return::Memory(layout) => signature.params.push(AbiParam {
             purpose: Purpose::Sret(layout),
@@ -650,8 +643,8 @@ fn signature(sigs: &Signatures, sig: &FnSig, variadic: bool) -> Signature {
 /// (`cc(fast)`), which leaves narrow values unextended, where it allows
 /// it; that is for one result at most, and every function flux defines is
 /// local and called directly.
-fn flux_signature(sigs: &Signatures, sig: &FnSig) -> Signature {
-    let mut signature = signature(sigs, sig, false);
+fn flux_signature(sigs: &Signatures, layouts: &Layouts, sig: &FnSig) -> Signature {
+    let mut signature = signature(sigs, layouts, sig, false);
     if signature.returns.len() <= 1 {
         signature.cc = CallConv::Fast;
         for param in signature.params.iter_mut().chain(&mut signature.returns) {
@@ -673,11 +666,11 @@ fn attrs(sig: &FnSig) -> FunctionAttrs {
 /// The signature of a function flux defines: keel's private convention
 /// unless its address is taken (`reified`), when it must be called
 /// through a pointer, which `cc(fast)` does not allow: C's then.
-fn ctx_signature(sigs: &Signatures, sig: &FnSig, reified: bool) -> Signature {
+fn ctx_signature(sigs: &Signatures, layouts: &Layouts, sig: &FnSig, reified: bool) -> Signature {
     if reified {
-        signature(sigs, sig, false)
+        signature(sigs, layouts, sig, false)
     } else {
-        flux_signature(sigs, sig)
+        flux_signature(sigs, layouts, sig)
     }
 }
 
@@ -744,6 +737,8 @@ struct Ctx<'a> {
     /// alignment.
     promoted: HashMap<(Vec<u8>, u32), String>,
     data: Vec<DataObject>,
+    /// How values are laid out in memory, as rustc lays them out.
+    layouts: Layouts<'a>,
 }
 
 impl Ctx<'_> {
@@ -765,7 +760,12 @@ impl Ctx<'_> {
             instance.args,
         );
         let takes_location = self.takes_location(instance);
-        let mut signature = ctx_signature(&self.typed.sigs, sig, self.reified.contains(&instance));
+        let mut signature = ctx_signature(
+            &self.typed.sigs,
+            &self.layouts,
+            sig,
+            self.reified.contains(&instance),
+        );
         if takes_location {
             signature.params.push(AbiParam::new(Type::Ptr));
         }
@@ -857,11 +857,11 @@ impl Ctx<'_> {
     /// `value`, of type `ty`, laid out in memory: its bytes and
     /// alignment.
     fn value_bytes(&mut self, value: &flux_mir::eval::Value, ty: Ty) -> (Vec<DataItem>, u32) {
-        let layout = layout(&self.typed.sigs, ty);
-        let mut bytes = vec![0u8; layout.size().max(1) as usize];
+        let layout = self.layouts.of(ty);
+        let mut bytes = vec![0u8; layout.size.max(1) as usize];
         // The addresses, which the linker fills in, by offset.
         let mut addresses: Vec<(usize, String)> = Vec::new();
-        self.write_value(value, ty, 0, &mut bytes, &mut addresses);
+        self.write_bytes(value, ty, 0, &mut bytes, &mut addresses);
         let mut items = Vec::new();
         let mut at = 0;
         addresses.sort();
@@ -875,7 +875,97 @@ impl Ctx<'_> {
         if at < bytes.len() {
             items.push(DataItem::Bytes(bytes[at..].to_vec()));
         }
-        (items, layout.align() as u32)
+        (items, layout.align as u32)
+    }
+
+    /// Writes `value`, of type `ty`, into `bytes` at `at`, laid out as
+    /// in memory; the addresses it holds go in `addresses`.
+    fn write_bytes(
+        &mut self,
+        value: &flux_mir::eval::Value,
+        ty: Ty,
+        at: usize,
+        bytes: &mut [u8],
+        addresses: &mut Vec<(usize, String)>,
+    ) {
+        use flux_mir::eval::Value as V;
+        let put = |bytes: &mut [u8], at: usize, bits: u128, width: usize| {
+            bytes[at..at + width].copy_from_slice(&bits.to_le_bytes()[..width]);
+        };
+        let layout = self.layouts.of(ty);
+        match value {
+            V::Int { bits, .. } => put(bytes, at, *bits, layout.size as usize),
+            V::Bool(b) => bytes[at] = u8::from(*b),
+            V::Static(id) => addresses.push((at, self.statics[id].clone())),
+            V::Ref(pointee) => {
+                let (symbol, len) = self.referenced(pointee, ty);
+                addresses.push((at, symbol));
+                if let Some(len) = len {
+                    put(bytes, at + 8, u128::from(len), 8);
+                }
+            }
+            V::Aggregate(elements) if matches!(ty.kind(), TyKind::Array(..)) => {
+                let elem = ty.sequence_elem().unwrap_or(Ty::ERROR);
+                let stride = self.layouts.of(elem).size as usize;
+                for (i, element) in elements.iter().enumerate() {
+                    self.write_bytes(element, elem, at + i * stride, bytes, addresses);
+                }
+            }
+            V::Aggregate(fields) => {
+                let types = self.typed.sigs.fields(ty).unwrap_or_default();
+                for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
+                    let offset = layout.field_offset(0, i as u32) as usize;
+                    self.write_bytes(field, field_ty, at + offset, bytes, addresses);
+                }
+            }
+            V::Variant {
+                strukt,
+                index,
+                fields,
+            } => {
+                let types = self
+                    .typed
+                    .sigs
+                    .variant_fields(ty, *index)
+                    .unwrap_or_default();
+                for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
+                    let offset = layout.field_offset(*index, i as u32) as usize;
+                    self.write_bytes(field, field_ty, at + offset, bytes, addresses);
+                }
+                if let Some((offset, width, bits)) = self.tag_store(ty, *strukt, *index) {
+                    put(bytes, at + offset as usize, bits, usize::from(width));
+                }
+            }
+        }
+    }
+
+    /// What a value of variant `variant` of `ty`, an enum of `strukt`,
+    /// has in its tag: its offset, width and bits; none where the tag
+    /// is the variant's own fields (a niche-filling enum's untagged
+    /// variant) or there is none.
+    fn tag_store(
+        &mut self,
+        ty: Ty,
+        strukt: flux_hir::StructId,
+        variant: u32,
+    ) -> Option<(u64, u8, u128)> {
+        let layout = self.layouts.of(ty);
+        let Shape::Enum { tag: Some(tag), .. } = &layout.shape else {
+            return None;
+        };
+        let mask = if tag.bytes >= 16 {
+            u128::MAX
+        } else {
+            (1u128 << (8 * u32::from(tag.bytes))) - 1
+        };
+        let bits = match tag.encoding {
+            TagEncoding::Direct => self.discriminant(strukt, variant),
+            TagEncoding::Niche { untagged, .. } if untagged == variant => return None,
+            TagEncoding::Niche { first, start, .. } => {
+                u128::from(variant.wrapping_sub(first)).wrapping_add(start)
+            }
+        };
+        Some((tag.offset, tag.bytes, bits & mask))
     }
 
     /// The name of the read-only data object holding `value`, of type
@@ -926,74 +1016,6 @@ impl Ctx<'_> {
         }
     }
 
-    /// Writes `value`, of type `ty`, into `bytes` at offset `at`, placing
-    /// every field where `layout` puts it, as code storing the value does;
-    /// the variants an enum does not hold stay zero. The addresses of the
-    /// data objects references point to go in `addresses`.
-    fn write_value(
-        &mut self,
-        value: &flux_mir::eval::Value,
-        ty: Ty,
-        at: u64,
-        bytes: &mut [u8],
-        addresses: &mut Vec<(usize, String)>,
-    ) {
-        use flux_mir::eval::Value as V;
-        fn put(bytes: &mut [u8], at: u64, bits: u128, scalar: &Layout) {
-            let Layout::Scalar(scalar) = scalar else {
-                unreachable!("scalar constants are laid out as scalars")
-            };
-            let (at, width) = (at as usize, scalar.bytes().unwrap_or(8) as usize);
-            bytes[at..at + width].copy_from_slice(&bits.to_le_bytes()[..width]);
-        }
-        let sigs = &self.typed.sigs;
-        match value {
-            V::Ref(pointee) => {
-                let (symbol, len) = self.referenced(pointee, ty);
-                addresses.push((at as usize, symbol));
-                if let Some(len) = len {
-                    put(bytes, at + 8, u128::from(len), &Layout::Scalar(Type::I64));
-                }
-            }
-            V::Static(id) => addresses.push((at as usize, self.statics[id].clone())),
-            V::Int { bits, .. } => put(bytes, at, *bits, &layout(sigs, ty)),
-            V::Bool(b) => put(bytes, at, u128::from(*b), &layout(sigs, ty)),
-            V::Aggregate(elements) if matches!(ty.kind(), TyKind::Array(..)) => {
-                let elem = ty.sequence_elem().unwrap_or(Ty::ERROR);
-                let size = layout(sigs, elem).size();
-                for (i, element) in elements.iter().enumerate() {
-                    self.write_value(element, elem, at + size * i as u64, bytes, addresses);
-                }
-            }
-            V::Aggregate(fields) => {
-                let types = sigs.fields(ty).unwrap_or_default();
-                let layouts: Vec<Layout> = types.iter().map(|&f| layout(sigs, f)).collect();
-                for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
-                    let field_at = at + member_offset(&layouts, i);
-                    self.write_value(field, field_ty, field_at, bytes, addresses);
-                }
-            }
-            V::Variant {
-                strukt,
-                index,
-                fields,
-            } => {
-                let Layout::Struct(members) = layout(sigs, ty) else {
-                    unreachable!("enums are laid out as structs")
-                };
-                let types = sigs.variant_fields(ty, *index).unwrap_or_default();
-                let bits = self.discriminant(*strukt, *index);
-                put(bytes, at, bits, &members[0]);
-                let variant = at + member_offset(&members, 1 + *index as usize);
-                let layouts: Vec<Layout> = types.iter().map(|&f| layout(sigs, f)).collect();
-                for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
-                    let field_at = variant + member_offset(&layouts, i);
-                    self.write_value(field, field_ty, field_at, bytes, addresses);
-                }
-            }
-        }
-    }
-
     /// The name of the read-only data object of `concrete`'s vtable as
     /// trait object `object` ([`flux_mir::vtable`]): the function that
     /// drops a value of the type in place (if it needs one and `core`
@@ -1006,7 +1028,7 @@ impl Ctx<'_> {
         let name = format!("__flux_vtable{}", self.vtables.len());
         self.vtables.insert((object, concrete), name.clone());
         let sigs = &self.typed.sigs;
-        let layout = layout(sigs, concrete);
+        let layout = self.layouts.of(concrete);
         let word = |value: u64| DataItem::Int {
             ty: Type::I64,
             value: value as i64,
@@ -1018,7 +1040,7 @@ impl Ctx<'_> {
             },
             None => DataItem::Zero(8),
         };
-        let mut items = vec![drop, word(layout.size()), word(layout.align())];
+        let mut items = vec![drop, word(layout.size), word(layout.align)];
         let entries = flux_mir::vtable::entries(&self.hir.items, sigs, object, concrete);
         for entry in entries {
             items.push(match entry {
@@ -1104,6 +1126,9 @@ impl Lower<'_, '_, '_> {
     fn body(mut self) {
         let body = self.body;
         let sigs = self.sigs;
+        // The parameters are stored where they live first, which may
+        // take blocks of its own (an enum's variants), then `bb0` runs.
+        let entry = self.b.create_block();
         self.blocks = body.blocks.iter().map(|_| self.b.create_block()).collect();
         // Locals whose own storage is borrowed need an address.
         let mut borrowed = vec![false; body.locals.len()];
@@ -1118,10 +1143,10 @@ impl Lower<'_, '_, '_> {
         }
         for (local, decl) in body.locals.iter() {
             if borrowed[local.index()] || is_memory(sigs, decl.ty) {
-                let layout = layout(sigs, decl.ty);
+                let layout = self.ctx.layouts.of(decl.ty);
                 let slot = self
                     .b
-                    .create_stack_slot(layout.size().max(1) as u32, layout.align() as u32);
+                    .create_stack_slot(layout.size.max(1) as u32, layout.align as u32);
                 self.slots.push(Some(slot));
                 self.vars.push(Box::default());
             } else {
@@ -1136,10 +1161,9 @@ impl Lower<'_, '_, '_> {
                 self.vars.push(vars);
             }
         }
-        let entry = self.blocks[0];
         self.b.switch_to_block(entry);
         if let Return::Sret(layout) | Return::Memory(layout) =
-            return_kind(sigs, body.locals[Body::RETURN].ty)
+            return_kind(sigs, &self.ctx.layouts, body.locals[Body::RETURN].ty)
         {
             let pointer = self.b.append_block_param(entry, Type::Ptr);
             self.sret = Some((pointer, layout));
@@ -1158,6 +1182,7 @@ impl Lower<'_, '_, '_> {
         if self.takes_location {
             self.caller_location = Some(self.b.append_block_param(entry, Type::Ptr));
         }
+        self.b.ins().jump(self.blocks[0], &[]);
         for (block, data) in body.blocks.iter() {
             self.b.switch_to_block(self.blocks[block.index()]);
             for statement in &data.statements {
@@ -1218,9 +1243,8 @@ impl Lower<'_, '_, '_> {
                     }
                 }
                 (ProjectionElem::Field(field), Location::Memory(address)) => {
-                    let fields = place_fields(sigs, ty);
-                    let members: Vec<Layout> = fields.iter().map(|&f| layout(sigs, f)).collect();
-                    let offset = member_offset(&members, field as usize);
+                    let layout = self.ctx.layouts.of(ty.ty);
+                    let offset = layout.field_offset(ty.variant.unwrap_or(0), field);
                     Location::Memory(self.offset(address, offset))
                 }
                 (ProjectionElem::Downcast(variant), Location::Vars { local, start, .. }) => {
@@ -1235,19 +1259,16 @@ impl Lower<'_, '_, '_> {
                         len: count(variants[variant as usize]),
                     }
                 }
-                (ProjectionElem::Downcast(variant), Location::Memory(address)) => {
-                    let Layout::Struct(members) = layout(sigs, ty.ty) else {
-                        unreachable!("enums are laid out as structs")
-                    };
-                    let offset = member_offset(&members, 1 + variant as usize);
-                    Location::Memory(self.offset(address, offset))
+                // A variant's fields' offsets are from the enum's start.
+                (ProjectionElem::Downcast(_), Location::Memory(address)) => {
+                    Location::Memory(address)
                 }
                 (ProjectionElem::Deref, location) => {
                     let pointer = self.load(location, ty.ty)[0];
                     Location::Memory(pointer)
                 }
                 (ProjectionElem::Index(index), Location::Memory(address)) => {
-                    let size = layout(sigs, elem_ty.ty).size();
+                    let size = self.ctx.layouts.of(elem_ty.ty).size;
                     let index = self.read(&index.into())[0];
                     Location::Memory(self.element(address, index, size))
                 }
@@ -1257,7 +1278,7 @@ impl Lower<'_, '_, '_> {
                     },
                     Location::Memory(address),
                 ) => {
-                    let size = layout(sigs, elem_ty.ty).size();
+                    let size = self.ctx.layouts.of(elem_ty.ty).size;
                     let index = if from_end {
                         // `len - offset`, the length an array's or the
                         // slice's pointer's.
@@ -1285,7 +1306,7 @@ impl Lower<'_, '_, '_> {
                         TyKind::Array(elem, _) | TyKind::Slice(elem) => elem,
                         _ => unreachable!("subslices are of arrays and slices"),
                     };
-                    let size = layout(sigs, elem).size();
+                    let size = self.ctx.layouts.of(elem).size;
                     Location::Memory(self.offset(address, u64::from(from) * size))
                 }
                 (
@@ -1318,7 +1339,7 @@ impl Lower<'_, '_, '_> {
                     TyKind::Slice(elem) => elem,
                     _ => unreachable!("a slice's part is of a slice"),
                 };
-                let size = layout(self.sigs, elem).size();
+                let size = self.ctx.layouts.of(elem).size;
                 let pointer = self.offset(parts[0], u64::from(*from) * size);
                 let cut = self.b.ins().iconst(Type::I64, i64::from(from + to));
                 let len = self.b.ins().isub(parts[1], cut);
@@ -1362,7 +1383,7 @@ impl Lower<'_, '_, '_> {
                 let vars = self.vars[local.index()][start..start + len].to_vec();
                 vars.into_iter().map(|var| self.b.use_var(var)).collect()
             }
-            Location::Memory(address) => self.load_leaves(address, &layout(self.sigs, ty)),
+            Location::Memory(address) => self.load_value(address, ty),
         }
     }
 
@@ -1381,7 +1402,7 @@ impl Lower<'_, '_, '_> {
                 }
             }
             Location::Memory(address) if is_memory(self.sigs, ty) => {
-                let size = layout(self.sigs, ty).size();
+                let size = self.ctx.layouts.of(ty).size;
                 // A value with no size (`[T; 0]`) may come as no value.
                 if let Some(&value) = values.first()
                     && size > 0
@@ -1389,22 +1410,16 @@ impl Lower<'_, '_, '_> {
                     self.copy(address, value, size);
                 }
             }
-            Location::Memory(address) => {
-                let leaves = layout(self.sigs, ty).leaves();
-                for ((offset, ty), &value) in leaves.into_iter().zip(values) {
-                    let address = self.offset(address, offset);
-                    self.b.ins().store_with_flags(value, address, aligned(ty));
-                }
-            }
+            Location::Memory(address) => self.store(address, ty, values),
         }
     }
 
     /// A new stack slot for a value of `ty`, and its address.
     fn new_slot(&mut self, ty: Ty) -> Value {
-        let layout = layout(self.sigs, ty);
+        let layout = self.ctx.layouts.of(ty);
         let slot = self
             .b
-            .create_stack_slot(layout.size().max(1) as u32, layout.align() as u32);
+            .create_stack_slot(layout.size.max(1) as u32, layout.align as u32);
         self.b.ins().stack_addr(slot)
     }
 
@@ -1414,7 +1429,7 @@ impl Lower<'_, '_, '_> {
         let sigs = self.sigs;
         match rvalue {
             Rvalue::Aggregate(AggregateKind::Array(elem), operands) => {
-                let size = layout(sigs, *elem).size();
+                let size = self.ctx.layouts.of(*elem).size;
                 for (i, operand) in operands.iter().enumerate() {
                     let values = self.operand(operand);
                     let at = self.offset(address, size * i as u64);
@@ -1422,30 +1437,21 @@ impl Lower<'_, '_, '_> {
                 }
             }
             Rvalue::Aggregate(AggregateKind::Variant(strukt, index), operands) => {
-                let Layout::Struct(members) = layout(sigs, ty) else {
-                    unreachable!("enums are laid out as structs")
-                };
-                let bits = self.ctx.discriminant(*strukt, *index);
-                let int = flux_ty::discriminant_ty(&self.ctx.hir.items, *strukt);
-                let tag = self.int_const(bits, int);
-                self.b
-                    .ins()
-                    .store_with_flags(tag, address, aligned(int_type(int)));
+                let layout = self.ctx.layouts.of(ty);
                 let fields = sigs.variant_fields(ty, *index).unwrap_or_default();
-                let variant = self.offset(address, member_offset(&members, 1 + *index as usize));
-                let field_layouts: Vec<Layout> = fields.iter().map(|&f| layout(sigs, f)).collect();
                 for (i, (operand, &field)) in operands.iter().zip(fields).enumerate() {
                     let values = self.operand(operand);
-                    let at = self.offset(variant, member_offset(&field_layouts, i));
+                    let at = self.offset(address, layout.field_offset(*index, i as u32));
                     self.store(at, field, &values);
                 }
+                self.store_tag(address, ty, *strukt, *index);
             }
             Rvalue::Aggregate(_, operands) => {
+                let layout = self.ctx.layouts.of(ty);
                 let fields = sigs.fields(ty).unwrap_or_default();
-                let field_layouts: Vec<Layout> = fields.iter().map(|&f| layout(sigs, f)).collect();
                 for (i, (operand, &field)) in operands.iter().zip(fields).enumerate() {
                     let values = self.operand(operand);
-                    let at = self.offset(address, member_offset(&field_layouts, i));
+                    let at = self.offset(address, layout.field_offset(0, i as u32));
                     self.store(at, field, &values);
                 }
             }
@@ -1460,31 +1466,285 @@ impl Lower<'_, '_, '_> {
         }
     }
 
-    /// Stores `values`, the leaves of a `ty`, at `address`.
+    /// Stores `values`, the leaves of a `ty`, at `address`, laid out as
+    /// rustc lays it out; an enum's variant is the one its first leaf,
+    /// the discriminant, says.
     fn store(&mut self, address: Value, ty: Ty, values: &[Value]) {
-        self.write_location(Location::Memory(address), ty, values);
-    }
-
-    fn write_location(&mut self, location: Location, ty: Ty, values: &[Value]) {
-        let Location::Memory(address) = location else {
-            unreachable!("stores are to memory")
-        };
-        if is_memory(self.sigs, ty) {
-            let size = layout(self.sigs, ty).size();
-            self.copy(address, values[0], size);
+        let sigs = self.sigs;
+        if is_memory(sigs, ty) {
+            let size = self.ctx.layouts.of(ty).size;
+            if let Some(&value) = values.first() {
+                self.copy(address, value, size);
+            }
             return;
         }
-        let leaves = layout(self.sigs, ty).leaves();
-        for ((offset, ty), &value) in leaves.into_iter().zip(values) {
-            let address = self.offset(address, offset);
-            self.b.ins().store_with_flags(value, address, aligned(ty));
+        if is_fat(ty) {
+            self.b
+                .ins()
+                .store_with_flags(values[0], address, aligned(Type::Ptr));
+            let at = self.offset(address, 8);
+            self.b
+                .ins()
+                .store_with_flags(values[1], at, aligned(Type::I64));
+            return;
+        }
+        if let Some(variants) = sigs.variants(ty) {
+            self.store_enum(address, ty, &variants, values);
+            return;
+        }
+        if let Some(fields) = sigs.fields(ty) {
+            let layout = self.ctx.layouts.of(ty);
+            let mut at = 0;
+            for (i, &field) in fields.iter().enumerate() {
+                let count = leaf_count(sigs, field);
+                let to = self.offset(address, layout.field_offset(0, i as u32));
+                self.store(to, field, &values[at..at + count]);
+                at += count;
+            }
+            return;
+        }
+        if let (Some(scalar), Some(&value)) = (keel_type(ty), values.first()) {
+            self.b
+                .ins()
+                .store_with_flags(value, address, aligned(scalar));
+        }
+    }
+
+    /// Stores an enum's leaves: the fields of the variant its
+    /// discriminant says, and its tag. Variants share their bytes, so
+    /// only that variant's are stored: where several have fields, the
+    /// discriminant picks which code runs.
+    fn store_enum(&mut self, address: Value, ty: Ty, variants: &[&'static [Ty]], values: &[Value]) {
+        let sigs = self.sigs;
+        let layout = self.ctx.layouts.of(ty);
+        let TyKind::Adt(adt, _) = ty.kind() else {
+            return;
+        };
+        let strukt = adt.strukt;
+        // Each variant's leaves, after the discriminant.
+        let mut ranges = Vec::new();
+        let mut at = 1;
+        for fields in variants {
+            let count: usize = fields.iter().map(|&f| leaf_count(sigs, f)).sum();
+            ranges.push(at..at + count);
+            at += count;
+        }
+        let store_variant = |this: &mut Self, v: usize| {
+            let mut leaf = ranges[v].start;
+            for (i, &field) in variants[v].iter().enumerate() {
+                let count = leaf_count(sigs, field);
+                let to = this.offset(address, layout.field_offset(v as u32, i as u32));
+                this.store(to, field, &values[leaf..leaf + count]);
+                leaf += count;
+            }
+        };
+        let with_data: Vec<usize> = (0..variants.len())
+            .filter(|&v| !ranges[v].is_empty())
+            .collect();
+        let tag = match &layout.shape {
+            Shape::Enum { tag, present, .. } => tag.map(|t| (t, *present)),
+            _ => None,
+        };
+        let Some((tag, _)) = tag else {
+            // One variant may hold a value: it is that one.
+            if let Shape::Enum { present, .. } = layout.shape {
+                store_variant(self, present as usize);
+            }
+            return;
+        };
+        // One variant with fields, the tag outside them: its fields are
+        // stored whatever the variant, which nothing else's overlap.
+        if tag.encoding == TagEncoding::Direct && with_data.len() <= 1 {
+            if let Some(&v) = with_data.first() {
+                store_variant(self, v);
+            }
+            self.store_tag_of(address, ty, values[0]);
+            return;
+        }
+        let join = self.b.create_block();
+        let blocks: Vec<Block> = variants.iter().map(|_| self.b.create_block()).collect();
+        let cases = (0..variants.len())
+            .map(|v| {
+                let bits = self.ctx.discriminant(strukt, v as u32);
+                let call = BlockCall {
+                    block: blocks[v],
+                    args: Vec::new(),
+                };
+                (bits as i64, call)
+            })
+            .collect();
+        let default = BlockCall {
+            block: *blocks.last().expect("an enum with a tag has variants"),
+            args: Vec::new(),
+        };
+        self.b.ins().switch(values[0], default, cases);
+        for (v, &block) in blocks.iter().enumerate() {
+            self.b.switch_to_block(block);
+            store_variant(self, v);
+            self.store_tag(address, ty, strukt, v as u32);
+            self.b.ins().jump(join, &[]);
+        }
+        self.b.switch_to_block(join);
+    }
+
+    /// Stores the tag of variant `variant` of `ty`, an enum of `strukt`,
+    /// at `address`, its fields there already.
+    fn store_tag(&mut self, address: Value, ty: Ty, strukt: flux_hir::StructId, variant: u32) {
+        if let Some((offset, bytes, bits)) = self.ctx.tag_store(ty, strukt, variant) {
+            let int = tag_int(bytes);
+            let value = self.int_const(bits, int);
+            let at = self.offset(address, offset);
+            self.b
+                .ins()
+                .store_with_flags(value, at, aligned(int_type(int)));
+        }
+    }
+
+    /// Stores a direct tag, `discriminant` (of the enum's discriminant
+    /// type) truncated to its width.
+    fn store_tag_of(&mut self, address: Value, ty: Ty, value: Value) {
+        let layout = self.ctx.layouts.of(ty);
+        let Shape::Enum { tag: Some(tag), .. } = layout.shape else {
+            return;
+        };
+        let from = discriminant(self.sigs, ty);
+        let int = tag_int(tag.bytes);
+        let value = if int.bits() < from.bits() {
+            self.b.ins().trunc(int_type(int), value)
+        } else {
+            value
+        };
+        let at = self.offset(address, tag.offset);
+        self.b
+            .ins()
+            .store_with_flags(value, at, aligned(int_type(int)));
+    }
+
+    /// The discriminant of the enum `ty` at `address`, of its
+    /// discriminant type: the tag extended, or decoded from the niche.
+    fn load_discriminant(&mut self, address: Value, ty: Ty) -> Value {
+        let layout = self.ctx.layouts.of(ty);
+        let leaf = discriminant(self.sigs, ty);
+        let TyKind::Adt(adt, _) = ty.kind() else {
+            return self.int_const(0, leaf);
+        };
+        let strukt = adt.strukt;
+        let (tag, present) = match &layout.shape {
+            Shape::Enum { tag, present, .. } => (*tag, *present),
+            _ => (None, 0),
+        };
+        let Some(tag) = tag else {
+            let bits = self.ctx.discriminant(strukt, present);
+            return self.int_const(bits, leaf);
+        };
+        let int = tag_int(tag.bytes);
+        let at = self.offset(address, tag.offset);
+        let raw = self
+            .b
+            .ins()
+            .load_with_flags(int_type(int), at, aligned(int_type(int)));
+        // `raw` in the discriminant's type.
+        let widen = |this: &mut Self, value: Value, signed: bool| -> Value {
+            if leaf.bits() > int.bits() {
+                if signed {
+                    this.b.ins().sext(int_type(leaf), value)
+                } else {
+                    this.b.ins().uext(int_type(leaf), value)
+                }
+            } else if leaf.bits() < int.bits() {
+                this.b.ins().trunc(int_type(leaf), value)
+            } else {
+                value
+            }
+        };
+        match tag.encoding {
+            TagEncoding::Direct => widen(self, raw, tag.signed),
+            TagEncoding::Niche {
+                untagged,
+                first,
+                last,
+                start,
+            } => {
+                let start = self.int_const(start, int);
+                let relative = self.b.ins().isub(raw, start);
+                let span = self.int_const(u128::from(last - first), int);
+                let in_niche = self.b.ins().icmp(IntCC::Ule, relative, span);
+                let untagged_bits = self.ctx.discriminant(strukt, untagged);
+                let mut result = self.int_const(untagged_bits, leaf);
+                for v in first..=last {
+                    if v == untagged {
+                        continue;
+                    }
+                    let index = self.int_const(u128::from(v - first), int);
+                    let is = self.b.ins().icmp(IntCC::Eq, relative, index);
+                    let is = self.b.ins().and(is, in_niche);
+                    let bits = self.ctx.discriminant(strukt, v);
+                    let value = self.int_const(bits, leaf);
+                    result = self.b.ins().select(is, value, result);
+                }
+                result
+            }
+        }
+    }
+
+    /// The leaves of a `ty` at `address`: for an enum, its discriminant,
+    /// then every variant's fields, those of the variants it does not
+    /// hold meaningless.
+    fn load_value(&mut self, address: Value, ty: Ty) -> Vec<Value> {
+        let mut out = Vec::new();
+        self.load_into(address, ty, &mut out);
+        out
+    }
+
+    fn load_into(&mut self, address: Value, ty: Ty, out: &mut Vec<Value>) {
+        let sigs = self.sigs;
+        if is_memory(sigs, ty) {
+            out.push(address);
+            return;
+        }
+        if is_fat(ty) {
+            out.push(
+                self.b
+                    .ins()
+                    .load_with_flags(Type::Ptr, address, aligned(Type::Ptr)),
+            );
+            let at = self.offset(address, 8);
+            let meta = if is_dyn_ptr(ty) { Type::Ptr } else { Type::I64 };
+            out.push(self.b.ins().load_with_flags(meta, at, aligned(meta)));
+            return;
+        }
+        if let Some(variants) = sigs.variants(ty) {
+            out.push(self.load_discriminant(address, ty));
+            let layout = self.ctx.layouts.of(ty);
+            for (v, fields) in variants.iter().enumerate() {
+                for (i, &field) in fields.iter().enumerate() {
+                    let at = self.offset(address, layout.field_offset(v as u32, i as u32));
+                    self.load_into(at, field, out);
+                }
+            }
+            return;
+        }
+        if let Some(fields) = sigs.fields(ty) {
+            let layout = self.ctx.layouts.of(ty);
+            for (i, &field) in fields.iter().enumerate() {
+                let at = self.offset(address, layout.field_offset(0, i as u32));
+                self.load_into(at, field, out);
+            }
+            return;
+        }
+        if let Some(scalar) = keel_type(ty) {
+            out.push(
+                self.b
+                    .ins()
+                    .load_with_flags(scalar, address, aligned(scalar)),
+            );
         }
     }
 
     /// Stores `count` copies of `values`, the leaves of an `elem`, from
     /// `address` on: unrolled when there are few, else in a loop.
     fn repeat(&mut self, address: Value, elem: Ty, values: &[Value], count: u64) {
-        let size = layout(self.sigs, elem).size();
+        let size = self.ctx.layouts.of(elem).size;
         if size == 0 {
             return;
         }
@@ -1563,9 +1823,10 @@ impl Lower<'_, '_, '_> {
             self.store(address, ty, &leaves);
             return;
         }
+        let layout = self.ctx.layouts.of(ty);
         match (value, ty.kind()) {
             (V::Aggregate(elements), TyKind::Array(elem, _)) => {
-                let size = layout(sigs, elem).size();
+                let size = self.ctx.layouts.of(elem).size;
                 for (i, element) in elements.iter().enumerate() {
                     let at = self.offset(address, size * i as u64);
                     self.store_value(at, element, elem);
@@ -1573,9 +1834,8 @@ impl Lower<'_, '_, '_> {
             }
             (V::Aggregate(fields), _) => {
                 let types = sigs.fields(ty).unwrap_or_default();
-                let layouts: Vec<Layout> = types.iter().map(|&f| layout(sigs, f)).collect();
                 for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
-                    let at = self.offset(address, member_offset(&layouts, i));
+                    let at = self.offset(address, layout.field_offset(0, i as u32));
                     self.store_value(at, field, field_ty);
                 }
             }
@@ -1587,22 +1847,12 @@ impl Lower<'_, '_, '_> {
                 },
                 _,
             ) => {
-                let Layout::Struct(members) = layout(sigs, ty) else {
-                    unreachable!("enums are laid out as structs")
-                };
-                let bits = self.ctx.discriminant(*strukt, *index);
-                let int = flux_ty::discriminant_ty(&self.ctx.hir.items, *strukt);
-                let tag = self.int_const(bits, int);
-                self.b
-                    .ins()
-                    .store_with_flags(tag, address, aligned(int_type(int)));
                 let types = sigs.variant_fields(ty, *index).unwrap_or_default();
-                let variant = self.offset(address, member_offset(&members, 1 + *index as usize));
-                let layouts: Vec<Layout> = types.iter().map(|&f| layout(sigs, f)).collect();
                 for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
-                    let at = self.offset(variant, member_offset(&layouts, i));
+                    let at = self.offset(address, layout.field_offset(*index, i as u32));
                     self.store_value(at, field, field_ty);
                 }
+                self.store_tag(address, ty, *strukt, *index);
             }
             _ => unreachable!("memory types are aggregates"),
         }
@@ -1773,8 +2023,8 @@ impl Lower<'_, '_, '_> {
                         self.b.use_var(var)
                     }
                     Location::Memory(address) => {
-                        let ty = int_type(ty.as_int().expect("an integer discriminant"));
-                        self.b.ins().load_with_flags(ty, address, aligned(ty))
+                        let enum_ty = self.body.place_ty(place, self.sigs);
+                        self.load_discriminant(address, enum_ty)
                     }
                 };
                 vec![tag]
@@ -1844,7 +2094,7 @@ impl Lower<'_, '_, '_> {
                     TyKind::Ref(_, s) => s.sequence_elem().unwrap_or(Ty::UNIT),
                     _ => Ty::UNIT,
                 };
-                let size = layout(self.sigs, elem).size();
+                let size = self.ctx.layouts.of(elem).size;
                 let pointer = self.operand(slice)[0];
                 let start = self.operand(start)[0];
                 let end = self.operand(end)[0];
@@ -2117,7 +2367,9 @@ impl Lower<'_, '_, '_> {
                     params: sig.params().into(),
                     ret: sig.ret(),
                 };
-                let sig_ref = self.b.import_signature(signature(self.sigs, &sig, false));
+                let sig_ref =
+                    self.b
+                        .import_signature(signature(self.sigs, &self.ctx.layouts, &sig, false));
                 let pointer = self.scalar(callee).expect("function pointers are scalars");
                 self.call(sig.ret, args, dest, *target, |b, values| {
                     b.ins().call_indirect(sig_ref, pointer, values)
@@ -2176,8 +2428,9 @@ impl Lower<'_, '_, '_> {
                 let values = self.read(&Body::RETURN.into());
                 let ret = self.body.locals[Body::RETURN].ty;
                 match self.sret.clone() {
-                    Some((pointer, layout)) if is_memory(self.sigs, ret) => {
-                        self.copy(pointer, values[0], layout.size());
+                    Some((pointer, _)) if is_memory(self.sigs, ret) => {
+                        let size = self.ctx.layouts.of(ret).size;
+                        self.copy(pointer, values[0], size);
                         self.b.ins().return_(&[]);
                     }
                     Some((pointer, layout)) => {
@@ -2225,7 +2478,7 @@ impl Lower<'_, '_, '_> {
     /// Memory for a call's result of type `ret`, if it is returned
     /// through memory.
     fn sret_for(&mut self, ret: Ty) -> Option<(Value, Layout)> {
-        match return_kind(self.sigs, ret) {
+        match return_kind(self.sigs, &self.ctx.layouts, ret) {
             Return::Sret(layout) | Return::Memory(layout) => {
                 let slot = self
                     .b
@@ -2339,9 +2592,10 @@ impl Lower<'_, '_, '_> {
             generic_args,
         );
         let mut sig = if function.is_extern {
-            signature(self.sigs, &sig, function.is_variadic)
+            signature(self.sigs, &self.ctx.layouts, &sig, function.is_variadic)
         } else {
-            ctx_signature(self.sigs, &sig, self.ctx.reified.contains(&instance))
+            let reified = self.ctx.reified.contains(&instance);
+            ctx_signature(self.sigs, &self.ctx.layouts, &sig, reified)
         };
         if self.ctx.takes_location(instance) {
             sig.params.push(AbiParam::new(Type::Ptr));
@@ -2377,7 +2631,9 @@ impl Lower<'_, '_, '_> {
             params: params.into(),
             ret: sig.ret,
         };
-        let sig_ref = self.b.import_signature(signature(self.sigs, &thin, false));
+        let sig_ref =
+            self.b
+                .import_signature(signature(self.sigs, &self.ctx.layouts, &thin, false));
         let receiver = self.operand(&args[0]);
         let address = self.offset(receiver[1], 8 * index as u64);
         let pointer = self

@@ -890,10 +890,23 @@ executable. No C compiler or system linker is involved.
   `FunctionBuilder` builds SSA form, so MIR's temporaries and whole
   aggregate copies cost nothing. A field is a range of its local's
   leaves.
-- A local that is borrowed lives in a stack slot instead, laid out as a
-  C struct of its fields, and so does whatever a pointer points to:
-  reading or writing a place there loads or stores each leaf at its
-  offset.
+- A local that is borrowed lives in a stack slot instead, and so does
+  whatever a pointer points to: reading or writing a place there loads
+  or stores each leaf at its offset. Values in memory are laid out as
+  rustc lays them out ([`layout`](../crates/flux-mir/src/layout.rs),
+  rustc's `rustc_abi::layout` for aarch64), so `size_of` and memory
+  written through raw pointers agree with rustc: a struct's, tuple's
+  or closure's fields reordered by alignment, the field with the
+  largest niche (its invalid values: a reference's null, a `bool`'s 2
+  to 255) first in its group, unless `#[repr(C)]`, and a tuple's last
+  element left last; an enum tagged, its tag the smallest integer that
+  holds its discriminants (or its `repr`'s), widened to the alignment
+  of the variants' first fields, or niche-filling, its largest
+  variant's fields with the others told apart by values of their
+  largest niche (`Option<&T>` is one pointer), whichever is smaller;
+  an enum with one variant that may hold a value laid out as a struct.
+  `NonNull` (`#[lang = "non_null"]`) has a null niche and `MaybeUninit`
+  none.
 - A value that contains an array is indexed at run time, so it lives
   in memory whatever happens to it: its locals are stack slots, its
   value is the address of one, copied with `memmove` where it is
@@ -903,11 +916,17 @@ executable. No C compiler or system linker is involved.
   slice is two leaves, the address of the first element and the
   length, which an unsizing coercion adds to a reference to an array
   and `len` and bounds checks read.
-- An enum is its discriminant, an `isize`, then every variant's fields
-  in turn, as if a struct of them all; in memory, a struct of the
-  discriminant and a struct per variant. Only the variant it holds has
-  meaningful leaves. Variants could share their leaves, but nothing can
-  observe an enum's size yet.
+- An enum's leaves are its discriminant, of its `repr` type, then
+  every variant's fields in turn; only the variant it holds has
+  meaningful leaves. In memory its variants share their bytes, so a
+  store stores the fields of the variant the discriminant says (through
+  a `switch` where several have fields), then its tag; a load decodes
+  the tag, extending a direct one, and comparing a niche with the values
+  the other variants have in it. `size_of::<T>()` and `align_of::<T>()`
+  (`core`'s intrinsics) are constants from the layout once `T` is
+  known, also in constant evaluation; for a type flux lays out
+  otherwise than rustc (`&CStr`, one pointer here), they are not
+  supported yet.
 - Aggregates are passed as one argument per leaf. keel functions return
   at most one value, so a function returning two or more leaves returns
   them through an `sret` pointer to a C struct of the leaves in the

@@ -443,6 +443,9 @@ pub struct Struct {
     /// The integer type an enum's `#[repr(u8)]` (say) gives its
     /// discriminant; `isize` without one.
     pub repr: Option<Symbol>,
+    /// `#[repr(C)]`: fields are laid out in declaration order, as C
+    /// does, and an enum's discriminant is a C `int` at least.
+    pub repr_c: bool,
     pub loc: ItemLoc,
     pub name_range: TextRange,
     /// `struct S` or `enum E`, where rustc reports errors about the
@@ -3384,9 +3387,12 @@ impl Collector<'_> {
         let mut derives = Vec::new();
         let is_core = self.items.is_core(ctx.module);
         let mut lang = None;
+        let mut hints = Vec::new();
         for attr in s.attrs() {
             if attr_name(attr) == Some("derive") {
                 derive_attr(attr, &mut derives, &mut self.items.diagnostics);
+            } else if attr_name(attr) == Some("repr") {
+                repr_attr(attr, &mut hints, &mut self.items.diagnostics);
             } else if is_core && let Some(name) = lang_attr(attr) {
                 lang = Some(name);
             } else {
@@ -3406,6 +3412,7 @@ impl Collector<'_> {
         );
         let (kind, fields) =
             self.collect_fields(ctx, s.record_field_list(), s.tuple_field_list(), false);
+        let repr_c = struct_repr(&hints, &mut self.items.diagnostics);
         let name_range = name.syntax().text_range();
         let id = self.items.structs.alloc(Struct {
             name: Symbol::intern(name.text()),
@@ -3414,6 +3421,7 @@ impl Collector<'_> {
             fields: fields.into(),
             variants: None,
             repr: None,
+            repr_c,
             loc: ItemLoc {
                 module: ctx.module,
                 file: ctx.file,
@@ -3740,6 +3748,7 @@ impl Collector<'_> {
             fields: Box::default(),
             variants: Some(variants.into()),
             repr,
+            repr_c: hints.iter().any(|(h, _)| h.as_str() == "C"),
             loc: ItemLoc {
                 module: ctx.module,
                 file: ctx.file,
@@ -4900,6 +4909,27 @@ fn repr_attr(
         }
     }
     out.extend(hints);
+}
+
+/// Whether `hints`, a struct's `repr`s, say `C`; the hints flux does
+/// not support are reported.
+fn struct_repr(hints: &[(Symbol, TextRange)], diagnostics: &mut Vec<Diagnostic>) -> bool {
+    let mut c = false;
+    for &(hint, range) in hints {
+        match hint.as_str() {
+            "C" => c = true,
+            "Rust" => {}
+            name if REPR_INTS.contains(&name) => diagnostics.push(Diagnostic::new(
+                range,
+                "attribute should be applied to an enum",
+            )),
+            name => diagnostics.push(Diagnostic::new(
+                range,
+                format!("the `repr({name})` attribute is not supported yet"),
+            )),
+        }
+    }
+    c
 }
 
 /// The integer type `hints`, an enum's `repr`s, give its discriminant;
@@ -6367,6 +6397,12 @@ pub fn slice_target() -> Symbol {
 /// usize> [T; N]` blocks.
 pub fn array_target() -> Symbol {
     Symbol::intern("array")
+}
+
+/// The [`ImplTarget::Primitive`] name of `core`'s `impl<T> *const T`
+/// (`const_ptr`) and `impl<T> *mut T` (`mut_ptr`) blocks.
+pub fn raw_ptr_target(mutable: bool) -> Symbol {
+    Symbol::intern(if mutable { "mut_ptr" } else { "const_ptr" })
 }
 
 pub fn is_primitive(name: Symbol) -> bool {

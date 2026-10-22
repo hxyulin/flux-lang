@@ -1,5 +1,21 @@
-//! Raw pointers: `addr_of!` and `addr_of_mut!`, which make one to a
-//! place without a reference to it, as `&raw const` and `&raw mut` do.
+//! Raw pointers: making them (`null`, `NonNull`, `addr_of!` and
+//! `addr_of_mut!`, as `&raw const` and `&raw mut` do), the methods of `*const
+//! T` and `*mut T`, and reading, writing, copying and dropping what they
+//! point to. As in rustc, these are `unsafe` where the caller must make
+//! sure the pointer is valid. Copies of many values go through C's
+//! `memmove` and `memcpy`.
+
+use crate::clone::Clone;
+use crate::cmp::{Eq, PartialEq};
+use crate::marker::Copy;
+use crate::mem::{align_of, size_of};
+use crate::option::Option::{self, None, Some};
+
+unsafe extern "C" {
+    fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8;
+    fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8;
+    fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8;
+}
 
 /// `&raw const $place`: a `*const` pointer to a place, made without a
 /// reference to it.
@@ -19,3 +35,373 @@ macro_rules! addr_of_mut {
 
 pub use addr_of;
 pub use addr_of_mut;
+
+/// A null pointer, which points to nothing.
+pub const fn null<T>() -> *const T {
+    0 as *const T
+}
+
+/// A null mutable pointer.
+pub const fn null_mut<T>() -> *mut T {
+    0 as *mut T
+}
+
+/// Whether two pointers are equal: the same address.
+pub fn eq<T>(a: *const T, b: *const T) -> bool {
+    a as usize == b as usize
+}
+
+/// Reads the value at `src` without moving it out: a bitwise copy,
+/// which the caller makes sure is used and dropped only once.
+pub unsafe fn read<T>(src: *const T) -> T {
+    unsafe { crate::intrinsics::read(&*src) }
+}
+
+/// Writes `value` at `dst`, without dropping what was there.
+pub unsafe fn write<T>(dst: *mut T, value: T) {
+    unsafe { crate::intrinsics::write(&mut *dst, value) }
+}
+
+/// Copies `count` values from `src` to `dst`, which may overlap.
+pub unsafe fn copy<T>(src: *const T, dst: *mut T, count: usize) {
+    unsafe {
+        memmove(dst as *mut u8, src as *const u8, count * size_of::<T>());
+    }
+}
+
+/// Copies `count` values from `src` to `dst`, which must not overlap.
+pub unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize) {
+    unsafe {
+        memcpy(dst as *mut u8, src as *const u8, count * size_of::<T>());
+    }
+}
+
+/// Sets `count` values' bytes at `dst` to `value`.
+pub unsafe fn write_bytes<T>(dst: *mut T, value: u8, count: usize) {
+    unsafe {
+        memset(dst as *mut u8, value as i32, count * size_of::<T>());
+    }
+}
+
+/// Swaps the values at `x` and `y`, which may be the same.
+pub unsafe fn swap<T>(x: *mut T, y: *mut T) {
+    unsafe {
+        let a = read(x);
+        copy(y, x, 1);
+        write(y, a);
+    }
+}
+
+/// Puts `src` at `dst`, giving back what was there.
+pub unsafe fn replace<T>(dst: *mut T, src: T) -> T {
+    unsafe {
+        let old = read(dst);
+        write(dst, src);
+        old
+    }
+}
+
+/// Drops the value at `to_drop`, which is then not to be used again.
+pub unsafe fn drop_in_place<T>(to_drop: *mut T) {
+    unsafe {
+        crate::mem::drop(read(to_drop));
+    }
+}
+
+impl<T> *const T {
+    /// Whether the pointer is null.
+    pub fn is_null(self) -> bool {
+        self as usize == 0
+    }
+
+    /// The pointer as one to a `U`.
+    pub const fn cast<U>(self) -> *const U {
+        self as *const U
+    }
+
+    /// The pointer as a mutable one.
+    pub const fn cast_mut(self) -> *mut T {
+        self as *mut T
+    }
+
+    /// The address.
+    pub fn addr(self) -> usize {
+        self as usize
+    }
+
+    /// The pointer `count` values on.
+    pub unsafe fn add(self, count: usize) -> *const T {
+        (self as usize).wrapping_add(count.wrapping_mul(size_of::<T>())) as *const T
+    }
+
+    /// The pointer `count` values back.
+    pub unsafe fn sub(self, count: usize) -> *const T {
+        (self as usize).wrapping_sub(count.wrapping_mul(size_of::<T>())) as *const T
+    }
+
+    /// The pointer `count` values on, or back if it is negative.
+    pub unsafe fn offset(self, count: isize) -> *const T {
+        (self as usize).wrapping_add((count as usize).wrapping_mul(size_of::<T>())) as *const T
+    }
+
+    /// [`Self::add`], for any `count`.
+    pub fn wrapping_add(self, count: usize) -> *const T {
+        (self as usize).wrapping_add(count.wrapping_mul(size_of::<T>())) as *const T
+    }
+
+    /// [`Self::sub`], for any `count`.
+    pub fn wrapping_sub(self, count: usize) -> *const T {
+        (self as usize).wrapping_sub(count.wrapping_mul(size_of::<T>())) as *const T
+    }
+
+    /// How many values `origin` is before the pointer.
+    pub unsafe fn offset_from(self, origin: *const T) -> isize {
+        ((self as usize).wrapping_sub(origin as usize) as isize) / (size_of::<T>() as isize)
+    }
+
+    /// Reads the value the pointer points to.
+    pub unsafe fn read(self) -> T {
+        unsafe { read(self) }
+    }
+
+    /// Copies `count` values from the pointer to `dest`.
+    pub unsafe fn copy_to(self, dest: *mut T, count: usize) {
+        unsafe { copy(self, dest, count) }
+    }
+
+    /// Copies `count` values from the pointer to `dest`, which must not
+    /// overlap.
+    pub unsafe fn copy_to_nonoverlapping(self, dest: *mut T, count: usize) {
+        unsafe { copy_nonoverlapping(self, dest, count) }
+    }
+
+    /// A reference to the value, or `None` for a null pointer.
+    pub unsafe fn as_ref<'a>(self) -> Option<&'a T> {
+        if self.is_null() {
+            None
+        } else {
+            unsafe { Some(&*self) }
+        }
+    }
+}
+
+impl<T> *mut T {
+    /// Whether the pointer is null.
+    pub fn is_null(self) -> bool {
+        self as usize == 0
+    }
+
+    /// The pointer as one to a `U`.
+    pub const fn cast<U>(self) -> *mut U {
+        self as *mut U
+    }
+
+    /// The pointer as a shared one.
+    pub const fn cast_const(self) -> *const T {
+        self as *const T
+    }
+
+    /// The address.
+    pub fn addr(self) -> usize {
+        self as usize
+    }
+
+    /// The pointer `count` values on.
+    pub unsafe fn add(self, count: usize) -> *mut T {
+        (self as usize).wrapping_add(count.wrapping_mul(size_of::<T>())) as *mut T
+    }
+
+    /// The pointer `count` values back.
+    pub unsafe fn sub(self, count: usize) -> *mut T {
+        (self as usize).wrapping_sub(count.wrapping_mul(size_of::<T>())) as *mut T
+    }
+
+    /// The pointer `count` values on, or back if it is negative.
+    pub unsafe fn offset(self, count: isize) -> *mut T {
+        (self as usize).wrapping_add((count as usize).wrapping_mul(size_of::<T>())) as *mut T
+    }
+
+    /// [`Self::add`], for any `count`.
+    pub fn wrapping_add(self, count: usize) -> *mut T {
+        (self as usize).wrapping_add(count.wrapping_mul(size_of::<T>())) as *mut T
+    }
+
+    /// [`Self::sub`], for any `count`.
+    pub fn wrapping_sub(self, count: usize) -> *mut T {
+        (self as usize).wrapping_sub(count.wrapping_mul(size_of::<T>())) as *mut T
+    }
+
+    /// How many values `origin` is before the pointer.
+    pub unsafe fn offset_from(self, origin: *const T) -> isize {
+        ((self as usize).wrapping_sub(origin as usize) as isize) / (size_of::<T>() as isize)
+    }
+
+    /// Reads the value the pointer points to.
+    pub unsafe fn read(self) -> T {
+        unsafe { read(self) }
+    }
+
+    /// Writes `value` where the pointer points, without dropping what
+    /// was there.
+    pub unsafe fn write(self, value: T) {
+        unsafe { write(self, value) }
+    }
+
+    /// Puts `src` where the pointer points, giving back what was there.
+    pub unsafe fn replace(self, src: T) -> T {
+        unsafe { replace(self, src) }
+    }
+
+    /// Swaps the values at the pointer and `with`.
+    pub unsafe fn swap(self, with: *mut T) {
+        unsafe { swap(self, with) }
+    }
+
+    /// Drops the value the pointer points to.
+    pub unsafe fn drop_in_place(self) {
+        unsafe { drop_in_place(self) }
+    }
+
+    /// Sets `count` values' bytes to `value`.
+    pub unsafe fn write_bytes(self, value: u8, count: usize) {
+        unsafe { write_bytes(self, value, count) }
+    }
+
+    /// Copies `count` values from the pointer to `dest`.
+    pub unsafe fn copy_to(self, dest: *mut T, count: usize) {
+        unsafe { copy(self, dest, count) }
+    }
+
+    /// Copies `count` values from the pointer to `dest`, which must not
+    /// overlap.
+    pub unsafe fn copy_to_nonoverlapping(self, dest: *mut T, count: usize) {
+        unsafe { copy_nonoverlapping(self, dest, count) }
+    }
+
+    /// Copies `count` values from `src` to the pointer.
+    pub unsafe fn copy_from(self, src: *const T, count: usize) {
+        unsafe { copy(src, self, count) }
+    }
+
+    /// Copies `count` values from `src` to the pointer, which must not
+    /// overlap.
+    pub unsafe fn copy_from_nonoverlapping(self, src: *const T, count: usize) {
+        unsafe { copy_nonoverlapping(src, self, count) }
+    }
+
+    /// A reference to the value, or `None` for a null pointer.
+    pub unsafe fn as_ref<'a>(self) -> Option<&'a T> {
+        if self.is_null() {
+            None
+        } else {
+            unsafe { Some(&*self) }
+        }
+    }
+
+    /// A mutable reference to the value, or `None` for a null pointer.
+    pub unsafe fn as_mut<'a>(self) -> Option<&'a mut T> {
+        if self.is_null() {
+            None
+        } else {
+            unsafe { Some(&mut *self) }
+        }
+    }
+}
+
+/// A `*mut T` that is never null, so that `Option<NonNull<T>>` is one
+/// pointer, as rustc lays it out (`#[rustc_layout_scalar_valid_range_start(1)]`
+/// there; its `lang` name here).
+#[lang = "non_null"]
+pub struct NonNull<T> {
+    pointer: *const T,
+}
+
+impl<T> NonNull<T> {
+    /// `ptr`, which must not be null.
+    pub const unsafe fn new_unchecked(ptr: *mut T) -> NonNull<T> {
+        NonNull {
+            pointer: ptr as *const T,
+        }
+    }
+
+    /// `ptr`, if it is not null.
+    pub fn new(ptr: *mut T) -> Option<NonNull<T>> {
+        if ptr.is_null() {
+            None
+        } else {
+            Some(NonNull {
+                pointer: ptr as *const T,
+            })
+        }
+    }
+
+    /// A pointer aligned for a `T` that points to nothing: what an empty
+    /// collection holds.
+    pub fn dangling() -> NonNull<T> {
+        NonNull {
+            pointer: align_of::<T>() as *const T,
+        }
+    }
+
+    /// The pointer.
+    pub const fn as_ptr(self) -> *mut T {
+        self.pointer as *mut T
+    }
+
+    /// A reference to the value it points to, which must be valid for
+    /// as long as the reference is used.
+    pub unsafe fn as_ref<'a>(&self) -> &'a T {
+        unsafe { &*self.pointer }
+    }
+
+    /// A mutable reference to the value it points to.
+    pub unsafe fn as_mut<'a>(&mut self) -> &'a mut T {
+        unsafe { &mut *(self.pointer as *mut T) }
+    }
+
+    /// The pointer as one to a `U`.
+    pub const fn cast<U>(self) -> NonNull<U> {
+        NonNull {
+            pointer: self.pointer as *const U,
+        }
+    }
+
+    /// The pointer `count` values on.
+    pub unsafe fn add(self, count: usize) -> NonNull<T> {
+        NonNull {
+            pointer: unsafe { self.pointer.add(count) },
+        }
+    }
+
+    /// Reads the value it points to.
+    pub unsafe fn read(self) -> T {
+        unsafe { read(self.pointer) }
+    }
+
+    /// Writes `value` where it points, without dropping what was there.
+    pub unsafe fn write(self, value: T) {
+        unsafe { write(self.pointer as *mut T, value) }
+    }
+}
+
+impl<T> Clone for NonNull<T> {
+    fn clone(&self) -> NonNull<T> {
+        *self
+    }
+}
+
+impl<T> Copy for NonNull<T> {}
+
+impl<T> PartialEq for NonNull<T> {
+    fn eq(&self, other: &NonNull<T>) -> bool {
+        self.pointer as usize == other.pointer as usize
+    }
+}
+
+impl<T> Eq for NonNull<T> {}
+
+impl<T> crate::fmt::Debug for NonNull<T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::fmt::Debug::fmt(&self.pointer, f)
+    }
+}

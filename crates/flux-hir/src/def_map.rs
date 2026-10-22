@@ -1366,6 +1366,10 @@ fn resolve_impls(items: &mut ItemTree, from: usize) {
                 }
                 _ => None,
             },
+            // `core`'s methods of raw pointers.
+            TypeRef::Ptr { mutable, .. } if items.is_core(module) => Some(ImplTarget::Primitive(
+                crate::item_tree::raw_ptr_target(*mutable),
+            )),
             _ => {
                 let range = items.impls[id].def_range;
                 error(

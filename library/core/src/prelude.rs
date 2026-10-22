@@ -9,7 +9,7 @@ pub mod rust_2024 {
         DoubleEndedIterator, ExactSizeIterator, Extend, FromIterator, IntoIterator, Iterator,
     };
     pub use crate::marker::{Copy, Sized};
-    pub use crate::mem::drop;
+    pub use crate::mem::{align_of, align_of_val, drop, size_of, size_of_val};
     pub use crate::ops::{Drop, Fn, FnMut, FnOnce};
     pub use crate::option::Option;
     pub use crate::option::Option::{None, Some};
