@@ -219,6 +219,22 @@ pub trait Iterator {
         accum
     }
 
+    /// Whether `size_hint` is exact and its upper bound, if any, is
+    /// right: rustc's `TrustedLen`, by which `Vec`'s `collect` and
+    /// `extend` choose how much room to make. flux has no
+    /// specialization, so the iterators that are override it.
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        false
+    }
+
+    /// rustc's `TrustedRandomAccess`, which makes `Skip` and `StepBy`
+    /// of such iterators `TrustedLen`.
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        false
+    }
+
     /// A collection of the items: whatever implements `FromIterator`
     /// for them.
     fn collect<B: FromIterator<Self::Item>>(self) -> B
@@ -717,6 +733,16 @@ impl<I: Iterator + ?Sized> Iterator for &mut I {
     type Item = I::Item;
     const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        (**self).__trusted_len()
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        (**self).__random_access()
+    }
+
     fn next(&mut self) -> Option<I::Item> {
         (**self).next()
     }
@@ -853,6 +879,16 @@ impl<A: Step> Iterator for Range<A> {
         self.start.__forward_unchecked(idx)
     }
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        true
+    }
+
     fn next(&mut self) -> Option<A> {
         if self.start < self.end {
             let n = self.start;
@@ -887,6 +923,11 @@ impl<A: Step> Iterator for RangeFrom<A> {
     type Item = A;
     const __TRUSTED_LEN: bool = true;
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
     fn next(&mut self) -> Option<A> {
         let n = self.start;
         self.start = n.forward_one();
@@ -901,6 +942,11 @@ impl<A: Step> Iterator for RangeFrom<A> {
 impl<A: Step> Iterator for RangeInclusive<A> {
     type Item = A;
     const __TRUSTED_LEN: bool = true;
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
 
     fn next(&mut self) -> Option<A> {
         if self.exhausted || !(self.start <= self.end) {
@@ -954,6 +1000,16 @@ impl<B, I: Iterator, F: FnMut(I::Item) -> B> Iterator for Map<I, F> {
     type Item = B;
     const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
     const __RANDOM_ACCESS: bool = I::__RANDOM_ACCESS;
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        self.iter.__trusted_len()
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        self.iter.__random_access()
+    }
 
     fn next(&mut self) -> Option<B> {
         match self.iter.next() {
@@ -1103,6 +1159,16 @@ impl<I: Iterator> Iterator for Enumerate<I> {
     const __RANDOM_ACCESS: bool = I::__RANDOM_ACCESS;
     const __MAY_HAVE_SIDE_EFFECT: bool = I::__MAY_HAVE_SIDE_EFFECT;
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        self.iter.__trusted_len()
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        self.iter.__random_access()
+    }
+
     fn next(&mut self) -> Option<(usize, I::Item)> {
         let a = self.iter.next()?;
         let i = self.count;
@@ -1197,6 +1263,16 @@ impl<A: Iterator, B: Iterator> Iterator for Zip<A, B> {
     const __TRUSTED_LEN: bool = A::__TRUSTED_LEN && B::__TRUSTED_LEN;
     const __RANDOM_ACCESS: bool = A::__RANDOM_ACCESS && B::__RANDOM_ACCESS;
     const __MAY_HAVE_SIDE_EFFECT: bool = A::__MAY_HAVE_SIDE_EFFECT || B::__MAY_HAVE_SIDE_EFFECT;
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        self.a.__trusted_len() && self.b.__trusted_len()
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        self.a.__random_access() && self.b.__random_access()
+    }
 
     fn next(&mut self) -> Option<(A::Item, B::Item)> {
         if A::__RANDOM_ACCESS && B::__RANDOM_ACCESS {
@@ -1383,6 +1459,16 @@ impl<A: Iterator, B: Iterator<Item = A::Item>> Iterator for Chain<A, B> {
         acc
     }
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        match (&self.a, &self.b) {
+            (Some(a), Some(b)) => a.__trusted_len() && b.__trusted_len(),
+            (Some(a), None) => a.__trusted_len(),
+            (None, Some(b)) => b.__trusted_len(),
+            (None, None) => true,
+        }
+    }
+
     fn next(&mut self) -> Option<A::Item> {
         if let Some(a) = &mut self.a {
             match a.next() {
@@ -1454,6 +1540,11 @@ impl<I: Iterator> Iterator for Take<I> {
     type Item = I::Item;
     const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        self.iter.__trusted_len()
+    }
+
     fn next(&mut self) -> Option<I::Item> {
         if self.n != 0 {
             self.n -= 1;
@@ -1522,6 +1613,11 @@ impl<I: Iterator> Iterator for Skip<I> {
             }
         }
         self.iter.__iterator_get_unchecked(idx + self.n)
+    }
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        self.iter.__random_access()
     }
 
     fn next(&mut self) -> Option<I::Item> {
@@ -1687,6 +1783,11 @@ impl<I: Iterator> Iterator for StepBy<I> {
     type Item = I::Item;
     const __TRUSTED_LEN: bool = I::__RANDOM_ACCESS;
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        self.iter.__random_access()
+    }
+
     fn next(&mut self) -> Option<I::Item> {
         if self.first_take {
             self.first_take = false;
@@ -1720,6 +1821,11 @@ pub struct Rev<I> {
 impl<I: DoubleEndedIterator> Iterator for Rev<I> {
     type Item = I::Item;
     const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        self.iter.__trusted_len()
+    }
 
     fn next(&mut self) -> Option<I::Item> {
         self.iter.next_back()
@@ -1776,6 +1882,16 @@ impl<'a, T: Copy, I: Iterator<Item = &'a T>> Iterator for Copied<I> {
         *self.it.__iterator_get_unchecked(idx)
     }
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        self.it.__trusted_len()
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        self.it.__random_access()
+    }
+
     fn next(&mut self) -> Option<T> {
         match self.it.next() {
             Some(&x) => Some(x),
@@ -1820,6 +1936,16 @@ impl<'a, T: Clone, I: Iterator<Item = &'a T>> Iterator for Cloned<I> {
 
     fn __iterator_get_unchecked(&mut self, idx: usize) -> T {
         self.it.__iterator_get_unchecked(idx).clone()
+    }
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        self.it.__trusted_len()
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        self.it.__random_access()
     }
 
     fn next(&mut self) -> Option<T> {
@@ -1872,6 +1998,14 @@ impl<I: Iterator> Iterator for Fuse<I> {
         match &mut self.iter {
             Some(iter) => iter.__iterator_get_unchecked(idx),
             None => crate::panicking::panic("internal error: entered unreachable code"),
+        }
+    }
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        match &self.iter {
+            Some(iter) => iter.__trusted_len(),
+            None => true,
         }
     }
 
@@ -2073,6 +2207,11 @@ impl<I: Iterator> Iterator for Peekable<I> {
             None => init,
         };
         self.iter.fold(acc, f)
+    }
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        self.iter.__trusted_len()
     }
 
     fn next(&mut self) -> Option<I::Item> {

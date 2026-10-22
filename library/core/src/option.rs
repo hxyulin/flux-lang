@@ -447,6 +447,11 @@ impl<T> crate::iter::Iterator for IntoIter<T> {
     type Item = T;
     const __TRUSTED_LEN: bool = true;
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
     fn next(&mut self) -> Option<T> {
         self.inner.take()
     }
@@ -479,6 +484,11 @@ impl<'a, T> crate::clone::Clone for Iter<'a, T> {
 impl<'a, T> crate::iter::Iterator for Iter<'a, T> {
     type Item = &'a T;
     const __TRUSTED_LEN: bool = true;
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
 
     fn next(&mut self) -> Option<&'a T> {
         self.inner.take()

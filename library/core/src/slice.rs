@@ -485,6 +485,16 @@ impl<'a, T> Iterator for Iter<'a, T> {
         &self.slice[self.start + idx]
     }
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        true
+    }
+
     fn next(&mut self) -> Option<&'a T> {
         if self.start < self.end {
             let item = &self.slice[self.start];
@@ -555,6 +565,16 @@ impl<'a, T> Iterator for IterMut<'a, T> {
         // Each index is asked for once.
         let rest = unsafe { subslice_mut(self.slice, i, i + 1) };
         &mut rest[0]
+    }
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        true
     }
 
     fn next(&mut self) -> Option<&'a mut T> {
@@ -877,6 +897,14 @@ impl<E> SliceIndex<E> for RangeToInclusive<usize> {
     }
 }
 
+/// The bounds `range` gives for a slice of length `bounds.end`,
+/// panicking as rustc's (unstable) `slice::range` does where they are
+/// not within it: what `Vec::drain` takes.
+#[track_caller]
+pub fn range<R: RangeBounds<usize>>(range: R, bounds: RangeTo<usize>) -> Range<usize> {
+    bounds_range(range, bounds.end)
+}
+
 /// The bounds `range` gives for a slice of length `len`, which panics
 /// as rustc's `slice::range` does where they are not within it.
 #[track_caller]
@@ -1071,6 +1099,16 @@ impl<'a, T> Iterator for Windows<'a, T> {
         unsafe { subslice(self.v, idx, idx + self.size) }
     }
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        true
+    }
+
     fn next(&mut self) -> Option<&'a [T]> {
         if self.size > self.v.len() {
             None
@@ -1118,6 +1156,16 @@ impl<'a, T> Iterator for Chunks<'a, T> {
         let start = idx * self.chunk_size;
         let end = crate::cmp::min(start + self.chunk_size, self.v.len());
         unsafe { subslice(self.v, start, end) }
+    }
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        true
     }
 
     fn next(&mut self) -> Option<&'a [T]> {
@@ -1181,6 +1229,16 @@ impl<'a, T> Iterator for ChunksExact<'a, T> {
         unsafe { subslice(self.v, start, start + self.chunk_size) }
     }
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        true
+    }
+
     fn next(&mut self) -> Option<&'a [T]> {
         let len = self.v.len();
         if len < self.chunk_size {
@@ -1232,6 +1290,16 @@ impl<'a, T> Iterator for ChunksMut<'a, T> {
         let end = crate::cmp::min(start + self.chunk_size, self.end);
         // Each index is asked for once.
         unsafe { subslice_mut(self.v, start, end) }
+    }
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        true
     }
 
     fn next(&mut self) -> Option<&'a mut [T]> {

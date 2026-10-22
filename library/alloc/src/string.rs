@@ -109,6 +109,7 @@ impl String {
     }
 
     /// Removes the character at byte `idx`, which must start one.
+    #[track_caller]
     pub fn remove(&mut self, idx: usize) -> char {
         let ch = match self[idx..].chars().next() {
             Some(ch) => ch,
@@ -125,6 +126,7 @@ impl String {
     }
 
     /// Puts `ch` at byte `idx`, which must be a character boundary.
+    #[track_caller]
     pub fn insert(&mut self, idx: usize, ch: char) {
         let mut buf = [0u8; 4];
         let bytes = ch.encode_utf8(&mut buf).as_bytes();
@@ -132,10 +134,12 @@ impl String {
     }
 
     /// Puts `string` at byte `idx`, which must be a character boundary.
+    #[track_caller]
     pub fn insert_str(&mut self, idx: usize, string: &str) {
         self.insert_bytes(idx, string.as_bytes());
     }
 
+    #[track_caller]
     fn insert_bytes(&mut self, idx: usize, bytes: &[u8]) {
         if !self.is_char_boundary(idx) {
             panic!("assertion failed: self.is_char_boundary(idx)");
@@ -152,6 +156,7 @@ impl String {
     }
 
     /// Shortens it to `new_len` bytes, a character boundary.
+    #[track_caller]
     pub fn truncate(&mut self, new_len: usize) {
         if new_len <= self.len() {
             if !self.is_char_boundary(new_len) {
@@ -190,6 +195,7 @@ impl String {
     }
 
     /// Splits off the bytes from `at` on into a new string.
+    #[track_caller]
     pub fn split_off(&mut self, at: usize) -> String {
         if !self.is_char_boundary(at) {
             panic!("assertion failed: self.is_char_boundary(at)");
@@ -237,6 +243,11 @@ impl fmt::Debug for String {
 impl fmt::Display for String {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.as_str(), f)
+    }
+
+    #[doc(hidden)]
+    fn __to_string_hint(&self) -> fmt::ToStringHint {
+        fmt::ToStringHint::Text(self.len())
     }
 }
 
@@ -327,26 +338,103 @@ impl<'a> AddAssign<&'a str> for String {
     }
 }
 
-/// A value's text as a `String`. rustc implements it for every
-/// `Display` type; flux, until its formatter writes, for text.
+/// A value's text as a `String`, as `{}` writes it.
 pub trait ToString {
     fn to_string(&self) -> String;
 }
 
-impl ToString for str {
+impl<T: fmt::Display + ?Sized> ToString for T {
+    /// With the room rustc's specializations make first: exactly the
+    /// text of a `str` or `String` (also behind references), a `char` or
+    /// `bool`, the most digits of an integer.
     fn to_string(&self) -> String {
-        String::from(self)
+        let mut buf = match fmt::Display::__to_string_hint(self) {
+            fmt::ToStringHint::Text(n) | fmt::ToStringHint::Capacity(n) => String::with_capacity(n),
+            fmt::ToStringHint::None => String::new(),
+        };
+        let _ = fmt::Write::write_fmt(&mut buf, format_args!("{}", self));
+        buf
     }
 }
 
-impl ToString for String {
-    fn to_string(&self) -> String {
-        String::from(self.as_str())
+impl fmt::Write for String {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.push_str(s);
+        Ok(())
+    }
+
+    fn write_char(&mut self, c: char) -> fmt::Result {
+        self.push(c);
+        Ok(())
     }
 }
 
-impl ToString for char {
-    fn to_string(&self) -> String {
-        String::from(*self)
+impl FromIterator<char> for String {
+    fn from_iter<I: IntoIterator<Item = char>>(iter: I) -> String {
+        let mut buf = String::new();
+        buf.extend(iter);
+        buf
+    }
+}
+
+impl<'a> FromIterator<&'a char> for String {
+    fn from_iter<I: IntoIterator<Item = &'a char>>(iter: I) -> String {
+        let mut buf = String::new();
+        buf.extend(iter);
+        buf
+    }
+}
+
+impl<'a> FromIterator<&'a str> for String {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> String {
+        let mut buf = String::new();
+        buf.extend(iter);
+        buf
+    }
+}
+
+impl FromIterator<String> for String {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> String {
+        let mut iterator = iter.into_iter();
+        match iterator.next() {
+            None => String::new(),
+            Some(mut buf) => {
+                buf.extend(iterator);
+                buf
+            }
+        }
+    }
+}
+
+impl Extend<char> for String {
+    fn extend<I: IntoIterator<Item = char>>(&mut self, iter: I) {
+        let iterator = iter.into_iter();
+        let (lower, _) = iterator.size_hint();
+        self.reserve(lower);
+        for c in iterator {
+            self.push(c);
+        }
+    }
+}
+
+impl<'a> Extend<&'a char> for String {
+    fn extend<I: IntoIterator<Item = &'a char>>(&mut self, iter: I) {
+        self.extend(iter.into_iter().copied());
+    }
+}
+
+impl<'a> Extend<&'a str> for String {
+    fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
+        for s in iter {
+            self.push_str(s);
+        }
+    }
+}
+
+impl Extend<String> for String {
+    fn extend<I: IntoIterator<Item = String>>(&mut self, iter: I) {
+        for s in iter {
+            self.push_str(&s);
+        }
     }
 }

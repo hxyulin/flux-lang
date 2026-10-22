@@ -471,6 +471,28 @@ impl<'a> Arguments<'a> {
         }
     }
 
+    /// How much room `format!` makes first, as rustc's: the literal
+    /// text's length, twice over where there are placeholders, or none
+    /// where it starts with one and has little text.
+    #[doc(hidden)]
+    pub fn estimated_capacity(&self) -> usize {
+        if let Some(s) = self.as_str() {
+            return s.len();
+        }
+        let mut length = 0usize;
+        let mut i = 0;
+        while i < self.pieces.len() {
+            length += self.pieces[i].len();
+            i += 1;
+        }
+        let starts_with_placeholder = self.pieces.is_empty() || self.pieces[0].is_empty();
+        if starts_with_placeholder && length < 16 {
+            0
+        } else {
+            length.wrapping_mul(2)
+        }
+    }
+
     fn as_statically_known_str(&self) -> Option<&'static str> {
         self.as_str()
     }
@@ -479,6 +501,11 @@ impl<'a> Arguments<'a> {
 impl Display for Arguments<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         write(f.buf, *self)
+    }
+
+    #[doc(hidden)]
+    fn __to_string_hint(&self) -> ToStringHint {
+        ToStringHint::Capacity(self.estimated_capacity())
     }
 }
 
@@ -553,6 +580,25 @@ pub fn write(buf: &mut dyn Write, args: Arguments<'_>) -> Result {
 pub trait Display {
     /// Writes the value to `f`.
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
+
+    /// How much room `alloc`'s `to_string` makes first, as rustc's
+    /// specializations of `ToString` do; flux has no specialization.
+    #[doc(hidden)]
+    fn __to_string_hint(&self) -> ToStringHint {
+        ToStringHint::None
+    }
+}
+
+/// What [`Display::__to_string_hint`] says.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub enum ToStringHint {
+    /// Grow as the text is written.
+    None,
+    /// Room for this many bytes first.
+    Capacity(usize),
+    /// Text this long, as `str`'s, which references to it share.
+    Text(usize),
 }
 
 /// Types that can be shown for debugging, as `{:?}` would. A failing
@@ -619,7 +665,28 @@ macro_rules! deref_impls {
     };
 }
 
-deref_impls!(Display, Debug, LowerHex, UpperHex, Octal, Binary, LowerExp, UpperExp);
+deref_impls!(Debug, LowerHex, UpperHex, Octal, Binary, LowerExp, UpperExp);
+
+impl<T: ?Sized + Display> Display for &T {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        Display::fmt(&**self, f)
+    }
+
+    // rustc's `to_string` of `&str` (and `&&str` ...) is `str`'s.
+    #[doc(hidden)]
+    fn __to_string_hint(&self) -> ToStringHint {
+        match Display::__to_string_hint(&**self) {
+            ToStringHint::Text(n) => ToStringHint::Text(n),
+            _ => ToStringHint::None,
+        }
+    }
+}
+
+impl<T: ?Sized + Display> Display for &mut T {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        Display::fmt(&**self, f)
+    }
+}
 
 /// An address as `{:#x}` would write it, as rustc writes pointers.
 pub(crate) fn pointer_fmt_inner(addr: usize, f: &mut Formatter<'_>) -> Result {
@@ -677,6 +744,11 @@ impl Display for bool {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         Display::fmt(if *self { "true" } else { "false" }, f)
     }
+
+    #[doc(hidden)]
+    fn __to_string_hint(&self) -> ToStringHint {
+        ToStringHint::Capacity(if *self { 4 } else { 5 })
+    }
 }
 
 impl Debug for bool {
@@ -688,6 +760,11 @@ impl Debug for bool {
 impl Display for str {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         f.pad(self)
+    }
+
+    #[doc(hidden)]
+    fn __to_string_hint(&self) -> ToStringHint {
+        ToStringHint::Text(self.len())
     }
 }
 
@@ -719,6 +796,11 @@ impl Debug for str {
 }
 
 impl Display for char {
+    #[doc(hidden)]
+    fn __to_string_hint(&self) -> ToStringHint {
+        ToStringHint::Capacity(self.len_utf8())
+    }
+
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         if f.options.flags & (flags::WIDTH_FLAG | flags::PRECISION_FLAG) == 0 {
             f.write_char(*self)

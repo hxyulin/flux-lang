@@ -6,7 +6,7 @@
 use core::cmp::Ordering;
 use core::fmt;
 use core::mem::ManuallyDrop;
-use core::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut, Index, IndexMut};
 use core::ptr;
 
 use crate::raw_vec::RawVec;
@@ -136,6 +136,7 @@ impl<T> Vec<T> {
     }
 
     /// Puts `element` at `index`, moving those after it along.
+    #[track_caller]
     pub fn insert(&mut self, index: usize, element: T) {
         let len = self.len;
         if index > len {
@@ -155,6 +156,7 @@ impl<T> Vec<T> {
     }
 
     /// Removes the element at `index`, moving those after it back.
+    #[track_caller]
     pub fn remove(&mut self, index: usize) -> T {
         let len = self.len;
         if index >= len {
@@ -223,6 +225,23 @@ impl<T> Vec<T> {
         self.len += count;
     }
 
+    /// Removes the elements in `range`, given by the iterator in turn;
+    /// those it does not give are dropped with it, and the elements
+    /// after the range moved back.
+    #[track_caller]
+    pub fn drain<R: core::ops::RangeBounds<usize>>(&mut self, range: R) -> Drain<'_, T> {
+        let len = self.len;
+        let core::ops::Range { start, end } = core::slice::range(range, ..len);
+        self.len = start;
+        Drain {
+            vec: self,
+            start,
+            end,
+            tail_start: end,
+            tail_len: len - end,
+        }
+    }
+
     /// Drops every element, in order, keeping the memory.
     pub fn clear(&mut self) {
         self.truncate(0);
@@ -237,6 +256,7 @@ impl<T> Vec<T> {
     }
 
     /// Splits off the elements from `at` on into a new vector.
+    #[track_caller]
     pub fn split_off(&mut self, at: usize) -> Vec<T> {
         let len = self.len;
         if at > len {
@@ -336,6 +356,84 @@ impl<T> Vec<T> {
     }
 }
 
+impl<T> Vec<T> {
+    /// Adds the items of an iterator whose `size_hint` is exact, with
+    /// room made for all of them first, as rustc's `extend_trusted`.
+    fn extend_trusted<I: Iterator<Item = T>>(&mut self, iterator: I) {
+        let (_, upper) = iterator.size_hint();
+        match upper {
+            Some(additional) => self.reserve(additional),
+            None => crate::raw_vec::capacity_overflow(),
+        }
+        for element in iterator {
+            let len = self.len;
+            unsafe { ptr::write(self.as_mut_ptr().add(len), element) };
+            self.len = len + 1;
+        }
+    }
+
+    /// Adds the items of any iterator, making room as rustc's
+    /// `extend_desugared` does: for the rest of its lower bound and one
+    /// more, each time it is full.
+    fn extend_desugared<I: Iterator<Item = T>>(&mut self, mut iterator: I) {
+        while let Some(element) = iterator.next() {
+            let len = self.len;
+            if len == self.capacity() {
+                let (lower, _) = iterator.size_hint();
+                self.reserve(lower.saturating_add(1));
+            }
+            unsafe { ptr::write(self.as_mut_ptr().add(len), element) };
+            self.len = len + 1;
+        }
+    }
+}
+
+impl<T> FromIterator<T> for Vec<T> {
+    /// rustc's `SpecFromIter`: exactly the room an exact iterator says,
+    /// else the first item, then room for the rest of the lower bound
+    /// (4 elements at least, 8 of a byte, 1 past 1024 bytes).
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Vec<T> {
+        let mut iterator = iter.into_iter();
+        if iterator.__trusted_len() {
+            let mut v = match iterator.size_hint() {
+                (_, Some(upper)) => Vec::with_capacity(upper),
+                (_, None) => crate::raw_vec::capacity_overflow(),
+            };
+            v.extend_trusted(iterator);
+            return v;
+        }
+        let first = match iterator.next() {
+            None => return Vec::new(),
+            Some(first) => first,
+        };
+        let (lower, _) = iterator.size_hint();
+        let min = crate::raw_vec::min_non_zero_cap(size_of::<T>());
+        let wanted = lower.saturating_add(1);
+        let mut v = Vec::with_capacity(if min > wanted { min } else { wanted });
+        unsafe { ptr::write(v.as_mut_ptr(), first) };
+        v.len = 1;
+        v.extend_desugared(iterator);
+        v
+    }
+}
+
+impl<T> Extend<T> for Vec<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        let iterator = iter.into_iter();
+        if iterator.__trusted_len() {
+            self.extend_trusted(iterator);
+        } else {
+            self.extend_desugared(iterator);
+        }
+    }
+}
+
+impl<'a, T: Copy + 'a> Extend<&'a T> for Vec<T> {
+    fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
+        self.extend(iter.into_iter().copied());
+    }
+}
+
 /// Drops the values at `base` from `start` to `end`, in order.
 unsafe fn drop_range<T>(base: *mut T, start: usize, end: usize) {
     if !core::mem::needs_drop::<T>() {
@@ -376,6 +474,55 @@ impl<T> DerefMut for Vec<T> {
         unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
     }
 }
+
+/// `v[i]`, through `Vec`'s own `Index` as in rustc (which panics where
+/// the brackets are), then the slice's.
+impl<T> Index<usize> for Vec<T> {
+    type Output = T;
+
+    #[track_caller]
+    fn index(&self, index: usize) -> &T {
+        &self.as_slice()[index]
+    }
+}
+
+impl<T> IndexMut<usize> for Vec<T> {
+    #[track_caller]
+    fn index_mut(&mut self, index: usize) -> &mut T {
+        &mut self.as_mut_slice()[index]
+    }
+}
+
+macro_rules! range_index {
+    ($($range:ty),*) => {
+        $(
+            impl<T> Index<$range> for Vec<T> {
+                type Output = [T];
+
+                #[track_caller]
+                fn index(&self, index: $range) -> &[T] {
+                    Index::index(self.as_slice(), index)
+                }
+            }
+
+            impl<T> IndexMut<$range> for Vec<T> {
+                #[track_caller]
+                fn index_mut(&mut self, index: $range) -> &mut [T] {
+                    IndexMut::index_mut(self.as_mut_slice(), index)
+                }
+            }
+        )*
+    };
+}
+
+range_index!(
+    core::ops::Range<usize>,
+    core::ops::RangeTo<usize>,
+    core::ops::RangeFrom<usize>,
+    core::ops::RangeFull,
+    core::ops::RangeInclusive<usize>,
+    core::ops::RangeToInclusive<usize>
+);
 
 impl<T: Clone> Clone for Vec<T> {
     fn clone(&self) -> Vec<T> {
@@ -508,6 +655,78 @@ impl<'a, T> IntoIterator for &'a mut Vec<T> {
 
     fn into_iter(self) -> core::slice::IterMut<'a, T> {
         self.as_mut_slice().iter_mut()
+    }
+}
+
+/// [`Vec::drain`]'s iterator.
+pub struct Drain<'a, T> {
+    vec: &'a mut Vec<T>,
+    /// The next element it gives, and one past the last.
+    start: usize,
+    end: usize,
+    /// Where the elements after the range are, and how many.
+    tail_start: usize,
+    tail_len: usize,
+}
+
+impl<T> Drain<'_, T> {
+    /// The elements not given yet.
+    pub fn as_slice(&self) -> &[T] {
+        unsafe {
+            core::slice::from_raw_parts(self.vec.as_ptr().add(self.start), self.end - self.start)
+        }
+    }
+}
+
+impl<T> Iterator for Drain<'_, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        if self.start == self.end {
+            return None;
+        }
+        let value = unsafe { ptr::read(self.vec.as_ptr().add(self.start)) };
+        self.start += 1;
+        Some(value)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.end - self.start;
+        (n, Some(n))
+    }
+
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+}
+
+impl<T> DoubleEndedIterator for Drain<'_, T> {
+    fn next_back(&mut self) -> Option<T> {
+        if self.start == self.end {
+            return None;
+        }
+        self.end -= 1;
+        Some(unsafe { ptr::read(self.vec.as_ptr().add(self.end)) })
+    }
+}
+
+impl<T> ExactSizeIterator for Drain<'_, T> {}
+
+impl<T> Drop for Drain<'_, T> {
+    /// The elements not given, in order, then the tail moved back.
+    fn drop(&mut self) {
+        unsafe {
+            drop_range(self.vec.as_mut_ptr(), self.start, self.end);
+            if self.tail_len > 0 {
+                let start = self.vec.len;
+                if self.tail_start != start {
+                    let base = self.vec.as_mut_ptr();
+                    ptr::copy(base.add(self.tail_start), base.add(start), self.tail_len);
+                }
+                self.vec.len = start + self.tail_len;
+            }
+        }
     }
 }
 

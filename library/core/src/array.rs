@@ -106,6 +106,16 @@ impl<T, const N: usize> Iterator for IntoIter<T, N> {
     type Item = T;
     const __TRUSTED_LEN: bool = true;
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        true
+    }
+
     fn next(&mut self) -> Option<T> {
         if self.start < self.end {
             let item = unsafe { read(&self.data.value[self.start]) };
