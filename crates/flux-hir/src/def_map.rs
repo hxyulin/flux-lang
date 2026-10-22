@@ -829,7 +829,14 @@ fn define_items(items: &mut ItemTree, from: ItemCounts) {
             &[Ns::Types, Ns::Values]
         };
         let binding = item(Def::Struct(id), s.loc.vis, s.loc.file, s.def_range);
-        defined.push((s.loc.module, s.name, ns, binding));
+        if s.non_exhaustive && s.kind != StructKind::Record {
+            defined.push((s.loc.module, s.name, &[Ns::Types], binding));
+            let mut ctor = binding;
+            ctor.vis = non_exhaustive_ctor_vis(items, Ns::Values, binding.def, binding.vis);
+            defined.push((s.loc.module, s.name, &[Ns::Values], ctor));
+        } else {
+            defined.push((s.loc.module, s.name, ns, binding));
+        }
     }
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let binding = item(Def::Trait(id), t.loc.vis, t.loc.file, t.def_range);
@@ -938,6 +945,13 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                         segment,
                         message,
                     }) => {
+                        // Import the public type without importing its crate-private constructor.
+                        if ns == Ns::Values
+                            && let Def::Struct(s) = def
+                            && items.externally_non_exhaustive(s, u.module)
+                        {
+                            continue;
+                        }
                         private.get_or_insert((segment, message));
                         def
                     }
@@ -1003,6 +1017,18 @@ fn error(items: &mut ItemTree, file: FileId, range: TextRange, message: impl Int
     items.diagnostics.push(d);
 }
 
+/// Reexports keep the public type and the crate-private value constructor separate.
+fn non_exhaustive_ctor_vis(items: &ItemTree, ns: Ns, def: Def, vis: Visibility) -> Visibility {
+    if ns == Ns::Values
+        && let Def::Struct(s) = def
+        && items.structs[s].non_exhaustive
+        && matches!(vis, Visibility::Public)
+    {
+        return Visibility::Crate(items.modules[items.structs[s].loc.module].krate);
+    }
+    vis
+}
+
 /// Puts what import `index` names in its module's scope.
 fn bind_import(items: &mut ItemTree, index: usize, ns: Ns, def: Def) {
     let u = &items.uses[index];
@@ -1031,6 +1057,7 @@ fn bind_import(items: &mut ItemTree, index: usize, ns: Ns, def: Def) {
     } else {
         u.vis
     };
+    let vis = non_exhaustive_ctor_vis(items, ns, def, vis);
     let scope = items.def_map.scopes[module.index()].ns_mut(ns);
     match scope.get(&name).copied() {
         Some(existing) if matches!(existing.kind, BindingKind::Item | BindingKind::Import) => {
@@ -1233,6 +1260,7 @@ fn apply_glob(items: &mut ItemTree, index: usize) -> bool {
             Err(e) => enum_variants(items, e, ns),
         };
         for (name, binding) in names {
+            let vis = non_exhaustive_ctor_vis(items, ns, binding.def, vis);
             let scope = items.def_map.scopes[module.index()].ns_mut(ns);
             match scope.get(&name) {
                 None => {

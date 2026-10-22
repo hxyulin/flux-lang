@@ -2420,6 +2420,14 @@ impl Ctx<'_> {
                 pats,
                 rest,
             } => {
+                if !items.structs[*strukt].is_enum()
+                    && items.externally_non_exhaustive(*strukt, self.module)
+                {
+                    self.error(
+                        range,
+                        "cannot match non-exhaustive tuple struct outside its defining crate",
+                    );
+                }
                 let generics = body.pat_generic_args.get(pat);
                 let ty = self.instantiate_adt(*strukt, generics, range);
                 let of_error = self.shallow(expected) == Ty::ERROR;
@@ -2484,6 +2492,12 @@ impl Ctx<'_> {
                     field_types = Ty::list(&vec![Ty::ERROR; field_types.len()]);
                 }
                 let def = items.structs[*strukt].variant(*variant);
+                if !rest
+                    && !items.structs[*strukt].is_enum()
+                    && items.externally_non_exhaustive(*strukt, self.module)
+                {
+                    self.error(range, "`..` required with struct marked as non-exhaustive");
+                }
                 let names = self.source_map.pat_fields.get(pat);
                 let mut private = Vec::new();
                 let mut mentioned = Vec::new();
@@ -2544,6 +2558,14 @@ impl Ctx<'_> {
                 }
             }
             Pat::Unit(strukt, _) => {
+                if !items.structs[*strukt].is_enum()
+                    && items.externally_non_exhaustive(*strukt, self.module)
+                {
+                    self.error(
+                        range,
+                        "cannot match non-exhaustive unit struct outside its defining crate",
+                    );
+                }
                 let generics = body.pat_generic_args.get(pat);
                 let ty = self.instantiate_adt(*strukt, generics, range);
                 if !self.unify(ty, expected) {
@@ -2665,6 +2687,15 @@ impl Ctx<'_> {
                 Some((f, target, trait_args)) => self.fn_item(id, f, target, trait_args),
                 None => Ty::ERROR,
             },
+            Expr::Path(Res::Struct(strukt))
+                if self.items.externally_non_exhaustive(*strukt, self.module) =>
+            {
+                self.error(
+                    self.range(id),
+                    "cannot use non-exhaustive struct constructor outside its defining crate",
+                );
+                Ty::ERROR
+            }
             Expr::Path(Res::Struct(strukt)) => match self.items.structs[*strukt].kind {
                 StructKind::Unit => self.instantiate_struct(*strukt, Some(id), self.range(id)),
                 // Its constructor, a function (`.map(Wrapper)`).
@@ -4028,6 +4059,12 @@ impl Ctx<'_> {
         args: &[ExprId],
     ) -> Ty {
         let def = self.items.structs[strukt].variant(variant);
+        if def.enum_name.is_none() && self.items.externally_non_exhaustive(strukt, self.module) {
+            self.error(
+                self.range(callee),
+                "cannot use non-exhaustive struct constructor outside its defining crate",
+            );
+        }
         if def.kind != StructKind::Tuple {
             let message = match def.enum_name {
                 Some(_) => format!("expected function, found enum variant `{}`", def.path()),
@@ -4686,6 +4723,13 @@ impl Ctx<'_> {
         let def = items.structs[strukt].variant(variant);
         let union = items.structs[strukt].is_union;
         let range = self.range(id);
+        if !items.structs[strukt].is_enum() && items.externally_non_exhaustive(strukt, self.module)
+        {
+            self.error(
+                range,
+                "cannot create non-exhaustive struct using struct expression",
+            );
+        }
         if union && (fields.len() != 1 || spread.is_some()) {
             self.error(range, "union expressions must have exactly one field");
         }
@@ -6085,6 +6129,7 @@ impl Ctx<'_> {
             if self.const_pats.is_empty() {
                 let found = crate::pats::check_body(
                     self.items,
+                    self.module,
                     self.sigs,
                     self.body,
                     self.source_map,

@@ -192,11 +192,18 @@ Classification counts and a digest across every Unicode scalar match rustc
 with and without Flux optimization. Registry dependency resolution and the
 remaining `memchr` language/library requirements are still outstanding.
 
-Unchanged `memchr 2.8.3` sources still need `non_exhaustive`
-and remaining language/library requirements exposed after HIR. Its original package
+Unchanged `memchr 2.8.3` sources now lower to HIR without diagnostics under the
+file command's edition-2024 boundary. The subsequent type/MIR probe still
+reports unsupported pointer comparisons, pointer `read_unaligned`, broader
+union fields, function-pointer Clone and Result `unwrap_unchecked`, plus type
+mismatches requiring separate triage. Its original package
 also needs feature selection and broader edition-2021 macro support. Source
 probes use the file command's explicit edition-2024 boundary and do not
 establish package compilation.
+
+Struct/enum `non_exhaustive` attributes enforce external construction and
+pattern restrictions through source dependencies. Variant-level attributes
+remain unsupported.
 
 Bounded Send/Sync checking now supports structural obligations, generic bounds,
 reference rules and explicit unsafe implementations, including memchr's Iter

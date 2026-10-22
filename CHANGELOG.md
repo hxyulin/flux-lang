@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Enforce struct/enum `non_exhaustive` restrictions across source crates,
+  preserving constructor visibility through aliases and reexports.
+
 - Add bounded Send/Sync obligations, explicit unsafe implementations and shared
   static Sync checks, with reference, raw-pointer and interior-mutability rules.
 

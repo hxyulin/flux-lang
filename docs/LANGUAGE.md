@@ -559,6 +559,12 @@ not `Sync` anyway), references to trait objects cast to raw pointers,
 write inherent `impl dyn Tr` blocks (E0116 elsewhere), whose methods
 trait objects of it have.
 
+Struct- and enum-level `#[non_exhaustive]` retains its defining crate through
+aliases and reexports. Outside that crate, struct construction/update is
+rejected, tuple/unit constructors are private, struct patterns require `..`,
+and enum matches need a wildcard. Same-crate use remains exhaustive.
+Variant-level attributes are explicitly unsupported.
+
 A pattern that is not a binding sees through references, and then binds
 by reference, as rustc's default binding modes do: `Some(x)` matching a
 `&Option<i32>` binds `x: &i32`. Edition 2024's rules hold: `mut`, `ref`

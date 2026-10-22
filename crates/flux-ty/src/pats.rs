@@ -30,6 +30,7 @@ use crate::ty::{IntTy, Mutability, Ty, TyKind};
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_body(
     items: &ItemTree,
+    module: flux_hir::ModuleId,
     sigs: &Signatures,
     body: &Body,
     source_map: &BodySourceMap,
@@ -41,6 +42,7 @@ pub(crate) fn check_body(
 ) -> Vec<Diagnostic> {
     let mut cx = Cx {
         items,
+        module,
         sigs,
         body,
         pat_types,
@@ -286,6 +288,7 @@ enum WPat {
 
 struct Cx<'a> {
     items: &'a ItemTree,
+    module: flux_hir::ModuleId,
     sigs: &'a Signatures,
     body: &'a Body,
     pat_types: &'a ArenaMap<Pat, Ty>,
@@ -593,6 +596,14 @@ impl Cx<'_> {
         match ty.kind() {
             TyKind::Never => true,
             TyKind::Tuple(elements) => elements.iter().any(|&e| self.uninhabited(e, depth + 1)),
+            TyKind::Adt(adt, _)
+                if self.items.structs[adt.strukt].is_enum()
+                    && self
+                        .items
+                        .externally_non_exhaustive(adt.strukt, self.module) =>
+            {
+                false
+            }
             TyKind::Adt(..) => match self.sigs.variants(ty) {
                 Some(variants) => variants
                     .iter()
@@ -668,6 +679,13 @@ impl Cx<'_> {
                         continue;
                     }
                     missing.push(ctor);
+                }
+                if self
+                    .items
+                    .externally_non_exhaustive(adt.strukt, self.module)
+                {
+                    // A future variant cannot be named by any existing pattern.
+                    missing.push(Ctor::Range(1, 0));
                 }
                 (present, missing)
             }

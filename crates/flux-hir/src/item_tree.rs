@@ -453,6 +453,8 @@ pub enum ImplTarget {
 /// arena, since their generics, bounds and `impl` blocks work alike.
 #[derive(Debug, Clone)]
 pub struct Struct {
+    /// Additional fields or variants may be added by the defining crate.
+    pub non_exhaustive: bool,
     /// Fields overlap in shared storage; never use struct field semantics.
     pub is_union: bool,
     pub name: Symbol,
@@ -1418,6 +1420,12 @@ impl ItemTree {
     /// The crate being compiled, rather than `core`.
     pub fn main_crate(&self) -> CrateId {
         CrateId(self.crates.len() as u32 - 1)
+    }
+
+    /// The restriction belongs to the definition, including through aliases and reexports.
+    pub fn externally_non_exhaustive(&self, strukt: StructId, from: ModuleId) -> bool {
+        let def = &self.structs[strukt];
+        def.non_exhaustive && self.modules[def.loc.module].krate != self.modules[from].krate
     }
 
     pub fn is_core(&self, module: ModuleId) -> bool {
@@ -3769,6 +3777,7 @@ impl Collector<'_> {
 
     fn collect_struct(&mut self, ctx: Ctx, s: ast::Struct<'_>) {
         let mut derives = Vec::new();
+        let mut non_exhaustive = false;
         let is_core = self.items.is_core(ctx.module);
         let mut lang = None;
         let mut hints = Vec::new();
@@ -3784,6 +3793,8 @@ impl Collector<'_> {
                     &mut repr_align,
                     &mut self.items.diagnostics,
                 );
+            } else if attr_name(attr) == Some("non_exhaustive") {
+                non_exhaustive |= non_exhaustive_attr(attr, &mut self.items.diagnostics);
             } else if is_core && let Some(name) = lang_attr(attr) {
                 lang = Some(name);
             } else {
@@ -3812,6 +3823,7 @@ impl Collector<'_> {
         let name_range = name.syntax().text_range();
         let id = self.items.structs.alloc(Struct {
             is_union: false,
+            non_exhaustive,
             name: Symbol::intern(name.text()),
             generics,
             kind,
@@ -3916,6 +3928,7 @@ impl Collector<'_> {
         let name_range = name.syntax().text_range();
         let id = self.items.structs.alloc(Struct {
             is_union: true,
+            non_exhaustive: false,
             name: Symbol::intern(name.text()),
             generics,
             kind,
@@ -4033,6 +4046,7 @@ impl Collector<'_> {
 
     fn collect_enum(&mut self, ctx: Ctx, e: ast::Enum<'_>) {
         let mut derives = Vec::new();
+        let mut non_exhaustive = false;
         let mut hints = Vec::new();
         let mut repr_align = 1;
         let is_core = self.items.is_core(ctx.module);
@@ -4048,6 +4062,8 @@ impl Collector<'_> {
                     &mut repr_align,
                     &mut self.items.diagnostics,
                 );
+            } else if attr_name(attr) == Some("non_exhaustive") {
+                non_exhaustive |= non_exhaustive_attr(attr, &mut self.items.diagnostics);
             } else if is_core && let Some(name) = lang_attr(attr) {
                 lang = Some(name);
             } else {
@@ -4281,6 +4297,7 @@ impl Collector<'_> {
         let name_range = name.syntax().text_range();
         let id = self.items.structs.alloc(Struct {
             is_union: false,
+            non_exhaustive,
             name: Symbol::intern(name.text()),
             generics,
             kind: StructKind::Record,
@@ -4948,6 +4965,20 @@ pub(crate) fn cfg_position(p: SyntaxNode<'_>) -> bool {
             })
 }
 
+/// `non_exhaustive` is a safe, bare attribute; lists and values are errors.
+fn non_exhaustive_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) -> bool {
+    let valid = attr.meta().is_some_and(|m| {
+        m.token_tree().is_none() && m.eq_token().is_none() && m.unsafe_token().is_none()
+    });
+    if !valid {
+        diagnostics.push(Diagnostic::new(
+            attr.syntax().text_range(),
+            "malformed `non_exhaustive` attribute input",
+        ));
+    }
+    valid
+}
+
 /// Checks attributes not handled by a specialized semantic consumer.
 pub(crate) fn check_attrs(
     attrs: AstChildren<'_, ast::Attr<'_>>,
@@ -5200,6 +5231,21 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
             attr.syntax().text_range(),
             "`derive` may only be applied to `struct`s, `enum`s and `union`s",
         ));
+        return;
+    }
+    if name == Some("non_exhaustive") {
+        if non_exhaustive_attr(attr, diagnostics) {
+            let variant = attr
+                .syntax()
+                .parent()
+                .is_some_and(|p| p.kind() == SyntaxKind::VARIANT);
+            let message = if variant {
+                "non-exhaustive enum variants are not supported yet"
+            } else {
+                "`non_exhaustive` may only be applied to structs, enums and enum variants"
+            };
+            diagnostics.push(Diagnostic::new(attr.syntax().text_range(), message));
+        }
         return;
     }
     let message = match name {
