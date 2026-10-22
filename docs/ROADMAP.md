@@ -45,7 +45,12 @@ with its adapters, `for` loops, slices' methods, iterators and sorts,
 arrays iterated by value, ranges as indices and `Index`/`IndexMut`,
 and text: bytes and
 byte strings, `char`, `str` with UTF-8 iteration and validation, raw
-pointers made from references and casts between pointers and integers.
+pointers made from references and casts between pointers and integers,
+and macros: `macro_rules!` with rustc's matching, scoping and hygiene,
+and `core`'s macros (`assert!`, `assert_eq!`, `matches!`, `panic!`,
+format strings checked but not formatted). Macros still lack items
+made inside function bodies and formatting itself (`std`'s `println!`
+needs a formatter that writes).
 In order next:
 
 1. `core` defines the pointer methods, `mem::replace` and `CStr`'s
