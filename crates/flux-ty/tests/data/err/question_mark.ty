@@ -1,0 +1,52 @@
+struct E1 {}
+struct E2 {}
+struct E3 {}
+fn from(E1) -> E2
+fn not_try(i32, &Option<i32>) -> Option<i32>
+    x@0: i32
+    o@1: &Option<i32>
+    _a@2: {error}
+fn returns_value(Option<i32>) -> i32
+    x@0: Option<i32>
+fn returns_unit(Result<i32, E1>) -> ()
+    x@0: Result<i32, E1>
+fn returns_generic<T>(Option<T>) -> T
+    x@0: Option<T>
+fn result_in_option(Result<i32, E1>) -> Option<i32>
+    x@0: Result<i32, E1>
+fn option_in_result(Option<i32>) -> Result<i32, E1>
+    x@0: Option<i32>
+fn no_conversion(Result<i32, E1>, Result<i32, E2>) -> Result<i32, E3>
+    x@0: Result<i32, E1>
+    y@1: Result<i32, E2>
+fn no_reverse_conversion(Result<i32, E2>) -> Result<i32, E1>
+    x@0: Result<i32, E2>
+fn narrowing(Result<i32, i64>) -> Result<i32, i32>
+    x@0: Result<i32, i64>
+fn generic_error<E>(Result<i32, E>) -> Result<i32, E1>
+    x@0: Result<i32, E>
+fn incompatible(Result<i32, E1>) -> Result<u8, E1>
+    x@0: Result<i32, E1>
+    y@1: u8
+fn in_const_fn(Option<i32>) -> Option<i32>
+    x@0: Option<i32>
+fn main() -> ()
+const X: Option<i32>
+const C: Option<i32>
+error 551..553: the `?` operator can only be applied to values that implement `Try`
+error 564..566: the `?` operator can only be applied to values that implement `Try`
+error 622..623: the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)
+error 670..671: the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)
+error 724..725: the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)
+error 796..797: the `?` operator can only be used on `Option`s, not `Result`s, in a function that returns `Option`
+error 867..868: the `?` operator can only be used on `Result`s, not `Option`s, in a function that returns `Result`
+error 959..960: `?` couldn't convert the error to `E3`
+error 964..965: `?` couldn't convert the error to `E3`
+error 1044..1045: `?` couldn't convert the error to `E1`
+error 1114..1115: `?` couldn't convert the error to `i32`
+error 1188..1189: `?` couldn't convert the error to `E1`
+error 1266..1268: `?` operator has incompatible types: expected `u8`, found `i32`
+error 1344..1345: return statement outside of function body
+error 1416..1418: `?` is not allowed on `Option<i32>` in constant functions
+error 1416..1418: `Try` is not yet stable as a const trait
+error 1416..1418: `FromResidual` is not yet stable as a const trait

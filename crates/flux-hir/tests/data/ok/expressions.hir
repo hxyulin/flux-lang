@@ -51,3 +51,8 @@ fn diverges() -> i32 {
     return 1;
 }
 
+fn question_marks(a@0: Option<i32>, b@1: Result<i32, u8>) -> Option<i32> {
+    let x@2 = (a@0? + 1);
+    Option::Some((x@2 + b@1.ok()?))
+}
+

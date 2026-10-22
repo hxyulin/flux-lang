@@ -1342,7 +1342,9 @@ fn extend_signatures(
                     );
                 }
             }
-        } else {
+        } else if !items.is_core(function.loc.module) {
+            // `core`'s `impl PartialEq<&B> for &A` takes `&&B`; it is
+            // trusted, and checked by its tests.
             for (param, &ty) in params {
                 if !matches!(ty.kind(), TyKind::Ref(..)) && contains_ref(ty) {
                     error(
@@ -1574,7 +1576,8 @@ fn check(hir: &Hir, all: bool) -> TypedFile {
         let called = result.calls.iter().map(|(_, i)| i.function);
         let methods = result.methods.iter().map(|(_, m)| m.function);
         let operators = result.overloads.iter().map(|(_, i)| i.function);
-        for f in called.chain(methods).chain(operators) {
+        let conversions = result.try_conversions.iter().map(|(_, i)| i.function);
+        for f in called.chain(methods).chain(operators).chain(conversions) {
             queue.extend(call_targets(items, f));
         }
     };

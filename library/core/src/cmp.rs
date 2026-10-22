@@ -47,3 +47,44 @@ impl PartialEq for bool { fn eq(&self, other: &bool) -> bool { *self == *other }
 impl Eq for bool {}
 impl PartialEq for () { fn eq(&self, _other: &()) -> bool { true } }
 impl Eq for () {}
+
+// References compare what they point to, as in rustc: `&a == &b` is
+// `a == b`, whichever of them are mutable.
+impl<A: PartialEq<B>, B> PartialEq<&B> for &A {
+    fn eq(&self, other: &&B) -> bool {
+        PartialEq::eq(&**self, &**other)
+    }
+    fn ne(&self, other: &&B) -> bool {
+        PartialEq::ne(&**self, &**other)
+    }
+}
+
+impl<A: PartialEq<B>, B> PartialEq<&mut B> for &mut A {
+    fn eq(&self, other: &&mut B) -> bool {
+        PartialEq::eq(&**self, &**other)
+    }
+    fn ne(&self, other: &&mut B) -> bool {
+        PartialEq::ne(&**self, &**other)
+    }
+}
+
+impl<A: PartialEq<B>, B> PartialEq<&mut B> for &A {
+    fn eq(&self, other: &&mut B) -> bool {
+        PartialEq::eq(&**self, &**other)
+    }
+    fn ne(&self, other: &&mut B) -> bool {
+        PartialEq::ne(&**self, &**other)
+    }
+}
+
+impl<A: PartialEq<B>, B> PartialEq<&B> for &mut A {
+    fn eq(&self, other: &&B) -> bool {
+        PartialEq::eq(&**self, &**other)
+    }
+    fn ne(&self, other: &&B) -> bool {
+        PartialEq::ne(&**self, &**other)
+    }
+}
+
+impl<A: Eq> Eq for &A {}
+impl<A: Eq> Eq for &mut A {}

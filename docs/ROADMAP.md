@@ -32,13 +32,13 @@ bounds, statically dispatched, associated types and constants,
 overloaded operators, `Copy`/`Clone`/`PartialEq`/`Eq` with `#[derive]`,
 `Drop`, with rustc's drop order and drop flags, bounds on structs, and
 enums with `match`, `if let`, `let`-`else`, exhaustiveness checking and
-rustc's default binding modes.
+rustc's default binding modes, operators on references through
+`core`'s impls, and `?` on `Option` and `Result` with `From`.
 In order next:
 
-1. Operators on references (`r + 1`, which match ergonomics makes
-   common) and `?`, then `Ordering` and `PartialOrd`. Discriminants
-   other than literals (`A = 1 << 2`), which MIR building needs the
-   values of before constants are evaluated.
+1. `Ordering` and `PartialOrd`, which also replace the built-in `<` on
+   references. Discriminants other than literals (`A = 1 << 2`), which
+   MIR building needs the values of before constants are evaluated.
 2. `core` defines the pointer methods, `mem::replace` and `CStr` (now
    built into the compiler) through lang items and intrinsics. `for`
    loops over `Iterator`, which needs closures for most of its methods.
@@ -71,9 +71,10 @@ intrinsics, unstable features), so flux cannot compile them. flux
 provides its own small core library, [`library/core`](../library/core),
 written in flux and compiled with every program, that defines the same
 names with the same meaning. So far it has the integer types' constants
-and methods, `mem::drop`, `convert::identity`, `marker::Sized`, the
-operator traits, `PartialEq`/`Eq`, `Copy`, `Clone`, `Drop`, `Option`
-and `Result`; `PartialOrd` comes with `Ordering`. Its front end (parsing,
+and methods, `mem::drop`, `convert::identity`, `convert::From`,
+`marker::Sized`, the operator traits (for references too),
+`PartialEq`/`Eq`, `Copy`, `Clone`, `Drop`, `Option` and `Result`;
+`PartialOrd` comes with `Ordering`. Its front end (parsing,
 item tree, names, signatures, constants' values, and bodies as they are
 reached) is done once per process and shared by every compilation in
 it, and only the functions a program calls are type-checked and

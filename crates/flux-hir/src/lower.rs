@@ -976,7 +976,14 @@ impl<'a> Ctx<'a> {
                     expr,
                 }
             }
-            ast::Expr::TryExpr(_) => self.unsupported_expr(range, "`?` expressions"),
+            ast::Expr::TryExpr(t) => {
+                let expr = self.lower_opt(t.expr(), syntax);
+                let id = self.alloc_expr(Expr::Try { expr }, range);
+                if let Some(question) = t.question_token() {
+                    self.source_map.ops.insert(id, question.text_range());
+                }
+                return id;
+            }
             ast::Expr::UnderscoreExpr(_) => {
                 self.unsupported_expr(range, "destructuring assignments")
             }

@@ -50,3 +50,8 @@ fn shadowing(x: i32) -> i32 {
 fn diverges() -> i32 {
     return 1;
 }
+
+fn question_marks(a: Option<i32>, b: Result<i32, u8>) -> Option<i32> {
+    let x = a? + 1;
+    Some(x + b.ok()?)
+}

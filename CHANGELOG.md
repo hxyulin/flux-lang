@@ -161,6 +161,23 @@
 - Find inherent functions through qualified paths (`<S>::new()`).
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
+- Support operators on references to integers and `bool` (`&a + b`,
+  `a + &b`, `a += &b`, `-&a`, `!&a`, `&a == &b`, `&a < &b`), which
+  match ergonomics makes common. `core` implements the operator traits
+  for references as rustc's does, shifts for any integer type on the
+  right, and `PartialEq` for `&A` and `&mut A`, so generic code takes
+  references too; `<` on references is built in until `PartialOrd`.
+  Mismatched operands are reported as rustc does (E0277 with E0308 for
+  integers of different types, E0369, E0368, E0600), and operators that
+  call trait methods in constants and `const fn`s are E0658 or E0015.
+  `impl` blocks overlap (E0119) only if their whole headers unify, and
+  E0119 names the trait with its arguments and `_` for what is left
+  open (`From<W<_>>` for `W<_>`), as rustc does.
+- Support `?` on `Option` and `Result`, returning `None` or the error
+  converted with `core::convert::From` (new, in the prelude, with
+  rustc's lossless integer conversions), with rustc's errors for the
+  `Try` and `FromResidual` bounds (E0277), mismatched values (E0308)
+  and `?` in constants and `const fn`s (E0572, E0658).
 
 ### Performance
 

@@ -126,11 +126,6 @@ fn referents(&C, &N, &N, &S, &S, &i32) -> ()
     _a@6: bool
     _b@7: bool
     _c@8: bool
-fn unary_on_references(&i32, &bool) -> ()
-    x@0: &i32
-    b@1: &bool
-    _a@2: i32
-    _b@3: bool
 fn main() -> ()
 error 899..900: cannot add `S` to `S`
 error 925..926: cannot subtract `S` from `S`
@@ -199,5 +194,3 @@ error 4242..4244: can't compare `i32` with `&i32`
 error 4325..4327: binary operation `==` cannot be applied to type `&S`
 error 4346..4348: can't compare `N` with `N`
 error 4367..4369: can't compare `C` with `i32`
-error 4511..4513: operators on references are not supported yet
-error 4534..4536: operators on references are not supported yet

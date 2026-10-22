@@ -1,0 +1,173 @@
+fn <Guard as Drop>::drop(_1: &mut Guard) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn <Wide as From<i32>>::from(_1: i32) -> Wide {
+    let mut _0: Wide;
+    let _2: i64;
+    let _3: i32;
+
+    bb0: {
+        _3 = copy _1;
+        _2 = copy _3 as i64;
+        _0 = Wide(copy _2);
+        return;
+    }
+}
+
+fn option(_1: Option<i32>) -> Option<i32> {
+    let mut _0: Option<i32>;
+    let _2: i32;
+    let _3: i32;
+    let _4: Option<i32>;
+    let _5: isize;
+
+    bb0: {
+        _4 = copy _1;
+        _5 = discriminant(_4);
+        switchInt(copy _5) -> [1: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _0 = Option::None;
+        return;
+    }
+
+    bb2: {
+        _3 = copy (_4 as #1).0;
+        _2 = Add(copy _3, const 1_i32);
+        _0 = Option::Some(copy _2);
+        return;
+    }
+}
+
+fn result(_1: Result<Guard, i32>) -> Result<i32, i32> {
+    let mut _0: Result<i32, i32>;
+    let _2: Guard; // g
+    let _3: Result<Guard, i32>;
+    let _4: isize;
+    let _5: i32;
+
+    bb0: {
+        _3 = move _1;
+        _4 = discriminant(_3);
+        switchInt(copy _4) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _0 = Result::Err(copy (_3 as #1).0);
+        return;
+    }
+
+    bb2: {
+        _2 = move (_3 as #0).0;
+        _5 = copy _2.0;
+        _0 = Result::Ok(copy _5);
+        drop(_2) -> bb3;
+    }
+
+    bb3: {
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn converted(_1: Result<i32, i32>) -> Result<i32, Wide> {
+    let mut _0: Result<i32, Wide>;
+    let _2: Guard; // _guard
+    let _3: i32;
+    let _4: Result<i32, i32>;
+    let _5: isize;
+    let _6: Wide;
+
+    bb0: {
+        _2 = Guard(const 1_i32);
+        _4 = copy _1;
+        _5 = discriminant(_4);
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _6 = from::<Wide, i32>(copy (_4 as #1).0) -> bb3;
+    }
+
+    bb2: {
+        _3 = copy (_4 as #0).0;
+        _0 = Result::Ok(copy _3);
+        drop(_2) -> bb5;
+    }
+
+    bb3: {
+        _0 = Result::Err(move _6);
+        drop(_2) -> bb4;
+    }
+
+    bb4: {
+        return;
+    }
+
+    bb5: {
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: Option<i32>;
+    let _2: Option<i32>;
+    let _3: Result<i32, i32>;
+    let _4: Result<Guard, i32>;
+    let _5: Result<i32, Wide>;
+    let _6: Result<i32, i32>;
+    let _7: Wide; // wide
+    let _8: isize;
+
+    bb0: {
+        _2 = Option::None;
+        _1 = option(copy _2) -> bb1;
+    }
+
+    bb1: {
+        _4 = Result::Err(const 1_i32);
+        _3 = result(move _4) -> bb2;
+    }
+
+    bb2: {
+        _6 = Result::Ok(const 2_i32);
+        _5 = converted(copy _6) -> bb6;
+    }
+
+    bb3: {
+        PlaceMention(_7.0);
+        _0 = const ();
+        StorageDead(_7);
+        goto -> bb5;
+    }
+
+    bb4: {
+        StorageDead(_7);
+        _0 = const ();
+        goto -> bb5;
+    }
+
+    bb5: {
+        return;
+    }
+
+    bb6: {
+        _8 = discriminant(_5);
+        switchInt(copy _8) -> [1: bb7, otherwise: bb4];
+    }
+
+    bb7: {
+        _7 = move (_5 as #1).0;
+        goto -> bb3;
+    }
+}
+

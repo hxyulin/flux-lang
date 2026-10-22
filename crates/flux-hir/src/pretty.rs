@@ -587,6 +587,10 @@ impl Printer<'_> {
                 self.expr(*expr);
                 write!(self.out, " as {})", type_ref(&self.body.types[*ty])).unwrap();
             }
+            Expr::Try { expr } => {
+                self.expr(*expr);
+                self.out.push('?');
+            }
             Expr::Ref { mutable, expr } => {
                 self.out.push_str(if *mutable { "(&mut " } else { "(&" });
                 self.expr(*expr);

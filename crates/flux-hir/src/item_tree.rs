@@ -50,6 +50,9 @@ pub struct ItemTree {
     pub trait_fns: rustc_hash::FxHashMap<Symbol, Vec<TraitId>>,
     /// The traits the compiler knows, by their `#[lang = "..."]` names.
     pub lang_traits: rustc_hash::FxHashMap<Symbol, TraitId>,
+    /// `core`'s enums the compiler knows, by their `#[lang = "..."]`
+    /// names: `Option` and `Result`, which `?` works on.
+    pub lang_enums: rustc_hash::FxHashMap<Symbol, StructId>,
     /// `core`'s `#[lang = "panic"]` function, which aborts, and which
     /// constant evaluation reports as a panic with its message.
     pub panic_fn: Option<FunctionId>,
@@ -2137,11 +2140,15 @@ impl Collector<'_> {
     fn collect_enum(&mut self, ctx: Ctx, e: ast::Enum<'_>) {
         let mut derives = Vec::new();
         let mut hints = Vec::new();
+        let is_core = self.items.is_core(ctx.module);
+        let mut lang = None;
         for attr in e.attrs() {
             if attr_name(attr) == Some("derive") {
                 derive_attr(attr, &mut derives, &mut self.items.diagnostics);
             } else if attr_name(attr) == Some("repr") {
                 repr_attr(attr, &mut hints, &mut self.items.diagnostics);
+            } else if is_core && let Some(name) = lang_attr(attr) {
+                lang = Some(name);
             } else {
                 check_attr(attr, &mut self.items.diagnostics);
             }
@@ -2302,6 +2309,9 @@ impl Collector<'_> {
             name_range,
             def_range,
         });
+        if let Some(lang) = lang {
+            self.items.lang_enums.insert(lang, id);
+        }
         for (derive, range) in derives {
             self.derives.push((ctx, id, derive, range, e.syntax().id()));
         }
