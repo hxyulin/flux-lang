@@ -3,9 +3,8 @@
 //! Written in flux, which compiles with overflow checks off, so
 //! arithmetic wraps, during constant evaluation too, except in methods
 //! marked `#[rustc_inherit_overflow_checks]`, which check where their
-//! caller does (in constants), as Rust's `core` does. Methods that are
-//! trait methods in Rust (`min`, `max`) are inherent here, until flux has
-//! traits; they are not `const`, as in Rust.
+//! caller does (in constants), as Rust's `core` does. `min` and `max`
+//! are `Ord`'s, as in Rust.
 
 impl i8 {
     pub const MIN: i8 = -128;
@@ -106,14 +105,6 @@ impl i8 {
         } else {
             (self as u8) - (other as u8)
         }
-    }
-
-    pub fn min(self, other: i8) -> i8 {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: i8) -> i8 {
-        if other < self { self } else { other }
     }
 
     #[rustc_inherit_overflow_checks]
@@ -258,14 +249,6 @@ impl i16 {
         }
     }
 
-    pub fn min(self, other: i16) -> i16 {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: i16) -> i16 {
-        if other < self { self } else { other }
-    }
-
     #[rustc_inherit_overflow_checks]
     pub const fn abs(self) -> i16 {
         if self < 0 { -self } else { self }
@@ -406,14 +389,6 @@ impl i32 {
         } else {
             (self as u32) - (other as u32)
         }
-    }
-
-    pub fn min(self, other: i32) -> i32 {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: i32) -> i32 {
-        if other < self { self } else { other }
     }
 
     #[rustc_inherit_overflow_checks]
@@ -558,14 +533,6 @@ impl i64 {
         }
     }
 
-    pub fn min(self, other: i64) -> i64 {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: i64) -> i64 {
-        if other < self { self } else { other }
-    }
-
     #[rustc_inherit_overflow_checks]
     pub const fn abs(self) -> i64 {
         if self < 0 { -self } else { self }
@@ -706,14 +673,6 @@ impl i128 {
         } else {
             (self as u128) - (other as u128)
         }
-    }
-
-    pub fn min(self, other: i128) -> i128 {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: i128) -> i128 {
-        if other < self { self } else { other }
     }
 
     #[rustc_inherit_overflow_checks]
@@ -858,14 +817,6 @@ impl isize {
         }
     }
 
-    pub fn min(self, other: isize) -> isize {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: isize) -> isize {
-        if other < self { self } else { other }
-    }
-
     #[rustc_inherit_overflow_checks]
     pub const fn abs(self) -> isize {
         if self < 0 { -self } else { self }
@@ -1008,14 +959,6 @@ impl u8 {
         }
     }
 
-    pub fn min(self, other: u8) -> u8 {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: u8) -> u8 {
-        if other < self { self } else { other }
-    }
-
     pub const fn is_power_of_two(self) -> bool {
         self != 0 && self & (self - 1) == 0
     }
@@ -1120,14 +1063,6 @@ impl u16 {
         } else {
             (self as u16) - (other as u16)
         }
-    }
-
-    pub fn min(self, other: u16) -> u16 {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: u16) -> u16 {
-        if other < self { self } else { other }
     }
 
     pub const fn is_power_of_two(self) -> bool {
@@ -1236,14 +1171,6 @@ impl u32 {
         }
     }
 
-    pub fn min(self, other: u32) -> u32 {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: u32) -> u32 {
-        if other < self { self } else { other }
-    }
-
     pub const fn is_power_of_two(self) -> bool {
         self != 0 && self & (self - 1) == 0
     }
@@ -1348,14 +1275,6 @@ impl u64 {
         } else {
             (self as u64) - (other as u64)
         }
-    }
-
-    pub fn min(self, other: u64) -> u64 {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: u64) -> u64 {
-        if other < self { self } else { other }
     }
 
     pub const fn is_power_of_two(self) -> bool {
@@ -1464,14 +1383,6 @@ impl u128 {
         }
     }
 
-    pub fn min(self, other: u128) -> u128 {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: u128) -> u128 {
-        if other < self { self } else { other }
-    }
-
     pub const fn is_power_of_two(self) -> bool {
         self != 0 && self & (self - 1) == 0
     }
@@ -1576,14 +1487,6 @@ impl usize {
         } else {
             (self as usize) - (other as usize)
         }
-    }
-
-    pub fn min(self, other: usize) -> usize {
-        if other < self { other } else { self }
-    }
-
-    pub fn max(self, other: usize) -> usize {
-        if other < self { self } else { other }
     }
 
     pub const fn is_power_of_two(self) -> bool {

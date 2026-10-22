@@ -103,3 +103,34 @@ impl<T: crate::cmp::PartialEq, E: crate::cmp::PartialEq> crate::cmp::PartialEq f
 }
 
 impl<T: crate::cmp::Eq, E: crate::cmp::Eq> crate::cmp::Eq for Result<T, E> {}
+
+// `Ok` is less than any `Err`, as rustc's derived impls order them.
+impl<T: crate::cmp::PartialOrd, E: crate::cmp::PartialOrd> crate::cmp::PartialOrd for Result<T, E> {
+    fn partial_cmp(&self, other: &Self) -> Option<crate::cmp::Ordering> {
+        match self {
+            Ok(a) => match other {
+                Ok(b) => crate::cmp::PartialOrd::partial_cmp(a, b),
+                Err(_) => Some(crate::cmp::Ordering::Less),
+            },
+            Err(a) => match other {
+                Ok(_) => Some(crate::cmp::Ordering::Greater),
+                Err(b) => crate::cmp::PartialOrd::partial_cmp(a, b),
+            },
+        }
+    }
+}
+
+impl<T: crate::cmp::Ord, E: crate::cmp::Ord> crate::cmp::Ord for Result<T, E> {
+    fn cmp(&self, other: &Self) -> crate::cmp::Ordering {
+        match self {
+            Ok(a) => match other {
+                Ok(b) => crate::cmp::Ord::cmp(a, b),
+                Err(_) => crate::cmp::Ordering::Less,
+            },
+            Err(a) => match other {
+                Ok(_) => crate::cmp::Ordering::Greater,
+                Err(b) => crate::cmp::Ord::cmp(a, b),
+            },
+        }
+    }
+}

@@ -41,13 +41,15 @@ error 533..542: cannot call non-const function `double` in constants
 error 566..575: cannot call non-const function `double` in constants
 error 593..601: cannot call non-const associated function `S::new` in constants
 error 635..640: cannot call non-const method `S::get` in constants
-error 662..668: cannot call non-const method `i32::max` in constants
+error 657..668: `Ord` is not yet stable as a const trait
+error 662..668: cannot call conditionally-const method `<i32 as Ord>::max` in constants
 error 709..714: cannot call non-const method `S::get` in constants
 error 717..726: cannot call non-const function `double` in constants
 error 773..782: cannot call non-const function `double` in constant functions
 error 785..793: cannot call non-const associated function `S::new` in constant functions
 error 794..799: cannot call non-const method `S::get` in constant functions
-error 858..865: cannot call non-const method `i32::min` in constant functions
+error 856..865: `Ord` is not yet stable as a const trait
+error 858..865: cannot call conditionally-const method `<i32 as Ord>::min` in constant functions
 error 1002..1022: `Option::<T>::unwrap_or` is not yet stable as a const fn
 error 1010..1022: cannot call conditionally-const method `Option::<i32>::unwrap_or` in constants
 error 1055..1073: `Option::<T>::ok_or` is not yet stable as a const fn

@@ -29,7 +29,8 @@ pointers, tuples and structs, with methods and references that need no
 lifetimes (parameters, temporaries and locals assigned once), generic
 functions, structs and `impl` blocks, monomorphized, traits with
 bounds, statically dispatched, associated types and constants,
-overloaded operators, `Copy`/`Clone`/`PartialEq`/`Eq` with `#[derive]`,
+overloaded operators, `Copy`/`Clone`/`PartialEq`/`Eq`/`PartialOrd`/`Ord`
+with `#[derive]`, `Ordering`,
 `Drop`, with rustc's drop order and drop flags, bounds on structs, and
 enums with `match`, `if let`, `let`-`else`, exhaustiveness checking,
 rustc's default binding modes and discriminants written as constant
@@ -37,14 +38,12 @@ expressions, operators on references through `core`'s impls, and `?`
 on `Option` and `Result` with `From`.
 In order next:
 
-1. `Ordering` and `PartialOrd`, which also replace the built-in `<` on
-   references.
-2. `core` defines the pointer methods, `mem::replace` and `CStr` (now
+1. `core` defines the pointer methods, `mem::replace` and `CStr` (now
    built into the compiler) through lang items and intrinsics. `for`
    loops over `Iterator`, which needs closures for most of its methods.
-3. Lifetimes: references in structs and return values (`Option<&T>`),
+2. Lifetimes: references in structs and return values (`Option<&T>`),
    which needs region inference across function signatures.
-4. Items inside function bodies.
+3. Items inside function bodies.
 
 Each comes with fixtures that rustc must agree with.
 
@@ -73,8 +72,8 @@ written in flux and compiled with every program, that defines the same
 names with the same meaning. So far it has the integer types' constants
 and methods, `mem::drop`, `convert::identity`, `convert::From`,
 `marker::Sized`, the operator traits (for references too),
-`PartialEq`/`Eq`, `Copy`, `Clone`, `Drop`, `Option` and `Result`;
-`PartialOrd` comes with `Ordering`. Its front end (parsing,
+`PartialEq`/`Eq`, `PartialOrd`/`Ord` with `Ordering`, `Copy`, `Clone`,
+`Drop`, `Option` and `Result`. Its front end (parsing,
 item tree, names, signatures, constants' values, and bodies as they are
 reached) is done once per process and shared by every compilation in
 it, and only the functions a program calls are type-checked and

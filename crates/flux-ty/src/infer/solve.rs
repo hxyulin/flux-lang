@@ -16,6 +16,7 @@ use flux_intern::Symbol;
 use flux_syntax::TextRange;
 
 use super::Ctx;
+use crate::Mutability;
 use crate::traits::{Predicate, TraitRef, owner_param_count, predicates_of};
 use crate::ty::{AliasTy, IntTy, Ty, TyKind};
 
@@ -849,6 +850,30 @@ impl Ctx<'_> {
                 None => false,
             };
             has && self.has_impl_header(ty, t)
+        })
+    }
+
+    /// Whether a method called `name` that takes `self` by value exists
+    /// for a reference to `ty` through an `impl` block whose bounds do
+    /// not hold, as rustc's probe finds `<&A as Ord>::max`, which needs
+    /// `A: Ord`, for `a.max(b)` once it borrows `a`.
+    pub(super) fn exists_unmet_for_ref(&mut self, ty: Ty, name: Symbol) -> bool {
+        let items = self.items;
+        if !items.trait_fns.contains_key(&name) {
+            return false;
+        }
+        let in_scope = self.traits_in_scope().to_vec();
+        in_scope.into_iter().any(|t| {
+            let by_value = match items.traits[t].value(items, name) {
+                Some(AssocItem::Function(f)) => {
+                    items.functions[f].has_self && super::self_mode(items, f).is_none()
+                }
+                _ => false,
+            };
+            by_value
+                && [Mutability::Not, Mutability::Mut]
+                    .into_iter()
+                    .any(|m| self.has_impl_header(Ty::new(TyKind::Ref(m, ty)), t))
         })
     }
 

@@ -1356,18 +1356,8 @@ impl Builder<'_> {
                     self.assign(dest, rvalue, range);
                 }
                 BinaryOp::Cmp(cmp) => {
-                    // `&a < &b` compares `a` and `b`.
-                    let layers = self.types.ordered_refs.get(expr).copied().unwrap_or(0);
-                    let (l, r) = if layers > 0
-                        && matches!(self.expr_ty(*lhs).kind(), TyKind::Ref(Mutability::Mut, _))
-                    {
-                        self.lower_mut_ordered(*lhs, *rhs, layers)
-                    } else {
-                        (
-                            self.lower_deref(*lhs, layers),
-                            self.lower_deref(*rhs, layers),
-                        )
-                    };
+                    let l = self.lower_operand(*lhs);
+                    let r = self.lower_operand(*rhs);
                     let op = match cmp {
                         CmpOp::Eq => BinOp::Eq,
                         CmpOp::Ne => BinOp::Ne,
@@ -1419,8 +1409,9 @@ impl Builder<'_> {
 
     /// An operator on a type other than the integers and `bool`: a call
     /// of its trait's method, `instance`, with the operands by value, by
-    /// reference for comparisons (`PartialEq::eq(&a, &b)`), and the left
-    /// one by mutable reference for compound assignments.
+    /// reference for comparisons (`PartialEq::eq(&a, &b)`), or as they
+    /// are for comparisons of references, whose referents are compared,
+    /// and the left one by mutable reference for compound assignments.
     fn lower_overloaded(
         &mut self,
         expr: ExprId,
@@ -1431,11 +1422,17 @@ impl Builder<'_> {
         let args = match self.body.exprs[expr] {
             Expr::Unary { operand, .. } => vec![self.lower_operand(operand)],
             Expr::Binary {
-                op: BinaryOp::Cmp(_),
+                op: BinaryOp::Cmp(cmp),
                 lhs,
                 rhs,
             } if self.types.compared_refs.get(expr).is_some() => {
-                vec![self.shared_operand(lhs), self.shared_operand(rhs)]
+                if !matches!(cmp, CmpOp::Eq | CmpOp::Ne)
+                    && let TyKind::Ref(Mutability::Mut, _) = self.expr_ty(lhs).kind()
+                {
+                    self.mut_ordered_operands(lhs, rhs)
+                } else {
+                    vec![self.shared_operand(lhs), self.shared_operand(rhs)]
+                }
             }
             Expr::Binary {
                 op: BinaryOp::Cmp(_),
@@ -1480,23 +1477,12 @@ impl Builder<'_> {
         Operand::Copy(temp.into())
     }
 
-    /// The value `expr` points to through `layers` references, or
-    /// `expr`'s own value.
-    fn lower_deref(&mut self, expr: ExprId, layers: u32) -> Operand {
-        if layers == 0 {
-            return self.lower_operand(expr);
-        }
-        let mut place = self.lower_place(expr);
-        for _ in 0..layers {
-            place = place.deref();
-        }
-        self.read(place)
-    }
-
     /// The operands of `a < b` where `a` and `b` are `&mut` references:
     /// as rustc's `PartialOrd::lt(&a, &mut *b)`, which borrows `a` and
-    /// reborrows `b` mutably, so `m < m` is E0502.
-    fn lower_mut_ordered(&mut self, lhs: ExprId, rhs: ExprId, layers: u32) -> (Operand, Operand) {
+    /// reborrows `b` mutably, so `m < m` is E0502; then shared
+    /// references to what they point to, which `core`'s impl for `&mut`
+    /// would pass on.
+    fn mut_ordered_operands(&mut self, lhs: ExprId, rhs: ExprId) -> Vec<Operand> {
         let place = self.lower_place(lhs);
         let ty = Ty::new(TyKind::Ref(Mutability::Not, self.place_ty(&place)));
         let l = self.temp(ty);
@@ -1515,12 +1501,23 @@ impl Builder<'_> {
             two_phase: false,
         };
         self.assign(&r.into(), rvalue, self.range(rhs));
-        let mut l = Place::from(l).deref();
-        let mut r = Place::from(r);
-        for _ in 0..layers {
-            (l, r) = (l.deref(), r.deref());
-        }
-        (self.read(l), self.read(r))
+        [
+            (Place::from(l).deref().deref(), lhs),
+            (Place::from(r).deref(), rhs),
+        ]
+        .into_iter()
+        .map(|(place, expr)| {
+            let ty = Ty::new(TyKind::Ref(Mutability::Not, self.place_ty(&place)));
+            let temp = self.temp(ty);
+            let rvalue = Rvalue::Ref {
+                mutability: Mutability::Not,
+                place,
+                two_phase: false,
+            };
+            self.assign(&temp.into(), rvalue, self.range(expr));
+            Operand::Copy(temp.into())
+        })
+        .collect()
     }
 
     /// `operand?`: moves the `Option` or `Result` into a temporary, as

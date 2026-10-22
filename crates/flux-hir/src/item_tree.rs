@@ -517,7 +517,8 @@ pub struct Function {
     /// `(x: i32)`
     pub param_list: TextRange,
     /// Made by `#[derive]` on this struct, with a body made for its
-    /// fields: `clone`, `eq` or `Eq`'s check. `Derive::Copy` is a `clone`
+    /// fields: `clone`, `eq`, `Eq`'s check, `partial_cmp` or `cmp`.
+    /// `Derive::Copy` is a `clone`
     /// that copies, for a struct without parameters that derives `Copy`
     /// too, as rustc's does.
     pub derived: Option<(StructId, Derive)>,
@@ -2456,19 +2457,10 @@ impl Collector<'_> {
             Derive::Copy => ("marker", "Copy"),
             Derive::PartialEq => ("cmp", "PartialEq"),
             Derive::Eq => ("cmp", "Eq"),
+            Derive::PartialOrd => ("cmp", "PartialOrd"),
+            Derive::Ord => ("cmp", "Ord"),
         };
-        let trait_path = Path {
-            anchor: PathAnchor::Global,
-            qself: None,
-            segments: Box::new([
-                Symbol::intern("core"),
-                Symbol::intern(module),
-                Symbol::intern(name),
-            ]),
-            ranges: Box::default(),
-            anchor_ranges: Box::default(),
-            args: Box::default(),
-        };
+        let trait_path = core_path(module, name);
         let bound = Bound {
             path: trait_path,
             range,
@@ -2573,6 +2565,30 @@ impl Collector<'_> {
                 "assert_receiver_is_total_eq",
                 vec![self_ref()],
                 TypeRef::unit(),
+            ),
+            Derive::PartialOrd => {
+                // `Option<Ordering>`
+                let mut option = core_path("option", "Option");
+                option.args = Box::new([
+                    None,
+                    None,
+                    Some(GenericArgs {
+                        types: Box::new([TypeRef::Path(core_path("cmp", "Ordering"))]),
+                        ranges: Box::new([range]),
+                        bindings: Box::default(),
+                        range,
+                    }),
+                ]);
+                (
+                    "partial_cmp",
+                    vec![self_ref(), self_ref()],
+                    TypeRef::Path(option),
+                )
+            }
+            Derive::Ord => (
+                "cmp",
+                vec![self_ref(), self_ref()],
+                TypeRef::Path(core_path("cmp", "Ordering")),
             ),
         };
         let function = self.items.functions.alloc(Function {
@@ -3190,6 +3206,25 @@ pub enum Derive {
     Copy,
     PartialEq,
     Eq,
+    PartialOrd,
+    Ord,
+}
+
+/// `::core::module::name`, as `#[derive]` names its traits and their
+/// types.
+fn core_path(module: &str, name: &str) -> Path {
+    Path {
+        anchor: PathAnchor::Global,
+        qself: None,
+        segments: Box::new([
+            Symbol::intern("core"),
+            Symbol::intern(module),
+            Symbol::intern(name),
+        ]),
+        ranges: Box::default(),
+        anchor_ranges: Box::default(),
+        args: Box::default(),
+    }
 }
 
 /// The traits `#[derive(...)]` names, with their ranges; others, and
@@ -3299,7 +3334,9 @@ fn derive_attr(
             "Copy" => Derive::Copy,
             "PartialEq" => Derive::PartialEq,
             "Eq" => Derive::Eq,
-            "Debug" | "Default" | "Hash" | "PartialOrd" | "Ord" => {
+            "PartialOrd" => Derive::PartialOrd,
+            "Ord" => Derive::Ord,
+            "Debug" | "Default" | "Hash" => {
                 error(range, format!("deriving `{name}` is not supported yet"));
                 continue;
             }

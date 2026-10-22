@@ -1,10 +1,10 @@
 // Operators on references in MIR: calls of `core`'s impls for
 // references (`<&i32 as Add<i32>>::add`), which take the references as
-// they are; `==` passes them to the referents' `eq`, reborrowing a
-// `&mut` as shared, so it stays usable; `<` reads the referents, built
-// in, and of `&mut` references, borrows the left one and reborrows the
-// right one mutably, as rustc's `PartialOrd::lt(&a, &mut *b)` does; a
-// compound assignment borrows its left side mutably.
+// they are; `==` and `<` pass them to the referents' `eq` and `lt`,
+// reborrowing a `&mut` as shared, so it stays usable, except that `<`
+// of `&mut` references borrows the left one and reborrows the right one
+// mutably, as rustc's `PartialOrd::lt(&a, &mut *b)` does; a compound
+// assignment borrows its left side mutably.
 
 fn arithmetic(r: &i32, x: i32) -> i32 {
     let a = r + x;

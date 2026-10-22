@@ -1,0 +1,105 @@
+struct Version { major: u32, minor: u32 }
+struct Labeled<T> { label: u8, value: T }
+enum Event { Start, Tick { 0: u64 }, Stop { code: i32 } }
+enum Never {  }
+struct Keyed { key: i32, _payload: bool }
+fn eq(&Keyed, &Keyed) -> bool
+    self@0: &Keyed
+    other@1: &Keyed
+fn partial_cmp(&Keyed, &Keyed) -> Option<Ordering>
+    self@0: &Keyed
+    other@1: &Keyed
+fn sign(Ordering) -> i32
+    o@0: Ordering
+fn integers(i32, i32, &u8, &mut u8) -> bool
+    a@0: i32
+    b@1: i32
+    r@2: &u8
+    m@3: &mut u8
+    first@4: Ordering
+    partial@5: Option<Ordering>
+    largest@6: i32
+    smallest@7: i32
+    clamped@8: i32
+    literal@9: i32
+fn generic<T>(T, T, &T) -> T
+    a@0: T
+    b@1: T
+    c@2: &T
+    ordered@3: bool
+fn partial<T>(&T, &T) -> Option<Ordering>
+    a@0: &T
+    b@1: &T
+fn derived(Version, Event) -> bool
+    v@0: Version
+    e@1: Event
+    newer@2: Version
+    label@3: bool
+    keyed@4: bool
+    event@5: Ordering
+fn never(&Never) -> bool
+    n@0: &Never
+fn options(Option<i32>, Result<u8, bool>) -> bool
+    a@0: Option<i32>
+    b@1: Result<u8, bool>
+fn main() -> ()
+    m@0: u8
+fn clone(&Version) -> Version
+    self@0: &Version
+fn eq(&Version, &Version) -> bool
+    self@0: &Version
+    other@1: &Version
+fn assert_receiver_is_total_eq(&Version) -> ()
+    self@0: &Version
+fn partial_cmp(&Version, &Version) -> Option<Ordering>
+    self@0: &Version
+    other@1: &Version
+    cmp@2: Option<Ordering>
+fn cmp(&Version, &Version) -> Ordering
+    self@0: &Version
+    other@1: &Version
+    cmp@2: Ordering
+fn eq(&Labeled<T>, &Labeled<T>) -> bool
+    self@0: &Labeled<T>
+    other@1: &Labeled<T>
+fn partial_cmp(&Labeled<T>, &Labeled<T>) -> Option<Ordering>
+    self@0: &Labeled<T>
+    other@1: &Labeled<T>
+    cmp@2: Option<Ordering>
+fn eq(&Event, &Event) -> bool
+    self@0: &Event
+    other@1: &Event
+    __self_0@2: &u64
+    __other_0@3: &u64
+    __self_0@4: &i32
+    __other_0@5: &i32
+fn assert_receiver_is_total_eq(&Event) -> ()
+    self@0: &Event
+    __self_0@1: &u64
+    __self_0@2: &i32
+fn partial_cmp(&Event, &Event) -> Option<Ordering>
+    self@0: &Event
+    other@1: &Event
+    __self_discr@2: isize
+    __arg1_discr@3: isize
+    __self_0@4: &u64
+    __arg1_0@5: &u64
+    __self_0@6: &i32
+    __arg1_0@7: &i32
+fn cmp(&Event, &Event) -> Ordering
+    self@0: &Event
+    other@1: &Event
+    __self_discr@2: isize
+    __arg1_discr@3: isize
+    __self_0@4: &u64
+    __arg1_0@5: &u64
+    __self_0@6: &i32
+    __arg1_0@7: &i32
+fn eq(&Never, &Never) -> bool
+    self@0: &Never
+    other@1: &Never
+fn partial_cmp(&Never, &Never) -> Option<Ordering>
+    self@0: &Never
+    other@1: &Never
+const LESS: Ordering
+const IS_LT: bool

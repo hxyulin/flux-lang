@@ -136,10 +136,11 @@ Values of `Copy` types are copied: integers, `bool`, raw pointers,
 shared references, tuples of `Copy` types, structs that implement
 `Copy` and type parameters bounded by it. Other values are moved, and
 flux reports uses after a move, including partial moves of fields, as
-rustc's borrow checker does. `#[derive(Clone, Copy, PartialEq, Eq)]`
-implements those traits for a struct as rustc does (for a generic one,
-where its parameters implement them); other derives are not supported
-yet.
+rustc's borrow checker does. `#[derive(Clone, Copy, PartialEq, Eq,
+PartialOrd, Ord)]` implements those traits for a struct as rustc does
+(for a generic one, where its parameters implement them), comparing
+fields in order for `PartialOrd` and `Ord`; other derives are not
+supported yet.
 
 Values are dropped as in rustc: a binding at the end of its block, in
 reverse order of declaration, then the function's parameters; a
@@ -203,11 +204,11 @@ Calls of trait methods are static: each calls the method of the
 `impl` block for its types, chosen when the program is compiled.
 Operators on other types than integers and `bool` call the methods of
 `core::ops`'s traits (`Add`, `AddAssign`, `Neg`, ...) and
-`core::cmp::PartialEq` (`==`, `!=`), which `core` implements for the
-integers and `bool` too, so generic code can use them; `&a == &b`
-compares `a` and `b`. There are no trait objects (`dyn Tr`) or
-`impl Trait` types, no generic associated types, and `PartialOrd` (so
-`<` on other types) is not supported yet. `Sized` is, as a bound:
+`core::cmp::PartialEq` (`==`, `!=`) and `core::cmp::PartialOrd` (`<`,
+`<=`, `>`, `>=`), which `core` implements for the integers and `bool`
+too, so generic code can use them; `&a == &b` and `&a < &b` compare `a`
+and `b`. There are no trait objects (`dyn Tr`) or
+`impl Trait` types, and no generic associated types. `Sized` is, as a bound:
 every type flux has is sized, but a trait's provided methods must say
 `where Self: Sized` to take or hold `Self` by value, as in rustc.
 
@@ -229,7 +230,9 @@ rustc; a guard that fails tries the next alternative of an or-pattern. A `match`
 order, so moving out of one variant's field and using the enum again is
 a use of a partially moved value, as in rustc; drops of enums with
 moved-out fields drop what the variant they hold still has.
-`#[derive(Clone, Copy, PartialEq, Eq)]` works on enums as on structs.
+`#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]` works on
+enums as on structs; `PartialOrd` and `Ord` order variants by their
+discriminants, then the fields of the same variant, as rustc's do.
 
 Operators work on references to integers and `bool` as in rustc,
 which match ergonomics makes common (`match &p { (a, b) => a + b }`):
@@ -237,10 +240,12 @@ which match ergonomics makes common (`match &p { (a, b) => a + b }`):
 `core`'s impls of the operator traits for references, which give the
 value's type; a shift takes any integer type on its right, by value or
 by reference; `==` and `!=` compare what references point to (`&mut`
-ones too), through `core`'s `impl PartialEq<&B> for &A`, so generic code
-bounded by these traits takes references. `<`, `<=`, `>` and `>=`
-compare the values two references to integers or `bool` point to; until
-`core` has `PartialOrd`, flux does this itself. Where the operands are,
+ones too), through `core`'s `impl PartialEq<&B> for &A`, and `<`, `<=`,
+`>` and `>=` through `impl PartialOrd<&B> for &A` (and the one for two
+`&mut`s), so generic code bounded by these traits takes references. As
+in rustc, `<` wants the same kind of reference on both sides (E0308),
+where `==` takes either, and `m < m` of a `&mut` borrows it mutably
+(E0502). Where the operands are,
 past one reference each, integers of different types, the error is
 rustc's pair (`&i32 + u8` is E0277 and E0308), and the other unmet
 combinations are E0277, E0369, E0368 and E0600 as in rustc. In
@@ -276,19 +281,24 @@ lint), even with overflow checks off.
 Every program can use flux's own `core` library, which has the parts of
 Rust's that flux supports so far: the integer types' constants (`MIN`,
 `MAX`, `BITS`) and methods such as `abs`, `pow`, `wrapping_add`,
-`count_ones`, `rotate_left`, `min` and `max`, `core::mem::drop` (also in
-the prelude, as `drop`), `core::convert::{identity, From}`,
+`count_ones` and `rotate_left`, `core::mem::drop` (also in the
+prelude, as `drop`), `core::convert::{identity, From}`,
 `core::marker::{Sized, Copy}`, `core::clone::Clone`, the operator
-traits of `core::ops` with `Drop`, `core::cmp::{PartialEq, Eq}`,
-`core::option::Option` and `core::result::Result` (`Sized`, `Copy`,
-`Clone`, `Drop`, `PartialEq`, `Eq`, `From`, `Option`, `Some`, `None`,
-`Result`, `Ok` and `Err` in the prelude). `From` converts each type
+traits of `core::ops` with `Drop`, `core::cmp::{PartialEq, Eq,
+PartialOrd, Ord, Ordering, max, min}`, `core::option::Option` and
+`core::result::Result` (`Sized`, `Copy`, `Clone`, `Drop`, `PartialEq`,
+`Eq`, `PartialOrd`, `Ord`, `From`, `Option`, `Some`, `None`, `Result`,
+`Ok` and `Err` in the prelude). `Ord` gives every type that implements
+it, the integers included, `cmp`, `max`, `min` and `clamp`, and
+`Ordering` has `is_eq`, `is_ne`, `is_lt`, `is_gt`, `is_le`, `is_ge`,
+`reverse` and `then` (`const`, as in rustc); `then_with` takes a
+closure, and comes later. `From` converts each type
 from itself, `bool` to the integers, and integers to the wider ones
 that hold all their values, as in rustc; `Into` comes later. `Option` has `is_some`,
 `is_none`, `unwrap`, `unwrap_or`, `ok_or`, `and`, `or` and `xor`;
 `Result` has `is_ok`, `is_err`, `ok`, `err`, `unwrap_or`, `and` and
-`or`; both implement `Clone`, `Copy`, `PartialEq` and `Eq` as rustc's
-do. As in rustc, constants may call `is_some`, `is_none`, `unwrap`,
+`or`; both implement `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`
+and `Ord` as rustc's do. As in rustc, constants may call `is_some`, `is_none`, `unwrap`,
 `is_ok` and `is_err`, and the others are reported as unstable there. Methods that take closures, or return references inside them
 (`as_ref`), come later. Anything else in
 `core` is reported as not supported yet, and so is `std`.
