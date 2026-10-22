@@ -1525,11 +1525,73 @@ impl<I: Iterator> Iterator for Skip<I> {
     }
 
     fn next(&mut self) -> Option<I::Item> {
-        while self.n > 0 {
-            self.n -= 1;
-            self.iter.next()?;
+        // As rustc's: through `nth`, which an iterator may skip with
+        // faster (or, dropping what it skips, differently ordered).
+        if self.n > 0 {
+            let n = self.n;
+            self.n = 0;
+            self.iter.nth(n)
+        } else {
+            self.iter.next()
         }
-        self.iter.next()
+    }
+
+    // The others skip as rustc's do, so that an iterator that drops what
+    // it skips (an array's `IntoIter`) drops it in the same order.
+
+    fn nth(&mut self, n: usize) -> Option<I::Item> {
+        if self.n > 0 {
+            let skip = self.n;
+            self.n = 0;
+            let n = match skip.checked_add(n) {
+                Some(nth) => nth,
+                None => {
+                    self.iter.nth(skip - 1)?;
+                    n
+                }
+            };
+            self.iter.nth(n)
+        } else {
+            self.iter.nth(n)
+        }
+    }
+
+    fn count(mut self) -> usize {
+        if self.n > 0 && self.iter.nth(self.n - 1).is_none() {
+            return 0;
+        }
+        self.iter.count()
+    }
+
+    fn last(mut self) -> Option<I::Item> {
+        if self.n > 0 {
+            self.iter.nth(self.n - 1)?;
+        }
+        self.iter.last()
+    }
+
+    fn fold<B, F: FnMut(B, Self::Item) -> B>(mut self, init: B, f: F) -> B
+    where
+        Self: Sized,
+    {
+        if self.n > 0 && self.iter.nth(self.n - 1).is_none() {
+            return init;
+        }
+        self.iter.fold(init, f)
+    }
+
+    fn try_fold<B, F, R>(&mut self, init: B, f: F) -> R
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> R,
+        R: Try<Output = B>,
+    {
+        let n = self.n;
+        self.n = 0;
+        if n > 0 && self.iter.nth(n - 1).is_none() {
+            return R::from_output(init);
+        }
+        self.iter.try_fold(init, f)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -1680,6 +1742,10 @@ impl<I: DoubleEndedIterator> Iterator for Rev<I> {
     fn fold<Acc, F: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, f: F) -> Acc {
         self.iter.rfold(init, f)
     }
+
+    fn nth(&mut self, n: usize) -> Option<I::Item> {
+        self.iter.nth_back(n)
+    }
 }
 
 impl<I: DoubleEndedIterator> DoubleEndedIterator for Rev<I> {
@@ -1689,6 +1755,10 @@ impl<I: DoubleEndedIterator> DoubleEndedIterator for Rev<I> {
 
     fn rfold<Acc, F: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, f: F) -> Acc {
         self.iter.fold(init, f)
+    }
+
+    fn nth_back(&mut self, n: usize) -> Option<I::Item> {
+        self.iter.nth(n)
     }
 }
 

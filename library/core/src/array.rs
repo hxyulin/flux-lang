@@ -133,6 +133,21 @@ impl<T, const N: usize> DoubleEndedIterator for IntoIter<T, N> {
             None
         }
     }
+
+    /// As rustc's (through `advance_back_by`): the `n` elements skipped
+    /// are dropped as one slice, front to back, before the one returned.
+    fn nth_back(&mut self, n: usize) -> Option<T> {
+        let left = self.end - self.start;
+        let step = if n < left { n } else { left };
+        let mut i = self.end - step;
+        let end = self.end;
+        self.end -= step;
+        while i < end {
+            drop(unsafe { read(&self.data.value[i]) });
+            i += 1;
+        }
+        self.next_back()
+    }
 }
 
 impl<T, const N: usize> Drop for IntoIter<T, N> {
