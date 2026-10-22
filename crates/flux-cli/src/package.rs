@@ -212,6 +212,7 @@ impl SourceGraph {
         let target = select_target(&package, library, bin)?;
         let index = self.sources.len();
         self.sources.push(SourceInput {
+            edition: edition(&target.edition)?,
             file: target.src_path.clone(),
             name: target.name.replace('-', "_"),
             dependencies,
@@ -258,9 +259,7 @@ fn metadata_package(manifest: &Path) -> Result<Package, String> {
     {
         return Err("expected the requested standalone package".into());
     }
-    if package.edition != "2024" {
-        return Err("package builds require edition 2024".into());
-    }
+    edition(&package.edition)?;
     if !package.features.is_empty() {
         return Err("features are not supported yet".into());
     }
@@ -273,24 +272,37 @@ fn select_target<'a>(
     bin: Option<&str>,
 ) -> Result<&'a Target, String> {
     let kind = if library { "lib" } else { "bin" };
-    for target in &package.targets {
-        if target.kind != [kind] || target.crate_types != [kind] {
-            return Err(format!(
-                "target `{}` in `{}` is not a supported {} target",
-                target.name,
-                package.name,
-                if library { "library" } else { "binary" }
-            ));
-        }
-        if target.edition != "2024" {
-            return Err("targets require edition 2024".into());
-        }
+    if !library
+        && package
+            .targets
+            .iter()
+            .any(|t| t.kind != ["bin"] || t.crate_types != ["bin"])
+    {
+        return Err(format!(
+            "target in `{}` is not a supported binary target",
+            package.name
+        ));
+    }
+    // Only the requested unit is compiled. Tests, benches, examples and other
+    // binaries do not contribute dependencies, cfgs or code to a library unit.
+    if package.targets.iter().any(|t| {
+        t.kind
+            .iter()
+            .any(|k| k == "custom-build" || k == "proc-macro")
+    }) {
+        return Err("build scripts and proc-macro targets are not supported yet".into());
     }
     let candidates: Vec<_> = package
         .targets
         .iter()
-        .filter(|t| bin.is_none_or(|name| name == t.name))
+        .filter(|t| t.kind == [kind] && bin.is_none_or(|name| name == t.name))
         .collect();
+    for target in &candidates {
+        if target.crate_types != [kind] {
+            return Err("unsupported target crate types".into());
+        }
+        edition(&target.edition)?;
+    }
     match candidates.as_slice() {
         [target] => Ok(*target),
         [] => Err(format!(
@@ -298,6 +310,14 @@ fn select_target<'a>(
             if library { "library" } else { "binary" }
         )),
         _ => Err("multiple binary targets; select one with --bin".into()),
+    }
+}
+
+fn edition(value: &str) -> Result<flux_syntax::Edition, String> {
+    match value {
+        "2021" => Ok(flux_syntax::Edition::E2021),
+        "2024" => Ok(flux_syntax::Edition::E2024),
+        _ => Err("package builds require edition 2021 or 2024".into()),
     }
 }
 
@@ -321,7 +341,18 @@ fn validate_manifest(path: &Path, library: bool) -> Result<(), String> {
     allowed_keys(
         &table,
         if library {
-            &["package", "lib", "dependencies"]
+            &[
+                "package",
+                "lib",
+                "bin",
+                "test",
+                "bench",
+                "example",
+                "dev-dependencies",
+                "target",
+                "dependencies",
+                "features",
+            ]
         } else {
             &["package", "bin", "dependencies"]
         },
@@ -348,19 +379,54 @@ fn validate_manifest(path: &Path, library: bool) -> Result<(), String> {
             "keywords",
             "categories",
             "publish",
+            "rust-version",
+            "metadata",
+            "build",
+            "autolib",
+            "autobins",
+            "autoexamples",
+            "autotests",
+            "autobenches",
         ],
         "package option",
     )?;
-    if package.get("edition").and_then(toml::Value::as_str) != Some("2024") {
-        return Err("package builds require edition 2024".into());
+    edition(
+        package
+            .get("edition")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("2015"),
+    )?;
+    if let Some(build) = package.get("build")
+        && build.as_bool() != Some(false)
+    {
+        return Err("build scripts are not supported yet (only build = false is accepted)".into());
     }
-    if path.parent().unwrap().join("build.rs").exists() {
+    if package.get("build").and_then(toml::Value::as_bool) != Some(false)
+        && path.parent().unwrap().join("build.rs").exists()
+    {
         return Err("build.rs is not supported yet".into());
+    }
+    // Target-specific dev dependencies are inert for the selected library.
+    // Never silently ignore a target-specific normal or build dependency.
+    if let Some(targets) = table.get("target") {
+        for value in targets
+            .as_table()
+            .ok_or("expected a target table")?
+            .values()
+        {
+            allowed_keys(
+                value
+                    .as_table()
+                    .ok_or("expected a target configuration table")?,
+                &["dev-dependencies"],
+                "target declaration",
+            )?;
+        }
     }
     if let Some(lib) = table.get("lib") {
         allowed_keys(
             lib.as_table().ok_or("expected a library table")?,
-            &["name", "path"],
+            &["name", "path", "test", "bench", "doctest"],
             "library option",
         )?;
     }
@@ -424,3 +490,7 @@ fn validate_configuration(root: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "package_edition_tests.rs"]
+mod edition_tests;

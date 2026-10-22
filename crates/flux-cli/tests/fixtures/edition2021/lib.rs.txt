@@ -1,0 +1,13 @@
+mod child;
+
+struct Wrap<T>(T);
+
+extern "C" {
+    fn abs(value: i32) -> i32;
+}
+
+pub fn gen() -> u32 {
+    let gen = Wrap(child::gen()).0;
+    assert!(gen == 42);
+    unsafe { abs(-(gen as i32)) as u32 }
+}

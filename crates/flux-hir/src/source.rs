@@ -31,6 +31,7 @@ impl FileId {
 #[derive(Debug)]
 pub struct SourceFile {
     pub path: PathBuf,
+    pub edition: flux_syntax::Edition,
     /// The file's syntax tree, which holds its text.
     pub parse: Parse,
     /// For the items a macro call in item position expanded to, the
@@ -255,6 +256,7 @@ pub(crate) fn core_files() -> &'static [Arc<SourceFile>] {
                     scope.spawn(move || SourceFile {
                         path: Path::new(root).join(name),
                         parse: flux_syntax::parse_source_file(text),
+                        edition: flux_syntax::Edition::E2024,
                         expansion_of: None,
                     })
                 })
@@ -301,6 +303,7 @@ impl SourceDb {
         self.files.push(Arc::new(SourceFile {
             path,
             parse,
+            edition: self.file(file).edition,
             expansion_of: Some(file),
         }));
         id
@@ -319,14 +322,25 @@ impl SourceDb {
 
     /// Parses `text` as the file at `path`.
     pub fn add(&mut self, path: impl Into<PathBuf>, text: impl Into<String>) -> FileId {
+        self.add_with_edition(path, text, flux_syntax::Edition::E2024)
+    }
+
+    /// Adds a file under its crate edition.
+    pub fn add_with_edition(
+        &mut self,
+        path: impl Into<PathBuf>,
+        text: impl Into<String>,
+        edition: flux_syntax::Edition,
+    ) -> FileId {
         let text: String = text.into();
-        let parse = flux_syntax::parse_source_text(text.into_boxed_str());
+        let parse = flux_syntax::parse_source_text_with_edition(text.into_boxed_str(), edition);
         let id = FileId(self.files.len() as u32);
         let path = path.into();
         self.by_path.entry(path.clone()).or_insert(id);
         self.files.push(Arc::new(SourceFile {
             path,
             parse,
+            edition,
             expansion_of: None,
         }));
         id
@@ -334,7 +348,21 @@ impl SourceDb {
 
     /// The file at `path`, read and parsed if it was not already.
     pub fn load(&mut self, path: &Path) -> Result<FileId, String> {
+        self.load_with_edition(path, flux_syntax::Edition::E2024)
+    }
+
+    /// Loads a source file, rejecting reuse under a different edition.
+    pub fn load_with_edition(
+        &mut self,
+        path: &Path,
+        edition: flux_syntax::Edition,
+    ) -> Result<FileId, String> {
         if let Some(&id) = self.by_path.get(path) {
+            if self.file(id).edition != edition {
+                return Err(
+                    "source file used under different editions is not supported yet".into(),
+                );
+            }
             return Ok(id);
         }
         // All embedded library files are here already.
@@ -347,7 +375,7 @@ impl SourceDb {
         }
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        Ok(self.add(path, text))
+        Ok(self.add_with_edition(path, text, edition))
     }
 
     /// Whether `path` exists on disk or in an embedded library.
