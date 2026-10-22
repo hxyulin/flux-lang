@@ -939,6 +939,9 @@
   order as rustc. Normalize both sides of impl method bounds containing
   associated types before comparing them. Differential tests also order
   `clamp` bounds using the generated integer type.
+- Use the same trusted-length metadata for iterator specialization and
+  `Vec` collection reservation, including owning vector iterators and
+  drains, so `Zip` and iterator equality preserve rustc's closure calls.
 - Support `core::ops::Deref` and `DerefMut`: `*w` on types that
   implement them, autoderef through them in method calls, field
   accesses and indexing (several levels deep, mixed with references),
@@ -981,7 +984,7 @@
 - `alloc` follow-ups: `collect` and `extend` of `Vec` and `String`
   (`FromIterator`, `Extend`) with rustc's capacities, which its
   `TrustedLen` specialization decides (iterators say it through a
-  hidden `Iterator::__trusted_len`), `format!`, `fmt::Write` for
+  hidden `Iterator::__TRUSTED_LEN`), `format!`, `fmt::Write` for
   `String`, `ToString` for every `Display` type with rustc's
   specializations' capacities (a hidden `Display::__to_string_hint`),
   `Vec`'s `Index` and `IndexMut` and `#[track_caller]` where rustc's

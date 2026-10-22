@@ -406,7 +406,7 @@ impl<T> FromIterator<T> for Vec<T> {
     /// (4 elements at least, 8 of a byte, 1 past 1024 bytes).
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Vec<T> {
         let mut iterator = iter.into_iter();
-        if iterator.__trusted_len() {
+        if core::iter::trusted_len(&iterator) {
             let mut v = match iterator.size_hint() {
                 (_, Some(upper)) => Vec::with_capacity(upper),
                 (_, None) => crate::raw_vec::capacity_overflow(),
@@ -432,7 +432,7 @@ impl<T> FromIterator<T> for Vec<T> {
 impl<T> Extend<T> for Vec<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         let iterator = iter.into_iter();
-        if iterator.__trusted_len() {
+        if core::iter::trusted_len(&iterator) {
             self.extend_trusted(iterator);
         } else {
             self.extend_desugared(iterator);
@@ -698,6 +698,7 @@ impl<T> Drain<'_, T> {
 
 impl<T> Iterator for Drain<'_, T> {
     type Item = T;
+    const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<T> {
         if self.start == self.end {
@@ -711,11 +712,6 @@ impl<T> Iterator for Drain<'_, T> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         let n = self.end - self.start;
         (n, Some(n))
-    }
-
-    #[doc(hidden)]
-    fn __trusted_len(&self) -> bool {
-        true
     }
 }
 
@@ -765,11 +761,7 @@ impl<T> IntoIter<T> {
 
 impl<T> Iterator for IntoIter<T> {
     type Item = T;
-
-    #[doc(hidden)]
-    fn __trusted_len(&self) -> bool {
-        true
-    }
+    const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<T> {
         if self.start == self.end {
