@@ -570,11 +570,7 @@ impl FnGen<'_> {
                 let (lo, hi) = {
                     let x = ty::int_value(&mut self.g.src, i);
                     let y = ty::int_value(&mut self.g.src, i);
-                    if i.value(x) <= i.value(y) {
-                        (x, y)
-                    } else {
-                        (y, x)
-                    }
+                    if i.cmp(x, y).is_le() { (x, y) } else { (y, x) }
                 };
                 Ex::new(
                     format!(
