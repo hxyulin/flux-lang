@@ -55,6 +55,18 @@ impl<T> Vec<T> {
         v
     }
 
+    /// The elements as a boxed slice, the room past them given back.
+    pub fn into_boxed_slice(mut self) -> crate::boxed::Box<[T]> {
+        self.shrink_to_fit();
+        let me = ManuallyDrop::new(self);
+        let len = me.len;
+        let ptr = me.buf.ptr();
+        unsafe {
+            let slice: &mut [T] = core::slice::from_raw_parts_mut(ptr, len);
+            crate::boxed::Box::from_raw(slice as *mut [T])
+        }
+    }
+
     /// How many elements it has room for without allocating.
     pub fn capacity(&self) -> usize {
         self.buf.capacity()

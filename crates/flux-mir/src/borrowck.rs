@@ -1129,6 +1129,8 @@ pub(crate) fn drop_owner(
         };
         let ty = body.place_ty(&base, sigs);
         match ty.kind() {
+            // A `Box`'s contents may be moved out of, as in rustc.
+            TyKind::Adt(..) if place.projection.get(len) == Some(&ProjectionElem::BoxDeref) => None,
             TyKind::Adt(adt, _)
                 if flux_ty::traits::drop_impl(items, sigs, adt.strukt).is_some() =>
             {

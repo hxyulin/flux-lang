@@ -975,7 +975,27 @@
   `ToOwned`, in the program's prelude as rustc's `std` prelude has
   them; `extern crate alloc;` names it. A failed import's name now
   shadows the prelude's, as rustc's dummy binding does, and `let v:
-  Vec` is "missing generics for struct `Vec`", as in rustc.
+  Vec` is "missing generics for struct `Vec`", as in rustc. Overlapping
+  `impl` blocks are told apart by their parameters' implicit `Sized`
+  bounds (`impl<T: Clone> ToOwned for T` is not for `str`).
+- `alloc` follow-ups: `collect` and `extend` of `Vec` and `String`
+  (`FromIterator`, `Extend`) with rustc's capacities, which its
+  `TrustedLen` specialization decides (iterators say it through a
+  hidden `Iterator::__trusted_len`), `format!`, `fmt::Write` for
+  `String`, `ToString` for every `Display` type with rustc's
+  specializations' capacities (a hidden `Display::__to_string_hint`),
+  `Vec`'s `Index` and `IndexMut` and `#[track_caller]` where rustc's
+  has them, so its panics are reported where rustc's are, `Vec::drain`,
+  and moving out of a `Box`: `*b` is rustc's built-in box dereference
+  (`ProjectionElem::BoxDeref`), its contents owned, and a box partly
+  moved out of frees its memory through its `Unique` field. `Box` may
+  hold unsized values: `Box<dyn Tr>` and `Box<[T]>` coerce from boxes
+  of sized values, and drop and free through `drop_in_place`,
+  `size_of_val` and `align_of_val`, now intrinsics for unsized types
+  too (a slice's elements in a loop, a trait object through its
+  vtable, whose drop slot holds `drop_in_place`'s instance).
+  `format_args!` writes literals a plain `{}` shows into its string, as
+  rustc does.
 
 ### Performance
 

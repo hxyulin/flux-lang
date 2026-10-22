@@ -69,9 +69,11 @@ impl Layout {
     }
 
     /// The layout of the value `t` refers to.
-    pub const fn for_value<T>(t: &T) -> Layout {
-        let _ = t;
-        Layout::new::<T>()
+    pub const fn for_value<T: ?Sized>(t: &T) -> Layout {
+        Layout {
+            size: crate::mem::size_of_val(t),
+            align: Alignment(crate::mem::align_of_val(t)),
+        }
     }
 
     /// The layout of `n` `T`s in a row.

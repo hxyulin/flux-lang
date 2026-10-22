@@ -1922,6 +1922,26 @@ pub fn impl_target(items: &ItemTree, ty: Ty) -> Option<ImplTarget> {
     }
 }
 
+/// What `ty` holds if it is `alloc`'s `Box<T>` (`#[lang = "owned_box"]`),
+/// which dereferences as a built-in pointer that owns its value does, as
+/// rustc's: moves out of `*b`, and `*b` is mutable where `b` is.
+pub fn box_pointee(ty: Ty) -> Option<Ty> {
+    static OWNED_BOX: std::sync::OnceLock<Option<StructId>> = std::sync::OnceLock::new();
+    let TyKind::Adt(adt, args) = ty.kind() else {
+        return None;
+    };
+    let owned_box = OWNED_BOX.get_or_init(|| {
+        flux_hir::Core::get()
+            .items
+            .lang_enums
+            .get(&Symbol::intern("owned_box"))
+            .copied()
+    });
+    (Some(adt.strukt) == *owned_box)
+        .then(|| args.first().copied())
+        .flatten()
+}
+
 /// Whether `strukt` is `core`'s struct with `#[lang = "{lang}"]`.
 pub fn is_lang_struct(items: &ItemTree, strukt: StructId, lang: &str) -> bool {
     items.lang_enums.get(&Symbol::intern(lang)) == Some(&strukt)

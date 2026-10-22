@@ -43,6 +43,27 @@ pub(crate) const fn align_of<T>() -> usize {
     loop {}
 }
 
+/// The size of the value `ptr` points to: `size_of::<T>()` for a sized
+/// `T`, the elements' for a slice or `str`, the vtable's for a trait
+/// object.
+#[rustc_intrinsic]
+pub(crate) const unsafe fn size_of_val<T: ?Sized>(ptr: *const T) -> usize {
+    loop {}
+}
+
+/// The alignment of the value `ptr` points to.
+#[rustc_intrinsic]
+pub(crate) const unsafe fn align_of_val<T: ?Sized>(ptr: *const T) -> usize {
+    loop {}
+}
+
+/// Drops the value `ptr` points to, in place: its drop glue, a slice's
+/// elements in order, or through a trait object's vtable.
+#[rustc_intrinsic]
+pub(crate) unsafe fn drop_in_place<T: ?Sized>(ptr: *mut T) {
+    loop {}
+}
+
 /// Whether dropping a `T` runs code.
 #[rustc_intrinsic]
 pub(crate) const fn needs_drop<T>() -> bool {

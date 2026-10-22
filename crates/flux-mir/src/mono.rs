@@ -157,6 +157,22 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                 }
             }
             let callees = match &data.terminator.kind {
+                // What dropping in place drops.
+                TerminatorKind::Call {
+                    func, generic_args, ..
+                } if hir.items.functions[*func].intrinsic
+                    && hir.items.functions[*func].name.as_str() == "drop_in_place" =>
+                {
+                    let ty = instance_args(&hir.items, sigs, generic_args, caller_args)
+                        .first()
+                        .copied()
+                        .unwrap_or(Ty::ERROR);
+                    let elem = match ty.kind() {
+                        TyKind::Slice(elem) => elem,
+                        _ => ty,
+                    };
+                    drop_instances(&hir.items, sigs, elem)
+                }
                 TerminatorKind::Call {
                     func, generic_args, ..
                 } => vec![Instance {
@@ -265,8 +281,26 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
 fn pointee(ty: Ty) -> Option<Ty> {
     match ty.kind() {
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => Some(t),
-        _ => None,
+        _ => flux_ty::box_pointee(ty),
     }
+}
+
+/// The `Drop::drop` instances dropping a `ty` calls.
+fn drop_instances(items: &ItemTree, sigs: &Signatures, ty: Ty) -> Vec<Instance> {
+    let mut glue = Vec::new();
+    drop_glue(items, sigs, Place::from(Local::from_raw(0)), ty, &mut glue);
+    let mut types = Vec::new();
+    glue_types(&glue, &mut types);
+    let drop = drop_fn(items);
+    types
+        .into_iter()
+        .filter_map(|ty| {
+            Some(Instance {
+                function: drop?,
+                args: Ty::list(&[ty]),
+            })
+        })
+        .collect()
 }
 
 /// `args`, in terms of a caller's parameters, for its instance with
@@ -572,19 +606,20 @@ pub fn instance_body<'b>(
     } else {
         Cow::Owned(subst_body(hir, sigs, body, args))
     };
-    let drops = body
-        .blocks
-        .values()
-        .any(|data| matches!(data.terminator.kind, TerminatorKind::Drop { .. }));
-    if drops {
-        expand_drops(&hir.items, sigs, body.to_mut());
-    }
+    // Intrinsics first: dropping in place is a drop to expand.
     let intrinsics = body.blocks.values().any(|data| {
         matches!(data.terminator.kind, TerminatorKind::Call { func, .. }
             if hir.items.functions[func].intrinsic)
     });
     if intrinsics {
         expand_intrinsics(&hir.items, sigs, discriminants, body.to_mut());
+    }
+    let drops = body
+        .blocks
+        .values()
+        .any(|data| matches!(data.terminator.kind, TerminatorKind::Drop { .. }));
+    if drops {
+        expand_drops(&hir.items, sigs, body.to_mut());
     }
     body
 }
@@ -640,6 +675,16 @@ pub fn expand_intrinsics(
             body.blocks[block].terminator.kind = goto;
             continue;
         }
+        // Of a trait object: through its vtable, code generation's.
+        let arg_ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
+        let name = data.name.as_str();
+        if matches!(name, "size_of_val" | "align_of_val" | "drop_in_place") && arg_ty.is_dyn() {
+            continue;
+        }
+        if name == "drop_in_place" {
+            expand_drop_in_place(sigs, body, block, &args[0], arg_ty, (target, range));
+            continue;
+        }
         // A reference argument, in a temporary to dereference.
         let pointer = |body: &mut Body, op: &Operand| -> Place {
             let ty = body.operand_ty(op, sigs);
@@ -663,6 +708,58 @@ pub fn expand_intrinsics(
                 let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
                 let needs = flux_ty::traits::needs_drop(items, sigs, &[], ty);
                 (dest, Rvalue::Use(Operand::Const(Constant::Bool(needs))))
+            }
+            (name @ ("size_of_val" | "align_of_val"), [ptr]) if arg_ty.is_unsized() => {
+                // A slice's or `str`'s: its length times its element's.
+                let elem = arg_ty
+                    .sequence_elem()
+                    .unwrap_or(Ty::int(flux_ty::IntTy::U8));
+                let layout = layouts.of(elem);
+                let usize = flux_ty::IntTy::Usize;
+                if name == "align_of_val" {
+                    let constant = Constant::Int {
+                        bits: u128::from(layout.align),
+                        ty: usize,
+                    };
+                    (dest, Rvalue::Use(Operand::Const(constant)))
+                } else {
+                    let ptr = pointer(body, ptr);
+                    let len = body.locals.alloc(LocalDecl {
+                        ty: Ty::int(usize),
+                        kind: LocalKind::Temp,
+                    });
+                    body.blocks[block].statements.push(Statement {
+                        kind: StatementKind::Assign(
+                            len.into(),
+                            Rvalue::Len {
+                                place: ptr.deref(),
+                                borrows: false,
+                            },
+                        ),
+                        range,
+                    });
+                    let size = Operand::Const(Constant::Int {
+                        bits: u128::from(layout.size),
+                        ty: usize,
+                    });
+                    (
+                        dest,
+                        Rvalue::BinaryOp(crate::BinOp::Mul, Operand::Move(len.into()), size),
+                    )
+                }
+            }
+            (name @ ("size_of_val" | "align_of_val"), [_]) => {
+                let layout = layouts.of(arg_ty);
+                let value = if name == "size_of_val" {
+                    layout.size
+                } else {
+                    layout.align
+                };
+                let constant = Constant::Int {
+                    bits: u128::from(value),
+                    ty: flux_ty::IntTy::Usize,
+                };
+                (dest, Rvalue::Use(Operand::Const(constant)))
             }
             (name @ ("size_of" | "align_of"), []) => {
                 let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
@@ -744,6 +841,103 @@ pub fn expand_intrinsics(
         });
         data.terminator.kind = goto;
     }
+}
+
+/// `drop_in_place::<ty>(ptr)`, which continues at `target`: a drop of
+/// `*ptr`, or for a slice, of each element in turn, in a loop.
+fn expand_drop_in_place(
+    sigs: &Signatures,
+    body: &mut Body,
+    block: BasicBlock,
+    ptr: &Operand,
+    ty: Ty,
+    (target, range): (Option<BasicBlock>, flux_syntax::TextRange),
+) {
+    let Some(target) = target else {
+        body.blocks[block].terminator.kind = TerminatorKind::Unreachable;
+        return;
+    };
+    let temp = |body: &mut Body, ty: Ty| {
+        body.locals.alloc(LocalDecl {
+            ty,
+            kind: LocalKind::Temp,
+        })
+    };
+    let assign = |place: Place, rvalue: Rvalue| Statement {
+        kind: StatementKind::Assign(place, rvalue),
+        range,
+    };
+    let ptr_ty = body.operand_ty(ptr, sigs);
+    let pointer = temp(body, ptr_ty);
+    body.blocks[block]
+        .statements
+        .push(assign(pointer.into(), Rvalue::Use(ptr.clone())));
+    let place = Place::from(pointer).deref();
+    let TyKind::Slice(_) = ty.kind() else {
+        if ty == Ty::STR {
+            body.blocks[block].terminator.kind = TerminatorKind::Goto(target);
+        } else {
+            body.blocks[block].terminator.kind = TerminatorKind::Drop { place, target };
+        }
+        return;
+    };
+    // for i in 0..len { drop((*p)[i]) }
+    let usize = Ty::int(flux_ty::IntTy::Usize);
+    let (i, len, more) = (temp(body, usize), temp(body, usize), temp(body, Ty::BOOL));
+    let zero = Operand::Const(Constant::int(0, flux_ty::IntTy::Usize));
+    let one = Operand::Const(Constant::int(1, flux_ty::IntTy::Usize));
+    body.blocks[block]
+        .statements
+        .push(assign(i.into(), Rvalue::Use(zero)));
+    body.blocks[block].statements.push(assign(
+        len.into(),
+        Rvalue::Len {
+            place: place.clone(),
+            borrows: false,
+        },
+    ));
+    let head = body.blocks.alloc(BasicBlockData {
+        statements: Vec::new(),
+        terminator: Terminator {
+            kind: TerminatorKind::Unreachable,
+            range,
+        },
+    });
+    let step = body.blocks.alloc(BasicBlockData {
+        statements: vec![assign(
+            i.into(),
+            Rvalue::BinaryOp(crate::BinOp::Add, Operand::Copy(i.into()), one),
+        )],
+        terminator: Terminator {
+            kind: TerminatorKind::Goto(head),
+            range,
+        },
+    });
+    let drop = body.blocks.alloc(BasicBlockData {
+        statements: Vec::new(),
+        terminator: Terminator {
+            kind: TerminatorKind::Drop {
+                place: place.index(i),
+                target: step,
+            },
+            range,
+        },
+    });
+    body.blocks[head].statements.push(assign(
+        more.into(),
+        Rvalue::BinaryOp(
+            crate::BinOp::Lt,
+            Operand::Copy(i.into()),
+            Operand::Copy(len.into()),
+        ),
+    ));
+    body.blocks[head].terminator.kind = TerminatorKind::SwitchInt {
+        discr: Operand::Copy(more.into()),
+        targets: vec![(0, target)],
+        otherwise: drop,
+        variants: None,
+    };
+    body.blocks[block].terminator.kind = TerminatorKind::Goto(head);
 }
 
 /// `Drop::drop`.

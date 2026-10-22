@@ -307,7 +307,7 @@ fn place(place: &Place) -> String {
     for elem in &place.projection {
         match elem {
             ProjectionElem::Field(field) => text.push_str(&format!(".{field}")),
-            ProjectionElem::Deref => text = format!("(*{text})"),
+            ProjectionElem::Deref | ProjectionElem::BoxDeref => text = format!("(*{text})"),
             ProjectionElem::Downcast(variant) => text = format!("({text} as #{variant})"),
             ProjectionElem::Index(local) => text.push_str(&format!("[_{}]", local.index())),
             // As rustc's MIR writes them: `_1[0 of 3]`, `_1[-1 of 2]`,

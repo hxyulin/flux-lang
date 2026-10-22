@@ -277,11 +277,11 @@ pub fn place_name(
             // A field or element of a reference's target is written as if
             // the reference were the struct or array: `r.a`, `s[_]`, and
             // through a reference to it: `r.a` for `(**r).a`.
-            ProjectionElem::Deref
+            ProjectionElem::Deref | ProjectionElem::BoxDeref
                 if matches!(
                     place.projection[i + 1..]
                         .iter()
-                        .find(|e| !matches!(e, ProjectionElem::Deref)),
+                        .find(|e| !matches!(e, ProjectionElem::Deref | ProjectionElem::BoxDeref)),
                     Some(
                         ProjectionElem::Field(_)
                             | ProjectionElem::Index(_)
@@ -294,7 +294,7 @@ pub fn place_name(
             ProjectionElem::ConstantIndex { .. } | ProjectionElem::Subslice { .. } => {
                 text = format!("{text}[..]")
             }
-            ProjectionElem::Deref => text = format!("*{text}"),
+            ProjectionElem::Deref | ProjectionElem::BoxDeref => text = format!("*{text}"),
             // rustc names a variant's field as if it were the enum's:
             // `o.0` for `(o as Some).0`.
             ProjectionElem::Downcast(_) => {}
@@ -344,6 +344,7 @@ impl PlaceTy {
                 pointee
             }
             (ProjectionElem::Deref, _) => Ty::ERROR,
+            (ProjectionElem::BoxDeref, _) => flux_ty::box_pointee(self.ty).unwrap_or(Ty::ERROR),
             (
                 ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. },
                 TyKind::Array(elem, _) | TyKind::Slice(elem),
@@ -379,6 +380,9 @@ pub enum ProjectionElem {
     Field(u32),
     /// What a reference or raw pointer points to.
     Deref,
+    /// What a `Box` holds: through its pointer, but owned as a field
+    /// is, so moved out of and borrowed as the box is.
+    BoxDeref,
     /// An enum as its variant with this index, which it holds: `(e as
     /// Some)`. Only its fields are places.
     Downcast(u32),
@@ -413,6 +417,16 @@ impl Place {
         self.project(ProjectionElem::Deref)
     }
 
+    /// `*self`, of a value of type `ty`: a `Box`'s contents, or what a
+    /// pointer points to.
+    pub fn deref_of(&self, ty: Ty) -> Place {
+        if flux_ty::box_pointee(ty).is_some() {
+            self.project(ProjectionElem::BoxDeref)
+        } else {
+            self.project(ProjectionElem::Deref)
+        }
+    }
+
     pub fn index(&self, local: Local) -> Place {
         self.project(ProjectionElem::Index(local))
     }
@@ -425,7 +439,7 @@ impl Place {
         })
     }
 
-    fn project(&self, elem: ProjectionElem) -> Place {
+    pub fn project(&self, elem: ProjectionElem) -> Place {
         let mut projection = self.projection.to_vec();
         projection.push(elem);
         Place {

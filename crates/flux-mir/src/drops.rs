@@ -264,6 +264,30 @@ impl Open<'_> {
             _ => false,
         };
         let children = &self.paths.paths[path].children;
+        // A `Box` whose contents are moved out of, wholly or in part:
+        // what is left of them, then its memory, through its field
+        // (`Unique`, whose `Drop` frees it), but not its own `Drop`,
+        // which would drop the contents, as rustc's drop elaboration
+        // frees a box.
+        if let Some(pointee) = flux_ty::box_pointee(ty)
+            && let Some(contents) = children
+                .iter()
+                .copied()
+                .find(|&c| self.paths.paths[c].fields.last() == Some(&ProjectionElem::BoxDeref))
+        {
+            if (self.needs_drop)(pointee) {
+                self.drop(contents, place.project(ProjectionElem::BoxDeref), pointee);
+            }
+            let memory = place.field(0);
+            if !self.state.maybe_held[path] {
+                // Nothing of the box is left.
+            } else if !self.state.maybe_uninit[path] {
+                self.step(memory, None);
+            } else {
+                self.step(memory, Some(path));
+            }
+            return;
+        }
         if let (Some(variants), false, false) =
             (self.sigs.variants(ty), children.is_empty(), has_drop_impl)
         {

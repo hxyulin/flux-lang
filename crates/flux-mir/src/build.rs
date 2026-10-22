@@ -1751,7 +1751,10 @@ impl Builder<'_> {
         for step in start..derefs {
             place = match overloads.iter().find(|o| o.step == step) {
                 Some(o) => self.overloaded_deref(place, *o, range),
-                None => place.deref(),
+                None => {
+                    let ty = self.place_ty(&place);
+                    place.deref_of(ty)
+                }
             };
         }
         place
@@ -1831,6 +1834,9 @@ impl Builder<'_> {
                 let ty = PlaceTy::from(ty.unwrap_or(Ty::ERROR));
                 let ty = proj.iter().fold(ty, |ty, &p| {
                     let elem = match p {
+                        flux_ty::CaptureProj::Deref if flux_ty::box_pointee(ty.ty).is_some() => {
+                            ProjectionElem::BoxDeref
+                        }
                         flux_ty::CaptureProj::Deref => ProjectionElem::Deref,
                         flux_ty::CaptureProj::Field(i) => ProjectionElem::Field(i),
                     };
@@ -1901,7 +1907,10 @@ impl Builder<'_> {
         };
         for &p in rest {
             place = match p {
-                flux_ty::CaptureProj::Deref => place.deref(),
+                flux_ty::CaptureProj::Deref => {
+                    let ty = self.place_ty(&place);
+                    place.deref_of(ty)
+                }
                 flux_ty::CaptureProj::Field(i) => place.field(i),
             };
         }
@@ -2240,7 +2249,10 @@ impl Builder<'_> {
             for step in 0..derefs {
                 place = match overloads.iter().find(|o| o.step == step) {
                     Some(o) => self.overloaded_deref(place, *o, range),
-                    None => place.deref(),
+                    None => {
+                        let ty = self.place_ty(&place);
+                        place.deref_of(ty)
+                    }
                 };
             }
             place
