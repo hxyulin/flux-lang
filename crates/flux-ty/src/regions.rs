@@ -331,6 +331,9 @@ pub(crate) struct Walker<'a> {
     /// types captures, which are their slots.
     pub opaque_captures: Vec<Box<[Region]>>,
     pub errors: Vec<(TextRange, String)>,
+    /// The region of the reference whose pointee is being walked, if
+    /// that is what is: a trait object's lifetime bound there.
+    ref_region: Option<Region>,
 }
 
 impl<'a> Walker<'a> {
@@ -346,6 +349,7 @@ impl<'a> Walker<'a> {
             fresh: Vec::new(),
             opaque_captures: Vec::new(),
             errors: Vec::new(),
+            ref_region: None,
         }
     }
 
@@ -408,6 +412,7 @@ impl<'a> Walker<'a> {
     }
 
     fn walk(&mut self, written: &TypeRef, ty: Ty, out: &mut Vec<Region>) {
+        let enclosing = self.ref_region.take();
         match (written, ty.kind()) {
             (_, TyKind::Error) => {}
             (
@@ -425,7 +430,26 @@ impl<'a> Walker<'a> {
                     None => self.elide(*amp),
                 };
                 out.push(r);
+                self.ref_region = Some(r);
                 self.walk(pointee, inner, out);
+                self.ref_region = None;
+            }
+            // A trait object has no slots: its lifetime bound is the
+            // reference it is behind (rustc's default), or `'static`
+            // behind other pointers, so that is all it may be written
+            // as.
+            (TypeRef::Dyn(d), _) => {
+                if let Some(l) = d.lifetime {
+                    let r = self.named(l);
+                    let default = enclosing.unwrap_or(Region::Static);
+                    if r != default && r != Region::Erased {
+                        self.errors.push((
+                            l.range,
+                            "lifetime bounds on trait objects other than their reference's lifetime are not supported yet"
+                                .to_owned(),
+                        ));
+                    }
+                }
             }
             (TypeRef::Ptr { pointee, .. }, TyKind::RawPtr(_, inner))
             | (TypeRef::Array { elem: pointee, .. }, TyKind::Array(inner, _))
@@ -741,6 +765,16 @@ pub(crate) fn lifetimes_in(ty: &TypeRef, out: &mut Vec<LifetimeRef>) {
             params.iter().for_each(|t| lifetimes_in(t, out));
             lifetimes_in(ret, out);
         }
+        TypeRef::Dyn(d) => {
+            for b in d.bounds.iter() {
+                for args in b.path.args.iter().flatten() {
+                    out.extend(args.lifetimes.iter().copied());
+                    args.types.iter().for_each(|t| lifetimes_in(t, out));
+                    args.bindings.iter().for_each(|b| lifetimes_in(&b.ty, out));
+                }
+            }
+            out.extend(d.lifetime);
+        }
         TypeRef::Never
         | TypeRef::Infer
         | TypeRef::Const(_)
@@ -786,6 +820,12 @@ pub(crate) fn elided_in(ty: &TypeRef, out: &mut Vec<TextRange>) {
         TypeRef::Ptr { pointee, .. }
         | TypeRef::Array { elem: pointee, .. }
         | TypeRef::Slice(pointee) => elided_in(pointee, out),
+        // `dyn Tr + '_`; without a bound, its default is not elided.
+        TypeRef::Dyn(d) => {
+            if let Some(l) = d.lifetime.filter(|l| l.is_anonymous()) {
+                out.push(l.range);
+            }
+        }
         // A function pointer's own.
         TypeRef::FnPtr { .. }
         | TypeRef::Never

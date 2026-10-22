@@ -1,0 +1,41 @@
+struct Sq { 0: i32 }
+struct Holder<'a> { shape: &dyn Shape }
+fn id(&Self) -> i32
+fn twice(&Self) -> i32
+    self@0: &Self
+fn area(&Self) -> i32
+fn grow(&mut Self, i32) -> ()
+fn id(&Sq) -> i32
+    self@0: &Sq
+fn area(&Sq) -> i32
+    self@0: &Sq
+fn grow(&mut Sq, i32) -> ()
+    self@0: &mut Sq
+    by@1: i32
+fn conv(&Self, T) -> T
+fn conv(&Sq, i32) -> i32
+    self@0: &Sq
+    x@1: i32
+fn up(&dyn Shape) -> &dyn Named
+    s@0: &dyn Shape
+fn generic<T>(&T) -> i32
+    x@0: &T
+fn apply(&dyn Fn(i32) -> i32) -> i32
+    f@0: &dyn Fn(i32) -> i32
+fn sum(&mut dyn Iterator<Item = u32>) -> u32
+    it@0: &mut dyn Iterator<Item = u32>
+    s@1: u32
+    iter@2: &mut dyn Iterator<Item = u32>
+    x@3: u32
+fn main() -> ()
+    a@0: Sq
+    b@1: Sq
+    shapes@2: [&dyn Shape; 2]
+    h@3: Holder
+    o@4: Option<&dyn Named>
+    t@5: (i32, &dyn Shape)
+    c@6: &dyn Conv<i32>
+    p@7: *const dyn Shape
+    k@8: i32
+    x@9: i32
+    n@10: &dyn Named

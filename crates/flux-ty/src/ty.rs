@@ -68,6 +68,10 @@ pub enum TyKind {
     Slice(Ty),
     /// `core::ffi::CStr`: a NUL-terminated string, only behind a reference.
     CStr,
+    /// `dyn Tr<A, Out = B>`: a trait object, unsized, so only behind a
+    /// pointer, whose type is known at run time. Its lifetime bound is
+    /// a region slot, as lifetimes are.
+    Dynamic(DynTy),
     /// The type of a function item, `fn(i32) -> i32 {double}`: one per
     /// function and generic arguments, with no value to hold, which
     /// coerces to a function pointer of its signature.
@@ -191,6 +195,55 @@ pub struct OpaqueTy {
     /// How many lifetimes it captures: its region slots, before its
     /// arguments'.
     pub lifetimes: u32,
+}
+
+/// `dyn Tr<A, Out = B>`: its trait, the trait's generic arguments after
+/// `Self`, and the associated types of the trait and its supertraits,
+/// each named and given, in the order [`crate::traits::dyn_assoc`]
+/// gives them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DynTy {
+    pub trait_: TraitId,
+    pub name: Symbol,
+    pub args: GenericArgs,
+    /// The associated types' names, as `assoc_tys` gives them.
+    pub assoc_names: &'static [Symbol],
+    pub assoc_tys: GenericArgs,
+}
+
+impl DynTy {
+    /// The type its associated type `name` is, if it has one so named.
+    pub fn assoc(self, name: Symbol) -> Option<Ty> {
+        let i = self.assoc_names.iter().position(|&n| n == name)?;
+        self.assoc_tys.get(i).copied()
+    }
+
+    /// The same with each type in it replaced by `f`'s.
+    pub fn map(self, mut f: impl FnMut(Ty) -> Ty) -> DynTy {
+        let args: Vec<Ty> = self.args.iter().map(|&t| f(t)).collect();
+        let assoc: Vec<Ty> = self.assoc_tys.iter().map(|&t| f(t)).collect();
+        DynTy {
+            args: Ty::list(&args),
+            assoc_tys: Ty::list(&assoc),
+            ..self
+        }
+    }
+}
+
+/// `names`, interned, for [`DynTy::assoc_names`].
+pub fn symbol_list(names: &[Symbol]) -> &'static [Symbol] {
+    use std::sync::Mutex;
+    static LISTS: Mutex<Vec<&'static [Symbol]>> = Mutex::new(Vec::new());
+    if names.is_empty() {
+        return &[];
+    }
+    let mut lists = LISTS.lock().unwrap();
+    if let Some(&list) = lists.iter().find(|&&l| l == names) {
+        return list;
+    }
+    let list: &'static [Symbol] = Box::leak(names.into());
+    lists.push(list);
+    list
 }
 
 /// A function's signature as a type: its parameters' types then its
@@ -503,6 +556,7 @@ impl Interner {
             TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => of(t),
             TyKind::Array(t, len) => of(t) | of(len),
             TyKind::FnPtr(sig) => sig.inputs_output.iter().fold(0, |f, &t| f | of(t)),
+            TyKind::Dynamic(d) => d.args.iter().chain(d.assoc_tys).fold(0, |f, &t| f | of(t)),
             TyKind::FnDef(def) => def
                 .args
                 .iter()
@@ -699,6 +753,7 @@ impl Ty {
             TyKind::Array(t, len) => Ty::array_of(go(t), go(len)),
             TyKind::Slice(t) => Ty::slice(go(t)),
             TyKind::FnDef(_) | TyKind::FnPtr(_) => self.map_fn(go),
+            TyKind::Dynamic(d) => Ty::new(TyKind::Dynamic(d.map(go))),
             _ => self,
         }
     }
@@ -729,6 +784,7 @@ impl Ty {
             TyKind::Array(elem, len) => Ty::array_of(elem.subst(args), len.subst(args)),
             TyKind::Slice(elem) => Ty::slice(elem.subst(args)),
             TyKind::FnDef(_) | TyKind::FnPtr(_) => self.map_fn(|t| t.subst(args)),
+            TyKind::Dynamic(d) => Ty::new(TyKind::Dynamic(d.map(|t| t.subst(args)))),
             _ => self,
         }
     }
@@ -820,6 +876,7 @@ impl Ty {
                 .chain(def.sig.inputs_output)
                 .copied()
                 .collect(),
+            TyKind::Dynamic(d) => d.args.iter().chain(d.assoc_tys).copied().collect(),
             _ => Vec::new(),
         }
     }
@@ -833,9 +890,18 @@ impl Ty {
         }
     }
 
-    /// Whether the type is a slice, which has no size of its own.
+    /// Whether the type is a slice, `str` or a trait object, which have
+    /// no size of their own.
     pub fn is_unsized(self) -> bool {
-        matches!(self.kind(), TyKind::Slice(_) | TyKind::Str)
+        matches!(
+            self.kind(),
+            TyKind::Slice(_) | TyKind::Str | TyKind::Dynamic(_)
+        )
+    }
+
+    /// Whether the type is a trait object.
+    pub fn is_dyn(self) -> bool {
+        matches!(self.kind(), TyKind::Dynamic(_))
     }
 
     /// The integer type, if this is one.
@@ -1002,11 +1068,38 @@ impl fmt::Display for Ty {
                 f.write_str("}")
             }
             TyKind::Closure(..) => f.write_str("{closure}"),
+            TyKind::Dynamic(d) => write_dyn(f, d),
             TyKind::Infer(_) => f.write_str("_"),
             TyKind::Value(value) => write!(f, "{value}"),
             TyKind::Error => f.write_str("{error}"),
         }
     }
+}
+
+/// `dyn Tr<A, Out = B>` as rustc writes it, and `dyn Fn(A) -> B` for
+/// the `Fn`-family traits.
+fn write_dyn(f: &mut fmt::Formatter<'_>, d: DynTy) -> fmt::Result {
+    let name = d.name.as_str();
+    if matches!(name, "Fn" | "FnMut" | "FnOnce")
+        && let [params] = d.args
+        && let TyKind::Tuple(params) = params.kind()
+    {
+        let params: Vec<String> = params.iter().map(Ty::to_string).collect();
+        write!(f, "dyn {name}({})", params.join(", "))?;
+        if let Some(ret) = d.assoc(Symbol::intern("Output")).filter(|&r| r != Ty::UNIT) {
+            write!(f, " -> {ret}")?;
+        }
+        return Ok(());
+    }
+    write!(f, "dyn {name}")?;
+    let mut parts: Vec<String> = d.args.iter().map(Ty::to_string).collect();
+    for (name, ty) in d.assoc_names.iter().zip(d.assoc_tys) {
+        parts.push(format!("{name} = {ty}"));
+    }
+    if !parts.is_empty() {
+        write!(f, "<{}>", parts.join(", "))?;
+    }
+    Ok(())
 }
 
 /// `fn(A, B) -> R`, with `unsafe` before it if it is, and without the

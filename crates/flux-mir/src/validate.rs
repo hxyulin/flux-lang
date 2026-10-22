@@ -247,6 +247,12 @@ impl Validator<'_> {
                 };
                 let unsizes = pointees.is_some_and(|(a, b)| match (a.kind(), b.kind()) {
                     (TyKind::Array(x, _), TyKind::Slice(y)) => self.same(y, x),
+                    // Upcasting: to a supertrait's object.
+                    (TyKind::Dynamic(x), TyKind::Dynamic(y)) => {
+                        flux_ty::objects::supertraits_of(self.items, x.trait_).contains(&y.trait_)
+                    }
+                    // A sized value, whose trait the type checker proved.
+                    (_, TyKind::Dynamic(_)) => !a.is_unsized(),
                     _ => false,
                 });
                 if !unsizes && !has_error(from) && !has_error(to) {

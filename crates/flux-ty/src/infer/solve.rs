@@ -481,6 +481,7 @@ impl Ctx<'_> {
             TyKind::Array(t, len) => Ty::array_of(self.normalize(t, origin), len),
             TyKind::Slice(t) => Ty::slice(self.normalize(t, origin)),
             TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(|t| self.normalize(t, origin)),
+            TyKind::Dynamic(d) => Ty::new(TyKind::Dynamic(d.map(|t| self.normalize(t, origin)))),
             _ => ty,
         }
     }
@@ -511,6 +512,10 @@ impl Ctx<'_> {
             }
             TyKind::Opaque(opaque) => {
                 candidates.extend(crate::traits::opaque_projections(self.sigs, opaque));
+            }
+            TyKind::Dynamic(d) => {
+                let ty = self.shallow(alias.args[0]);
+                candidates.extend(crate::traits::dyn_projections(self.sigs, ty, d));
             }
             _ => {}
         }
@@ -553,7 +558,7 @@ impl Ctx<'_> {
         // block does not apply to it.
         if matches!(
             self_ty.kind(),
-            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)
+            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Dynamic(_)
         ) {
             let alias_bounds = self.alias_bounds(self_ty);
             if self
@@ -1233,7 +1238,7 @@ impl Ctx<'_> {
             _ => None,
         };
         let mut found: Vec<(AssocItem, Option<TraitRef>)> = Vec::new();
-        if ty.has_params() || matches!(ty.kind(), TyKind::Opaque(_)) {
+        if ty.has_params() || matches!(ty.kind(), TyKind::Opaque(_) | TyKind::Dynamic(_)) {
             let alias_bounds = self.alias_bounds(ty);
             let known = self.known(ty);
             for p in self.param_env.clone().into_iter().chain(alias_bounds) {

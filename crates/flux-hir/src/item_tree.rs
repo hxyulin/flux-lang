@@ -1047,6 +1047,8 @@ pub enum TypeRef {
     /// [`TypeRef::ImplParam`]s, those in its return type
     /// [`TypeRef::Opaque`]s, and reports the others.
     ImplTrait(Box<ImplTraitRef>),
+    /// `dyn Tr + 'a`: a trait object.
+    Dyn(Box<DynRef>),
     /// The type parameter made for an `impl Trait` parameter type, by
     /// its index among the function's, its owner's first.
     ImplParam(u32),
@@ -1075,6 +1077,17 @@ pub struct ImplTraitRef {
     pub range: TextRange,
     /// As written, which is how rustc names it: `impl Iterator<Item = u32>`.
     pub name: Symbol,
+}
+
+/// `dyn Tr + 'a`, as written.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DynRef {
+    /// Its trait bounds: the first is its trait, the others are errors
+    /// (flux has no auto traits).
+    pub bounds: Box<[Bound]>,
+    /// `'a` in `dyn Tr + 'a`.
+    pub lifetime: Option<LifetimeRef>,
+    pub range: TextRange,
 }
 
 /// A generic parameter in `use<'a, T>`.
@@ -1194,6 +1207,19 @@ impl std::fmt::Display for TypeRef {
             TypeRef::Slice(elem) => write!(f, "[{elem}]"),
             TypeRef::Infer => f.write_str("_"),
             TypeRef::ImplTrait(it) => write!(f, "{}", it.name),
+            TypeRef::Dyn(d) => {
+                f.write_str("dyn ")?;
+                for (i, b) in d.bounds.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(" + ")?;
+                    }
+                    write!(f, "{}", b.path)?;
+                }
+                if let Some(l) = d.lifetime {
+                    write!(f, " + {}", l.name)?;
+                }
+                Ok(())
+            }
             TypeRef::ImplParam(i) => write!(f, "<impl param {i}>"),
             TypeRef::Opaque(i) => write!(f, "<opaque {i}>"),
             TypeRef::Error => f.write_str("<error>"),
@@ -4705,6 +4731,18 @@ fn param_projections(ty: &TypeRef, params: &[GenericParam], out: &mut Vec<TypeRe
                 param_projections(p, params, out);
             }
         }
+        TypeRef::Dyn(d) => {
+            for b in d.bounds.iter() {
+                for args in b.path.args.iter().flatten() {
+                    for arg in args.types.iter() {
+                        param_projections(arg, params, out);
+                    }
+                    for binding in args.bindings.iter() {
+                        param_projections(&binding.ty, params, out);
+                    }
+                }
+            }
+        }
         TypeRef::Never
         | TypeRef::Infer
         | TypeRef::Const(_)
@@ -5589,7 +5627,7 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
                 len,
             };
         }
-        ast::Type::DynTraitType(_) => "trait objects",
+        ast::Type::DynTraitType(d) => return lower_dyn(d, diagnostics),
         ast::Type::FnPtrType(ptr) => return lower_fn_ptr(ptr, diagnostics),
         ast::Type::ForType(_) => "higher-ranked types",
         ast::Type::ImplTraitType(it) => return lower_impl_trait(it, diagnostics),
@@ -5624,6 +5662,65 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
     };
     unsupported(diagnostics, ty.syntax().text_range(), what);
     TypeRef::Error
+}
+
+/// `dyn Tr + 'a`.
+fn lower_dyn(d: ast::DynTraitType<'_>, diagnostics: &mut Vec<Diagnostic>) -> TypeRef {
+    let range = d.syntax().text_range();
+    let mut bounds = Vec::new();
+    let mut lifetime: Option<LifetimeRef> = None;
+    for bound in d.type_bound_list().into_iter().flat_map(|l| l.bounds()) {
+        let bound_range = bound.syntax().text_range();
+        if let Some(l) = bound.lifetime() {
+            if lifetime.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    bound_range,
+                    "only a single explicit lifetime bound is permitted",
+                ));
+            } else {
+                lifetime = Some(lower_lifetime(l));
+            }
+            continue;
+        }
+        let what = if bound.question_token().is_some() {
+            diagnostics.push(Diagnostic::new(
+                bound_range,
+                "relaxed bounds are not permitted in trait object types",
+            ));
+            continue;
+        } else if bound.use_token().is_some() {
+            "`use` bounds in trait objects"
+        } else if bound.for_token().is_some() {
+            "higher-ranked bounds"
+        } else if bound.l_paren_token().is_some() {
+            "parenthesized bounds"
+        } else {
+            let Some(path) = bound.path_type().and_then(|p| p.path()) else {
+                continue;
+            };
+            if let Some(path) = lower_trait_path(path, diagnostics) {
+                bounds.push(Bound {
+                    path,
+                    range: bound_range,
+                });
+            }
+            continue;
+        };
+        unsupported(diagnostics, bound_range, what);
+        return TypeRef::Error;
+    }
+    if bounds.is_empty() {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "at least one trait is required for an object type",
+        ));
+        return TypeRef::Error;
+    }
+    TypeRef::Dyn(Box::new(DynRef {
+        bounds: bounds.into(),
+        lifetime,
+        range,
+    }))
 }
 
 /// `impl Tr + 'a + use<'a, T>`: what it stands for depends on where it
@@ -5744,6 +5841,11 @@ fn visit_impl_traits(ty: &mut TypeRef, at: Nested, f: &mut dyn FnMut(&mut TypeRe
                 visit_impl_traits(t, p, f);
             }
             visit_impl_traits(ret, r, f);
+        }
+        TypeRef::Dyn(d) => {
+            for b in d.bounds.iter_mut() {
+                visit_path_impl_traits(&mut b.path, at, f);
+            }
         }
         TypeRef::Never
         | TypeRef::Infer

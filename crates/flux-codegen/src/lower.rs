@@ -142,6 +142,7 @@ pub fn lower_module(
         uses_abort: false,
         locations: HashMap::new(),
         strings: HashMap::new(),
+        vtables: HashMap::new(),
         promoted: HashMap::new(),
         data: Vec::new(),
     };
@@ -333,6 +334,15 @@ fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: I
                 encode(value.ty, feed);
                 feed(&value.bits().to_le_bytes());
             }
+            TyKind::Dynamic(d) => {
+                feed(b"dyn");
+                feed(&(d.trait_.index() as u32).to_le_bytes());
+                d.args
+                    .iter()
+                    .chain(d.assoc_tys)
+                    .for_each(|&a| encode(a, feed));
+                feed(b";");
+            }
             TyKind::Param(_)
             | TyKind::Alias(_)
             | TyKind::Opaque(_)
@@ -375,6 +385,7 @@ fn keel_type(ty: Ty) -> Option<Type> {
         | TyKind::Array(..)
         | TyKind::Slice(_)
         | TyKind::Str
+        | TyKind::Dynamic(_)
         | TyKind::Closure(..)
         | TyKind::Param(_)
         | TyKind::Alias(_)
@@ -409,9 +420,24 @@ fn is_memory(sigs: &Signatures, ty: Ty) -> bool {
     }
 }
 
-/// A pointer to a slice: its address, then its length.
+/// A pointer to a slice, `str` or trait object: its address, then its
+/// length or vtable.
 fn is_fat(ty: Ty) -> bool {
     matches!(ty.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_unsized())
+}
+
+/// A pointer to a trait object: its address, then its vtable's.
+fn is_dyn_ptr(ty: Ty) -> bool {
+    matches!(ty.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn())
+}
+
+/// The second leaf of a fat pointer: a length, or a vtable's address.
+fn metadata_leaf(ty: Ty) -> Ty {
+    if is_dyn_ptr(ty) {
+        address_leaf()
+    } else {
+        Ty::int(IntTy::Usize)
+    }
 }
 
 /// The leaf of a value of a memory type: the address of its bytes.
@@ -430,7 +456,7 @@ fn leaves(sigs: &Signatures, ty: Ty, out: &mut Vec<Ty>) {
     }
     if is_fat(ty) {
         out.push(address_leaf());
-        out.push(Ty::int(IntTy::Usize));
+        out.push(metadata_leaf(ty));
         return;
     }
     if let Some(variants) = sigs.variants(ty) {
@@ -495,7 +521,8 @@ fn layout(sigs: &Signatures, ty: Ty) -> Layout {
         return Layout::Array(Box::new(layout(sigs, elem)), array_len(len) as u32);
     }
     if is_fat(ty) {
-        return Layout::Struct(vec![Layout::Scalar(Type::Ptr), Layout::Scalar(Type::I64)]);
+        let meta = if is_dyn_ptr(ty) { Type::Ptr } else { Type::I64 };
+        return Layout::Struct(vec![Layout::Scalar(Type::Ptr), Layout::Scalar(meta)]);
     }
     if let Some(variants) = sigs.variants(ty) {
         let mut members = vec![Layout::Scalar(int_type(discriminant(sigs, ty)))];
@@ -718,6 +745,8 @@ struct Ctx<'a> {
     locations: HashMap<(flux_hir::FileId, u32), String>,
     /// The data object holding each distinct C string, by its bytes.
     strings: HashMap<Box<[u8]>, String>,
+    /// The vtable of each type as each trait object: `(object, type)`.
+    vtables: HashMap<(Ty, Ty), String>,
     /// The data objects of promoted constants, by their bytes and
     /// alignment.
     promoted: HashMap<(Vec<u8>, u32), String>,
@@ -965,6 +994,52 @@ impl Ctx<'_> {
             }
             V::Static(id) => out.push(Leaf::Address(self.statics[id].clone())),
         }
+    }
+
+    /// The name of the read-only data object of `concrete`'s vtable as
+    /// trait object `object` ([`flux_mir::vtable`]): no drop function
+    /// yet (nothing drops a trait object), its size and alignment, then
+    /// its slots.
+    fn vtable(&mut self, object: Ty, concrete: Ty) -> String {
+        if let Some(name) = self.vtables.get(&(object, concrete)) {
+            return name.clone();
+        }
+        let name = format!("__flux_vtable{}", self.vtables.len());
+        self.vtables.insert((object, concrete), name.clone());
+        let sigs = &self.typed.sigs;
+        let layout = layout(sigs, concrete);
+        let word = |value: u64| DataItem::Int {
+            ty: Type::I64,
+            value: value as i64,
+        };
+        let mut items = vec![DataItem::Zero(8), word(layout.size()), word(layout.align())];
+        let entries = flux_mir::vtable::entries(&self.hir.items, sigs, object, concrete);
+        for entry in entries {
+            items.push(match entry {
+                flux_mir::vtable::Entry::Null => DataItem::Zero(8),
+                flux_mir::vtable::Entry::Method(instance) => DataItem::Ptr {
+                    symbol: instance_symbol(self.hir, self.symbols, instance),
+                    addend: 0,
+                },
+                flux_mir::vtable::Entry::Super(sup) => DataItem::Ptr {
+                    symbol: self.vtable(sup, concrete),
+                    addend: 0,
+                },
+            });
+        }
+        self.data.push(DataObject {
+            name: name.clone(),
+            thread_local: false,
+            local: true,
+            weak_odr: false,
+            hidden: false,
+            init: Some(DataInit {
+                constant: true,
+                align: 8,
+                items,
+            }),
+        });
+        name
     }
 
     /// The name of the read-only data object holding `bytes` and a
@@ -1644,6 +1719,39 @@ impl Lower<'_, '_, '_> {
                 }
                 _ => vec![self.read(&pointer_of(place))[1]],
             },
+            // To a trait object: the pointer and the type's vtable; from
+            // one, upcast, the pointer and the supertrait's vtable, which
+            // the subtrait's has.
+            Rvalue::Unsize(operand, to) if is_dyn_ptr(*to) => {
+                let from = self.body.operand_ty(operand, self.sigs);
+                let (pointee_of, object) = match (from.kind(), to.kind()) {
+                    (
+                        TyKind::Ref(_, a) | TyKind::RawPtr(_, a),
+                        TyKind::Ref(_, b) | TyKind::RawPtr(_, b),
+                    ) => (a, b),
+                    _ => unreachable!("unsizing is of pointers"),
+                };
+                let leaves = self.operand(operand);
+                if pointee_of.is_dyn() {
+                    let index = flux_mir::vtable::super_index(
+                        &self.ctx.hir.items,
+                        self.sigs,
+                        pointee_of,
+                        object,
+                    )
+                    .expect("upcasting is to a supertrait");
+                    let address = self.offset(leaves[1], 8 * index as u64);
+                    let vtable =
+                        self.b
+                            .ins()
+                            .load_with_flags(Type::Ptr, address, aligned(Type::Ptr));
+                    return vec![leaves[0], vtable];
+                }
+                let name = self.ctx.vtable(object, pointee_of);
+                let data = self.b.import_data(&name);
+                let vtable = self.b.ins().symbol_addr(keel_ir::Symbol::Data(data));
+                vec![leaves[0], vtable]
+            }
             Rvalue::Unsize(operand, _) => {
                 let from = self.body.operand_ty(operand, self.sigs);
                 let len = match from.kind() {
@@ -1859,6 +1967,27 @@ impl Lower<'_, '_, '_> {
                 args,
                 dest,
                 target,
+            } if flux_mir::vtable::virtual_call(
+                &self.ctx.hir.items,
+                flux_ty::traits::resolve_instance(
+                    &self.ctx.hir.items,
+                    &self.ctx.typed.sigs,
+                    Instance {
+                        function: *func,
+                        args: generic_args,
+                    },
+                ),
+            )
+            .is_some() =>
+            {
+                self.virtual_call(*func, generic_args, args, dest, *target);
+            }
+            TerminatorKind::Call {
+                func,
+                generic_args,
+                args,
+                dest,
+                target,
             } => {
                 let items = &self.ctx.hir.items;
                 let offset = self.body.fn_spans.get(&block).copied().unwrap_or(offset);
@@ -2011,8 +2140,18 @@ impl Lower<'_, '_, '_> {
         target: Option<flux_mir::BasicBlock>,
         make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
     ) {
-        let memory = is_memory(self.sigs, ret);
-        let sret = match return_kind(self.sigs, ret) {
+        let sret = self.sret_for(ret);
+        let mut values: Vec<Value> = sret.iter().map(|(pointer, _)| *pointer).collect();
+        for arg in args {
+            values.extend(self.operand(arg));
+        }
+        self.finish_call(ret, sret, values, dest, target, make);
+    }
+
+    /// Memory for a call's result of type `ret`, if it is returned
+    /// through memory.
+    fn sret_for(&mut self, ret: Ty) -> Option<(Value, Layout)> {
+        match return_kind(self.sigs, ret) {
             Return::Sret(layout) | Return::Memory(layout) => {
                 let slot = self
                     .b
@@ -2020,11 +2159,40 @@ impl Lower<'_, '_, '_> {
                 Some((self.b.ins().stack_addr(slot), layout))
             }
             Return::Values(_) => None,
-        };
-        let mut values: Vec<Value> = sret.iter().map(|(pointer, _)| *pointer).collect();
-        for arg in args {
-            values.extend(self.operand(arg));
         }
+    }
+
+    /// [`Self::call`] with the arguments' leaves given: `first`, then
+    /// `rest`.
+    fn call_values(
+        &mut self,
+        ret: Ty,
+        first: Value,
+        rest: Vec<Value>,
+        dest: &flux_mir::Place,
+        target: Option<flux_mir::BasicBlock>,
+        make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
+    ) {
+        let sret = self.sret_for(ret);
+        let mut values: Vec<Value> = sret.iter().map(|(pointer, _)| *pointer).collect();
+        values.push(first);
+        values.extend(rest);
+        self.finish_call(ret, sret, values, dest, target, make);
+    }
+
+    /// The call instruction `make` makes from `values`, its result
+    /// stored in `dest` (through `sret` if given), continuing at
+    /// `target`.
+    fn finish_call(
+        &mut self,
+        ret: Ty,
+        sret: Option<(Value, Layout)>,
+        values: Vec<Value>,
+        dest: &flux_mir::Place,
+        target: Option<flux_mir::BasicBlock>,
+        make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
+    ) {
+        let memory = is_memory(self.sigs, ret);
         let call = make(&mut self.b, &values);
         // A call that does not return stores nothing: its destination may
         // be of any type (a `match` arm calling `panic`).
@@ -2108,6 +2276,49 @@ impl Lower<'_, '_, '_> {
         let callee = self.b.import_function(&symbol, sig);
         self.callees.insert(instance, callee);
         callee
+    }
+
+    /// A call of trait method `func` on a trait object: the method is
+    /// the vtable's, called through a pointer with C's convention, and
+    /// the receiver, a pointer to the object, is passed as its address
+    /// alone, as the method's `&self` for the type behind it is.
+    fn virtual_call(
+        &mut self,
+        func: FunctionId,
+        generic_args: GenericArgs,
+        args: &[flux_mir::Operand],
+        dest: &flux_mir::Place,
+        target: Option<flux_mir::BasicBlock>,
+    ) {
+        let items = &self.ctx.hir.items;
+        let sigs = &self.ctx.typed.sigs;
+        let object = generic_args[0];
+        let index = flux_mir::vtable::method_index(items, sigs, object, func)
+            .expect("a trait object's method has a slot");
+        let sig = flux_ty::traits::instance_sig(items, sigs, func, generic_args);
+        // The receiver as a thin pointer.
+        let mut params = sig.params.to_vec();
+        params[0] = address_leaf();
+        let thin = FnSig {
+            params: params.into(),
+            ret: sig.ret,
+        };
+        let sig_ref = self.b.import_signature(signature(self.sigs, &thin, false));
+        let receiver = self.operand(&args[0]);
+        let address = self.offset(receiver[1], 8 * index as u64);
+        let pointer = self
+            .b
+            .ins()
+            .load_with_flags(Type::Ptr, address, aligned(Type::Ptr));
+        let data = receiver[0];
+        let rest = &args[1..];
+        let mut leaves = Vec::new();
+        for arg in rest {
+            leaves.extend(self.operand(arg));
+        }
+        self.call_values(sig.ret, data, leaves, dest, target, |b, values| {
+            b.ins().call_indirect(sig_ref, pointer, values)
+        });
     }
 
     fn panic_block(&mut self) -> Block {

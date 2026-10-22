@@ -1,0 +1,10 @@
+trait Tr;
+
+fn two_lifetimes<'a>(x@0: &'a dyn Tr + 'a) -> () {}
+
+fn relaxed(x@0: &dyn Tr) -> () {}
+
+fn main() -> () {}
+
+error 105..107: only a single explicit lifetime bound is permitted
+error 139..145: relaxed bounds are not permitted in trait object types

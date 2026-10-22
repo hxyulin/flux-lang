@@ -1,0 +1,124 @@
+fn <S<'_> as Tr>::get(_1: &S) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy (*(*_1).0);
+        return;
+    }
+}
+
+fn keep<'a>(_1: &S) -> &dyn Tr {
+    let mut _0: &dyn Tr;
+    let _2: &S;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = copy _2 as &dyn Tr (unsize);
+        return;
+    }
+}
+
+fn too_long<'a, 'b>(_1: &S) -> &dyn Tr {
+    let mut _0: &dyn Tr;
+    let _2: &S;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = copy _2 as &dyn Tr (unsize);
+        return;
+    }
+}
+
+fn param<'a, T>(_1: &T) -> &dyn Tr {
+    let mut _0: &dyn Tr;
+    let _2: &T;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = copy _2 as &dyn Tr (unsize);
+        return;
+    }
+}
+
+fn dangling() -> () {
+    let mut _0: ();
+    let _1: &dyn Tr; // r
+    let _2: ();
+    let _3: i32; // x
+    let _4: S; // s
+    let _5: &i32;
+    let _6: ();
+    let _7: &dyn Tr;
+    let _8: &S;
+    let _9: i32;
+    let _10: &dyn Tr;
+
+    bb0: {
+        _3 = const 5_i32;
+        _5 = &_3;
+        _4 = S(copy _5);
+        _8 = &_4;
+        _7 = copy _8 as &dyn Tr (unsize);
+        _1 = copy _7;
+        _6 = const ();
+        _2 = const ();
+        StorageDead(_4);
+        StorageDead(_3);
+        _10 = &(*_1);
+        _9 = get::<dyn Tr>(copy _10) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn overwritten() -> () {
+    let mut _0: ();
+    let mut _1: i32; // x
+    let _2: S; // s
+    let _3: &i32;
+    let _4: &dyn Tr; // r
+    let _5: &S;
+    let _6: ();
+    let _7: i32;
+    let _8: &dyn Tr;
+
+    bb0: {
+        _1 = const 5_i32;
+        _3 = &_1;
+        _2 = S(copy _3);
+        _5 = &_2;
+        _4 = copy _5 as &dyn Tr (unsize);
+        _1 = const 6_i32;
+        _6 = const ();
+        _8 = &(*_4);
+        _7 = get::<dyn Tr>(copy _8) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        StorageDead(_4);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 425..426: lifetime may not live long enough
+error 425..426: lifetime may not live long enough
+error 485..486: lifetime may not live long enough
+error 569..571: `x` does not live long enough
+error 586..588: `s` does not live long enough
+error 698..703: cannot assign to `x` because it is borrowed

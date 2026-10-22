@@ -474,12 +474,14 @@ impl Ctx<'_> {
                 });
                 parts.ret()
             }
-            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => {
+            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Dynamic(_) => {
                 let items = self.items;
-                // An opaque type's bounds are its own.
+                // An opaque type's bounds are its own, and a trait
+                // object's its trait.
                 let base = self.known(base);
                 let own = match base.kind() {
                     TyKind::Opaque(opaque) => crate::traits::opaque_bounds(self.sigs, opaque),
+                    TyKind::Dynamic(d) => crate::traits::dyn_bounds(self.sigs, base, d),
                     _ => Vec::new(),
                 };
                 let found = [ClosureKind::Fn, ClosureKind::FnMut, ClosureKind::FnOnce]

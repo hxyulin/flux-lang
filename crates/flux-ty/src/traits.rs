@@ -605,6 +605,9 @@ pub fn alias_bounds(sigs: &Signatures, env: &[Predicate], ty: Ty) -> Vec<Predica
     if let TyKind::Opaque(opaque) = ty.kind() {
         return opaque_bounds(sigs, opaque);
     }
+    if let TyKind::Dynamic(d) = ty.kind() {
+        return dyn_bounds(sigs, ty, d);
+    }
     let TyKind::Alias(alias) = ty.kind() else {
         return Vec::new();
     };
@@ -629,8 +632,45 @@ pub fn alias_bounds(sigs: &Signatures, env: &[Predicate], ty: Ty) -> Vec<Predica
 /// `Self`'s trait do if that is an associated type.
 pub fn in_env(sigs: &Signatures, env: &[Predicate], goal: Predicate) -> bool {
     env.contains(&goal)
-        || (matches!(goal.self_ty.kind(), TyKind::Alias(_) | TyKind::Opaque(_))
-            && alias_bounds(sigs, env, goal.self_ty).contains(&goal))
+        || (matches!(
+            goal.self_ty.kind(),
+            TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Dynamic(_)
+        ) && alias_bounds(sigs, env, goal.self_ty).contains(&goal))
+}
+
+/// What trait object `ty`, `d`, implements: its trait, with its
+/// supertraits.
+pub fn dyn_bounds(sigs: &Signatures, ty: Ty, d: crate::DynTy) -> Vec<Predicate> {
+    elaborate(sigs, &[dyn_principal(ty, d)])
+}
+
+/// `ty: Tr<A>` for trait object `ty`, `d`, `dyn Tr<A>`.
+pub fn dyn_principal(ty: Ty, d: crate::DynTy) -> Predicate {
+    Predicate {
+        self_ty: ty,
+        trait_ref: TraitRef {
+            trait_: d.trait_,
+            name: d.name,
+            args: d.args,
+        },
+    }
+}
+
+/// What trait object `ty`, `d`, says the associated types of its
+/// trait and supertraits are, and what their traits imply.
+pub fn dyn_projections(sigs: &Signatures, ty: Ty, d: crate::DynTy) -> Vec<Projection> {
+    let bounds = dyn_bounds(sigs, ty, d);
+    let mut out = Vec::new();
+    for p in &bounds {
+        for (&name, &assoc) in d.assoc_names.iter().zip(d.assoc_tys) {
+            out.push(Projection {
+                alias: alias_of(p.trait_ref, ty, name),
+                ty: assoc,
+            });
+        }
+    }
+    out.extend(implied_projections(sigs, &bounds));
+    out
 }
 
 /// The bounds of `opaque`, with their supertraits: all that is known of
@@ -898,6 +938,13 @@ impl Normalizer<'_> {
                 {
                     return self.go(p.ty, depth + 1);
                 }
+                if let TyKind::Dynamic(d) = args[0].kind()
+                    && let Some(p) = dyn_projections(sigs, args[0], d)
+                        .into_iter()
+                        .find(|p| p.alias == alias)
+                {
+                    return self.go(p.ty, depth + 1);
+                }
                 let goal = alias_predicate(alias);
                 if let Some((imp, impl_args)) = select_impl(items, sigs, goal)
                     && let Some(t) = impl_type(sigs, imp, alias.name)
@@ -923,6 +970,7 @@ impl Normalizer<'_> {
             TyKind::Array(t, len) => Ty::array_of(self.go(t, depth + 1), len),
             TyKind::Slice(t) => Ty::slice(self.go(t, depth + 1)),
             TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(|t| self.go(t, depth + 1)),
+            TyKind::Dynamic(d) => Ty::new(TyKind::Dynamic(d.map(|t| self.go(t, depth + 1)))),
             _ => ty,
         }
     }
@@ -1477,6 +1525,17 @@ pub fn resolve_instance(items: &ItemTree, sigs: &Signatures, instance: Instance)
         return instance;
     }
     instance
+}
+
+/// Whether method `f` takes `self` by value (not `&self` or `&mut
+/// self`).
+pub fn self_by_value(items: &ItemTree, f: FunctionId) -> bool {
+    let function = &items.functions[f];
+    function.has_self
+        && !matches!(
+            function.params.first().map(|p| &p.ty),
+            Some(flux_hir::TypeRef::Ref { .. })
+        )
 }
 
 /// The constant a path to `c` names once its generic arguments are
