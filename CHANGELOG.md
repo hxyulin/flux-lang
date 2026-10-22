@@ -133,6 +133,22 @@
   rustc, and `None.unwrap()` in a constant is "evaluation panicked"
   (E0080). `core`'s other `Option` and `Result` methods are reported as
   conditionally const (E0658), with rustc's two errors.
+- Support discriminants written as any constant expression (`A = 1 <<
+  2`, `B = N + f()`, `C = Self::A as isize + 1`), typed by the enum's
+  `repr`: each is an anonymous constant, evaluated with the others and
+  as rustc does, only as far as each use needs, so casts, matches,
+  constant patterns and code generation see the evaluated values.
+  E0015, E0080, E0081, E0308, E0370 and E0391 are reported as rustc
+  does, and so are `Self` and type parameters in a generic enum's
+  discriminants.
+- Report a negated literal out of range (`-129i8`) at the `-`, as rustc
+  does.
+- Check that associated types' traits hold where they are named:
+  `<T as Tr>::Out` needs `T: Tr` (E0277) in signatures, fields,
+  constants' types, bounds, `impl` headers and annotations in bodies,
+  reported at rustc's positions, again where a body or a constant's value
+  normalizes its signature, as rustc does. An unmet bound of a
+  signature is reported once per item, for structs' bounds too.
 - Report the mismatched types rustc reports after E0409, where a
   binding is by reference in one alternative and by value in another.
 - Recover from malformed patterns and `else` branches with one error

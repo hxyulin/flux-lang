@@ -53,11 +53,10 @@ reported as "not supported yet":
 
 - **Items:** functions, including `const fn`; structs (named-field,
   tuple and unit structs); enums, with unit, tuple and named-field
-  variants, generic ones included, and integer literal discriminants
-  (`enum E { A = 1, B }`), whose type `#[repr(u8)]` and the other
-  integer types set, as `#[repr(C)]` may be written too (other `repr`
-  hints, and discriminants other than literals, `A = 1 << 2`, are not
-  supported yet); inherent `impl`
+  variants, generic ones included, and discriminants (`enum E { A = 1,
+  B, C = 1 << 4, D = N + f() }`), constant expressions whose type
+  `#[repr(u8)]` and the other integer types set, as `#[repr(C)]` may be
+  written too (other `repr` hints are not supported yet); inherent `impl`
   blocks for them, with
   associated functions, methods (`self`, `mut self`, `&self`,
   `&mut self`) and constants; traits with required and provided methods
@@ -167,7 +166,9 @@ the traits its bounds name, and no fields; it is moved, never copied.
 An associated type is what the `impl` block for its types says, or what
 a bound says (`T: Tr<Out = i32>`, also inside a bound on an associated
 type: `type N: Add<Output = i32>;`); otherwise, for a type parameter, it
-is a type of its own, as in rustc.
+is a type of its own, as in rustc. Its trait must hold wherever it is
+named: `<T as Tr>::Out` needs `T: Tr` (E0277) in signatures, bounds,
+`impl` headers, annotations and paths, reported where rustc reports it.
 Blocks for different instances of a struct (`impl Pair<i32>` and
 `impl Pair<u8>`) may define the same name, and the type a method is
 called on picks one.
@@ -261,7 +262,13 @@ operand, as rustc's `Try::branch(x)` does. rustc implements `Try` for
 
 Constants are evaluated at compile time, calls to `const fn`s included,
 and overflow, division by zero or a panic (`None.unwrap()`) there is
-an error, as in rustc. So is
+an error, as in rustc. So are enums' discriminants, whether the enum is
+used or not, with rustc's checks: a discriminant counted past its
+type's maximum (E0370), a value assigned twice (E0081), and one that
+needs itself (E0391). As in rustc, `E::A as i32` needs only `A`'s
+discriminant, so `B = Self::A as isize + 1` works, but making a value
+of the enum or matching on it, even in a `const fn` it calls, needs
+them all. So is
 arithmetic in ordinary code that rustc can tell overflows, such as
 `let x: u8 = 255; x + 1` (its deny-by-default `arithmetic_overflow`
 lint), even with overflow checks off.

@@ -7,8 +7,8 @@ use std::fmt::Write;
 use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 
 use crate::{
-    Body, Diagnostic, Expr, ExprId, Function, Hir, Literal, LoopSource, Pat, PatId, Res, Stmt,
-    StructKind, TypeRef,
+    Body, Diagnostic, Discriminant, Expr, ExprId, Function, Hir, Literal, LoopSource, Pat, PatId,
+    Res, Stmt, StructKind, TypeRef,
 };
 
 pub(crate) fn file(hir: &Hir) -> String {
@@ -47,7 +47,32 @@ pub(crate) fn file(hir: &Hir) -> String {
                         StructKind::Tuple => format!("({fields})"),
                         StructKind::Unit => String::new(),
                     };
-                    format!("{}{fields} = {}", v.name, v.discriminant)
+                    let discriminant = match v.discriminant {
+                        Discriminant::Value(value) => value.to_string(),
+                        // The variant's own expression, or the variant's
+                        // whose expression it counts from.
+                        Discriminant::Const { konst, offset } => {
+                            let (_, written) = items.consts[konst]
+                                .discriminant
+                                .expect("discriminants' constants");
+                            if offset > 0 {
+                                format!("{} + {offset}", variants[written as usize].name)
+                            } else if let Some((body, _)) = hir.const_body(konst) {
+                                let mut out = String::new();
+                                Printer {
+                                    hir,
+                                    body,
+                                    out: &mut out,
+                                    indent: 0,
+                                }
+                                .expr(body.root);
+                                out
+                            } else {
+                                "<error>".to_owned()
+                            }
+                        }
+                    };
+                    format!("{}{fields} = {discriminant}", v.name)
                 })
                 .collect();
             let repr = s.repr.map_or(String::new(), |r| format!("#[repr({r})] "));

@@ -1615,113 +1615,128 @@ pub fn check_trivial_bounds(
 /// structs they name, given the bounds in scope where they are written:
 /// `W<u8>` with `struct W<T: Tr>` needs `u8: Tr` (E0277). As in rustc, a
 /// struct's bounds are not assumed where it is named, so `fn f<T>(w:
-/// W<T>)` needs `T: Tr` too. The types in bounds are checked too.
+/// W<T>)` needs `T: Tr` too, and an associated type needs its trait:
+/// `<T as Tr>::Out` needs `T: Tr`. The types in bounds are checked too.
+/// Each unmet bound is reported once per item, at the innermost type
+/// that needs it where it is first met, as rustc does.
 pub fn check_well_formed(
     items: &ItemTree,
     sigs: &Signatures,
     from: ItemCounts,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if sigs.struct_predicates.iter().next().is_none()
-        && sigs.struct_projections.iter().next().is_none()
-    {
-        return;
-    }
     let scope = |predicates: Vec<Predicate>, mut projections: Vec<Projection>| {
         let env = elaborate(sigs, &predicates);
         projections.extend(implied_projections(sigs, &env));
         (env, projections)
     };
+    // Without bounds on structs, only the items that name associated
+    // types have anything to check.
+    let struct_bounds = sigs.struct_predicates.iter().next().is_some()
+        || sigs.struct_projections.iter().next().is_some();
+    let aliased = |tys: &[Ty]| tys.iter().any(|t| t.has_aliases());
+    let aliased_bounds = |predicates: &[Predicate], declared: &[Projection]| {
+        predicates
+            .iter()
+            .any(|p| p.self_ty.has_aliases() || aliased(p.trait_ref.args))
+            || declared
+                .iter()
+                .any(|q| q.ty.has_aliases() || aliased(q.alias.args))
+    };
+    let aliased_owner = |owner: Option<Owner>| {
+        let (predicates, declared) = match owner {
+            Some(Owner::Impl(imp)) => (
+                sigs.impl_predicates.get(imp),
+                sigs.impl_projections.get(imp),
+            ),
+            Some(Owner::Trait(t)) => (sigs.trait_predicates.get(t), sigs.trait_projections.get(t)),
+            None => return false,
+        };
+        aliased_bounds(
+            predicates.map_or(&[][..], |p| p),
+            declared.map_or(&[][..], |p| p),
+        )
+    };
     for (id, s) in items.structs.iter().skip(from.structs as usize) {
         let own = sigs.struct_predicates.get(id).map_or(&[][..], |p| p);
         let declared = sigs.struct_projections.get(id).map_or(&[][..], |p| p);
+        if !struct_bounds && !aliased(sigs.structs[id]) && !aliased_bounds(own, declared) {
+            continue;
+        }
         let (env, projections) = scope(own.to_vec(), declared.to_vec());
         let wf = WfScope {
             env: &env,
             projections: &projections,
+            aliases: true,
         };
-        for (field, &ty) in crate::all_fields(s).zip(sigs.structs[id]) {
-            wf_check(
-                items,
-                sigs,
-                diagnostics,
-                s.loc.file,
-                &wf,
-                ty,
-                Some(&field.ty),
-                WfRange::at(field.range),
-            );
-        }
-        wf_bounds(
-            items,
-            sigs,
-            diagnostics,
-            s.loc.file,
-            &wf,
-            &s.generics,
-            own,
-            declared,
+        let span = TextRange::new(
+            s.def_range.start(),
+            s.def_range.end().max(s.generics.range.end()),
         );
+        let mut check = WfCheck::new(items, sigs, s.loc.file, &wf, span, diagnostics);
+        for (field, &ty) in crate::all_fields(s).zip(sigs.structs[id]) {
+            check.ty(ty, Some(&field.ty), WfRange::at(field.range));
+        }
+        check.bounds(&s.generics, own, declared);
     }
     for (id, imp) in items.impls.iter().skip(from.impls as usize) {
         let own = sigs.impl_predicates.get(id).map_or(&[][..], |p| p);
         let declared = sigs.impl_projections.get(id).map_or(&[][..], |p| p);
+        let types = sigs.impl_types.get(id).map_or(&[][..], |t| t);
+        let trait_args = sigs.impl_traits.get(id).map_or(&[][..], |t| t.args);
+        if !struct_bounds
+            && !sigs.impls[id].has_aliases()
+            && !aliased(trait_args)
+            && !types.iter().any(|&(_, t)| t.has_aliases())
+            && !aliased_bounds(own, declared)
+        {
+            continue;
+        }
+        // rustc checks no more of a block with a parameter its header does
+        // not constrain (E0207).
+        let constrained = (0..imp.generics.params.len() as u32).all(|i| {
+            crate::mentions_param(sigs.impls[id], i)
+                || trait_args.iter().any(|&a| crate::mentions_param(a, i))
+        });
+        if !constrained {
+            continue;
+        }
         let (env, projections) = scope(own.to_vec(), declared.to_vec());
         let wf = WfScope {
             env: &env,
             projections: &projections,
+            aliases: true,
         };
-        // rustc reports a header's types at the whole type.
-        wf_check(
-            items,
-            sigs,
-            diagnostics,
-            imp.file,
-            &wf,
-            sigs.impls[id],
-            None,
-            WfRange::at(imp.self_range),
-        );
+        let mut check = WfCheck::new(items, sigs, imp.file, &wf, imp.def_range, diagnostics);
+        // rustc reports the bounds of structs in a header's types at the
+        // whole type, and associated types where they are.
+        let whole = |range| WfRange {
+            whole: Some(range),
+            ..WfRange::at(range)
+        };
+        check.ty(sigs.impls[id], Some(&imp.self_ty), whole(imp.self_range));
         if let (Some(t), Some(bound)) = (sigs.impl_traits.get(id), &imp.trait_ref) {
-            for &arg in t.args {
-                wf_check(
-                    items,
-                    sigs,
-                    diagnostics,
-                    imp.file,
-                    &wf,
-                    arg,
-                    None,
-                    WfRange::at(bound.range),
-                );
+            let written = bound.path.args.last().and_then(Option::as_ref);
+            for (i, &arg) in t.args.iter().enumerate() {
+                let part = written.and_then(|a| Some((a.types.get(i)?, a.ranges[i])));
+                let at = WfRange {
+                    whole: Some(bound.range),
+                    ..WfRange::at(part.map_or(bound.range, |(_, r)| r))
+                };
+                check.ty(arg, part.map(|(t, _)| t), at);
             }
         }
-        let types = sigs.impl_types.get(id).map_or(&[][..], |t| t);
         for (written, &(_, ty)) in imp.types.iter().zip(types) {
-            wf_check(
-                items,
-                sigs,
-                diagnostics,
-                imp.file,
-                &wf,
-                ty,
-                Some(&written.ty),
-                WfRange::at(written.ty_range),
-            );
+            check.ty(ty, Some(&written.ty), WfRange::at(written.ty_range));
         }
-        wf_bounds(
-            items,
-            sigs,
-            diagnostics,
-            imp.file,
-            &wf,
-            &imp.generics,
-            own,
-            declared,
-        );
+        check.bounds(&imp.generics, own, declared);
     }
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let own = sigs.trait_predicates.get(id).map_or(&[][..], |p| p);
+        let declared = sigs.trait_projections.get(id).map_or(&[][..], |p| p);
+        if !struct_bounds && !aliased_bounds(own, declared) {
+            continue;
+        }
         let (env, projections) = scope(
             owner_predicates(items, sigs, Some(Owner::Trait(id))),
             Vec::new(),
@@ -1729,44 +1744,63 @@ pub fn check_well_formed(
         let wf = WfScope {
             env: &env,
             projections: &projections,
+            aliases: true,
         };
-        let declared = sigs.trait_projections.get(id).map_or(&[][..], |p| p);
-        wf_bounds(
-            items,
-            sigs,
-            diagnostics,
-            t.loc.file,
-            &wf,
+        let span = TextRange::new(
+            t.def_range.start(),
+            t.def_range.end().max(t.generics.range.end()),
+        );
+        WfCheck::new(items, sigs, t.loc.file, &wf, span, diagnostics).bounds(
             &t.generics,
             own,
             declared,
         );
     }
     for (id, konst) in items.consts.iter().skip(from.consts as usize) {
+        if !struct_bounds && !sigs.consts[id].has_aliases() && !aliased_owner(konst.owner) {
+            continue;
+        }
         let (env, projections) = scope(owner_predicates(items, sigs, konst.owner), Vec::new());
         let wf = WfScope {
             env: &env,
             projections: &projections,
+            aliases: true,
         };
-        wf_check(
+        let mut check = WfCheck::new(
             items,
             sigs,
-            diagnostics,
             konst.loc.file,
             &wf,
+            konst.def_range,
+            diagnostics,
+        );
+        check.ty(
             sigs.consts[id],
             Some(&konst.ty),
             WfRange::at(konst.ty_range),
         );
+        check.owner_bounds(konst.owner);
     }
     for (id, f) in items.functions.iter().skip(from.functions as usize) {
+        let sig = &sigs.fns[id];
+        let own = sigs.fn_predicates.get(id).map_or(&[][..], |p| p);
+        let declared = sigs.fn_projections.get(id).map_or(&[][..], |p| p);
+        if !struct_bounds
+            && !aliased(&sig.params)
+            && !sig.ret.has_aliases()
+            && !aliased_bounds(own, declared)
+            && !aliased_owner(f.owner)
+        {
+            continue;
+        }
         let env = elaborate(sigs, &predicates_of(items, sigs, id));
         let projections = projections_of(items, sigs, id);
         let wf = WfScope {
             env: &env,
             projections: &projections,
+            aliases: true,
         };
-        let sig = &sigs.fns[id];
+        let mut check = WfCheck::new(items, sigs, f.loc.file, &wf, f.sig_range, diagnostics);
         for (i, (param, &ty)) in f.params.iter().zip(&sig.params).enumerate() {
             // `self` in `&self`, as rustc points, but the whole of it for
             // what an associated type is.
@@ -1774,43 +1808,20 @@ pub fn check_well_formed(
                 WfRange {
                     bound: TextRange::new(param.range.end() - 4, param.range.end()),
                     projection: param.range,
+                    whole: None,
                 }
             } else {
                 WfRange::at(param.range)
             };
-            wf_check(
-                items,
-                sigs,
-                diagnostics,
-                f.loc.file,
-                &wf,
-                ty,
-                Some(&param.ty),
-                range,
-            );
+            check.ty(ty, Some(&param.ty), range);
         }
-        wf_check(
-            items,
-            sigs,
-            diagnostics,
-            f.loc.file,
-            &wf,
-            sig.ret,
-            Some(&f.ret),
-            WfRange::at(f.ret_range),
-        );
-        let own = sigs.fn_predicates.get(id).map_or(&[][..], |p| p);
-        let declared = sigs.fn_projections.get(id).map_or(&[][..], |p| p);
-        wf_bounds(
-            items,
-            sigs,
-            diagnostics,
-            f.loc.file,
-            &wf,
-            &f.generics,
-            own,
-            declared,
-        );
+        check.ty(sig.ret, Some(&f.ret), WfRange::at(f.ret_range));
+        check.owner_bounds(f.owner);
+        check.bounds(&f.generics, own, declared);
+        if f.has_body {
+            let types = f.params.iter().map(|p| p.range).zip(sig.params.iter());
+            check.normalized(types.chain([(f.ret_range, &sig.ret)]));
+        }
         // A trait's method in an `impl` block: its trait's signature, for
         // the block's types, at the whole signature, given the method's
         // bounds in the trait as well.
@@ -1847,93 +1858,246 @@ pub fn check_well_formed(
         let wf = WfScope {
             env: &env,
             projections: &projections,
+            aliases: false,
         };
         let required = sigs.fns[required].subst(&args);
+        let mut check = WfCheck::new(items, sigs, f.loc.file, &wf, f.def_range, diagnostics);
         for &ty in required.params.iter().chain([&required.ret]) {
-            wf_check(
-                items,
-                sigs,
-                diagnostics,
-                f.loc.file,
-                &wf,
-                ty,
-                None,
-                WfRange::at(f.def_range),
-            );
+            check.ty(ty, None, WfRange::at(f.def_range));
         }
     }
 }
 
-/// Reports how `ty`, written as `written`, fails the bounds of the
-/// structs it names, given `scope`.
-#[allow(clippy::too_many_arguments)]
-fn wf_check(
-    items: &ItemTree,
-    sigs: &Signatures,
-    diagnostics: &mut Vec<Diagnostic>,
+/// The well-formedness checks of one item's signature, which report
+/// each unmet bound once, as rustc does.
+struct WfCheck<'a, 'd> {
+    items: &'a ItemTree,
+    sigs: &'a Signatures,
     file: FileId,
-    scope: &WfScope<'_>,
-    ty: Ty,
-    written: Option<&TypeRef>,
-    range: WfRange,
-) {
-    let mut found = Vec::new();
-    unmet_struct_bounds(
-        items,
-        sigs,
-        scope,
-        ty,
-        written,
-        range,
-        &mut Vec::new(),
-        &mut found,
-    );
-    for (range, message) in found {
-        let d = Diagnostic {
+    scope: &'a WfScope<'a>,
+    /// Where an associated type in the item's bounds whose trait does
+    /// not hold is reported: the item's signature, or its name.
+    span: TextRange,
+    diagnostics: &'d mut Vec<Diagnostic>,
+    /// The unmet bounds reported.
+    reported: Vec<Predicate>,
+}
+
+impl<'a, 'd> WfCheck<'a, 'd> {
+    fn new(
+        items: &'a ItemTree,
+        sigs: &'a Signatures,
+        file: FileId,
+        scope: &'a WfScope<'a>,
+        span: TextRange,
+        diagnostics: &'d mut Vec<Diagnostic>,
+    ) -> WfCheck<'a, 'd> {
+        WfCheck {
+            items,
+            sigs,
             file,
+            scope,
+            span,
+            diagnostics,
+            reported: Vec::new(),
+        }
+    }
+
+    fn report(&mut self, range: TextRange, message: String) {
+        let d = Diagnostic {
+            file: self.file,
             range,
             message,
         };
-        if !diagnostics.contains(&d) {
-            diagnostics.push(d);
+        if !self.diagnostics.contains(&d) {
+            self.diagnostics.push(d);
+        }
+    }
+
+    /// Reports how `ty`, written as `written`, fails the bounds of the
+    /// structs and traits of associated types it names.
+    fn ty(&mut self, ty: Ty, written: Option<&TypeRef>, range: WfRange) {
+        let mut found = Vec::new();
+        unmet_struct_bounds(
+            self.items,
+            self.sigs,
+            self.scope,
+            ty,
+            written,
+            range,
+            &mut self.reported,
+            &mut found,
+        );
+        for (range, message) in found {
+            self.report(range, message);
+        }
+    }
+
+    /// [`Self::ty`] for the types in bounds, `generics` as written and
+    /// `predicates` and `declared` as resolved: each at the bound, or
+    /// the binding, that has it.
+    fn bounds(&mut self, generics: &Generics, predicates: &[Predicate], declared: &[Projection]) {
+        self.bound_aliases(predicates, declared);
+        if predicates.len() != generics.predicates.len() {
+            return;
+        }
+        for (written, p) in generics.predicates.iter().zip(predicates) {
+            let at = WfRange::at(written.bound.range);
+            for ty in std::iter::once(p.self_ty).chain(p.trait_ref.args.iter().copied()) {
+                self.ty(ty, None, at);
+            }
+            let bindings = written.bound.path.args.last().into_iter().flatten();
+            for b in bindings.flat_map(|a| a.bindings.iter()) {
+                let q = declared.iter().find(|q| {
+                    q.alias.name == b.name
+                        && q.alias.trait_ == p.trait_ref.trait_
+                        && q.alias.args[0] == p.self_ty
+                });
+                if let Some(q) = q {
+                    self.ty(q.ty, Some(&b.ty), WfRange::at(b.range()));
+                }
+            }
+        }
+    }
+
+    /// The associated types in the bounds of `owner`, the `impl` block or
+    /// trait of an associated item, which rustc reports at the item.
+    fn owner_bounds(&mut self, owner: Option<Owner>) {
+        let (predicates, declared) = match owner {
+            Some(Owner::Impl(imp)) => (
+                self.sigs.impl_predicates.get(imp),
+                self.sigs.impl_projections.get(imp),
+            ),
+            Some(Owner::Trait(t)) => (
+                self.sigs.trait_predicates.get(t),
+                self.sigs.trait_projections.get(t),
+            ),
+            None => return,
+        };
+        self.bound_aliases(
+            predicates.map_or(&[][..], |p| p),
+            declared.map_or(&[][..], |p| p),
+        );
+    }
+
+    /// Reports the associated types in `predicates` and `declared` whose
+    /// traits do not hold, at the item: rustc normalizes an item's bounds
+    /// there.
+    fn bound_aliases(&mut self, predicates: &[Predicate], declared: &[Projection]) {
+        if !self.scope.aliases {
+            return;
+        }
+        let mut aliases = Vec::new();
+        for p in predicates {
+            collect_aliases(p.self_ty, &mut aliases);
+            for &a in p.trait_ref.args {
+                collect_aliases(a, &mut aliases);
+            }
+        }
+        for q in declared {
+            for &a in q.alias.args {
+                collect_aliases(a, &mut aliases);
+            }
+            collect_aliases(q.ty, &mut aliases);
+        }
+        for alias in aliases {
+            let goal = normalize_predicate(self.items, self.sigs, alias_predicate(alias));
+            if holds(self.items, self.sigs, self.scope.env, goal) {
+                continue;
+            }
+            let leaf = unmet_leaf(self.items, self.sigs, self.scope.env, goal, 0);
+            if !self.reported.contains(&leaf) {
+                self.reported.push(leaf);
+                let message = unmet(self.items, leaf);
+                self.report(self.span, message);
+            }
+        }
+    }
+
+    /// What type checking a function's body adds, which normalizes the
+    /// types of its signature, `types` with where each is written: an
+    /// associated type whose trait does not hold, at the whole type, each
+    /// associated type once, unless that is where its check reported it.
+    fn normalized<'t>(&mut self, types: impl Iterator<Item = (TextRange, &'t Ty)>) {
+        if !self.scope.aliases {
+            return;
+        }
+        let mut seen = Vec::new();
+        for (range, &ty) in types {
+            let mut aliases = Vec::new();
+            collect_aliases(ty, &mut aliases);
+            for alias in aliases {
+                if seen.contains(&alias) {
+                    continue;
+                }
+                seen.push(alias);
+                let goal = normalize_predicate(self.items, self.sigs, alias_predicate(alias));
+                if !holds(self.items, self.sigs, self.scope.env, goal) {
+                    let leaf = unmet_leaf(self.items, self.sigs, self.scope.env, goal, 0);
+                    let message = unmet(self.items, leaf);
+                    self.report(range, message);
+                }
+            }
         }
     }
 }
 
-/// [`wf_check`] for the types in bounds, `generics` as written and
-/// `predicates` and `declared` as resolved: each at the bound, or the
-/// binding, that has it.
-#[allow(clippy::too_many_arguments)]
-fn wf_bounds(
-    items: &ItemTree,
-    sigs: &Signatures,
-    diagnostics: &mut Vec<Diagnostic>,
-    file: FileId,
-    scope: &WfScope<'_>,
-    generics: &Generics,
-    predicates: &[Predicate],
-    declared: &[Projection],
-) {
-    if predicates.len() != generics.predicates.len() {
-        return;
+/// Whether the header of `impl` block `imp` names an associated type
+/// whose trait holds for no types the block may be for, given its
+/// bounds: then it overlaps no other block, as rustc finds.
+fn broken_header(items: &ItemTree, sigs: &Signatures, imp: ImplId) -> bool {
+    let self_ty = sigs.impls.get(imp).copied().unwrap_or(Ty::ERROR);
+    let trait_args = sigs.impl_traits.get(imp).map_or(&[][..], |t| t.args);
+    let header = || std::iter::once(self_ty).chain(trait_args.iter().copied());
+    if !header().any(|t| t.has_aliases()) {
+        return false;
     }
-    for (written, p) in generics.predicates.iter().zip(predicates) {
-        let at = WfRange::at(written.bound.range);
-        for ty in std::iter::once(p.self_ty).chain(p.trait_ref.args.iter().copied()) {
-            wf_check(items, sigs, diagnostics, file, scope, ty, None, at);
+    let own = sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
+    let env = elaborate(sigs, own);
+    let mut aliases = Vec::new();
+    header().for_each(|t| collect_aliases(t, &mut aliases));
+    aliases.into_iter().any(|alias| {
+        let goal = normalize_predicate(items, sigs, alias_predicate(alias));
+        if holds(items, sigs, &env, goal) {
+            return false;
         }
-        let bindings = written.bound.path.args.last().into_iter().flatten();
-        for b in bindings.flat_map(|a| a.bindings.iter()) {
-            let q = declared.iter().find(|q| {
-                q.alias.name == b.name
-                    && q.alias.trait_ == p.trait_ref.trait_
-                    && q.alias.args[0] == p.self_ty
-            });
-            if let Some(q) = q {
-                let at = WfRange::at(b.range());
-                wf_check(items, sigs, diagnostics, file, scope, q.ty, Some(&b.ty), at);
+        let impls = items.trait_impls.get(&goal.trait_ref.trait_);
+        !impls.into_iter().flatten().any(|&other| {
+            sigs.impls
+                .get(other)
+                .is_some_and(|&ty| crate::overlap(ty, goal.self_ty))
+        })
+    })
+}
+
+/// Whether `ty` has an associated type whose trait does not hold given
+/// `env`.
+fn broken_alias(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -> bool {
+    if !ty.has_aliases() {
+        return false;
+    }
+    let mut aliases = Vec::new();
+    collect_aliases(ty, &mut aliases);
+    aliases.into_iter().any(|alias| {
+        let goal = normalize_predicate(items, sigs, alias_predicate(alias));
+        !holds(items, sigs, env, goal)
+    })
+}
+
+/// The associated types in `ty`, those in their arguments first.
+fn collect_aliases(ty: Ty, out: &mut Vec<AliasTy>) {
+    match ty.kind() {
+        TyKind::Alias(alias) => {
+            for &a in alias.args {
+                collect_aliases(a, out);
             }
+            out.push(alias);
         }
+        TyKind::Adt(_, list) | TyKind::Tuple(list) => {
+            list.iter().for_each(|&t| collect_aliases(t, out));
+        }
+        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => collect_aliases(t, out),
+        _ => {}
     }
 }
 
@@ -1942,6 +2106,9 @@ fn wf_bounds(
 pub struct WfScope<'a> {
     pub env: &'a [Predicate],
     pub projections: &'a [Projection],
+    /// Whether associated types need their traits: not where a trait's
+    /// signature is checked for an `impl` block's types.
+    pub aliases: bool,
 }
 
 /// Where a type's unmet bounds are reported: E0277s at `bound`, E0271s
@@ -1950,6 +2117,9 @@ pub struct WfScope<'a> {
 struct WfRange {
     bound: TextRange,
     projection: TextRange,
+    /// Where the bounds of structs are reported instead, if not at the
+    /// type itself: an `impl` block's header's whole type.
+    whole: Option<TextRange>,
 }
 
 impl WfRange {
@@ -1957,6 +2127,15 @@ impl WfRange {
         WfRange {
             bound: range,
             projection: range,
+            whole: None,
+        }
+    }
+
+    /// The range of a type inside this one, written at `range`.
+    fn inner(self, range: TextRange) -> WfRange {
+        WfRange {
+            whole: self.whole,
+            ..WfRange::at(range)
         }
     }
 }
@@ -2011,7 +2190,9 @@ fn unmet_struct_bounds(
     let parts = written_parts(written);
     let inner = |i: usize| {
         let part = parts.get(i).copied();
-        let at = part.and_then(written_range).map_or(range, WfRange::at);
+        let at = part
+            .and_then(written_range)
+            .map_or(range, |r| range.inner(r));
         (part, at)
     };
     match ty.kind() {
@@ -2023,7 +2204,17 @@ fn unmet_struct_bounds(
             let normalized = |t: Ty| normalize(items, sigs, scope.projections, t);
             let preds = sigs.struct_predicates.get(adt.strukt).into_iter().flatten();
             for p in preds {
-                let p = normalize_predicate(items, sigs, p.subst(args));
+                let p = p.subst(args);
+                // An associated type whose trait does not hold is
+                // reported itself, as an error type.
+                if scope.aliases
+                    && std::iter::once(p.self_ty)
+                        .chain(p.trait_ref.args.iter().copied())
+                        .any(|t| broken_alias(items, sigs, scope.env, t))
+                {
+                    continue;
+                }
+                let p = normalize_predicate(items, sigs, p);
                 let p = Predicate {
                     self_ty: normalized(p.self_ty),
                     trait_ref: TraitRef {
@@ -2043,7 +2234,7 @@ fn unmet_struct_bounds(
                 let leaf = unmet_leaf(items, sigs, scope.env, p, 0);
                 if !reported.contains(&leaf) {
                     reported.push(leaf);
-                    out.push((range.bound, unmet(items, leaf)));
+                    out.push((range.whole.unwrap_or(range.bound), unmet(items, leaf)));
                 }
             }
             for q in sigs
@@ -2079,12 +2270,56 @@ fn unmet_struct_bounds(
                 let expected = normalized(q.ty);
                 if found != expected && found != Ty::ERROR && expected != Ty::ERROR {
                     out.push((
-                        range.projection,
+                        range.whole.unwrap_or(range.projection),
                         format!(
                             "type mismatch resolving `{} == {expected}`",
                             Ty::alias(alias)
                         ),
                     ));
+                }
+            }
+        }
+        // An associated type needs its trait: `<T as Tr>::Out` needs
+        // `T: Tr`, at the type, as rustc points.
+        TyKind::Alias(alias) if scope.aliases => {
+            let qself = match written {
+                Some(TypeRef::Path(path)) => path.qself.as_deref(),
+                _ => None,
+            };
+            for (i, &arg) in alias.args.iter().enumerate() {
+                // `T` and the trait's arguments, as written.
+                let (part, at) = match qself {
+                    Some(q) if i == 0 => (Some(&q.ty), range.inner(q.ty_range)),
+                    Some(q) => {
+                        let args = q.trait_.as_ref().and_then(|t| t.args.last()?.as_ref());
+                        match args {
+                            Some(a) if i - 1 < a.types.len() => {
+                                (Some(&a.types[i - 1]), range.inner(a.ranges[i - 1]))
+                            }
+                            _ => (None, range),
+                        }
+                    }
+                    None => (None, range),
+                };
+                unmet_struct_bounds(items, sigs, scope, arg, part, at, reported, out);
+            }
+            let normalized = |t: Ty| normalize(items, sigs, scope.projections, t);
+            let goal = alias_predicate(AliasTy {
+                args: Ty::list(
+                    &alias
+                        .args
+                        .iter()
+                        .map(|&a| normalized(a))
+                        .collect::<Vec<_>>(),
+                ),
+                ..alias
+            });
+            let goal = normalize_predicate(items, sigs, goal);
+            if !holds(items, sigs, scope.env, goal) {
+                let leaf = unmet_leaf(items, sigs, scope.env, goal, 0);
+                if !reported.contains(&leaf) {
+                    reported.push(leaf);
+                    out.push((range.bound, unmet(items, leaf)));
                 }
             }
         }
@@ -2244,8 +2479,9 @@ fn check_overlap(
             else {
                 continue;
             };
-            // A type that did not resolve was reported already.
-            if b == Ty::ERROR {
+            // A type that did not resolve, or names an associated type
+            // whose trait does not hold, was reported already.
+            if b == Ty::ERROR || broken_header(items, sigs, later) {
                 continue;
             }
             let b_header: Vec<Ty> = std::iter::once(b)
@@ -2260,6 +2496,7 @@ fn check_overlap(
                     .chain(a_ref.args.iter().copied())
                     .collect();
                 a_ty != Ty::ERROR
+                    && !broken_header(items, sigs, a)
                     && unify_headers(&a_header, &b_header).is_some()
                     && !excluded_by_bounds(items, sigs, a, later)
                     && !excluded_by_bounds(items, sigs, later, a)

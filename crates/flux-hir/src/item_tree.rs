@@ -164,6 +164,11 @@ pub struct Const {
     pub def_range: TextRange,
     /// The whole item.
     pub item_range: TextRange,
+    /// The enum and variant whose discriminant it is, written as an
+    /// expression other than a literal (`A = 1 << 2`): an anonymous
+    /// constant of the enum's `repr` type, in no scope, whose `node` is
+    /// the variant.
+    pub discriminant: Option<(StructId, u32)>,
 }
 
 /// What an associated item is in.
@@ -327,9 +332,22 @@ pub struct Variant {
     pub fields: Box<[Field]>,
     /// The value `as` casts give a fieldless enum's: written (`A = 5`),
     /// or one more than the previous variant's.
-    pub discriminant: i128,
+    pub discriminant: Discriminant,
     pub name_range: TextRange,
     pub def_range: TextRange,
+}
+
+/// A variant's discriminant, as far as the item tree knows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Discriminant {
+    /// Written as an integer literal, or counted from one (or from the
+    /// first variant's 0).
+    Value(i128),
+    /// The value of `konst`, the anonymous constant of an expression
+    /// written for this variant or an earlier one, plus `offset`, the
+    /// number of variants since, wrapping in the enum's `repr` type:
+    /// known once constants are evaluated.
+    Const { konst: ConstId, offset: u32 },
 }
 
 /// What a constructor, struct expression or pattern names: a struct, or
@@ -431,6 +449,16 @@ impl Struct {
     pub fn variant_count(&self) -> usize {
         self.variants.as_ref().map_or(1, |v| v.len())
     }
+
+    /// Whether an enum's discriminants are known only once constants
+    /// are evaluated: one is written as an expression other than a
+    /// literal.
+    pub fn has_const_discriminants(&self) -> bool {
+        self.variants
+            .iter()
+            .flatten()
+            .any(|v| matches!(v.discriminant, Discriminant::Const { .. }))
+    }
 }
 
 /// A function: one with a body, or one declared in an `extern` block.
@@ -478,6 +506,10 @@ pub struct Function {
     /// From the first keyword to the end of the signature, where rustc
     /// reports errors about the whole function: `fn f(x: i32) -> i32`.
     pub def_range: TextRange,
+    /// `def_range` with the `where` clause, and the `;` of a function
+    /// without a body: where rustc reports an associated type in its
+    /// bounds (or its block's or trait's) whose trait does not hold.
+    pub sig_range: TextRange,
     /// The whole item, body included.
     pub item_range: TextRange,
     /// `(x: i32)`
@@ -957,6 +989,30 @@ impl ItemTree {
     /// Whether `module` is in the crate being compiled.
     pub fn in_main_crate(&self, module: ModuleId) -> bool {
         self.modules[module].krate == self.main_crate()
+    }
+
+    /// Constant `id`'s name in messages: `N`, `_`, or rustc's
+    /// `m::E::A::{constant#0}` for a discriminant's, with the path of
+    /// the enum's module in its crate.
+    pub fn const_name(&self, id: ConstId) -> String {
+        let konst = &self.consts[id];
+        match (konst.name, konst.discriminant) {
+            (Some(name), _) => name.to_string(),
+            (None, Some((strukt, variant))) => {
+                let mut path = vec![format!(
+                    "{}::{{constant#0}}",
+                    self.structs[strukt].variant(variant).path()
+                )];
+                let mut module = &self.modules[self.structs[strukt].loc.module];
+                while let Some(parent) = module.parent {
+                    path.push(module.name.to_string());
+                    module = &self.modules[parent];
+                }
+                path.reverse();
+                path.join("::")
+            }
+            (None, None) => "_".to_owned(),
+        }
     }
 }
 
@@ -1925,8 +1981,15 @@ impl Collector<'_> {
         .flatten()
         .next()
         .map_or(0, |n| n.text_range().end());
+        let sig_end = if has_body {
+            f.where_clause()
+                .map_or(signature_end, |w| w.syntax().text_range().end())
+        } else {
+            f.syntax().text_range().end()
+        };
         let id = self.items.functions.alloc(Function {
             def_range: TextRange::new(def_start(f.syntax()), signature_end),
+            sig_range: TextRange::new(def_start(f.syntax()), sig_end),
             item_range: TextRange::new(def_start(f.syntax()), f.syntax().text_range().end()),
             param_list: f
                 .param_list()
@@ -2016,6 +2079,7 @@ impl Collector<'_> {
                 has_body,
                 def_range: TextRange::new(def_start, header_end),
                 item_range,
+                discriminant: None,
             }),
         )
     }
@@ -2176,9 +2240,17 @@ impl Collector<'_> {
         );
         let repr_name = repr.map_or("isize", |r| r.as_str());
         let values = int_range(repr_name);
+        // Whether a discriminant is an expression other than a literal,
+        // whose value is known only once constants are evaluated: then
+        // duplicates are found after evaluation.
+        let computed = all_variants
+            .clone()
+            .any(|v| v.expr().is_some_and(|e| discriminant_value(e).is_none()));
+        let strukt = StructId::from_raw(self.items.structs.len() as u32);
+        let generic_names: Vec<Symbol> = generics.params.iter().map(|p| p.name).collect();
         let mut variants: Vec<Variant> = Vec::new();
         // The next discriminant, `None` past the type's maximum.
-        let mut next = Some(0i128);
+        let mut next = Some(Discriminant::Value(0));
         // Whether a discriminant is written, which rustc allows on an
         // enum with fields only with an integer `repr`.
         let mut written = false;
@@ -2200,21 +2272,24 @@ impl Collector<'_> {
             let v_name = Symbol::intern(v_name.text());
             let v_range = TextRange::new(def_start(v.syntax()), v.syntax().text_range().end());
             let diagnostics = &mut self.items.diagnostics;
-            let discriminant = match v.expr() {
+            let placeholder = next.unwrap_or(Discriminant::Value(0));
+            // An expression, which becomes an anonymous constant.
+            let mut anonymous = None;
+            let mut discriminant = match v.expr() {
                 Some(expr) => {
                     written = true;
                     let range = expr.syntax().text_range();
                     match discriminant_value(expr) {
                         Some((_, _, Some((suffix, at)))) if suffix.as_str() != repr_name => {
                             diagnostics.push(Diagnostic::new(at, "mismatched types"));
-                            next.unwrap_or(0)
+                            placeholder
                         }
                         Some((true, _, _)) if repr_name.starts_with('u') => {
                             diagnostics.push(Diagnostic::new(
                                 range,
                                 format!("cannot apply unary operator `-` to type `{repr_name}`"),
                             ));
-                            next.unwrap_or(0)
+                            placeholder
                         }
                         Some((negative, value, _)) => {
                             let value = if negative {
@@ -2222,7 +2297,7 @@ impl Collector<'_> {
                             } else {
                                 i128::try_from(value).ok()
                             };
-                            match value {
+                            Discriminant::Value(match value {
                                 Some(value) if values.contains(&value) => value,
                                 None if repr_name == "u128" && !negative => {
                                     unsupported(
@@ -2239,15 +2314,13 @@ impl Collector<'_> {
                                     ));
                                     0
                                 }
-                            }
+                            })
                         }
                         None => {
-                            unsupported(
-                                diagnostics,
-                                range,
-                                "discriminants other than integer literals",
-                            );
-                            next.unwrap_or(0)
+                            if !generic_in_discriminant(expr, &generic_names, diagnostics) {
+                                anonymous = Some(range);
+                            }
+                            placeholder
                         }
                     }
                 }
@@ -2257,17 +2330,19 @@ impl Collector<'_> {
                         diagnostics
                             .push(Diagnostic::new(name_range, "enum discriminant overflowed"));
                         // As rustc, wrapped around.
-                        *values.start()
+                        Discriminant::Value(*values.start())
                     }
                 },
             };
-            if variants.iter().any(|p| p.discriminant == discriminant)
+            if !computed
+                && variants.iter().any(|p| p.discriminant == discriminant)
                 && !duplicates.contains(&discriminant)
+                && let Discriminant::Value(value) = discriminant
             {
                 duplicates.push(discriminant);
                 diagnostics.push(Diagnostic::new(
                     def_range,
-                    format!("discriminant value `{discriminant}` assigned more than once"),
+                    format!("discriminant value `{value}` assigned more than once"),
                 ));
             }
             if variants.iter().any(|p| p.name == v_name) {
@@ -2277,7 +2352,36 @@ impl Collector<'_> {
                 ));
                 continue;
             }
-            next = discriminant.checked_add(1).filter(|n| values.contains(n));
+            if let Some(range) = anonymous {
+                let konst = self.items.consts.alloc(Const {
+                    name: None,
+                    ty: TypeRef::Path(Path::single(Symbol::intern(repr_name))),
+                    ty_range: range,
+                    loc: ItemLoc {
+                        module: ctx.module,
+                        file: ctx.file,
+                        vis: Visibility::Public,
+                    },
+                    owner: None,
+                    node: v.syntax().id(),
+                    has_body: true,
+                    def_range: range,
+                    item_range: range,
+                    discriminant: Some((strukt, variants.len() as u32)),
+                });
+                discriminant = Discriminant::Const { konst, offset: 0 };
+            }
+            next = match discriminant {
+                Discriminant::Value(value) => value
+                    .checked_add(1)
+                    .filter(|n| values.contains(n))
+                    .map(Discriminant::Value),
+                // Overflow is found once the constant's value is known.
+                Discriminant::Const { konst, offset } => Some(Discriminant::Const {
+                    konst,
+                    offset: offset + 1,
+                }),
+            };
             variants.push(Variant {
                 name: v_name,
                 kind,
@@ -2493,6 +2597,7 @@ impl Collector<'_> {
             node,
             name_range: range,
             def_range: range,
+            sig_range: range,
             item_range: range,
             param_list: range,
             derived: Some((strukt, if copies { Derive::Copy } else { derive })),
@@ -2901,6 +3006,33 @@ fn discriminant_value(expr: ast::Expr<'_>) -> Option<(bool, u128, Option<(Symbol
     };
     let suffix = suffix.map(|s| (s, literal.syntax().text_range()));
     Some((negative, value, suffix))
+}
+
+/// Reports `Self` and the enum's type parameters in a discriminant of a
+/// generic enum, which rustc does not allow; whether there are any.
+fn generic_in_discriminant(
+    expr: ast::Expr<'_>,
+    generics: &[Symbol],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    if generics.is_empty() {
+        return false;
+    }
+    let mut found = false;
+    for token in expr.syntax().tokens() {
+        let message = match token.kind() {
+            SyntaxKind::SELF_TYPE_KW => {
+                "generic `Self` types are not permitted in enum discriminant values"
+            }
+            SyntaxKind::IDENT if generics.iter().any(|g| g.as_str() == token.text()) => {
+                "generic parameters may not be used in enum discriminant values"
+            }
+            _ => continue,
+        };
+        diagnostics.push(Diagnostic::new(token.text_range(), message));
+        found = true;
+    }
+    found
 }
 
 /// The values of integer type `name`, as far as an `i128` holds them;

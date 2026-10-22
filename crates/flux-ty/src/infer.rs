@@ -2,7 +2,7 @@
 
 mod solve;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use flux_arena::ArenaMap;
 use flux_hir::{
@@ -153,9 +153,14 @@ pub fn infer_const(
 ) -> InferenceResult {
     let data = &items.consts[konst];
     let ret = sigs.consts[konst];
+    // A discriminant's `Self` is its enum, which is not generic.
+    let enum_ty = data.discriminant.map(|(strukt, _)| {
+        let name = items.structs[strukt].name;
+        Ty::adt(strukt, name, &[])
+    });
     let owner = Owner {
         module: data.loc.module,
-        self_ty: self_ty(sigs, data.owner),
+        self_ty: enum_ty.or_else(|| self_ty(sigs, data.owner)),
         generics: generic_names(items, data.owner, &Generics::default()),
         is_unsafe: false,
         const_context: Some("constants"),
@@ -172,8 +177,13 @@ pub fn infer_const(
     };
     let mut ctx = Ctx::new(items, sigs, owner, body, source_map);
     // What the constant's type needs is reported with it, not again in
-    // its value, as rustc does.
+    // its value, as rustc does; but the traits of its associated types
+    // are needed again to normalize it, at the value.
     ctx.signature_wf(ret);
+    if ret.has_aliases() {
+        let range = ctx.range(body.root);
+        ctx.require_alias_traits(ret, None, range);
+    }
     let ret = ctx.normalize(ret, data.def_range);
     ctx.expect(body.root, ret);
     let ty = ctx.infer_expr(body.root);
@@ -753,8 +763,13 @@ impl Ctx<'_> {
         );
     }
 
-    fn resolve_type_ref(&mut self, ty: TypeRefId) -> Ty {
-        let range = self.source_map.types.get(ty).copied().unwrap_or_default();
+    fn resolve_type_ref(&mut self, ty_ref: TypeRefId) -> Ty {
+        let range = self
+            .source_map
+            .types
+            .get(ty_ref)
+            .copied()
+            .unwrap_or_default();
         let scope = TypeScope {
             self_ty: self.self_ty,
             generics: &self.generics,
@@ -766,14 +781,15 @@ impl Ctx<'_> {
         let ty = resolve_or_report(
             self.items,
             self.module,
-            &self.body.types[ty],
+            &self.body.types[ty_ref],
             scope,
             range,
             &mut self.diagnostics,
         );
         let ty = self.fill_placeholders(ty, range);
         if ty.has_aliases() {
-            self.require_alias_traits(ty, range);
+            let body = self.body;
+            self.require_alias_traits(ty, Some(&body.types[ty_ref]), range);
         }
         let ty = self.normalize(ty, range);
         self.register_wf(ty, range, true);
@@ -3851,16 +3867,17 @@ impl Ctx<'_> {
     }
 
     fn run_deferred(&mut self, reported: &mut HashSet<InferVar>) {
-        // Operands of `-`, where a literal may reach one past the maximum.
-        let negated: HashSet<ExprId> = self
+        // Operands of `-`, where a literal may reach one past the maximum,
+        // with the negation, where rustc reports one out of range.
+        let negated: HashMap<ExprId, ExprId> = self
             .body
             .exprs
             .iter()
-            .filter_map(|(_, e)| match e {
+            .filter_map(|(id, e)| match e {
                 Expr::Unary {
                     op: UnaryOp::Neg,
                     operand,
-                } => Some(*operand),
+                } => Some((*operand, id)),
                 _ => None,
             })
             .collect();
@@ -3925,14 +3942,15 @@ impl Ctx<'_> {
                         continue;
                     };
                     let max = int.max();
-                    let limit = if negated.contains(&expr) && int.is_signed() {
+                    let negation = negated.get(&expr).copied();
+                    let limit = if negation.is_some() && int.is_signed() {
                         max + 1
                     } else {
                         max
                     };
                     if value > limit {
                         self.error(
-                            self.range(expr),
+                            self.range(negation.unwrap_or(expr)),
                             format!("literal out of range for `{int}`", int = int.name()),
                         );
                     }

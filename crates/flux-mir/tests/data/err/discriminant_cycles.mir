@@ -1,0 +1,109 @@
+fn matches() -> isize {
+    let mut _0: isize;
+    let _1: Matched;
+    let _2: isize;
+
+    bb0: {
+        _1 = Matched::A;
+        _2 = discriminant(_1);
+        switchInt(copy _2) -> [1: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb6;
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _0 = const 5_isize;
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        _0 = const 6_isize;
+        goto -> bb1;
+    }
+}
+
+fn value(_1: Valued) -> isize {
+    let mut _0: isize;
+    let _2: isize;
+    let _3: isize;
+
+    bb0: {
+        _3 = discriminant(_1);
+        _2 = copy _3 as isize;
+        _0 = Add(copy _2, const 10_isize);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn <Valued as ::core::clone::Clone>::clone(_1: &Valued) -> Valued {
+    let mut _0: Valued;
+    let _2: ();
+    let _3: isize;
+    let _4: isize;
+
+    bb0: {
+        _3 = discriminant((*_1));
+        switchInt(copy _3) -> [1: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        _0 = copy (*_1);
+        return;
+    }
+
+    bb2: {
+        _4 = discriminant((*_1));
+        switchInt(copy _4) -> [Valued::B: bb6, otherwise: bb5];
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _2 = const ();
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        goto -> bb7;
+    }
+
+    bb7: {
+        _2 = const ();
+        goto -> bb1;
+    }
+}
+
+error 306..324: cycle detected when simplifying constant for the type system `Itself::A::{constant#0}`
+error 364..377: cycle detected when simplifying constant for the type system `ThroughConst::A::{constant#0}`
+error 455..473: cycle detected when simplifying constant for the type system `First::A::{constant#0}`
+error 563..572: cycle detected when simplifying constant for the type system `Matched::B::{constant#0}`
+error 736..752: cycle detected when simplifying constant for the type system `Valued::B::{constant#0}`

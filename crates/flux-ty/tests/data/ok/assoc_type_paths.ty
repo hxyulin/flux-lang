@@ -1,0 +1,18 @@
+struct S<T> { 0: T }
+struct Wrap<T> { 0: T }
+fn q(<Self as Tr>::Out) -> <Self as Tr>::Out
+fn m(<T as Tr>::Out) -> <T as Tr>::Out
+    x@0: <T as Tr>::Out
+fn a<T>(<T as Tr>::Out) -> <T as Tr>::Out
+    x@0: <T as Tr>::Out
+fn b<T>(<<T as Dim>::Smaller as Dim>::Smaller) -> <<T as Dim>::Smaller as Dim>::Smaller
+    x@0: <<T as Dim>::Smaller as Dim>::Smaller
+fn c<T>(<Wrap<T> as Tr>::Out) -> T
+    x@0: T
+fn d<T, U>(<T as Gen<U>>::Out) -> <T as Gen<U>>::Out
+    x@0: <T as Gen<U>>::Out
+fn e(<u16 as Gen<u8>>::Out) -> u8
+    x@0: u8
+    y@1: u16
+    _z@2: (u8, u16)
+fn main() -> ()

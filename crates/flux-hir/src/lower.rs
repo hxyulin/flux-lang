@@ -40,6 +40,16 @@ pub struct LoweredBody {
 /// without parameters.
 pub fn lower_const(tree: &SyntaxTree, items: &ItemTree, konst: ConstId) -> LoweredBody {
     let data = &items.consts[konst];
+    if let Some((strukt, _)) = data.discriminant {
+        // An enum's discriminant, in the enum's scope: `Self` is the
+        // enum, which is not generic (reported otherwise).
+        let v = ast::Variant::cast(tree.node(data.node)).expect("discriminants point at variants");
+        let mut ctx = Ctx::new(items, data.loc.module, None, None);
+        ctx.in_impl = true;
+        ctx.self_target = Some(ImplTarget::Struct(strukt));
+        let root = ctx.lower_opt(v.expr(), v.syntax());
+        return ctx.finish(Vec::new(), root);
+    }
     let c = ast::Const::cast(tree.node(data.node)).expect("constants point at CONST nodes");
     let mut ctx = Ctx::new(items, data.loc.module, data.owner, None);
     let root = ctx.lower_opt(c.body(), c.syntax());
