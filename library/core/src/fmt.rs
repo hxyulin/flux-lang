@@ -832,8 +832,8 @@ impl Escape {
 }
 
 /// How `{:?}` escapes `c` in a string (`in_str`) or a `char` literal,
-/// if it does: rustc's `char::escape_debug_ext`, with its Unicode
-/// tables approximated by the ranges below.
+/// if it does: rustc's `char::escape_debug_ext`, which `{:?}` calls with
+/// grapheme-extending characters escaped, through rustc's Unicode tables.
 pub(crate) fn escape_debug(c: char, escape_double: bool, escape_single: bool) -> Option<Escape> {
     match c {
         '"' if escape_double => Some(Escape::Backslash('"')),
@@ -843,41 +843,12 @@ pub(crate) fn escape_debug(c: char, escape_double: bool, escape_single: bool) ->
         '\t' => Some(Escape::Backslash('t')),
         '\r' => Some(Escape::Backslash('r')),
         '\0' => Some(Escape::Backslash('0')),
-        '\x20'..='\x7E' | '\u{FF9E}' | '\u{FF9F}' => None,
-        _ if needs_unicode_escape(c as u32) => Some(Escape::Unicode(c as u32)),
+        '\x20'..='\x7E' => None,
+        _ if crate::unicode::is_grapheme_extended(c) || !crate::unicode::is_printable(c) => {
+            Some(Escape::Unicode(c as u32))
+        }
         _ => None,
     }
-}
-
-/// Control, private-use, whitespace, grapheme-extending, default
-/// ignorable and format characters, as far as these ranges cover them.
-fn needs_unicode_escape(c: u32) -> bool {
-    c < 0x20
-        || (0x7F..=0x9F).contains(&c)
-        || c == 0xA0
-        || c == 0xAD
-        || (0x300..=0x36F).contains(&c)
-        || (0x483..=0x489).contains(&c)
-        || (0x591..=0x5BD).contains(&c)
-        || c == 0x61C
-        || (0x610..=0x61A).contains(&c)
-        || (0x64B..=0x65F).contains(&c)
-        || c == 0x1680
-        || (0x1AB0..=0x1AFF).contains(&c)
-        || (0x1DC0..=0x1DFF).contains(&c)
-        || (0x2000..=0x200F).contains(&c)
-        || (0x2028..=0x202F).contains(&c)
-        || (0x205F..=0x206F).contains(&c)
-        || (0x20D0..=0x20FF).contains(&c)
-        || c == 0x3000
-        || (0xD800..=0xDFFF).contains(&c)
-        || (0xE000..=0xF8FF).contains(&c)
-        || (0xFE00..=0xFE0F).contains(&c)
-        || (0xFE20..=0xFE2F).contains(&c)
-        || c == 0xFEFF
-        || (0xFFF0..=0xFFFB).contains(&c)
-        || (0xE0000..=0xE0FFF).contains(&c)
-        || c >= 0xF0000
 }
 
 impl<T: Debug> Debug for [T] {

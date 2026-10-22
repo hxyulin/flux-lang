@@ -37,3 +37,4 @@ pub mod ptr;
 pub mod result;
 pub mod slice;
 pub mod str;
+mod unicode;

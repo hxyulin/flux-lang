@@ -69,6 +69,10 @@ const CORE_FILES: &[(&str, &str)] = &[
     ("ffi.rs", include_str!("../../../library/core/src/ffi.rs")),
     ("str.rs", include_str!("../../../library/core/src/str.rs")),
     (
+        "unicode.rs",
+        include_str!("../../../library/core/src/unicode.rs"),
+    ),
+    (
         "array.rs",
         include_str!("../../../library/core/src/array.rs"),
     ),
