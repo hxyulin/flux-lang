@@ -11,6 +11,7 @@ use crate::clone::Clone;
 use crate::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use crate::convert::From;
 use crate::default::Default;
+use crate::fmt::{self, Debug, Display, Formatter};
 use crate::marker::Copy;
 use crate::mem;
 use crate::ops::{Drop, FnOnce};
@@ -128,15 +129,66 @@ impl<T> From<T> for Cell<T> {
 }
 
 /// What `RefCell::try_borrow` gives where the value is lent mutably.
-#[derive(Debug)]
 pub struct BorrowError {
     _private: (),
 }
 
+impl Debug for BorrowError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("BorrowError")
+    }
+}
+
+impl Display for BorrowError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.pad("RefCell already mutably borrowed")
+    }
+}
+
 /// What `RefCell::try_borrow_mut` gives where the value is lent.
-#[derive(Debug)]
 pub struct BorrowMutError {
     _private: (),
+}
+
+impl Debug for BorrowMutError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("BorrowMutError")
+    }
+}
+
+impl Display for BorrowMutError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.pad("RefCell already borrowed")
+    }
+}
+
+/// `Cell { value: 5 }`, as rustc's.
+impl<T: Copy + Debug> Debug for Cell<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cell").field("value", &self.get()).finish()
+    }
+}
+
+/// What a `RefCell` lent mutably shows for its value.
+struct BorrowedPlaceholder;
+
+impl Debug for BorrowedPlaceholder {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("<borrowed>")
+    }
+}
+
+/// `RefCell { value: 7 }`, or `RefCell { value: <borrowed> }` while it
+/// is lent mutably, as rustc's.
+impl<T: Debug> Debug for RefCell<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_struct("RefCell");
+        match self.try_borrow() {
+            Ok(borrow) => d.field("value", borrow.value),
+            Err(_) => d.field("value", &BorrowedPlaceholder),
+        };
+        d.finish()
+    }
 }
 
 /// A value lent out through shared references, checked at run time:
@@ -286,6 +338,13 @@ impl<'b, T> Ref<'b, T> {
     }
 }
 
+/// The value's.
+impl<'b, T: Debug> Debug for Ref<'b, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.value.fmt(f)
+    }
+}
+
 impl<'b, T> Drop for Ref<'b, T> {
     fn drop(&mut self) {
         self.borrow.set(self.borrow.get() - 1);
@@ -301,6 +360,13 @@ pub struct RefMut<'b, T> {
 impl<'b, T> RefMut<'b, T> {
     fn value_mut(&mut self) -> &mut T {
         &mut *self.value
+    }
+}
+
+/// The value's.
+impl<'b, T: Debug> Debug for RefMut<'b, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        (*self.value).fmt(f)
     }
 }
 

@@ -1939,6 +1939,12 @@ impl<T> ExactSizeIterator for Empty<T> {
     }
 }
 
+impl<T> crate::fmt::Debug for Empty<T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.write_str("Empty")
+    }
+}
+
 impl<T> Clone for Empty<T> {
     fn clone(&self) -> Empty<T> {
         Empty { marker: PhantomData }
@@ -2058,6 +2064,12 @@ impl<A: Clone> DoubleEndedIterator for Repeat<A> {
     fn nth_back(&mut self, n: usize) -> Option<A> {
         let _ = n;
         Some(self.element.clone())
+    }
+}
+
+impl<A: crate::fmt::Debug> crate::fmt::Debug for Repeat<A> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_struct("Repeat").field("element", &self.element).finish()
     }
 }
 
