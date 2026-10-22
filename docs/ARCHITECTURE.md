@@ -203,7 +203,16 @@ program's files:
   unresolved until types are known. `break` and
   `continue` record the loop they leave. Parentheses disappear, and
   `while c { body }` becomes `loop { if c { body } else { break } }`, as
-  in rustc. A `let` in the condition of an `if` or `while`, alone or in
+  in rustc, and `for pat in head { body }` becomes `match
+  IntoIterator::into_iter(head) { mut iter => loop { match
+  Iterator::next(&mut iter) { None => break, Some(pat) => body } } }`
+  (`Body::for_loop_match` finds its parts again); ranges are `core`'s
+  range structs, `a..=b` a call of `RangeInclusive::new`. Loops may
+  have labels, which `break` and `continue` resolve to their loop. A
+  closure (`Expr::Closure`) is part of the body it is written in: its
+  parameters and bindings are the body's, its body sees the bindings
+  around it but not the loops, and `return` in it returns from it. A
+  `let` in the condition of an `if` or `while`, alone or in
   a chain of `&&`, stays an expression (`Expr::Let`), as in rustc's HIR,
   whose bindings the `then` branch sees. Each alternative of an
   or-pattern binds the same bindings, by name, so a binding is one local
@@ -309,6 +318,29 @@ references call the referents' method with the references as they are
 method is E0658 where the `impl` block is one of `core`'s for its own
 types, which rustc's `core` makes conditionally `const`, and E0015
 otherwise.
+
+A closure's type (`TyKind::Closure`) is unique to its expression and
+its owner's generic arguments, followed, as rustc's are, by three
+types inferred like any other: its kind (`i8`, `i16` or `i32` for
+`Fn`, `FnMut` or `FnOnce`), its signature, and the tuple of what it
+captures. Its signature comes from a call's `Fn`-family bounds on the
+parameter it is passed to (arguments that are closures are inferred
+after the others, as in rustc), which also fix its kind, or from its
+annotations, body and calls. Once the body is inferred
+([`closure`](../crates/flux-ty/src/infer/closure.rs)), each closure,
+innermost first, has its captures found as rustc's edition-2021
+analysis finds them: each use of a place outside it (a binding and
+fields and dereferences into it, an index stopping at the array) is a
+copy, move, borrow or assignment; moved places are captured by value
+and others by reference (all by value with `move`), cut at the first
+dereference by value and after the last shared one by reference, and
+a place used whole and in part is captured whole. Its kind follows
+from the uses, and so do the methods its calls call (`f(x)` is
+`Fn::call(&f, (x,))`, `FnMut::call_mut` or `FnOnce::call_once`) and
+whether the bounds it was expected to meet hold (E0525). The solver
+meets `Fn`-family bounds on closures, function items and pointers
+from their signatures, and normalizes `FnOnce::Output` to their
+return types.
 
 `x?` stays an expression in HIR (`Expr::Try`), since what it does
 depends on `x`'s type: `core`'s `#[lang = "Option"]` and `#[lang =
@@ -561,7 +593,17 @@ non-`mut` bindings and anything written or mutably borrowed behind a
 of a struct with a `Drop` impl (E0509), which moves nothing, so the
 value is not also "moved" for `init`. A drop reads the value, so it
 keeps the references in it live, and a temporary dropped while a
-reference to it is still to be used is E0716.
+reference to it is still to be used is E0716. A closure that captures
+by reference holds the loans of its captures, and so does any value
+it is moved into: an aggregate holds its operands' loans, a call's
+result those of its arguments if its type may hold any (a `Map` of a
+closure), a reference to such a value the value's, and a value written
+through a `&mut` (by assignment, or by a call it is passed to with
+the `&mut`) gives its loans to the local the `&mut` borrows. Borrowing
+such a value uses it. In a closure's body, what it captures is a
+field of `self`, through the reference it captured unless by value,
+and is named and checked as the captured variable (E0594 and E0596 for
+an `Fn` closure's, E0507 for moves out of an `FnMut` closure's).
 
 [`drops`](../crates/flux-mir/src/drops.rs) then *elaborates* the drops, as
 rustc's `ElaborateDrops` does: with `init`'s analysis over the dropped
@@ -651,6 +693,18 @@ rustc's legacy mangling. A call of a trait's method stays one in MIR;
 once its types are known, `traits::resolve_instance` makes it a call of
 the method of the `impl` block for them, or of the trait's provided
 method with `Self` substituted, as rustc's `Instance::resolve` does.
+A closure's body is MIR of its own (`FileMir::closures`), built from
+its expression as the method of its kind's trait, `call(&self, args)`
+with the arguments as one tuple, generic in its owner's parameters,
+with *shims* for the traits beyond its kind (`call_once` of an `Fn`
+closure borrows it, calls `call`, and drops it); a call of
+`Fn::call::<C, A>` for a closure type `C` is its body, substituted with
+the arguments `C` holds (`FileMir::instance_body`). A closure is an
+aggregate of what it captures, so code generation needs nothing new
+for it. Function items and pointers get shims that call them, and a
+closure that captures nothing becomes a pointer to its `call_once`,
+whose arguments are those of the pointer's signature, leaf for
+leaf.
 
 Only arm64 macOS can link so far: Linux needs glibc's startup objects
 passed to keel's ELF linker. `flux build --timings` prints each phase's
