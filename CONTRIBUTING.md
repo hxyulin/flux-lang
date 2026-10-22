@@ -99,6 +99,13 @@ This needs arm64 macOS, where flux can link executables so far. Write
 programs so rustc cannot fold them at compile time (pass values through
 function parameters), or its overflow lints reject them.
 
+The runtime harness also bundles the actual differential generator's
+choice-tape module and MIR's dataflow bitset with the driver in
+`tests/run/support/compiler_internals.rs`. Both compilers compile those
+sources and compare their behavior. This covers compiler implementations
+as they change; it does not yet build the entire compiler with flux.
+The modules are bundled because flux does not support `#[path]` yet.
+
 ## Differential testing
 
 `crates/flux-difftest` generates random programs inside flux's subset,

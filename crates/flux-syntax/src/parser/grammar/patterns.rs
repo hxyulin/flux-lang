@@ -226,7 +226,7 @@ fn tuple_or_paren_pat(p: &mut Parser<'_>) {
             p.err_and_bump("expected a pattern");
             continue;
         }
-        has_rest |= p.at(T![..]) && !at_range_end(p, 2);
+        has_rest |= p.at(T![..]) && !p.at(T![..=]) && !at_range_end(p, 2);
         pattern(p);
         count += 1;
         trailing_comma = p.eat(T![,]);

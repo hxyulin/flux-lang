@@ -1,7 +1,7 @@
 //! A set of small indices, a bit each: the states of the dataflow
 //! analyses.
 
-use std::ops::Index;
+use core::ops::Index;
 
 /// A set of the indices below its size, as words of bits.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -4,6 +4,12 @@
 
 ### Syntax
 
+- Parse parenthesized range-to patterns as patterns rather than tuples,
+  and preserve attributed tail expressions in blocks and macro expansions.
+  Reenable their differential generator coverage. Compile the compiler's
+  own choice tape and dataflow bitset in the runtime comparison harness;
+  add unsigned integers' `is_multiple_of` method used by the bitset.
+
 - Support reference results in `Fn`, `FnMut` and `FnOnce` bounds, with
   the result borrowing from the input (`F: Fn(&T) -> &U`), including
   equivalent single-lifetime `for<'a>` binders. Check each call's

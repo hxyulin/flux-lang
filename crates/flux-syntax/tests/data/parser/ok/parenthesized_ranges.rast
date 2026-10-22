@@ -1,0 +1,312 @@
+SOURCE_FILE@0..373
+  FN@0..372
+    FN_KW@0..2 "fn"
+    WHITESPACE@2..3 " "
+    NAME@3..11
+      IDENT@3..11 "classify"
+    PARAM_LIST@11..34
+      L_PAREN@11..12 "("
+      PARAM@12..17
+        IDENT_PAT@12..13
+          NAME@12..13
+            IDENT@12..13 "x"
+        COLON@13..14 ":"
+        WHITESPACE@14..15 " "
+        PATH_TYPE@15..17
+          PATH@15..17
+            PATH_SEGMENT@15..17
+              NAME_REF@15..17
+                IDENT@15..17 "u8"
+      COMMA@17..18 ","
+      WHITESPACE@18..19 " "
+      PARAM@19..33
+        IDENT_PAT@19..23
+          NAME@19..23
+            IDENT@19..23 "pair"
+        COLON@23..24 ":"
+        WHITESPACE@24..25 " "
+        TUPLE_TYPE@25..33
+          L_PAREN@25..26 "("
+          PATH_TYPE@26..28
+            PATH@26..28
+              PATH_SEGMENT@26..28
+                NAME_REF@26..28
+                  IDENT@26..28 "u8"
+          COMMA@28..29 ","
+          WHITESPACE@29..30 " "
+          PATH_TYPE@30..32
+            PATH@30..32
+              PATH_SEGMENT@30..32
+                NAME_REF@30..32
+                  IDENT@30..32 "u8"
+          R_PAREN@32..33 ")"
+      R_PAREN@33..34 ")"
+    WHITESPACE@34..35 " "
+    BLOCK_EXPR@35..372
+      L_CURLY@35..36 "{"
+      WHITESPACE@36..41 "\n    "
+      EXPR_STMT@41..189
+        MATCH_EXPR@41..189
+          MATCH_KW@41..46 "match"
+          WHITESPACE@46..47 " "
+          PATH_EXPR@47..48
+            PATH@47..48
+              PATH_SEGMENT@47..48
+                NAME_REF@47..48
+                  IDENT@47..48 "x"
+          WHITESPACE@48..49 " "
+          MATCH_ARM_LIST@49..189
+            L_CURLY@49..50 "{"
+            WHITESPACE@50..59 "\n        "
+            MATCH_ARM@59..72
+              PAREN_PAT@59..65
+                L_PAREN@59..60 "("
+                RANGE_PAT@60..64
+                  DOT2EQ@60..63 "..="
+                  LITERAL_PAT@63..64
+                    LITERAL@63..64
+                      INT_NUMBER@63..64 "5"
+                R_PAREN@64..65 ")"
+              WHITESPACE@65..66 " "
+              FAT_ARROW@66..68 "=>"
+              WHITESPACE@68..69 " "
+              TUPLE_EXPR@69..71
+                L_PAREN@69..70 "("
+                R_PAREN@70..71 ")"
+              COMMA@71..72 ","
+            WHITESPACE@72..81 "\n        "
+            MATCH_ARM@81..94
+              PAREN_PAT@81..87
+                L_PAREN@81..82 "("
+                RANGE_PAT@82..86
+                  DOT2@82..84 ".."
+                  LITERAL_PAT@84..86
+                    LITERAL@84..86
+                      INT_NUMBER@84..86 "10"
+                R_PAREN@86..87 ")"
+              WHITESPACE@87..88 " "
+              FAT_ARROW@88..90 "=>"
+              WHITESPACE@90..91 " "
+              TUPLE_EXPR@91..93
+                L_PAREN@91..92 "("
+                R_PAREN@92..93 ")"
+              COMMA@93..94 ","
+            WHITESPACE@94..103 "\n        "
+            MATCH_ARM@103..119
+              PAREN_PAT@103..112
+                L_PAREN@103..104 "("
+                PAREN_PAT@104..111
+                  L_PAREN@104..105 "("
+                  RANGE_PAT@105..110
+                    DOT2EQ@105..108 "..="
+                    LITERAL_PAT@108..110
+                      LITERAL@108..110
+                        INT_NUMBER@108..110 "20"
+                  R_PAREN@110..111 ")"
+                R_PAREN@111..112 ")"
+              WHITESPACE@112..113 " "
+              FAT_ARROW@113..115 "=>"
+              WHITESPACE@115..116 " "
+              TUPLE_EXPR@116..118
+                L_PAREN@116..117 "("
+                R_PAREN@117..118 ")"
+              COMMA@118..119 ","
+            WHITESPACE@119..128 "\n        "
+            MATCH_ARM@128..144
+              PAREN_PAT@128..137
+                L_PAREN@128..129 "("
+                RANGE_PAT@129..136
+                  LITERAL_PAT@129..131
+                    LITERAL@129..131
+                      INT_NUMBER@129..131 "30"
+                  DOT2EQ@131..134 "..="
+                  LITERAL_PAT@134..136
+                    LITERAL@134..136
+                      INT_NUMBER@134..136 "40"
+                R_PAREN@136..137 ")"
+              WHITESPACE@137..138 " "
+              FAT_ARROW@138..140 "=>"
+              WHITESPACE@140..141 " "
+              TUPLE_EXPR@141..143
+                L_PAREN@141..142 "("
+                R_PAREN@142..143 ")"
+              COMMA@143..144 ","
+            WHITESPACE@144..153 "\n        "
+            MATCH_ARM@153..166
+              PAREN_PAT@153..159
+                L_PAREN@153..154 "("
+                RANGE_PAT@154..158
+                  LITERAL_PAT@154..156
+                    LITERAL@154..156
+                      INT_NUMBER@154..156 "50"
+                  DOT2@156..158 ".."
+                R_PAREN@158..159 ")"
+              WHITESPACE@159..160 " "
+              FAT_ARROW@160..162 "=>"
+              WHITESPACE@162..163 " "
+              TUPLE_EXPR@163..165
+                L_PAREN@163..164 "("
+                R_PAREN@164..165 ")"
+              COMMA@165..166 ","
+            WHITESPACE@166..175 "\n        "
+            MATCH_ARM@175..183
+              WILDCARD_PAT@175..176
+                UNDERSCORE@175..176 "_"
+              WHITESPACE@176..177 " "
+              FAT_ARROW@177..179 "=>"
+              WHITESPACE@179..180 " "
+              TUPLE_EXPR@180..182
+                L_PAREN@180..181 "("
+                R_PAREN@181..182 ")"
+              COMMA@182..183 ","
+            WHITESPACE@183..188 "\n    "
+            R_CURLY@188..189 "}"
+      WHITESPACE@189..194 "\n    "
+      EXPR_STMT@194..330
+        MATCH_EXPR@194..330
+          MATCH_KW@194..199 "match"
+          WHITESPACE@199..200 " "
+          PATH_EXPR@200..204
+            PATH@200..204
+              PATH_SEGMENT@200..204
+                NAME_REF@200..204
+                  IDENT@200..204 "pair"
+          WHITESPACE@204..205 " "
+          MATCH_ARM_LIST@205..330
+            L_CURLY@205..206 "{"
+            WHITESPACE@206..215 "\n        "
+            MATCH_ARM@215..231
+              TUPLE_PAT@215..224
+                L_PAREN@215..216 "("
+                RANGE_PAT@216..220
+                  DOT2EQ@216..219 "..="
+                  LITERAL_PAT@219..220
+                    LITERAL@219..220
+                      INT_NUMBER@219..220 "5"
+                COMMA@220..221 ","
+                WHITESPACE@221..222 " "
+                WILDCARD_PAT@222..223
+                  UNDERSCORE@222..223 "_"
+                R_PAREN@223..224 ")"
+              WHITESPACE@224..225 " "
+              FAT_ARROW@225..227 "=>"
+              WHITESPACE@227..228 " "
+              TUPLE_EXPR@228..230
+                L_PAREN@228..229 "("
+                R_PAREN@229..230 ")"
+              COMMA@230..231 ","
+            WHITESPACE@231..240 "\n        "
+            MATCH_ARM@240..256
+              TUPLE_PAT@240..249
+                L_PAREN@240..241 "("
+                RANGE_PAT@241..245
+                  DOT2@241..243 ".."
+                  LITERAL_PAT@243..245
+                    LITERAL@243..245
+                      INT_NUMBER@243..245 "10"
+                COMMA@245..246 ","
+                WHITESPACE@246..247 " "
+                WILDCARD_PAT@247..248
+                  UNDERSCORE@247..248 "_"
+                R_PAREN@248..249 ")"
+              WHITESPACE@249..250 " "
+              FAT_ARROW@250..252 "=>"
+              WHITESPACE@252..253 " "
+              TUPLE_EXPR@253..255
+                L_PAREN@253..254 "("
+                R_PAREN@254..255 ")"
+              COMMA@255..256 ","
+            WHITESPACE@256..265 "\n        "
+            MATCH_ARM@265..280
+              TUPLE_PAT@265..273
+                L_PAREN@265..266 "("
+                REST_PAT@266..268
+                  DOT2@266..268 ".."
+                COMMA@268..269 ","
+                WHITESPACE@269..270 " "
+                LITERAL_PAT@270..272
+                  LITERAL@270..272
+                    INT_NUMBER@270..272 "20"
+                R_PAREN@272..273 ")"
+              WHITESPACE@273..274 " "
+              FAT_ARROW@274..276 "=>"
+              WHITESPACE@276..277 " "
+              TUPLE_EXPR@277..279
+                L_PAREN@277..278 "("
+                R_PAREN@278..279 ")"
+              COMMA@279..280 ","
+            WHITESPACE@280..289 "\n        "
+            MATCH_ARM@289..304
+              TUPLE_PAT@289..297
+                L_PAREN@289..290 "("
+                LITERAL_PAT@290..292
+                  LITERAL@290..292
+                    INT_NUMBER@290..292 "30"
+                COMMA@292..293 ","
+                WHITESPACE@293..294 " "
+                REST_PAT@294..296
+                  DOT2@294..296 ".."
+                R_PAREN@296..297 ")"
+              WHITESPACE@297..298 " "
+              FAT_ARROW@298..300 "=>"
+              WHITESPACE@300..301 " "
+              TUPLE_EXPR@301..303
+                L_PAREN@301..302 "("
+                R_PAREN@302..303 ")"
+              COMMA@303..304 ","
+            WHITESPACE@304..313 "\n        "
+            MATCH_ARM@313..324
+              TUPLE_PAT@313..317
+                L_PAREN@313..314 "("
+                REST_PAT@314..316
+                  DOT2@314..316 ".."
+                R_PAREN@316..317 ")"
+              WHITESPACE@317..318 " "
+              FAT_ARROW@318..320 "=>"
+              WHITESPACE@320..321 " "
+              TUPLE_EXPR@321..323
+                L_PAREN@321..322 "("
+                R_PAREN@322..323 ")"
+              COMMA@323..324 ","
+            WHITESPACE@324..329 "\n    "
+            R_CURLY@329..330 "}"
+      WHITESPACE@330..335 "\n    "
+      LET_STMT@335..370
+        LET_KW@335..338 "let"
+        WHITESPACE@338..339 " "
+        TUPLE_PAT@339..346
+          L_PAREN@339..340 "("
+          RANGE_PAT@340..344
+            DOT2EQ@340..343 "..="
+            LITERAL_PAT@343..344
+              LITERAL@343..344
+                INT_NUMBER@343..344 "5"
+          COMMA@344..345 ","
+          R_PAREN@345..346 ")"
+        WHITESPACE@346..347 " "
+        EQ@347..348 "="
+        WHITESPACE@348..349 " "
+        TUPLE_EXPR@349..353
+          L_PAREN@349..350 "("
+          PATH_EXPR@350..351
+            PATH@350..351
+              PATH_SEGMENT@350..351
+                NAME_REF@350..351
+                  IDENT@350..351 "x"
+          COMMA@351..352 ","
+          R_PAREN@352..353 ")"
+        WHITESPACE@353..354 " "
+        LET_ELSE@354..369
+          ELSE_KW@354..358 "else"
+          WHITESPACE@358..359 " "
+          BLOCK_EXPR@359..369
+            L_CURLY@359..360 "{"
+            WHITESPACE@360..361 " "
+            RETURN_EXPR@361..367
+              RETURN_KW@361..367 "return"
+            WHITESPACE@367..368 " "
+            R_CURLY@368..369 "}"
+        SEMICOLON@369..370 ";"
+      WHITESPACE@370..371 "\n"
+      R_CURLY@371..372 "}"
+  WHITESPACE@372..373 "\n"
