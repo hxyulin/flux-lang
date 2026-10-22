@@ -194,7 +194,7 @@ remaining `memchr` language/library requirements are still outstanding.
 
 Unchanged `memchr 2.8.3` sources still need `Send`/`Sync`, per-function
 `target_feature`, `non_exhaustive`, macro-generated block imports, aggregate
-union fields, and several remaining NEON operations. Its original package
+union fields, legacy trailing const arguments and some remaining NEON APIs. Its original package
 also needs feature selection and broader edition-2021 macro support. Source
 probes use the file command's explicit edition-2024 boundary and do not
 establish package compilation.
@@ -204,8 +204,11 @@ loads, splat, byte comparison, bitwise AND/OR, reinterpretation and checked
 const-generic lane extraction through packed Keel operations. Calls require
 unsafe code in the current subset. Public callable wrappers also support
 unsafe function pointers; they do not expose intrinsic stub bodies to indirect
-calls. Narrowing shift, pairwise maximum, legacy trailing lane arguments and
-caller feature attributes remain next steps. External C vector ABI is not
+calls. Narrowing shift and pairwise unsigned maximum are also supported:
+narrowing checks `1..=8` and writes eight bytes through scalar operations;
+pairwise maximum combines scalarized shuffles with packed comparison/selection.
+Native `shrn`/`umaxp` selection is not implemented. Legacy trailing const
+arguments and caller feature attributes remain next steps. External C vector ABI is not
 supported. Baseline `target_feature` predicates select NEON on AArch64 and
 SSE/SSE2/FXSR on x86-64 independently of the compiler's own build flags.
 

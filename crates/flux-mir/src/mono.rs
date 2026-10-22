@@ -270,6 +270,16 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                         d.file = hir.items.functions[caller.function].loc.file;
                         return Err(d);
                     }
+                    if name.as_str() == "__neon_vshrn_n_u16"
+                        && !matches!(callee.args.first().map(|ty| ty.kind()), Some(TyKind::Value(v)) if (1..=8).contains(&v.bits()))
+                    {
+                        let mut d = Diagnostic::new(
+                            data.terminator.range,
+                            "shift amount out of range: expected 1..=8",
+                        );
+                        d.file = hir.items.functions[caller.function].loc.file;
+                        return Err(d);
+                    }
                     continue;
                 }
                 if mir.instance_body(&hir.items, callee).is_none()
@@ -1443,7 +1453,7 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
     body
 }
 
-/// Core's bounded NEON intrinsics are emitted as Keel vector operations.
+/// Core's bounded NEON intrinsics are emitted directly as Keel operations.
 pub fn is_neon_intrinsic(name: &str) -> bool {
     matches!(
         name,
@@ -1454,5 +1464,7 @@ pub fn is_neon_intrinsic(name: &str) -> bool {
             | "__neon_vorrq_u8"
             | "__neon_vgetq_lane_u64"
             | "__neon_vget_lane_u64"
+            | "__neon_vshrn_n_u16"
+            | "__neon_vpmaxq_u8"
     )
 }

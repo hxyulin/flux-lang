@@ -211,3 +211,127 @@ fn neon_reified_lane_is_checked_in_its_wrapper() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].ends_with("lane index out of range"), "{errors:?}");
 }
+
+#[test]
+#[cfg(target_arch = "aarch64")]
+fn neon_narrow_shifts_are_checked_through_public_wrappers() {
+    for shift in ["0", "9", "-1", "2147483647", "-2147483648"] {
+        for call in [
+            format!("vshrn_n_u16::<{shift}>(a)"),
+            format!("generic::<{shift}>(a)"),
+            format!(
+                "{{ let f: unsafe fn(uint16x8_t) -> uint8x8_t = vshrn_n_u16::<{shift}>; f(a) }}"
+            ),
+            format!("invoke(generic::<{shift}>, a)"),
+            format!("{{ let f: fn(uint16x8_t) -> uint8x8_t = generic::<{shift}>; f(a) }}"),
+        ] {
+            let text = format!(
+                "use core::arch::aarch64::*;
+fn generic<const N: i32>(a: uint16x8_t) -> uint8x8_t {{ unsafe {{ vshrn_n_u16::<N>(a) }} }}
+fn invoke<F: Fn(uint16x8_t) -> uint8x8_t>(f: F, a: uint16x8_t) -> uint8x8_t {{ f(a) }}
+fn main() {{ let a = unsafe {{ vreinterpretq_u16_u8(vdupq_n_u8(0)) }}; let _ = unsafe {{ {call} }}; }}"
+            );
+            let (_, _, hir) = flux_hir::lower_text("main.rs", &text);
+            assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+            let typed = flux_mir::check_file(&hir);
+            assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+            let mir = flux_mir::build_file(&hir, &typed);
+            assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+            // The diagnostic is in core's public wrapper, not main.rs.
+            let errors: Vec<_> = flux_codegen::lower_module(&hir, &typed, &mir)
+                .err()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| d.message)
+                .collect();
+            assert_eq!(errors.len(), 1, "{call}: {errors:?}");
+            assert!(
+                errors[0].ends_with("shift amount out of range: expected 1..=8"),
+                "{errors:?}"
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(target_arch = "aarch64")]
+fn neon_memchr_next_lowering_preserves_store_width_and_unsigned_max() {
+    let text = "
+use core::arch::aarch64::*;
+fn main() {
+    let a = unsafe { vdupq_n_u8(255) };
+    let b = unsafe { vpmaxq_u8(a, vdupq_n_u8(128)) };
+    let _ = unsafe { vshrn_n_u16::<3>(vreinterpretq_u16_u8(b)) };
+}";
+    let (_, _, hir) = flux_hir::lower_text("main.rs", text);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+    let module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
+    keel_ir::verify_module(&module).unwrap();
+    let narrow = module
+        .functions
+        .iter()
+        .find(|f| f.name.contains("vshrn_n_u16"))
+        .unwrap();
+    let stores: Vec<_> = narrow
+        .layout_insts()
+        .filter_map(|(_, i)| {
+            if let keel_ir::InstData::Store { value, .. } = narrow.inst_data(i) {
+                Some(narrow.value_type(*value))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(stores, [keel_ir::Type::I8; 8]);
+    let asm = keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
+    // Shuffles legalize to scalar byte moves on the pinned Keel. The
+    // unsigned comparison and selection themselves remain packed.
+    for instruction in ["ldrh\tw", "strb\tw", "lsr\tw", "cmhi\tv", "bsl\tv"] {
+        assert!(asm.contains(instruction), "missing {instruction}:\n{asm}");
+    }
+}
+
+#[test]
+#[cfg(target_arch = "aarch64")]
+fn neon_mask_apis_require_unsafe_calls_and_function_values() {
+    for (params, call) in [
+        ("a: uint16x8_t", "vshrn_n_u16::<1>(a)"),
+        ("a: uint8x16_t, b: uint8x16_t", "vpmaxq_u8(a, b)"),
+    ] {
+        let text = format!(
+            "use core::arch::aarch64::*; fn bad({params}) {{ let _ = {call}; }} fn main() {{}}"
+        );
+        let (_, _, hir) = flux_hir::lower_text("main.rs", &text);
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        let typed = flux_mir::check_file(&hir);
+        assert!(
+            typed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("unsafe")),
+            "{:?}",
+            typed.diagnostics
+        );
+    }
+    for value in [
+        "let _: fn(uint16x8_t) -> uint8x8_t = vshrn_n_u16::<1>;",
+        "let _: fn(uint8x16_t, uint8x16_t) -> uint8x16_t = vpmaxq_u8;",
+        "invoke(vshrn_n_u16::<1>);",
+        "invoke_pair(vpmaxq_u8);",
+    ] {
+        let text = format!(
+            "use core::arch::aarch64::*;
+fn invoke<F: Fn(uint16x8_t) -> uint8x8_t>(f: F) {{}}
+fn invoke_pair<F: Fn(uint8x16_t, uint8x16_t) -> uint8x16_t>(f: F) {{}}
+fn main() {{ {value} }}"
+        );
+        let (_, _, hir) = flux_hir::lower_text("main.rs", &text);
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        let typed = flux_mir::check_file(&hir);
+        assert!(!typed.diagnostics.is_empty(), "accepted {value}");
+    }
+}
