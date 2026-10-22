@@ -1,0 +1,353 @@
+fn Bag::evens(_1: &Bag) -> Filter<Copied<Iter<u32>>, {closure}> {
+    let mut _0: Filter<Copied<Iter<u32>>, {closure}>;
+    let _2: Copied<Iter<u32>>;
+    let _3: Iter<u32>;
+    let _4: &[u32; 4];
+    let _5: &[u32];
+    let _6: RangeTo<usize>;
+    let _7: usize;
+    let _8: &[u32];
+    let _9: &[u32];
+    let _10: Iter<u32>;
+    let _11: Copied<Iter<u32>>;
+    let _12: {closure};
+
+    bb0: {
+        _4 = &(*_1).0;
+        _5 = copy _4 as &[u32] (unsize);
+        _7 = copy (*_1).1;
+        _6 = RangeTo { end: copy _7 };
+        _8 = index::<[u32], RangeTo<usize>>(move _5, copy _6) -> bb1;
+    }
+
+    bb1: {
+        _9 = &(*_8);
+        _3 = iter::<u32>(copy _9) -> bb2;
+    }
+
+    bb2: {
+        _10 = move _3;
+        _2 = copied::<Iter<u32>, u32>(move _10) -> bb3;
+    }
+
+    bb3: {
+        _11 = move _2;
+        _12 = {closure}();
+        _0 = filter::<Copied<Iter<u32>>, {closure}>(move _11, copy _12) -> bb4;
+    }
+
+    bb4: {
+        StorageDead(_2);
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn Bag::evens::{closure#13} as FnMut(_1: &mut {closure}, _2: (&u32,)) -> bool {
+    let mut _0: bool;
+    let _3: &u32; // x
+    let _4: u32;
+    let _5: &u32;
+
+    bb0: {
+        _3 = copy _2.0;
+        _5 = copy _3;
+        _4 = rem::<&u32, u32>(copy _5, const 2_u32) -> bb1;
+    }
+
+    bb1: {
+        _0 = Eq(copy _4, const 0_u32);
+        return;
+    }
+}
+
+fn Bag::evens::{closure#13} as FnOnce(_1: {closure}, _2: (&u32,)) -> bool {
+    let mut _0: bool;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, (&u32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn Bag::push(_1: &mut Bag, _2: u32) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: u32;
+    let _5: usize;
+    let _6: bool;
+    let _7: ();
+    let _8: usize;
+
+    bb0: {
+        _4 = copy _2;
+        _5 = copy (*_1).1;
+        _6 = Lt(copy _5, const 4_usize);
+        assert(copy _6, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        (*_1).0[_5] = copy _4;
+        _3 = const ();
+        _8 = copy (*_1).1;
+        (*_1).1 = Add(copy _8, const 1_usize);
+        _7 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn adder(_1: i32) -> {closure} {
+    let mut _0: {closure};
+
+    bb0: {
+        _0 = {closure}(copy _1);
+        return;
+    }
+}
+
+fn adder::{closure#3} as Fn(_1: &{closure}, _2: (i32,)) -> i32 {
+    let mut _0: i32;
+    let _3: i32; // x
+    let _4: i32;
+    let _5: i32;
+
+    bb0: {
+        _3 = copy _2.0;
+        _4 = copy _3;
+        _5 = copy (*_1).0;
+        _0 = Add(copy _4, copy _5);
+        return;
+    }
+}
+
+fn adder::{closure#3} as FnMut(_1: &mut {closure}, _2: (i32,)) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (i32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn adder::{closure#3} as FnOnce(_1: {closure}, _2: (i32,)) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (i32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn apply<impl Fn(i32) -> i32>(_1: impl Fn(i32) -> i32, _2: i32) -> i32 {
+    let mut _0: i32;
+    let _3: &impl Fn(i32) -> i32;
+    let _4: i32;
+    let _5: (i32,);
+
+    bb0: {
+        _3 = &_1;
+        _4 = copy _2;
+        _5 = (copy _4,);
+        _0 = call::<impl Fn(i32) -> i32, (i32,)>(copy _3, move _5) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn owned() -> Map<IntoIter<u32, 3>, {closure}> {
+    let mut _0: Map<IntoIter<u32, 3>, {closure}>;
+    let _1: IntoIter<u32, 3>;
+    let _2: [u32; 3];
+    let _3: [u32; 3];
+    let _4: IntoIter<u32, 3>;
+    let _5: {closure};
+
+    bb0: {
+        _2 = [const 1_u32, const 2_u32, const 3_u32];
+        _3 = copy _2;
+        _1 = into_iter::<[u32; 3]>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _4 = move _1;
+        _5 = {closure}();
+        _0 = map::<IntoIter<u32, 3>, u32, {closure}>(move _4, copy _5) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_1);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn owned::{closure#8} as FnMut(_1: &mut {closure}, _2: (u32,)) -> u32 {
+    let mut _0: u32;
+    let _3: u32; // x
+    let _4: u32;
+
+    bb0: {
+        _3 = copy _2.0;
+        _4 = copy _3;
+        _0 = Mul(copy _4, const 2_u32);
+        return;
+    }
+}
+
+fn owned::{closure#8} as FnOnce(_1: {closure}, _2: (u32,)) -> u32 {
+    let mut _0: u32;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, (u32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let mut _1: Bag; // bag
+    let _2: [u32; 4];
+    let _3: ();
+    let _4: &mut Bag;
+    let _5: u32; // total
+    let _6: impl Iterator<Item = u32> + '_;
+    let _7: &Bag;
+    let _8: impl Iterator<Item = u32> + '_;
+    let _9: ();
+    let _10: &mut Bag;
+    let _11: Option<u32>; // first
+    let mut _12: impl Iterator<Item = u32> + '_; // it
+    let _13: &Bag;
+    let _14: &mut impl Iterator<Item = u32> + '_;
+    let _15: (u32, Option<u32>);
+    let _16: u32;
+    let _17: Option<u32>;
+    let _18: ();
+    let _19: &mut Bag;
+    let _20: impl Fn(i32) -> i32; // add
+    let _21: i32;
+    let _22: i32;
+    let _23: impl Fn(i32) -> i32;
+    let _24: i32;
+    let _25: usize;
+    let _26: impl Iterator<Item = u32>;
+    let _27: impl Iterator<Item = u32>;
+
+    bb0: {
+        _2 = [const 0_u32; 4];
+        _1 = Bag { items: copy _2, len: const 0_usize };
+        _4 = &two_phase _1;
+        _3 = push(move _4, const 2_u32) -> bb1;
+    }
+
+    bb1: {
+        _7 = &_1;
+        _6 = evens(copy _7) -> bb2;
+    }
+
+    bb2: {
+        _8 = move _6;
+        _5 = sum::<impl Iterator<Item = u32> + '_, u32>(move _8) -> bb3;
+    }
+
+    bb3: {
+        StorageDead(_6);
+        _10 = &two_phase _1;
+        _9 = push(move _10, const 4_u32) -> bb4;
+    }
+
+    bb4: {
+        _13 = &_1;
+        _12 = evens(copy _13) -> bb5;
+    }
+
+    bb5: {
+        _14 = &two_phase _12;
+        _11 = next::<impl Iterator<Item = u32> + '_>(move _14) -> bb6;
+    }
+
+    bb6: {
+        drop(_12) -> bb7;
+    }
+
+    bb7: {
+        StorageDead(_12);
+        _16 = copy _5;
+        _17 = copy _11;
+        _15 = (copy _16, copy _17);
+        StorageDead(_15);
+        _19 = &two_phase _1;
+        _18 = push(move _19, const 6_u32) -> bb8;
+    }
+
+    bb8: {
+        _20 = adder(const 1_i32) -> bb9;
+    }
+
+    bb9: {
+        _23 = move _20;
+        _22 = apply::<impl Fn(i32) -> i32>(move _23, const 2_i32) -> bb10;
+    }
+
+    bb10: {
+        _26 = owned() -> bb11;
+    }
+
+    bb11: {
+        _27 = move _26;
+        _25 = count::<impl Iterator<Item = u32>>(move _27) -> bb12;
+    }
+
+    bb12: {
+        _24 = copy _25 as i32;
+        _21 = Add(copy _22, copy _24);
+        StorageDead(_21);
+        StorageDead(_26);
+        _0 = const ();
+        StorageDead(_20);
+        StorageDead(_11);
+        StorageDead(_5);
+        StorageDead(_1);
+        return;
+    }
+}
+

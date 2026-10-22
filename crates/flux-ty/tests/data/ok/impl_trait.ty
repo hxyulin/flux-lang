@@ -1,0 +1,51 @@
+struct Counter { step: u32 }
+fn evens(u64) -> impl Iterator<Item = u64>
+    limit@0: u64
+    n@1: &u64
+fn doubled<I>(I) -> impl Iterator<Item = u32>
+    it@0: I
+    x@1: u32
+fn call_twice<impl Fn(u32) -> u32>(impl Fn(u32) -> u32, u32) -> u32
+    f@0: impl Fn(u32) -> u32
+    x@1: u32
+fn compose<impl Fn(i32) -> i32, impl Fn(i32) -> i32>(impl Fn(i32) -> i32, impl Fn(i32) -> i32) -> impl Fn(i32) -> i32
+    f@0: impl Fn(i32) -> i32
+    g@1: impl Fn(i32) -> i32
+    x@2: i32
+fn maybe(bool) -> Option<impl Fn() -> u32>
+    c@0: bool
+fn copyable(u8) -> impl Copy + Clone
+    x@0: u8
+fn countdown(u32) -> impl Copy
+    n@0: u32
+fn first<T, impl Copy>(T, impl Copy) -> T
+    t@0: T
+    explicit@1: impl Copy
+fn sum_all<I>(I) -> u64
+    it@0: I
+fn steps(&Counter, u32) -> impl Iterator<Item = u32> + '_
+    self@0: &Counter
+    n@1: u32
+    i@2: u32
+fn main() -> ()
+    x@0: u64
+    a@1: u64
+    it@2: impl Iterator<Item = u64>
+    b@3: Option<u64>
+    iter@4: impl Iterator<Item = u64>
+    x@5: u64
+    c@6: u32
+    x@7: u32
+    d@8: u32
+    x@9: i32
+    x@10: i32
+    e@11: i32
+    g@12: impl Fn() -> u32
+    f@13: Option<u32>
+    k@14: impl Copy + Clone
+    k2@15: impl Copy + Clone
+    k3@16: impl Copy + Clone
+    r@17: impl Copy
+    s@18: u64
+    t@19: u32
+    u@20: u8

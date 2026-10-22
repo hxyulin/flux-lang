@@ -106,6 +106,9 @@ pub struct InferenceResult {
     /// and `calls` as a call of its `Fn`-family trait's method, with the
     /// arguments as a tuple.
     pub closures: ArenaMap<Expr, ClosureInfo>,
+    /// The hidden type of each of the function's opaque types (the `impl
+    /// Trait`s of its return type), by index: what its body returns.
+    pub opaques: Vec<Ty>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -167,6 +170,7 @@ pub fn infer_body(
     };
     let mut ctx = Ctx::new(items, sigs, owner, body, source_map);
     let origin = data.def_range;
+    ctx.hide_opaques(function);
     let ret = ctx.normalize(sig.ret, origin);
     ctx.ret = ret;
     for (i, &pat) in body.params.iter().enumerate() {
@@ -327,6 +331,8 @@ impl<'a> Ctx<'a> {
             coerced_tuples: HashSet::new(),
             for_heads: HashSet::new(),
             reified_closures: Vec::new(),
+            own_opaques: Vec::new(),
+            own_opaque_args: &[],
             diagnostics: Vec::new(),
         }
     }
@@ -529,6 +535,12 @@ struct Ctx<'a> {
     /// Closures coerced to function pointers, with their types and the
     /// pointers', which must capture nothing.
     reified_closures: Vec<(ExprId, Ty, Ty)>,
+    /// In a function with opaque types, the variables their hidden types
+    /// are, by index, and the generic arguments for which they are its
+    /// own (its parameters): where the body names them, as it returns
+    /// or calls itself, they are those variables.
+    own_opaques: Vec<Ty>,
+    own_opaque_args: crate::GenericArgs,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -613,8 +625,100 @@ impl Ctx<'_> {
                 let args: Vec<Ty> = args.iter().map(|&a| self.known(a)).collect();
                 Ty::closure(id, &args)
             }
+            TyKind::Opaque(opaque) => {
+                let args: Vec<Ty> = opaque.args.iter().map(|&a| self.known(a)).collect();
+                Ty::opaque(crate::OpaqueTy {
+                    args: Ty::list(&args),
+                    ..opaque
+                })
+            }
             _ => ty,
         }
+    }
+
+    /// Whether `ty` contains variable `var`.
+    fn occurs(&mut self, var: InferVar, ty: Ty) -> bool {
+        let ty = self.shallow(ty);
+        match ty.kind() {
+            TyKind::Infer(other) => self.root(other) == self.root(var),
+            _ if !ty.has_infer() => false,
+            _ => ty.children().into_iter().any(|t| self.occurs(var, t)),
+        }
+    }
+
+    /// Makes the opaque types of `function`, whose body this is,
+    /// variables for their hidden types, with their bounds as
+    /// obligations: what the body returns must meet them.
+    fn hide_opaques(&mut self, function: FunctionId) {
+        let (items, sigs) = (self.items, self.sigs);
+        let decls = &items.functions[function].opaques;
+        if decls.is_empty() {
+            return;
+        }
+        let identity: Vec<Ty> = (self.generics.iter().enumerate())
+            .map(|(i, &name)| Ty::param(i as u32, name))
+            .collect();
+        self.own_opaque_args = Ty::list(&identity);
+        self.own_opaques = decls.iter().map(|d| self.new_var(false, d.range)).collect();
+        let Some(opaque_sigs) = sigs.opaques.get(function) else {
+            return;
+        };
+        for ((decl, sig), &var) in decls
+            .iter()
+            .zip(opaque_sigs.iter())
+            .zip(&self.own_opaques.clone())
+        {
+            let mut args = identity.clone();
+            args.push(var);
+            for p in sig.predicates.iter() {
+                self.register(p.subst(&args), decl.range, solve::ObligationKind::Bound);
+            }
+            for p in sig.projections.iter() {
+                self.register_projection(p.subst(&args), decl.range);
+            }
+        }
+    }
+
+    /// `ty` with the body's own opaque types replaced by their hidden
+    /// types' variables.
+    fn reveal_own(&self, ty: Ty) -> Ty {
+        if self.own_opaques.is_empty() || !ty.has_opaques() {
+            return ty;
+        }
+        let owner = self.owner_fn;
+        ty.map_opaques(&mut |o| {
+            if Some(o.function) == owner && o.args == self.own_opaque_args {
+                self.own_opaques[o.index as usize]
+            } else {
+                Ty::opaque(o)
+            }
+        })
+    }
+
+    /// Once the body is inferred, the hidden types of its opaque types;
+    /// one nothing decided is a cycle (E0720).
+    fn hidden_types(&mut self, reported: &mut HashSet<InferVar>) -> Vec<Ty> {
+        let Some(function) = self.owner_fn else {
+            return Vec::new();
+        };
+        let items = self.items;
+        let vars = self.own_opaques.clone();
+        let mut out = Vec::new();
+        for (decl, var) in items.functions[function].opaques.iter().zip(vars) {
+            let shallow = self.shallow(var);
+            if let TyKind::Infer(v) = shallow.kind()
+                && !self.unknown(v).0
+            {
+                if !self.tainted && self.diagnostics.is_empty() {
+                    self.error(decl.range, "cannot resolve opaque type");
+                }
+                reported.insert(self.root(v));
+                out.push(Ty::ERROR);
+                continue;
+            }
+            out.push(self.resolve(var, reported));
+        }
+        out
     }
 
     fn unify(&mut self, a: Ty, b: Ty) -> bool {
@@ -670,6 +774,15 @@ impl Ctx<'_> {
                 }
                 ok
             }
+            (TyKind::Opaque(a), TyKind::Opaque(b))
+                if (a.function, a.index) == (b.function, b.index) =>
+            {
+                let mut ok = true;
+                for (&x, &y) in a.args.iter().zip(b.args) {
+                    ok &= self.unify(x, y);
+                }
+                ok
+            }
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
                 let mut ok =
                     x.is_unsafe == y.is_unsafe && x.inputs_output.len() == y.inputs_output.len();
@@ -696,6 +809,21 @@ impl Ctx<'_> {
         let (int, _) = self.unknown(var);
         if int && ty.as_int().is_none() {
             return false;
+        }
+        // A hidden type that would contain itself (`(f(),)` in `f`) is
+        // no type (E0720): only bodies with opaque types can make one.
+        if !self.own_opaques.is_empty() && ty.has_infer() && self.occurs(var, ty) {
+            let root = self.root(var);
+            let hidden = self.own_opaques.clone().into_iter().any(
+                |h| matches!(self.shallow(h).kind(), TyKind::Infer(v) if self.root(v) == root),
+            );
+            if !hidden {
+                return false;
+            }
+            let origin = self.vars[var.0 as usize].1;
+            self.error(origin, "cannot resolve opaque type");
+            self.vars[root.0 as usize].0 = VarValue::Known(Ty::ERROR);
+            return true;
         }
         self.vars[var.0 as usize].0 = VarValue::Known(ty);
         true
@@ -935,6 +1063,13 @@ impl Ctx<'_> {
                         .zip(b.args)
                         .all(|(&x, &y)| self.can_unify(x, y))
             }
+            (TyKind::Opaque(a), TyKind::Opaque(b)) => {
+                (a.function, a.index) == (b.function, b.index)
+                    && a.args
+                        .iter()
+                        .zip(b.args)
+                        .all(|(&x, &y)| self.can_unify(x, y))
+            }
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
                 x.is_unsafe == y.is_unsafe
                     && x.inputs_output.len() == y.inputs_output.len()
@@ -1047,10 +1182,15 @@ impl Ctx<'_> {
             let root = self.root(var);
             self.reported_vars.insert(root);
         }
-        let (expected, actual) = (self.describe(expected), self.describe(actual));
+        // An opaque type is "opaque type" there, as rustc names it.
+        let mut name = |ty: Ty| match self.shallow(ty).kind() {
+            TyKind::Opaque(_) => "opaque type".to_owned(),
+            _ => format!("`{}`", self.describe(ty)),
+        };
+        let (expected, actual) = (name(expected), name(actual));
         self.error(
             range,
-            format!("mismatched types: expected `{expected}`, found `{actual}`"),
+            format!("mismatched types: expected {expected}, found {actual}"),
         );
     }
 
@@ -1070,6 +1210,7 @@ impl Ctx<'_> {
             self_types: &[],
             defaults: Some(&self.sigs.trait_defaults),
             lens: Some(&self.lens),
+            function: None,
         };
         let ty = resolve_or_report(
             self.items,
@@ -1541,8 +1682,13 @@ impl Ctx<'_> {
             .generic_args
             .get(expr)
             .and_then(|g| g.item.clone());
-        let own = self.own_args(kind, data.generics.len(), written.as_ref(), origin);
+        // Those made for `impl Trait` parameters cannot be written.
+        let explicit = data.generics.explicit_len();
+        let own = self.own_args(kind, explicit, written.as_ref(), origin);
         args.extend(own);
+        for _ in explicit..data.generics.len() {
+            args.push(self.new_var(false, origin));
+        }
         self.calls.insert(expr, (function, args.clone()));
         args
     }
@@ -3919,7 +4065,9 @@ impl Ctx<'_> {
                 .is_some_and(|f| self.items.functions[f].has_self)
         });
         let other = matches!(base.kind(), TyKind::Tuple(_) | TyKind::RawPtr(..));
-        if in_some_trait && (other || impl_target(self.items, base).is_some()) || base.has_params()
+        if in_some_trait && (other || impl_target(self.items, base).is_some())
+            || base.has_params()
+            || matches!(base.kind(), TyKind::Opaque(_))
         {
             let what = match base.kind() {
                 TyKind::Adt(adt, _)
@@ -4205,6 +4353,7 @@ impl Ctx<'_> {
             TyKind::Adt(..)
                 | TyKind::Param(_)
                 | TyKind::Alias(_)
+                | TyKind::Opaque(_)
                 | TyKind::Ref(..)
                 | TyKind::Array(..)
                 | TyKind::Slice(_)
@@ -4241,7 +4390,7 @@ impl Ctx<'_> {
             // An integer or `bool` on the left and another type on the
             // right: no `impl` block of `core`'s takes it.
             let other = match self.shallow(rhs_ty).kind() {
-                TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) => true,
+                TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => true,
                 TyKind::Char => operand != Ty::CHAR,
                 _ => false,
             };
@@ -4516,7 +4665,11 @@ impl Ctx<'_> {
     fn overload_unary(&mut self, id: ExprId, op: UnaryOp, ty: Ty) -> Option<Ty> {
         if !matches!(
             self.shallow(ty).kind(),
-            TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) | TyKind::Ref(..)
+            TyKind::Adt(..)
+                | TyKind::Param(_)
+                | TyKind::Alias(_)
+                | TyKind::Opaque(_)
+                | TyKind::Ref(..)
         ) {
             return None;
         }
@@ -4738,7 +4891,17 @@ impl Ctx<'_> {
             self.default_int_vars();
             self.analyze_closures();
         }
+        // As in rustc, a hidden type nothing decides (the function only
+        // calls itself) is `!`.
+        for v in self.own_opaques.clone() {
+            if let TyKind::Infer(var) = self.shallow(v).kind()
+                && !self.unknown(var).0
+            {
+                self.vars[var.0 as usize].0 = VarValue::Known(Ty::NEVER);
+            }
+        }
         self.finish_obligations(&mut reported);
+        let opaques = self.hidden_types(&mut reported);
         self.report_unknown_lets(&mut reported);
         let exprs: Vec<(ExprId, Ty)> = self.expr_types.iter().map(|(e, t)| (e, *t)).collect();
         for (expr, ty) in exprs {
@@ -4906,6 +5069,7 @@ impl Ctx<'_> {
             unsizes,
             builtin_methods: self.builtin_methods,
             missing_lens: self.lens.missing.into_inner(),
+            opaques,
             diagnostics: self.diagnostics,
         }
     }
@@ -5067,6 +5231,11 @@ impl Ctx<'_> {
             }
             TyKind::Alias(alias) => {
                 for &t in alias.args {
+                    self.unknown_vars(t, out);
+                }
+            }
+            TyKind::Opaque(opaque) => {
+                for &t in opaque.args {
                     self.unknown_vars(t, out);
                 }
             }
@@ -5244,6 +5413,17 @@ impl Ctx<'_> {
                 Ty::alias(crate::AliasTy {
                     args: Ty::list(&args),
                     ..alias
+                })
+            }
+            TyKind::Opaque(opaque) if ty.has_infer() => {
+                let args: Vec<Ty> = opaque
+                    .args
+                    .iter()
+                    .map(|&a| self.resolve(a, reported))
+                    .collect();
+                Ty::opaque(crate::OpaqueTy {
+                    args: Ty::list(&args),
+                    ..opaque
                 })
             }
             _ => ty,

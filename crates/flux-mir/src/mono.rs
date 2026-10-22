@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use flux_hir::{Diagnostic, FunctionId, Hir, ItemTree, StructId};
 pub use flux_ty::Instance;
-use flux_ty::{Mutability, Signatures, Ty, TyKind, subst_list};
+use flux_ty::{GenericArgs, Mutability, Signatures, Ty, TyKind};
 
 use crate::{
     BasicBlock, BasicBlockData, Body, Constant, FileMir, Local, LocalDecl, LocalKind, Operand,
@@ -91,7 +91,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                 if let Operand::Const(Constant::Fn { function, args, .. }) = op {
                     let instance = Instance {
                         function,
-                        args: Ty::list(&subst_list(args, caller_args)),
+                        args: instance_args(&hir.items, sigs, args, caller_args),
                     };
                     let instance = flux_ty::traits::resolve_instance(&hir.items, sigs, instance);
                     reified.insert(instance);
@@ -108,7 +108,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                     func, generic_args, ..
                 } => vec![Instance {
                     function: *func,
-                    args: Ty::list(&subst_list(generic_args, caller_args)),
+                    args: instance_args(&hir.items, sigs, generic_args, caller_args),
                 }],
                 TerminatorKind::Drop { place, .. } => {
                     let ty = body.place_ty(place, sigs);
@@ -160,6 +160,39 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         }
     }
     Ok(Collected { instances, reified })
+}
+
+/// `args`, in terms of a caller's parameters, for its instance with
+/// `caller_args`: substituted, with opaque types revealed and associated
+/// types normalized, as [`subst_body`] makes them.
+fn instance_args(
+    items: &ItemTree,
+    sigs: &Signatures,
+    args: &[Ty],
+    caller_args: &[Ty],
+) -> GenericArgs {
+    if caller_args.is_empty() && !args.iter().any(|a| a.has_opaques()) {
+        return Ty::list(args);
+    }
+    let list: Vec<Ty> = args
+        .iter()
+        .map(|&a| flux_ty::traits::instance_ty(items, sigs, a, caller_args))
+        .collect();
+    Ty::list(&list)
+}
+
+/// Whether `body` mentions opaque types, which its instances reveal.
+fn mentions_opaques(body: &Body) -> bool {
+    body.locals.values().any(|l| l.ty.has_opaques())
+        || body
+            .blocks
+            .values()
+            .any(|data| match &data.terminator.kind {
+                TerminatorKind::Call { generic_args, .. } => {
+                    generic_args.iter().any(|a| a.has_opaques())
+                }
+                _ => false,
+            })
 }
 
 /// The MIR of `instance`: its function's with its generic arguments
@@ -828,7 +861,7 @@ pub fn instance_body<'b>(
     body: &'b Body,
     args: &[Ty],
 ) -> Cow<'b, Body> {
-    let mut body = if args.is_empty() {
+    let mut body = if args.is_empty() && !mentions_opaques(body) {
         Cow::Borrowed(body)
     } else {
         Cow::Owned(subst_body(hir, sigs, body, args))

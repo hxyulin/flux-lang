@@ -108,7 +108,9 @@ impl<'a> Ctx<'a> {
     ) -> std::borrow::Cow<'a, crate::FnSig> {
         let sigs = self.sigs;
         let sig = &sigs[function];
-        let has_aliases = sig.ret.has_aliases() || sig.params.iter().any(|p| p.has_aliases());
+        let has_aliases = sig.ret.has_aliases()
+            || sig.params.iter().any(|p| p.has_aliases())
+            || (Some(function) == self.owner_fn && !self.own_opaques.is_empty());
         if args.is_empty() && !has_aliases {
             return std::borrow::Cow::Borrowed(sig);
         }
@@ -239,7 +241,7 @@ impl Ctx<'_> {
 
     /// What a bound says an associated type is (`S: Shape<Out = i32>`),
     /// at `range` if it is not.
-    fn register_projection(&mut self, p: crate::traits::Projection, range: TextRange) {
+    pub(super) fn register_projection(&mut self, p: crate::traits::Projection, range: TextRange) {
         let expected = self.normalize(p.ty, range);
         let var = self.new_var(false, range);
         self.unify(var, expected);
@@ -398,6 +400,7 @@ impl Ctx<'_> {
     /// types. One whose `Self` is not known yet becomes a variable;
     /// one of a generic parameter without a binding stays.
     pub(super) fn normalize(&mut self, ty: Ty, origin: TextRange) -> Ty {
+        let ty = self.reveal_own(ty);
         if !ty.has_aliases() {
             return ty;
         }
@@ -483,10 +486,23 @@ impl Ctx<'_> {
 
     /// What `alias` is, if a bound in scope or one `impl` block says.
     fn try_normalize(&mut self, alias: AliasTy) -> Option<Ty> {
+        // A `Self` not known yet is ambiguous: a bound in scope must not
+        // decide what it is.
+        if let TyKind::Infer(var) = self.shallow(alias.args[0]).kind()
+            && !self.unknown(var).0
+        {
+            return None;
+        }
         let target = Ty::alias(alias);
         let mut candidates = self.env_projections.clone();
-        if let TyKind::Alias(outer) = self.shallow(alias.args[0]).kind() {
-            candidates.extend(crate::traits::alias_projections(self.sigs, outer));
+        match self.shallow(alias.args[0]).kind() {
+            TyKind::Alias(outer) => {
+                candidates.extend(crate::traits::alias_projections(self.sigs, outer));
+            }
+            TyKind::Opaque(opaque) => {
+                candidates.extend(crate::traits::opaque_projections(self.sigs, opaque));
+            }
+            _ => {}
         }
         for p in candidates {
             if p.alias.trait_ == alias.trait_
@@ -535,7 +551,10 @@ impl Ctx<'_> {
         // scope says implements the trait: the bound decides, as rustc's
         // where-clause candidates shadow `impl` blocks, so a blanket
         // block does not apply to it.
-        if matches!(self_ty.kind(), TyKind::Param(_) | TyKind::Alias(_)) {
+        if matches!(
+            self_ty.kind(),
+            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)
+        ) {
             let alias_bounds = self.alias_bounds(self_ty);
             if self
                 .param_env
@@ -714,6 +733,11 @@ impl Ctx<'_> {
                     self.int_vars(t, out);
                 }
             }
+            TyKind::Opaque(opaque) => {
+                for &t in opaque.args {
+                    self.int_vars(t, out);
+                }
+            }
             TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
                 self.int_vars(t, out)
             }
@@ -805,6 +829,7 @@ impl Ctx<'_> {
             TyKind::Ref(..) => "reference",
             TyKind::Tuple(_) => "tuple",
             TyKind::Param(_) => "type parameter",
+            TyKind::Opaque(_) => "opaque type",
             TyKind::RawPtr(..) => "raw pointer",
             TyKind::Array(..) => "array",
             TyKind::Slice(_) => "slice",
@@ -1116,11 +1141,12 @@ impl Ctx<'_> {
             };
         }
         let alias_bounds = self.alias_bounds(ty);
+        let known = self.known(ty);
         let candidates: Vec<Predicate> = self
             .param_env
             .iter()
             .chain(&alias_bounds)
-            .filter(|p| p.self_ty == ty && p.trait_ref.trait_ == t)
+            .filter(|p| (p.self_ty == ty || p.self_ty == known) && p.trait_ref.trait_ == t)
             .copied()
             .collect();
         // A bound whose arguments unify with those wanted (`C: Index<usize>`
@@ -1249,10 +1275,11 @@ impl Ctx<'_> {
             _ => None,
         };
         let mut found: Vec<(AssocItem, Option<TraitRef>)> = Vec::new();
-        if ty.has_params() {
+        if ty.has_params() || matches!(ty.kind(), TyKind::Opaque(_)) {
             let alias_bounds = self.alias_bounds(ty);
+            let known = self.known(ty);
             for p in self.param_env.clone().into_iter().chain(alias_bounds) {
-                if p.self_ty == ty
+                if (p.self_ty == ty || p.self_ty == known)
                     && let Some(f) = wanted(p.trait_ref.trait_)
                     && !found.iter().any(|(g, _)| *g == f)
                 {

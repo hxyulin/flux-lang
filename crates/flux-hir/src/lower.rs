@@ -14,7 +14,9 @@ use crate::body::{
 };
 use crate::def_map::{Def, Ns, ResolveError, Resolved};
 use crate::item_tree::{GenericArgs, PathAnchor, lower_generic_args, lower_generic_path};
-use crate::item_tree::{check_attr, check_attrs, lower_type, unsupported};
+use crate::item_tree::{
+    ImplTraitSite, check_attr, check_attrs, lower_type, reject_impl_trait, unsupported,
+};
 use crate::literal::{
     parse_int, unescape_byte, unescape_byte_str, unescape_c_str, unescape_char, unescape_str,
 };
@@ -1611,7 +1613,9 @@ impl<'a> Ctx<'a> {
             ast::Expr::CastExpr(cast) => {
                 let expr = self.lower_opt(cast.expr(), syntax);
                 let ty_range = cast.ty().map_or(range, |t| t.syntax().text_range());
-                let ty = lower_type(cast.ty(), &mut self.diagnostics);
+                let mut ty = lower_type(cast.ty(), &mut self.diagnostics);
+                let site = ImplTraitSite::NotAllowed("cast expression types");
+                reject_impl_trait(&mut ty, site, &mut self.diagnostics);
                 let ty = self.types.alloc(ty);
                 self.source_map.types.insert(ty, ty_range);
                 Expr::Cast { expr, ty }
@@ -2228,7 +2232,9 @@ impl<'a> Ctx<'a> {
                     }
                     let ty = let_stmt.ty().map(|ty| {
                         let range = ty.syntax().text_range();
-                        let ty = lower_type(Some(ty), &mut self.diagnostics);
+                        let mut ty = lower_type(Some(ty), &mut self.diagnostics);
+                        let site = ImplTraitSite::NotAllowed("the type of variable bindings");
+                        reject_impl_trait(&mut ty, site, &mut self.diagnostics);
                         let id = self.types.alloc(ty);
                         self.source_map.types.insert(id, range);
                         id
@@ -2696,7 +2702,9 @@ impl<'a> Ctx<'a> {
             }
             let ty = param.ty().map(|ty| {
                 let at = ty.syntax().text_range();
-                let ty = lower_type(Some(ty), &mut self.diagnostics);
+                let mut ty = lower_type(Some(ty), &mut self.diagnostics);
+                let site = ImplTraitSite::NotAllowed("closure parameters");
+                reject_impl_trait(&mut ty, site, &mut self.diagnostics);
                 let id = self.types.alloc(ty);
                 self.source_map.types.insert(id, at);
                 id
@@ -2708,7 +2716,9 @@ impl<'a> Ctx<'a> {
             let at = ret
                 .ty()
                 .map_or(ret.syntax().text_range(), |t| t.syntax().text_range());
-            let ty = lower_type(ret.ty(), &mut self.diagnostics);
+            let mut ty = lower_type(ret.ty(), &mut self.diagnostics);
+            let site = ImplTraitSite::NotAllowed("closure return types");
+            reject_impl_trait(&mut ty, site, &mut self.diagnostics);
             let id = self.types.alloc(ty);
             self.source_map.types.insert(id, at);
             id

@@ -1,0 +1,29 @@
+fn wrong_item() -> impl Iterator<Item = u64>
+fn not_iterator() -> impl Iterator<Item = u32>
+fn branches(bool) -> impl Copy
+    c@0: bool
+fn returns(bool) -> impl Copy
+    c@0: bool
+fn cycle() -> impl Copy
+fn number() -> impl Copy
+fn takes<impl Copy>(impl Copy) -> u32
+    x@0: impl Copy
+fn bounded<T, impl Fn(T) -> u32>(T, impl Fn(T) -> u32) -> u32
+    t@0: T
+    f@1: impl Fn(T) -> u32
+fn not_copy() -> impl Fn() -> u32
+fn main() -> ()
+    a@0: u32
+    b@1: {error}
+    x@2: {error}
+    f@3: impl Fn() -> u32
+error 78..103: expected `Range<u32>` to be an iterator that yields `u64`, but it yields `u32`
+error 142..167: `u32` is not an iterator
+error 242..246: `if` and `else` have incompatible types: `u8` and `u16`
+error 328..332: mismatched types: expected `u8`, found `u16`
+error 350..359: cannot resolve opaque type
+error 621..629: mismatched types: expected `u32`, found opaque type
+error 652..653: cannot add `{integer}` to `impl Copy`
+error 661..666: function takes 0 generic arguments but 1 generic argument was supplied
+error 681..688: function takes 1 generic argument but 2 generic arguments were supplied
+error 747..752: no method named `clone` found for opaque type `impl Fn() -> u32` in the current scope

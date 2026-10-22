@@ -98,7 +98,11 @@ struct Validator<'a> {
 }
 
 impl Validator<'_> {
+    /// `ty` normalized, its opaque types revealed: a function's body has
+    /// its hidden types where its callers have the opaque ones, and an
+    /// instance's are revealed.
     fn norm(&self, ty: Ty) -> Ty {
+        let ty = flux_ty::traits::reveal(self.sigs, ty);
         flux_ty::traits::normalize(self.items, self.sigs, self.env, ty)
     }
 
