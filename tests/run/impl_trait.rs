@@ -89,6 +89,29 @@ impl Ring {
     }
 }
 
+struct Names<K> {
+    keys: [K; 3],
+}
+
+impl<K> Names<K> {
+    fn iter(&self) -> impl Iterator<Item = &K> + '_ {
+        self.keys.iter().filter(|_| true)
+    }
+
+    fn clear(&mut self) {}
+}
+
+// What a `for` loop over an opaque iterator keeps of its items' own
+// lifetimes is not the iterator's borrow.
+fn keys_of(names: &mut Names<&'static str>) -> i64 {
+    let mut kept = [""; 3];
+    for (i, k) in names.iter().enumerate() {
+        kept[i] = *k;
+    }
+    names.clear();
+    kept.iter().map(|k| k.len() as i64).sum()
+}
+
 fn even_refs<'a>(v: &'a [i64]) -> impl Iterator<Item = &'a i64> + 'a {
     v.iter().filter(|x| **x % 2 == 0)
 }
@@ -162,4 +185,8 @@ fn main() {
     show(15, *a.unwrap_or(&0) * 100 + *b.unwrap_or(&0));
     show(16, sum_refs(last_refs(&values).take(2)) + sum_refs(even_refs(&values[2..])));
     show(14, evens(100).skip(3).step_by(4).take(3).sum::<u64>() as i64);
+    let mut names = Names {
+        keys: ["a", "bb", "cccc"],
+    };
+    show(17, keys_of(&mut names));
 }

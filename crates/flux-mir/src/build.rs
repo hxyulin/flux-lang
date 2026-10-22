@@ -959,13 +959,14 @@ fn build_body(
                             && !c.projection.contains(&flux_ty::CaptureProj::Deref)
                     })
                     .collect(),
-                annotated_refs: match &body.exprs[expr] {
-                    Expr::Closure { param_types, .. } => param_types
-                        .iter()
-                        .flatten()
-                        .any(|&t| has_ref(&body.types[t])),
-                    _ => false,
-                },
+                annotated_refs: !info.hinted
+                    && match &body.exprs[expr] {
+                        Expr::Closure { param_types, .. } => param_types
+                            .iter()
+                            .flatten()
+                            .any(|&t| has_ref(&body.types[t])),
+                        _ => false,
+                    },
             })
         }
         _ => None,

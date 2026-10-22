@@ -88,6 +88,11 @@ pub struct ClosureInfo {
     pub kind: ClosureKind,
     /// In the order of the closure's fields.
     pub captures: Box<[Capture]>,
+    /// Its signature follows from the `Fn`-family bounds of the
+    /// parameter it is passed as, as rustc's `sig_of_closure_with_expectation`
+    /// takes it: a reference its parameters' annotations write has the
+    /// bound's lifetime, not one of the closure's own.
+    pub hinted: bool,
 }
 
 /// The signature a closure is expected to have: from the bounds of the
@@ -169,6 +174,7 @@ impl Ctx<'_> {
             return Ty::ERROR;
         };
         let mut hint = self.closure_hints.remove(id);
+        let from_bound = hint.is_some();
         // Where a function pointer is expected, its signature.
         if hint.is_none()
             && let Some(&expected) = self.expected.get(id)
@@ -213,6 +219,9 @@ impl Ctx<'_> {
             );
             self.mismatched_closures.insert(id);
             hinted = None;
+        }
+        if from_bound && hinted.is_some() {
+            self.hinted_closures.insert(id);
         }
         let mut types = Vec::with_capacity(params.len());
         for (i, &pat) in params.iter().enumerate() {
@@ -747,6 +756,7 @@ impl Ctx<'_> {
             ty: closure.ty,
             kind,
             captures,
+            hinted: self.hinted_closures.contains(&closure.expr),
         }
     }
 

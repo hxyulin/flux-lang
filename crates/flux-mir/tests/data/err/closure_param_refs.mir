@@ -1,0 +1,483 @@
+fn escapes_to_capture() -> () {
+    let mut _0: ();
+    let _1: [i32; 2]; // v
+    let mut _2: Option<&&i32>; // keep
+    let _3: usize; // n
+    let _4: Filter<Iter<i32>, {closure}>;
+    let _5: Iter<i32>;
+    let _6: &[i32; 2];
+    let _7: &[i32];
+    let _8: Iter<i32>;
+    let _9: {closure};
+    let _10: &mut Option<&&i32>;
+    let _11: Filter<Iter<i32>, {closure}>;
+    let _12: (usize, Option<&&i32>);
+    let _13: usize;
+    let _14: Option<&&i32>;
+
+    bb0: {
+        _1 = [const 1_i32, const 2_i32];
+        _2 = Option::None;
+        _6 = &_1;
+        _7 = copy _6 as &[i32] (unsize);
+        _5 = iter::<i32>(copy _7) -> bb1;
+    }
+
+    bb1: {
+        _8 = move _5;
+        _10 = &mut _2;
+        _9 = {closure}(move _10);
+        _4 = filter::<Iter<i32>, {closure}>(move _8, move _9) -> bb2;
+    }
+
+    bb2: {
+        _11 = move _4;
+        _3 = count::<Filter<Iter<i32>, {closure}>>(move _11) -> bb3;
+    }
+
+    bb3: {
+        StorageDead(_4);
+        StorageDead(_5);
+        _13 = copy _3;
+        _14 = copy _2;
+        _12 = (copy _13, copy _14);
+        StorageDead(_12);
+        _0 = const ();
+        StorageDead(_3);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn escapes_to_capture::{closure#13} as FnMut(_1: &mut {closure}, _2: (&&i32,)) -> bool {
+    let mut _0: bool;
+    let _3: &&i32; // x
+    let _4: ();
+    let _5: Option<&&i32>;
+    let _6: &&i32;
+
+    bb0: {
+        _3 = copy _2.0;
+        _6 = copy _3;
+        _5 = Option::Some(copy _6);
+        (*(*_1).0) = copy _5;
+        _4 = const ();
+        _0 = const true;
+        return;
+    }
+}
+
+fn escapes_to_capture::{closure#13} as FnOnce(_1: {closure}, _2: (&&i32,)) -> bool {
+    let mut _0: bool;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, (&&i32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn escapes_to_output() -> () {
+    let mut _0: ();
+    let _1: [i32; 2]; // v
+    let _2: Option<&i32>; // m
+    let _3: Iter<i32>;
+    let _4: &[i32; 2];
+    let _5: &[i32];
+    let _6: Iter<i32>;
+    let _7: {closure};
+
+    bb0: {
+        _1 = [const 1_i32, const 2_i32];
+        _4 = &_1;
+        _5 = copy _4 as &[i32] (unsize);
+        _3 = iter::<i32>(copy _5) -> bb1;
+    }
+
+    bb1: {
+        _6 = move _3;
+        _7 = {closure}();
+        _2 = max_by_key::<Iter<i32>, &&i32, {closure}>(move _6, copy _7) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_3);
+        PlaceMention(_2);
+        _0 = const ();
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn escapes_to_output::{closure#6} as FnMut(_1: &mut {closure}, _2: (&&i32,)) -> &&i32 {
+    let mut _0: &&i32;
+    let _3: &&i32; // x
+
+    bb0: {
+        _3 = copy _2.0;
+        _0 = copy _3;
+        return;
+    }
+}
+
+fn escapes_to_output::{closure#6} as FnOnce(_1: {closure}, _2: (&&i32,)) -> &&i32 {
+    let mut _0: &&i32;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, (&&i32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn with_local<F>(_1: F) -> () {
+    let mut _0: ();
+    let _2: i32; // x
+    let _3: ();
+    let _4: &mut F;
+    let _5: &i32;
+    let _6: (&i32,);
+
+    bb0: {
+        _2 = const 1_i32;
+        _4 = &two_phase _1;
+        _5 = &_2;
+        _6 = (copy _5,);
+        _3 = call_mut::<F, (&i32,)>(move _4, move _6) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        StorageDead(_2);
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn callee_local() -> () {
+    let mut _0: ();
+    let mut _1: Option<&i32>; // keep
+    let _2: ();
+    let _3: {closure};
+    let _4: &mut Option<&i32>;
+
+    bb0: {
+        _1 = Option::None;
+        _4 = &mut _1;
+        _3 = {closure}(move _4);
+        _2 = with_local::<{closure}>(move _3) -> bb1;
+    }
+
+    bb1: {
+        PlaceMention(_1);
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn callee_local::{closure#7} as FnMut(_1: &mut {closure}, _2: (&i32,)) -> () {
+    let mut _0: ();
+    let _3: &i32; // x
+    let _4: Option<&i32>;
+    let _5: &i32;
+
+    bb0: {
+        _3 = copy _2.0;
+        _5 = copy _3;
+        _4 = Option::Some(copy _5);
+        (*(*_1).0) = copy _4;
+        _0 = const ();
+        return;
+    }
+}
+
+fn callee_local::{closure#7} as FnOnce(_1: {closure}, _2: (&i32,)) -> () {
+    let mut _0: ();
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, (&i32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn kept_items() -> () {
+    let mut _0: ();
+    let mut _1: Option<&i32>; // keep
+    let _2: ();
+    let _3: [i32; 2]; // v
+    let _4: ();
+    let _5: Iter<i32>;
+    let _6: &[i32; 2];
+    let _7: &[i32];
+    let _8: Iter<i32>;
+    let _9: {closure};
+    let _10: &mut Option<&i32>;
+
+    bb0: {
+        _1 = Option::None;
+        _3 = [const 1_i32, const 2_i32];
+        _6 = &_3;
+        _7 = copy _6 as &[i32] (unsize);
+        _5 = iter::<i32>(copy _7) -> bb1;
+    }
+
+    bb1: {
+        _8 = move _5;
+        _10 = &mut _1;
+        _9 = {closure}(move _10);
+        _4 = for_each::<Iter<i32>, {closure}>(move _8, move _9) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_5);
+        _2 = const ();
+        StorageDead(_3);
+        PlaceMention(_1);
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn kept_items::{closure#11} as FnMut(_1: &mut {closure}, _2: (&i32,)) -> () {
+    let mut _0: ();
+    let _3: &i32; // x
+    let _4: Option<&i32>;
+    let _5: &i32;
+
+    bb0: {
+        _3 = copy _2.0;
+        _5 = copy _3;
+        _4 = Option::Some(copy _5);
+        (*(*_1).0) = copy _4;
+        _0 = const ();
+        return;
+    }
+}
+
+fn kept_items::{closure#11} as FnOnce(_1: {closure}, _2: (&i32,)) -> () {
+    let mut _0: ();
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, (&i32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn mapped_out() -> () {
+    let mut _0: ();
+    let _1: Option<&i32>; // r
+    let _2: ();
+    let _3: [S; 1]; // v
+    let _4: S;
+    let _5: ();
+    let _6: Option<&i32>;
+    let _7: Map<Iter<S>, {closure}>;
+    let _8: Iter<S>;
+    let _9: &[S; 1];
+    let _10: &[S];
+    let _11: Iter<S>;
+    let _12: {closure};
+    let _13: &mut Map<Iter<S>, {closure}>;
+
+    bb0: {
+        _4 = S { f: const 1_i32 };
+        _3 = [move _4];
+        _9 = &_3;
+        _10 = copy _9 as &[S] (unsize);
+        _8 = iter::<S>(copy _10) -> bb1;
+    }
+
+    bb1: {
+        _11 = move _8;
+        _12 = {closure}();
+        _7 = map::<Iter<S>, &i32, {closure}>(move _11, copy _12) -> bb2;
+    }
+
+    bb2: {
+        _13 = &two_phase _7;
+        _6 = next::<Map<Iter<S>, {closure}>>(move _13) -> bb3;
+    }
+
+    bb3: {
+        _1 = copy _6;
+        _5 = const ();
+        StorageDead(_7);
+        StorageDead(_8);
+        _2 = const ();
+        StorageDead(_3);
+        PlaceMention(_1);
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn mapped_out::{closure#9} as FnMut(_1: &mut {closure}, _2: (&S,)) -> &i32 {
+    let mut _0: &i32;
+    let _3: &S; // s
+
+    bb0: {
+        _3 = copy _2.0;
+        _0 = &(*_3).0;
+        return;
+    }
+}
+
+fn mapped_out::{closure#9} as FnOnce(_1: {closure}, _2: (&S,)) -> &i32 {
+    let mut _0: &i32;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, (&S,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn captured_local<'a>(_1: Result<i32, i32>) -> Result<i32, &i32> {
+    let mut _0: Result<i32, &i32>;
+    let _2: i32; // x
+    let _3: Result<i32, i32>;
+    let _4: {closure};
+    let _5: &i32;
+
+    bb0: {
+        _2 = const 5_i32;
+        _3 = copy _1;
+        _5 = &_2;
+        _4 = {closure}(move _5);
+        _0 = map_err::<i32, i32, &i32, {closure}>(copy _3, copy _4) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn captured_local<'a>::{closure#4} as FnOnce(_1: {closure}, _2: (i32,)) -> &i32 {
+    let mut _0: &i32;
+
+    bb0: {
+        _0 = &(*_1.0);
+        return;
+    }
+}
+
+fn firsts<'a>(_1: &[(u8, &str)]) -> Map<Iter<(u8, &str)>, {closure}> {
+    let mut _0: Map<Iter<(u8, &str)>, {closure}>;
+    let _2: Iter<(u8, &str)>;
+    let _3: &[(u8, &str)];
+    let _4: Iter<(u8, &str)>;
+    let _5: {closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _2 = iter::<(u8, &str)>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _4 = move _2;
+        _5 = {closure}();
+        _0 = map::<Iter<(u8, &str)>, &u8, {closure}>(move _4, copy _5) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn firsts<'a>::{closure#5} as FnMut(_1: &mut {closure}, _2: (&(u8, &str),)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &(u8, &str); // i
+
+    bb0: {
+        _3 = copy _2.0;
+        _0 = &(*_3).0;
+        return;
+    }
+}
+
+fn firsts<'a>::{closure#5} as FnOnce(_1: {closure}, _2: (&(u8, &str),)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, (&(u8, &str),)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 388..402: borrowed data escapes outside of closure
+error 618..619: lifetime may not live long enough
+error 848..862: borrowed data escapes outside of closure
+error 1045..1046: `v` does not live long enough
+error 1257..1258: `v` does not live long enough
+error 1480..1486: closure may outlive the current function, but it borrows `x`, which is owned by the current function
+error 1644..1670: lifetime may not live long enough

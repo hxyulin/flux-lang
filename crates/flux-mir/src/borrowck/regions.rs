@@ -26,13 +26,13 @@
 //!
 //! Signatures' lifetimes come from [`flux_ty::regions`]. A closure's
 //! body treats every lifetime of its captures, parameters and return
-//! type as one universal region of its own: its creator equates the
-//! lifetimes of what it captures, and a call of it lets anything in its
-//! inputs flow into its result and into whatever is behind a `&mut` in
-//! them. Where a signature's lifetimes cannot be matched to an
-//! instance's types (an associated type no `impl` block decides, say),
-//! the instance's are fresh regions that everything in the call's
-//! inputs outlives.
+//! type as a universal region of its own, and how they must relate are
+//! its requirements: of what it captures where it is made, and of its
+//! parameters and result where it is called, or where a callee's
+//! `Fn`-family bound says how it calls it. Where a signature's
+//! lifetimes cannot be matched to an instance's types (an associated
+//! type no `impl` block decides, say), the instance's are fresh regions
+//! that everything in the call's inputs outlives.
 
 use flux_hir::{Diagnostic, ItemTree};
 use flux_syntax::TextRange;
@@ -432,6 +432,36 @@ struct Cx<'a> {
     /// In a function returning opaque types, the slots of their hidden
     /// types in its return value.
     hidden: Vec<HiddenSlots>,
+    /// The variables made for lifetimes elided in bounds: in the
+    /// parameters of a `Fn`-family bound, its own (higher-ranked).
+    holes: rustc_hash::FxHashSet<Var>,
+    /// The slots of the inputs of the call whose bounds are being
+    /// proven: what the callee may give a closure where its parameters'
+    /// slots cannot be told.
+    call_inputs: Vec<Var>,
+    /// The closures whose `Fn`-family bounds the call being checked
+    /// proved, and those whose `Output` it normalized: whose
+    /// requirements of their parameters' and return value's lifetimes
+    /// it related to its own.
+    proven_closures: rustc_hash::FxHashSet<flux_ty::ClosureId>,
+    output_closures: rustc_hash::FxHashSet<flux_ty::ClosureId>,
+    /// Where the call being checked is.
+    call_range: TextRange,
+}
+
+/// What a lifetime a closure is given is, where a bound says what it is
+/// called with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClosureSlot {
+    Var(Var),
+    /// The bound's own lifetime (`&T` in `F: Fn(&T)`), a different one
+    /// at each call: nothing else may outlive it, nor it anything else.
+    HigherRanked(Var),
+    /// Something the call is given, which flux cannot tell.
+    Input,
+    /// Related where the closure's `Output` is normalized.
+    Ret,
+    None,
 }
 
 /// The slots of an opaque type's hidden type in its function's return
@@ -504,6 +534,11 @@ impl<'a> Cx<'a> {
             own_requirements: Vec::new(),
             errors: Vec::new(),
             hidden: Vec::new(),
+            holes: Default::default(),
+            call_inputs: Vec::new(),
+            proven_closures: Default::default(),
+            output_closures: Default::default(),
+            call_range: TextRange::default(),
         }
     }
 
@@ -1147,8 +1182,18 @@ impl<'a> Cx<'a> {
         if let Some((_, vars)) = self.env_regions.iter().find(|(e, _)| *e == alias) {
             return Some(vars.clone());
         }
-        if let TyKind::Opaque(opaque) = alias.args[0].kind() {
-            return self.opaque_projection(opaque, alias, arg_vars.first()?);
+        // What an opaque type's bounds say, or else what an `impl`
+        // block for it does (`impl<I: Iterator> IntoIterator for I`).
+        if let TyKind::Opaque(opaque) = alias.args[0].kind()
+            && let Some(vars) = self.opaque_projection(opaque, alias, arg_vars.first()?)
+        {
+            return Some(vars);
+        }
+        if let TyKind::Closure(id, list) = alias.args[0].kind()
+            && self.is_fn_output(alias)
+        {
+            let inputs = arg_vars.get(1).map_or(&[][..], Vec::as_slice);
+            return Some(self.closure_output(id, list, arg_vars.first()?, inputs));
         }
         let (items, sigs) = (self.items, self.sigs);
         let self_ty = alias.args[0];
@@ -1289,13 +1334,16 @@ impl<'a> Cx<'a> {
         // T>, T>`): those of the types the header binds.
         let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
         for (p, table) in projections.iter().zip(regions.projections.iter()) {
-            if table.is_empty() {
-                continue;
-            }
             let instance = Ty::alias(p.alias).subst(impl_args);
             let TyKind::Alias(alias) = instance.kind() else {
                 continue;
             };
+            // A closure's `Output` binds the parameters it is, which
+            // its header may not name (`B` of `impl<B, I, F: FnMut(I::Item)
+            // -> B> Iterator for Map<I, F>`).
+            if table.is_empty() && !self.is_closure_output(alias) {
+                continue;
+            }
             let type_vars: Vec<Vec<Var>> = binding
                 .types
                 .iter()
@@ -1943,16 +1991,22 @@ impl<'a> Cx<'a> {
             }
             return self.opaque_call(args, dest, range);
         }
-        // Closures passed on, which the callee may call.
+        // Closures passed on, which the callee may call: its bounds
+        // say how, as they are proven below.
+        let mut passed = Vec::new();
+        self.call_inputs.clear();
         for op in args {
             let (ty, vars) = self.operand_regions(op);
-            let mut found = Vec::new();
-            self.closures_in(ty, &vars, &mut 0, &mut found);
-            for (id, upvars) in found {
-                self.passed_closure(id, &upvars, args, dest, range);
-            }
+            self.closures_in(ty, &vars, &mut 0, &mut passed);
+            self.call_inputs.extend(vars);
         }
+        self.proven_closures.clear();
+        self.output_closures.clear();
+        self.call_range = range;
         let Some(regions) = sigs.regions.fns.get(func) else {
+            for (id, upvars) in passed {
+                self.passed_closure(id, &upvars, args, dest, range, false);
+            }
             return self.opaque_call(args, dest, range);
         };
         let sig = &sigs.fns[func];
@@ -2084,6 +2138,9 @@ impl<'a> Cx<'a> {
         for (p, table) in declared {
             self.prove_projection(p, table, &lifetimes, generic_args, &type_vars, range);
         }
+        for (id, upvars) in passed {
+            self.passed_closure(id, &upvars, args, dest, range, true);
+        }
     }
 
     /// A copy of a struct or enum, or of an array of them, needs its type
@@ -2140,6 +2197,7 @@ impl<'a> Cx<'a> {
         for v in &mut vars {
             if *v == HOLE {
                 *v = self.fresh();
+                self.holes.insert(*v);
             }
         }
         Some(vars)
@@ -2159,6 +2217,23 @@ impl<'a> Cx<'a> {
         range: TextRange,
         depth: u32,
     ) {
+        // A closure's `Fn`-family bound: how the callee calls it.
+        if flux_ty::fn_trait_kind(self.items, p.trait_ref.trait_).is_some()
+            && let self_ty = self.normalize(p.self_ty.subst(args))
+            && let TyKind::Closure(id, _) = self_ty.kind()
+        {
+            let n = self.slots(self_ty) as usize;
+            let upvars = self
+                .bound_slots_in(p.self_ty, self_table, lifetimes, args, arg_vars)
+                .filter(|v| v.len() == n);
+            let inputs = p.trait_ref.args.first().and_then(|&t| {
+                let n = self.slots(self.normalize(t.subst(args))) as usize;
+                self.bound_slots_in(t, &[], lifetimes, args, arg_vars)
+                    .filter(|v| v.len() == n)
+            });
+            self.closure_goal(id, upvars.as_deref(), inputs.as_deref(), range);
+            return;
+        }
         let mut header = Vec::with_capacity(1 + p.trait_ref.args.len());
         let mut vars = Vec::with_capacity(header.capacity());
         for (k, &t) in std::iter::once(&p.self_ty)
@@ -2294,12 +2369,12 @@ impl<'a> Cx<'a> {
         arg_vars: &[Vec<Var>],
         range: TextRange,
     ) {
-        if table.is_empty() {
-            return;
-        }
         let TyKind::Alias(alias) = Ty::alias(p.alias).subst(args).kind() else {
             return;
         };
+        if table.is_empty() && !self.is_closure_output(alias) {
+            return;
+        }
         let mut alias_vars = Vec::with_capacity(p.alias.args.len());
         for &a in p.alias.args {
             let Some(vars) = self.bound_slots(a, args, arg_vars) else {
@@ -2378,6 +2453,128 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// Whether `alias` is `<F as FnOnce<A>>::Output`.
+    fn is_fn_output(&self, alias: AliasTy) -> bool {
+        flux_ty::fn_trait_kind(self.items, alias.trait_) == Some(flux_ty::ClosureKind::FnOnce)
+            && alias.name.as_str() == "Output"
+    }
+
+    /// Whether `alias` is a closure's `Output`.
+    fn is_closure_output(&self, alias: AliasTy) -> bool {
+        matches!(alias.args[0].kind(), TyKind::Closure(..)) && self.is_fn_output(alias)
+    }
+
+    /// Closure `id`, whose captures have slots `upvars` (unknown if
+    /// `None`), meets a `Fn`-family bound whose parameters have slots
+    /// `inputs` (`None` if they cannot be told): what its body requires
+    /// of the lifetimes of its parameters and captures, as the bound
+    /// says they are. Where the bound's own lifetimes (`F: Fn(&T)`, any
+    /// lifetime at each call) would have to outlive, or be outlived by,
+    /// anything else, the closure does not meet it, as in rustc. What
+    /// it returns is related where its `Output` is normalized.
+    fn closure_goal(
+        &mut self,
+        id: flux_ty::ClosureId,
+        upvars: Option<&[Var]>,
+        inputs: Option<&[Var]>,
+        range: TextRange,
+    ) {
+        let requirements = self.requirements;
+        let Some(required) = requirements.get(&id) else {
+            return;
+        };
+        self.proven_closures.insert(id);
+        let slot = |cx: &Cx<'_>, e: Ext| match e {
+            Ext::Static => ClosureSlot::Var(STATIC),
+            Ext::Upvar(k) => match upvars.and_then(|u| u.get(k as usize)) {
+                Some(&v) => ClosureSlot::Var(v),
+                None => ClosureSlot::None,
+            },
+            Ext::Arg(k) => match inputs.map(|i| i.get(k as usize)) {
+                None => ClosureSlot::Input,
+                Some(Some(&v)) if cx.holes.contains(&v) => ClosureSlot::HigherRanked(v),
+                Some(Some(&v)) => ClosureSlot::Var(v),
+                Some(None) => ClosureSlot::None,
+            },
+            Ext::Ret(_) => ClosureSlot::Ret,
+            Ext::SelfRef => ClosureSlot::None,
+        };
+        for &(a, b, at) in &required.outlives {
+            match (slot(self, a), slot(self, b)) {
+                (ClosureSlot::HigherRanked(x), ClosureSlot::HigherRanked(y)) if x == y => {}
+                (ClosureSlot::Var(STATIC), ClosureSlot::HigherRanked(_)) => {}
+                (ClosureSlot::HigherRanked(_), _) | (_, ClosureSlot::HigherRanked(_)) => {
+                    let message = match b {
+                        Ext::Upvar(_) => "borrowed data escapes outside of closure",
+                        _ => "lifetime may not live long enough",
+                    };
+                    let d = Diagnostic::new(at, message);
+                    if !self.errors.contains(&d) {
+                        self.errors.push(d);
+                    }
+                }
+                (ClosureSlot::Var(x), ClosureSlot::Var(y)) => {
+                    self.outlives(x, y, Category::CallArgument, range);
+                }
+                (ClosureSlot::Input, ClosureSlot::Var(y)) => {
+                    for x in self.call_inputs.clone() {
+                        self.outlives(x, y, Category::CallArgument, range);
+                    }
+                }
+                (ClosureSlot::Var(x), ClosureSlot::Input) => {
+                    for y in self.call_inputs.clone() {
+                        self.outlives(x, y, Category::CallArgument, range);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The slots of what closure `id`, with generic arguments `list`,
+    /// returns when its captures have slots `upvars` and its
+    /// parameters `inputs`: new regions, which what its body returns
+    /// of them outlives.
+    fn closure_output(
+        &mut self,
+        id: flux_ty::ClosureId,
+        list: &'static [Ty],
+        upvars: &[Var],
+        inputs: &[Var],
+    ) -> Vec<Var> {
+        let ret = flux_ty::ClosureArgs::split(list).ret();
+        let n = self.slots(ret);
+        let outs = self.fresh_list(n);
+        let range = self.call_range;
+        let requirements = self.requirements;
+        let Some(required) = requirements.get(&id) else {
+            // A body not checked: it may return anything it is given.
+            for &o in &outs {
+                for &i in upvars.iter().chain(inputs) {
+                    self.outlives(i, o, Category::CallArgument, range);
+                }
+            }
+            return outs;
+        };
+        self.output_closures.insert(id);
+        let var = |e: Ext| match e {
+            Ext::Static => Some(STATIC),
+            Ext::Upvar(k) => upvars.get(k as usize).copied(),
+            Ext::Arg(k) => inputs.get(k as usize).copied(),
+            Ext::Ret(k) => outs.get(k as usize).copied(),
+            Ext::SelfRef => None,
+        };
+        for &(a, b, _) in &required.outlives {
+            if !matches!(a, Ext::Ret(_)) && !matches!(b, Ext::Ret(_)) {
+                continue;
+            }
+            if let (Some(x), Some(y)) = (var(a), var(b)) {
+                self.outlives(x, y, Category::CallArgument, range);
+            }
+        }
+        outs
+    }
+
     /// The closures in a value of type `ty` with slots `vars`: each one's
     /// id and its captures' slots, into `out`.
     fn closures_in(
@@ -2424,11 +2621,12 @@ impl<'a> Cx<'a> {
     }
 
     /// A closure, whose captures have slots `upvars`, passed to a call
-    /// that may call it: what its body requires, as far as the call's
-    /// lifetimes can say. What it returns may hold anything the call is
-    /// given; what it keeps of its parameters, the callee may have
-    /// given it from its own locals, which flux cannot tell, so it is
-    /// not supported.
+    /// that may call it: what its body requires of what it captures.
+    /// The callee's bounds say how it is called, which relates what it
+    /// requires of its parameters and its result; where they did not,
+    /// what it returns may hold anything the call is given, and what it
+    /// keeps of its parameters, which flux cannot tell, is not
+    /// supported where the callee's signature is unknown.
     fn passed_closure(
         &mut self,
         id: flux_ty::ClosureId,
@@ -2436,6 +2634,7 @@ impl<'a> Cx<'a> {
         args: &[Operand],
         dest: &Place,
         range: TextRange,
+        signature_known: bool,
     ) {
         let Some(required) = self.requirements.get(&id) else {
             return;
@@ -2446,8 +2645,12 @@ impl<'a> Cx<'a> {
         }
         let (_, dest_vars) = self.place_regions(dest);
         let category = self.category_into(dest);
+        let proven = self.proven_closures.contains(&id);
+        let output = self.output_closures.contains(&id);
         for &(a, b, at) in &required.outlives {
             match (a, b) {
+                (Ext::Arg(_), _) if proven => {}
+                (Ext::Arg(_), _) if signature_known => {}
                 (Ext::Arg(_), _) => {
                     let message =
                         "closures that keep references to their parameters are not supported yet";
@@ -2456,6 +2659,7 @@ impl<'a> Cx<'a> {
                         self.errors.push(d);
                     }
                 }
+                (_, Ext::Ret(_)) if output => {}
                 (_, Ext::Ret(_)) => {
                     for &d in &dest_vars {
                         for &i in &inputs {

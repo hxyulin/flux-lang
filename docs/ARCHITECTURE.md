@@ -784,10 +784,16 @@ is not also "moved" for `init`. A closure's body is checked before its
 creator's: each lifetime of what it captures, its parameters and its
 result is a universal region of its own, and how they must relate
 becomes its *requirements*, which its creator adds where it makes the
-closure (between what it captures) and where it calls it; a closure
-passed to a generic function may be called there, so what it returns
-is outlived by everything that call is given, and one that keeps
-references to its parameters is not supported yet. In a closure's
+closure (between what it captures) and where it calls it. A closure
+passed to a generic function is called there as the callee's bounds
+say: proving a `Fn`-family bound on it (the call's own, or an `impl`
+block's, `F: FnMut(I::Item) -> B` of `Map<I, F>`'s) relates what it
+requires of its parameters' lifetimes to the bound's parameter types,
+whose own references (`&T` in `F: Fn(&T)`) are higher-ranked, so
+nothing else may outlive them or they it; and its `Output` normalizes
+to new regions that what its body returns outlives, which binds `B`
+for normalizing `<Map<I, F> as Iterator>::Item`. Where no bound says,
+what it returns is outlived by everything the call is given. In a closure's
 body, what it captures is a field of `self`, through the reference it
 captured unless by value, and is named and checked as the captured
 variable (E0594 and E0596 for an `Fn` closure's, E0507 for moves out

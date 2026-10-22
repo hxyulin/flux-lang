@@ -158,7 +158,8 @@ pub struct Upvars {
     pub mutable: Vec<bool>,
     /// A parameter's written type has a reference, whose lifetime is
     /// the closure's own (higher-ranked), as in rustc: what it is
-    /// given there may not outlive the call.
+    /// given there may not outlive the call. Not where its signature
+    /// follows from a bound, whose lifetimes it then has.
     pub annotated_refs: bool,
 }
 
