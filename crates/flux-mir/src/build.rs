@@ -1051,7 +1051,7 @@ fn build_body(
 /// and see `ref mut` bindings through shared references.
 struct Guard {
     scrutinee: Option<Place>,
-    /// The arm's bindings, including Copy values bound before the guard.
+    /// Bindings of this and enclosing guards, including Copy values.
     bindings: Vec<BindingId>,
     ref_muts: Vec<BindingId>,
 }
@@ -3782,9 +3782,14 @@ impl Builder<'_> {
                             PatPlace::Place(place) => Some(place.clone()),
                             PatPlace::Upvar(..) => None,
                         };
+                        let mut bindings = b
+                            .guard
+                            .as_ref()
+                            .map_or_else(Vec::new, |guard| guard.bindings.clone());
+                        bindings.extend(exit.binds.iter().map(|&(binding, _)| binding));
                         let outer = b.guard.replace(Guard {
                             scrutinee,
-                            bindings: exit.binds.iter().map(|&(binding, _)| binding).collect(),
+                            bindings,
                             ref_muts: now
                                 .iter()
                                 .map(|&(binding, _)| binding)

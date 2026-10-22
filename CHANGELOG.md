@@ -1054,6 +1054,10 @@
   through `Box`, and select `DerefMut`/`IndexMut` for scrutinees bound by
   explicit `ref mut` patterns in `let`, `if let` and `match`.
 
+- Resolve closure captures of deferred match-guard bindings through the
+  scrutinee, avoiding false uninitialized-binding errors. Preserve guard
+  move and mutation restrictions, including bindings of enclosing guards.
+
 ### Performance
 
 - Guard against slowdowns worse than linear. The corpus tests fail on a
