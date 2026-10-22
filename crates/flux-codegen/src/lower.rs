@@ -28,7 +28,11 @@
 //! reference to a slice is two leaves, the address of its first element
 //! and its length.
 
-use std::collections::HashMap;
+use std::sync::Arc;
+
+use flux_arena::{SliceId, SlicePool};
+use rustc_hash::{FxHashMap, FxHashSet};
+use smallvec::{SmallVec, smallvec};
 
 use flux_hir::{Diagnostic, FunctionId, Hir, ImplTarget, Owner};
 use flux_mir::layout::{Layouts, Shape, TagEncoding};
@@ -46,6 +50,10 @@ use keel_ir::{
     Signature, Type, Value,
 };
 
+// Scalar values and fat pointers stay on the stack; large aggregates spill.
+type Values = SmallVec<[Value; 4]>;
+type TypeLeaves = SmallVec<[Ty; 4]>;
+
 /// The keel module for a type-checked program and its MIR, `core`
 /// included: one function per instance of a function the program needs.
 /// An error if a generic function needs instances of itself without end.
@@ -58,7 +66,7 @@ pub fn lower_module(
     let instances = collected.instances;
     let mut module = Module::default();
     let items = &hir.items;
-    let symbols: HashMap<FunctionId, String> = items
+    let symbols: FxHashMap<FunctionId, String> = items
         .functions
         .iter()
         .map(|(id, f)| {
@@ -108,7 +116,7 @@ pub fn lower_module(
         })
         .collect();
     let mut declared_abort = false;
-    let mut declared = std::collections::HashSet::new();
+    let mut declared = FxHashSet::default();
     let layouts = Layouts::new(items, &typed.sigs, &mir.discriminants);
     for (id, function) in hir.items.functions.iter() {
         // The same C function may be declared in several modules.
@@ -122,7 +130,7 @@ pub fn lower_module(
         }
     }
     // Each static's symbol, from its path as a function's is.
-    let statics: HashMap<flux_hir::ConstId, String> = items
+    let statics: FxHashMap<flux_hir::ConstId, String> = items
         .consts
         .iter()
         .filter(|(_, c)| c.is_static.is_some())
@@ -156,15 +164,15 @@ pub fn lower_module(
             &mir.consts,
             &names,
         ),
-        instance_values: HashMap::new(),
+        instance_values: FxHashMap::default(),
         symbols: &symbols,
         statics: &statics,
         reified: collected.reified,
         uses_abort: false,
-        locations: HashMap::new(),
-        strings: HashMap::new(),
-        vtables: HashMap::new(),
-        promoted: HashMap::new(),
+        locations: FxHashMap::default(),
+        strings: FxHashMap::default(),
+        vtables: FxHashMap::default(),
+        promoted: FxHashMap::default(),
         data: Vec::new(),
         layouts,
     };
@@ -274,7 +282,11 @@ pub fn lower_module(
 /// segment, as rustc's legacy mangling does, if it has generic arguments
 /// or is in one of a generic struct's blocks, which may each have a
 /// function of its name. The hash covers the arguments and the block.
-fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: Instance) -> String {
+fn instance_symbol(
+    hir: &Hir,
+    symbols: &FxHashMap<FunctionId, String>,
+    instance: Instance,
+) -> String {
     let base = &symbols[&instance.function];
     let items = &hir.items;
     // A trait's blocks for different types each have its methods.
@@ -500,7 +512,7 @@ fn address_leaf() -> Ty {
 /// and `!`, one for a scalar; an enum's discriminant, then every
 /// variant's fields; the address of a value of a memory type; the
 /// address and length of a pointer to a slice.
-fn leaves(sigs: &Signatures, ty: Ty, out: &mut Vec<Ty>) {
+fn leaves(sigs: &Signatures, ty: Ty, out: &mut TypeLeaves) {
     if is_memory(sigs, ty) {
         out.push(address_leaf());
         return;
@@ -530,8 +542,8 @@ fn leaves(sigs: &Signatures, ty: Ty, out: &mut Vec<Ty>) {
     }
 }
 
-fn leaves_of(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
-    let mut out = Vec::new();
+fn leaves_of(sigs: &Signatures, ty: Ty) -> TypeLeaves {
+    let mut out = TypeLeaves::new();
     leaves(sigs, ty, &mut out);
     out
 }
@@ -746,23 +758,23 @@ struct Ctx<'a> {
     discriminants: &'a flux_mir::Discriminants,
     /// Evaluates the others, for the instances that use them.
     evaluator: flux_mir::eval::Evaluator<'a>,
-    instance_values: HashMap<flux_ty::ConstInstance, flux_mir::eval::Value>,
-    symbols: &'a HashMap<FunctionId, String>,
+    instance_values: FxHashMap<flux_ty::ConstInstance, flux_mir::eval::Value>,
+    symbols: &'a FxHashMap<FunctionId, String>,
     /// The data object of each static.
-    statics: &'a HashMap<flux_hir::ConstId, String>,
+    statics: &'a FxHashMap<flux_hir::ConstId, String>,
     /// The instances whose address the program takes.
-    reified: std::collections::HashSet<Instance>,
+    reified: FxHashSet<Instance>,
     uses_abort: bool,
     /// The data object of each `Location` a `#[track_caller]` function
     /// is passed, by file and offset.
-    locations: HashMap<(flux_hir::FileId, u32), String>,
+    locations: FxHashMap<(flux_hir::FileId, u32), String>,
     /// The data object holding each distinct C string, by its bytes.
-    strings: HashMap<Box<[u8]>, String>,
+    strings: FxHashMap<Box<[u8]>, String>,
     /// The vtable of each type as each trait object: `(object, type)`.
-    vtables: HashMap<(Ty, Ty), String>,
+    vtables: FxHashMap<(Ty, Ty), String>,
     /// The data objects of promoted constants, by their bytes and
     /// alignment.
-    promoted: HashMap<(Vec<u8>, u32), String>,
+    promoted: FxHashMap<(Vec<u8>, u32), String>,
     data: Vec<DataObject>,
     /// How values are laid out in memory, as rustc lays them out.
     layouts: Layouts<'a>,
@@ -813,9 +825,10 @@ impl Ctx<'_> {
             b: FunctionBuilder::new(&mut function),
             blocks: Vec::new(),
             vars: Vec::new(),
+            variable_lists: SlicePool::default(),
             slots: Vec::new(),
             sret: None,
-            callees: HashMap::new(),
+            callees: FxHashMap::default(),
             panic_block: None,
         };
         lower.body();
@@ -863,17 +876,20 @@ impl Ctx<'_> {
                 ty: IntTy::U8,
             })
             .collect();
-        let value = V::Aggregate(vec![
-            V::Ref(Box::new(V::Aggregate(bytes))),
-            V::Int {
-                bits: line as u128,
-                ty: IntTy::U32,
-            },
-            V::Int {
-                bits: column as u128,
-                ty: IntTy::U32,
-            },
-        ]);
+        let value = V::Aggregate(
+            vec![
+                V::Ref(Arc::new(V::Aggregate(bytes))),
+                V::Int {
+                    bits: line as u128,
+                    ty: IntTy::U32,
+                },
+                V::Int {
+                    bits: column as u128,
+                    ty: IntTy::U32,
+                },
+            ]
+            .into(),
+        );
         let strukt = items.lang_enums[&flux_intern::Symbol::intern("Location")];
         let ty = Ty::adt(strukt, items.structs[strukt].name, &[]);
         let name = self.promoted(&value, ty);
@@ -1138,13 +1154,14 @@ struct Lower<'a, 'c, 'f> {
     blocks: Vec<Block>,
     /// The keel variables of each MIR local held in variables, one per
     /// leaf.
-    vars: Vec<Box<[Variable]>>,
+    vars: Vec<SliceId<Variable>>,
+    variable_lists: SlicePool<Variable>,
     /// The storage address of each local that is borrowed or lives in memory.
     slots: Vec<Option<Value>>,
     /// Where to store the return value, and its layout, when it is
     /// returned through memory.
     sret: Option<(Value, Layout)>,
-    callees: HashMap<Instance, FuncRef>,
+    callees: FxHashMap<Instance, FuncRef>,
     /// Calls `abort`; shared by every failed assertion.
     panic_block: Option<Block>,
 }
@@ -1173,15 +1190,14 @@ impl Lower<'_, '_, '_> {
             if borrowed[local.index()] || is_memory(sigs, decl.ty) {
                 let address = self.new_slot(decl.ty);
                 self.slots.push(Some(address));
-                self.vars.push(Box::default());
+                self.vars.push(SliceId::default());
             } else {
-                let vars = leaves_of(sigs, decl.ty)
-                    .into_iter()
-                    .map(|leaf| {
+                let vars = self
+                    .variable_lists
+                    .alloc(leaves_of(sigs, decl.ty).into_iter().map(|leaf| {
                         self.b
                             .declare_var(keel_type(leaf).expect("leaves are scalars"))
-                    })
-                    .collect();
+                    }));
                 self.slots.push(None);
                 self.vars.push(vars);
             }
@@ -1194,7 +1210,7 @@ impl Lower<'_, '_, '_> {
         }
         for param in body.params() {
             let leaves = leaves_of(sigs, body.locals[param].ty);
-            let values: Vec<Value> = leaves
+            let values: Values = leaves
                 .into_iter()
                 .map(|leaf| {
                     let ty = keel_type(leaf).expect("leaves are scalars");
@@ -1248,7 +1264,7 @@ impl Lower<'_, '_, '_> {
             None => Location::Vars {
                 local: place.local,
                 start: 0,
-                len: self.vars[place.local.index()].len(),
+                len: self.variable_lists[self.vars[place.local.index()]].len(),
             },
         };
         for (i, &elem) in place.projection.iter().enumerate() {
@@ -1313,7 +1329,7 @@ impl Lower<'_, '_, '_> {
                             _ => {
                                 let base = Place {
                                     local: place.local,
-                                    projection: place.projection[..i].into(),
+                                    projection: place.projection.prefix(i),
                                 };
                                 self.slice_parts(&base)[1]
                             }
@@ -1351,12 +1367,12 @@ impl Lower<'_, '_, '_> {
     /// pointer and vtable of a trait object): those of the pointer it is
     /// behind, or for a slice's part (`rest @ ..`), moved past its first
     /// elements and shortened by those at both ends.
-    fn slice_parts(&mut self, place: &Place) -> Vec<Value> {
+    fn slice_parts(&mut self, place: &Place) -> Values {
         match &*place.projection {
             [base @ .., ProjectionElem::Subslice { from, to, .. }] => {
                 let base = Place {
                     local: place.local,
-                    projection: base.into(),
+                    projection: place.projection.prefix(base.len()),
                 };
                 let parts = self.slice_parts(&base);
                 let elem = match self.body.place_ty(&base, self.sigs).kind() {
@@ -1367,7 +1383,7 @@ impl Lower<'_, '_, '_> {
                 let pointer = self.offset(parts[0], u64::from(*from) * size);
                 let cut = self.b.ins().iconst(Type::I64, i64::from(from + to));
                 let len = self.b.ins().isub(parts[1], cut);
-                vec![pointer, len]
+                smallvec![pointer, len]
             }
             _ => self.read(&pointer_of(place)),
         }
@@ -1395,23 +1411,25 @@ impl Lower<'_, '_, '_> {
 
     /// The leaves of the `ty` at `location`: for a memory type, its
     /// address.
-    fn load(&mut self, location: Location, ty: Ty) -> Vec<Value> {
+    fn load(&mut self, location: Location, ty: Ty) -> Values {
         if is_memory(self.sigs, ty) {
             let Location::Memory(address) = location else {
                 unreachable!("memory types are in memory")
             };
-            return vec![address];
+            return smallvec![address];
         }
         match location {
-            Location::Vars { local, start, len } => {
-                let vars = self.vars[local.index()][start..start + len].to_vec();
-                vars.into_iter().map(|var| self.b.use_var(var)).collect()
-            }
+            Location::Vars { local, start, len } => (start..start + len)
+                .map(|i| {
+                    let var = self.variable_lists[self.vars[local.index()]][i];
+                    self.b.use_var(var)
+                })
+                .collect(),
             Location::Memory(address) => self.load_value(address, ty),
         }
     }
 
-    fn read(&mut self, place: &Place) -> Vec<Value> {
+    fn read(&mut self, place: &Place) -> Values {
         let (location, ty) = self.locate(place);
         self.load(location, ty)
     }
@@ -1420,8 +1438,8 @@ impl Lower<'_, '_, '_> {
         let (location, ty) = self.locate(place);
         match location {
             Location::Vars { local, start, len } => {
-                let vars = self.vars[local.index()][start..start + len].to_vec();
-                for (var, &value) in vars.into_iter().zip(values) {
+                for (i, &value) in (start..start + len).zip(values) {
+                    let var = self.variable_lists[self.vars[local.index()]][i];
                     self.b.def_var(var, value);
                 }
             }
@@ -1736,13 +1754,13 @@ impl Lower<'_, '_, '_> {
     /// The leaves of a `ty` at `address`: for an enum, its discriminant,
     /// then every variant's fields, those of the variants it does not
     /// hold meaningless.
-    fn load_value(&mut self, address: Value, ty: Ty) -> Vec<Value> {
-        let mut out = Vec::new();
+    fn load_value(&mut self, address: Value, ty: Ty) -> Values {
+        let mut out = Values::new();
         self.load_into(address, ty, &mut out);
         out
     }
 
-    fn load_into(&mut self, address: Value, ty: Ty, out: &mut Vec<Value>) {
+    fn load_into(&mut self, address: Value, ty: Ty, out: &mut Values) {
         let sigs = self.sigs;
         if is_memory(sigs, ty) {
             out.push(address);
@@ -1820,7 +1838,7 @@ impl Lower<'_, '_, '_> {
     }
 
     /// An operand's leaves.
-    fn operand(&mut self, operand: &Operand) -> Vec<Value> {
+    fn operand(&mut self, operand: &Operand) -> Values {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self.read(place),
             Operand::Const(Constant::Item { id, args, ty }) => {
@@ -1840,18 +1858,18 @@ impl Lower<'_, '_, '_> {
                 if is_memory(self.sigs, *ty) {
                     let address = self.new_slot(*ty);
                     self.store_value(address, &value, *ty);
-                    return vec![address];
+                    return smallvec![address];
                 }
-                let mut leaves = Vec::new();
+                let mut leaves = Values::new();
                 self.value_leaves(&value, *ty, &mut leaves);
                 leaves
             }
             // A reference to a slice or `str` is two leaves.
             Operand::Const(Constant::Promoted { index, ty }) => {
-                let value = flux_mir::eval::Value::Ref(Box::new(
+                let value = flux_mir::eval::Value::Ref(Arc::new(
                     self.body.promoted[*index as usize].clone(),
                 ));
-                let mut leaves = Vec::new();
+                let mut leaves = Values::new();
                 self.value_leaves(&value, *ty, &mut leaves);
                 leaves
             }
@@ -1864,7 +1882,7 @@ impl Lower<'_, '_, '_> {
         use flux_mir::eval::Value as V;
         let sigs = self.sigs;
         if !is_memory(sigs, ty) {
-            let mut leaves = Vec::new();
+            let mut leaves = Values::new();
             self.value_leaves(value, ty, &mut leaves);
             self.store(address, ty, &leaves);
             return;
@@ -1905,9 +1923,9 @@ impl Lower<'_, '_, '_> {
     }
 
     /// Zero leaves of type `ty`: a value for code that is never output.
-    fn zeroes(&mut self, ty: Ty) -> Vec<Value> {
+    fn zeroes(&mut self, ty: Ty) -> Values {
         if is_memory(self.sigs, ty) {
-            return vec![self.new_slot(ty)];
+            return smallvec![self.new_slot(ty)];
         }
         leaves_of(self.sigs, ty)
             .into_iter()
@@ -1928,7 +1946,7 @@ impl Lower<'_, '_, '_> {
     }
 
     /// A constant item's value, of type `ty`, as leaves.
-    fn value_leaves(&mut self, value: &flux_mir::eval::Value, ty: Ty, out: &mut Vec<Value>) {
+    fn value_leaves(&mut self, value: &flux_mir::eval::Value, ty: Ty, out: &mut Values) {
         use flux_mir::eval::Value as V;
         match value {
             V::Int { bits, ty } => out.push(self.int_const(*bits, *ty)),
@@ -2037,13 +2055,13 @@ impl Lower<'_, '_, '_> {
     }
 
     /// The leaves of an rvalue of type `ty`.
-    fn rvalue(&mut self, rvalue: &Rvalue, ty: Ty) -> Vec<Value> {
+    fn rvalue(&mut self, rvalue: &Rvalue, ty: Ty) -> Values {
         match rvalue {
             Rvalue::Use(operand) => self.operand(operand),
             Rvalue::Aggregate(AggregateKind::Variant(strukt, index), operands) => {
                 let bits = self.ctx.discriminant(*strukt, *index);
                 let int = flux_ty::discriminant_ty(&self.ctx.hir.items, *strukt);
-                let mut leaves = vec![self.int_const(bits, int)];
+                let mut leaves = smallvec![self.int_const(bits, int)];
                 let variants = self.sigs.variants(ty).unwrap_or_default();
                 for (v, types) in variants.into_iter().enumerate() {
                     if v as u32 == *index {
@@ -2065,7 +2083,7 @@ impl Lower<'_, '_, '_> {
                 let (location, _) = self.locate(place);
                 let tag = match location {
                     Location::Vars { local, start, .. } => {
-                        let var = self.vars[local.index()][start];
+                        let var = self.variable_lists[self.vars[local.index()]][start];
                         self.b.use_var(var)
                     }
                     Location::Memory(address) => {
@@ -2073,21 +2091,21 @@ impl Lower<'_, '_, '_> {
                         self.load_discriminant(address, enum_ty)
                     }
                 };
-                vec![tag]
+                smallvec![tag]
             }
             // A reference to a slice is the pointer it is behind.
             Rvalue::Ref { place, .. } if self.body.place_ty(place, self.sigs).is_unsized() => {
                 self.slice_parts(place)
             }
             Rvalue::Ref { place, .. } => match self.locate(place).0 {
-                Location::Memory(address) => vec![address],
+                Location::Memory(address) => smallvec![address],
                 Location::Vars { .. } => unreachable!("borrowed locals are in memory"),
             },
             Rvalue::Len { place, .. } => match self.body.place_ty(place, self.sigs).kind() {
                 TyKind::Array(_, len) => {
-                    vec![self.int_const(u128::from(array_len(len)), IntTy::Usize)]
+                    smallvec![self.int_const(u128::from(array_len(len)), IntTy::Usize)]
                 }
-                _ => vec![self.slice_parts(place)[1]],
+                _ => smallvec![self.slice_parts(place)[1]],
             },
             // To a trait object: the pointer and the type's vtable; from
             // one, upcast, the pointer and the supertrait's vtable, which
@@ -2111,12 +2129,12 @@ impl Lower<'_, '_, '_> {
                         self.b
                             .ins()
                             .load_with_flags(Type::Ptr, address, aligned(Type::Ptr));
-                    return vec![leaves[0], vtable];
+                    return smallvec![leaves[0], vtable];
                 }
                 let name = self.ctx.vtable(object, pointee_of);
                 let data = self.b.import_data(&name);
                 let vtable = self.b.ins().symbol_addr(keel_ir::Symbol::Data(data));
-                vec![leaves[0], vtable]
+                smallvec![leaves[0], vtable]
             }
             Rvalue::Unsize(operand, _) => {
                 let from = self.body.operand_ty(operand, self.sigs);
@@ -2125,7 +2143,7 @@ impl Lower<'_, '_, '_> {
                     _ => 0,
                 };
                 let pointer = self.operand(operand)[0];
-                vec![pointer, self.int_const(u128::from(len), IntTy::Usize)]
+                smallvec![pointer, self.int_const(u128::from(len), IntTy::Usize)]
             }
             // The address of element `start`, and `end - start` elements.
             Rvalue::Subslice { slice, start, end } => {
@@ -2139,7 +2157,7 @@ impl Lower<'_, '_, '_> {
                 let end = self.operand(end)[0];
                 let address = self.element(pointer, start, size);
                 let len = self.b.ins().isub(end, start);
-                vec![address, len]
+                smallvec![address, len]
             }
             Rvalue::Repeat(..) => unreachable!("arrays are built in memory"),
             // A pointer to a slice or `str` as one to a slice or `str`
@@ -2512,7 +2530,7 @@ impl Lower<'_, '_, '_> {
         make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
     ) {
         let sret = self.sret_for(ret);
-        let mut values: Vec<Value> = sret.iter().map(|(pointer, _)| *pointer).collect();
+        let mut values: Values = sret.iter().map(|(pointer, _)| *pointer).collect();
         for arg in args {
             values.extend(self.operand(arg));
         }
@@ -2538,13 +2556,13 @@ impl Lower<'_, '_, '_> {
         &mut self,
         ret: Ty,
         first: Value,
-        rest: Vec<Value>,
+        rest: Values,
         dest: &flux_mir::Place,
         target: Option<flux_mir::BasicBlock>,
         make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
     ) {
         let sret = self.sret_for(ret);
-        let mut values: Vec<Value> = sret.iter().map(|(pointer, _)| *pointer).collect();
+        let mut values: Values = sret.iter().map(|(pointer, _)| *pointer).collect();
         values.push(first);
         values.extend(rest);
         self.finish_call(ret, sret, values, dest, target, make);
@@ -2557,7 +2575,7 @@ impl Lower<'_, '_, '_> {
         &mut self,
         ret: Ty,
         sret: Option<(Value, Layout)>,
-        values: Vec<Value>,
+        values: Values,
         dest: &flux_mir::Place,
         target: Option<flux_mir::BasicBlock>,
         make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
@@ -2568,9 +2586,15 @@ impl Lower<'_, '_, '_> {
         // be of any type (a `match` arm calling `panic`).
         if target.is_some() {
             let results = match &sret {
-                Some((pointer, _)) if memory => vec![*pointer],
+                Some((pointer, _)) if memory => smallvec![*pointer],
                 Some((pointer, layout)) => self.load_leaves(*pointer, layout),
-                None => self.b.function().inst_results(call).to_vec(),
+                None => self
+                    .b
+                    .function()
+                    .inst_results(call)
+                    .iter()
+                    .copied()
+                    .collect(),
             };
             self.write(dest, &results);
         }
@@ -2585,7 +2609,7 @@ impl Lower<'_, '_, '_> {
     }
 
     /// The leaves of a value laid out as `layout` at `pointer`.
-    fn load_leaves(&mut self, pointer: Value, layout: &Layout) -> Vec<Value> {
+    fn load_leaves(&mut self, pointer: Value, layout: &Layout) -> Values {
         layout
             .leaves()
             .into_iter()
@@ -2685,7 +2709,7 @@ impl Lower<'_, '_, '_> {
             .load_with_flags(Type::Ptr, address, aligned(Type::Ptr));
         let data = receiver[0];
         let rest = &args[1..];
-        let mut leaves = Vec::new();
+        let mut leaves = Values::new();
         for arg in rest {
             leaves.extend(self.operand(arg));
         }
@@ -2767,7 +2791,7 @@ fn pointer_of(place: &Place) -> Place {
     match &*place.projection {
         [rest @ .., ProjectionElem::Deref | ProjectionElem::BoxDeref] => Place {
             local: place.local,
-            projection: rest.into(),
+            projection: place.projection.prefix(rest.len()),
         },
         _ => unreachable!("slices are behind pointers"),
     }

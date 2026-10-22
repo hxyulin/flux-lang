@@ -48,6 +48,8 @@ mod lens;
 pub mod lint;
 pub mod mono;
 mod pretty;
+mod projection;
+pub use projection::Projection;
 pub mod validate;
 pub mod vtable;
 
@@ -379,7 +381,7 @@ impl PlaceTy {
 pub struct Place {
     pub local: Local,
     /// Outermost first.
-    pub projection: Box<[ProjectionElem]>,
+    pub projection: Projection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -449,11 +451,9 @@ impl Place {
     }
 
     pub fn project(&self, elem: ProjectionElem) -> Place {
-        let mut projection = self.projection.to_vec();
-        projection.push(elem);
         Place {
             local: self.local,
-            projection: projection.into(),
+            projection: self.projection.appended(elem),
         }
     }
 
@@ -467,7 +467,7 @@ impl From<Local> for Place {
     fn from(local: Local) -> Place {
         Place {
             local,
-            projection: Box::default(),
+            projection: Projection::default(),
         }
     }
 }
@@ -857,24 +857,18 @@ impl AssertMessage {
 }
 
 impl TerminatorKind {
-    pub fn successors(&self) -> Vec<BasicBlock> {
-        match self {
-            TerminatorKind::Goto(target) => vec![*target],
-            TerminatorKind::SwitchInt {
+    pub fn successors(&self) -> impl Iterator<Item = BasicBlock> + '_ {
+        let (targets, last): (&[(u128, BasicBlock)], Option<BasicBlock>) = match self {
+            Self::SwitchInt {
                 targets, otherwise, ..
-            } => targets
-                .iter()
-                .map(|&(_, bb)| bb)
-                .chain(Some(*otherwise))
-                .collect(),
-            TerminatorKind::Call { target, .. } | TerminatorKind::CallIndirect { target, .. } => {
-                target.iter().copied().collect()
+            } => (targets, Some(*otherwise)),
+            Self::Goto(target) | Self::Assert { target, .. } | Self::Drop { target, .. } => {
+                (&[], Some(*target))
             }
-            TerminatorKind::Assert { target, .. } | TerminatorKind::Drop { target, .. } => {
-                vec![*target]
-            }
-            TerminatorKind::Return | TerminatorKind::Unreachable => Vec::new(),
-        }
+            Self::Call { target, .. } | Self::CallIndirect { target, .. } => (&[], *target),
+            Self::Return | Self::Unreachable => (&[], None),
+        };
+        targets.iter().map(|&(_, block)| block).chain(last)
     }
 }
 
@@ -887,7 +881,7 @@ pub struct FileMir {
     /// checked, and *shims* for the others, which call it (`call_once`
     /// of an `Fn` closure borrows it, calls `call`, then drops it). In
     /// terms of its owner's generic parameters.
-    pub closures: std::collections::HashMap<(ClosureId, ClosureKind), Body>,
+    pub closures: rustc_hash::FxHashMap<(ClosureId, ClosureKind), Body>,
     /// Each constant's value, as MIR.
     pub consts: flux_arena::ArenaMap<flux_hir::Const, Body>,
     /// The values of the constants without generic parameters, and of
@@ -945,10 +939,11 @@ impl Body {
     /// (`.all(u8::is_ascii_digit)`), in its locals' types and its calls'
     /// generic arguments, which a shim may call once monomorphized, and
     /// functions coerced to pointers.
-    pub fn callees(&self) -> Vec<FunctionId> {
-        let mut found = Vec::new();
+    pub fn callees(&self) -> smallvec::SmallVec<[FunctionId; 4]> {
+        let mut found = smallvec::SmallVec::new();
+        let mut short_seen = smallvec::SmallVec::<[Ty; 16]>::new();
         let mut seen = rustc_hash::FxHashSet::default();
-        let mut stack: Vec<Ty> = self.locals.values().map(|l| l.ty).collect();
+        let mut stack: smallvec::SmallVec<[Ty; 16]> = self.locals.values().map(|l| l.ty).collect();
         for data in self.blocks.values() {
             if let TerminatorKind::Call {
                 func, generic_args, ..
@@ -967,20 +962,32 @@ impl Body {
             };
             for statement in &data.statements {
                 if let StatementKind::Assign(_, rvalue) = &statement.kind {
-                    rvalue.operands().into_iter().for_each(&mut operand);
+                    rvalue.operands().for_each(&mut operand);
                 }
             }
-            data.terminator
-                .kind
-                .operands()
-                .into_iter()
-                .for_each(&mut operand);
+            data.terminator.kind.operands().for_each(&mut operand);
         }
         while let Some(ty) = stack.pop() {
-            if !seen.insert(ty) {
+            // Leaves other than function items cannot name callees. Most
+            // locals have primitive types, so they need no visited-set entry.
+            let kind = ty.kind();
+            if !matches!(kind, TyKind::FnDef(_)) && ty.children().next().is_none() {
                 continue;
             }
-            if let TyKind::FnDef(def) = ty.kind() {
+            if short_seen.len() < 16 {
+                if short_seen.contains(&ty) {
+                    continue;
+                }
+                short_seen.push(ty);
+            } else {
+                if seen.is_empty() {
+                    seen.extend(short_seen.iter().copied());
+                }
+                if !seen.insert(ty) {
+                    continue;
+                }
+            }
+            if let TyKind::FnDef(def) = kind {
                 found.push(def.function);
             }
             stack.extend(ty.children());
@@ -1027,14 +1034,10 @@ impl Body {
         for data in self.blocks.values() {
             for statement in &data.statements {
                 if let StatementKind::Assign(_, rvalue) = &statement.kind {
-                    rvalue.operands().into_iter().for_each(&mut operand);
+                    rvalue.operands().for_each(&mut operand);
                 }
             }
-            data.terminator
-                .kind
-                .operands()
-                .into_iter()
-                .for_each(&mut operand);
+            data.terminator.kind.operands().for_each(&mut operand);
         }
         found
     }
@@ -1042,35 +1045,32 @@ impl Body {
 
 impl Rvalue {
     /// The operands it reads.
-    pub fn operands(&self) -> Vec<&Operand> {
-        match self {
-            Rvalue::Use(op)
-            | Rvalue::UnaryOp(_, op)
-            | Rvalue::Cast(op, _)
-            | Rvalue::Repeat(op, _)
-            | Rvalue::Unsize(op, _) => vec![op],
-            Rvalue::BinaryOp(_, l, r) => vec![l, r],
-            Rvalue::Subslice { slice, start, end } => vec![slice, start, end],
-            Rvalue::Aggregate(_, ops) => ops.iter().collect(),
-            Rvalue::Ref { .. } | Rvalue::Discriminant(_) | Rvalue::Len { .. } => Vec::new(),
-        }
+    pub fn operands(&self) -> impl Iterator<Item = &Operand> {
+        let (fixed, rest): ([Option<&Operand>; 3], &[Operand]) = match self {
+            Self::Use(op)
+            | Self::UnaryOp(_, op)
+            | Self::Cast(op, _)
+            | Self::Repeat(op, _)
+            | Self::Unsize(op, _) => ([Some(op), None, None], &[]),
+            Self::BinaryOp(_, l, r) => ([Some(l), Some(r), None], &[]),
+            Self::Subslice { slice, start, end } => ([Some(slice), Some(start), Some(end)], &[]),
+            Self::Aggregate(_, ops) => ([None; 3], ops),
+            Self::Ref { .. } | Self::Discriminant(_) | Self::Len { .. } => ([None; 3], &[]),
+        };
+        fixed.into_iter().flatten().chain(rest)
     }
 }
 
 impl TerminatorKind {
-    /// The operands it reads.
-    pub fn operands(&self) -> Vec<&Operand> {
-        match self {
-            TerminatorKind::SwitchInt { discr, .. } => vec![discr],
-            TerminatorKind::Call { args, .. } => args.iter().collect(),
-            TerminatorKind::CallIndirect { callee, args, .. } => {
-                std::iter::once(callee).chain(args).collect()
-            }
-            TerminatorKind::Assert { cond, .. } => vec![cond],
-            TerminatorKind::Goto(_)
-            | TerminatorKind::Drop { .. }
-            | TerminatorKind::Return
-            | TerminatorKind::Unreachable => Vec::new(),
-        }
+    /// The operands it reads, in evaluation order.
+    pub fn operands(&self) -> impl Iterator<Item = &Operand> {
+        let (first, rest): (Option<&Operand>, &[Operand]) = match self {
+            Self::SwitchInt { discr, .. } => (Some(discr), &[]),
+            Self::Call { args, .. } => (None, args),
+            Self::CallIndirect { callee, args, .. } => (Some(callee), args),
+            Self::Assert { cond, .. } => (Some(cond), &[]),
+            Self::Goto(_) | Self::Drop { .. } | Self::Return | Self::Unreachable => (None, &[]),
+        };
+        first.into_iter().chain(rest)
     }
 }

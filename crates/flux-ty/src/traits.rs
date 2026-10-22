@@ -40,7 +40,7 @@ pub struct Predicate {
 impl TraitRef {
     pub fn subst(self, args: &[Ty]) -> TraitRef {
         TraitRef {
-            args: Ty::list(&crate::subst_list(self.args, args)),
+            args: crate::ty::map_list(self.args, |t| t.subst(args)),
             ..self
         }
     }
@@ -192,7 +192,7 @@ pub struct TraitSig {
 }
 
 /// The default of each trait's parameters, for bounds that leave them out.
-pub type TraitDefaults = flux_arena::ArenaMap<flux_hir::Trait, Box<[Option<Ty>]>>;
+pub type TraitDefaults = flux_arena::LayeredArenaMap<flux_hir::Trait, Box<[Option<Ty>]>>;
 
 /// Resolved bounds: what types implement, and what associated types are.
 #[derive(Debug, Clone, Default)]
@@ -577,6 +577,23 @@ pub fn declared_projections(
 /// left to [`alias_bounds`], as rustc leaves them: `type Inner: Tr;`
 /// would go on forever, and nested ones multiply.
 pub fn elaborate(sigs: &Signatures, predicates: &[Predicate]) -> Vec<Predicate> {
+    // Bounds without supertraits are common. Preserve first-occurrence order
+    // without allocating a traversal stack or a set for a short input.
+    if predicates.len() <= 8
+        && predicates.iter().all(|p| {
+            sigs.traits
+                .get(p.trait_ref.trait_)
+                .is_none_or(|sig| sig.supertraits.is_empty())
+        })
+    {
+        let mut out = Vec::with_capacity(predicates.len());
+        for &p in predicates {
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+        return out;
+    }
     let mut out: Vec<Predicate> = Vec::new();
     let mut seen = rustc_hash::FxHashSet::default();
     let mut stack: Vec<Predicate> = predicates.iter().rev().copied().collect();
@@ -588,11 +605,24 @@ pub fn elaborate(sigs: &Signatures, predicates: &[Predicate]) -> Vec<Predicate> 
         let Some(sig) = sigs.traits.get(p.trait_ref.trait_) else {
             continue;
         };
-        let args: Vec<Ty> = std::iter::once(p.self_ty)
-            .chain(p.trait_ref.args.iter().copied())
-            .collect();
+        if sig.supertraits.is_empty() {
+            continue;
+        }
+        let count = 1 + p.trait_ref.args.len();
+        let mut short = [Ty::ERROR; 16];
+        let mut long = Vec::new();
+        let args = if count <= short.len() {
+            short[0] = p.self_ty;
+            short[1..count].copy_from_slice(p.trait_ref.args);
+            &short[..count]
+        } else {
+            long.reserve(count);
+            long.push(p.self_ty);
+            long.extend_from_slice(p.trait_ref.args);
+            &long
+        };
         for sup in sig.supertraits.iter().rev() {
-            stack.push(sup.subst(&args).with_self(p.self_ty));
+            stack.push(sup.subst(args).with_self(p.self_ty));
         }
     }
     out
@@ -913,11 +943,8 @@ impl Normalizer<'_> {
         let (items, sigs) = (self.items, self.sigs);
         match ty.kind() {
             TyKind::Alias(alias) => {
-                let args: Vec<Ty> = alias.args.iter().map(|&a| self.go(a, depth + 1)).collect();
-                let alias = AliasTy {
-                    args: Ty::list(&args),
-                    ..alias
-                };
+                let args = crate::ty::map_list(alias.args, |a| self.go(a, depth + 1));
+                let alias = AliasTy { args, ..alias };
                 if let Some(p) = self.env.iter().find(|p| p.alias == alias) {
                     return self.go(p.ty, depth + 1);
                 }
@@ -954,16 +981,16 @@ impl Normalizer<'_> {
                 Ty::alias(alias)
             }
             TyKind::Tuple(list) => {
-                let list: Vec<Ty> = list.iter().map(|&t| self.go(t, depth + 1)).collect();
-                Ty::tuple(&list)
+                let list = crate::ty::map_list(list, |t| self.go(t, depth + 1));
+                Ty::new(TyKind::Tuple(list))
             }
             TyKind::Adt(adt, list) => {
-                let list: Vec<Ty> = list.iter().map(|&t| self.go(t, depth + 1)).collect();
-                Ty::adt(adt.strukt, adt.name, &list)
+                let list = crate::ty::map_list(list, |t| self.go(t, depth + 1));
+                Ty::new(TyKind::Adt(adt, list))
             }
             TyKind::Closure(id, list) => {
-                let list: Vec<Ty> = list.iter().map(|&t| self.go(t, depth + 1)).collect();
-                Ty::closure(id, &list)
+                let list = crate::ty::map_list(list, |t| self.go(t, depth + 1));
+                Ty::new(TyKind::Closure(id, list))
             }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, self.go(t, depth + 1))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.go(t, depth + 1)),
@@ -1023,7 +1050,7 @@ pub fn select_impl(
     let impls = sigs
         .impl_index
         .impls_for(items, goal.trait_ref.trait_, goal.self_ty);
-    let found: Vec<(ImplId, Vec<Ty>)> = impls
+    let mut found: Vec<(ImplId, Vec<Ty>)> = impls
         .filter_map(|imp| Some((imp, match_impl(items, sigs, imp, goal)?)))
         .collect();
     let rigid_self = is_rigid(goal.self_ty);
@@ -1036,22 +1063,30 @@ pub fn select_impl(
         return None;
     }
     DEPTH.set(DEPTH.get() + 1);
-    let judged: Vec<(&(ImplId, Vec<Ty>), bool)> = found
-        .iter()
-        .filter_map(|c| Some((c, impl_bounds(items, sigs, c.0, &c.1, 0)?)))
-        .collect();
+    // Selection needs only the number and index of eligible candidates.
+    // Keep the header-matching and bounds-checking passes in their original
+    // order: checking a bound can recursively select another impl.
+    let (mut judged_count, mut definite_count) = (0, 0);
+    let (mut judged_index, mut definite_index) = (0, 0);
+    for (index, (imp, args)) in found.iter().enumerate() {
+        if let Some(definite) = impl_bounds(items, sigs, *imp, args, 0) {
+            judged_count += 1;
+            judged_index = index;
+            if definite {
+                definite_count += 1;
+                definite_index = index;
+            }
+        }
+    }
     DEPTH.set(DEPTH.get() - 1);
-    let definite: Vec<_> = judged.iter().filter(|(_, d)| *d).collect();
-    if let [(only, _)] = definite.as_slice() {
-        return Some((*only).clone());
-    }
-    if rigid_self || !definite.is_empty() {
+    let chosen = if definite_count == 1 {
+        definite_index
+    } else if !rigid_self && definite_count == 0 && judged_count == 1 {
+        judged_index
+    } else {
         return None;
-    }
-    match judged.as_slice() {
-        [(only, _)] => Some((*only).clone()),
-        _ => None,
-    }
+    };
+    Some(found.swap_remove(chosen))
 }
 
 /// A type that only the bounds in scope say anything about: a generic
@@ -1149,27 +1184,37 @@ fn match_impl_sized(
         return None;
     }
     let self_ty = *sigs.impls.get(imp)?;
-    let mut binds = vec![None; items.impls[imp].generics.len()];
-    if !match_ty(self_ty, goal.self_ty, &mut binds) {
+    // Most candidates are rejected. Do not allocate bindings just to reject
+    // a short header; only successful matches need an owned argument list.
+    let count = items.impls[imp].generics.len();
+    let mut short = [None; 8];
+    let mut long = Vec::new();
+    let binds = if count <= short.len() {
+        &mut short[..count]
+    } else {
+        long.resize(count, None);
+        &mut long[..]
+    };
+    if !match_ty(self_ty, goal.self_ty, binds) {
         return None;
     }
     for (&x, &y) in trait_ref.args.iter().zip(goal.trait_ref.args) {
-        if !match_ty(x, y, &mut binds) {
+        if !match_ty(x, y, binds) {
             return None;
         }
     }
-    bind_by_projections(items, sigs, imp, &mut binds);
+    bind_by_projections(items, sigs, imp, binds);
     // Its parameters are `Sized` unless bounded `?Sized`.
     let params = &items.impls[imp].generics.params;
     if sized
         && params
             .iter()
-            .zip(&binds)
+            .zip(binds.iter())
             .any(|(p, b)| !p.maybe_unsized && b.is_some_and(Ty::is_unsized))
     {
         return None;
     }
-    Some(binds.into_iter().map(|b| b.unwrap_or(Ty::ERROR)).collect())
+    Some(binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect())
 }
 
 /// The parameters of `impl` block `imp` that only its bounds' associated
@@ -1324,16 +1369,11 @@ fn normalize_predicate(items: &ItemTree, sigs: &Signatures, p: Predicate) -> Pre
     if !p.self_ty.has_aliases() && !p.trait_ref.args.iter().any(|a| a.has_aliases()) {
         return p;
     }
-    let args: Vec<Ty> = p
-        .trait_ref
-        .args
-        .iter()
-        .map(|&a| normalize(items, sigs, &[], a))
-        .collect();
+    let args = crate::ty::map_list(p.trait_ref.args, |a| normalize(items, sigs, &[], a));
     Predicate {
         self_ty: normalize(items, sigs, &[], p.self_ty),
         trait_ref: TraitRef {
-            args: Ty::list(&args),
+            args,
             ..p.trait_ref
         },
     }
@@ -1498,13 +1538,7 @@ pub fn is_destructor(items: &ItemTree, function: FunctionId) -> bool {
 /// own default; any other function is itself.
 pub fn resolve_instance(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Instance {
     let instance = Instance {
-        args: Ty::list(
-            &instance
-                .args
-                .iter()
-                .map(|&a| normalize(items, sigs, &[], a))
-                .collect::<Vec<_>>(),
-        ),
+        args: crate::ty::map_list(instance.args, |a| normalize(items, sigs, &[], a)),
         ..instance
     };
     let data = &items.functions[instance.function];
@@ -1555,15 +1589,8 @@ pub fn self_by_value(items: &ItemTree, f: FunctionId) -> bool {
 /// known: for a trait's, the `impl` block's for them, or the trait's
 /// default; any other constant is itself.
 pub fn resolve_const(items: &ItemTree, sigs: &Signatures, c: ConstInstance) -> ConstInstance {
-    let args: Vec<Ty> = c
-        .args
-        .iter()
-        .map(|&a| normalize(items, sigs, &[], a))
-        .collect();
-    let c = ConstInstance {
-        args: Ty::list(&args),
-        ..c
-    };
+    let args = crate::ty::map_list(c.args, |a| normalize(items, sigs, &[], a));
+    let c = ConstInstance { args, ..c };
     let data = &items.consts[c.konst];
     let (Some(Owner::Trait(t)), Some(name)) = (data.owner, data.name) else {
         return c;
@@ -1927,14 +1954,9 @@ fn check_type_bounds(
         let goal = Predicate {
             self_ty: goal.self_ty,
             trait_ref: TraitRef {
-                args: Ty::list(
-                    &goal
-                        .trait_ref
-                        .args
-                        .iter()
-                        .map(|&a| normalize(items, sigs, projections, a))
-                        .collect::<Vec<_>>(),
-                ),
+                args: crate::ty::map_list(goal.trait_ref.args, |a| {
+                    normalize(items, sigs, projections, a)
+                }),
                 ..goal.trait_ref
             },
         };
@@ -1954,13 +1976,7 @@ fn check_type_bounds(
         }
         let q = q.subst(&args);
         let alias = AliasTy {
-            args: Ty::list(
-                &q.alias
-                    .args
-                    .iter()
-                    .map(|&a| normalize(items, sigs, projections, a))
-                    .collect::<Vec<_>>(),
-            ),
+            args: crate::ty::map_list(q.alias.args, |a| normalize(items, sigs, projections, a)),
             ..q.alias
         };
         let found = normalize(items, sigs, projections, Ty::alias(alias));
@@ -2116,16 +2132,12 @@ fn check_method(
     // signatures are: the trait's `F: FnMut(B, Self::Item)` is the
     // block's `F: FnMut(B, I::Item)`.
     let norm_predicate = |p: Predicate| {
-        let args: Vec<Ty> = p
-            .trait_ref
-            .args
-            .iter()
-            .map(|&a| normalize(items, sigs, projections, a))
-            .collect();
+        let args =
+            crate::ty::map_list(p.trait_ref.args, |a| normalize(items, sigs, projections, a));
         Predicate {
             self_ty: normalize(items, sigs, projections, p.self_ty),
             trait_ref: TraitRef {
-                args: Ty::list(&args),
+                args,
                 ..p.trait_ref
             },
         }
@@ -2799,9 +2811,7 @@ fn collect_aliases(ty: Ty, out: &mut Vec<AliasTy>) {
             collect_aliases(t, out)
         }
         TyKind::FnDef(_) | TyKind::FnPtr(_) => {
-            ty.children()
-                .into_iter()
-                .for_each(|t| collect_aliases(t, out));
+            ty.children().for_each(|t| collect_aliases(t, out));
         }
         _ => {}
     }
@@ -2929,13 +2939,7 @@ fn unmet_struct_bounds(
                 let p = Predicate {
                     self_ty: normalized(p.self_ty),
                     trait_ref: TraitRef {
-                        args: Ty::list(
-                            &p.trait_ref
-                                .args
-                                .iter()
-                                .map(|&a| normalized(a))
-                                .collect::<Vec<_>>(),
-                        ),
+                        args: crate::ty::map_list(p.trait_ref.args, &normalized),
                         ..p.trait_ref
                     },
                 };
@@ -2956,13 +2960,7 @@ fn unmet_struct_bounds(
             {
                 let q = q.subst(args);
                 let alias = AliasTy {
-                    args: Ty::list(
-                        &q.alias
-                            .args
-                            .iter()
-                            .map(|&a| normalized(a))
-                            .collect::<Vec<_>>(),
-                    ),
+                    args: crate::ty::map_list(q.alias.args, &normalized),
                     ..q.alias
                 };
                 // Without the trait, there is no associated type (E0277).
@@ -3016,13 +3014,7 @@ fn unmet_struct_bounds(
             }
             let normalized = |t: Ty| normalize(items, sigs, scope.projections, t);
             let goal = alias_predicate(AliasTy {
-                args: Ty::list(
-                    &alias
-                        .args
-                        .iter()
-                        .map(|&a| normalized(a))
-                        .collect::<Vec<_>>(),
-                ),
+                args: crate::ty::map_list(alias.args, normalized),
                 ..alias
             });
             let goal = normalize_predicate(items, sigs, goal);

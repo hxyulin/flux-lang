@@ -25,7 +25,7 @@
 //! `Fn`. Its captures are ordered by binding, in the order each is first
 //! used, and by field within one.
 
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 
 use flux_hir::{
     BinaryOp, BindingId, Expr, ExprId, FunctionId, Pat, PatId, Res, Stmt, StructId, TypeRefId,
@@ -118,7 +118,7 @@ pub(super) struct PendingClosure {
     ty: Ty,
     is_move: bool,
     /// The bindings declared in it, which it does not capture.
-    locals: HashSet<BindingId>,
+    locals: FxHashSet<BindingId>,
 }
 
 /// A call of a value of a closure's type, whose method (`call`,
@@ -145,7 +145,7 @@ type Place = (BindingId, Vec<CaptureProj>);
 
 /// The uses of places outside one closure, and its own bindings.
 struct Uses<'l> {
-    locals: &'l HashSet<BindingId>,
+    locals: &'l FxHashSet<BindingId>,
     found: Vec<(Place, UseKind, TextRange)>,
 }
 
@@ -300,7 +300,7 @@ impl Ctx<'_> {
             self.check_pat(pat, ty, false);
         }
         let outer_ret = std::mem::replace(&mut self.ret, ret_ty);
-        let mut locals = HashSet::new();
+        let mut locals = FxHashSet::default();
         for &pat in params {
             pat_bindings_into(self.body, pat, &mut locals);
         }
@@ -1169,7 +1169,7 @@ impl Ctx<'_> {
                 self.consume(*index, uses);
             }
             Expr::Array(elements) => {
-                for &e in elements.iter() {
+                for &e in self.body.lists[*elements].iter() {
                     self.consume(e, uses);
                 }
             }
@@ -1189,12 +1189,12 @@ impl Ctx<'_> {
             }
             Expr::Try { expr: operand } => self.consume(*operand, uses),
             Expr::Tuple(fields) => {
-                for &f in fields.iter() {
+                for &f in self.body.lists[*fields].iter() {
                     self.consume(f, uses);
                 }
             }
             Expr::Record { fields, spread, .. } => {
-                for &(_, f) in fields.iter() {
+                for &(_, f) in self.body.lists[*fields].iter() {
                     self.consume(f, uses);
                 }
                 if let Some(spread) = spread {
@@ -1202,7 +1202,7 @@ impl Ctx<'_> {
                 }
             }
             Expr::Block { stmts, tail, .. } => {
-                for stmt in stmts.iter() {
+                for stmt in self.body.lists[*stmts].iter() {
                     match *stmt {
                         Stmt::Let {
                             pat,
@@ -1237,9 +1237,9 @@ impl Ctx<'_> {
             }
             Expr::Let { pat, expr: init } => self.walk_let(*pat, *init, uses),
             Expr::Match { scrutinee, arms } => {
-                let pats: Vec<PatId> = arms.iter().map(|arm| arm.pat).collect();
+                let pats: Vec<PatId> = self.body.lists[*arms].iter().map(|arm| arm.pat).collect();
                 let place = self.scrutinee(*scrutinee, &pats, uses);
-                for arm in arms.iter() {
+                for arm in self.body.lists[*arms].iter() {
                     if let Some(place) = &place {
                         self.walk_pat(arm.pat, place.clone(), uses);
                     }
@@ -1269,7 +1269,7 @@ impl Ctx<'_> {
                     // local holding one is copied.
                     None => self.consume(*callee, uses),
                 }
-                for &arg in args.iter() {
+                for &arg in self.body.lists[*args].iter() {
                     self.consume(arg, uses);
                 }
             }
@@ -1288,7 +1288,7 @@ impl Ctx<'_> {
                 } else {
                     self.consume(*receiver, uses);
                 }
-                for &arg in args.iter() {
+                for &arg in self.body.lists[*args].iter() {
                     self.consume(arg, uses);
                 }
             }
@@ -1427,13 +1427,17 @@ impl Ctx<'_> {
                 {
                     uses.add(place.clone(), UseKind::Borrow(Mutability::Not), range);
                 }
-                for &p in prefix.iter().chain(slice.iter()).chain(suffix.iter()) {
+                for &p in self.body.lists[*prefix]
+                    .iter()
+                    .chain(slice.iter())
+                    .chain(self.body.lists[*suffix].iter())
+                {
                     self.walk_pat_whole(p, &place, uses);
                 }
             }
             Pat::Tuple { pats, rest } => {
                 let count = self.place_field_count(&place);
-                for (i, p) in positions(pats, *rest, count) {
+                for (i, p) in positions(&self.body.lists[*pats], *rest, count) {
                     let mut field = place.clone();
                     field.1.push(CaptureProj::Field(i));
                     self.walk_pat(p, field, uses);
@@ -1444,12 +1448,12 @@ impl Ctx<'_> {
             } => {
                 if self.items.structs[*strukt].is_enum() {
                     self.read_discriminant(*strukt, &place, range, uses);
-                    for &p in pats.iter() {
+                    for &p in self.body.lists[*pats].iter() {
                         self.walk_pat_whole(p, &place, uses);
                     }
                 } else {
                     let count = self.place_field_count(&place);
-                    for (i, p) in positions(pats, *rest, count) {
+                    for (i, p) in positions(&self.body.lists[*pats], *rest, count) {
                         let mut field = place.clone();
                         field.1.push(CaptureProj::Field(i));
                         self.walk_pat(p, field, uses);
@@ -1464,11 +1468,11 @@ impl Ctx<'_> {
             } => {
                 if self.items.structs[*strukt].is_enum() {
                     self.read_discriminant(*strukt, &place, range, uses);
-                    for &(_, p) in fields.iter() {
+                    for &(_, p) in self.body.lists[*fields].iter() {
                         self.walk_pat_whole(p, &place, uses);
                     }
                 } else {
-                    for &(name, p) in fields.iter() {
+                    for &(name, p) in self.body.lists[*fields].iter() {
                         let Some(i) = field_index(self.items, *strukt, *variant, name) else {
                             continue;
                         };
@@ -1487,7 +1491,7 @@ impl Ctx<'_> {
                 uses.add(place, UseKind::Borrow(Mutability::Not), range);
             }
             Pat::Or(alternatives) => {
-                for &alt in alternatives.iter() {
+                for &alt in self.body.lists[*alternatives].iter() {
                     self.walk_pat(alt, place.clone(), uses);
                 }
             }
@@ -1545,7 +1549,7 @@ impl Ctx<'_> {
                 uses.add(place.clone(), UseKind::Borrow(Mutability::Not), range);
             }
             other => {
-                for child in other.children().collect::<Vec<_>>() {
+                for child in other.children(&body.lists) {
                     self.walk_pat_whole(child, place, uses);
                 }
             }
@@ -1667,7 +1671,7 @@ fn has_ref_mut(body: &flux_hir::Body, pat: PatId) -> bool {
             body.bindings[*binding].by_ref == Some(true)
                 || sub.is_some_and(|sub| has_ref_mut(body, sub))
         }
-        other => other.children().any(|p| has_ref_mut(body, p)),
+        other => other.children(&body.lists).any(|p| has_ref_mut(body, p)),
     }
 }
 
@@ -1697,29 +1701,31 @@ fn field_index(
         .map(|(i, _)| i as u32)
 }
 
-fn pat_bindings_into(body: &flux_hir::Body, pat: PatId, out: &mut HashSet<BindingId>) {
+fn pat_bindings_into(body: &flux_hir::Body, pat: PatId, out: &mut FxHashSet<BindingId>) {
     if let Pat::Bind { binding, .. } = body.pats[pat] {
         out.insert(binding);
     }
-    for child in body.pats[pat].children() {
+    for child in body.pats[pat].children(&body.lists) {
         pat_bindings_into(body, child, out);
     }
 }
 
 /// Every binding the patterns in `expr` bind, nested closures' included.
-fn expr_bindings(body: &flux_hir::Body, expr: ExprId, out: &mut HashSet<BindingId>) {
+fn expr_bindings(body: &flux_hir::Body, expr: ExprId, out: &mut FxHashSet<BindingId>) {
     let mut stack = vec![expr];
     while let Some(e) = stack.pop() {
         match &body.exprs[e] {
             Expr::Missing | Expr::Literal(_) | Expr::Path(_) | Expr::Continue { .. } => {}
-            Expr::Tuple(list) | Expr::Array(list) => stack.extend(list.iter().copied()),
+            Expr::Tuple(list) | Expr::Array(list) => {
+                stack.extend(body.lists[*list].iter().copied())
+            }
             Expr::Repeat { value, .. } => stack.push(*value),
             Expr::Index { base, index } => {
                 stack.push(*base);
                 stack.push(*index);
             }
             Expr::Block { stmts, tail, .. } => {
-                for stmt in stmts.iter() {
+                for stmt in body.lists[*stmts].iter() {
                     match *stmt {
                         Stmt::Let {
                             pat,
@@ -1751,7 +1757,7 @@ fn expr_bindings(body: &flux_hir::Body, expr: ExprId, out: &mut HashSet<BindingI
             }
             Expr::Match { scrutinee, arms } => {
                 stack.push(*scrutinee);
-                for arm in arms.iter() {
+                for arm in body.lists[*arms].iter() {
                     pat_bindings_into(body, arm.pat, out);
                     stack.extend(arm.guard);
                     stack.push(arm.body);
@@ -1761,11 +1767,11 @@ fn expr_bindings(body: &flux_hir::Body, expr: ExprId, out: &mut HashSet<BindingI
             Expr::Break { value, .. } | Expr::Return { value } => stack.extend(*value),
             Expr::Call { callee, args } => {
                 stack.push(*callee);
-                stack.extend(args.iter().copied());
+                stack.extend(body.lists[*args].iter().copied());
             }
             Expr::MethodCall { receiver, args, .. } => {
                 stack.push(*receiver);
-                stack.extend(args.iter().copied());
+                stack.extend(body.lists[*args].iter().copied());
             }
             Expr::Unary { operand, .. } => stack.push(*operand),
             Expr::Binary { lhs, rhs, .. } => {
@@ -1778,13 +1784,13 @@ fn expr_bindings(body: &flux_hir::Body, expr: ExprId, out: &mut HashSet<BindingI
             | Expr::Ref { expr, .. }
             | Expr::RawRef { expr, .. } => stack.push(*expr),
             Expr::Record { fields, spread, .. } => {
-                stack.extend(fields.iter().map(|&(_, f)| f));
+                stack.extend(body.lists[*fields].iter().map(|&(_, f)| f));
                 stack.extend(*spread);
             }
             Expr::Closure {
                 params, body: b, ..
             } => {
-                for &p in params.iter() {
+                for &p in body.lists[*params].iter() {
                     pat_bindings_into(body, p, out);
                 }
                 stack.push(*b);

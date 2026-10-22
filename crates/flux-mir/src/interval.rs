@@ -76,7 +76,17 @@ impl IntervalSet {
     }
 
     /// Adds `other`'s points; whether that added any.
+    #[allow(dead_code)] // Also exercised by the compiler-internals runtime driver.
     pub fn union(&mut self, other: &IntervalSet) -> bool {
+        self.union_with_scratch(other, &mut Vec::new())
+    }
+
+    /// Unions using a reusable merge buffer; both buffers retain capacity.
+    pub fn union_with_scratch(
+        &mut self,
+        other: &IntervalSet,
+        merged: &mut Vec<(u32, u32)>,
+    ) -> bool {
         if other.runs.is_empty() {
             return false;
         }
@@ -84,7 +94,8 @@ impl IntervalSet {
             self.runs.clone_from(&other.runs);
             return true;
         }
-        let mut merged: Vec<(u32, u32)> = Vec::with_capacity(self.runs.len() + other.runs.len());
+        merged.clear();
+        merged.reserve(self.runs.len() + other.runs.len());
         let (mut i, mut j) = (0, 0);
         while i < self.runs.len() || j < other.runs.len() {
             let next = match (self.runs.get(i), other.runs.get(j)) {
@@ -107,8 +118,8 @@ impl IntervalSet {
                 _ => merged.push(next),
             }
         }
-        let grew = merged != self.runs;
-        self.runs = merged;
+        let grew = *merged != self.runs;
+        std::mem::swap(&mut self.runs, merged);
         grew
     }
 }
@@ -116,6 +127,32 @@ impl IntervalSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scratch_union_matches_point_sets() {
+        let mut scratch = Vec::new();
+        for mask in 0u32..256 {
+            let mut a = IntervalSet::new();
+            let mut b = IntervalSet::new();
+            for p in 0..8 {
+                if mask & (1 << p) != 0 {
+                    a.push(p * 2, p * 2 + 1);
+                }
+                if mask & (1 << (7 - p)) != 0 {
+                    b.push(p * 2 + 1, p * 2 + 3);
+                }
+            }
+            let expected: Vec<bool> = (0..18).map(|p| a.contains(p) || b.contains(p)).collect();
+            let before = a.clone();
+            let changed = a.union_with_scratch(&b, &mut scratch);
+            assert_eq!(changed, a != before);
+            for p in 0..18 {
+                assert_eq!(a.contains(p), expected[p as usize]);
+            }
+            assert!(!a.union_with_scratch(&b, &mut scratch));
+            assert!(a.runs.windows(2).all(|w| w[0].1 < w[1].0));
+        }
+    }
 
     #[test]
     fn union_and_contains() {

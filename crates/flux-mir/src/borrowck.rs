@@ -59,14 +59,21 @@ pub fn check(
         .collect();
     let mut regions = regions::infer(body, items, sigs, &infos, requirements);
     // The loans of each local's places, and those made into each local.
-    let mut borrowed = vec![Vec::new(); body.locals.len()];
-    let mut made_into = vec![Vec::new(); body.locals.len()];
-    let mut holders: Vec<Local> = Vec::with_capacity(loans.len());
-    for (id, (loan, holder)) in loans.iter().enumerate() {
-        borrowed[loan.place.local.index()].push(id as u32);
-        made_into[holder.index()].push(id as u32);
-        holders.push(*holder);
-    }
+    let borrowed = regions::Adjacency::new(
+        body.locals.len(),
+        loans
+            .iter()
+            .enumerate()
+            .map(|(id, (loan, _))| (loan.place.local.index() as u32, id as u32)),
+    );
+    let made_into = regions::Adjacency::new(
+        body.locals.len(),
+        loans
+            .iter()
+            .enumerate()
+            .map(|(id, (_, holder))| (holder.index() as u32, id as u32)),
+    );
+    let holders: Vec<Local> = loans.iter().map(|(_, holder)| *holder).collect();
     let mut checker = Checker {
         body,
         items,
@@ -205,49 +212,45 @@ fn is_unique(body: &Body, place: &Place, mutability: Mutability) -> bool {
 }
 
 /// The locals a statement reads, as values or as pointers to go through.
-fn place_uses(place: &Place, uses: &mut Vec<Local>) {
+fn place_uses(place: &Place, set: &mut dyn FnMut(Local, bool)) {
     if place.has_deref() {
-        uses.push(place.local);
+        set(place.local, true);
     }
 }
 
-fn operand_uses(operand: &Operand, uses: &mut Vec<Local>) {
+fn operand_uses(operand: &Operand, set: &mut dyn FnMut(Local, bool)) {
     if let Operand::Copy(place) | Operand::Move(place) = operand {
-        uses.push(place.local);
+        set(place.local, true);
     }
 }
 
 /// Updates the live locals from after the statement to before it,
 /// through `set`.
 fn statement_transfer(kind: &StatementKind, set: &mut dyn FnMut(Local, bool)) {
-    let mut uses = Vec::new();
     match kind {
         StatementKind::Assign(dest, rvalue) => {
             if dest.projection.is_empty() {
                 set(dest.local, false);
             }
-            place_uses(dest, &mut uses);
+            place_uses(dest, set);
             match rvalue {
                 // Borrowing a value that holds loans uses them, and so
                 // does reading the length of a slice behind one.
                 Rvalue::Ref { place, .. }
                 | Rvalue::Len { place, .. }
                 | Rvalue::Discriminant(place) => {
-                    place_uses(place, &mut uses);
-                    uses.push(place.local);
+                    place_uses(place, set);
+                    set(place.local, true);
                 }
                 _ => {
                     for operand in rvalue.operands() {
-                        operand_uses(operand, &mut uses);
+                        operand_uses(operand, set);
                     }
                 }
             }
         }
         StatementKind::StorageDead(local) => set(*local, false),
-        StatementKind::PlaceMention(place) => uses.push(place.local),
-    }
-    for local in uses {
-        set(local, true);
+        StatementKind::PlaceMention(place) => set(place.local, true),
     }
 }
 
@@ -257,20 +260,16 @@ fn terminator_transfer(kind: &TerminatorKind, set: &mut dyn FnMut(Local, bool)) 
     {
         set(dest.local, false);
     }
-    let mut uses = Vec::new();
     for operand in kind.operands() {
-        operand_uses(operand, &mut uses);
+        operand_uses(operand, set);
     }
     match kind {
         TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. } => {
-            place_uses(dest, &mut uses)
+            place_uses(dest, set)
         }
         // Dropping a value may use the references in it.
-        TerminatorKind::Drop { place, .. } => uses.push(place.local),
+        TerminatorKind::Drop { place, .. } => set(place.local, true),
         _ => {}
-    }
-    for local in uses {
-        set(local, true);
     }
 }
 
@@ -285,11 +284,10 @@ fn liveness_where(body: &Body, tracked: &[bool]) -> Vec<Vec<u32>> {
     // those since found dead.
     let mut live = BitSet::new_empty(body.locals.len());
     let mut members: Vec<u32> = Vec::new();
-    let blocks: Vec<_> = body.blocks.iter().collect();
     let mut changed = true;
     while changed {
         changed = false;
-        for &(block, data) in blocks.iter().rev() {
+        for (block, data) in body.blocks.iter().rev() {
             members.clear();
             for successor in data.terminator.kind.successors() {
                 for &local in &live_in[successor.index()] {
@@ -343,9 +341,9 @@ struct Checker<'a> {
     regions: &'a regions::Regions,
     /// The loans of each local's places, in order: those an access to a
     /// place of it may conflict with.
-    borrowed: &'a [Vec<u32>],
+    borrowed: &'a regions::Adjacency,
     /// The loans made into each local, in order.
-    made_into: &'a [Vec<u32>],
+    made_into: &'a regions::Adjacency,
     /// The local each loan is made into, which holds a two-phase one
     /// until its call.
     holders: &'a [Local],
@@ -594,16 +592,13 @@ impl Checker<'_> {
         else {
             return;
         };
-        let passed: Vec<Local> = args
-            .iter()
-            .filter_map(|arg| match arg {
-                Operand::Copy(place) | Operand::Move(place) => Some(place.local),
-                Operand::Const(_) => None,
-            })
-            .collect();
+        let passed = args.iter().filter_map(|arg| match arg {
+            Operand::Copy(place) | Operand::Move(place) => Some(place.local),
+            Operand::Const(_) => None,
+        });
         // Activate the two-phase borrows of receivers.
         let made_into = self.made_into;
-        for &local in &passed {
+        for local in passed {
             for &id in &made_into[local.index()] {
                 let loan = &self.loans[id as usize].0;
                 if loan.two_phase {
@@ -716,7 +711,7 @@ impl Checker<'_> {
                         ProjectionElem::ConstantIndex { .. } | ProjectionElem::Subslice { .. } => {
                             let base = Place {
                                 local: place.local,
-                                projection: place.projection[..i].into(),
+                                projection: place.projection.prefix(i),
                             };
                             self.body.place_ty(&base, self.sigs).is_unsized()
                         }
@@ -726,7 +721,7 @@ impl Checker<'_> {
                     // Moving out of an element would leave a hole (E0508).
                     let base = Place {
                         local: place.local,
-                        projection: place.projection[..last].into(),
+                        projection: place.projection.prefix(last),
                     };
                     let ty = self.body.place_ty(&base, self.sigs);
                     let what = if ty.is_unsized() { "slice" } else { "array" };
@@ -834,7 +829,7 @@ impl Checker<'_> {
             }
             let prefix = Place {
                 local: place.local,
-                projection: place.projection[..i].into(),
+                projection: place.projection.prefix(i),
             };
             let pointer = self.body.place_ty(&prefix, self.sigs);
             match pointer.kind() {
@@ -875,7 +870,7 @@ impl Checker<'_> {
             .rposition(|&e| e == ProjectionElem::Deref)?;
         let prefix = Place {
             local: place.local,
-            projection: place.projection[..last].into(),
+            projection: place.projection.prefix(last),
         };
         Some(self.body.place_ty(&prefix, self.sigs))
     }
@@ -995,7 +990,7 @@ impl Checker<'_> {
         {
             let mut base = Place {
                 local: place.local,
-                projection: place.projection[..at].into(),
+                projection: place.projection.prefix(at),
             };
             let ty = self.body.place_ty(&base, self.sigs);
             if let [rest @ .., crate::ProjectionElem::Deref] = &*base.projection {
@@ -1018,7 +1013,7 @@ impl Checker<'_> {
         while let [base @ .., crate::ProjectionElem::Field(_)] = &*named.projection {
             let base = Place {
                 local: named.local,
-                projection: base.into(),
+                projection: named.projection.prefix(base.len()),
             };
             let is_tuple_struct = match self.body.place_ty(&base, self.sigs).kind() {
                 TyKind::Adt(adt, _) => {
@@ -1037,7 +1032,7 @@ impl Checker<'_> {
         {
             named = Place {
                 local: named.local,
-                projection: base.into(),
+                projection: named.projection.prefix(base.len()),
             };
         }
         let message = format!(
@@ -1075,7 +1070,7 @@ impl Checker<'_> {
                             .place_ty(
                                 &Place {
                                     local: loan.place.local,
-                                    projection: loan.place.projection[..i].into(),
+                                    projection: loan.place.projection.prefix(i),
                                 },
                                 self.sigs,
                             )
@@ -1147,7 +1142,7 @@ pub(crate) fn drop_owner(
     (0..place.projection.len()).find_map(|len| {
         let base = Place {
             local: place.local,
-            projection: place.projection[..len].into(),
+            projection: place.projection.prefix(len),
         };
         let ty = body.place_ty(&base, sigs);
         match ty.kind() {
@@ -1168,5 +1163,75 @@ fn pointer_kind(pointer: Ty) -> &'static str {
     match pointer.kind() {
         TyKind::RawPtr(..) => "a `*const` pointer",
         _ => "a `&` reference",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn liveness_transfer_preserves_kills_order_and_duplicate_uses() {
+        let local = |i| Local::from_raw(i);
+        let place = |i| Place::from(local(i));
+        let mut events = Vec::new();
+        statement_transfer(
+            &StatementKind::Assign(
+                place(0),
+                Rvalue::Aggregate(
+                    crate::AggregateKind::Tuple,
+                    vec![
+                        Operand::Copy(place(1)),
+                        Operand::Move(place(0)),
+                        Operand::Copy(place(1)),
+                    ],
+                ),
+            ),
+            &mut |l, live| events.push((l, live)),
+        );
+        assert_eq!(
+            events,
+            [
+                (local(0), false),
+                (local(1), true),
+                (local(0), true),
+                (local(1), true)
+            ]
+        );
+        events.clear();
+        terminator_transfer(
+            &TerminatorKind::CallIndirect {
+                callee: Operand::Copy(place(0)),
+                args: vec![Operand::Copy(place(1)), Operand::Move(place(0))],
+                dest: place(0),
+                target: None,
+            },
+            &mut |l, live| events.push((l, live)),
+        );
+        assert_eq!(
+            events,
+            [
+                (local(0), false),
+                (local(0), true),
+                (local(1), true),
+                (local(0), true)
+            ]
+        );
+        events.clear();
+        statement_transfer(
+            &StatementKind::Assign(
+                place(0),
+                Rvalue::Ref {
+                    mutability: Mutability::Not,
+                    place: place(1).project(ProjectionElem::Deref),
+                    two_phase: false,
+                },
+            ),
+            &mut |l, live| events.push((l, live)),
+        );
+        assert_eq!(
+            events,
+            [(local(0), false), (local(1), true), (local(1), true)]
+        );
     }
 }

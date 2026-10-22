@@ -14,7 +14,8 @@
 //! for an enum, of the variant it holds.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use flux_hir::{Diagnostic, FunctionId, Hir, ItemTree, StructId};
 use flux_intern::Symbol;
@@ -45,14 +46,14 @@ pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instan
 #[derive(Debug, Default)]
 pub struct Collected {
     pub instances: Vec<Instance>,
-    pub reified: std::collections::HashSet<Instance>,
+    pub reified: FxHashSet<Instance>,
 }
 
 /// [`collect`], with the instances whose address is taken.
 pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collected, Diagnostic> {
-    let mut reified = std::collections::HashSet::new();
+    let mut reified = FxHashSet::default();
     let mut instances = Vec::new();
-    let mut depths: HashMap<Instance, u32> = HashMap::new();
+    let mut depths: FxHashMap<Instance, u32> = FxHashMap::default();
     let items = &hir.items;
     let root = items.module_of(items.main_crate());
     let main = mir.bodies.iter().map(|(id, _)| id).find(|&id| {
@@ -92,58 +93,61 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         };
         for data in body.blocks.values() {
             // Functions whose address is taken.
-            let mut pointers = Vec::new();
             for statement in &data.statements {
-                if let StatementKind::Assign(_, rvalue) = &statement.kind {
-                    pointers.extend(rvalue.operands().into_iter().cloned());
-                    // A vtable's methods, for a value made a trait object.
-                    if let Rvalue::Unsize(op, to) = rvalue {
-                        let from = flux_ty::traits::instance_ty(
-                            &hir.items,
-                            sigs,
-                            body.operand_ty(op, sigs),
-                            caller_args,
-                        );
-                        let to = flux_ty::traits::instance_ty(&hir.items, sigs, *to, caller_args);
-                        let mut vtables = Vec::new();
-                        if let (Some(concrete), Some(object)) = (pointee(from), pointee(to))
-                            && object.is_dyn()
-                            && !concrete.is_dyn()
-                        {
-                            vtables.push((object, concrete));
-                        }
-                        while let Some((object, concrete)) = vtables.pop() {
-                            let drop = crate::vtable::drop_entry(&hir.items, sigs, concrete)
-                                .map(crate::vtable::Entry::Method);
-                            let entries =
-                                crate::vtable::entries(&hir.items, sigs, object, concrete);
-                            for entry in drop.into_iter().chain(entries) {
-                                match entry {
-                                    crate::vtable::Entry::Method(instance) => {
-                                        reified.insert(instance);
-                                        let has_body =
-                                            mir.instance_body(&hir.items, instance).is_some()
-                                                || is_clone_shim(&hir.items, instance);
-                                        if has_body && !depths.contains_key(&instance) {
-                                            depths.insert(instance, depth + 1);
-                                            instances.push(instance);
-                                        }
+                // A vtable's methods, for a value made a trait object.
+                if let StatementKind::Assign(_, Rvalue::Unsize(op, to)) = &statement.kind {
+                    let from = flux_ty::traits::instance_ty(
+                        &hir.items,
+                        sigs,
+                        body.operand_ty(op, sigs),
+                        caller_args,
+                    );
+                    let to = flux_ty::traits::instance_ty(&hir.items, sigs, *to, caller_args);
+                    let mut vtables = Vec::new();
+                    if let (Some(concrete), Some(object)) = (pointee(from), pointee(to))
+                        && object.is_dyn()
+                        && !concrete.is_dyn()
+                    {
+                        vtables.push((object, concrete));
+                    }
+                    while let Some((object, concrete)) = vtables.pop() {
+                        let drop = crate::vtable::drop_entry(&hir.items, sigs, concrete)
+                            .map(crate::vtable::Entry::Method);
+                        let entries = crate::vtable::entries(&hir.items, sigs, object, concrete);
+                        for entry in drop.into_iter().chain(entries) {
+                            match entry {
+                                crate::vtable::Entry::Method(instance) => {
+                                    reified.insert(instance);
+                                    let has_body =
+                                        mir.instance_body(&hir.items, instance).is_some()
+                                            || is_clone_shim(&hir.items, instance);
+                                    if has_body && !depths.contains_key(&instance) {
+                                        depths.insert(instance, depth + 1);
+                                        instances.push(instance);
                                     }
-                                    crate::vtable::Entry::Super(sup) => {
-                                        vtables.push((sup, concrete));
-                                    }
-                                    crate::vtable::Entry::Null => {}
                                 }
+                                crate::vtable::Entry::Super(sup) => {
+                                    vtables.push((sup, concrete));
+                                }
+                                crate::vtable::Entry::Null => {}
                             }
                         }
                     }
                 }
             }
-            pointers.extend(data.terminator.kind.operands().into_iter().cloned());
+            let pointers = data
+                .statements
+                .iter()
+                .filter_map(|statement| match &statement.kind {
+                    StatementKind::Assign(_, rvalue) => Some(rvalue),
+                    _ => None,
+                })
+                .flat_map(Rvalue::operands)
+                .chain(data.terminator.kind.operands());
             for op in pointers {
                 if let Operand::Const(Constant::Fn { function, args, .. }) = op {
                     let instance = Instance {
-                        function,
+                        function: *function,
                         args: instance_args(&hir.items, sigs, args, caller_args),
                     };
                     let instance = flux_ty::traits::resolve_instance(&hir.items, sigs, instance);
@@ -156,7 +160,8 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                     }
                 }
             }
-            let callees = match &data.terminator.kind {
+            let single;
+            let callees: Cow<'_, [Instance]> = match &data.terminator.kind {
                 // What dropping in place drops.
                 TerminatorKind::Call {
                     func, generic_args, ..
@@ -171,24 +176,29 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                         TyKind::Slice(elem) => elem,
                         _ => ty,
                     };
-                    drop_instances(&hir.items, sigs, elem)
+                    Cow::Owned(drop_instances(&hir.items, sigs, elem))
                 }
                 TerminatorKind::Call {
                     func, generic_args, ..
-                } => vec![Instance {
-                    function: *func,
-                    args: instance_args(&hir.items, sigs, generic_args, caller_args),
-                }],
+                } => {
+                    single = Instance {
+                        function: *func,
+                        args: instance_args(&hir.items, sigs, generic_args, caller_args),
+                    };
+                    Cow::Borrowed(std::slice::from_ref(&single))
+                }
                 // What a failed check calls.
-                TerminatorKind::Assert { msg, .. } => items
-                    .lang_fns
-                    .get(&Symbol::intern(msg.lang_fn()))
-                    .map(|&function| Instance {
-                        function,
-                        args: &[],
-                    })
-                    .into_iter()
-                    .collect(),
+                TerminatorKind::Assert { msg, .. } => {
+                    if let Some(&function) = items.lang_fns.get(&Symbol::intern(msg.lang_fn())) {
+                        single = Instance {
+                            function,
+                            args: &[],
+                        };
+                        Cow::Borrowed(std::slice::from_ref(&single))
+                    } else {
+                        Cow::Borrowed(&[])
+                    }
+                }
                 TerminatorKind::Drop { place, .. } => {
                     let ty = body.place_ty(place, sigs);
                     let ty = flux_ty::traits::instance_ty(&hir.items, sigs, ty, caller_args);
@@ -197,19 +207,21 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                     let mut types = Vec::new();
                     glue_types(&glue, &mut types);
                     let drop = drop_fn(&hir.items);
-                    types
-                        .into_iter()
-                        .filter_map(|ty| {
-                            Some(Instance {
-                                function: drop?,
-                                args: Ty::list(&[ty]),
+                    Cow::Owned(
+                        types
+                            .into_iter()
+                            .filter_map(|ty| {
+                                Some(Instance {
+                                    function: drop?,
+                                    args: Ty::list(&[ty]),
+                                })
                             })
-                        })
-                        .collect()
+                            .collect(),
+                    )
                 }
                 _ => continue,
             };
-            for callee in callees {
+            for &callee in callees.iter() {
                 let callee = flux_ty::traits::resolve_instance(&hir.items, sigs, callee);
                 // Through a vtable, whose methods are collected where
                 // values become trait objects.
@@ -1238,16 +1250,10 @@ impl Glue {
     fn reindex(&self, from: Local, to: Local) -> Glue {
         let place = |p: &Place| Place {
             local: p.local,
-            projection: p
-                .projection
-                .iter()
-                .map(|&e| match e {
-                    crate::ProjectionElem::Index(l) if l == from => {
-                        crate::ProjectionElem::Index(to)
-                    }
-                    e => e,
-                })
-                .collect(),
+            projection: crate::Projection::from_exact_iter(p.projection.iter().map(|&e| match e {
+                crate::ProjectionElem::Index(l) if l == from => crate::ProjectionElem::Index(to),
+                e => e,
+            })),
         };
         match self {
             Glue::Drop(p, ty) => Glue::Drop(place(p), *ty),

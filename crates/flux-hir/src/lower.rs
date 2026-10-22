@@ -1,6 +1,6 @@
 //! Lowers a function body from the typed AST to HIR.
 
-use flux_arena::Arena;
+use flux_arena::{Arena, SliceId};
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::ast::{self, AstNode, BinaryOp, CmpOp, LiteralKind, LogicOp};
 use flux_syntax::parser::Fragment;
@@ -11,8 +11,8 @@ use flux_arena::ArenaMap;
 
 use crate::body::TypeRefId;
 use crate::body::{
-    Binding, BindingId, Body, BodySourceMap, Expr, ExprId, Literal, LoopSource, MatchArm, Pat,
-    PatId, PathGenerics, Res, SegmentArgs, Stmt,
+    Binding, BindingId, Body, BodyLists, BodySourceMap, Expr, ExprId, Literal, LoopSource,
+    MatchArm, Pat, PatId, PathGenerics, Res, SegmentArgs, Stmt,
 };
 use crate::def_map::{Def, Ns, ResolveError, Resolved};
 use crate::item_tree::{GenericArgs, PathAnchor, lower_generic_args, lower_generic_path};
@@ -30,6 +30,19 @@ use crate::{
 };
 
 mod scopes;
+// Evaluate pooled children before borrowing the entire context for node allocation.
+macro_rules! alloc_expr {
+    ($ctx:ident, $expr:expr, $range:expr $(,)?) => {{
+        let expr = $expr;
+        $ctx.alloc_expr(expr, $range)
+    }};
+}
+macro_rules! alloc_pat {
+    ($ctx:ident, $pat:expr, $range:expr $(,)?) => {{
+        let pat = $pat;
+        $ctx.alloc_pat(pat, $range)
+    }};
+}
 use scopes::{Ident, Scopes};
 
 /// Where a pattern binds, for "cannot shadow" messages.
@@ -172,7 +185,7 @@ pub fn lower_body<'a>(
                     binds.push((ctx.bindings[binding].name, p));
                 }
                 let first = stack.len();
-                stack.extend(ctx.pats[p].children());
+                stack.extend(ctx.pats[p].children(&ctx.lists));
                 stack[first..].reverse();
             }
             for i in 1..binds.len() {
@@ -254,9 +267,7 @@ fn derived_body(
             },
             at,
         );
-        ctx.source_map
-            .expr_fields
-            .insert(place, Box::new([field.name_range]));
+        ctx.source_map.expr_fields.insert(place, [field.name_range]);
         place
     };
     // `Tr::method(&self.field)`, for the lang trait `lang`.
@@ -280,10 +291,11 @@ fn derived_body(
         };
         let callee = ctx.alloc_expr(Expr::Path(res), at);
         ctx.source_map.segments.insert(callee, at);
-        ctx.alloc_expr(
+        alloc_expr!(
+            ctx,
             Expr::Call {
                 callee,
-                args: Box::new([arg]),
+                args: ctx.lists.alloc([arg]),
             },
             at,
         )
@@ -291,21 +303,22 @@ fn derived_body(
     let whole = s.name_range;
     let (stmts, tail) = match derive {
         Derive::Clone => {
-            let fields: Box<[(Symbol, ExprId)]> = s
+            let fields: Vec<(Symbol, ExprId)> = s
                 .fields
                 .iter()
                 .map(|f| (f.name, call(&mut ctx, "clone", "clone", f)))
                 .collect();
-            let record = ctx.alloc_expr(
+            let record = alloc_expr!(
+                ctx,
                 Expr::Record {
                     strukt,
                     variant: 0,
-                    fields,
+                    fields: ctx.lists.alloc(fields),
                     spread: None,
                 },
                 whole,
             );
-            let names: Box<[TextRange]> = s.fields.iter().map(|f| f.name_range).collect();
+            let names: Vec<TextRange> = s.fields.iter().map(|f| f.name_range).collect();
             ctx.source_map.expr_fields.insert(record, names);
             ctx.source_map.paths.insert(record, whole);
             (Vec::new(), Some(record))
@@ -374,10 +387,11 @@ fn derived_body(
                     at,
                 );
                 let callee = ctx.alloc_expr(Expr::Path(res), at);
-                let call = ctx.alloc_expr(
+                let call = alloc_expr!(
+                    ctx,
                     Expr::Call {
                         callee,
-                        args: Box::new([arg]),
+                        args: ctx.lists.alloc([arg]),
                     },
                     at,
                 );
@@ -397,9 +411,10 @@ fn derived_body(
             (stmts, Some(copy))
         }
     };
-    let root = ctx.alloc_expr(
+    let root = alloc_expr!(
+        ctx,
         Expr::Block {
-            stmts: stmts.into(),
+            stmts: ctx.lists.alloc(stmts),
             tail,
             is_unsafe: false,
         },
@@ -465,41 +480,44 @@ fn derived_default_body(items: &ItemTree, function: FunctionId, strukt: StructId
                 },
                 None => Res::Err,
             };
-            let fields: Box<[(Symbol, ExprId)]> = s
+            let fields: Vec<(Symbol, ExprId)> = s
                 .fields
                 .iter()
                 .map(|f| {
                     let at = f.def_range;
                     let callee = ctx.alloc_expr(Expr::Path(default), at);
                     ctx.source_map.segments.insert(callee, at);
-                    let call = ctx.alloc_expr(
+                    let call = alloc_expr!(
+                        ctx,
                         Expr::Call {
                             callee,
-                            args: Box::default(),
+                            args: ctx.lists.alloc([]),
                         },
                         at,
                     );
                     (f.name, call)
                 })
                 .collect();
-            let record = ctx.alloc_expr(
+            let record = alloc_expr!(
+                ctx,
                 Expr::Record {
                     strukt,
                     variant: 0,
-                    fields,
+                    fields: ctx.lists.alloc(fields),
                     spread: None,
                 },
                 whole,
             );
-            let names: Box<[TextRange]> = s.fields.iter().map(|f| f.name_range).collect();
+            let names: Vec<TextRange> = s.fields.iter().map(|f| f.name_range).collect();
             ctx.source_map.expr_fields.insert(record, names);
             ctx.source_map.paths.insert(record, whole);
             record
         }
     };
-    let root = ctx.alloc_expr(
+    let root = alloc_expr!(
+        ctx,
         Expr::Block {
-            stmts: Box::default(),
+            stmts: ctx.lists.alloc([]),
             tail: Some(value),
             is_unsafe: false,
         },
@@ -535,15 +553,16 @@ fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) 
     // `receiver.method(args)`, at `at`.
     let method =
         |ctx: &mut Ctx<'_>, receiver: ExprId, name: &str, args: Vec<ExprId>, at: TextRange| {
-            let call = ctx.alloc_expr(
+            let call = alloc_expr!(
+                ctx,
                 Expr::MethodCall {
                     receiver,
                     method: Symbol::intern(name),
-                    args: args.into(),
+                    args: ctx.lists.alloc(args),
                 },
                 at,
             );
-            ctx.source_map.expr_fields.insert(call, Box::new([at]));
+            ctx.source_map.expr_fields.insert(call, [at]);
             call
         };
     let string = |ctx: &mut Ctx<'_>, text: &str, at: TextRange| {
@@ -594,9 +613,7 @@ fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) 
                     },
                     at,
                 );
-                ctx.source_map
-                    .expr_fields
-                    .insert(place, Box::new([field.name_range]));
+                ctx.source_map.expr_fields.insert(place, [field.name_range]);
                 ctx.alloc_expr(
                     Expr::Ref {
                         mutable: false,
@@ -640,18 +657,20 @@ fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) 
                     whole,
                 );
             }
-            ctx.alloc_expr(
+            alloc_expr!(
+                ctx,
                 Expr::Match {
                     scrutinee,
-                    arms: arms.into(),
+                    arms: ctx.lists.alloc(arms),
                 },
                 whole,
             )
         }
     };
-    let root = ctx.alloc_expr(
+    let root = alloc_expr!(
+        ctx,
         Expr::Block {
-            stmts: Box::default(),
+            stmts: ctx.lists.alloc([]),
             tail: Some(value),
             is_unsafe: false,
         },
@@ -696,10 +715,11 @@ fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -
         let callee = ctx.alloc_expr(Expr::Path(hash), at);
         ctx.source_map.segments.insert(callee, at);
         let f = ctx.alloc_expr(Expr::Path(Res::Local(state)), at);
-        let expr = ctx.alloc_expr(
+        let expr = alloc_expr!(
+            ctx,
             Expr::Call {
                 callee,
-                args: Box::new([value, f]),
+                args: ctx.lists.alloc([value, f]),
             },
             at,
         );
@@ -721,9 +741,7 @@ fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -
                     },
                     at,
                 );
-                ctx.source_map
-                    .expr_fields
-                    .insert(place, Box::new([field.name_range]));
+                ctx.source_map.expr_fields.insert(place, [field.name_range]);
                 let value = ctx.alloc_expr(
                     Expr::Ref {
                         mutable: false,
@@ -746,13 +764,13 @@ fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -
                         StructKind::Tuple => Pat::TupleStruct {
                             strukt,
                             variant: v as u32,
-                            pats: Box::default(),
+                            pats: ctx.lists.alloc([]),
                             rest: Some(0),
                         },
                         StructKind::Record => Pat::Record {
                             strukt,
                             variant: v as u32,
-                            fields: Box::default(),
+                            fields: ctx.lists.alloc([]),
                             rest: true,
                         },
                         StructKind::Unit => Pat::Unit(strukt, v as u32),
@@ -766,10 +784,11 @@ fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -
                     });
                 }
                 let scrutinee = ctx.alloc_expr(Expr::Path(Res::Local(bindings[0])), whole);
-                let init = ctx.alloc_expr(
+                let init = alloc_expr!(
+                    ctx,
                     Expr::Match {
                         scrutinee,
-                        arms: arms.into(),
+                        arms: ctx.lists.alloc(arms),
                     },
                     whole,
                 );
@@ -798,7 +817,7 @@ fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -
             let mut arms = Vec::new();
             for (v, variant) in variants.iter().enumerate() {
                 let (pat, mine) = variant_pat(&mut ctx, strukt, v as u32, "__self_");
-                let calls: Box<[Stmt]> = variant
+                let calls: Vec<Stmt> = variant
                     .fields
                     .iter()
                     .zip(&mine)
@@ -808,9 +827,10 @@ fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -
                         call(&mut ctx, value, at)
                     })
                     .collect();
-                let body = ctx.alloc_expr(
+                let body = alloc_expr!(
+                    ctx,
                     Expr::Block {
-                        stmts: calls,
+                        stmts: ctx.lists.alloc(calls),
                         tail: None,
                         is_unsafe: false,
                     },
@@ -834,10 +854,11 @@ fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -
                     whole,
                 );
             }
-            let matched = ctx.alloc_expr(
+            let matched = alloc_expr!(
+                ctx,
                 Expr::Match {
                     scrutinee,
-                    arms: arms.into(),
+                    arms: ctx.lists.alloc(arms),
                 },
                 whole,
             );
@@ -847,9 +868,10 @@ fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -
             });
         }
     }
-    let root = ctx.alloc_expr(
+    let root = alloc_expr!(
+        ctx,
         Expr::Block {
-            stmts: stmts.into(),
+            stmts: ctx.lists.alloc(stmts),
             tail: None,
             is_unsafe: false,
         },
@@ -886,16 +908,18 @@ fn ctor_body(
         None => Res::Struct(strukt),
     };
     let callee = ctx.alloc_expr(Expr::Path(callee), at);
-    let value = ctx.alloc_expr(
+    let value = alloc_expr!(
+        ctx,
         Expr::Call {
             callee,
-            args: values.into(),
+            args: ctx.lists.alloc(values),
         },
         at,
     );
-    let root = ctx.alloc_expr(
+    let root = alloc_expr!(
+        ctx,
         Expr::Block {
-            stmts: Box::default(),
+            stmts: ctx.lists.alloc([]),
             tail: Some(value),
             is_unsafe: false,
         },
@@ -944,10 +968,11 @@ fn derived_enum_body(
     let call = |ctx: &mut Ctx<'_>, callee: Res, arg: ExprId, at: TextRange| {
         let callee = ctx.alloc_expr(Expr::Path(callee), at);
         ctx.source_map.segments.insert(callee, at);
-        ctx.alloc_expr(
+        alloc_expr!(
+            ctx,
             Expr::Call {
                 callee,
-                args: Box::new([arg]),
+                args: ctx.lists.alloc([arg]),
             },
             at,
         )
@@ -1028,7 +1053,7 @@ fn derived_enum_body(
                 let wild = ctx.alloc_pat(Pat::Wild, at);
                 let unequal = ctx.alloc_expr(Expr::Literal(Literal::Bool(false)), at);
                 let other = local(&mut ctx, receivers[1], at);
-                let arms = Box::new([
+                let arms = [
                     MatchArm {
                         pat: other_pat,
                         guard: None,
@@ -1039,11 +1064,12 @@ fn derived_enum_body(
                         guard: None,
                         body: unequal,
                     },
-                ]);
-                ctx.alloc_expr(
+                ];
+                alloc_expr!(
+                    ctx,
                     Expr::Match {
                         scrutinee: other,
-                        arms,
+                        arms: ctx.lists.alloc(arms),
                     },
                     at,
                 )
@@ -1058,7 +1084,7 @@ fn derived_enum_body(
                 } else {
                     lang_method("total_eq", "assert_receiver_is_total_eq")
                 };
-                let stmts: Box<[Stmt]> = variant
+                let stmts: Vec<Stmt> = variant
                     .fields
                     .iter()
                     .zip(&mine)
@@ -1070,9 +1096,10 @@ fn derived_enum_body(
                         }
                     })
                     .collect();
-                ctx.alloc_expr(
+                alloc_expr!(
+                    ctx,
                     Expr::Block {
-                        stmts,
+                        stmts: ctx.lists.alloc(stmts),
                         tail: None,
                         is_unsafe: false,
                     },
@@ -1098,10 +1125,11 @@ fn derived_enum_body(
             whole,
         );
     }
-    let matched = ctx.alloc_expr(
+    let matched = alloc_expr!(
+        ctx,
         Expr::Match {
             scrutinee,
-            arms: arms.into(),
+            arms: ctx.lists.alloc(arms),
         },
         whole,
     );
@@ -1115,9 +1143,10 @@ fn derived_enum_body(
             },
             whole,
         );
-        ctx.alloc_expr(
+        alloc_expr!(
+            ctx,
             Expr::Block {
-                stmts: Box::new([Stmt::Expr {
+                stmts: ctx.lists.alloc([Stmt::Expr {
                     expr: matched,
                     has_semicolon: true,
                 }]),
@@ -1127,9 +1156,10 @@ fn derived_enum_body(
             whole,
         )
     } else {
-        ctx.alloc_expr(
+        alloc_expr!(
+            ctx,
             Expr::Block {
-                stmts: Box::default(),
+                stmts: ctx.lists.alloc([]),
                 tail: Some(matched),
                 is_unsafe: false,
             },
@@ -1209,10 +1239,11 @@ fn derived_ord_body(
     let call = |ctx: &mut Ctx<'_>, a: ExprId, b: ExprId, at: TextRange| {
         let callee = ctx.alloc_expr(Expr::Path(compare), at);
         ctx.source_map.segments.insert(callee, at);
-        ctx.alloc_expr(
+        alloc_expr!(
+            ctx,
             Expr::Call {
                 callee,
-                args: Box::new([a, b]),
+                args: ctx.lists.alloc([a, b]),
             },
             at,
         )
@@ -1224,11 +1255,12 @@ fn derived_ord_body(
         };
         let inner = ctx.alloc_pat(Pat::Unit(ordering, v), at);
         match some {
-            Some((option, some)) if partial => ctx.alloc_pat(
+            Some((option, some)) if partial => alloc_pat!(
+                ctx,
                 Pat::TupleStruct {
                     strukt: option,
                     variant: some,
-                    pats: Box::new([inner]),
+                    pats: ctx.lists.alloc([inner]),
                     rest: None,
                 },
                 at,
@@ -1244,10 +1276,11 @@ fn derived_ord_body(
         match some {
             Some((option, some)) if partial => {
                 let callee = ctx.alloc_expr(Expr::Path(Res::Variant(option, some)), at);
-                ctx.alloc_expr(
+                alloc_expr!(
+                    ctx,
                     Expr::Call {
                         callee,
-                        args: Box::new([inner]),
+                        args: ctx.lists.alloc([inner]),
                     },
                     at,
                 )
@@ -1270,7 +1303,7 @@ fn derived_ord_body(
             });
             let unequal = ctx.alloc_pat(Pat::Bind { binding, sub: None }, at);
             let decided = local(ctx, binding, at);
-            let arms = Box::new([
+            let arms = [
                 MatchArm {
                     pat: same,
                     guard: None,
@@ -1281,11 +1314,12 @@ fn derived_ord_body(
                     guard: None,
                     body: decided,
                 },
-            ]);
-            result = ctx.alloc_expr(
+            ];
+            result = alloc_expr!(
+                ctx,
                 Expr::Match {
                     scrutinee: comparison,
-                    arms,
+                    arms: ctx.lists.alloc(arms),
                 },
                 at,
             );
@@ -1306,9 +1340,7 @@ fn derived_ord_body(
                         },
                         at,
                     );
-                    ctx.source_map
-                        .expr_fields
-                        .insert(place, Box::new([f.name_range]));
+                    ctx.source_map.expr_fields.insert(place, [f.name_range]);
                     borrow(&mut ctx, place, at)
                 });
                 comparisons.push((call(&mut ctx, a, b, at), at));
@@ -1327,7 +1359,7 @@ fn derived_ord_body(
             );
             let empty = Expr::Match {
                 scrutinee,
-                arms: Box::default(),
+                arms: ctx.lists.alloc([]),
             };
             (Vec::new(), ctx.alloc_expr(empty, whole))
         }
@@ -1351,13 +1383,13 @@ fn derived_ord_body(
                         StructKind::Tuple => Pat::TupleStruct {
                             strukt,
                             variant: v as u32,
-                            pats: Box::default(),
+                            pats: ctx.lists.alloc([]),
                             rest: Some(0),
                         },
                         StructKind::Record => Pat::Record {
                             strukt,
                             variant: v as u32,
-                            fields: Box::default(),
+                            fields: ctx.lists.alloc([]),
                             rest: true,
                         },
                         StructKind::Unit => Pat::Unit(strukt, v as u32),
@@ -1371,10 +1403,11 @@ fn derived_ord_body(
                     });
                 }
                 let scrutinee = local(&mut ctx, *receiver, whole);
-                let init = ctx.alloc_expr(
+                let init = alloc_expr!(
+                    ctx,
                     Expr::Match {
                         scrutinee,
-                        arms: arms.into(),
+                        arms: ctx.lists.alloc(arms),
                     },
                     whole,
                 );
@@ -1433,10 +1466,11 @@ fn derived_ord_body(
                     });
                 }
                 let other = local(&mut ctx, receivers[1], at);
-                let body = ctx.alloc_expr(
+                let body = alloc_expr!(
+                    ctx,
                     Expr::Match {
                         scrutinee: other,
-                        arms: inner.into(),
+                        arms: ctx.lists.alloc(inner),
                     },
                     at,
                 );
@@ -1461,10 +1495,11 @@ fn derived_ord_body(
                     });
                 }
                 let scrutinee = local(&mut ctx, receivers[0], whole);
-                ctx.alloc_expr(
+                alloc_expr!(
+                    ctx,
                     Expr::Match {
                         scrutinee,
-                        arms: arms.into(),
+                        arms: ctx.lists.alloc(arms),
                     },
                     whole,
                 )
@@ -1472,9 +1507,10 @@ fn derived_ord_body(
             (stmts, tail)
         }
     };
-    let root = ctx.alloc_expr(
+    let root = alloc_expr!(
+        ctx,
         Expr::Block {
-            stmts: stmts.into(),
+            stmts: ctx.lists.alloc(stmts),
             tail: Some(tail),
             is_unsafe: false,
         },
@@ -1561,13 +1597,13 @@ fn variant_pat(
         StructKind::Tuple => Pat::TupleStruct {
             strukt,
             variant: v,
-            pats: pats.into_iter().map(|(_, p)| p).collect(),
+            pats: ctx.lists.alloc(pats.into_iter().map(|(_, p)| p)),
             rest: None,
         },
         StructKind::Record => Pat::Record {
             strukt,
             variant: v,
-            fields: pats.into(),
+            fields: ctx.lists.alloc(pats),
             rest: false,
         },
         StructKind::Unit => Pat::Unit(strukt, v),
@@ -1591,22 +1627,24 @@ fn build_variant(
         StructKind::Unit => ctx.alloc_expr(Expr::Path(Res::Variant(strukt, v)), at),
         StructKind::Tuple => {
             let callee = ctx.alloc_expr(Expr::Path(Res::Variant(strukt, v)), at);
-            ctx.alloc_expr(
+            alloc_expr!(
+                ctx,
                 Expr::Call {
                     callee,
-                    args: values.into(),
+                    args: ctx.lists.alloc(values),
                 },
                 at,
             )
         }
         StructKind::Record => {
             let names: Vec<Symbol> = variant.fields.iter().map(|f| f.name).collect();
-            let ranges: Box<[TextRange]> = variant.fields.iter().map(|f| f.name_range).collect();
-            let id = ctx.alloc_expr(
+            let ranges: Vec<TextRange> = variant.fields.iter().map(|f| f.name_range).collect();
+            let id = alloc_expr!(
+                ctx,
                 Expr::Record {
                     strukt,
                     variant: v,
-                    fields: names.into_iter().zip(values).collect(),
+                    fields: ctx.lists.alloc(names.into_iter().zip(values)),
                     spread: None,
                 },
                 at,
@@ -1675,6 +1713,18 @@ struct Ctx<'a> {
     generics: Vec<Symbol>,
     /// Those of them that are const parameters, which are values.
     const_params: Vec<Symbol>,
+    lists: BodyLists,
+    // Entries before a recursive list's mark belong to its parents. Each
+    // completed list drains only its suffix, retaining scratch capacity.
+    field_scratch: Vec<(Symbol, ExprId)>,
+    pat_field_scratch: Vec<(Symbol, PatId)>,
+    field_range_scratch: Vec<TextRange>,
+    pat_field_range_scratch: Vec<(TextRange, TextRange)>,
+    param_type_scratch: Vec<Option<TypeRefId>>,
+    expr_scratch: Vec<ExprId>,
+    stmt_scratch: Vec<Stmt>,
+    arm_scratch: Vec<MatchArm>,
+    pat_scratch: Vec<PatId>,
     exprs: Arena<Expr>,
     pats: Arena<Pat>,
     bindings: Arena<Binding>,
@@ -1773,6 +1823,16 @@ impl<'a> Ctx<'a> {
                 Owner::Trait(_) => true,
                 Owner::Impl(i) => items.impls[i].trait_ref.is_some(),
             }),
+            lists: BodyLists::default(),
+            field_scratch: Vec::new(),
+            pat_field_scratch: Vec::new(),
+            field_range_scratch: Vec::new(),
+            pat_field_range_scratch: Vec::new(),
+            param_type_scratch: Vec::new(),
+            expr_scratch: Vec::new(),
+            stmt_scratch: Vec::new(),
+            arm_scratch: Vec::new(),
+            pat_scratch: Vec::new(),
             exprs: Arena::new(),
             pats: Arena::new(),
             bindings: Arena::new(),
@@ -1797,14 +1857,16 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn finish(self, params: Vec<PatId>, root: ExprId) -> LoweredBody {
+    fn finish(mut self, params: Vec<PatId>, root: ExprId) -> LoweredBody {
+        let params = self.lists.alloc(params);
         LoweredBody {
             body: Body {
+                lists: self.lists,
                 exprs: self.exprs,
                 pats: self.pats,
                 bindings: self.bindings,
                 types: self.types,
-                params: params.into(),
+                params,
                 generic_args: self.generic_args,
                 pat_generic_args: self.pat_args,
                 alt_by_ref: self.alt_by_ref,
@@ -1974,7 +2036,6 @@ impl<'a> Ctx<'a> {
         m: ast::MacroExpr<'_>,
         semicolon: bool,
         is_tail: bool,
-        stmts: &mut Vec<Stmt>,
     ) -> Option<ExprId> {
         if macros::is_macro_rules(m.syntax()) {
             self.define_local_macro(m.syntax());
@@ -1986,7 +2047,7 @@ impl<'a> Ctx<'a> {
             if is_tail && !semicolon {
                 return Some(id);
             }
-            stmts.push(Stmt::Expr {
+            self.stmt_scratch.push(Stmt::Expr {
                 expr: id,
                 has_semicolon: true,
             });
@@ -1995,13 +2056,13 @@ impl<'a> Ctx<'a> {
         let root = ast::MacroStmts::cast(parse.tree().root())?;
         self.expansion_depth += 1;
         crate::item_tree::body_expansion(1);
-        let tail = self.lower_stmts(root.stmts(), root.tail_expr(), stmts);
+        let tail = self.lower_stmts(root.stmts(), root.tail_expr());
         self.expansion_depth -= 1;
         crate::item_tree::body_expansion(-1);
         match tail {
             Some(tail) if is_tail && !semicolon => Some(tail),
             Some(tail) => {
-                stmts.push(Stmt::Expr {
+                self.stmt_scratch.push(Stmt::Expr {
                     expr: tail,
                     has_semicolon: true,
                 });
@@ -2083,10 +2144,7 @@ impl<'a> Ctx<'a> {
                 }
                 return id;
             }
-            ast::Expr::TupleExpr(tuple) => {
-                let fields = tuple.fields().map(|e| self.lower_expr(e)).collect();
-                Expr::Tuple(fields)
-            }
+            ast::Expr::TupleExpr(tuple) => Expr::Tuple(self.lower_expr_list(tuple.fields())),
             ast::Expr::BlockExpr(block) => return self.lower_block(block),
             ast::Expr::IfExpr(if_expr) => self.lower_if(if_expr),
             ast::Expr::LoopExpr(loop_expr) => {
@@ -2126,8 +2184,8 @@ impl<'a> Ctx<'a> {
                     callee => self.lower_opt(callee, syntax),
                 };
                 let args = match call.arg_list() {
-                    Some(list) => list.args().map(|e| self.lower_expr(e)).collect(),
-                    None => Box::default(),
+                    Some(list) => self.lower_expr_list(list.args()),
+                    None => SliceId::default(),
                 };
                 Expr::Call { callee, args }
             }
@@ -2176,7 +2234,7 @@ impl<'a> Ctx<'a> {
                         }
                         Expr::Repeat { value, count }
                     }
-                    None => Expr::Array(exprs.map(|e| self.lower_expr(e)).collect()),
+                    None => Expr::Array(self.lower_expr_list(exprs)),
                 }
             }
             ast::Expr::AwaitExpr(_) => self.unsupported_expr(range, "`.await` expressions"),
@@ -2193,9 +2251,7 @@ impl<'a> Ctx<'a> {
                             },
                             range,
                         );
-                        self.source_map
-                            .expr_fields
-                            .insert(id, Box::new([name_range]));
+                        self.source_map.expr_fields.insert(id, [name_range]);
                         return id;
                     }
                     None => Expr::Missing,
@@ -2229,8 +2285,8 @@ impl<'a> Ctx<'a> {
                 });
                 let receiver = self.lower_opt(call.receiver(), syntax);
                 let args = match call.arg_list() {
-                    Some(list) => list.args().map(|e| self.lower_expr(e)).collect(),
-                    None => Box::default(),
+                    Some(list) => self.lower_expr_list(list.args()),
+                    None => SliceId::default(),
                 };
                 match call.name_ref() {
                     Some(name) => {
@@ -2242,9 +2298,7 @@ impl<'a> Ctx<'a> {
                         };
                         let id = self.alloc_expr(call, range);
                         let name_range = name.syntax().text_range();
-                        self.source_map
-                            .expr_fields
-                            .insert(id, Box::new([name_range]));
+                        self.source_map.expr_fields.insert(id, [name_range]);
                         if let Some(generics) = generics {
                             let item = self.segment_args(name_range, &generics);
                             let generics = PathGenerics {
@@ -2400,10 +2454,11 @@ impl<'a> Ctx<'a> {
             };
             let callee = self.alloc_expr(Expr::Path(Res::Function(new)), range);
             self.source_map.segments.insert(callee, range);
-            return self.alloc_expr(
+            return alloc_expr!(
+                self,
                 Expr::Call {
                     callee,
-                    args: Box::new([start, end]),
+                    args: self.lists.alloc([start, end]),
                 },
                 range,
             );
@@ -2415,12 +2470,13 @@ impl<'a> Ctx<'a> {
         if fields.is_empty() {
             self.alloc_expr(Expr::Path(Res::Struct(strukt)), range)
         } else {
-            let ranges = fields.iter().map(|_| range).collect();
-            let id = self.alloc_expr(
+            let ranges = std::iter::repeat_n(range, fields.len());
+            let id = alloc_expr!(
+                self,
                 Expr::Record {
                     strukt,
                     variant: 0,
-                    fields: fields.into(),
+                    fields: self.lists.alloc(fields),
                     spread: None,
                 },
                 range,
@@ -2449,8 +2505,8 @@ impl<'a> Ctx<'a> {
         let target = path
             .as_ref()
             .and_then(|path| self.resolve_struct_path(path, path_range, true));
-        let mut fields = Vec::new();
-        let mut name_ranges = Vec::new();
+        let fields_start = self.field_scratch.len();
+        let ranges_start = self.field_range_scratch.len();
         let mut spread = None;
         if let Some(list) = record.record_expr_field_list() {
             for field in list.fields() {
@@ -2469,8 +2525,8 @@ impl<'a> Ctx<'a> {
                         self.alloc_expr(Expr::Path(res), name_range)
                     }
                 };
-                fields.push((symbol, expr));
-                name_ranges.push(name_range);
+                self.field_scratch.push((symbol, expr));
+                self.field_range_scratch.push(name_range);
             }
             if list.dot2_token().is_some() {
                 match list.spread() {
@@ -2480,18 +2536,23 @@ impl<'a> Ctx<'a> {
             }
         }
         let Some((strukt, variant)) = target else {
+            self.field_scratch.truncate(fields_start);
+            self.field_range_scratch.truncate(ranges_start);
             return self.alloc_expr(Expr::Missing, range);
         };
-        let id = self.alloc_expr(
+        let id = alloc_expr!(
+            self,
             Expr::Record {
                 strukt,
                 variant,
-                fields: fields.into(),
+                fields: self.lists.alloc(self.field_scratch.drain(fields_start..)),
                 spread,
             },
             range,
         );
-        self.source_map.expr_fields.insert(id, name_ranges.into());
+        self.source_map
+            .expr_fields
+            .insert(id, self.field_range_scratch.drain(ranges_start..));
         if let Some(path) = record.path() {
             self.source_map.paths.insert(id, path.syntax().text_range());
         }
@@ -2801,6 +2862,18 @@ impl<'a> Ctx<'a> {
         Expr::Missing
     }
 
+    fn lower_expr_list<'t>(
+        &mut self,
+        exprs: impl IntoIterator<Item = ast::Expr<'t>>,
+    ) -> SliceId<ExprId> {
+        let start = self.expr_scratch.len();
+        for expr in exprs {
+            let expr = self.lower_expr(expr);
+            self.expr_scratch.push(expr);
+        }
+        self.lists.alloc(self.expr_scratch.drain(start..))
+    }
+
     fn lower_opt_block(
         &mut self,
         block: Option<ast::BlockExpr<'_>>,
@@ -2838,14 +2911,15 @@ impl<'a> Ctx<'a> {
             self.module = module;
         }
         let macros = self.local_macros.len();
-        let mut stmts = Vec::new();
-        let tail = self.lower_stmts(block.stmts(), block.tail_expr(), &mut stmts);
+        let stmts_start = self.stmt_scratch.len();
+        let tail = self.lower_stmts(block.stmts(), block.tail_expr());
         self.local_macros.truncate(macros);
         self.scopes.truncate(scope);
         let module = std::mem::replace(&mut self.module, outer_module);
-        let id = self.alloc_expr(
+        let id = alloc_expr!(
+            self,
             Expr::Block {
-                stmts: stmts.into(),
+                stmts: self.lists.alloc(self.stmt_scratch.drain(stmts_start..)),
                 tail,
                 is_unsafe: block.unsafe_token().is_some(),
             },
@@ -2867,7 +2941,6 @@ impl<'a> Ctx<'a> {
         &mut self,
         list: ast::AstChildren<'t, ast::Stmt<'t>>,
         tail: Option<ast::Expr<'t>>,
-        stmts: &mut Vec<Stmt>,
     ) -> Option<ExprId> {
         for stmt in list {
             match stmt {
@@ -2899,7 +2972,7 @@ impl<'a> Ctx<'a> {
                         id
                     });
                     let pat = self.lower_top_pat(let_stmt.pat(), let_stmt.syntax(), PatSite::Let);
-                    stmts.push(Stmt::Let {
+                    self.stmt_scratch.push(Stmt::Let {
                         pat,
                         ty,
                         init,
@@ -2910,11 +2983,11 @@ impl<'a> Ctx<'a> {
                     check_attrs(expr_stmt.attrs(), &mut self.diagnostics);
                     let semicolon = expr_stmt.semicolon_token().is_some();
                     if let Some(ast::Expr::MacroExpr(m)) = expr_stmt.expr() {
-                        self.lower_macro_stmts(m, semicolon, false, stmts);
+                        self.lower_macro_stmts(m, semicolon, false);
                         continue;
                     }
                     let expr = self.lower_opt(expr_stmt.expr(), expr_stmt.syntax());
-                    stmts.push(Stmt::Expr {
+                    self.stmt_scratch.push(Stmt::Expr {
                         expr,
                         has_semicolon: semicolon,
                     });
@@ -2933,7 +3006,7 @@ impl<'a> Ctx<'a> {
         }
         match tail {
             Some(ast::Expr::MacroExpr(m)) if m.attrs().next().is_none() => {
-                self.lower_macro_stmts(m, false, true, stmts)
+                self.lower_macro_stmts(m, false, true)
             }
             Some(e) => Some(self.lower_expr(e)),
             None => None,
@@ -2981,9 +3054,10 @@ impl<'a> Ctx<'a> {
             },
             range,
         );
-        let else_branch = self.alloc_expr(
+        let else_branch = alloc_expr!(
+            self,
             Expr::Block {
-                stmts: Box::default(),
+                stmts: self.lists.alloc([]),
                 tail: Some(exit),
                 is_unsafe: false,
             },
@@ -3097,7 +3171,7 @@ impl<'a> Ctx<'a> {
     /// `match scrutinee { pat if guard => body, .. }`
     fn lower_match(&mut self, m: ast::MatchExpr<'_>) -> Expr {
         let scrutinee = self.lower_opt(m.expr(), m.syntax());
-        let mut arms = Vec::new();
+        let arms_start = self.arm_scratch.len();
         if let Some(list) = m.match_arm_list() {
             check_attrs(list.attrs(), &mut self.diagnostics);
             for arm in list.arms() {
@@ -3109,12 +3183,12 @@ impl<'a> Ctx<'a> {
                     .map(|g| self.lower_condition(g.condition(), g.syntax()));
                 let body = self.lower_opt(arm.expr(), arm.syntax());
                 self.scopes.truncate(scope);
-                arms.push(MatchArm { pat, guard, body });
+                self.arm_scratch.push(MatchArm { pat, guard, body });
             }
         }
         Expr::Match {
             scrutinee,
-            arms: arms.into(),
+            arms: self.lists.alloc(self.arm_scratch.drain(arms_start..)),
         }
     }
 
@@ -3207,10 +3281,11 @@ impl<'a> Ctx<'a> {
         let into_iter = lang_fn(self, "IntoIterator", "into_iter");
         let callee = self.alloc_expr(Expr::Path(into_iter), head_range);
         self.source_map.segments.insert(callee, head_range);
-        let scrutinee = self.alloc_expr(
+        let scrutinee = alloc_expr!(
+            self,
             Expr::Call {
                 callee,
-                args: Box::new([head]),
+                args: self.lists.alloc([head]),
             },
             head_range,
         );
@@ -3241,10 +3316,11 @@ impl<'a> Ctx<'a> {
             },
             head_range,
         );
-        let next_call = self.alloc_expr(
+        let next_call = alloc_expr!(
+            self,
             Expr::Call {
                 callee: next_callee,
-                args: Box::new([iter_mut]),
+                args: self.lists.alloc([iter_mut]),
             },
             head_range,
         );
@@ -3269,11 +3345,12 @@ impl<'a> Ctx<'a> {
         let scope = self.scopes.len();
         let pat = self.lower_top_pat(for_expr.pat(), syntax, PatSite::Let);
         let pat_range = self.source_map.pats.get(pat).copied().unwrap_or(range);
-        let some_pat = self.alloc_pat(
+        let some_pat = alloc_pat!(
+            self,
             Pat::TupleStruct {
                 strukt: option,
                 variant: some,
-                pats: Box::new([pat]),
+                pats: self.lists.alloc([pat]),
                 rest: None,
             },
             pat_range,
@@ -3282,10 +3359,11 @@ impl<'a> Ctx<'a> {
         let body = self.lower_opt_block(for_expr.loop_body(), syntax);
         self.loops.pop();
         self.scopes.truncate(scope);
-        let inner = self.alloc_expr(
+        let inner = alloc_expr!(
+            self,
             Expr::Match {
                 scrutinee: next_call,
-                arms: Box::new([
+                arms: self.lists.alloc([
                     MatchArm {
                         pat: none_pat,
                         guard: None,
@@ -3300,9 +3378,10 @@ impl<'a> Ctx<'a> {
             },
             range,
         );
-        let loop_body = self.alloc_expr(
+        let loop_body = alloc_expr!(
+            self,
             Expr::Block {
-                stmts: Box::new([Stmt::Expr {
+                stmts: self.lists.alloc([Stmt::Expr {
                     expr: inner,
                     has_semicolon: false,
                 }]),
@@ -3315,10 +3394,11 @@ impl<'a> Ctx<'a> {
             body: loop_body,
             source: LoopSource::For,
         };
-        self.alloc_expr(
+        alloc_expr!(
+            self,
             Expr::Match {
                 scrutinee,
-                arms: Box::new([MatchArm {
+                arms: self.lists.alloc([MatchArm {
                     pat: iter_pat,
                     guard: None,
                     body: loop_id,
@@ -3340,8 +3420,8 @@ impl<'a> Ctx<'a> {
         let scope = self.scopes.len();
         let loops = std::mem::take(&mut self.loops);
         let in_closure = std::mem::replace(&mut self.in_closure, true);
-        let mut params = Vec::new();
-        let mut param_types = Vec::new();
+        let params_start = self.pat_scratch.len();
+        let types_start = self.param_type_scratch.len();
         let mut names: Vec<Symbol> = Vec::new();
         for param in closure.param_list().into_iter().flat_map(|l| l.params()) {
             check_attrs(param.attrs(), &mut self.diagnostics);
@@ -3371,8 +3451,8 @@ impl<'a> Ctx<'a> {
                 self.source_map.types.insert(id, at);
                 id
             });
-            params.push(pat);
-            param_types.push(ty);
+            self.pat_scratch.push(pat);
+            self.param_type_scratch.push(ty);
         }
         let ret = closure.ret_type().map(|ret| {
             let at = ret
@@ -3389,10 +3469,13 @@ impl<'a> Ctx<'a> {
         self.scopes.truncate(scope);
         self.loops = loops;
         self.in_closure = in_closure;
-        self.alloc_expr(
+        alloc_expr!(
+            self,
             Expr::Closure {
-                params: params.into(),
-                param_types: param_types.into(),
+                params: self.lists.alloc(self.pat_scratch.drain(params_start..)),
+                param_types: self
+                    .lists
+                    .alloc(self.param_type_scratch.drain(types_start..)),
                 ret,
                 body,
                 is_move: closure.move_token().is_some(),
@@ -3406,14 +3489,14 @@ impl<'a> Ctx<'a> {
         match &self.pats[pat] {
             Pat::Bind { binding, .. } if !out.contains(binding) => out.push(*binding),
             Pat::Or(alternatives) => {
-                if let Some(&first) = alternatives.first() {
+                if let Some(&first) = self.lists[*alternatives].first() {
                     self.pat_bindings(first, out);
                 }
                 return;
             }
             _ => {}
         }
-        for child in self.pats[pat].children() {
+        for child in self.pats[pat].children(&self.lists) {
             self.pat_bindings(child, out);
         }
     }
@@ -4365,7 +4448,7 @@ impl<'a> Ctx<'a> {
     fn lower_or_pat(&mut self, or: ast::OrPat<'_>, site: PatSite) -> Pat {
         let base = self.pat_binds.len();
         let mut first: Option<(Vec<(Ident, BindingId)>, TextRange)> = None;
-        let mut alternatives = Vec::new();
+        let start = self.pat_scratch.len();
         for alt in or.pats() {
             let alt_range = alt.syntax().text_range();
             self.or_reuse
@@ -4394,12 +4477,12 @@ impl<'a> Ctx<'a> {
                     }
                 }
             }
-            alternatives.push(id);
+            self.pat_scratch.push(id);
         }
         if let Some((bound, _)) = first {
             self.pat_binds.extend(bound);
         }
-        Pat::Or(alternatives.into())
+        Pat::Or(self.lists.alloc(self.pat_scratch.drain(start..)))
     }
 
     /// `x`, `mut x`, `ref x`, `x @ pat`, or a unit struct's or unit
@@ -4555,8 +4638,8 @@ impl<'a> Ctx<'a> {
     /// `[a, .., z]`, `[x, rest @ ..]`: the patterns before and after the
     /// `..` (one at most), and what it is.
     fn lower_slice_pat(&mut self, slice: ast::SlicePat<'_>, site: PatSite) -> Pat {
-        let mut prefix = Vec::new();
-        let mut suffix = Vec::new();
+        let start = self.pat_scratch.len();
+        let mut split = None;
         let mut middle: Option<PatId> = None;
         for field in slice.pats() {
             let range = field.syntax().text_range();
@@ -4578,22 +4661,26 @@ impl<'a> Ctx<'a> {
                 Some(_) if middle.is_some() => {
                     self.error(range, "`..` can only be used once per slice pattern");
                 }
-                Some(rest) => middle = Some(rest),
+                Some(rest) => {
+                    middle = Some(rest);
+                    split = Some(self.pat_scratch.len());
+                }
                 None => {
                     let parent = field.syntax();
                     let lowered = self.lower_pat(Some(field), parent, site);
-                    if middle.is_some() {
-                        suffix.push(lowered);
-                    } else {
-                        prefix.push(lowered);
-                    }
+                    self.pat_scratch.push(lowered);
                 }
             }
         }
+        let suffix = self.lists.alloc(
+            self.pat_scratch
+                .drain(split.unwrap_or(self.pat_scratch.len())..),
+        );
+        let prefix = self.lists.alloc(self.pat_scratch.drain(start..));
         Pat::Slice {
-            prefix: prefix.into(),
+            prefix,
             slice: middle,
-            suffix: suffix.into(),
+            suffix,
         }
     }
 
@@ -4602,8 +4689,8 @@ impl<'a> Ctx<'a> {
         &mut self,
         fields: ast::AstChildren<'_, ast::Pat<'_>>,
         site: PatSite,
-    ) -> (Box<[PatId]>, Option<u32>) {
-        let mut pats = Vec::new();
+    ) -> (SliceId<PatId>, Option<u32>) {
+        let start = self.pat_scratch.len();
         let mut rest = None;
         for field in fields {
             if let ast::Pat::RestPat(dots) = field {
@@ -4613,21 +4700,22 @@ impl<'a> Ctx<'a> {
                         "`..` can only be used once per tuple pattern",
                     );
                 }
-                rest.get_or_insert(pats.len() as u32);
+                rest.get_or_insert((self.pat_scratch.len() - start) as u32);
                 continue;
             }
             let parent = field.syntax();
-            pats.push(self.lower_pat(Some(field), parent, site));
+            let pat = self.lower_pat(Some(field), parent, site);
+            self.pat_scratch.push(pat);
         }
-        (pats.into(), rest)
+        (self.lists.alloc(self.pat_scratch.drain(start..)), rest)
     }
 
     /// `S { a, b: x, .. }` or `E::V { a, .. }`
     fn lower_record_pat(&mut self, record: ast::RecordPat<'_>, site: PatSite) -> PatId {
         let range = record.syntax().text_range();
         let target = self.resolve_struct(record.path(), range, true);
-        let mut fields = Vec::new();
-        let mut name_ranges = Vec::new();
+        let fields_start = self.pat_field_scratch.len();
+        let ranges_start = self.pat_field_range_scratch.len();
         let mut rest = false;
         if let Some(list) = record.record_pat_field_list() {
             rest = list.rest_pat().is_some();
@@ -4657,23 +4745,31 @@ impl<'a> Ctx<'a> {
                     _ => continue,
                 };
                 let pat = self.lower_pat(field.pat(), field.syntax(), site);
-                fields.push((Symbol::intern(name), pat));
-                name_ranges.push((name_range, field.syntax().text_range()));
+                self.pat_field_scratch.push((Symbol::intern(name), pat));
+                self.pat_field_range_scratch
+                    .push((name_range, field.syntax().text_range()));
             }
         }
         let Some((strukt, variant, path)) = target else {
+            self.pat_field_scratch.truncate(fields_start);
+            self.pat_field_range_scratch.truncate(ranges_start);
             return self.alloc_pat(Pat::Missing, range);
         };
-        let id = self.alloc_pat(
+        let id = alloc_pat!(
+            self,
             Pat::Record {
                 strukt,
                 variant,
-                fields: fields.into(),
+                fields: self
+                    .lists
+                    .alloc(self.pat_field_scratch.drain(fields_start..)),
                 rest,
             },
             range,
         );
-        self.source_map.pat_fields.insert(id, name_ranges.into());
+        self.source_map
+            .pat_fields
+            .insert(id, self.pat_field_range_scratch.drain(ranges_start..));
         self.pat_generics(id, &path, record.path(), range);
         id
     }

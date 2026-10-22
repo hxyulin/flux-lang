@@ -16,9 +16,20 @@
 //! - [`LayeredArena`] is an `Arena` whose first values are frozen and
 //!   shared by its copies, so many arenas can continue one large one
 //!   (every program's items continue `core`'s) without copying it.
+//!   [`LayeredArenaMap`] shares frozen side tables with private overrides.
+//! - [`SlicePool`] stores child lists in one vector, named by 32-bit
+//!   [`SliceId`] ranges. [`SharedSlicePool`] batches immutable `Copy`
+//!   slices into reference-counted chunks when slices must own their storage.
+//! - [`StaticSliceArena`] batches process-lifetime interned `Copy` slices.
 
 mod dropless;
+mod shared_slice;
+mod slice;
+mod static_slice;
 mod typed;
 
 pub use dropless::DroplessArena;
-pub use typed::{Arena, ArenaMap, Idx, LayeredArena};
+pub use shared_slice::{SharedSlice, SharedSlicePool};
+pub use slice::{SliceId, SlicePool};
+pub use static_slice::StaticSliceArena;
+pub use typed::{Arena, ArenaMap, Idx, LayeredArena, LayeredArenaMap};

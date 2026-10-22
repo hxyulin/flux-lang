@@ -25,6 +25,8 @@ use std::sync::{LazyLock, OnceLock, RwLock};
 use hashbrown::HashTable;
 use rustc_hash::FxBuildHasher;
 
+use flux_arena::StaticSliceArena;
+
 use flux_hir::{ExprId, FunctionId, StructId, TraitId};
 use flux_intern::{Symbol, sym};
 
@@ -220,11 +222,11 @@ impl DynTy {
 
     /// The same with each type in it replaced by `f`'s.
     pub fn map(self, mut f: impl FnMut(Ty) -> Ty) -> DynTy {
-        let args: Vec<Ty> = self.args.iter().map(|&t| f(t)).collect();
-        let assoc: Vec<Ty> = self.assoc_tys.iter().map(|&t| f(t)).collect();
+        let args = map_list(self.args, &mut f);
+        let assoc = map_list(self.assoc_tys, f);
         DynTy {
-            args: Ty::list(&args),
-            assoc_tys: Ty::list(&assoc),
+            args,
+            assoc_tys: assoc,
             ..self
         }
     }
@@ -233,16 +235,22 @@ impl DynTy {
 /// `names`, interned, for [`DynTy::assoc_names`].
 pub fn symbol_list(names: &[Symbol]) -> &'static [Symbol] {
     use std::sync::Mutex;
-    static LISTS: Mutex<Vec<&'static [Symbol]>> = Mutex::new(Vec::new());
+    type SymbolLists = (
+        HashTable<(u64, &'static [Symbol])>,
+        StaticSliceArena<Symbol>,
+    );
+    static LISTS: LazyLock<Mutex<SymbolLists>> =
+        LazyLock::new(|| Mutex::new((HashTable::new(), StaticSliceArena::default())));
     if names.is_empty() {
         return &[];
     }
+    let hash = FxBuildHasher.hash_one(names);
     let mut lists = LISTS.lock().unwrap();
-    if let Some(&list) = lists.iter().find(|&&l| l == names) {
+    if let Some(&(_, list)) = lists.0.find(hash, |&(h, list)| h == hash && list == names) {
         return list;
     }
-    let list: &'static [Symbol] = Box::leak(names.into());
-    lists.push(list);
+    let list = lists.1.alloc(names);
+    lists.0.insert_unique(hash, (hash, list), |&(h, _)| h);
     list
 }
 
@@ -256,10 +264,9 @@ pub struct FnSigTy {
 
 impl FnSigTy {
     pub fn new(params: &[Ty], ret: Ty, is_unsafe: bool) -> FnSigTy {
-        let mut all = params.to_vec();
-        all.push(ret);
+        let all = intern_types(params.iter().copied().chain([ret]));
         FnSigTy {
-            inputs_output: Ty::list(&all),
+            inputs_output: all,
             is_unsafe,
         }
     }
@@ -274,9 +281,9 @@ impl FnSigTy {
 
     /// The signature with each type replaced by `f`'s.
     pub fn map(self, f: impl FnMut(Ty) -> Ty) -> FnSigTy {
-        let list: Vec<Ty> = self.inputs_output.iter().copied().map(f).collect();
+        let list = map_list(self.inputs_output, f);
         FnSigTy {
-            inputs_output: Ty::list(&list),
+            inputs_output: list,
             ..self
         }
     }
@@ -418,7 +425,7 @@ impl InferVar {
 /// shards are). Indices come from one counter, so they stay dense.
 struct Interner {
     kinds: [Shard<u32>; SHARDS],
-    lists: [Shard<&'static [Ty]>; SHARDS],
+    lists: [CachePadded<RwLock<ListShard>>; SHARDS],
     next: AtomicU32,
 }
 
@@ -517,6 +524,12 @@ const PREDEFINED: [TyKind; 6] = [
     TyKind::Str,
 ];
 
+#[derive(Default)]
+struct ListShard {
+    table: HashTable<(u64, &'static [Ty])>,
+    storage: StaticSliceArena<Ty>,
+}
+
 static INTERNER: LazyLock<Interner> = LazyLock::new(|| {
     let interner = Interner {
         kinds: std::array::from_fn(|_| CachePadded(RwLock::default())),
@@ -584,15 +597,15 @@ impl Interner {
     fn list(&self, types: &[Ty], hash: u64) -> &'static [Ty] {
         let shard = &self.lists[shard(hash)].0;
         let eq = |&(h, list): &(u64, &'static [Ty])| h == hash && list == types;
-        if let Some(&(_, list)) = shard.read().unwrap().find(hash, eq) {
+        if let Some(&(_, list)) = shard.read().unwrap().table.find(hash, eq) {
             return list;
         }
-        let mut table = shard.write().unwrap();
-        if let Some(&(_, list)) = table.find(hash, eq) {
+        let mut shard = shard.write().unwrap();
+        if let Some(&(_, list)) = shard.table.find(hash, eq) {
             return list;
         }
-        let list: &'static [Ty] = Box::leak(types.into());
-        table.insert_unique(hash, (hash, list), |&(h, _)| h);
+        let list = shard.storage.alloc(types);
+        shard.table.insert_unique(hash, (hash, list), |&(h, _)| h);
         list
     }
 }
@@ -726,25 +739,22 @@ impl Ty {
         let mut go = |t: Ty| t.map_opaques(f);
         match self.kind() {
             TyKind::Opaque(opaque) => {
-                let args: Vec<Ty> = opaque.args.iter().map(|&a| go(a)).collect();
-                f(OpaqueTy {
-                    args: Ty::list(&args),
-                    ..opaque
-                })
+                let args = map_list(opaque.args, &mut go);
+                f(OpaqueTy { args, ..opaque })
             }
-            TyKind::Tuple(list) => Ty::tuple(&list.iter().map(|&t| go(t)).collect::<Vec<_>>()),
+            TyKind::Tuple(list) => Ty::new(TyKind::Tuple(map_list(list, go))),
             TyKind::Adt(adt, list) => {
-                let list: Vec<Ty> = list.iter().map(|&t| go(t)).collect();
-                Ty::new(TyKind::Adt(adt, Ty::list(&list)))
+                let list = map_list(list, go);
+                Ty::new(TyKind::Adt(adt, list))
             }
             TyKind::Closure(id, list) => {
-                let list: Vec<Ty> = list.iter().map(|&t| go(t)).collect();
-                Ty::closure(id, &list)
+                let list = map_list(list, go);
+                Ty::new(TyKind::Closure(id, list))
             }
             TyKind::Alias(alias) => {
-                let list: Vec<Ty> = alias.args.iter().map(|&t| go(t)).collect();
+                let list = map_list(alias.args, go);
                 Ty::alias(AliasTy {
-                    args: Ty::list(&list),
+                    args: list,
                     ..alias
                 })
             }
@@ -766,17 +776,19 @@ impl Ty {
         }
         match self.kind() {
             TyKind::Param(param) => args.get(param.index as usize).copied().unwrap_or(Ty::ERROR),
-            TyKind::Tuple(elements) => Ty::tuple(&subst_list(elements, args)),
-            TyKind::Adt(adt, list) => Ty::new(TyKind::Adt(adt, Ty::list(&subst_list(list, args)))),
+            TyKind::Tuple(elements) => {
+                Ty::new(TyKind::Tuple(map_list(elements, |t| t.subst(args))))
+            }
+            TyKind::Adt(adt, list) => Ty::new(TyKind::Adt(adt, map_list(list, |t| t.subst(args)))),
             TyKind::Closure(id, list) => {
-                Ty::new(TyKind::Closure(id, Ty::list(&subst_list(list, args))))
+                Ty::new(TyKind::Closure(id, map_list(list, |t| t.subst(args))))
             }
             TyKind::Alias(alias) => Ty::alias(AliasTy {
-                args: Ty::list(&subst_list(alias.args, args)),
+                args: map_list(alias.args, |t| t.subst(args)),
                 ..alias
             }),
             TyKind::Opaque(opaque) => Ty::opaque(OpaqueTy {
-                args: Ty::list(&subst_list(opaque.args, args)),
+                args: map_list(opaque.args, |t| t.subst(args)),
                 ..opaque
             }),
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, pointee.subst(args)),
@@ -850,9 +862,9 @@ impl Ty {
         match self.kind() {
             TyKind::FnPtr(sig) => Ty::new(TyKind::FnPtr(sig.map(f))),
             TyKind::FnDef(def) => {
-                let args: Vec<Ty> = def.args.iter().map(|&a| f(a)).collect();
+                let args = map_list(def.args, &mut f);
                 Ty::new(TyKind::FnDef(FnDefTy {
-                    args: Ty::list(&args),
+                    args,
                     sig: def.sig.map(f),
                     ..def
                 }))
@@ -862,23 +874,29 @@ impl Ty {
     }
 
     /// The types directly inside this one.
-    pub fn children(self) -> Vec<Ty> {
-        match self.kind() {
-            TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => list.to_vec(),
-            TyKind::Alias(alias) => alias.args.to_vec(),
-            TyKind::Opaque(opaque) => opaque.args.to_vec(),
-            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => vec![t],
-            TyKind::Array(t, len) => vec![t, len],
-            TyKind::FnPtr(sig) => sig.inputs_output.to_vec(),
-            TyKind::FnDef(def) => def
-                .args
-                .iter()
-                .chain(def.sig.inputs_output)
-                .copied()
-                .collect(),
-            TyKind::Dynamic(d) => d.args.iter().chain(d.assoc_tys).copied().collect(),
-            _ => Vec::new(),
-        }
+    pub fn children(self) -> impl Iterator<Item = Ty> + Clone {
+        let mut inline = [None; 2];
+        let (first, second): (&'static [Ty], &'static [Ty]) = match self.kind() {
+            TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => (list, &[]),
+            TyKind::Alias(alias) => (alias.args, &[]),
+            TyKind::Opaque(opaque) => (opaque.args, &[]),
+            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => {
+                inline[0] = Some(t);
+                (&[], &[])
+            }
+            TyKind::Array(t, len) => {
+                inline = [Some(t), Some(len)];
+                (&[], &[])
+            }
+            TyKind::FnPtr(sig) => (sig.inputs_output, &[]),
+            TyKind::FnDef(def) => (def.args, def.sig.inputs_output),
+            TyKind::Dynamic(d) => (d.args, d.assoc_tys),
+            _ => (&[], &[]),
+        };
+        inline
+            .into_iter()
+            .flatten()
+            .chain(first.iter().chain(second).copied())
     }
 
     /// The signature of a function item or pointer type.
@@ -929,6 +947,36 @@ impl Ty {
     /// `*const T`, `*mut T`, `&T` or `&mut T`.
     pub fn is_pointer(self) -> bool {
         matches!(self.kind(), TyKind::RawPtr(..) | TyKind::Ref(..))
+    }
+}
+
+/// Maps a list using stack scratch for the common short-list case.
+/// Recursive mappings get independent scratch, so no borrow or lock spans `f`.
+pub(crate) fn map_list(list: &[Ty], f: impl FnMut(Ty) -> Ty) -> &'static [Ty] {
+    intern_types(list.iter().copied().map(f))
+}
+
+fn intern_types(types: impl Iterator<Item = Ty>) -> &'static [Ty] {
+    let capacity = types.size_hint().0;
+    let mut short = [Ty::ERROR; 16];
+    let mut count = 0;
+    let mut long = Vec::new();
+    for ty in types {
+        if count < short.len() {
+            short[count] = ty;
+        } else {
+            if long.is_empty() {
+                long.reserve(capacity.max(short.len() + 1));
+                long.extend_from_slice(&short);
+            }
+            long.push(ty);
+        }
+        count += 1;
+    }
+    if count <= short.len() {
+        Ty::list(&short[..count])
+    } else {
+        Ty::list(&long)
     }
 }
 
@@ -1119,6 +1167,59 @@ fn write_sig(f: &mut fmt::Formatter<'_>, sig: FnSigTy) -> fmt::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mapped_lists_cover_inline_spill_and_recursive_cases() {
+        let param = Ty::param(0, Symbol::intern("ListParam"));
+        for len in [0, 1, 16, 17, 40] {
+            let input = vec![param; len];
+            let tuple = Ty::tuple(&input);
+            let mapped = tuple.subst(&[Ty::BOOL]);
+            assert_eq!(mapped, Ty::tuple(&vec![Ty::BOOL; len]));
+            assert_eq!(mapped.children().collect::<Vec<_>>(), vec![Ty::BOOL; len]);
+            assert!(std::ptr::eq(map_list(&input, |t| t), Ty::list(&input)));
+        }
+        let nested = Ty::tuple(&[Ty::tuple(&[param]), Ty::array_of(param, param)]);
+        assert_eq!(
+            nested.subst(&[Ty::BOOL]),
+            Ty::tuple(&[Ty::tuple(&[Ty::BOOL]), Ty::array_of(Ty::BOOL, Ty::BOOL)])
+        );
+        let sig = FnSigTy::new(&[param; 16], param, true).map(|t| t.subst(&[Ty::BOOL]));
+        assert_eq!(sig.params(), &[Ty::BOOL; 16]);
+        assert_eq!(sig.ret(), Ty::BOOL);
+        assert!(sig.is_unsafe);
+    }
+
+    #[test]
+    fn children_preserve_order_for_inline_and_split_lists() {
+        let args = Ty::list(&[Ty::BOOL, Ty::CHAR]);
+        let sig = FnSigTy::new(&[Ty::STR], Ty::UNIT, false);
+        let def = Ty::new(TyKind::FnDef(FnDefTy {
+            function: FunctionId::from_raw(0),
+            name: Symbol::intern("child_fn"),
+            args,
+            sig,
+        }));
+        assert_eq!(
+            def.children().collect::<Vec<_>>(),
+            [Ty::BOOL, Ty::CHAR, Ty::STR, Ty::UNIT]
+        );
+        assert_eq!(
+            Ty::array_of(Ty::CHAR, Ty::BOOL)
+                .children()
+                .collect::<Vec<_>>(),
+            [Ty::CHAR, Ty::BOOL]
+        );
+        assert_eq!(
+            Ty::raw_ptr(Mutability::Not, Ty::STR)
+                .children()
+                .collect::<Vec<_>>(),
+            [Ty::STR]
+        );
+        assert_eq!(Ty::BOOL.children().count(), 0);
+        let names = [Symbol::intern("ListAssocA"), Symbol::intern("ListAssocB")];
+        assert!(std::ptr::eq(symbol_list(&names), symbol_list(&names)));
+    }
 
     #[test]
     fn interning() {

@@ -3,7 +3,7 @@
 mod closure;
 mod solve;
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use flux_arena::ArenaMap;
 use flux_hir::{
@@ -205,7 +205,7 @@ pub fn infer_body(
     ctx.hide_opaques(function);
     let ret = ctx.normalize(sig.ret, origin);
     ctx.ret = ret;
-    for (i, &pat) in body.params.iter().enumerate() {
+    for (i, &pat) in body.lists[body.params].iter().enumerate() {
         let ty = sig.params.get(i).copied().unwrap_or(Ty::ERROR);
         let ty = ctx.normalize(ty, origin);
         ctx.check_pat(pat, ty, false);
@@ -317,6 +317,9 @@ impl<'a> Ctx<'a> {
             body,
             source_map,
             vars: Vec::new(),
+            probe_snapshots: Vec::new(),
+            obligation_scratch: Vec::new(),
+            projection_scratch: Vec::new(),
             expr_types: ArenaMap::new(),
             binding_types: ArenaMap::new(),
             field_indices: ArenaMap::new(),
@@ -338,12 +341,12 @@ impl<'a> Ctx<'a> {
             pat_derefs: ArenaMap::new(),
             binding_refs: ArenaMap::new(),
             mode_errors: Vec::new(),
-            negated_pats: HashSet::new(),
-            const_pats: HashSet::new(),
+            negated_pats: FxHashSet::default(),
+            const_pats: FxHashSet::default(),
             expected: ArenaMap::new(),
             loops: ArenaMap::new(),
-            reported_vars: HashSet::new(),
-            uninit_bindings: HashSet::new(),
+            reported_vars: FxHashSet::default(),
+            uninit_bindings: FxHashSet::default(),
             tainted: false,
             unsafe_depth: u32::from(owner.is_unsafe),
             ret: owner.ret,
@@ -354,9 +357,9 @@ impl<'a> Ctx<'a> {
             projections: Vec::new(),
             normalizing: Vec::new(),
             obligations: Vec::new(),
-            reported_unmet: HashSet::new(),
-            written_wf: HashSet::new(),
-            signature_wf: HashSet::new(),
+            reported_unmet: FxHashSet::default(),
+            written_wf: FxHashSet::default(),
+            signature_wf: FxHashSet::default(),
             deferred: Vec::new(),
             unsizes: ArenaMap::new(),
             builtin_methods: ArenaMap::new(),
@@ -365,13 +368,13 @@ impl<'a> Ctx<'a> {
             closure_calls: Vec::new(),
             kind_requirements: Vec::new(),
             closure_hints: ArenaMap::new(),
-            mismatched_closures: HashSet::new(),
-            hinted_closures: HashSet::new(),
+            mismatched_closures: FxHashSet::default(),
+            hinted_closures: FxHashSet::default(),
             closure_infos: Default::default(),
             closure_locals: Vec::new(),
-            unit_matches: HashSet::new(),
-            coerced_tuples: HashSet::new(),
-            for_heads: HashSet::new(),
+            unit_matches: FxHashSet::default(),
+            coerced_tuples: FxHashSet::default(),
+            for_heads: FxHashSet::default(),
             reified_closures: Vec::new(),
             own_opaques: Vec::new(),
             own_opaque_args: &[],
@@ -490,6 +493,10 @@ struct Ctx<'a> {
     source_map: &'a BodySourceMap,
     /// Each variable's value and where it was created.
     vars: Vec<(VarValue, TextRange)>,
+    /// Reusable buffers owned by completed probes and solver passes.
+    probe_snapshots: Vec<Vec<(VarValue, TextRange)>>,
+    obligation_scratch: Vec<Obligation>,
+    projection_scratch: Vec<solve::PendingProjection>,
     expr_types: ArenaMap<Expr, Ty>,
     binding_types: ArenaMap<Binding, Ty>,
     field_indices: ArenaMap<Expr, u32>,
@@ -516,18 +523,18 @@ struct Ctx<'a> {
     mode_errors: Vec<(TextRange, &'static str)>,
     /// Negated literals in patterns, where `-` on an unsigned type is an
     /// unmet `Neg` bound, as rustc reports it.
-    negated_pats: HashSet<ExprId>,
+    negated_pats: FxHashSet<ExprId>,
     /// Paths to constants in patterns, `N` and the ends of `A..=B`.
-    const_pats: HashSet<ExprId>,
+    const_pats: FxHashSet<ExprId>,
     /// The type the context of an expression wants, where known before
     /// it is inferred: a call or struct expression's generic arguments
     /// follow from it, so mismatches are reported at its parts.
     expected: ArenaMap<Expr, Ty>,
     loops: ArenaMap<Expr, LoopState>,
     /// Variables already reported as needing a type.
-    reported_vars: HashSet<InferVar>,
+    reported_vars: FxHashSet<InferVar>,
     /// `let x;` bindings, which may be assigned once without `mut`.
-    uninit_bindings: HashSet<BindingId>,
+    uninit_bindings: FxHashSet<BindingId>,
     /// Has errors, or values of erroneous types, once inference is done:
     /// variables left unknown are then not reported.
     tainted: bool,
@@ -550,12 +557,12 @@ struct Ctx<'a> {
     /// Trait obligations not yet met.
     obligations: Vec<Obligation>,
     /// Unmet obligations reported, by range and message.
-    reported_unmet: HashSet<(TextRange, String)>,
+    reported_unmet: FxHashSet<(TextRange, String)>,
     /// The struct types written in the body, and in a constant, those its
     /// type names, whose bounds are checked once.
-    written_wf: HashSet<Ty>,
+    written_wf: FxHashSet<Ty>,
     /// In a constant, the struct types its type names.
-    signature_wf: HashSet<Ty>,
+    signature_wf: FxHashSet<Ty>,
     deferred: Vec<Deferred>,
     unsizes: ArenaMap<Expr, Ty>,
     builtin_methods: ArenaMap<Expr, (BuiltinMethod, u32)>,
@@ -571,21 +578,21 @@ struct Ctx<'a> {
     /// The signatures closures passed to calls are expected to have.
     closure_hints: ArenaMap<Expr, closure::Hint>,
     /// Closures whose signature or kind was reported as wrong.
-    mismatched_closures: HashSet<ExprId>,
+    mismatched_closures: FxHashSet<ExprId>,
     /// The closures whose signatures follow from the `Fn`-family bounds
     /// of the parameters they are passed as.
-    hinted_closures: HashSet<ExprId>,
+    hinted_closures: FxHashSet<ExprId>,
     /// What each closure analyzed captures, innermost first.
     closure_infos: rustc_hash::FxHashMap<ExprId, ClosureInfo>,
     /// The bindings of the closures being inferred, innermost last.
-    closure_locals: Vec<HashSet<BindingId>>,
+    closure_locals: Vec<FxHashSet<BindingId>>,
     /// The `match`es of `for` loops, whose arms must be `()`.
-    unit_matches: HashSet<ExprId>,
+    unit_matches: FxHashSet<ExprId>,
     /// Tuple expressions whose elements were coerced to the elements of
     /// the tuple type their context wants, which they have.
-    coerced_tuples: HashSet<ExprId>,
+    coerced_tuples: FxHashSet<ExprId>,
     /// The calls of `IntoIterator::into_iter` of `for` loops' heads.
-    for_heads: HashSet<ExprId>,
+    for_heads: FxHashSet<ExprId>,
     /// Closures coerced to function pointers, with their types and the
     /// pointers', which must capture nothing.
     reified_closures: Vec<(ExprId, Ty, Ty)>,
@@ -680,23 +687,20 @@ impl Ctx<'_> {
             TyKind::Slice(elem) => Ty::slice(self.known(elem)),
             TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(|t| self.known(t)),
             TyKind::Tuple(elements) => {
-                let elements: Vec<Ty> = elements.iter().map(|&e| self.known(e)).collect();
-                Ty::tuple(&elements)
+                let elements = crate::ty::map_list(elements, |e| self.known(e));
+                Ty::new(TyKind::Tuple(elements))
             }
             TyKind::Adt(adt, args) => {
-                let args: Vec<Ty> = args.iter().map(|&a| self.known(a)).collect();
-                Ty::adt(adt.strukt, adt.name, &args)
+                let args = crate::ty::map_list(args, |a| self.known(a));
+                Ty::new(TyKind::Adt(adt, args))
             }
             TyKind::Closure(id, args) => {
-                let args: Vec<Ty> = args.iter().map(|&a| self.known(a)).collect();
-                Ty::closure(id, &args)
+                let args = crate::ty::map_list(args, |a| self.known(a));
+                Ty::new(TyKind::Closure(id, args))
             }
             TyKind::Opaque(opaque) => {
-                let args: Vec<Ty> = opaque.args.iter().map(|&a| self.known(a)).collect();
-                Ty::opaque(crate::OpaqueTy {
-                    args: Ty::list(&args),
-                    ..opaque
-                })
+                let args = crate::ty::map_list(opaque.args, |a| self.known(a));
+                Ty::opaque(crate::OpaqueTy { args, ..opaque })
             }
             _ => ty,
         }
@@ -708,7 +712,7 @@ impl Ctx<'_> {
         match ty.kind() {
             TyKind::Infer(other) => self.root(other) == self.root(var),
             _ if !ty.has_infer() => false,
-            _ => ty.children().into_iter().any(|t| self.occurs(var, t)),
+            _ => ty.children().any(|t| self.occurs(var, t)),
         }
     }
 
@@ -763,7 +767,7 @@ impl Ctx<'_> {
 
     /// Once the body is inferred, the hidden types of its opaque types;
     /// one nothing decided is a cycle (E0720).
-    fn hidden_types(&mut self, reported: &mut HashSet<InferVar>) -> Vec<Ty> {
+    fn hidden_types(&mut self, reported: &mut FxHashSet<InferVar>) -> Vec<Ty> {
         let Some(function) = self.owner_fn else {
             return Vec::new();
         };
@@ -1165,7 +1169,7 @@ impl Ctx<'_> {
             && let TyKind::Tuple(elements) = self.shallow(expected).kind()
         {
             if fields.len() == elements.len() {
-                for (&field, &element) in fields.iter().zip(elements) {
+                for (&field, &element) in self.body.lists[*fields].iter().zip(elements) {
                     let ty = self.expr_types.get(field).copied().unwrap_or(Ty::ERROR);
                     self.coerce(ty, element, field);
                 }
@@ -1658,18 +1662,12 @@ impl Ctx<'_> {
         match ty.kind() {
             TyKind::Infer(_) => self.new_var(false, origin),
             TyKind::Tuple(elements) => {
-                let elements: Vec<Ty> = elements
-                    .iter()
-                    .map(|&e| self.fill_placeholders(e, origin))
-                    .collect();
-                Ty::tuple(&elements)
+                let elements = crate::ty::map_list(elements, |e| self.fill_placeholders(e, origin));
+                Ty::new(TyKind::Tuple(elements))
             }
             TyKind::Adt(adt, args) => {
-                let args: Vec<Ty> = args
-                    .iter()
-                    .map(|&a| self.fill_placeholders(a, origin))
-                    .collect();
-                Ty::adt(adt.strukt, adt.name, &args)
+                let args = crate::ty::map_list(args, |a| self.fill_placeholders(a, origin));
+                Ty::new(TyKind::Adt(adt, args))
             }
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, self.fill_placeholders(pointee, origin)),
             TyKind::FnPtr(_) => ty.map_fn(|t| self.fill_placeholders(t, origin)),
@@ -1808,8 +1806,7 @@ impl Ctx<'_> {
         if !fields.iter().any(|f| f.has_aliases()) {
             return fields;
         }
-        let fields: Vec<Ty> = fields.iter().map(|&f| self.normalize(f, range)).collect();
-        Ty::list(&fields)
+        crate::ty::map_list(fields, |f| self.normalize(f, range))
     }
 
     /// The values of a variant's fields as the values of all the fields
@@ -2250,7 +2247,7 @@ impl Ctx<'_> {
                 self.check_pat_in(*inner, pointee, BindingMode::Move, uninit);
             }
             Pat::Or(alternatives) => {
-                for &alt in alternatives.iter() {
+                for &alt in self.body.lists[*alternatives].iter() {
                     self.check_pat_in(alt, expected, mode, uninit);
                 }
             }
@@ -2350,7 +2347,10 @@ impl Ctx<'_> {
                         (Ty::ERROR, Ty::ERROR)
                     }
                 };
-                for &p in prefix.iter().chain(suffix.iter()) {
+                for &p in self.body.lists[*prefix]
+                    .iter()
+                    .chain(self.body.lists[*suffix].iter())
+                {
                     self.check_pat_in(p, elem, mode, uninit);
                 }
                 if let Some(slice) = slice {
@@ -2379,7 +2379,7 @@ impl Ctx<'_> {
                     }
                     TyKind::Error => None,
                     TyKind::Infer(_) if rest.is_none() => {
-                        let vars: Vec<Ty> = pats
+                        let vars: Vec<Ty> = self.body.lists[*pats]
                             .iter()
                             .map(|&p| {
                                 let range = self.source_map.pats.get(p).copied();
@@ -2395,7 +2395,7 @@ impl Ctx<'_> {
                         None
                     }
                     _ => {
-                        let found: Vec<&str> = pats.iter().map(|_| "_").collect();
+                        let found: Vec<&str> = self.body.lists[*pats].iter().map(|_| "_").collect();
                         let found = match found.len() {
                             1 => "(_,)".to_owned(),
                             _ => format!("({})", found.join(", ")),
@@ -2408,7 +2408,7 @@ impl Ctx<'_> {
                         None
                     }
                 };
-                self.check_tuple_pats(pats, *rest, elements, mode, uninit);
+                self.check_tuple_pats(&self.body.lists[*pats], *rest, elements, mode, uninit);
             }
             Pat::TupleStruct {
                 strukt,
@@ -2436,7 +2436,7 @@ impl Ctx<'_> {
                 if !fits {
                     let (want, got) = (fields.len(), pats.len());
                     // rustc points at the fields, not the whole pattern.
-                    let range = pats
+                    let range = self.body.lists[*pats]
                         .first()
                         .and_then(|&p| self.source_map.pats.get(p).copied())
                         .unwrap_or(range);
@@ -2454,7 +2454,13 @@ impl Ctx<'_> {
                         ),
                     );
                 }
-                self.check_tuple_pats(pats, *rest, fits.then_some(fields), mode, uninit);
+                self.check_tuple_pats(
+                    &self.body.lists[*pats],
+                    *rest,
+                    fits.then_some(fields),
+                    mode,
+                    uninit,
+                );
             }
             Pat::Record {
                 strukt,
@@ -2478,7 +2484,7 @@ impl Ctx<'_> {
                 let mut private = Vec::new();
                 let mut mentioned = Vec::new();
                 let mut unknown = false;
-                for (i, &(name, field_pat)) in fields.iter().enumerate() {
+                for (i, &(name, field_pat)) in self.body.lists[*fields].iter().enumerate() {
                     let (name_range, field_range) = names
                         .and_then(|n| n.get(i))
                         .copied()
@@ -2721,7 +2727,7 @@ impl Ctx<'_> {
                     && let TyKind::Tuple(elements) = self.shallow(expected).kind()
                     && elements.len() == fields.len()
                 {
-                    for (&field, &element) in fields.iter().zip(elements) {
+                    for (&field, &element) in self.body.lists[*fields].iter().zip(elements) {
                         self.expect(field, element);
                         let ty = self.infer_expr(field);
                         self.coerce(ty, element, field);
@@ -2729,7 +2735,10 @@ impl Ctx<'_> {
                     self.coerced_tuples.insert(id);
                     return Ty::tuple(elements);
                 }
-                let elements: Vec<Ty> = fields.iter().map(|&f| self.infer_expr(f)).collect();
+                let elements: Vec<Ty> = self.body.lists[*fields]
+                    .iter()
+                    .map(|&f| self.infer_expr(f))
+                    .collect();
                 Ty::tuple(&elements)
             }
             Expr::Field { expr, name } => self.infer_field(id, *expr, *name),
@@ -2739,8 +2748,10 @@ impl Ctx<'_> {
                     None => {
                         // Function items of different functions coerce to
                         // their pointer type, as in rustc.
-                        let types: Vec<(ExprId, Ty)> =
-                            elements.iter().map(|&e| (e, self.infer_expr(e))).collect();
+                        let types: Vec<(ExprId, Ty)> = self.body.lists[*elements]
+                            .iter()
+                            .map(|&e| (e, self.infer_expr(e)))
+                            .collect();
                         if let Some(ptr) = self.fn_lub(&types) {
                             return Ty::array(ptr, elements.len() as u64);
                         }
@@ -2751,7 +2762,7 @@ impl Ctx<'_> {
                         return Ty::array(elem, elements.len() as u64);
                     }
                 };
-                for &element in elements.iter() {
+                for &element in self.body.lists[*elements].iter() {
                     self.expect(element, elem);
                     let ty = self.infer_expr(element);
                     self.coerce(ty, elem, element);
@@ -2816,14 +2827,16 @@ impl Ctx<'_> {
                 variant,
                 fields,
                 spread,
-            } => self.infer_record(id, *strukt, *variant, fields, *spread),
+            } => self.infer_record(id, *strukt, *variant, &self.body.lists[*fields], *spread),
             Expr::Let { pat, expr } => {
                 let ty = self.infer_expr(*expr);
                 self.check_pat(*pat, ty, false);
                 self.mutable_pattern_place(*pat, *expr);
                 Ty::BOOL
             }
-            Expr::Match { scrutinee, arms } => self.infer_match(id, *scrutinee, arms),
+            Expr::Match { scrutinee, arms } => {
+                self.infer_match(id, *scrutinee, &self.body.lists[*arms])
+            }
             Expr::Block {
                 stmts,
                 tail,
@@ -2841,7 +2854,7 @@ impl Ctx<'_> {
                 if const_block {
                     self.const_context = Some("constants");
                 }
-                let ty = self.infer_block(stmts, *tail);
+                let ty = self.infer_block(&self.body.lists[*stmts], *tail);
                 self.const_context = outer_context;
                 self.unsafe_depth -= u32::from(*is_unsafe);
                 self.module = outer;
@@ -2954,12 +2967,12 @@ impl Ctx<'_> {
                 self.coerce(ty, self.ret, value.unwrap_or(id));
                 Ty::NEVER
             }
-            Expr::Call { callee, args } => self.infer_call(id, *callee, args),
+            Expr::Call { callee, args } => self.infer_call(id, *callee, &self.body.lists[*args]),
             Expr::MethodCall {
                 receiver,
                 method,
                 args,
-            } => self.infer_method_call(id, *receiver, *method, args),
+            } => self.infer_method_call(id, *receiver, *method, &self.body.lists[*args]),
             Expr::Ref { mutable, expr } => {
                 // What the context wants a reference to is what it wants
                 // of the operand, as in rustc's `check_expr_addr_of`.
@@ -3028,7 +3041,14 @@ impl Ctx<'_> {
                 ret,
                 body: closure_body,
                 is_move,
-            } => self.infer_closure(id, params, param_types, *ret, *closure_body, *is_move),
+            } => self.infer_closure(
+                id,
+                &self.body.lists[*params],
+                &self.body.lists[*param_types],
+                *ret,
+                *closure_body,
+                *is_move,
+            ),
             Expr::Cast { expr, ty } => {
                 let to = self.resolve_type_ref(*ty);
                 let from = self.infer_expr(*expr);
@@ -3547,10 +3567,13 @@ impl Ctx<'_> {
             && let TyKind::Tuple(elements) = expected.kind()
         {
             return fields.len() == elements.len()
-                && fields.iter().zip(elements).all(|(&field, &element)| {
-                    let ty = self.expr_types.get(field).copied().unwrap_or(Ty::ERROR);
-                    self.can_coerce(ty, element, field)
-                });
+                && self.body.lists[*fields]
+                    .iter()
+                    .zip(elements)
+                    .all(|(&field, &element)| {
+                        let ty = self.expr_types.get(field).copied().unwrap_or(Ty::ERROR);
+                        self.can_coerce(ty, element, field)
+                    });
         }
         self.can_unify(actual, expected)
     }
@@ -4259,7 +4282,7 @@ impl Ctx<'_> {
                     body.bindings[*binding].by_ref == Some(true)
                         || sub.is_some_and(|p| has_ref_mut(body, p))
                 }
-                other => other.children().any(|p| has_ref_mut(body, p)),
+                other => other.children(&body.lists).any(|p| has_ref_mut(body, p)),
             }
         }
         if has_ref_mut(self.body, pat) {
@@ -5828,9 +5851,7 @@ impl Ctx<'_> {
                 let first_assignment = plain && self.uninit_bindings.contains(&binding);
                 if !data.mutable && !first_assignment {
                     let name = data.name;
-                    let is_param = self
-                        .body
-                        .params
+                    let is_param = self.body.lists[self.body.params]
                         .iter()
                         .any(|&p| matches!(self.body.pats[p], Pat::Bind { binding: b, .. } if b == binding));
                     let message = if is_param {
@@ -5889,91 +5910,67 @@ impl Ctx<'_> {
         self.finish_obligations(&mut reported);
         let opaques = self.hidden_types(&mut reported);
         self.report_unknown_lets(&mut reported);
-        let exprs: Vec<(ExprId, Ty)> = self.expr_types.iter().map(|(e, t)| (e, *t)).collect();
-        for (expr, ty) in exprs {
-            let ty = self.resolve(ty, &mut reported);
-            self.expr_types.insert(expr, ty);
+        // HIR indices retain the maps' index order without an entry snapshot.
+        for (expr, _) in self.body.exprs.iter() {
+            if let Some(&ty) = self.expr_types.get(expr) {
+                let ty = self.resolve(ty, &mut reported);
+                self.expr_types.insert(expr, ty);
+            }
         }
-        let bindings: Vec<(BindingId, Ty)> =
-            self.binding_types.iter().map(|(b, t)| (b, *t)).collect();
-        for (binding, ty) in bindings {
-            let ty = self.resolve(ty, &mut reported);
-            self.binding_types.insert(binding, ty);
+        for (binding, _) in self.body.bindings.iter() {
+            if let Some(&ty) = self.binding_types.get(binding) {
+                let ty = self.resolve(ty, &mut reported);
+                self.binding_types.insert(binding, ty);
+            }
         }
-        let instances: Vec<(ExprId, (FunctionId, Vec<Ty>))> = self
-            .calls
-            .iter()
-            .map(|(e, call)| (e, call.clone()))
-            .collect();
+        let instances = std::mem::take(&mut self.calls);
         let mut calls = ArenaMap::new();
-        for (expr, (function, args)) in instances {
-            let args: Vec<Ty> = args
-                .iter()
-                .map(|&a| self.resolve(a, &mut reported))
-                .collect();
-            let args = Ty::list(&args);
+        for (expr, (function, args)) in instances.iter() {
+            let function = *function;
+            let args = crate::ty::map_list(args, |a| self.resolve(a, &mut reported));
             self.check_sized_args(expr, function, args);
             calls.insert(expr, Instance { function, args });
         }
-        let overloaded: Vec<(ExprId, (FunctionId, Vec<Ty>))> = self
-            .overloads
-            .iter()
-            .map(|(e, call)| (e, call.clone()))
-            .collect();
+        self.calls = instances;
+        let overloaded = std::mem::take(&mut self.overloads);
         let mut overloads = ArenaMap::new();
-        for (expr, (function, args)) in overloaded {
-            let args: Vec<Ty> = args
-                .iter()
-                .map(|&a| self.resolve(a, &mut reported))
-                .collect();
-            let args = Ty::list(&args);
+        for (expr, (function, args)) in overloaded.iter() {
+            let function = *function;
+            let args = crate::ty::map_list(args, |a| self.resolve(a, &mut reported));
             overloads.insert(expr, Instance { function, args });
         }
+        self.overloads = overloaded;
         self.check_const_operators(&overloads);
-        let converted: Vec<(ExprId, (FunctionId, Vec<Ty>))> = self
-            .try_conversions
-            .iter()
-            .map(|(e, call)| (e, call.clone()))
-            .collect();
+        let converted = std::mem::take(&mut self.try_conversions);
         let mut try_conversions = ArenaMap::new();
-        for (expr, (function, args)) in converted {
-            let args: Vec<Ty> = args
-                .iter()
-                .map(|&a| self.resolve(a, &mut reported))
-                .collect();
+        for (expr, (function, args)) in converted.iter() {
+            let function = *function;
+            let args = crate::ty::map_list(args, |a| self.resolve(a, &mut reported));
             if args[0] != args[1] {
-                let args = Ty::list(&args);
                 try_conversions.insert(expr, Instance { function, args });
             }
         }
-        let used: Vec<(ExprId, (ConstId, Vec<Ty>))> =
-            self.consts.iter().map(|(e, c)| (e, c.clone())).collect();
+        self.try_conversions = converted;
+        let used = std::mem::take(&mut self.consts);
         let mut consts = ArenaMap::new();
-        for (expr, (konst, args)) in used {
-            let args: Vec<Ty> = args
-                .iter()
-                .map(|&a| self.resolve(a, &mut reported))
-                .collect();
-            consts.insert(
-                expr,
-                ConstInstance {
-                    konst,
-                    args: Ty::list(&args),
-                },
-            );
+        for (expr, (konst, args)) in used.iter() {
+            let konst = *konst;
+            let args = crate::ty::map_list(args, |a| self.resolve(a, &mut reported));
+            consts.insert(expr, ConstInstance { konst, args });
         }
-        let coerced: Vec<(ExprId, Ty)> = self.unsizes.iter().map(|(e, t)| (e, *t)).collect();
+        self.consts = used;
         let mut unsizes = ArenaMap::new();
-        for (expr, ty) in coerced {
-            unsizes.insert(expr, self.resolve(ty, &mut reported));
+        for (expr, _) in self.body.exprs.iter() {
+            if let Some(&ty) = self.unsizes.get(expr) {
+                unsizes.insert(expr, self.resolve(ty, &mut reported));
+            }
         }
         let mut resolve_steps = |cx: &mut Self, map: &ArenaMap<Expr, Vec<OverloadedDeref>>| {
             let mut out = ArenaMap::new();
-            let all: Vec<(ExprId, Vec<OverloadedDeref>)> =
-                map.iter().map(|(e, s)| (e, s.clone())).collect();
-            for (expr, steps) in all {
+            for (expr, steps) in map.iter() {
                 let steps = steps
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .map(|step| OverloadedDeref {
                         ty: cx.resolve(step.ty, &mut reported),
                         target: cx.resolve(step.target, &mut reported),
@@ -5988,10 +5985,11 @@ impl Ctx<'_> {
         let overloaded_derefs = resolve_steps(&mut self, &overloaded);
         let coerced = std::mem::take(&mut self.coercion_derefs);
         let coercion_derefs = resolve_steps(&mut self, &coerced);
-        let matched: Vec<(PatId, Ty)> = self.pat_types.iter().map(|(p, t)| (p, *t)).collect();
         let mut pat_types = ArenaMap::new();
-        for (pat, ty) in matched {
-            pat_types.insert(pat, self.resolve(ty, &mut reported));
+        for (pat, _) in self.body.pats.iter() {
+            if let Some(&ty) = self.pat_types.get(pat) {
+                pat_types.insert(pat, self.resolve(ty, &mut reported));
+            }
         }
         // Walk after inference so placeholders and substituted aliases have the
         // same slot layout as the locals MIR will build.
@@ -6030,14 +6028,11 @@ impl Ctx<'_> {
         }
         self.run_deferred(&mut reported);
         self.check_sized();
-        let receivers: Vec<(ExprId, Mutability)> = self
-            .methods
-            .iter()
-            .filter_map(|(e, m)| Some((e, m.autoref?)))
-            .collect();
-        for (call, m) in receivers {
-            if let Expr::MethodCall { receiver, .. } = self.body.exprs[call]
-                && self.methods[call].derefs == 0
+        for (call, expr) in self.body.exprs.iter() {
+            if let Expr::MethodCall { receiver, .. } = *expr
+                && let Some(method) = self.methods.get(call)
+                && let Some(m) = method.autoref
+                && method.derefs == 0
                 && self.in_static_mut(receiver)
             {
                 self.static_mut_ref(call, m == Mutability::Mut);
@@ -6197,7 +6192,7 @@ impl Ctx<'_> {
             // A closure's parameter, where rustc asks for its type.
             Expr::Path(Res::Local(binding))
                 if let Some(pat) = body.exprs.values().find_map(|e| match e {
-                    Expr::Closure { params, .. } => params.iter().copied().find(
+                    Expr::Closure { params, .. } => self.body.lists[*params].iter().copied().find(
                         |&p| matches!(body.pats[p], Pat::Bind { binding: b, .. } if b == binding),
                     ),
                     _ => None,
@@ -6209,7 +6204,7 @@ impl Ctx<'_> {
                 let Expr::Block { stmts, .. } = e else {
                     return None;
                 };
-                stmts.iter().find_map(|stmt| match *stmt {
+                self.body.lists[*stmts].iter().find_map(|stmt| match *stmt {
                     Stmt::Let { pat, ty: None, .. } => {
                         let mut bound = Vec::new();
                         body.pat_bindings(pat, &mut bound);
@@ -6229,13 +6224,13 @@ impl Ctx<'_> {
     /// Reports `let` bindings without a type whose type is not fully
     /// known, as rustc does, rather than where the unknown part came
     /// from: `let x = f();` for a generic `f`.
-    fn report_unknown_lets(&mut self, reported: &mut HashSet<InferVar>) {
+    fn report_unknown_lets(&mut self, reported: &mut FxHashSet<InferVar>) {
         let body = self.body;
         for (_, expr) in body.exprs.iter() {
             let Expr::Block { stmts, .. } = expr else {
                 continue;
             };
-            for stmt in stmts.iter() {
+            for stmt in self.body.lists[*stmts].iter() {
                 let Stmt::Let {
                     pat,
                     ty: None,
@@ -6329,13 +6324,15 @@ impl Ctx<'_> {
         let body = self.body;
         let values: Vec<ExprId> = match &body.exprs[expr] {
             Expr::MethodCall { receiver, args, .. } => std::iter::once(*receiver)
-                .chain(args.iter().copied())
+                .chain(self.body.lists[*args].iter().copied())
                 .collect(),
             _ => body
                 .exprs
                 .values()
                 .find_map(|e| match e {
-                    Expr::Call { callee, args } if *callee == expr => Some(args.to_vec()),
+                    Expr::Call { callee, args } if *callee == expr => {
+                        Some(self.body.lists[*args].to_vec())
+                    }
                     _ => None,
                 })
                 .unwrap_or_default(),
@@ -6355,7 +6352,7 @@ impl Ctx<'_> {
     /// rustc does.
     fn check_sized(&mut self) {
         let body = self.body;
-        let mut places = HashSet::new();
+        let mut places = FxHashSet::default();
         for (id, expr) in body.exprs.iter() {
             match *expr {
                 Expr::Ref { expr, .. } | Expr::Index { base: expr, .. } => {
@@ -6404,7 +6401,7 @@ impl Ctx<'_> {
                 continue;
             };
             // Parameters are reported with the signature.
-            if body.params.contains(&pat) {
+            if self.body.lists[body.params].contains(&pat) {
                 continue;
             }
             let ty = self.binding_types.get(*binding).copied();
@@ -6418,7 +6415,7 @@ impl Ctx<'_> {
         // A `let`'s value is reported with its binding.
         for expr in body.exprs.values() {
             if let Expr::Block { stmts, .. } = expr {
-                for stmt in stmts.iter() {
+                for stmt in self.body.lists[*stmts].iter() {
                     if let Stmt::Let {
                         pat,
                         init: Some(init),
@@ -6453,7 +6450,7 @@ impl Ctx<'_> {
     /// `ty` with every variable replaced, at any depth: integer variables
     /// default to `i32`, diverging ones to `!`, and any other unknown
     /// variable is reported once and becomes an error.
-    fn resolve(&mut self, ty: Ty, reported: &mut HashSet<InferVar>) -> Ty {
+    fn resolve(&mut self, ty: Ty, reported: &mut FxHashSet<InferVar>) -> Ty {
         let ty = self.shallow(ty);
         match ty.kind() {
             TyKind::Infer(var) => {
@@ -6483,41 +6480,24 @@ impl Ctx<'_> {
             }
             TyKind::Slice(elem) => Ty::slice(self.resolve(elem, reported)),
             TyKind::Tuple(elements) => {
-                let elements: Vec<Ty> = elements
-                    .iter()
-                    .map(|&e| self.resolve(e, reported))
-                    .collect();
-                Ty::tuple(&elements)
+                let elements = crate::ty::map_list(elements, |e| self.resolve(e, reported));
+                Ty::new(TyKind::Tuple(elements))
             }
             TyKind::Adt(adt, args) if ty.has_infer() => {
-                let args: Vec<Ty> = args.iter().map(|&a| self.resolve(a, reported)).collect();
-                Ty::adt(adt.strukt, adt.name, &args)
+                let args = crate::ty::map_list(args, |a| self.resolve(a, reported));
+                Ty::new(TyKind::Adt(adt, args))
             }
             TyKind::Closure(id, args) if ty.has_infer() => {
-                let args: Vec<Ty> = args.iter().map(|&a| self.resolve(a, reported)).collect();
-                Ty::closure(id, &args)
+                let args = crate::ty::map_list(args, |a| self.resolve(a, reported));
+                Ty::new(TyKind::Closure(id, args))
             }
             TyKind::Alias(alias) if ty.has_infer() => {
-                let args: Vec<Ty> = alias
-                    .args
-                    .iter()
-                    .map(|&a| self.resolve(a, reported))
-                    .collect();
-                Ty::alias(crate::AliasTy {
-                    args: Ty::list(&args),
-                    ..alias
-                })
+                let args = crate::ty::map_list(alias.args, |a| self.resolve(a, reported));
+                Ty::alias(crate::AliasTy { args, ..alias })
             }
             TyKind::Opaque(opaque) if ty.has_infer() => {
-                let args: Vec<Ty> = opaque
-                    .args
-                    .iter()
-                    .map(|&a| self.resolve(a, reported))
-                    .collect();
-                Ty::opaque(crate::OpaqueTy {
-                    args: Ty::list(&args),
-                    ..opaque
-                })
+                let args = crate::ty::map_list(opaque.args, |a| self.resolve(a, reported));
+                Ty::opaque(crate::OpaqueTy { args, ..opaque })
             }
             _ => ty,
         }
@@ -6632,10 +6612,10 @@ impl Ctx<'_> {
         }
     }
 
-    fn run_deferred(&mut self, reported: &mut HashSet<InferVar>) {
+    fn run_deferred(&mut self, reported: &mut FxHashSet<InferVar>) {
         // Operands of `-`, where a literal may reach one past the maximum,
         // with the negation, where rustc reports one out of range.
-        let negated: HashMap<ExprId, ExprId> = self
+        let negated: FxHashMap<ExprId, ExprId> = self
             .body
             .exprs
             .iter()
@@ -6656,10 +6636,10 @@ impl Ctx<'_> {
                     whole,
                     context,
                 } => {
-                    let args: Vec<Ty> = args.iter().map(|&a| self.resolve(a, reported)).collect();
+                    let args = crate::ty::map_list(args, |a| self.resolve(a, reported));
                     let data = &self.items.functions[function];
                     if let Some(flux_hir::Owner::Trait(t)) = data.owner {
-                        self.const_trait_call(t, function, &args, (call, whole), context);
+                        self.const_trait_call(t, function, args, (call, whole), context);
                         continue;
                     }
                     let what = match data.owner {
@@ -6667,7 +6647,7 @@ impl Ctx<'_> {
                         Some(_) => "associated function",
                         None => "function",
                     };
-                    let (path, generic_path) = self.unstable_paths(function, &args);
+                    let (path, generic_path) = self.unstable_paths(function, args);
                     self.error(
                         call,
                         format!("cannot call conditionally-const {what} `{path}` in {context}"),

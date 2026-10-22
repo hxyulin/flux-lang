@@ -217,7 +217,7 @@ impl Printer<'_> {
         let name = self.hir.items.function_path(function);
         let generics = &function.generics;
         write!(self.out, "{unsafety}fn {name}{generics}(").unwrap();
-        for (i, &pat) in self.body.params.iter().enumerate() {
+        for (i, &pat) in self.body.lists[self.body.params].iter().enumerate() {
             if i > 0 {
                 self.out.push_str(", ");
             }
@@ -313,7 +313,7 @@ impl Printer<'_> {
                 }
             }
             Pat::Or(alternatives) => {
-                for (i, &alt) in alternatives.iter().enumerate() {
+                for (i, &alt) in self.body.lists[*alternatives].iter().enumerate() {
                     if i > 0 {
                         self.out.push_str(" | ");
                     }
@@ -331,7 +331,7 @@ impl Printer<'_> {
             } => {
                 self.out.push('[');
                 let mut first = true;
-                for &p in prefix.iter() {
+                for &p in self.body.lists[*prefix].iter() {
                     if !first {
                         self.out.push_str(", ");
                     }
@@ -354,7 +354,7 @@ impl Printer<'_> {
                     }
                     first = false;
                 }
-                for &p in suffix.iter() {
+                for &p in self.body.lists[*suffix].iter() {
                     if !first {
                         self.out.push_str(", ");
                     }
@@ -365,7 +365,7 @@ impl Printer<'_> {
             }
             Pat::Tuple { pats, rest } => {
                 self.out.push('(');
-                self.tuple_pats(pats, *rest);
+                self.tuple_pats(&self.body.lists[*pats], *rest);
                 if pats.len() == 1 && rest.is_none() {
                     self.out.push(',');
                 }
@@ -378,7 +378,7 @@ impl Printer<'_> {
                 rest,
             } => {
                 write!(self.out, "{}(", self.variant_path(*strukt, *variant)).unwrap();
-                self.tuple_pats(pats, *rest);
+                self.tuple_pats(&self.body.lists[*pats], *rest);
                 self.out.push(')');
             }
             Pat::Record {
@@ -388,7 +388,7 @@ impl Printer<'_> {
                 rest,
             } => {
                 write!(self.out, "{} {{ ", self.variant_path(*strukt, *variant)).unwrap();
-                for (i, (name, pat)) in fields.iter().enumerate() {
+                for (i, (name, pat)) in self.body.lists[*fields].iter().enumerate() {
                     if i > 0 {
                         self.out.push_str(", ");
                     }
@@ -503,7 +503,7 @@ impl Printer<'_> {
             Expr::Path(Res::Err) => self.out.push_str("<error>"),
             Expr::Tuple(fields) => {
                 self.out.push('(');
-                self.exprs(fields);
+                self.exprs(&self.body.lists[*fields]);
                 if fields.len() == 1 {
                     self.out.push(',');
                 }
@@ -523,7 +523,7 @@ impl Printer<'_> {
                 }
                 self.out.push('{');
                 self.indent += 1;
-                for stmt in stmts.iter() {
+                for stmt in self.body.lists[*stmts].iter() {
                     self.newline();
                     match stmt {
                         Stmt::Let {
@@ -592,7 +592,7 @@ impl Printer<'_> {
                 self.expr(*scrutinee);
                 self.out.push_str(" {");
                 self.indent += 1;
-                for arm in arms.iter() {
+                for arm in self.body.lists[*arms].iter() {
                     self.newline();
                     self.pat(arm.pat);
                     if let Some(guard) = arm.guard {
@@ -642,7 +642,7 @@ impl Printer<'_> {
             Expr::Call { callee, args } => {
                 self.expr(*callee);
                 self.out.push('(');
-                self.exprs(args);
+                self.exprs(&self.body.lists[*args]);
                 self.out.push(')');
             }
             Expr::MethodCall {
@@ -654,7 +654,7 @@ impl Printer<'_> {
                 write!(self.out, ".{method}").unwrap();
                 self.generic_args(id);
                 self.out.push('(');
-                self.exprs(args);
+                self.exprs(&self.body.lists[*args]);
                 self.out.push(')');
             }
             Expr::Unary { op, operand } => {
@@ -676,7 +676,7 @@ impl Printer<'_> {
             }
             Expr::Array(elements) => {
                 self.out.push('[');
-                self.exprs(elements);
+                self.exprs(&self.body.lists[*elements]);
                 self.out.push(']');
             }
             Expr::Repeat { value, count } => {
@@ -727,7 +727,7 @@ impl Printer<'_> {
                 self.out.push_str(&path);
                 self.generic_args(id);
                 self.out.push_str(" { ");
-                for (i, (name, value)) in fields.iter().enumerate() {
+                for (i, (name, value)) in self.body.lists[*fields].iter().enumerate() {
                     if i > 0 {
                         self.out.push_str(", ");
                     }
@@ -752,7 +752,11 @@ impl Printer<'_> {
                     self.out.push_str("move ");
                 }
                 self.out.push('|');
-                for (i, (&pat, ty)) in params.iter().zip(param_types.iter()).enumerate() {
+                for (i, (&pat, ty)) in self.body.lists[*params]
+                    .iter()
+                    .zip(self.body.lists[*param_types].iter())
+                    .enumerate()
+                {
                     if i > 0 {
                         self.out.push_str(", ");
                     }

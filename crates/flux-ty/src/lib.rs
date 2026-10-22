@@ -29,7 +29,7 @@ use std::fmt::Write;
 use std::ops::Index;
 use std::sync::OnceLock;
 
-use flux_arena::ArenaMap;
+use flux_arena::{ArenaMap, LayeredArenaMap};
 use flux_hir::def_map::{Def, Ns, ResolveError, Resolved};
 use flux_hir::{
     Const, ConstId, Core, Diagnostic, Function, FunctionId, Generics, Hir, Impl, ImplId,
@@ -113,38 +113,38 @@ impl FnSig {
 /// generic parameters.
 #[derive(Debug, Clone, Default)]
 pub struct Signatures {
-    pub fns: ArenaMap<Function, FnSig>,
+    pub fns: LayeredArenaMap<Function, FnSig>,
     /// The types of each struct's fields, and of each enum's, every
     /// variant's in turn: all that a value of it may contain.
-    pub structs: ArenaMap<Struct, &'static [Ty]>,
+    pub structs: LayeredArenaMap<Struct, &'static [Ty]>,
     /// Where each variant of an enum starts in its `structs` entry, and
     /// where the last ends.
-    pub variant_starts: ArenaMap<Struct, Box<[u32]>>,
+    pub variant_starts: LayeredArenaMap<Struct, Box<[u32]>>,
     /// The type of each enum's discriminant: [`discriminant_ty`].
-    pub discriminants: ArenaMap<Struct, IntTy>,
-    pub impls: ArenaMap<Impl, Ty>,
-    pub consts: ArenaMap<Const, Ty>,
-    pub traits: ArenaMap<Trait, TraitSig>,
+    pub discriminants: LayeredArenaMap<Struct, IntTy>,
+    pub impls: LayeredArenaMap<Impl, Ty>,
+    pub consts: LayeredArenaMap<Const, Ty>,
+    pub traits: LayeredArenaMap<Trait, TraitSig>,
     /// The trait each trait's `impl` block implements, if it resolved.
-    pub impl_traits: ArenaMap<Impl, TraitRef>,
+    pub impl_traits: LayeredArenaMap<Impl, TraitRef>,
     /// The bounds of each `impl` block, trait and function, their own
     /// only: a function's are after its owner's.
-    pub impl_predicates: ArenaMap<Impl, Box<[Predicate]>>,
+    pub impl_predicates: LayeredArenaMap<Impl, Box<[Predicate]>>,
     /// The bounds of each struct, which every type naming it must meet.
-    pub struct_predicates: ArenaMap<Struct, Box<[Predicate]>>,
-    pub trait_predicates: ArenaMap<Trait, Box<[Predicate]>>,
-    pub fn_predicates: ArenaMap<Function, Box<[Predicate]>>,
+    pub struct_predicates: LayeredArenaMap<Struct, Box<[Predicate]>>,
+    pub trait_predicates: LayeredArenaMap<Trait, Box<[Predicate]>>,
+    pub fn_predicates: LayeredArenaMap<Function, Box<[Predicate]>>,
     /// What the bounds of each `impl` block, trait and function say
     /// associated types are (`T: Tr<Out = i32>`), their own only.
-    pub impl_projections: ArenaMap<Impl, Box<[Projection]>>,
-    pub struct_projections: ArenaMap<Struct, Box<[Projection]>>,
-    pub trait_projections: ArenaMap<Trait, Box<[Projection]>>,
-    pub fn_projections: ArenaMap<Function, Box<[Projection]>>,
+    pub impl_projections: LayeredArenaMap<Impl, Box<[Projection]>>,
+    pub struct_projections: LayeredArenaMap<Struct, Box<[Projection]>>,
+    pub trait_projections: LayeredArenaMap<Trait, Box<[Projection]>>,
+    pub fn_projections: LayeredArenaMap<Function, Box<[Projection]>>,
     /// The associated types each trait's `impl` block defines, by name.
-    pub impl_types: ArenaMap<Impl, Box<[(Symbol, Ty)]>>,
+    pub impl_types: LayeredArenaMap<Impl, Box<[(Symbol, Ty)]>>,
     /// The bounds of each function's opaque types (the `impl Trait`s of
     /// its return type), by index: [`traits::opaque_bounds`].
-    pub opaques: ArenaMap<Function, Box<[OpaqueSig]>>,
+    pub opaques: LayeredArenaMap<Function, Box<[OpaqueSig]>>,
     /// The hidden type of each opaque type, in terms of its function's
     /// generic parameters, once the function's body is inferred: what
     /// code generation sees ([`traits::reveal`]).
@@ -203,6 +203,67 @@ impl Index<FunctionId> for Signatures {
 }
 
 impl Signatures {
+    /// The lookup indexes are rebuilt for the extended item tree.
+    fn fork_for_extension(&self) -> Self {
+        Self {
+            fns: self.fns.clone(),
+            structs: self.structs.clone(),
+            variant_starts: self.variant_starts.clone(),
+            discriminants: self.discriminants.clone(),
+            impls: self.impls.clone(),
+            consts: self.consts.clone(),
+            traits: self.traits.clone(),
+            impl_traits: self.impl_traits.clone(),
+            impl_predicates: self.impl_predicates.clone(),
+            struct_predicates: self.struct_predicates.clone(),
+            trait_predicates: self.trait_predicates.clone(),
+            fn_predicates: self.fn_predicates.clone(),
+            impl_projections: self.impl_projections.clone(),
+            struct_projections: self.struct_projections.clone(),
+            trait_projections: self.trait_projections.clone(),
+            fn_projections: self.fn_projections.clone(),
+            impl_types: self.impl_types.clone(),
+            opaques: self.opaques.clone(),
+            hidden: self.hidden.clone(),
+            trait_defaults: self.trait_defaults.clone(),
+            impl_index: Default::default(),
+            traits_in_scope: Default::default(),
+            cyclic: self.cyclic,
+            array_lens: self.array_lens.clone(),
+            arg_tys: self.arg_tys.clone(),
+            regions: self.regions.clone(),
+            builtins: self.builtins,
+        }
+    }
+
+    /// Freeze the library's maps once; copies retain a shared base and
+    /// clone individual inherited values only when they are changed.
+    fn freeze(&mut self) {
+        self.fns.freeze();
+        self.structs.freeze();
+        self.variant_starts.freeze();
+        self.discriminants.freeze();
+        self.impls.freeze();
+        self.consts.freeze();
+        self.traits.freeze();
+        self.impl_traits.freeze();
+        self.impl_predicates.freeze();
+        self.struct_predicates.freeze();
+        self.trait_predicates.freeze();
+        self.fn_predicates.freeze();
+        self.impl_projections.freeze();
+        self.struct_projections.freeze();
+        self.trait_projections.freeze();
+        self.fn_projections.freeze();
+        self.impl_types.freeze();
+        self.opaques.freeze();
+        self.trait_defaults.freeze();
+        self.regions.fns.freeze();
+        self.regions.structs.freeze();
+        self.regions.impls.freeze();
+        self.regions.consts.freeze();
+    }
+
     /// The types of the fields of `ty`, a tuple or struct; none for an
     /// enum, whose fields are its variants'.
     pub fn fields(&self, ty: Ty) -> Option<&'static [Ty]> {
@@ -275,16 +336,14 @@ impl Signatures {
         if args.is_empty() {
             return fields;
         }
-        let fields = subst_list(fields, args);
+        let fields = ty::map_list(fields, |t| t.subst(args));
         if !fields.iter().any(|f| f.has_aliases()) {
-            return Ty::list(&fields);
+            return fields;
         }
         let (mut done, mut active) = (rustc_hash::FxHashMap::default(), Vec::new());
-        let fields: Vec<Ty> = fields
-            .iter()
-            .map(|&f| self.normalize_known(f, 0, &mut done, &mut active))
-            .collect();
-        Ty::list(&fields)
+        ty::map_list(fields, |f| {
+            self.normalize_known(f, 0, &mut done, &mut active)
+        })
     }
 
     /// The generic arguments of `imp` for which its header is `args`
@@ -295,11 +354,19 @@ impl Signatures {
         // only its bounds' associated types decide.
         let header = std::iter::once(self.impls[imp]).chain(trait_ref.args.iter().copied());
         let count = header.clone().map(max_param).max().unwrap_or(0);
-        let mut binds = vec![None; count as usize];
+        let count = count as usize;
+        let mut short = [None; 8];
+        let mut long = Vec::new();
+        let binds = if count <= short.len() {
+            &mut short[..count]
+        } else {
+            long.resize(count, None);
+            &mut long[..]
+        };
         header
             .zip(args)
-            .all(|(x, &y)| traits::match_ty(x, y, &mut binds))
-            .then_some(binds)
+            .all(|(x, &y)| traits::match_ty(x, y, binds))
+            .then(|| binds.to_vec())
     }
 
     /// Whether the bounds of `imp`, with generic arguments `binds`, hold:
@@ -308,6 +375,9 @@ impl Signatures {
     /// the items know), `None` if one does not.
     fn bounds_hold(&self, imp: ImplId, binds: &[Option<Ty>], depth: u32) -> Option<bool> {
         let preds = self.impl_predicates.get(imp).map_or(&[][..], |p| p);
+        if preds.is_empty() {
+            return Some(true);
+        }
         let known: Vec<Ty> = binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
         let mut definite = true;
         for p in preds {
@@ -393,11 +463,8 @@ impl Signatures {
         let mut go = |t: Ty| self.normalize_known(t, depth + 1, done, active);
         let normalized = match ty.kind() {
             TyKind::Alias(alias) => 'alias: {
-                let args: Vec<Ty> = alias.args.iter().map(|&a| go(a)).collect();
-                let alias = ty::AliasTy {
-                    args: Ty::list(&args),
-                    ..alias
-                };
+                let args = ty::map_list(alias.args, &mut go);
+                let alias = ty::AliasTy { args, ..alias };
                 // What a closure or function returns: `FnOnce`'s `Output`,
                 // the only trait with an associated type they implement.
                 if alias.name.as_str() == "Output" {
@@ -419,7 +486,7 @@ impl Signatures {
                     if trait_ref.trait_ != alias.trait_ {
                         continue;
                     }
-                    let Some(binds) = self.match_header(imp, &args) else {
+                    let Some(binds) = self.match_header(imp, args) else {
                         continue;
                     };
                     let Some(definite) = self.bounds_hold(imp, &binds, 0) else {
@@ -482,14 +549,14 @@ impl Signatures {
                 }
                 Ty::alias(alias)
             }
-            TyKind::Tuple(list) => Ty::tuple(&list.iter().map(|&t| go(t)).collect::<Vec<_>>()),
+            TyKind::Tuple(list) => Ty::new(TyKind::Tuple(ty::map_list(list, go))),
             TyKind::Adt(adt, list) => {
-                let list: Vec<Ty> = list.iter().map(|&t| go(t)).collect();
-                Ty::adt(adt.strukt, adt.name, &list)
+                let list = ty::map_list(list, go);
+                Ty::new(TyKind::Adt(adt, list))
             }
             TyKind::Closure(id, list) => {
-                let list: Vec<Ty> = list.iter().map(|&t| go(t)).collect();
-                Ty::closure(id, &list)
+                let list = ty::map_list(list, go);
+                Ty::new(TyKind::Closure(id, list))
             }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
@@ -515,9 +582,7 @@ fn max_param(ty: Ty) -> u32 {
         TyKind::Opaque(opaque) => opaque.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Slice(t) => max_param(t),
         TyKind::Array(t, len) => max_param(t).max(max_param(len)),
-        TyKind::FnDef(_) | TyKind::FnPtr(_) => {
-            ty.children().into_iter().map(max_param).max().unwrap_or(0)
-        }
+        TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().map(max_param).max().unwrap_or(0),
         _ => 0,
     }
 }
@@ -2083,9 +2148,7 @@ pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
         TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
             list.iter().any(|&t| mentions_param(t, index))
         }
-        TyKind::FnDef(_) | TyKind::FnPtr(_) => {
-            ty.children().into_iter().any(|t| mentions_param(t, index))
-        }
+        TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().any(|t| mentions_param(t, index)),
         TyKind::Opaque(opaque) => opaque.args.iter().any(|&t| mentions_param(t, index)),
         _ => false,
     }
@@ -2102,7 +2165,7 @@ fn uses_param(ty: Ty, index: u32) -> bool {
         TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
             list.iter().any(|&t| uses_param(t, index))
         }
-        TyKind::FnPtr(_) => ty.children().into_iter().any(|t| uses_param(t, index)),
+        TyKind::FnPtr(_) => ty.children().any(|t| uses_param(t, index)),
         _ => mentions_param(ty, index),
     }
 }
@@ -2233,7 +2296,9 @@ pub fn signatures_checked(
         }
         return (sigs, diagnostics);
     }
-    let (sigs, mut diagnostics) = core_signatures().clone();
+    let (core_sigs, core_diagnostics) = core_signatures();
+    let sigs = core_sigs.fork_for_extension();
+    let mut diagnostics = core_diagnostics.clone();
     let (sigs, more) = extend_signatures(items, sigs, core, core.impls, lens);
     diagnostics.extend(more);
     (sigs, diagnostics)
@@ -2261,6 +2326,7 @@ fn core_signatures() -> &'static (Signatures, Vec<Diagnostic>) {
             "core's array lengths name only constants whose values are literals"
         );
         sigs.array_lens = known;
+        sigs.freeze();
         (sigs, diagnostics)
     })
 }
@@ -2601,7 +2667,7 @@ fn extend_signatures(
             };
             fn mutable_ref(ty: Ty) -> bool {
                 matches!(ty.kind(), TyKind::Ref(Mutability::Mut, _))
-                    || ty.children().into_iter().any(mutable_ref)
+                    || ty.children().any(mutable_ref)
             }
             if mutable_ref(ty) {
                 error("mutable references in statics are not supported yet".to_owned());

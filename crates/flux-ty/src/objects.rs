@@ -366,5 +366,5 @@ pub(crate) fn resolve_dyn(
 
 /// Whether `ty` contains a trait object.
 fn mentions_object(ty: Ty) -> bool {
-    ty.is_dyn() || ty.children().into_iter().any(mentions_object)
+    ty.is_dyn() || ty.children().any(mentions_object)
 }
