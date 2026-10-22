@@ -853,6 +853,17 @@
   `BorrowError`, `BorrowMutError`, `TryFromIntError` (now holding an
   `IntErrorKind`, as rustc's), `CharTryFromError`, `TryFromCharError`,
   `BuildHasherDefault`, `iter::Empty` and `iter::Repeat`.
+- Support `?Sized`: type parameters of functions, structs, traits and
+  `impl` blocks are `Sized` unless bounded `?Sized` (in their list or
+  the `where` clause), as in rustc, so `fn f<T: ?Sized>(x: &T)` and
+  `impl<T: ?Sized + Tr> Tr for &T` take `str` and slices, and an `impl`
+  block applies only where its implicit bounds hold (`&str: Tr` through
+  `impl<T: Tr> Tr for &T` is E0277, which flux used to accept). Values,
+  parameters, struct arguments and calls of unsized parameters are
+  E0277; misplaced and duplicate relaxed bounds and `?Trait` other than
+  `Sized` are rustc's errors (E0203). `core` relaxes the bounds rustc's
+  does: comparisons and formatting of references, raw pointers' traits,
+  `PhantomData`, and `Iterator` for `&mut I`.
 
 ### Performance
 

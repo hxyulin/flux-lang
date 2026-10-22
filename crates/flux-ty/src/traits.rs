@@ -1099,6 +1099,15 @@ pub fn match_impl(
         }
     }
     bind_by_projections(items, sigs, imp, &mut binds);
+    // Its parameters are `Sized` unless bounded `?Sized`.
+    let params = &items.impls[imp].generics.params;
+    if params
+        .iter()
+        .zip(&binds)
+        .any(|(p, b)| !p.maybe_unsized && b.is_some_and(Ty::is_unsized))
+    {
+        return None;
+    }
     Some(binds.into_iter().map(|b| b.unwrap_or(Ty::ERROR)).collect())
 }
 
@@ -1188,9 +1197,11 @@ fn holds_at(
     if stack.len() > 256 || stack.contains(&goal) {
         return false;
     }
-    if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized)
-        || is_builtin_copy(items, goal.trait_ref.trait_, goal.self_ty)
-    {
+    // Outside bodies, a parameter is taken to be sized.
+    if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized) {
+        return !goal.self_ty.is_unsized();
+    }
+    if is_builtin_copy(items, goal.trait_ref.trait_, goal.self_ty) {
         return true;
     }
     if let Some(found) = fn_goal(items, goal.trait_ref.trait_, goal.self_ty) {

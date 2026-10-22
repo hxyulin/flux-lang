@@ -1,0 +1,22 @@
+trait Sup;
+
+trait Assoc;
+
+fn in_where<T>(x@0: &T) -> () {}
+
+fn twice<T>(x@0: &T) -> () {}
+
+fn not_sized<T>(x@0: &T) -> () {}
+
+fn elsewhere<T>(x@0: &T) -> () {}
+
+fn listed_and_where<T>(x@0: &T) -> () {}
+
+fn main() -> () {}
+
+error 104..110: duplicate relaxed `Sized` bounds
+error 148..153: bound modifier `?` can only be applied to `Sized`
+error 210..216: this relaxed bound is not permitted here
+error 246..252: duplicate relaxed `Sized` bounds
+error 298..304: relaxed bounds are not permitted in supertrait bounds
+error 337..343: `?Sized` bounds are not supported yet

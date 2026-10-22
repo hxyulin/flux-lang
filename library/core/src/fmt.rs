@@ -61,7 +61,7 @@ pub trait Write {
     }
 }
 
-impl<W: Write> Write for &mut W {
+impl<W: Write + ?Sized> Write for &mut W {
     fn write_str(&mut self, s: &str) -> Result {
         (**self).write_str(s)
     }
@@ -651,13 +651,13 @@ pub trait Pointer {
 macro_rules! deref_impls {
     ($($tr:ident),*) => {
         $(
-            impl<T: $tr> $tr for &T {
+            impl<T: ?Sized + $tr> $tr for &T {
                 fn fmt(&self, f: &mut Formatter<'_>) -> Result {
                     $tr::fmt(&**self, f)
                 }
             }
 
-            impl<T: $tr> $tr for &mut T {
+            impl<T: ?Sized + $tr> $tr for &mut T {
                 fn fmt(&self, f: &mut Formatter<'_>) -> Result {
                     $tr::fmt(&**self, f)
                 }
@@ -684,37 +684,37 @@ pub(crate) fn pointer_fmt_inner(addr: usize, f: &mut Formatter<'_>) -> Result {
     ret
 }
 
-impl<T> Pointer for *const T {
+impl<T: ?Sized> Pointer for *const T {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        pointer_fmt_inner(*self as usize, f)
+        pointer_fmt_inner(*self as *const u8 as usize, f)
     }
 }
 
-impl<T> Pointer for *mut T {
+impl<T: ?Sized> Pointer for *mut T {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        pointer_fmt_inner(*self as usize, f)
+        pointer_fmt_inner(*self as *const u8 as usize, f)
     }
 }
 
-impl<T> Pointer for &T {
+impl<T: ?Sized> Pointer for &T {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        pointer_fmt_inner(*self as *const T as usize, f)
+        pointer_fmt_inner(*self as *const T as *const u8 as usize, f)
     }
 }
 
-impl<T> Pointer for &mut T {
+impl<T: ?Sized> Pointer for &mut T {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        pointer_fmt_inner(&**self as *const T as usize, f)
+        pointer_fmt_inner(&**self as *const T as *const u8 as usize, f)
     }
 }
 
-impl<T> Debug for *const T {
+impl<T: ?Sized> Debug for *const T {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         Pointer::fmt(self, f)
     }
 }
 
-impl<T> Debug for *mut T {
+impl<T: ?Sized> Debug for *mut T {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         Pointer::fmt(self, f)
     }

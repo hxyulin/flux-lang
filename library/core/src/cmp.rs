@@ -12,7 +12,7 @@ use Ordering::{Equal, Greater, Less};
 /// The `==` and `!=` operators.
 #[lang = "eq"]
 #[diagnostic::on_unimplemented(message = "can't compare `{Self}` with `{Rhs}`")]
-pub trait PartialEq<Rhs = Self> {
+pub trait PartialEq<Rhs: ?Sized = Self> {
     fn eq(&self, other: &Rhs) -> bool;
     fn ne(&self, other: &Rhs) -> bool {
         !self.eq(other)
@@ -60,7 +60,7 @@ impl Eq for () {}
 
 // References compare what they point to, as in rustc: `&a == &b` is
 // `a == b`, whichever of them are mutable.
-impl<A: PartialEq<B>, B> PartialEq<&B> for &A {
+impl<A: ?Sized + PartialEq<B>, B: ?Sized> PartialEq<&B> for &A {
     fn eq(&self, other: &&B) -> bool {
         PartialEq::eq(&**self, &**other)
     }
@@ -69,7 +69,7 @@ impl<A: PartialEq<B>, B> PartialEq<&B> for &A {
     }
 }
 
-impl<A: PartialEq<B>, B> PartialEq<&mut B> for &mut A {
+impl<A: ?Sized + PartialEq<B>, B: ?Sized> PartialEq<&mut B> for &mut A {
     fn eq(&self, other: &&mut B) -> bool {
         PartialEq::eq(&**self, &**other)
     }
@@ -78,7 +78,7 @@ impl<A: PartialEq<B>, B> PartialEq<&mut B> for &mut A {
     }
 }
 
-impl<A: PartialEq<B>, B> PartialEq<&mut B> for &A {
+impl<A: ?Sized + PartialEq<B>, B: ?Sized> PartialEq<&mut B> for &A {
     fn eq(&self, other: &&mut B) -> bool {
         PartialEq::eq(&**self, &**other)
     }
@@ -87,7 +87,7 @@ impl<A: PartialEq<B>, B> PartialEq<&mut B> for &A {
     }
 }
 
-impl<A: PartialEq<B>, B> PartialEq<&B> for &mut A {
+impl<A: ?Sized + PartialEq<B>, B: ?Sized> PartialEq<&B> for &mut A {
     fn eq(&self, other: &&B) -> bool {
         PartialEq::eq(&**self, &**other)
     }
@@ -96,8 +96,8 @@ impl<A: PartialEq<B>, B> PartialEq<&B> for &mut A {
     }
 }
 
-impl<A: Eq> Eq for &A {}
-impl<A: Eq> Eq for &mut A {}
+impl<A: ?Sized + Eq> Eq for &A {}
+impl<A: ?Sized + Eq> Eq for &mut A {}
 
 /// The result of comparing two values: `1.cmp(&2)` is `Less`.
 #[lang = "Ordering"]
@@ -208,7 +208,7 @@ impl Ord for Ordering {
 /// unordered: `partial_cmp` gives `None` for those.
 #[lang = "partial_ord"]
 #[diagnostic::on_unimplemented(message = "can't compare `{Self}` with `{Rhs}`")]
-pub trait PartialOrd<Rhs = Self>: PartialEq<Rhs> {
+pub trait PartialOrd<Rhs: ?Sized = Self>: PartialEq<Rhs> {
     /// How `self` compares with `other`, if they are ordered.
     fn partial_cmp(&self, other: &Rhs) -> Option<Ordering>;
 
@@ -532,7 +532,7 @@ impl Ord for () { fn cmp(&self, _other: &()) -> Ordering { Equal } }
 
 // References compare what they point to, as in rustc: `&a < &b` is
 // `a < b`. Unlike `PartialEq`, a `&` compares only with a `&`.
-impl<A: PartialOrd<B>, B> PartialOrd<&B> for &A {
+impl<A: ?Sized + PartialOrd<B>, B: ?Sized> PartialOrd<&B> for &A {
     fn partial_cmp(&self, other: &&B) -> Option<Ordering> {
         PartialOrd::partial_cmp(*self, *other)
     }
@@ -550,7 +550,7 @@ impl<A: PartialOrd<B>, B> PartialOrd<&B> for &A {
     }
 }
 
-impl<A: PartialOrd<B>, B> PartialOrd<&mut B> for &mut A {
+impl<A: ?Sized + PartialOrd<B>, B: ?Sized> PartialOrd<&mut B> for &mut A {
     fn partial_cmp(&self, other: &&mut B) -> Option<Ordering> {
         PartialOrd::partial_cmp(&**self, &**other)
     }
@@ -568,13 +568,13 @@ impl<A: PartialOrd<B>, B> PartialOrd<&mut B> for &mut A {
     }
 }
 
-impl<A: Ord> Ord for &A {
+impl<A: ?Sized + Ord> Ord for &A {
     fn cmp(&self, other: &Self) -> Ordering {
         Ord::cmp(*self, *other)
     }
 }
 
-impl<A: Ord> Ord for &mut A {
+impl<A: ?Sized + Ord> Ord for &mut A {
     fn cmp(&self, other: &Self) -> Ordering {
         Ord::cmp(&**self, &**other)
     }

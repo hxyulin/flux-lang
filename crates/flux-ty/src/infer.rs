@@ -171,6 +171,7 @@ pub fn infer_body(
         const_context: (data.is_const && !data.do_not_const_check).then_some("constant functions"),
         ret: sig.ret,
         param_env: elaborate(sigs, &predicates_of(items, sigs, function)),
+        unsized_params: crate::unsized_params(items, data.owner, &data.generics),
         env_projections: crate::traits::projections_of(items, sigs, function),
         self_trait: items
             .impl_of(function)
@@ -189,9 +190,6 @@ pub fn infer_body(
     ctx.expect(body.root, ret);
     let ty = ctx.infer_expr(body.root);
     ctx.coerce(ty, ret, body.root);
-    if let Some(flux_hir::Owner::Trait(_)) = data.owner {
-        ctx.check_unsized_self();
-    }
     ctx.finish()
 }
 
@@ -227,6 +225,7 @@ pub fn infer_const(
             sigs,
             &crate::traits::owner_predicates(items, sigs, data.owner),
         ),
+        unsized_params: crate::unsized_params(items, data.owner, &Generics::default()),
         env_projections: crate::traits::owner_projections(items, sigs, data.owner),
         self_trait: data
             .owner
@@ -266,6 +265,8 @@ struct Owner {
     ret: Ty,
     /// The bounds in scope, with the supertraits they imply.
     param_env: Vec<Predicate>,
+    /// Which generic parameters have no implicit `Sized` bound.
+    unsized_params: Vec<bool>,
     /// What the bounds in scope say associated types are.
     env_projections: Vec<crate::Projection>,
     /// In a trait's `impl` block, its trait.
@@ -321,6 +322,7 @@ impl<'a> Ctx<'a> {
             unsafe_depth: u32::from(owner.is_unsafe),
             ret: owner.ret,
             param_env: owner.param_env,
+            unsized_params: owner.unsized_params,
             env_projections: owner.env_projections,
             self_trait: owner.self_trait,
             projections: Vec::new(),
@@ -504,6 +506,8 @@ struct Ctx<'a> {
     ret: Ty,
     /// The bounds in scope, with the supertraits they imply.
     param_env: Vec<Predicate>,
+    /// Which generic parameters have no implicit `Sized` bound.
+    unsized_params: Vec<bool>,
     /// What the bounds in scope say associated types are.
     env_projections: Vec<crate::Projection>,
     /// In a trait's `impl` block, its trait: `Self::Out` is its type.
@@ -1246,6 +1250,7 @@ impl Ctx<'_> {
             defaults: Some(&self.sigs.trait_defaults),
             lens: Some(&self.lens),
             function: None,
+            unsized_params: &self.unsized_params,
         };
         let ty = resolve_or_report(
             self.items,
@@ -1395,6 +1400,7 @@ impl Ctx<'_> {
             defaults: Some(&self.sigs.trait_defaults),
             lens: Some(&self.lens),
             function: None,
+            unsized_params: &self.unsized_params,
         };
         let mut errors = Vec::new();
         let ty = crate::resolve_generic_arg(
@@ -5467,29 +5473,26 @@ impl Ctx<'_> {
         }
     }
 
-    /// A generic parameter is `Sized` unless it is a trait's `Self`: a
-    /// call of `function` at `expr` with an unsized argument for one is
-    /// E0277, reported at the argument whose type names it, as rustc
-    /// does.
+    /// Whether values of `ty` may have no size known at compile time
+    /// here: a slice, `str`, or a parameter without an implicit `Sized`
+    /// bound that no bound makes `Sized`.
+    fn is_unsized(&mut self, ty: Ty) -> bool {
+        let ty = self.shallow(ty);
+        crate::maybe_unsized(self.items, ty, &self.unsized_params, &self.param_env)
+    }
+
+    /// A generic parameter is `Sized` unless it is a trait's `Self` or
+    /// bounded `?Sized`: a call of `function` at `expr` with an unsized
+    /// argument for one is E0277, reported at the argument whose type
+    /// names it, as rustc does.
     fn check_sized_args(&mut self, expr: ExprId, function: FunctionId, args: &[Ty]) {
-        // A trait's `Self` may be unsized, and so may `core`'s traits'
-        // own parameters where rustc's are `?Sized` (`AsRef<T: ?Sized>`),
-        // which `core` cannot write yet.
-        let unsized_ok = match self.items.functions[function].owner {
-            Some(flux_hir::Owner::Trait(t)) => {
-                let data = &self.items.traits[t];
-                if self.items.is_core(data.loc.module) {
-                    1 + data.generics.len()
-                } else {
-                    1
-                }
-            }
-            _ => 0,
-        };
-        let Some((index, &arg)) = args
+        let data = &self.items.functions[function];
+        let callee_unsized = crate::unsized_params(self.items, data.owner, &data.generics);
+        let Some((index, arg)) = args
             .iter()
             .enumerate()
-            .find(|&(i, a)| a.is_unsized() && i >= unsized_ok)
+            .find(|&(i, &a)| callee_unsized.get(i) != Some(&true) && self.is_unsized(a))
+            .map(|(i, &a)| (i, a))
         else {
             return;
         };
@@ -5534,6 +5537,16 @@ impl Ctx<'_> {
                 {
                     places.insert(receiver);
                 }
+                // An unsized `self` passed on is reported with the
+                // parameter it came from, as rustc does.
+                Expr::MethodCall { receiver, .. }
+                    if self
+                        .expr_types
+                        .get(receiver)
+                        .is_some_and(|t| matches!(t.kind(), TyKind::Param(_))) =>
+                {
+                    places.insert(receiver);
+                }
                 // Compared by reference: `a[..2] == b[..2]`.
                 Expr::Binary {
                     op: BinaryOp::Cmp(_),
@@ -5550,8 +5563,12 @@ impl Ctx<'_> {
             let Pat::Bind { binding, .. } = data else {
                 continue;
             };
+            // Parameters are reported with the signature.
+            if body.params.contains(&pat) {
+                continue;
+            }
             let ty = self.binding_types.get(*binding).copied();
-            if let Some(ty) = ty.filter(|t| t.is_unsized())
+            if let Some(ty) = ty.filter(|&t| self.is_unsized(t))
                 && self.binding_refs.get(*binding).is_none()
             {
                 let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
@@ -5568,17 +5585,25 @@ impl Ctx<'_> {
                         ..
                     } = *stmt
                         && matches!(body.pats[pat], Pat::Bind { .. })
+                        // A call's value must be sized, wherever it goes.
+                        && !matches!(body.exprs[init], Expr::Call { .. } | Expr::MethodCall { .. })
                     {
                         places.insert(init);
                     }
                 }
             }
         }
-        let unsized_values: Vec<(ExprId, Ty)> = self
+        let values: Vec<(ExprId, Ty)> = self
             .expr_types
             .iter()
-            .filter(|&(id, ty)| ty.is_unsized() && !places.contains(&id))
+            .filter(|&(id, ty)| {
+                (ty.is_unsized() || matches!(ty.kind(), TyKind::Param(_))) && !places.contains(&id)
+            })
             .map(|(id, ty)| (id, *ty))
+            .collect();
+        let unsized_values: Vec<(ExprId, Ty)> = values
+            .into_iter()
+            .filter(|&(_, ty)| self.is_unsized(ty))
             .collect();
         for (expr, ty) in unsized_values {
             self.error(self.range(expr), crate::unsized_error(ty));
@@ -5947,8 +5972,8 @@ impl Ctx<'_> {
                         (TyKind::RawPtr(_, a), TyKind::RawPtr(_, b)) => {
                             !b.is_unsized() || a.is_unsized()
                         }
-                        (TyKind::RawPtr(_, pointee), TyKind::Int(_)) => !pointee.is_unsized(),
-                        (TyKind::Int(_), TyKind::RawPtr(_, pointee)) => !pointee.is_unsized(),
+                        (TyKind::RawPtr(_, pointee), TyKind::Int(_)) => !self.is_unsized(pointee),
+                        (TyKind::Int(_), TyKind::RawPtr(_, pointee)) => !self.is_unsized(pointee),
                         // A fieldless enum, to its discriminant.
                         (TyKind::Adt(adt, _), TyKind::Int(_)) => {
                             self.sigs.variants(from).is_some_and(|variants| {

@@ -745,6 +745,9 @@ pub struct GenericParam {
     /// as it is written, which turbofish cannot give.
     pub synthetic: bool,
     pub kind: ParamKind,
+    /// `T: ?Sized`, in the list or the `where` clause: the parameter has
+    /// no implicit `Sized` bound.
+    pub maybe_unsized: bool,
 }
 
 /// Whether a generic parameter is a type or a constant.
@@ -1979,7 +1982,7 @@ impl Collector<'_> {
         }
         let mut bounds = Vec::new();
         if let Some(list) = t.type_bound_list() {
-            lower_bounds(list, &mut bounds, None, diagnostics);
+            lower_bounds(list, &mut bounds, None, Relaxed::Unsupported, diagnostics);
         }
         for bound in &mut bounds {
             reject_impl_trait_in_path(&mut bound.path, IN_BOUNDS, diagnostics);
@@ -2106,7 +2109,13 @@ impl Collector<'_> {
         );
         let mut supertraits = Vec::new();
         if let Some(list) = t.type_bound_list() {
-            lower_bounds(list, &mut supertraits, None, diagnostics);
+            lower_bounds(
+                list,
+                &mut supertraits,
+                None,
+                Relaxed::Supertrait,
+                diagnostics,
+            );
         }
         for bound in &mut supertraits {
             reject_impl_trait_in_path(&mut bound.path, IN_BOUNDS, diagnostics);
@@ -3924,6 +3933,7 @@ impl Collector<'_> {
                 default: None,
                 synthetic: false,
                 kind: p.kind.clone(),
+                maybe_unsized: p.maybe_unsized,
             })
             .collect();
         // As rustc expands it: each parameter's own bounds and the
@@ -4037,6 +4047,7 @@ impl Collector<'_> {
                         default: None,
                         synthetic: false,
                         kind: ParamKind::Type,
+                        maybe_unsized: false,
                     }]),
                     predicates: Box::new([WherePredicate {
                         ty: TypeRef::Path(Path::single(h)),
@@ -5112,13 +5123,25 @@ pub(crate) fn lower_lifetime(lifetime: ast::Lifetime<'_>) -> LifetimeRef {
     }
 }
 
+/// What `?Trait` bounds may be in a list of bounds.
+enum Relaxed<'a> {
+    /// `?Sized`, collected here (an item's generic parameters).
+    Collect(&'a mut Vec<TextRange>),
+    /// None: rustc's error for supertraits.
+    Supertrait,
+    /// Reported as not supported.
+    Unsupported,
+}
+
 /// The bounds in `list`, `A + B + 'a`: trait bounds into `out`, and
 /// lifetime bounds into `lifetimes` where they are allowed (`None`
-/// reports them as not supported); others are reported.
+/// reports them as not supported); `?Sized` as `relaxed` says; others
+/// are reported.
 fn lower_bounds(
     list: ast::TypeBoundList<'_>,
     out: &mut Vec<Bound>,
     mut lifetimes: Option<&mut Vec<LifetimeRef>>,
+    mut relaxed: Relaxed<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for bound in list.bounds() {
@@ -5134,7 +5157,35 @@ fn lower_bounds(
         } else if bound.use_token().is_some() {
             "`use` bounds"
         } else if bound.question_token().is_some() {
-            "`?Sized` bounds"
+            match &mut relaxed {
+                Relaxed::Collect(out) => {
+                    // The trait is resolved later, but only `Sized` may be
+                    // relaxed, so the name is enough.
+                    let name = bound
+                        .path_type()
+                        .and_then(|p| p.path())
+                        .and_then(|p| p.segment())
+                        .and_then(|s| s.name_ref())
+                        .map(|n| n.text());
+                    if name == Some("Sized") {
+                        out.push(range);
+                    } else {
+                        diagnostics.push(Diagnostic::new(
+                            range,
+                            "bound modifier `?` can only be applied to `Sized`",
+                        ));
+                    }
+                    continue;
+                }
+                Relaxed::Supertrait => {
+                    diagnostics.push(Diagnostic::new(
+                        range,
+                        "relaxed bounds are not permitted in supertrait bounds",
+                    ));
+                    continue;
+                }
+                Relaxed::Unsupported => "`?Sized` bounds",
+            }
         } else if bound.for_token().is_some() {
             "higher-ranked bounds"
         } else if bound.l_paren_token().is_some() {
@@ -5188,9 +5239,12 @@ fn collect_generics_as_written(
     let mut predicates = Vec::new();
     let mut outlives = Vec::new();
     let mut type_outlives = Vec::new();
+    // `?Sized` bounds: on what type, and where each is written.
+    let mut relaxed: Vec<(TypeRef, Vec<TextRange>)> = Vec::new();
     let where_predicates = |predicates: &mut Vec<WherePredicate>,
                             outlives: &mut Vec<OutlivesPredicate>,
                             type_outlives: &mut Vec<TypeOutlives>,
+                            relaxed: &mut Vec<(TypeRef, Vec<TextRange>)>,
                             diagnostics: &mut Vec<Diagnostic>| {
         let Some(clause) = where_clause else {
             return;
@@ -5207,7 +5261,13 @@ fn collect_generics_as_written(
                 // `'a: 'b + 'c`
                 let longer = lower_lifetime(lifetime);
                 if let Some(list) = pred.type_bound_list() {
-                    lower_bounds(list, &mut bounds, Some(&mut lifetimes), diagnostics);
+                    lower_bounds(
+                        list,
+                        &mut bounds,
+                        Some(&mut lifetimes),
+                        Relaxed::Unsupported,
+                        diagnostics,
+                    );
                 }
                 for bound in bounds {
                     diagnostics.push(Diagnostic::new(
@@ -5224,8 +5284,18 @@ fn collect_generics_as_written(
             }
             let ty_range = pred.ty().map_or(range, |t| t.syntax().text_range());
             let ty = lower_type(pred.ty(), diagnostics);
+            let mut relaxed_here = Vec::new();
             if let Some(list) = pred.type_bound_list() {
-                lower_bounds(list, &mut bounds, Some(&mut lifetimes), diagnostics);
+                lower_bounds(
+                    list,
+                    &mut bounds,
+                    Some(&mut lifetimes),
+                    Relaxed::Collect(&mut relaxed_here),
+                    diagnostics,
+                );
+            }
+            if !relaxed_here.is_empty() {
+                relaxed.push((ty.clone(), relaxed_here));
             }
             predicates.extend(bounds.into_iter().map(|bound| WherePredicate {
                 ty: ty.clone(),
@@ -5244,8 +5314,10 @@ fn collect_generics_as_written(
             &mut predicates,
             &mut outlives,
             &mut type_outlives,
+            &mut relaxed,
             diagnostics,
         );
+        mark_relaxed(&mut [], relaxed, diagnostics);
         return Generics {
             predicates: predicates.into(),
             outlives: outlives.into(),
@@ -5274,8 +5346,18 @@ fn collect_generics_as_written(
                 if let Some(list) = param.type_bound_list() {
                     let mut bounds = Vec::new();
                     let mut bound_lifetimes = Vec::new();
-                    lower_bounds(list, &mut bounds, Some(&mut bound_lifetimes), diagnostics);
+                    let mut relaxed_here = Vec::new();
+                    lower_bounds(
+                        list,
+                        &mut bounds,
+                        Some(&mut bound_lifetimes),
+                        Relaxed::Collect(&mut relaxed_here),
+                        diagnostics,
+                    );
                     let ty = TypeRef::Path(Path::single(Symbol::intern(name.text())));
+                    if !relaxed_here.is_empty() {
+                        relaxed.push((ty.clone(), relaxed_here));
+                    }
                     let ty_range = name.syntax().text_range();
                     predicates.extend(bounds.into_iter().map(|bound| WherePredicate {
                         ty: ty.clone(),
@@ -5331,6 +5413,7 @@ fn collect_generics_as_written(
                     default,
                     synthetic: false,
                     kind: ParamKind::Type,
+                    maybe_unsized: false,
                 });
                 continue;
             }
@@ -5363,6 +5446,7 @@ fn collect_generics_as_written(
                     default: None,
                     synthetic: false,
                     kind: ParamKind::Const { ty, ty_range },
+                    maybe_unsized: false,
                 });
                 continue;
             }
@@ -5381,7 +5465,13 @@ fn collect_generics_as_written(
                 if let Some(list) = param.type_bound_list() {
                     let mut bounds = Vec::new();
                     let mut shorter = Vec::new();
-                    lower_bounds(list, &mut bounds, Some(&mut shorter), diagnostics);
+                    lower_bounds(
+                        list,
+                        &mut bounds,
+                        Some(&mut shorter),
+                        Relaxed::Unsupported,
+                        diagnostics,
+                    );
                     for bound in bounds {
                         diagnostics.push(Diagnostic::new(
                             bound.range,
@@ -5420,8 +5510,10 @@ fn collect_generics_as_written(
         &mut predicates,
         &mut outlives,
         &mut type_outlives,
+        &mut relaxed,
         diagnostics,
     );
+    mark_relaxed(&mut params, relaxed, diagnostics);
     Generics {
         params: params.into(),
         lifetimes: lifetimes.into(),
@@ -5429,6 +5521,41 @@ fn collect_generics_as_written(
         outlives: outlives.into(),
         type_outlives: type_outlives.into(),
         range: list.syntax().text_range(),
+    }
+}
+
+/// Marks the parameters `?Sized` bounds are on, which must be the
+/// item's own type parameters, each relaxed once (E0203).
+fn mark_relaxed(
+    params: &mut [GenericParam],
+    relaxed: Vec<(TypeRef, Vec<TextRange>)>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut seen: Vec<(Symbol, TextRange)> = Vec::new();
+    for (ty, ranges) in relaxed {
+        let param = match &ty {
+            TypeRef::Path(path) => path
+                .as_name()
+                .and_then(|name| params.iter_mut().find(|p| p.name == name && !p.is_const())),
+            _ => None,
+        };
+        let Some(param) = param else {
+            for range in ranges {
+                diagnostics.push(Diagnostic::new(
+                    range,
+                    "this relaxed bound is not permitted here",
+                ));
+            }
+            continue;
+        };
+        param.maybe_unsized = true;
+        for range in ranges {
+            if let Some(&(_, first)) = seen.iter().find(|(n, _)| *n == param.name) {
+                diagnostics.push(Diagnostic::new(first, "duplicate relaxed `Sized` bounds"));
+            } else {
+                seen.push((param.name, range));
+            }
+        }
     }
 }
 
@@ -5769,6 +5896,7 @@ fn desugar_impl_param(
         default: None,
         synthetic: true,
         kind: ParamKind::Type,
+        maybe_unsized: false,
     });
     for bound in it.bounds.iter_mut() {
         visit_path_impl_traits(&mut bound.path, Nested::Site, &mut |t, at| {

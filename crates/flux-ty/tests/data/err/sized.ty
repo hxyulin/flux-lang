@@ -1,0 +1,29 @@
+struct S<T> { 0: T }
+fn f(&Self) -> i32
+fn f(&str) -> i32
+    self@0: &str
+fn f(&&T) -> i32
+    self@0: &&T
+fn takes<T>(T) -> i32
+    x@0: T
+fn by_value<T>(T) -> ()
+    x@0: T
+fn sized<T>(&T) -> ()
+    x@0: &T
+fn pass<T>(&T) -> ()
+    x@0: &T
+fn in_struct<T>({error}) -> ()
+    x@0: {error}
+fn deref<T>(&T) -> ()
+    x@0: &T
+    y@1: T
+fn main() -> ()
+    s@0: &str
+    t@1: str
+error 325..326: the size for values of type `T` cannot be known at compilation time
+error 393..394: the size for values of type `T` cannot be known at compilation time
+error 445..449: the size for values of type `T` cannot be known at compilation time
+error 492..493: the size for values of type `T` cannot be known at compilation time
+error 525..528: the size for values of type `str` cannot be known at compilation time
+error 562..563: the size for values of type `str` cannot be known at compilation time
+error 580..581: the trait bound `&str: Tr` is not satisfied

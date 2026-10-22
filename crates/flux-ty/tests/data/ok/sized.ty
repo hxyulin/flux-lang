@@ -1,0 +1,21 @@
+struct Ref<'a, T> { inner: &T }
+fn len_of(&Self) -> usize
+fn len_of(&str) -> usize
+    self@0: &str
+fn len_of(&[T]) -> usize
+    self@0: &[T]
+fn len_of(&&T) -> usize
+    self@0: &&T
+fn len(&Ref<T>) -> usize
+    self@0: &Ref<T>
+fn generic<T>(&T) -> usize
+    x@0: &T
+    r@1: Ref<T>
+fn sized<T>(T) -> usize
+    x@0: T
+fn eq<T>(&T, &T) -> bool
+    a@0: &T
+    b@1: &T
+fn main() -> ()
+    s@0: &str
+    a@1: [i32; 2]
