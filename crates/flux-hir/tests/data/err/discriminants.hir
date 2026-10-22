@@ -1,0 +1,15 @@
+#[repr(u8)] enum UsesSelf<T> { A = 0, B(T) = 1, C = 2 }
+
+#[repr(u8)] enum UsesParam<T> { A = 0, B(T) = 1 }
+
+enum Unresolved { A = <error>(), B = (<Self>::Nope as isize) }
+
+fn size<T>() -> u8 {
+    1
+}
+
+fn main() -> () {}
+
+error 180..184: generic `Self` types are not permitted in enum discriminant values
+error 262..263: generic parameters may not be used in enum discriminant values
+error 343..350: cannot find function `missing` in this scope

@@ -51,18 +51,35 @@ use flux_intern::Symbol;
 use flux_syntax::TextRange;
 use flux_ty::{GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind};
 
+/// The discriminants of the enums whose discriminants are not all
+/// literals ([`flux_hir::Discriminant::Const`]), evaluated, as bits:
+/// what [`discriminant_bits`] needs for them.
+pub type Discriminants = flux_arena::ArenaMap<flux_hir::Struct, Box<[u128]>>;
+
 /// The discriminant of variant `variant` of enum `strukt`, as the bits
 /// [`TerminatorKind::SwitchInt`] compares: of the type
 /// [`flux_ty::discriminant_ty`] gives, which [`Rvalue::Discriminant`]
-/// has.
-pub fn discriminant_bits(items: &flux_hir::ItemTree, strukt: StructId, variant: u32) -> u128 {
-    let value = items.structs[strukt]
-        .variants
-        .as_ref()
-        .map_or(0, |v| v[variant as usize].discriminant);
-    match Constant::int(value, flux_ty::discriminant_ty(items, strukt)) {
-        Constant::Int { bits, .. } => bits,
-        _ => unreachable!("an integer constant"),
+/// has. `None` for one that is not a literal's and is not in
+/// `discriminants`, whose evaluation failed or did not happen.
+pub fn discriminant_bits(
+    items: &flux_hir::ItemTree,
+    discriminants: &Discriminants,
+    strukt: StructId,
+    variant: u32,
+) -> Option<u128> {
+    let Some(variants) = items.structs[strukt].variants.as_ref() else {
+        return Some(0);
+    };
+    match variants[variant as usize].discriminant {
+        flux_hir::Discriminant::Value(value) => {
+            match Constant::int(value, flux_ty::discriminant_ty(items, strukt)) {
+                Constant::Int { bits, .. } => Some(bits),
+                _ => unreachable!("an integer constant"),
+            }
+        }
+        flux_hir::Discriminant::Const { .. } => discriminants
+            .get(strukt)
+            .map(|values| values[variant as usize]),
     }
 }
 
@@ -448,6 +465,12 @@ pub enum TerminatorKind {
         discr: Operand,
         targets: Vec<(u128, BasicBlock)>,
         otherwise: BasicBlock,
+        /// `Some(e)` if `discr` is enum `e`'s discriminant and each
+        /// target's value is the index of a variant of `e`, standing for
+        /// its discriminant ([`discriminant_bits`]): discriminants other
+        /// than literals are known only once constants are evaluated,
+        /// which may need this body.
+        variants: Option<StructId>,
     },
     /// Calls `func`, stores its result in `dest` and continues at
     /// `target`; `target` is `None` when `func` returns `!`.
@@ -534,6 +557,9 @@ pub struct FileMir {
     /// The values of the constants without generic parameters, and of
     /// the instances of others that code without any names.
     pub const_values: eval::ConstValues,
+    /// The discriminants of the enums whose discriminants are not all
+    /// literals, once evaluated.
+    pub discriminants: Discriminants,
     pub diagnostics: Vec<flux_hir::Diagnostic>,
 }
 

@@ -2,7 +2,7 @@
 
 mod solve;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use flux_arena::ArenaMap;
 use flux_hir::{
@@ -144,9 +144,14 @@ pub fn infer_const(
 ) -> InferenceResult {
     let data = &items.consts[konst];
     let ret = sigs.consts[konst];
+    // A discriminant's `Self` is its enum, which is not generic.
+    let enum_ty = data.discriminant.map(|(strukt, _)| {
+        let name = items.structs[strukt].name;
+        Ty::adt(strukt, name, &[])
+    });
     let owner = Owner {
         module: data.loc.module,
-        self_ty: self_ty(sigs, data.owner),
+        self_ty: enum_ty.or_else(|| self_ty(sigs, data.owner)),
         generics: generic_names(items, data.owner, &Generics::default()),
         is_unsafe: false,
         const_context: Some("constants"),
@@ -3556,16 +3561,17 @@ impl Ctx<'_> {
     }
 
     fn run_deferred(&mut self, reported: &mut HashSet<InferVar>) {
-        // Operands of `-`, where a literal may reach one past the maximum.
-        let negated: HashSet<ExprId> = self
+        // Operands of `-`, where a literal may reach one past the maximum,
+        // with the negation, where rustc reports one out of range.
+        let negated: HashMap<ExprId, ExprId> = self
             .body
             .exprs
             .iter()
-            .filter_map(|(_, e)| match e {
+            .filter_map(|(id, e)| match e {
                 Expr::Unary {
                     op: UnaryOp::Neg,
                     operand,
-                } => Some(*operand),
+                } => Some((*operand, id)),
                 _ => None,
             })
             .collect();
@@ -3630,14 +3636,15 @@ impl Ctx<'_> {
                         continue;
                     };
                     let max = int.max();
-                    let limit = if negated.contains(&expr) && int.is_signed() {
+                    let negation = negated.get(&expr).copied();
+                    let limit = if negation.is_some() && int.is_signed() {
                         max + 1
                     } else {
                         max
                     };
                     if value > limit {
                         self.error(
-                            self.range(expr),
+                            self.range(negation.unwrap_or(expr)),
                             format!("literal out of range for `{int}`", int = int.name()),
                         );
                     }

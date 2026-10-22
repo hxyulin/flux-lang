@@ -95,15 +95,12 @@ pub fn lower_module(
             });
         }
     }
-    let names = |id: flux_hir::ConstId| {
-        items.consts[id]
-            .name
-            .map_or("_".to_owned(), |n| n.to_string())
-    };
+    let names = |id: flux_hir::ConstId| items.const_name(id);
     let mut ctx = Ctx {
         hir,
         typed,
         const_values: &mir.const_values,
+        discriminants: &mir.discriminants,
         evaluator: flux_mir::eval::Evaluator::new(
             items,
             &typed.sigs,
@@ -473,6 +470,8 @@ struct Ctx<'a> {
     /// The values of constants that code without generic parameters
     /// names.
     const_values: &'a flux_mir::eval::ConstValues,
+    /// The discriminants of enums that are not literals'.
+    discriminants: &'a flux_mir::Discriminants,
     /// Evaluates the others, for the instances that use them.
     evaluator: flux_mir::eval::Evaluator<'a>,
     instance_values: HashMap<flux_ty::ConstInstance, flux_mir::eval::Value>,
@@ -484,6 +483,14 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// The discriminant of variant `variant` of enum `strukt`, as bits.
+    fn discriminant(&mut self, strukt: flux_hir::StructId, variant: u32) -> u128 {
+        let items = &self.hir.items;
+        flux_mir::discriminant_bits(items, self.discriminants, strukt, variant)
+            .or_else(|| self.evaluator.discriminant(strukt, variant).ok())
+            .expect("discriminants are evaluated before code generation")
+    }
+
     /// `instance`, whose MIR is `body` with its generic arguments
     /// substituted.
     fn function(&mut self, instance: Instance, body: &Body) -> Function {
@@ -783,9 +790,8 @@ impl Lower<'_, '_, '_> {
                 index,
                 fields,
             } => {
-                let items = &self.ctx.hir.items;
-                let bits = flux_mir::discriminant_bits(items, *strukt, *index);
-                let int = flux_ty::discriminant_ty(items, *strukt);
+                let bits = self.ctx.discriminant(*strukt, *index);
+                let int = flux_ty::discriminant_ty(&self.ctx.hir.items, *strukt);
                 out.push(self.int_const(bits, int));
                 let variants = self.sigs.variants(ty).unwrap_or_default();
                 for (v, types) in variants.into_iter().enumerate() {
@@ -849,9 +855,8 @@ impl Lower<'_, '_, '_> {
         match rvalue {
             Rvalue::Use(operand) => self.operand(operand),
             Rvalue::Aggregate(AggregateKind::Variant(strukt, index), operands) => {
-                let items = &self.ctx.hir.items;
-                let bits = flux_mir::discriminant_bits(items, *strukt, *index);
-                let int = flux_ty::discriminant_ty(items, *strukt);
+                let bits = self.ctx.discriminant(*strukt, *index);
+                let int = flux_ty::discriminant_ty(&self.ctx.hir.items, *strukt);
                 let mut leaves = vec![self.int_const(bits, int)];
                 let variants = self.sigs.variants(ty).unwrap_or_default();
                 for (v, types) in variants.into_iter().enumerate() {
@@ -988,7 +993,15 @@ impl Lower<'_, '_, '_> {
                 discr,
                 targets,
                 otherwise,
+                variants,
             } => {
+                let targets: Vec<(u128, flux_mir::BasicBlock)> = match *variants {
+                    Some(strukt) => targets
+                        .iter()
+                        .map(|&(v, block)| (self.ctx.discriminant(strukt, v as u32), block))
+                        .collect(),
+                    None => targets.clone(),
+                };
                 let Some(value) = self.scalar(discr) else {
                     self.b.ins().jump(self.blocks[otherwise.index()], &[]);
                     return;

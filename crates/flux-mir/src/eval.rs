@@ -7,8 +7,15 @@
 //! with rustc's messages: "attempt to compute `i32::MAX + 1_i32`, which
 //! would overflow". An error inside a call is reported at the call in the
 //! constant.
+//!
+//! An enum's discriminants written as expressions are anonymous
+//! constants, evaluated as they are needed, as rustc does: a unit
+//! variant's path cast to an integer needs that variant's only, while
+//! making a value of the enum (which needs its layout) or a body that
+//! matches on it needs them all, so a discriminant that needs those of
+//! its own enum is a cycle (E0391).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use flux_arena::ArenaMap;
 use flux_hir::{ConstId, FunctionId, ItemTree};
@@ -45,6 +52,9 @@ pub struct EvalError {
     pub message: String,
     /// The error is another constant's, which reports it itself.
     pub nested: bool,
+    /// A cycle back to this discriminant's constant, which reports it
+    /// once, at its value, as rustc does.
+    pub cycle: Option<ConstId>,
 }
 
 /// The values of constants: of those without generic parameters by
@@ -88,6 +98,11 @@ pub struct Evaluator<'a> {
     pub names: &'a dyn Fn(ConstId) -> String,
     values: HashMap<ConstInstance, Result<Value, EvalError>>,
     in_progress: Vec<ConstInstance>,
+    /// Every discriminant of the enums whose values were made or matched
+    /// on, as bits.
+    discriminants: HashMap<flux_hir::StructId, Result<Box<[u128]>, EvalError>>,
+    /// The functions whose matches' enums have their discriminants.
+    switched: HashSet<FunctionId>,
     /// The constants whose own value failed, in the order they did,
     /// with why: what [`Self::eval_instance`]'s callers report.
     pub failures: Vec<(ConstInstance, EvalError)>,
@@ -110,6 +125,8 @@ impl<'a> Evaluator<'a> {
             names,
             values: HashMap::new(),
             in_progress: Vec::new(),
+            discriminants: HashMap::new(),
+            switched: HashSet::new(),
             failures: Vec::new(),
             steps: 0,
         }
@@ -139,6 +156,18 @@ impl<'a> Evaluator<'a> {
             ));
         };
         if self.in_progress.contains(&c) {
+            let data = &self.items.consts[c.konst];
+            if data.discriminant.is_some() {
+                return Err(EvalError {
+                    range: data.def_range,
+                    message: format!(
+                        "cycle detected when simplifying constant for the type system `{}`",
+                        (self.names)(c.konst)
+                    ),
+                    nested: false,
+                    cycle: Some(c.konst),
+                });
+            }
             let message = format!(
                 "cycle detected when const-evaluating `{}`",
                 (self.names)(c.konst)
@@ -156,16 +185,79 @@ impl<'a> Evaluator<'a> {
         let steps = self.steps;
         self.steps = 0;
         // A constant's own arithmetic is always checked.
-        let result = self.run(body, Vec::new(), c.args, 0, true);
+        let result = self
+            .switched(body)
+            .and_then(|()| self.run(body, Vec::new(), c.args, 0, true));
         self.steps = steps;
         self.in_progress.pop();
         if let Err(e) = &result
             && !e.nested
+            && e.cycle.is_none_or(|k| k == c.konst)
         {
             self.failures.push((c, e.clone()));
         }
         self.values.insert(c, result.clone());
         result
+    }
+
+    /// The discriminant of variant `variant` of enum `strukt`, as bits:
+    /// a literal's, or its constant's value plus the variants since.
+    pub fn discriminant(
+        &mut self,
+        strukt: flux_hir::StructId,
+        variant: u32,
+    ) -> Result<u128, EvalError> {
+        let int = flux_ty::discriminant_ty(self.items, strukt);
+        let variants = self.items.structs[strukt]
+            .variants
+            .as_ref()
+            .expect("an enum");
+        match variants[variant as usize].discriminant {
+            flux_hir::Discriminant::Value(value) => Ok(truncate(value as u128, int)),
+            flux_hir::Discriminant::Const { konst, offset } => match self.eval_const(konst)? {
+                Value::Int { bits, .. } => Ok(truncate(bits.wrapping_add(u128::from(offset)), int)),
+                _ => unreachable!("discriminants are integers"),
+            },
+        }
+    }
+
+    /// Every discriminant of enum `strukt`, as bits, evaluated: what
+    /// making a value of it or matching on it needs.
+    pub fn discriminants(&mut self, strukt: flux_hir::StructId) -> Result<Box<[u128]>, EvalError> {
+        if let Some(result) = self.discriminants.get(&strukt) {
+            return result.clone();
+        }
+        let count = self.items.structs[strukt].variant_count() as u32;
+        let result: Result<Box<[u128]>, EvalError> =
+            (0..count).map(|v| self.discriminant(strukt, v)).collect();
+        self.discriminants.insert(strukt, result.clone());
+        result
+    }
+
+    /// The discriminants of enum `strukt`, needed at `range`; another
+    /// constant's errors are its own.
+    fn layout(&mut self, strukt: flux_hir::StructId, range: TextRange) -> Result<(), EvalError> {
+        if !self.items.structs[strukt].has_const_discriminants() {
+            return Ok(());
+        }
+        self.discriminants(strukt)
+            .map(drop)
+            .map_err(|e| used(e, range, false))
+    }
+
+    /// The discriminants of the enums `body` matches on, which rustc
+    /// needs to build it.
+    fn switched(&mut self, body: &Body) -> Result<(), EvalError> {
+        for data in body.blocks.values() {
+            if let TerminatorKind::SwitchInt {
+                variants: Some(strukt),
+                ..
+            } = data.terminator.kind
+            {
+                self.layout(strukt, data.terminator.range)?;
+            }
+        }
+        Ok(())
     }
 
     /// Runs `body`, of an item with generic arguments `generics`;
@@ -208,6 +300,7 @@ impl<'a> Evaluator<'a> {
                     discr,
                     targets,
                     otherwise,
+                    variants,
                 } => {
                     let value = match self.operand(&locals, generics, discr, range)? {
                         Value::Int { bits, .. } => bits,
@@ -216,10 +309,20 @@ impl<'a> Evaluator<'a> {
                             unreachable!("switches on scalars")
                         }
                     };
-                    targets
-                        .iter()
-                        .find(|&&(v, _)| v == value)
-                        .map_or(*otherwise, |&(_, target)| target)
+                    let mut found = *otherwise;
+                    for &(v, target) in targets {
+                        let v = match *variants {
+                            Some(strukt) => self
+                                .discriminant(strukt, v as u32)
+                                .map_err(|e| used(e, range, false))?,
+                            None => v,
+                        };
+                        if v == value {
+                            found = target;
+                            break;
+                        }
+                    }
+                    found
                 }
                 TerminatorKind::Call {
                     func,
@@ -299,6 +402,10 @@ impl<'a> Evaluator<'a> {
                 "calling this function in constants is not supported yet".to_owned(),
             ));
         };
+        if !self.switched.contains(&func) {
+            self.switched(callee).map_err(|e| at_call(e, range))?;
+            self.switched.insert(func);
+        }
         if depth >= DEPTH_LIMIT {
             return Err(error(
                 range,
@@ -309,7 +416,7 @@ impl<'a> Evaluator<'a> {
         // flux, unless it inherits its caller's.
         let checked = checked && callee.inherits_overflow_checks;
         self.run(callee, args, instance.args, depth + 1, checked)
-            .map_err(|e| EvalError { range, ..e })
+            .map_err(|e| at_call(e, range))
     }
 
     fn assert_message(
@@ -367,17 +474,8 @@ impl<'a> Evaluator<'a> {
                         konst: id,
                         args: Ty::list(&subst_list(args, generics)),
                     };
-                    // A cycle is reported at every constant in it; running
-                    // out of depth, once, at the outermost.
                     let outermost = self.in_progress.len() == 1;
-                    self.eval_instance(c).map_err(|e| {
-                        let nested = if e.message.starts_with("queries overflow") {
-                            !outermost
-                        } else {
-                            !e.message.starts_with("cycle detected")
-                        };
-                        EvalError { range, nested, ..e }
-                    })
+                    self.eval_instance(c).map_err(|e| used(e, range, outermost))
                 }
             },
         }
@@ -394,6 +492,9 @@ impl<'a> Evaluator<'a> {
         match rvalue {
             Rvalue::Use(op) => self.operand(locals, generics, op, range),
             Rvalue::Aggregate(kind, ops) => {
+                if let AggregateKind::Variant(strukt, _) = *kind {
+                    self.layout(strukt, range)?;
+                }
                 let fields = ops
                     .iter()
                     .map(|op| self.operand(locals, generics, op, range))
@@ -409,7 +510,9 @@ impl<'a> Evaluator<'a> {
             }
             Rvalue::Discriminant(place) => match read(locals, place, range)? {
                 Value::Variant { strukt, index, .. } => {
-                    let bits = crate::discriminant_bits(self.items, strukt, index);
+                    let bits = self
+                        .discriminant(strukt, index)
+                        .map_err(|e| used(e, range, false))?;
                     Ok(Value::Int {
                         bits,
                         ty: flux_ty::discriminant_ty(self.items, strukt),
@@ -480,6 +583,33 @@ fn error(range: TextRange, message: String) -> EvalError {
         range,
         message,
         nested: false,
+        cycle: None,
+    }
+}
+
+/// `e`, from a constant used at `range`: reported there if it is a
+/// cycle, which is reported at every constant in it, or the depth
+/// limit, reported once, at the `outermost` constant; otherwise the
+/// constant's own. A cycle through a discriminant is reported at it.
+fn used(e: EvalError, range: TextRange, outermost: bool) -> EvalError {
+    if e.cycle.is_some() {
+        return e;
+    }
+    let nested = if e.message.starts_with("queries overflow") {
+        !outermost
+    } else {
+        !e.message.starts_with("cycle detected")
+    };
+    EvalError { range, nested, ..e }
+}
+
+/// `e`, from inside a call: reported at the call, unless it is a cycle
+/// through a discriminant.
+fn at_call(e: EvalError, range: TextRange) -> EvalError {
+    if e.cycle.is_some() {
+        e
+    } else {
+        EvalError { range, ..e }
     }
 }
 

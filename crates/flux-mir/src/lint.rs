@@ -79,10 +79,16 @@ pub fn check(
             }
         }
         let taken = match &data.terminator.kind {
+            // Which variant's discriminant a value is needs the values
+            // of all; the operand is never known anyway.
+            TerminatorKind::SwitchInt {
+                variants: Some(_), ..
+            } => None,
             TerminatorKind::SwitchInt {
                 discr,
                 targets,
                 otherwise,
+                variants: None,
             } => match operand(discr, &known, consts) {
                 Some(Value::Int { bits, .. }) => Some(
                     targets
