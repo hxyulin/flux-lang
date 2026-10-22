@@ -907,6 +907,13 @@
   blocks `core` lacks, such as `str: PartialEq<String>`, rustc finds
   several and coerces nothing, so `a.eq(&b)` of `&str`s is rejected by
   rustc and accepted by flux.)
+- Fix a miscompile of statics and promoted constants of enums one of
+  whose variants holds an array (`static G: E = E::B(8, 3)` beside
+  `E::A([i32; 2])`, `Result<[i32; 2], i64>`): their data put another
+  variant's fields where an array's address would be in registers, not
+  where its elements are in memory, so code read them at other offsets.
+  A constant's bytes are now written field by field at the offsets of
+  the layout code reads and writes them with.
 
 ### Performance
 
