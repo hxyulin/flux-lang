@@ -1570,16 +1570,6 @@ impl<I: Iterator> Iterator for Skip<I> {
         self.iter.last()
     }
 
-    fn fold<B, F: FnMut(B, Self::Item) -> B>(mut self, init: B, f: F) -> B
-    where
-        Self: Sized,
-    {
-        if self.n > 0 && self.iter.nth(self.n - 1).is_none() {
-            return init;
-        }
-        self.iter.fold(init, f)
-    }
-
     fn try_fold<B, F, R>(&mut self, init: B, f: F) -> R
     where
         Self: Sized,
