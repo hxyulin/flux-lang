@@ -3,6 +3,8 @@
 use super::*;
 
 type Errors = Vec<(flux_hir::FileId, TextRange, String)>;
+/// The slots of each of a list of types.
+type Tables = Box<[Box<[Region]>]>;
 
 /// Resolves the lifetimes of the signatures of `items` from `from` on,
 /// whose types `sigs` has, into `sigs.regions`, reporting what is wrong
@@ -30,6 +32,7 @@ pub(crate) fn resolve_regions(
             &t.generics,
             t.supertraits.iter(),
             items.is_core(t.loc.module),
+            false,
             &mut list,
         );
         for ty in &t.types {
@@ -37,6 +40,7 @@ pub(crate) fn resolve_regions(
                 &Generics::default(),
                 ty.bounds.iter(),
                 items.is_core(t.loc.module),
+                false,
                 &mut list,
             );
         }
@@ -116,6 +120,7 @@ fn structs(
             &s.generics,
             std::iter::empty(),
             items.is_core(s.loc.module),
+            false,
             &mut list,
         );
         errors.extend(list.into_iter().map(|(r, m)| (s.loc.file, r, m)));
@@ -216,11 +221,39 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
             })
             .collect();
         let mut list = std::mem::take(&mut walker.errors);
+        // rustc's E0207: an associated type may name only lifetimes the
+        // header or the bounds' associated types decide.
+        let mut in_bounds = Vec::new();
+        for p in imp.generics.predicates.iter() {
+            for args in p.bound.path.args.iter().flatten() {
+                for b in args.bindings.iter() {
+                    lifetimes_in(&b.ty, &mut in_bounds);
+                }
+            }
+        }
+        for (i, l) in imp.generics.lifetimes.iter().enumerate() {
+            let r = Region::Param(i as u32);
+            let decided = self_regions
+                .iter()
+                .chain(trait_args.iter().flat_map(|a| a.iter()))
+                .any(|&s| s == r)
+                || in_bounds.iter().any(|b| b.name == l.name);
+            if !decided && types.iter().any(|(_, t)| t.contains(&r)) {
+                list.push((
+                    l.range,
+                    format!(
+                        "the lifetime parameter `{}` is not constrained by the impl trait, self type, or predicates",
+                        l.name
+                    ),
+                ));
+            }
+        }
         let names = walker.names.clone();
         check_bounds(
             &imp.generics,
             std::iter::empty(),
             items.is_core(imp.module),
+            true,
             &mut list,
         );
         let mut outlives = Vec::new();
@@ -233,40 +266,25 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
             &mut outlives,
             &mut list,
         );
+        dedup(&mut outlives);
+        let bounds: Box<[Outlives<Region>]> = outlives.clone().into();
         implied_outlives(items, sigs, self_ty, &self_regions, &mut outlives);
         if let Some(trait_ref) = trait_ref {
             for (&arg, regions) in trait_ref.args.iter().zip(&trait_args) {
                 implied_outlives(items, sigs, arg, regions, &mut outlives);
             }
         }
-        // A trait's block is chosen by its types alone, so its header
-        // must hold whatever their lifetimes are: each a parameter of its
-        // own, used once, without bounds.
-        if imp.trait_ref.is_some() {
-            let mut seen = Vec::new();
-            let general = self_regions
-                .iter()
-                .chain(trait_args.iter().flat_map(|a| a.iter()))
-                .all(|r| match r {
-                    Region::Param(i) if !seen.contains(i) => {
-                        seen.push(*i);
-                        true
-                    }
-                    Region::Erased => true,
-                    _ => false,
-                })
-                && imp.generics.outlives.is_empty()
-                && imp.generics.type_outlives.is_empty();
-            if !general {
-                list.push((
-                    imp.def_range,
-                    "trait implementations for some lifetimes only are not supported yet"
-                        .to_owned(),
-                ));
-            }
-        }
         errors.extend(list.into_iter().map(|(r, m)| (imp.file, r, m)));
         dedup(&mut outlives);
+        let (bound_selfs, projections) = bound_regions(
+            items,
+            imp.module,
+            &imp.generics,
+            &names,
+            &generics,
+            sigs.impl_predicates.get(id).map_or(&[][..], |p| p),
+            sigs.impl_projections.get(id).map_or(&[][..], |p| p),
+        );
         sigs.regions.impls.insert(
             id,
             ImplRegions {
@@ -275,6 +293,9 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
                 trait_args: trait_args.into(),
                 types,
                 outlives: outlives.into(),
+                bounds,
+                bound_selfs,
+                projections,
             },
         );
     }
@@ -361,6 +382,7 @@ fn functions(
             &function.generics,
             std::iter::empty(),
             items.is_core(function.loc.module),
+            true,
             &mut list,
         );
         let mut outlives = owner_outlives;
@@ -384,6 +406,15 @@ fn functions(
         });
         dedup(&mut outlives);
         errors.extend(list.into_iter().map(|(r, m)| (function.loc.file, r, m)));
+        let (bound_selfs, projections) = bound_regions(
+            items,
+            function.loc.module,
+            &function.generics,
+            &names,
+            &generics,
+            sigs.fn_predicates.get(id).map_or(&[][..], |p| p),
+            sigs.fn_projections.get(id).map_or(&[][..], |p| p),
+        );
         sigs.regions.fns.insert(
             id,
             FnRegions {
@@ -394,9 +425,58 @@ fn functions(
                 outlives: outlives.into(),
                 has_bounds: !function.generics.outlives.is_empty()
                     || !function.generics.type_outlives.is_empty(),
+                bound_selfs,
+                projections,
             },
         );
     }
+}
+
+/// The slots of the types `generics`' bounds are on, as `predicates`
+/// lists them, and of what they say associated types are, as
+/// `projections` does (those that resolved, in order), with the
+/// lifetimes `names` and the type parameters `type_names` in scope;
+/// none where they cannot be matched, which only errors cause.
+fn bound_regions(
+    items: &ItemTree,
+    module: ModuleId,
+    generics: &Generics,
+    names: &[Option<Symbol>],
+    type_names: &[Symbol],
+    predicates: &[crate::Predicate],
+    projections: &[crate::traits::Projection],
+) -> (Tables, Tables) {
+    let mut walker = Walker::new(items, module, names.to_vec());
+    walker.scope = TypeScope {
+        generics: type_names,
+        ..TypeScope::default()
+    };
+    let written = &generics.predicates;
+    let selfs = if predicates.len() == written.len() {
+        written
+            .iter()
+            .zip(predicates)
+            .map(|(w, p)| walker.regions(&w.ty, p.self_ty))
+            .collect()
+    } else {
+        Box::default()
+    };
+    let bindings = written.iter().flat_map(|w| {
+        let last = w.bound.path.segments.len().saturating_sub(1);
+        w.bound.path.args(last).map_or(&[][..], |a| &a.bindings)
+    });
+    let mut tables = Vec::with_capacity(projections.len());
+    for (b, p) in bindings.zip(projections) {
+        if b.name != p.alias.name {
+            return (selfs, Box::default());
+        }
+        tables.push(walker.regions(&b.ty, p.ty));
+    }
+    if tables.len() != projections.len() {
+        return (selfs, Box::default());
+    }
+    // Errors are the bounds' own, reported with them.
+    (selfs, tables.into())
 }
 
 /// rustc's E0107 for lifetime arguments to a `kind` that takes none.
@@ -466,14 +546,17 @@ fn bounds_outlives(
 /// lifetime is an error there (E0637), as in rustc, and a lifetime
 /// argument is one too, since traits have no lifetime parameters. In a
 /// `Fn`-family bound, elided lifetimes among the parameters are its own
-/// (higher-ranked), and supported. `core` may name lifetimes in its
-/// bounds' associated type bindings (`I: Iterator<Item = &'a T>`)
-/// where nothing it returns has them, so that what is erased is never
-/// needed: `Iterator::copied`, `Sum<&'a i32>`.
+/// (higher-ranked), and supported. Where the bounds are a function's or
+/// an `impl` block's (`tracked`), what they say associated types are
+/// may name lifetimes (`I: Iterator<Item = &'a T>`), which the borrow
+/// checker relates. `core` may name lifetimes in its bounds' generic
+/// arguments where nothing it returns has them, so that what is erased
+/// is never needed: `Sum<&'a i32>`.
 fn check_bounds<'b>(
     generics: &'b Generics,
     more: impl Iterator<Item = &'b flux_hir::Bound>,
     in_core: bool,
+    tracked: bool,
     errors: &mut Vec<(TextRange, String)>,
 ) {
     for bound in generics.predicates.iter().map(|p| &p.bound).chain(more) {
@@ -516,7 +599,9 @@ fn check_bounds<'b>(
             }
             for b in args.bindings.iter() {
                 elided_in(&b.ty, &mut elided);
-                lifetimes_in(&b.ty, &mut named);
+                if !tracked {
+                    lifetimes_in(&b.ty, &mut named);
+                }
             }
             for at in elided {
                 errors.push((

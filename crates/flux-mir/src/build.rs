@@ -2062,9 +2062,6 @@ impl Builder<'_> {
                 _ => None,
             },
             Expr::Tuple(fields) | Expr::Array(fields) => {
-                if matches!(ty.kind(), TyKind::Array(..)) && fields.is_empty() {
-                    return None;
-                }
                 let values: Option<Vec<Value>> =
                     fields.iter().map(|&f| self.promotable(f)).collect();
                 Some(Value::Aggregate(values?))

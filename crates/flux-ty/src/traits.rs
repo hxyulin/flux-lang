@@ -17,6 +17,7 @@ use flux_hir::{
 use flux_intern::{Symbol, kw};
 use flux_syntax::TextRange;
 
+use crate::regions::{ImplRegions, Outlives, Region, StructRegions};
 use crate::ty::{AliasTy, ClosureArgs, GenericArgs, Mutability, Ty, TyKind};
 use crate::{ConstInstance, Instance, Signatures, TypeScope, resolve_type, wrong_arg_count};
 
@@ -3208,6 +3209,101 @@ fn written_trait_ref(sigs: &Signatures, p: Predicate) -> String {
 /// with arguments other than distinct type parameters (E0366), or with
 /// bounds the struct does not have (E0367): a value is dropped the same
 /// way whatever its type's arguments are.
+/// rustc's E0367 for the lifetime bounds of `Drop` impl `imp` (`'b: 'a`,
+/// `T: 'a`) that its struct, with lifetimes `theirs`, does not have or
+/// imply; the impl's header is the struct's parameters, `args` its type
+/// arguments.
+fn drop_lifetime_bounds(
+    imp: &flux_hir::Impl,
+    regions: &ImplRegions,
+    theirs: &StructRegions,
+    args: &[Ty],
+    error: &mut dyn FnMut(TextRange, &str),
+) {
+    // The impl's lifetime written as `l`, as the struct's.
+    let lifetime = |l: flux_hir::LifetimeRef| -> Option<Region> {
+        if l.is_static() {
+            return Some(Region::Static);
+        }
+        let i = regions.names.iter().position(|n| n.name == Some(l.name))?;
+        let k = regions
+            .self_ty
+            .iter()
+            .position(|&r| r == Region::Param(i as u32))?;
+        Some(Region::Param(k as u32))
+    };
+    // `a: b` among the struct's lifetimes, as its bounds and fields say.
+    let known = |a: Region, b: Region| {
+        let mut reached = vec![a];
+        let mut i = 0;
+        while let Some(&r) = reached.get(i) {
+            i += 1;
+            if r == b || r == Region::Static {
+                return true;
+            }
+            for p in theirs.outlives.iter() {
+                if let Outlives::Region(x, y) = *p
+                    && x == r
+                    && !reached.contains(&y)
+                {
+                    reached.push(y);
+                }
+            }
+        }
+        false
+    };
+    // rustc's span for a lifetime's bound is the header with its `where`
+    // clause.
+    let g = &imp.generics;
+    let end = g
+        .outlives
+        .iter()
+        .map(|p| p.shorter.range.end())
+        .chain(g.type_outlives.iter().map(|p| p.lifetime.range.end()))
+        .chain(g.predicates.iter().map(|p| p.bound.range.end()))
+        .fold(imp.def_range.end(), |a, b| a.max(b));
+    let whole = TextRange::new(imp.def_range.start(), end);
+    for p in g.outlives.iter() {
+        let (Some(a), Some(b)) = (lifetime(p.longer), lifetime(p.shorter)) else {
+            continue;
+        };
+        if !known(a, b) {
+            let message = format!(
+                "`Drop` impl requires `{}: {}` but the struct it is implemented for does not",
+                p.longer.name, p.shorter.name
+            );
+            error(whole, &message);
+        }
+    }
+    for p in g.type_outlives.iter() {
+        let TypeRef::Path(path) = &p.ty else { continue };
+        let Some(name) = path.as_name() else { continue };
+        let Some(j) = g.params.iter().position(|q| q.name == name) else {
+            continue;
+        };
+        // The struct's parameter that the impl's `j` is.
+        let is_param =
+            |t: Ty, i: usize| matches!(t.kind(), TyKind::Param(q) if q.index as usize == i);
+        let Some(k) = args.iter().position(|&a| is_param(a, j)) else {
+            continue;
+        };
+        let Some(b) = lifetime(p.lifetime) else {
+            continue;
+        };
+        let holds = theirs.outlives.iter().any(|q| match *q {
+            Outlives::Type(t, c) => is_param(t, k) && known(c, b),
+            Outlives::Region(..) => false,
+        });
+        if !holds {
+            let message = format!(
+                "`Drop` impl requires `{name}: {}` but the struct it is implemented for does not",
+                p.lifetime.name
+            );
+            error(p.lifetime.range, &message);
+        }
+    }
+}
+
 fn check_drop_impls(
     items: &ItemTree,
     sigs: &Signatures,
@@ -3249,9 +3345,25 @@ fn check_drop_impls(
             }
             _ => true,
         });
+        // Its lifetime arguments too: distinct parameters, not `'static`.
+        let regions = sigs.regions.impls.get(id);
+        let header = regions.map_or(&[][..], |r| &r.self_ty);
+        let mut seen = Vec::new();
+        let specialized = specialized
+            || header.iter().any(|r| match r {
+                Region::Param(i) if !seen.contains(i) => {
+                    seen.push(*i);
+                    false
+                }
+                Region::Erased => false,
+                _ => true,
+            });
         if specialized {
             error(imp.def_range, "`Drop` impls cannot be specialized");
             continue;
+        }
+        if let (Some(regions), Some(theirs)) = (regions, sigs.regions.structs.get(adt.strukt)) {
+            drop_lifetime_bounds(imp, regions, theirs, args, &mut error);
         }
         // Each bound must be one of the struct's, or follow from them.
         let struct_env = elaborate(

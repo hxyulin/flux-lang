@@ -236,6 +236,28 @@ pub(crate) fn impl_method_matches(
         Region::Param(i) => trait_vars.get(i as usize).copied(),
         Region::Erased => None,
     };
+    // What the block's bounds and the method's say associated types are.
+    let declared = sigs
+        .impl_projections
+        .get(imp)
+        .map_or(&[][..], |p| p)
+        .iter()
+        .zip(block.projections.iter())
+        .chain(
+            sigs.fn_projections
+                .get(method)
+                .map_or(&[][..], |p| p)
+                .iter()
+                .zip(ir.projections.iter()),
+        );
+    for (p, table) in declared {
+        let mut map = map_impl;
+        if !table.is_empty()
+            && let Some(vars) = cx.instantiate_sig(p.ty, table, &mut map, &[], &[])
+        {
+            cx.env_regions.push((p.alias, vars));
+        }
+    }
     // The trait's signature for the block's types: `Self` and the
     // trait's parameters are the block's, the method's own parameters
     // the impl method's.
@@ -379,6 +401,12 @@ struct Cx<'a> {
     known: Vec<bool>,
     /// `T: 'a` the bounds and signature say, by universal index.
     known_types: Vec<(Ty, u32)>,
+    /// The function's universal regions that its parameters' types
+    /// name, by index.
+    in_params: Vec<u32>,
+    /// What the bounds in scope say associated types are, where they
+    /// name lifetimes (`I: Iterator<Item = &'a T>`): their slots.
+    env_regions: Vec<(AliasTy, Vec<Var>)>,
     constraints: Vec<Constraint>,
     /// `T: 'r`: what must hold of a parameter or associated type.
     type_tests: Vec<(Ty, Var, TextRange)>,
@@ -403,6 +431,13 @@ struct Cx<'a> {
 struct Value {
     points: IntervalSet,
     ends: Vec<u32>,
+}
+
+/// What matching an `impl` block's header binds: each of its lifetimes,
+/// and each of its type parameters' slots.
+struct ImplBinding {
+    lifetimes: Vec<Option<Var>>,
+    types: Vec<Option<Vec<Var>>>,
 }
 
 struct Solution {
@@ -435,6 +470,8 @@ impl<'a> Cx<'a> {
             known_pairs: Vec::new(),
             known: Vec::new(),
             known_types: Vec::new(),
+            in_params: Vec::new(),
+            env_regions: Vec::new(),
             constraints: Vec::new(),
             type_tests: Vec::new(),
             loan_vars: Vec::new(),
@@ -545,6 +582,42 @@ impl<'a> Cx<'a> {
                             self.known_types.push((t, b));
                         }
                     }
+                }
+            }
+            for table in r.params.iter() {
+                for &region in table.iter() {
+                    if let Region::Param(i) = region
+                        && !self.in_params.contains(&(1 + i))
+                    {
+                        self.in_params.push(1 + i);
+                    }
+                }
+            }
+            // What its bounds and its block's say associated types are.
+            let mut declared: Vec<(flux_ty::traits::Projection, &[Region])> = Vec::new();
+            if let Some(flux_hir::Owner::Impl(imp)) = self.items.functions[f].owner
+                && let Some(block) = sigs.regions.impls.get(imp)
+            {
+                let list = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+                declared.extend(
+                    list.iter()
+                        .copied()
+                        .zip(block.projections.iter().map(|t| &t[..])),
+                );
+            }
+            let list = sigs.fn_projections.get(f).map_or(&[][..], |p| p);
+            declared.extend(
+                list.iter()
+                    .copied()
+                    .zip(r.projections.iter().map(|t| &t[..])),
+            );
+            for (p, table) in declared {
+                if table.is_empty() {
+                    continue;
+                }
+                let mut map_var = map;
+                if let Some(vars) = self.instantiate_sig(p.ty, table, &mut map_var, &[], &[]) {
+                    self.env_regions.push((p.alias, vars));
                 }
             }
             let sig = &sigs.fns[f];
@@ -726,6 +799,12 @@ impl<'a> Cx<'a> {
                 if self.slots(normalized) == 0 {
                     return true;
                 }
+                if let TyKind::Alias(a) = instance.kind()
+                    && let Some((_, vars)) = self.env_regions.iter().find(|(e, _)| *e == a)
+                {
+                    out.extend(vars);
+                    return true;
+                }
                 // Each argument's slots, which are its parameters'.
                 let mut alias_vars = Vec::new();
                 for &a in alias.args {
@@ -762,6 +841,9 @@ impl<'a> Cx<'a> {
         if depth > 16 {
             return None;
         }
+        if let Some((_, vars)) = self.env_regions.iter().find(|(e, _)| *e == alias) {
+            return Some(vars.clone());
+        }
         let (items, sigs) = (self.items, self.sigs);
         let self_ty = alias.args[0];
         let goal = flux_ty::Predicate {
@@ -775,31 +857,14 @@ impl<'a> Cx<'a> {
         if let Some((imp, impl_args)) = flux_ty::traits::select_impl(items, sigs, goal) {
             let value = flux_ty::traits::impl_type(sigs, imp, alias.name)?;
             let regions = sigs.regions.impls.get(imp)?;
-            let mut lifetimes: Vec<Option<Var>> = vec![None; regions.names.len()];
-            let mut types: Vec<Option<Vec<Var>>> = vec![None; impl_args.len()];
-            let header = sigs.impls[imp];
-            let mut matched = self.match_regions(
-                header,
-                &regions.self_ty,
-                self_ty,
-                arg_vars.first()?,
-                &mut lifetimes,
-                &mut types,
-            );
-            let trait_args = sigs.impl_traits.get(imp).map_or(&[][..], |t| t.args);
-            for (k, (&pattern, table)) in
-                trait_args.iter().zip(regions.trait_args.iter()).enumerate()
-            {
-                let (Some(&actual), Some(vars)) = (alias.args.get(k + 1), arg_vars.get(k + 1))
-                else {
-                    return None;
-                };
-                matched &=
-                    self.match_regions(pattern, table, actual, vars, &mut lifetimes, &mut types);
-            }
-            if !matched {
-                return None;
-            }
+            let ImplBinding { lifetimes, types } = self.bind_impl(
+                imp,
+                &impl_args,
+                alias.args,
+                arg_vars,
+                TextRange::default(),
+                depth,
+            )?;
             let mut type_vars = Vec::with_capacity(types.len());
             for (j, t) in types.into_iter().enumerate() {
                 match t {
@@ -824,22 +889,98 @@ impl<'a> Cx<'a> {
         None
     }
 
-    /// Matches `pattern`, an `impl` block's header type with slots
-    /// `table`, to `actual`, with slots `vars`: binds the block's
-    /// lifetimes and its type parameters' slots.
-    fn match_regions(
+    /// Matches `impl` block `imp`'s header, with generic arguments
+    /// `impl_args`, to `header` (`Self` and the trait's arguments), whose
+    /// slots are `header_vars`: binds the block's lifetimes and its type
+    /// parameters' slots. Trait selection ignores lifetimes, so the block
+    /// holds only where they are what its header says: a lifetime or type
+    /// it names twice must be the same each time (`impl<'a> PartialEq for
+    /// Token<'a>`, whose `Rhs` is `Token<'a>` too), and one it names as
+    /// `'static` must be `'static`, as rustc's matching equates them.
+    fn bind_impl(
         &mut self,
-        pattern: Ty,
-        table: &[Region],
-        actual: Ty,
-        vars: &[Var],
-        lifetimes: &mut [Option<Var>],
-        types: &mut [Option<Vec<Var>>],
-    ) -> bool {
-        let (mut t, mut v) = (0, 0);
-        self.match_at(
-            pattern, table, &mut t, actual, vars, &mut v, lifetimes, types,
-        )
+        imp: flux_hir::ImplId,
+        impl_args: &[Ty],
+        header: &[Ty],
+        header_vars: &[Vec<Var>],
+        range: TextRange,
+        depth: u32,
+    ) -> Option<ImplBinding> {
+        let sigs = self.sigs;
+        let regions = sigs.regions.impls.get(imp)?;
+        let mut binding = ImplBinding {
+            lifetimes: vec![None; regions.names.len()],
+            types: vec![None; impl_args.len()],
+        };
+        let mut eqs = Vec::new();
+        let trait_args = sigs.impl_traits.get(imp).map_or(&[][..], |t| t.args);
+        let patterns = std::iter::once(sigs.impls[imp]).chain(trait_args.iter().copied());
+        let tables = std::iter::once(&regions.self_ty).chain(regions.trait_args.iter());
+        for (k, (pattern, table)) in patterns.zip(tables).enumerate() {
+            let (Some(&actual), Some(vars)) = (header.get(k), header_vars.get(k)) else {
+                return None;
+            };
+            let (mut t, mut v) = (0, 0);
+            if !self.match_at(
+                pattern,
+                table,
+                &mut t,
+                actual,
+                vars,
+                &mut v,
+                &mut binding,
+                &mut eqs,
+            ) {
+                return None;
+            }
+        }
+        // What its bounds say associated types are, which may name its
+        // lifetimes and parameters too (`impl<'a, I: Iterator<Item = &'a
+        // T>, T>`): those of the types the header binds.
+        let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+        for (p, table) in projections.iter().zip(regions.projections.iter()) {
+            if table.is_empty() {
+                continue;
+            }
+            let instance = Ty::alias(p.alias).subst(impl_args);
+            let TyKind::Alias(alias) = instance.kind() else {
+                continue;
+            };
+            let type_vars: Vec<Vec<Var>> = binding
+                .types
+                .iter()
+                .map(|t| t.clone().unwrap_or_default())
+                .collect();
+            let mut alias_vars = Vec::with_capacity(p.alias.args.len());
+            for &a in p.alias.args {
+                match self.bound_slots(a, impl_args, &type_vars) {
+                    Some(vars) => alias_vars.push(vars),
+                    None => break,
+                }
+            }
+            if alias_vars.len() != p.alias.args.len() {
+                continue;
+            }
+            let Some(actual) = self.normalize_regions(alias, &alias_vars, depth + 1) else {
+                continue;
+            };
+            let actual_ty = self.normalize(instance);
+            let (mut t, mut v) = (0, 0);
+            self.match_at(
+                p.ty,
+                table,
+                &mut t,
+                actual_ty,
+                &actual,
+                &mut v,
+                &mut binding,
+                &mut eqs,
+            );
+        }
+        for (a, b) in eqs {
+            self.equate(a, b, Category::CallArgument, range);
+        }
+        Some(binding)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -851,22 +992,35 @@ impl<'a> Cx<'a> {
         actual: Ty,
         vars: &[Var],
         v: &mut usize,
-        lifetimes: &mut [Option<Var>],
-        types: &mut [Option<Vec<Var>>],
+        binding: &mut ImplBinding,
+        eqs: &mut Vec<(Var, Var)>,
     ) -> bool {
-        let slot = |t: &mut usize, v: &mut usize, lifetimes: &mut [Option<Var>]| -> bool {
+        let slot = |t: &mut usize,
+                    v: &mut usize,
+                    binding: &mut ImplBinding,
+                    eqs: &mut Vec<(Var, Var)>|
+         -> bool {
             let (r, var) = (table.get(*t).copied(), vars.get(*v).copied());
             *t += 1;
             *v += 1;
             match (r, var) {
-                (Some(Region::Param(i)), Some(var)) => match lifetimes.get_mut(i as usize) {
-                    Some(slot @ None) => {
-                        *slot = Some(var);
-                        true
+                (Some(Region::Param(i)), Some(var)) => {
+                    match binding.lifetimes.get_mut(i as usize) {
+                        Some(slot @ None) => {
+                            *slot = Some(var);
+                            true
+                        }
+                        Some(Some(bound)) => {
+                            eqs.push((*bound, var));
+                            true
+                        }
+                        None => false,
                     }
-                    Some(Some(bound)) => *bound == var,
-                    None => false,
-                },
+                }
+                (Some(Region::Static), Some(var)) => {
+                    eqs.push((STATIC, var));
+                    true
+                }
                 (Some(Region::Erased), Some(_)) => true,
                 _ => false,
             }
@@ -878,34 +1032,37 @@ impl<'a> Cx<'a> {
                     return false;
                 };
                 *v += n;
-                match types.get_mut(p.index as usize) {
+                match binding.types.get_mut(p.index as usize) {
                     Some(slot @ None) => {
                         *slot = Some(own.to_vec());
                         true
                     }
-                    Some(Some(bound)) => bound == own,
-                    None => false,
+                    Some(Some(bound)) if bound.len() == own.len() => {
+                        eqs.extend(bound.iter().copied().zip(own.iter().copied()));
+                        true
+                    }
+                    _ => false,
                 }
             }
             (TyKind::Ref(_, a), TyKind::Ref(_, b)) => {
-                slot(t, v, lifetimes) && self.match_at(a, table, t, b, vars, v, lifetimes, types)
+                slot(t, v, binding, eqs) && self.match_at(a, table, t, b, vars, v, binding, eqs)
             }
             (TyKind::RawPtr(_, a), TyKind::RawPtr(_, b))
             | (TyKind::Array(a, _), TyKind::Array(b, _))
             | (TyKind::Slice(a), TyKind::Slice(b)) => {
-                self.match_at(a, table, t, b, vars, v, lifetimes, types)
+                self.match_at(a, table, t, b, vars, v, binding, eqs)
             }
             (TyKind::Tuple(xs), TyKind::Tuple(ys)) if xs.len() == ys.len() => xs
                 .iter()
                 .zip(ys)
-                .all(|(&a, &b)| self.match_at(a, table, t, b, vars, v, lifetimes, types)),
+                .all(|(&a, &b)| self.match_at(a, table, t, b, vars, v, binding, eqs)),
             (TyKind::Adt(x, xs), TyKind::Adt(y, ys)) if x.strukt == y.strukt => {
                 let n = self.items.structs[x.strukt].generics.lifetimes.len();
-                (0..n).all(|_| slot(t, v, lifetimes))
+                (0..n).all(|_| slot(t, v, binding, eqs))
                     && xs
                         .iter()
                         .zip(ys)
-                        .all(|(&a, &b)| self.match_at(a, table, t, b, vars, v, lifetimes, types))
+                        .all(|(&a, &b)| self.match_at(a, table, t, b, vars, v, binding, eqs))
             }
             _ => {
                 // Types without slots of their own to bind.
@@ -1502,6 +1659,280 @@ impl<'a> Cx<'a> {
                 }
             }
         }
+        // Its trait bounds (`Self: Tr` first, for a trait's method), as
+        // the `impl` blocks for the call's types meet them, and what they
+        // say associated types are.
+        let owner = items.functions[func].owner;
+        let block = match owner {
+            Some(flux_hir::Owner::Impl(imp)) => sigs.regions.impls.get(imp).map(|r| (imp, r)),
+            _ => None,
+        };
+        let mut bounds: Vec<(flux_ty::Predicate, &[Region])> = Vec::new();
+        match (owner, block) {
+            (Some(flux_hir::Owner::Impl(_)), Some((imp, r))) => {
+                let list = sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
+                for (k, &p) in list.iter().enumerate() {
+                    bounds.push((p, r.bound_selfs.get(k).map_or(&[][..], |t| t)));
+                }
+            }
+            _ => {
+                for p in flux_ty::traits::owner_predicates(items, sigs, owner) {
+                    bounds.push((p, &[]));
+                }
+            }
+        }
+        let own = sigs.fn_predicates.get(func).map_or(&[][..], |p| p);
+        for (k, &p) in own.iter().enumerate() {
+            bounds.push((p, regions.bound_selfs.get(k).map_or(&[][..], |t| t)));
+        }
+        for (p, table) in bounds {
+            self.prove_bound(p, table, &lifetimes, generic_args, &type_vars, range, 0);
+        }
+        let mut declared: Vec<(flux_ty::traits::Projection, &[Region])> = Vec::new();
+        if let Some((imp, r)) = block {
+            let list = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+            declared.extend(
+                list.iter()
+                    .copied()
+                    .zip(r.projections.iter().map(|t| &t[..])),
+            );
+        }
+        let list = sigs.fn_projections.get(func).map_or(&[][..], |p| p);
+        declared.extend(
+            list.iter()
+                .copied()
+                .zip(regions.projections.iter().map(|t| &t[..])),
+        );
+        for (p, table) in declared {
+            self.prove_projection(p, table, &lifetimes, generic_args, &type_vars, range);
+        }
+    }
+
+    /// The slots of an instance of `ty`, a type in a bound's terms (whose
+    /// own lifetimes are not written down, so fresh), for generic
+    /// arguments `args` with slots `arg_vars`; `None` where they cannot
+    /// be matched to the instance's type.
+    fn bound_slots(&mut self, ty: Ty, args: &[Ty], arg_vars: &[Vec<Var>]) -> Option<Vec<Var>> {
+        self.bound_slots_in(ty, &[], &[], args, arg_vars)
+    }
+
+    /// The slots of an instance of `ty`, as [`Cx::bound_slots`], whose
+    /// own are `table`, in terms of an item's lifetimes `lifetimes`.
+    fn bound_slots_in(
+        &mut self,
+        ty: Ty,
+        table: &[Region],
+        lifetimes: &[Var],
+        args: &[Ty],
+        arg_vars: &[Vec<Var>],
+    ) -> Option<Vec<Var>> {
+        const HOLE: Var = Var::MAX;
+        let mut map = |r: Region| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => Some(lifetimes.get(i as usize).copied().unwrap_or(HOLE)),
+            Region::Erased => Some(HOLE),
+        };
+        let mut vars = self.instantiate_sig(ty, table, &mut map, args, arg_vars)?;
+        for v in &mut vars {
+            if *v == HOLE {
+                *v = self.fresh();
+            }
+        }
+        Some(vars)
+    }
+
+    /// Proves bound `p`, in the terms of an item whose lifetimes are
+    /// `lifetimes` and generic arguments `args`, with slots `arg_vars`;
+    /// the type it is on has slots `self_table`.
+    #[allow(clippy::too_many_arguments)]
+    fn prove_bound(
+        &mut self,
+        p: flux_ty::Predicate,
+        self_table: &[Region],
+        lifetimes: &[Var],
+        args: &[Ty],
+        arg_vars: &[Vec<Var>],
+        range: TextRange,
+        depth: u32,
+    ) {
+        let mut header = Vec::with_capacity(1 + p.trait_ref.args.len());
+        let mut vars = Vec::with_capacity(header.capacity());
+        for (k, &t) in std::iter::once(&p.self_ty)
+            .chain(p.trait_ref.args)
+            .enumerate()
+        {
+            let instance = self.normalize(t.subst(args));
+            let table = if k == 0 { self_table } else { &[] };
+            let Some(v) = self.bound_slots_in(t, table, lifetimes, args, arg_vars) else {
+                return;
+            };
+            if v.len() != self.slots(instance) as usize {
+                return;
+            }
+            header.push(instance);
+            vars.push(v);
+        }
+        let goal = flux_ty::Predicate {
+            self_ty: header[0],
+            trait_ref: flux_ty::TraitRef {
+                args: Ty::list(&header[1..]),
+                ..p.trait_ref
+            },
+        };
+        self.prove(goal, &vars, range, depth);
+    }
+
+    /// Proves `goal`, whose self type and trait arguments have slots
+    /// `vars`, by the `impl` block for its types, as rustc's trait
+    /// selection does in the borrow checker: the block is chosen by
+    /// types alone, then its header's lifetimes and its bounds, and
+    /// those of the blocks its own bounds choose, constrain the goal's.
+    /// A bound in scope proves a goal on a generic parameter, and says
+    /// nothing of lifetimes.
+    fn prove(&mut self, goal: flux_ty::Predicate, vars: &[Vec<Var>], range: TextRange, depth: u32) {
+        let (items, sigs) = (self.items, self.sigs);
+        if depth > 8 || vars.iter().all(|v| v.is_empty()) {
+            return;
+        }
+        if let Some(elem) = flux_ty::traits::builtin_array_impl(items, goal) {
+            // Arrays' impls are built in, element by element.
+            let header = std::iter::once(goal.self_ty).chain(goal.trait_ref.args.iter().copied());
+            let mut elem_vars = Vec::new();
+            for (ty, vars) in header.zip(vars) {
+                // An array's or slice's slots are its element's; behind a
+                // reference (`[A; N] == &[B]`), after the reference's.
+                let vars = match ty.kind() {
+                    TyKind::Ref(_, inner)
+                        if matches!(inner.kind(), TyKind::Array(..) | TyKind::Slice(_)) =>
+                    {
+                        vars.get(1..).unwrap_or(&[])
+                    }
+                    _ => &vars[..],
+                };
+                elem_vars.push(vars.to_vec());
+            }
+            return self.prove(elem, &elem_vars, range, depth + 1);
+        }
+        if matches!(
+            goal.self_ty.kind(),
+            TyKind::Param(_)
+                | TyKind::Alias(_)
+                | TyKind::Infer(_)
+                | TyKind::Closure(..)
+                | TyKind::FnDef(_)
+                | TyKind::FnPtr(_)
+        ) {
+            return;
+        }
+        let Some((imp, impl_args)) = flux_ty::traits::select_impl(items, sigs, goal) else {
+            return;
+        };
+        let Some(regions) = sigs.regions.impls.get(imp) else {
+            return;
+        };
+        let header: Vec<Ty> = std::iter::once(goal.self_ty)
+            .chain(goal.trait_ref.args.iter().copied())
+            .collect();
+        let Some(binding) = self.bind_impl(imp, &impl_args, &header, vars, range, depth) else {
+            return;
+        };
+        // Lifetimes and types the header does not name are free.
+        let lifetimes: Vec<Var> = binding
+            .lifetimes
+            .into_iter()
+            .map(|l| l.unwrap_or_else(|| self.fresh()))
+            .collect();
+        let mut type_vars = Vec::with_capacity(binding.types.len());
+        for (j, t) in binding.types.into_iter().enumerate() {
+            let vars = match t {
+                Some(vars) => vars,
+                None => {
+                    let n = self.slots(impl_args[j]);
+                    self.fresh_list(n)
+                }
+            };
+            type_vars.push(vars);
+        }
+        let map = |r: Region| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => lifetimes.get(i as usize).copied(),
+            Region::Erased => None,
+        };
+        for p in regions.bounds.iter() {
+            match *p {
+                Outlives::Region(a, b) => {
+                    if let (Some(a), Some(b)) = (map(a), map(b)) {
+                        self.outlives(a, b, Category::CallArgument, range);
+                    }
+                }
+                Outlives::Type(t, b) => {
+                    let Some(b) = map(b) else { continue };
+                    if let TyKind::Param(p) = t.kind()
+                        && let Some(vars) = type_vars.get(p.index as usize)
+                    {
+                        for &v in &vars.clone() {
+                            self.outlives(v, b, Category::CallArgument, range);
+                        }
+                    }
+                    let instance = self.normalize(t.subst(&impl_args));
+                    self.type_outlives(instance, b, range);
+                }
+            }
+        }
+        let predicates = sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
+        for (k, &p) in predicates.iter().enumerate() {
+            let table = regions.bound_selfs.get(k).map_or(&[][..], |t| t);
+            self.prove_bound(
+                p,
+                table,
+                &lifetimes,
+                &impl_args,
+                &type_vars,
+                range,
+                depth + 1,
+            );
+        }
+    }
+
+    /// Proves what bound `p` of an item, with lifetimes `lifetimes`,
+    /// generic arguments `args` and their slots `arg_vars`, says an
+    /// associated type is (`I: Iterator<Item = &'a T>`), its slots
+    /// `table`: the type the instance's normalizes to must be it,
+    /// lifetimes and all.
+    #[allow(clippy::too_many_arguments)]
+    fn prove_projection(
+        &mut self,
+        p: flux_ty::traits::Projection,
+        table: &[Region],
+        lifetimes: &[Var],
+        args: &[Ty],
+        arg_vars: &[Vec<Var>],
+        range: TextRange,
+    ) {
+        if table.is_empty() {
+            return;
+        }
+        let TyKind::Alias(alias) = Ty::alias(p.alias).subst(args).kind() else {
+            return;
+        };
+        let mut alias_vars = Vec::with_capacity(p.alias.args.len());
+        for &a in p.alias.args {
+            let Some(vars) = self.bound_slots(a, args, arg_vars) else {
+                return;
+            };
+            alias_vars.push(vars);
+        }
+        let Some(actual) = self.normalize_regions(alias, &alias_vars, 0) else {
+            return;
+        };
+        let Some(expected) = self.bound_slots_in(p.ty, table, lifetimes, args, arg_vars) else {
+            return;
+        };
+        if actual.len() == expected.len() {
+            for (a, b) in actual.into_iter().zip(expected) {
+                self.equate(a, b, Category::CallArgument, range);
+            }
+        }
     }
 
     /// `T: b` for the parameters and associated types in `ty`.
@@ -1905,8 +2336,21 @@ impl<'a> Cx<'a> {
                     continue;
                 }
                 let target = self.universal[b as usize].0;
-                let (_, range) = self.blame(var, target);
-                errors.push(Diagnostic::new(range, "lifetime may not live long enough"));
+                let (category, range) = self.blame(var, target);
+                // rustc's E0521: a parameter's lifetime that a call needs
+                // to be `'static`.
+                let message = if b == 0
+                    && category == Category::CallArgument
+                    && self.in_params.contains(&a)
+                    && self.body.owner.is_some()
+                {
+                    "borrowed data escapes outside of function"
+                } else {
+                    "lifetime may not live long enough"
+                };
+                errors.push(Diagnostic::new(range, message));
+                // One error per lifetime, as rustc reports.
+                break;
             }
         }
         errors
