@@ -1063,6 +1063,28 @@ impl Checker<'_> {
             {
                 continue;
             }
+            // Accessing a reference's storage does not access the data
+            // behind a shared reference (or a raw pointer). In particular,
+            // borrowing a struct mutably may replace its `&T` field while
+            // a borrow of that field's pointee is still live. A mutable
+            // reference's pointee remains protected against deep accesses.
+            if (place.projection.len()..loan.place.projection.len()).any(|i| {
+                loan.place.projection[i] == ProjectionElem::Deref
+                    && matches!(
+                        self.body
+                            .place_ty(
+                                &Place {
+                                    local: loan.place.local,
+                                    projection: loan.place.projection[..i].into(),
+                                },
+                                self.sigs,
+                            )
+                            .kind(),
+                        TyKind::Ref(Mutability::Not, _) | TyKind::RawPtr(..)
+                    )
+            }) {
+                continue;
+            }
             // A two-phase loan is shared until its call, while what
             // holds it is still to be passed.
             let reserved = loan.two_phase

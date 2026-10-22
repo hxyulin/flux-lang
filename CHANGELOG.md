@@ -1031,6 +1031,15 @@
   of the path to it. Captures are ordered by binding, in the order each
   is first used, and by field within one, so a closure drops them in
   rustc's order.
+- Avoid reading an uncaptured single-variant enum when a closure's
+  pattern only tests its variant and wildcard fields. Indexed captures
+  also support `ref` and `ref mut` bindings inside field patterns.
+- Allow borrowing a struct mutably while a borrow through one of its
+  shared-reference fields is live, without relaxing conflicts through
+  mutable references. Track function-item output lifetimes through
+  iterator adapters using the function's signature, including invariant
+  references; function-pointer outputs conservatively keep all argument
+  lifetimes equal. This fixes false borrow errors in the JSON example.
 
 ### Performance
 
