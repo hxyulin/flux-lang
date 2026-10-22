@@ -1,0 +1,211 @@
+fn call<F>(_1: F) -> u8 {
+    let mut _0: u8;
+    let _2: u8; // x
+    let _3: &u8;
+    let _4: &F;
+    let _5: &u8;
+    let _6: (&u8,);
+
+    bb0: {
+        _2 = const 5_u8;
+        _4 = &_1;
+        _5 = &_2;
+        _6 = (copy _5,);
+        _3 = call::<F, (&u8,)>(copy _4, move _6) -> bb1;
+    }
+
+    bb1: {
+        _0 = copy (*_3);
+        StorageDead(_3);
+        StorageDead(_2);
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn escapes<F>(_1: F) -> &u8 {
+    let mut _0: &u8;
+    let _2: u8; // x
+    let _3: &F;
+    let _4: &u8;
+    let _5: (&u8,);
+
+    bb0: {
+        _2 = const 5_u8;
+        _3 = &_1;
+        _4 = &_2;
+        _5 = (copy _4,);
+        _0 = call::<F, (&u8,)>(copy _3, move _5) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_2);
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn dangling<F>(_1: F) -> u8 {
+    let mut _0: u8;
+    let _2: &u8; // r
+    let _3: ();
+    let _4: u8; // y
+    let _5: ();
+    let _6: &u8;
+    let _7: &F;
+    let _8: &u8;
+    let _9: (&u8,);
+
+    bb0: {
+        _4 = const 7_u8;
+        _7 = &_1;
+        _8 = &_4;
+        _9 = (copy _8,);
+        _6 = call::<F, (&u8,)>(copy _7, move _9) -> bb1;
+    }
+
+    bb1: {
+        _2 = copy _6;
+        _5 = const ();
+        _3 = const ();
+        StorageDead(_4);
+        _0 = copy (*_2);
+        StorageDead(_2);
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: u8; // outside
+    let _2: u8; // a
+    let _3: {closure};
+    let _4: &u8;
+    let _5: u8; // b
+    let _6: {closure};
+    let _7: (u8, u8);
+    let _8: u8;
+    let _9: u8;
+
+    bb0: {
+        _1 = const 9_u8;
+        _4 = &_1;
+        _3 = {closure}(move _4);
+        _2 = call::<{closure}>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _6 = {closure}();
+        _5 = call::<{closure}>(copy _6) -> bb2;
+    }
+
+    bb2: {
+        _8 = copy _2;
+        _9 = copy _5;
+        _7 = (copy _8, copy _9);
+        StorageDead(_7);
+        _0 = const ();
+        StorageDead(_5);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main::{closure#4} as Fn(_1: &{closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+
+    bb0: {
+        _0 = &(*(*_1).0);
+        return;
+    }
+}
+
+fn main::{closure#4} as FnMut(_1: &mut {closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#4} as FnOnce(_1: {closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#8} as Fn(_1: &{closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &u8; // v
+
+    bb0: {
+        _3 = copy _2.0;
+        _0 = copy _3;
+        return;
+    }
+}
+
+fn main::{closure#8} as FnMut(_1: &mut {closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#8} as FnOnce(_1: {closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+error 378..383: cannot return value referencing local variable `x`
+error 482..484: `y` does not live long enough
+error 562..569: `outside` does not live long enough

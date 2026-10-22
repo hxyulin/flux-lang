@@ -1,0 +1,27 @@
+struct S<'a>(&'a i32);
+
+impl<'a> S<'a>;
+
+fn shadow<'a, F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+
+fn where_shadow<'a, F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+
+fn reserved<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+
+fn anonymous<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+
+fn bounded<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+
+fn S::shadow<F>(self@0: &Self, f@1: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+
+fn output_only<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+
+fn main() -> () {}
+
+error 97..99: lifetime name `'a` shadows a lifetime name that is already in scope
+error 178..180: lifetime name `'a` shadows a lifetime name that is already in scope
+error 232..239: invalid lifetime parameter name: `'static`
+error 304..306: `'_` cannot be used here
+error 357..364: bounds cannot be used in this context
+error 461..463: lifetime name `'a` shadows a lifetime name that is already in scope
+error 546..553: binding for associated type `Output` references lifetime `'a`, which does not appear in the trait input types

@@ -4,6 +4,12 @@
 
 ### Syntax
 
+- Support reference results in `Fn`, `FnMut` and `FnOnce` bounds, with
+  the result borrowing from the input (`F: Fn(&T) -> &U`), including
+  equivalent single-lifetime `for<'a>` binders. Check each call's
+  result lifetime and reject closures whose captured borrows cannot
+  satisfy the bound.
+
 - Add a lexer for Rust edition 2024 tokens: nested comments, raw
   identifiers, lifetimes, char, byte, string, raw string, byte string and C
   string literals, and integer and float literals with suffixes.

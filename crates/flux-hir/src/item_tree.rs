@@ -5296,15 +5296,26 @@ fn lower_bounds(
                 }
                 Relaxed::Unsupported => "`?Sized` bounds",
             }
-        } else if bound.for_token().is_some() {
-            "higher-ranked bounds"
         } else if bound.l_paren_token().is_some() {
             "parenthesized bounds"
         } else {
             let Some(path) = bound.path_type().and_then(|p| p.path()) else {
                 continue;
             };
-            if let Some(path) = lower_trait_path(path, diagnostics) {
+            // `for<'a> Fn(&'a T) -> &'a U` is `Fn(&T) -> &U`, which flux
+            // supports; other higher-ranked bounds it does not yet.
+            let binder = bound
+                .for_token()
+                .map(|_| binder_names(bound.generic_param_list(), diagnostics));
+            if let Some(mut path) = lower_trait_path(path, diagnostics) {
+                match binder {
+                    Some(Some(names)) if elide_fn_binder(&mut path, &names, diagnostics) => {}
+                    Some(_) => {
+                        unsupported(diagnostics, range, "higher-ranked bounds");
+                        continue;
+                    }
+                    None => {}
+                }
                 out.push(Bound { path, range });
             }
             continue;
@@ -5361,7 +5372,11 @@ fn collect_generics_as_written(
         };
         for pred in clause.predicates() {
             let range = pred.syntax().text_range();
-            if pred.for_token().is_some() {
+            // `where for<'a> F: Fn(&'a T) -> &'a U`, as the bound's own.
+            let binder = pred
+                .for_token()
+                .map(|_| binder_names(pred.generic_param_list(), diagnostics));
+            if let Some(None) = binder {
                 unsupported(diagnostics, range, "higher-ranked bounds");
                 continue;
             }
@@ -5406,6 +5421,14 @@ fn collect_generics_as_written(
             }
             if !relaxed_here.is_empty() {
                 relaxed.push((ty.clone(), relaxed_here));
+            }
+            if let Some(Some(names)) = &binder
+                && !bounds
+                    .iter_mut()
+                    .all(|b| elide_fn_binder(&mut b.path, names, diagnostics))
+            {
+                unsupported(diagnostics, range, "higher-ranked bounds");
+                continue;
             }
             predicates.extend(bounds.into_iter().map(|bound| WherePredicate {
                 ty: ty.clone(),
@@ -6446,4 +6469,127 @@ pub fn is_primitive(name: Symbol) -> bool {
         sym::usize,
     ]
     .contains(&name)
+}
+
+/// The lifetimes a `for<'a, 'b>` binder declares, if it declares only
+/// lifetimes.
+fn binder_names(
+    list: Option<ast::GenericParamList<'_>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<Symbol>> {
+    let list = list?;
+    let mut names = Vec::new();
+    for param in list.generic_params() {
+        match param {
+            ast::GenericParam::LifetimeParam(l) => {
+                let lifetime = lower_lifetime(l.lifetime()?);
+                if lifetime.is_static() {
+                    diagnostics.push(Diagnostic::new(
+                        lifetime.range,
+                        "invalid lifetime parameter name: `'static`",
+                    ));
+                } else if lifetime.is_anonymous() {
+                    diagnostics.push(Diagnostic::new(lifetime.range, "`'_` cannot be used here"));
+                }
+                if let Some(bounds) = l.type_bound_list() {
+                    diagnostics.push(Diagnostic::new(
+                        bounds.syntax().text_range(),
+                        "bounds cannot be used in this context",
+                    ));
+                }
+                // Check before erasing the binder. A block starts a new
+                // item scope: nested items do not inherit its lifetimes.
+                let mut ancestor = list.syntax().parent();
+                while let Some(node) = ancestor {
+                    if node.kind() == SyntaxKind::BLOCK_EXPR {
+                        break;
+                    }
+                    let shadows = node.children().filter_map(ast::GenericParamList::cast).any(|g| {
+                        g.syntax() != list.syntax() && g.generic_params().any(|p| {
+                            matches!(p, ast::GenericParam::LifetimeParam(p)
+                                if p.lifetime().is_some_and(|l| Symbol::intern(l.text()) == lifetime.name))
+                        })
+                    });
+                    if shadows {
+                        diagnostics.push(Diagnostic::new(
+                            lifetime.range,
+                            format!("lifetime name `{}` shadows a lifetime name that is already in scope", lifetime.name),
+                        ));
+                        break;
+                    }
+                    ancestor = node.parent();
+                }
+                names.push(lifetime.name);
+            }
+            _ => return None,
+        }
+    }
+    Some(names)
+}
+
+/// Rewrites a `Fn`-family bound under a binder of one lifetime,
+/// `for<'a> Fn(&'a T) -> &'a U`, as the elided `Fn(&T) -> &U` it means:
+/// whether it could, as the lifetime is its parameters' only one and
+/// appears only on references.
+fn elide_fn_binder(path: &mut Path, names: &[Symbol], diagnostics: &mut Vec<Diagnostic>) -> bool {
+    let [name] = names else {
+        return names.is_empty();
+    };
+    let last = path.segments.len().saturating_sub(1);
+    let Some(Some(args)) = path.args.get_mut(last) else {
+        return false;
+    };
+    if !args.parenthesized {
+        return false;
+    }
+    fn walk(ty: &mut TypeRef, name: Symbol, count: &mut u32, named: &mut bool) -> bool {
+        match ty {
+            TypeRef::Ref {
+                lifetime, pointee, ..
+            } => {
+                match lifetime {
+                    Some(l) if l.name == name => {
+                        *lifetime = None;
+                        *count += 1;
+                        *named = true;
+                    }
+                    Some(_) => {}
+                    None => *count += 1,
+                }
+                walk(pointee, name, count, named)
+            }
+            TypeRef::Tuple(list) => list.iter_mut().all(|t| walk(t, name, count, named)),
+            TypeRef::Slice(t) | TypeRef::Ptr { pointee: t, .. } => walk(t, name, count, named),
+            TypeRef::Array { elem, .. } => walk(elem, name, count, named),
+            TypeRef::Path(path) => path.args.iter().flatten().all(|a| {
+                a.lifetimes.iter().all(|l| l.name != name)
+                    && a.types.iter().all(|t| {
+                        matches!(t, TypeRef::Path(_)) || {
+                            let mut inner = 0;
+                            let mut t = t.clone();
+                            walk(&mut t, name, &mut inner, &mut false) && inner == 0
+                        }
+                    })
+            }),
+            _ => true,
+        }
+    }
+    let mut inputs = 0;
+    let mut named_input = false;
+    let ok_inputs = args
+        .types
+        .iter_mut()
+        .all(|t| walk(t, *name, &mut inputs, &mut named_input));
+    let ok_outputs = args.bindings.iter_mut().all(|b| {
+        let mut named_output = false;
+        let ok = walk(&mut b.ty, *name, &mut 0, &mut named_output);
+        if named_output && !named_input {
+            diagnostics.push(Diagnostic::new(
+                b.ty_range,
+                format!("binding for associated type `{}` references lifetime `{name}`, which does not appear in the trait input types", b.name),
+            ));
+        }
+        ok
+    });
+    ok_inputs && ok_outputs && inputs == 1
 }

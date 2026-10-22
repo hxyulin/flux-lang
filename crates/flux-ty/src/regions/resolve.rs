@@ -493,14 +493,36 @@ fn bound_regions(
     };
     let bindings = written.iter().flat_map(|w| {
         let last = w.bound.path.segments.len().saturating_sub(1);
-        w.bound.path.args(last).map_or(&[][..], |a| &a.bindings)
+        let args = w.bound.path.args(last);
+        args.map_or(&[][..], |a| &a.bindings)
+            .iter()
+            .map(move |b| (b, args))
     });
     let mut tables = Vec::with_capacity(projections.len());
-    for (b, p) in bindings.zip(projections) {
+    for ((b, args), p) in bindings.zip(projections) {
         if b.name != p.alias.name {
             return (selfs, Box::default());
         }
-        tables.push(walker.regions(&b.ty, p.ty));
+        let mut table = walker.regions(&b.ty, p.ty).to_vec();
+        // A `Fn`-family bound's result: its elided lifetime is the one
+        // its parameters elide, its own at each call.
+        if let Some(args) = args.filter(|a| a.parenthesized)
+            && let (Some(input), Some(&input_ty)) = (args.types.first(), p.alias.args.get(1))
+        {
+            let inputs = walker.regions(input, input_ty);
+            let elided: Vec<usize> = (inputs.iter().enumerate())
+                .filter(|(_, r)| **r == Region::Erased)
+                .map(|(i, _)| i)
+                .collect();
+            if let [only] = elided[..] {
+                for r in table.iter_mut() {
+                    if *r == Region::Erased {
+                        *r = Region::Late(only as u32);
+                    }
+                }
+            }
+        }
+        tables.push(table.into());
     }
     if tables.len() != projections.len() {
         return (selfs, Box::default());
@@ -683,20 +705,30 @@ fn check_bounds<'b>(
                         "named lifetimes in `Fn` bounds are not supported yet".to_owned(),
                     ));
                 }
+                // An elided lifetime in what it returns is the one its
+                // parameters elide, as a function's (E0106 if they elide
+                // none or several).
+                let mut inputs = Vec::new();
+                for t in args.types.iter() {
+                    elided_in(t, &mut inputs);
+                }
                 for b in args.bindings.iter() {
                     let mut found = Vec::new();
                     elided_in(&b.ty, &mut found);
                     lifetimes_in(&b.ty, &mut named);
-                    if !found.is_empty()
-                        || named.iter().any(|l| {
-                            b.ty_range.start() <= l.range.start()
-                                && l.range.end() <= b.ty_range.end()
-                        })
-                    {
+                    if named.iter().any(|l| {
+                        !l.is_anonymous()
+                            && b.ty_range.start() <= l.range.start()
+                            && l.range.end() <= b.ty_range.end()
+                    }) {
                         errors.push((
                             b.ty_range,
-                            "`Fn` bounds returning references are not supported yet".to_owned(),
+                            "named lifetimes in `Fn` bounds are not supported yet".to_owned(),
                         ));
+                    } else if !found.is_empty() && inputs.len() != 1 {
+                        for at in found {
+                            errors.push((at, "missing lifetime specifier".to_owned()));
+                        }
                     }
                 }
                 continue;
