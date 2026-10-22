@@ -59,7 +59,9 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
             continue;
         }
         let body = build(hir, typed, id);
-        for callee in body.callees() {
+        let mut callees = body.callees();
+        callees.extend(body.object_methods(&hir.items));
+        for callee in callees {
             if expanded.insert(callee) {
                 queue.extend(flux_ty::call_targets(&hir.items, callee));
             }
@@ -69,7 +71,9 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         found.sort_by_key(|e| e.into_raw());
         for expr in found {
             let closure = build_closure(hir, typed, id, expr);
-            for callee in closure.callees() {
+            let mut callees = closure.callees();
+            callees.extend(closure.object_methods(&hir.items));
+            for callee in callees {
                 queue.extend(flux_ty::call_targets(&hir.items, callee));
             }
             let kind = typed.bodies[id].closures[expr].kind;
@@ -295,7 +299,9 @@ fn check_clean_patterns(
             continue;
         }
         let body = build(hir, typed, id);
-        for callee in body.callees() {
+        let mut callees = body.callees();
+        callees.extend(body.object_methods(&hir.items));
+        for callee in callees {
             if expanded.insert(callee) {
                 queue.extend(flux_ty::call_targets(&hir.items, callee));
             }
