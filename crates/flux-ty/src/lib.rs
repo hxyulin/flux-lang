@@ -208,6 +208,7 @@ impl Signatures {
     /// The lookup indexes are rebuilt for the extended item tree.
     fn fork_for_extension(&self) -> Self {
         Self {
+            unions: self.unions.clone(),
             fns: self.fns.clone(),
             structs: self.structs.clone(),
             variant_starts: self.variant_starts.clone(),
