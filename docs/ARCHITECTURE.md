@@ -460,7 +460,8 @@ and infers a body again if it named one only it does. A constant whose
 value needs its own length is a cycle. A length written as another
 expression (`[u8; N + 1]`) is an *anonymous constant*, as in rustc:
 the item tree collects one per such expression in each item and body
-(`ItemTree::anon_consts`, by file and node; `Const::anon`), of type
+(`ItemTree::anon_consts`, by file and node, the file being a macro
+expansion's for the items it makes; `Const::anon`), of type
 `usize`, lowered and evaluated like any constant; rustc's
 `min_const_generics` rules (no generic parameters, no generic `Self`)
 are checked as it is collected.
@@ -670,7 +671,9 @@ semantics become explicit, so code generation never sees expressions:
   returns, dropping what is in scope as `return` does.
 
 Only reachable code is built: every function of the program, and the
-functions of `core` that something calls. A generic function is built
+functions of `core` that something calls or names as a value (a
+function item passed on, `.all(u8::is_ascii_digit)`, whose shim calls
+it once monomorphized, or a pointer). A generic function is built
 and checked once, in terms of its parameters; its calls record their
 generic arguments in terms of its own. A constant's value is MIR too,
 which [`eval`](../crates/flux-mir/src/eval.rs) runs at compile time, with
@@ -960,7 +963,10 @@ scrutinee the closure captures only parts of as they go into it. A
 closure is an aggregate of what it captures, so code generation needs
 nothing new for it. Code type checking rules out (a local neither
 declared nor captured, a call of a value that is not callable) is
-lowered to `unreachable` and recorded in `Body::bugs`. Bodies without
+lowered to `unreachable` and recorded in `Body::bugs`, and so is a
+local whose type is an error (`Ty::has_error`), which only a reported
+error may make; monomorphization likewise refuses an instance whose
+generic arguments are errors or parameters. Bodies without
 errors of their own reach it where others have some, such as a call
 of what a failed import should have brought, and those programs are
 never compiled; in a program without errors it is a bug in flux, on

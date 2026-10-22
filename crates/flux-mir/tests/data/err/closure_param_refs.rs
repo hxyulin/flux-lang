@@ -70,4 +70,47 @@ fn firsts<'a>(items: &'a [(u8, &'static str)]) -> impl Iterator<Item = &'static 
     items.iter().map(|i| &i.0)
 }
 
+struct Applier<T, F> {
+    f: F,
+    last: Option<T>,
+}
+
+impl<T: Copy, F: FnMut(T)> Applier<T, F> {
+    fn apply(&mut self, t: T) {
+        self.last = Some(t);
+        (self.f)(t)
+    }
+}
+
+// A closure kept in a struct, given a local later through an `impl`
+// block's bound.
+fn given_later() {
+    let mut out: Option<&i32> = None;
+    let mut a = Applier {
+        f: |x| out = Some(x),
+        last: None,
+    };
+    {
+        let local = 5;
+        a.apply(&local);
+    }
+    drop(a);
+    let _ = out;
+}
+
+fn first_ref<'a, I: Iterator<Item = &'a i32>>(mut it: I) -> Option<&'a i32> {
+    it.next()
+}
+
+// Adapters' items, through a bound saying what they are.
+fn adapted_out() {
+    let r;
+    {
+        let v = [1, 2, 3];
+        let m = v.iter().map(|x| x).filter(|x| **x > 1);
+        r = first_ref(m);
+    }
+    let _ = r;
+}
+
 fn main() {}

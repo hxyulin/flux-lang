@@ -763,6 +763,40 @@
   `core::panic::Location::caller()` and its panics. `tests/run` now
   compares stderr too, and constant evaluation reports `panic!("{}",
   s)` of a `&str` with its message.
+- Fix bugs the second round of example programs found. Type aliases of
+  arrays whose lengths name constants (`type Pair = [u32; N]`), array
+  lengths written as expressions in items a macro defines, `core`
+  functions reached only as values (`.all(u8::is_ascii_hexdigit)`,
+  `.filter(Result::is_ok)`, pointers to them) and closures that only
+  call a captured function (`|b| pred(b)`) compile instead of crashing
+  code generation. A local whose type is an error reaching MIR, or an
+  instance with arguments that are not concrete, is now an internal
+  compiler error rather than invalid code. Arguments other than closures
+  are coerced to their parameters before closures are checked, as in
+  rustc, so `fold(0i32, |acc, x| acc.wrapping_add(x))` knows `acc`.
+- Relate a closure passed to a generic function through the callee's
+  `Fn`-family bounds, as rustc relates closure signatures: closures may
+  return and keep references to their parameters (`map(|i| &i.qty)`,
+  `filter_map(|s| match s { .. })`, `map(|(slot, f)| *slot = f)`), a
+  call's result holds what its closure captures only as its signature
+  says (`map_err(|code| Error::Bad { key, code })`), adapters' items
+  have their closures' lifetimes (`impl Iterator<Item = &'static str>`
+  from `map(|i| i.name)`), and a closure's annotated parameters take the
+  bound's lifetimes (`map(|s: &str| s.trim())`). A bound's own
+  references (`&T` in `F: Fn(&T)`) are higher-ranked: keeping or
+  returning them is E0521 or "lifetime may not live long enough", as in
+  rustc. A `for` loop over an opaque iterator no longer keeps what it
+  borrows in its items.
+- Match rustc's diagnostics more closely: names an unsupported pattern
+  binds stay bound, errors involving error types or receivers of unknown
+  type after other errors are not reported, nor are struct patterns
+  naming a failed import, an associated type's unresolved bound stops
+  type checking, a `match` reports only its first arm that does not
+  fit, identical errors from several expansions of a macro are reported
+  once, conflicts with closures' unique captures are E0500, E0501 and
+  E0524, and a name followed by parentheses or braces where an item
+  should start is rustc's "missing `fn` or `struct` for function or
+  struct definition" (and its other forms).
 
 ### Performance
 
