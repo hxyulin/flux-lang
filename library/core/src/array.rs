@@ -5,7 +5,7 @@
 //! array's type.
 
 use crate::intrinsics::{array_as_mut_slice, array_as_slice, read, subslice};
-use crate::iter::{DoubleEndedIterator, Iterator};
+use crate::iter::{DoubleEndedIterator, ExactSizeIterator, Iterator};
 use crate::marker::PhantomData;
 use crate::mem::{ManuallyDrop, drop};
 use crate::ops::Drop;
@@ -56,7 +56,14 @@ impl<T, A> Iterator for IntoIter<T, A> {
             None
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.end - self.start;
+        (n, Some(n))
+    }
 }
+
+impl<T, A> ExactSizeIterator for IntoIter<T, A> {}
 
 impl<T, A> DoubleEndedIterator for IntoIter<T, A> {
     fn next_back(&mut self) -> Option<T> {

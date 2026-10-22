@@ -430,4 +430,4 @@ fn main() -> () {
 }
 
 error 116..122: `short` does not live long enough
-error 1105..1110: cannot borrow `w` as mutable more than once at a time
+error 1105..1106: cannot borrow `w` as mutable more than once at a time

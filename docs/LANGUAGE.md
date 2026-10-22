@@ -262,7 +262,22 @@ x in &mut array` iterate a slice of the array. `for x in array` and
 `array.into_iter()` iterate it by value, with `core::array::IntoIter`
 (rustc's `IntoIter<T, N>`; flux's is `IntoIter<T, [T; N]>`, which
 messages show as rustc's), which moves the elements out one by one and
-drops those it has not given when it is dropped. Slices' methods are found on arrays, and references to them,
+drops those it has not given when it is dropped. `core::slice` also
+has `first_mut`, `last_mut`, `get_mut`, `split_first`, `split_last`,
+`swap`, `reverse`, `rotate_left`, `rotate_right`, `split_at`,
+`split_at_mut`, `copy_from_slice`, `clone_from_slice`, `fill`,
+`contains`, `starts_with`, `ends_with`, `windows`, `chunks`,
+`chunks_exact`, `chunks_mut` (iterators from both ends), `binary_search`
+(`_by`, `_by_key`, rustc's algorithm, so it finds the same one of equal
+elements), `is_sorted`, and `sort`, `sort_by`, `sort_by_key` (in
+rustc's `alloc`, which flux has none of) and their `sort_unstable`
+forms: one stable merge sort that allocates nothing, so equal elements
+keep their order, as rustc's unstable sort keeps them only up to 20
+elements (it may order them differently beyond). Slices are
+`PartialEq`, `Eq`, `PartialOrd` and `Ord`, comparing elements in turn
+(`a[..2] == b[..2]`, `s < t`). Iterators have `size_hint`, and
+`ExactSizeIterator` (`len`, in the prelude) and `rposition` exist for
+the slice and array iterators. Slices' methods are found on arrays, and references to them,
 as rustc's method probe finds them: the array is borrowed and the
 reference unsized to a slice's (`arr.iter()`, `(&mut arr).last()`). Other
 methods of arrays and slices, comparisons with `<`, and arrays in `const
@@ -461,7 +476,7 @@ form, and parentheses on other traits, are errors, as in rustc), and
 the range structs `Range`, `RangeInclusive`, `RangeFrom`, `RangeTo`,
 `RangeToInclusive` and `RangeFull`, with `contains`. `core::iter` has
 `Iterator` (in the prelude) with `next` and the provided methods
-`count`, `last`, `nth`, `step_by`, `chain`, `zip`, `map`, `for_each`,
+`size_hint`, `rposition`, `count`, `last`, `nth`, `step_by`, `chain`, `zip`, `map`, `for_each`,
 `filter`, `filter_map`, `enumerate`, `skip_while`, `take_while`,
 `skip`, `take`, `fold`, `all`, `any`, `find`, `find_map`, `position`,
 `max`, `min`, `max_by`, `min_by`, `max_by_key`, `min_by_key`, `rev`,

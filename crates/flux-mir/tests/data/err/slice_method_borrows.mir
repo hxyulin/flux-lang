@@ -1,0 +1,186 @@
+fn main() -> () {
+    let mut _0: ();
+    let mut _1: [i32; 4]; // a
+    let _2: &mut [i32]; // l
+    let _3: &mut [i32]; // r
+    let _4: (&mut [i32], &mut [i32]);
+    let _5: &mut [i32; 4];
+    let _6: &mut [i32];
+    let _7: ();
+    let _8: i32;
+    let _9: usize;
+    let _10: usize;
+    let _11: bool;
+    let _12: usize;
+    let _13: usize;
+    let _14: bool;
+    let _15: ();
+    let _16: usize;
+    let _17: bool;
+    let _18: ();
+    let _19: usize;
+    let _20: usize;
+    let _21: bool;
+    let mut _22: [i32; 3]; // b
+    let _23: &mut i32; // first
+    let _24: Option<&mut i32>;
+    let _25: &mut [i32; 3];
+    let _26: &mut [i32];
+    let _27: Option<&mut i32>;
+    let _28: usize; // w
+    let _29: Windows<i32>;
+    let _30: &[i32; 3];
+    let _31: &[i32];
+    let _32: Windows<i32>;
+    let _33: ();
+    let mut _34: [i32; 3]; // c
+    let _35: &[i32]; // s
+    let _36: &[i32; 3];
+    let _37: &[i32];
+    let _38: RangeFull;
+    let _39: &[i32];
+    let _40: ();
+    let _41: &mut [i32; 3];
+    let _42: &mut [i32];
+    let _43: usize;
+    let mut _44: [i32; 3]; // d
+    let _45: ();
+    let _46: &mut [i32; 3];
+    let _47: &mut [i32];
+    let _48: usize;
+    let _49: usize;
+    let _50: &mut [i32]; // e
+    let _51: &mut [i32; 3];
+    let _52: &mut [i32; 3];
+    let _53: ();
+    let _54: &mut [i32];
+    let _55: usize;
+    let _56: usize;
+
+    bb0: {
+        _1 = [const 1_i32, const 2_i32, const 3_i32, const 4_i32];
+        _5 = &mut _1;
+        _6 = move _5 as &mut [i32] (unsize);
+        _4 = split_at_mut::<i32>(move _6, const 2_usize) -> bb1;
+    }
+
+    bb1: {
+        _2 = move _4.0;
+        _3 = move _4.1;
+        StorageDead(_4);
+        _9 = const 0_usize;
+        _10 = Len((*_3));
+        _11 = Lt(copy _9, copy _10);
+        assert(copy _11, "index out of bounds") -> bb2;
+    }
+
+    bb2: {
+        _8 = copy (*_3)[_9];
+        _12 = const 0_usize;
+        _13 = Len((*_2));
+        _14 = Lt(copy _12, copy _13);
+        assert(copy _14, "index out of bounds") -> bb3;
+    }
+
+    bb3: {
+        (*_2)[_12] = copy _8;
+        _7 = const ();
+        _16 = const 0_usize;
+        _17 = Lt(copy _16, const 4_usize);
+        assert(copy _17, "index out of bounds") -> bb4;
+    }
+
+    bb4: {
+        _1[_16] = const 1_i32;
+        _15 = const ();
+        _19 = const 1_usize;
+        _20 = Len((*_3));
+        _21 = Lt(copy _19, copy _20);
+        assert(copy _21, "index out of bounds") -> bb5;
+    }
+
+    bb5: {
+        (*_3)[_19] = const 2_i32;
+        _18 = const ();
+        _22 = [const 1_i32, const 2_i32, const 3_i32];
+        _25 = &mut _22;
+        _26 = move _25 as &mut [i32] (unsize);
+        _24 = first_mut::<i32>(move _26) -> bb6;
+    }
+
+    bb6: {
+        _27 = move _24;
+        _23 = unwrap::<&mut i32>(move _27) -> bb7;
+    }
+
+    bb7: {
+        StorageDead(_24);
+        _30 = &_22;
+        _31 = copy _30 as &[i32] (unsize);
+        _29 = windows::<i32>(copy _31, const 2_usize) -> bb8;
+    }
+
+    bb8: {
+        _32 = move _29;
+        _28 = count::<Windows<i32>>(move _32) -> bb9;
+    }
+
+    bb9: {
+        StorageDead(_29);
+        (*_23) = const 4_i32;
+        _33 = const ();
+        _34 = [const 3_i32, const 1_i32, const 2_i32];
+        _36 = &_34;
+        _37 = copy _36 as &[i32] (unsize);
+        _38 = RangeFull;
+        _39 = index::<[i32], RangeFull>(move _37, copy _38) -> bb10;
+    }
+
+    bb10: {
+        _35 = &(*_39);
+        _41 = &mut _34;
+        _42 = move _41 as &mut [i32] (unsize);
+        _40 = sort::<i32>(move _42) -> bb11;
+    }
+
+    bb11: {
+        _43 = Len(&(*_35));
+        StorageDead(_43);
+        _44 = [const 3_i32, const 1_i32, const 2_i32];
+        _46 = &mut _44;
+        _47 = move _46 as &mut [i32] (unsize);
+        _49 = Len(&_44);
+        _48 = Sub(copy _49, const 1_usize);
+        _45 = swap::<i32>(move _47, const 0_usize, copy _48) -> bb12;
+    }
+
+    bb12: {
+        _52 = &mut _44;
+        _51 = &mut (*_52);
+        _50 = move _51 as &mut [i32] (unsize);
+        _54 = &two_phase (*_50);
+        _56 = Len(&(*_50));
+        _55 = Sub(copy _56, const 1_usize);
+        _53 = swap::<i32>(move _54, const 0_usize, copy _55) -> bb13;
+    }
+
+    bb13: {
+        _0 = const ();
+        StorageDead(_50);
+        StorageDead(_44);
+        StorageDead(_35);
+        StorageDead(_34);
+        StorageDead(_28);
+        StorageDead(_23);
+        StorageDead(_22);
+        StorageDead(_3);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+error 433..441: cannot assign to `a[_]` because it is borrowed
+error 536..537: cannot borrow `b` as immutable because it is also borrowed as mutable
+error 625..626: cannot borrow `c` as mutable because it is also borrowed as immutable
+error 697..698: cannot borrow `d` as immutable because it is also borrowed as mutable

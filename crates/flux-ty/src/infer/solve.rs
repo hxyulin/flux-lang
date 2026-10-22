@@ -1035,7 +1035,7 @@ impl Ctx<'_> {
             return true;
         }
         if let TyKind::Array(elem, _) = ty.kind()
-            && matches!(self.items.traits[t].lang, Some(l) if matches!(l.as_str(), "copy" | "clone" | "eq"))
+            && matches!(self.items.traits[t].lang, Some(l) if matches!(l.as_str(), "copy" | "clone" | "eq" | "total_eq"))
         {
             let args = args.map(|a| {
                 a.iter()

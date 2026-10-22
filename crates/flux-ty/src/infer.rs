@@ -3956,6 +3956,7 @@ impl Ctx<'_> {
                 | TyKind::Alias(_)
                 | TyKind::Ref(..)
                 | TyKind::Array(..)
+                | TyKind::Slice(_)
         );
         let op_range = self.source_map.ops.get(id).copied().unwrap_or_default();
         if let BinaryOp::Cmp(_) = op
@@ -4873,6 +4874,15 @@ impl Ctx<'_> {
                         || self.methods.get(id).is_some_and(|m| m.autoref.is_some()) =>
                 {
                     places.insert(receiver);
+                }
+                // Compared by reference: `a[..2] == b[..2]`.
+                Expr::Binary {
+                    op: BinaryOp::Cmp(_),
+                    lhs,
+                    rhs,
+                } if self.overloads.get(id).is_some() => {
+                    places.insert(lhs);
+                    places.insert(rhs);
                 }
                 _ => {}
             }
