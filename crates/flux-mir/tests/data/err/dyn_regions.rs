@@ -44,8 +44,29 @@ fn overwritten() {
 
 fn main() {}
 
-// A trait object's lifetime bound cannot be checked against an `impl`
-// block's parameter's: rustc's E0521 here, not supported yet in flux.
+// A trait object's lifetime bound against a parameter's (E0521).
+fn need_static<T: ?Sized + 'static>(_: &T) {}
+fn escapes<'a>(x: &'a dyn Tr) {
+    need_static(x);
+}
+fn still_static(x: &(dyn Tr + 'static)) {
+    need_static(x);
+}
+
+// Lifetime bounds written out, which may only shorten.
+fn param_bound<'a, T: Tr>(x: &'a T) -> &'a (dyn Tr + 'static) {
+    x
+}
+fn too_short<'a, 'b>(x: &'a (dyn Tr + 'b)) -> &'a (dyn Tr + 'static) {
+    x
+}
+fn shorter<'a>(x: &'a (dyn Tr + 'static)) -> &'a dyn Tr {
+    x
+}
+fn reborrowed<'a>(x: &'a mut (dyn Tr + 'static)) -> &'a mut dyn Tr {
+    x
+}
+
 trait Two {
     fn two(&self) {}
 }

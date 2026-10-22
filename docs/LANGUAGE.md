@@ -488,16 +488,17 @@ its receiver or as `Self::Item`); every associated type must be given
 (E0191) and every parameter whose default names `Self` (E0393); other
 traits than the first are E0225 (flux has no auto traits), and a bare
 trait as a type is E0782. A method with `where Self: Sized` "cannot be
-invoked on a trait object". A trait object's lifetime bound is the
-reference it is behind, rustc's default (`'static` behind a raw
-pointer), so what a value made one holds must outlive it; other bounds
-(`&'a (dyn Tr + 'static)`), trait objects as arguments of parameters
-with lifetime bounds (`T: 'static`, which rustc checks against the
-object's bound), references and trait objects in a trait
-object's generic arguments, trait objects in constants and statics
-(which are not `Sync` anyway), references to trait objects cast to raw
-pointers, `Box<dyn Tr>`, `dyn Any` and inherent `impl dyn Tr` blocks
-are not supported yet.
+invoked on a trait object". A trait object's lifetime bound (`dyn Tr +
+'a`) is, unless written, rustc's default: the reference it is behind,
+`'static` elsewhere. What a value made a trait object holds must
+outlive it, a bound may only shorten (behind `&mut` too, as rustc's
+unsizing coercion allows), and a parameter's lifetime bound (`T:
+'static`) holds of a trait object if its bound does (E0310, E0521, as
+rustc reports them). References and trait objects in a trait object's
+generic arguments, trait objects in constants and statics (which are
+not `Sync` anyway), references to trait objects cast to raw pointers,
+`Box<dyn Tr>`, `dyn Any` and inherent `impl dyn Tr` blocks are not
+supported yet.
 
 A pattern that is not a binding sees through references, and then binds
 by reference, as rustc's default binding modes do: `Some(x)` matching a

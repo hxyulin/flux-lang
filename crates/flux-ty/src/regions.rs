@@ -7,8 +7,10 @@
 //! slot* of each type in each function's, struct's and `impl` block's
 //! signature. A type's slots are, in order: a reference's own, then its
 //! pointee's; a struct's or enum's lifetime arguments, then its type
-//! arguments' slots; a tuple's, array's or raw pointer's parts'; and a
-//! closure's captures'. A generic parameter, an associated type, and a
+//! arguments' slots; a tuple's, array's or raw pointer's parts'; a
+//! closure's captures'; and a trait object's lifetime bound (`dyn Tr +
+//! 'a`, or rustc's default: the reference it is behind, `'static`
+//! elsewhere). A generic parameter, an associated type, and a
 //! function item or pointer have none: an instance of a signature has
 //! the slots of its types with the arguments substituted, each
 //! parameter's at its place ([`instantiate`]).
@@ -223,6 +225,8 @@ pub fn slots(items: &ItemTree, ty: Ty) -> usize {
         TyKind::Opaque(opaque) => {
             opaque.lifetimes as usize + opaque.args.iter().map(|&t| slots(items, t)).sum::<usize>()
         }
+        // Its lifetime bound; its arguments have none.
+        TyKind::Dynamic(_) => 1,
         _ => 0,
     }
 }
@@ -290,6 +294,7 @@ fn instantiate_at<R: Copy>(
                 instantiate_at(items, t, own, next, region, args, out);
             }
         }
+        TyKind::Dynamic(_) => own_slot(next, out),
         _ => {}
     }
 }
@@ -434,22 +439,15 @@ impl<'a> Walker<'a> {
                 self.walk(pointee, inner, out);
                 self.ref_region = None;
             }
-            // A trait object has no slots: its lifetime bound is the
-            // reference it is behind (rustc's default), or `'static`
-            // behind other pointers, so that is all it may be written
-            // as.
-            (TypeRef::Dyn(d), _) => {
-                if let Some(l) = d.lifetime {
-                    let r = self.named(l);
-                    let default = enclosing.unwrap_or(Region::Static);
-                    if r != default && r != Region::Erased {
-                        self.errors.push((
-                            l.range,
-                            "lifetime bounds on trait objects other than their reference's lifetime are not supported yet"
-                                .to_owned(),
-                        ));
-                    }
-                }
+            // A trait object's lifetime bound, as written, or rustc's
+            // default: the reference it is behind, `'static` elsewhere.
+            (TypeRef::Dyn(d), TyKind::Dynamic(_)) => {
+                let r = match d.lifetime {
+                    Some(l) if l.is_anonymous() => self.elide(l.range),
+                    Some(l) => self.named(l),
+                    None => enclosing.unwrap_or(Region::Static),
+                };
+                out.push(r);
             }
             (TypeRef::Ptr { pointee, .. }, TyKind::RawPtr(_, inner))
             | (TypeRef::Array { elem: pointee, .. }, TyKind::Array(inner, _))
@@ -988,6 +986,7 @@ fn implied_at<R: Copy + PartialEq>(
                 implied_at(items, sigs, t, regions, next, out);
             }
         }
+        TyKind::Dynamic(_) => *next += 1,
         _ => {}
     }
 }

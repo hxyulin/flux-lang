@@ -352,9 +352,22 @@ fn functions(
                 Some(TypeRef::Ref { .. })
             );
         let inputs: Vec<Region> = params.iter().flat_map(|p| p.iter().copied()).collect();
+        // Each parameter's lifetimes, each once, as rustc counts them:
+        // `&'a S<'a>`, and `&dyn Tr`, whose lifetime bound is its
+        // reference's, have one; `x: &'a i32, y: &'a i32` two.
+        let mut distinct: Vec<Region> = Vec::new();
+        for p in params.iter() {
+            let mut own: Vec<Region> = Vec::new();
+            for &r in p.iter() {
+                if !own.contains(&r) {
+                    own.push(r);
+                }
+            }
+            distinct.extend(own);
+        }
         walker.elided = match (self_ref, params.first()) {
             (true, Some(first)) if !first.is_empty() => Elided::Is(first[0]),
-            _ if inputs.len() == 1 => Elided::Is(inputs[0]),
+            _ if distinct.len() == 1 => Elided::Is(distinct[0]),
             _ => {
                 let fresh = |r: &&Region| matches!(r, Region::Param(i) if *i >= first_fresh);
                 let per_param: Vec<(Option<Symbol>, usize)> = function
@@ -819,6 +832,8 @@ impl VarianceWalk<'_> {
                     self.go(t, ambient.xform(Variance::Invariant));
                 }
             }
+            // `dyn Tr + 'a` is covariant in `'a`.
+            TyKind::Dynamic(_) => self.slot(ambient),
             _ => {}
         }
     }
