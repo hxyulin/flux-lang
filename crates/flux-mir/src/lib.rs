@@ -964,10 +964,16 @@ impl Body {
                 }
             }
         }
+        // And what drops a value in place, which a vtable's first word
+        // calls.
+        let drop = (!traits.is_empty())
+            .then(|| flux_ty::objects::drop_in_place(items))
+            .flatten();
         traits
             .into_iter()
             .flat_map(|t| flux_ty::objects::supertraits_of(items, t))
             .flat_map(|t| items.traits[t].functions.iter().copied())
+            .chain(drop)
             .collect()
     }
 

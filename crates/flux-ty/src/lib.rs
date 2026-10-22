@@ -3337,8 +3337,9 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
                 _ => None,
             });
         // A value made a trait object may have any method of its
-        // trait and supertraits called, through the vtable.
-        let objects: Vec<FunctionId> = result
+        // trait and supertraits called, through the vtable, and be
+        // dropped in place through it.
+        let traits: Vec<flux_hir::TraitId> = result
             .unsizes
             .iter()
             .filter_map(|(_, ty)| match ty.kind() {
@@ -3348,8 +3349,15 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
                 },
                 _ => None,
             })
+            .collect();
+        let drop = (!traits.is_empty())
+            .then(|| objects::drop_in_place(items))
+            .flatten();
+        let objects: Vec<FunctionId> = traits
+            .into_iter()
             .flat_map(|t| objects::supertraits_of(items, t))
             .flat_map(|t| items.traits[t].functions.iter().copied())
+            .chain(drop)
             .collect();
         for f in called
             .chain(methods)

@@ -188,6 +188,17 @@ pub fn dyn_incompatibility(items: &ItemTree, t: TraitId) -> Option<String> {
     None
 }
 
+/// `core::ptr::drop_in_place`, if `core` has it: what a vtable's drop
+/// function calls.
+pub fn drop_in_place(items: &ItemTree) -> Option<flux_hir::FunctionId> {
+    items.functions.iter().find_map(|(id, f)| {
+        let in_ptr =
+            items.is_core(f.loc.module) && items.modules[f.loc.module].name.as_str() == "ptr";
+        (in_ptr && f.owner.is_none() && f.name.as_str() == "drop_in_place" && f.has_body)
+            .then_some(id)
+    })
+}
+
 /// Whether method `f` of a trait may be called on a trait object: it
 /// does not say `where Self: Sized`.
 pub fn is_dispatchable(items: &ItemTree, f: flux_hir::FunctionId) -> bool {

@@ -111,6 +111,21 @@ pub fn entries(items: &ItemTree, sigs: &Signatures, object: Ty, concrete: Ty) ->
         .collect()
 }
 
+/// What a vtable's first word, the function that drops a value of
+/// `concrete` in place, calls: `core::ptr::drop_in_place::<T>`, where
+/// dropping one runs code and `core` has it; `None` (an empty word)
+/// otherwise.
+pub fn drop_entry(items: &ItemTree, sigs: &Signatures, concrete: Ty) -> Option<Instance> {
+    if !flux_ty::traits::needs_drop(items, sigs, &[], concrete) {
+        return None;
+    }
+    let function = flux_ty::objects::drop_in_place(items)?;
+    Some(Instance {
+        function,
+        args: Ty::list(&[concrete]),
+    })
+}
+
 /// The index, in words, of method `f` in vtables of trait object
 /// `object`, header included.
 pub fn method_index(
