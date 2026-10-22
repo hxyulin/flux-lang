@@ -287,6 +287,48 @@
   module. An inner function cannot use its outer function's locals
   (E0434), generic parameters or `Self` (E0401), nor a constant a local
   (E0435); a file module may not be declared in a block.
+- Support closures (`|x| x + 1`, `move |x: i32| -> i32 { .. }`), with
+  the `Fn`, `FnMut` and `FnOnce` traits in `core` (and the prelude),
+  named in bounds as `Fn(A, B) -> C`. A closure's signature comes from
+  its annotations, from the `Fn`-family bounds of what it is passed to
+  (which also fix its kind), or from its calls. What it captures is
+  found as rustc's edition-2021 analysis finds it: precise places
+  (`s.a`, `*r`), by shared or mutable reference or by value, all by
+  value with `move`, with its kind from what its body does. Closures
+  are called directly, from fields (`(self.f)(x)`), and through
+  generic parameters and references, and are `Copy` when what they
+  capture is. Each closure's body is MIR of its own, checked like a
+  function's, with shims for the traits beyond its kind, and is
+  monomorphized with its owner. The borrow checker follows the loans
+  closures hold through the values they are stored in, the calls they
+  are passed to and `&mut` arguments, with rustc's messages (E0499,
+  E0502, E0503, E0506, E0597, E0382, E0507, E0594, E0596, E0525,
+  E0593, E0631, E0618, E0057, E0267). Closures returning references,
+  `async` closures and closures in constants are not supported yet.
+- Support ranges (`a..b`, `a..=b`, `a..`, `..b`, `..=b`, `..`) as
+  `core::ops`'s `Range` structs, with `contains`, and `core::iter`:
+  `Iterator` with `map`, `filter`, `filter_map`, `enumerate`, `zip`,
+  `chain`, `take`, `skip`, `take_while`, `skip_while`, `step_by`, `rev`
+  and consumers (`count`, `last`, `nth`, `sum`, `product`, `fold`,
+  `for_each`, `any`, `all`, `find`, `find_map`, `position`, `max`,
+  `min`, `max_by_key`, `min_by_key`, `eq`), `DoubleEndedIterator`,
+  `IntoIterator` with the blanket impl for iterators, `Sum` and
+  `Product`, and the integer ranges as iterators. `for` loops lower
+  as rustc's do, with labels on `for`, `while` and `loop` for `break`
+  and `continue`, and rustc's errors for what is not an iterator,
+  refutable patterns (E0005), `break` with a value (E0571) and
+  undeclared labels (E0426).
+- Add the `Option` and `Result` methods that take closures: `map`,
+  `map_or`, `map_or_else`, `and_then`, `or_else`, `unwrap_or_else`,
+  `filter`, `ok_or_else`, `is_some_and`, `is_none_or`, `inspect` and
+  `zip`; `map_err`, `is_ok_and` and `is_err_and`.
+- An `impl` block's parameter that only its bounds' associated types
+  decide (`B` in `impl<B, I, F: FnMut(I::Item) -> B> Iterator for
+  Map<I, F>`) is constrained, as in rustc, and found from those types
+  where the block is used. `T::Item` in `impl<T: It> Tr for T` names
+  `T`'s bound's `Item` rather than the block's own, and a bound in
+  scope on a type parameter keeps blanket `impl` blocks from deciding
+  its associated types.
 
 ### Performance
 

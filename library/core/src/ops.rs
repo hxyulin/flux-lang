@@ -9,7 +9,14 @@
 //! references are at the end.
 //!
 //! `Drop` is here too, as in Rust: the code that runs when a value goes
-//! out of scope.
+//! out of scope, and so are the `Fn`-family traits, which closures
+//! implement.
+
+mod function;
+mod range;
+
+pub use function::{Fn, FnMut, FnOnce};
+pub use range::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
 /// The `+` operator: addition.
 #[lang = "add"]

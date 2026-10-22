@@ -51,7 +51,7 @@ use flux_arena::{Arena, Idx};
 use flux_hir::{FunctionId, StructId};
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
-use flux_ty::{GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind};
+use flux_ty::{ClosureId, ClosureKind, GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind};
 
 /// The discriminants of the enums whose discriminants are not all
 /// literals ([`flux_hir::Discriminant::Const`]), evaluated, as bits:
@@ -119,6 +119,50 @@ pub struct Body {
     /// the variants enums hold to drop what they still hold, as rustc
     /// checks before elaborating drops.
     pub init_errors: Vec<flux_hir::Diagnostic>,
+    /// A closure's body's: its kind and what it captures, through `_1`.
+    pub upvars: Option<Upvars>,
+    /// The borrows that capture places for closures, by block and
+    /// statement: where the capture's use is in the closure, which rustc
+    /// reports for some errors, and whether it assigns the place.
+    pub capture_uses: Vec<(BasicBlock, usize, TextRange, bool)>,
+}
+
+/// What a closure's body captures, for messages and for what it may
+/// change: each captured place is a field of `self` (`_1`, through a
+/// reference unless the closure is `FnOnce`), itself a reference to the
+/// place unless captured by value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upvars {
+    pub kind: ClosureKind,
+    /// Each captured place as written: `x`, `s.a`.
+    pub names: Vec<String>,
+    /// Captured by reference.
+    pub by_ref: Vec<bool>,
+    /// Captured by value from a `mut` binding (or a place in one), so
+    /// that the closure may change it.
+    pub mutable: Vec<bool>,
+}
+
+impl Upvars {
+    /// The upvar `place` is in, and how many of its projections lead
+    /// to it, if it is in one.
+    pub fn of(&self, place: &Place) -> Option<(usize, usize)> {
+        if place.local != Local::from_raw(1) {
+            return None;
+        }
+        let p = &place.projection;
+        let (field, len) = match (self.kind, p.first(), p.get(1)) {
+            (ClosureKind::FnOnce, Some(&ProjectionElem::Field(i)), _) => (i as usize, 1),
+            (_, Some(ProjectionElem::Deref), Some(&ProjectionElem::Field(i))) => (i as usize, 2),
+            _ => return None,
+        };
+        let by_ref = *self.by_ref.get(field)?;
+        if by_ref {
+            (p.get(len) == Some(&ProjectionElem::Deref)).then_some((field, len + 1))
+        } else {
+            Some((field, len))
+        }
+    }
 }
 
 impl Body {
@@ -170,7 +214,18 @@ pub fn place_name(
         _ => format!("_{}", place.local.index()),
     };
     let mut ty = PlaceTy::from(body.locals[place.local].ty);
-    for (i, &elem) in place.projection.iter().enumerate() {
+    // In a closure, a captured place is named as it is outside.
+    let mut skip = 0;
+    if let Some(upvars) = &body.upvars
+        && let Some((field, len)) = upvars.of(place)
+    {
+        text = upvars.names[field].clone();
+        for &elem in &place.projection[..len] {
+            ty = ty.project(elem, sigs);
+        }
+        skip = len;
+    }
+    for (i, &elem) in place.projection.iter().enumerate().skip(skip) {
         // A static is named by itself, not the address it is used through.
         if i == 0 && matches!(body.locals[place.local].kind, LocalKind::Static(_)) {
             ty = ty.project(elem, sigs);
@@ -404,6 +459,8 @@ pub enum AggregateKind {
     Struct(StructId),
     /// Variant `index` of an enum, from its fields.
     Variant(StructId, u32),
+    /// A closure, from what it captures.
+    Closure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -633,6 +690,12 @@ impl TerminatorKind {
 #[derive(Debug)]
 pub struct FileMir {
     pub bodies: flux_arena::ArenaMap<flux_hir::Function, Body>,
+    /// Each closure's body, as the method of each `Fn`-family trait it
+    /// implements: its own kind's, built from its expression and
+    /// checked, and *shims* for the others, which call it (`call_once`
+    /// of an `Fn` closure borrows it, calls `call`, then drops it). In
+    /// terms of its owner's generic parameters.
+    pub closures: std::collections::HashMap<(ClosureId, ClosureKind), Body>,
     /// Each constant's value, as MIR.
     pub consts: flux_arena::ArenaMap<flux_hir::Const, Body>,
     /// The values of the constants without generic parameters, and of
@@ -649,6 +712,35 @@ impl FileMir {
     /// snapshot tests and `flux mir`.
     pub fn debug_dump(&self, hir: &flux_hir::Hir) -> String {
         pretty::file(self, hir)
+    }
+
+    /// The MIR of `instance`, and the generic arguments to substitute in
+    /// it: a function's own, or for a `Fn`-family method on a closure,
+    /// the closure's body or shim, with its owner's arguments.
+    pub fn instance_body(
+        &self,
+        items: &flux_hir::ItemTree,
+        instance: flux_ty::Instance,
+    ) -> Option<(&Body, GenericArgs)> {
+        if let Some(body) = self.bodies.get(instance.function) {
+            return Some((body, instance.args));
+        }
+        let (id, args) = match instance.args.first()?.kind() {
+            TyKind::Closure(id, args) => (id, args),
+            _ => return None,
+        };
+        let mode = fn_method_kind(items, instance.function)?;
+        let body = self.closures.get(&(id, mode))?;
+        Some((body, flux_ty::ClosureArgs::split(args).parent))
+    }
+}
+
+/// The `Fn`-family trait `function` is the method of, if it is `call`,
+/// `call_mut` or `call_once`.
+pub fn fn_method_kind(items: &flux_hir::ItemTree, function: FunctionId) -> Option<ClosureKind> {
+    match items.functions[function].owner? {
+        flux_hir::Owner::Trait(t) => flux_ty::fn_trait_kind(items, t),
+        flux_hir::Owner::Impl(_) => None,
     }
 }
 

@@ -54,8 +54,9 @@ pub struct ItemTree {
     pub block_modules: rustc_hash::FxHashMap<(FileId, NodeId), ModuleId>,
     /// The traits the compiler knows, by their `#[lang = "..."]` names.
     pub lang_traits: rustc_hash::FxHashMap<Symbol, TraitId>,
-    /// `core`'s enums the compiler knows, by their `#[lang = "..."]`
-    /// names: `Option` and `Result`, which `?` works on.
+    /// `core`'s structs and enums the compiler knows, by their
+    /// `#[lang = "..."]` names: `Option` and `Result`, which `?` works
+    /// on, and the ranges.
     pub lang_enums: rustc_hash::FxHashMap<Symbol, StructId>,
     /// `core`'s `#[lang = "panic"]` function, which aborts, and which
     /// constant evaluation reports as a panic with its message.
@@ -693,6 +694,10 @@ pub struct GenericArgs {
     pub bindings: Box<[AssocBinding]>,
     /// From `<` to `>`.
     pub range: TextRange,
+    /// Written `(A, B) -> C`, as a `Fn`-family trait's are: one type, the
+    /// tuple of the parameters, and `Output` bound to the return type
+    /// (`()` if none is written).
+    pub parenthesized: bool,
 }
 
 /// `Out = i32` in a trait's generic arguments: what one of its associated
@@ -2417,9 +2422,13 @@ impl Collector<'_> {
 
     fn collect_struct(&mut self, ctx: Ctx, s: ast::Struct<'_>) {
         let mut derives = Vec::new();
+        let is_core = self.items.is_core(ctx.module);
+        let mut lang = None;
         for attr in s.attrs() {
             if attr_name(attr) == Some("derive") {
                 derive_attr(attr, &mut derives, &mut self.items.diagnostics);
+            } else if is_core && let Some(name) = lang_attr(attr) {
+                lang = Some(name);
             } else {
                 check_attr(attr, &mut self.items.diagnostics);
             }
@@ -2453,6 +2462,9 @@ impl Collector<'_> {
             name_range,
             def_range: TextRange::new(def_start(s.syntax()), name_range.end()),
         });
+        if let Some(lang) = lang {
+            self.items.lang_enums.insert(lang, id);
+        }
         for (derive, range) in derives {
             self.derives.push((ctx, id, derive, range, s.syntax().id()));
         }
@@ -2789,7 +2801,8 @@ impl Collector<'_> {
             Derive::PartialOrd => ("cmp", "PartialOrd"),
             Derive::Ord => ("cmp", "Ord"),
         };
-        let trait_path = core_path(module, name);
+        let in_core = self.items.is_core(ctx.module);
+        let trait_path = core_path(module, name, in_core);
         let bound = Bound {
             path: trait_path,
             range,
@@ -2849,6 +2862,7 @@ impl Collector<'_> {
                 ranges: params.iter().map(|p| p.range).collect(),
                 bindings: Box::default(),
                 range: s.generics.range,
+                parenthesized: false,
             })]);
         }
         let generics = Generics {
@@ -2897,15 +2911,16 @@ impl Collector<'_> {
             ),
             Derive::PartialOrd => {
                 // `Option<Ordering>`
-                let mut option = core_path("option", "Option");
+                let mut option = core_path("option", "Option", in_core);
                 option.args = Box::new([
                     None,
                     None,
                     Some(GenericArgs {
-                        types: Box::new([TypeRef::Path(core_path("cmp", "Ordering"))]),
+                        types: Box::new([TypeRef::Path(core_path("cmp", "Ordering", in_core))]),
                         ranges: Box::new([range]),
                         bindings: Box::default(),
                         range,
+                        parenthesized: false,
                     }),
                 ]);
                 (
@@ -2917,7 +2932,7 @@ impl Collector<'_> {
             Derive::Ord => (
                 "cmp",
                 vec![self_ref(), self_ref()],
-                TypeRef::Path(core_path("cmp", "Ordering")),
+                TypeRef::Path(core_path("cmp", "Ordering", in_core)),
             ),
         };
         let function = self.items.functions.alloc(Function {
@@ -3143,6 +3158,20 @@ pub(crate) fn lower_generic_path(
     path: ast::Path<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Path> {
+    lower_path_with(path, false, diagnostics)
+}
+
+/// A path to a trait, as [`lower_generic_path`], where the last segment
+/// may have `Fn`-family arguments: `Fn(i32) -> i32`.
+fn lower_trait_path(path: ast::Path<'_>, diagnostics: &mut Vec<Diagnostic>) -> Option<Path> {
+    lower_path_with(path, true, diagnostics)
+}
+
+fn lower_path_with(
+    path: ast::Path<'_>,
+    parenthesized: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Path> {
     // Large crates lower millions of paths: each array is allocated once,
     // at its final size.
     let mut count = 1;
@@ -3153,15 +3182,20 @@ pub(crate) fn lower_generic_path(
     }
     let mut segments = Vec::with_capacity(count);
     let mut current = Some(path);
+    // `Fn(A) -> B` on the last segment of a trait's path.
+    let mut paren = None;
     while let Some(p) = current {
         let segment = p.segment()?;
         if let Some(list) = segment.parenthesized_arg_list() {
-            unsupported(
-                diagnostics,
-                list.syntax().text_range(),
-                "parenthesized generic arguments",
-            );
-            return None;
+            if !(parenthesized && segments.is_empty()) {
+                unsupported(
+                    diagnostics,
+                    list.syntax().text_range(),
+                    "parenthesized generic arguments",
+                );
+                return None;
+            }
+            paren = Some((list, segment.ret_type()));
         }
         segments.push(segment);
         current = p.qualifier();
@@ -3267,12 +3301,19 @@ pub(crate) fn lower_generic_path(
             names.push(Symbol::intern(name.text()));
             ranges.push(range);
             // Most paths have no arguments, and get no list of them.
-            if let Some(list) = list {
+            let lowered = match list {
+                Some(list) => Some(lower_generic_args(list, diagnostics)),
+                None if i + 1 == count => paren
+                    .take()
+                    .map(|(list, ret)| lower_parenthesized_args(list, ret, diagnostics)),
+                None => None,
+            };
+            if let Some(lowered) = lowered {
                 if args.is_empty() {
                     args.reserve_exact(count - anchors);
                 }
                 args.resize(names.len() - 1, None);
-                args.push(Some(lower_generic_args(list, diagnostics)));
+                args.push(Some(lowered));
             }
         }
     }
@@ -3345,6 +3386,43 @@ pub(crate) fn lower_generic_args(
         ranges: ranges.into(),
         bindings: bindings.into(),
         range: list.syntax().text_range(),
+        parenthesized: false,
+    }
+}
+
+/// `(A, B) -> C` after a trait's name, as `Fn`-family traits take
+/// them: the tuple `(A, B)`, and `Output = C` (`()` if no type is
+/// written).
+fn lower_parenthesized_args(
+    list: ast::ParenthesizedArgList<'_>,
+    ret: Option<ast::RetType<'_>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> GenericArgs {
+    let range = list.syntax().text_range();
+    let params: Box<[TypeRef]> = list
+        .types()
+        .map(|ty| lower_type(Some(ty), diagnostics))
+        .collect();
+    let (ty, ty_range) = match ret {
+        Some(ret) => {
+            let ty = ret.ty();
+            let at = ty.map_or(ret.syntax().text_range(), |t| t.syntax().text_range());
+            (lower_type(ty, diagnostics), at)
+        }
+        None => (TypeRef::unit(), range),
+    };
+    let end = ret.map_or(range, |r| r.syntax().text_range());
+    GenericArgs {
+        types: Box::new([TypeRef::Tuple(params)]),
+        ranges: Box::new([range]),
+        bindings: Box::new([AssocBinding {
+            name: Symbol::intern("Output"),
+            ty,
+            name_range: ty_range,
+            ty_range,
+        }]),
+        range: TextRange::new(range.start(), end.end()),
+        parenthesized: true,
     }
 }
 
@@ -3588,15 +3666,27 @@ pub enum Derive {
 
 /// `::core::module::name`, as `#[derive]` names its traits and their
 /// types.
-fn core_path(module: &str, name: &str) -> Path {
+fn core_path(module: &str, name: &str, in_core: bool) -> Path {
+    // `core` itself names them from its root.
+    let (anchor, segments): (PathAnchor, Box<[Symbol]>) = if in_core {
+        (
+            PathAnchor::Crate,
+            Box::new([Symbol::intern(module), Symbol::intern(name)]),
+        )
+    } else {
+        (
+            PathAnchor::Global,
+            Box::new([
+                Symbol::intern("core"),
+                Symbol::intern(module),
+                Symbol::intern(name),
+            ]),
+        )
+    };
     Path {
-        anchor: PathAnchor::Global,
+        anchor,
         qself: None,
-        segments: Box::new([
-            Symbol::intern("core"),
-            Symbol::intern(module),
-            Symbol::intern(name),
-        ]),
+        segments,
         ranges: Box::default(),
         anchor_ranges: Box::default(),
         args: Box::default(),
@@ -3780,7 +3870,7 @@ fn lower_bound_type(ty: ast::Type<'_>, diagnostics: &mut Vec<Diagnostic>) -> Opt
         diagnostics.push(Diagnostic::new(range, "expected a trait, found type"));
         return None;
     };
-    let path = lower_generic_path(path.path()?, diagnostics)?;
+    let path = lower_trait_path(path.path()?, diagnostics)?;
     Some(Bound { path, range })
 }
 
@@ -3806,7 +3896,7 @@ fn lower_bounds(
             let Some(path) = bound.path_type().and_then(|p| p.path()) else {
                 continue;
             };
-            if let Some(path) = lower_generic_path(path, diagnostics) {
+            if let Some(path) = lower_trait_path(path, diagnostics) {
                 out.push(Bound { path, range });
             }
             continue;

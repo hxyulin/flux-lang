@@ -17,7 +17,7 @@ use flux_hir::{
 use flux_intern::{Symbol, kw};
 use flux_syntax::TextRange;
 
-use crate::ty::{AliasTy, GenericArgs, Mutability, Ty, TyKind};
+use crate::ty::{AliasTy, ClosureArgs, GenericArgs, Mutability, Ty, TyKind};
 use crate::{ConstInstance, Instance, Signatures, TypeScope, resolve_type, wrong_arg_count};
 
 /// A trait with generic arguments for its own parameters, not `Self`:
@@ -237,6 +237,29 @@ pub fn trait_ref(
     let at = path.range(last, bound.range);
     let want = data.generics.len();
     let written = path.args(last);
+    // `Fn(A) -> B` is how stable Rust names the `Fn`-family traits, and
+    // the only traits it may name so.
+    let is_fn = crate::fn_trait_kind(items, t).is_some();
+    match written {
+        Some(w) if w.parenthesized && !is_fn => {
+            errors.push((
+                TextRange::new(at.start(), w.range.end()),
+                "parenthetical notation is only stable when used with `Fn`-family traits".into(),
+            ));
+            return None;
+        }
+        // `core` itself may write them out.
+        Some(w) if !w.parenthesized && is_fn && !items.is_core(module) => {
+            let range = TextRange::new(at.start(), w.range.end());
+            errors.push((
+                range,
+                "the precise format of `Fn`-family traits' type parameters is subject to change"
+                    .into(),
+            ));
+            return None;
+        }
+        _ => {}
+    }
     let mut args: Vec<Ty> = written.map_or(Vec::new(), |written| {
         written
             .types
@@ -296,6 +319,24 @@ pub fn trait_ref(
     };
     let mut projections = Vec::new();
     for binding in written.map_or(&[][..], |w| &w.bindings) {
+        // An associated type of a supertrait with the same parameters:
+        // `Output` of `FnOnce` in `Fn(A) -> B`, `Item` of `Iterator` in
+        // `DoubleEndedIterator<Item = A>`.
+        if !data.types.iter().any(|ty| ty.name == binding.name)
+            && let Some(sup) = supertrait_with_type(items, t, binding.name)
+        {
+            let ty = resolve_type(items, module, &binding.ty, scope, binding.ty_range, errors);
+            let sup_ref = TraitRef {
+                trait_: sup,
+                name: items.traits[sup].name,
+                args: Ty::list(&args[..items.traits[sup].generics.len().min(args.len())]),
+            };
+            projections.push(Projection {
+                alias: alias_of(sup_ref, self_ty, binding.name),
+                ty,
+            });
+            continue;
+        }
         if !data.types.iter().any(|ty| ty.name == binding.name) {
             errors.push((
                 binding.name_range,
@@ -313,6 +354,48 @@ pub fn trait_ref(
         });
     }
     Some((trait_ref, projections))
+}
+
+/// The supertrait of `t`, through any chain of supertraits, that has an
+/// associated type `name`, if its parameters are `t`'s first ones in
+/// order (or none), so that a binding of `name` in a bound on `t` can
+/// name it with `t`'s arguments.
+fn supertrait_with_type(items: &ItemTree, t: TraitId, name: Symbol) -> Option<TraitId> {
+    let mut stack = vec![t];
+    let mut seen = vec![t];
+    while let Some(current) = stack.pop() {
+        let data = &items.traits[current];
+        for bound in data.supertraits.iter() {
+            let (Some(sup), _) = items.resolve_trait(data.loc.module, bound) else {
+                continue;
+            };
+            if seen.contains(&sup) {
+                continue;
+            }
+            seen.push(sup);
+            let last = bound.path.segments.len().saturating_sub(1);
+            let forwarded = bound.path.args(last).is_none_or(|args| {
+                args.bindings.is_empty()
+                    && args.types.iter().enumerate().all(|(i, ty)| match ty {
+                        flux_hir::TypeRef::Path(p) => {
+                            p.qself.is_none()
+                                && p.segments.len() == 1
+                                && data.generics.params.get(i).map(|g| g.name)
+                                    == Some(p.segments[0])
+                        }
+                        _ => false,
+                    })
+            });
+            if !forwarded {
+                continue;
+            }
+            if items.traits[sup].types.iter().any(|ty| ty.name == name) {
+                return Some(sup);
+            }
+            stack.push(sup);
+        }
+    }
+    None
 }
 
 /// `<self_ty as trait_ref>::name`.
@@ -627,6 +710,9 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
         (TyKind::Adt(a, xs), TyKind::Adt(b, ys)) => {
             a == b && xs.iter().zip(ys).all(|(&x, &y)| match_ty(x, y, binds))
         }
+        (TyKind::Closure(a, xs), TyKind::Closure(b, ys)) => {
+            a == b && xs.iter().zip(ys).all(|(&x, &y)| match_ty(x, y, binds))
+        }
         (TyKind::Tuple(xs), TyKind::Tuple(ys)) => {
             xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, &y)| match_ty(x, y, binds))
         }
@@ -720,6 +806,9 @@ impl Normalizer<'_> {
                 if let Some(p) = self.env.iter().find(|p| p.alias == alias) {
                     return self.go(p.ty, depth + 1);
                 }
+                if let Some(ret) = closure_output(items, alias) {
+                    return self.go(ret, depth + 1);
+                }
                 if let TyKind::Alias(outer) = args[0].kind()
                     && let Some(p) = alias_projections(sigs, outer)
                         .into_iter()
@@ -745,6 +834,10 @@ impl Normalizer<'_> {
             TyKind::Adt(adt, list) => {
                 let list: Vec<Ty> = list.iter().map(|&t| self.go(t, depth + 1)).collect();
                 Ty::adt(adt.strukt, adt.name, &list)
+            }
+            TyKind::Closure(id, list) => {
+                let list: Vec<Ty> = list.iter().map(|&t| self.go(t, depth + 1)).collect();
+                Ty::closure(id, &list)
             }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, self.go(t, depth + 1))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.go(t, depth + 1)),
@@ -803,7 +896,68 @@ pub fn match_impl(
             return None;
         }
     }
+    bind_by_projections(items, sigs, imp, &mut binds);
     Some(binds.into_iter().map(|b| b.unwrap_or(Ty::ERROR)).collect())
+}
+
+/// The parameters of `impl` block `imp` that only its bounds' associated
+/// types decide (`B` in `where F: FnMut(I::Item) -> B`), from what those
+/// types are for the ones `binds` has.
+pub(crate) fn bind_by_projections(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: ImplId,
+    binds: &mut [Option<Ty>],
+) {
+    let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+    if binds.iter().all(Option::is_some) || projections.is_empty() {
+        return;
+    }
+    loop {
+        let mut progress = false;
+        for p in projections {
+            let unbound = |binds: &[Option<Ty>]| {
+                (0..binds.len())
+                    .any(|i| binds[i].is_none() && crate::mentions_param(p.ty, i as u32))
+            };
+            if !unbound(binds) {
+                continue;
+            }
+            let known: Vec<Ty> = binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
+            let alias = Ty::alias(p.alias).subst(&known);
+            // The block for its own parameters: the parameters themselves.
+            let ty = if alias == Ty::alias(p.alias) {
+                p.ty
+            } else if alias.has_params() || has_error(alias) {
+                continue;
+            } else {
+                normalize(items, sigs, &[], alias)
+            };
+            if matches!(ty.kind(), TyKind::Alias(_)) {
+                continue;
+            }
+            let mut found = binds.to_vec();
+            if match_ty(p.ty, ty, &mut found) {
+                binds.copy_from_slice(&found);
+                progress = true;
+            }
+        }
+        if !progress {
+            return;
+        }
+    }
+}
+
+fn has_error(ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::Error => true,
+        TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
+            list.iter().any(|&t| has_error(t))
+        }
+        TyKind::Alias(alias) => alias.args.iter().any(|&t| has_error(t)),
+        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => has_error(t),
+        _ => false,
+    }
 }
 
 /// Whether `goal` holds given `env`, the elaborated bounds in scope, in
@@ -842,6 +996,29 @@ fn holds_at(
         let holds = holds_at(items, sigs, env, elem, stack);
         stack.pop();
         return holds;
+    }
+    if let TyKind::Closure(_, args) = goal.self_ty.kind() {
+        return match closure_goal(items, goal.trait_ref.trait_, args) {
+            ClosureGoal::Fn(kind, params) => {
+                ClosureArgs::split(args)
+                    .closure_kind()
+                    .is_some_and(|k| k <= kind)
+                    && goal.trait_ref.args.first() == Some(&params)
+            }
+            ClosureGoal::Upvars(upvars) => {
+                stack.push(goal);
+                let all = upvars.iter().all(|&ty| {
+                    let goal = Predicate {
+                        self_ty: ty,
+                        ..goal
+                    };
+                    holds_at(items, sigs, env, goal, stack)
+                });
+                stack.pop();
+                all
+            }
+            ClosureGoal::No => false,
+        };
     }
     let mut impls = sigs
         .impl_index
@@ -938,6 +1115,10 @@ pub fn is_copy(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -
         TyKind::Tuple(elements) => elements.iter().all(|&t| is_copy(items, sigs, env, t)),
         TyKind::Array(elem, _) => is_copy(items, sigs, env, elem),
         TyKind::Slice(_) => false,
+        TyKind::Closure(_, args) => ClosureArgs::split(args)
+            .upvar_types()
+            .iter()
+            .all(|&t| is_copy(items, sigs, env, t)),
         TyKind::Ref(Mutability::Mut, _) => false,
         TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) => {
             let Some(&copy) = items.lang_traits.get(&flux_intern::sym::copy) else {
@@ -957,6 +1138,37 @@ pub fn is_copy(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -
     }
 }
 
+/// What a goal on a closure's type needs, by its trait: its kind and
+/// parameters for a `Fn`-family trait, its captured values' meeting it
+/// for `Copy` and `Clone`; other traits it does not implement.
+pub(crate) enum ClosureGoal {
+    Fn(crate::ClosureKind, Ty),
+    Upvars(&'static [Ty]),
+    No,
+}
+
+pub(crate) fn closure_goal(items: &ItemTree, t: TraitId, args: GenericArgs) -> ClosureGoal {
+    let parts = ClosureArgs::split(args);
+    if let Some(kind) = crate::fn_trait_kind(items, t) {
+        return ClosureGoal::Fn(kind, parts.params());
+    }
+    match items.traits[t].lang {
+        Some(l) if l.as_str() == "copy" || l.as_str() == "clone" => {
+            ClosureGoal::Upvars(parts.upvar_types())
+        }
+        _ => ClosureGoal::No,
+    }
+}
+
+/// `<C as FnOnce<A>>::Output` for a closure `C`: what it returns.
+pub fn closure_output(items: &ItemTree, alias: AliasTy) -> Option<Ty> {
+    let TyKind::Closure(_, args) = alias.args[0].kind() else {
+        return None;
+    };
+    (crate::fn_trait_kind(items, alias.trait_) == Some(crate::ClosureKind::FnOnce))
+        .then(|| ClosureArgs::split(args).ret())
+}
+
 /// The `impl Drop` block of `strukt`, if it has one.
 pub fn drop_impl(items: &ItemTree, sigs: &Signatures, strukt: StructId) -> Option<ImplId> {
     let drop = *items.lang_traits.get(&flux_intern::sym::drop)?;
@@ -973,6 +1185,10 @@ pub fn needs_drop(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty
     match ty.kind() {
         TyKind::Tuple(elements) => elements.iter().any(|&e| needs_drop(items, sigs, env, e)),
         TyKind::Array(elem, len) => len > 0 && needs_drop(items, sigs, env, elem),
+        TyKind::Closure(_, args) => ClosureArgs::split(args)
+            .upvar_types()
+            .iter()
+            .any(|&e| needs_drop(items, sigs, env, e)),
         TyKind::Adt(adt, args) => {
             drop_impl(items, sigs, adt.strukt).is_some()
                 || sigs.structs[adt.strukt]
@@ -1134,6 +1350,15 @@ pub fn check_impls(
             });
         };
         let data = &items.traits[t];
+        // Only `core` implements the `Fn`-family traits on stable Rust.
+        if crate::fn_trait_kind(items, t).is_some() && !items.is_core(imp.module) {
+            let at = imp.trait_ref.as_ref().map_or(imp.def_range, |b| b.range);
+            error(
+                at,
+                format!("manual implementations of `{}` are experimental", data.name),
+            );
+            continue;
+        }
         match (imp.is_unsafe, data.is_unsafe) {
             (true, false) => error(
                 imp.def_range,
@@ -2154,7 +2379,7 @@ fn collect_aliases(ty: Ty, out: &mut Vec<AliasTy>) {
             }
             out.push(alias);
         }
-        TyKind::Adt(_, list) | TyKind::Tuple(list) => {
+        TyKind::Adt(_, list) | TyKind::Tuple(list) | TyKind::Closure(_, list) => {
             list.iter().for_each(|&t| collect_aliases(t, out));
         }
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {

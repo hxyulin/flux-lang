@@ -48,6 +48,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut bodies = ArenaMap::new();
     // The callees whose targets are queued already.
     let mut expanded = rustc_hash::FxHashSet::default();
+    let mut closures = std::collections::HashMap::new();
     while let Some(id) = queue.pop() {
         if bodies.get(id).is_some() || hir.body(id).is_none() || typed.bodies.get(id).is_none() {
             continue;
@@ -56,6 +57,21 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         for callee in body.callees() {
             if expanded.insert(callee) {
                 queue.extend(flux_ty::call_targets(&hir.items, callee));
+            }
+        }
+        // Its closures, innermost first, and what they call.
+        let mut found: Vec<ExprId> = typed.bodies[id].closures.iter().map(|(e, _)| e).collect();
+        found.sort_by_key(|e| e.into_raw());
+        for expr in found {
+            let closure = build_closure(hir, typed, id, expr);
+            for callee in closure.callees() {
+                queue.extend(flux_ty::call_targets(&hir.items, callee));
+            }
+            let kind = typed.bodies[id].closures[expr].kind;
+            let key = flux_ty::ClosureId { owner: id, expr };
+            closures.insert((key, kind), closure);
+            for (mode, shim) in closure_shims(hir, typed, id, expr) {
+                closures.insert((key, mode), shim);
             }
         }
         bodies.insert(id, body);
@@ -68,6 +84,17 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         let data = &hir.items.functions[id];
         if !failed.contains(&id) {
             diagnostics.extend(check(body, data.loc.file, data.is_const));
+            // Its closures' own bodies; shims need no checks.
+            let mut own: Vec<_> = closures
+                .iter()
+                .filter(|((c, kind), _)| {
+                    c.owner == id && typed.bodies[id].closures[c.expr].kind == *kind
+                })
+                .collect();
+            own.sort_by_key(|((c, _), _)| c.expr.into_raw());
+            for (_, closure) in own {
+                diagnostics.extend(check(closure, data.loc.file, false));
+            }
         }
     }
     let mut const_values = crate::eval::ConstValues::default();
@@ -85,6 +112,11 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         let linted = bodies
             .iter()
             .map(|(id, body)| (hir.items.functions[id].loc.file, body))
+            .chain(
+                closures
+                    .iter()
+                    .map(|((c, _), body)| (hir.items.functions[c.owner].loc.file, body)),
+            )
             .chain(consts.iter().filter_map(|(id, body)| {
                 let data = &hir.items.consts[id];
                 data.owner.map(|_| (data.loc.file, body))
@@ -101,6 +133,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     flux_hir::Diagnostic::sort(&mut diagnostics);
     FileMir {
         bodies,
+        closures,
         consts,
         const_values,
         discriminants,
@@ -147,6 +180,16 @@ pub fn check_clean_bodies(
                 .into_iter()
                 .map(|d| flux_hir::Diagnostic { file, ..d }),
         );
+        let mut found: Vec<ExprId> = result.closures.iter().map(|(e, _)| e).collect();
+        found.sort_by_key(|e| e.into_raw());
+        for expr in found {
+            let closure = build_closure(hir, typed, id, expr);
+            diagnostics.extend(
+                check_body(hir, typed, &closure, false)
+                    .into_iter()
+                    .map(|d| flux_hir::Diagnostic { file, ..d }),
+            );
+        }
     }
     diagnostics
 }
@@ -469,6 +512,212 @@ pub fn build(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Body {
 enum Item {
     Function(FunctionId),
     Const(ConstId),
+    /// The closure expression `expr` in `owner`'s body.
+    Closure(FunctionId, ExprId),
+}
+
+/// Builds the MIR of closure `expr` of `owner`'s body, as the method of
+/// its own kind's trait: `call(&self, args)`, `call_mut(&mut self,
+/// args)` or `call_once(self, args)`, with its parameters bound from
+/// the tuple `args` and what it captures read through `self`.
+pub fn build_closure(hir: &Hir, typed: &TypedFile, owner: FunctionId, expr: ExprId) -> Body {
+    let (body, source_map) = hir.body(owner).expect("closures are in bodies");
+    let types = &typed.bodies[owner];
+    let info = &types.closures[expr];
+    let TyKind::Closure(_, args) = info.ty.kind() else {
+        unreachable!("closures have closure types")
+    };
+    let parts = flux_ty::ClosureArgs::split(args);
+    let env = flux_ty::traits::projections_of(&hir.items, &typed.sigs, owner);
+    let norm = |ty| flux_ty::traits::normalize(&hir.items, &typed.sigs, &env, ty);
+    let sig = flux_ty::FnSig {
+        params: Box::new([closure_self(info.kind, info.ty), norm(parts.params())]),
+        ret: norm(parts.ret()),
+    };
+    build_body(
+        hir,
+        typed,
+        body,
+        source_map,
+        types,
+        &sig,
+        Item::Closure(owner, expr),
+    )
+}
+
+/// A captured place as written: `x`, `s.a`, `*r`.
+fn capture_name(
+    body: &flux_hir::Body,
+    binding_types: &ArenaMap<Binding, Ty>,
+    capture: &flux_ty::Capture,
+    sigs: &flux_ty::Signatures,
+    items: &ItemTree,
+) -> String {
+    let mut text = body.bindings[capture.binding].name.to_string();
+    let mut ty = binding_types
+        .get(capture.binding)
+        .copied()
+        .unwrap_or(Ty::ERROR);
+    let proj = &capture.projection;
+    for (i, &p) in proj.iter().enumerate() {
+        match p {
+            flux_ty::CaptureProj::Deref => {
+                if !matches!(proj.get(i + 1), Some(flux_ty::CaptureProj::Field(_))) {
+                    text = format!("*{text}");
+                }
+                ty = match ty.kind() {
+                    TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => t,
+                    _ => Ty::ERROR,
+                };
+            }
+            flux_ty::CaptureProj::Field(f) => {
+                match ty.kind() {
+                    TyKind::Adt(adt, _) => {
+                        let name = items.structs[adt.strukt].variant(0).fields[f as usize].name;
+                        text = format!("{text}.{name}");
+                    }
+                    _ => text = format!("{text}.{f}"),
+                }
+                ty = sigs
+                    .fields(ty)
+                    .and_then(|fields| fields.get(f as usize).copied())
+                    .unwrap_or(Ty::ERROR);
+            }
+        }
+    }
+    text
+}
+
+/// The type of `self` in the method of trait `kind` of a closure of type
+/// `ty`.
+fn closure_self(kind: flux_ty::ClosureKind, ty: Ty) -> Ty {
+    match kind {
+        flux_ty::ClosureKind::Fn => Ty::new(TyKind::Ref(Mutability::Not, ty)),
+        flux_ty::ClosureKind::FnMut => Ty::new(TyKind::Ref(Mutability::Mut, ty)),
+        flux_ty::ClosureKind::FnOnce => ty,
+    }
+}
+
+/// The bodies of closure `expr` of `owner` as the methods of the traits
+/// it implements beyond its own kind's, each a call of that one: as
+/// `call_mut` of an `Fn` closure, `call(&*self, args)`; as `call_once`,
+/// `call(&self, args)` and then a drop of `self`.
+pub fn closure_shims(
+    hir: &Hir,
+    typed: &TypedFile,
+    owner: FunctionId,
+    expr: ExprId,
+) -> Vec<(flux_ty::ClosureKind, Body)> {
+    use flux_ty::ClosureKind;
+    let items = &hir.items;
+    let types = &typed.bodies[owner];
+    let info = &types.closures[expr];
+    let TyKind::Closure(_, args) = info.ty.kind() else {
+        return Vec::new();
+    };
+    let parts = flux_ty::ClosureArgs::split(args);
+    let env = flux_ty::traits::projections_of(items, &typed.sigs, owner);
+    let norm = |ty| flux_ty::traits::normalize(items, &typed.sigs, &env, ty);
+    let (params, ret) = (norm(parts.params()), norm(parts.ret()));
+    let range = hir.body(owner).map_or_else(TextRange::default, |(_, map)| {
+        map.exprs.get(expr).copied().unwrap_or_default()
+    });
+    let method = |kind: ClosureKind| {
+        let t = flux_ty::fn_trait(items, kind)?;
+        let name = match kind {
+            ClosureKind::Fn => "call",
+            ClosureKind::FnMut => "call_mut",
+            ClosureKind::FnOnce => "call_once",
+        };
+        items.traits[t].function(items, Symbol::intern(name))
+    };
+    let Some(target) = method(info.kind) else {
+        return Vec::new();
+    };
+    let mut shims = Vec::new();
+    for mode in [ClosureKind::FnMut, ClosureKind::FnOnce] {
+        if mode <= info.kind {
+            continue;
+        }
+        let mut locals = Arena::new();
+        locals.alloc(LocalDecl {
+            ty: ret,
+            kind: LocalKind::Return,
+        });
+        let this = locals.alloc(LocalDecl {
+            ty: closure_self(mode, info.ty),
+            kind: LocalKind::Param,
+        });
+        let tuple = locals.alloc(LocalDecl {
+            ty: params,
+            kind: LocalKind::Param,
+        });
+        let borrow = locals.alloc(LocalDecl {
+            ty: closure_self(info.kind, info.ty),
+            kind: LocalKind::Temp,
+        });
+        let m = match info.kind {
+            ClosureKind::Fn => Mutability::Not,
+            _ => Mutability::Mut,
+        };
+        let place: Place = match mode {
+            ClosureKind::FnOnce => this.into(),
+            _ => Place::from(this).deref(),
+        };
+        let mut blocks = Arena::new();
+        let after = BasicBlock::from_raw(1);
+        let terminator = |kind| Terminator { kind, range };
+        blocks.alloc(BasicBlockData {
+            statements: vec![Statement {
+                kind: StatementKind::Assign(
+                    borrow.into(),
+                    Rvalue::Ref {
+                        mutability: m,
+                        place,
+                        two_phase: false,
+                    },
+                ),
+                range,
+            }],
+            terminator: terminator(TerminatorKind::Call {
+                func: target,
+                generic_args: Ty::list(&[info.ty, params]),
+                args: vec![Operand::Move(borrow.into()), Operand::Move(tuple.into())],
+                dest: Body::RETURN.into(),
+                target: Some(after),
+            }),
+        });
+        // `self` is dropped once called.
+        if mode == ClosureKind::FnOnce {
+            blocks.alloc(BasicBlockData {
+                statements: Vec::new(),
+                terminator: terminator(TerminatorKind::Drop {
+                    place: this.into(),
+                    target: BasicBlock::from_raw(2),
+                }),
+            });
+        }
+        blocks.alloc(BasicBlockData {
+            statements: Vec::new(),
+            terminator: terminator(TerminatorKind::Return),
+        });
+        shims.push((
+            mode,
+            Body {
+                locals,
+                blocks,
+                param_count: 2,
+                c_strings: Vec::new(),
+                in_core: false,
+                inherits_overflow_checks: false,
+                live_drops: Vec::new(),
+                init_errors: Vec::new(),
+                upvars: None,
+                capture_uses: Vec::new(),
+            },
+        ));
+    }
+    shims
 }
 
 fn build_body(
@@ -481,19 +730,21 @@ fn build_body(
     item: Item,
 ) -> Body {
     let module = match item {
-        Item::Function(f) => hir.items.functions[f].loc.module,
+        Item::Function(f) | Item::Closure(f, _) => hir.items.functions[f].loc.module,
         Item::Const(c) => hir.items.consts[c].loc.module,
     };
     // The bounds in scope, for what is `Copy`.
     let env = match item {
-        Item::Function(f) => flux_ty::traits::elaborate(
+        Item::Function(f) | Item::Closure(f, _) => flux_ty::traits::elaborate(
             &typed.sigs,
             &flux_ty::traits::predicates_of(&hir.items, &typed.sigs, f),
         ),
         Item::Const(_) => Vec::new(),
     };
     let projections = match item {
-        Item::Function(f) => flux_ty::traits::projections_of(&hir.items, &typed.sigs, f),
+        Item::Function(f) | Item::Closure(f, _) => {
+            flux_ty::traits::projections_of(&hir.items, &typed.sigs, f)
+        }
         Item::Const(_) => Vec::new(),
     };
     let mut b = Builder {
@@ -522,6 +773,8 @@ fn build_body(
         extend_at: None,
         extending: false,
         needs_drop: Default::default(),
+        upvars: Vec::new(),
+        capture_uses: Vec::new(),
     };
     b.locals.alloc(LocalDecl {
         ty: sig.ret,
@@ -539,7 +792,45 @@ fn build_body(
         .collect();
     let entry = b.new_block();
     b.current = Some(entry);
-    for (&pat, &local) in body.params.iter().zip(&params) {
+    let (root, param_pats) = match item {
+        Item::Closure(_, expr) => {
+            let Expr::Closure {
+                params: pats,
+                body: closure_body,
+                ..
+            } = &body.exprs[expr]
+            else {
+                unreachable!("closures are closure expressions")
+            };
+            // What it captures, through `self`.
+            let info = &types.closures[expr];
+            let this = Place::from(params[0]);
+            let env = match info.kind {
+                flux_ty::ClosureKind::FnOnce => this,
+                _ => this.deref(),
+            };
+            for (i, capture) in info.captures.iter().enumerate() {
+                let field = env.field(i as u32);
+                let place = match capture.mode {
+                    flux_ty::CaptureMode::ByValue => field,
+                    flux_ty::CaptureMode::ByRef(_) => field.deref(),
+                };
+                b.upvars.push((capture.clone(), place));
+            }
+            let at = b.range(expr);
+            b.scopes[0].locals.push((params[0], at));
+            b.scopes[0].locals.push((params[1], at));
+            // The parameters, from the tuple of the arguments.
+            for (i, &pat) in pats.iter().enumerate() {
+                let range = b.pat_range(pat);
+                b.declare_bindings(pat);
+                b.match_irrefutable(pat, Place::from(params[1]).field(i as u32), range);
+            }
+            (*closure_body, &[][..])
+        }
+        _ => (body.root, &body.params[..]),
+    };
+    for (&pat, &local) in param_pats.iter().zip(&params) {
         let range = b.pat_range(pat);
         b.scopes[0].locals.push((local, range));
         match body.pats[pat] {
@@ -557,7 +848,34 @@ fn build_body(
             }
         }
     }
-    let range = b.range(body.root);
+    let upvars = match item {
+        Item::Closure(_, expr) => {
+            let info = &types.closures[expr];
+            Some(crate::Upvars {
+                kind: info.kind,
+                names: info
+                    .captures
+                    .iter()
+                    .map(|c| capture_name(body, &types.binding_types, c, &typed.sigs, &hir.items))
+                    .collect(),
+                by_ref: info
+                    .captures
+                    .iter()
+                    .map(|c| matches!(c.mode, flux_ty::CaptureMode::ByRef(_)))
+                    .collect(),
+                mutable: info
+                    .captures
+                    .iter()
+                    .map(|c| {
+                        body.bindings[c.binding].mutable
+                            && !c.projection.contains(&flux_ty::CaptureProj::Deref)
+                    })
+                    .collect(),
+            })
+        }
+        _ => None,
+    };
+    let range = b.range(root);
     // A constant's value keeps what it borrows, which is never dropped.
     if let Item::Const(_) = item {
         let mut extended = Vec::new();
@@ -566,7 +884,7 @@ fn build_body(
         b.extend_at = Some((usize::MAX, 0));
     }
     b.scoped(ScopeKind::Temps, range, |b| {
-        b.lower_into(body.root, &Body::RETURN.into());
+        b.lower_into(root, &Body::RETURN.into());
     });
     b.leave_scopes(0, false, range);
     b.terminate(TerminatorKind::Return, range);
@@ -594,12 +912,14 @@ fn build_body(
         inherits_overflow_checks: false,
         live_drops: Vec::new(),
         init_errors: Vec::new(),
+        upvars,
+        capture_uses: b.capture_uses,
     };
     built.init_errors = crate::init::check(&built, &hir.items, &typed.sigs);
     built.init_errors.extend(b.errors);
     let precise = match item {
         Item::Function(f) => hir.items.functions[f].precise_live_drops,
-        Item::Const(_) => false,
+        Item::Const(_) | Item::Closure(..) => false,
     };
     crate::drops::elaborate(&mut built, &hir.items, &typed.sigs, &b.env, precise);
     built
@@ -713,6 +1033,12 @@ struct Builder<'a> {
     /// Whether each type asked about needs dropping, which may take the
     /// trait solver.
     needs_drop: std::cell::RefCell<rustc_hash::FxHashMap<Ty, bool>>,
+    /// In a closure's body, what it captures and where each is, through
+    /// `self`: the place itself if captured by value, else what the
+    /// reference to it points to.
+    upvars: Vec<(flux_ty::Capture, Place)>,
+    /// [`Body::capture_uses`].
+    capture_uses: Vec<(BasicBlock, usize, TextRange, bool)>,
 }
 
 /// Whether `expr` denotes a place: a local, a field or element of one, or
@@ -973,6 +1299,9 @@ impl Builder<'_> {
     /// The place `expr` denotes: itself if it is a place expression,
     /// otherwise a temporary holding its value.
     fn lower_place(&mut self, expr: ExprId) -> Place {
+        if let Some(place) = self.upvar_place(expr) {
+            return place;
+        }
         match self.body.exprs[expr] {
             Expr::Path(Res::Local(binding)) if self.guard_places.get(binding).is_some() => {
                 self.guard_places[binding].clone()
@@ -993,11 +1322,25 @@ impl Builder<'_> {
                 operand,
             } => self.lower_place(operand).deref(),
             Expr::Index { base, index } => {
-                let mut place = self.lower_place(base);
                 let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
-                for _ in 0..derefs {
-                    place = place.deref();
-                }
+                // In a closure, the array or slice may be what it captures.
+                let captured = self.hir_place(base).and_then(|(binding, mut proj)| {
+                    if self.upvars.is_empty() || self.binding_locals.get(binding).is_some() {
+                        return None;
+                    }
+                    proj.extend((0..derefs).map(|_| flux_ty::CaptureProj::Deref));
+                    self.capture_source(binding, &proj)
+                });
+                let place = match captured {
+                    Some(place) => place,
+                    None => {
+                        let mut place = self.lower_place(base);
+                        for _ in 0..derefs {
+                            place = place.deref();
+                        }
+                        place
+                    }
+                };
                 self.index(place, index, self.range(expr))
             }
             Expr::Path(Res::Static(id)) => self.static_place(id, self.range(expr)),
@@ -1068,6 +1411,141 @@ impl Builder<'_> {
         let address = Operand::Const(Constant::Static { id, ty: pointer });
         self.assign(&temp.into(), Rvalue::Use(address), range);
         Place::from(temp).deref()
+    }
+
+    /// In a closure's body, the place `expr` denotes if it is in a place
+    /// the closure captures.
+    fn upvar_place(&self, expr: ExprId) -> Option<Place> {
+        if self.upvars.is_empty() {
+            return None;
+        }
+        let (binding, proj) = self.hir_place(expr)?;
+        if self.binding_locals.get(binding).is_some() {
+            return None;
+        }
+        self.capture_source(binding, &proj)
+    }
+
+    /// The place of binding `binding`, then `proj`, here: in a local,
+    /// or in what a closure captures.
+    fn capture_source(&self, binding: BindingId, proj: &[flux_ty::CaptureProj]) -> Option<Place> {
+        let (mut place, rest) = match self.binding_locals.get(binding) {
+            Some(&local) => (Place::from(local), proj),
+            None => {
+                let (capture, place) = self
+                    .upvars
+                    .iter()
+                    .find(|(c, _)| c.binding == binding && proj.starts_with(&c.projection))?;
+                (place.clone(), &proj[capture.projection.len()..])
+            }
+        };
+        for &p in rest {
+            place = match p {
+                flux_ty::CaptureProj::Deref => place.deref(),
+                flux_ty::CaptureProj::Field(i) => place.field(i),
+            };
+        }
+        Some(place)
+    }
+
+    /// The binding `expr` is a place in, and the path to it, if it is a
+    /// place expression.
+    fn hir_place(&self, expr: ExprId) -> Option<(BindingId, Vec<flux_ty::CaptureProj>)> {
+        match self.body.exprs[expr] {
+            Expr::Path(Res::Local(binding)) => Some((binding, Vec::new())),
+            Expr::Field { expr: base, .. } => {
+                let (binding, mut proj) = self.hir_place(base)?;
+                let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
+                proj.extend((0..derefs).map(|_| flux_ty::CaptureProj::Deref));
+                proj.push(flux_ty::CaptureProj::Field(self.field_index(expr)));
+                Some((binding, proj))
+            }
+            Expr::Unary {
+                op: UnaryOp::Deref,
+                operand,
+            } => {
+                let (binding, mut proj) = self.hir_place(operand)?;
+                proj.push(flux_ty::CaptureProj::Deref);
+                Some((binding, proj))
+            }
+            _ => None,
+        }
+    }
+
+    /// `|..| body`: the closure, from what it captures, each read or
+    /// borrowed here.
+    fn lower_closure(&mut self, expr: ExprId, dest: &Place, range: TextRange) {
+        let Some(info) = self.types.closures.get(expr) else {
+            self.terminate(TerminatorKind::Unreachable, range);
+            return;
+        };
+        let mut operands = Vec::new();
+        for capture in info.captures.iter() {
+            let Some(place) = self.capture_source(capture.binding, &capture.projection) else {
+                self.terminate(TerminatorKind::Unreachable, range);
+                return;
+            };
+            let operand = match capture.mode {
+                flux_ty::CaptureMode::ByValue => self.read(place),
+                flux_ty::CaptureMode::ByRef(mutability) => {
+                    let temp = self.temp(capture.upvar_ty());
+                    let rvalue = Rvalue::Ref {
+                        mutability,
+                        place,
+                        two_phase: false,
+                    };
+                    let block = self.block();
+                    let index = self.blocks[block.index()].0.len();
+                    self.capture_uses
+                        .push((block, index, capture.range, capture.assigned));
+                    self.assign(&temp.into(), rvalue, range);
+                    Operand::Move(temp.into())
+                }
+            };
+            operands.push(operand);
+        }
+        self.assign(
+            dest,
+            Rvalue::Aggregate(AggregateKind::Closure, operands),
+            range,
+        );
+    }
+
+    /// A method's receiver, or the value a call of a value calls,
+    /// dereferenced and borrowed or moved as type checking said, in a
+    /// temporary, so that errors about it point at it.
+    fn adjusted_receiver(&mut self, receiver: ExprId, method: flux_ty::Method) -> Operand {
+        let receiver_range = self.range(receiver);
+        let mut place = self.lower_place(receiver);
+        for _ in 0..method.derefs {
+            place = place.deref();
+        }
+        let ty = match method.autoref {
+            Some(m) => Ty::new(TyKind::Ref(m, self.place_ty(&place))),
+            None => self.place_ty(&place),
+        };
+        let temp = self.temp(ty);
+        // A receiver taken by value is moved in now, so it is
+        // dropped if an argument leaves first.
+        if method.autoref.is_none() && self.needs_drop(ty) {
+            let scope = self.scopes.last_mut().expect("bodies have a scope");
+            scope.locals.push((temp, receiver_range));
+        }
+        let rvalue = match method.autoref {
+            Some(mutability) => Rvalue::Ref {
+                mutability,
+                place,
+                two_phase: mutability == Mutability::Mut,
+            },
+            None => Rvalue::Use(self.read(place)),
+        };
+        self.assign(&temp.into(), rvalue, receiver_range);
+        self.read(temp.into())
+    }
+
+    /// `ty` with its associated types normalized by the bounds in scope.
+    fn normalize(&self, ty: Ty) -> Ty {
+        flux_ty::traits::normalize(self.items, &self.typed.sigs, &self.projections, ty)
     }
 
     fn field_index(&self, expr: ExprId) -> u32 {
@@ -1238,9 +1716,11 @@ impl Builder<'_> {
             Expr::Match { scrutinee, arms } => {
                 self.lower_match(*scrutinee, arms, dest, range);
             }
+            Expr::Closure { .. } => self.lower_closure(expr, dest, range),
             Expr::Path(Res::Local(binding))
                 if self.binding_locals.get(*binding).is_none()
-                    && self.guard_places.get(*binding).is_none() =>
+                    && self.guard_places.get(*binding).is_none()
+                    && self.upvar_place(expr).is_none() =>
             {
                 self.terminate(TerminatorKind::Unreachable, range);
             }
@@ -1440,6 +1920,22 @@ impl Builder<'_> {
                 self.leave_scopes(0, false, range);
                 self.terminate(TerminatorKind::Return, range);
             }
+            Expr::Call { callee, args } if let Some(&method) = self.types.methods.get(expr) => {
+                let receiver = self.adjusted_receiver(*callee, method);
+                // The arguments, as the tuple the trait's method takes.
+                let instance = self.types.calls[expr];
+                let tupled = instance.args.get(1).copied().unwrap_or(Ty::UNIT);
+                let tupled = self.normalize(tupled);
+                let operands = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                let tuple = self.temp(tupled);
+                self.assign(
+                    &tuple.into(),
+                    Rvalue::Aggregate(AggregateKind::Tuple, operands),
+                    range,
+                );
+                let operands = vec![receiver, Operand::Move(tuple.into())];
+                self.call(instance.function, instance.args, operands, dest, range);
+            }
             Expr::Call { callee, args } => match body.exprs[*callee] {
                 Expr::Path(Res::Function(_) | Res::Assoc { .. }) => {
                     let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
@@ -1491,34 +1987,8 @@ impl Builder<'_> {
             Expr::MethodCall { receiver, args, .. }
                 if let Some(&method) = self.types.methods.get(expr) =>
             {
-                let receiver_range = self.range(*receiver);
-                let mut place = self.lower_place(*receiver);
-                for _ in 0..method.derefs {
-                    place = place.deref();
-                }
-                // The receiver is passed through a temporary, so errors
-                // about it point at it rather than at the whole call.
-                let ty = match method.autoref {
-                    Some(m) => Ty::new(TyKind::Ref(m, self.place_ty(&place))),
-                    None => self.place_ty(&place),
-                };
-                let temp = self.temp(ty);
-                // A receiver taken by value is moved in now, so it is
-                // dropped if an argument leaves first.
-                if method.autoref.is_none() && self.needs_drop(ty) {
-                    let scope = self.scopes.last_mut().expect("bodies have a scope");
-                    scope.locals.push((temp, receiver_range));
-                }
-                let rvalue = match method.autoref {
-                    Some(mutability) => Rvalue::Ref {
-                        mutability,
-                        place,
-                        two_phase: mutability == Mutability::Mut,
-                    },
-                    None => Rvalue::Use(self.read(place)),
-                };
-                self.assign(&temp.into(), rvalue, receiver_range);
-                let mut operands = vec![self.read(temp.into())];
+                let receiver = self.adjusted_receiver(*receiver, method);
+                let mut operands = vec![receiver];
                 operands.extend(args.iter().map(|&arg| self.lower_operand(arg)));
                 let instance = self.types.calls[expr];
                 self.call(instance.function, instance.args, operands, dest, range);

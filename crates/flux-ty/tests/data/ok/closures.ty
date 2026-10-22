@@ -1,0 +1,59 @@
+struct Holder<F> { f: F }
+fn run(&Holder<F>, i32) -> i32
+    self@0: &Holder<F>
+    x@1: i32
+fn apply<F>(F, i32) -> i32
+    f@0: F
+    x@1: i32
+fn apply_mut<F>(F) -> ()
+    f@0: F
+fn consume<F>(F) -> u64
+    f@0: F
+fn by_ref<F>(&F) -> i64
+    f@0: &F
+fn generic<T>(T) -> (T, T)
+    t@0: T
+    x@1: T
+    dup@2: {closure}
+fn inference() -> i32
+    k@0: i32
+    a@1: i32
+    b@2: i32
+    add@3: {closure}
+    sum@4: i32
+    x@5: i32
+    from_bound@6: i32
+    seen@7: u8
+    n@8: u8
+    flag@9: bool
+    big@10: u64
+    x@11: i64
+    twice@12: {closure}
+    through@13: i64
+    a@14: bool
+    b@15: bool
+    x@16: i32
+    h@17: Holder<{closure}>
+fn iterators() -> i32
+    x@0: &i32
+    x@1: i32
+    evens@2: i32
+    count@3: usize
+    x@4: u8
+    found@5: Option<u8>
+    acc@6: i32
+    a@7: i32
+    b@8: i32
+    pairs@9: i32
+    total@10: i32
+    iter@11: Enumerate<Range<i32>>
+    i@12: usize
+    x@13: i32
+fn options() -> i32
+    a@0: Option<i32>
+    x@1: i32
+    x@2: i32
+    b@3: Option<i32>
+    r@4: Result<i32, u8>
+    e@5: u8
+fn main() -> ()

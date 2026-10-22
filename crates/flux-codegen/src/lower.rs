@@ -285,6 +285,13 @@ fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: I
                 encode(elem, feed);
                 feed(b"]");
             }
+            TyKind::Closure(id, args) => {
+                feed(b"C");
+                feed(&(id.owner.index() as u32).to_le_bytes());
+                feed(&(id.expr.index() as u32).to_le_bytes());
+                args.iter().for_each(|&a| encode(a, feed));
+                feed(b";");
+            }
             TyKind::RawPtr(m, pointee) | TyKind::Ref(m, pointee) => {
                 let pointer: &[u8] = if matches!(ty.kind(), TyKind::Ref(..)) {
                     b"&"
@@ -342,6 +349,7 @@ fn keel_type(ty: Ty) -> Option<Type> {
         | TyKind::Adt(..)
         | TyKind::Array(..)
         | TyKind::Slice(_)
+        | TyKind::Closure(..)
         | TyKind::Param(_)
         | TyKind::Alias(_)
         | TyKind::Never
@@ -360,7 +368,7 @@ fn discriminant(sigs: &Signatures, ty: Ty) -> flux_ty::IntTy {
 fn is_memory(sigs: &Signatures, ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Array(..) => true,
-        TyKind::Tuple(_) | TyKind::Adt(..) => sigs
+        TyKind::Tuple(_) | TyKind::Adt(..) | TyKind::Closure(..) => sigs
             .contents(ty)
             .is_some_and(|fields| fields.iter().any(|&f| is_memory(sigs, f))),
         _ => false,

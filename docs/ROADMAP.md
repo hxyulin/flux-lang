@@ -38,16 +38,19 @@ expressions, operators on references through `core`'s impls, `?`
 on `Option` and `Result` with `From`, arrays and slices, with
 lengths evaluated while types are checked, bounds checks and rustc's
 borrow rules for elements, type aliases, statics, functions as values,
-with function pointers, and items inside function bodies.
+with function pointers, items inside function bodies, closures with
+rustc's precise captures and the `Fn`-family traits, ranges, `Iterator`
+with its adapters, and `for` loops.
 In order next:
 
 1. `core` defines the pointer methods, `mem::replace` and `CStr` (now
-   built into the compiler) through lang items and intrinsics. `for`
-   loops over `Iterator`, which needs closures for most of its methods.
+   built into the compiler) through lang items and intrinsics.
    Const generics, so that `core` can implement the arrays' traits and
    methods that are built into the compiler for now (`len`, `Copy`,
    `Clone`, `PartialEq`), and the slice methods that need references in
-   return values (`first`, `iter`, `split_at`).
+   return values (`first`, `iter`, `split_at`). Returning closures
+   (`impl Fn`), which needs opaque types, and iterators over
+   references, which need lifetimes.
 2. Lifetimes: references in structs and return values (`Option<&T>`),
    which needs region inference across function signatures.
 

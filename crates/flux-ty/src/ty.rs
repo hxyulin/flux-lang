@@ -19,7 +19,7 @@ use std::sync::{LazyLock, OnceLock, RwLock};
 
 use rustc_hash::FxHashMap;
 
-use flux_hir::{FunctionId, StructId, TraitId};
+use flux_hir::{ExprId, FunctionId, StructId, TraitId};
 use flux_intern::{Symbol, sym};
 
 /// A type: a handle to its [`TyKind`].
@@ -58,6 +58,9 @@ pub enum TyKind {
     FnDef(FnDefTy),
     /// A function pointer, `fn(i32) -> i32`.
     FnPtr(FnSigTy),
+    /// The type of a closure expression: unique to it, with its owner's
+    /// generic arguments followed by [`ClosureArgs`]' three.
+    Closure(ClosureId, GenericArgs),
     /// An inference variable; never present after inference.
     Infer(InferVar),
     /// The type of an erroneous expression, already reported. It unifies
@@ -147,6 +150,52 @@ impl FnSigTy {
     }
 }
 
+/// A closure: the function whose body has it, and its expression there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClosureId {
+    pub owner: FunctionId,
+    pub expr: ExprId,
+}
+
+/// Which of the `Fn`-family traits a closure implements: all three for
+/// `Fn`, `FnMut` and `FnOnce` for `FnMut`, `FnOnce` alone for `FnOnce`.
+/// As in rustc, a closure's type holds it as a type, `i8`, `i16` or
+/// `i32`, so that it can be inferred like its other parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ClosureKind {
+    Fn,
+    FnMut,
+    FnOnce,
+}
+
+impl ClosureKind {
+    pub fn as_ty(self) -> Ty {
+        Ty::int(match self {
+            ClosureKind::Fn => IntTy::I8,
+            ClosureKind::FnMut => IntTy::I16,
+            ClosureKind::FnOnce => IntTy::I32,
+        })
+    }
+
+    pub fn from_ty(ty: Ty) -> Option<ClosureKind> {
+        match ty.kind() {
+            TyKind::Int(IntTy::I8) => Some(ClosureKind::Fn),
+            TyKind::Int(IntTy::I16) => Some(ClosureKind::FnMut),
+            TyKind::Int(IntTy::I32) => Some(ClosureKind::FnOnce),
+            _ => None,
+        }
+    }
+
+    /// The trait's name.
+    pub fn name(self) -> &'static str {
+        match self {
+            ClosureKind::Fn => "Fn",
+            ClosureKind::FnMut => "FnMut",
+            ClosureKind::FnOnce => "FnOnce",
+        }
+    }
+}
+
 /// A function item's type: the function, its name for messages, its
 /// generic arguments, and its signature with them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -155,6 +204,58 @@ pub struct FnDefTy {
     pub name: Symbol,
     pub args: GenericArgs,
     pub sig: FnSigTy,
+}
+
+/// The last three generic arguments of a closure's type: its kind
+/// ([`ClosureKind::as_ty`]), its signature as the tuple `(params, ret)`
+/// with `params` a tuple, and the tuple of the types of what it captures
+/// (its fields).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosureArgs {
+    pub parent: GenericArgs,
+    pub kind: Ty,
+    pub sig: Ty,
+    pub upvars: Ty,
+}
+
+impl ClosureArgs {
+    pub fn split(args: GenericArgs) -> ClosureArgs {
+        let n = args.len();
+        assert!(n >= 3, "a closure's type has its three parts");
+        ClosureArgs {
+            parent: &args[..n - 3],
+            kind: args[n - 3],
+            sig: args[n - 2],
+            upvars: args[n - 1],
+        }
+    }
+
+    /// The tuple of the parameters' types.
+    pub fn params(&self) -> Ty {
+        match self.sig.kind() {
+            TyKind::Tuple([params, _]) => *params,
+            _ => Ty::ERROR,
+        }
+    }
+
+    pub fn ret(&self) -> Ty {
+        match self.sig.kind() {
+            TyKind::Tuple([_, ret]) => *ret,
+            _ => Ty::ERROR,
+        }
+    }
+
+    /// The captured values' types, once known.
+    pub fn upvar_types(&self) -> &'static [Ty] {
+        match self.upvars.kind() {
+            TyKind::Tuple(list) => list,
+            _ => &[],
+        }
+    }
+
+    pub fn closure_kind(&self) -> Option<ClosureKind> {
+        ClosureKind::from_ty(self.kind)
+    }
 }
 
 /// The generic arguments of a use of a generic item: one type per
@@ -258,7 +359,9 @@ impl Table {
         let flags = match kind {
             TyKind::Param(_) => HAS_PARAM,
             TyKind::Infer(_) => HAS_INFER,
-            TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().fold(0, |f, &t| f | of(t)),
+            TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
+                list.iter().fold(0, |f, &t| f | of(t))
+            }
             TyKind::Alias(alias) => alias.args.iter().fold(HAS_ALIAS, |f, &t| f | of(t)),
             TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
                 of(t)
@@ -353,6 +456,10 @@ impl Ty {
         Ty::new(TyKind::Adt(AdtId { strukt, name }, Ty::list(args)))
     }
 
+    pub fn closure(id: ClosureId, args: &[Ty]) -> Ty {
+        Ty::new(TyKind::Closure(id, Ty::list(args)))
+    }
+
     pub fn param(index: u32, name: Symbol) -> Ty {
         Ty::new(TyKind::Param(ParamTy { index, name }))
     }
@@ -390,6 +497,9 @@ impl Ty {
             TyKind::Param(param) => args.get(param.index as usize).copied().unwrap_or(Ty::ERROR),
             TyKind::Tuple(elements) => Ty::tuple(&subst_list(elements, args)),
             TyKind::Adt(adt, list) => Ty::new(TyKind::Adt(adt, Ty::list(&subst_list(list, args)))),
+            TyKind::Closure(id, list) => {
+                Ty::new(TyKind::Closure(id, Ty::list(&subst_list(list, args))))
+            }
             TyKind::Alias(alias) => Ty::alias(AliasTy {
                 args: Ty::list(&subst_list(alias.args, args)),
                 ..alias
@@ -440,7 +550,7 @@ impl Ty {
     /// The types directly inside this one.
     pub fn children(self) -> Vec<Ty> {
         match self.kind() {
-            TyKind::Tuple(list) | TyKind::Adt(_, list) => list.to_vec(),
+            TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => list.to_vec(),
             TyKind::Alias(alias) => alias.args.to_vec(),
             TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
                 vec![t]
@@ -620,6 +730,7 @@ impl fmt::Display for Ty {
                 }
                 f.write_str("}")
             }
+            TyKind::Closure(..) => f.write_str("{closure}"),
             TyKind::Infer(_) => f.write_str("_"),
             TyKind::Error => f.write_str("{error}"),
         }

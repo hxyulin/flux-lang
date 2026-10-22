@@ -13,12 +13,19 @@ fn expressions(v@0: i32) -> () {
     loop#2 {
         break#2;
     }
-    <missing>
+    match IntoIterator::into_iter(Range { start: 0, end: 3 }) {
+        mut iter@2 => loop#10 /* for */ {
+            match Iterator::next((&mut iter@2)) {
+                Option::None => break#10,
+                Option::Some(i@3) => {},
+            }
+        },
+    }
     match v@0 {
         _ => {},
     }
-    let f@2 = <missing>;
-    let (a@3, b@4) = (1, 2);
+    let f@4 = <missing>;
+    let (a@5, b@6) = (1, 2);
     v@0.method();
 }
 
@@ -28,8 +35,5 @@ error 11..21: `extern` blocks must be `unsafe` in edition 2024
 error 78..85: lifetimes are not supported yet
 error 96..102: string literals other than `c"..."` are not supported yet
 error 106..118: the `cfg` attribute is not supported yet
-error 184..191: loop labels are not supported yet
-error 213..219: loop labels are not supported yet
-error 231..247: `for` loops are not supported yet
 error 296..299: floating-point numbers are not supported yet
 error 348..364: free function without a body

@@ -585,9 +585,10 @@ impl<'a> Evaluator<'a> {
                         index,
                         fields,
                     },
-                    AggregateKind::Tuple | AggregateKind::Struct(_) | AggregateKind::Array(_) => {
-                        Value::Aggregate(fields)
-                    }
+                    AggregateKind::Tuple
+                    | AggregateKind::Struct(_)
+                    | AggregateKind::Array(_)
+                    | AggregateKind::Closure => Value::Aggregate(fields),
                 })
             }
             Rvalue::Repeat(op, count) => {

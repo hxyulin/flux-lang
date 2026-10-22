@@ -162,6 +162,14 @@ impl Ordering {
             _ => self,
         }
     }
+
+    /// Itself, or `f()` if it is `Equal`.
+    pub fn then_with<F: crate::ops::FnOnce() -> Ordering>(self, f: F) -> Ordering {
+        match self {
+            Equal => f(),
+            _ => self,
+        }
+    }
 }
 
 impl crate::clone::Clone for Ordering {
@@ -284,6 +292,34 @@ pub fn max<T: Ord>(v1: T, v2: T) -> T {
 #[rustc_const_unstable]
 pub fn min<T: Ord>(v1: T, v2: T) -> T {
     v1.min(v2)
+}
+
+/// The greater of `v1` and `v2` by `compare`, `v2` if they are equal.
+pub fn max_by<T, F: crate::ops::FnOnce(&T, &T) -> Ordering>(v1: T, v2: T, compare: F) -> T {
+    match compare(&v1, &v2) {
+        Greater => v1,
+        _ => v2,
+    }
+}
+
+/// The lesser of `v1` and `v2` by `compare`, `v1` if they are equal.
+pub fn min_by<T, F: crate::ops::FnOnce(&T, &T) -> Ordering>(v1: T, v2: T, compare: F) -> T {
+    match compare(&v1, &v2) {
+        Greater => v2,
+        _ => v1,
+    }
+}
+
+/// The greater of `v1` and `v2` by `f`'s key, `v2` if they are equal.
+pub fn max_by_key<T, F: crate::ops::FnMut(&T) -> K, K: Ord>(v1: T, v2: T, mut f: F) -> T {
+    let (k1, k2) = (f(&v1), f(&v2));
+    if k1 > k2 { v1 } else { v2 }
+}
+
+/// The lesser of `v1` and `v2` by `f`'s key, `v1` if they are equal.
+pub fn min_by_key<T, F: crate::ops::FnMut(&T) -> K, K: Ord>(v1: T, v2: T, mut f: F) -> T {
+    let (k1, k2) = (f(&v1), f(&v2));
+    if k2 < k1 { v2 } else { v1 }
 }
 
 // The integers and `bool` compare with the built-in operators.

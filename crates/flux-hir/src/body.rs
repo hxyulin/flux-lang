@@ -165,6 +165,18 @@ pub enum Expr {
         base: ExprId,
         index: ExprId,
     },
+    /// `|a, b: i32| body`, `move |x| -> T { .. }`: a function of its
+    /// own whose body is part of this one's, and which may use (capture)
+    /// the bindings in scope where it is written. `return` in its body
+    /// returns from it.
+    Closure {
+        params: Box<[PatId]>,
+        /// Each parameter's type, if written.
+        param_types: Box<[Option<TypeRefId>]>,
+        ret: Option<TypeRefId>,
+        body: ExprId,
+        is_move: bool,
+    },
     /// `S { a: 1, b, ..base }` or `E::V { a: 1 }`, in source order.
     Record {
         strukt: StructId,
@@ -216,6 +228,11 @@ pub enum LoopSource {
     /// `while cond { body }`, lowered as
     /// `loop { if cond { body } else { break } }`.
     While,
+    /// `for pat in head { body }`: the loop of
+    /// `match IntoIterator::into_iter(head) { mut iter => loop { match
+    /// Iterator::next(&mut iter) { None => break, Some(pat) => body } } }`
+    /// ([`Body::for_loop_match`]).
+    For,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,6 +362,31 @@ impl Pat {
 }
 
 impl Body {
+    /// The `match` of `Iterator::next` in a `for` loop's `loop`, and the
+    /// loop's own pattern, inside its `Some`.
+    pub fn for_loop_match(&self, loop_expr: ExprId) -> Option<(ExprId, PatId)> {
+        let Expr::Loop {
+            body,
+            source: LoopSource::For,
+        } = self.exprs[loop_expr]
+        else {
+            return None;
+        };
+        let Expr::Block { stmts, .. } = &self.exprs[body] else {
+            return None;
+        };
+        let [Stmt::Expr { expr, .. }] = &stmts[..] else {
+            return None;
+        };
+        let Expr::Match { arms, .. } = &self.exprs[*expr] else {
+            return None;
+        };
+        let Pat::TupleStruct { pats, .. } = &self.pats[arms.get(1)?.pat] else {
+            return None;
+        };
+        Some((*expr, *pats.first()?))
+    }
+
     /// Every binding in `pat`, in source order, once: an or-pattern's
     /// alternatives bind the same ones.
     pub fn pat_bindings(&self, pat: PatId, out: &mut Vec<BindingId>) {

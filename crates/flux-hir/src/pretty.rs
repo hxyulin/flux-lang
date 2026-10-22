@@ -560,8 +560,10 @@ impl Printer<'_> {
             }
             Expr::Loop { body, source } => {
                 write!(self.out, "loop#{} ", id.index()).unwrap();
-                if *source == LoopSource::While {
-                    self.out.push_str("/* while */ ");
+                match source {
+                    LoopSource::While => self.out.push_str("/* while */ "),
+                    LoopSource::For => self.out.push_str("/* for */ "),
+                    LoopSource::Loop => {}
                 }
                 self.expr(*body);
             }
@@ -680,6 +682,32 @@ impl Printer<'_> {
                     self.expr(*spread);
                 }
                 self.out.push_str(" }");
+            }
+            Expr::Closure {
+                params,
+                param_types,
+                ret,
+                body,
+                is_move,
+            } => {
+                if *is_move {
+                    self.out.push_str("move ");
+                }
+                self.out.push('|');
+                for (i, (&pat, ty)) in params.iter().zip(param_types.iter()).enumerate() {
+                    if i > 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.pat(pat);
+                    if let Some(ty) = ty {
+                        write!(self.out, ": {}", type_ref(&self.body.types[*ty])).unwrap();
+                    }
+                }
+                self.out.push_str("| ");
+                if let Some(ret) = ret {
+                    write!(self.out, "-> {} ", type_ref(&self.body.types[*ret])).unwrap();
+                }
+                self.expr(*body);
             }
         }
     }

@@ -71,11 +71,11 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         next += 1;
         let depth = depths[&caller];
         let shim;
-        let body = match mir.bodies.get(caller.function) {
-            Some(body) => body,
+        let (body, caller_args) = match mir.instance_body(&hir.items, caller) {
+            Some(found) => found,
             None => {
                 shim = clone_shim(&hir.items, sigs, caller).expect("instances have bodies");
-                &shim
+                (&shim, caller.args)
             }
         };
         for data in body.blocks.values() {
@@ -108,11 +108,11 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                     func, generic_args, ..
                 } => vec![Instance {
                     function: *func,
-                    args: Ty::list(&subst_list(generic_args, caller.args)),
+                    args: Ty::list(&subst_list(generic_args, caller_args)),
                 }],
                 TerminatorKind::Drop { place, .. } => {
                     let ty = body.place_ty(place, sigs);
-                    let ty = flux_ty::traits::instance_ty(&hir.items, sigs, ty, caller.args);
+                    let ty = flux_ty::traits::instance_ty(&hir.items, sigs, ty, caller_args);
                     let mut glue = Vec::new();
                     drop_glue(&hir.items, sigs, place.clone(), ty, &mut glue);
                     let mut types = Vec::new();
@@ -132,7 +132,9 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
             };
             for callee in callees {
                 let callee = flux_ty::traits::resolve_instance(&hir.items, sigs, callee);
-                if mir.bodies.get(callee.function).is_none() && !is_clone_shim(&hir.items, callee) {
+                if mir.instance_body(&hir.items, callee).is_none()
+                    && !is_clone_shim(&hir.items, callee)
+                {
                     continue;
                 }
                 if depths.contains_key(&callee) {
@@ -166,8 +168,8 @@ pub fn body_of<'b>(
     mir: &'b FileMir,
     instance: Instance,
 ) -> Cow<'b, Body> {
-    match mir.bodies.get(instance.function) {
-        Some(body) => instance_body(hir, sigs, body, instance.args),
+    match mir.instance_body(&hir.items, instance) {
+        Some((body, args)) => instance_body(hir, sigs, body, args),
         None => Cow::Owned(clone_shim(&hir.items, sigs, instance).expect("instances have bodies")),
     }
 }
@@ -300,6 +302,8 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
         inherits_overflow_checks: false,
         live_drops: Vec::new(),
         init_errors: Vec::new(),
+        upvars: None,
+        capture_uses: Vec::new(),
     })
 }
 
@@ -403,6 +407,8 @@ fn eq_shim(instance: Instance) -> Body {
         inherits_overflow_checks: false,
         live_drops: Vec::new(),
         init_errors: Vec::new(),
+        upvars: None,
+        capture_uses: Vec::new(),
     }
 }
 
@@ -501,7 +507,7 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
                 return;
             }
         }
-        TyKind::Tuple(_) => {}
+        TyKind::Tuple(_) | TyKind::Closure(..) => {}
         TyKind::Array(elem, len) => {
             let depth = place.index_locals().count();
             let index = element_index(depth);
