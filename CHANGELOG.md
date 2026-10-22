@@ -462,6 +462,9 @@
   }`) compare with `<str as PartialEq>::eq`, as in rustc, and, like
   byte strings, match a reference without seeing through it; for
   exhaustiveness they cover nothing (`&_` not covered).
+- Find slices' methods on arrays (`arr.iter()`, `arr.first()`,
+  `(&mut arr).last()`): past the receiver's last dereference, an array
+  is borrowed and unsized to a slice, as rustc's method probe does.
 
 ### Performance
 

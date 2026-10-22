@@ -1751,6 +1751,21 @@ impl Builder<'_> {
             None => Rvalue::Use(self.read(place)),
         };
         self.assign(&temp.into(), rvalue, receiver_range);
+        // `arr.iter()`: the reference to the array, as one to a slice.
+        if method.unsize
+            && let TyKind::Ref(m, pointee) = ty.kind()
+            && let TyKind::Array(elem, _) = pointee.kind()
+        {
+            let slice = Ty::new(TyKind::Ref(m, Ty::new(TyKind::Slice(elem))));
+            let unsized_ = self.temp(slice);
+            let operand = self.read(temp.into());
+            self.assign(
+                &unsized_.into(),
+                Rvalue::Unsize(operand, slice),
+                receiver_range,
+            );
+            return self.read(unsized_.into());
+        }
         self.read(temp.into())
     }
 

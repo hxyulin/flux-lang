@@ -529,6 +529,7 @@ impl Ctx<'_> {
                 function,
                 derefs,
                 autoref,
+                unsize: false,
             },
         );
         self.calls.insert(id, (function, vec![self_ty, tupled]));

@@ -124,12 +124,15 @@ enum BindingMode {
 }
 
 /// A resolved method call: the receiver is dereferenced `derefs` times,
-/// then borrowed (`autoref`) or passed by value.
+/// then borrowed (`autoref`) or passed by value, and the reference to an
+/// array unsized to one to a slice if `unsize` (`arr.iter()`), as
+/// rustc's probe does past the last dereference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Method {
     pub function: FunctionId,
     pub derefs: u32,
     pub autoref: Option<Mutability>,
+    pub unsize: bool,
 }
 
 /// Infers the types of `function`'s body.
@@ -3424,7 +3427,7 @@ impl Ctx<'_> {
                             id,
                             receiver,
                             function,
-                            (ty, d),
+                            (ty, d, false),
                             trait_args,
                             args,
                             name_range,
@@ -3449,6 +3452,37 @@ impl Ctx<'_> {
                     derefs += 1;
                 }
                 _ => break,
+            }
+        }
+        // Past the last dereference, an array unsizes to a slice, which
+        // only a reference may take (rustc's probe's final step).
+        if let TyKind::Array(elem, _) = base.kind() {
+            let slice = Ty::new(TyKind::Slice(elem));
+            for mode in [Mutability::Not, Mutability::Mut] {
+                match self.probe_method(slice, Some(mode), method, inherent(slice), traits) {
+                    Ok(Some((function, trait_args))) => {
+                        return self.check_method(
+                            id,
+                            receiver,
+                            function,
+                            (slice, derefs, true),
+                            trait_args,
+                            args,
+                            name_range,
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(()) => {
+                        self.error(name_range, "multiple applicable items in scope");
+                        return Ty::ERROR;
+                    }
+                }
+            }
+            if unmet.is_none()
+                && (self.exists_unmet(slice, method, true)
+                    || self.exists_unmet_for_ref(slice, method))
+            {
+                unmet = Some(slice);
             }
         }
         if let TyKind::Array(..) | TyKind::Slice(_) = base.kind() {
@@ -3600,7 +3634,7 @@ impl Ctx<'_> {
         id: ExprId,
         receiver: ExprId,
         function: FunctionId,
-        (base, derefs): (Ty, u32),
+        (base, derefs, unsize): (Ty, u32, bool),
         trait_args: Option<&[Ty]>,
         args: &[ExprId],
         name_range: TextRange,
@@ -3657,6 +3691,7 @@ impl Ctx<'_> {
                 function,
                 derefs,
                 autoref,
+                unsize,
             },
         );
         let params = &sig.params[1..];
