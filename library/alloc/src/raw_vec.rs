@@ -14,7 +14,7 @@ pub(crate) struct RawVec<T> {
 }
 
 /// rustc's `RawVec::MIN_NON_ZERO_CAP`.
-const fn min_non_zero_cap(size: usize) -> usize {
+pub(crate) const fn min_non_zero_cap(size: usize) -> usize {
     if size == 1 {
         8
     } else if size <= 1024 {

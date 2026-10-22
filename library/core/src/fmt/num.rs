@@ -119,6 +119,12 @@ macro_rules! unsigned_display {
                 fn fmt(&self, f: &mut Formatter<'_>) -> Result {
                     fmt_u64(*self as u64, true, f)
                 }
+
+                // rustc's `to_string` makes room for the most digits.
+                #[doc(hidden)]
+                fn __to_string_hint(&self) -> super::ToStringHint {
+                    super::ToStringHint::Capacity(<$t>::MAX.ilog10() as usize + 1)
+                }
             }
         )*
     };
@@ -133,6 +139,13 @@ macro_rules! signed_display {
                     let abs = if n < 0 { 0u64.wrapping_sub(n as u64) } else { n as u64 };
                     fmt_u64(abs, n >= 0, f)
                 }
+
+                // The most digits, and the sign.
+                #[doc(hidden)]
+                fn __to_string_hint(&self) -> super::ToStringHint {
+                    let digits = <$t>::MAX.ilog10() as usize + 1;
+                    super::ToStringHint::Capacity(digits + (*self < 0) as usize)
+                }
             }
         )*
     };
@@ -145,6 +158,11 @@ impl Display for u128 {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         fmt_u128(*self, true, f)
     }
+
+    #[doc(hidden)]
+    fn __to_string_hint(&self) -> super::ToStringHint {
+        super::ToStringHint::Capacity(39)
+    }
 }
 
 impl Display for i128 {
@@ -152,6 +170,11 @@ impl Display for i128 {
         let n = *self;
         let abs = if n < 0 { 0u128.wrapping_sub(n as u128) } else { n as u128 };
         fmt_u128(abs, n >= 0, f)
+    }
+
+    #[doc(hidden)]
+    fn __to_string_hint(&self) -> super::ToStringHint {
+        super::ToStringHint::Capacity(39 + (*self < 0) as usize)
     }
 }
 

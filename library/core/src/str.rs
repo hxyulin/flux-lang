@@ -1588,6 +1588,16 @@ impl<'a> Iterator for Bytes<'a> {
     const __RANDOM_ACCESS: bool = true;
     const __MAY_HAVE_SIDE_EFFECT: bool = false;
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
+    #[doc(hidden)]
+    fn __random_access(&self) -> bool {
+        true
+    }
+
     fn next(&mut self) -> Option<u8> {
         if self.front < self.back {
             self.front += 1;

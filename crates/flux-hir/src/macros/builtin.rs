@@ -753,6 +753,129 @@ fn placeholder(inner: &str) -> Result<Placeholder, SpecError> {
 /// evaluates them once each, by reference, and makes the `Arguments`
 /// that shows them, each with the formatting trait its placeholders
 /// name (which it must implement, reported at it).
+/// The text a string or integer literal shows with `{}`, as rustc's
+/// `try_inline_lit` finds it, through parentheses and `&`: an integer
+/// within its type (`i32` unsuffixed).
+fn inlined_literal(expr: &[Tok]) -> Option<String> {
+    let mut e = expr;
+    loop {
+        match e {
+            [first, rest @ ..] if first.kind == T![&] => e = rest,
+            [open, inner @ .., close] if open.kind == T!['('] && close.kind == T![')'] => e = inner,
+            _ => break,
+        }
+    }
+    let [t] = e else {
+        return None;
+    };
+    match t.kind {
+        SyntaxKind::STRING => crate::literal::unescape_str(t.text.as_str()).ok(),
+        SyntaxKind::INT_NUMBER => {
+            let Ok(crate::Literal::Int { value, suffix }) =
+                crate::literal::parse_int(t.text.as_str())
+            else {
+                return None;
+            };
+            let max: u128 = match suffix.map(|s| s.as_str()) {
+                None | Some("i32") => i32::MAX as u128,
+                Some("i8") => i8::MAX as u128,
+                Some("i16") => i16::MAX as u128,
+                Some("i64" | "isize") => i64::MAX as u128,
+                Some("i128") => i128::MAX as u128,
+                Some("u8") => u8::MAX.into(),
+                Some("u16") => u16::MAX.into(),
+                Some("u32") => u32::MAX.into(),
+                Some("u64" | "usize") => u64::MAX.into(),
+                _ => u128::MAX,
+            };
+            (value <= max).then(|| value.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Writes the literals plain `{}` placeholders show into the pieces
+/// around them, dropping those placeholders, and the entries and
+/// arguments nothing shows any more.
+fn inline_literals(
+    format: &mut FormatString,
+    resolved: &mut Vec<(Option<usize>, Option<usize>, Option<usize>)>,
+    entries: &mut Vec<(usize, &'static str)>,
+    exprs: &mut Vec<Vec<Tok>>,
+) {
+    let texts: Vec<Option<String>> = (0..format.placeholders.len())
+        .map(|i| match resolved[i] {
+            (Some(e), None, None)
+                if entries[e].1 == "display" && format.placeholders[i].is_plain() =>
+            {
+                inlined_literal(&exprs[entries[e].0])
+            }
+            _ => None,
+        })
+        .collect();
+    if texts.iter().all(Option::is_none) {
+        return;
+    }
+    let mut pieces = Vec::new();
+    let mut placeholders = Vec::new();
+    let mut kept = Vec::new();
+    let mut current = format.pieces[0].clone();
+    for (i, text) in texts.iter().enumerate() {
+        let after = format.pieces.get(i + 1).cloned().unwrap_or_default();
+        match text {
+            Some(text) => {
+                current.push_str(text);
+                current.push_str(&after);
+            }
+            None => {
+                pieces.push(std::mem::replace(&mut current, after));
+                placeholders.push(format.placeholders[i].clone());
+                kept.push(resolved[i]);
+            }
+        }
+    }
+    pieces.push(current);
+    // The entries the placeholders left need, in the order they first
+    // need them, and the arguments those show.
+    let mut new_entries: Vec<(usize, &'static str)> = Vec::new();
+    let remap = |e: Option<usize>, new_entries: &mut Vec<(usize, &'static str)>| {
+        e.map(|e| {
+            let entry = entries[e];
+            match new_entries.iter().position(|&n| n == entry) {
+                Some(i) => i,
+                None => {
+                    new_entries.push(entry);
+                    new_entries.len() - 1
+                }
+            }
+        })
+    };
+    let resolved_new: Vec<_> = kept
+        .iter()
+        .map(|&(v, w, p)| {
+            let w = remap(w, &mut new_entries);
+            let p = remap(p, &mut new_entries);
+            let v = remap(v, &mut new_entries);
+            (v, w, p)
+        })
+        .collect();
+    let mut args: Vec<usize> = Vec::new();
+    for entry in new_entries.iter_mut() {
+        entry.0 = match args.iter().position(|&a| a == entry.0) {
+            Some(i) => i,
+            None => {
+                args.push(entry.0);
+                args.len() - 1
+            }
+        };
+    }
+    *exprs = args.iter().map(|&a| exprs[a].clone()).collect();
+    *entries = new_entries;
+    *resolved = resolved_new;
+    format.pieces = pieces;
+    format.placeholders = placeholders;
+}
+
 fn format_args(
     cx: &BuiltinCx<'_>,
     toks: &[Tok],
@@ -938,6 +1061,9 @@ fn format_args(
             ));
         }
     }
+    // rustc writes literals that plain `{}`s show into the string
+    // (`inline_literals`): `format!("{}", 42)` is `"42"`.
+    inline_literals(&mut format, &mut resolved, &mut entries, &mut exprs);
     // The pieces: the text before each placeholder, and after the last
     // if there is any.
     if format.pieces.last().is_some_and(|p| p.is_empty()) {

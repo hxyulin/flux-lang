@@ -64,6 +64,7 @@ const ALLOC_FILES: &[(&str, &str)] = &[
         "macros.rs",
         include_str!("../../../library/alloc/src/macros.rs"),
     ),
+    ("fmt.rs", include_str!("../../../library/alloc/src/fmt.rs")),
     (
         "alloc.rs",
         include_str!("../../../library/alloc/src/alloc.rs"),
