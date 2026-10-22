@@ -1,0 +1,14 @@
+fn named<'a>(&i32) -> ()
+    x@0: &i32
+fn mixed<'a>(&i32) -> ()
+    x@0: &i32
+fn main() -> ()
+fn projection(&i32) -> ()
+    x@0: &i32
+fn projected_alias(&i32) -> ()
+    x@0: &i32
+type StaticProjection = <&i32 as Ref>::Out
+error 39..41: named lifetimes in types in bodies are not supported yet
+error 107..109: named lifetimes in types in bodies are not supported yet
+error 240..247: lifetimes in associated type annotations are not supported yet
+error 304..311: lifetimes in associated type annotations are not supported yet

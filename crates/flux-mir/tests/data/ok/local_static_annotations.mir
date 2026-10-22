@@ -1,0 +1,403 @@
+fn choose(_1: bool) -> &i32 {
+    let mut _0: &i32;
+    let _2: &i32; // r
+    let _3: &i32;
+    let _4: ();
+    let _5: bool;
+    let _6: ();
+    let _7: &i32;
+    let mut _8: &i32;
+    let _9: ();
+    let _10: &i32;
+
+    bb0: {
+        _5 = copy _1;
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _8 = const &VALUE;
+        _7 = &(*_8);
+        _2 = copy _7;
+        _6 = const ();
+        _4 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _10 = const &promoted[0];
+        _2 = copy _10;
+        _9 = const ();
+        _4 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _0 = copy _2;
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn generic<T>(_1: &T) -> &T {
+    let mut _0: &T;
+    let _2: &T; // r
+    let _3: &T;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = copy _2;
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: &i32; // r
+    let _2: &i32;
+    let mut _3: &i32;
+    let _4: &[i32]; // slice
+    let _5: &[i32];
+    let _6: &[i32; 3];
+    let _7: &i32; // inferred
+    let _8: &i32;
+    let mut _9: &i32;
+    let _10: (&i32,); // wrapped
+    let _11: (&i32,);
+    let _12: &i32;
+    let _13: &i32; // explicit
+    let _14: &i32;
+    let _15: &i32; // implicit
+    let _16: &i32;
+    let _17: Hold<i32>; // hold
+    let _18: Hold<i32>;
+    let _19: &i32;
+    let _20: &i32; // a
+    let _21: &i32; // b
+    let _22: (&i32, &i32);
+    let _23: ();
+    let _24: &i32;
+    let _25: ();
+    let _26: &i32;
+    let _27: &i32;
+    let mut _28: &i32;
+    let mut _29: &i32; // c
+    let _30: (&i32,);
+    let _31: (&i32,);
+    let _32: &i32;
+    let _33: ();
+    let _34: &i32;
+    let _35: &i32; // d
+    let _36: Hold<i32>;
+    let _37: &i32; // e
+    let _38: [&i32; 1];
+    let _39: [&i32; 1];
+    let _40: &i32;
+    let _41: &&i32; // f
+    let _42: &i32;
+    let _43: (&[i32], &i32, (&i32,), &i32, &i32, &i32, &i32, &i32, &&i32);
+    let _44: &[i32];
+    let _45: &i32;
+    let _46: (&i32,);
+    let _47: &i32;
+    let _48: &i32;
+    let _49: &i32;
+    let _50: &i32;
+    let _51: &i32;
+    let _52: &&i32;
+
+    bb0: {
+        _3 = const &VALUE;
+        _1 = &(*_3);
+        _6 = const &promoted[0];
+        _4 = copy _6 as &[i32] (unsize);
+        _9 = const &VALUE;
+        _7 = &(*_9);
+        _12 = copy _1;
+        _10 = (copy _12,);
+        _13 = copy _1;
+        _15 = copy _13;
+        _19 = copy _15;
+        _17 = Hold { value: copy _19 };
+        _24 = choose(const true) -> bb1;
+    }
+
+    bb1: {
+        _20 = copy _24;
+        _23 = const ();
+        _28 = const &VALUE;
+        _27 = &(*_28);
+        _26 = generic::<i32>(copy _27) -> bb2;
+    }
+
+    bb2: {
+        _21 = copy _26;
+        _25 = const ();
+        _32 = copy _1;
+        _31 = (copy _32,);
+        _29 = copy _31.0;
+        StorageDead(_31);
+        _34 = const &promoted[1];
+        _29 = copy _34;
+        _33 = const ();
+        _35 = copy _17.0;
+        _40 = copy _1;
+        _39 = [copy _40];
+        _37 = copy _39[0 of 1];
+        StorageDead(_39);
+        _41 = &_1;
+        _44 = copy _4;
+        _45 = copy _7;
+        _46 = copy _10;
+        _47 = copy _20;
+        _48 = copy _21;
+        _49 = copy _29;
+        _50 = copy _35;
+        _51 = copy _37;
+        _52 = copy _41;
+        _43 = (copy _44, copy _45, copy _46, copy _47, copy _48, copy _49, copy _50, copy _51, copy _52);
+        StorageDead(_43);
+        _0 = const ();
+        StorageDead(_41);
+        StorageDead(_37);
+        StorageDead(_35);
+        StorageDead(_29);
+        StorageDead(_21);
+        StorageDead(_20);
+        StorageDead(_17);
+        StorageDead(_15);
+        StorageDead(_13);
+        StorageDead(_10);
+        StorageDead(_7);
+        StorageDead(_4);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn mixed(_1: &i32) -> i32 {
+    let mut _0: i32;
+    let mut _2: (&i32, &i32); // pair
+    let _3: (&i32, &i32);
+    let _4: &i32;
+    let mut _5: &i32;
+    let _6: &i32;
+    let mut _7: &i32;
+    let _8: ();
+    let _9: &i32;
+    let _10: i32;
+    let _11: i32;
+
+    bb0: {
+        _5 = const &VALUE;
+        _4 = &(*_5);
+        _7 = const &VALUE;
+        _6 = &(*_7);
+        _2 = (copy _4, copy _6);
+        _9 = copy _1;
+        _2.1 = copy _9;
+        _8 = const ();
+        _10 = copy (*_2.0);
+        _11 = copy (*_2.1);
+        _0 = Add(copy _10, copy _11);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn implied<T>(_1: &&T) -> () {
+    let mut _0: ();
+    let _2: &&T;
+
+    bb0: {
+        PlaceMention(_1);
+        _0 = const ();
+        return;
+    }
+}
+
+fn inferred_inner(_1: &&i32) -> () {
+    let mut _0: ();
+    let _2: &&i32;
+
+    bb0: {
+        PlaceMention(_1);
+        _0 = const ();
+        return;
+    }
+}
+
+fn defaults() -> () {
+    let mut _0: ();
+    let _1: DefaultRef<&i32>;
+    let _2: DefaultRef<&i32>;
+    let _3: &i32;
+    let mut _4: &i32;
+    let _5: DefaultCopy<&i32, &i32>;
+    let _6: DefaultCopy<&i32, &i32>;
+    let _7: &i32;
+    let mut _8: &i32;
+    let _9: &i32;
+
+    bb0: {
+        _4 = const &VALUE;
+        _3 = &(*_4);
+        _2 = DefaultRef { value: copy _3 };
+        StorageDead(_2);
+        _8 = const &VALUE;
+        _7 = &(*_8);
+        _9 = const &promoted[0];
+        _6 = DefaultCopy { first: copy _7, second: copy _9 };
+        StorageDead(_6);
+        _0 = const ();
+        return;
+    }
+}
+
+fn alias_placeholder(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: (&i32, &i32);
+    let _3: (&i32, &i32);
+    let _4: &i32;
+    let _5: &i32;
+    let mut _6: &i32;
+
+    bb0: {
+        _4 = copy _1;
+        _6 = const &VALUE;
+        _5 = &(*_6);
+        _3 = (copy _4, copy _5);
+        StorageDead(_3);
+        _0 = const ();
+        return;
+    }
+}
+
+fn let_else() -> () {
+    let mut _0: ();
+    let _1: &i32; // r
+    let _2: Option<&i32>;
+    let _3: Option<&i32>;
+    let _4: &i32;
+    let mut _5: &i32;
+    let _6: isize;
+    let _7: !;
+    let _8: !;
+    let _9: &i32;
+
+    bb0: {
+        _5 = const &VALUE;
+        _4 = &(*_5);
+        _3 = Option::Some(copy _4);
+        _6 = discriminant(_3);
+        switchInt(copy _6) -> [1: bb3, otherwise: bb1];
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+
+    bb2: {
+        StorageDead(_3);
+        PlaceMention(_1);
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+
+    bb3: {
+        _1 = copy (_3 as #1).0;
+        goto -> bb2;
+    }
+}
+
+fn closure() -> () {
+    let mut _0: ();
+    let _1: {closure}; // f
+    let _2: i32;
+    let _3: &{closure};
+    let _4: ();
+
+    bb0: {
+        _1 = {closure}();
+        _3 = &_1;
+        _4 = ();
+        _2 = call::<{closure}, ()>(copy _3, move _4) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_2);
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn closure::{closure#5} as Fn(_1: &{closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &i32; // r
+    let _4: &i32;
+    let mut _5: &i32;
+
+    bb0: {
+        _5 = const &VALUE;
+        _3 = &(*_5);
+        _0 = copy (*_3);
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn closure::{closure#5} as FnMut(_1: &mut {closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn closure::{closure#5} as FnOnce(_1: {closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn tuple_placeholder(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: (&i32, &i32);
+    let _3: (&i32, &i32);
+    let _4: &i32;
+    let _5: &i32;
+    let mut _6: &i32;
+
+    bb0: {
+        _4 = copy _1;
+        _6 = const &VALUE;
+        _5 = &(*_6);
+        _3 = (copy _4, copy _5);
+        StorageDead(_3);
+        _0 = const ();
+        return;
+    }
+}
+

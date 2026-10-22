@@ -790,6 +790,8 @@ pub fn closure_shims(
             mode,
             Body {
                 locals,
+                region_annotations: Vec::new(),
+                region_relations: Vec::new(),
                 blocks,
                 param_count: 2,
                 c_strings: Vec::new(),
@@ -843,9 +845,12 @@ fn build_body(
         source_map,
         types,
         locals: Arena::new(),
+        region_annotations: Vec::new(),
+        region_relations: Vec::new(),
         blocks: Vec::new(),
         current: None,
         binding_locals: ArenaMap::new(),
+        annotation_locals: ArenaMap::new(),
         binding_ranges: ArenaMap::new(),
         guard_places: ArenaMap::new(),
         guard: None,
@@ -1020,6 +1025,8 @@ fn build_body(
     }
     let mut built = Body {
         locals: b.locals,
+        region_annotations: b.region_annotations,
+        region_relations: b.region_relations,
         blocks: arena,
         param_count: params.len(),
         c_strings: b.c_strings,
@@ -1158,6 +1165,8 @@ struct Builder<'a> {
     source_map: &'a flux_hir::BodySourceMap,
     types: &'a InferenceResult,
     locals: Arena<LocalDecl>,
+    region_annotations: Vec<(Local, Box<[flux_ty::regions::Region]>, TextRange)>,
+    region_relations: Vec<(Place, Place, flux_ty::regions::Variance, TextRange)>,
     /// Blocks under construction; a block is finished once it has a
     /// terminator.
     blocks: Vec<(Vec<Statement>, Option<Terminator>)>,
@@ -1165,6 +1174,7 @@ struct Builder<'a> {
     /// code needs a block again (then it starts an unreachable one).
     current: Option<BasicBlock>,
     binding_locals: ArenaMap<Binding, Local>,
+    annotation_locals: ArenaMap<Pat, Local>,
     /// Each binding's pattern, where it is reported.
     binding_ranges: ArenaMap<Binding, TextRange>,
     /// While lowering a guard, the bindings of its arm that bind values
@@ -3071,6 +3081,7 @@ impl Builder<'_> {
                 ..
             } => {
                 self.declare_bindings(pat);
+                self.annotate_let_bindings(pat);
                 self.lower_let_else(pat, init, else_branch);
             }
             Stmt::Let { pat, init, .. } => {
@@ -3081,6 +3092,7 @@ impl Builder<'_> {
                     .expect("bodies have a scope");
                 let at = self.scopes[scope].locals.len();
                 self.declare_bindings(pat);
+                self.annotate_let_bindings(pat);
                 let Some(init) = init else {
                     return;
                 };
@@ -3102,6 +3114,134 @@ impl Builder<'_> {
                     self.lower_operand(expr);
                 }
             }
+        }
+    }
+
+    fn annotate_pat_source(&mut self, pat: PatId, source: &PatPlace) {
+        if self.types.let_regions.get(pat).is_none() {
+            return;
+        }
+        match source {
+            PatPlace::Place(place) => self.annotate_let_source(pat, place.clone()),
+            PatPlace::Upvar(..) => self.errors.push(flux_hir::Diagnostic::new(
+                self.pat_range(pat),
+                "lifetime annotations on uncaptured places in closures are not supported yet",
+            )),
+        }
+    }
+
+    fn annotate_let_source(&mut self, pat: PatId, source: Place) {
+        if self.types.let_regions.get(pat).is_some() {
+            let range = self.pat_range(pat);
+            let local = self.annotation_locals[pat];
+            self.region_relations.push((
+                source,
+                local.into(),
+                flux_ty::regions::Variance::Covariant,
+                range,
+            ));
+        }
+    }
+
+    fn annotate_let_bindings(&mut self, pat: PatId) {
+        let Some((ty, regions)) = self.types.let_regions.get(pat) else {
+            return;
+        };
+        let local = self.locals.alloc(LocalDecl {
+            ty: *ty,
+            kind: LocalKind::Temp,
+        });
+        self.annotation_locals.insert(pat, local);
+        self.region_annotations
+            .push((local, regions.clone(), self.pat_range(pat)));
+        self.annotated_pattern(pat, local.into());
+    }
+
+    /// Project the annotation through the pattern without generating reads or
+    /// tests: an uninitialized destructuring declaration has no value yet.
+    fn annotated_pattern(&mut self, pat: PatId, mut place: Place) {
+        for _ in 0..self.types.pat_derefs.get(pat).copied().unwrap_or(0) {
+            place = place.deref();
+        }
+        match &self.body.pats[pat] {
+            Pat::Bind { binding, sub } => {
+                let mut dest = Place::from(self.binding_locals[*binding]);
+                if self.types.binding_refs.get(*binding).is_some() {
+                    dest = dest.deref();
+                }
+                self.region_relations.push((
+                    place.clone(),
+                    dest,
+                    flux_ty::regions::Variance::Invariant,
+                    self.pat_range(pat),
+                ));
+                if let Some(sub) = sub {
+                    self.annotated_pattern(*sub, place);
+                }
+            }
+            Pat::Tuple { pats, rest } => {
+                let count = self
+                    .typed
+                    .sigs
+                    .fields(self.place_ty(&place))
+                    .map_or(0, |f| f.len());
+                for (i, p) in positions(pats, *rest, count) {
+                    self.annotated_pattern(p, place.field(i));
+                }
+            }
+            Pat::TupleStruct {
+                strukt,
+                variant,
+                pats,
+                rest,
+            } => {
+                let count = self.items.structs[*strukt].variant(*variant).fields.len();
+                let place = place.project(ProjectionElem::Downcast(*variant));
+                for (i, p) in positions(pats, *rest, count) {
+                    self.annotated_pattern(p, place.field(i));
+                }
+            }
+            Pat::Record {
+                strukt,
+                variant,
+                fields,
+                ..
+            } => {
+                let place = place.project(ProjectionElem::Downcast(*variant));
+                for &(name, p) in fields.iter() {
+                    self.annotated_pattern(
+                        p,
+                        place.field(self.struct_field(*strukt, *variant, name)),
+                    );
+                }
+            }
+            Pat::Ref { pat, .. } => self.annotated_pattern(*pat, place.deref()),
+            Pat::Or(pats) => {
+                for &p in pats.iter() {
+                    self.annotated_pattern(p, place.clone());
+                }
+            }
+            Pat::Slice {
+                prefix,
+                slice,
+                suffix,
+            } => {
+                // All elements and subslices share the sequence's region slots.
+                for &p in prefix.iter().chain(suffix.iter()) {
+                    self.annotated_pattern(
+                        p,
+                        place.project(ProjectionElem::ConstantIndex {
+                            offset: 0,
+                            min_length: 0,
+                            from_end: false,
+                        }),
+                    );
+                }
+                if let Some(p) = slice {
+                    self.annotated_pattern(*p, place);
+                }
+            }
+            Pat::Missing | Pat::Wild | Pat::Unit(..) | Pat::Expr(_) | Pat::Range { .. } => {}
         }
     }
 
@@ -3172,13 +3312,19 @@ impl Builder<'_> {
             Pat::Bind { binding, sub: None } if self.types.binding_refs.get(binding).is_none() => {
                 let local = self.binding_locals[binding];
                 self.lower_into(init, &local.into());
+                self.annotate_let_source(pat, local.into());
             }
             // `let _ = place;` does not read the place, nor does a
             // closure capture it for that.
             Pat::Wild if is_place(self.body, init) => {
                 let PatPlace::Place(place) = self.pat_place(init) else {
+                    if self.types.let_regions.get(pat).is_some() {
+                        self.errors.push(flux_hir::Diagnostic::new(self.pat_range(pat),
+                            "lifetime annotations on uncaptured places in closures are not supported yet"));
+                    }
                     return;
                 };
+                self.annotate_let_source(pat, place.clone());
                 let range = self.range(init);
                 let block = self.block();
                 self.blocks[block.index()].0.push(Statement {
@@ -3188,6 +3334,8 @@ impl Builder<'_> {
             }
             _ => {
                 let place = self.pat_place(init);
+                self.annotate_pat_source(pat, &place);
+
                 self.match_irrefutable(pat, place, self.range(init));
             }
         }
@@ -3198,6 +3346,7 @@ impl Builder<'_> {
     fn lower_let_else(&mut self, pat: PatId, init: ExprId, else_branch: ExprId) {
         let range = self.range(init);
         let place = self.pat_place(init);
+        self.annotate_pat_source(pat, &place);
         let otherwise = self.new_block();
         let matched = self.new_block();
         for exit in self.test(pat, place, otherwise, range) {

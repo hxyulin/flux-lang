@@ -101,6 +101,13 @@ pub struct Body {
     /// `_0` is the return value, then one local per parameter, then the
     /// user's bindings and temporaries.
     pub locals: Arena<LocalDecl>,
+    /// Type-only locals for written local lifetime annotations. They have no
+    /// storage or runtime operations; region checking relates their projections
+    /// to the initializer and bindings, including bindings assigned later.
+    pub region_annotations: Vec<(Local, Box<[flux_ty::regions::Region]>, TextRange)>,
+    /// Covariant initializer-to-annotation and invariant annotation-to-binding
+    /// relations. The latter keep later writes subject to the annotation.
+    pub region_relations: Vec<(Place, Place, flux_ty::regions::Variance, TextRange)>,
     pub blocks: Arena<BasicBlockData>,
     pub param_count: usize,
     /// The bytes of each C string constant, without the terminating NUL;
@@ -198,6 +205,8 @@ impl Body {
     pub(crate) fn empty(owner: Option<FunctionId>) -> Body {
         Body {
             locals: Arena::new(),
+            region_annotations: Vec::new(),
+            region_relations: Vec::new(),
             blocks: Arena::new(),
             param_count: 0,
             c_strings: Vec::new(),
