@@ -175,6 +175,12 @@
 - Report duplicate items in `impl` blocks of traits (E0201), which
   produced invalid keel IR.
 - Find inherent functions through qualified paths (`<S>::new()`).
+- Update keel to `1aa8c53`, which fixes `-O` arm64 code for a sparse
+  `switch` whose default target is the next block (`match o { Some(v)
+  => v, None => -1 }` returned the payload for `None`). flux's own
+  functions are local and use keel's private calling convention
+  (`cc(fast)`) where it allows, one result at most; `extern` functions
+  keep C's.
 - Give macro calls a node kind per position: `MACRO_CALL` (items),
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 - Support operators on references to integers and `bool` (`&a + b`,
