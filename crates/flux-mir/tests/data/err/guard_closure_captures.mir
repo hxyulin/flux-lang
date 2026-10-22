@@ -1,0 +1,609 @@
+fn consume(_1: S) -> bool {
+    let mut _0: bool;
+
+    bb0: {
+        _0 = const true;
+        return;
+    }
+}
+
+fn move_binding(_1: S) -> () {
+    let mut _0: ();
+    let _2: S; // b
+    let _3: bool;
+    let _4: {closure};
+    let _5: &{closure};
+    let _6: ();
+
+    bb0: {
+        _4 = {closure}(copy _1);
+        _5 = &_4;
+        _6 = ();
+        _3 = call::<{closure}, ()>(copy _5, move _6) -> bb6;
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb8;
+    }
+
+    bb3: {
+        _0 = const ();
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb4: {
+        _2 = move _1;
+        goto -> bb3;
+    }
+
+    bb5: {
+        goto -> bb2;
+    }
+
+    bb6: {
+        StorageDead(_4);
+        switchInt(copy _3) -> [0: bb5, otherwise: bb4];
+    }
+
+    bb7: {
+        unreachable;
+    }
+
+    bb8: {
+        _0 = const ();
+        goto -> bb1;
+    }
+}
+
+fn move_binding::{closure#8} as Fn(_1: &{closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: &S; // r
+    let _4: u8;
+
+    bb0: {
+        _3 = &(*_1).0;
+        _4 = copy (*_3).0;
+        _0 = Eq(copy _4, const 7_u8);
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn move_binding::{closure#8} as FnMut(_1: &mut {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn move_binding::{closure#8} as FnOnce(_1: {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn move_noncopy_field(_1: Pair) -> () {
+    let mut _0: ();
+    let _2: Pair; // b
+    let _3: bool;
+    let _4: {closure};
+    let _5: {closure};
+    let _6: ();
+
+    bb0: {
+        _4 = {closure}(copy _1.0);
+        _5 = move _4;
+        _6 = ();
+        _3 = call_once::<{closure}, ()>(move _5, move _6) -> bb6;
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb8;
+    }
+
+    bb3: {
+        _0 = const ();
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb4: {
+        _2 = move _1;
+        goto -> bb3;
+    }
+
+    bb5: {
+        goto -> bb2;
+    }
+
+    bb6: {
+        StorageDead(_4);
+        switchInt(copy _3) -> [0: bb5, otherwise: bb4];
+    }
+
+    bb7: {
+        unreachable;
+    }
+
+    bb8: {
+        _0 = const ();
+        goto -> bb1;
+    }
+}
+
+fn move_noncopy_field::{closure#5} as FnOnce(_1: {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: S;
+
+    bb0: {
+        _3 = move _1.0;
+        _0 = consume(move _3) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn mutate_copy_field(_1: S) -> () {
+    let mut _0: ();
+    let mut _2: S; // b
+    let _3: bool;
+    let _4: {closure};
+    let _5: &mut u8;
+    let _6: &mut {closure};
+    let _7: ();
+
+    bb0: {
+        _5 = &mut _1.0;
+        _4 = {closure}(move _5);
+        _6 = &two_phase _4;
+        _7 = ();
+        _3 = call_mut::<{closure}, ()>(move _6, move _7) -> bb6;
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb8;
+    }
+
+    bb3: {
+        _0 = const ();
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb4: {
+        _2 = move _1;
+        goto -> bb3;
+    }
+
+    bb5: {
+        goto -> bb2;
+    }
+
+    bb6: {
+        StorageDead(_4);
+        switchInt(copy _3) -> [0: bb5, otherwise: bb4];
+    }
+
+    bb7: {
+        unreachable;
+    }
+
+    bb8: {
+        _0 = const ();
+        goto -> bb1;
+    }
+}
+
+fn mutate_copy_field::{closure#7} as FnMut(_1: &mut {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: ();
+    let _4: u8;
+
+    bb0: {
+        _4 = copy (*(*_1).0);
+        (*(*_1).0) = Add(copy _4, const 1_u8);
+        _3 = const ();
+        _0 = const true;
+        return;
+    }
+}
+
+fn mutate_copy_field::{closure#7} as FnOnce(_1: {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn borrow_binding(_1: S) -> () {
+    let mut _0: ();
+    let mut _2: S; // b
+    let _3: bool;
+    let _4: {closure};
+    let _5: &mut S;
+    let _6: &mut {closure};
+    let _7: ();
+
+    bb0: {
+        _5 = &mut _1;
+        _4 = {closure}(move _5);
+        _6 = &two_phase _4;
+        _7 = ();
+        _3 = call_mut::<{closure}, ()>(move _6, move _7) -> bb6;
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb8;
+    }
+
+    bb3: {
+        _0 = const ();
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb4: {
+        _2 = move _1;
+        goto -> bb3;
+    }
+
+    bb5: {
+        goto -> bb2;
+    }
+
+    bb6: {
+        StorageDead(_4);
+        switchInt(copy _3) -> [0: bb5, otherwise: bb4];
+    }
+
+    bb7: {
+        unreachable;
+    }
+
+    bb8: {
+        _0 = const ();
+        goto -> bb1;
+    }
+}
+
+fn borrow_binding::{closure#8} as FnMut(_1: &mut {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: &mut S; // r
+    let _4: u8;
+
+    bb0: {
+        _3 = &mut (*(*_1).0);
+        _4 = copy (*_3).0;
+        _0 = Eq(copy _4, const 7_u8);
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn borrow_binding::{closure#8} as FnOnce(_1: {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn mutate_copy_binding(_1: u8) -> () {
+    let mut _0: ();
+    let mut _2: u8; // b
+    let _3: bool;
+    let _4: {closure};
+    let _5: &mut u8;
+    let _6: &mut {closure};
+    let _7: ();
+
+    bb0: {
+        _2 = copy _1;
+        _5 = &mut _2;
+        _4 = {closure}(move _5);
+        _6 = &two_phase _4;
+        _7 = ();
+        _3 = call_mut::<{closure}, ()>(move _6, move _7) -> bb6;
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb8;
+    }
+
+    bb3: {
+        _0 = const ();
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb4: {
+        goto -> bb3;
+    }
+
+    bb5: {
+        StorageDead(_2);
+        goto -> bb2;
+    }
+
+    bb6: {
+        StorageDead(_4);
+        switchInt(copy _3) -> [0: bb5, otherwise: bb4];
+    }
+
+    bb7: {
+        unreachable;
+    }
+
+    bb8: {
+        _0 = const ();
+        goto -> bb1;
+    }
+}
+
+fn mutate_copy_binding::{closure#6} as FnMut(_1: &mut {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: ();
+    let _4: u8;
+
+    bb0: {
+        _4 = copy (*(*_1).0);
+        (*(*_1).0) = Add(copy _4, const 1_u8);
+        _3 = const ();
+        _0 = const true;
+        return;
+    }
+}
+
+fn mutate_copy_binding::{closure#6} as FnOnce(_1: {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn move_ref_mut(_1: S) -> () {
+    let mut _0: ();
+    let _2: &mut S; // b
+    let _3: bool;
+    let _4: {closure};
+    let _5: {closure};
+    let _6: ();
+
+    bb0: {
+        _2 = &mut _1;
+        _4 = {closure}(copy _2);
+        _5 = move _4;
+        _6 = ();
+        _3 = call_once::<{closure}, ()>(move _5, move _6) -> bb6;
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb8;
+    }
+
+    bb3: {
+        _0 = const ();
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb4: {
+        goto -> bb3;
+    }
+
+    bb5: {
+        StorageDead(_2);
+        goto -> bb2;
+    }
+
+    bb6: {
+        StorageDead(_4);
+        switchInt(copy _3) -> [0: bb5, otherwise: bb4];
+    }
+
+    bb7: {
+        unreachable;
+    }
+
+    bb8: {
+        _0 = const ();
+        goto -> bb1;
+    }
+}
+
+fn move_ref_mut::{closure#7} as FnOnce(_1: {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: &mut S; // r
+    let _4: u8;
+
+    bb0: {
+        _3 = move _1.0;
+        _4 = copy (*_3).0;
+        _0 = Eq(copy _4, const 7_u8);
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn mutate_ref_mut(_1: S) -> () {
+    let mut _0: ();
+    let _2: &mut S; // b
+    let _3: bool;
+    let _4: {closure};
+    let _5: &mut u8;
+    let _6: &mut {closure};
+    let _7: ();
+
+    bb0: {
+        _2 = &mut _1;
+        _5 = &mut (*_2).0;
+        _4 = {closure}(move _5);
+        _6 = &two_phase _4;
+        _7 = ();
+        _3 = call_mut::<{closure}, ()>(move _6, move _7) -> bb6;
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb8;
+    }
+
+    bb3: {
+        _0 = const ();
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb4: {
+        goto -> bb3;
+    }
+
+    bb5: {
+        StorageDead(_2);
+        goto -> bb2;
+    }
+
+    bb6: {
+        StorageDead(_4);
+        switchInt(copy _3) -> [0: bb5, otherwise: bb4];
+    }
+
+    bb7: {
+        unreachable;
+    }
+
+    bb8: {
+        _0 = const ();
+        goto -> bb1;
+    }
+}
+
+fn mutate_ref_mut::{closure#7} as FnMut(_1: &mut {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: ();
+    let _4: u8;
+
+    bb0: {
+        _4 = copy (*(*_1).0);
+        (*(*_1).0) = Add(copy _4, const 1_u8);
+        _3 = const ();
+        _0 = const true;
+        return;
+    }
+}
+
+fn mutate_ref_mut::{closure#7} as FnOnce(_1: {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 217..218: cannot move out of `b` in pattern guard
+error 339..342: cannot move out of `b` in pattern guard
+error 450..453: cannot borrow `b` as mutable in pattern guard
+error 583..584: cannot borrow `b` as mutable in pattern guard
+error 702..703: cannot borrow `b` as mutable in pattern guard
+error 831..832: cannot move out of `b` in pattern guard
+error 956..959: cannot borrow `b` as mutable in pattern guard
