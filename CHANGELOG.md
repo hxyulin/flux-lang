@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Support macro-generated block imports with ordinary scope, hygiene and
+  privacy rules. Reject calls whose macro definition changes after collection,
+  preventing reuse of an expansion from a different definition.
+
 - Add checked NEON narrowing shifts and unsigned pairwise maximum, including
   indirect-call regressions and byte-width checks. Narrowing uses scalar
   lowering; pairwise maximum combines scalar shuffles and packed compare/select.

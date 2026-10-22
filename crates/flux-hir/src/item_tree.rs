@@ -93,6 +93,10 @@ pub struct ItemTree {
     /// The file each expansion of a macro call in item position is part
     /// of, by the file its items are in.
     pub expansion_files: rustc_hash::FxHashMap<FileId, FileId>,
+    /// Body expansions retained so collection and lowering share block identities.
+    pub(crate) body_expansions: rustc_hash::FxHashMap<(FileId, NodeId), BodyExpansion>,
+    /// Retained body definitions keep collection and lowering hygiene identical.
+    pub(crate) body_macro_definitions: rustc_hash::FxHashMap<(FileId, NodeId), macros::MacroId>,
     /// `use m;` imports of `macro_rules!` macros, for the def map.
     pub(crate) macro_imports: Vec<MacroImport>,
     /// Problems found collecting the items and resolving their names;
@@ -102,6 +106,15 @@ pub struct ItemTree {
     /// resolved before the program's: the items with smaller indices
     /// are `core`'s. Zero in a tree without `core`, or `core`'s own.
     pub core: ItemCounts,
+}
+
+/// A body macro expansion collected for its block imports.
+#[derive(Debug, Clone)]
+pub(crate) struct BodyExpansion {
+    pub definition: macros::MacroId,
+    pub file: FileId,
+    pub ctxts: Vec<(u32, u32)>,
+    pub fragment: flux_syntax::parser::Fragment,
 }
 
 /// How many items of each kind an [`ItemTree`] has: where the items a
@@ -3125,28 +3138,35 @@ impl Collector<'_> {
         if !tree
             .node(node)
             .descendants()
-            .any(|n| is_item_kind(n.kind()))
+            .any(|n| is_item_kind(n.kind()) || n.kind() == SyntaxKind::MACRO_EXPR)
         {
             return;
         }
         let mut blocks = Vec::new();
         outer_blocks(tree.node(node), &mut blocks);
         for block in blocks {
-            self.collect_block(ctx, block, function);
+            self.collect_block(ctx, block, function, false);
         }
     }
 
     /// Block `node`'s items, in a module of their own, then those of the
     /// blocks inside it. A `macro_rules!` statement defines a macro for
     /// the items and blocks after it.
-    fn collect_block(&mut self, ctx: Ctx, node: NodeId, function: Option<FunctionId>) {
+    fn collect_block(
+        &mut self,
+        ctx: Ctx,
+        node: NodeId,
+        function: Option<FunctionId>,
+        generated: bool,
+    ) {
         let shared = self.db.shared(ctx.file);
         let tree = shared.parse.tree();
         let block = tree.node(node);
-        let has_items = block.children().any(|c| is_item_kind(c.kind()));
-        let has_macros = block.children().any(|c| {
-            c.first_child()
-                .is_some_and(|m| m.kind() == SyntaxKind::MACRO_EXPR && macros::is_macro_rules(m))
+        let has_items = block.children().any(|c| {
+            is_item_kind(c.kind())
+                || c.kind() == SyntaxKind::MACRO_EXPR
+                || c.children()
+                    .any(|m| m.kind() == SyntaxKind::MACRO_EXPR && !macros::is_macro_rules(m))
         });
         let ctx = if has_items {
             let parent = &self.items.modules[ctx.module];
@@ -3173,40 +3193,119 @@ impl Collector<'_> {
             ctx
         };
         let outer_scope = self.macro_scope;
-        // The blocks inside statements, with the macros in scope there,
-        // collected after the block's items.
-        let mut inner = Vec::new();
         for child in block.children() {
-            if !item_enabled(child, &mut Vec::new()) {
-                continue;
-            }
-            if is_item_kind(child.kind()) {
-                let start = self.items.diagnostics.len();
-                if item_enabled(child, &mut self.items.diagnostics) {
-                    self.collect_item_expanding_types(ctx, child.id());
-                }
-                self.tag(start, ctx.file);
-                continue;
-            }
-            if has_macros
-                && let Some(mac) = child.first_child()
-                && mac.kind() == SyntaxKind::MACRO_EXPR
-                && macros::is_macro_rules(mac)
-            {
-                // Lowering the body reports its errors.
-                let start = self.items.diagnostics.len();
-                self.define_macro(ctx, mac, false, false);
-                self.items.diagnostics.truncate(start);
-            }
-            let mut blocks = Vec::new();
-            outer_blocks(child, &mut blocks);
-            inner.extend(blocks.into_iter().map(|b| (b, self.macro_scope)));
-        }
-        for (block, scope) in inner {
-            self.macro_scope = scope;
-            self.collect_block(ctx, block, function);
+            self.collect_body_node(ctx, child, function, generated);
         }
         self.macro_scope = outer_scope;
+    }
+
+    /// Walk expressions without crossing item or block scopes. Only imports
+    /// made by body macros are collected; other generated items remain errors.
+    fn collect_body_node(
+        &mut self,
+        ctx: Ctx,
+        node: SyntaxNode<'_>,
+        function: Option<FunctionId>,
+        generated: bool,
+    ) {
+        if !item_enabled(node, &mut Vec::new()) {
+            return;
+        }
+        if node.kind() == SyntaxKind::BLOCK_EXPR {
+            self.collect_block(ctx, node.id(), function, generated);
+            return;
+        }
+        if is_item_kind(node.kind()) {
+            let start = self.items.diagnostics.len();
+            if (!generated || node.kind() == SyntaxKind::USE)
+                && item_enabled(node, &mut self.items.diagnostics)
+            {
+                self.collect_item_expanding_types(ctx, node.id());
+            }
+            self.tag(start, ctx.file);
+            return;
+        }
+        if node.kind() == SyntaxKind::MACRO_EXPR {
+            if macros::is_macro_rules(node) {
+                let start = self.items.diagnostics.len();
+                let previous = self.macro_scope;
+                self.define_macro(ctx, node, false, false);
+                if self.macro_scope != previous
+                    && self.items.diagnostics.len() == start
+                    && let Some(scope) = self.macro_scope
+                {
+                    self.items
+                        .body_macro_definitions
+                        .insert((ctx.file, node.id()), self.items.macro_scopes[scope].def);
+                }
+                self.items.diagnostics.truncate(start);
+                return;
+            }
+            if self.expansion_depth >= RECURSION_LIMIT {
+                return;
+            }
+            let Some(path) = node.children().find_map(ast::Path::cast) else {
+                return;
+            };
+            let Ok(macros::Resolved::Def(id)) =
+                macros::resolve::<()>(self.items, path, &[], self.macro_scope, ctx.module)
+            else {
+                return;
+            };
+            let def = self.items.macros[id].clone();
+            let fragment = if node.parent().is_some_and(|p| {
+                matches!(p.kind(), SyntaxKind::EXPR_STMT)
+                    || (matches!(p.kind(), SyntaxKind::BLOCK_EXPR | SyntaxKind::MACRO_STMTS)
+                        && !node.children().any(|c| c.kind() == SyntaxKind::ATTR))
+            }) {
+                flux_syntax::parser::Fragment::Stmts
+            } else {
+                flux_syntax::parser::Fragment::Expr
+            };
+            let real = self.real_file(ctx.file);
+            let site = macros::CallSite {
+                items: self.items,
+                krate: self.items.modules[ctx.module].krate,
+                module: ctx.module,
+                real_file: real,
+            };
+            let mut diagnostics = Vec::new();
+            let Some(expansion) = macros::expand(&def, node, &site, fragment, &mut diagnostics)
+            else {
+                return;
+            };
+            // Unsuccessful or diagnostic-bearing expansions are lowered normally,
+            // where their errors are reported once with the body context.
+            if !diagnostics.is_empty() {
+                return;
+            }
+            self.record_macro_path(ctx, path, id);
+            let file = self.db.add_expansion(expansion.parse, real);
+            self.items.expansion_files.insert(file, real);
+            self.items.body_expansions.insert(
+                (ctx.file, node.id()),
+                BodyExpansion {
+                    definition: id,
+                    file,
+                    ctxts: expansion.ctxts,
+                    fragment,
+                },
+            );
+            let shared = self.db.shared(file);
+            self.items.files.insert(file, Arc::clone(&shared));
+            self.expansion_depth += 1;
+            self.collect_body_node(
+                Ctx { file, ..ctx },
+                shared.parse.tree().root(),
+                function,
+                true,
+            );
+            self.expansion_depth -= 1;
+            return;
+        }
+        for child in node.children() {
+            self.collect_body_node(ctx, child, function, generated);
+        }
     }
 
     /// Allocates the anonymous constants of item `node` (array lengths,

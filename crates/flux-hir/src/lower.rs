@@ -1,5 +1,7 @@
 //! Lowers a function body from the typed AST to HIR.
 
+use std::borrow::Cow;
+
 use flux_arena::{Arena, SliceId};
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::ast::{self, AstNode, BinaryOp, CmpOp, LiteralKind, LogicOp};
@@ -1734,6 +1736,8 @@ struct Ctx<'a> {
     generic_args: ArenaMap<Expr, PathGenerics>,
     /// Bindings in scope, innermost last; a block truncates it on exit.
     scopes: Scopes,
+    /// Block item scopes, with the number of locals outside each block.
+    item_scopes: Vec<(ModuleId, usize)>,
     /// The bindings of the pattern being lowered so far.
     pat_binds: Vec<(Ident, BindingId)>,
     /// For each or-pattern being lowered, the bindings of its first
@@ -1760,6 +1764,10 @@ struct Ctx<'a> {
     local_macros: Vec<(Symbol, LocalMacro)>,
     /// How many macro expansions the code being lowered is in.
     expansion_depth: u32,
+    /// File of the retained expansion currently being lowered.
+    expansion_file: Option<FileId>,
+    /// A tail macro invocation requires an expression until a block is entered.
+    macro_tail_is_expr: bool,
     /// For each hygiene context an expansion made, the context its
     /// tokens had in the definition, and for a macro defined in this
     /// body, how many bindings and loops were in scope there: its
@@ -1841,6 +1849,7 @@ impl<'a> Ctx<'a> {
             source_map: BodySourceMap::default(),
             generic_args: ArenaMap::new(),
             scopes: Scopes::new(),
+            item_scopes: Vec::new(),
             pat_binds: Vec::new(),
             or_reuse: Vec::new(),
             pat_args: ArenaMap::new(),
@@ -1853,6 +1862,8 @@ impl<'a> Ctx<'a> {
             macro_scope: None,
             local_macros: Vec::new(),
             expansion_depth: 0,
+            expansion_file: None,
+            macro_tail_is_expr: false,
             ctxt_parents: FxHashMap::default(),
             path_ctxt: 0,
         }
@@ -1885,8 +1896,22 @@ impl<'a> Ctx<'a> {
     fn lookup_local(&self, name: Symbol, ctxt: u32) -> Option<BindingId> {
         let mut ident = Ident::new(name, ctxt);
         let mut limit = usize::MAX;
+        // Block items are unhygienic: they also shadow definition-site
+        // locals of a macro called inside the block.
+        let start = self
+            .item_scopes
+            .iter()
+            .rev()
+            .find_map(|&(module, start)| {
+                (self.items.def_map.scopes[module.index()]
+                    .values
+                    .contains_key(&name)
+                    || self.items.def_map.failed_imports.contains(&(module, name)))
+                .then_some(start)
+            })
+            .unwrap_or(0);
         loop {
-            if let Some(binding) = self.scopes.get_below(ident, limit) {
+            if let Some(binding) = self.scopes.get_between(ident, start, limit) {
                 return Some(binding);
             }
             match self.ctxt_parents.get(&ident.ctxt) {
@@ -1922,6 +1947,17 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// The file whose node identities `node` uses, if it was retained.
+    fn syntax_file(&self, node: SyntaxNode<'_>) -> Option<FileId> {
+        self.expansion_file
+            .filter(|file| std::ptr::eq(node.tree(), self.items.files[file].parse.tree()))
+            .or_else(|| {
+                self.place
+                    .filter(|p| std::ptr::eq(node.tree(), p.tree))
+                    .map(|p| p.file)
+            })
+    }
+
     /// The file the body is written in, not an expansion's.
     fn real_file(&self) -> FileId {
         self.place.map_or(FileId::UNKNOWN, |p| {
@@ -1935,7 +1971,11 @@ impl<'a> Ctx<'a> {
 
     /// Expands the macro call `node` as `fragment`, reporting why not if
     /// it cannot.
-    fn expand(&mut self, node: SyntaxNode<'_>, fragment: Fragment) -> Option<Parse> {
+    fn expand(
+        &mut self,
+        node: SyntaxNode<'_>,
+        fragment: Fragment,
+    ) -> Option<(Cow<'a, Parse>, Option<FileId>)> {
         let path = node.children().find_map(ast::Path::cast)?;
         let resolved = macros::resolve(
             self.items,
@@ -1965,6 +2005,32 @@ impl<'a> Ctx<'a> {
             module: self.module,
             real_file: self.real_file(),
         };
+        let file = self.syntax_file(node);
+        if matches!(fragment, Fragment::Expr | Fragment::Stmts)
+            && let Some(cached) = file.and_then(|f| self.items.body_expansions.get(&(f, node.id())))
+            && cached.fragment == fragment
+        {
+            let collected = &self.items.macros[cached.definition];
+            if (
+                collected.krate,
+                collected.file,
+                collected.name_range,
+                collected.group,
+            ) != (def.krate, def.file, def.name_range, def.group)
+            {
+                self.error(
+                    node.text_range(),
+                    "body macro resolution changes after item collection are not supported yet",
+                );
+                return None;
+            }
+            for &(new, old) in &cached.ctxts {
+                self.ctxt_parents.insert(new, (old, local));
+            }
+            let parse = &self.items.files[&cached.file].parse;
+            self.expand_types_in(parse.tree().root());
+            return Some((Cow::Borrowed(parse), Some(cached.file)));
+        }
         let expansion = macros::expand(&def, node, &site, fragment, &mut self.diagnostics)?;
         for (new, old) in expansion.ctxts {
             self.ctxt_parents.insert(new, (old, local));
@@ -1972,7 +2038,7 @@ impl<'a> Ctx<'a> {
         if fragment != Fragment::Type {
             self.expand_types_in(expansion.parse.tree().root());
         }
-        Some(expansion.parse)
+        Some((Cow::Owned(expansion.parse), None))
     }
 
     /// Expands the macro calls in type position in `node`, for
@@ -1982,7 +2048,9 @@ impl<'a> Ctx<'a> {
         expand_types(node, &mut diagnostics, &mut |call, _| {
             self.expansion_depth += 1;
             crate::item_tree::body_expansion(1);
-            let parse = self.expand(call, Fragment::Type);
+            let parse = self
+                .expand(call, Fragment::Type)
+                .map(|(parse, _)| parse.into_owned());
             self.expansion_depth -= 1;
             crate::item_tree::body_expansion(-1);
             parse
@@ -1995,7 +2063,13 @@ impl<'a> Ctx<'a> {
     fn define_local_macro(&mut self, node: SyntaxNode<'_>) {
         let krate = self.items.modules[self.module].krate;
         let file = self.real_file();
-        if let Some(def) = MacroDef::from_rules(node, krate, file, false, &mut self.diagnostics) {
+        let retained = self
+            .syntax_file(node)
+            .and_then(|file| self.items.body_macro_definitions.get(&(file, node.id())))
+            .map(|&id| self.items.macros[id].clone());
+        if let Some(def) = retained
+            .or_else(|| MacroDef::from_rules(node, krate, file, false, &mut self.diagnostics))
+        {
             self.local_macros.push((
                 def.name,
                 LocalMacro {
@@ -2016,14 +2090,16 @@ impl<'a> Ctx<'a> {
             );
             return self.alloc_expr(Expr::Missing, range);
         }
-        let Some(parse) = self.expand(m.syntax(), Fragment::Expr) else {
+        let Some((parse, file)) = self.expand(m.syntax(), Fragment::Expr) else {
             return self.alloc_expr(Expr::Missing, range);
         };
         let root = parse.tree().root();
         let expr = root.children().find_map(ast::Expr::cast);
         self.expansion_depth += 1;
         crate::item_tree::body_expansion(1);
+        let outer_file = std::mem::replace(&mut self.expansion_file, file);
         let id = self.lower_opt(expr, root);
+        self.expansion_file = outer_file;
         self.expansion_depth -= 1;
         crate::item_tree::body_expansion(-1);
         id
@@ -2043,7 +2119,7 @@ impl<'a> Ctx<'a> {
             return None;
         }
         let range = m.syntax().text_range();
-        let Some(parse) = self.expand(m.syntax(), Fragment::Stmts) else {
+        let Some((parse, file)) = self.expand(m.syntax(), Fragment::Stmts) else {
             let id = self.alloc_expr(Expr::Missing, range);
             if is_tail && !semicolon {
                 return Some(id);
@@ -2057,7 +2133,15 @@ impl<'a> Ctx<'a> {
         let root = ast::MacroStmts::cast(parse.tree().root())?;
         self.expansion_depth += 1;
         crate::item_tree::body_expansion(1);
+        let outer_file = std::mem::replace(&mut self.expansion_file, file);
+        let outer_tail = self.macro_tail_is_expr;
+        self.macro_tail_is_expr |= is_tail
+            && !semicolon
+            && m.token_tree()
+                .is_some_and(|tt| tt.l_curly_token().is_none());
         let tail = self.lower_stmts(root.stmts(), root.tail_expr());
+        self.macro_tail_is_expr = outer_tail;
+        self.expansion_file = outer_file;
         self.expansion_depth -= 1;
         crate::item_tree::body_expansion(-1);
         match tail {
@@ -2944,16 +3028,23 @@ impl<'a> Ctx<'a> {
         // A block with items is a module of its own, where its names
         // are resolved.
         let outer_module = self.module;
-        if let Some(place) = self.place
-            && std::ptr::eq(syntax.tree(), place.tree)
-            && let Some(&module) = self.items.block_modules.get(&(place.file, syntax.id()))
+        let file = self.syntax_file(syntax);
+        if let Some(&module) =
+            file.and_then(|file| self.items.block_modules.get(&(file, syntax.id())))
         {
             self.module = module;
         }
+        let item_scopes = self.item_scopes.len();
+        if self.module != outer_module {
+            self.item_scopes.push((self.module, scope));
+        }
         let macros = self.local_macros.len();
         let stmts_start = self.stmt_scratch.len();
+        let outer_tail = std::mem::replace(&mut self.macro_tail_is_expr, false);
         let tail = self.lower_stmts(block.stmts(), block.tail_expr());
+        self.macro_tail_is_expr = outer_tail;
         self.local_macros.truncate(macros);
+        self.item_scopes.truncate(item_scopes);
         self.scopes.truncate(scope);
         let module = std::mem::replace(&mut self.module, outer_module);
         let id = alloc_expr!(
@@ -3042,9 +3133,19 @@ impl<'a> Ctx<'a> {
                     });
                 }
                 // Collected with the item tree, lowered on their own;
-                // the item tree does not see those a macro made here.
+                // retained expansions also have their imports collected.
                 ast::Stmt::Item(item) => {
-                    if self.expansion_depth > 0 {
+                    if self.expansion_depth > 0
+                        && self.macro_tail_is_expr
+                        && matches!(item, ast::Item::Use(_))
+                    {
+                        self.error(item.syntax().text_range(), "expected an expression");
+                    } else if self.expansion_depth > 0
+                        && !(matches!(item, ast::Item::Use(_))
+                            && self
+                                .expansion_file
+                                .is_some_and(|file| self.syntax_file(item.syntax()) == Some(file)))
+                    {
                         self.unsupported(
                             item.syntax().text_range(),
                             "items made by macros in function bodies",
@@ -4279,7 +4380,7 @@ impl<'a> Ctx<'a> {
                 Pat::Missing
             }
             ast::Pat::MacroPat(m) => {
-                let Some(parse) = self.expand(m.syntax(), Fragment::Pat) else {
+                let Some((parse, _)) = self.expand(m.syntax(), Fragment::Pat) else {
                     return self.alloc_pat(Pat::Missing, range);
                 };
                 let root = parse.tree().root();

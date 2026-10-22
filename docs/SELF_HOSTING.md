@@ -193,11 +193,15 @@ with and without Flux optimization. Registry dependency resolution and the
 remaining `memchr` language/library requirements are still outstanding.
 
 Unchanged `memchr 2.8.3` sources still need `Send`/`Sync`, per-function
-`target_feature`, `non_exhaustive`, macro-generated block imports, aggregate
+`target_feature`, `non_exhaustive`, aggregate
 union fields, legacy trailing const arguments and some remaining NEON APIs. Its original package
 also needs feature selection and broader edition-2021 macro support. Source
 probes use the file command's explicit edition-2024 boundary and do not
 establish package compilation.
+
+Macro-generated block imports now share ordinary import scopes, hygiene and
+privacy checks. Other generated local items remain unsupported, as do body
+macro calls whose selected definition changes after sequential collection.
 
 The NEON foundation now supplies distinct fixed-layout types, unaligned
 loads, splat, byte comparison, bitwise AND/OR, reinterpretation and checked

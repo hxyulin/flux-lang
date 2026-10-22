@@ -1,0 +1,32 @@
+fn secret() -> () {}
+
+fn public() -> () {}
+
+fn outer() -> () {}
+
+fn main() -> () {
+    {
+        secret();
+    };
+    {
+        public();
+    };
+    <error>();
+    {
+        <error>();
+    }
+    {}
+    {};
+}
+
+fn invalid_tail() -> () {}
+
+fn invalid_nested_tail() -> () {}
+
+error 129..135: function `secret` is private
+error 281..310: the name `same` is defined multiple times
+error 354..373: items made by macros in function bodies are not supported yet
+error 441..447: cannot find function `scoped` in this scope
+error 457..463: cannot find function `scoped` in this scope
+error 657..683: expected an expression
+error 657..683: expected an expression
