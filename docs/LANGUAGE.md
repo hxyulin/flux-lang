@@ -452,8 +452,9 @@ and the others of bits and signs, the `checked_`, `wrapping_`,
 `next_power_of_two`, `div_ceil`, `next_multiple_of`, `swap_bytes`,
 `reverse_bits` and the byte-order conversions (`to_le_bytes`, ...), all
 `const` and panicking or overflowing in constants as rustc's do,
-`core::mem::drop` (also in the
-prelude, as `drop`), `core::convert::{identity, From}`,
+`core::mem::{drop, swap, replace}` (`drop` also in the prelude;
+`swap`'s body is the compiler's, and it is not `const` yet, as rustc's
+is), `core::convert::{identity, From}`,
 `core::marker::{Sized, Copy}`, `core::clone::Clone`, the operator
 traits of `core::ops` with `Drop`, `core::cmp::{PartialEq, Eq,
 PartialOrd, Ord, Ordering, max, min}`, `core::option::Option` and
@@ -478,8 +479,12 @@ Of the methods that take closures, `Option` has `map`, `map_or`,
 `map_or_else`, `and_then`, `or_else`, `unwrap_or_else`, `filter`,
 `ok_or_else`, `is_some_and`, `is_none_or`, `inspect` and `zip`, and
 `Result` has `map`, `map_err`, `map_or`, `map_or_else`, `and_then`,
-`or_else`, `unwrap_or_else`, `is_ok_and` and `is_err_and`; methods
-that return references inside them (`as_ref`) come later. Anything else in
+`or_else`, `unwrap_or_else`, `is_ok_and` and `is_err_and`. `Option`
+also has `as_ref`, `as_mut`, `take`, `take_if`, `replace`, `insert`,
+`get_or_insert`, `get_or_insert_with` and `iter`, `copied` and `cloned`
+of an `Option<&T>` (`const` where rustc's are, except `take` and
+`replace`, which flux's constant evaluation cannot run yet), and is
+`IntoIterator`, by value and by reference. Anything else in
 `core` is reported as not supported yet, and so is `std`.
 
 `core::ops` has the `Fn`, `FnMut` and `FnOnce` traits (in the
@@ -492,11 +497,19 @@ the range structs `Range`, `RangeInclusive`, `RangeFrom`, `RangeTo`,
 `filter`, `filter_map`, `enumerate`, `skip_while`, `take_while`,
 `skip`, `take`, `fold`, `all`, `any`, `find`, `find_map`, `position`,
 `max`, `min`, `max_by`, `min_by`, `max_by_key`, `min_by_key`, `rev`,
-`sum`, `product` and `eq`; `DoubleEndedIterator` (`next_back`,
-`nth_back`, `rfind`); `IntoIterator`, which every iterator
-implements; and `Sum` and `Product` for the integers. The ranges of
+`sum`, `product`, `eq`, `size_hint`, `reduce`, `rposition`, `by_ref`,
+`copied`, `cloned`, `flat_map`, `flatten`, `peekable` (with `peek`,
+`peek_mut`, `next_if` and `next_if_eq`), `scan`, `map_while`,
+`inspect`, `cycle` and `fuse`; `DoubleEndedIterator` (`next_back`,
+`nth_back`, `rfind`), which the adapters implement where rustc's do;
+`ExactSizeIterator` (`len`, in the prelude), for the slice and `Option`
+iterators, the ranges of rustc's types and the adapters that keep it;
+`IntoIterator`, which every iterator implements; and `Sum` and
+`Product` for the integers and references to them. Every adapter's
+`size_hint` is rustc's. `&mut I` is an iterator where `I` is. The ranges of
 integers are iterators (`Range`, `RangeFrom` and `RangeInclusive`, the
-first and last from both ends). `for pat in head { body }` is
+first and last from both ends). `try_fold` and the others that need
+the `Try` trait are not supported yet. `for pat in head { body }` is
 rustc's `match IntoIterator::into_iter(head) { mut iter => loop {
 match Iterator::next(&mut iter) { None => break, Some(pat) => body }
 } }`, so values are dropped as in rustc: the item's bindings at the end

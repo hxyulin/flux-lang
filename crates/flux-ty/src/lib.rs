@@ -276,7 +276,29 @@ impl Signatures {
                     args: Ty::list(&args),
                     ..alias
                 };
-                for (imp, trait_ref) in self.impl_traits.iter() {
+                // What a closure or function returns: `FnOnce`'s `Output`,
+                // the only trait with an associated type they implement.
+                if alias.name.as_str() == "Output" {
+                    if let Some(sig) = args[0].fn_sig()
+                        && !sig.is_unsafe
+                    {
+                        break 'alias go(sig.ret());
+                    }
+                    if let TyKind::Closure(_, closure) = args[0].kind() {
+                        break 'alias go(ClosureArgs::split(closure).ret());
+                    }
+                }
+                // Blanket blocks (`impl<I: Iterator> IntoIterator for I`)
+                // last: where another block's header matches, coherence
+                // says the blanket one's bounds do not hold.
+                let candidates =
+                    self.impl_traits
+                        .iter()
+                        .filter(|(imp, _)| !matches!(self.impls[*imp].kind(), TyKind::Param(_)))
+                        .chain(self.impl_traits.iter().filter(|(imp, _)| {
+                            matches!(self.impls[*imp].kind(), TyKind::Param(_))
+                        }));
+                for (imp, trait_ref) in candidates {
                     if trait_ref.trait_ != alias.trait_ {
                         continue;
                     }
@@ -288,7 +310,55 @@ impl Signatures {
                     let matches = header
                         .zip(&args)
                         .all(|(x, &y)| traits::match_ty(x, y, &mut binds));
+                    // A block with bounds is not known to hold for
+                    // parameters, associated types and types not inferred
+                    // yet, whose bounds are not at hand: `<U as
+                    // IntoIterator>::IntoIter` stays, for inference to
+                    // normalize, rather than being the blanket block's for
+                    // iterators.
+                    let rigid = binds
+                        .iter()
+                        .flatten()
+                        .any(|b| b.has_params() || b.has_aliases() || b.has_infer());
+                    if rigid && self.impl_predicates.get(imp).is_some_and(|p| !p.is_empty()) {
+                        continue;
+                    }
                     if matches && let Some(t) = traits::impl_type(self, imp, alias.name) {
+                        // Parameters only the block's bounds' associated
+                        // types decide (`T` in `impl<'a, T, I: Iterator<Item
+                        // = &'a T>> Iterator for Copied<I>`), from what
+                        // those are for the known ones.
+                        let projections = self.impl_projections.get(imp).map_or(&[][..], |p| p);
+                        let needed = projections
+                            .iter()
+                            .map(|p| max_param(p.ty))
+                            .chain([max_param(t)])
+                            .max()
+                            .unwrap_or(0) as usize;
+                        if binds.len() < needed {
+                            binds.resize(needed, None);
+                        }
+                        let mut progress = true;
+                        while progress && binds.iter().any(Option::is_none) {
+                            progress = false;
+                            for p in projections {
+                                let known: Vec<Ty> =
+                                    binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
+                                let projected = Ty::alias(p.alias).subst(&known);
+                                if projected.has_params() || projected.has_infer() {
+                                    continue;
+                                }
+                                let ty = go(projected);
+                                if matches!(ty.kind(), TyKind::Alias(_) | TyKind::Error) {
+                                    continue;
+                                }
+                                let mut found = binds.clone();
+                                if traits::match_ty(p.ty, ty, &mut found) && found != binds {
+                                    binds = found;
+                                    progress = true;
+                                }
+                            }
+                        }
                         let binds: Vec<Ty> =
                             binds.into_iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
                         break 'alias go(t.subst(&binds));

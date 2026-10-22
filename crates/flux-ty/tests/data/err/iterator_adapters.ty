@@ -1,0 +1,11 @@
+struct Counter { n: u32 }
+fn next(&mut Counter) -> Option<u32>
+    self@0: &mut Counter
+fn main() -> ()
+    x@0: &i32
+    x@1: i32
+    s@2: &[u8]
+error 410..414: expected `Range<{integer}>` to be an iterator that yields `&_`, but it yields `{integer}`
+error 455..460: the trait bound `Counter: Clone` is not satisfied
+error 502..511: the trait bound `Filter<Range<{integer}>, {closure}>: ExactSizeIterator` is not satisfied
+error 579..582: a value of type `u32` cannot be made by summing an iterator over elements of type `&u8`

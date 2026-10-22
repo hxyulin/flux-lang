@@ -178,6 +178,75 @@ impl<T> Option<T> {
         }
     }
 
+    /// A reference to the value, if any.
+    pub const fn as_ref(&self) -> Option<&T> {
+        match self {
+            Some(value) => Some(value),
+            None => None,
+        }
+    }
+
+    /// A mutable reference to the value, if any.
+    pub const fn as_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Some(value) => Some(value),
+            None => None,
+        }
+    }
+
+    /// Takes the value out, leaving `None`. (`const` in rustc; flux's
+    /// constant evaluation cannot write through `&mut` yet.)
+    pub fn take(&mut self) -> Option<T> {
+        crate::mem::replace(self, None)
+    }
+
+    /// Takes the value out if `predicate` is `true` for it, leaving `None`.
+    pub fn take_if<P: FnOnce(&mut T) -> bool>(&mut self, predicate: P) -> Option<T> {
+        let taken = match self {
+            Some(value) => predicate(value),
+            None => false,
+        };
+        if taken { self.take() } else { None }
+    }
+
+    /// Puts `value` in, giving back what was there. (`const` in rustc.)
+    pub fn replace(&mut self, value: T) -> Option<T> {
+        crate::mem::replace(self, Some(value))
+    }
+
+    /// Puts `value` in, and gives a reference to it.
+    #[rustc_const_unstable]
+    pub fn insert(&mut self, value: T) -> &mut T {
+        *self = Some(value);
+        match self {
+            Some(value) => value,
+            None => crate::panicking::panic(c"internal error: entered unreachable code"),
+        }
+    }
+
+    /// The value, after putting `value` in if it is `None`.
+    #[rustc_const_unstable]
+    pub fn get_or_insert(&mut self, value: T) -> &mut T {
+        if let None = self {
+            *self = Some(value);
+        }
+        match self {
+            Some(value) => value,
+            None => crate::panicking::panic(c"internal error: entered unreachable code"),
+        }
+    }
+
+    /// The value, after putting `f()` in if it is `None`.
+    pub fn get_or_insert_with<F: FnOnce() -> T>(&mut self, f: F) -> &mut T {
+        if let None = self {
+            *self = Some(f());
+        }
+        match self {
+            Some(value) => value,
+            None => crate::panicking::panic(c"internal error: entered unreachable code"),
+        }
+    }
+
     /// `Some((a, b))` if both are `Some`.
     pub fn zip<U>(self, other: Option<U>) -> Option<(T, U)> {
         match self {
@@ -185,6 +254,54 @@ impl<T> Option<T> {
                 Some(b) => Some((a, b)),
                 None => None,
             },
+            None => None,
+        }
+    }
+}
+
+impl<T> Option<&T> {
+    /// `Some` with a copy of the value it refers to, or `None`.
+    pub const fn copied(self) -> Option<T>
+    where
+        T: crate::marker::Copy,
+    {
+        match self {
+            Some(&value) => Some(value),
+            None => None,
+        }
+    }
+
+    /// `Some` with a clone of the value it refers to, or `None`.
+    pub fn cloned(self) -> Option<T>
+    where
+        T: crate::clone::Clone,
+    {
+        match self {
+            Some(value) => Some(value.clone()),
+            None => None,
+        }
+    }
+}
+
+impl<T> Option<&mut T> {
+    /// `Some` with a copy of the value it refers to, or `None`.
+    pub const fn copied(self) -> Option<T>
+    where
+        T: crate::marker::Copy,
+    {
+        match self {
+            Some(&mut value) => Some(value),
+            None => None,
+        }
+    }
+
+    /// `Some` with a clone of the value it refers to, or `None`.
+    pub fn cloned(self) -> Option<T>
+    where
+        T: crate::clone::Clone,
+    {
+        match self {
+            Some(value) => Some(value.clone()),
             None => None,
         }
     }
@@ -248,3 +365,97 @@ impl<T: crate::cmp::Ord> crate::cmp::Ord for Option<T> {
         }
     }
 }
+
+impl<T> Option<T> {
+    /// An iterator over a reference to the value, if any.
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter {
+            inner: self.as_ref(),
+        }
+    }
+}
+
+/// An `Option` is an iterator of its value, if any.
+impl<T> crate::iter::IntoIterator for Option<T> {
+    type Item = T;
+    type IntoIter = IntoIter<T>;
+
+    fn into_iter(self) -> IntoIter<T> {
+        IntoIter { inner: self }
+    }
+}
+
+impl<'a, T> crate::iter::IntoIterator for &'a Option<T> {
+    type Item = &'a T;
+    type IntoIter = Iter<'a, T>;
+
+    fn into_iter(self) -> Iter<'a, T> {
+        self.iter()
+    }
+}
+
+/// [`Option::into_iter`]'s.
+pub struct IntoIter<T> {
+    inner: Option<T>,
+}
+
+impl<T: crate::clone::Clone> crate::clone::Clone for IntoIter<T> {
+    fn clone(&self) -> Self {
+        IntoIter {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<T> crate::iter::Iterator for IntoIter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.inner.take()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = if self.inner.is_some() { 1 } else { 0 };
+        (n, Some(n))
+    }
+}
+
+impl<T> crate::iter::DoubleEndedIterator for IntoIter<T> {
+    fn next_back(&mut self) -> Option<T> {
+        self.inner.take()
+    }
+}
+
+impl<T> crate::iter::ExactSizeIterator for IntoIter<T> {}
+
+/// [`Option::iter`]'s.
+pub struct Iter<'a, T> {
+    inner: Option<&'a T>,
+}
+
+impl<'a, T> crate::clone::Clone for Iter<'a, T> {
+    fn clone(&self) -> Self {
+        Iter { inner: self.inner }
+    }
+}
+
+impl<'a, T> crate::iter::Iterator for Iter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<&'a T> {
+        self.inner.take()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = if self.inner.is_some() { 1 } else { 0 };
+        (n, Some(n))
+    }
+}
+
+impl<'a, T> crate::iter::DoubleEndedIterator for Iter<'a, T> {
+    fn next_back(&mut self) -> Option<&'a T> {
+        self.inner.take()
+    }
+}
+
+impl<'a, T> crate::iter::ExactSizeIterator for Iter<'a, T> {}

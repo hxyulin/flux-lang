@@ -547,6 +547,31 @@
   `cast_signed` and the byte-order conversions. All are `const`; in
   constants, `next_power_of_two` and `next_multiple_of` report overflow
   and the logarithms and square roots their panics, as rustc does.
+- Add to `core::iter`: `size_hint` (rustc's for every adapter and
+  range), `ExactSizeIterator` (in the prelude), `copied`, `cloned`,
+  `flat_map`, `flatten`, `peekable`, `scan`, `map_while`, `inspect`,
+  `cycle`, `fuse`, `by_ref`, `reduce` and `rposition`, the back ends of
+  more adapters, `Iterator` for `&mut I`, and `Sum` and `Product` of
+  references to integers, with rustc's messages when they are misused
+  (E0271's "expected ... to be an iterator that yields", `Sum`'s and
+  `Product`'s). `Option` gains `copied`, `cloned`, `as_ref`, `as_mut`,
+  `take`, `take_if`, `replace`, `insert`, `get_or_insert`,
+  `get_or_insert_with`, `iter` and `IntoIterator`; `core::mem` gains
+  `swap`, whose body the compiler makes, and `replace`; slices'
+  iterator is `Clone`. `core` may name lifetimes in its bounds'
+  associated types (`I: Iterator<Item = &'a T>`) where they never reach
+  what it returns.
+- Fix associated types of type parameters that a blanket `impl` block
+  decided without its bounds holding: `<U as IntoIterator>::Item` for
+  `U: IntoIterator` became `<U as Iterator>::Item` (in signatures and
+  fields), which miscompiled. A struct's field types for known
+  arguments now find the parameters only an `impl` block's bounds
+  decide (`T` of `Copied<I>`'s `Iterator` block) and closures' return
+  types, prefer specific blocks to blanket ones, and leave associated
+  types of parameters and unknown types to inference. Obligations are
+  selected before closure arguments are checked, as rustc does, so
+  `it.copied().map(|p| p.x)` knows `p`'s type, and bounds on a method's
+  own parameters that no argument mentions are reported at its name.
 
 ### Performance
 
