@@ -188,10 +188,18 @@ pub(crate) struct MovePaths {
     ids: FxHashMap<u64, usize>,
     // Union field projections alias shared storage without changing the
     // borrowed-key hash table used by ordinary move paths.
-    aliases: Vec<(Local, crate::Projection, usize)>,
+    aliases: Vec<MoveAlias>,
+    alias_ids: FxHashMap<u64, usize>,
     /// Moves out of a struct with a `Drop` impl, E0509: they move
     /// nothing, as in rustc, so later uses are not errors too.
     forbidden: Vec<Place>,
+}
+
+struct MoveAlias {
+    local: Local,
+    fields: crate::Projection,
+    path: usize,
+    collision: Option<usize>,
 }
 
 /// The fields and variants of `place` before its first dereference or
@@ -221,6 +229,7 @@ impl MovePaths {
             paths: Vec::new(),
             ids: FxHashMap::default(),
             aliases: Vec::new(),
+            alias_ids: FxHashMap::default(),
             forbidden: Vec::new(),
         };
         for (local, _) in body.locals.iter() {
@@ -239,9 +248,9 @@ impl MovePaths {
                 });
                 if let Some(i) = union_prefix {
                     let path = paths.insert(place.local, &fields[..i]);
-                    paths.aliases.push((place.local, fields.into(), path));
+                    paths.insert_alias(place.local, fields, path);
                 } else {
-                    paths.insert(place.local, &fields);
+                    paths.insert(place.local, fields);
                 }
             }
         };
@@ -326,9 +335,29 @@ impl MovePaths {
             }
             next = path.collision;
         }
-        self.aliases.iter().find_map(|(owner, projection, path)| {
-            (*owner == local && projection.as_ref() == fields).then_some(*path)
-        })
+        let mut next = self.alias_ids.get(&hash).copied();
+        while let Some(id) = next {
+            let alias = &self.aliases[id];
+            if alias.local == local && alias.fields.as_ref() == fields {
+                return Some(alias.path);
+            }
+            next = alias.collision;
+        }
+        None
+    }
+
+    fn insert_alias(&mut self, local: Local, fields: &[ProjectionElem], path: usize) {
+        if self.lookup(local, fields).is_some() {
+            return;
+        }
+        let hash = self.ids.hasher().hash_one((local, fields));
+        let collision = self.alias_ids.insert(hash, self.aliases.len());
+        self.aliases.push(MoveAlias {
+            local,
+            fields: fields.into(),
+            path,
+            collision,
+        });
     }
 
     /// The path of `place`, or of the pointer it is behind, and whether
@@ -743,6 +772,7 @@ mod tests {
             paths: Vec::new(),
             ids: FxHashMap::default(),
             aliases: Vec::new(),
+            alias_ids: FxHashMap::default(),
             forbidden: Vec::new(),
         };
         let local = Local::from_raw(0);

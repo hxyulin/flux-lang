@@ -438,7 +438,7 @@ impl<'a> Evaluator<'a> {
         depth: u32,
         checked: bool,
     ) -> Result<Value, EvalError> {
-        fn has_union(sigs: &Signatures, ty: Ty, seen: &mut HashSet<Ty>) -> bool {
+        fn has_union(sigs: &Signatures, ty: Ty, seen: &mut FxHashSet<Ty>) -> bool {
             if !seen.insert(ty) {
                 return false;
             }
@@ -453,7 +453,7 @@ impl<'a> Evaluator<'a> {
                     .is_some_and(|fs| fs.iter().any(|&t| has_union(sigs, t, seen))),
             }
         }
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         if body
             .locals
             .values()
