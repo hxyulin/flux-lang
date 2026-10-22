@@ -1,0 +1,20 @@
+struct S { n: i32 }
+struct Wrapper<T> { inner: T }
+fn deref(&Wrapper<T>) -> &T
+    self@0: &Wrapper<T>
+fn takes(&u8) -> ()
+fn main() -> ()
+    s@0: S
+    _a@1: {error}
+    w@2: Wrapper<S>
+    _b@3: {error}
+    _c@4: &u8
+    _d@5: i32
+    _e@6: {error}
+error 265..267: type `S` cannot be dereferenced
+error 327..334: no field `missing` on type `Wrapper<S>`
+error 342..349: no method named `nothing` found for struct `Wrapper<S>` in the current scope
+error 371..373: mismatched types: expected `&u8`, found `&Wrapper<S>`
+error 385..387: mismatched types: expected `&u8`, found `&Wrapper<S>`
+error 408..410: mismatched types: expected `i32`, found `S`
+error 425..429: type `u8` cannot be dereferenced

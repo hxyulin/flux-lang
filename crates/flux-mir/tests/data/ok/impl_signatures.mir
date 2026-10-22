@@ -249,22 +249,18 @@ fn iter_of<'x>(_1: &Bag) -> It {
 
 fn pick<'a>(_1: &&Bag) -> &Bag {
     let mut _0: &Bag;
-    let _2: &&Bag;
 
     bb0: {
-        _2 = copy _1;
-        _0 = &(*(*_2));
+        _0 = &(*(*_1));
         return;
     }
 }
 
 fn through<'a, 'b>(_1: &mut &mut Bag) -> &Bag {
     let mut _0: &Bag;
-    let _2: &mut &mut Bag;
 
     bb0: {
-        _2 = move _1;
-        _0 = &(*(*_2));
+        _0 = &(*(*_1));
         return;
     }
 }

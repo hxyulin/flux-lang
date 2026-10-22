@@ -1306,8 +1306,13 @@ impl Builder<'_> {
             return ty;
         };
         let derefs = self.types.deref_coercions.get(expr).copied().unwrap_or(1);
+        let overloads = self.types.coercion_derefs.get(expr).map_or(&[][..], |s| s);
         let mut pointee = ty;
-        for _ in 0..derefs {
+        for step in 0..derefs {
+            if let Some(o) = overloads.iter().find(|o| o.step == step) {
+                pointee = o.target;
+                continue;
+            }
             match pointee.kind() {
                 TyKind::Ref(_, inner) => pointee = inner,
                 _ => return ty,
@@ -1565,19 +1570,24 @@ impl Builder<'_> {
             }
             Expr::Field { expr: base, .. } => {
                 let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
-                self.lower_place_deref(base, derefs)
+                let overloads = self.overloads_of(expr);
+                self.lower_place_deref(base, derefs, &overloads)
                     .field(self.field_index(expr))
             }
             Expr::Unary {
                 op: UnaryOp::Deref,
                 operand,
-            } => self.lower_place_deref(operand, 1),
+            } => {
+                let overloads = self.overloads_of(expr);
+                self.lower_place_deref(operand, 1, &overloads)
+            }
             Expr::Index { base, index } if let Some(&instance) = self.types.overloads.get(expr) => {
                 self.overloaded_index(expr, (base, index), instance)
             }
             Expr::Index { base, index } => {
                 let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
-                let place = self.lower_place_deref(base, derefs);
+                let overloads = self.overloads_of(expr);
+                let place = self.lower_place_deref(base, derefs, &overloads);
                 self.index(place, index, self.range(expr))
             }
             Expr::Path(Res::Static(id)) => self.static_place(id, self.range(expr)),
@@ -1634,7 +1644,8 @@ impl Builder<'_> {
     ) -> Place {
         let range = self.range(expr);
         let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
-        let place = self.lower_place_deref(base, derefs);
+        let overloads = self.overloads_of(expr);
+        let place = self.lower_place_deref(base, derefs, &overloads);
         let mutability = if self.items.functions[instance.function].name.as_str() == "index_mut" {
             Mutability::Mut
         } else {
@@ -1661,6 +1672,7 @@ impl Builder<'_> {
         let index = self.lower_operand(index);
         let output = Ty::new(TyKind::Ref(mutability, self.expr_ty(expr)));
         let result = self.temp(output);
+        self.locals[result].kind = LocalKind::Overloaded { index: true, ty };
         let args = vec![Operand::Move(receiver.into()), index];
         if let (Some(block), Some(bracket)) = (self.current, self.source_map.ops.get(expr)) {
             self.fn_spans.insert(block, bracket.start());
@@ -1709,22 +1721,75 @@ impl Builder<'_> {
     /// autoderef (`r.get()`, `r.v`, `r[i]`) or a reborrow (`&*r`) does.
     /// In a closure, that place may be in what the closure captures when
     /// `expr`'s own place is not: `|| r.get()` captures `*r`, not `r`.
-    fn lower_place_deref(&mut self, expr: ExprId, derefs: u32) -> Place {
-        if derefs > 0
+    /// Of the dereferences, `overloads` are calls of `Deref::deref` or
+    /// `DerefMut::deref_mut`, each of a borrow of the place so far, whose
+    /// result is the place dereferenced.
+    fn lower_place_deref(
+        &mut self,
+        expr: ExprId,
+        derefs: u32,
+        overloads: &[flux_ty::OverloadedDeref],
+    ) -> Place {
+        // Through references, up to the first overloaded dereference.
+        let builtin = overloads.first().map_or(derefs, |o| o.step);
+        let mut done = None;
+        if builtin > 0
             && !self.upvars.is_empty()
             && let Some((binding, mut proj)) = self.hir_place(expr)
             && self.binding_locals.get(binding).is_none()
         {
-            proj.extend((0..derefs).map(|_| flux_ty::CaptureProj::Deref));
+            proj.extend((0..builtin).map(|_| flux_ty::CaptureProj::Deref));
             if let Some(place) = self.capture_source(binding, &proj) {
-                return place;
+                done = Some(place);
             }
         }
-        let mut place = self.lower_place(expr);
-        for _ in 0..derefs {
-            place = place.deref();
+        let (mut place, start) = match done {
+            Some(place) => (place, builtin),
+            None => (self.lower_place(expr), 0),
+        };
+        let range = self.range(expr);
+        for step in start..derefs {
+            place = match overloads.iter().find(|o| o.step == step) {
+                Some(o) => self.overloaded_deref(place, *o, range),
+                None => place.deref(),
+            };
         }
         place
+    }
+
+    /// `*Deref::deref(&place)`, or `*DerefMut::deref_mut(&mut place)`.
+    fn overloaded_deref(
+        &mut self,
+        place: Place,
+        o: flux_ty::OverloadedDeref,
+        range: TextRange,
+    ) -> Place {
+        let Some(function) = flux_ty::deref_fn(self.items, o.mutability) else {
+            self.bug("an overloaded dereference without `Deref`", range);
+            return place.deref();
+        };
+        let ty = self.place_ty(&place);
+        let reference = self.temp(Ty::new(TyKind::Ref(o.mutability, ty)));
+        let borrow = Rvalue::Ref {
+            mutability: o.mutability,
+            place,
+            two_phase: false,
+        };
+        self.assign(&reference.into(), borrow, range);
+        let result = self.temp(Ty::new(TyKind::Ref(o.mutability, o.target)));
+        self.locals[result].kind = LocalKind::Overloaded { index: false, ty };
+        let args = vec![Operand::Move(reference.into())];
+        self.call(function, Ty::list(&[ty]), args, &result.into(), range);
+        Place::from(result).deref()
+    }
+
+    /// The overloaded dereferences among `expr`'s autoderef.
+    fn overloads_of(&self, expr: ExprId) -> Vec<flux_ty::OverloadedDeref> {
+        self.types
+            .overloaded_derefs
+            .get(expr)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The place `expr` denotes, for a pattern to match: in a closure,
@@ -1848,6 +1913,12 @@ impl Builder<'_> {
     fn hir_place(&self, expr: ExprId) -> Option<(BindingId, Vec<flux_ty::CaptureProj>)> {
         match self.body.exprs[expr] {
             Expr::Path(Res::Local(binding)) => Some((binding, Vec::new())),
+            // Not through an overloaded dereference, which calls code.
+            Expr::Field { .. } | Expr::Unary { .. }
+                if self.types.overloaded_derefs.get(expr).is_some() =>
+            {
+                None
+            }
             Expr::Field { expr: base, .. } => {
                 let (binding, mut proj) = self.hir_place(base)?;
                 let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
@@ -1909,9 +1980,15 @@ impl Builder<'_> {
     /// A method's receiver, or the value a call of a value calls,
     /// dereferenced and borrowed or moved as type checking said, in a
     /// temporary, so that errors about it point at it.
-    fn adjusted_receiver(&mut self, receiver: ExprId, method: flux_ty::Method) -> Operand {
+    fn adjusted_receiver(
+        &mut self,
+        call: ExprId,
+        receiver: ExprId,
+        method: flux_ty::Method,
+    ) -> Operand {
         let receiver_range = self.range(receiver);
-        let place = self.lower_place_deref(receiver, method.derefs);
+        let overloads = self.overloads_of(call);
+        let place = self.lower_place_deref(receiver, method.derefs, &overloads);
         let ty = match method.autoref {
             Some(m) => Ty::new(TyKind::Ref(m, self.place_ty(&place))),
             None => self.place_ty(&place),
@@ -2147,12 +2224,26 @@ impl Builder<'_> {
         };
         // `&**r` for a deref coercion.
         let derefs = self.types.deref_coercions.get(expr).copied().unwrap_or(1);
+        let overloads = self
+            .types
+            .coercion_derefs
+            .get(expr)
+            .cloned()
+            .unwrap_or_default();
         let place = if is_place(self.body, expr) {
-            self.lower_place_deref(expr, derefs)
+            self.lower_place_deref(expr, derefs, &overloads)
         } else {
             let temp = self.temp(self.expr_ty(expr));
             self.lower_value(expr, &temp.into());
-            (0..derefs).fold(Place::from(temp), |place, _| place.deref())
+            let range = self.range(expr);
+            let mut place = Place::from(temp);
+            for step in 0..derefs {
+                place = match overloads.iter().find(|o| o.step == step) {
+                    Some(o) => self.overloaded_deref(place, *o, range),
+                    None => place.deref(),
+                };
+            }
+            place
         };
         let rvalue = Rvalue::Ref {
             mutability,
@@ -2364,7 +2455,8 @@ impl Builder<'_> {
                 if let Some(&(method, derefs)) = self.types.builtin_methods.get(expr) =>
             {
                 let receiver_range = self.range(*receiver);
-                let place = self.lower_place_deref(*receiver, derefs);
+                let overloads = self.overloads_of(expr);
+                let place = self.lower_place_deref(*receiver, derefs, &overloads);
                 let rvalue = Rvalue::Len {
                     place,
                     borrows: true,
@@ -2480,7 +2572,7 @@ impl Builder<'_> {
                 self.terminate(TerminatorKind::Return, range);
             }
             Expr::Call { callee, args } if let Some(&method) = self.types.methods.get(expr) => {
-                let receiver = self.adjusted_receiver(*callee, method);
+                let receiver = self.adjusted_receiver(expr, *callee, method);
                 // The arguments, as the tuple the trait's method takes.
                 let instance = self.types.calls[expr];
                 let tupled = instance.args.get(1).copied().unwrap_or(Ty::UNIT);
@@ -2549,7 +2641,7 @@ impl Builder<'_> {
             Expr::MethodCall { receiver, args, .. }
                 if let Some(&method) = self.types.methods.get(expr) =>
             {
-                let receiver = self.adjusted_receiver(*receiver, method);
+                let receiver = self.adjusted_receiver(expr, *receiver, method);
                 let mut operands = vec![receiver];
                 operands.extend(args.iter().map(|&arg| self.lower_operand(arg)));
                 let instance = self.types.calls[expr];
@@ -2712,7 +2804,7 @@ impl Builder<'_> {
             return self.lower_operand(expr);
         };
         let range = self.range(expr);
-        let place = self.lower_place_deref(expr, 1);
+        let place = self.lower_place_deref(expr, 1, &[]);
         let temp = self.temp(Ty::new(TyKind::Ref(Mutability::Not, pointee)));
         let rvalue = Rvalue::Ref {
             mutability: Mutability::Not,
@@ -2738,7 +2830,7 @@ impl Builder<'_> {
             two_phase: false,
         };
         self.assign(&l.into(), rvalue, self.range(lhs));
-        let place = self.lower_place_deref(rhs, 1);
+        let place = self.lower_place_deref(rhs, 1, &[]);
         let ty = Ty::new(TyKind::Ref(Mutability::Mut, self.place_ty(&place)));
         let r = self.temp(ty);
         let rvalue = Rvalue::Ref {

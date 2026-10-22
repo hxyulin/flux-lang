@@ -301,6 +301,7 @@ pub(crate) fn impl_method_matches(
     let mut map_i = map_impl;
     let mut map_t = map_trait;
     let count = impl_sig.params.len().min(trait_sig.params.len());
+    let mut known_implied: Vec<(Var, Var)> = Vec::new();
     for i in 0..count {
         let ty = cx.normalize(impl_sig.params[i]);
         let mine = cx.instantiate_sig(impl_sig.params[i], &ir.params[i], &mut map_i, &[], &[]);
@@ -312,14 +313,28 @@ pub(crate) fn impl_method_matches(
             &arg_vars,
         );
         match (mine, theirs) {
-            (Some(mine), Some(theirs)) if mine.len() == theirs.len() => cx.relate(
-                ty,
-                &theirs,
-                &mine,
-                Variance::Covariant,
-                Category::Boring,
-                range,
-            ),
+            (Some(mine), Some(theirs)) if mine.len() == theirs.len() => {
+                // The trait's parameter, for the block's types, is well
+                // formed: what it implies is known (`&'t0 Guard<'a, T>`
+                // that `'a: 't0`), as rustc's `compare_impl_method`
+                // assumes.
+                let instance = cx.normalize(trait_sig.params[i].subst(&args));
+                let mut implied = Vec::new();
+                flux_ty::regions::implied_outlives(items, sigs, instance, &theirs, &mut implied);
+                for p in implied {
+                    if let Outlives::Region(a, b) = p {
+                        known_implied.push((a, b));
+                    }
+                }
+                cx.relate(
+                    ty,
+                    &theirs,
+                    &mine,
+                    Variance::Covariant,
+                    Category::Boring,
+                    range,
+                )
+            }
             _ => return false,
         }
     }
@@ -360,6 +375,7 @@ pub(crate) fn impl_method_matches(
             cx.known_pairs.push((a, b));
         }
     }
+    cx.known_pairs.extend(known_implied);
     cx.close_known();
     // Each region's universal regions, until nothing changes.
     let n = cx.universal.len();
@@ -2205,9 +2221,7 @@ impl<'a> Cx<'a> {
             return;
         };
         // rustc moves temporaries rather than copying them.
-        if place.projection.is_empty()
-            && self.body.locals[place.local].kind == crate::LocalKind::Temp
-        {
+        if place.projection.is_empty() && self.body.locals[place.local].kind.is_temp() {
             return;
         }
         let mut elem = self.body.place_ty(place, self.sigs);

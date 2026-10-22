@@ -73,14 +73,12 @@ fn too_long<'x>(_1: &Bag) -> It {
 
 fn escape(_1: &Bag) -> &Bag {
     let mut _0: &Bag;
-    let _2: &&Bag;
-    let _3: &&Bag; // r
+    let _2: &&Bag; // r
 
     bb0: {
-        _3 = &_1;
-        _2 = copy _3;
-        StorageDead(_3);
+        _2 = &_1;
         _0 = &(*(*_2));
+        StorageDead(_2);
         return;
     }
 }

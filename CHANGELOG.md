@@ -939,6 +939,21 @@
   order as rustc. Normalize both sides of impl method bounds containing
   associated types before comparing them. Differential tests also order
   `clamp` bounds using the generated integer type.
+- Support `core::ops::Deref` and `DerefMut`: `*w` on types that
+  implement them, autoderef through them in method calls, field
+  accesses and indexing (several levels deep, mixed with references),
+  and deref coercion of `&W` to `&W::Target` (`&mut` through
+  `DerefMut`), with the built-in deref coercion of references the same
+  mechanism. `DerefMut` is chosen where the place is used mutably, as
+  rustc's `convert_place_derefs_to_mutable` does, and the borrow
+  checker reports rustc's E0594, E0596 and E0507 for writing through or
+  moving out of a dereference ("cannot move out of dereference of
+  `W`"), and now names overloaded indexing as rustc does ("cannot move
+  out of index of `I`"). A block ending with a `&mut T` where a `&T` is
+  wanted is reborrowed at its tail (`fn get(&self) -> &T { self.r }`
+  moved `self.r`), and a trait `impl` block's method may assume what
+  the trait's parameters imply for the block's types (`&'s Guard<'a,
+  T>` that `'a: 's`), as rustc's `compare_impl_method` does.
 
 ### Performance
 

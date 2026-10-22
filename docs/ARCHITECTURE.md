@@ -539,15 +539,26 @@ contain types:
   (rustc's deny-by-default `overflowing_literals`), the operand types of
   operators, casts, and unary `-` on unsigned types.
 
-A method call `x.m()` looks through `x`'s references for the struct with
-a method `m`, and records how the receiver is passed: dereferenced so
-many times, then borrowed for `&self` and `&mut self` or passed by
-value. A field access dereferences the same way. Where a `&mut T` is
-used as a reference (an argument, or a `let` with a type), it is
-reborrowed rather than moved, and may become a `&T`, as in rustc. A
-reference to a reference there (`&&T`, `&mut &T`, `&&mut T`) is
-dereferenced until it is the reference expected, then reborrowed
-(`&**r`): rustc's deref coercion, through references only.
+A method call `x.m()` looks through what `x` dereferences to for the
+type with a method `m`, and records how the receiver is passed:
+dereferenced so many times, then borrowed for `&self` and `&mut self` or
+passed by value. A field access and an index dereference the same way.
+Each step of this *autoderef* (`deref_step`) goes through a reference or,
+for a type that may implement `core::ops::Deref` (`#[lang = "deref"]`),
+to its `Target`, as rustc's does; the overloaded steps are recorded by
+their index among the expression's dereferences
+(`InferenceResult::overloaded_derefs`, `OverloadedDeref`), as `Deref`
+calls until the place turns out to be used mutably (assigned, borrowed
+`&mut`, the receiver of a `&mut self` method), when they become
+`DerefMut` ones where the type has it, as rustc's
+`convert_place_derefs_to_mutable` does; `*w` is one step. Where a `&mut
+T` is used as a reference (an argument, or a `let` with a type), it is
+reborrowed rather than moved, and may become a `&T`, as in rustc; a
+block ending with one is reborrowed at its tail. A reference to
+something that dereferences to the type expected (`&&T`, `&mut &T`,
+`&Wrapper<T>`) is dereferenced until it is the reference expected, then
+reborrowed (`&**r`): rustc's deref coercion, whose overloaded steps are
+`coercion_derefs`.
 
 A pattern is checked against the type of the value it matches. One that
 is not a binding, a wildcard or a reference pattern sees through the
@@ -623,7 +634,13 @@ semantics become explicit, so code generation never sees expressions:
   `Index::index` or `IndexMut::index_mut`, which type checking chose
   by whether the place is used mutably, on a borrow of the base
   (unsized if type checking found the method on the slice an array
-  unsizes to), and is the place `(*_r)` the call returns.
+  unsizes to), and is the place `(*_r)` the call returns. An
+  overloaded dereference is the same: `Deref::deref(&place)` or
+  `DerefMut::deref_mut(&mut place)`, and the place `(*_r)`; its
+  temporary (`LocalKind::Overloaded`) lets the borrow checker name what
+  was dereferenced or indexed where rustc does ("cannot move out of
+  dereference of `W`", "cannot borrow data in dereference of `W` as
+  mutable" where it has no `DerefMut`).
   `[x; N]` is one rvalue, `Repeat`; `len` reads the length (`Len`), as
   a borrow of its receiver; an unsizing coercion is an `Unsize`
   rvalue. Drop glue drops an array's elements in a loop. Arrays'
