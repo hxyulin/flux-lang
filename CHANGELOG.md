@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Add checked `NonZeroU32` construction/access and preserve its zero niche.
+  The self-compilation subset now runs unchanged parser events while
+  retaining their eight-byte representation.
+
 - Add a bounded embedded `std` facade over existing `core`/`alloc` APIs,
   with shared type identities and abort-only `thread::panicking`.
 - Add `flux package build/run --manifest-path PATH [--bin NAME]` for

@@ -20,6 +20,8 @@ use std::boxed::Box as SB;
 use alloc::boxed::Box as AB;
 use std::option::Option as SO;
 use core::option::Option as CO;
+use std::num::NonZeroU32 as SN;
+use core::num::NonZeroU32 as CN;
 use ::std::mem as sm;
 use core::mem as cm;
 fn fused<I: SI>(i: I) -> I { i }
@@ -34,6 +36,7 @@ fn main() {
     let mut iter = fused(v.into_iter());
     let first: SO<i32> = iter.next();
     let _: CO<i32> = first;
+    let _: CN = SN::new(3).unwrap();
     let _ = std::fmt::format(format_args!("{} {}", s, b));
     let _ = std::thread::panicking();
 }
@@ -78,6 +81,7 @@ fn reexports_and_cached_library_ids() {
             ("SS", "AS"),
             ("SB", "AB"),
             ("SO", "CO"),
+            ("SN", "CN"),
             ("sm", "cm"),
         ] {
             let a = items.lookup(module, Symbol::intern(a), Ns::Types).unwrap();
@@ -106,7 +110,7 @@ fn facade_keeps_library_privacy_and_alloc_opt_in() {
         "use std::fs; fn main() {}",
         "use std::sync; fn main() {}",
         "use std::thread::spawn; fn main() {}",
-        "use std::num::NonZeroU32; fn main() {}",
+        "use std::num::NonZeroU64; fn main() {}",
         "use std::vec::RawVec; fn main() {}",
         "use core::unicode; fn main() {}",
     ] {

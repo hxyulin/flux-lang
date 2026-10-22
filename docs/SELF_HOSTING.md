@@ -24,6 +24,9 @@ their algorithms:
 - `crates/flux-syntax/src/syntax_kind.rs`: keyword classification and its
   constant perfect-hash table, punctuation, composite token slices and
   the exported `T!` macro, including `T![$]`.
+- `crates/flux-syntax/src/parser/event.rs`: compact parser events,
+  forward-parent indices, error storage, cloning and equality. Its original
+  eight-byte layout assertion remains enabled.
 
 The test embeds the source files as modules beside
 `tests/run/support/compiler_internals.rs`. It compares output and exit
@@ -41,13 +44,17 @@ and loading separately compiled dependency crates. The normal workspace
 suite includes this test; the dedicated recipe makes it quick to repeat
 while expanding the subset.
 
-On 2026-10-23 the four-module test matched rustc across 174 output lines
-in both Flux modes, using the unchanged syntax-kind source, including its
-explicit local `'static` annotation. With item configuration filtering,
+On 2026-10-23 the five-module test matched rustc in both Flux modes,
+using the unchanged syntax-kind and event sources, including the explicit
+local `'static` annotation and original event layout assertion.
+With item configuration filtering,
 the earlier robustness corpus built MIR
 for 2,417 of 60,594 registry source files, compared with 1,467 before the
 change on the same corpus. This measures individual files reaching the
 MIR stage; it does not establish native compilation of those crates.
+
+The event module's `Option<NonZeroU32>` field uses a four-byte zero niche,
+preserving the unchanged event layout rather than replacing the production type.
 
 ## Main gaps to the complete compiler
 
@@ -116,9 +123,10 @@ the workspace does not establish support.
 
 Concrete later consumers include `AstNode<'t>`'s trait lifetime parameter,
 the labeled block `'alias: { ... }` in type resolution, and the arena's
-`repr(align(16))` layout. The parser uses `NonZeroU32` and asserts that
-its `Event` representation occupies eight bytes, so a substitute must
-preserve the layout and niche rather than merely provide the same methods.
+`repr(align(16))` layout. The parser's `NonZeroU32` prerequisite now has
+checked `new`/`get`, comparison and formatting support with the correct
+zero niche. `Event` is eight bytes and `Option<NonZeroU32>` is four bytes;
+the remaining NonZero family and APIs are not implied by this subset.
 
 ### Library and runtime
 
@@ -144,7 +152,7 @@ alloc gaps first, without requiring an operating-system API all at once.
 
 ## Next milestones
 
-1. Keep the four-module executable subset passing as its source evolves.
+1. Keep the executable source subset passing as its source evolves.
 2. Compile the lexer and token input after defining how their two external
    dependencies are built. Compare token streams on real compiler sources.
 3. Compile the parser and syntax-tree pipeline, then require its output on

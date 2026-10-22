@@ -11,7 +11,10 @@ The root exposes core's `array`, `ascii`, `cell`, `char`, `clone`, `cmp`,
 `ops`, `option`, `panic`, `ptr`, `result`, `slice` and `str`, and alloc's
 `alloc`, `borrow`, `boxed`, `fmt`, `prelude`, `string` and `vec`. Only the
 APIs actually implemented in those modules exist. For example, `cell`
-does not acquire `RefCell`, and `num` does not acquire NonZero types.
+does not acquire `RefCell`. `num` now provides the checked `NonZeroU32`
+subset (`new`/`get`, comparison, copying, hashing and formatting), whose
+zero niche preserves `Option<NonZeroU32>` at four bytes. Other NonZero
+types and APIs are not implied.
 There are no additional collection implementations: Vec, String and Box
 remain available at their usual module paths and through the prelude.
 
@@ -39,5 +42,6 @@ caches include std, so library file and item IDs stay stable across
 compilations. Std is crate 2 and the program is crate 3; core and alloc
 retain crate IDs 0 and 1. No rustc library metadata is loaded.
 
-Filesystem, synchronization, atomics, NonZero representation/layout work,
-and missing core/alloc APIs are outside this facade's scope.
+Filesystem, synchronization, atomics and missing core/alloc APIs remain
+outside this facade's scope. The NonZeroU32 layout support is implemented
+in core/compiler code rather than simulated by facade aliases.
