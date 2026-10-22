@@ -59,12 +59,12 @@ In order next:
    and those still missing (`PartialOrd`, `array::from_fn`, `map`).
    Returning closures (`impl Fn`), which needs opaque types.
 2. Lifetimes, what is left: lifetime parameters on traits and in the
-   generic arguments of bounds (`T: Tr<&'a U>`), higher-ranked bounds
+   trait arguments of bounds (`T: Tr<&'a U>`), lifetimes in the bounds
+   of structs, traits and associated types, higher-ranked bounds
    (`for<'a>`), named lifetimes in types inside bodies, `Fn` bounds and
    function pointers returning references, closures passed to generic
-   functions keeping their parameters' references, trait `impl` blocks
-   for some lifetimes only, and mutable references in constants. Each
-   is reported as not supported yet.
+   functions keeping their parameters' references, and mutable
+   references in constants. Each is reported as not supported yet.
 
 Each comes with fixtures that rustc must agree with.
 

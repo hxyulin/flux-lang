@@ -628,6 +628,38 @@
   A constant naming a failed import's type no longer reports "entering
   unreachable code" when an array length needs it, and a call of an
   associated function of such a type no longer panics.
+- Support trait `impl` blocks for some lifetimes only: a header naming
+  a lifetime twice (`impl<'a> PartialEq for Token<'a>`, whose `Rhs` is
+  `Token<'a>` too; `impl<'a> Add for &'a V`), naming `'static` (`impl
+  Tr for &'static S`), or bounding its lifetimes (`impl<'a, 'b: 'a>`).
+  A block is still chosen by types alone; then the borrow checker
+  proves each call's trait bounds by it, as rustc's does, so its
+  header's lifetimes, its bounds and those of the blocks its own bounds
+  choose constrain the call's. Derives on types with lifetime
+  parameters work (`#[derive(Clone, Copy, PartialEq, Debug)] enum
+  Token<'a>`), and misuses are rustc's errors: E0597, "lifetime may not
+  live long enough" (now once per lifetime that fails, so both of an
+  invariant type's), and E0521, "borrowed data escapes outside of
+  function", for a parameter's lifetime a call needs to be `'static`.
+  A copy of a value whose type is `Copy` for some lifetimes only
+  (`impl Copy for X<'static>`) needs them, as in rustc. `Drop` impls for some lifetimes only are E0366, and with lifetime
+  bounds the struct does not have or imply E0367; a lifetime only a
+  trait `impl` block's associated type names is E0207.
+- Bounds of functions and `impl` blocks may name lifetimes in what they
+  say associated types are (`I: Iterator<Item = &'a T>`), outside
+  `core` too: the body sees the bound's lifetimes, and callers must
+  meet them (E0597, E0515, E0521, as in rustc). Lifetimes in a bound's
+  trait arguments (`T: Tr<&'a U>`) are still `core`'s only.
+- `core::ffi::CStr` is `PartialEq` (with `CStr` and `&CStr`), `Eq`,
+  `PartialOrd`, `Ord` and `Debug`, comparing bytes as rustc's does, and
+  has `count_bytes`, `is_empty`, `to_bytes`, `to_bytes_with_nul`,
+  `to_str`, `from_bytes_with_nul` and `from_bytes_until_nul`, with
+  rustc's `FromBytesWithNulError` and `FromBytesUntilNulError`; `&CStr`
+  and `&[T]` are `Default`. `*a == *b` compares `str`s and `CStr`s.
+- Fix overwriting a reference while what it pointed to is still
+  borrowed (`out[n] = Token::Ident(&src[a..b])` in a loop), which was
+  E0506: as in rustc, a write of a pointer leaves loans of what it
+  points to alone. `&[]` is promoted for any element type, as in rustc.
 
 ### Performance
 
