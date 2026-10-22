@@ -16,8 +16,8 @@ use flux_syntax::TextRange;
 use flux_ty::{ConstInstance, GenericArgs, IntTy, Signatures, Ty, subst_list};
 
 use crate::{
-    AssertMessage, BinOp, Body, Constant, Operand, Place, ProjectionElem, Rvalue, StatementKind,
-    TerminatorKind, UnOp,
+    AggregateKind, AssertMessage, BinOp, Body, Constant, Operand, Place, ProjectionElem, Rvalue,
+    StatementKind, TerminatorKind, UnOp,
 };
 
 /// A value computed at compile time.
@@ -31,6 +31,12 @@ pub enum Value {
     Bool(bool),
     /// A tuple or struct, fields in order; `()` has none.
     Aggregate(Vec<Value>),
+    /// Variant `index` of enum `strukt`, its fields in order.
+    Variant {
+        strukt: flux_hir::StructId,
+        index: u32,
+        fields: Vec<Value>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,7 +212,9 @@ impl<'a> Evaluator<'a> {
                     let value = match self.operand(&locals, generics, discr, range)? {
                         Value::Int { bits, .. } => bits,
                         Value::Bool(b) => u128::from(b),
-                        Value::Aggregate(_) => unreachable!("switches on scalars"),
+                        Value::Aggregate(_) | Value::Variant { .. } => {
+                            unreachable!("switches on scalars")
+                        }
                     };
                     targets
                         .iter()
@@ -220,6 +228,17 @@ impl<'a> Evaluator<'a> {
                     dest,
                     target,
                 } => {
+                    // `core`'s panic, with its message, a `c"..."`.
+                    if Some(*func) == self.items.panic_fn {
+                        let message = match args.first() {
+                            Some(Operand::Const(Constant::CStr(index))) => {
+                                String::from_utf8_lossy(&body.c_strings[*index as usize])
+                                    .into_owned()
+                            }
+                            _ => "explicit panic".to_owned(),
+                        };
+                        return Err(error(range, format!("evaluation panicked: {message}")));
+                    }
                     let args = args
                         .iter()
                         .map(|a| self.operand(&locals, generics, a, range))
@@ -374,11 +393,30 @@ impl<'a> Evaluator<'a> {
     ) -> Result<Value, EvalError> {
         match rvalue {
             Rvalue::Use(op) => self.operand(locals, generics, op, range),
-            Rvalue::Aggregate(_, ops) => Ok(Value::Aggregate(
-                ops.iter()
+            Rvalue::Aggregate(kind, ops) => {
+                let fields = ops
+                    .iter()
                     .map(|op| self.operand(locals, generics, op, range))
-                    .collect::<Result<_, _>>()?,
-            )),
+                    .collect::<Result<_, _>>()?;
+                Ok(match *kind {
+                    AggregateKind::Variant(strukt, index) => Value::Variant {
+                        strukt,
+                        index,
+                        fields,
+                    },
+                    AggregateKind::Tuple | AggregateKind::Struct(_) => Value::Aggregate(fields),
+                })
+            }
+            Rvalue::Discriminant(place) => match read(locals, place, range)? {
+                Value::Variant { strukt, index, .. } => {
+                    let bits = crate::discriminant_bits(self.items, strukt, index);
+                    Ok(Value::Int {
+                        bits,
+                        ty: flux_ty::discriminant_ty(self.items, strukt),
+                    })
+                }
+                _ => unreachable!("discriminants are of enums"),
+            },
             Rvalue::Ref { .. } => Err(error(
                 range,
                 "references in constants are not supported yet".to_owned(),
@@ -388,7 +426,9 @@ impl<'a> Evaluator<'a> {
                 let bits = match value {
                     Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                     Value::Bool(b) => u128::from(b),
-                    Value::Aggregate(_) => unreachable!("casts are of scalars"),
+                    Value::Aggregate(_) | Value::Variant { .. } => {
+                        unreachable!("casts are of scalars")
+                    }
                 };
                 let to = to.as_int().expect("casts are to integers");
                 Ok(Value::Int {
@@ -449,7 +489,11 @@ fn read(locals: &[Option<Value>], place: &Place, range: TextRange) -> Result<Val
         .ok_or_else(|| error(range, "use of an uninitialized value".to_owned()))?;
     for elem in &place.projection {
         value = match (elem, value) {
-            (ProjectionElem::Field(i), Value::Aggregate(fields)) => &fields[*i as usize],
+            (
+                ProjectionElem::Field(i),
+                Value::Aggregate(fields) | Value::Variant { fields, .. },
+            ) => &fields[*i as usize],
+            (ProjectionElem::Downcast(_), Value::Variant { .. }) => value,
             _ => {
                 return Err(error(
                     range,
@@ -477,7 +521,11 @@ fn write(
         .ok_or_else(|| error(range, "use of an uninitialized value".to_owned()))?;
     for elem in &place.projection {
         value = match (elem, value) {
-            (ProjectionElem::Field(i), Value::Aggregate(fields)) => &mut fields[*i as usize],
+            (
+                ProjectionElem::Field(i),
+                Value::Aggregate(fields) | Value::Variant { fields, .. },
+            ) => &mut fields[*i as usize],
+            (ProjectionElem::Downcast(_), value @ Value::Variant { .. }) => value,
             _ => {
                 return Err(error(
                     range,
@@ -643,7 +691,7 @@ pub fn show(value: &Value) -> String {
             }
         }
         Value::Bool(b) => b.to_string(),
-        Value::Aggregate(_) => "{aggregate}".to_owned(),
+        Value::Aggregate(_) | Value::Variant { .. } => "{aggregate}".to_owned(),
     }
 }
 

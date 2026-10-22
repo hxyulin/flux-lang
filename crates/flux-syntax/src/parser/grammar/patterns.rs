@@ -13,6 +13,19 @@ const LITERAL_PAT_FIRST: TokenSet = TokenSet::new(&[
     T![false],
 ]);
 
+/// What may follow a pattern, where a malformed one stops.
+const PATTERN_RECOVERY: TokenSet = TokenSet::new(&[
+    T![,],
+    T![=],
+    T![:],
+    T![|],
+    T![')'],
+    T![']'],
+    T![if],
+    T![in],
+    T![=>],
+]);
+
 pub(super) const PATTERN_FIRST: TokenSet =
     paths::PATH_FIRST
         .union(LITERAL_PAT_FIRST)
@@ -42,6 +55,10 @@ pub(super) fn pattern(p: &mut Parser<'_>) {
         return;
     }
     while p.at(T![|]) && !p.at(T![||]) {
+        if !PATTERN_FIRST.contains(p.nth(1)) {
+            p.err_and_bump("a trailing `|` is not allowed in an or-pattern");
+            break;
+        }
         p.bump(T![|]);
         pattern_single(p);
     }
@@ -95,10 +112,7 @@ pub(super) fn pattern_single(p: &mut Parser<'_>) {
             opt_range(p, lhs);
         }
         _ if paths::is_path_start(p) => path_pat(p),
-        _ => p.err_recover(
-            "expected a pattern",
-            TokenSet::new(&[T![,], T![=], T![:], T![|], T![')'], T![']'], T![if], T![in]]),
-        ),
+        _ => p.err_recover("expected a pattern", PATTERN_RECOVERY),
     }
 }
 
@@ -108,9 +122,13 @@ fn at_path_continuation(p: &mut Parser<'_>) -> bool {
         && (p.nth(1) != T![.] || p.nth_at(1, T![..]))
 }
 
-/// `name`, `ref mut name`, `name @ subpattern`.
+/// `name`, `ref mut name`, `name @ subpattern`; also `mut ref name`,
+/// which rustc parses and reports as unstable.
 fn ident_pat(p: &mut Parser<'_>) {
     let m = p.start();
+    if p.at(T![mut]) && p.nth_at(1, T![ref]) {
+        p.bump(T![mut]);
+    }
     p.eat(T![ref]);
     p.eat(T![mut]);
     name(p);
@@ -123,7 +141,9 @@ fn ident_pat(p: &mut Parser<'_>) {
 fn literal_pat(p: &mut Parser<'_>) -> CompletedMarker {
     let m = p.start();
     if p.eat(T![-]) && !p.at(INT_NUMBER) && !p.at(FLOAT_NUMBER) {
-        p.error("expected a number after `-`");
+        // Skips what is there instead, a name say.
+        p.err_recover("expected a number after `-`", PATTERN_RECOVERY);
+        return m.complete(p, LITERAL_PAT);
     }
     expressions::literal(p);
     m.complete(p, LITERAL_PAT)

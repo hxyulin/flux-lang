@@ -1,0 +1,44 @@
+#[repr(u8)] enum Overflowed { A = 255, B = 0 }
+
+#[repr(u8)] enum TooBig { A = 0 }
+
+#[repr(i8)] enum TooSmall { A = 0 }
+
+#[repr(u8)] enum Negative { A = 0 }
+
+#[repr(u8)] enum Suffixed { A = 1, B = 2 }
+
+#[repr(u8)] enum TwoInts { A = 0 }
+
+#[repr(u8)] enum TwoAttributes { A = 0 }
+
+#[repr(u8)] enum CAndIntWithoutFields { A = 0 }
+
+enum COnlyWithFields { A = 1, B(i32) = 2 }
+
+#[repr(u8)] enum Empty {  }
+
+enum NoHints { A = 0 }
+
+enum Unknown { A = 0 }
+
+enum Assigned { A = 0 }
+
+enum Transparent { A = 0 }
+
+fn main() -> () {}
+
+error 185..186: enum discriminant overflowed
+error 225..228: literal out of range for `u8`
+error 269..273: literal out of range for `i8`
+error 314..316: cannot apply unary operator `-` to type `u8`
+error 370..374: mismatched types
+error 386..388: conflicting representation hints
+error 428..430: conflicting representation hints
+error 484..485: conflicting representation hints
+error 541..561: `#[repr(inttype)]` must be specified for enums with explicit discriminants and non-unit variants
+error 597..599: unsupported representation for zero-variant enum
+error 619..623: malformed `repr` attribute input
+error 652..661: malformed `repr` attribute input
+error 690..704: malformed `repr` attribute input
+error 739..750: the `repr(transparent)` attribute is not supported yet

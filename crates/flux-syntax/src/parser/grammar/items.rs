@@ -175,11 +175,13 @@ fn enum_(p: &mut Parser<'_>, m: Marker) {
             p,
             T!['{'],
             T!['}'],
-            TokenSet::new(&[IDENT, T![#]]),
+            TokenSet::new(&[IDENT, T![#], T![pub]]),
             "a variant",
             |p| {
                 let m = p.start();
                 attributes::outer_attrs(p);
+                // Not allowed, but parsed, as rustc does, to say so.
+                opt_visibility(p);
                 name(p);
                 match p.current() {
                     T!['{'] => record_field_list(p),

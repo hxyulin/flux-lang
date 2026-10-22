@@ -1,0 +1,124 @@
+enum Shape { Circle(i32) = 0, Rect { w: i32, h: i32 } = 1, Empty = 2 }
+
+enum Level { Low = -1, Mid = 0, High = 10 }
+
+enum Maybe<T> { Just(T) = 0, Nothing = 1 }
+
+impl Shape;
+
+impl ::core::clone::Clone for Level;
+
+impl ::core::marker::Copy for Level;
+
+impl ::core::cmp::PartialEq for Level;
+
+impl ::core::cmp::Eq for Level;
+
+fn Shape::empty() -> Self {
+    Shape::Empty
+}
+
+fn Shape::sides(self@0: &Self) -> i32 {
+    match self@0 {
+        Shape::Circle(_) => 0,
+        Shape::Rect { .. } => 4,
+        Shape::Empty => 0,
+    }
+}
+
+fn area(s@0: Shape) -> i32 {
+    match s@0 {
+        Shape::Circle(r@1) if (r@1 > 0) => ((3 * r@1) * r@1),
+        Shape::Circle(_) => 0,
+        Shape::Rect { w: w@2, h: height@3 } => (w@2 * height@3),
+        Shape::Empty => 0,
+    }
+}
+
+fn patterns(x@0: i32, pair@1: (bool, i32), m@2: Maybe<i32>) -> i32 {
+    let a@3 = match x@0 {
+        0 => 1,
+        1 | 2 => 2,
+        (-5)..=(-1) => 3,
+        3..10 => 4,
+        10.. => 5,
+        ..(-5) => 6,
+    };
+    let b@6 = match pair@1 {
+        (true, n@4 @ 1..=9) => n@4,
+        (false, ref n@5) => (*n@5),
+        (_, _) => 0,
+    };
+    let c@8 = match m@2 {
+        Maybe::Just(v@7) => v@7,
+        Maybe::Nothing => 0,
+    };
+    let d@10 = match (&Maybe::Just(1)) {
+        &Maybe::Just(v@9) => v@9,
+        &Maybe::Nothing => 0,
+    };
+    (((a@3 + b@6) + c@8) + d@10)
+}
+
+fn conditions(m@0: Maybe<i32>, n@1: Maybe<i32>) -> i32 {
+    if ((let Maybe::Just(x@2) = m@0 && (x@2 > 1)) && let Maybe::Just(y@3) = n@1) {
+        return (x@2 + y@3);
+    }
+    let mut count@4 = 0;
+    loop#16 /* while */ if let Maybe::Nothing = Maybe::Nothing[Self<i32>] {
+        (count@4 += 1);
+        if (count@4 > 3) {
+            break#16;
+        }
+    } else {
+        break#16
+    }
+    let Maybe::Just(z@5) = Maybe::Just(count@4) else {
+        return 0;
+    };
+    z@5
+}
+
+fn main() -> () {
+    let _ = area(Shape::empty());
+    let _ = Shape::Rect { w: 1, h: 2 }.sides();
+    let _ = patterns(1, (true, 2), Maybe::Nothing);
+    let _ = conditions(Maybe::Just(1), Maybe::Nothing);
+    let _ = (Level::Mid as i32);
+    let _ = (Level::Low == Level::High);
+}
+
+fn <Level as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+    match self@0 {
+        Level::Low => {},
+        Level::Mid => {},
+        Level::High => {},
+    };
+    (*self@0)
+}
+
+fn <Level as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+    match self@0 {
+        Level::Low => match other@1 {
+            Level::Low => true,
+            _ => false,
+        },
+        Level::Mid => match other@1 {
+            Level::Mid => true,
+            _ => false,
+        },
+        Level::High => match other@1 {
+            Level::High => true,
+            _ => false,
+        },
+    }
+}
+
+fn <Level as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
+    match self@0 {
+        Level::Low => {},
+        Level::Mid => {},
+        Level::High => {},
+    }
+}
+

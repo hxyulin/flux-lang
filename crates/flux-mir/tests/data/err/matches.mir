@@ -1,0 +1,683 @@
+fn <D as Drop>::drop(_1: &mut D) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn take(_1: S) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn moved_then_matched(_1: E) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: S; // s
+    let _4: isize;
+    let _5: ();
+    let _6: S;
+    let _7: isize;
+
+    bb0: {
+        _4 = discriminant(_1);
+        switchInt(copy _4) -> [0: bb4, otherwise: bb2];
+    }
+
+    bb1: {
+        _6 = move _3;
+        _5 = take(move _6) -> bb5;
+    }
+
+    bb2: {
+        StorageDead(_3);
+        _2 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _7 = discriminant(_1);
+        switchInt(copy _7) -> [2: bb8, otherwise: bb7];
+    }
+
+    bb4: {
+        _3 = move (_1 as #0).0;
+        goto -> bb1;
+    }
+
+    bb5: {
+        _2 = const ();
+        StorageDead(_3);
+        goto -> bb3;
+    }
+
+    bb6: {
+        return;
+    }
+
+    bb7: {
+        goto -> bb11;
+    }
+
+    bb8: {
+        goto -> bb9;
+    }
+
+    bb9: {
+        _0 = const ();
+        goto -> bb6;
+    }
+
+    bb10: {
+        unreachable;
+    }
+
+    bb11: {
+        _0 = const ();
+        goto -> bb6;
+    }
+}
+
+fn moved_then_borrowed(_1: Option<S>) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: S; // s
+    let _4: isize;
+    let _5: ();
+    let _6: S;
+    let _7: isize;
+    let _8: &S; // r
+    let _9: isize;
+
+    bb0: {
+        _4 = discriminant(_1);
+        switchInt(copy _4) -> [1: bb4, otherwise: bb2];
+    }
+
+    bb1: {
+        _6 = move _3;
+        _5 = take(move _6) -> bb5;
+    }
+
+    bb2: {
+        StorageDead(_3);
+        _2 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _7 = discriminant(_1);
+        switchInt(copy _7) -> [0: bb8, otherwise: bb7];
+    }
+
+    bb4: {
+        _3 = move (_1 as #1).0;
+        goto -> bb1;
+    }
+
+    bb5: {
+        _2 = const ();
+        StorageDead(_3);
+        goto -> bb3;
+    }
+
+    bb6: {
+        return;
+    }
+
+    bb7: {
+        _9 = discriminant(_1);
+        switchInt(copy _9) -> [1: bb11, otherwise: bb10];
+    }
+
+    bb8: {
+        goto -> bb9;
+    }
+
+    bb9: {
+        _0 = const ();
+        goto -> bb6;
+    }
+
+    bb10: {
+        unreachable;
+    }
+
+    bb11: {
+        _8 = &(_1 as #1).0;
+        goto -> bb12;
+    }
+
+    bb12: {
+        _0 = const ();
+        StorageDead(_8);
+        goto -> bb6;
+    }
+}
+
+fn both_bindings(_1: E) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: S; // a
+    let _4: S; // b
+    let _5: isize;
+    let _6: ();
+    let _7: S;
+    let _8: ();
+    let _9: S;
+    let _10: S; // x
+    let _11: isize;
+    let _12: !;
+    let _13: !;
+
+    bb0: {
+        _5 = discriminant(_1);
+        switchInt(copy _5) -> [1: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        _11 = discriminant(_1);
+        switchInt(copy _11) -> [1: bb11, otherwise: bb9];
+    }
+
+    bb2: {
+        goto -> bb8;
+    }
+
+    bb3: {
+        _3 = move (_1 as #1).0;
+        _4 = move (_1 as #1).1;
+        goto -> bb4;
+    }
+
+    bb4: {
+        _7 = move _3;
+        _6 = take(move _7) -> bb5;
+    }
+
+    bb5: {
+        _9 = move _4;
+        _8 = take(move _9) -> bb6;
+    }
+
+    bb6: {
+        _2 = const ();
+        StorageDead(_4);
+        StorageDead(_3);
+        goto -> bb1;
+    }
+
+    bb7: {
+        unreachable;
+    }
+
+    bb8: {
+        _2 = const ();
+        goto -> bb1;
+    }
+
+    bb9: {
+        _0 = const ();
+        return;
+    }
+
+    bb10: {
+        _0 = const ();
+        StorageDead(_10);
+        return;
+    }
+
+    bb11: {
+        _10 = move (_1 as #1).0;
+        goto -> bb10;
+    }
+
+    bb12: {
+        _12 = const ();
+        unreachable;
+    }
+}
+
+fn out_of_reference(_1: &E) -> () {
+    let mut _0: ();
+    let _2: S; // s
+    let _3: isize;
+
+    bb0: {
+        _3 = discriminant((*_1));
+        switchInt(copy _3) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb6;
+    }
+
+    bb3: {
+        _2 = move ((*_1) as #0).0;
+        goto -> bb4;
+    }
+
+    bb4: {
+        _0 = const ();
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        _0 = const ();
+        goto -> bb1;
+    }
+}
+
+fn out_of_drop(_1: D) -> () {
+    let mut _0: ();
+    let _2: S; // s
+    let _3: bool;
+
+    bb0: {
+        _3 = const true;
+        _2 = move _1.0;
+        goto -> bb3;
+    }
+
+    bb1: {
+        switchInt(copy _3) -> [0: bb5, otherwise: bb6];
+    }
+
+    bb2: {
+        unreachable;
+    }
+
+    bb3: {
+        _0 = const ();
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb4: {
+        return;
+    }
+
+    bb5: {
+        _3 = const false;
+        goto -> bb4;
+    }
+
+    bb6: {
+        drop(_1) -> bb5;
+    }
+}
+
+fn not_mutable(_1: E) -> () {
+    let mut _0: ();
+    let _2: &mut S; // s
+    let _3: isize;
+
+    bb0: {
+        _3 = discriminant(_1);
+        switchInt(copy _3) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb6;
+    }
+
+    bb3: {
+        _2 = &mut (_1 as #0).0;
+        goto -> bb4;
+    }
+
+    bb4: {
+        _0 = const ();
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        _0 = const ();
+        goto -> bb1;
+    }
+}
+
+fn borrowed_then_moved(_1: E) -> () {
+    let mut _0: ();
+    let _2: &S; // r
+    let _3: &E;
+    let _4: &S; // s
+    let _5: isize;
+    let _6: E; // f
+
+    bb0: {
+        _3 = &_1;
+        _5 = discriminant((*_3));
+        switchInt(copy _5) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        _6 = move _1;
+        PlaceMention(_2);
+        _0 = const ();
+        StorageDead(_6);
+        StorageDead(_2);
+        return;
+    }
+
+    bb2: {
+        goto -> bb6;
+    }
+
+    bb3: {
+        _4 = &((*_3) as #0).0;
+        goto -> bb4;
+    }
+
+    bb4: {
+        _2 = copy _4;
+        StorageDead(_4);
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn guards(_1: Option<i32>, _2: Option<i32>, _3: Option<S>) -> () {
+    let mut _0: ();
+    let _4: ();
+    let _5: isize;
+    let _6: bool;
+    let _7: ();
+    let _8: Option<i32>;
+    let _9: ();
+    let _10: &mut i32; // n
+    let _11: isize;
+    let _12: bool;
+    let _13: ();
+    let _14: i32;
+    let _15: S; // s
+    let _16: isize;
+    let _17: bool;
+    let _18: S;
+
+    bb0: {
+        _5 = discriminant(_1);
+        switchInt(copy _5) -> [1: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        _11 = discriminant(_2);
+        switchInt(copy _11) -> [1: bb11, otherwise: bb10];
+    }
+
+    bb2: {
+        goto -> bb8;
+    }
+
+    bb3: {
+        _8 = Option::None;
+        _1 = copy _8;
+        _7 = const ();
+        _6 = const false;
+        switchInt(copy _6) -> [0: bb6, otherwise: bb5];
+    }
+
+    bb4: {
+        PlaceMention(_1);
+        _4 = const ();
+        goto -> bb1;
+    }
+
+    bb5: {
+        goto -> bb4;
+    }
+
+    bb6: {
+        goto -> bb2;
+    }
+
+    bb7: {
+        unreachable;
+    }
+
+    bb8: {
+        _4 = const ();
+        goto -> bb1;
+    }
+
+    bb9: {
+        _16 = discriminant(_3);
+        switchInt(copy _16) -> [1: bb19, otherwise: bb18];
+    }
+
+    bb10: {
+        goto -> bb16;
+    }
+
+    bb11: {
+        _10 = &mut (_2 as #1).0;
+        _14 = copy (*_10);
+        (*_10) = Add(copy _14, const 1_i32);
+        _13 = const ();
+        _12 = const true;
+        switchInt(copy _12) -> [0: bb14, otherwise: bb13];
+    }
+
+    bb12: {
+        _9 = const ();
+        StorageDead(_10);
+        goto -> bb9;
+    }
+
+    bb13: {
+        goto -> bb12;
+    }
+
+    bb14: {
+        StorageDead(_10);
+        goto -> bb10;
+    }
+
+    bb15: {
+        unreachable;
+    }
+
+    bb16: {
+        _9 = const ();
+        goto -> bb9;
+    }
+
+    bb17: {
+        return;
+    }
+
+    bb18: {
+        goto -> bb25;
+    }
+
+    bb19: {
+        _18 = copy (_3 as #1).0;
+        _17 = take_bool(move _18) -> bb23;
+    }
+
+    bb20: {
+        _0 = const ();
+        StorageDead(_15);
+        goto -> bb17;
+    }
+
+    bb21: {
+        _15 = move (_3 as #1).0;
+        goto -> bb20;
+    }
+
+    bb22: {
+        goto -> bb18;
+    }
+
+    bb23: {
+        switchInt(copy _17) -> [0: bb22, otherwise: bb21];
+    }
+
+    bb24: {
+        unreachable;
+    }
+
+    bb25: {
+        _0 = const ();
+        goto -> bb17;
+    }
+}
+
+fn take_bool(_1: S) -> bool {
+    let mut _0: bool;
+
+    bb0: {
+        _0 = const true;
+        return;
+    }
+}
+
+fn bindings(_1: Option<S>, _2: Option<S>) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: Option<S>; // whole
+    let _5: S; // inner
+    let _6: isize;
+    let _7: ();
+    let _8: S; // d
+    let _9: isize;
+    let _10: S;
+    let _11: isize;
+
+    bb0: {
+        _6 = discriminant(_1);
+        switchInt(copy _6) -> [1: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        goto -> bb7;
+    }
+
+    bb2: {
+        goto -> bb6;
+    }
+
+    bb3: {
+        _5 = move (_1 as #1).0;
+        _4 = move _1;
+        goto -> bb4;
+    }
+
+    bb4: {
+        _3 = const ();
+        StorageDead(_5);
+        StorageDead(_4);
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        _3 = const ();
+        goto -> bb1;
+    }
+
+    bb7: {
+        _9 = discriminant(_2);
+        switchInt(copy _9) -> [1: bb11, otherwise: bb10];
+    }
+
+    bb8: {
+        return;
+    }
+
+    bb9: {
+        goto -> bb7;
+    }
+
+    bb10: {
+        _11 = discriminant(_2);
+        switchInt(copy _11) -> [0: bb15, otherwise: bb14];
+    }
+
+    bb11: {
+        _8 = move (_2 as #1).0;
+        goto -> bb12;
+    }
+
+    bb12: {
+        _10 = move _8;
+        _7 = take(move _10) -> bb13;
+    }
+
+    bb13: {
+        StorageDead(_8);
+        goto -> bb9;
+    }
+
+    bb14: {
+        unreachable;
+    }
+
+    bb15: {
+        goto -> bb16;
+    }
+
+    bb16: {
+        _0 = const ();
+        goto -> bb8;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 286..287: use of partially moved value: `e`
+error 467..472: borrow of moved value
+error 639..640: use of moved value
+error 647..648: use of partially moved value: `e`
+error 721..723: cannot move out of `r` as enum variant `A` which is behind a shared reference
+error 806..807: cannot move out of type `D`, which implements the `Drop` trait
+error 888..897: cannot borrow `e.0` as mutable, as `e` is not declared as mutable
+error 1050..1051: cannot move out of `e` because it is borrowed
+error 1184..1192: cannot assign `x` in match guard
+error 1345..1352: cannot assign to `*n`, as it is immutable for the pattern guard
+error 1452..1453: cannot move out of `s` in pattern guard
+error 1595..1614: use of partially moved value: `o`
+error 1689..1690: use of moved value

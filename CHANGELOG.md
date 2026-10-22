@@ -97,6 +97,59 @@
   E0790 are reported as rustc does.
 - Build instances from `main`, as rustc does: generic code that only
   unused functions call is not instantiated.
+- Support enums: unit, tuple and named-field variants, generic enums,
+  discriminants and casts of enums without fields, variants through
+  their enum (`E::A`, `Self::A`) and imports (`use E::*;`), and
+  `#[derive]` on enums. Support `match` with guards, `if let`, `let`
+  chains, `while let` and `let`-`else`, `if let` guards, and patterns
+  with literals,
+  ranges, or-patterns, `@`, `ref`, `ref mut` and `&`, with rustc's
+  default binding modes and edition 2024's rules for them. `match`es
+  must be exhaustive and `let` patterns irrefutable (E0004, E0005),
+  reported with rustc's witnesses, integer ranges included. MIR tests
+  what each pattern looks at and moves into bindings once an arm and
+  its guard match; moves out of variants are tracked and dropped as in
+  rustc. `core` gains `Option` and `Result` (in the prelude) with their
+  methods that need no closures. E0023, E0026, E0027, E0029, E0030,
+  E0081, E0164, E0370, E0408, E0409, E0416, E0449, E0507, E0510, E0530,
+  E0532, E0533, E0559, E0574, E0579, E0594, E0599, E0618, E0732 and
+  E0783 are reported as rustc does, and so are or-patterns without
+  parentheses in `let` and parameters and rustc's other syntax rules
+  for patterns and `let`-`else`. The parser accepts visibilities on
+  variants and or-patterns as parameters, to report them as rustc does.
+- Support constants in patterns (`N`, `i32::MAX`, `Self::N`, `<T as
+  Tr>::N`), alone and as range ends, of integer types and `bool`. The
+  exhaustiveness and range checks of bodies that name them wait for
+  constant evaluation, which evaluates the constants first, as rustc
+  does. E0029, E0080 ("runtime values cannot be referenced in
+  patterns"), E0158, E0530, E0532 and E0533 are reported as rustc does.
+- Support `#[repr(u8)]` and the other integer types on enums, which
+  set the discriminant's type: its range, literal suffixes, casts and
+  the tag's size, and allow discriminants on enums with fields.
+  `#[repr(C)]` is accepted; malformed, conflicting and zero-variant
+  `repr`s are reported as rustc does (E0084, E0539, E0565, E0566,
+  E0600, E0732).
+- Evaluate panics in constants: `Option::unwrap` is a `const fn`, as in
+  rustc, and `None.unwrap()` in a constant is "evaluation panicked"
+  (E0080). `core`'s other `Option` and `Result` methods are reported as
+  conditionally const (E0658), with rustc's two errors.
+- Report the mismatched types rustc reports after E0409, where a
+  binding is by reference in one alternative and by value in another.
+- Recover from malformed patterns and `else` branches with one error
+  where rustc gives one: a trailing `|` in an or-pattern, `-` before a
+  name, `let ... else` without a block or with `else if`, `else`
+  without a block, a struct literal as a `match` scrutinee or `if`
+  condition, and a missing `,` after an arm. `mut ref x` parses, and is
+  reported as unstable.
+- Fix a crash on `Self { .. }` of a struct whose type is in error.
+- Fix type checking that took exponential time or overflowed the stack
+  on associated types defined through each other: each normalization
+  now normalizes a type once, stops at a cycle, and inference reports
+  one as rustc's overflow (E0275). Elaborating bounds no longer
+  compares each with all before it. rayon's `iter` module checks in
+  milliseconds rather than never.
+- Name the binding in "cannot borrow `s.a` as mutable, as `s` is not
+  declared as mutable", as rustc does.
 - Report duplicate items in `impl` blocks of traits (E0201), which
   produced invalid keel IR.
 - Find inherent functions through qualified paths (`<S>::new()`).

@@ -52,7 +52,13 @@ Everything above parses, but only this part compiles so far; the rest is
 reported as "not supported yet":
 
 - **Items:** functions, including `const fn`; structs (named-field,
-  tuple and unit structs); inherent `impl` blocks for them, with
+  tuple and unit structs); enums, with unit, tuple and named-field
+  variants, generic ones included, and integer literal discriminants
+  (`enum E { A = 1, B }`), whose type `#[repr(u8)]` and the other
+  integer types set, as `#[repr(C)]` may be written too (other `repr`
+  hints, and discriminants other than literals, `A = 1 << 2`, are not
+  supported yet); inherent `impl`
+  blocks for them, with
   associated functions, methods (`self`, `mut self`, `&self`,
   `&mut self`) and constants; traits with required and provided methods
   and associated functions, associated types (`type Out: Bound;`),
@@ -72,7 +78,9 @@ reported as "not supported yet":
   `unsafe extern "C"` blocks of function declarations, including
   C-variadic ones (`fn printf(format: *const i8, ...) -> i32;`). Items
   may be `pub`, `pub(crate)`, `pub(super)`, `pub(self)` or
-  `pub(in path)`, and flux checks privacy as rustc does.
+  `pub(in path)`, and flux checks privacy as rustc does. An enum's
+  variants are named through it (`E::A`, `Self::A`) or imported
+  (`use E::*;`, `use E::{A, B};`).
 - **Types:** paths (`i32`, `bool`, `Self`, `m::S`, `crate::m::S`,
   `Pair<i32>`, a type parameter `T`), associated types (`T::Out`,
   `Self::Out`, `<T as Tr>::Out`), tuples, `!`, references without
@@ -80,8 +88,9 @@ reported as "not supported yet":
   `_` inside bodies (`let p: Pair<_> = ...`).
 - **Expressions:** integer, boolean and C string (`c"..."`, `cr"..."`)
   literals, local and function names, tuples, struct expressions
-  (`S { a: 1, b, ..base }`), tuple struct constructors (`P(1, 2)`) and
-  unit structs, field accesses (`s.a`, `t.0`, through references),
+  (`S { a: 1, b, ..base }`, `E::V { a: 1 }`), tuple struct and variant
+  constructors (`P(1, 2)`, `E::V(1)`), unit structs and variants, field
+  accesses (`s.a`, `t.0`, through references),
   paths to items in modules and associated items (`m::f`, `S::new`,
   `Self::X`, `i32::MAX`), trait items, functions and constants, through
   a type, a trait or both (`T::f`, `S::N`, `Tr::f`, `<T as Tr>::N`,
@@ -89,21 +98,32 @@ reported as "not supported yet":
   in paths and method calls
   (`id::<u8>`, `Pair::<i32>::new`, `x.m::<u8>()`), method calls,
   borrows (`&x`, `&mut x`) and dereferences (`*r`), blocks (including
-  `unsafe`), `if`/`else`, `loop`, `while`, unlabeled `break` (with a
-  value) and `continue`, `return`, calls, unary and binary operators,
-  assignments (to locals and their fields), `as` casts between
-  integers, and one method: `CStr::as_ptr`.
-- **Patterns:** `x`, `mut x`, `_`, tuples, structs (`S { a, b: x, .. }`),
-  tuple structs and unit structs, with `..` rest patterns. Patterns are
-  irrefutable: `let` and parameters only.
+  `unsafe`), `if`/`else`, `if let` and `let` chains (`if let Some(x) = a
+  && x > 1 && let Ok(y) = b`), `match` with guards (`if let` guards
+  too), `loop`, `while`,
+  `while let`, unlabeled `break` (with a value) and `continue`,
+  `return`, calls, unary and binary operators, assignments (to locals
+  and their fields), `as` casts between integers and from enums without
+  fields, and one method: `CStr::as_ptr`.
+- **Statements:** `let`, with a type, a value and `else` (`let Some(x) =
+  o else { return };`).
+- **Patterns:** `x`, `mut x`, `ref x`, `ref mut x`, `x @ pat`, `_`,
+  tuples, structs and variants (`S { a, b: x, .. }`, `E::V(x, ..)`,
+  `None`), with `..` rest patterns, integer and `bool` literals
+  (`-1`, `true`), constants of integer types and `bool` (`N`,
+  `i32::MAX`, `Self::N`), ranges whose ends are either (`1..=9`,
+  `0..N`, `5..`, `..=i8::MIN`), or-patterns (`1 | 2`) and reference
+  patterns (`&x`). Constants of other types in patterns are not
+  supported yet.
 - **Attributes:** only `allow`, `warn`, `deny`, `expect`, `inline`,
-  `cold`, `must_use` and `doc`, which are ignored, `derive` on structs,
+  `cold`, `must_use` and `doc`, which are ignored, `derive` on structs
+  and enums,
   and
   `#[diagnostic::on_unimplemented(message = "...")]` on traits, whose
   message reports their unmet bounds, as in rustc.
 
 Type checking follows rustc for this subset: the integer types, `bool`,
-tuples, structs and `!`; integer literals default to `i32`; no implicit
+tuples, structs, enums and `!`; integer literals default to `i32`; no implicit
 conversions; operators need operands of the same type, except shifts,
 and work on integers and `bool` only (comparing tuples or pointers is not
 supported yet); `as` converts between integers and from `bool`. `isize` and `usize` are
@@ -138,7 +158,7 @@ E0366), and only the bounds the struct has or implies (E0367),
 `Copy` is not for types with destructors (E0184), constants and
 `const fn`s may not drop values whose `drop` runs code (E0493), and a
 temporary may not be dropped while borrowed (E0716).
-Structs and tuples cannot be passed to C yet.
+Structs, enums and tuples cannot be passed to C yet.
 
 Generic items are checked once, in terms of their parameters, and
 compiled once per set of arguments the program uses them with
@@ -192,8 +212,29 @@ references to integers (`&a + &b`, `-&a`). `Sized` is, as a bound:
 every type flux has is sized, but a trait's provided methods must say
 `where Self: Sized` to take or hold `Self` by value, as in rustc.
 
+A pattern that is not a binding sees through references, and then binds
+by reference, as rustc's default binding modes do: `Some(x)` matching a
+`&Option<i32>` binds `x: &i32`. Edition 2024's rules hold: `mut`, `ref`
+and `&` may not be written where a pattern already borrows. `match`es
+must be exhaustive (E0004) and `let` and parameter patterns irrefutable
+(E0005), checked as rustc checks them, integer ranges included, and
+reported with the patterns rustc gives for what is not covered
+(`E::B(_)`, `6_u8..=u8::MAX`, `usize::MAX..`). Where patterns name
+constants, those checks wait for the constants' values, so they come
+with constant evaluation's errors, after type checking, but report
+the same. Values are moved into
+bindings once an arm's pattern and guard match; a guard sees the values
+it would move by reference, and may not move them, change the value
+matched (E0510) or write through `ref mut` bindings (E0594), as in
+rustc; a guard that fails tries the next alternative of an or-pattern. A `match` tests what its arms look at, in
+order, so moving out of one variant's field and using the enum again is
+a use of a partially moved value, as in rustc; drops of enums with
+moved-out fields drop what the variant they hold still has.
+`#[derive(Clone, Copy, PartialEq, Eq)]` works on enums as on structs.
+
 Constants are evaluated at compile time, calls to `const fn`s included,
-and overflow or division by zero there is an error, as in rustc. So is
+and overflow, division by zero or a panic (`None.unwrap()`) there is
+an error, as in rustc. So is
 arithmetic in ordinary code that rustc can tell overflows, such as
 `let x: u8 = 255; x + 1` (its deny-by-default `arithmetic_overflow`
 lint), even with overflow checks off.
@@ -204,9 +245,16 @@ Rust's that flux supports so far: the integer types' constants (`MIN`,
 `count_ones`, `rotate_left`, `min` and `max`, `core::mem::drop` (also in
 the prelude, as `drop`), `core::convert::identity`,
 `core::marker::{Sized, Copy}`, `core::clone::Clone`, the operator
-traits of `core::ops` with `Drop`, and `core::cmp::{PartialEq, Eq}`
-(`Sized`, `Copy`, `Clone`, `Drop`, `PartialEq` and `Eq` in the
-prelude). Anything else in
+traits of `core::ops` with `Drop`, `core::cmp::{PartialEq, Eq}`,
+`core::option::Option` and `core::result::Result` (`Sized`, `Copy`,
+`Clone`, `Drop`, `PartialEq`, `Eq`, `Option`, `Some`, `None`,
+`Result`, `Ok` and `Err` in the prelude). `Option` has `is_some`,
+`is_none`, `unwrap`, `unwrap_or`, `ok_or`, `and`, `or` and `xor`;
+`Result` has `is_ok`, `is_err`, `ok`, `err`, `unwrap_or`, `and` and
+`or`; both implement `Clone`, `Copy`, `PartialEq` and `Eq` as rustc's
+do. As in rustc, constants may call `is_some`, `is_none`, `unwrap`,
+`is_ok` and `is_err`, and the others are reported as unstable there. Methods that take closures, or return references inside them
+(`as_ref`), come later. Anything else in
 `core` is reported as not supported yet, and so is `std`.
 
 References may be parameters, temporaries, and `let` bindings without
@@ -230,7 +278,8 @@ width, and division by zero or `MIN / -1` aborts. Programs call C through
   `rng.gen()` and `try!(...)` are errors, as in rustc 2024. Old code needs
   `r#gen`.
 - **Struct literals in conditions** (`if x == S { a: 1 } {}`): rejected as
-  in rustc; parenthesize them.
+  in rustc; parenthesize them. As in rustc, one whose `{` is followed by
+  `name:` is reported once and read as a struct literal.
 - **Comparing a cast with `<`** (`x as usize < y`): the `<` starts generic
   arguments, as in rustc. `<=` and other operators work.
 

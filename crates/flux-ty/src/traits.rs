@@ -497,9 +497,10 @@ pub fn declared_projections(
 /// repeats.
 pub fn elaborate(sigs: &Signatures, predicates: &[Predicate]) -> Vec<Predicate> {
     let mut out: Vec<Predicate> = Vec::new();
+    let mut seen = rustc_hash::FxHashSet::default();
     let mut stack: Vec<Predicate> = predicates.iter().rev().copied().collect();
     while let Some(p) = stack.pop() {
-        if out.contains(&p) {
+        if !seen.insert(p) {
             continue;
         }
         out.push(p);
@@ -603,50 +604,92 @@ pub fn impl_type(sigs: &Signatures, imp: ImplId, name: Symbol) -> Option<Ty> {
 /// known: from `env`, the bounds in scope, or from the `impl` block for
 /// its types. The others stay, as types of their own.
 pub fn normalize(items: &ItemTree, sigs: &Signatures, env: &[Projection], ty: Ty) -> Ty {
-    normalize_at(items, sigs, env, ty, 0)
-}
-
-fn normalize_at(items: &ItemTree, sigs: &Signatures, env: &[Projection], ty: Ty, depth: u32) -> Ty {
-    if !ty.has_aliases() || depth > 64 {
+    if !ty.has_aliases() {
         return ty;
     }
-    let go = |t: Ty| normalize_at(items, sigs, env, t, depth + 1);
-    match ty.kind() {
-        TyKind::Alias(alias) => {
-            let args: Vec<Ty> = alias.args.iter().map(|&a| go(a)).collect();
-            let alias = AliasTy {
-                args: Ty::list(&args),
-                ..alias
-            };
-            if let Some(p) = env.iter().find(|p| p.alias == alias) {
-                return go(p.ty);
-            }
-            let goal = Predicate {
-                self_ty: args[0],
-                trait_ref: TraitRef {
-                    trait_: alias.trait_,
-                    name: alias.trait_name,
-                    args: Ty::list(&args[1..]),
-                },
-            };
-            let impls = items.trait_impls.get(&alias.trait_).into_iter().flatten();
-            for &imp in impls {
-                if let Some(impl_args) = match_impl(items, sigs, imp, goal)
-                    && let Some(t) = impl_type(sigs, imp, alias.name)
-                {
-                    return go(t.subst(&impl_args));
+    let mut normalizer = Normalizer {
+        items,
+        sigs,
+        env,
+        done: rustc_hash::FxHashMap::default(),
+        active: Vec::new(),
+    };
+    normalizer.go(ty, 0)
+}
+
+/// One [`normalize`]: what each type it met normalizes to, as aliases
+/// recur in what they normalize to (`<T as Tr>::A` in an `impl` block's
+/// `type B`), which would otherwise be normalized again each time.
+struct Normalizer<'a> {
+    items: &'a ItemTree,
+    sigs: &'a Signatures,
+    env: &'a [Projection],
+    done: rustc_hash::FxHashMap<Ty, Ty>,
+    /// The aliases being normalized: one met again within its own
+    /// normalization is a cycle, and stays as it is.
+    active: Vec<Ty>,
+}
+
+impl Normalizer<'_> {
+    fn go(&mut self, ty: Ty, depth: u32) -> Ty {
+        if !ty.has_aliases() || depth > 64 {
+            return ty;
+        }
+        if let Some(&done) = self.done.get(&ty) {
+            return done;
+        }
+        if self.active.contains(&ty) {
+            return ty;
+        }
+        self.active.push(ty);
+        let normalized = self.normalize(ty, depth);
+        self.active.pop();
+        self.done.insert(ty, normalized);
+        normalized
+    }
+
+    fn normalize(&mut self, ty: Ty, depth: u32) -> Ty {
+        let (items, sigs) = (self.items, self.sigs);
+        match ty.kind() {
+            TyKind::Alias(alias) => {
+                let args: Vec<Ty> = alias.args.iter().map(|&a| self.go(a, depth + 1)).collect();
+                let alias = AliasTy {
+                    args: Ty::list(&args),
+                    ..alias
+                };
+                if let Some(p) = self.env.iter().find(|p| p.alias == alias) {
+                    return self.go(p.ty, depth + 1);
                 }
+                let goal = Predicate {
+                    self_ty: args[0],
+                    trait_ref: TraitRef {
+                        trait_: alias.trait_,
+                        name: alias.trait_name,
+                        args: Ty::list(&args[1..]),
+                    },
+                };
+                let impls = items.trait_impls.get(&alias.trait_).into_iter().flatten();
+                for &imp in impls {
+                    if let Some(impl_args) = match_impl(items, sigs, imp, goal)
+                        && let Some(t) = impl_type(sigs, imp, alias.name)
+                    {
+                        return self.go(t.subst(&impl_args), depth + 1);
+                    }
+                }
+                Ty::alias(alias)
             }
-            Ty::alias(alias)
+            TyKind::Tuple(list) => {
+                let list: Vec<Ty> = list.iter().map(|&t| self.go(t, depth + 1)).collect();
+                Ty::tuple(&list)
+            }
+            TyKind::Adt(adt, list) => {
+                let list: Vec<Ty> = list.iter().map(|&t| self.go(t, depth + 1)).collect();
+                Ty::adt(adt.strukt, adt.name, &list)
+            }
+            TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, self.go(t, depth + 1))),
+            TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.go(t, depth + 1)),
+            _ => ty,
         }
-        TyKind::Tuple(list) => Ty::tuple(&list.iter().map(|&t| go(t)).collect::<Vec<_>>()),
-        TyKind::Adt(adt, list) => {
-            let list: Vec<Ty> = list.iter().map(|&t| go(t)).collect();
-            Ty::adt(adt.strukt, adt.name, &list)
-        }
-        TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
-        TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
-        _ => ty,
     }
 }
 
@@ -1545,7 +1588,7 @@ pub fn check_well_formed(
             env: &env,
             projections: &projections,
         };
-        for (field, &ty) in s.fields.iter().zip(sigs.structs[id]) {
+        for (field, &ty) in crate::all_fields(s).zip(sigs.structs[id]) {
             wf_check(
                 items,
                 sigs,

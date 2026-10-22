@@ -189,23 +189,32 @@ fn rvalue_text(hir: &Hir, rvalue: &Rvalue) -> String {
             }
         }
         Rvalue::Aggregate(AggregateKind::Struct(strukt), ops) => {
-            let s = &hir.items.structs[*strukt];
-            match s.kind {
-                StructKind::Unit => s.name.to_string(),
-                StructKind::Tuple => {
-                    let ops: Vec<String> = ops.iter().map(|o| operand(hir, o)).collect();
-                    format!("{}({})", s.name, ops.join(", "))
-                }
-                StructKind::Record => {
-                    let fields: Vec<String> = s
-                        .fields
-                        .iter()
-                        .zip(ops)
-                        .map(|(f, op)| format!("{}: {}", f.name, operand(hir, op)))
-                        .collect();
-                    format!("{} {{ {} }}", s.name, fields.join(", "))
-                }
-            }
+            aggregate(hir, hir.items.structs[*strukt].variant(0), ops)
+        }
+        Rvalue::Aggregate(AggregateKind::Variant(strukt, index), ops) => {
+            aggregate(hir, hir.items.structs[*strukt].variant(*index), ops)
+        }
+        Rvalue::Discriminant(p) => format!("discriminant({})", place(p)),
+    }
+}
+
+/// A struct or variant built from `ops`: `S { a: .. }`, `E::B(..)`.
+fn aggregate(hir: &Hir, v: flux_hir::VariantData<'_>, ops: &[Operand]) -> String {
+    let name = v.path();
+    match v.kind {
+        StructKind::Unit => name,
+        StructKind::Tuple => {
+            let ops: Vec<String> = ops.iter().map(|o| operand(hir, o)).collect();
+            format!("{name}({})", ops.join(", "))
+        }
+        StructKind::Record => {
+            let fields: Vec<String> = v
+                .fields
+                .iter()
+                .zip(ops)
+                .map(|(f, op)| format!("{}: {}", f.name, operand(hir, op)))
+                .collect();
+            format!("{name} {{ {} }}", fields.join(", "))
         }
     }
 }
@@ -217,6 +226,7 @@ fn place(place: &Place) -> String {
         match elem {
             ProjectionElem::Field(field) => text.push_str(&format!(".{field}")),
             ProjectionElem::Deref => text = format!("(*{text})"),
+            ProjectionElem::Downcast(variant) => text = format!("({text} as #{variant})"),
         }
     }
     text

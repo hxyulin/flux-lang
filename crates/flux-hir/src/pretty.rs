@@ -29,6 +29,36 @@ pub(crate) fn file(hir: &Hir) -> String {
             .collect();
         let fields = fields.join(", ");
         let (name, generics, bounds) = (s.name, &s.generics, where_clause(&s.generics));
+        if let Some(variants) = &s.variants {
+            let variants: Vec<String> = variants
+                .iter()
+                .map(|v| {
+                    let fields: Vec<String> = v
+                        .fields
+                        .iter()
+                        .map(|f| match v.kind {
+                            StructKind::Tuple => type_ref(&f.ty),
+                            _ => format!("{}: {}", f.name, type_ref(&f.ty)),
+                        })
+                        .collect();
+                    let fields = fields.join(", ");
+                    let fields = match v.kind {
+                        StructKind::Record => format!(" {{ {fields} }}"),
+                        StructKind::Tuple => format!("({fields})"),
+                        StructKind::Unit => String::new(),
+                    };
+                    format!("{}{fields} = {}", v.name, v.discriminant)
+                })
+                .collect();
+            let repr = s.repr.map_or(String::new(), |r| format!("#[repr({r})] "));
+            writeln!(
+                out,
+                "{repr}enum {name}{generics}{bounds} {{ {} }}\n",
+                variants.join(", ")
+            )
+            .unwrap();
+            continue;
+        }
         match s.kind {
             StructKind::Record => writeln!(out, "struct {name}{generics}{bounds} {{ {fields} }}"),
             StructKind::Tuple => writeln!(out, "struct {name}{generics}({fields}){bounds};"),
@@ -203,10 +233,51 @@ impl Printer<'_> {
         match &self.body.pats[pat] {
             Pat::Missing => self.out.push_str("<missing>"),
             Pat::Wild => self.out.push('_'),
-            Pat::Bind(binding) => {
+            Pat::Bind { binding, sub } => {
                 let b = &self.body.bindings[*binding];
+                let by_ref = match b.by_ref {
+                    Some(true) => "ref mut ",
+                    Some(false) => "ref ",
+                    None => "",
+                };
                 let mutability = if b.mutable { "mut " } else { "" };
-                write!(self.out, "{mutability}{}@{}", b.name, binding.index()).unwrap();
+                write!(
+                    self.out,
+                    "{by_ref}{mutability}{}@{}",
+                    b.name,
+                    binding.index()
+                )
+                .unwrap();
+                if let Some(sub) = sub {
+                    self.out.push_str(" @ ");
+                    self.pat(*sub);
+                }
+            }
+            Pat::Expr(expr) => self.expr(*expr),
+            Pat::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                if let Some(start) = start {
+                    self.expr(*start);
+                }
+                self.out.push_str(if *inclusive { "..=" } else { ".." });
+                if let Some(end) = end {
+                    self.expr(*end);
+                }
+            }
+            Pat::Or(alternatives) => {
+                for (i, &alt) in alternatives.iter().enumerate() {
+                    if i > 0 {
+                        self.out.push_str(" | ");
+                    }
+                    self.pat(alt);
+                }
+            }
+            Pat::Ref { pat, mutable } => {
+                self.out.push_str(if *mutable { "&mut " } else { "&" });
+                self.pat(*pat);
             }
             Pat::Tuple { pats, rest } => {
                 self.out.push('(');
@@ -216,17 +287,23 @@ impl Printer<'_> {
                 }
                 self.out.push(')');
             }
-            Pat::TupleStruct { strukt, pats, rest } => {
-                write!(self.out, "{}(", self.hir.items.structs[*strukt].name).unwrap();
+            Pat::TupleStruct {
+                strukt,
+                variant,
+                pats,
+                rest,
+            } => {
+                write!(self.out, "{}(", self.variant_path(*strukt, *variant)).unwrap();
                 self.tuple_pats(pats, *rest);
                 self.out.push(')');
             }
             Pat::Record {
                 strukt,
+                variant,
                 fields,
                 rest,
             } => {
-                write!(self.out, "{} {{ ", self.hir.items.structs[*strukt].name).unwrap();
+                write!(self.out, "{} {{ ", self.variant_path(*strukt, *variant)).unwrap();
                 for (i, (name, pat)) in fields.iter().enumerate() {
                     if i > 0 {
                         self.out.push_str(", ");
@@ -240,10 +317,16 @@ impl Printer<'_> {
                 }
                 self.out.push_str(" }");
             }
-            Pat::Unit(strukt) => {
-                write!(self.out, "{}", self.hir.items.structs[*strukt].name).unwrap();
+            Pat::Unit(strukt, variant) => {
+                let path = self.variant_path(*strukt, *variant);
+                self.out.push_str(&path);
             }
         }
+    }
+
+    /// `S`, or `E::A` for a variant.
+    fn variant_path(&self, strukt: flux_arena::Idx<crate::Struct>, variant: u32) -> String {
+        self.hir.items.structs[strukt].variant(variant).path()
     }
 
     fn tuple_pats(&mut self, pats: &[PatId], rest: Option<u32>) {
@@ -298,6 +381,11 @@ impl Printer<'_> {
                 write!(self.out, "{}", self.hir.items.structs[*s].name).unwrap();
                 self.generic_args(id);
             }
+            Expr::Path(Res::Variant(s, v)) => {
+                let path = self.variant_path(*s, *v);
+                self.out.push_str(&path);
+                self.generic_args(id);
+            }
             Expr::Path(Res::Const(c)) => {
                 let name = self.hir.items.consts[*c].name;
                 write!(
@@ -348,7 +436,12 @@ impl Printer<'_> {
                 for stmt in stmts.iter() {
                     self.newline();
                     match stmt {
-                        Stmt::Let { pat, ty, init } => {
+                        Stmt::Let {
+                            pat,
+                            ty,
+                            init,
+                            else_branch,
+                        } => {
                             self.out.push_str("let ");
                             self.pat(*pat);
                             if let Some(ty) = ty {
@@ -358,6 +451,10 @@ impl Printer<'_> {
                             if let Some(init) = init {
                                 self.out.push_str(" = ");
                                 self.expr(*init);
+                            }
+                            if let Some(else_branch) = else_branch {
+                                self.out.push_str(" else ");
+                                self.expr(*else_branch);
                             }
                             self.out.push(';');
                         }
@@ -393,6 +490,32 @@ impl Printer<'_> {
                     self.out.push_str(" else ");
                     self.expr(*else_branch);
                 }
+            }
+            Expr::Let { pat, expr } => {
+                self.out.push_str("let ");
+                self.pat(*pat);
+                self.out.push_str(" = ");
+                self.expr(*expr);
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.out.push_str("match ");
+                self.expr(*scrutinee);
+                self.out.push_str(" {");
+                self.indent += 1;
+                for arm in arms.iter() {
+                    self.newline();
+                    self.pat(arm.pat);
+                    if let Some(guard) = arm.guard {
+                        self.out.push_str(" if ");
+                        self.expr(guard);
+                    }
+                    self.out.push_str(" => ");
+                    self.expr(arm.body);
+                    self.out.push(',');
+                }
+                self.indent -= 1;
+                self.newline();
+                self.out.push('}');
             }
             Expr::Loop { body, source } => {
                 write!(self.out, "loop#{} ", id.index()).unwrap();
@@ -475,10 +598,12 @@ impl Printer<'_> {
             }
             Expr::Record {
                 strukt,
+                variant,
                 fields,
                 spread,
             } => {
-                write!(self.out, "{}", self.hir.items.structs[*strukt].name).unwrap();
+                let path = self.variant_path(*strukt, *variant);
+                self.out.push_str(&path);
                 self.generic_args(id);
                 self.out.push_str(" { ");
                 for (i, (name, value)) in fields.iter().enumerate() {

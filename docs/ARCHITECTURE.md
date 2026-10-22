@@ -138,8 +138,8 @@ analysis. Semantic analysis will follow rustc's and rust-analyzer's split:
 1. **Item tree:** each file's items and signatures, with path-based IDs.
 2. **HIR:** each body lowered from the AST into an arena of expressions
    and patterns with names resolved and sugar removed (`for` to `loop`
-   and `match`, `?` to a `match`, `if let` chains to `match`), keeping a
-   map back to AST nodes for diagnostics.
+   and `match`, `?` to a `match`), keeping a map back to AST nodes for
+   diagnostics.
 3. **Type inference and trait solving** on HIR bodies, one body at a time,
    given the item tree's signatures.
 4. **MIR** for borrow checking and lowering to keel.
@@ -160,7 +160,12 @@ program's files:
   `#[derive(Clone)]` and friends become `impl` blocks here, after the
   crate's other items as in rustc, each with a method marked as derived
   (`Function::derived`), whose body is built from the struct's fields
-  rather than lowered from syntax.
+  rather than lowered from syntax (for an enum, a `match` on its
+  variants). Structs and enums share one arena (`Struct`, with an
+  enum's `variants`), since their generics, bounds, derives and `impl`
+  blocks work alike; what a constructor, struct expression or pattern
+  names is a struct or one variant of an enum, by index, and
+  `Struct::variant` gives either's fields the same way.
 - The **def map** ([`def_map`](../crates/flux-hir/src/def_map.rs)): what
   each module's names mean, in Rust's two namespaces (types and values),
   from its items and its `use` imports. Imports are resolved together,
@@ -170,7 +175,9 @@ program's files:
   A path is resolved segment by segment through modules, checking each
   item's visibility from where the path is written; a name not in a
   module's scope comes from the prelude, then from crates (`core`), then
-  from the primitive types.
+  from the primitive types. An enum's variants are in its own scope,
+  before its associated items (`E::A`), and imports and globs can bring
+  them into a module's (`use E::*;`).
 - A **body** per function and constant, lowered into arenas of
   expressions, patterns and bindings addressed by `Idx`. Names are resolved while lowering,
   through a stack of scopes and then the item tree, so an expression
@@ -184,7 +191,12 @@ program's files:
   unresolved until types are known. `break` and
   `continue` record the loop they leave. Parentheses disappear, and
   `while c { body }` becomes `loop { if c { body } else { break } }`, as
-  in rustc. A source map gives every node's text range for diagnostics.
+  in rustc. A `let` in the condition of an `if` or `while`, alone or in
+  a chain of `&&`, stays an expression (`Expr::Let`), as in rustc's HIR,
+  whose bindings the `then` branch sees. Each alternative of an
+  or-pattern binds the same bindings, by name, so a binding is one local
+  however it matched. A source map gives every node's text range for
+  diagnostics.
 
 A program has two crates: flux's own `core`
 ([`library/core`](../library/core/src/lib.rs)), built into the compiler
@@ -315,6 +327,26 @@ value. A field access dereferences the same way. Where a `&mut T` is
 used as a reference (an argument, or a `let` with a type), it is
 reborrowed rather than moved, and may become a `&T`, as in rustc.
 
+A pattern is checked against the type of the value it matches. One that
+is not a binding, a wildcard or a reference pattern sees through the
+references of that type first, and its bindings then bind by reference
+(rustc's default binding modes, recorded per binding and per pattern
+for MIR). After inference, a body without errors gets the checks rustc
+makes on patterns ([`pats`](../crates/flux-ty/src/pats.rs)): the
+usefulness algorithm of Maranget's "Warnings for pattern matching", as
+rustc implements it, finds whether a `match` is exhaustive and a `let`
+or parameter pattern irrefutable. Patterns are constructors applied to
+fields (variants, `true` and `false`, one for a struct, tuple or
+reference, and ranges for integers, split at the bounds the patterns
+of a column use, with an infinity past `isize` and `usize`'s ends), and
+what is not covered is reported as witnesses printed as rustc prints
+them. A pattern that names a constant (`N`, `0..i32::MAX`) is an
+expression, typed like one; it matches the constant's value, which
+type checking does not know. So the checks of a body with one wait:
+`flux_mir`'s `build_file` evaluates the constants its patterns name,
+from their MIR, then runs them (`check_deferred_patterns`), and does
+not borrow-check the bodies they fail in, as rustc does not.
+
 Without lifetimes, references are checked only where each one lives in a
 single local assigned once: parameters, temporaries, and non-`mut`
 `let` bindings with a value. A reference anywhere else (in a tuple or
@@ -360,9 +392,22 @@ semantics become explicit, so code generation never sees expressions:
   block's scope; and a place before it is overwritten. `break`,
   `continue` and `return` drop what they leave. Only types that may need
   it are dropped: a struct with a `Drop` impl or such a field, and a
-  type parameter that is not `Copy`. Tuples and structs are built whole by an aggregate rvalue;
+  type parameter that is not `Copy`. Tuples, structs and enums' variants are built whole by an aggregate rvalue;
   a pattern like `let (a, S { b, .. }) = t;` reads each binding's part of
   `t` directly, so it moves only those parts, as in rustc.
+- An enum's fields are those of one variant, a *downcast* away
+  (`(_1 as Some).0`), and which variant it holds is its discriminant,
+  read by an rvalue. A pattern is a sequence of tests of the parts of
+  the place matched that it looks at (a discriminant, a comparison with
+  a literal or a range's ends), each going on or to where matching
+  fails, and then its bindings, each assigned from its part of the
+  place, or a reference to it. An or-pattern has a way of matching per
+  alternative, each with its own bindings and the next alternative to
+  resume at, so a guard that fails tries it. A `match` tests its arms in
+  order; a guard reads the parts its arm would move instead of moving
+  them, and runs before they are moved. `if let` and `let`-`else` are
+  the same tests, with the scrutinee's temporaries and the bindings
+  dropped before the `else` branch runs, as in edition 2024.
 
 Only reachable code is built: every function of the program, and the
 functions of `core` that something calls. A generic function is built
@@ -375,7 +420,9 @@ so is overflow in a constant's own initializer ("attempt to compute
 `i32::MAX + 1_i32`, which would overflow"). A `const fn`'s arithmetic
 wraps, as rustc compiles functions with flux's `-C overflow-checks=off`,
 unless it is marked `#[rustc_inherit_overflow_checks]`, as `core`'s
-`abs` and `pow` are: then it is checked where its caller's is. Uses of a
+`abs` and `pow` are: then it is checked where its caller's is. `core`'s
+`#[lang = "panic"]` function aborts at run time; evaluation reports a
+call of it as rustc's "evaluation panicked", with its message. Uses of a
 constant refer to it with its generic arguments, and code generation
 emits its value. The value of a trait's constant, or one of a generic
 block, depends on its arguments: for them, it is the `impl` block's
@@ -406,9 +453,12 @@ which paths may be uninitialized, which may have been moved out of, and
 which may have been assigned. Moving or assigning a path does the same to
 every path below it. From these it reports, with rustc's wording, uses of
 uninitialized bindings (E0381) and of moved or partially moved values
-(E0382), assignments to a field of a binding that is not fully
+(E0382, once per set of moves, at the most specific use, as rustc
+does), assignments to a field of a binding that is not fully
 initialized or not `mut` (E0381, E0594), and assigning an immutable local
-twice (E0384).
+twice (E0384). Reading an enum's discriminant reads all of it. It runs
+before drops are elaborated, as rustc's does, since elaboration reads
+the discriminants of enums with fields moved out.
 
 [`borrowck`](../crates/flux-mir/src/borrowck.rs) checks borrows with
 rustc's non-lexical lifetimes, simplified by flux's rule that a
@@ -438,7 +488,8 @@ a value moved out on some paths only is guarded by a *drop flag*, a
 `bool` set where the path is assigned and cleared where it is moved out
 of, dropped, or goes out of scope; and a struct or tuple with some fields
 moved out is dropped field by field, each the same way (a struct with a
-`Drop` impl cannot be, by E0509). In a constant or `const fn`, a drop
+`Drop` impl cannot be, by E0509). An enum with fields of a variant moved
+out drops the fields of each variant if it holds that variant. In a constant or `const fn`, a drop
 that may find a value, even part of one, is E0493, as rustc checks
 before elaborating: `Drop` impls cannot run at compile time.
 
@@ -459,6 +510,11 @@ executable. No C compiler or system linker is involved.
   C struct of its fields, and so does whatever a pointer points to:
   reading or writing a place there loads or stores each leaf at its
   offset.
+- An enum is its discriminant, an `isize`, then every variant's fields
+  in turn, as if a struct of them all; in memory, a struct of the
+  discriminant and a struct per variant. Only the variant it holds has
+  meaningful leaves. Variants could share their leaves, but nothing can
+  observe an enum's size yet.
 - Aggregates are passed as one argument per leaf. keel functions return
   at most one value, so a function returning two or more leaves returns
   them through an `sret` pointer to a C struct of the leaves in the
@@ -487,7 +543,8 @@ as rustc's collector does; one more than 128 calls deep is rustc's
 Each instance is a copy of the function's MIR with its arguments
 substituted and its drops expanded into *drop glue*, a call of
 `Drop::drop` with a borrow of each part of the value whose type has a
-`Drop` impl, the struct before its fields and fields in order (the
+`Drop` impl, the struct before its fields and fields in order, and for
+an enum the fields of the variant it holds, which it tests (the
 collector follows these calls too), compiled like any other function, and its symbol is the
 function's with a hash of the arguments as the last segment, as in
 rustc's legacy mangling. A call of a trait's method stays one in MIR;

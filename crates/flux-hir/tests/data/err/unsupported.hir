@@ -14,7 +14,9 @@ fn expressions(v@0: i32) -> () {
         break#2;
     }
     <missing>
-    <missing>
+    match v@0 {
+        _ => {},
+    }
     let f@2 = <missing>;
     let (a@3, b@4) = (1, 2);
     v@0.method();
@@ -29,6 +31,5 @@ error 106..118: the `cfg` attribute is not supported yet
 error 184..191: loop labels are not supported yet
 error 213..219: loop labels are not supported yet
 error 231..247: `for` loops are not supported yet
-error 252..283: `match` expressions are not supported yet
 error 296..299: floating-point numbers are not supported yet
 error 348..364: free function without a body

@@ -1,5 +1,5 @@
-SOURCE_FILE@0..144
-  FN@0..143
+SOURCE_FILE@0..260
+  FN@0..259
     FN_KW@0..2 "fn"
     WHITESPACE@2..3 " "
     NAME@3..4
@@ -8,54 +8,94 @@ SOURCE_FILE@0..144
       L_PAREN@4..5 "("
       R_PAREN@5..6 ")"
     WHITESPACE@6..7 " "
-    BLOCK_EXPR@7..143
+    BLOCK_EXPR@7..259
       L_CURLY@7..8 "{"
       WHITESPACE@8..13 "\n    "
-      COMMENT@13..82 "// Like rustc, a stru ..."
+      COMMENT@13..82 "// A struct literal n ..."
       WHITESPACE@82..87 "\n    "
-      COMMENT@87..111 "// the body of the `if`."
-      WHITESPACE@111..116 "\n    "
-      EXPR_STMT@116..138
-        IF_EXPR@116..138
-          IF_KW@116..118 "if"
-          WHITESPACE@118..119 " "
-          BIN_EXPR@119..129
-            PATH_EXPR@119..120
-              PATH@119..120
-                PATH_SEGMENT@119..120
-                  NAME_REF@119..120
-                    IDENT@119..120 "p"
-            WHITESPACE@120..121 " "
-            EQ2@121..123 "=="
-            WHITESPACE@123..124 " "
-            PATH_EXPR@124..129
-              PATH@124..129
-                PATH_SEGMENT@124..129
-                  NAME_REF@124..129
-                    IDENT@124..129 "Point"
-          WHITESPACE@129..130 " "
-          BLOCK_EXPR@130..138
-            L_CURLY@130..131 "{"
-            WHITESPACE@131..132 " "
-            EXPR_STMT@132..133
-              PATH_EXPR@132..133
-                PATH@132..133
-                  PATH_SEGMENT@132..133
-                    NAME_REF@132..133
-                      IDENT@132..133 "x"
-            ERROR@133..134
-              COLON@133..134 ":"
-            WHITESPACE@134..135 " "
-            LITERAL@135..136
-              INT_NUMBER@135..136 "1"
-            WHITESPACE@136..137 " "
-            R_CURLY@137..138 "}"
-      WHITESPACE@138..139 " "
-      BLOCK_EXPR@139..141
-        L_CURLY@139..140 "{"
-        R_CURLY@140..141 "}"
-      WHITESPACE@141..142 "\n"
-      R_CURLY@142..143 "}"
-  WHITESPACE@143..144 "\n"
-error 133..133: expected `;`
-error 133..133: expected an expression
+      COMMENT@87..155 "// of the `if`. As ru ..."
+      WHITESPACE@155..160 "\n    "
+      COMMENT@160..179 "// and read as one."
+      WHITESPACE@179..184 "\n    "
+      EXPR_STMT@184..209
+        IF_EXPR@184..209
+          IF_KW@184..186 "if"
+          WHITESPACE@186..187 " "
+          BIN_EXPR@187..206
+            PATH_EXPR@187..188
+              PATH@187..188
+                PATH_SEGMENT@187..188
+                  NAME_REF@187..188
+                    IDENT@187..188 "p"
+            WHITESPACE@188..189 " "
+            EQ2@189..191 "=="
+            WHITESPACE@191..192 " "
+            RECORD_EXPR@192..206
+              PATH@192..197
+                PATH_SEGMENT@192..197
+                  NAME_REF@192..197
+                    IDENT@192..197 "Point"
+              WHITESPACE@197..198 " "
+              RECORD_EXPR_FIELD_LIST@198..206
+                L_CURLY@198..199 "{"
+                WHITESPACE@199..200 " "
+                RECORD_EXPR_FIELD@200..204
+                  NAME_REF@200..201
+                    IDENT@200..201 "x"
+                  COLON@201..202 ":"
+                  WHITESPACE@202..203 " "
+                  LITERAL@203..204
+                    INT_NUMBER@203..204 "1"
+                WHITESPACE@204..205 " "
+                R_CURLY@205..206 "}"
+          WHITESPACE@206..207 " "
+          BLOCK_EXPR@207..209
+            L_CURLY@207..208 "{"
+            R_CURLY@208..209 "}"
+      WHITESPACE@209..214 "\n    "
+      MATCH_EXPR@214..257
+        MATCH_KW@214..219 "match"
+        WHITESPACE@219..220 " "
+        RECORD_EXPR@220..233
+          PATH@220..224
+            PATH@220..221
+              PATH_SEGMENT@220..221
+                NAME_REF@220..221
+                  IDENT@220..221 "a"
+            COLON2@221..223 "::"
+            PATH_SEGMENT@223..224
+              NAME_REF@223..224
+                IDENT@223..224 "S"
+          WHITESPACE@224..225 " "
+          RECORD_EXPR_FIELD_LIST@225..233
+            L_CURLY@225..226 "{"
+            WHITESPACE@226..227 " "
+            RECORD_EXPR_FIELD@227..231
+              NAME_REF@227..228
+                IDENT@227..228 "x"
+              COLON@228..229 ":"
+              WHITESPACE@229..230 " "
+              LITERAL@230..231
+                INT_NUMBER@230..231 "1"
+            WHITESPACE@231..232 " "
+            R_CURLY@232..233 "}"
+        WHITESPACE@233..234 " "
+        MATCH_ARM_LIST@234..257
+          L_CURLY@234..235 "{"
+          WHITESPACE@235..244 "\n        "
+          MATCH_ARM@244..251
+            WILDCARD_PAT@244..245
+              UNDERSCORE@244..245 "_"
+            WHITESPACE@245..246 " "
+            FAT_ARROW@246..248 "=>"
+            WHITESPACE@248..249 " "
+            BLOCK_EXPR@249..251
+              L_CURLY@249..250 "{"
+              R_CURLY@250..251 "}"
+          WHITESPACE@251..256 "\n    "
+          R_CURLY@256..257 "}"
+      WHITESPACE@257..258 "\n"
+      R_CURLY@258..259 "}"
+  WHITESPACE@259..260 "\n"
+error 192..192: struct literals are not allowed here
+error 220..220: struct literals are not allowed here

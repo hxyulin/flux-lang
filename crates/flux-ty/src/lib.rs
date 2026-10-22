@@ -17,6 +17,7 @@
 //! assignments need a `mut` binding.
 
 mod infer;
+mod pats;
 pub mod traits;
 mod ty;
 
@@ -84,7 +85,14 @@ impl FnSig {
 #[derive(Debug, Clone, Default)]
 pub struct Signatures {
     pub fns: ArenaMap<Function, FnSig>,
+    /// The types of each struct's fields, and of each enum's, every
+    /// variant's in turn: all that a value of it may contain.
     pub structs: ArenaMap<Struct, &'static [Ty]>,
+    /// Where each variant of an enum starts in its `structs` entry, and
+    /// where the last ends.
+    pub variant_starts: ArenaMap<Struct, Box<[u32]>>,
+    /// The type of each enum's discriminant: [`discriminant_ty`].
+    pub discriminants: ArenaMap<Struct, IntTy>,
     pub impls: ArenaMap<Impl, Ty>,
     pub consts: ArenaMap<Const, Ty>,
     pub traits: ArenaMap<Trait, TraitSig>,
@@ -121,13 +129,66 @@ impl Index<FunctionId> for Signatures {
 }
 
 impl Signatures {
-    /// The types of the fields of `ty`, a tuple or struct.
+    /// The types of the fields of `ty`, a tuple or struct; none for an
+    /// enum, whose fields are its variants'.
     pub fn fields(&self, ty: Ty) -> Option<&'static [Ty]> {
+        match ty.kind() {
+            TyKind::Tuple(elements) => Some(elements),
+            TyKind::Adt(adt, _) if self.is_enum(adt.strukt) => None,
+            TyKind::Adt(adt, args) => Some(self.field_types(adt.strukt, args)),
+            _ => None,
+        }
+    }
+
+    /// The type of the discriminant of `ty`, an enum.
+    pub fn discriminant_ty(&self, ty: Ty) -> Option<IntTy> {
+        match ty.kind() {
+            TyKind::Adt(adt, _) => self.discriminants.get(adt.strukt).copied(),
+            _ => None,
+        }
+    }
+
+    /// Whether `strukt` is an enum.
+    pub fn is_enum(&self, strukt: StructId) -> bool {
+        self.variant_starts.get(strukt).is_some()
+    }
+
+    /// The types of the fields of variant `variant` of `ty`, an enum, or
+    /// of `ty` itself, a struct or tuple, for variant 0.
+    pub fn variant_fields(&self, ty: Ty, variant: u32) -> Option<&'static [Ty]> {
+        match ty.kind() {
+            TyKind::Adt(adt, args) if self.is_enum(adt.strukt) => {
+                let starts = &self.variant_starts[adt.strukt];
+                let (start, end) = (
+                    *starts.get(variant as usize)? as usize,
+                    *starts.get(variant as usize + 1)? as usize,
+                );
+                Some(&self.field_types(adt.strukt, args)[start..end])
+            }
+            _ => self.fields(ty),
+        }
+    }
+
+    /// The types of everything a value of `ty` may hold directly: a
+    /// tuple's elements, a struct's fields, every variant's fields of an
+    /// enum.
+    pub fn contents(&self, ty: Ty) -> Option<&'static [Ty]> {
         match ty.kind() {
             TyKind::Tuple(elements) => Some(elements),
             TyKind::Adt(adt, args) => Some(self.field_types(adt.strukt, args)),
             _ => None,
         }
+    }
+
+    /// The variants of `ty`, an enum, by their fields' types.
+    pub fn variants(&self, ty: Ty) -> Option<Vec<&'static [Ty]>> {
+        let TyKind::Adt(adt, _) = ty.kind() else {
+            return None;
+        };
+        let count = self.variant_starts.get(adt.strukt)?.len() - 1;
+        (0..count as u32)
+            .map(|v| self.variant_fields(ty, v))
+            .collect()
     }
 
     /// The types of the fields of `strukt` with generic arguments `args`,
@@ -142,19 +203,35 @@ impl Signatures {
         if !fields.iter().any(|f| f.has_aliases()) {
             return Ty::list(&fields);
         }
-        let fields: Vec<Ty> = fields.iter().map(|&f| self.normalize_known(f, 0)).collect();
+        let (mut done, mut active) = (rustc_hash::FxHashMap::default(), Vec::new());
+        let fields: Vec<Ty> = fields
+            .iter()
+            .map(|&f| self.normalize_known(f, 0, &mut done, &mut active))
+            .collect();
         Ty::list(&fields)
     }
 
     /// `ty` with each associated type of known types replaced by what
-    /// their trait's `impl` block for them says it is.
-    fn normalize_known(&self, ty: Ty, depth: u32) -> Ty {
-        if !ty.has_aliases() || depth > 64 {
+    /// their trait's `impl` block for them says it is. `done` has what
+    /// the types met so far normalize to, and `active` the aliases being
+    /// normalized, as [`traits::normalize`] does.
+    fn normalize_known(
+        &self,
+        ty: Ty,
+        depth: u32,
+        done: &mut rustc_hash::FxHashMap<Ty, Ty>,
+        active: &mut Vec<Ty>,
+    ) -> Ty {
+        if !ty.has_aliases() || depth > 64 || active.contains(&ty) {
             return ty;
         }
-        let go = |t: Ty| self.normalize_known(t, depth + 1);
-        match ty.kind() {
-            TyKind::Alias(alias) => {
+        if let Some(&done) = done.get(&ty) {
+            return done;
+        }
+        active.push(ty);
+        let mut go = |t: Ty| self.normalize_known(t, depth + 1, done, active);
+        let normalized = match ty.kind() {
+            TyKind::Alias(alias) => 'alias: {
                 let args: Vec<Ty> = alias.args.iter().map(|&a| go(a)).collect();
                 let alias = ty::AliasTy {
                     args: Ty::list(&args),
@@ -175,7 +252,7 @@ impl Signatures {
                     if matches && let Some(t) = traits::impl_type(self, imp, alias.name) {
                         let binds: Vec<Ty> =
                             binds.into_iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
-                        return go(t.subst(&binds));
+                        break 'alias go(t.subst(&binds));
                     }
                 }
                 Ty::alias(alias)
@@ -188,7 +265,10 @@ impl Signatures {
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
             _ => ty,
-        }
+        };
+        active.pop();
+        done.insert(ty, normalized);
+        normalized
     }
 }
 
@@ -374,6 +454,11 @@ pub fn resolve_type(
                     errors,
                     last_range,
                     format!("expected type, found module `{}`", items.modules[m].name),
+                ),
+                Ok(Resolved::Def(Def::Variant(..))) => fail(
+                    errors,
+                    range,
+                    format!("expected type, found variant `{path}`"),
                 ),
                 Ok(_) => fail(errors, last_range, format!("expected type, found `{path}`")),
                 Err(e @ ResolveError::NotFound { .. }) => {
@@ -609,7 +694,8 @@ pub fn struct_type(
         if want == 0 {
             return Ty::adt(strukt, def.name, &[]);
         }
-        errors.push((at, format!("missing generics for struct `{}`", def.name)));
+        let kind = if def.is_enum() { "enum" } else { "struct" };
+        errors.push((at, format!("missing generics for {kind} `{}`", def.name)));
         return Ty::ERROR;
     };
     let args: Vec<Ty> = written
@@ -619,7 +705,8 @@ pub fn struct_type(
         .map(|(ty, &range)| resolve_type(items, module, ty, scope, range, errors))
         .collect();
     if args.len() != want {
-        errors.push((at, wrong_arg_count("struct", want, args.len())));
+        let kind = if def.is_enum() { "enum" } else { "struct" };
+        errors.push((at, wrong_arg_count(kind, want, args.len())));
         return Ty::ERROR;
     }
     if args.contains(&Ty::ERROR) {
@@ -1001,12 +1088,23 @@ fn extend_signatures(
             bounds: &bounds,
             ..scope
         };
-        let fields: Vec<Ty> = s
-            .fields
-            .iter()
-            .map(|f| resolve(items, s.loc, &f.ty, scope, f.range, &mut reported))
-            .collect();
+        let mut starts = Vec::new();
+        let mut fields: Vec<Ty> = Vec::new();
+        for v in 0..s.variant_count() as u32 {
+            starts.push(fields.len() as u32);
+            let variant = s.variant(v).fields;
+            fields.extend(
+                variant
+                    .iter()
+                    .map(|f| resolve(items, s.loc, &f.ty, scope, f.range, &mut reported)),
+            );
+        }
+        starts.push(fields.len() as u32);
         sigs.structs.insert(id, Ty::list(&fields));
+        if s.is_enum() {
+            sigs.variant_starts.insert(id, starts.into());
+            sigs.discriminants.insert(id, discriminant_ty(items, id));
+        }
         if !own.predicates.is_empty() {
             sigs.struct_predicates.insert(id, own.predicates.into());
         }
@@ -1167,7 +1265,8 @@ fn extend_signatures(
         }
     }
     for (id, s) in items.structs.iter().skip(from.structs as usize) {
-        // Without `PhantomData`, a parameter must be a field's type.
+        // Without `PhantomData`, a parameter must be a field's type, of
+        // some variant for an enum.
         for (i, param) in s.generics.params.iter().enumerate() {
             let fields = sigs.structs[id];
             if !fields.iter().any(|&f| uses_param(f, i as u32)) && !fields.contains(&Ty::ERROR) {
@@ -1211,7 +1310,7 @@ fn extend_signatures(
                 &format!("recursive type `{}` has infinite size", s.name),
             );
         }
-        for (field, &ty) in s.fields.iter().zip(sigs.structs[id]) {
+        for (field, &ty) in all_fields(s).zip(sigs.structs[id]) {
             // With lifetime parameters, already reported.
             if contains_ref(ty) && !s.generics.has_lifetimes {
                 error(s.loc.file, field.range, "missing lifetime specifier");
@@ -1235,7 +1334,7 @@ fn extend_signatures(
                 .map(|(p, &ty)| (ty, p.range))
                 .chain([(sig.ret, function.ret_range)]);
             for (ty, range) in types {
-                if !matches!(ty.kind(), TyKind::Tuple([])) && sigs.fields(ty).is_some() {
+                if !matches!(ty.kind(), TyKind::Tuple([])) && sigs.contents(ty).is_some() {
                     error(
                         function.loc.file,
                         range,
@@ -1287,10 +1386,26 @@ fn contains(sigs: &Signatures, ty: Ty, strukt: StructId, seen: &mut Vec<StructId
         }
         seen.push(adt.strukt);
     }
-    let fields = sigs.fields(ty).unwrap_or(&[]);
+    let fields = sigs.contents(ty).unwrap_or(&[]);
     fields
         .iter()
         .any(|&field| contains(sigs, field, strukt, seen))
+}
+
+/// The type of enum `strukt`'s discriminant: its `repr`'s, or `isize`.
+pub fn discriminant_ty(items: &ItemTree, strukt: StructId) -> IntTy {
+    items.structs[strukt]
+        .repr
+        .and_then(IntTy::from_name)
+        .unwrap_or(IntTy::Isize)
+}
+
+/// The fields of a struct, or of every variant of an enum in turn: what
+/// [`Signatures::structs`] has the types of.
+pub fn all_fields(s: &flux_hir::Struct) -> impl Iterator<Item = &flux_hir::Field> {
+    s.fields
+        .iter()
+        .chain(s.variants.iter().flatten().flat_map(|v| v.fields.iter()))
 }
 
 /// The type of `impl` block `imp` (`S<T>` in `impl<T> S<T>`), in terms of
@@ -1515,6 +1630,76 @@ fn check(hir: &Hir, all: bool) -> TypedFile {
     }
 }
 
+/// The checks of the patterns of the bodies whose patterns name
+/// constants ([`InferenceResult::deferred_pats`]), given `value`, the
+/// value of a constant of an integer type or `bool` (`1` for `true`),
+/// or `None` if it has none (reported). Bodies that name one without a
+/// value are not checked. Also returns the functions with errors, which
+/// rustc does not borrow-check.
+pub fn check_deferred_patterns(
+    hir: &Hir,
+    typed: &TypedFile,
+    value: &mut dyn FnMut(ConstInstance) -> Option<i128>,
+) -> (Vec<Diagnostic>, Vec<FunctionId>) {
+    let functions = typed.bodies.iter().map(|(id, result)| {
+        let file = hir.items.functions[id].loc.file;
+        (Some(id), hir.body(id), file, result)
+    });
+    let consts = typed.consts.iter().map(|(id, result)| {
+        let file = hir.items.consts[id].loc.file;
+        (None, hir.const_body(id), file, result)
+    });
+    let mut diagnostics = Vec::new();
+    let mut failed = Vec::new();
+    'bodies: for (function, body, file, result) in functions.chain(consts) {
+        let Some((body, source_map)) = body else {
+            continue;
+        };
+        if !result.deferred_pats {
+            continue;
+        }
+        let mut values = ArenaMap::new();
+        for data in body.pats.values() {
+            let ends = match *data {
+                flux_hir::Pat::Expr(expr) => [Some(expr), None],
+                flux_hir::Pat::Range { start, end, .. } => [start, end],
+                _ => continue,
+            };
+            for expr in ends.into_iter().flatten() {
+                let instance = match (result.consts.get(expr), &body.exprs[expr]) {
+                    (Some(&instance), _) => instance,
+                    (None, &flux_hir::Expr::Path(flux_hir::Res::Const(konst))) => {
+                        ConstInstance { konst, args: &[] }
+                    }
+                    _ => continue,
+                };
+                match value(instance) {
+                    Some(v) => {
+                        values.insert(expr, v);
+                    }
+                    None => continue 'bodies,
+                }
+            }
+        }
+        let found = pats::check_body(
+            &hir.items,
+            &typed.sigs,
+            body,
+            source_map,
+            &result.pat_types,
+            &result.pat_derefs,
+            &result.expr_types,
+            &values,
+            &[],
+        );
+        if !found.is_empty() {
+            failed.extend(function);
+        }
+        diagnostics.extend(found.into_iter().map(|d| Diagnostic { file, ..d }));
+    }
+    (diagnostics, failed)
+}
+
 impl TypedFile {
     /// Each function's signature and the type of each of its bindings,
     /// then the diagnostics. Used by snapshot tests.
@@ -1523,6 +1708,36 @@ impl TypedFile {
         let items = &hir.items;
         for (id, s) in items.structs.iter() {
             if !items.in_main_crate(s.loc.module) {
+                continue;
+            }
+            if let Some(variants) = &s.variants {
+                let starts = &self.sigs.variant_starts[id];
+                let all = self.sigs.structs[id];
+                let shown: Vec<String> = variants
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let types = &all[starts[i] as usize..starts[i + 1] as usize];
+                        let fields: Vec<String> = v
+                            .fields
+                            .iter()
+                            .zip(types)
+                            .map(|(f, ty)| format!("{}: {ty}", f.name))
+                            .collect();
+                        match fields.as_slice() {
+                            [] => v.name.to_string(),
+                            _ => format!("{} {{ {} }}", v.name, fields.join(", ")),
+                        }
+                    })
+                    .collect();
+                writeln!(
+                    out,
+                    "enum {}{} {{ {} }}",
+                    s.name,
+                    s.generics,
+                    shown.join(", ")
+                )
+                .unwrap();
                 continue;
             }
             let fields: Vec<String> = s

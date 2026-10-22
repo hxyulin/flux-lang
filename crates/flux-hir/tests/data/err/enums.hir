@@ -1,0 +1,126 @@
+enum Dup { A = 0, B = 1 }
+
+enum Fields { X(i32) = 0, Y { y: i32 } = 1 }
+
+enum Discr { A = 1, B = 1 }
+
+enum Mixed { A(i32) = 1, B = 2 }
+
+enum Overflow { A = 9223372036854775807, B = -9223372036854775808 }
+
+enum E { Unit = 0, Tuple(i32) = 1, Record { x: i32 } = 2 }
+
+enum Visible { A = 0 }
+
+struct S { x: i32, y: i32 }
+
+impl E;
+
+fn E::self_ctor() -> () {
+    let _ = <error>(1);
+}
+
+fn values() -> () {
+    let _ = <error>;
+    let _ = <error>(1);
+    let _ = <error>;
+    let _ = <missing>;
+}
+
+fn patterns(e@0: E) -> () {
+    match e@0 {
+        <missing> => {},
+        <missing> => {},
+        <missing> => {},
+        <missing> => {},
+        _ => {},
+    }
+    match (1, 2) {
+        (x@1, y@2) | (y@2, 3) => {},
+        (z@3, z@4) => {},
+        _ => {},
+    }
+    match 1 {
+        <missing> => {},
+        _ => {},
+    }
+    let Tuple@5 = e@0;
+}
+
+fn conditions(x@0: Option<i32>) -> () {
+    let _ = <missing>;
+}
+
+fn alternatives(Option::Some(x@0) | Option::None: Option<i32>) -> () {}
+
+fn syntax(o@0: Option<i32>, a@1: bool, c@2: bool) -> () {
+    let Option::Some(v@3) | Option::None = o@0;
+    let S { x: x@4, .. } = S { x: 1, y: 2 };
+    let Option::Some(w@5) = if c@2 {
+        o@0
+    } else {
+        Option::None
+    } else {
+        return;
+    };
+    let true = (a@1 && c@2) else {
+        return;
+    };
+    if <missing> {}
+    let _ = <error>;
+}
+
+fn variants(e@0: E) -> () {
+    match e@0 {
+        <missing> => {},
+        <missing> => {},
+        <E>::Gone => {},
+        _ => {},
+    }
+    match (1, 2) {
+        (ref a@2, _) | (_, ref a@2) => {},
+        (mut b@3, _) | (_, mut b@3) => {},
+    }
+    match Option::Some(1) {
+        Option::Some(ref c@4) => {},
+        Option::None => {},
+    }
+}
+
+fn main() -> () {}
+
+error 104..105: the name `A` is defined multiple times
+error 130..133: visibility qualifiers are not permitted here
+error 148..151: visibility qualifiers are not permitted here
+error 165..175: discriminant value `1` assigned more than once
+error 203..213: `#[repr(inttype)]` must be specified for enums with explicit discriminants and non-unit variants
+error 291..292: enum discriminant overflowed
+error 404..408: the `Self` constructor can only be used with tuple or unit structs
+error 448..457: expected value, found struct variant `E::Record`
+error 471..480: expected value, found struct variant `E::Record`
+error 497..498: cannot find value `E` in this scope
+error 512..513: expected struct, variant or union type, found enum `E`
+error 569..580: expected tuple struct or tuple variant, found unit variant `E::Unit`
+error 595..603: expected unit struct, unit variant or constant, found tuple variant `E::Tuple`
+error 618..627: expected unit struct, unit variant or constant, found struct variant `E::Record`
+error 642..655: expected tuple struct or tuple variant, found struct variant `E::Record`
+error 720..726: variable `x` is not bound in all patterns
+error 745..746: identifier `z` is bound more than once in the same pattern
+error 798..803: `...` range patterns are deprecated
+error 840..845: let bindings cannot shadow tuple variants
+error 913..928: expected expression, found `let` statement
+error 952..955: visibility qualifiers are not permitted here
+error 978..992: function parameters require top-level or-patterns in parentheses
+error 988..992: variable `x` is not bound in all patterns
+error 1103..1117: `let` bindings require top-level or-patterns in parentheses
+error 1113..1117: variable `v` is not bound in all patterns
+error 1137..1138: expected `}`, found `,`
+error 1204..1205: right curly brace `}` before `else` in a `let...else` statement not allowed
+error 1251..1257: a `&&` expression cannot be directly assigned in `let...else`
+error 1311..1313: `||` operators are not supported in let chain conditions
+error 1331..1335: cannot find `Self` in this scope
+error 1388..1395: no variant, associated function, or constant named `Missing` found for enum `E` in the current scope
+error 1416..1422: no variant named `Absent` found for enum `E`
+error 1524..1525: variable `a` is bound inconsistently across alternatives separated by `|`
+error 1558..1559: variable `b` is bound inconsistently across alternatives separated by `|`
+error 1614..1615: mutable by-reference bindings are experimental

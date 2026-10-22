@@ -10,18 +10,19 @@
 //!
 //! A drop of a value is expanded here, once its type is known, into its
 //! *drop glue*: calls of `Drop::drop` for each part of it whose type has
-//! a `Drop` impl, the outer before the inner and fields in order.
+//! a `Drop` impl, the outer before the inner and fields in order, and
+//! for an enum, of the variant it holds.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use flux_hir::{Diagnostic, FunctionId, Hir, ItemTree};
+use flux_hir::{Diagnostic, FunctionId, Hir, ItemTree, StructId};
 pub use flux_ty::Instance;
 use flux_ty::{Mutability, Signatures, Ty, TyKind, subst_list};
 
 use crate::{
-    BasicBlockData, Body, Constant, FileMir, LocalDecl, LocalKind, Operand, Place, Rvalue,
-    Statement, StatementKind, Terminator, TerminatorKind,
+    BasicBlock, BasicBlockData, Body, Constant, FileMir, Local, LocalDecl, LocalKind, Operand,
+    Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
 };
 
 /// rustc's `recursion_limit`: how deep a chain of instances, each
@@ -69,9 +70,12 @@ pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instan
                     let ty = flux_ty::traits::instance_ty(&hir.items, sigs, ty, caller.args);
                     let mut glue = Vec::new();
                     drop_glue(&hir.items, sigs, place.clone(), ty, &mut glue);
+                    let mut types = Vec::new();
+                    glue_types(&glue, &mut types);
                     let drop = drop_fn(&hir.items);
-                    glue.into_iter()
-                        .filter_map(|(_, ty)| {
+                    types
+                        .into_iter()
+                        .filter_map(|ty| {
                             Some(Instance {
                                 function: drop?,
                                 args: Ty::list(&[ty]),
@@ -138,20 +142,55 @@ fn drop_fn(items: &ItemTree) -> Option<FunctionId> {
     items.traits[t].function(items, drop)
 }
 
-/// The parts of a `ty` at `place` whose types have a `Drop` impl, in the
-/// order dropping it runs theirs: a struct's own, then its fields', in
-/// order.
-fn drop_glue(
-    items: &ItemTree,
-    sigs: &Signatures,
-    place: Place,
-    ty: Ty,
-    out: &mut Vec<(Place, Ty)>,
-) {
+/// What dropping a value runs: its `Drop` impls, the parts of it whose
+/// types have one, in the order dropping it runs them.
+enum Glue {
+    /// `Drop::drop(&mut place)`, for a `place` of type `ty`.
+    Drop(Place, Ty),
+    /// For an enum at `place`, the glue of the variant it holds.
+    Variants(Place, StructId, Vec<Vec<Glue>>),
+}
+
+/// The types whose `Drop` impls `glue` runs.
+fn glue_types(glue: &[Glue], out: &mut Vec<Ty>) {
+    for part in glue {
+        match part {
+            Glue::Drop(_, ty) => out.push(*ty),
+            Glue::Variants(_, _, variants) => {
+                for variant in variants {
+                    glue_types(variant, out);
+                }
+            }
+        }
+    }
+}
+
+/// The glue of a `ty` at `place`: a struct's own `Drop` impl, then its
+/// fields', in order; an enum's, then the fields' of the variant it
+/// holds.
+fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mut Vec<Glue>) {
     match ty.kind() {
         TyKind::Adt(adt, _) => {
             if flux_ty::traits::drop_impl(items, sigs, adt.strukt).is_some() {
-                out.push((place.clone(), ty));
+                out.push(Glue::Drop(place.clone(), ty));
+            }
+            if let Some(variants) = sigs.variants(ty) {
+                let glue: Vec<Vec<Glue>> = variants
+                    .iter()
+                    .enumerate()
+                    .map(|(v, fields)| {
+                        let mut glue = Vec::new();
+                        let variant = place.downcast(v as u32);
+                        for (i, &field) in fields.iter().enumerate() {
+                            drop_glue(items, sigs, variant.field(i as u32), field, &mut glue);
+                        }
+                        glue
+                    })
+                    .collect();
+                if glue.iter().any(|g| !g.is_empty()) {
+                    out.push(Glue::Variants(place, adt.strukt, glue));
+                }
+                return;
             }
         }
         TyKind::Tuple(_) => {}
@@ -163,7 +202,8 @@ fn drop_glue(
 }
 
 /// Replaces each drop in `body`, whose types are known, with its drop
-/// glue: `Drop::drop(&mut place)` for each part that has a `Drop` impl.
+/// glue: `Drop::drop(&mut place)` for each part that has a `Drop` impl,
+/// and for enums, a test of the variant they hold.
 pub fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
     let Some(drop) = drop_fn(items) else {
         return;
@@ -182,43 +222,114 @@ pub fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
         let ty = body.place_ty(&place, sigs);
         let mut glue = Vec::new();
         drop_glue(items, sigs, place, ty, &mut glue);
-        let mut next = target;
-        let mut first = (Vec::new(), TerminatorKind::Goto(target));
-        for (i, (place, ty)) in glue.into_iter().enumerate().rev() {
-            let pointer = body.locals.alloc(LocalDecl {
-                ty: Ty::new(TyKind::Ref(Mutability::Mut, ty)),
-                kind: LocalKind::Temp,
-            });
-            let borrow = Statement {
-                kind: StatementKind::Assign(
-                    pointer.into(),
-                    Rvalue::Ref {
-                        mutability: Mutability::Mut,
-                        place,
-                        two_phase: false,
-                    },
-                ),
-                range,
-            };
-            let call = TerminatorKind::Call {
-                func: drop,
-                generic_args: Ty::list(&[ty]),
-                args: vec![Operand::Move(pointer.into())],
-                dest: unit.into(),
-                target: Some(next),
-            };
-            if i == 0 {
-                first = (vec![borrow], call);
+        let mut expand = Expand {
+            items,
+            body,
+            drop,
+            unit,
+            range,
+        };
+        let (statements, kind) = expand.glue(&glue, target);
+        let data = &mut body.blocks[block];
+        data.statements.extend(statements);
+        data.terminator.kind = kind;
+    }
+}
+
+/// Builds the blocks that run drop glue.
+struct Expand<'a> {
+    items: &'a ItemTree,
+    body: &'a mut Body,
+    drop: FunctionId,
+    unit: Local,
+    range: flux_syntax::TextRange,
+}
+
+impl Expand<'_> {
+    /// The statements and terminator that run `glue`, then go to
+    /// `target`.
+    fn glue(&mut self, glue: &[Glue], target: BasicBlock) -> (Vec<Statement>, TerminatorKind) {
+        let mut next = (Vec::new(), TerminatorKind::Goto(target));
+        for (i, part) in glue.iter().enumerate().rev() {
+            let after = if i + 1 == glue.len() {
+                target
             } else {
-                next = body.blocks.alloc(BasicBlockData {
-                    statements: vec![borrow],
-                    terminator: Terminator { kind: call, range },
+                self.push(next)
+            };
+            next = self.part(part, after);
+        }
+        next
+    }
+
+    fn push(&mut self, (statements, kind): (Vec<Statement>, TerminatorKind)) -> BasicBlock {
+        self.body.blocks.alloc(BasicBlockData {
+            statements,
+            terminator: Terminator {
+                kind,
+                range: self.range,
+            },
+        })
+    }
+
+    fn part(&mut self, part: &Glue, target: BasicBlock) -> (Vec<Statement>, TerminatorKind) {
+        match part {
+            Glue::Drop(place, ty) => {
+                let pointer = self.body.locals.alloc(LocalDecl {
+                    ty: Ty::new(TyKind::Ref(Mutability::Mut, *ty)),
+                    kind: LocalKind::Temp,
                 });
+                let borrow = Statement {
+                    kind: StatementKind::Assign(
+                        pointer.into(),
+                        Rvalue::Ref {
+                            mutability: Mutability::Mut,
+                            place: place.clone(),
+                            two_phase: false,
+                        },
+                    ),
+                    range: self.range,
+                };
+                let call = TerminatorKind::Call {
+                    func: self.drop,
+                    generic_args: Ty::list(&[*ty]),
+                    args: vec![Operand::Move(pointer.into())],
+                    dest: self.unit.into(),
+                    target: Some(target),
+                };
+                (vec![borrow], call)
+            }
+            Glue::Variants(place, strukt, variants) => {
+                let mut targets = Vec::new();
+                for (v, glue) in variants.iter().enumerate() {
+                    if glue.is_empty() {
+                        continue;
+                    }
+                    let run = self.glue(glue, target);
+                    let block = self.push(run);
+                    targets.push((
+                        crate::discriminant_bits(self.items, *strukt, v as u32),
+                        block,
+                    ));
+                }
+                let discriminant = self.body.locals.alloc(LocalDecl {
+                    ty: Ty::int(flux_ty::discriminant_ty(self.items, *strukt)),
+                    kind: LocalKind::Temp,
+                });
+                let read = Statement {
+                    kind: StatementKind::Assign(
+                        discriminant.into(),
+                        Rvalue::Discriminant(place.clone()),
+                    ),
+                    range: self.range,
+                };
+                let switch = TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(discriminant.into()),
+                    targets,
+                    otherwise: target,
+                };
+                (vec![read], switch)
             }
         }
-        let data = &mut body.blocks[block];
-        data.statements.extend(first.0);
-        data.terminator.kind = first.1;
     }
 }
 
@@ -289,7 +400,7 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
                     operand(r);
                 }
                 Rvalue::Aggregate(_, ops) => ops.iter_mut().for_each(operand),
-                Rvalue::Ref { .. } => {}
+                Rvalue::Ref { .. } | Rvalue::Discriminant(_) => {}
             }
         }
         match &mut data.terminator.kind {

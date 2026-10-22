@@ -12,9 +12,15 @@
 //! - `&&` and `||` are control flow; reads of a local are copied into a
 //!   temporary first, so later operands cannot change them.
 //! - Values are read from [`Place`]s, a local and a path of fields and
-//!   dereferences into it, either copied or moved ([`Operand`]); tuples
-//!   and structs are built whole ([`Rvalue::Aggregate`]), and references
-//!   by borrowing a place ([`Rvalue::Ref`]). Method calls are calls with
+//!   dereferences into it, either copied or moved ([`Operand`]); tuples,
+//!   structs and enums are built whole ([`Rvalue::Aggregate`]), and
+//!   references by borrowing a place ([`Rvalue::Ref`]). An enum's fields
+//!   are those of one of its variants, a [`ProjectionElem::Downcast`]
+//!   away, and which one it holds is its discriminant
+//!   ([`Rvalue::Discriminant`]).
+//! - `match`, `if let` and `let`-`else` test the parts of a place their
+//!   patterns look at, in order, and bind once the whole pattern (and an
+//!   arm's guard) matched. Method calls are calls with
 //!   the receiver's auto-dereferences and auto-borrow explicit.
 //! - A block's bindings die at its end ([`StatementKind::StorageDead`]).
 //! - Values are dropped ([`TerminatorKind::Drop`]) where their scope
@@ -45,6 +51,21 @@ use flux_intern::Symbol;
 use flux_syntax::TextRange;
 use flux_ty::{GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind};
 
+/// The discriminant of variant `variant` of enum `strukt`, as the bits
+/// [`TerminatorKind::SwitchInt`] compares: of the type
+/// [`flux_ty::discriminant_ty`] gives, which [`Rvalue::Discriminant`]
+/// has.
+pub fn discriminant_bits(items: &flux_hir::ItemTree, strukt: StructId, variant: u32) -> u128 {
+    let value = items.structs[strukt]
+        .variants
+        .as_ref()
+        .map_or(0, |v| v[variant as usize].discriminant);
+    match Constant::int(value, flux_ty::discriminant_ty(items, strukt)) {
+        Constant::Int { bits, .. } => bits,
+        _ => unreachable!("an integer constant"),
+    }
+}
+
 pub use build::{build, build_file, check_clean_bodies};
 
 pub type Local = Idx<LocalDecl>;
@@ -74,6 +95,10 @@ pub struct Body {
     /// which may not drop anything whose `drop` runs code, even part of
     /// it.
     pub live_drops: Vec<(TextRange, Ty)>,
+    /// What [`init`] found, before drop elaboration added the tests of
+    /// the variants enums hold to drop what they still hold, as rustc
+    /// checks before elaborating drops.
+    pub init_errors: Vec<flux_hir::Diagnostic>,
 }
 
 impl Body {
@@ -93,11 +118,12 @@ impl Body {
     }
 
     pub fn place_ty(&self, place: &Place, sigs: &Signatures) -> Ty {
-        let local_ty = self.locals[place.local].ty;
+        let local_ty = PlaceTy::from(self.locals[place.local].ty);
         place
             .projection
             .iter()
-            .fold(local_ty, |ty, &elem| projection_ty(ty, elem, sigs))
+            .fold(local_ty, |ty, &elem| ty.project(elem, sigs))
+            .ty
     }
 
     pub fn operand_ty(&self, operand: &Operand, sigs: &Signatures) -> Ty {
@@ -120,7 +146,7 @@ pub fn place_name(
         LocalKind::User { name, .. } => name.to_string(),
         _ => format!("_{}", place.local.index()),
     };
-    let mut ty = body.locals[place.local].ty;
+    let mut ty = PlaceTy::from(body.locals[place.local].ty);
     for (i, &elem) in place.projection.iter().enumerate() {
         match elem {
             // A field of a reference's target is written as if the
@@ -128,27 +154,57 @@ pub fn place_name(
             ProjectionElem::Deref
                 if matches!(place.projection.get(i + 1), Some(ProjectionElem::Field(_))) => {}
             ProjectionElem::Deref => text = format!("*{text}"),
-            ProjectionElem::Field(field) => match ty.kind() {
+            // rustc names a variant's field as if it were the enum's:
+            // `o.0` for `(o as Some).0`.
+            ProjectionElem::Downcast(_) => {}
+            ProjectionElem::Field(field) => match ty.ty.kind() {
                 TyKind::Adt(adt, _) => {
-                    let name = items.structs[adt.strukt].fields[field as usize].name;
+                    let variant = items.structs[adt.strukt].variant(ty.variant.unwrap_or(0));
+                    let name = variant.fields[field as usize].name;
                     text = format!("{text}.{name}");
                 }
                 _ => text = format!("{text}.{field}"),
             },
         }
-        ty = projection_ty(ty, elem, sigs);
+        ty = ty.project(elem, sigs);
     }
     text
 }
 
-/// The type of `elem` of a value of type `ty`.
-pub fn projection_ty(ty: Ty, elem: ProjectionElem, sigs: &Signatures) -> Ty {
-    match (elem, ty.kind()) {
-        (ProjectionElem::Field(field), _) => sigs
-            .fields(ty)
-            .map_or(Ty::ERROR, |fields| fields[field as usize]),
-        (ProjectionElem::Deref, TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee)) => pointee,
-        (ProjectionElem::Deref, _) => Ty::ERROR,
+/// The type of a place, and the variant of it a [`ProjectionElem::Downcast`]
+/// chose, whose fields its fields are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaceTy {
+    pub ty: Ty,
+    pub variant: Option<u32>,
+}
+
+impl From<Ty> for PlaceTy {
+    fn from(ty: Ty) -> PlaceTy {
+        PlaceTy { ty, variant: None }
+    }
+}
+
+impl PlaceTy {
+    /// The type of `elem` of a place of this type.
+    pub fn project(self, elem: ProjectionElem, sigs: &Signatures) -> PlaceTy {
+        let ty = match (elem, self.ty.kind()) {
+            (ProjectionElem::Downcast(variant), _) => {
+                return PlaceTy {
+                    ty: self.ty,
+                    variant: Some(variant),
+                };
+            }
+            (ProjectionElem::Field(field), _) => sigs
+                .variant_fields(self.ty, self.variant.unwrap_or(0))
+                .and_then(|fields| fields.get(field as usize).copied())
+                .unwrap_or(Ty::ERROR),
+            (ProjectionElem::Deref, TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee)) => {
+                pointee
+            }
+            (ProjectionElem::Deref, _) => Ty::ERROR,
+        };
+        PlaceTy::from(ty)
     }
 }
 
@@ -163,15 +219,23 @@ pub struct Place {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProjectionElem {
-    /// A field of a tuple or struct, by index.
+    /// A field of a tuple or struct, or of the variant before it, by
+    /// index.
     Field(u32),
     /// What a reference or raw pointer points to.
     Deref,
+    /// An enum as its variant with this index, which it holds: `(e as
+    /// Some)`. Only its fields are places.
+    Downcast(u32),
 }
 
 impl Place {
     pub fn field(&self, index: u32) -> Place {
         self.project(ProjectionElem::Field(index))
+    }
+
+    pub fn downcast(&self, variant: u32) -> Place {
+        self.project(ProjectionElem::Downcast(variant))
     }
 
     pub fn deref(&self) -> Place {
@@ -254,6 +318,9 @@ pub enum Rvalue {
     Cast(Operand, Ty),
     /// A tuple or struct from its fields, in declaration order.
     Aggregate(AggregateKind, Vec<Operand>),
+    /// The discriminant of the enum in `place`, as an `isize`: the value
+    /// of the variant it holds.
+    Discriminant(Place),
     /// `&place` or `&mut place`. A *two-phase* `&mut`, made for a method
     /// call's receiver, acts as a shared borrow until the call, so that
     /// the arguments may still read the place: `s.set(s.get())`.
@@ -268,6 +335,8 @@ pub enum Rvalue {
 pub enum AggregateKind {
     Tuple,
     Struct(StructId),
+    /// Variant `index` of an enum, from its fields.
+    Variant(StructId, u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -519,7 +588,7 @@ impl Rvalue {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(op, _) => vec![op],
             Rvalue::BinaryOp(_, l, r) => vec![l, r],
             Rvalue::Aggregate(_, ops) => ops.iter().collect(),
-            Rvalue::Ref { .. } => Vec::new(),
+            Rvalue::Ref { .. } | Rvalue::Discriminant(_) => Vec::new(),
         }
     }
 }

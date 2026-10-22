@@ -119,6 +119,54 @@ fn main_function() {
     );
 }
 
+/// `Self { .. }` of a struct whose type is in error (its lifetime
+/// parameter is unsupported) has no field types to check against.
+#[test]
+fn record_of_struct_in_error() {
+    let text = "struct S<'a> { x: &'a i32, n: i32 }\n\
+                impl<'a> S<'a> { fn new(x: &'a i32) -> Self { Self { x, n: 1 } } }\n\
+                fn main() {}\n";
+    let (_, _, hir) = flux_hir::lower_text_bare("main.rs", text);
+    flux_ty::check_file(&hir);
+}
+
+/// A binding bound by reference in one alternative and by value in
+/// another (E0409, from lowering) has a different type in each, which
+/// rustc reports too, at the later one.
+#[test]
+fn or_pattern_binding_modes() {
+    let text = "fn f(x: (i32, i32)) -> i32 { match x { (ref a, 0) | (a, _) => *a } }\n\
+                fn g(x: (i32, i32)) -> i32 { match x { (mut a, 0) | (a, _) => a } }\n\
+                fn main() {}\n";
+    let (_, _, hir) = flux_hir::lower_text_bare("main.rs", text);
+    let typed = flux_ty::check_file(&hir);
+    let found: Vec<(u32, &str)> = typed
+        .diagnostics
+        .iter()
+        .map(|d| (d.range.start(), d.message.as_str()))
+        .collect();
+    assert_eq!(
+        found,
+        [(53, "mismatched types: expected `&i32`, found `i32`")],
+        "only by-reference and by-value bindings differ in type"
+    );
+}
+
+/// Associated types whose `impl` blocks define them by each other, twice
+/// over, normalize in time: each is normalized once, and a cycle stops.
+/// (rustc reports overflow, E0275, which flux does not yet.)
+#[test]
+fn cyclic_associated_types_terminate() {
+    let text = "trait A { type X; }\n\
+                trait B { type Y; }\n\
+                impl<T> A for T { type X = (<T as B>::Y, <T as B>::Y); }\n\
+                impl<T> B for T { type Y = (<T as A>::X, <T as A>::X); }\n\
+                fn f(x: <i32 as A>::X) {}\n\
+                fn main() {}\n";
+    let (_, _, hir) = flux_hir::lower_text_bare("main.rs", text);
+    flux_ty::check_file(&hir);
+}
+
 /// Type checking never panics on anything lowering produces: every prefix
 /// of every parser fixture.
 #[test]

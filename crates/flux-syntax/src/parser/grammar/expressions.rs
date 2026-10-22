@@ -194,7 +194,14 @@ fn let_stmt(p: &mut Parser<'_>, m: Marker) {
         if p.at(T![else]) {
             let e = p.start();
             p.bump(T![else]);
-            block_expr(p);
+            if p.at(T![if]) {
+                let error = p.start();
+                p.error("conditional `else if` is not supported for `let...else`");
+                if_expr(p);
+                error.complete(p, ERROR);
+            } else {
+                else_block(p);
+            }
             e.complete(p, LET_ELSE);
         }
     }
@@ -554,6 +561,12 @@ fn atom_expr(p: &mut Parser<'_>, r: Restrictions) -> Option<(CompletedMarker, Bl
 /// A path, a macro call `path!(...)`, or a struct literal `Path { ... }`.
 fn path_expr(p: &mut Parser<'_>, r: Restrictions) -> (CompletedMarker, BlockLike) {
     let m = p.start();
+    // `match S { a: 1 } { .. }`: a struct's fields follow the path where
+    // a block would. rustc reports it, at the path, and reads it as one.
+    let struct_literal = r.forbid_structs && at_struct_literal(p);
+    if struct_literal {
+        p.error("struct literals are not allowed here");
+    }
     paths::expr_path(p);
     match p.current() {
         T![!] if !p.at(T![!=]) => {
@@ -574,12 +587,29 @@ fn path_expr(p: &mut Parser<'_>, r: Restrictions) -> (CompletedMarker, BlockLike
             }
             (m.complete(p, MACRO_EXPR), blocklike)
         }
-        T!['{'] if !r.forbid_structs => {
+        T!['{'] if !r.forbid_structs || struct_literal => {
             record_expr_field_list(p);
             (m.complete(p, RECORD_EXPR), BlockLike::NotBlock)
         }
         _ => (m.complete(p, PATH_EXPR), BlockLike::NotBlock),
     }
+}
+
+/// Whether a path of names, `a::S`, is next, then `{ name:`: the start
+/// of a struct expression, which cannot be a block.
+fn at_struct_literal(p: &mut Parser<'_>) -> bool {
+    let mut n = 0;
+    while p.nth(n) == IDENT {
+        n += 1;
+        if !p.nth_at(n, T![::]) {
+            return p.nth(n) == T!['{']
+                && p.nth(n + 1) == IDENT
+                && p.nth_at(n + 2, T![:])
+                && !p.nth_at(n + 2, T![::]);
+        }
+        n += 2;
+    }
+    false
 }
 
 /// `{ a, b: 1, 0: x, ..base }`.
@@ -693,10 +723,23 @@ fn if_expr(p: &mut Parser<'_>) -> CompletedMarker {
         if p.at(T![if]) {
             if_expr(p);
         } else {
-            block_expr(p);
+            else_block(p);
         }
     }
     m.complete(p, IF_EXPR)
+}
+
+/// The block after `else`. Without its braces, the expression there is
+/// reported where it starts, as rustc does, and skipped.
+fn else_block(p: &mut Parser<'_>) {
+    if p.at(T!['{']) || !at_expr_start(p, DEFAULT) {
+        block_expr(p);
+        return;
+    }
+    let error = p.start();
+    p.error("expected `{`");
+    expr(p);
+    error.complete(p, ERROR);
 }
 
 /// A loop or a plain block, into `m`, which may already hold a label.
@@ -775,7 +818,7 @@ fn match_arm(p: &mut Parser<'_>) {
     // Like a statement, a block-like body needs no comma.
     let blocklike = expr_bp(p, STMT, 1).map_or(BlockLike::NotBlock, |(_, b)| b);
     if !p.eat(T![,]) && blocklike == BlockLike::NotBlock && !p.at(T!['}']) {
-        p.error("expected `,`");
+        p.error("expected `,` following `match` arm");
     }
     m.complete(p, MATCH_ARM);
 }

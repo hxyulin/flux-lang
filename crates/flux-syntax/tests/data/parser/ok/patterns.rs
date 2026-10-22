@@ -1,6 +1,8 @@
 fn patterns(x: Value) {
     let _ = x;
     let (a, mut b, ref c, ref mut d) = x;
+    // Parsed, and reported later as unstable, as rustc does.
+    let (mut ref e, mut ref mut f) = x;
     let Point { x, y: renamed, .. } = p;
     let [first, .., last] = arr;
     let [head, rest @ ..] = arr;

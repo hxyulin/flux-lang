@@ -50,6 +50,9 @@ pub struct ItemTree {
     pub trait_fns: rustc_hash::FxHashMap<Symbol, Vec<TraitId>>,
     /// The traits the compiler knows, by their `#[lang = "..."]` names.
     pub lang_traits: rustc_hash::FxHashMap<Symbol, TraitId>,
+    /// `core`'s `#[lang = "panic"]` function, which aborts, and which
+    /// constant evaluation reports as a panic with its message.
+    pub panic_fn: Option<FunctionId>,
     pub diagnostics: Vec<Diagnostic>,
     /// How many of each item came from [`Core`](crate::Core), built and
     /// resolved before the program's: the items with smaller indices
@@ -288,18 +291,76 @@ pub enum ImplTarget {
     Primitive(Symbol),
 }
 
-/// A struct: `struct S { a: i32 }`, `struct P(i32);` or `struct U;`.
+/// A struct, `struct S { a: i32 }`, `struct P(i32);` or `struct U;`, or
+/// an enum, `enum E { A, B(i32), C { x: i32 } }`: a type made of fields,
+/// or of one of several variants, each made of fields. They share an
+/// arena, since their generics, bounds and `impl` blocks work alike.
 #[derive(Debug, Clone)]
 pub struct Struct {
     pub name: Symbol,
     pub generics: Generics,
+    /// A struct's kind; `Record` for an enum.
     pub kind: StructKind,
-    /// In declaration order; a tuple struct's are named `0`, `1`, ...
+    /// A struct's fields, in declaration order; a tuple struct's are
+    /// named `0`, `1`, ... None for an enum.
     pub fields: Box<[Field]>,
+    /// An enum's variants, in declaration order; `None` for a struct.
+    pub variants: Option<Box<[Variant]>>,
+    /// The integer type an enum's `#[repr(u8)]` (say) gives its
+    /// discriminant; `isize` without one.
+    pub repr: Option<Symbol>,
     pub loc: ItemLoc,
     pub name_range: TextRange,
-    /// `struct S`, where rustc reports errors about the whole struct.
+    /// `struct S` or `enum E`, where rustc reports errors about the
+    /// whole item.
     pub def_range: TextRange,
+}
+
+/// A variant of an enum: `A`, `B(i32)` or `C { x: i32 }`.
+#[derive(Debug, Clone)]
+pub struct Variant {
+    pub name: Symbol,
+    pub kind: StructKind,
+    pub fields: Box<[Field]>,
+    /// The value `as` casts give a fieldless enum's: written (`A = 5`),
+    /// or one more than the previous variant's.
+    pub discriminant: i128,
+    pub name_range: TextRange,
+    pub def_range: TextRange,
+}
+
+/// What a constructor, struct expression or pattern names: a struct, or
+/// one variant of an enum.
+#[derive(Debug, Clone, Copy)]
+pub struct VariantData<'a> {
+    pub name: Symbol,
+    pub kind: StructKind,
+    pub fields: &'a [Field],
+    /// The enum's name for a variant, for messages (`E::A`).
+    pub enum_name: Option<Symbol>,
+}
+
+impl VariantData<'_> {
+    pub fn field(&self, name: Symbol) -> Option<(usize, &Field)> {
+        self.fields.iter().enumerate().find(|(_, f)| f.name == name)
+    }
+
+    /// `S` or `E::A`.
+    pub fn path(&self) -> String {
+        match self.enum_name {
+            Some(e) => format!("{e}::{}", self.name),
+            None => self.name.to_string(),
+        }
+    }
+
+    /// "struct" or "variant", for messages.
+    pub fn what(&self) -> &'static str {
+        if self.enum_name.is_some() {
+            "variant"
+        } else {
+            "struct"
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,6 +389,45 @@ impl Struct {
     pub fn field(&self, name: Symbol) -> Option<(usize, &Field)> {
         self.fields.iter().enumerate().find(|(_, f)| f.name == name)
     }
+
+    pub fn is_enum(&self) -> bool {
+        self.variants.is_some()
+    }
+
+    /// Variant `index` of an enum, or the struct itself for index 0.
+    pub fn variant(&self, index: u32) -> VariantData<'_> {
+        match &self.variants {
+            Some(variants) => {
+                let v = &variants[index as usize];
+                VariantData {
+                    name: v.name,
+                    kind: v.kind,
+                    fields: &v.fields,
+                    enum_name: Some(self.name),
+                }
+            }
+            None => VariantData {
+                name: self.name,
+                kind: self.kind,
+                fields: &self.fields,
+                enum_name: None,
+            },
+        }
+    }
+
+    /// An enum's variant called `name`, by index.
+    pub fn variant_named(&self, name: Symbol) -> Option<u32> {
+        self.variants
+            .as_ref()?
+            .iter()
+            .position(|v| v.name == name)
+            .map(|i| i as u32)
+    }
+
+    /// How many variants it has: one for a struct.
+    pub fn variant_count(&self) -> usize {
+        self.variants.as_ref().map_or(1, |v| v.len())
+    }
 }
 
 /// A function: one with a body, or one declared in an `extern` block.
@@ -351,6 +451,16 @@ pub struct Function {
     /// `#[rustc_inherit_overflow_checks]`, which only `core` may write:
     /// arithmetic overflow in it is checked where its caller's would be.
     pub inherits_overflow_checks: bool,
+    /// `#[rustc_const_unstable]`, which only `core` may write: a `const
+    /// fn` in rustc's `core` that only unstable Rust may call in
+    /// constants (one whose bounds are conditionally const). Not
+    /// `is_const`.
+    pub const_unstable: bool,
+    /// `#[rustc_allow_const_fn_unstable(const_precise_live_drops)]`,
+    /// which only `core` may write: as a `const fn`, it may drop only
+    /// values that need no dropping by then, which drop elaboration
+    /// finds, rather than values that may need it at all.
+    pub precise_live_drops: bool,
     /// Takes more arguments after `params`, like C's `printf(fmt, ...)`.
     pub is_variadic: bool,
     /// The `impl` block or trait it is in, if any.
@@ -953,7 +1063,10 @@ impl Collector<'_> {
                 self.collect_const(ctx, c, None);
                 return;
             }
-            ast::Item::Enum(_) => "enums",
+            ast::Item::Enum(e) => {
+                self.collect_enum(ctx, e);
+                return;
+            }
             ast::Item::ExternCrate(_) => "`extern crate` declarations",
             ast::Item::MacroCall(_) => "macros",
             ast::Item::Static(_) => "statics",
@@ -1639,9 +1752,18 @@ impl Collector<'_> {
     ) -> Option<FunctionId> {
         let is_core = self.items.is_core(ctx.module);
         let mut inherits_overflow_checks = false;
+        let mut const_unstable = false;
+        let mut precise_live_drops = false;
+        let mut lang = None;
         for attr in f.attrs() {
             if is_core && attr_name(attr) == Some("rustc_inherit_overflow_checks") {
                 inherits_overflow_checks = true;
+            } else if is_core && attr_name(attr) == Some("rustc_const_unstable") {
+                const_unstable = true;
+            } else if is_core && attr_name(attr) == Some("rustc_allow_const_fn_unstable") {
+                precise_live_drops = true;
+            } else if is_core && let Some(name) = lang_attr(attr) {
+                lang = Some(name);
             } else {
                 check_attr(attr, &mut self.items.diagnostics);
             }
@@ -1800,36 +1922,40 @@ impl Collector<'_> {
         .flatten()
         .next()
         .map_or(0, |n| n.text_range().end());
-        Some(
-            self.items.functions.alloc(Function {
-                def_range: TextRange::new(def_start(f.syntax()), signature_end),
-                item_range: TextRange::new(def_start(f.syntax()), f.syntax().text_range().end()),
-                param_list: f
-                    .param_list()
-                    .map_or(name.syntax().text_range(), |p| p.syntax().text_range()),
-                name: Symbol::intern(name.text()),
-                generics,
-                params: params.into(),
-                ret,
-                ret_range,
-                loc: ItemLoc {
-                    module: ctx.module,
-                    file: ctx.file,
-                    vis,
-                },
-                is_unsafe: in_extern_block || f.unsafe_token().is_some(),
-                is_extern: in_extern_block,
-                is_const: f.const_token().is_some(),
-                inherits_overflow_checks,
-                is_variadic,
-                owner,
-                has_self,
-                has_body: has_body && !in_extern_block,
-                node: f.syntax().id(),
-                name_range: name.syntax().text_range(),
-                derived: None,
-            }),
-        )
+        let id = self.items.functions.alloc(Function {
+            def_range: TextRange::new(def_start(f.syntax()), signature_end),
+            item_range: TextRange::new(def_start(f.syntax()), f.syntax().text_range().end()),
+            param_list: f
+                .param_list()
+                .map_or(name.syntax().text_range(), |p| p.syntax().text_range()),
+            name: Symbol::intern(name.text()),
+            generics,
+            params: params.into(),
+            ret,
+            ret_range,
+            loc: ItemLoc {
+                module: ctx.module,
+                file: ctx.file,
+                vis,
+            },
+            is_unsafe: in_extern_block || f.unsafe_token().is_some(),
+            is_extern: in_extern_block,
+            is_const: f.const_token().is_some(),
+            inherits_overflow_checks,
+            const_unstable,
+            precise_live_drops,
+            is_variadic,
+            owner,
+            has_self,
+            has_body: has_body && !in_extern_block,
+            node: f.syntax().id(),
+            name_range: name.syntax().text_range(),
+            derived: None,
+        });
+        if lang.is_some_and(|l| l.as_str() == "panic") {
+            self.items.panic_fn = Some(id);
+        }
+        Some(id)
     }
 
     fn collect_const(
@@ -1911,11 +2037,55 @@ impl Collector<'_> {
             Defaults::Struct,
             diagnostics,
         );
+        let (kind, fields) =
+            self.collect_fields(ctx, s.record_field_list(), s.tuple_field_list(), false);
+        let name_range = name.syntax().text_range();
+        let id = self.items.structs.alloc(Struct {
+            name: Symbol::intern(name.text()),
+            generics,
+            kind,
+            fields: fields.into(),
+            variants: None,
+            repr: None,
+            loc: ItemLoc {
+                module: ctx.module,
+                file: ctx.file,
+                vis,
+            },
+            name_range,
+            def_range: TextRange::new(def_start(s.syntax()), name_range.end()),
+        });
+        for (derive, range) in derives {
+            self.derives.push((ctx, id, derive, range, s.syntax().id()));
+        }
+    }
+
+    /// The fields of a struct or variant, and so its kind. A variant's
+    /// fields are as visible as its enum, and may not say otherwise.
+    fn collect_fields(
+        &mut self,
+        ctx: Ctx,
+        record: Option<ast::RecordFieldList<'_>>,
+        tuple: Option<ast::TupleFieldList<'_>>,
+        in_variant: bool,
+    ) -> (StructKind, Vec<Field>) {
         let mut fields = Vec::new();
-        let kind = if let Some(list) = s.record_field_list() {
+        let field_vis = |this: &mut Self, vis: Option<ast::Visibility<'_>>| {
+            if !in_variant {
+                return this.visibility(ctx, vis);
+            }
+            if let Some(vis) = vis {
+                this.items.diagnostics.push(Diagnostic::new(
+                    vis.syntax().text_range(),
+                    "visibility qualifiers are not permitted here",
+                ));
+            }
+            Visibility::Public
+        };
+        let kind = if let Some(list) = record {
             for field in list.fields() {
                 check_inert_attrs(field.attrs(), &mut self.items.diagnostics);
-                let field_vis = self.visibility(ctx, field.visibility());
+                let vis = field_vis(self, field.visibility());
                 let diagnostics = &mut self.items.diagnostics;
                 let Some(field_name) = field.name() else {
                     continue;
@@ -1934,7 +2104,7 @@ impl Collector<'_> {
                 fields.push(Field {
                     name: field_name,
                     ty: lower_type(field.ty(), diagnostics),
-                    vis: field_vis,
+                    vis,
                     range: field
                         .ty()
                         .map_or(field_name_range, |t| t.syntax().text_range()),
@@ -1943,15 +2113,15 @@ impl Collector<'_> {
                 });
             }
             StructKind::Record
-        } else if let Some(list) = s.tuple_field_list() {
+        } else if let Some(list) = tuple {
             for (i, field) in list.fields().enumerate() {
                 check_inert_attrs(field.attrs(), &mut self.items.diagnostics);
-                let field_vis = self.visibility(ctx, field.visibility());
+                let vis = field_vis(self, field.visibility());
                 let range = field.syntax().text_range();
                 fields.push(Field {
                     name: Symbol::intern(&i.to_string()),
                     ty: lower_type(field.ty(), &mut self.items.diagnostics),
-                    vis: field_vis,
+                    vis,
                     range: field.ty().map_or(range, |t| t.syntax().text_range()),
                     name_range: range,
                     def_range: range,
@@ -1961,22 +2131,179 @@ impl Collector<'_> {
         } else {
             StructKind::Unit
         };
+        (kind, fields)
+    }
+
+    fn collect_enum(&mut self, ctx: Ctx, e: ast::Enum<'_>) {
+        let mut derives = Vec::new();
+        let mut hints = Vec::new();
+        for attr in e.attrs() {
+            if attr_name(attr) == Some("derive") {
+                derive_attr(attr, &mut derives, &mut self.items.diagnostics);
+            } else if attr_name(attr) == Some("repr") {
+                repr_attr(attr, &mut hints, &mut self.items.diagnostics);
+            } else {
+                check_attr(attr, &mut self.items.diagnostics);
+            }
+        }
+        let vis = self.visibility(ctx, e.visibility());
+        let Some(name) = e.name() else {
+            return;
+        };
+        let generics = collect_generics(
+            e.generic_param_list(),
+            e.where_clause(),
+            Defaults::Struct,
+            &mut self.items.diagnostics,
+        );
+        let def_range = TextRange::new(def_start(e.syntax()), name.syntax().text_range().end());
+        let all_variants = e.variant_list().into_iter().flat_map(|l| l.variants());
+        let has_fields = all_variants
+            .clone()
+            .any(|v| v.record_field_list().is_some() || v.tuple_field_list().is_some());
+        let repr = enum_repr(
+            &hints,
+            has_fields,
+            all_variants.clone().next().is_none(),
+            &mut self.items.diagnostics,
+        );
+        let repr_name = repr.map_or("isize", |r| r.as_str());
+        let values = int_range(repr_name);
+        let mut variants: Vec<Variant> = Vec::new();
+        // The next discriminant, `None` past the type's maximum.
+        let mut next = Some(0i128);
+        // Whether a discriminant is written, which rustc allows on an
+        // enum with fields only with an integer `repr`.
+        let mut written = false;
+        let mut duplicates = Vec::new();
+        for v in e.variant_list().into_iter().flat_map(|l| l.variants()) {
+            check_attrs(v.attrs(), &mut self.items.diagnostics);
+            if let Some(vis) = v.visibility() {
+                self.items.diagnostics.push(Diagnostic::new(
+                    vis.syntax().text_range(),
+                    "visibility qualifiers are not permitted here",
+                ));
+            }
+            let Some(v_name) = v.name() else {
+                continue;
+            };
+            let (kind, fields) =
+                self.collect_fields(ctx, v.record_field_list(), v.tuple_field_list(), true);
+            let name_range = v_name.syntax().text_range();
+            let v_name = Symbol::intern(v_name.text());
+            let v_range = TextRange::new(def_start(v.syntax()), v.syntax().text_range().end());
+            let diagnostics = &mut self.items.diagnostics;
+            let discriminant = match v.expr() {
+                Some(expr) => {
+                    written = true;
+                    let range = expr.syntax().text_range();
+                    match discriminant_value(expr) {
+                        Some((_, _, Some((suffix, at)))) if suffix.as_str() != repr_name => {
+                            diagnostics.push(Diagnostic::new(at, "mismatched types"));
+                            next.unwrap_or(0)
+                        }
+                        Some((true, _, _)) if repr_name.starts_with('u') => {
+                            diagnostics.push(Diagnostic::new(
+                                range,
+                                format!("cannot apply unary operator `-` to type `{repr_name}`"),
+                            ));
+                            next.unwrap_or(0)
+                        }
+                        Some((negative, value, _)) => {
+                            let value = if negative {
+                                0i128.checked_sub_unsigned(value)
+                            } else {
+                                i128::try_from(value).ok()
+                            };
+                            match value {
+                                Some(value) if values.contains(&value) => value,
+                                None if repr_name == "u128" && !negative => {
+                                    unsupported(
+                                        diagnostics,
+                                        range,
+                                        "discriminants above `i128::MAX`",
+                                    );
+                                    0
+                                }
+                                _ => {
+                                    diagnostics.push(Diagnostic::new(
+                                        range,
+                                        format!("literal out of range for `{repr_name}`"),
+                                    ));
+                                    0
+                                }
+                            }
+                        }
+                        None => {
+                            unsupported(
+                                diagnostics,
+                                range,
+                                "discriminants other than integer literals",
+                            );
+                            next.unwrap_or(0)
+                        }
+                    }
+                }
+                None => match next {
+                    Some(value) => value,
+                    None => {
+                        diagnostics
+                            .push(Diagnostic::new(name_range, "enum discriminant overflowed"));
+                        // As rustc, wrapped around.
+                        *values.start()
+                    }
+                },
+            };
+            if variants.iter().any(|p| p.discriminant == discriminant)
+                && !duplicates.contains(&discriminant)
+            {
+                duplicates.push(discriminant);
+                diagnostics.push(Diagnostic::new(
+                    def_range,
+                    format!("discriminant value `{discriminant}` assigned more than once"),
+                ));
+            }
+            if variants.iter().any(|p| p.name == v_name) {
+                diagnostics.push(Diagnostic::new(
+                    name_range,
+                    format!("the name `{v_name}` is defined multiple times"),
+                ));
+                continue;
+            }
+            next = discriminant.checked_add(1).filter(|n| values.contains(n));
+            variants.push(Variant {
+                name: v_name,
+                kind,
+                fields: fields.into(),
+                discriminant,
+                name_range,
+                def_range: v_range,
+            });
+        }
+        if written && has_fields && repr.is_none() {
+            self.items.diagnostics.push(Diagnostic::new(
+                def_range,
+                "`#[repr(inttype)]` must be specified for enums with explicit discriminants and non-unit variants",
+            ));
+        }
         let name_range = name.syntax().text_range();
         let id = self.items.structs.alloc(Struct {
             name: Symbol::intern(name.text()),
             generics,
-            kind,
-            fields: fields.into(),
+            kind: StructKind::Record,
+            fields: Box::default(),
+            variants: Some(variants.into()),
+            repr,
             loc: ItemLoc {
                 module: ctx.module,
                 file: ctx.file,
                 vis,
             },
             name_range,
-            def_range: TextRange::new(def_start(s.syntax()), name_range.end()),
+            def_range,
         });
         for (derive, range) in derives {
-            self.derives.push((ctx, id, derive, range, s.syntax().id()));
+            self.derives.push((ctx, id, derive, range, e.syntax().id()));
         }
     }
 
@@ -2058,7 +2385,8 @@ impl Collector<'_> {
         // And the trait for each field type's associated types of the
         // parameters (`T::Out`), which a bound on `T` cannot give.
         let mut projections = Vec::new();
-        for field in s.fields.iter() {
+        let variant_fields = s.variants.iter().flatten().flat_map(|v| v.fields.iter());
+        for field in s.fields.iter().chain(variant_fields) {
             param_projections(&field.ty, &params, &mut projections);
         }
         for ty in projections {
@@ -2141,6 +2469,8 @@ impl Collector<'_> {
             is_extern: false,
             is_const: false,
             inherits_overflow_checks: false,
+            const_unstable: false,
+            precise_live_drops: false,
             is_variadic: false,
             owner: Some(Owner::Impl(id)),
             has_self: true,
@@ -2529,6 +2859,156 @@ fn param_projections(ty: &TypeRef, params: &[GenericParam], out: &mut Vec<TypeRe
         }
         TypeRef::Never | TypeRef::Infer | TypeRef::Error => {}
     }
+}
+
+/// The value of an enum discriminant written as an integer literal,
+/// optionally negated, without a suffix or with `isize`'s, the type rustc
+/// gives discriminants by default.
+/// A discriminant written as an integer literal, `5` or `-5`: whether it
+/// is negated, its value, and its suffix and the literal's range if it
+/// has one.
+#[allow(clippy::type_complexity)]
+fn discriminant_value(expr: ast::Expr<'_>) -> Option<(bool, u128, Option<(Symbol, TextRange)>)> {
+    let (negative, literal) = match expr {
+        ast::Expr::Literal(literal) => (false, literal),
+        ast::Expr::PrefixExpr(prefix) if prefix.op_kind() == Some(ast::UnaryOp::Neg) => {
+            match prefix.expr()? {
+                ast::Expr::Literal(literal) => (true, literal),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let token = literal.value()?;
+    let crate::Literal::Int { value, suffix } = crate::literal::parse_int(token.text()).ok()?
+    else {
+        return None;
+    };
+    let suffix = suffix.map(|s| (s, literal.syntax().text_range()));
+    Some((negative, value, suffix))
+}
+
+/// The values of integer type `name`, as far as an `i128` holds them;
+/// `isize` and `usize` are 64 bits wide.
+fn int_range(name: &str) -> std::ops::RangeInclusive<i128> {
+    let (signed, bits) = match name {
+        "isize" => (true, 64),
+        "usize" => (false, 64),
+        _ => (name.starts_with('i'), name[1..].parse().unwrap_or(64)),
+    };
+    match (signed, bits) {
+        (true, 128) => i128::MIN..=i128::MAX,
+        (false, 128) => 0..=i128::MAX,
+        (true, bits) => -(1i128 << (bits - 1))..=(1i128 << (bits - 1)) - 1,
+        (false, bits) => 0..=(1i128 << bits) - 1,
+    }
+}
+
+/// The integer types a `repr` may give a discriminant.
+const REPR_INTS: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
+];
+
+/// The hints of a `#[repr(...)]`, with their ranges; malformed ones are
+/// reported as rustc does.
+fn repr_attr(
+    attr: ast::Attr<'_>,
+    out: &mut Vec<(Symbol, TextRange)>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let meta = attr.meta();
+    let malformed = |diagnostics: &mut Vec<Diagnostic>| {
+        let range = meta.map_or(attr.syntax().text_range(), |m| m.syntax().text_range());
+        diagnostics.push(Diagnostic::new(range, "malformed `repr` attribute input"));
+    };
+    let Some(tree) = meta.and_then(|m| m.token_tree()) else {
+        malformed(diagnostics);
+        return;
+    };
+    let mut items: Vec<Vec<SyntaxElement<'_>>> = vec![Vec::new()];
+    for element in tree.syntax().children_with_tokens() {
+        match element.kind() {
+            k if k.is_trivia() => {}
+            SyntaxKind::L_PAREN | SyntaxKind::R_PAREN => {}
+            SyntaxKind::COMMA => items.push(Vec::new()),
+            _ => items.last_mut().expect("an item").push(element),
+        }
+    }
+    let mut hints = Vec::new();
+    for item in items.iter().filter(|i| !i.is_empty()) {
+        let name = match item.as_slice() {
+            [name] | [name, _] => name.into_token().filter(|t| t.kind() == SyntaxKind::IDENT),
+            _ => None,
+        };
+        let known = name.is_some_and(|n| {
+            let args = item.len() == 2;
+            match n.text() {
+                "align" => args && item[1].kind() == SyntaxKind::TOKEN_TREE,
+                "C" | "Rust" | "transparent" | "packed" | "simd" => {
+                    !args || (n.text() == "packed" && item[1].kind() == SyntaxKind::TOKEN_TREE)
+                }
+                other => !args && REPR_INTS.contains(&other),
+            }
+        });
+        match name {
+            Some(name) if known => hints.push((Symbol::intern(name.text()), name.text_range())),
+            _ => {
+                malformed(diagnostics);
+                return;
+            }
+        }
+    }
+    out.extend(hints);
+}
+
+/// The integer type `hints`, an enum's `repr`s, give its discriminant;
+/// hints flux does not support, and conflicting ones, are reported.
+/// `has_fields`: a variant has fields, which `repr(C, u8)` describes;
+/// `empty`: the enum has no variants, which no `repr` describes.
+fn enum_repr(
+    hints: &[(Symbol, TextRange)],
+    has_fields: bool,
+    empty: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Symbol> {
+    let mut int = None;
+    let mut c = false;
+    for &(hint, range) in hints {
+        match hint.as_str() {
+            "C" => c = true,
+            "Rust" => {}
+            name if REPR_INTS.contains(&name) => {
+                if int.is_some() {
+                    diagnostics.push(Diagnostic::new(
+                        hints[0].1,
+                        "conflicting representation hints",
+                    ));
+                    return int;
+                }
+                int = Some(hint);
+            }
+            name => diagnostics.push(Diagnostic::new(
+                range,
+                format!("the `repr({name})` attribute is not supported yet"),
+            )),
+        }
+    }
+    if c && int.is_some() && !has_fields {
+        diagnostics.push(Diagnostic::new(
+            hints[0].1,
+            "conflicting representation hints",
+        ));
+    }
+    if let Some(&(_, range)) = hints.iter().find(|h| h.0.as_str() != "Rust")
+        && empty
+        && (c || int.is_some())
+    {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "unsupported representation for zero-variant enum",
+        ));
+    }
+    int
 }
 
 /// A trait `#[derive]` implements.

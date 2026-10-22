@@ -143,7 +143,7 @@ VariantList =
   '{' variants:(Variant (',' Variant)* ','?)? '}'
 
 Variant =
-  Attr* Name (RecordFieldList | TupleFieldList)? ('=' Expr)?
+  Attr* Visibility? Name (RecordFieldList | TupleFieldList)? ('=' Expr)?
 
 Impl =
   Attr* Visibility? 'unsafe'? 'impl' GenericParamList?

@@ -21,7 +21,9 @@ pub(super) fn fn_param_list(p: &mut Parser<'_>) {
         } else if p.eat(T![...]) {
             m.complete(p, PARAM);
         } else {
-            patterns::pattern_single(p);
+            // An or-pattern is not allowed without parentheses, but is
+            // parsed, as rustc does, to say so.
+            patterns::pattern(p);
             p.expect(T![:]);
             if !p.eat(T![...]) {
                 types::type_(p);

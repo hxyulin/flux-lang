@@ -94,13 +94,12 @@ error 891..901: deriving `PartialOrd` is not supported yet
 error 903..906: deriving `Ord` is not supported yet
 error 1003..1021: paths in `derive` are not supported yet
 error 1023..1045: paths in `derive` are not supported yet
-error 1064..1151: enums are not supported yet
-error 1206..1207: expected identifier, found `,`
-error 1252..1253: expected identifier, found `,`
-error 1300..1303: traits in `#[derive(...)]` don't accept arguments
-error 1344..1348: expected one of `(`, `,`, `::`, or `=`, found `Copy`
-error 1377..1384: expected path to a trait, found literal
-error 1412..1419: wrong meta list delimiters
-error 1448..1452: cannot find derive macro `Nope` in this scope
-error 1593..1599: expected non-macro attribute, found attribute macro `derive`
-error 1638..1644: expected non-macro attribute, found attribute macro `derive`
+error 1117..1118: expected identifier, found `,`
+error 1163..1164: expected identifier, found `,`
+error 1211..1214: traits in `#[derive(...)]` don't accept arguments
+error 1255..1259: expected one of `(`, `,`, `::`, or `=`, found `Copy`
+error 1288..1295: expected path to a trait, found literal
+error 1323..1330: wrong meta list delimiters
+error 1359..1363: cannot find derive macro `Nope` in this scope
+error 1504..1510: expected non-macro attribute, found attribute macro `derive`
+error 1549..1555: expected non-macro attribute, found attribute macro `derive`

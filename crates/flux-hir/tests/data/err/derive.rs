@@ -51,12 +51,6 @@ struct Ordered;
 #[derive(core::clone::Clone, ::core::cmp::PartialEq)]
 struct ByPath;
 
-// On an enum, the enum itself is not supported yet.
-#[derive(Clone)]
-enum E {
-    A,
-}
-
 // Malformed lists, reported as rustc does.
 #[derive(,Clone)]
 struct LeadingComma;

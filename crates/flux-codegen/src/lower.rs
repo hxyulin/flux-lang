@@ -9,14 +9,20 @@
 //! leaf; a function returning two or more leaves returns them through
 //! memory the caller provides (`sret`), laid out as a C struct of the
 //! leaves, which keel returns in registers where the platform allows.
+//!
+//! An enum is its discriminant, an `isize`, then the fields of each of its
+//! variants in turn, as if it were a struct of them all: only the
+//! variant it holds has meaningful leaves. Where the fields of one
+//! variant could share another's would be smaller, but nothing observes
+//! the size yet.
 
 use std::collections::HashMap;
 
 use flux_hir::{Diagnostic, FunctionId, Hir, ImplTarget, Owner};
 use flux_mir::mono::Instance;
 use flux_mir::{
-    BinOp, Body, Constant, FileMir, Local, Operand, Place, ProjectionElem, Rvalue, StatementKind,
-    TerminatorKind, UnOp, projection_ty,
+    AggregateKind, BinOp, Body, Constant, FileMir, Local, Operand, Place, PlaceTy, ProjectionElem,
+    Rvalue, StatementKind, TerminatorKind, UnOp,
 };
 use flux_ty::{FnSig, GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind, TypedFile};
 use keel_frontend::{FunctionBuilder, Variable};
@@ -259,9 +265,24 @@ fn keel_type(ty: Ty) -> Option<Type> {
     }
 }
 
+/// The type of the discriminant of `ty`, an enum.
+fn discriminant(sigs: &Signatures, ty: Ty) -> flux_ty::IntTy {
+    sigs.discriminant_ty(ty).unwrap_or(flux_ty::IntTy::Isize)
+}
+
 /// The scalar leaves of a value of `ty`, in field order: none for `()`
-/// and `!`, one for a scalar.
+/// and `!`, one for a scalar; an enum's discriminant, then every
+/// variant's fields.
 fn leaves(sigs: &Signatures, ty: Ty, out: &mut Vec<Ty>) {
+    if let Some(variants) = sigs.variants(ty) {
+        out.push(Ty::int(discriminant(sigs, ty)));
+        for fields in variants {
+            for &field in fields {
+                leaves(sigs, field, out);
+            }
+        }
+        return;
+    }
     match sigs.fields(ty) {
         Some(fields) => {
             for &field in fields {
@@ -280,6 +301,13 @@ fn leaves_of(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
 }
 
 fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
+    if let Some(variants) = sigs.variants(ty) {
+        return 1 + variants
+            .iter()
+            .flat_map(|fields| fields.iter())
+            .map(|&f| leaf_count(sigs, f))
+            .sum::<usize>();
+    }
     match sigs.fields(ty) {
         Some(fields) => fields.iter().map(|&f| leaf_count(sigs, f)).sum(),
         None => usize::from(keel_type(ty).is_some()),
@@ -287,10 +315,16 @@ fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
 }
 
 /// How a value of `ty` is laid out in memory: a C struct of its fields,
-/// recursively, with `()` and `!` empty.
+/// recursively, with `()` and `!` empty; an enum as a struct of its
+/// discriminant and a struct of each variant's fields.
 fn layout(sigs: &Signatures, ty: Ty) -> Layout {
+    if let Some(variants) = sigs.variants(ty) {
+        let mut members = vec![Layout::Scalar(int_type(discriminant(sigs, ty)))];
+        members.extend(variants.iter().map(|fields| struct_layout(sigs, fields)));
+        return Layout::Struct(members);
+    }
     match sigs.fields(ty) {
-        Some(fields) => Layout::Struct(fields.iter().map(|&f| layout(sigs, f)).collect()),
+        Some(fields) => struct_layout(sigs, fields),
         None => match keel_type(ty) {
             Some(scalar) => Layout::Scalar(scalar),
             None => Layout::Struct(Vec::new()),
@@ -298,20 +332,28 @@ fn layout(sigs: &Signatures, ty: Ty) -> Layout {
     }
 }
 
-/// The offset of field `index` in a value of `ty`, as [`layout`] places
-/// it.
-fn field_offset(sigs: &Signatures, ty: Ty, index: u32) -> u64 {
-    let fields = sigs.fields(ty).expect("fields are of aggregates");
+fn struct_layout(sigs: &Signatures, fields: &[Ty]) -> Layout {
+    Layout::Struct(fields.iter().map(|&f| layout(sigs, f)).collect())
+}
+
+/// The offset of member `index` of a C struct of `members`.
+fn member_offset(members: &[Layout], index: usize) -> u64 {
     let mut offset: u64 = 0;
-    for (i, &field) in fields.iter().enumerate() {
-        let field = layout(sigs, field);
-        offset = offset.next_multiple_of(field.align());
-        if i == index as usize {
+    for (i, member) in members.iter().enumerate() {
+        offset = offset.next_multiple_of(member.align());
+        if i == index {
             break;
         }
-        offset += field.size();
+        offset += member.size();
     }
     offset
+}
+
+/// The fields of a value of `place`'s type: of the variant it was
+/// downcast to, or its own.
+fn place_fields(sigs: &Signatures, place: PlaceTy) -> &'static [Ty] {
+    sigs.variant_fields(place.ty, place.variant.unwrap_or(0))
+        .expect("fields are of aggregates")
 }
 
 /// Where a place's value is.
@@ -574,7 +616,8 @@ impl Lower<'_, '_, '_> {
             self.b.switch_to_block(self.blocks[block.index()]);
             for statement in &data.statements {
                 if let StatementKind::Assign(dest, rvalue) = &statement.kind {
-                    let values = self.rvalue(rvalue);
+                    let ty = body.place_ty(dest, sigs);
+                    let values = self.rvalue(rvalue, ty);
                     self.write(dest, &values);
                 }
             }
@@ -594,7 +637,7 @@ impl Lower<'_, '_, '_> {
     /// reads the pointer.
     fn locate(&mut self, place: &Place) -> (Location, Ty) {
         let sigs = self.sigs;
-        let mut ty = self.body.locals[place.local].ty;
+        let mut ty = PlaceTy::from(self.body.locals[place.local].ty);
         let mut location = match self.slots[place.local.index()] {
             Some(slot) => Location::Memory(self.b.ins().stack_addr(slot)),
             None => Location::Vars {
@@ -604,10 +647,10 @@ impl Lower<'_, '_, '_> {
             },
         };
         for &elem in &place.projection {
-            let elem_ty = projection_ty(ty, elem, sigs);
+            let elem_ty = ty.project(elem, sigs);
             location = match (elem, location) {
                 (ProjectionElem::Field(field), Location::Vars { local, start, .. }) => {
-                    let fields = sigs.fields(ty).expect("fields are of aggregates");
+                    let fields = place_fields(sigs, ty);
                     let before: usize = fields[..field as usize]
                         .iter()
                         .map(|&f| leaf_count(sigs, f))
@@ -615,21 +658,42 @@ impl Lower<'_, '_, '_> {
                     Location::Vars {
                         local,
                         start: start + before,
-                        len: leaf_count(sigs, elem_ty),
+                        len: leaf_count(sigs, elem_ty.ty),
                     }
                 }
                 (ProjectionElem::Field(field), Location::Memory(address)) => {
-                    let offset = field_offset(sigs, ty, field);
+                    let fields = place_fields(sigs, ty);
+                    let members: Vec<Layout> = fields.iter().map(|&f| layout(sigs, f)).collect();
+                    let offset = member_offset(&members, field as usize);
+                    Location::Memory(self.offset(address, offset))
+                }
+                (ProjectionElem::Downcast(variant), Location::Vars { local, start, .. }) => {
+                    let variants = sigs.variants(ty.ty).expect("downcasts are of enums");
+                    let count = |fields: &[Ty]| -> usize {
+                        fields.iter().map(|&f| leaf_count(sigs, f)).sum()
+                    };
+                    let before: usize = variants[..variant as usize].iter().map(|f| count(f)).sum();
+                    Location::Vars {
+                        local,
+                        start: start + 1 + before,
+                        len: count(variants[variant as usize]),
+                    }
+                }
+                (ProjectionElem::Downcast(variant), Location::Memory(address)) => {
+                    let Layout::Struct(members) = layout(sigs, ty.ty) else {
+                        unreachable!("enums are laid out as structs")
+                    };
+                    let offset = member_offset(&members, 1 + variant as usize);
                     Location::Memory(self.offset(address, offset))
                 }
                 (ProjectionElem::Deref, location) => {
-                    let pointer = self.load(location, ty)[0];
+                    let pointer = self.load(location, ty.ty)[0];
                     Location::Memory(pointer)
                 }
             };
             ty = elem_ty;
         }
-        (location, ty)
+        (location, ty.ty)
     }
 
     /// The leaves of the `ty` at `location`.
@@ -686,7 +750,7 @@ impl Lower<'_, '_, '_> {
                     },
                 };
                 let mut leaves = Vec::new();
-                self.value_leaves(&value, &mut leaves);
+                self.value_leaves(&value, *ty, &mut leaves);
                 leaves
             }
             Operand::Const(constant) => self.constant(*constant).into_iter().collect(),
@@ -702,16 +766,38 @@ impl Lower<'_, '_, '_> {
             .collect()
     }
 
-    /// A constant item's value as leaves.
-    fn value_leaves(&mut self, value: &flux_mir::eval::Value, out: &mut Vec<Value>) {
+    /// A constant item's value, of type `ty`, as leaves.
+    fn value_leaves(&mut self, value: &flux_mir::eval::Value, ty: Ty, out: &mut Vec<Value>) {
+        use flux_mir::eval::Value as V;
         match value {
-            flux_mir::eval::Value::Int { bits, ty } => out.push(self.int_const(*bits, *ty)),
-            flux_mir::eval::Value::Bool(b) => {
-                out.push(self.b.ins().iconst(Type::I8, i64::from(*b)))
+            V::Int { bits, ty } => out.push(self.int_const(*bits, *ty)),
+            V::Bool(b) => out.push(self.b.ins().iconst(Type::I8, i64::from(*b))),
+            V::Aggregate(fields) => {
+                let types = self.sigs.fields(ty).unwrap_or_default();
+                for (field, &field_ty) in fields.iter().zip(types) {
+                    self.value_leaves(field, field_ty, out);
+                }
             }
-            flux_mir::eval::Value::Aggregate(fields) => {
-                for field in fields {
-                    self.value_leaves(field, out);
+            V::Variant {
+                strukt,
+                index,
+                fields,
+            } => {
+                let items = &self.ctx.hir.items;
+                let bits = flux_mir::discriminant_bits(items, *strukt, *index);
+                let int = flux_ty::discriminant_ty(items, *strukt);
+                out.push(self.int_const(bits, int));
+                let variants = self.sigs.variants(ty).unwrap_or_default();
+                for (v, types) in variants.into_iter().enumerate() {
+                    if v as u32 == *index {
+                        for (field, &field_ty) in fields.iter().zip(types) {
+                            self.value_leaves(field, field_ty, out);
+                        }
+                    } else {
+                        for &field_ty in types {
+                            out.extend(self.zeroes(field_ty));
+                        }
+                    }
                 }
             }
         }
@@ -758,12 +844,45 @@ impl Lower<'_, '_, '_> {
         self.b.ins().iconst(ty, as_signed)
     }
 
-    /// An rvalue's leaves.
-    fn rvalue(&mut self, rvalue: &Rvalue) -> Vec<Value> {
+    /// The leaves of an rvalue of type `ty`.
+    fn rvalue(&mut self, rvalue: &Rvalue, ty: Ty) -> Vec<Value> {
         match rvalue {
             Rvalue::Use(operand) => self.operand(operand),
+            Rvalue::Aggregate(AggregateKind::Variant(strukt, index), operands) => {
+                let items = &self.ctx.hir.items;
+                let bits = flux_mir::discriminant_bits(items, *strukt, *index);
+                let int = flux_ty::discriminant_ty(items, *strukt);
+                let mut leaves = vec![self.int_const(bits, int)];
+                let variants = self.sigs.variants(ty).unwrap_or_default();
+                for (v, types) in variants.into_iter().enumerate() {
+                    if v as u32 == *index {
+                        for operand in operands {
+                            leaves.extend(self.operand(operand));
+                        }
+                    } else {
+                        for &field_ty in types {
+                            leaves.extend(self.zeroes(field_ty));
+                        }
+                    }
+                }
+                leaves
+            }
             Rvalue::Aggregate(_, operands) => {
                 operands.iter().flat_map(|o| self.operand(o)).collect()
+            }
+            Rvalue::Discriminant(place) => {
+                let (location, _) = self.locate(place);
+                let tag = match location {
+                    Location::Vars { local, start, .. } => {
+                        let var = self.vars[local.index()][start];
+                        self.b.use_var(var)
+                    }
+                    Location::Memory(address) => {
+                        let ty = int_type(ty.as_int().expect("an integer discriminant"));
+                        self.b.ins().load_with_flags(ty, address, aligned(ty))
+                    }
+                };
+                vec![tag]
             }
             Rvalue::Ref { place, .. } => match self.locate(place).0 {
                 Location::Memory(address) => vec![address],
@@ -775,7 +894,10 @@ impl Lower<'_, '_, '_> {
 
     fn scalar_rvalue(&mut self, rvalue: &Rvalue) -> Option<Value> {
         match rvalue {
-            Rvalue::Use(_) | Rvalue::Aggregate(..) | Rvalue::Ref { .. } => {
+            Rvalue::Use(_)
+            | Rvalue::Aggregate(..)
+            | Rvalue::Ref { .. }
+            | Rvalue::Discriminant(_) => {
                 unreachable!("not scalar operations")
             }
             Rvalue::UnaryOp(op, operand) => {

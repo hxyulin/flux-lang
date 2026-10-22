@@ -2,8 +2,8 @@
 
 use flux_arena::{Arena, ArenaMap};
 use flux_hir::{
-    ArithOp, BinaryOp, Binding, CmpOp, ConstId, Expr, ExprId, FunctionId, Hir, ItemTree, Literal,
-    LogicOp, Pat, PatId, Res, Stmt, StructId, UnaryOp,
+    ArithOp, BinaryOp, Binding, BindingId, CmpOp, ConstId, Expr, ExprId, FunctionId, Hir, ItemTree,
+    Literal, LogicOp, MatchArm, Pat, PatId, Res, Stmt, StructId, UnaryOp,
 };
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
@@ -11,28 +11,31 @@ use flux_ty::{GenericArgs, InferenceResult, IntTy, Mutability, Ty, TyKind, Typed
 
 use crate::{
     AggregateKind, AssertMessage, BasicBlock, BasicBlockData, BinOp, Body, Constant, FileMir,
-    Local, LocalDecl, LocalKind, Operand, Place, Rvalue, Statement, StatementKind, Terminator,
-    TerminatorKind, UnOp, projection_ty,
+    Local, LocalDecl, LocalKind, Operand, Place, PlaceTy, Rvalue, Statement, StatementKind,
+    Terminator, TerminatorKind, UnOp,
 };
 
 /// Builds every body of a file and checks initialization. The file must
 /// have no diagnostics from lowering or type checking.
 pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut diagnostics = Vec::new();
-    let mut check = |body: &Body, file, is_const| {
-        diagnostics.extend(
-            check_body(hir, typed, body, is_const)
-                .into_iter()
-                .map(|d| flux_hir::Diagnostic { file, ..d }),
-        );
+    let check = |body: &Body, file, is_const| {
+        check_body(hir, typed, body, is_const)
+            .into_iter()
+            .map(move |d| flux_hir::Diagnostic { file, ..d })
     };
     // Every constant, and every function of the program; `core`'s
     // functions only if something calls them.
     let mut queue: Vec<FunctionId> = Vec::new();
     let mut consts = ArenaMap::new();
+    let mut unchecked = Vec::new();
     for (id, _) in hir.const_bodies() {
         let body = build_const(hir, typed, id);
-        check(&body, hir.items.consts[id].loc.file, true);
+        let found: Vec<_> = check(&body, hir.items.consts[id].loc.file, true).collect();
+        if !found.is_empty() {
+            unchecked.push(id);
+        }
+        diagnostics.extend(found);
         queue.extend(body.callees());
         consts.insert(id, body);
     }
@@ -48,12 +51,20 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
             continue;
         }
         let body = build(hir, typed, id);
-        let data = &hir.items.functions[id];
-        check(&body, data.loc.file, data.is_const);
         for callee in body.callees() {
             queue.extend(flux_ty::call_targets(&hir.items, callee));
         }
         bodies.insert(id, body);
+    }
+    // Patterns that name constants are checked with their values; rustc
+    // does not borrow-check the bodies whose patterns have errors.
+    let (found, failed) = check_patterns(hir, typed, &bodies, &consts, &unchecked, true);
+    diagnostics.extend(found);
+    for (id, body) in bodies.iter() {
+        let data = &hir.items.functions[id];
+        if !failed.contains(&id) {
+            diagnostics.extend(check(body, data.loc.file, data.is_const));
+        }
     }
     let mut const_values = crate::eval::ConstValues::default();
     if diagnostics.is_empty() {
@@ -98,8 +109,11 @@ pub fn check_clean_bodies(
     typed: &TypedFile,
     errors: &[flux_hir::Diagnostic],
 ) -> Vec<flux_hir::Diagnostic> {
-    let mut diagnostics = Vec::new();
+    let (mut diagnostics, failed) = check_clean_patterns(hir, typed);
     for (id, _) in hir.bodies.iter() {
+        if failed.contains(&id) {
+            continue;
+        }
         let Some(result) = typed.bodies.get(id) else {
             continue;
         };
@@ -130,6 +144,107 @@ pub fn check_clean_bodies(
     diagnostics
 }
 
+/// [`check_patterns`] where other bodies have errors: with the values
+/// of the constants that have none, and call only functions that have
+/// none. Constants that fail are not reported.
+fn check_clean_patterns(
+    hir: &Hir,
+    typed: &TypedFile,
+) -> (Vec<flux_hir::Diagnostic>, Vec<FunctionId>) {
+    if !has_deferred_patterns(typed) {
+        return Default::default();
+    }
+    let clean = |result: Option<&InferenceResult>| result.is_some_and(|r| r.diagnostics.is_empty());
+    let mut queue = Vec::new();
+    let mut consts = ArenaMap::new();
+    for (id, _) in hir.const_bodies() {
+        if clean(typed.consts.get(id)) && typed.sigs.consts.get(id) != Some(&Ty::ERROR) {
+            let body = build_const(hir, typed, id);
+            queue.extend(body.callees());
+            consts.insert(id, body);
+        }
+    }
+    let mut bodies = ArenaMap::new();
+    while let Some(id) = queue.pop() {
+        if bodies.get(id).is_some() || hir.body(id).is_none() || !clean(typed.bodies.get(id)) {
+            continue;
+        }
+        let body = build(hir, typed, id);
+        for callee in body.callees() {
+            queue.extend(flux_ty::call_targets(&hir.items, callee));
+        }
+        bodies.insert(id, body);
+    }
+    check_patterns(hir, typed, &bodies, &consts, &[], false)
+}
+
+/// Whether some body's pattern checks wait for the values of
+/// constants.
+fn has_deferred_patterns(typed: &TypedFile) -> bool {
+    let functions = typed.bodies.iter().map(|(_, r)| r);
+    functions
+        .chain(typed.consts.iter().map(|(_, r)| r))
+        .any(|r| r.deferred_pats)
+}
+
+/// The checks of the patterns that name constants, with the values of
+/// the constants, evaluated from `bodies` and `consts` but those in
+/// `skip`; and the functions they fail in. With `report`, constants
+/// whose evaluation fails are reported, as rustc does (E0080).
+fn check_patterns(
+    hir: &Hir,
+    typed: &TypedFile,
+    bodies: &ArenaMap<flux_hir::Function, Body>,
+    consts: &ArenaMap<flux_hir::Const, Body>,
+    skip: &[ConstId],
+    report: bool,
+) -> (Vec<flux_hir::Diagnostic>, Vec<FunctionId>) {
+    if !has_deferred_patterns(typed) {
+        return Default::default();
+    }
+    let items = &hir.items;
+    let names = |id: ConstId| {
+        items.consts[id]
+            .name
+            .map_or("_".to_owned(), |n| n.to_string())
+    };
+    let mut evaluator = crate::eval::Evaluator::new(items, &typed.sigs, bodies, consts, &names);
+    let (mut diagnostics, failed) = flux_ty::check_deferred_patterns(hir, typed, &mut |c| {
+        if skip.contains(&c.konst) {
+            return None;
+        }
+        match evaluator.eval_instance(c).ok()? {
+            crate::eval::Value::Int { bits, ty } if ty.is_signed() => {
+                Some(crate::eval::sign_extend(bits, ty))
+            }
+            crate::eval::Value::Int { bits, .. } => Some(bits as i128),
+            crate::eval::Value::Bool(b) => Some(b as i128),
+            _ => None,
+        }
+    });
+    if report {
+        diagnostics.extend(eval_failures(items, &evaluator));
+    }
+    (diagnostics, failed)
+}
+
+/// The constants whose evaluation failed, as rustc reports them: at the
+/// constant, once each.
+fn eval_failures(
+    items: &flux_hir::ItemTree,
+    evaluator: &crate::eval::Evaluator<'_>,
+) -> Vec<flux_hir::Diagnostic> {
+    let mut diagnostics: Vec<flux_hir::Diagnostic> = Vec::new();
+    for (c, e) in &evaluator.failures {
+        let mut d = flux_hir::Diagnostic::new(e.range, e.message.clone());
+        d.file = items.consts[c.konst].loc.file;
+        if !diagnostics.contains(&d) {
+            diagnostics.push(d);
+        }
+    }
+    diagnostics
+}
+
 /// A body's initialization and borrow errors, and if it is of a
 /// constant or `const fn`, its drops that would run code.
 fn check_body(
@@ -138,7 +253,7 @@ fn check_body(
     body: &Body,
     is_const: bool,
 ) -> Vec<flux_hir::Diagnostic> {
-    let mut found = crate::init::check(body, &hir.items, &typed.sigs);
+    let mut found = body.init_errors.clone();
     found.extend(crate::borrowck::check(body, &hir.items, &typed.sigs));
     if is_const {
         found.extend(crate::drops::check_const(body));
@@ -201,14 +316,7 @@ fn evaluate_consts(
             }
         }
     }
-    let mut diagnostics: Vec<flux_hir::Diagnostic> = Vec::new();
-    for (c, e) in &evaluator.failures {
-        let mut d = flux_hir::Diagnostic::new(e.range, e.message.clone());
-        d.file = items.consts[c.konst].loc.file;
-        if !diagnostics.contains(&d) {
-            diagnostics.push(d);
-        }
-    }
+    let diagnostics = eval_failures(items, &evaluator);
     for (id, _) in items.consts.iter() {
         if consts.get(id).is_some()
             && !is_generic_const(items, id)
@@ -318,6 +426,10 @@ fn build_body(
         blocks: Vec::new(),
         current: None,
         binding_locals: ArenaMap::new(),
+        binding_ranges: ArenaMap::new(),
+        guard_places: ArenaMap::new(),
+        guard: None,
+        errors: Vec::new(),
         loops: ArenaMap::new(),
         scopes: vec![Scope {
             kind: ScopeKind::Function,
@@ -351,7 +463,7 @@ fn build_body(
         let range = b.pat_range(pat);
         b.scopes[0].locals.push((local, range));
         match body.pats[pat] {
-            Pat::Bind(binding) => {
+            Pat::Bind { binding, sub: None } if types.binding_refs.get(binding).is_none() => {
                 let data = &body.bindings[binding];
                 b.locals[local].kind = LocalKind::User {
                     name: data.name,
@@ -361,7 +473,7 @@ fn build_body(
             }
             _ => {
                 b.declare_bindings(pat);
-                b.destructure(pat, &local.into(), range);
+                b.match_irrefutable(pat, local.into(), range);
             }
         }
     }
@@ -401,9 +513,48 @@ fn build_body(
         in_core: hir.items.is_core(module),
         inherits_overflow_checks: false,
         live_drops: Vec::new(),
+        init_errors: Vec::new(),
     };
-    crate::drops::elaborate(&mut built, &hir.items, &typed.sigs, &b.env);
+    built.init_errors = crate::init::check(&built, &hir.items, &typed.sigs);
+    built.init_errors.extend(b.errors);
+    let precise = match item {
+        Item::Function(f) => hir.items.functions[f].precise_live_drops,
+        Item::Const(_) => false,
+    };
+    crate::drops::elaborate(&mut built, &hir.items, &typed.sigs, &b.env, precise);
     built
+}
+
+/// What a guard may not change: as rustc's guards borrow the place matched
+/// and see `ref mut` bindings through shared references.
+struct Guard {
+    scrutinee: Place,
+    ref_muts: Vec<BindingId>,
+}
+
+/// Where control goes once a pattern matched: the block, the place each
+/// binding binds, and where to go to try the next way of matching (the
+/// next alternative of an or-pattern) if a guard fails.
+struct Exit {
+    block: BasicBlock,
+    binds: Vec<(BindingId, Place)>,
+    resume: BasicBlock,
+}
+
+/// The patterns of a tuple or tuple struct pattern with the indices of
+/// the fields they match, of `count`, around `..` at `rest`.
+fn positions(
+    pats: &[PatId],
+    rest: Option<u32>,
+    count: usize,
+) -> impl Iterator<Item = (u32, PatId)> + '_ {
+    pats.iter().enumerate().map(move |(i, &p)| {
+        let index = match rest {
+            Some(rest) if i >= rest as usize => count - (pats.len() - i),
+            _ => i,
+        };
+        (index as u32, p)
+    })
 }
 
 /// A scope whose locals are dropped, in reverse order, when it ends.
@@ -450,6 +601,16 @@ struct Builder<'a> {
     /// code needs a block again (then it starts an unreachable one).
     current: Option<BasicBlock>,
     binding_locals: ArenaMap<Binding, Local>,
+    /// Each binding's pattern, where it is reported.
+    binding_ranges: ArenaMap<Binding, TextRange>,
+    /// While lowering a guard, the bindings of its arm that bind values
+    /// that are not `Copy`: the places they will bind, which the guard
+    /// reads instead, as rustc's guards see them by reference.
+    guard_places: ArenaMap<Binding, Place>,
+    /// While lowering a guard, what it may not change.
+    guard: Option<Guard>,
+    /// Errors found while building: what a guard may not do.
+    errors: Vec<flux_hir::Diagnostic>,
     loops: ArenaMap<Expr, LoopScope>,
     /// The enclosing scopes, innermost last.
     scopes: Vec<Scope>,
@@ -605,15 +766,25 @@ impl Builder<'_> {
     }
 
     fn place_ty(&self, place: &Place) -> Ty {
-        let local_ty = self.locals[place.local].ty;
-        place.projection.iter().fold(local_ty, |ty, &elem| {
-            let ty = projection_ty(ty, elem, &self.typed.sigs);
-            if ty.has_aliases() {
-                flux_ty::traits::normalize(self.items, &self.typed.sigs, &self.projections, ty)
+        let local_ty = PlaceTy::from(self.locals[place.local].ty);
+        let ty = place.projection.iter().fold(local_ty, |ty, &elem| {
+            let ty = ty.project(elem, &self.typed.sigs);
+            if ty.ty.has_aliases() {
+                let normalized = flux_ty::traits::normalize(
+                    self.items,
+                    &self.typed.sigs,
+                    &self.projections,
+                    ty.ty,
+                );
+                PlaceTy {
+                    ty: normalized,
+                    ..ty
+                }
             } else {
                 ty
             }
-        })
+        });
+        ty.ty
     }
 
     /// Leaves the scopes from `depth` in, if the code is reachable:
@@ -701,6 +872,9 @@ impl Builder<'_> {
     /// otherwise a temporary holding its value.
     fn lower_place(&mut self, expr: ExprId) -> Place {
         match self.body.exprs[expr] {
+            Expr::Path(Res::Local(binding)) if self.guard_places.get(binding).is_some() => {
+                self.guard_places[binding].clone()
+            }
             Expr::Path(Res::Local(binding)) if self.binding_locals.get(binding).is_some() => {
                 self.binding_locals[binding].into()
             }
@@ -741,11 +915,21 @@ impl Builder<'_> {
         self.types.field_indices.get(expr).copied().unwrap_or(0)
     }
 
-    /// The index of `strukt`'s field `name`.
-    fn struct_field(&self, strukt: StructId, name: Symbol) -> u32 {
+    /// The index of field `name` of `strukt`, or of its variant `variant`.
+    fn struct_field(&self, strukt: StructId, variant: u32, name: Symbol) -> u32 {
         self.items.structs[strukt]
+            .variant(variant)
             .field(name)
             .map_or(0, |(i, _)| i as u32)
+    }
+
+    /// The aggregate that builds `strukt`, or its variant `variant`.
+    fn aggregate(&self, strukt: StructId, variant: u32) -> AggregateKind {
+        if self.items.structs[strukt].is_enum() {
+            AggregateKind::Variant(strukt, variant)
+        } else {
+            AggregateKind::Struct(strukt)
+        }
     }
 
     fn constant(&mut self, literal: &Literal, expr: ExprId) -> Constant {
@@ -829,8 +1013,40 @@ impl Builder<'_> {
                     range,
                 );
             }
-            Expr::Path(Res::Local(binding)) if self.binding_locals.get(*binding).is_none() => {
+            Expr::Path(Res::Variant(strukt, variant)) => {
+                // Only unit variants type-check as values.
+                self.assign(
+                    dest,
+                    Rvalue::Aggregate(AggregateKind::Variant(*strukt, *variant), Vec::new()),
+                    range,
+                );
+            }
+            Expr::Let { .. } => {
+                // Only in conditions, which lower them as branches.
                 self.terminate(TerminatorKind::Unreachable, range);
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.lower_match(*scrutinee, arms, dest, range);
+            }
+            Expr::Path(Res::Local(binding))
+                if self.binding_locals.get(*binding).is_none()
+                    && self.guard_places.get(*binding).is_none() =>
+            {
+                self.terminate(TerminatorKind::Unreachable, range);
+            }
+            Expr::Path(Res::Local(binding))
+                if let Some(place) = self.guard_places.get(*binding).cloned()
+                    && matches!(self.read(place), Operand::Move(_)) =>
+            {
+                let name = body.bindings[*binding].name;
+                self.errors.push(flux_hir::Diagnostic::new(
+                    range,
+                    format!("cannot move out of `{name}` in pattern guard"),
+                ));
+                // Moves nothing, as in rustc, so later uses are not errors
+                // too; the program does not compile.
+                let place = self.lower_place(expr);
+                self.assign(dest, Rvalue::Use(Operand::Copy(place)), range);
             }
             // Reads of places, including fields of values that are not
             // places: `make().x`.
@@ -847,6 +1063,9 @@ impl Builder<'_> {
                 mutable,
                 expr: inner,
             } => {
+                if *mutable && is_place(body, *inner) {
+                    self.check_guard_write(*inner, true, range);
+                }
                 self.extending = self.extended_refs.contains(&expr);
                 let place = self.lower_place(*inner);
                 self.extending = false;
@@ -864,9 +1083,10 @@ impl Builder<'_> {
             }
             Expr::Record {
                 strukt,
+                variant,
                 fields,
                 spread,
-            } => self.lower_record(*strukt, fields, *spread, dest, range),
+            } => self.lower_record(*strukt, *variant, fields, *spread, dest, range),
             Expr::Block { stmts, tail, .. } => {
                 self.scoped(ScopeKind::Block, range, |b| {
                     for stmt in stmts.iter() {
@@ -879,6 +1099,13 @@ impl Builder<'_> {
                         None => b.assign_unit(dest, range),
                     }
                 });
+            }
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+            } if self.has_let(*condition) => {
+                self.lower_if_let(*condition, *then_branch, *else_branch, dest, range);
             }
             Expr::If {
                 condition,
@@ -969,6 +1196,14 @@ impl Builder<'_> {
                     self.assign(
                         dest,
                         Rvalue::Aggregate(AggregateKind::Struct(strukt), operands),
+                        range,
+                    );
+                }
+                Expr::Path(Res::Variant(strukt, variant)) => {
+                    let operands = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                    self.assign(
+                        dest,
+                        Rvalue::Aggregate(AggregateKind::Variant(strukt, variant), operands),
                         range,
                     );
                 }
@@ -1066,8 +1301,28 @@ impl Builder<'_> {
                 }
             },
             Expr::Cast { expr: inner, .. } => {
-                let operand = self.lower_operand(*inner);
                 let ty = self.expr_ty(expr);
+                // A cast to the operand's own type is the operand.
+                if self.expr_ty(*inner) == ty {
+                    self.lower_into(*inner, dest);
+                    return;
+                }
+                // A fieldless enum is cast through its discriminant.
+                let operand = if matches!(self.expr_ty(*inner).kind(), TyKind::Adt(..)) {
+                    // The cast takes the value: moves it unless it is `Copy`.
+                    let mut place = self.lower_place(*inner);
+                    if let Operand::Move(_) = self.read(place.clone()) {
+                        let value = self.temp(self.expr_ty(*inner));
+                        self.assign(&value.into(), Rvalue::Use(Operand::Move(place)), range);
+                        place = value.into();
+                    }
+                    let int = self.typed.sigs.discriminant_ty(self.expr_ty(*inner));
+                    let discriminant = self.temp(Ty::int(int.unwrap_or(IntTy::Isize)));
+                    self.assign(&discriminant.into(), Rvalue::Discriminant(place), range);
+                    Operand::Copy(discriminant.into())
+                } else {
+                    self.lower_operand(*inner)
+                };
                 self.assign(dest, Rvalue::Cast(operand, ty), range);
             }
         }
@@ -1162,16 +1417,17 @@ impl Builder<'_> {
     fn lower_record(
         &mut self,
         strukt: StructId,
+        variant: u32,
         fields: &[(Symbol, ExprId)],
         spread: Option<ExprId>,
         dest: &Place,
         range: TextRange,
     ) {
-        let count = self.items.structs[strukt].fields.len();
+        let count = self.items.structs[strukt].variant(variant).fields.len();
         let mut operands: Vec<Option<Operand>> = vec![None; count];
         for &(name, value) in fields {
             let operand = self.lower_operand(value);
-            operands[self.struct_field(strukt, name) as usize] = Some(operand);
+            operands[self.struct_field(strukt, variant, name) as usize] = Some(operand);
         }
         if let Some(base) = spread {
             let base = self.lower_place(base);
@@ -1185,15 +1441,21 @@ impl Builder<'_> {
             .into_iter()
             .map(|o| o.unwrap_or(Operand::Const(Constant::Unit)))
             .collect();
-        self.assign(
-            dest,
-            Rvalue::Aggregate(AggregateKind::Struct(strukt), operands),
-            range,
-        );
+        let kind = self.aggregate(strukt, variant);
+        self.assign(dest, Rvalue::Aggregate(kind, operands), range);
     }
 
     fn lower_stmt(&mut self, stmt: &Stmt) {
         match *stmt {
+            Stmt::Let {
+                pat,
+                init: Some(init),
+                else_branch: Some(else_branch),
+                ..
+            } => {
+                self.declare_bindings(pat);
+                self.lower_let_else(pat, init, else_branch);
+            }
             Stmt::Let { pat, init, .. } => {
                 let scope = self
                     .scopes
@@ -1258,6 +1520,11 @@ impl Builder<'_> {
                     self.extending_refs(*else_branch, out);
                 }
             }
+            Expr::Match { arms, .. } => {
+                for arm in arms.iter() {
+                    self.extending_refs(arm.body, out);
+                }
+            }
             Expr::Cast { expr: inner, .. } => self.extending_refs(*inner, out),
             _ => {}
         }
@@ -1284,7 +1551,7 @@ impl Builder<'_> {
 
     fn lower_let(&mut self, pat: PatId, init: ExprId) {
         match self.body.pats[pat] {
-            Pat::Bind(binding) => {
+            Pat::Bind { binding, sub: None } if self.types.binding_refs.get(binding).is_none() => {
                 let local = self.binding_locals[binding];
                 self.lower_into(init, &local.into());
             }
@@ -1300,8 +1567,69 @@ impl Builder<'_> {
             }
             _ => {
                 let place = self.lower_place(init);
-                self.destructure(pat, &place, self.range(init));
+                self.match_irrefutable(pat, place, self.range(init));
             }
+        }
+    }
+
+    /// `let pat = init else { .. };`: the bindings if `init` matches,
+    /// else the block, which diverges.
+    fn lower_let_else(&mut self, pat: PatId, init: ExprId, else_branch: ExprId) {
+        let range = self.range(init);
+        let place = self.lower_place(init);
+        let otherwise = self.new_block();
+        let matched = self.new_block();
+        for exit in self.test(pat, place, otherwise, range) {
+            self.current = Some(exit.block);
+            self.bind_all(&exit.binds, range);
+            self.goto(matched, range);
+        }
+        // The initializer's temporaries are dropped before the `else`
+        // block runs, as in rustc.
+        self.current = Some(otherwise);
+        let temps = self.scopes.len() - 1;
+        self.leave_scopes(temps, false, range);
+        self.lower_operand(else_branch);
+        if self.current.is_some() {
+            self.terminate(TerminatorKind::Unreachable, range);
+        }
+        self.current = Some(matched);
+    }
+
+    /// Binds the bindings of `pat`, which matches the value in `place`
+    /// whatever it is.
+    fn match_irrefutable(&mut self, pat: PatId, place: Place, range: TextRange) {
+        if !self.tests(pat) {
+            // Nothing to test, so nowhere to fail to.
+            let here = self.block();
+            for exit in self.test(pat, place, here, range) {
+                self.bind_all(&exit.binds, range);
+            }
+            return;
+        }
+        let never = self.new_block();
+        let matched = self.new_block();
+        for exit in self.test(pat, place, never, range) {
+            self.current = Some(exit.block);
+            self.bind_all(&exit.binds, range);
+            self.goto(matched, range);
+        }
+        self.current = Some(never);
+        self.terminate(TerminatorKind::Unreachable, range);
+        self.current = Some(matched);
+    }
+
+    /// Whether matching `pat` tests anything: which variant an enum
+    /// holds, or what a value is.
+    fn tests(&self, pat: PatId) -> bool {
+        match &self.body.pats[pat] {
+            Pat::Expr(_) | Pat::Range { .. } | Pat::Or(_) => true,
+            Pat::TupleStruct { strukt, .. } | Pat::Record { strukt, .. } | Pat::Unit(strukt, _)
+                if self.items.structs[*strukt].variant_count() > 1 =>
+            {
+                true
+            }
+            data => data.children().any(|child| self.tests(child)),
         }
     }
 
@@ -1310,6 +1638,11 @@ impl Builder<'_> {
         let mut bindings = Vec::new();
         self.binding_pats(pat, &mut bindings);
         for (binding, range) in bindings {
+            // A guard lowered once per way of matching declares its
+            // `let`'s bindings once.
+            if self.binding_locals.get(binding).is_some() {
+                continue;
+            }
             let data = &self.body.bindings[binding];
             let ty = self
                 .types
@@ -1325,6 +1658,7 @@ impl Builder<'_> {
                 },
             });
             self.binding_locals.insert(binding, local);
+            self.binding_ranges.insert(binding, range);
             let scope = self
                 .scopes
                 .iter_mut()
@@ -1335,9 +1669,11 @@ impl Builder<'_> {
         }
     }
 
-    /// The bindings in `pat`, each with its pattern's range.
-    fn binding_pats(&self, pat: PatId, out: &mut Vec<(flux_hir::BindingId, TextRange)>) {
-        if let Pat::Bind(binding) = self.body.pats[pat] {
+    /// The bindings in `pat`, each once with its first pattern's range.
+    fn binding_pats(&self, pat: PatId, out: &mut Vec<(BindingId, TextRange)>) {
+        if let Pat::Bind { binding, .. } = self.body.pats[pat]
+            && !out.iter().any(|&(b, _)| b == binding)
+        {
             out.push((binding, self.pat_range(pat)));
         }
         for child in self.body.pats[pat].children() {
@@ -1345,35 +1681,482 @@ impl Builder<'_> {
         }
     }
 
-    /// Binds `pat`'s bindings to the parts of the value in `place` they
-    /// match.
-    fn destructure(&mut self, pat: PatId, place: &Place, range: TextRange) {
-        match &self.body.pats[pat] {
-            Pat::Missing | Pat::Wild | Pat::Unit(_) => {}
-            Pat::Bind(binding) => {
-                let local = self.binding_locals[*binding];
-                let operand = self.read(place.clone());
-                self.assign(&local.into(), Rvalue::Use(operand), range);
+    /// Tests whether the value in `place` matches `pat`, going to `fail`
+    /// if it does not, and gives where control goes if it does: one exit
+    /// per way of matching, more than one for an or-pattern, each with
+    /// the places its bindings bind. Tests read only the parts of the
+    /// place they look at, at `range`, the scrutinee.
+    fn test(&mut self, pat: PatId, place: Place, fail: BasicBlock, range: TextRange) -> Vec<Exit> {
+        let mut place = place;
+        for _ in 0..self.types.pat_derefs.get(pat).copied().unwrap_or(0) {
+            place = place.deref();
+        }
+        let here = |b: &mut Self| {
+            vec![Exit {
+                block: b.block(),
+                binds: Vec::new(),
+                resume: fail,
+            }]
+        };
+        let body = self.body;
+        match &body.pats[pat] {
+            Pat::Missing | Pat::Wild => here(self),
+            Pat::Bind { binding, sub } => {
+                let mut exits = match sub {
+                    Some(sub) => self.test(*sub, place.clone(), fail, range),
+                    None => here(self),
+                };
+                // As rustc, after the subpattern's: `x @ Some(y)` moves
+                // `y` out before `x` would take the whole.
+                for exit in &mut exits {
+                    exit.binds.push((*binding, place.clone()));
+                }
+                exits
             }
-            Pat::Tuple { pats, rest } | Pat::TupleStruct { pats, rest, .. } => {
+            Pat::Tuple { pats, rest } => {
                 let count = self
                     .typed
                     .sigs
-                    .fields(self.place_ty(place))
+                    .fields(self.place_ty(&place))
                     .map_or(0, |f| f.len());
-                for (i, &field) in pats.iter().enumerate() {
-                    let index = match rest {
-                        Some(rest) if i >= *rest as usize => count - (pats.len() - i),
-                        _ => i,
-                    };
-                    self.destructure(field, &place.field(index as u32), range);
+                let parts = positions(pats, *rest, count)
+                    .map(|(i, p)| (p, place.field(i)))
+                    .collect();
+                self.test_all(parts, fail, range)
+            }
+            Pat::TupleStruct {
+                strukt,
+                variant,
+                pats,
+                rest,
+            } => {
+                let place = self.test_variant(*strukt, *variant, place, fail, range);
+                let count = self.items.structs[*strukt].variant(*variant).fields.len();
+                let parts = positions(pats, *rest, count)
+                    .map(|(i, p)| (p, place.field(i)))
+                    .collect();
+                self.test_all(parts, fail, range)
+            }
+            Pat::Record {
+                strukt,
+                variant,
+                fields,
+                ..
+            } => {
+                let place = self.test_variant(*strukt, *variant, place, fail, range);
+                let parts = fields
+                    .iter()
+                    .map(|&(name, p)| (p, place.field(self.struct_field(*strukt, *variant, name))))
+                    .collect();
+                self.test_all(parts, fail, range)
+            }
+            Pat::Unit(strukt, variant) => {
+                self.test_variant(*strukt, *variant, place, fail, range);
+                here(self)
+            }
+            Pat::Expr(expr) => {
+                if let Expr::Literal(Literal::Bool(value)) = body.exprs[*expr] {
+                    let ok = self.new_block();
+                    let (on_false, otherwise) = if value { (fail, ok) } else { (ok, fail) };
+                    self.terminate(
+                        TerminatorKind::SwitchInt {
+                            discr: Operand::Copy(place),
+                            targets: vec![(0, on_false)],
+                            otherwise,
+                        },
+                        range,
+                    );
+                    self.current = Some(ok);
+                } else {
+                    let value = self.lower_operand(*expr);
+                    self.compare(BinOp::Eq, place, value, fail, range);
+                }
+                here(self)
+            }
+            Pat::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                if let Some(start) = start {
+                    let value = self.lower_operand(*start);
+                    self.compare(BinOp::Ge, place.clone(), value, fail, range);
+                }
+                if let Some(end) = end {
+                    let value = self.lower_operand(*end);
+                    let op = if *inclusive { BinOp::Le } else { BinOp::Lt };
+                    self.compare(op, place, value, fail, range);
+                }
+                here(self)
+            }
+            Pat::Or(alternatives) => {
+                let mut exits = Vec::new();
+                for (i, &alt) in alternatives.iter().enumerate() {
+                    let last = i + 1 == alternatives.len();
+                    let next = if last { fail } else { self.new_block() };
+                    exits.extend(self.test(alt, place.clone(), next, range));
+                    self.current = (!last).then_some(next);
+                }
+                exits
+            }
+            Pat::Ref { pat: inner, .. } => self.test(*inner, place.deref(), fail, range),
+        }
+    }
+
+    /// Tests the patterns of the parts of a value in turn. A part that
+    /// fails resumes the alternatives of an or-pattern before it, so
+    /// every way of matching is tried, in order.
+    fn test_all(
+        &mut self,
+        parts: Vec<(PatId, Place)>,
+        fail: BasicBlock,
+        range: TextRange,
+    ) -> Vec<Exit> {
+        let mut exits = vec![Exit {
+            block: self.block(),
+            binds: Vec::new(),
+            resume: fail,
+        }];
+        for (pat, place) in parts {
+            let mut next = Vec::new();
+            for exit in exits {
+                self.current = Some(exit.block);
+                for sub in self.test(pat, place.clone(), exit.resume, range) {
+                    let mut binds = exit.binds.clone();
+                    binds.extend(sub.binds);
+                    next.push(Exit {
+                        block: sub.block,
+                        binds,
+                        resume: sub.resume,
+                    });
                 }
             }
-            Pat::Record { strukt, fields, .. } => {
-                for &(name, field) in fields.iter() {
-                    let index = self.struct_field(*strukt, name);
-                    self.destructure(field, &place.field(index), range);
+            exits = next;
+        }
+        exits
+    }
+
+    /// Tests that the enum in `place` holds variant `variant`; gives the
+    /// place of that variant, or `place` itself for a struct.
+    fn test_variant(
+        &mut self,
+        strukt: StructId,
+        variant: u32,
+        place: Place,
+        fail: BasicBlock,
+        range: TextRange,
+    ) -> Place {
+        let data = &self.items.structs[strukt];
+        if !data.is_enum() {
+            return place;
+        }
+        if data.variant_count() > 1 {
+            let int = flux_ty::discriminant_ty(self.items, strukt);
+            let discriminant = self.temp(Ty::int(int));
+            self.assign(
+                &discriminant.into(),
+                Rvalue::Discriminant(place.clone()),
+                range,
+            );
+            let ok = self.new_block();
+            let bits = crate::discriminant_bits(self.items, strukt, variant);
+            self.terminate(
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(discriminant.into()),
+                    targets: vec![(bits, ok)],
+                    otherwise: fail,
+                },
+                range,
+            );
+            self.current = Some(ok);
+        }
+        place.downcast(variant)
+    }
+
+    /// Goes on if `place op value`, else to `fail`.
+    fn compare(
+        &mut self,
+        op: BinOp,
+        place: Place,
+        value: Operand,
+        fail: BasicBlock,
+        range: TextRange,
+    ) {
+        let holds = self.temp(Ty::BOOL);
+        self.assign(
+            &holds.into(),
+            Rvalue::BinaryOp(op, Operand::Copy(place), value),
+            range,
+        );
+        let ok = self.new_block();
+        self.terminate(
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(holds.into()),
+                targets: vec![(0, fail)],
+                otherwise: ok,
+            },
+            range,
+        );
+        self.current = Some(ok);
+    }
+
+    /// Binds `binding` to the value in `place`, or a reference to it, at
+    /// the binding. A move out of what may not be moved out of is at
+    /// `scrutinee`, where rustc reports it.
+    fn bind(&mut self, binding: BindingId, place: Place, scrutinee: TextRange) {
+        let local = self.binding_locals[binding];
+        let mut range = self
+            .binding_ranges
+            .get(binding)
+            .copied()
+            .unwrap_or_default();
+        let rvalue = match self.types.binding_refs.get(binding) {
+            Some(&mutability) => Rvalue::Ref {
+                mutability,
+                place,
+                two_phase: false,
+            },
+            None => {
+                let operand = self.read(place.clone());
+                if let Operand::Move(_) = operand
+                    && (place.has_deref() || self.in_drop_owner(&place))
+                {
+                    range = scrutinee;
                 }
+                Rvalue::Use(operand)
+            }
+        };
+        self.assign(&local.into(), rvalue, range);
+    }
+
+    fn bind_all(&mut self, binds: &[(BindingId, Place)], scrutinee: TextRange) {
+        for (binding, place) in binds {
+            self.bind(*binding, place.clone(), scrutinee);
+        }
+    }
+
+    /// Whether `place` is inside a value whose type has a `Drop` impl.
+    fn in_drop_owner(&self, place: &Place) -> bool {
+        (0..place.projection.len()).any(|len| {
+            let base = Place {
+                local: place.local,
+                projection: place.projection[..len].into(),
+            };
+            matches!(
+                self.place_ty(&base).kind(),
+                TyKind::Adt(adt, _)
+                    if flux_ty::traits::drop_impl(self.items, &self.typed.sigs, adt.strukt).is_some()
+            )
+        })
+    }
+
+    /// Whether binding `binding` takes a value that is not `Copy`, which
+    /// a guard must not move: it reads the place instead.
+    fn binds_value(&self, binding: BindingId) -> bool {
+        if self.types.binding_refs.get(binding).is_some() {
+            return false;
+        }
+        let ty = self.locals[self.binding_locals[binding]].ty;
+        !flux_ty::traits::is_copy(self.items, &self.typed.sigs, &self.env, ty)
+    }
+
+    /// `match scrutinee { arms }`: each arm's pattern is tested in turn,
+    /// then its guard; the first that matches binds and runs its body.
+    fn lower_match(
+        &mut self,
+        scrutinee: ExprId,
+        arms: &[MatchArm],
+        dest: &Place,
+        range: TextRange,
+    ) {
+        let at = self.range(scrutinee);
+        let place = self.lower_place(scrutinee);
+        let join = self.new_block();
+        for arm in arms {
+            let next = self.new_block();
+            self.scoped(ScopeKind::Block, range, |b| {
+                b.declare_bindings(arm.pat);
+                let exits = b.test(arm.pat, place.clone(), next, at);
+                let body = b.new_block();
+                for exit in exits {
+                    b.current = Some(exit.block);
+                    if let Some(guard) = arm.guard {
+                        let (later, now): (Vec<_>, Vec<_>) = exit
+                            .binds
+                            .iter()
+                            .cloned()
+                            .partition(|(binding, _)| b.binds_value(*binding));
+                        b.bind_all(&now, at);
+                        for (binding, place) in &later {
+                            b.guard_places.insert(*binding, place.clone());
+                        }
+                        let guard_range = b.range(guard);
+                        let pass = b.new_block();
+                        let failed = b.new_block();
+                        let outer = b.guard.replace(Guard {
+                            scrutinee: place.clone(),
+                            ref_muts: now
+                                .iter()
+                                .map(|&(binding, _)| binding)
+                                .filter(|&binding| {
+                                    b.types.binding_refs.get(binding) == Some(&Mutability::Mut)
+                                })
+                                .collect(),
+                        });
+                        if b.has_let(guard) {
+                            b.lower_condition(guard, pass, failed);
+                        } else {
+                            let cond =
+                                b.scoped(ScopeKind::Temps, guard_range, |b| b.lower_operand(guard));
+                            b.terminate(
+                                TerminatorKind::SwitchInt {
+                                    discr: cond,
+                                    targets: vec![(0, failed)],
+                                    otherwise: pass,
+                                },
+                                guard_range,
+                            );
+                        }
+                        b.guard = outer;
+                        for (binding, _) in &later {
+                            b.guard_places.remove(*binding);
+                        }
+                        // What the guard saw is bound again if another
+                        // way of matching is tried.
+                        b.current = Some(failed);
+                        let mut seen: Vec<BindingId> = now.iter().map(|&(b, _)| b).collect();
+                        b.condition_bindings(guard, &mut seen);
+                        for binding in &seen {
+                            let Some(&local) = b.binding_locals.get(*binding) else {
+                                continue;
+                            };
+                            let block = b.block();
+                            b.blocks[block.index()].0.push(Statement {
+                                kind: StatementKind::StorageDead(local),
+                                range: guard_range,
+                            });
+                        }
+                        b.goto(exit.resume, guard_range);
+                        b.current = Some(pass);
+                        b.bind_all(&later, at);
+                    } else {
+                        b.bind_all(&exit.binds, at);
+                    }
+                    b.goto(body, range);
+                }
+                b.current = Some(body);
+                b.lower_into(arm.body, dest);
+            });
+            self.goto(join, range);
+            self.current = Some(next);
+        }
+        // Exhaustive: no value gets here.
+        self.terminate(TerminatorKind::Unreachable, range);
+        self.current = Some(join);
+    }
+
+    /// The bindings of the `let`s of a condition.
+    fn condition_bindings(&self, cond: ExprId, out: &mut Vec<BindingId>) {
+        match self.body.exprs[cond] {
+            Expr::Let { pat, .. } => self.body.pat_bindings(pat, out),
+            Expr::Binary {
+                op: BinaryOp::Logic(LogicOp::And),
+                lhs,
+                rhs,
+            } => {
+                self.condition_bindings(lhs, out);
+                self.condition_bindings(rhs, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a condition is or has a `let`, in a chain of `&&`.
+    fn has_let(&self, expr: ExprId) -> bool {
+        match self.body.exprs[expr] {
+            Expr::Let { .. } => true,
+            Expr::Binary {
+                op: BinaryOp::Logic(LogicOp::And),
+                lhs,
+                rhs,
+            } => self.has_let(lhs) || self.has_let(rhs),
+            _ => false,
+        }
+    }
+
+    /// An `if` whose condition has `let`s. Their scrutinees'
+    /// temporaries, and their bindings, live through the `then` branch,
+    /// and are dropped before the `else` branch runs, as in edition
+    /// 2024.
+    fn lower_if_let(
+        &mut self,
+        condition: ExprId,
+        then_branch: ExprId,
+        else_branch: Option<ExprId>,
+        dest: &Place,
+        range: TextRange,
+    ) {
+        let depth = self.scopes.len();
+        for kind in [ScopeKind::Temps, ScopeKind::Block] {
+            self.scopes.push(Scope {
+                kind,
+                locals: Vec::new(),
+            });
+        }
+        let then_block = self.new_block();
+        let leave = self.new_block();
+        let join = self.new_block();
+        self.lower_condition(condition, then_block, leave);
+        self.current = Some(then_block);
+        self.lower_into(then_branch, dest);
+        self.leave_scopes(depth, true, range);
+        self.goto(join, range);
+        self.current = Some(leave);
+        self.leave_scopes(depth, true, range);
+        self.scopes.truncate(depth);
+        match else_branch {
+            Some(else_branch) => self.lower_into(else_branch, dest),
+            None => self.assign_unit(dest, range),
+        }
+        self.goto(join, range);
+        self.current = Some(join);
+    }
+
+    /// Goes to `then` if `cond` holds, binding its `let`s' bindings,
+    /// else to `otherwise`.
+    fn lower_condition(&mut self, cond: ExprId, then: BasicBlock, otherwise: BasicBlock) {
+        let range = self.range(cond);
+        match self.body.exprs[cond] {
+            Expr::Let { pat, expr } => {
+                let at = self.range(expr);
+                let place = self.lower_place(expr);
+                self.declare_bindings(pat);
+                for exit in self.test(pat, place, otherwise, at) {
+                    self.current = Some(exit.block);
+                    self.bind_all(&exit.binds, at);
+                    self.goto(then, range);
+                }
+            }
+            Expr::Binary {
+                op: BinaryOp::Logic(LogicOp::And),
+                lhs,
+                rhs,
+            } if self.has_let(cond) => {
+                let middle = self.new_block();
+                self.lower_condition(lhs, middle, otherwise);
+                self.current = Some(middle);
+                self.lower_condition(rhs, then, otherwise);
+            }
+            _ => {
+                let value = self.lower_operand(cond);
+                self.terminate(
+                    TerminatorKind::SwitchInt {
+                        discr: value,
+                        targets: vec![(0, otherwise)],
+                        otherwise: then,
+                    },
+                    range,
+                );
             }
         }
     }
@@ -1425,6 +2208,7 @@ impl Builder<'_> {
             self.terminate(TerminatorKind::Unreachable, range);
             return;
         }
+        self.check_guard_write(lhs, false, range);
         match op {
             None => {
                 let value = self.lower_operand(rhs);
@@ -1455,6 +2239,69 @@ impl Builder<'_> {
                 let rvalue = self.arith(arith, Operand::Copy(current.into()), r, ty, range);
                 self.assign(&place, rvalue, range);
             }
+        }
+    }
+
+    /// In a guard, what assigning or mutably borrowing (`borrow`) the
+    /// place `expr` would break: the place matched (E0510), or the value
+    /// behind a `ref mut` binding, which a guard sees as immutable.
+    fn check_guard_write(&mut self, expr: ExprId, borrow: bool, range: TextRange) {
+        let Some(guard) = &self.guard else {
+            return;
+        };
+        if let Expr::Unary {
+            op: UnaryOp::Deref,
+            operand,
+        } = self.body.exprs[expr]
+            && let Expr::Path(Res::Local(binding)) = self.body.exprs[operand]
+            && guard.ref_muts.contains(&binding)
+        {
+            let name = self.body.bindings[binding].name;
+            let message = if borrow {
+                format!(
+                    "cannot borrow `*{name}` as mutable, as it is immutable for the pattern guard"
+                )
+            } else {
+                format!("cannot assign to `*{name}`, as it is immutable for the pattern guard")
+            };
+            self.errors.push(flux_hir::Diagnostic::new(range, message));
+            return;
+        }
+        let Some(written) = self.place_of(expr) else {
+            return;
+        };
+        let scrutinee = &guard.scrutinee;
+        let contains = written.local == scrutinee.local
+            && scrutinee.projection.starts_with(&written.projection);
+        if contains {
+            let name = self.place_text(expr);
+            let what = if borrow { "mutably borrow" } else { "assign" };
+            self.errors.push(flux_hir::Diagnostic::new(
+                range,
+                format!("cannot {what} `{name}` in match guard"),
+            ));
+        }
+    }
+
+    /// The place a place expression denotes, without evaluating anything:
+    /// a local and its fields, with no dereference.
+    fn place_of(&self, expr: ExprId) -> Option<Place> {
+        match self.body.exprs[expr] {
+            Expr::Path(Res::Local(binding)) => Some((*self.binding_locals.get(binding)?).into()),
+            Expr::Field { expr: base, .. } if self.types.field_derefs.get(expr).is_none() => {
+                Some(self.place_of(base)?.field(self.field_index(expr)))
+            }
+            _ => None,
+        }
+    }
+
+    /// A place expression as rustc writes it: `x.a`.
+    fn place_text(&self, expr: ExprId) -> String {
+        match self.body.exprs[expr] {
+            Expr::Path(Res::Local(binding)) => self.body.bindings[binding].name.to_string(),
+            Expr::Field { expr: base, name } => format!("{}.{name}", self.place_text(base)),
+            Expr::Unary { operand, .. } => format!("*{}", self.place_text(operand)),
+            _ => "_".to_owned(),
         }
     }
 

@@ -1,0 +1,42 @@
+enum E { Unit, Tuple { 0: i32 }, Record { x: i32 } }
+enum Maybe<T> { Just { 0: T }, Nothing }
+fn constructors() -> ()
+fn patterns(E, &mut E) -> ()
+    e@0: E
+    r@1: &mut E
+    y@2: {error}
+    x@3: i32
+fn arms(i32) -> i32
+    x@0: i32
+    y@1: i32
+fn casts(Maybe<i32>) -> ()
+    m@0: Maybe<i32>
+fn names(E, u8, {error}) -> ()
+    e@0: E
+    x@1: u8
+    v@2: {error}
+    y@3: {error}
+fn casts_to_self() -> Result<i32, i32>
+fn main() -> ()
+error 240..248: this enum variant takes 1 argument but 2 arguments were supplied
+error 268..275: expected function, found enum variant `E::Unit`
+error 309..310: variant `E::Record` has no field named `y`
+error 329..338: missing field `x` in initializer of `E`
+error 380..381: mismatched types: expected `bool`, found `{integer}`
+error 405..409: mismatched types: expected `i32`, found `bool`
+error 477..478: this pattern has 2 fields, but the corresponding tuple variant has 1 field
+error 509..510: variant `E::Record` does not have a field named `y`
+error 531..543: pattern does not mention field `x`
+error 594..595: mismatched types: expected `E`, found `{integer}`
+error 646..658: mismatched types: types differ in mutability
+error 712..724: only `char` and numeric types are allowed in range patterns
+error 784..788: mismatched types: expected `{integer}`, found `bool`
+error 899..903: `match` arms have incompatible types: expected `u8`, found `i32`
+error 957..974: `else` clause of `let...else` does not diverge: expected `!`, found `{integer}`
+error 1023..1037: non-primitive cast: `E` as `i32`
+error 1051..1059: non-primitive cast: `Maybe<i32>` as `i32`
+error 1089..1096: expected type, found variant `E::Unit`
+error 1115..1122: no variant, associated function, or constant named `Missing` found for enum `E` in the current scope
+error 1130..1137: no method named `nothing` found for enum `E` in the current scope
+error 1163..1165: the trait bound `u8: Neg` is not satisfied
+error 1228..1230: mismatched types: expected `{integer}`, found `&_`

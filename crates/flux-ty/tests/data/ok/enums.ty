@@ -1,0 +1,41 @@
+enum E { A, B { 0: i32, 1: bool }, C { x: i64, y: (u8, bool) } }
+enum Tree<T> { Leaf { 0: T }, Node { 0: T, 1: T } }
+enum Small { One, Two }
+fn by_value(E) -> i64
+    e@0: E
+    n@1: i32
+    flag@2: bool
+    x@3: i64
+    b@4: u8
+fn by_reference(&E, &mut E) -> i64
+    e@0: &E
+    m@1: &mut E
+    n@2: &i32
+    x@3: &i64
+    first@4: i64
+    n@5: &mut i32
+    flag@6: &mut bool
+fn explicit(E) -> i32
+    e@0: E
+    n@1: &i32
+    n@2: &mut i32
+    whole@3: E
+fn generic<T>(Tree<T>) -> T
+    t@0: Tree<T>
+    v@1: T
+fn inferred() -> Option<u8>
+    found@0: Option<u8>
+    values@1: (Option<u8>, Option<u8>)
+    v@2: u8
+fn results(Result<i32, bool>) -> i32
+    r@0: Result<i32, bool>
+    v@1: i32
+fn main() -> ()
+    m@0: E
+fn clone(&Small) -> Small
+    self@0: &Small
+fn eq(&Small, &Small) -> bool
+    self@0: &Small
+    other@1: &Small
+fn assert_receiver_is_total_eq(&Small) -> ()
+    self@0: &Small
