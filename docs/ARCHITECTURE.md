@@ -932,7 +932,9 @@ executable. No C compiler or system linker is involved.
   as the value's address alone, as the method's `&self` takes it.
   `mono` collects the methods of each vtable a body makes as instances
   whose address is taken, which use C's convention, and does not
-  collect virtual calls' callees.
+  collect virtual calls' callees; a body that makes a trait object
+  reaches every method of its trait and supertraits, so that `core`'s
+  are type-checked and built.
 - Calls to C-variadic functions use a variadic keel signature, which
   gives the platform's convention (on Apple arm64, variadic arguments go
   on the stack).

@@ -3327,11 +3327,27 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
                 TyKind::FnDef(def) => Some(def.function),
                 _ => None,
             });
+        // A value made a trait object may have any method of its
+        // trait and supertraits called, through the vtable.
+        let objects: Vec<FunctionId> = result
+            .unsizes
+            .iter()
+            .filter_map(|(_, ty)| match ty.kind() {
+                TyKind::Ref(_, p) | TyKind::RawPtr(_, p) => match p.kind() {
+                    TyKind::Dynamic(d) => Some(d.trait_),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .flat_map(|t| objects::supertraits_of(items, t))
+            .flat_map(|t| items.traits[t].functions.iter().copied())
+            .collect();
         for f in called
             .chain(methods)
             .chain(operators)
             .chain(conversions)
             .chain(values)
+            .chain(objects)
         {
             if expanded.insert(f) {
                 queue.extend(call_targets(items, f));

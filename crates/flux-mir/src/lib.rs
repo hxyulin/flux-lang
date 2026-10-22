@@ -949,6 +949,28 @@ impl Body {
         found
     }
 
+    /// The methods the body's trait objects' vtables may hold: those of
+    /// the traits (and supertraits) of what it unsizes values to.
+    pub fn object_methods(&self, items: &flux_hir::ItemTree) -> Vec<FunctionId> {
+        let mut traits = Vec::new();
+        for data in self.blocks.values() {
+            for statement in &data.statements {
+                if let StatementKind::Assign(_, Rvalue::Unsize(_, to)) = &statement.kind
+                    && let TyKind::Ref(_, p) | TyKind::RawPtr(_, p) = to.kind()
+                    && let TyKind::Dynamic(d) = p.kind()
+                    && !traits.contains(&d.trait_)
+                {
+                    traits.push(d.trait_);
+                }
+            }
+        }
+        traits
+            .into_iter()
+            .flat_map(|t| flux_ty::objects::supertraits_of(items, t))
+            .flat_map(|t| items.traits[t].functions.iter().copied())
+            .collect()
+    }
+
     /// The constant items the body uses, with their generic arguments.
     pub fn const_items(&self) -> Vec<flux_ty::ConstInstance> {
         let mut found = Vec::new();
