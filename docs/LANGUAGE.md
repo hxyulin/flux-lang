@@ -68,8 +68,11 @@ reported as "not supported yet":
   trait bounds in their lists and `where` clauses (`fn f<T: A + B>`,
   `where T: Tr<u8>`), without defaults (`fn id<T>(x: T) -> T`,
   `struct Pair<T>`, `impl<T> Pair<T>`, `impl Pair<i32>`), structs
-  included (`struct W<T: Tr>`, `where` clauses); const parameters
-  (below), without defaults; associated constants
+  included (`struct W<T: Tr>`, `where` clauses), except that a
+  struct's or enum's type parameters may have defaults (`enum
+  ControlFlow<B, C = ()>`), which types that leave them out get, in
+  terms of the arguments before them (`ControlFlow<i32>`), as in rustc;
+  const parameters (below), without defaults; associated constants
   in traits, with or without a default, in their `impl` blocks and in
   generic inherent blocks (`const N: u32;`, `const N: u32 = 1;`);
   constants (`const N: i32 = 5;`); statics (`static X: T = v;`,
@@ -489,8 +492,14 @@ program's impls, and the integer conversions that lose nothing), and
 the errors are rustc's E0277 messages for the `Try` and `FromResidual`
 bounds its desugaring has, E0308 where the value has another type than
 wanted, and E0572 and E0658 in constants and `const fn`s. `?` moves its
-operand, as rustc's `Try::branch(x)` does. rustc implements `Try` for
-`ControlFlow` and `Poll` too, which flux does not have.
+operand, as rustc's `Try::branch(x)` does. On a `core::ops::ControlFlow<B,
+C>`, `x?` is the `Continue` value, and returns the `Break` from a
+function that returns a `ControlFlow<B, _>`, with rustc's errors for
+the other combinations. `?` is built into the compiler for these three
+types; `core` also has rustc's `Try` and `FromResidual` traits for them,
+which `try_fold` and its relatives are bounded by, but which programs
+cannot name, as they are unstable in rustc (`Poll`, the other type
+rustc implements them for, is not supported).
 
 Constants are evaluated at compile time, calls to `const fn`s included,
 and overflow, division by zero or a panic (`None.unwrap()`) there is
@@ -626,8 +635,12 @@ iterators, the ranges of rustc's types and the adapters that keep it;
 `Product` for the integers and references to them. Every adapter's
 `size_hint` is rustc's. `&mut I` is an iterator where `I` is. The ranges of
 integers are iterators (`Range`, `RangeFrom` and `RangeInclusive`, the
-first and last from both ends). `try_fold` and the others that need
-the `Try` trait are not supported yet. `for pat in head { body }` is
+first and last from both ends). `try_fold`, `try_for_each` and
+`DoubleEndedIterator::try_rfold` take a closure that returns an
+`Option`, a `Result` or a `ControlFlow` (`core::ops`, with `is_break`,
+`is_continue`, `break_value`, `continue_value`, `map_break` and
+`map_continue`), and stop at the first `None`, `Err` or `Break`, which
+they return. `for pat in head { body }` is
 rustc's `match IntoIterator::into_iter(head) { mut iter => loop {
 match Iterator::next(&mut iter) { None => break, Some(pat) => body }
 } }`, so values are dropped as in rustc: the item's bindings at the end

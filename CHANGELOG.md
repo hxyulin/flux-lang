@@ -797,6 +797,16 @@
   E0524, and a name followed by parentheses or braces where an item
   should start is rustc's "missing `fn` or `struct` for function or
   struct definition" (and its other forms).
+- Add `core::ops::ControlFlow` and rustc's `Try` and `FromResidual`
+  traits (unstable to name, as in rustc) for `Option`, `Result` and
+  `ControlFlow`, with `Iterator::try_fold`, `try_for_each` and
+  `DoubleEndedIterator::try_rfold` bounded by them, and
+  `core::convert::Infallible`. `?` works on a `ControlFlow`, with
+  rustc's errors where the function returns another type. Structs and
+  enums may give their type parameters defaults, which types that leave
+  them out get (`ControlFlow<i32>`, `W<'a>`), with rustc's E0107 for
+  too many or too few arguments; an `impl` block's supertraits are
+  checked with its own associated types normalized.
 
 ### Performance
 

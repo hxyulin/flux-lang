@@ -120,6 +120,10 @@ const CORE_FILES: &[(&str, &str)] = &[
         include_str!("../../../library/core/src/ops/range.rs"),
     ),
     (
+        "ops/try_trait.rs",
+        include_str!("../../../library/core/src/ops/try_trait.rs"),
+    ),
+    (
         "option.rs",
         include_str!("../../../library/core/src/option.rs"),
     ),

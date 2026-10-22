@@ -730,7 +730,9 @@ pub struct TypeOutlives {
 pub struct GenericParam {
     pub name: Symbol,
     pub range: TextRange,
-    /// `= Self` in `trait Add<Rhs = Self>`: traits' parameters only.
+    /// `= Self` in `trait Add<Rhs = Self>`, `= ()` in `enum
+    /// ControlFlow<B, C = ()>`: traits', structs' and enums' parameters
+    /// only.
     pub default: Option<(TypeRef, TextRange)>,
     /// Made for an `impl Trait` parameter type (`x: impl Copy`), named
     /// as it is written, which turbofish cannot give.
@@ -761,7 +763,8 @@ impl GenericParam {
 enum Defaults {
     /// A trait's: supported.
     Trait,
-    /// A struct's: valid Rust, not supported yet.
+    /// A struct's or enum's: supported, applied in types that leave
+    /// them out.
     Struct,
     /// A type alias's: valid Rust, not supported yet.
     Alias,
@@ -5127,14 +5130,9 @@ fn collect_generics_as_written(
                 if let Some(ty) = param.default_type() {
                     let ty_range = ty.syntax().text_range();
                     match defaults {
-                        Defaults::Trait => {
+                        Defaults::Trait | Defaults::Struct => {
                             default = Some((lower_type(Some(ty), diagnostics), ty_range));
                         }
-                        Defaults::Struct => unsupported(
-                            diagnostics,
-                            ty_range,
-                            "defaults for type parameters of structs",
-                        ),
                         Defaults::Alias => unsupported(
                             diagnostics,
                             ty_range,

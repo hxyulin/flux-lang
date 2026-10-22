@@ -15,10 +15,14 @@
 mod function;
 mod index;
 mod range;
+mod try_trait;
 
 pub use function::{Fn, FnMut, FnOnce};
 pub use index::{Index, IndexMut};
 pub use range::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+pub use try_trait::ControlFlow;
+// Unstable in rustc: `core` uses them, programs cannot name them.
+pub(crate) use try_trait::{FromResidual, Try};
 
 /// The `+` operator: addition.
 #[lang = "add"]

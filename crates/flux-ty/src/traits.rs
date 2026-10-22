@@ -1709,7 +1709,9 @@ pub fn check_impls(
                 .chain(trait_ref.args.iter().copied())
                 .collect();
             for sup in sigs.traits.get(t).map_or(&[][..], |s| &s.supertraits) {
-                let goal = sup.subst(&args).with_self(self_ty);
+                // `trait Try: FromResidual<<Self as Try>::Residual>`
+                // names the block's own types.
+                let goal = normalize_predicate(items, sigs, sup.subst(&args).with_self(self_ty));
                 if !holds(items, sigs, &env, goal) {
                     error(imp.self_range, unmet(items, goal));
                 }
