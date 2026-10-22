@@ -19,6 +19,7 @@
 mod impl_index;
 mod in_scope;
 mod infer;
+pub mod objects;
 mod pats;
 pub mod regions;
 pub mod traits;
@@ -44,8 +45,8 @@ pub use infer::{
 };
 pub use traits::{Predicate, Projection, TraitRef, TraitSig};
 pub use ty::{
-    AdtId, AliasTy, ClosureArgs, ClosureId, ClosureKind, FnDefTy, FnSigTy, GenericArgs, InferVar,
-    IntTy, Mutability, OpaqueTy, ParamTy, Ty, TyKind, subst_list,
+    AdtId, AliasTy, ClosureArgs, ClosureId, ClosureKind, DynTy, FnDefTy, FnSigTy, GenericArgs,
+    InferVar, IntTy, Mutability, OpaqueTy, ParamTy, Ty, TyKind, subst_list, symbol_list,
 };
 
 /// Which `Fn`-family trait `t` is, if it is one: `core`'s
@@ -1231,6 +1232,7 @@ pub fn resolve_type(
                 lifetimes: 0,
             })
         }
+        TypeRef::Dyn(d) => objects::resolve_dyn(items, module, d, scope, range, errors),
         // One lowering did not make something else, which is in a path
         // in a body (`Option::<impl Copy>::None`), as rustc names it.
         TypeRef::ImplTrait(it) => fail(
@@ -1862,6 +1864,14 @@ fn visit_paths(ty: &TypeRef, f: &mut impl FnMut(&Path)) {
             .iter()
             .chain([&**ret])
             .for_each(|t| visit_paths(t, f)),
+        TypeRef::Dyn(d) => {
+            for b in d.bounds.iter() {
+                for args in b.path.args.iter().flatten() {
+                    args.types.iter().for_each(|t| visit_paths(t, f));
+                    args.bindings.iter().for_each(|b| visit_paths(&b.ty, f));
+                }
+            }
+        }
         TypeRef::Never
         | TypeRef::Infer
         | TypeRef::Const(_)
@@ -2572,10 +2582,15 @@ fn extend_signatures(
             if mutable_ref(ty) {
                 error("mutable references in statics are not supported yet".to_owned());
             } else if !mutable && let Some(pointer) = not_sync(&sigs, ty, &mut Vec::new()) {
-                // Without `Sync`, the one type flux has that is not.
-                error(format!(
-                    "`{pointer}` cannot be shared between threads safely"
-                ));
+                // Without `Sync`, the types flux has that are not: raw
+                // pointers and trait objects, which rustc names with their
+                // lifetime bound here.
+                let name = if pointer.is_dyn() {
+                    format!("({pointer} + 'static)")
+                } else {
+                    pointer.to_string()
+                };
+                error(format!("`{name}` cannot be shared between threads safely"));
             }
         }
         sigs.consts.insert(id, ty);
@@ -2889,7 +2904,8 @@ fn check_alias(
 /// those are the types flux has that are not.
 fn not_sync(sigs: &Signatures, ty: Ty, seen: &mut Vec<StructId>) -> Option<Ty> {
     match ty.kind() {
-        TyKind::RawPtr(..) => Some(ty),
+        TyKind::RawPtr(..) | TyKind::Dynamic(_) => Some(ty),
+        TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => not_sync(sigs, t, seen),
         TyKind::Adt(adt, _) => {
             if seen.contains(&adt.strukt) {
                 return None;

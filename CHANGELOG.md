@@ -864,6 +864,21 @@
   `Sized` are rustc's errors (E0203). `core` relaxes the bounds rustc's
   does: comparisons and formatting of references, raw pointers' traits,
   `PhantomData`, and `Iterator` for `&mut I`.
+- Support trait objects: `&dyn Tr`, `&mut dyn Tr` and `*const dyn Tr`,
+  with generic traits (`dyn Tr<i32>`), associated types (`dyn
+  Iterator<Item = u32>`) and the `Fn`-family traits (`dyn Fn(i32) ->
+  i32`, called like a function). References and pointers become ones to
+  trait objects at every coercion site and in casts, and to supertraits'
+  objects (upcasting); methods, provided and supertraits' ones included,
+  are called through vtables laid out as rustc's (drop, size, align, the
+  supertraits' vtables, then each trait's methods), which code
+  generation emits as data objects of function addresses, the methods
+  in them using C's convention. Dyn compatibility (E0038), E0191,
+  E0225, E0393, E0161, E0599 and "cannot be invoked on a trait object"
+  are reported as rustc does, and the borrow checker requires what a
+  value made a trait object holds to outlive the object's lifetime
+  bound, its reference's. `core`'s `Iterator for &mut I` takes `I:
+  ?Sized`, so `&mut dyn Iterator` iterates in `for` loops and adapters.
 
 ### Performance
 

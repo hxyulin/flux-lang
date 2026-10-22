@@ -838,6 +838,20 @@ impl Ctx<'_> {
                 }
                 ok
             }
+            (TyKind::Dynamic(x), TyKind::Dynamic(y))
+                if x.trait_ == y.trait_ && x.assoc_names == y.assoc_names =>
+            {
+                let mut ok = true;
+                for (&a, &b) in x
+                    .args
+                    .iter()
+                    .chain(x.assoc_tys)
+                    .zip(y.args.iter().chain(y.assoc_tys))
+                {
+                    ok &= self.unify(a, b);
+                }
+                ok
+            }
             _ => false,
         }
     }
@@ -898,6 +912,40 @@ impl Ctx<'_> {
                 self.mismatch(expected, actual, range);
             }
             return;
+        }
+        // A reference or raw pointer to a value where one to a trait
+        // object is expected is unsized, after a reborrow if it is a
+        // `&mut`, if the value's type implements the trait; one to
+        // another trait object is upcast to its supertrait's: rustc's
+        // unsizing coercions, tried before deref coercion as in rustc.
+        if let Some((from, to, pointee, target, raw)) =
+            match (self.shallow(actual).kind(), self.shallow(expected).kind()) {
+                (TyKind::Ref(from, pointee), TyKind::Ref(to, target)) => {
+                    Some((from, to, pointee, target, false))
+                }
+                (TyKind::RawPtr(from, pointee), TyKind::RawPtr(to, target))
+                | (TyKind::Ref(from, pointee), TyKind::RawPtr(to, target)) => {
+                    Some((from, to, pointee, target, true))
+                }
+                _ => None,
+            }
+            && let TyKind::Dynamic(d) = self.shallow(target).kind()
+            && (from == to || from == Mutability::Mut)
+        {
+            let target = self.shallow(target);
+            let pointee = self.shallow(pointee);
+            if !self.can_unify(pointee, target) {
+                if self.unsize_to_dyn(pointee, target, d, blamed) {
+                    if from == Mutability::Mut && !raw {
+                        self.reborrows.insert(expr, to);
+                    }
+                    self.unsizes.insert(expr, expected);
+                } else {
+                    let range = self.range(blamed);
+                    self.mismatch(expected, actual, range);
+                }
+                return;
+            }
         }
         // A `&&T`, `&mut &T` or `&&mut T` where a `&T` is expected is
         // dereferenced until it is one, then reborrowed: rustc's deref
@@ -972,6 +1020,15 @@ impl Ctx<'_> {
         if let (TyKind::Ref(from, pointee), TyKind::RawPtr(to, expected_pointee)) =
             (self.shallow(actual).kind(), self.shallow(expected).kind())
         {
+            // Its lifetime bound would become `'static`, which flux
+            // cannot check of a reference's.
+            if self.shallow(pointee).is_dyn() {
+                self.error(
+                    self.range(blamed),
+                    "references to trait objects as raw pointers are not supported yet",
+                );
+                return;
+            }
             if (from == to || from == Mutability::Mut) && self.unify(pointee, expected_pointee) {
                 if from == Mutability::Mut {
                     self.reborrows.insert(expr, to);
@@ -1024,6 +1081,76 @@ impl Ctx<'_> {
             }
             self.mismatch(expected, actual, range);
         }
+    }
+
+    /// Whether a pointer to a `source` may become one to `target`, trait
+    /// object `d`: `source` must implement its trait with the associated
+    /// types it gives, and be sized (obligations, reported at `expr`
+    /// if they fail); or be a trait object whose trait has `d`'s as a
+    /// supertrait (upcasting).
+    fn unsize_to_dyn(&mut self, source: Ty, target: Ty, d: crate::DynTy, expr: ExprId) -> bool {
+        let range = self.range(expr);
+        // Constant evaluation keeps no vtables.
+        if let Some(context) = self.const_context {
+            self.error(
+                range,
+                format!("trait objects in {context} are not supported yet"),
+            );
+            return true;
+        }
+        if let TyKind::Dynamic(s) = source.kind() {
+            let principal = crate::traits::dyn_principal(target, d);
+            let found = crate::traits::dyn_bounds(self.sigs, source, s)
+                .into_iter()
+                .find(|p| p.trait_ref.trait_ == d.trait_);
+            let Some(found) = found else {
+                return false;
+            };
+            let mut ok = true;
+            for (&a, &b) in found.trait_ref.args.iter().zip(principal.trait_ref.args) {
+                ok &= self.unify(a, b);
+            }
+            // Its associated types are the source's.
+            for (&name, &ty) in d.assoc_names.iter().zip(d.assoc_tys) {
+                let given = crate::traits::dyn_projections(self.sigs, source, s)
+                    .into_iter()
+                    .find(|p| p.alias.name == name)
+                    .map(|p| p.ty);
+                ok &= given.is_some_and(|g| self.unify(g, ty));
+            }
+            return ok;
+        }
+        let principal = crate::traits::dyn_principal(source, d);
+        self.register(principal, range, solve::ObligationKind::Bound);
+        for p in crate::traits::dyn_projections(self.sigs, target, d) {
+            if p.alias.args[0] == target && d.assoc_names.contains(&p.alias.name) {
+                let alias = crate::traits::alias_of(
+                    crate::TraitRef {
+                        trait_: p.alias.trait_,
+                        name: p.alias.trait_name,
+                        args: Ty::list(&p.alias.args[1..]),
+                    },
+                    source,
+                    p.alias.name,
+                );
+                if self.is_unsized(source) {
+                    break;
+                }
+                self.register_projection(crate::Projection { alias, ty: p.ty }, range);
+            }
+        }
+        if let Some(sized) = self.sigs.builtins.sized {
+            let p = Predicate {
+                self_ty: source,
+                trait_ref: crate::TraitRef {
+                    trait_: sized,
+                    name: self.items.traits[sized].name,
+                    args: &[],
+                },
+            };
+            self.register(p, range, solve::ObligationKind::Bound);
+        }
+        true
     }
 
     /// Gives `expr`, and the blocks between it and the value it ends with,
@@ -1120,6 +1247,15 @@ impl Ctx<'_> {
                     && x.args
                         .iter()
                         .zip(y.args)
+                        .all(|(&a, &b)| self.can_unify(a, b))
+            }
+            (TyKind::Dynamic(x), TyKind::Dynamic(y)) => {
+                x.trait_ == y.trait_
+                    && x.assoc_names == y.assoc_names
+                    && x.args
+                        .iter()
+                        .chain(x.assoc_tys)
+                        .zip(y.args.iter().chain(y.assoc_tys))
                         .all(|(&a, &b)| self.can_unify(a, b))
             }
             _ => false,
@@ -2652,6 +2788,15 @@ impl Ctx<'_> {
                 {
                     self.unify(from, to);
                 }
+                // `&x as &dyn Tr`, `p as *const dyn Tr`: an unsizing
+                // coercion.
+                if let TyKind::Ref(_, object) | TyKind::RawPtr(_, object) = to.kind()
+                    && object.is_dyn()
+                    && self.can_coerce(from, to, *expr)
+                {
+                    self.coerce(from, to, *expr);
+                    return to;
+                }
                 // `r as *const T`: the coercion of a reference to a raw
                 // pointer, which reborrows a `&mut`, then maybe a cast of
                 // the pointer. A reference to an array may become a
@@ -2659,6 +2804,13 @@ impl Ctx<'_> {
                 if let (TyKind::Ref(m, pointee), TyKind::RawPtr(to_m, target)) =
                     (self.shallow(from).kind(), self.shallow(to).kind())
                 {
+                    if self.shallow(pointee).is_dyn() {
+                        self.error(
+                            self.range(id),
+                            "references to trait objects as raw pointers are not supported yet",
+                        );
+                        return Ty::ERROR;
+                    }
                     let target = self.shallow(target);
                     let elem = match self.shallow(pointee).kind() {
                         TyKind::Array(elem, _) => Some(elem),
@@ -3051,6 +3203,25 @@ impl Ctx<'_> {
                         (self.shallow(array).kind(), self.shallow(slice).kind()) =>
             {
                 return self.can_unify(elem, expected_elem);
+            }
+            // To a trait object, as `coerce` unsizes, if the value's type
+            // may implement its trait (or is an object of a subtrait).
+            (
+                TyKind::Ref(from, pointee) | TyKind::RawPtr(from, pointee),
+                TyKind::Ref(to, object) | TyKind::RawPtr(to, object),
+            ) if (from == to || from == Mutability::Mut)
+                && !(matches!(actual.kind(), TyKind::RawPtr(..))
+                    && matches!(expected.kind(), TyKind::Ref(..)))
+                && let TyKind::Dynamic(d) = self.shallow(object).kind()
+                && !self.can_unify(pointee, object) =>
+            {
+                let pointee = self.shallow(pointee);
+                return match pointee.kind() {
+                    TyKind::Dynamic(s) => {
+                        crate::objects::supertraits_of(self.items, s.trait_).contains(&d.trait_)
+                    }
+                    _ => !self.is_unsized(pointee) && self.may_implement(pointee, d.trait_),
+                };
             }
             (TyKind::Ref(from, pointee), TyKind::Ref(to, expected_pointee))
                 if (from == to || from == Mutability::Mut)
@@ -4269,7 +4440,7 @@ impl Ctx<'_> {
         let other = matches!(base.kind(), TyKind::Tuple(_) | TyKind::RawPtr(..));
         if in_some_trait && (other || impl_target(self.items, base).is_some())
             || base.has_params()
-            || matches!(base.kind(), TyKind::Opaque(_))
+            || matches!(base.kind(), TyKind::Opaque(_) | TyKind::Dynamic(_))
         {
             let what = match base.kind() {
                 TyKind::Adt(adt, _)
@@ -4379,6 +4550,30 @@ impl Ctx<'_> {
         let data = &self.items.functions[function];
         if crate::traits::is_destructor(self.items, function) {
             self.error(name_range, "explicit use of destructor method");
+        }
+        // A trait object has its trait's methods but those that need
+        // `Self: Sized`, and cannot be moved into one taking `self`.
+        if let TyKind::Dynamic(d) = self.shallow(base).kind()
+            && matches!(data.owner, Some(flux_hir::Owner::Trait(_)))
+        {
+            if !crate::objects::is_dispatchable(self.items, function) {
+                self.error(
+                    name_range,
+                    format!(
+                        "the `{}` method cannot be invoked on a trait object",
+                        data.name
+                    ),
+                );
+                return Ty::ERROR;
+            }
+            if crate::traits::self_by_value(self.items, function) {
+                let object = Ty::new(TyKind::Dynamic(d));
+                self.error(
+                    self.range(receiver),
+                    format!("cannot move a value of type `{object}`"),
+                );
+                return Ty::ERROR;
+            }
         }
         self.check_fn_trait_method(function, name_range);
         let generic_args = self.instantiate_fn(id, function, Some(base), trait_args, name_range);

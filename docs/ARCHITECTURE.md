@@ -419,6 +419,34 @@ hidden types, and monomorphization (`traits::instance_ty`) and the MIR
 validator reveal every opaque type, so code generation sees only the
 hidden ones.
 
+A type parameter is `Sized` unless it is a trait's `Self` or bounded
+`?Sized` (`GenericParam::maybe_unsized`, from the item tree): rather
+than an implicit predicate per parameter, as rustc has, each item knows
+which of its parameters may be unsized (`unsized_params`), and a
+`Sized` goal holds of every type but slices, `str`, trait objects and
+those parameters, unless a bound says so. Calls check their arguments
+for the callee's sized parameters, and matching an `impl` block's
+header rejects unsized arguments for its sized ones.
+
+A trait object (`TyKind::Dynamic`, [`objects`](../crates/flux-ty/src/objects.rs))
+is its trait, the trait's arguments and the values of every associated
+type of the trait and its supertraits, in one order (`dyn_assoc`), so
+`dyn Iterator<Item = u32>` is one type however it is written. Whether a
+trait can be one (rustc's dyn compatibility, E0038) and its supertraits
+are read from the item tree alone, as the types that name it are
+resolved. Its bounds are its trait elaborated with `Self` the object
+(`traits::dyn_bounds`), which the solver, method probing and calls of
+`Fn`-family objects find as they find an opaque type's, and its
+associated types normalize to what it gives (`dyn_projections`).
+`coerce` unsizes a reference or pointer to a value whose type must then
+implement the trait, with its associated types, and be sized
+(obligations), and upcasts one to an object whose trait has the target's
+as a supertrait; casts try the same coercion. A trait object has no
+region slot: its lifetime bound is the reference it is behind, rustc's
+default, so that is the only bound flux accepts written, and borrow
+checking an unsizing makes what the value holds outlive the
+reference's region (or `'static` behind a raw pointer).
+
 `x?` stays an expression in HIR (`Expr::Try`), since what it does
 depends on `x`'s type: `core`'s `#[lang = "Option"]` and `#[lang =
 "Result"]` enums are the only types with `Try` on stable Rust that flux
@@ -887,6 +915,21 @@ executable. No C compiler or system linker is involved.
   keel allows `cc(fast)` for direct calls only, monomorphization
   collects the instances whose address is taken, and those use C's
   convention everywhere.
+- A pointer to a trait object is two leaves: the address of the
+  value and that of its type's vtable
+  ([`vtable`](../crates/flux-mir/src/vtable.rs)), a read-only data
+  object of the drop function (none yet), size and alignment, the
+  addresses of its supertraits' vtables, then each method of the trait
+  and its supertraits, the type's `impl` block's or the provided one
+  (empty for one with `where Self: Sized`). Unsizing to a trait object
+  emits the vtable, once per type and object; upcasting loads the
+  supertrait's from the object's. A call of a trait's method whose
+  `Self` is a trait object is a *virtual call*: it loads the method
+  from its slot and calls it through the pointer, passing the receiver
+  as the value's address alone, as the method's `&self` takes it.
+  `mono` collects the methods of each vtable a body makes as instances
+  whose address is taken, which use C's convention, and does not
+  collect virtual calls' callees.
 - Calls to C-variadic functions use a variadic keel signature, which
   gives the platform's convention (on Apple arm64, variadic arguments go
   on the stack).

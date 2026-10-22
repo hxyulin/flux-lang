@@ -38,7 +38,9 @@ expressions, operators on references through `core`'s impls, `?`
 on `Option` and `Result` with `From`, arrays and slices, with
 lengths evaluated while types are checked, bounds checks and rustc's
 borrow rules for elements, const generics (with arrays' traits,
-`array::from_fn` and `map` in `core`), type aliases, statics, functions as values,
+`array::from_fn` and `map` in `core`), `?Sized` parameters, trait
+objects behind references (vtables, upcasting, `dyn Fn`, `dyn
+Iterator`), type aliases, statics, functions as values,
 with function pointers, items inside function bodies, closures with
 rustc's precise captures and the `Fn`-family traits, ranges, `Iterator`
 with its adapters, `for` loops, slices' methods, iterators and sorts,
@@ -65,6 +67,10 @@ In order next:
    `len` and `is_empty` (built into the compiler), `each_mut`, and the
    other array methods of rustc's `core`.
    Returning closures (`impl Fn`), which needs opaque types.
+   What trait objects leave: `Box<dyn Tr>` (with drop through the
+   vtable, once `alloc` exists), lifetime bounds other than their
+   reference's, references in their arguments, trait objects in
+   constants, `impl dyn Tr` blocks, unsized structs, and `dyn Any`.
 2. Lifetimes, what is left: lifetime parameters on traits and in the
    trait arguments of bounds (`T: Tr<&'a U>`), lifetimes in the bounds
    of structs, traits and associated types, higher-ranked bounds

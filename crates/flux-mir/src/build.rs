@@ -1222,6 +1222,8 @@ fn has_ref(ty: &flux_hir::TypeRef) -> bool {
             .iter()
             .flatten()
             .any(|a| !a.lifetimes.is_empty() || a.types.iter().any(has_ref)),
+        // A trait object's lifetime bound.
+        T::Dyn(_) => true,
         T::FnPtr { .. }
         | T::Never
         | T::Infer
@@ -2049,14 +2051,39 @@ impl Builder<'_> {
             };
             let temp = self.temp(reference);
             self.lower_reborrowed(expr, &temp.into());
-            let operand = self.read(temp.into());
-            // A reference coerced to a raw pointer is cast to one.
-            let rvalue = if let TyKind::RawPtr(..) = ty.kind() {
+            let mut operand = self.read(temp.into());
+            let to_object =
+                matches!(ty.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn());
+            // A reference coerced to a raw pointer is cast to one, which
+            // may then be unsized to one to a trait object.
+            if let (TyKind::Ref(_, pointee), TyKind::RawPtr(m, _)) = (reference.kind(), ty.kind())
+                && to_object
+            {
+                let raw = self.temp(Ty::raw_ptr(m, pointee));
+                self.assign(
+                    &raw.into(),
+                    Rvalue::Cast(operand, Ty::raw_ptr(m, pointee)),
+                    self.range(expr),
+                );
+                operand = self.read(raw.into());
+            }
+            let rvalue = if let TyKind::RawPtr(..) = ty.kind()
+                && !to_object
+            {
                 Rvalue::Cast(operand, ty)
             } else {
                 Rvalue::Unsize(operand, ty)
             };
-            self.assign(dest, rvalue, self.range(expr));
+            // At the value a block ends with, where rustc reports what
+            // the coercion needs.
+            let mut at = expr;
+            while let Expr::Block {
+                tail: Some(tail), ..
+            } = self.body.exprs[at]
+            {
+                at = tail;
+            }
+            self.assign(dest, rvalue, self.range(at));
             return;
         }
         self.lower_reborrowed(expr, dest);

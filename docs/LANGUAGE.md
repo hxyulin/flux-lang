@@ -457,8 +457,7 @@ Operators on other types than integers and `bool` call the methods of
 `core::cmp::PartialEq` (`==`, `!=`) and `core::cmp::PartialOrd` (`<`,
 `<=`, `>`, `>=`), which `core` implements for the integers and `bool`
 too, so generic code can use them; `&a == &b` and `&a < &b` compare `a`
-and `b`. There are no trait objects (`dyn Tr`), and no generic
-associated types. `Sized` is, as a bound and implicitly: every type
+and `b`. There are no generic associated types. `Sized` is, as a bound and implicitly: every type
 is sized but slices, `str` and trait objects, and a type parameter is
 `Sized` unless bounded `?Sized` (`fn f<T: ?Sized>(x: &T)`, `impl<T:
 ?Sized + Tr> Tr for &T`), as in rustc; a trait's `Self` is not, so its
@@ -468,6 +467,35 @@ E0277, and so is a call or `impl` block that needs a parameter to be
 `Sized` with an unsized type. A struct's last field may not be of an
 unsized parameter's type yet (unsized structs are not supported), and
 `?Sized` on associated types and `impl Trait` is not supported yet.
+
+Trait objects (`dyn Tr`, `dyn Tr<i32>`, `dyn Iterator<Item = u32>`,
+`dyn Fn(i32) -> i32`) exist behind references and raw pointers (`&dyn
+Tr`, `&mut dyn Tr`, `*const dyn Tr`), each a pointer to the value and
+one to its type's vtable. A reference or pointer to a value of a sized
+type that implements the trait becomes one to a trait object at every
+coercion site and in casts (`&x as &dyn Tr`), and one to a trait object
+becomes one to a supertrait's (upcasting); the type must implement the
+trait with the associated types the object gives (E0277, E0271) and be
+sized. A trait object implements its trait and supertraits, so their
+methods are found on it, provided ones included, and called through
+its vtable; `dyn Fn`-family objects are called like functions. Its
+trait must be dyn compatible, as rustc's rules say (E0038: no `Self:
+Sized` supertrait, no `Self` as a supertrait's parameter, no
+associated constants, and each method without `where Self: Sized`
+takes `&self` or `&mut self` (or `self`, which cannot be called on a
+trait object, E0161), has no type parameters, and names `Self` only in
+its receiver or as `Self::Item`); every associated type must be given
+(E0191) and every parameter whose default names `Self` (E0393); other
+traits than the first are E0225 (flux has no auto traits), and a bare
+trait as a type is E0782. A method with `where Self: Sized` "cannot be
+invoked on a trait object". A trait object's lifetime bound is the
+reference it is behind, rustc's default (`'static` behind a raw
+pointer), so what a value made one holds must outlive it; other bounds
+(`&'a (dyn Tr + 'static)`), references and trait objects in a trait
+object's generic arguments, trait objects in constants and statics
+(which are not `Sync` anyway), references to trait objects cast to raw
+pointers, `Box<dyn Tr>`, `dyn Any` and inherent `impl dyn Tr` blocks
+are not supported yet.
 
 A pattern that is not a binding sees through references, and then binds
 by reference, as rustc's default binding modes do: `Some(x)` matching a

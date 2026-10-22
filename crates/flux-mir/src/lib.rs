@@ -48,6 +48,7 @@ pub mod lint;
 pub mod mono;
 mod pretty;
 pub mod validate;
+pub mod vtable;
 
 use flux_arena::{Arena, Idx};
 use flux_hir::{FunctionId, StructId};

@@ -1802,6 +1802,31 @@ impl<'a> Cx<'a> {
                     range,
                 );
             }
+            // To a trait object, whose lifetime bound is the reference's
+            // (or `'static` behind a raw pointer): what the value holds
+            // must outlive it, as rustc's `T: 'a` for the unsizing.
+            Rvalue::Unsize(op, to) if matches!(to.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn()) =>
+            {
+                let (op_ty, vars) = self.operand_regions(op);
+                match (op_ty.kind(), dest_ty.kind()) {
+                    // `&'r T` already says `T: 'r` for its parameters.
+                    (TyKind::Ref(..), TyKind::Ref(..)) => {
+                        if let (Some(&from), Some(&to)) = (vars.first(), dest_vars.first()) {
+                            self.outlives(from, to, category, range);
+                            for &v in &vars[1..] {
+                                self.outlives(v, to, category, range);
+                            }
+                        }
+                    }
+                    (TyKind::RawPtr(_, pointee), _) => {
+                        for &v in &vars {
+                            self.outlives(v, STATIC, category, range);
+                        }
+                        self.type_outlives(pointee, STATIC, range);
+                    }
+                    _ => {}
+                }
+            }
             Rvalue::Unsize(op, _) | Rvalue::Subslice { slice: op, .. } => {
                 let (_, vars) = self.operand_regions(op);
                 self.relate(

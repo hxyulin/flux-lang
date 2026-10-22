@@ -96,6 +96,44 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
             for statement in &data.statements {
                 if let StatementKind::Assign(_, rvalue) = &statement.kind {
                     pointers.extend(rvalue.operands().into_iter().cloned());
+                    // A vtable's methods, for a value made a trait object.
+                    if let Rvalue::Unsize(op, to) = rvalue {
+                        let from = flux_ty::traits::instance_ty(
+                            &hir.items,
+                            sigs,
+                            body.operand_ty(op, sigs),
+                            caller_args,
+                        );
+                        let to = flux_ty::traits::instance_ty(&hir.items, sigs, *to, caller_args);
+                        let mut vtables = Vec::new();
+                        if let (Some(concrete), Some(object)) = (pointee(from), pointee(to))
+                            && object.is_dyn()
+                            && !concrete.is_dyn()
+                        {
+                            vtables.push((object, concrete));
+                        }
+                        while let Some((object, concrete)) = vtables.pop() {
+                            for entry in crate::vtable::entries(&hir.items, sigs, object, concrete)
+                            {
+                                match entry {
+                                    crate::vtable::Entry::Method(instance) => {
+                                        reified.insert(instance);
+                                        let has_body =
+                                            mir.instance_body(&hir.items, instance).is_some()
+                                                || is_clone_shim(&hir.items, instance);
+                                        if has_body && !depths.contains_key(&instance) {
+                                            depths.insert(instance, depth + 1);
+                                            instances.push(instance);
+                                        }
+                                    }
+                                    crate::vtable::Entry::Super(sup) => {
+                                        vtables.push((sup, concrete));
+                                    }
+                                    crate::vtable::Entry::Null => {}
+                                }
+                            }
+                        }
+                    }
                 }
             }
             pointers.extend(data.terminator.kind.operands().into_iter().cloned());
@@ -154,6 +192,11 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
             };
             for callee in callees {
                 let callee = flux_ty::traits::resolve_instance(&hir.items, sigs, callee);
+                // Through a vtable, whose methods are collected where
+                // values become trait objects.
+                if crate::vtable::virtual_call(&hir.items, callee).is_some() {
+                    continue;
+                }
                 if hir.items.functions[callee.function].intrinsic {
                     continue;
                 }
@@ -198,6 +241,14 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         return Err(d);
     }
     Ok(Collected { instances, reified })
+}
+
+/// What a pointer type points to.
+fn pointee(ty: Ty) -> Option<Ty> {
+    match ty.kind() {
+        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => Some(t),
+        _ => None,
+    }
 }
 
 /// `args`, in terms of a caller's parameters, for its instance with

@@ -1,0 +1,30 @@
+fn new() -> Self
+fn g<T>(&Self, T) -> ()
+fn eq(&Self, &Self) -> bool
+fn f(&Self) -> ()
+fn r(&Self) -> Self
+fn ok(&Self) -> ()
+fn new() -> Self
+fn g<T>(&Self) -> ()
+fn by(Self) -> ()
+fn item(&Self) -> Option<<Self as J>::X>
+fn a({error}) -> ()
+fn b({error}) -> ()
+fn c({error}) -> ()
+fn d({error}) -> ()
+fn e({error}) -> ()
+fn f({error}) -> ()
+fn g({error}) -> ()
+fn h(&dyn H) -> ()
+fn i({error}) -> ()
+fn j(&dyn J<X = u8>) -> ()
+fn main() -> ()
+const N: i32
+error 581..586: the trait `A` is not dyn compatible
+error 600..605: the trait `B` is not dyn compatible
+error 619..624: the trait `C` is not dyn compatible
+error 638..643: the trait `D` is not dyn compatible
+error 657..662: the trait `E` is not dyn compatible
+error 676..681: the trait `F` is not dyn compatible
+error 699..700: the trait `G` is not dyn compatible
+error 733..738: the trait `I` is not dyn compatible
