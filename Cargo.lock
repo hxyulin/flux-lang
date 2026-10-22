@@ -204,6 +204,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "flux-difftest"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "flux-codegen",
+ "flux-hir",
+ "flux-intern",
+ "flux-mir",
+ "keel-asm",
+ "keel-codegen",
+ "keel-ir",
+ "keel-opt",
+]
+
+[[package]]
 name = "flux-hir"
 version = "0.1.0"
 dependencies = [

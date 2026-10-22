@@ -1,0 +1,28 @@
+[package]
+name = "flux-difftest"
+description = "Differential testing of flux against rustc: a program generator, a driver and a reducer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "difftest"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+# For `difftest bisect-opt`, which builds through flux's libraries to run
+# a prefix of keel's optimizer.
+flux-codegen.workspace = true
+flux-hir.workspace = true
+flux-intern.workspace = true
+flux-mir.workspace = true
+keel-asm.workspace = true
+keel-codegen.workspace = true
+keel-ir.workspace = true
+keel-opt.workspace = true
+
+[lints]
+workspace = true

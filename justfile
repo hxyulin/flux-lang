@@ -57,6 +57,16 @@ run file:
 lex file:
     cargo run -q -p flux-cli -- lex "{{file}}"
 
+# Differential testing: generate N programs, compile them with rustc and flux, compare. Usage: just difftest 2000 [--reduce] [--weight name=N]
+difftest n="1000" *args:
+    cargo build -q --release -p flux-cli -p flux-difftest
+    ./target/release/difftest run -n {{n}} {{args}}
+
+# Minimize a failing difftest seed (or `--file f.rs`), keeping its failure. Usage: just difftest-reduce 42
+difftest-reduce *args:
+    cargo build -q --release -p flux-cli -p flux-difftest
+    ./target/release/difftest reduce {{args}}
+
 # Lint GitHub Actions workflows (requires actionlint).
 workflows-check:
     actionlint -color

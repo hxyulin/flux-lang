@@ -10,6 +10,7 @@ members = [
     "crates/flux-mir",
     "crates/flux-codegen",
     "crates/flux-cli",
+    "crates/flux-difftest",
 ]
 
 [workspace.package]
