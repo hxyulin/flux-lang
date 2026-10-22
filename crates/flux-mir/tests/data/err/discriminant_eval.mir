@@ -1,0 +1,35 @@
+fn unwrapped() -> isize {
+    let mut _0: isize;
+    let _1: Option<isize>; // o
+    let _2: Option<isize>;
+
+    bb0: {
+        _1 = Option::None;
+        _2 = copy _1;
+        _0 = unwrap::<isize>(copy _2) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 344..349: attempt to divide `1_isize` by zero
+error 381..395: attempt to compute `isize::MAX + 1_isize`, which would overflow
+error 443..450: attempt to compute `u8::MAX + 1_u8`, which would overflow
+error 563..574: evaluation panicked: called `Option::unwrap()` on a `None` value
+error 627..628: enum discriminant overflowed
+error 688..689: enum discriminant overflowed
+error 694..709: discriminant value `1` assigned more than once
+error 771..794: discriminant value `-1` assigned more than once
+error 771..794: discriminant value `5` assigned more than once

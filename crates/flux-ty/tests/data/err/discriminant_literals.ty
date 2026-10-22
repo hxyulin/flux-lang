@@ -1,0 +1,9 @@
+enum OutOfRange { A, B }
+enum Negative { A, B }
+fn main() -> ()
+const OutOfRange::A::{constant#0}: u8
+const OutOfRange::B::{constant#0}: u8
+const Negative::A::{constant#0}: i8
+const Negative::B::{constant#0}: i8
+error 196..199: literal out of range for `u8`
+error 243..247: literal out of range for `i8`

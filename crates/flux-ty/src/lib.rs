@@ -832,7 +832,7 @@ fn duplicate_assoc_items(
 
 /// Whether two `impl` blocks' types, each in terms of its own
 /// parameters, may be the same type.
-fn overlap(a: Ty, b: Ty) -> bool {
+pub(crate) fn overlap(a: Ty, b: Ty) -> bool {
     match (a.kind(), b.kind()) {
         (TyKind::Param(_) | TyKind::Error, _) | (_, TyKind::Param(_) | TyKind::Error) => true,
         (TyKind::Adt(x, xs), TyKind::Adt(y, ys)) => {
@@ -849,7 +849,7 @@ fn overlap(a: Ty, b: Ty) -> bool {
 }
 
 /// Whether `ty` mentions generic parameter `index`.
-fn mentions_param(ty: Ty, index: u32) -> bool {
+pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
     if !ty.has_params() {
         return false;
     }
@@ -1172,6 +1172,12 @@ fn extend_signatures(
         }
     }
     for (id, konst) in items.consts.iter().skip(from.consts as usize) {
+        // A discriminant has the enum's `repr` type.
+        if let Some((strukt, _)) = konst.discriminant {
+            sigs.consts
+                .insert(id, Ty::int(discriminant_ty(items, strukt)));
+            continue;
+        }
         let generics = generic_names(items, konst.owner, &Generics::default());
         // Its owner's bounds, for `Self::A` or `T::A` in its type.
         let bounds = traits::elaborate(&sigs, &traits::owner_predicates(items, &sigs, konst.owner));
@@ -1789,7 +1795,7 @@ impl TypedFile {
         }
         for (id, konst) in items.consts.iter() {
             if items.in_main_crate(konst.loc.module) {
-                let name = konst.name.map_or("_".to_owned(), |n| n.to_string());
+                let name = items.const_name(id);
                 writeln!(out, "const {name}: {}", self.sigs.consts[id]).unwrap();
             }
         }

@@ -306,10 +306,7 @@ impl Expand<'_> {
                     }
                     let run = self.glue(glue, target);
                     let block = self.push(run);
-                    targets.push((
-                        crate::discriminant_bits(self.items, *strukt, v as u32),
-                        block,
-                    ));
+                    targets.push((v as u128, block));
                 }
                 let discriminant = self.body.locals.alloc(LocalDecl {
                     ty: Ty::int(flux_ty::discriminant_ty(self.items, *strukt)),
@@ -326,6 +323,7 @@ impl Expand<'_> {
                     discr: Operand::Copy(discriminant.into()),
                     targets,
                     otherwise: target,
+                    variants: Some(*strukt),
                 };
                 (vec![read], switch)
             }

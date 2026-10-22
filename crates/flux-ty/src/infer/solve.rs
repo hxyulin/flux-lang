@@ -489,8 +489,15 @@ impl Ctx<'_> {
         Some(ty.subst(&args))
     }
 
-    /// For a type written in a body, `<S as Tr>::Out` needs `S: Tr`.
-    pub(super) fn require_alias_traits(&mut self, ty: Ty, range: TextRange) {
+    /// For a type written in a body as `written`, at `range`,
+    /// `<S as Tr>::Out` needs `S: Tr`, which rustc reports at `S`.
+    pub(super) fn require_alias_traits(
+        &mut self,
+        ty: Ty,
+        written: Option<&flux_hir::TypeRef>,
+        range: TextRange,
+    ) {
+        use flux_hir::TypeRef;
         match ty.kind() {
             TyKind::Alias(alias) => {
                 let pred = Predicate {
@@ -501,36 +508,51 @@ impl Ctx<'_> {
                         args: Ty::list(&alias.args[1..]),
                     },
                 };
-                let at = self.qself_type_range(range);
-                self.register(pred, at, ObligationKind::Bound);
-                for &a in alias.args {
-                    self.require_alias_traits(a, range);
+                let qself = match written {
+                    Some(TypeRef::Path(path)) => path.qself.as_deref(),
+                    _ => None,
+                };
+                self.register(
+                    pred,
+                    qself.map_or(range, |q| q.ty_range),
+                    ObligationKind::Bound,
+                );
+                let trait_args = qself
+                    .and_then(|q| q.trait_.as_ref()?.args.last()?.as_ref())
+                    .map_or(&[][..], |a| &a.types);
+                for (i, &a) in alias.args.iter().enumerate() {
+                    let part = match i {
+                        0 => qself.map(|q| &q.ty),
+                        _ => trait_args.get(i - 1),
+                    };
+                    self.require_alias_traits(a, part, range);
                 }
             }
             TyKind::Tuple(list) | TyKind::Adt(_, list) => {
-                for &t in list {
-                    self.require_alias_traits(t, range);
+                let parts = match written {
+                    Some(TypeRef::Tuple(elements)) => &elements[..],
+                    Some(TypeRef::Path(path)) => path
+                        .args
+                        .last()
+                        .and_then(Option::as_ref)
+                        .map_or(&[][..], |a| &a.types),
+                    _ => &[],
+                };
+                for (i, &t) in list.iter().enumerate() {
+                    self.require_alias_traits(t, parts.get(i), range);
                 }
             }
-            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => self.require_alias_traits(t, range),
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => {
+                let pointee = match written {
+                    Some(TypeRef::Ref { pointee, .. } | TypeRef::Ptr { pointee, .. }) => {
+                        Some(&**pointee)
+                    }
+                    _ => None,
+                };
+                self.require_alias_traits(t, pointee, range);
+            }
             _ => {}
         }
-    }
-
-    /// `S` in a type `<S as Tr>::Out` written at `range`, where rustc
-    /// reports `S: Tr` unmet; `range` if it is not such a type.
-    fn qself_type_range(&self, range: TextRange) -> TextRange {
-        self.body
-            .types
-            .iter()
-            .find_map(|(id, ty)| {
-                let flux_hir::TypeRef::Path(path) = ty else {
-                    return None;
-                };
-                let qself = path.qself.as_ref()?;
-                (self.source_map.types.get(id) == Some(&range)).then_some(qself.ty_range)
-            })
-            .unwrap_or(range)
     }
 
     /// Once the body is inferred: integer variables in waiting
