@@ -102,16 +102,15 @@ pub unsafe fn replace<T>(dst: *mut T, src: T) -> T {
 }
 
 /// Drops the value at `to_drop`, which is then not to be used again.
-pub unsafe fn drop_in_place<T>(to_drop: *mut T) {
-    unsafe {
-        crate::mem::drop(read(to_drop));
-    }
+#[lang = "drop_in_place"]
+pub unsafe fn drop_in_place<T: ?Sized>(to_drop: *mut T) {
+    unsafe { crate::intrinsics::drop_in_place(to_drop) }
 }
 
-impl<T> *const T {
+impl<T: ?Sized> *const T {
     /// Whether the pointer is null.
     pub fn is_null(self) -> bool {
-        self as usize == 0
+        self as *const u8 as usize == 0
     }
 
     /// The pointer as one to a `U`.
@@ -126,9 +125,20 @@ impl<T> *const T {
 
     /// The address.
     pub fn addr(self) -> usize {
-        self as usize
+        self as *const u8 as usize
     }
 
+    /// A reference to the value, or `None` for a null pointer.
+    pub unsafe fn as_ref<'a>(self) -> Option<&'a T> {
+        if self.is_null() {
+            None
+        } else {
+            unsafe { Some(&*self) }
+        }
+    }
+}
+
+impl<T> *const T {
     /// The pointer `count` values on.
     pub unsafe fn add(self, count: usize) -> *const T {
         (self as usize).wrapping_add(count.wrapping_mul(size_of::<T>())) as *const T
@@ -175,20 +185,12 @@ impl<T> *const T {
         unsafe { copy_nonoverlapping(self, dest, count) }
     }
 
-    /// A reference to the value, or `None` for a null pointer.
-    pub unsafe fn as_ref<'a>(self) -> Option<&'a T> {
-        if self.is_null() {
-            None
-        } else {
-            unsafe { Some(&*self) }
-        }
-    }
 }
 
-impl<T> *mut T {
+impl<T: ?Sized> *mut T {
     /// Whether the pointer is null.
     pub fn is_null(self) -> bool {
-        self as usize == 0
+        self as *const u8 as usize == 0
     }
 
     /// The pointer as one to a `U`.
@@ -203,9 +205,29 @@ impl<T> *mut T {
 
     /// The address.
     pub fn addr(self) -> usize {
-        self as usize
+        self as *const u8 as usize
     }
 
+    /// A reference to the value, or `None` for a null pointer.
+    pub unsafe fn as_ref<'a>(self) -> Option<&'a T> {
+        if self.is_null() {
+            None
+        } else {
+            unsafe { Some(&*self) }
+        }
+    }
+
+    /// A mutable reference to the value, or `None` for a null pointer.
+    pub unsafe fn as_mut<'a>(self) -> Option<&'a mut T> {
+        if self.is_null() {
+            None
+        } else {
+            unsafe { Some(&mut *self) }
+        }
+    }
+}
+
+impl<T> *mut T {
     /// The pointer `count` values on.
     pub unsafe fn add(self, count: usize) -> *mut T {
         (self as usize).wrapping_add(count.wrapping_mul(size_of::<T>())) as *mut T
@@ -289,34 +311,17 @@ impl<T> *mut T {
         unsafe { copy_nonoverlapping(src, self, count) }
     }
 
-    /// A reference to the value, or `None` for a null pointer.
-    pub unsafe fn as_ref<'a>(self) -> Option<&'a T> {
-        if self.is_null() {
-            None
-        } else {
-            unsafe { Some(&*self) }
-        }
-    }
-
-    /// A mutable reference to the value, or `None` for a null pointer.
-    pub unsafe fn as_mut<'a>(self) -> Option<&'a mut T> {
-        if self.is_null() {
-            None
-        } else {
-            unsafe { Some(&mut *self) }
-        }
-    }
 }
 
 /// A `*mut T` that is never null, so that `Option<NonNull<T>>` is one
 /// pointer, as rustc lays it out (`#[rustc_layout_scalar_valid_range_start(1)]`
 /// there; its `lang` name here).
 #[lang = "non_null"]
-pub struct NonNull<T> {
+pub struct NonNull<T: ?Sized> {
     pointer: *const T,
 }
 
-impl<T> NonNull<T> {
+impl<T: ?Sized> NonNull<T> {
     /// `ptr`, which must not be null.
     pub const unsafe fn new_unchecked(ptr: *mut T) -> NonNull<T> {
         NonNull {
@@ -332,14 +337,6 @@ impl<T> NonNull<T> {
             Some(NonNull {
                 pointer: ptr as *const T,
             })
-        }
-    }
-
-    /// A pointer aligned for a `T` that points to nothing: what an empty
-    /// collection holds.
-    pub fn dangling() -> NonNull<T> {
-        NonNull {
-            pointer: align_of::<T>() as *const T,
         }
     }
 
@@ -365,6 +362,16 @@ impl<T> NonNull<T> {
             pointer: self.pointer as *const U,
         }
     }
+}
+
+impl<T> NonNull<T> {
+    /// A pointer aligned for a `T` that points to nothing: what an empty
+    /// collection holds.
+    pub fn dangling() -> NonNull<T> {
+        NonNull {
+            pointer: align_of::<T>() as *const T,
+        }
+    }
 
     /// The pointer `count` values on.
     pub unsafe fn add(self, count: usize) -> NonNull<T> {
@@ -384,23 +391,23 @@ impl<T> NonNull<T> {
     }
 }
 
-impl<T> Clone for NonNull<T> {
+impl<T: ?Sized> Clone for NonNull<T> {
     fn clone(&self) -> NonNull<T> {
         *self
     }
 }
 
-impl<T> Copy for NonNull<T> {}
+impl<T: ?Sized> Copy for NonNull<T> {}
 
-impl<T> PartialEq for NonNull<T> {
+impl<T: ?Sized> PartialEq for NonNull<T> {
     fn eq(&self, other: &NonNull<T>) -> bool {
-        self.pointer as usize == other.pointer as usize
+        self.pointer as *const u8 as usize == other.pointer as *const u8 as usize
     }
 }
 
-impl<T> Eq for NonNull<T> {}
+impl<T: ?Sized> Eq for NonNull<T> {}
 
-impl<T> crate::fmt::Debug for NonNull<T> {
+impl<T: ?Sized> crate::fmt::Debug for NonNull<T> {
     fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
         crate::fmt::Debug::fmt(&self.pointer, f)
     }

@@ -455,6 +455,19 @@ fn is_dyn_ptr(ty: Ty) -> bool {
     matches!(ty.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn())
 }
 
+/// What a pointer or `Box` of type `ty` points to.
+fn pointee_of(ty: Ty) -> Option<Ty> {
+    match ty.kind() {
+        TyKind::Ref(_, p) | TyKind::RawPtr(_, p) => Some(p),
+        _ => flux_ty::box_pointee(ty),
+    }
+}
+
+/// A `Box` of a trait object.
+fn is_dyn_box(ty: Ty) -> bool {
+    flux_ty::box_pointee(ty).is_some_and(|p| p.is_dyn())
+}
+
 /// The second leaf of a fat pointer: a length, or a vtable's address.
 fn metadata_leaf(ty: Ty) -> Ty {
     if is_dyn_ptr(ty) {
@@ -1263,7 +1276,7 @@ impl Lower<'_, '_, '_> {
                 (ProjectionElem::Downcast(_), Location::Memory(address)) => {
                     Location::Memory(address)
                 }
-                (ProjectionElem::Deref, location) => {
+                (ProjectionElem::Deref | ProjectionElem::BoxDeref, location) => {
                     let pointer = self.load(location, ty.ty)[0];
                     Location::Memory(pointer)
                 }
@@ -2046,14 +2059,10 @@ impl Lower<'_, '_, '_> {
             // To a trait object: the pointer and the type's vtable; from
             // one, upcast, the pointer and the supertrait's vtable, which
             // the subtrait's has.
-            Rvalue::Unsize(operand, to) if is_dyn_ptr(*to) => {
+            Rvalue::Unsize(operand, to) if is_dyn_ptr(*to) || is_dyn_box(*to) => {
                 let from = self.body.operand_ty(operand, self.sigs);
-                let (pointee_of, object) = match (from.kind(), to.kind()) {
-                    (
-                        TyKind::Ref(_, a) | TyKind::RawPtr(_, a),
-                        TyKind::Ref(_, b) | TyKind::RawPtr(_, b),
-                    ) => (a, b),
-                    _ => unreachable!("unsizing is of pointers"),
+                let (Some(pointee_of), Some(object)) = (pointee_of(from), pointee_of(*to)) else {
+                    unreachable!("unsizing is of pointers")
                 };
                 let leaves = self.operand(operand);
                 if pointee_of.is_dyn() {
@@ -2078,11 +2087,8 @@ impl Lower<'_, '_, '_> {
             }
             Rvalue::Unsize(operand, _) => {
                 let from = self.body.operand_ty(operand, self.sigs);
-                let len = match from.kind() {
-                    TyKind::Ref(_, array) | TyKind::RawPtr(_, array) => match array.kind() {
-                        TyKind::Array(_, len) => array_len(len),
-                        _ => 0,
-                    },
+                let len = match pointee_of(from).map(Ty::kind) {
+                    Some(TyKind::Array(_, len)) => array_len(len),
                     _ => 0,
                 };
                 let pointer = self.operand(operand)[0];
@@ -2323,6 +2329,11 @@ impl Lower<'_, '_, '_> {
                     if let Some(target) = target {
                         self.b.ins().jump(self.blocks[target.index()], &[]);
                     }
+                    return;
+                }
+                // Of a trait object: through its vtable.
+                if items.functions[*func].intrinsic {
+                    self.dyn_intrinsic(*func, args, dest, *target);
                     return;
                 }
                 let callee = self.callee(*func, generic_args);
@@ -2651,6 +2662,63 @@ impl Lower<'_, '_, '_> {
         });
     }
 
+    /// `size_of_val`, `align_of_val` or `drop_in_place` of a trait
+    /// object, which `mono` leaves to code generation: the vtable's
+    /// size or alignment word, or a call of its drop function, if it has
+    /// one, with the data pointer.
+    fn dyn_intrinsic(
+        &mut self,
+        func: FunctionId,
+        args: &[Operand],
+        dest: &flux_mir::Place,
+        target: Option<flux_mir::BasicBlock>,
+    ) {
+        let name = self.ctx.hir.items.functions[func].name;
+        let leaves = self.operand(&args[0]);
+        let (data, vtable) = (leaves[0], leaves[1]);
+        let word = |this: &mut Self, index: u64, ty: Type| {
+            let at = this.offset(vtable, 8 * index);
+            this.b.ins().load_with_flags(ty, at, aligned(ty))
+        };
+        match name.as_str() {
+            "size_of_val" => {
+                let size = word(self, 1, Type::I64);
+                self.write(dest, &[size]);
+            }
+            "align_of_val" => {
+                let align = word(self, 2, Type::I64);
+                self.write(dest, &[align]);
+            }
+            _ => {
+                // A null slot: nothing to drop.
+                let drop = word(self, 0, Type::Ptr);
+                let address = self
+                    .b
+                    .ins()
+                    .convert(keel_ir::ConvertOp::PtrToInt, Type::I64, drop);
+                let zero = self.b.ins().iconst(Type::I64, 0);
+                let null = self.b.ins().icmp(IntCC::Eq, address, zero);
+                let call = self.b.create_block();
+                let done = self.b.create_block();
+                self.b.ins().brif(null, done, &[], call, &[]);
+                self.b.switch_to_block(call);
+                let sig = Signature::new(&[Type::Ptr], &[]);
+                let sig_ref = self.b.import_signature(sig);
+                self.b.ins().call_indirect(sig_ref, drop, &[data]);
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+            }
+        }
+        match target {
+            Some(target) => {
+                self.b.ins().jump(self.blocks[target.index()], &[]);
+            }
+            None => {
+                self.b.ins().trap();
+            }
+        }
+    }
+
     fn panic_block(&mut self) -> Block {
         if let Some(block) = self.panic_block {
             return block;
@@ -2665,7 +2733,7 @@ impl Lower<'_, '_, '_> {
 /// The pointer `place`, a slice behind it, is behind.
 fn pointer_of(place: &Place) -> Place {
     match &*place.projection {
-        [rest @ .., ProjectionElem::Deref] => Place {
+        [rest @ .., ProjectionElem::Deref | ProjectionElem::BoxDeref] => Place {
             local: place.local,
             projection: rest.into(),
         },

@@ -243,7 +243,7 @@ impl Validator<'_> {
                     {
                         Some((a, b))
                     }
-                    _ => None,
+                    _ => flux_ty::box_pointee(from).zip(flux_ty::box_pointee(to)),
                 };
                 let unsizes = pointees.is_some_and(|(a, b)| match (a.kind(), b.kind()) {
                     (TyKind::Array(x, _), TyKind::Slice(y)) => self.same(y, x),

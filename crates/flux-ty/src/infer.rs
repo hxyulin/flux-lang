@@ -1001,6 +1001,35 @@ impl Ctx<'_> {
                 return;
             }
         }
+        // A `Box<[T; N]>` or `Box<T>` where a `Box<[T]>` or `Box<dyn
+        // Tr>` is wanted: rustc's `CoerceUnsized` of boxes.
+        if let (Some(p), Some(q)) = (
+            crate::box_pointee(self.shallow(actual)),
+            crate::box_pointee(self.shallow(expected)),
+        ) {
+            let (p, q) = (self.shallow(p), self.shallow(q));
+            match (p.kind(), q.kind()) {
+                (TyKind::Array(elem, _), TyKind::Slice(wanted)) => {
+                    if self.unify(elem, wanted) {
+                        self.unsizes.insert(expr, expected);
+                    } else {
+                        let range = self.range(blamed);
+                        self.mismatch(expected, actual, range);
+                    }
+                    return;
+                }
+                (_, TyKind::Dynamic(d)) if !self.can_unify(p, q) => {
+                    if self.unsize_to_dyn(p, q, d, blamed) {
+                        self.unsizes.insert(expr, expected);
+                    } else {
+                        let range = self.range(blamed);
+                        self.mismatch(expected, actual, range);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         // A `&&T`, `&mut &T` or `&&mut T` where a `&T` is expected is
         // dereferenced until it is one, then reborrowed: rustc's deref
         // coercion, through references.
@@ -1326,6 +1355,19 @@ impl Ctx<'_> {
     /// Unifies `ty`, the type of expression `expr` before its parts are
     /// inferred, with the type its context wants, if they can be.
     fn meet_expectation(&mut self, expr: ExprId, ty: Ty) {
+        // A box of an unsized type wanted (`Box<dyn Tr>`): the value made
+        // is a box of a sized one, coerced after, as rustc only hints
+        // its arguments with what is wanted.
+        if let Some(&expected) = self.expected.get(expr)
+            && let (Some(e), Some(t)) = (
+                crate::box_pointee(self.shallow(expected)),
+                crate::box_pointee(self.shallow(ty)),
+            )
+            && self.shallow(e).is_unsized()
+            && !self.shallow(t).is_unsized()
+        {
+            return;
+        }
         if let Some(&expected) = self.expected.get(expr)
             && self.can_unify(ty, expected)
         {
@@ -3393,6 +3435,16 @@ impl Ctx<'_> {
         if actual == Ty::NEVER {
             return true;
         }
+        if let (Some(p), Some(q)) = (crate::box_pointee(actual), crate::box_pointee(expected)) {
+            let (p, q) = (self.shallow(p), self.shallow(q));
+            match (p.kind(), q.kind()) {
+                (TyKind::Array(elem, _), TyKind::Slice(wanted)) => {
+                    return self.can_unify(elem, wanted);
+                }
+                (_, TyKind::Dynamic(_)) if !self.can_unify(p, q) => return !p.is_unsized(),
+                _ => {}
+            }
+        }
         match (actual.kind(), expected.kind()) {
             (TyKind::Ref(from, array), TyKind::Ref(to, slice))
                 if (from == to || from == Mutability::Mut)
@@ -3986,6 +4038,7 @@ impl Ctx<'_> {
                 self.annotations_needed(operand, var, self.range(id));
                 Ty::ERROR
             }
+            TyKind::Adt(..) if let Some(pointee) = crate::box_pointee(self.shallow(ty)) => pointee,
             _ => {
                 // `*Deref::deref(&v)`.
                 let range = self.range(id);
@@ -4188,10 +4241,12 @@ impl Ctx<'_> {
                 .overloaded_derefs
                 .get(place)
                 .map_or(0, |s| s.len() as u32);
-            let through_ref = self
-                .field_derefs
-                .get(place)
-                .is_some_and(|&d| d > overloaded);
+            let base = match self.body.exprs[place] {
+                Expr::Field { expr, .. } | Expr::Index { base: expr, .. } => Some(expr),
+                _ => None,
+            };
+            let derefs = self.field_derefs.get(place).copied().unwrap_or(0);
+            let through_ref = base.is_some_and(|b| self.derefs_through_ref(place, b, derefs));
             match self.body.exprs[place] {
                 Expr::Field { expr: inner, .. } => {
                     past_deref |= through_ref;
@@ -4201,7 +4256,8 @@ impl Ctx<'_> {
                     op: UnaryOp::Deref,
                     operand,
                 } => {
-                    past_deref |= overloaded == 0;
+                    // A `Box`'s contents are owned, as a field is.
+                    past_deref |= overloaded == 0 && self.derefs_through_ref(place, operand, 1);
                     place = operand;
                 }
                 Expr::Index { base, .. } => {
@@ -4257,6 +4313,10 @@ impl Ctx<'_> {
     /// unknown type stops it.
     fn deref_step(&mut self, ty: Ty, range: TextRange) -> Option<(Ty, bool)> {
         let ty = self.shallow(ty);
+        // A `Box`'s contents, built in as rustc's are.
+        if let Some(pointee) = crate::box_pointee(ty) {
+            return Some((self.shallow(pointee), false));
+        }
         match ty.kind() {
             TyKind::Ref(_, pointee) => Some((self.shallow(pointee), false)),
             TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => {
@@ -4336,6 +4396,33 @@ impl Ctx<'_> {
             step.mutability = Mutability::Mut;
         }
         self.overloaded_derefs.insert(expr, steps);
+    }
+
+    /// Whether `derefs` of `expr`'s dereferences of `base` go through a
+    /// reference or raw pointer, rather than only `Box`es and `Deref`
+    /// types.
+    fn derefs_through_ref(&mut self, expr: ExprId, base: ExprId, derefs: u32) -> bool {
+        let Some(&ty) = self.expr_types.get(base) else {
+            return false;
+        };
+        let steps = self
+            .overloaded_derefs
+            .get(expr)
+            .cloned()
+            .unwrap_or_default();
+        let mut ty = self.shallow(ty);
+        for step in 0..derefs {
+            if let Some(o) = steps.iter().find(|o| o.step == step) {
+                ty = self.shallow(o.target);
+                continue;
+            }
+            if let Some(pointee) = crate::box_pointee(ty) {
+                ty = self.shallow(pointee);
+                continue;
+            }
+            return true;
+        }
+        false
     }
 
     /// `ty` with references removed, and how many there were.

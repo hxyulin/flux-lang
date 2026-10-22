@@ -1,5 +1,8 @@
-//! `Box<T>`: a value on the heap, owned. It dereferences to the value,
-//! and dropping it drops the value, then frees its memory.
+//! `Box<T>`: a value on the heap, owned. It dereferences to the value
+//! as a built-in pointer does (`#[lang = "owned_box"]`): `*b` may be
+//! moved out of, and is mutable where `b` is. Dropping it drops the
+//! value (its `Drop`), then frees its memory (its field's); a box whose
+//! value was moved out of only frees it.
 
 use core::cmp::Ordering;
 use core::fmt;
@@ -9,8 +12,24 @@ use core::ptr::{self, NonNull};
 use crate::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 
 #[lang = "owned_box"]
-pub struct Box<T> {
+pub struct Box<T: ?Sized> {
+    ptr: Unique<T>,
+}
+
+/// A box's memory, which dropping frees.
+struct Unique<T: ?Sized> {
     ptr: NonNull<T>,
+}
+
+impl<T: ?Sized> Drop for Unique<T> {
+    /// Its size, of a slice or trait object too, read from where it
+    /// points after its value was dropped or moved out.
+    fn drop(&mut self) {
+        let layout = unsafe { Layout::for_value(self.ptr.as_ref()) };
+        if layout.size() != 0 {
+            unsafe { dealloc(self.ptr.as_ptr() as *mut u8, layout) };
+        }
+    }
 }
 
 impl<T> Box<T> {
@@ -27,12 +46,16 @@ impl<T> Box<T> {
             unsafe { NonNull::new_unchecked(raw as *mut T) }
         };
         unsafe { ptr.write(x) };
-        Box { ptr }
+        Box {
+            ptr: Unique { ptr },
+        }
     }
+}
 
+impl<T: ?Sized> Box<T> {
     /// The box's pointer, which the caller now owns.
     pub fn into_raw(b: Box<T>) -> *mut T {
-        let ptr = b.ptr.as_ptr();
+        let ptr = b.ptr.ptr.as_ptr();
         core::mem::forget(b);
         ptr
     }
@@ -40,7 +63,9 @@ impl<T> Box<T> {
     /// The box that owns `raw`, which `into_raw` gave.
     pub unsafe fn from_raw(raw: *mut T) -> Box<T> {
         Box {
-            ptr: unsafe { NonNull::new_unchecked(raw) },
+            ptr: Unique {
+                ptr: unsafe { NonNull::new_unchecked(raw) },
+            },
         }
     }
 
@@ -50,29 +75,24 @@ impl<T> Box<T> {
     }
 }
 
-impl<T> Deref for Box<T> {
+impl<T: ?Sized> Deref for Box<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        unsafe { self.ptr.as_ref() }
+        &**self
     }
 }
 
-impl<T> DerefMut for Box<T> {
+impl<T: ?Sized> DerefMut for Box<T> {
     fn deref_mut(&mut self) -> &mut T {
-        unsafe { self.ptr.as_mut() }
+        &mut **self
     }
 }
 
-impl<T> Drop for Box<T> {
+/// The value; the field frees the memory after.
+impl<T: ?Sized> Drop for Box<T> {
     fn drop(&mut self) {
-        let layout = Layout::new::<T>();
-        unsafe {
-            ptr::drop_in_place(self.ptr.as_ptr());
-            if layout.size() != 0 {
-                dealloc(self.ptr.as_ptr() as *mut u8, layout);
-            }
-        }
+        unsafe { ptr::drop_in_place(self.ptr.ptr.as_ptr()) };
     }
 }
 
@@ -88,35 +108,50 @@ impl<T: Default> Default for Box<T> {
     }
 }
 
-impl<T: PartialEq> PartialEq for Box<T> {
+impl<T: ?Sized + PartialEq> PartialEq for Box<T> {
     fn eq(&self, other: &Box<T>) -> bool {
         **self == **other
     }
 }
 
-impl<T: Eq> Eq for Box<T> {}
+impl<T: ?Sized + Eq> Eq for Box<T> {}
 
-impl<T: PartialOrd> PartialOrd for Box<T> {
+impl<T: ?Sized + PartialOrd> PartialOrd for Box<T> {
     fn partial_cmp(&self, other: &Box<T>) -> Option<Ordering> {
         (**self).partial_cmp(&**other)
     }
 }
 
-impl<T: Ord> Ord for Box<T> {
+impl<T: ?Sized + Ord> Ord for Box<T> {
     fn cmp(&self, other: &Box<T>) -> Ordering {
         (**self).cmp(&**other)
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for Box<T> {
+impl<T: ?Sized + fmt::Debug> fmt::Debug for Box<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
 
-impl<T: fmt::Display> fmt::Display for Box<T> {
+impl<T: ?Sized + fmt::Display> fmt::Display for Box<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&**self, f)
+    }
+}
+
+impl<T> Box<[T]> {
+    /// The elements, as a vector with room for them alone.
+    pub fn into_vec(self) -> crate::vec::Vec<T> {
+        let len = self.len();
+        let ptr = Box::into_raw(self) as *mut T;
+        unsafe { crate::vec::Vec::from_raw_parts(ptr, len, len) }
+    }
+}
+
+impl<T> From<crate::vec::Vec<T>> for Box<[T]> {
+    fn from(v: crate::vec::Vec<T>) -> Box<[T]> {
+        v.into_boxed_slice()
     }
 }
 

@@ -738,27 +738,48 @@ flux's `alloc` library has heap memory, through C's `malloc`, `realloc`
 and `free` (`alloc::alloc::{alloc, alloc_zeroed, dealloc, realloc,
 handle_alloc_error, Layout}`; failing to allocate aborts), and the
 types that own it, which the program's prelude has as rustc's `std`
-prelude does: `Box<T>` (`new`, `into_raw`, `from_raw`, `leak`, `Deref`
-and `DerefMut` to the value, dropping the value then freeing it,
-`Clone`, comparisons, `Debug`, `Display`, `Default`, `From<T>`),
+prelude does: `Box<T>` (`new`, `into_raw`, `from_raw`, `leak`,
+dereferenced as rustc's built-in box is, so `*b` and its fields may be
+moved out of, the rest dropped and the memory freed with the box, and
+`*b` is mutable where `b` is; dropping it drops the value then frees
+it; `Deref`, `DerefMut`, `Clone`, comparisons, `Debug`, `Display`,
+`Default`, `From<T>`),
 `Vec<T>` (`new`, `with_capacity`, `push`, `pop`, `insert`, `remove`,
 `swap_remove`, `truncate`, `clear`, `retain`, `dedup`, `resize`,
 `extend_from_slice`, `append`, `split_off`, `reserve`,
 `reserve_exact`, `shrink_to_fit`, `shrink_to`, `len`, `capacity`,
-`as_ptr`, `set_len`, `from_raw_parts`; `Deref` to `[T]`, so slices'
-methods and indexing work on it; `IntoIterator` by value, by reference
-and mutably; `Clone`, comparisons with vectors, slices and arrays,
-`Debug`, `Default`, `From<&[T]>` and `From<[T; N]>`), whose
+`as_ptr`, `set_len`, `from_raw_parts`, `drain`; `Deref` to `[T]`, so
+slices' methods work on it; `Index` and `IndexMut` by `usize` and
+ranges, panicking at the brackets with rustc's messages, as `insert`,
+`remove` and `split_off` do at their calls; `IntoIterator` by value,
+by reference and mutably; `FromIterator` and `Extend`, so `collect`
+makes one, with the capacities rustc's specializations give (exactly
+the length of an iterator whose length is known, rustc's
+`TrustedLen`, which flux's iterators say through a hidden method in
+place of specialization; else room for the first item and the rest of
+the lower bound); `Clone`, comparisons with vectors, slices and
+arrays, `Debug`, `Default`, `From<&[T]>` and `From<[T; N]>`), whose
 `capacity()` grows as rustc's `RawVec` grows it and whose elements drop
 in order, `vec![a, b, c]` and `vec![x; n]`, and `String` (`new`,
 `with_capacity`, `from`, `push`, `push_str`, `pop`, `insert`,
 `insert_str`, `remove`, `truncate`, `clear`, `split_off`, `from_utf8`,
 `into_bytes`, `as_str`, `Deref` to `str`, comparisons with `String`,
 `str` and `&str`, `+` and `+=` with `&str`, `Clone`, `Debug`,
-`Display`), with `ToString` for `str`, `String` and `char`, `ToOwned`
-(`str` to `String`, `[T]` to `Vec<T>`), and slices' `to_vec` and
-`repeat`. `Box` is dereferenced through `Deref`, so moving out of `*b`
-is not supported yet (E0507), nor are `Box<[T]>` and `Box<dyn Tr>`.
+`Display`, `fmt::Write`, `FromIterator` and `Extend` of `char`s, `&str`s
+and `String`s), with `format!` (rustc's capacity estimate, literals a
+plain `{}` shows written into the format string as rustc does),
+`ToString` for every `Display` type (with the room rustc's
+specializations make: exact for text, the most digits of an integer),
+`ToOwned` (`str` to `String`, `[T]` to `Vec<T>`), and slices' `to_vec`
+and `repeat`. `Box<T>` may hold an unsized value: `Box<[T]>` and
+`Box<dyn Tr>` from `Box<[T; N]>` and `Box<T>` where one is wanted
+(rustc's `CoerceUnsized`), `Vec::into_boxed_slice`, `into_vec` and
+`From<Vec<T>>`, dropped through the vtable's drop function and freed
+with the size it records; `core::mem::{size_of_val, align_of_val}`,
+`Layout::for_value` and `ptr::drop_in_place` take unsized values too.
+`Box<str>`, `String::drain` and the other `alloc` collections are not
+supported yet; a panic inside `alloc` that rustc reports at its own
+source (`swap_remove`, `drain` out of range) is reported at flux's.
 
 `core::ops` has the `Fn`, `FnMut` and `FnOnce` traits (in the
 prelude), which bounds name as `Fn(A, B) -> C` (the angle-bracket

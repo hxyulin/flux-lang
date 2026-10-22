@@ -276,7 +276,9 @@ call's cost is linear in its tokens. Macros the compiler implements
 (`assert!`, `format_args!`, `cfg!`, ...) are `core`'s
 `#[rustc_builtin_macro]` declarations, expanded by
 [`builtin`](../crates/flux-hir/src/macros/builtin.rs). `format_args!`
-expands as rustc's lowering does: `Arguments::new_v1(&[pieces], &match
+expands as rustc's lowering does (string and integer literals a plain
+`{}` shows written into the pieces first, as its `inline_literals`
+does, so `format!("{}", 42)` needs no formatting): `Arguments::new_v1(&[pieces], &match
 (&a, &b) { args => [rt::Argument::new_display(args.0), ..] })`, each
 argument evaluated once and borrowed, one `rt::Argument` per argument
 and trait (a width or precision from an argument is
@@ -881,7 +883,22 @@ a value moved out on some paths only is guarded by a *drop flag*, a
 of, dropped, or goes out of scope; and a struct or tuple with some fields
 moved out is dropped field by field, each the same way (a struct with a
 `Drop` impl cannot be, by E0509). An enum with fields of a variant moved
-out drops the fields of each variant if it holds that variant. In a constant or `const fn`, a drop
+out drops the fields of each variant if it holds that variant. A
+`Box` (`#[lang = "owned_box"]`) is dereferenced by its own projection,
+`ProjectionElem::BoxDeref`, which type checking's autoderef and `*b`
+make as rustc's built-in box dereference: not behind a pointer to the
+borrow checker and `init` (its contents are owned, moved out of and
+mutable as a field is, and have move paths), and to code generation
+the pointer in the box. A box whose contents are moved out of, wholly
+or in part, drops what is left of them, then its field, `alloc`'s
+`Unique`, whose `Drop` frees the memory, but not its own `Drop`,
+which drops the contents. `core`'s `drop_in_place`, `size_of_val` and
+`align_of_val` intrinsics are expanded by `mono` for sized types, slices
+(a loop of drops; the length times the element's size) and `str`, and
+left to code generation for trait objects, which reads the vtable's
+words: its drop function (`ptr::drop_in_place`'s instance for the
+type, collected where the vtable is made, or null), size and
+alignment. In a constant or `const fn`, a drop
 that may find a value, even part of one, is E0493, as rustc checks
 before elaborating: `Drop` impls cannot run at compile time.
 

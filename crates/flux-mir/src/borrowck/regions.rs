@@ -1639,6 +1639,8 @@ impl<'a> Cx<'a> {
                     ty = inner;
                 }
                 (ProjectionElem::Deref, TyKind::RawPtr(_, inner)) => ty = inner,
+                // A `Box<T>`'s slots are its `T`'s.
+                (ProjectionElem::BoxDeref, _) => ty = flux_ty::box_pointee(ty).unwrap_or(Ty::ERROR),
                 (
                     ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. },
                     TyKind::Array(elem, _) | TyKind::Slice(elem),
@@ -1840,7 +1842,9 @@ impl<'a> Cx<'a> {
             // To a trait object, whose lifetime bound is the reference's
             // (or `'static` behind a raw pointer): what the value holds
             // must outlive it, as rustc's `T: 'a` for the unsizing.
-            Rvalue::Unsize(op, to) if matches!(to.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn()) =>
+            Rvalue::Unsize(op, to)
+                if matches!(to.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn())
+                    || flux_ty::box_pointee(*to).is_some_and(|p| p.is_dyn()) =>
             {
                 let (op_ty, vars) = self.operand_regions(op);
                 // The reference's own region relates; then the object's
@@ -1858,6 +1862,10 @@ impl<'a> Cx<'a> {
                         )
                     }
                     (TyKind::RawPtr(_, pointee), _) => {
+                        (pointee, &vars[..], dest_vars.first().copied())
+                    }
+                    // A box's slots are its value's.
+                    _ if let Some(pointee) = flux_ty::box_pointee(op_ty) => {
                         (pointee, &vars[..], dest_vars.first().copied())
                     }
                     _ => (op_ty, &[][..], None),

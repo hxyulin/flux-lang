@@ -27,17 +27,15 @@ pub const fn align_of<T>() -> usize {
     crate::intrinsics::align_of::<T>()
 }
 
-/// The size of the value `val` refers to; `T` is sized in flux, so it
-/// is `size_of::<T>()`.
-pub const fn size_of_val<T>(val: &T) -> usize {
-    let _ = val;
-    size_of::<T>()
+/// The size of the value `val` refers to: of a slice's elements, or of
+/// a trait object's type.
+pub const fn size_of_val<T: ?Sized>(val: &T) -> usize {
+    unsafe { crate::intrinsics::size_of_val(val as *const T) }
 }
 
 /// The alignment of the value `val` refers to.
-pub const fn align_of_val<T>(val: &T) -> usize {
-    let _ = val;
-    align_of::<T>()
+pub const fn align_of_val<T: ?Sized>(val: &T) -> usize {
+    unsafe { crate::intrinsics::align_of_val(val as *const T) }
 }
 
 /// A value that is not dropped: dropping a `ManuallyDrop<T>` does
