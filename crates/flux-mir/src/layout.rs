@@ -398,6 +398,17 @@ impl<'a> Layouts<'a> {
                     end: u64::MAX as u128,
                 });
             }
+            if lang("nonzero_u32") {
+                // The private u32 wrapper's checked constructor excludes zero.
+                // As for NonNull, preserve that scalar validity range through
+                // aggregates so an enclosing enum can fill the zero niche.
+                layout.niche = Some(Niche {
+                    offset: 0,
+                    bytes: 4,
+                    start: 1,
+                    end: u32::MAX as u128,
+                });
+            }
             if lang("alignment") {
                 // rustc's `AlignmentEnum`: the powers of two.
                 layout.niche = Some(Niche {

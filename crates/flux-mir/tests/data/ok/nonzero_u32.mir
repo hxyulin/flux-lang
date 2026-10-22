@@ -1,0 +1,363 @@
+fn check(_1: u32) -> u32 {
+    let mut _0: u32;
+    let _2: Option<NonZeroU32>; // nz
+    let _3: u32;
+    let _4: Option<Option<NonZeroU32>>; // nested
+    let _5: Option<NonZeroU32>;
+    let _6: Payload; // payload
+    let _7: NonZeroU32; // n
+    let _8: isize;
+    let _9: NonZeroU32;
+    let _10: isize;
+    let _11: u32; // result
+    let _12: isize;
+    let _13: isize;
+    let _14: isize;
+    let _15: NonZeroU32; // n
+    let _16: isize;
+    let _17: isize;
+    let _18: NonZeroU32;
+    let _19: isize;
+    let _20: NonZeroU32; // n
+    let _21: isize;
+    let _22: Wrapped;
+    let _23: NonZeroU32;
+    let _24: NonZeroU32;
+
+    bb0: {
+        _3 = copy _1;
+        _2 = new(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _5 = copy _2;
+        _4 = Option::Some(copy _5);
+        _8 = discriminant(_2);
+        switchInt(copy _8) -> [1: bb4, otherwise: bb3];
+    }
+
+    bb2: {
+        _12 = discriminant(_4);
+        switchInt(copy _12) -> [0: bb11, otherwise: bb10];
+    }
+
+    bb3: {
+        _10 = discriminant(_2);
+        switchInt(copy _10) -> [0: bb7, otherwise: bb6];
+    }
+
+    bb4: {
+        _7 = copy (_2 as #1).0;
+        goto -> bb5;
+    }
+
+    bb5: {
+        _9 = copy _7;
+        _6 = Payload::Value(copy _9);
+        StorageDead(_7);
+        goto -> bb2;
+    }
+
+    bb6: {
+        unreachable;
+    }
+
+    bb7: {
+        goto -> bb8;
+    }
+
+    bb8: {
+        _6 = Payload::Empty;
+        goto -> bb2;
+    }
+
+    bb9: {
+        _19 = discriminant(_6);
+        switchInt(copy _19) -> [0: bb24, otherwise: bb23];
+    }
+
+    bb10: {
+        _13 = discriminant(_4);
+        switchInt(copy _13) -> [1: bb14, otherwise: bb13];
+    }
+
+    bb11: {
+        goto -> bb12;
+    }
+
+    bb12: {
+        _11 = const 0_u32;
+        goto -> bb9;
+    }
+
+    bb13: {
+        _16 = discriminant(_4);
+        switchInt(copy _16) -> [1: bb18, otherwise: bb17];
+    }
+
+    bb14: {
+        _14 = discriminant((_4 as #1).0);
+        switchInt(copy _14) -> [0: bb15, otherwise: bb13];
+    }
+
+    bb15: {
+        goto -> bb16;
+    }
+
+    bb16: {
+        _11 = const 0_u32;
+        goto -> bb9;
+    }
+
+    bb17: {
+        unreachable;
+    }
+
+    bb18: {
+        _17 = discriminant((_4 as #1).0);
+        switchInt(copy _17) -> [1: bb19, otherwise: bb17];
+    }
+
+    bb19: {
+        _15 = copy ((_4 as #1).0 as #1).0;
+        goto -> bb20;
+    }
+
+    bb20: {
+        _18 = copy _15;
+        _11 = get(copy _18) -> bb21;
+    }
+
+    bb21: {
+        StorageDead(_15);
+        goto -> bb9;
+    }
+
+    bb22: {
+        StorageDead(_11);
+        StorageDead(_6);
+        StorageDead(_4);
+        StorageDead(_2);
+        return;
+    }
+
+    bb23: {
+        _21 = discriminant(_6);
+        switchInt(copy _21) -> [1: bb27, otherwise: bb26];
+    }
+
+    bb24: {
+        goto -> bb25;
+    }
+
+    bb25: {
+        _0 = copy _11;
+        goto -> bb22;
+    }
+
+    bb26: {
+        unreachable;
+    }
+
+    bb27: {
+        _20 = copy (_6 as #1).0;
+        goto -> bb28;
+    }
+
+    bb28: {
+        _23 = copy _20;
+        _22 = Wrapped(copy _23);
+        _24 = copy _22.0;
+        _0 = get(copy _24) -> bb29;
+    }
+
+    bb29: {
+        StorageDead(_22);
+        StorageDead(_20);
+        goto -> bb22;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: ();
+    let _2: bool;
+    let _3: bool;
+    let _4: Option<NonZeroU32>;
+    let _5: &Option<NonZeroU32>;
+    let _6: ();
+    let _7: bool;
+    let _8: bool;
+    let _9: u32;
+    let _10: NonZeroU32;
+    let _11: Option<NonZeroU32>;
+    let _12: Option<NonZeroU32>;
+    let _13: NonZeroU32;
+    let _14: IntoIter<u32, 4>;
+    let _15: [u32; 4];
+    let mut _16: IntoIter<u32, 4>; // iter
+    let _17: ();
+    let _18: ();
+    let _19: Option<u32>;
+    let _20: &mut IntoIter<u32, 4>;
+    let _21: &mut IntoIter<u32, 4>;
+    let _22: isize;
+    let _23: u32; // value
+    let _24: isize;
+    let _25: ();
+    let _26: bool;
+    let _27: bool;
+    let _28: u32;
+    let _29: u32;
+    let _30: u32;
+
+    bb0: {
+        _4 = const ZERO;
+        _5 = &_4;
+        _3 = is_none::<NonZeroU32>(copy _5) -> bb1;
+    }
+
+    bb1: {
+        _2 = Not(copy _3);
+        StorageDead(_4);
+        switchInt(copy _2) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb2: {
+        _1 = panic(const &promoted[0]) -> !;
+    }
+
+    bb3: {
+        _1 = const ();
+        goto -> bb4;
+    }
+
+    bb4: {
+        _11 = const MAX;
+        _12 = copy _11;
+        _10 = unwrap::<NonZeroU32>(copy _12) -> bb5;
+    }
+
+    bb5: {
+        _13 = copy _10;
+        _9 = get(copy _13) -> bb6;
+    }
+
+    bb6: {
+        _8 = Eq(copy _9, const MAX);
+        _7 = Not(copy _8);
+        StorageDead(_10);
+        StorageDead(_11);
+        switchInt(copy _7) -> [0: bb8, otherwise: bb7];
+    }
+
+    bb7: {
+        _6 = panic(const &promoted[1]) -> !;
+    }
+
+    bb8: {
+        _6 = const ();
+        goto -> bb9;
+    }
+
+    bb9: {
+        _15 = [const 0_u32, const 1_u32, const 2147483648_u32, const MAX];
+        _14 = into_iter::<[u32; 4]>(copy _15) -> bb10;
+    }
+
+    bb10: {
+        _16 = move _14;
+        goto -> bb13;
+    }
+
+    bb11: {
+        StorageDead(_14);
+        return;
+    }
+
+    bb12: {
+        unreachable;
+    }
+
+    bb13: {
+        goto -> bb14;
+    }
+
+    bb14: {
+        _21 = &mut _16;
+        _20 = &mut (*_21);
+        _19 = next::<IntoIter<u32, 4>>(move _20) -> bb16;
+    }
+
+    bb15: {
+        drop(_16) -> bb28;
+    }
+
+    bb16: {
+        _22 = discriminant(_19);
+        switchInt(copy _22) -> [0: bb19, otherwise: bb18];
+    }
+
+    bb17: {
+        StorageDead(_19);
+        _17 = const ();
+        goto -> bb14;
+    }
+
+    bb18: {
+        _24 = discriminant(_19);
+        switchInt(copy _24) -> [1: bb22, otherwise: bb21];
+    }
+
+    bb19: {
+        goto -> bb20;
+    }
+
+    bb20: {
+        _0 = const ();
+        StorageDead(_19);
+        goto -> bb15;
+    }
+
+    bb21: {
+        unreachable;
+    }
+
+    bb22: {
+        _23 = copy (_19 as #1).0;
+        goto -> bb23;
+    }
+
+    bb23: {
+        _29 = copy _23;
+        _28 = check(copy _29) -> bb24;
+    }
+
+    bb24: {
+        _30 = copy _23;
+        _27 = Eq(copy _28, copy _30);
+        _26 = Not(copy _27);
+        switchInt(copy _26) -> [0: bb26, otherwise: bb25];
+    }
+
+    bb25: {
+        _25 = panic(const &promoted[2]) -> !;
+    }
+
+    bb26: {
+        _25 = const ();
+        goto -> bb27;
+    }
+
+    bb27: {
+        _18 = const ();
+        StorageDead(_23);
+        goto -> bb17;
+    }
+
+    bb28: {
+        StorageDead(_16);
+        goto -> bb11;
+    }
+}
+
