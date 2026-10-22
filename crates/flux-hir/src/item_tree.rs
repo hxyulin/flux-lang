@@ -452,6 +452,8 @@ pub struct Struct {
     /// `#[repr(C)]`: fields are laid out in declaration order, as C
     /// does, and an enum's discriminant is a C `int` at least.
     pub repr_c: bool,
+    /// Minimum aggregate alignment from `#[repr(align(N))]`, or 1.
+    pub repr_align: u32,
     pub loc: ItemLoc,
     pub name_range: TextRange,
     /// `struct S` or `enum E`, where rustc reports errors about the
@@ -3483,11 +3485,17 @@ impl Collector<'_> {
         let is_core = self.items.is_core(ctx.module);
         let mut lang = None;
         let mut hints = Vec::new();
+        let mut repr_align = 1;
         for attr in s.attrs() {
             if attr_name(attr) == Some("derive") {
                 derive_attr(attr, &mut derives, &mut self.items.diagnostics);
             } else if attr_name(attr) == Some("repr") {
-                repr_attr(attr, &mut hints, &mut self.items.diagnostics);
+                repr_attr(
+                    attr,
+                    &mut hints,
+                    &mut repr_align,
+                    &mut self.items.diagnostics,
+                );
             } else if is_core && let Some(name) = lang_attr(attr) {
                 lang = Some(name);
             } else {
@@ -3517,6 +3525,7 @@ impl Collector<'_> {
             variants: None,
             repr: None,
             repr_c,
+            repr_align,
             loc: ItemLoc {
                 module: ctx.module,
                 file: ctx.file,
@@ -3616,13 +3625,19 @@ impl Collector<'_> {
     fn collect_enum(&mut self, ctx: Ctx, e: ast::Enum<'_>) {
         let mut derives = Vec::new();
         let mut hints = Vec::new();
+        let mut repr_align = 1;
         let is_core = self.items.is_core(ctx.module);
         let mut lang = None;
         for attr in e.attrs() {
             if attr_name(attr) == Some("derive") {
                 derive_attr(attr, &mut derives, &mut self.items.diagnostics);
             } else if attr_name(attr) == Some("repr") {
-                repr_attr(attr, &mut hints, &mut self.items.diagnostics);
+                repr_attr(
+                    attr,
+                    &mut hints,
+                    &mut repr_align,
+                    &mut self.items.diagnostics,
+                );
             } else if is_core && let Some(name) = lang_attr(attr) {
                 lang = Some(name);
             } else {
@@ -3844,6 +3859,7 @@ impl Collector<'_> {
             variants: Some(variants.into()),
             repr,
             repr_c: hints.iter().any(|(h, _)| h.as_str() == "C"),
+            repr_align,
             loc: ItemLoc {
                 module: ctx.module,
                 file: ctx.file,
@@ -5008,6 +5024,7 @@ const REPR_INTS: &[&str] = &[
 fn repr_attr(
     attr: ast::Attr<'_>,
     out: &mut Vec<(Symbol, TextRange)>,
+    repr_align: &mut u32,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let meta = attr.meta();
@@ -5045,7 +5062,39 @@ fn repr_attr(
             }
         });
         match name {
-            Some(name) if known => hints.push((Symbol::intern(name.text()), name.text_range())),
+            Some(name) if known => {
+                if name.text() == "align" {
+                    let tree = item[1].into_node().expect("checked token tree");
+                    let mut args: Vec<_> = tree
+                        .children_with_tokens()
+                        .filter(|e| {
+                            !e.kind().is_trivia()
+                                && !matches!(e.kind(), SyntaxKind::L_PAREN | SyntaxKind::R_PAREN)
+                        })
+                        .collect();
+                    if args.last().is_some_and(|e| e.kind() == SyntaxKind::COMMA) {
+                        args.pop();
+                    }
+                    let value = match args.as_slice() {
+                        [arg] => arg
+                            .into_token()
+                            .filter(|t| t.kind() == SyntaxKind::INT_NUMBER)
+                            .and_then(|t| crate::literal::parse_int(t.text()).ok()),
+                        _ => None,
+                    };
+                    let range = tree.text_range();
+                    match value {
+                        Some(crate::Literal::Int { value, suffix: None })
+                            if value.is_power_of_two() && value <= (1 << 29) => {
+                                *repr_align = (*repr_align).max(value as u32);
+                            }
+                        Some(crate::Literal::Int { suffix: None, .. }) => diagnostics.push(
+                            Diagnostic::new(range, "invalid `repr(align)` attribute: alignment must be a power of two no larger than 2^29")),
+                        _ => diagnostics.push(Diagnostic::new(range, "expected an unsuffixed integer alignment")),
+                    }
+                }
+                hints.push((Symbol::intern(name.text()), name.text_range()));
+            }
             _ => {
                 malformed(diagnostics);
                 return;
@@ -5062,7 +5111,7 @@ fn struct_repr(hints: &[(Symbol, TextRange)], diagnostics: &mut Vec<Diagnostic>)
     for &(hint, range) in hints {
         match hint.as_str() {
             "C" => c = true,
-            "Rust" => {}
+            "Rust" | "align" => {}
             name if REPR_INTS.contains(&name) => diagnostics.push(Diagnostic::new(
                 range,
                 "attribute should be applied to an enum",
@@ -5091,7 +5140,7 @@ fn enum_repr(
     for &(hint, range) in hints {
         match hint.as_str() {
             "C" => c = true,
-            "Rust" => {}
+            "Rust" | "align" => {}
             name if REPR_INTS.contains(&name) => {
                 if int.is_some() {
                     diagnostics.push(Diagnostic::new(
@@ -5116,7 +5165,7 @@ fn enum_repr(
     }
     if let Some(&(_, range)) = hints.iter().find(|h| h.0.as_str() != "Rust")
         && empty
-        && (c || int.is_some())
+        && (c || int.is_some() || hints.iter().any(|h| h.0.as_str() == "align"))
     {
         diagnostics.push(Diagnostic::new(
             range,

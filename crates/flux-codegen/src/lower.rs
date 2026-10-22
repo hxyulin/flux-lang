@@ -39,7 +39,7 @@ use flux_mir::{
 };
 use flux_ty::{FnSig, GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind, TypedFile};
 use keel_frontend::{FunctionBuilder, Variable};
-use keel_ir::StackSlot;
+use keel_ir::ConvertOp;
 use keel_ir::{
     AbiParam, ArgExt, Block, BlockCall, CallConv, DataInit, DataItem, DataObject, FuncDecl,
     FuncRef, Function, FunctionAttrs, IntCC, Intrinsic, Layout, MemoryFlags, Module, Purpose,
@@ -1139,8 +1139,8 @@ struct Lower<'a, 'c, 'f> {
     /// The keel variables of each MIR local held in variables, one per
     /// leaf.
     vars: Vec<Box<[Variable]>>,
-    /// The stack slot of each local that is borrowed.
-    slots: Vec<Option<StackSlot>>,
+    /// The storage address of each local that is borrowed or lives in memory.
+    slots: Vec<Option<Value>>,
     /// Where to store the return value, and its layout, when it is
     /// returned through memory.
     sret: Option<(Value, Layout)>,
@@ -1168,13 +1168,11 @@ impl Lower<'_, '_, '_> {
                 }
             }
         }
+        self.b.switch_to_block(entry);
         for (local, decl) in body.locals.iter() {
             if borrowed[local.index()] || is_memory(sigs, decl.ty) {
-                let layout = self.ctx.layouts.of(decl.ty);
-                let slot = self
-                    .b
-                    .create_stack_slot(layout.size.max(1) as u32, layout.align as u32);
-                self.slots.push(Some(slot));
+                let address = self.new_slot(decl.ty);
+                self.slots.push(Some(address));
                 self.vars.push(Box::default());
             } else {
                 let vars = leaves_of(sigs, decl.ty)
@@ -1188,7 +1186,6 @@ impl Lower<'_, '_, '_> {
                 self.vars.push(vars);
             }
         }
-        self.b.switch_to_block(entry);
         if let Return::Sret(layout) | Return::Memory(layout) =
             return_kind(sigs, &self.ctx.layouts, body.locals[Body::RETURN].ty)
         {
@@ -1247,7 +1244,7 @@ impl Lower<'_, '_, '_> {
         let sigs = self.sigs;
         let mut ty = PlaceTy::from(self.body.locals[place.local].ty);
         let mut location = match self.slots[place.local.index()] {
-            Some(slot) => Location::Memory(self.b.ins().stack_addr(slot)),
+            Some(address) => Location::Memory(address),
             None => Location::Vars {
                 local: place.local,
                 start: 0,
@@ -1444,10 +1441,32 @@ impl Lower<'_, '_, '_> {
     /// A new stack slot for a value of `ty`, and its address.
     fn new_slot(&mut self, ty: Ty) -> Value {
         let layout = self.ctx.layouts.of(ty);
-        let slot = self
-            .b
-            .create_stack_slot(layout.size.max(1) as u32, layout.align as u32);
-        self.b.ins().stack_addr(slot)
+        self.aligned_slot(layout.size, layout.align)
+    }
+
+    /// Keel's stack frame is aligned to 16 bytes. Reserve padding and
+    /// round an interior pointer for types with a larger alignment.
+    fn aligned_slot(&mut self, size: u64, align: u64) -> Value {
+        let padding = if align > 16 { align - 1 } else { 0 };
+        let reserve = u32::try_from(
+            size.max(1)
+                .checked_add(padding)
+                .expect("stack size overflow"),
+        )
+        .expect("stack object exceeds the IR size limit");
+        let slot = self.b.create_stack_slot(reserve, align.min(16) as u32);
+        let base = self.b.ins().stack_addr(slot);
+        if align <= 16 {
+            return base;
+        }
+        let bits = self.b.ins().convert(ConvertOp::PtrToInt, Type::I64, base);
+        let padding = self.b.ins().iconst(Type::I64, padding as i64);
+        let upper = self.b.ins().iadd(bits, padding);
+        let mask = self.b.ins().iconst(Type::I64, -(align as i64));
+        let rounded = self.b.ins().and(upper, mask);
+        self.b
+            .ins()
+            .convert(ConvertOp::IntToPtr, Type::Ptr, rounded)
     }
 
     /// Stores at `address` the value of `rvalue`, an aggregate or repeat
@@ -2505,10 +2524,9 @@ impl Lower<'_, '_, '_> {
     fn sret_for(&mut self, ret: Ty) -> Option<(Value, Layout)> {
         match return_kind(self.sigs, &self.ctx.layouts, ret) {
             Return::Sret(layout) | Return::Memory(layout) => {
-                let slot = self
-                    .b
-                    .create_stack_slot(layout.size().max(1) as u32, layout.align() as u32);
-                Some((self.b.ins().stack_addr(slot), layout))
+                let align = layout.align().max(self.ctx.layouts.of(ret).align);
+                let address = self.aligned_slot(layout.size(), align);
+                Some((address, layout))
             }
             Return::Values(_) => None,
         }

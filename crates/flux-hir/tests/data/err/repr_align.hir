@@ -1,0 +1,36 @@
+struct Zero;
+
+struct NotPowerOfTwo;
+
+struct TooLarge;
+
+struct Suffixed;
+
+struct String;
+
+struct Negative;
+
+struct Multiple;
+
+struct Missing;
+
+struct NotLiteral;
+
+#[repr(align(32))] struct Packed;
+
+enum InvalidEnum { A = 0 }
+
+#[repr(align(8))] enum EmptyEnum {  }
+
+error 12..15: invalid `repr(align)` attribute: alignment must be a power of two no larger than 2^29
+error 43..46: invalid `repr(align)` attribute: alignment must be a power of two no larger than 2^29
+error 83..95: invalid `repr(align)` attribute: alignment must be a power of two no larger than 2^29
+error 127..132: expected an unsuffixed integer alignment
+error 164..169: expected an unsuffixed integer alignment
+error 199..203: expected an unsuffixed integer alignment
+error 235..242: expected an unsuffixed integer alignment
+error 274..276: expected an unsuffixed integer alignment
+error 307..310: expected an unsuffixed integer alignment
+error 350..356: the `repr(packed)` attribute is not supported yet
+error 386..389: invalid `repr(align)` attribute: alignment must be a power of two no larger than 2^29
+error 422..427: unsupported representation for zero-variant enum

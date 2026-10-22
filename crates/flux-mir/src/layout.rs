@@ -312,11 +312,14 @@ impl<'a> Layouts<'a> {
             TyKind::FnDef(_) => Layout::zst(false),
             TyKind::Never => Layout::zst(true),
             TyKind::Tuple([]) => Layout::zst(false),
-            TyKind::Tuple(elements) => self.univariant_layout(elements, true, Kind::MaybeUnsized),
+            TyKind::Tuple(elements) => {
+                self.univariant_layout(elements, true, Kind::MaybeUnsized, 1)
+            }
             TyKind::Closure(_, args) => self.univariant_layout(
                 ClosureArgs::split(args).upvar_types(),
                 true,
                 Kind::AlwaysSized,
+                1,
             ),
             TyKind::Array(elem, len) => {
                 let elem = self.of(elem);
@@ -366,10 +369,10 @@ impl<'a> Layouts<'a> {
         }
     }
 
-    fn univariant_layout(&self, fields: &[Ty], reorder: bool, kind: Kind) -> Layout {
+    fn univariant_layout(&self, fields: &[Ty], reorder: bool, kind: Kind, align: u64) -> Layout {
         let layouts: Vec<Rc<Layout>> = fields.iter().map(|&f| self.of(f)).collect();
         let refs: Vec<&Layout> = layouts.iter().map(|l| &**l).collect();
-        let u = univariant(&refs, reorder, kind);
+        let u = univariant(&refs, reorder, kind, align);
         Layout {
             size: u.size,
             align: u.align,
@@ -388,7 +391,12 @@ impl<'a> Layouts<'a> {
             let fields = self.sigs.fields(ty).unwrap_or_default();
             // A struct's last field is unsized only if its type may be,
             // which flux's never may.
-            let mut layout = self.univariant_layout(fields, !data.repr_c, Kind::AlwaysSized);
+            let mut layout = self.univariant_layout(
+                fields,
+                !data.repr_c,
+                Kind::AlwaysSized,
+                u64::from(data.repr_align),
+            );
             if lang("non_null") {
                 // `#[rustc_layout_scalar_valid_range_start(1)]`.
                 layout.niche = Some(Niche {
@@ -430,6 +438,7 @@ impl<'a> Layouts<'a> {
             }
             return layout;
         };
+        let repr_align = u64::from(data.repr_align);
         let repr_int = data.repr.and_then(IntTy::from_name);
         let inhibit = data.repr_c || repr_int.is_some();
         let layouts: Vec<Vec<Rc<Layout>>> = variants
@@ -444,14 +453,17 @@ impl<'a> Layouts<'a> {
             .filter(|&v| inhibit || !absent(&layouts[v as usize]))
             .collect();
         let Some(&first_present) = present.first() else {
-            return Layout::zst(true);
+            return Layout {
+                align: repr_align,
+                ..Layout::zst(true)
+            };
         };
         let all_offsets = |kind: Kind| -> Vec<Box<[u64]>> {
             layouts
                 .iter()
                 .map(|fields| {
                     let refs: Vec<&Layout> = fields.iter().map(|l| &**l).collect();
-                    univariant(&refs, !inhibit, kind).offsets.into()
+                    univariant(&refs, !inhibit, kind, repr_align).offsets.into()
                 })
                 .collect()
         };
@@ -460,7 +472,7 @@ impl<'a> Layouts<'a> {
                 .iter()
                 .map(|l| &**l)
                 .collect();
-            let u = univariant(&refs, true, Kind::AlwaysSized);
+            let u = univariant(&refs, true, Kind::AlwaysSized, repr_align);
             let mut offsets = all_offsets(Kind::AlwaysSized);
             offsets[first_present as usize] = u.offsets.into();
             return Layout {
@@ -476,7 +488,7 @@ impl<'a> Layouts<'a> {
                 },
             };
         }
-        let mut layout = self.enum_layout(strukt, &layouts, data.repr_c, repr_int);
+        let mut layout = self.enum_layout(strukt, &layouts, data.repr_c, repr_int, repr_align);
         layout.exact = exact;
         layout
     }
@@ -488,6 +500,7 @@ impl<'a> Layouts<'a> {
         layouts: &[Vec<Rc<Layout>>],
         repr_c: bool,
         repr_int: Option<IntTy>,
+        repr_align: u64,
     ) -> Layout {
         let inhibit = repr_c || repr_int.is_some();
         let reorder = !inhibit;
@@ -499,9 +512,11 @@ impl<'a> Layouts<'a> {
             if inhibit || layouts.len() < 2 {
                 return None;
             }
-            let mut align = 1;
+            let mut align = repr_align;
+            // The explicit alignment pads each variant before deciding
+            // whether another variant fits around its niche.
             let mut variants: Vec<Univariant> = (0..layouts.len())
-                .map(|v| univariant(&refs_of(v), reorder, Kind::AlwaysSized))
+                .map(|v| univariant(&refs_of(v), reorder, Kind::AlwaysSized, repr_align))
                 .collect();
             for v in &variants {
                 align = align.max(v.align);
@@ -593,7 +608,7 @@ impl<'a> Layouts<'a> {
                 prefix_align = prefix_align.max(l.align);
             }
         }
-        let mut align = 1;
+        let mut align = repr_align;
         let mut size = 0;
         let mut start_align = 256;
         let mut variants: Vec<Univariant> = Vec::new();
@@ -603,6 +618,7 @@ impl<'a> Layouts<'a> {
                 &fields,
                 reorder,
                 Kind::Prefixed(u64::from(min_bytes), prefix_align),
+                repr_align,
             );
             // The first field that cannot move to make room for a wider
             // tag.
@@ -754,8 +770,8 @@ fn smallest_range_containing(values: &[u128], bytes: u8) -> Option<(u128, u128)>
 
 /// rustc's `univariant`: the layout biased to put the largest niche at
 /// the start, unless putting it at the end leaves more room before it.
-fn univariant(fields: &[&Layout], reorder: bool, kind: Kind) -> Univariant {
-    let layout = univariant_biased(fields, reorder, kind, Bias::Start);
+fn univariant(fields: &[&Layout], reorder: bool, kind: Kind, align: u64) -> Univariant {
+    let layout = univariant_biased(fields, reorder, kind, Bias::Start, align);
     if kind != Kind::MaybeUnsized
         && let Some(niche) = layout.niche
     {
@@ -763,7 +779,7 @@ fn univariant(fields: &[&Layout], reorder: bool, kind: Kind) -> Univariant {
         let len = u64::from(niche.bytes);
         let tail = layout.size - head - len;
         if fields.len() > 1 && head != 0 && tail > 0 {
-            let alt = univariant_biased(fields, reorder, kind, Bias::End);
+            let alt = univariant_biased(fields, reorder, kind, Bias::End, align);
             if let Some(alt_niche) = alt.niche {
                 let alt_head = alt_niche.offset;
                 if alt_head > head && alt_head > tail {
@@ -776,7 +792,13 @@ fn univariant(fields: &[&Layout], reorder: bool, kind: Kind) -> Univariant {
 }
 
 /// rustc's `univariant_biased`.
-fn univariant_biased(fields: &[&Layout], reorder: bool, kind: Kind, bias: Bias) -> Univariant {
+fn univariant_biased(
+    fields: &[&Layout],
+    reorder: bool,
+    kind: Kind,
+    bias: Bias,
+    min_align: u64,
+) -> Univariant {
     let mut order: Vec<usize> = (0..fields.len()).collect();
     // A tuple's last element stays last.
     let end = if kind == Kind::MaybeUnsized {
@@ -829,7 +851,7 @@ fn univariant_biased(fields: &[&Layout], reorder: bool, kind: Kind, bias: Bias) 
             }),
         }
     }
-    let mut align = 1;
+    let mut align = min_align;
     let mut offset = 0;
     if let Kind::Prefixed(size, prefix_align) = kind {
         align = align.max(prefix_align);

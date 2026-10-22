@@ -1,0 +1,4 @@
+fn main() -> ()
+    a@0: [u8; 3]
+error 70..74: mismatched types: expected `usize`, found `Range<{integer}>`
+error 112..114: mismatched types: expected `usize`, found `RangeFull`
