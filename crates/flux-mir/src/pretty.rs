@@ -267,6 +267,12 @@ fn rvalue_text(hir: &Hir, rvalue: &Rvalue) -> String {
         } => format!("Len({})", place(p)),
         Rvalue::Repeat(o, count) => format!("[{}; {count}]", operand(hir, o)),
         Rvalue::Unsize(o, ty) => format!("{} as {ty} (unsize)", operand(hir, o)),
+        Rvalue::Subslice { slice, start, end } => format!(
+            "Subslice({}, {}, {})",
+            operand(hir, slice),
+            operand(hir, start),
+            operand(hir, end)
+        ),
     }
 }
 

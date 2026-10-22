@@ -110,7 +110,12 @@ fn structs(
             StructRegions {
                 lifetimes: s.generics.lifetimes.len() as u32,
                 fields,
-                variances: vec![Variance::Bivariant; count].into(),
+                // `PhantomData<T>` acts as if it held a `T`.
+                variances: if crate::is_lang_struct(items, id, "phantom_data") {
+                    vec![Variance::Covariant; count].into()
+                } else {
+                    vec![Variance::Bivariant; count].into()
+                },
                 outlives: Box::default(),
             },
         );

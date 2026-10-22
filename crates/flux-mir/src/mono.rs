@@ -132,6 +132,9 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
             };
             for callee in callees {
                 let callee = flux_ty::traits::resolve_instance(&hir.items, sigs, callee);
+                if hir.items.functions[callee.function].intrinsic {
+                    continue;
+                }
                 if mir.instance_body(&hir.items, callee).is_none()
                     && !is_clone_shim(&hir.items, callee)
                 {
@@ -546,7 +549,89 @@ pub fn instance_body<'b>(
     if drops {
         expand_drops(&hir.items, sigs, body.to_mut());
     }
+    let intrinsics = body.blocks.values().any(|data| {
+        matches!(data.terminator.kind, TerminatorKind::Call { func, .. }
+            if hir.items.functions[func].intrinsic)
+    });
+    if intrinsics {
+        expand_intrinsics(&hir.items, sigs, body.to_mut());
+    }
     body
+}
+
+/// Replaces each call of one of `core`'s intrinsics in `body`, whose
+/// types are known, with what it does:
+///
+/// - `read(src)`: a copy of `*src`, which the caller will not drop;
+/// - `write(dst, value)`: `*dst = value`, without dropping `*dst`;
+/// - `array_as_slice(a)`, `array_as_mut_slice(a)`: `a` unsized to a
+///   slice, where `A`, the array's type, is a generic argument;
+/// - `subslice(s, start, end)`, `subslice_mut(s, start, end)`:
+///   `&s[start..end]`, unchecked.
+pub fn expand_intrinsics(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
+    let blocks: Vec<_> = body.blocks.iter().map(|(b, _)| b).collect();
+    for block in blocks {
+        let range = body.blocks[block].terminator.range;
+        let TerminatorKind::Call {
+            func,
+            args,
+            dest,
+            target,
+            ..
+        } = body.blocks[block].terminator.kind.clone()
+        else {
+            continue;
+        };
+        let data = &items.functions[func];
+        if !data.intrinsic {
+            continue;
+        }
+        // A reference argument, in a temporary to dereference.
+        let pointer = |body: &mut Body, op: &Operand| -> Place {
+            let ty = body.operand_ty(op, sigs);
+            let temp = body.locals.alloc(LocalDecl {
+                ty,
+                kind: LocalKind::Temp,
+            });
+            body.blocks[block].statements.push(Statement {
+                kind: StatementKind::Assign(temp.into(), Rvalue::Use(op.clone())),
+                range,
+            });
+            Place::from(temp)
+        };
+        let (place, rvalue) = match (data.name.as_str(), args.as_slice()) {
+            ("read", [src]) => {
+                let src = pointer(body, src);
+                (dest, Rvalue::Use(Operand::Copy(src.deref())))
+            }
+            ("write", [dst, value]) => {
+                let dst = pointer(body, dst);
+                (dst.deref(), Rvalue::Use(value.clone()))
+            }
+            ("array_as_slice" | "array_as_mut_slice", [array]) => {
+                let ty = body.place_ty(&dest, sigs);
+                (dest, Rvalue::Unsize(array.clone(), ty))
+            }
+            ("subslice" | "subslice_mut", [slice, start, end]) => (
+                dest,
+                Rvalue::Subslice {
+                    slice: slice.clone(),
+                    start: start.clone(),
+                    end: end.clone(),
+                },
+            ),
+            _ => unreachable!("`core`'s intrinsics are these"),
+        };
+        let data = &mut body.blocks[block];
+        data.statements.push(Statement {
+            kind: StatementKind::Assign(place, rvalue),
+            range,
+        });
+        data.terminator.kind = match target {
+            Some(target) => TerminatorKind::Goto(target),
+            None => TerminatorKind::Unreachable,
+        };
+    }
 }
 
 /// `Drop::drop`.
@@ -598,6 +683,9 @@ fn glue_types(glue: &[Glue], out: &mut Vec<Ty>) {
 /// holds.
 fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mut Vec<Glue>) {
     match ty.kind() {
+        TyKind::Adt(adt, _) if flux_ty::is_lang_struct(items, adt.strukt, "manually_drop") => {
+            return;
+        }
         TyKind::Adt(adt, _) => {
             if flux_ty::traits::drop_impl(items, sigs, adt.strukt).is_some() {
                 out.push(Glue::Drop(place.clone(), ty));
@@ -942,6 +1030,11 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
                 Rvalue::Unsize(op, ty) => {
                     operand(op);
                     *ty = subst(*ty);
+                }
+                Rvalue::Subslice { slice, start, end } => {
+                    operand(slice);
+                    operand(start);
+                    operand(end);
                 }
                 Rvalue::Ref { .. } | Rvalue::Discriminant(_) | Rvalue::Len { .. } => {}
             }

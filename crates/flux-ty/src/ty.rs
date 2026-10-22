@@ -793,6 +793,9 @@ impl fmt::Display for Ty {
                 f.write_str(")")
             }
             TyKind::Adt(adt, []) => write!(f, "{}", adt.name),
+            TyKind::Adt(adt, args) if let Some(len) = array_iter_len(adt.name, args) => {
+                write!(f, "{}<{}, {len}>", adt.name, args[0])
+            }
             TyKind::Adt(adt, args) => {
                 write!(f, "{}<", adt.name)?;
                 for (i, arg) in args.iter().enumerate() {
@@ -851,6 +854,19 @@ fn write_sig(f: &mut fmt::Formatter<'_>, sig: FnSigTy) -> fmt::Result {
         write!(f, " -> {}", sig.ret())?;
     }
     Ok(())
+}
+
+/// For `core::array::IntoIter<T, [T; N]>`, which stands for rustc's
+/// `IntoIter<T, N>` until flux has const generics: `N`, which messages
+/// show in place of the array type.
+pub(crate) fn array_iter_len(name: flux_intern::Symbol, args: &[Ty]) -> Option<u64> {
+    match args {
+        [elem, array] if name.as_str() == "IntoIter" => match array.kind() {
+            TyKind::Array(e, len) if e == *elem => Some(len),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 #[cfg(test)]

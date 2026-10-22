@@ -43,3 +43,16 @@ impl<A: Copy, B: Copy, C: Copy, D: Copy, E: Copy, F: Copy, G: Copy, H: Copy, I: 
 impl<A: Copy, B: Copy, C: Copy, D: Copy, E: Copy, F: Copy, G: Copy, H: Copy, I: Copy, J: Copy> Copy for (A, B, C, D, E, F, G, H, I, J) {}
 impl<A: Copy, B: Copy, C: Copy, D: Copy, E: Copy, F: Copy, G: Copy, H: Copy, I: Copy, J: Copy, K: Copy> Copy for (A, B, C, D, E, F, G, H, I, J, K) {}
 impl<A: Copy, B: Copy, C: Copy, D: Copy, E: Copy, F: Copy, G: Copy, H: Copy, I: Copy, J: Copy, K: Copy, L: Copy> Copy for (A, B, C, D, E, F, G, H, I, J, K, L) {}
+
+/// A type that acts as if it held a `T`, while holding nothing: for
+/// structs whose parameters no field names. It is covariant in `T`.
+#[lang = "phantom_data"]
+pub struct PhantomData<T>;
+
+impl<T> Clone for PhantomData<T> {
+    fn clone(&self) -> PhantomData<T> {
+        PhantomData
+    }
+}
+
+impl<T> Copy for PhantomData<T> {}

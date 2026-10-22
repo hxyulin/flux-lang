@@ -1,10 +1,10 @@
-// Arrays are not iterable by value yet: rustc's `core` makes them so
-// with const generics. References to them and slices are.
+// An array iterates by value: its items are elements, not references.
 
 fn main() {
     let a = [1, 2, 3];
-    for x in a {}
-    for x in &a {}
-    let s: &[i32] = &a;
-    for x in s {}
+    for x in a {
+        let y: &i32 = x;
+    }
+    let mut iter = [1u8, 2].into_iter();
+    let z: Option<&u8> = iter.next();
 }

@@ -239,14 +239,18 @@ borrows the array, whatever the index: `&mut a[0]` and `&mut a[1]`
 conflict (E0499), and elements may not be moved out of (E0508).
 `len` and `is_empty` are built into the compiler, as is the length of
 an array, `Copy`, `Clone` and `PartialEq` (`==` and `!=` on arrays of
-one length) of arrays whose elements implement them: rustc's `core`
-writes these with const generics, which flux does not have yet. `core::slice`
-gives slices `first`, `last` and `get` (`Option<&T>`) and `iter`, an
-iterator over references from both ends (`Iter<'a, T>`), and
-`IntoIterator` for `&[T]`, so `for x in slice` works, and `for x in
-&array` iterates a slice of the array (arrays by value, `&mut` slices
-and `iter_mut` need const generics or more, and are not supported
-yet). Slices' methods are found on arrays, and references to them,
+one length) of arrays whose elements implement them, and
+`IntoIterator` for `[T; N]`, `&[T; N]` and `&mut [T; N]`: rustc's
+`core` writes these with const generics, which flux does not have yet.
+`core::slice` gives slices `first`, `last` and `get` (`Option<&T>`),
+`iter` and `iter_mut`, iterators over references from both ends
+(`Iter<'a, T>`, `IterMut<'a, T>`), and `IntoIterator` for `&[T]` and
+`&mut [T]`, so `for x in slice` works, and `for x in &array` and `for
+x in &mut array` iterate a slice of the array. `for x in array` and
+`array.into_iter()` iterate it by value, with `core::array::IntoIter`
+(rustc's `IntoIter<T, N>`; flux's is `IntoIter<T, [T; N]>`, which
+messages show as rustc's), which moves the elements out one by one and
+drops those it has not given when it is dropped. Slices' methods are found on arrays, and references to them,
 as rustc's method probe finds them: the array is borrowed and the
 reference unsized to a slice's (`arr.iter()`, `(&mut arr).last()`). Other
 methods of arrays and slices, comparisons with `<`, ranges as indices

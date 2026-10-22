@@ -481,7 +481,14 @@ semantics become explicit, so code generation never sees expressions:
   a borrow of its receiver; an unsizing coercion is an `Unsize`
   rvalue. Drop glue drops an array's elements in a loop, and
   `Clone::clone` and `PartialEq::eq` of arrays, which the compiler
-  implements, get MIR made by `mono`.
+  implements, get MIR made by `mono`; arrays' built-in `IntoIterator`
+  calls `core::array`'s functions (`traits::resolve_instance`), generic
+  over the array's type. `core`'s `#[rustc_intrinsic]` functions
+  (`core::intrinsics`: `read`, `write`, `array_as_slice`, `subslice`,
+  ...) are what the borrow checker sees by their signatures; `mono`
+  replaces their calls with MIR once types are known (a copy through a
+  reference, an `Unsize`, a `Subslice` rvalue), so their bodies never
+  run.
 - `&&` and `||` branch, and reading a local copies it into a temporary,
   so `x + { x = 10; x }` adds the old `x`.
 - A call to a function returning `!` has no successor block.

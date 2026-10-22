@@ -1,0 +1,50 @@
+//! Operations the compiler implements, which `core` builds its arrays'
+//! and slices' methods from. A call of one is replaced with what it does
+//! once its types are known, when generic code is monomorphized, so
+//! their bodies never run; their signatures are what the borrow checker
+//! sees.
+
+/// A bitwise copy of `*src`, which need not be `Copy`: the caller makes
+/// sure that only one of the two is used and dropped.
+#[rustc_intrinsic]
+pub(crate) unsafe fn read<T>(src: &T) -> T {
+    loop {}
+}
+
+/// Stores `value` in `*dst` without dropping what was there.
+#[rustc_intrinsic]
+pub(crate) unsafe fn write<T>(dst: &mut T, value: T) {
+    loop {}
+}
+
+/// The array `A`, which must be `[T; N]` for some `N`, as a slice.
+#[rustc_intrinsic]
+pub(crate) unsafe fn array_as_slice<A, T>(array: &A) -> &[T] {
+    loop {}
+}
+
+/// The array `A`, which must be `[T; N]` for some `N`, as a mutable
+/// slice.
+#[rustc_intrinsic]
+pub(crate) unsafe fn array_as_mut_slice<A, T>(array: &mut A) -> &mut [T] {
+    loop {}
+}
+
+/// `&slice[start..end]`, unchecked: `start <= end <= slice.len()`.
+#[rustc_intrinsic]
+pub(crate) unsafe fn subslice<T>(slice: &[T], start: usize, end: usize) -> &[T] {
+    loop {}
+}
+
+/// `&mut slice[start..end]`, unchecked: `start <= end <= slice.len()`.
+/// The result's lifetime is unrelated to `slice`'s, as a raw pointer's
+/// would be, so that disjoint parts of one slice may be borrowed at
+/// once (`split_at_mut`, `IterMut`); the caller gives it the right one.
+#[rustc_intrinsic]
+pub(crate) unsafe fn subslice_mut<'a, 'b, T>(
+    slice: &'a mut [T],
+    start: usize,
+    end: usize,
+) -> &'b mut [T] {
+    loop {}
+}
