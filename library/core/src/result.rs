@@ -7,6 +7,7 @@ use crate::option::Option::{self, None, Some};
 /// A value, or an error. `?` returns the error from a function that
 /// returns a `Result` if it is `Err`, converted with `From`.
 #[lang = "Result"]
+#[derive(Debug)]
 pub enum Result<T, E> {
     Ok(T),
     Err(E),

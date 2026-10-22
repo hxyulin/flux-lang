@@ -101,6 +101,7 @@ impl<A: Eq> Eq for &mut A {}
 /// The result of comparing two values: `1.cmp(&2)` is `Less`.
 #[lang = "Ordering"]
 #[repr(i8)]
+#[derive(Debug)]
 pub enum Ordering {
     Less = -1,
     Equal = 0,

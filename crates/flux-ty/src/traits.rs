@@ -1226,7 +1226,7 @@ fn array_into_iter_instance(items: &ItemTree, instance: Instance) -> Option<Inst
     })
 }
 
-/// For `ty: t` where `ty` is an array and `t` is `Copy`, `Clone`, `Eq`,
+/// For `ty: t` where `ty` is an array and `t` is `Copy`, `Clone`, `Debug`, `Eq`,
 /// `Default` or `PartialEq<[U; N]>`, what its element type must meet:
 /// `T: Copy`, `T: Clone`, `T: Eq`, `T: Default`, `T: PartialEq<U>`. rustc's `core` implements them for
 /// arrays with const generics, which flux does not have, so they are
@@ -1234,7 +1234,7 @@ fn array_into_iter_instance(items: &ItemTree, instance: Instance) -> Option<Inst
 pub fn builtin_array_impl(items: &ItemTree, goal: Predicate) -> Option<Predicate> {
     let lang = items.traits[goal.trait_ref.trait_].lang?;
     match lang.as_str() {
-        "copy" | "clone" | "total_eq" => match goal.self_ty.kind() {
+        "copy" | "clone" | "total_eq" | "Debug" => match goal.self_ty.kind() {
             TyKind::Array(elem, _) => Some(Predicate {
                 self_ty: elem,
                 ..goal

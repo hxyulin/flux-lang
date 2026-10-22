@@ -1,0 +1,24 @@
+struct NoDebug {}
+struct S { a: i32, b: NoDebug }
+enum E { A { 0: NoDebug }, B { x: u8 } }
+struct W<T> { 0: T }
+struct Manual {}
+fn fmt(&Manual, &mut Formatter) -> Result<(), Error>
+    self@0: &Manual
+    _f@1: &mut Formatter
+fn show<T>(&T) -> ()
+fn main() -> ()
+fn fmt(&S, &mut Formatter) -> Result<(), Error>
+    self@0: &S
+    f@1: &mut Formatter
+fn fmt(&E, &mut Formatter) -> Result<(), Error>
+    self@0: &E
+    f@1: &mut Formatter
+    __self_0@2: &NoDebug
+    __self_0@3: &u8
+fn fmt(&W<T>, &mut Formatter) -> Result<(), Error>
+    self@0: &W<T>
+    f@1: &mut Formatter
+error 222..232: `NoDebug` doesn't implement `Debug`
+error 269..276: `NoDebug` doesn't implement `Debug`
+error 644..652: `NoDebug` doesn't implement `Debug`

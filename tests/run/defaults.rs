@@ -14,7 +14,7 @@ fn show(label: i32, value: i64) {
     }
 }
 
-#[derive(Default, Clone, Copy, PartialEq)]
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
 struct Point {
     x: i32,
     y: i64,

@@ -81,6 +81,7 @@ const CORE_FILES: &[(&str, &str)] = &[
         "default.rs",
         include_str!("../../../library/core/src/default.rs"),
     ),
+    ("fmt.rs", include_str!("../../../library/core/src/fmt.rs")),
     ("iter.rs", include_str!("../../../library/core/src/iter.rs")),
     ("mem.rs", include_str!("../../../library/core/src/mem.rs")),
     ("num.rs", include_str!("../../../library/core/src/num.rs")),

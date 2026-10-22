@@ -2985,6 +2985,7 @@ impl Collector<'_> {
             Derive::PartialOrd => ("cmp", "PartialOrd"),
             Derive::Ord => ("cmp", "Ord"),
             Derive::Default => ("default", "Default"),
+            Derive::Debug => ("fmt", "Debug"),
         };
         // rustc's `Default` for an enum bounds no parameters: its
         // default variant has no fields.
@@ -3118,18 +3119,19 @@ impl Collector<'_> {
             Derive::PartialOrd => {
                 // `Option<Ordering>`
                 let mut option = core_path("option", "Option", in_core);
-                option.args = Box::new([
-                    None,
-                    None,
-                    Some(GenericArgs {
+                // On the last segment: `::core::option::Option`, or
+                // `crate::option::Option` in `core`.
+                let leading = std::iter::repeat_n(None, option.segments.len() - 1);
+                option.args = leading
+                    .chain([Some(GenericArgs {
                         lifetimes: Box::default(),
                         types: Box::new([TypeRef::Path(core_path("cmp", "Ordering", in_core))]),
                         ranges: Box::new([range]),
                         bindings: Box::default(),
                         range,
                         parenthesized: false,
-                    }),
-                ]);
+                    })])
+                    .collect();
                 (
                     "partial_cmp",
                     vec![self_ref(), self_ref()],
@@ -3142,6 +3144,25 @@ impl Collector<'_> {
                 TypeRef::Path(core_path("cmp", "Ordering", in_core)),
             ),
             Derive::Default => ("default", Vec::new(), self_ty()),
+            // `fmt(&self, f: &mut Formatter<'_>) -> fmt::Result`
+            Derive::Debug => {
+                let formatter = Param {
+                    ty: TypeRef::Ref {
+                        lifetime: None,
+                        amp: range,
+                        mutable: true,
+                        pointee: Box::new(TypeRef::Path(core_path("fmt", "Formatter", in_core))),
+                    },
+                    name: Some(Symbol::intern("f")),
+                    range,
+                    whole: range,
+                };
+                (
+                    "fmt",
+                    vec![self_ref(), formatter],
+                    TypeRef::Path(core_path("fmt", "Result", in_core)),
+                )
+            }
         };
         let has_self = !params.is_empty();
         let function = self.items.functions.alloc(Function {
@@ -3895,6 +3916,7 @@ pub enum Derive {
     PartialOrd,
     Ord,
     Default,
+    Debug,
 }
 
 /// `::core::module::name`, as `#[derive]` names its traits and their
@@ -4036,7 +4058,8 @@ fn derive_attr(
             "PartialOrd" => Derive::PartialOrd,
             "Ord" => Derive::Ord,
             "Default" => Derive::Default,
-            "Debug" | "Hash" => {
+            "Debug" => Derive::Debug,
+            "Hash" => {
                 error(range, format!("deriving `{name}` is not supported yet"));
                 continue;
             }
