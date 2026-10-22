@@ -1229,6 +1229,21 @@ impl Ctx<'_> {
                     self.walk_pat(*sub, place, uses);
                 }
             }
+            // Elements are not captured apart from their array.
+            Pat::Slice {
+                prefix,
+                slice,
+                suffix,
+            } => {
+                // A slice's length is read.
+                let ty = self.pat_types.get(pat).copied().unwrap_or(Ty::ERROR);
+                if let TyKind::Slice(_) = self.shallow(ty).kind() {
+                    uses.add(place.clone(), UseKind::Borrow(Mutability::Not), range);
+                }
+                for &p in prefix.iter().chain(slice.iter()).chain(suffix.iter()) {
+                    self.walk_pat_whole(p, &place, uses);
+                }
+            }
             Pat::Tuple { pats, rest } => {
                 let count = self.place_field_count(&place);
                 for (i, p) in positions(pats, *rest, count) {

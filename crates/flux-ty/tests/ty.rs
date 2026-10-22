@@ -158,8 +158,7 @@ fn or_pattern_binding_modes() {
 }
 
 /// Errors are reported once, where they are, as rustc does not report
-/// errors involving error types: the names a rejected pattern binds,
-/// what matches a value of an error type, a receiver whose type is not
+/// errors involving error types: what matches a value of an error type, a receiver whose type is not
 /// known after errors, and what a failed import names.
 #[test]
 fn errors_do_not_cascade() {
@@ -180,13 +179,7 @@ fn errors_do_not_cascade() {
                 fn main() {}\n";
     let (_, _, hir) = flux_hir::lower_text(Path::new("main.rs"), text);
     let lowered: Vec<&str> = hir.diagnostics.iter().map(|d| d.message.as_str()).collect();
-    assert_eq!(
-        lowered,
-        [
-            "`core::cmp::NoSuchThing` is not supported yet",
-            "slice patterns are not supported yet",
-        ]
-    );
+    assert_eq!(lowered, ["`core::cmp::NoSuchThing` is not supported yet"]);
     let typed = flux_ty::check_file(&hir);
     let found: Vec<&str> = typed
         .diagnostics

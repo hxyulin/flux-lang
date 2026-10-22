@@ -1,0 +1,22 @@
+fn a(&[u8]) -> ()
+    s@0: &[u8]
+    x@1: &u8
+    y@2: &u8
+fn b(&[u8]) -> ()
+    s@0: &[u8]
+fn c(&[bool]) -> ()
+    s@0: &[bool]
+fn d([bool; 2]) -> ()
+    a@0: [bool; 2]
+fn e(&[u8]) -> ()
+    s@0: &[u8]
+fn f(&[u8]) -> ()
+    s@0: &[u8]
+    x@1: &u8
+fn main() -> ()
+error 241..242: non-exhaustive patterns: `&[]`, `&[_]` and `&[_, _, _, ..]` not covered
+error 302..303: non-exhaustive patterns: `&[_, ..]` not covered
+error 361..362: non-exhaustive patterns: `&[false, .., true]` not covered
+error 473..474: non-exhaustive patterns: `[false, false]` not covered
+error 561..562: non-exhaustive patterns: `&[]` not covered
+error 621..628: refutable pattern in local binding: pattern `&[]` not covered

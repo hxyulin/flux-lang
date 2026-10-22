@@ -1966,6 +1966,7 @@ impl Ctx<'_> {
         let sees_through = match body.pats[pat] {
             Pat::Expr(e) => !reference_literal(e),
             Pat::Tuple { .. }
+            | Pat::Slice { .. }
             | Pat::TupleStruct { .. }
             | Pat::Record { .. }
             | Pat::Unit(..)
@@ -2112,6 +2113,80 @@ impl Ctx<'_> {
                     }
                 }
                 self.deferred.push(Deferred::RangePat { pat, ty: expected });
+            }
+            Pat::Slice {
+                prefix,
+                slice,
+                suffix,
+            } => {
+                let count = prefix.len() + suffix.len();
+                let (elem, rest_ty) = match self.shallow(expected).kind() {
+                    TyKind::Array(elem, len) => match self.shallow(len).as_usize() {
+                        Some(n) if slice.is_none() && count != n as usize => {
+                            self.error(
+                                range,
+                                format!(
+                                    "pattern requires {count} element{} but array has {n}",
+                                    plural(count)
+                                ),
+                            );
+                            (elem, Ty::ERROR)
+                        }
+                        Some(n) if count > n as usize => {
+                            self.error(
+                                range,
+                                format!(
+                                    "pattern requires at least {count} element{} but array has {n}",
+                                    plural(count)
+                                ),
+                            );
+                            (elem, Ty::ERROR)
+                        }
+                        Some(n) => {
+                            let rest = Ty::usize_value(n - count as u64);
+                            (elem, Ty::array_of(elem, rest))
+                        }
+                        None => {
+                            self.error(
+                                range,
+                                "cannot pattern-match on an array without a fixed length",
+                            );
+                            (elem, Ty::ERROR)
+                        }
+                    },
+                    TyKind::Slice(elem) => (elem, expected),
+                    TyKind::Error => (Ty::ERROR, Ty::ERROR),
+                    _ => {
+                        let found = self.describe(expected);
+                        self.error(
+                            range,
+                            format!("expected an array or slice, found `{found}`"),
+                        );
+                        (Ty::ERROR, Ty::ERROR)
+                    }
+                };
+                for &p in prefix.iter().chain(suffix.iter()) {
+                    self.check_pat_in(p, elem, mode, uninit);
+                }
+                if let Some(slice) = slice {
+                    self.check_pat_in(*slice, rest_ty, mode, uninit);
+                    if let Pat::Bind { binding, .. } = body.pats[*slice] {
+                        let by_ref = self.binding_refs.get(binding).copied();
+                        let what = match (self.shallow(expected).kind(), by_ref) {
+                            (TyKind::Array(..), Some(_)) => {
+                                Some("binding the rest of an array by reference")
+                            }
+                            (TyKind::Slice(_), Some(Mutability::Mut)) => {
+                                Some("binding the rest of a slice mutably")
+                            }
+                            _ => None,
+                        };
+                        if let Some(what) = what {
+                            let at = self.source_map.pats.get(*slice).copied().unwrap_or(range);
+                            self.error(at, format!("{what} is not supported yet"));
+                        }
+                    }
+                }
             }
             Pat::Tuple { pats, rest } => {
                 let elements = match self.shallow(expected).kind() {

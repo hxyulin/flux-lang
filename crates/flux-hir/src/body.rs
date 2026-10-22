@@ -358,13 +358,30 @@ pub enum Pat {
     Or(Box<[PatId]>),
     /// `&pat` or `&mut pat`.
     Ref { pat: PatId, mutable: bool },
+    /// `[a, b]`, `[first, .., last]` or `[x, rest @ ..]`: the patterns
+    /// before `..`, what `..` is if there is one (a wildcard, or a binding
+    /// of the elements it stands for, `rest @ ..`), and those after it.
+    Slice {
+        prefix: Box<[PatId]>,
+        slice: Option<PatId>,
+        suffix: Box<[PatId]>,
+    },
 }
 
 impl Pat {
     /// The patterns directly inside this one.
-    pub fn children(&self) -> impl Iterator<Item = PatId> + '_ {
+    pub fn children(&self) -> Box<dyn Iterator<Item = PatId> + '_> {
         let (pats, fields): (&[PatId], &[(Symbol, PatId)]) = match self {
             Pat::Tuple { pats, .. } | Pat::TupleStruct { pats, .. } | Pat::Or(pats) => (pats, &[]),
+            Pat::Slice {
+                prefix,
+                slice,
+                suffix,
+            } => {
+                let all = prefix.iter().chain(slice).chain(suffix.iter()).copied();
+                return Box::new(all.collect::<Vec<_>>().into_iter())
+                    as Box<dyn Iterator<Item = PatId>>;
+            }
             Pat::Record { fields, .. } => (&[], fields),
             Pat::Bind { sub: Some(sub), .. } | Pat::Ref { pat: sub, .. } => {
                 (std::slice::from_ref(sub), &[])
@@ -376,7 +393,7 @@ impl Pat {
             | Pat::Expr(_)
             | Pat::Range { .. } => (&[], &[]),
         };
-        pats.iter().copied().chain(fields.iter().map(|&(_, p)| p))
+        Box::new(pats.iter().copied().chain(fields.iter().map(|&(_, p)| p)))
     }
 }
 

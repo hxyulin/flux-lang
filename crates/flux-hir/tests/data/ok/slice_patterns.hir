@@ -1,0 +1,104 @@
+struct String3([u8; 3]);
+
+fn sign(s@0: &[u8]) -> (bool, &[u8]) {
+    match s@0 {
+        [45u8, rest@1 @ ..] => (true, rest@1),
+        all@2 => (false, all@2),
+    }
+}
+
+fn describe(s@0: &[i32]) -> i32 {
+    match s@0 {
+        [] => 0,
+        [x@1] => (*x@1),
+        [first@2, .., last@3] => ((first@2 * 100) + last@3),
+    }
+}
+
+fn middle(s@0: &[i32]) -> usize {
+    match s@0 {
+        [_, mid@1 @ .., _] => mid@1.len(),
+        _ => 99,
+    }
+}
+
+fn exact(a@0: [u8; 4]) -> u32 {
+    let [a@1, b@2, c@3, d@4] = a@0;
+    u32::from_be_bytes([a@1, b@2, c@3, d@4])
+}
+
+fn tail_sum(a@0: [i32; 5]) -> i32 {
+    let [first@1, rest@2 @ ..] = a@0;
+    ((first@1 * 1000) + rest@2.iter().sum::<i32>())
+}
+
+fn by_ref(a@0: &[String3; 3]) -> u8 {
+    let [x@1, _, z@2] = a@0;
+    (x@1.0[0] + z@2.0[2])
+}
+
+fn count_pairs(s@0: &[(u8, u8)]) -> u32 {
+    let mut n@1 = 0;
+    let mut rest@2 = s@0;
+    loop#2 /* while */ if let [(a@3, b@4), tail@5 @ ..] = rest@2 {
+        (n@1 += (((*a@3) + (*b@4)) as u32));
+        (rest@2 = tail@5);
+    } else {
+        break#2
+    }
+    n@1
+}
+
+fn ends(s@0: &[i32]) -> i32 {
+    match s@0 {
+        [.., x@1, y@2] if (x@1 < y@2) => 1,
+        [a@3, ..] if ((*a@3) > 10) => 2,
+        [_, _, ..] => 3,
+        [_] => 4,
+        [] => 5,
+    }
+}
+
+fn mutate(s@0: &mut [i32]) -> () {
+    if let [first@1, ..] = s@0 {
+        ((*first@1) += 100);
+    }
+}
+
+unsafe extern fn printf(*const i8, ...) -> i32;
+
+fn show(label@0: i32, value@1: i64) -> () {
+    unsafe {
+        printf(c"%d: %lld\n".as_ptr(), label@0, value@1);
+    }
+}
+
+fn main() -> () {
+    let (neg@0, rest@1) = sign(b"-12");
+    show(1, (((neg@0 as i64) * 10) + (rest@1.len() as i64)));
+    let (neg@2, rest@3) = sign(b"34");
+    show(2, (((neg@2 as i64) * 10) + (rest@3.len() as i64)));
+    show(3, (describe((&[])) as i64));
+    show(4, (describe((&[7])) as i64));
+    show(5, (describe((&[1, 2, 3])) as i64));
+    show(6, (middle((&[1, 2, 3, 4])) as i64));
+    show(7, (middle((&[1])) as i64));
+    show(8, (exact([1, 2, 3, 4]) as i64));
+    show(9, (tail_sum([1, 2, 3, 4, 5]) as i64));
+    show(10, (by_ref((&[String3([1, 2, 3]), String3([4, 5, 6]), String3([7, 8, 9])])) as i64));
+    show(11, (count_pairs((&[(1, 2), (3, 4), (5, 6)])) as i64));
+    show(12, (ends((&[1, 2])) as i64));
+    show(13, (ends((&[20, 1])) as i64));
+    show(14, (ends((&[5, 4, 3])) as i64));
+    show(15, (ends((&[5])) as i64));
+    show(16, (ends((&[])) as i64));
+    let mut v@4 = [1, 2, 3, 4];
+    mutate((&mut v@4));
+    show(17, (((v@4[0] as i64) * 10) + (v@4[3] as i64)));
+    let [a@5, b@6, c@7, d@8] = [1, 2, 3, 4];
+    show(18, ((((a@5 + b@6) + c@7) + d@8) as i64));
+    let arr@9 = [[1, 2], [3, 4]];
+    let [[p@10, _], [_, q@11]] = arr@9;
+    show(19, (((p@10 * 10) + q@11) as i64));
+}
+

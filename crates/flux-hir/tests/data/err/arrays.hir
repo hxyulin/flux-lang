@@ -15,10 +15,10 @@ fn lengths(n@0: usize) -> () {
     let b@2: [u8; {const}] = [0; 3];
     let c@3 = [0; 3];
     let d@4: [bool; <error>] = [];
-    let <missing> = [1, 2];
-    let e@6 = [0; {const}];
-    let f@7: [u8; <error>] = [0; 2];
-    let g@8: [u8; <error>] = [0; 2];
+    let [first@5, .., last@6] = [1, 2, 3];
+    let e@7 = [0; {const}];
+    let f@8: [u8; <error>] = [0; 2];
+    let g@9: [u8; <error>] = [0; 2];
 }
 
 fn generic<T, const M: usize>() -> [T; {const}] {
@@ -30,15 +30,15 @@ fn generic<T, const M: usize>() -> [T; {const}] {
 
 fn main() -> () {}
 
-error 186..190: generic `Self` types are currently not permitted in anonymous constants
-error 264..268: generic `Self` types are currently not permitted in anonymous constants
-error 320..321: attempt to use a non-constant value in a constant
-error 399..403: mismatched types: expected `usize`, found `bool`
-error 419..430: slice patterns are not supported yet
-error 457..458: attempt to use a non-constant value in a constant
-error 481..482: attempt to use a non-constant value in a constant
-error 512..513: attempt to use a non-constant value in a constant
-error 569..570: generic parameters may not be used in const operations
-error 596..597: generic parameters may not be used in const operations
-error 630..631: generic parameters may not be used in const operations
-error 665..679: constant expression depends on a generic parameter
+error 201..205: generic `Self` types are currently not permitted in anonymous constants
+error 279..283: generic `Self` types are currently not permitted in anonymous constants
+error 335..336: attempt to use a non-constant value in a constant
+error 414..418: mismatched types: expected `usize`, found `bool`
+error 452..454: `..` can only be used once per slice pattern
+error 485..486: attempt to use a non-constant value in a constant
+error 509..510: attempt to use a non-constant value in a constant
+error 540..541: attempt to use a non-constant value in a constant
+error 597..598: generic parameters may not be used in const operations
+error 624..625: generic parameters may not be used in const operations
+error 658..659: generic parameters may not be used in const operations
+error 693..707: constant expression depends on a generic parameter
