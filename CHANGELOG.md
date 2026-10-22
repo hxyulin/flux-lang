@@ -148,6 +148,12 @@
   one as rustc's overflow (E0275). Elaborating bounds no longer
   compares each with all before it. rayon's `iter` module checks in
   milliseconds rather than never.
+- Find the bounds of an associated type (`type Smaller: Dimension;`)
+  when a goal, method call or normalization names it, as rustc does,
+  rather than adding them to every function's bounds four levels deep:
+  they hold however deeply associated types nest (methods of
+  `<<T::Smaller as Dim>::Larger as Dim>::...` five levels down were not
+  found), and ndarray's `lib.rs` checks in 25 ms rather than 24 s.
 - Name the binding in "cannot borrow `s.a` as mutable, as `s` is not
   declared as mutable", as rustc does.
 - Report duplicate items in `impl` blocks of traits (E0201), which
@@ -157,6 +163,14 @@
   `MACRO_EXPR`, `MACRO_TYPE` and `MACRO_PAT`.
 
 ### Performance
+
+- Run the corpus tests on every core, and print the files they spent
+  longest on: `just corpus ~/.cargo/registry/src` takes 13 s instead of
+  about two and a half minutes. Derives no longer look for a `Copy`
+  derive among all of a crate's (windows' module tree lowers in 1.5 s
+  instead of 2.0 s), and module scopes hash with FxHash. The grammar
+  check looks up each pair of node and child kind once, rather than
+  formatting both for every child.
 
 - Find the loans live at each point from the few locals that hold each
   one, rather than from every local: borrow checking takes a fifth of

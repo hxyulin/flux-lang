@@ -276,7 +276,11 @@ An associated type is an alias, `<T as Tr>::Out` (`TyKind::Alias`),
 *normalized* to what it is where that is known: from a bound in scope
 (`T: Tr<Out = i32>`) or from the `impl` block for its types. One whose
 `Self` is not yet known becomes a variable, replaced when it is; one of
-a type parameter without a binding stays, a type of its own. Operators
+a type parameter without a binding stays, a type of its own. The bounds
+in scope are those written with their supertraits; an associated type's
+own bounds (`type Smaller: Dimension;`) are found from its trait when a
+goal, method call or normalization names it, as rustc's *item bounds*
+are, since they nest without end. Operators
 on types other than integers and `bool` are calls of their traits'
 methods, found through `#[lang]` names (`a + b` is `Add::add(a, b)`, its
 type `<A as Add<B>>::Output`), and so are monomorphized like any other

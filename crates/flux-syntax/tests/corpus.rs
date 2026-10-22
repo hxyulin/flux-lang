@@ -14,6 +14,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::panic;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 #[test]
@@ -26,44 +28,64 @@ fn corpus() {
     collect(Path::new(&root), &mut files);
     files.sort();
 
-    let mut bytes = 0usize;
-    let mut clean = 0usize;
-    let mut failures = Vec::new();
-    let mut messages: HashMap<String, (usize, String)> = HashMap::new();
+    let next = AtomicUsize::new(0);
+    let bytes = AtomicUsize::new(0);
+    let clean = AtomicUsize::new(0);
+    let failures = Mutex::new(Vec::new());
+    let messages: Mutex<HashMap<String, (usize, String)>> = Mutex::new(HashMap::new());
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     let start = Instant::now();
-    for path in &files {
-        let Ok(text) = fs::read_to_string(path) else {
-            continue;
-        };
-        bytes += text.len();
-        let result = panic::catch_unwind(|| flux_syntax::parse_source_file(&text));
-        let Ok(parse) = result else {
-            failures.push(format!("{}: parser panicked", path.display()));
-            continue;
-        };
-        if let Err(message) = parse.tree().validate() {
-            failures.push(format!("{}: {message}", path.display()));
-        } else if parse.root().text() != text {
-            failures.push(format!("{}: tree does not round-trip", path.display()));
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                while let Some(path) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let Ok(text) = fs::read_to_string(path) else {
+                        continue;
+                    };
+                    bytes.fetch_add(text.len(), Ordering::Relaxed);
+                    let result = panic::catch_unwind(|| flux_syntax::parse_source_file(&text));
+                    let Ok(parse) = result else {
+                        let failure = format!("{}: parser panicked", path.display());
+                        failures.lock().unwrap().push(failure);
+                        continue;
+                    };
+                    if let Err(message) = parse.tree().validate() {
+                        let failure = format!("{}: {message}", path.display());
+                        failures.lock().unwrap().push(failure);
+                    } else if parse.root().text() != text {
+                        let failure = format!("{}: tree does not round-trip", path.display());
+                        failures.lock().unwrap().push(failure);
+                    }
+                    if parse.errors().is_empty() {
+                        clean.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        // Count only the first error per file; later ones are
+                        // often knock-on effects of the first.
+                        let error = &parse.errors()[0];
+                        let example = format!("{}@{:?}", path.display(), error.range);
+                        let mut messages = messages.lock().unwrap();
+                        let entry = messages
+                            .entry(error.message.clone())
+                            .or_insert_with(|| (0, example.clone()));
+                        entry.0 += 1;
+                        // The first by path, whichever thread found it.
+                        if example < entry.1 {
+                            entry.1 = example;
+                        }
+                    }
+                }
+            });
         }
-        if parse.errors().is_empty() {
-            clean += 1;
-        } else {
-            // Count only the first error per file; later ones are often
-            // knock-on effects of the first.
-            let error = &parse.errors()[0];
-            let entry = messages
-                .entry(error.message.clone())
-                .or_insert_with(|| (0, format!("{}@{:?}", path.display(), error.range)));
-            entry.0 += 1;
-        }
-    }
+    });
     let elapsed = start.elapsed();
 
-    let mut messages: Vec<_> = messages.into_iter().collect();
+    let (bytes, clean) = (bytes.into_inner(), clean.into_inner());
+    let failures = failures.into_inner().unwrap();
+    let mut messages: Vec<_> = messages.into_inner().unwrap().into_iter().collect();
     messages.sort_by_key(|(_, (count, _))| std::cmp::Reverse(*count));
     println!(
-        "{} files, {:.1} MiB in {elapsed:.2?} ({:.1} MiB/s); {clean} without errors ({:.1}%)",
+        "{} files, {:.1} MiB in {elapsed:.2?} on {threads} threads ({:.1} MiB/s); \
+         {clean} without errors ({:.1}%)",
         files.len(),
         bytes as f64 / (1 << 20) as f64,
         bytes as f64 / (1 << 20) as f64 / elapsed.as_secs_f64(),

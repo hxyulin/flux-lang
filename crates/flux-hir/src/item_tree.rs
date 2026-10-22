@@ -2309,10 +2309,15 @@ impl Collector<'_> {
 
     fn expand_derives(&mut self) {
         let derives = std::mem::take(&mut self.derives);
+        let copy: rustc_hash::FxHashSet<StructId> = derives
+            .iter()
+            .filter(|d| d.2 == Derive::Copy)
+            .map(|d| d.1)
+            .collect();
         for &(ctx, strukt, derive, range, node) in &derives {
             let copies = derive == Derive::Clone
                 && self.items.structs[strukt].generics.params.is_empty()
-                && derives.iter().any(|d| d.1 == strukt && d.2 == Derive::Copy);
+                && copy.contains(&strukt);
             self.derive(ctx, strukt, derive, copies, range, node);
         }
     }

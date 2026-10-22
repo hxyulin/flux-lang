@@ -16,7 +16,7 @@
 //! importing module, below explicit items and imports; a name two globs
 //! disagree on is ambiguous, an error only where it is used.
 
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
@@ -70,19 +70,19 @@ pub enum BindingKind {
 
 #[derive(Debug, Default, Clone)]
 pub struct Scope {
-    pub types: HashMap<Symbol, Binding>,
-    pub values: HashMap<Symbol, Binding>,
+    pub types: FxHashMap<Symbol, Binding>,
+    pub values: FxHashMap<Symbol, Binding>,
 }
 
 impl Scope {
-    fn ns(&self, ns: Ns) -> &HashMap<Symbol, Binding> {
+    fn ns(&self, ns: Ns) -> &FxHashMap<Symbol, Binding> {
         match ns {
             Ns::Types => &self.types,
             Ns::Values => &self.values,
         }
     }
 
-    fn ns_mut(&mut self, ns: Ns) -> &mut HashMap<Symbol, Binding> {
+    fn ns_mut(&mut self, ns: Ns) -> &mut FxHashMap<Symbol, Binding> {
         match ns {
             Ns::Types => &mut self.types,
             Ns::Values => &mut self.values,
@@ -98,7 +98,7 @@ pub struct DefMap {
     pub prelude: Option<ModuleId>,
     /// Names whose import failed, by module: uses of them are not
     /// reported again.
-    pub failed_imports: std::collections::HashSet<(ModuleId, Symbol)>,
+    pub failed_imports: FxHashSet<(ModuleId, Symbol)>,
 }
 
 /// What a path means.
@@ -584,7 +584,7 @@ pub(crate) fn resolve(items: &mut ItemTree, from: ItemCounts) {
     resolve_imports(items, from.uses as usize);
     resolve_impls(items, from.impls as usize);
     // An import into both namespaces reports its problems once.
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = FxHashSet::default();
     items
         .diagnostics
         .retain(|d| seen.insert((d.file, d.range, d.message.clone())));
@@ -1187,7 +1187,7 @@ fn resolve_impls(items: &mut ItemTree, from: usize) {
     }
     // Duplicate associated items, per type with new blocks: functions and
     // constants share a namespace.
-    let mut by_target: HashMap<ImplTarget, Vec<AssocItem>> = items
+    let mut by_target: FxHashMap<ImplTarget, Vec<AssocItem>> = items
         .impls
         .values()
         .skip(from)

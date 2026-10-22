@@ -441,7 +441,11 @@ impl Ctx<'_> {
     /// What `alias` is, if a bound in scope or one `impl` block says.
     fn try_normalize(&mut self, alias: AliasTy) -> Option<Ty> {
         let target = Ty::alias(alias);
-        for p in self.env_projections.clone() {
+        let mut candidates = self.env_projections.clone();
+        if let TyKind::Alias(outer) = self.shallow(alias.args[0]).kind() {
+            candidates.extend(crate::traits::alias_projections(self.sigs, outer));
+        }
+        for p in candidates {
             if p.alias.trait_ == alias.trait_
                 && p.alias.name == alias.name
                 && self.probe(|cx| cx.unify(Ty::alias(p.alias), target))
@@ -671,6 +675,13 @@ impl Ctx<'_> {
         format!("{kind} `{}`", self.describe(ty))
     }
 
+    /// The bounds associated type `ty` has by its trait's declaration, if
+    /// it is one, as [`crate::traits::alias_bounds`].
+    fn alias_bounds(&mut self, ty: Ty) -> Vec<Predicate> {
+        let ty = self.known(ty);
+        crate::traits::alias_bounds(self.sigs, &self.param_env, ty)
+    }
+
     fn select_predicate(&mut self, pred: Predicate) -> Selection {
         let self_ty = self.shallow(pred.self_ty);
         if self_ty == Ty::ERROR || pred.trait_ref.args.contains(&Ty::ERROR) {
@@ -692,12 +703,14 @@ impl Ctx<'_> {
         if crate::traits::is_builtin_copy(self.items, t, self_ty) {
             return Selection::Met(Vec::new());
         }
-        let env: Vec<Predicate> = self
+        let mut env: Vec<Predicate> = self
             .param_env
             .iter()
             .filter(|p| p.trait_ref.trait_ == t)
             .copied()
             .collect();
+        let alias_bounds = self.alias_bounds(self_ty);
+        env.extend(alias_bounds.into_iter().filter(|p| p.trait_ref.trait_ == t));
         let bounds: Vec<Predicate> = env
             .into_iter()
             .filter(|&p| self.probe(|cx| cx.unify_predicates(p, pred)))
@@ -822,7 +835,8 @@ impl Ctx<'_> {
         {
             return true;
         }
-        let in_env = self.param_env.iter().any(|p| {
+        let alias_bounds = self.alias_bounds(ty);
+        let in_env = self.param_env.iter().chain(&alias_bounds).any(|p| {
             p.self_ty == ty && p.trait_ref.trait_ == t && args.is_none_or(|a| a == p.trait_ref.args)
         });
         if in_env {
@@ -927,7 +941,8 @@ impl Ctx<'_> {
         };
         let mut found: Vec<(AssocItem, Option<TraitRef>)> = Vec::new();
         if ty.has_params() {
-            for p in self.param_env.clone() {
+            let alias_bounds = self.alias_bounds(ty);
+            for p in self.param_env.clone().into_iter().chain(alias_bounds) {
                 if p.self_ty == ty
                     && let Some(f) = wanted(p.trait_ref.trait_)
                     && !found.iter().any(|(g, _)| *g == f)
