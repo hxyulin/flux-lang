@@ -485,14 +485,9 @@ impl Ctx<'_> {
                 args: Ty::list(&alias.args[1..]),
             },
         };
-        let impls = self
-            .items
-            .trait_impls
-            .get(&alias.trait_)
-            .map_or(&[][..], |v| v);
+        let (items, sigs) = (self.items, self.sigs);
+        let impls = sigs.impl_index.impls_for(items, alias.trait_, self_ty);
         let found: Vec<ImplId> = impls
-            .iter()
-            .copied()
             .filter(|&imp| self.probe(|cx| cx.unify_impl(imp, pred).is_some()))
             .collect();
         let [imp] = found.as_slice() else {
@@ -814,10 +809,9 @@ impl Ctx<'_> {
             [] => {}
             _ => return Selection::Ambiguous,
         }
-        let impls = self.items.trait_impls.get(&t).map_or(&[][..], |v| v);
+        let (items, sigs) = (self.items, self.sigs);
+        let impls = sigs.impl_index.impls_for(items, t, self_ty);
         let found: Vec<ImplId> = impls
-            .iter()
-            .copied()
             .filter(|&imp| self.probe(|cx| cx.unify_impl(imp, pred).is_some()))
             .collect();
         // Of several blocks, those whose bounds cannot hold are no
@@ -967,8 +961,8 @@ impl Ctx<'_> {
         if in_env {
             return true;
         }
-        let impls = self.items.trait_impls.get(&t).map_or(&[][..], |v| v);
-        impls.iter().any(|&imp| {
+        let (items, sigs) = (self.items, self.sigs);
+        sigs.impl_index.impls_for(items, t, ty).any(|imp| {
             self.probe(|cx| {
                 let (Some(&self_ty), Some(&trait_ref)) =
                     (cx.sigs.impls.get(imp), cx.sigs.impl_traits.get(imp))
@@ -1350,9 +1344,10 @@ impl Ctx<'_> {
             return true;
         }
         let traits = items.trait_fns.get(&name).map_or(&[][..], |v| v);
-        traits.iter().any(|t| {
-            let impls = items.trait_impls.get(t).map_or(&[][..], |v| v);
-            impls.iter().any(|&imp| {
+        let head = Some(crate::impl_index::Head::Adt(adt.strukt));
+        traits.iter().any(|&t| {
+            let mut impls = self.sigs.impl_index.impls_with_head(items, t, head);
+            impls.any(|imp| {
                 matches!(self.sigs.impls.get(imp).map(|t| t.kind()), Some(TyKind::Adt(a, _)) if a.strukt == adt.strukt)
             })
         })

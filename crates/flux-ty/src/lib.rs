@@ -16,6 +16,7 @@
 //! checking: calls to `unsafe` functions need an `unsafe` block, and
 //! assignments need a `mut` binding.
 
+mod impl_index;
 mod in_scope;
 mod infer;
 mod pats;
@@ -119,6 +120,8 @@ pub struct Signatures {
     pub impl_types: ArenaMap<Impl, Box<[(Symbol, Ty)]>>,
     /// The defaults of each trait's parameters.
     pub trait_defaults: traits::TraitDefaults,
+    /// The `impl` blocks of each trait by the constructor of their type.
+    pub impl_index: impl_index::ImplIndex,
     /// The traits in scope in each module.
     pub traits_in_scope: in_scope::TraitsInScope,
     /// A trait is its own supertrait (reported): rustc stops before
@@ -1382,6 +1385,7 @@ fn extend_signatures(
         let ty = impl_type(items, imp, lens, &mut reported);
         sigs.impls.insert(id, ty);
     }
+    sigs.impl_index = impl_index::ImplIndex::new(items, &sigs);
     let in_file = |errors: Vec<(TextRange, String)>, file, reported: &mut Vec<Diagnostic>| {
         reported.extend(errors.into_iter().map(|(range, message)| Diagnostic {
             file,
@@ -2238,13 +2242,18 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
     }
     let items = &hir.items;
     let mut queue: Vec<FunctionId> = Vec::new();
-    let reached = |result: &InferenceResult, queue: &mut Vec<FunctionId>| {
+    // The functions whose targets are queued already: a trait method
+    // called from every body would queue all its blocks' for each.
+    let mut expanded = rustc_hash::FxHashSet::default();
+    let mut reached = |result: &InferenceResult, queue: &mut Vec<FunctionId>| {
         let called = result.calls.iter().map(|(_, i)| i.function);
         let methods = result.methods.iter().map(|(_, m)| m.function);
         let operators = result.overloads.iter().map(|(_, i)| i.function);
         let conversions = result.try_conversions.iter().map(|(_, i)| i.function);
         for f in called.chain(methods).chain(operators).chain(conversions) {
-            queue.extend(call_targets(items, f));
+            if expanded.insert(f) {
+                queue.extend(call_targets(items, f));
+            }
         }
     };
     let mut consts = ArenaMap::new();

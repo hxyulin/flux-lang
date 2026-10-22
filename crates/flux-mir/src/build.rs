@@ -46,13 +46,17 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
             .filter(|&id| hir.is_program(id)),
     );
     let mut bodies = ArenaMap::new();
+    // The callees whose targets are queued already.
+    let mut expanded = rustc_hash::FxHashSet::default();
     while let Some(id) = queue.pop() {
         if bodies.get(id).is_some() || hir.body(id).is_none() || typed.bodies.get(id).is_none() {
             continue;
         }
         let body = build(hir, typed, id);
         for callee in body.callees() {
-            queue.extend(flux_ty::call_targets(&hir.items, callee));
+            if expanded.insert(callee) {
+                queue.extend(flux_ty::call_targets(&hir.items, callee));
+            }
         }
         bodies.insert(id, body);
     }
@@ -168,13 +172,17 @@ fn check_clean_patterns(
         }
     }
     let mut bodies = ArenaMap::new();
+    // The callees whose targets are queued already.
+    let mut expanded = rustc_hash::FxHashSet::default();
     while let Some(id) = queue.pop() {
         if bodies.get(id).is_some() || hir.body(id).is_none() || !clean(typed.bodies.get(id)) {
             continue;
         }
         let body = build(hir, typed, id);
         for callee in body.callees() {
-            queue.extend(flux_ty::call_targets(&hir.items, callee));
+            if expanded.insert(callee) {
+                queue.extend(flux_ty::call_targets(&hir.items, callee));
+            }
         }
         bodies.insert(id, body);
     }

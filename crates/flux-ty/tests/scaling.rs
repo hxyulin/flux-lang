@@ -67,11 +67,11 @@ fn many_traits_in_scope() {
 }
 
 /// `impl` blocks of one trait, for different structs, and calls that
-/// need them. Every block is compared with every earlier one for
-/// overlap, and every goal looks through all of them, where rustc finds
-/// those for a type by its outermost constructor.
+/// need them. Every block was once compared with every earlier one for
+/// overlap, every goal looked through all of them, and every call of
+/// the trait's method queued every block's for checking; blocks are now
+/// found by the outermost constructor of their type, as rustc's are.
 #[test]
-#[ignore = "impl blocks of a trait are compared and searched pairwise: quadratic"]
 fn many_impls_of_one_trait() {
     let make = |n| {
         let items = repeat(n, |i| {

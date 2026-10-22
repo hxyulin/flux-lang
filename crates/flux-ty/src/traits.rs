@@ -728,8 +728,8 @@ impl Normalizer<'_> {
                     return self.go(p.ty, depth + 1);
                 }
                 let goal = alias_predicate(alias);
-                let impls = items.trait_impls.get(&alias.trait_).into_iter().flatten();
-                for &imp in impls {
+                let impls = sigs.impl_index.impls_for(items, alias.trait_, goal.self_ty);
+                for imp in impls {
                     if let Some(impl_args) = match_impl(items, sigs, imp, goal)
                         && let Some(t) = impl_type(sigs, imp, alias.name)
                     {
@@ -843,9 +843,11 @@ fn holds_at(
         stack.pop();
         return holds;
     }
-    let impls = items.trait_impls.get(&goal.trait_ref.trait_);
+    let mut impls = sigs
+        .impl_index
+        .impls_for(items, goal.trait_ref.trait_, goal.self_ty);
     stack.push(goal);
-    let holds = impls.into_iter().flatten().any(|&imp| {
+    let holds = impls.any(|imp| {
         let Some(args) = match_impl(items, sigs, imp, goal) else {
             return false;
         };
@@ -958,7 +960,8 @@ pub fn is_copy(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -
 /// The `impl Drop` block of `strukt`, if it has one.
 pub fn drop_impl(items: &ItemTree, sigs: &Signatures, strukt: StructId) -> Option<ImplId> {
     let drop = *items.lang_traits.get(&flux_intern::sym::drop)?;
-    items.trait_impls.get(&drop)?.iter().copied().find(|&imp| {
+    let head = Some(crate::impl_index::Head::Adt(strukt));
+    sigs.impl_index.impls_with_head(items, drop, head).find(|&imp| {
         matches!(sigs.impls.get(imp).map(|t| t.kind()), Some(TyKind::Adt(adt, _)) if adt.strukt == strukt)
     })
 }
@@ -1022,8 +1025,7 @@ pub fn resolve_instance(items: &ItemTree, sigs: &Signatures, instance: Instance)
             args: Ty::list(&header[1..]),
         },
     };
-    let impls = items.trait_impls.get(&t).into_iter().flatten();
-    for &imp in impls {
+    for imp in sigs.impl_index.impls_for(items, t, goal.self_ty) {
         let Some(mut args) = match_impl(items, sigs, imp, goal) else {
             continue;
         };
@@ -1070,7 +1072,7 @@ pub fn resolve_const(items: &ItemTree, sigs: &Signatures, c: ConstInstance) -> C
             args: Ty::list(&args[1..]),
         },
     };
-    for &imp in items.trait_impls.get(&t).into_iter().flatten() {
+    for imp in sigs.impl_index.impls_for(items, t, goal.self_ty) {
         let Some(impl_args) = match_impl(items, sigs, imp, goal) else {
             continue;
         };
@@ -2118,8 +2120,10 @@ fn broken_header(items: &ItemTree, sigs: &Signatures, imp: ImplId) -> bool {
         if holds(items, sigs, &env, goal) {
             return false;
         }
-        let impls = items.trait_impls.get(&goal.trait_ref.trait_);
-        !impls.into_iter().flatten().any(|&other| {
+        let mut impls = sigs
+            .impl_index
+            .impls_for(items, goal.trait_ref.trait_, goal.self_ty);
+        !impls.any(|other| {
             sigs.impls
                 .get(other)
                 .is_some_and(|&ty| crate::overlap(ty, goal.self_ty))
@@ -2419,12 +2423,10 @@ pub fn unmet_leaf(
     if depth > 32 {
         return goal;
     }
-    let impls = items
-        .trait_impls
-        .get(&goal.trait_ref.trait_)
-        .into_iter()
-        .flatten();
-    let mut matching = impls.filter_map(|&imp| Some((imp, match_impl(items, sigs, imp, goal)?)));
+    let impls = sigs
+        .impl_index
+        .impls_for(items, goal.trait_ref.trait_, goal.self_ty);
+    let mut matching = impls.filter_map(|imp| Some((imp, match_impl(items, sigs, imp, goal)?)));
     let (Some((imp, args)), None) = (matching.next(), matching.next()) else {
         return goal;
     };
@@ -2547,7 +2549,7 @@ fn check_overlap(
     let mut conflicted = Vec::new();
     let mut traits: Vec<(&TraitId, &Vec<ImplId>)> = items.trait_impls.iter().collect();
     traits.sort_by_key(|(t, _)| t.index());
-    for (_, impls) in traits {
+    for (&t, impls) in traits {
         for (i, &later) in impls.iter().enumerate() {
             if later.index() < checked as usize {
                 continue;
@@ -2564,7 +2566,7 @@ fn check_overlap(
             let b_header: Vec<Ty> = std::iter::once(b)
                 .chain(b_ref.args.iter().copied())
                 .collect();
-            let earlier = impls[..i].iter().find(|&&a| {
+            let earlier = sigs.impl_index.earlier(items, sigs, t, i).find(|&a| {
                 let (Some(&a_ty), Some(a_ref)) = (sigs.impls.get(a), sigs.impl_traits.get(a))
                 else {
                     return false;
@@ -2578,7 +2580,7 @@ fn check_overlap(
                     && !excluded_by_bounds(items, sigs, a, later)
                     && !excluded_by_bounds(items, sigs, later, a)
             });
-            let Some(&earlier) = earlier else {
+            let Some(earlier) = earlier else {
                 continue;
             };
             // What both are for, as rustc names it: `From<_>` for `W<_>`.
