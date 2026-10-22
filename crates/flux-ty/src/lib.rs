@@ -2062,13 +2062,25 @@ pub fn signatures_checked(
     let core = items.core;
     if check_core || core == ItemCounts::default() {
         let checked = if check_core { 0 } else { core.impls };
-        return extend_signatures(
+        // `core`'s lengths are known without evaluation, as where its
+        // signatures are shared.
+        let known = match lens {
+            None if core != ItemCounts::default() => core_lens_values(),
+            _ => LenValues::default(),
+        };
+        let arg_tys = ArgTys::default();
+        let core_lens = ArrayLens::new(&known, &arg_tys);
+        let (mut sigs, diagnostics) = extend_signatures(
             items,
             Signatures::default(),
             ItemCounts::default(),
             checked,
-            lens,
+            lens.or(Some(&core_lens)),
         );
+        if lens.is_none() {
+            sigs.array_lens = known;
+        }
+        return (sigs, diagnostics);
     }
     let (sigs, mut diagnostics) = core_signatures().clone();
     let (sigs, more) = extend_signatures(items, sigs, core, core.impls, lens);
@@ -2083,13 +2095,22 @@ fn core_signatures() -> &'static (Signatures, Vec<Diagnostic>) {
     CORE.get_or_init(|| {
         let items = &Core::get().items;
         let unchecked = items.impls.len() as u32;
-        extend_signatures(
+        let known = core_lens_values();
+        let arg_tys = ArgTys::default();
+        let lens = ArrayLens::new(&known, &arg_tys);
+        let (mut sigs, diagnostics) = extend_signatures(
             items,
             Signatures::default(),
             ItemCounts::default(),
             unchecked,
-            None,
-        )
+            Some(&lens),
+        );
+        debug_assert!(
+            lens.missing.borrow().is_empty(),
+            "core's array lengths name only constants whose values are literals"
+        );
+        sigs.array_lens = known;
+        (sigs, diagnostics)
     })
 }
 
@@ -2997,15 +3018,22 @@ fn literal_lens(
     (values, diagnostics)
 }
 
-/// Resolves the signatures of `items`, evaluating with `eval` the
-/// constants their array lengths name, if any: then they are resolved
-/// twice, the first time to type-check the constants.
-fn lens_signatures(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> (Signatures, Vec<Diagnostic>) {
-    let items = &hir.items;
-    // Most constants lengths name are literals, known without
-    // evaluation; the others need the signatures resolved first.
-    let mut known: LenValues = hir
-        .const_bodies()
+/// The values of `core`'s constants that its array lengths may name:
+/// those whose values are literals, which need no evaluation (`static
+/// mut BUF: [u8; CAPACITY]`).
+fn core_lens_values() -> LenValues {
+    let core = Core::get();
+    literal_values(
+        (core.items.consts.iter()).filter_map(|(id, _)| core.const_body(id).map(|b| (id, b))),
+    )
+}
+
+/// The values of those of `consts` whose values are integer or `bool`
+/// literals.
+fn literal_values<'b>(
+    consts: impl Iterator<Item = (ConstId, &'b (flux_hir::Body, flux_hir::BodySourceMap))>,
+) -> LenValues {
+    consts
         .filter_map(|(id, (body, _))| match &body.exprs[body.root] {
             flux_hir::Expr::Literal(flux_hir::Literal::Int { value, .. }) => {
                 Some((id, Some(*value)))
@@ -3013,7 +3041,17 @@ fn lens_signatures(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> (Signatures,
             flux_hir::Expr::Literal(flux_hir::Literal::Bool(b)) => Some((id, Some(u128::from(*b)))),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+/// Resolves the signatures of `items`, evaluating with `eval` the
+/// constants their array lengths name, if any: then they are resolved
+/// twice, the first time to type-check the constants.
+fn lens_signatures(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> (Signatures, Vec<Diagnostic>) {
+    let items = &hir.items;
+    // Most constants lengths name are literals, known without
+    // evaluation; the others need the signatures resolved first.
+    let mut known = literal_values(hir.const_bodies());
     let mut arg_tys = ArgTys::default();
     let lens = ArrayLens::new(&known, &arg_tys);
     let (mut sigs, diagnostics) = signatures_checked(items, all, Some(&lens));
