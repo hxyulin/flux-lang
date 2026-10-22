@@ -997,6 +997,12 @@ fn holds_at(
         stack.pop();
         return holds;
     }
+    if let Some(found) = fn_goal(items, goal.trait_ref.trait_, goal.self_ty) {
+        return match found {
+            ClosureGoal::Fn(_, params) => goal.trait_ref.args.first() == Some(&params),
+            _ => false,
+        };
+    }
     if let TyKind::Closure(_, args) = goal.self_ty.kind() {
         return match closure_goal(items, goal.trait_ref.trait_, args) {
             ClosureGoal::Fn(kind, params) => {
@@ -1147,6 +1153,17 @@ pub(crate) enum ClosureGoal {
     No,
 }
 
+/// What a goal on a function item or pointer type needs: a safe
+/// function implements the `Fn`-family traits for its parameters.
+pub(crate) fn fn_goal(items: &ItemTree, t: TraitId, ty: Ty) -> Option<ClosureGoal> {
+    let sig = ty.fn_sig()?;
+    let kind = crate::fn_trait_kind(items, t)?;
+    if sig.is_unsafe {
+        return Some(ClosureGoal::No);
+    }
+    Some(ClosureGoal::Fn(kind, Ty::tuple(sig.params())))
+}
+
 pub(crate) fn closure_goal(items: &ItemTree, t: TraitId, args: GenericArgs) -> ClosureGoal {
     let parts = ClosureArgs::split(args);
     if let Some(kind) = crate::fn_trait_kind(items, t) {
@@ -1162,6 +1179,12 @@ pub(crate) fn closure_goal(items: &ItemTree, t: TraitId, args: GenericArgs) -> C
 
 /// `<C as FnOnce<A>>::Output` for a closure `C`: what it returns.
 pub fn closure_output(items: &ItemTree, alias: AliasTy) -> Option<Ty> {
+    if let Some(sig) = alias.args[0].fn_sig()
+        && !sig.is_unsafe
+        && crate::fn_trait_kind(items, alias.trait_) == Some(crate::ClosureKind::FnOnce)
+    {
+        return Some(sig.ret());
+    }
     let TyKind::Closure(_, args) = alias.args[0].kind() else {
         return None;
     };

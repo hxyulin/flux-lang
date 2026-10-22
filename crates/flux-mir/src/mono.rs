@@ -91,13 +91,13 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                 if let Operand::Const(Constant::Fn { function, args, .. }) = op {
                     let instance = Instance {
                         function,
-                        args: Ty::list(&subst_list(args, caller.args)),
+                        args: Ty::list(&subst_list(args, caller_args)),
                     };
                     let instance = flux_ty::traits::resolve_instance(&hir.items, sigs, instance);
                     reified.insert(instance);
-                    if mir.bodies.get(instance.function).is_some()
-                        && !depths.contains_key(&instance)
-                    {
+                    let has_body = mir.instance_body(&hir.items, instance).is_some()
+                        || is_clone_shim(&hir.items, instance);
+                    if has_body && !depths.contains_key(&instance) {
                         depths.insert(instance, depth + 1);
                         instances.push(instance);
                     }
@@ -184,6 +184,9 @@ fn lang_method(items: &ItemTree, lang: &str, name: &str) -> Option<FunctionId> {
 /// which the compiler implements, as rustc's `core` does with const
 /// generics.
 fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
+    if is_fn_shim(items, instance) {
+        return true;
+    }
     let of_array = matches!(
         instance.args.first().map(|t| t.kind()),
         Some(TyKind::Array(..))
@@ -199,6 +202,9 @@ fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
 fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option<Body> {
     if !is_clone_shim(items, instance) {
         return None;
+    }
+    if is_fn_shim(items, instance) {
+        return Some(fn_shim(items, sigs, instance));
     }
     if Some(instance.function) == lang_method(items, "eq", "eq") {
         return Some(eq_shim(instance));
@@ -309,6 +315,97 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
 
 /// `PartialEq::eq` for arrays of `T` and `U`, with `instance`'s
 /// arguments: `T::eq` of each pair of elements until one is false.
+/// Whether `instance` is a `Fn`-family method of a function item or
+/// pointer, which the compiler implements.
+fn is_fn_shim(items: &ItemTree, instance: Instance) -> bool {
+    crate::fn_method_kind(items, instance.function).is_some()
+        && matches!(
+            instance.args.first().map(|t| t.kind()),
+            Some(TyKind::FnDef(_) | TyKind::FnPtr(_))
+        )
+}
+
+/// `call`, `call_mut` or `call_once` of a function item or pointer: a
+/// call of the function with the arguments taken out of their tuple.
+fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
+    let kind = crate::fn_method_kind(items, instance.function).expect("a Fn-family method");
+    let callee_ty = instance.args[0];
+    let tuple = instance.args.get(1).copied().unwrap_or(Ty::UNIT);
+    let sig = flux_ty::traits::instance_sig(items, sigs, instance.function, instance.args);
+    let mut locals = flux_arena::Arena::new();
+    let ret = locals.alloc(LocalDecl {
+        ty: sig.ret,
+        kind: LocalKind::Return,
+    });
+    let this_ty = match kind {
+        flux_ty::ClosureKind::Fn => Ty::new(TyKind::Ref(Mutability::Not, callee_ty)),
+        flux_ty::ClosureKind::FnMut => Ty::new(TyKind::Ref(Mutability::Mut, callee_ty)),
+        flux_ty::ClosureKind::FnOnce => callee_ty,
+    };
+    let this = locals.alloc(LocalDecl {
+        ty: this_ty,
+        kind: LocalKind::Param,
+    });
+    let args_local = locals.alloc(LocalDecl {
+        ty: tuple,
+        kind: LocalKind::Param,
+    });
+    let count = match tuple.kind() {
+        TyKind::Tuple(list) => list.len(),
+        _ => 0,
+    };
+    let args: Vec<Operand> = (0..count)
+        .map(|i| Operand::Move(Place::from(args_local).field(i as u32)))
+        .collect();
+    let range = flux_syntax::TextRange::default();
+    let target = Some(BasicBlock::from_raw(1));
+    let call = match callee_ty.kind() {
+        TyKind::FnDef(def) => TerminatorKind::Call {
+            func: def.function,
+            generic_args: def.args,
+            args,
+            dest: ret.into(),
+            target,
+        },
+        _ => {
+            let pointer = match kind {
+                flux_ty::ClosureKind::FnOnce => Place::from(this),
+                _ => Place::from(this).deref(),
+            };
+            TerminatorKind::CallIndirect {
+                callee: Operand::Copy(pointer),
+                args,
+                dest: ret.into(),
+                target,
+            }
+        }
+    };
+    let mut blocks = flux_arena::Arena::new();
+    blocks.alloc(BasicBlockData {
+        statements: Vec::new(),
+        terminator: Terminator { kind: call, range },
+    });
+    blocks.alloc(BasicBlockData {
+        statements: Vec::new(),
+        terminator: Terminator {
+            kind: TerminatorKind::Return,
+            range,
+        },
+    });
+    Body {
+        locals,
+        blocks,
+        param_count: 2,
+        c_strings: Vec::new(),
+        in_core: false,
+        inherits_overflow_checks: false,
+        live_drops: Vec::new(),
+        init_errors: Vec::new(),
+        upvars: None,
+        capture_uses: Vec::new(),
+    }
+}
+
 fn eq_shim(instance: Instance) -> Body {
     let (TyKind::Array(elem, len), TyKind::Array(other, _)) =
         (instance.args[0].kind(), instance.args[1].kind())

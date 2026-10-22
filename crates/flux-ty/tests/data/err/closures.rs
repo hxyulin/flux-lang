@@ -87,4 +87,10 @@ fn by_name() {
     let b = Fn::call(&f, (1,));
 }
 
+fn capturing_pointer() {
+    let k = 2;
+    let ok: fn(i32) -> i32 = |x| x + 1;
+    let g: fn(i32) -> i32 = |x| x + k;
+}
+
 fn main() {}

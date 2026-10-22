@@ -429,6 +429,10 @@ and `Fn` otherwise, and `Copy` if what it captures is. The borrow
 checker treats a closure as holding the borrows of what it captures,
 for as long as it, or any value it is moved into (an adapter like
 `Map`, a struct, a call's result), may be used, with rustc's messages.
+Safe function items and pointers implement the `Fn`-family traits too,
+so they may be passed where closures are, and a closure that captures
+nothing coerces to a function pointer of its signature (one that
+captures is E0308, as in rustc).
 Closures cannot be returned yet (no `impl Fn`), nor be `async`, nor
 return references, nor appear in constants or `const fn`s; calls of
 `Fn::call` and the other methods by name, and `impl Fn for S`, are

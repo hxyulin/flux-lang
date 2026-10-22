@@ -312,6 +312,7 @@ impl<'a> Ctx<'a> {
             closure_locals: Vec::new(),
             unit_matches: HashSet::new(),
             for_heads: HashSet::new(),
+            reified_closures: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -506,6 +507,9 @@ struct Ctx<'a> {
     unit_matches: HashSet<ExprId>,
     /// The calls of `IntoIterator::into_iter` of `for` loops' heads.
     for_heads: HashSet<ExprId>,
+    /// Closures coerced to function pointers, with their types and the
+    /// pointers', which must capture nothing.
+    reified_closures: Vec<(ExprId, Ty, Ty)>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -718,6 +722,22 @@ impl Ctx<'_> {
         {
             self.reborrows.insert(expr, m);
             if !self.unify(pointee, expected_pointee) {
+                let range = self.range(blamed);
+                self.mismatch(expected, actual, range);
+            }
+            return;
+        }
+        // A closure where a function pointer is wanted becomes one, if
+        // it captures nothing (checked once that is known).
+        if let (TyKind::Closure(_, args), TyKind::FnPtr(ptr)) =
+            (self.shallow(actual).kind(), self.shallow(expected).kind())
+        {
+            let parts = crate::ClosureArgs::split(args);
+            let params_ok = self.unify(parts.params(), Ty::tuple(ptr.params()));
+            if params_ok && self.unify(parts.ret(), ptr.ret()) {
+                self.reified.insert(expr, ());
+                self.reified_closures.push((expr, actual, expected));
+            } else {
                 let range = self.range(blamed);
                 self.mismatch(expected, actual, range);
             }

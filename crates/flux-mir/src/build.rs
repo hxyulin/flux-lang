@@ -1071,6 +1071,18 @@ impl Builder<'_> {
             TyKind::FnDef(def) if self.types.reified.get(expr).is_some() => {
                 Ty::new(TyKind::FnPtr(def.sig))
             }
+            TyKind::Closure(_, args) if self.types.reified.get(expr).is_some() => {
+                let parts = flux_ty::ClosureArgs::split(args);
+                let params = match parts.params().kind() {
+                    TyKind::Tuple(list) => list,
+                    _ => &[],
+                };
+                Ty::new(TyKind::FnPtr(flux_ty::FnSigTy::new(
+                    params,
+                    parts.ret(),
+                    false,
+                )))
+            }
             _ => ty,
         }
     }
@@ -1595,6 +1607,27 @@ impl Builder<'_> {
             let pointer = Constant::Fn {
                 function: def.function,
                 args: def.args,
+                ty,
+            };
+            self.assign(dest, Rvalue::Use(Operand::Const(pointer)), self.range(expr));
+            return;
+        }
+        // A closure that captures nothing coerced to a pointer: to its
+        // `call_once`, which takes nothing for it.
+        if self.types.reified.get(expr).is_some()
+            && let TyKind::Closure(_, args) = self.own_ty(expr).kind()
+            && let Some(once) = flux_ty::fn_trait(self.items, flux_ty::ClosureKind::FnOnce)
+            && let Some(call_once) =
+                self.items.traits[once].function(self.items, Symbol::intern("call_once"))
+        {
+            let closure = self.own_ty(expr);
+            let item = self.temp(closure);
+            self.lower_value(expr, &item.into());
+            let ty = self.place_ty(dest);
+            let params = flux_ty::ClosureArgs::split(args).params();
+            let pointer = Constant::Fn {
+                function: call_once,
+                args: Ty::list(&[closure, params]),
                 ty,
             };
             self.assign(dest, Rvalue::Use(Operand::Const(pointer)), self.range(expr));

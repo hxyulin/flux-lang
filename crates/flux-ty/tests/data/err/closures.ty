@@ -52,6 +52,12 @@ fn by_name() -> ()
     f@1: {closure}
     a@2: i32
     b@3: i32
+fn capturing_pointer() -> ()
+    k@0: i32
+    x@1: i32
+    ok@2: fn(i32) -> i32
+    x@3: i32
+    g@4: fn(i32) -> i32
 fn main() -> ()
 error 257..258: expected function, found `T`
 error 283..288: closure is expected to take 1 argument, but it takes 2 arguments
@@ -72,3 +78,4 @@ error 978..985: `break` with value from a `for` loop
 error 1028..1032: mismatched types: expected `{integer}`, found `bool`
 error 1090..1094: use of unstable library feature `fn_traits`
 error 1114..1122: use of unstable library feature `fn_traits`
+error 1245..1254: mismatched types: expected `fn(i32) -> i32`, found `{closure}`

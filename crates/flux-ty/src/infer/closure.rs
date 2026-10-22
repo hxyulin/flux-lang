@@ -166,7 +166,19 @@ impl Ctx<'_> {
             );
             return Ty::ERROR;
         };
-        let hint = self.closure_hints.remove(id);
+        let mut hint = self.closure_hints.remove(id);
+        // Where a function pointer is expected, its signature.
+        if hint.is_none()
+            && let Some(&expected) = self.expected.get(id)
+            && let TyKind::FnPtr(sig) = self.shallow(expected).kind()
+        {
+            hint = Some(Hint {
+                kind: ClosureKind::Fn,
+                params: Ty::tuple(sig.params()),
+                ret: Some(sig.ret()),
+                at: range,
+            });
+        }
         // Where rustc reports a signature that does not fit: at the
         // callee it is passed to.
         let head = match hint {
@@ -573,8 +585,17 @@ impl Ctx<'_> {
         for (expr, kind) in std::mem::take(&mut self.kind_requirements) {
             required.entry(expr).or_default().push(kind);
         }
+        let reified = std::mem::take(&mut self.reified_closures);
         for closure in pending {
             let info = self.analyze_closure(closure);
+            for &(expr, closure_ty, pointer) in &reified {
+                if self.shallow_closure_expr(closure_ty) == Some(closure.expr)
+                    && !info.captures.is_empty()
+                {
+                    let range = self.range(self.blame(expr));
+                    self.mismatch(pointer, closure_ty, range);
+                }
+            }
             let TyKind::Closure(_, args) = closure.ty.kind() else {
                 continue;
             };
@@ -607,6 +628,13 @@ impl Ctx<'_> {
                     self.report_closure_kind(closure.expr, expected, kind);
                 }
             }
+        }
+    }
+
+    fn shallow_closure_expr(&mut self, ty: Ty) -> Option<ExprId> {
+        match self.shallow(ty).kind() {
+            TyKind::Closure(id, _) => Some(id.expr),
+            _ => None,
         }
     }
 
