@@ -113,4 +113,16 @@ fn out_of_scope() {
     c();
 }
 
+fn triple(x: i32) -> i32 {
+    x * 3
+}
+
+// A function pointer called in a closure is captured by reference.
+fn called_pointer() {
+    let mut h: fn(i32) -> i32 = triple;
+    let c = || h(1);
+    h = |x| x;
+    c();
+}
+
 fn main() {}

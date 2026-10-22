@@ -1083,8 +1083,9 @@ impl Ctx<'_> {
             Expr::Call { callee, args } => {
                 match self.methods.get(expr).copied() {
                     Some(m) => self.adjusted(*callee, m.derefs, m.autoref, uses),
-                    None if matches!(body.exprs[*callee], Expr::Path(_)) => {}
-                    None => self.walk(*callee, uses),
+                    // A function item or pointer, called by value: a
+                    // local holding one is copied.
+                    None => self.consume(*callee, uses),
                 }
                 for &arg in args.iter() {
                     self.consume(arg, uses);
