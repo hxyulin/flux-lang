@@ -734,6 +734,32 @@ of an `Option<&T>` (`const` where rustc's are, except `take` and
 `IntoIterator`, by value and by reference. Anything else in
 `core` is reported as not supported yet, and so is `std`.
 
+flux's `alloc` library has heap memory, through C's `malloc`, `realloc`
+and `free` (`alloc::alloc::{alloc, alloc_zeroed, dealloc, realloc,
+handle_alloc_error, Layout}`; failing to allocate aborts), and the
+types that own it, which the program's prelude has as rustc's `std`
+prelude does: `Box<T>` (`new`, `into_raw`, `from_raw`, `leak`, `Deref`
+and `DerefMut` to the value, dropping the value then freeing it,
+`Clone`, comparisons, `Debug`, `Display`, `Default`, `From<T>`),
+`Vec<T>` (`new`, `with_capacity`, `push`, `pop`, `insert`, `remove`,
+`swap_remove`, `truncate`, `clear`, `retain`, `dedup`, `resize`,
+`extend_from_slice`, `append`, `split_off`, `reserve`,
+`reserve_exact`, `shrink_to_fit`, `shrink_to`, `len`, `capacity`,
+`as_ptr`, `set_len`, `from_raw_parts`; `Deref` to `[T]`, so slices'
+methods and indexing work on it; `IntoIterator` by value, by reference
+and mutably; `Clone`, comparisons with vectors, slices and arrays,
+`Debug`, `Default`, `From<&[T]>` and `From<[T; N]>`), whose
+`capacity()` grows as rustc's `RawVec` grows it and whose elements drop
+in order, `vec![a, b, c]` and `vec![x; n]`, and `String` (`new`,
+`with_capacity`, `from`, `push`, `push_str`, `pop`, `insert`,
+`insert_str`, `remove`, `truncate`, `clear`, `split_off`, `from_utf8`,
+`into_bytes`, `as_str`, `Deref` to `str`, comparisons with `String`,
+`str` and `&str`, `+` and `+=` with `&str`, `Clone`, `Debug`,
+`Display`), with `ToString` for `str`, `String` and `char`, `ToOwned`
+(`str` to `String`, `[T]` to `Vec<T>`), and slices' `to_vec` and
+`repeat`. `Box` is dereferenced through `Deref`, so moving out of `*b`
+is not supported yet (E0507), nor are `Box<[T]>` and `Box<dyn Tr>`.
+
 `core::ops` has the `Fn`, `FnMut` and `FnOnce` traits (in the
 prelude), which bounds name as `Fn(A, B) -> C` (the angle-bracket
 form, and parentheses on other traits, are errors, as in rustc), and
@@ -918,8 +944,8 @@ At run time flux matches rustc with `-C overflow-checks=off -C
 panic=abort`: arithmetic wraps, shift amounts are masked to the type's
 width, and division by zero or `MIN / -1` panics. Programs print with
 `println!` and its relatives and call C through `unsafe extern "C"`
-blocks; there is no standard library yet, so programs name `core::fmt`
-rather than `std::fmt`.
+blocks; there is no standard library beyond `core` and `alloc` yet, so
+programs name `core::fmt` rather than `std::fmt`.
 
 ## Deliberately rejected
 

@@ -220,13 +220,21 @@ program's files:
   however it matched. A source map gives every node's text range for
   diagnostics.
 
-A program has two crates: flux's own `core`
-([`library/core`](../library/core/src/lib.rs)), built into the compiler
-and compiled with every program, and the program itself, whose files are
-read as its `mod` declarations name them (`m.rs` or `m/mod.rs`). Both
-crates' items share one item tree, with each module knowing its crate.
-Only `core` may write `impl` blocks for primitive types, which is how
-`i32::MAX` and `x.abs()` exist.
+A program has three crates: flux's own `core`
+([`library/core`](../library/core/src/lib.rs)) and `alloc`
+([`library/alloc`](../library/alloc/src/lib.rs)), built into the
+compiler and compiled with every program, and the program itself, whose
+files are read as its `mod` declarations name them (`m.rs` or
+`m/mod.rs`). The crates' items share one item tree, with each module
+knowing its crate. Only `core` and `alloc` (`CrateData::is_core`) may
+write `impl` blocks for primitive types, which is how `i32::MAX` and
+`x.abs()` exist. `core`'s and `alloc`'s modules see `core`'s prelude;
+the program's see `alloc::prelude::rust_2024` (`DefMap::std_prelude`),
+`core`'s names with `Vec`, `String`, `Box`, `ToString` and `ToOwned`,
+as rustc's `std` prelude, and may name `alloc` once `extern crate
+alloc;` declares it (`CrateData::externs`); `vec!`, `alloc`'s exported
+macro, is in every crate's macro prelude, as `core`'s are. A crate sees
+only the crates before it.
 
 `core` cannot name the program, so its part of the front end is the
 same in every compilation, and is done once per process, the first

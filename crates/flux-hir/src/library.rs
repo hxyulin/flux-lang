@@ -68,7 +68,12 @@ impl Core {
         }
         Some(self.bodies[function.index()].get_or_init(|| {
             let lowered = self.lower_body(function);
-            debug_assert!(lowered.diagnostics.is_empty(), "core lowers cleanly");
+            debug_assert!(
+                lowered.diagnostics.is_empty(),
+                "core lowers cleanly: {} {:?}",
+                self.items.functions[function].name,
+                lowered.diagnostics
+            );
             (lowered.body, lowered.source_map)
         }))
     }

@@ -7,6 +7,7 @@
 #[macro_use]
 mod macros;
 
+pub mod alloc;
 pub mod array;
 pub mod ascii;
 pub mod cell;

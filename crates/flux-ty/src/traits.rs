@@ -1132,6 +1132,18 @@ pub fn match_impl(
     imp: ImplId,
     goal: Predicate,
 ) -> Option<Vec<Ty>> {
+    match_impl_sized(items, sigs, imp, goal, true)
+}
+
+/// [`match_impl`], checking that its parameters not bounded `?Sized`
+/// are sized only if `sized`.
+fn match_impl_sized(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: ImplId,
+    goal: Predicate,
+    sized: bool,
+) -> Option<Vec<Ty>> {
     let trait_ref = sigs.impl_traits.get(imp)?;
     if trait_ref.trait_ != goal.trait_ref.trait_ {
         return None;
@@ -1149,10 +1161,11 @@ pub fn match_impl(
     bind_by_projections(items, sigs, imp, &mut binds);
     // Its parameters are `Sized` unless bounded `?Sized`.
     let params = &items.impls[imp].generics.params;
-    if params
-        .iter()
-        .zip(&binds)
-        .any(|(p, b)| !p.maybe_unsized && b.is_some_and(Ty::is_unsized))
+    if sized
+        && params
+            .iter()
+            .zip(&binds)
+            .any(|(p, b)| !p.maybe_unsized && b.is_some_and(Ty::is_unsized))
     {
         return None;
     }
@@ -2071,9 +2084,15 @@ fn excluded_by_bounds(
         return false;
     };
     let goal = trait_ref.with_self(self_ty);
-    let Some(args) = match_impl(items, sigs, general, goal) else {
+    let Some(args) = match_impl_sized(items, sigs, general, goal, false) else {
         return false;
     };
+    // A parameter not bounded `?Sized` is not an unsized type, as
+    // rustc's implicit `Sized` bounds say: `impl<T: Clone> ToOwned for
+    // T` is not for `str`.
+    if match_impl(items, sigs, general, goal).is_none() {
+        return true;
+    }
     let env = elaborate(sigs, sigs.impl_predicates.get(specific).map_or(&[], |p| p));
     let bounds = sigs.impl_predicates.get(general).map_or(&[][..], |p| p);
     bounds

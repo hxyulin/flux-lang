@@ -106,8 +106,13 @@ impl Scope {
 pub struct DefMap {
     /// Each module's scope, by module index.
     pub scopes: Vec<Scope>,
-    /// `core::prelude::rust_2024`, whose names every module sees.
+    /// `core::prelude::rust_2024`, whose names every module of `core`
+    /// and `alloc` sees.
     pub prelude: Option<ModuleId>,
+    /// `alloc::prelude::rust_2024`, `core`'s and `alloc`'s names (`Vec`,
+    /// `String`, `Box`), as rustc's `std` prelude: what the program's
+    /// modules see.
+    pub std_prelude: Option<ModuleId>,
     /// Names whose import failed, by module: uses of them are not
     /// reported again.
     pub failed_imports: FxHashSet<(ModuleId, Symbol)>,
@@ -248,7 +253,12 @@ impl ItemTree {
                 let Some(&first) = segments.first() else {
                     return Err(fail(At::Segment(0), "expected a name after `::`".into()));
                 };
-                match self.extern_crate(first, from) {
+                // `$crate` of `alloc`'s macros is `::alloc`, which the
+                // program may not have declared.
+                match self
+                    .extern_crate(first, from)
+                    .or_else(|| self.any_crate(first, from))
+                {
                     Some(root) => (root, 1),
                     None => {
                         let what = if segments.len() == 1 { "crate " } else { "" };
@@ -269,7 +279,10 @@ impl ItemTree {
                 {
                     return Err(fail(At::Segment(0), format!("`{first}` is ambiguous")));
                 }
-                if self.failed_import(from, first) && self.lookup(from, first, ns).is_none() {
+                // A failed import's name shadows the prelude's, as rustc's
+                // dummy binding does.
+                if self.failed_import(from, first) && self.scope_binding(from, first, ns).is_none()
+                {
                     return Err(ResolveError::Reported);
                 }
                 if segments.len() == 1 {
@@ -294,10 +307,12 @@ impl ItemTree {
                     }
                     Some(Resolved::SelfType) => return Ok(Resolved::SelfType),
                     _ => {
-                        let message = if first == sym::std || first == sym::alloc {
+                        let message = if first == sym::std {
                             format!(
-                                "the `{first}` crate is not supported yet; flux has only `core`"
+                                "the `{first}` crate is not supported yet; flux has only `core` and `alloc`"
                             )
+                        } else if first == sym::alloc {
+                            "use of unresolved module or unlinked crate `alloc`".to_owned()
                         } else {
                             format!("cannot find module or crate `{first}` in this scope")
                         };
@@ -590,7 +605,12 @@ impl ItemTree {
         {
             return Some(Resolved::Def(binding.def));
         }
-        if let Some(prelude) = self.def_map.prelude
+        let prelude = if self.is_core(module) {
+            self.def_map.prelude
+        } else {
+            self.def_map.std_prelude.or(self.def_map.prelude)
+        };
+        if let Some(prelude) = prelude
             && let Some(binding) = self.def_map.scopes[prelude.index()].ns(ns).get(&name)
             && binding.vis == Visibility::Public
         {
@@ -607,13 +627,29 @@ impl ItemTree {
         None
     }
 
-    /// The root of the crate called `name`, as seen from `module`: `core`.
+    /// The root of the crate called `name`, as seen from `module`: `core`,
+    /// and `alloc` from `alloc`'s later crates once `extern crate alloc;`
+    /// declares it (or from `core`-like ones). A crate sees only those
+    /// before it.
     fn extern_crate(&self, name: Symbol, module: ModuleId) -> Option<ModuleId> {
+        let own = self.modules[module].krate;
+        let own_data = &self.crates[own.0 as usize];
+        self.crates
+            .iter()
+            .enumerate()
+            .find(|(i, c)| c.name == name && c.is_core && (*i as u32) < own.0)
+            .filter(|_| name == sym::core || own_data.is_core || own_data.externs.contains(&name))
+            .map(|(_, c)| c.root)
+    }
+
+    /// The root of the `core`-like crate `name` before `module`'s,
+    /// declared or not.
+    fn any_crate(&self, name: Symbol, module: ModuleId) -> Option<ModuleId> {
         let own = self.modules[module].krate;
         self.crates
             .iter()
             .enumerate()
-            .find(|(i, c)| c.name == name && c.is_core && *i as u32 != own.0)
+            .find(|(i, c)| c.name == name && c.is_core && (*i as u32) < own.0)
             .map(|(_, c)| c.root)
     }
 
@@ -624,7 +660,7 @@ impl ItemTree {
         match m.parent {
             Some(parent) => format!("{}::{}", self.module_path(parent), m.name),
             None if self.crates[m.krate.0 as usize].is_core && m.krate != self.main_crate() => {
-                "core".to_owned()
+                m.name.to_string()
             }
             None => "crate".to_owned(),
         }
@@ -646,14 +682,7 @@ impl ItemTree {
         let m = &self.modules[module];
         match m.parent {
             None if m.krate == self.main_crate() => "the crate root".to_owned(),
-            _ => format!(
-                "`{}`",
-                if m.parent.is_none() {
-                    sym::core
-                } else {
-                    m.name
-                }
-            ),
+            _ => format!("`{}`", m.name),
         }
     }
 
@@ -708,7 +737,8 @@ pub(crate) fn resolve(items: &mut ItemTree, from: ItemCounts) {
         .scopes
         .resize(items.modules.len(), Scope::default());
     define_items(items, from);
-    items.def_map.prelude = find_prelude(items);
+    items.def_map.prelude = find_prelude(items, sym::core);
+    items.def_map.std_prelude = find_prelude(items, sym::alloc);
     resolve_imports(items, from.uses as usize);
     resolve_impls(items, from.impls as usize);
     // An import into both namespaces reports its problems once. Large
@@ -830,8 +860,13 @@ fn define_items(items: &mut ItemTree, from: ItemCounts) {
     }
 }
 
-fn find_prelude(items: &ItemTree) -> Option<ModuleId> {
-    let core = items.crates.iter().find(|c| c.is_core)?.root;
+/// `prelude::rust_2024` of `core`-like crate `krate`.
+fn find_prelude(items: &ItemTree, krate: Symbol) -> Option<ModuleId> {
+    let core = items
+        .crates
+        .iter()
+        .find(|c| c.is_core && c.name == krate)?
+        .root;
     let child = |module: ModuleId, name: Symbol| match items.def_map.scopes[module.index()]
         .types
         .get(&name)?

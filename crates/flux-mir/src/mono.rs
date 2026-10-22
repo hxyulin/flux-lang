@@ -659,6 +659,11 @@ pub fn expand_intrinsics(
                 let copy = flux_ty::traits::is_copy(items, sigs, &[], ty);
                 (dest, Rvalue::Use(Operand::Const(Constant::Bool(copy))))
             }
+            ("needs_drop", []) => {
+                let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
+                let needs = flux_ty::traits::needs_drop(items, sigs, &[], ty);
+                (dest, Rvalue::Use(Operand::Const(Constant::Bool(needs))))
+            }
             (name @ ("size_of" | "align_of"), []) => {
                 let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
                 let layout = layouts.of(ty);
@@ -695,11 +700,11 @@ pub fn expand_intrinsics(
             }
             // `data` as a pointer to an empty array, unsized, as a
             // reference, then its first `len` elements.
-            ("slice_from_raw_parts", [data, len]) => {
+            ("slice_from_raw_parts" | "slice_from_raw_parts_mut", [data, len]) => {
                 let slice_ref = body.place_ty(&dest, sigs);
-                let elem = match slice_ref.kind() {
-                    TyKind::Ref(_, slice) => slice.sequence_elem().unwrap_or(Ty::ERROR),
-                    _ => Ty::ERROR,
+                let (m, elem) = match slice_ref.kind() {
+                    TyKind::Ref(m, slice) => (m, slice.sequence_elem().unwrap_or(Ty::ERROR)),
+                    _ => (Mutability::Not, Ty::ERROR),
                 };
                 let temp = |body: &mut Body, ty: Ty, rvalue: Rvalue| -> Operand {
                     let local = body.locals.alloc(LocalDecl {
@@ -712,11 +717,8 @@ pub fn expand_intrinsics(
                     });
                     Operand::Move(local.into())
                 };
-                let array = Ty::new(TyKind::RawPtr(Mutability::Not, Ty::array(elem, 0)));
-                let raw_slice = Ty::new(TyKind::RawPtr(
-                    Mutability::Not,
-                    Ty::new(TyKind::Slice(elem)),
-                ));
+                let array = Ty::new(TyKind::RawPtr(m, Ty::array(elem, 0)));
+                let raw_slice = Ty::new(TyKind::RawPtr(m, Ty::new(TyKind::Slice(elem))));
                 let array_ptr = temp(body, array, Rvalue::Cast(data.clone(), array));
                 let raw = temp(body, raw_slice, Rvalue::Unsize(array_ptr, raw_slice));
                 let empty = temp(body, slice_ref, Rvalue::Cast(raw, slice_ref));

@@ -43,6 +43,12 @@ pub(crate) const fn align_of<T>() -> usize {
     loop {}
 }
 
+/// Whether dropping a `T` runs code.
+#[rustc_intrinsic]
+pub(crate) const fn needs_drop<T>() -> bool {
+    loop {}
+}
+
 /// `&slice[start..end]`, unchecked: `start <= end <= slice.len()`.
 #[rustc_intrinsic]
 pub(crate) unsafe fn subslice<T>(slice: &[T], start: usize, end: usize) -> &[T] {
@@ -66,6 +72,12 @@ pub(crate) unsafe fn subslice_mut<'a, 'b, T>(
 /// be there for as long as the slice is used.
 #[rustc_intrinsic]
 pub(crate) unsafe fn slice_from_raw_parts<'a, T>(data: *const T, len: usize) -> &'a [T] {
+    loop {}
+}
+
+/// The `len` elements from `data` on, as a mutable slice, unchecked.
+#[rustc_intrinsic]
+pub(crate) unsafe fn slice_from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T] {
     loop {}
 }
 
