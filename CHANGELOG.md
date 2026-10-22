@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Accept baseline AArch64 NEON attributes on unsafe functions with bodies,
+  validating feature lists, placement, inline conflicts and trait safety.
+
 - Accept bounded legacy trailing const arguments on NEON lane extraction and
   narrowing, preserving unsafe calls, modern signatures and const validation.
 

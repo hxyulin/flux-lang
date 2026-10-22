@@ -2840,7 +2840,16 @@ impl Collector<'_> {
         let mut do_not_const_check = false;
         let mut lang = None;
         let attrs = crate::cfg::Attrs::new(f.attrs());
+        let has_target_feature = attrs.iter().any(|a| attr_name(a) == Some("target_feature"));
         for attr in attrs.iter() {
+            if attr_name(attr) == Some("target_feature") {
+                target_feature_attr(attr, f, in_extern_block, &mut self.items.diagnostics);
+                continue;
+            }
+            if has_target_feature && attr_name(attr) == Some("inline") {
+                target_feature_inline(attr, &mut self.items.diagnostics);
+                continue;
+            }
             if attr_name(attr) == Some("track_caller")
                 && attr.meta().is_some_and(|m| m.path().is_some())
             {
@@ -4987,6 +4996,134 @@ fn check_inner_attrs(
         if !(is_core && attr_name(attr).is_some_and(|n| ["no_core", "feature"].contains(&n))) {
             check_attr(attr, diagnostics);
         }
+    }
+}
+
+/// Only guaranteed baseline NEON on explicitly unsafe functions is supported.
+/// No per-function ISA or safety metadata is needed: codegen already emits this
+/// baseline, and ordinary unsafe function items retain all call/coercion rules.
+fn target_feature_attr(
+    attr: ast::Attr<'_>,
+    function: ast::Fn<'_>,
+    in_extern_block: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let range = attr.syntax().text_range();
+    let meta = attr.meta().expect("named attribute");
+    if std::env::consts::ARCH != "aarch64" {
+        unsupported(
+            diagnostics,
+            range,
+            "`target_feature` attributes on this architecture",
+        );
+    }
+    if meta.unsafe_token().is_some() {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "`target_feature` is not an unsafe attribute",
+        ));
+        return;
+    }
+    if in_extern_block || function.body().is_none() {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "`target_feature` requires a function with a body",
+        ));
+    }
+    if function.unsafe_token().is_none() {
+        unsupported(diagnostics, range, "`target_feature` on safe functions");
+    }
+    let mut tokens = Vec::new();
+    if let Some(tree) = meta.token_tree() {
+        macros::tt::tokens_of(tree.syntax(), &mut tokens);
+    }
+    let malformed = |diagnostics: &mut Vec<Diagnostic>| {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "expected `target_feature(enable = \"neon\")`",
+        ));
+    };
+    let [open, inner @ .., close] = tokens.as_slice() else {
+        malformed(diagnostics);
+        return;
+    };
+    if meta.eq_token().is_some() || open.kind != T!['('] || close.kind != T![')'] {
+        malformed(diagnostics);
+        return;
+    }
+    let mut rest = inner;
+    // Empty lists are inert in rustc. Repeated keys, attributes and features
+    // are accepted too; validate each rather than silently dropping duplicates.
+    while !rest.is_empty() {
+        let [key, eq, value, tail @ ..] = rest else {
+            malformed(diagnostics);
+            return;
+        };
+        if key.text.as_str() != "enable" || eq.kind != T![=] || value.kind != SyntaxKind::STRING {
+            malformed(diagnostics);
+            return;
+        }
+        match crate::literal::unescape_str(value.text.as_str()) {
+            Ok(features) => {
+                for feature in features.split(',') {
+                    if feature != "neon" {
+                        diagnostics.push(Diagnostic::new(
+                            value.range(),
+                            format!("target feature `{feature}` is not supported yet"),
+                        ));
+                    }
+                }
+            }
+            Err(message) => diagnostics.push(Diagnostic::new(value.range(), message)),
+        }
+        match tail {
+            [] => break,
+            [comma, tail @ ..] if comma.kind == T![,] => rest = tail,
+            _ => {
+                malformed(diagnostics);
+                return;
+            }
+        }
+    }
+}
+
+fn target_feature_inline(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) {
+    let meta = attr.meta().expect("named attribute");
+    let mut tokens = Vec::new();
+    if let Some(tree) = meta.token_tree() {
+        macros::tt::tokens_of(tree.syntax(), &mut tokens);
+    }
+    let valid = if meta.unsafe_token().is_some() || meta.eq_token().is_some() {
+        false
+    } else if meta.token_tree().is_none() {
+        true
+    } else {
+        let argument = match tokens.as_slice() {
+            [open, arg, close] if open.kind == T!['('] && close.kind == T![')'] => Some(arg),
+            [open, arg, comma, close]
+                if open.kind == T!['('] && comma.kind == T![,] && close.kind == T![')'] =>
+            {
+                Some(arg)
+            }
+            _ => None,
+        };
+        match argument.map(|t| t.text.as_str()) {
+            Some("always") => {
+                diagnostics.push(Diagnostic::new(
+                    attr.syntax().text_range(),
+                    "cannot use `inline(always)` with `target_feature`",
+                ));
+                return;
+            }
+            Some("never") => true,
+            _ => false,
+        }
+    };
+    if !valid {
+        diagnostics.push(Diagnostic::new(
+            attr.syntax().text_range(),
+            "malformed `inline` attribute input",
+        ));
     }
 }
 

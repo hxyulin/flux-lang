@@ -2021,6 +2021,14 @@ fn check_method(
         return;
     };
     let trait_name = items.traits[t].name;
+    // In particular, an unsafe baseline target-feature method cannot satisfy
+    // a safe trait declaration: calls through the trait must preserve safety.
+    if function.is_unsafe != decl.is_unsafe {
+        return error(
+            function.def_range,
+            format!("method `{name}` has an incompatible type for trait"),
+        );
+    }
     match (function.has_self, decl.has_self) {
         (true, false) => {
             return error(
