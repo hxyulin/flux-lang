@@ -1,0 +1,22 @@
+fn unknown() -> () {}
+
+fn nested() -> () {}
+
+fn before() -> i32 {
+    <missing>
+}
+
+fn main() -> () {
+    <missing>;
+}
+
+error 0..37: the `unknown_attribute` attribute is not supported yet
+error 54..105: the `unknown_nested` attribute is not supported yet
+error 121..149: expected an expression
+error 178..204: expected 1 cfg-pattern
+error 233..258: expected `,`
+error 281..309: expected an attribute
+error 336..366: expected 1 cfg-pattern
+error 398..417: arguments to `macro_use` are not allowed here
+error 544..549: cannot find macro `later` in this scope
+error 637..643: cannot find macro `hidden` in this scope

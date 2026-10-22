@@ -4,16 +4,8 @@ enum E { A = 0 }
 
 fn conditional_attribute() -> () {}
 
-fn parameters(value@0: i32) -> () {
-    let local@1 = value@0;
-    value@0;
-}
+fn parameters(value@0: i32) -> () {}
 
-error 0..14: the `cfg` attribute is not supported yet
-error 16..42: the `cfg_attr` attribute is not supported yet
-error 90..104: the `cfg` attribute is not supported yet
-error 123..136: the `cfg` attribute is not supported yet
-error 169..182: the `cfg` attribute is not supported yet
-error 207..220: the `cfg` attribute is not supported yet
-error 239..252: the `cfg` attribute is not supported yet
-error 280..293: the `cfg` attribute is not supported yet
+error 123..136: conditional attributes in this position are not supported yet
+error 169..182: conditional attributes in this position are not supported yet
+error 207..220: conditional attributes in this position are not supported yet

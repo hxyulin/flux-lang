@@ -32,6 +32,5 @@ fn expressions(v@0: i32) -> () {
 fn declaration_only() -> ();
 
 error 11..21: `extern` blocks must be `unsafe` in edition 2024
-error 106..132: the `cfg_attr` attribute is not supported yet
 error 310..313: floating-point numbers are not supported yet
 error 362..378: free function without a body

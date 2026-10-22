@@ -4,7 +4,7 @@ use flux_arena::{Arena, SliceId};
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::ast::{self, AstNode, BinaryOp, CmpOp, LiteralKind, LogicOp};
 use flux_syntax::parser::Fragment;
-use flux_syntax::{Parse, SyntaxNode, SyntaxTree, TextRange};
+use flux_syntax::{Parse, SyntaxKind, SyntaxNode, SyntaxTree, TextRange};
 use rustc_hash::FxHashMap;
 
 use flux_arena::ArenaMap;
@@ -2094,8 +2094,24 @@ impl<'a> Ctx<'a> {
 
     /// Attributes on an expression node.
     fn check_attrs(&mut self, node: SyntaxNode<'_>) {
-        for attr in node.children().filter_map(ast::Attr::cast) {
-            check_attr(attr, &mut self.diagnostics);
+        let attrs = crate::cfg::Attrs::new(node.children().filter_map(ast::Attr::cast));
+        self.diagnostics.extend(
+            attrs
+                .errors
+                .iter()
+                .map(|(r, m)| Diagnostic::new(*r, m.clone())),
+        );
+        for attr in attrs.iter() {
+            if crate::item_tree::attr_name(attr) == Some("cfg")
+                && !crate::item_tree::cfg_position(node)
+            {
+                self.unsupported(
+                    attr.syntax().text_range(),
+                    "conditional attributes in this position",
+                );
+            } else {
+                check_attr(attr, &mut self.diagnostics);
+            }
         }
     }
 
@@ -2510,6 +2526,9 @@ impl<'a> Ctx<'a> {
         let mut spread = None;
         if let Some(list) = record.record_expr_field_list() {
             for field in list.fields() {
+                if !crate::item_tree::item_enabled(field.syntax(), &mut self.diagnostics) {
+                    continue;
+                }
                 check_attrs(field.attrs(), &mut self.diagnostics);
                 let Some(name) = field.name_ref() else {
                     continue;
@@ -2868,8 +2887,10 @@ impl<'a> Ctx<'a> {
     ) -> SliceId<ExprId> {
         let start = self.expr_scratch.len();
         for expr in exprs {
-            let expr = self.lower_expr(expr);
-            self.expr_scratch.push(expr);
+            if crate::item_tree::item_enabled(expr.syntax(), &mut self.diagnostics) {
+                let expr = self.lower_expr(expr);
+                self.expr_scratch.push(expr);
+            }
         }
         self.lists.alloc(self.expr_scratch.drain(start..))
     }
@@ -2887,7 +2908,25 @@ impl<'a> Ctx<'a> {
 
     fn lower_block(&mut self, block: ast::BlockExpr<'_>) -> ExprId {
         let syntax = block.syntax();
-        check_attrs(block.attrs(), &mut self.diagnostics);
+        for attr in block.attrs() {
+            if attr.bang_token().is_some()
+                && syntax.parent().is_some_and(|p| {
+                    !matches!(
+                        p.kind(),
+                        SyntaxKind::FN
+                            | SyntaxKind::BLOCK_EXPR
+                            | SyntaxKind::EXPR_STMT
+                            | SyntaxKind::MACRO_STMTS
+                    )
+                })
+            {
+                self.error(
+                    attr.syntax().text_range(),
+                    "an inner attribute is not permitted in this context",
+                );
+            }
+        }
+        self.check_attrs(syntax);
         if let Some(label) = block.label() {
             self.unsupported(label.syntax().text_range(), "labeled blocks");
         }
@@ -2943,6 +2982,15 @@ impl<'a> Ctx<'a> {
         tail: Option<ast::Expr<'t>>,
     ) -> Option<ExprId> {
         for stmt in list {
+            if !crate::item_tree::item_enabled(stmt.syntax(), &mut self.diagnostics) {
+                continue;
+            }
+            if let ast::Stmt::ExprStmt(stmt) = stmt
+                && let Some(expr) = stmt.expr()
+                && !crate::item_tree::item_enabled(expr.syntax(), &mut self.diagnostics)
+            {
+                continue;
+            }
             match stmt {
                 ast::Stmt::LetStmt(let_stmt) => {
                     check_attrs(let_stmt.attrs(), &mut self.diagnostics);
@@ -3004,6 +3052,8 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
+        let tail =
+            tail.filter(|e| crate::item_tree::item_enabled(e.syntax(), &mut self.diagnostics));
         match tail {
             Some(ast::Expr::MacroExpr(m)) if m.attrs().next().is_none() => {
                 self.lower_macro_stmts(m, false, true)
@@ -3175,6 +3225,9 @@ impl<'a> Ctx<'a> {
         if let Some(list) = m.match_arm_list() {
             check_attrs(list.attrs(), &mut self.diagnostics);
             for arm in list.arms() {
+                if !crate::item_tree::item_enabled(arm.syntax(), &mut self.diagnostics) {
+                    continue;
+                }
                 check_attrs(arm.attrs(), &mut self.diagnostics);
                 let scope = self.scopes.len();
                 let pat = self.lower_top_pat(arm.pat(), arm.syntax(), PatSite::Match);
