@@ -462,10 +462,10 @@ and the others of bits and signs, the `checked_`, `wrapping_`,
 `reverse_bits` and the byte-order conversions (`to_le_bytes`, ...), all
 `const` and panicking or overflowing in constants as rustc's do,
 `core::fmt::{Debug, Formatter, Result, Error}` (`Debug` for the
-integers, `bool`, `()`, raw pointers, references, slices, arrays,
+integers, `bool`, `char`, `str`, `()`, raw pointers, references, slices, arrays,
 tuples, `Option`, `Result`, `Ordering` and the ranges),
 `core::default::Default` (in the prelude) for the integers, `bool`,
-`()`, `Option`, tuples of up to twelve elements and `Range`,
+`char`, `&str`, `()`, `Option`, tuples of up to twelve elements and `Range`,
 `core::mem::{drop, swap, replace, take}` (`drop` also in the prelude;
 `swap`'s body is the compiler's, and it is not `const` yet, as rustc's
 is), `core::convert::{identity, From}`,
@@ -484,9 +484,9 @@ it, the integers included, `cmp`, `max`, `min` and `clamp`, and
 `cmp::{max_by, min_by, max_by_key, min_by_key}`. `From` converts each type
 from itself, `bool` to the integers, and integers to the wider ones
 that hold all their values, as in rustc; `Into` comes later. `Option` has `is_some`,
-`is_none`, `unwrap`, `unwrap_or`, `ok_or`, `and`, `or` and `xor`;
-`Result` has `is_ok`, `is_err`, `ok`, `err`, `unwrap_or`, `and` and
-`or`; both implement `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`
+`is_none`, `unwrap`, `expect`, `unwrap_or`, `ok_or`, `and`, `or` and
+`xor`; `Result` has `is_ok`, `is_err`, `ok`, `err`, `unwrap`, `expect`,
+`unwrap_err`, `expect_err`, `unwrap_or`, `and` and `or`; both implement `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`
 and `Ord` as rustc's do. As in rustc, constants may call `is_some`, `is_none`, `unwrap`,
 `is_ok` and `is_err`, and the others are reported as unstable there.
 Of the methods that take closures, `Option` has `map`, `map_or`,

@@ -1,8 +1,10 @@
 //! Results of operations that may fail: `Result<T, E>` is `Ok(T)` or
 //! `Err(E)`.
 
+use crate::fmt::Debug;
 use crate::ops::FnOnce;
 use crate::option::Option::{self, None, Some};
+use crate::panicking::panic;
 
 /// A value, or an error. `?` returns the error from a function that
 /// returns a `Result` if it is `Err`, converted with `From`.
@@ -56,6 +58,50 @@ impl<T, E> Result<T, E> {
         match self {
             Ok(value) => value,
             Err(_) => default,
+        }
+    }
+
+    /// The value; panics on `Err`.
+    pub fn unwrap(self) -> T
+    where
+        E: Debug,
+    {
+        match self {
+            Ok(value) => value,
+            Err(_) => panic(c"called `Result::unwrap()` on an `Err` value"),
+        }
+    }
+
+    /// The value; panics with `msg` on `Err`.
+    pub fn expect(self, msg: &str) -> T
+    where
+        E: Debug,
+    {
+        match self {
+            Ok(value) => value,
+            Err(_) => panic(msg),
+        }
+    }
+
+    /// The error; panics on `Ok`.
+    pub fn unwrap_err(self) -> E
+    where
+        T: Debug,
+    {
+        match self {
+            Ok(_) => panic(c"called `Result::unwrap_err()` on an `Ok` value"),
+            Err(e) => e,
+        }
+    }
+
+    /// The error; panics with `msg` on `Ok`.
+    pub fn expect_err(self, msg: &str) -> E
+    where
+        T: Debug,
+    {
+        match self {
+            Ok(_) => panic(msg),
+            Err(e) => e,
         }
     }
 

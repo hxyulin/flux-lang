@@ -280,4 +280,18 @@ impl Step for char {
         };
         unsafe { char::from_u32_unchecked(before) }
     }
+
+    /// The characters between, without the surrogates' gap.
+    fn steps_between(start: &char, end: &char) -> (usize, Option<usize>) {
+        let (start, end) = (*start as u32, *end as u32);
+        if start <= end {
+            let mut count = end - start;
+            if start < 0xD800 && 0xE000 <= end {
+                count -= 0x800;
+            }
+            (count as usize, Some(count as usize))
+        } else {
+            (0, None)
+        }
+    }
 }
