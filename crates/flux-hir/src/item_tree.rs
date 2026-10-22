@@ -1679,8 +1679,13 @@ impl Collector<'_> {
         let tree = shared.parse.tree();
         let source = ast::SourceFile::cast(tree.root()).expect("the root is a SOURCE_FILE");
         let is_core = self.items.is_core(module);
+        if !item_enabled(source.syntax(), &mut self.items.diagnostics) {
+            self.tag(start, file);
+            return;
+        }
         let crate_root = self.items.modules[module].parent.is_none();
-        let no_std = crate_root && source.attrs().any(|a| attr_name(a) == Some("no_std"));
+        let attrs = crate::cfg::Attrs::new(source.attrs());
+        let no_std = crate_root && attrs.iter().any(|a| attr_name(a) == Some("no_std"));
         if no_std {
             let own = self.items.modules[module].krate;
             self.items.crates[own.0 as usize].no_std = true;
@@ -1873,7 +1878,8 @@ impl Collector<'_> {
     fn collect_macro_call(&mut self, ctx: Ctx, mc: ast::MacroCall<'_>) {
         let is_core = self.items.is_core(ctx.module);
         let (mut export, mut builtin) = (false, false);
-        for attr in mc.attrs() {
+        let attrs = crate::cfg::Attrs::new(mc.attrs());
+        for attr in attrs.iter() {
             match attr_name(attr) {
                 Some("macro_export") => export = true,
                 Some("rustc_builtin_macro") if is_core => builtin = true,
@@ -2259,7 +2265,8 @@ impl Collector<'_> {
         let is_core = self.items.is_core(ctx.module);
         let mut lang = None;
         let mut on_unimplemented = None;
-        for attr in t.attrs() {
+        let attrs = crate::cfg::Attrs::new(t.attrs());
+        for attr in attrs.iter() {
             if let Some(message) = on_unimplemented_attr(attr) {
                 on_unimplemented = message;
                 continue;
@@ -2387,9 +2394,19 @@ impl Collector<'_> {
         // Macros defined in a module are in scope until its end, or
         // after it too with `#[macro_use]`.
         let mut macro_use = false;
-        for attr in m.attrs() {
+        let attrs = crate::cfg::Attrs::new(m.attrs());
+        for attr in attrs.iter() {
             if attr_name(attr) == Some("macro_use") {
-                macro_use = true;
+                if attr.meta().is_some_and(|m| {
+                    m.token_tree().is_none() && m.eq_token().is_none() && m.unsafe_token().is_none()
+                }) {
+                    macro_use = true;
+                } else {
+                    self.items.diagnostics.push(Diagnostic::new(
+                        attr.syntax().text_range(),
+                        "arguments to `macro_use` are not allowed here",
+                    ));
+                }
             } else {
                 check_attr(attr, &mut self.items.diagnostics);
             }
@@ -2420,6 +2437,28 @@ impl Collector<'_> {
         let child_dir = parent.dir.join(name_text);
         let krate = parent.krate;
         let parent_dir = parent.dir.clone();
+        // File modules may configure themselves out with inner attributes.
+        // Inspect those before allocating a module binding in the parent.
+        if m.item_list().is_none() {
+            let flat = parent_dir.join(format!("{name_text}.rs"));
+            let nested = child_dir.join("mod.rs");
+            let path = match (self.db.exists(&flat), self.db.exists(&nested)) {
+                (true, false) => Some(flat),
+                (false, true) => Some(nested),
+                _ => None,
+            };
+            if let Some(path) = path
+                && let Ok(file) = self.db.load(&path)
+            {
+                let start = self.items.diagnostics.len();
+                let shared = self.db.shared(file);
+                let enabled = item_enabled(shared.parse.root(), &mut self.items.diagnostics);
+                self.tag(start, file);
+                if !enabled {
+                    return;
+                }
+            }
+        }
         let module = self.items.modules.alloc(Module {
             name: Symbol::intern(name_text),
             parent: Some(ctx.module),
@@ -2766,7 +2805,8 @@ impl Collector<'_> {
         let mut track_caller = false;
         let mut do_not_const_check = false;
         let mut lang = None;
-        for attr in f.attrs() {
+        let attrs = crate::cfg::Attrs::new(f.attrs());
+        for attr in attrs.iter() {
             if attr_name(attr) == Some("track_caller")
                 && attr.meta().is_some_and(|m| m.path().is_some())
             {
@@ -3132,6 +3172,9 @@ impl Collector<'_> {
         // collected after the block's items.
         let mut inner = Vec::new();
         for child in block.children() {
+            if !item_enabled(child, &mut Vec::new()) {
+                continue;
+            }
             if is_item_kind(child.kind()) {
                 let start = self.items.diagnostics.len();
                 if item_enabled(child, &mut self.items.diagnostics) {
@@ -3200,7 +3243,7 @@ impl Collector<'_> {
         counts: &mut rustc_hash::FxHashMap<Symbol, u32>,
     ) {
         let kind = node.kind();
-        if is_item_kind(kind) && !item_enabled(node, &mut Vec::new()) {
+        if !item_enabled(node, &mut Vec::new()) {
             return;
         }
         let outer = scope.clone();
@@ -3402,7 +3445,8 @@ impl Collector<'_> {
     ) -> Option<ConstId> {
         let is_core = self.items.is_core(ctx.module);
         let mut specialization = false;
-        for attr in c.attrs() {
+        let attrs = crate::cfg::Attrs::new(c.attrs());
+        for attr in attrs.iter() {
             if is_core && attr_name(attr) == Some("rustc_specialization") {
                 specialization = true;
             } else {
@@ -3565,7 +3609,8 @@ impl Collector<'_> {
         let mut lang = None;
         let mut hints = Vec::new();
         let mut repr_align = 1;
-        for attr in s.attrs() {
+        let attrs = crate::cfg::Attrs::new(s.attrs());
+        for attr in attrs.iter() {
             if attr_name(attr) == Some("derive") {
                 derive_attr(attr, &mut derives, &mut self.items.diagnostics);
             } else if attr_name(attr) == Some("repr") {
@@ -3707,7 +3752,8 @@ impl Collector<'_> {
         let mut repr_align = 1;
         let is_core = self.items.is_core(ctx.module);
         let mut lang = None;
-        for attr in e.attrs() {
+        let attrs = crate::cfg::Attrs::new(e.attrs());
+        for attr in attrs.iter() {
             if attr_name(attr) == Some("derive") {
                 derive_attr(attr, &mut derives, &mut self.items.diagnostics);
             } else if attr_name(attr) == Some("repr") {
@@ -3766,8 +3812,21 @@ impl Collector<'_> {
         let mut defaults: Vec<(u32, TextRange, bool, TextRange)> = Vec::new();
         for v in e.variant_list().into_iter().flat_map(|l| l.variants()) {
             let mut marked = Vec::new();
-            for attr in v.attrs() {
-                if attr_name(attr) == Some("default") {
+            let attrs = crate::cfg::Attrs::new(v.attrs());
+            self.items.diagnostics.extend(
+                attrs
+                    .errors
+                    .iter()
+                    .map(|(r, m)| Diagnostic::new(*r, m.clone())),
+            );
+            for attr in attrs.iter() {
+                if attr_name(attr) == Some("cfg") {
+                    unsupported(
+                        &mut self.items.diagnostics,
+                        attr.syntax().text_range(),
+                        "conditional attributes in this position",
+                    );
+                } else if attr_name(attr) == Some("default") {
                     let meta = attr.meta();
                     let has_value = meta.is_some_and(|m| {
                         m.token_tree().is_some()
@@ -4486,6 +4545,9 @@ fn is_item_kind(kind: SyntaxKind) -> bool {
 
 /// The outermost blocks in `node`, itself included, outside items.
 fn outer_blocks(node: SyntaxNode<'_>, out: &mut Vec<NodeId>) {
+    if !item_enabled(node, &mut Vec::new()) {
+        return;
+    }
     if node.kind() == SyntaxKind::BLOCK_EXPR {
         out.push(node.id());
         return;
@@ -4514,15 +4576,20 @@ pub(crate) fn def_start(node: SyntaxNode<'_>) -> u32 {
         .start()
 }
 
-/// Evaluates every outer `cfg` on an item, conjunctively, before any
-/// expansion, name collection or lowering. Even a false predicate does
-/// not suppress validation of the item's other `cfg` attributes.
-fn item_enabled(node: SyntaxNode<'_>, diagnostics: &mut Vec<Diagnostic>) -> bool {
-    let mut enabled = true;
-    for attr in node.children().filter_map(ast::Attr::cast) {
-        if attr.bang_token().is_some()
-            || attr_name(attr) != Some("cfg")
-            || attr.meta().is_some_and(|m| m.unsafe_token().is_some())
+/// Evaluates conditional attributes before expansion, collection and lowering.
+/// A false predicate does not suppress validation of the other attributes;
+/// modules and functions also inherit the cfg on their contents.
+pub(crate) fn item_enabled(node: SyntaxNode<'_>, diagnostics: &mut Vec<Diagnostic>) -> bool {
+    let attrs = crate::cfg::Attrs::new(node.children().filter_map(ast::Attr::cast));
+    let mut enabled = attrs.errors.is_empty();
+    diagnostics.extend(
+        attrs
+            .errors
+            .iter()
+            .map(|(r, m)| Diagnostic::new(*r, m.clone())),
+    );
+    for attr in attrs.iter() {
+        if attr_name(attr) != Some("cfg") || attr.meta().is_some_and(|m| m.unsafe_token().is_some())
         {
             continue;
         }
@@ -4546,17 +4613,60 @@ fn item_enabled(node: SyntaxNode<'_>, diagnostics: &mut Vec<Diagnostic>) -> bool
             }
         }
     }
+    // Inner attributes belong to the enclosing module, and can remove it
+    // before its name, imports, or macros are collected.
+    if matches!(
+        node.kind(),
+        SyntaxKind::MODULE | SyntaxKind::FN | SyntaxKind::IMPL | SyntaxKind::TRAIT
+    ) && let Some(list) = node
+        .children()
+        .find(|n| matches!(n.kind(), SyntaxKind::ITEM_LIST | SyntaxKind::BLOCK_EXPR))
+    {
+        enabled &= item_enabled(list, diagnostics);
+    }
     enabled
 }
 
-/// Attributes that cannot change what a program means are allowed and
-/// ignored; other attributes are reported unless already handled by
-/// item collection (outer `cfg`).
+/// Positions whose enclosing lowering step can remove the attributed node.
+pub(crate) fn cfg_position(p: SyntaxNode<'_>) -> bool {
+    is_item_kind(p.kind())
+        || matches!(
+            p.kind(),
+            SyntaxKind::SOURCE_FILE
+                | SyntaxKind::ITEM_LIST
+                | SyntaxKind::LET_STMT
+                | SyntaxKind::EXPR_STMT
+                | SyntaxKind::MATCH_ARM
+                | SyntaxKind::RECORD_EXPR_FIELD
+        )
+        || ast::Expr::can_cast(p.kind())
+            && p.parent().is_some_and(|parent| {
+                matches!(
+                    parent.kind(),
+                    SyntaxKind::ARG_LIST
+                        | SyntaxKind::TUPLE_EXPR
+                        | SyntaxKind::BLOCK_EXPR
+                        | SyntaxKind::EXPR_STMT
+                        | SyntaxKind::FN
+                        | SyntaxKind::MACRO_STMTS
+                ) || ast::ArrayExpr::cast(parent)
+                    .is_some_and(|array| array.semicolon_token().is_none())
+            })
+}
+
+/// Checks attributes not handled by a specialized semantic consumer.
 pub(crate) fn check_attrs(
     attrs: AstChildren<'_, ast::Attr<'_>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    for attr in attrs {
+    let attrs = crate::cfg::Attrs::new(attrs);
+    diagnostics.extend(
+        attrs
+            .errors
+            .iter()
+            .map(|(r, m)| Diagnostic::new(*r, m.clone())),
+    );
+    for attr in attrs.iter() {
         check_attr(attr, diagnostics);
     }
 }
@@ -4570,7 +4680,14 @@ fn check_inner_attrs(
     crate_root: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    for attr in attrs {
+    let attrs = crate::cfg::Attrs::new(attrs);
+    diagnostics.extend(
+        attrs
+            .errors
+            .iter()
+            .map(|(r, m)| Diagnostic::new(*r, m.clone())),
+    );
+    for attr in attrs.iter() {
         if crate_root && attr_name(attr) == Some("no_std") {
             if !attr.meta().is_some_and(|m| {
                 m.token_tree().is_none() && m.eq_token().is_none() && m.unsafe_token().is_none()
@@ -4588,7 +4705,7 @@ fn check_inner_attrs(
     }
 }
 
-fn attr_name(attr: ast::Attr<'_>) -> Option<&str> {
+pub(crate) fn attr_name(attr: ast::Attr<'_>) -> Option<&str> {
     attr.meta()
         .and_then(|m| m.path())
         .filter(|p| p.qualifier().is_none())
@@ -4600,9 +4717,21 @@ fn attr_name(attr: ast::Attr<'_>) -> Option<&str> {
 /// [`check_attrs`] for fields and parameters, where rustc rejects
 /// `#[derive]` as an attribute macro rather than a misplaced derive.
 fn check_inert_attrs(attrs: AstChildren<'_, ast::Attr<'_>>, diagnostics: &mut Vec<Diagnostic>) {
-    for attr in attrs {
+    let attrs = crate::cfg::Attrs::new(attrs);
+    diagnostics.extend(
+        attrs
+            .errors
+            .iter()
+            .map(|(r, m)| Diagnostic::new(*r, m.clone())),
+    );
+    for attr in attrs.iter() {
         let path = attr.meta().and_then(|m| m.path());
         match path {
+            _ if attr_name(attr) == Some("cfg") => unsupported(
+                diagnostics,
+                attr.syntax().text_range(),
+                "conditional attributes in this position",
+            ),
             Some(path) if attr_name(attr) == Some("derive") => diagnostics.push(Diagnostic::new(
                 path.syntax().text_range(),
                 "expected non-macro attribute, found attribute macro `derive`",
@@ -4636,14 +4765,9 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
         return;
     }
     if name == Some("cfg")
-        && attr.bang_token().is_none()
         && attr.meta().is_some_and(|m| m.unsafe_token().is_none())
-        && attr
-            .syntax()
-            .parent()
-            .is_some_and(|p| is_item_kind(p.kind()))
+        && attr.syntax().parent().is_some_and(cfg_position)
     {
-        // Evaluated before item collection, including validation.
         return;
     }
     if name.is_some_and(|n| IGNORED.contains(&n)) {
@@ -6474,7 +6598,7 @@ pub(crate) fn expand_types(
     ) {
         // Collection reports malformed attributes. This preliminary walk
         // only decides which subtrees may contain macros to expand.
-        if is_item_kind(node.kind()) && !item_enabled(node, &mut Vec::new()) {
+        if !item_enabled(node, &mut Vec::new()) {
             return;
         }
         if node.kind() == SyntaxKind::MACRO_TYPE {

@@ -1,0 +1,60 @@
+struct Value { value: i32 }
+
+impl ::core::clone::Clone for Value;
+
+impl ::core::marker::Copy for Value;
+
+fn value() -> i32 {
+    7
+}
+
+fn generated() -> i32 {
+    41
+}
+
+fn value() -> i32 {
+    11
+}
+
+fn sum(a@0: i32, b@1: i32) -> i32 {
+    (a@0 + b@1)
+}
+
+fn main() -> () {
+    {
+        {
+            _print(Arguments::new_v1((&["", "\n"]), (&match ((&generated()),) {
+                args@0 => [Argument::new_display(args@0.0)],
+            })));
+        };
+    };
+    let v@1 = Value { value: value() };
+    let copy@2 = v@1;
+    {
+        _print(Arguments::new_v1((&["", " ", " ", " ", "\n"]), (&match ((&v@1.value), (&copy@2.value), (&11), (&value())) {
+            args@3 => [Argument::new_display(args@3.0), Argument::new_display(args@3.1), Argument::new_display(args@3.2), Argument::new_display(args@3.3)],
+        })));
+    };
+    let a@4 = [13, 17];
+    let t@5 = (19, 23);
+    {
+        _print(Arguments::new_v1((&["", " ", " ", "\n"]), (&match ((&(a@4[0] + a@4[1])), (&(t@5.0 + t@5.1)), (&sum(29, 31))) {
+            args@6 => [Argument::new_display(args@6.0), Argument::new_display(args@6.1), Argument::new_display(args@6.2)],
+        })));
+    };
+    let selected@7 = match 1 {
+        _ => 37,
+    };
+    let record@8 = Value { value: selected@7 };
+    {
+        _print(Arguments::new_v1((&["", "\n"]), (&match ((&record@8.value),) {
+            args@9 => [Argument::new_display(args@9.0)],
+        })));
+    };
+}
+
+fn <Value as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+    assert_param_is_clone((&self@0.value));
+    (*self@0)
+}
+

@@ -85,6 +85,137 @@ fn cfg_predicate(call: TextRange, toks: &[Tok], pos: &mut usize) -> Result<bool,
     })
 }
 
+/// Expanded conditional attributes. Keeping the small expansion trees here lets
+/// every attribute consumer see ordinary attributes, including derives and reprs.
+pub(crate) struct Attrs<'a> {
+    attrs: Vec<Attr<'a>>,
+    pub(crate) errors: Vec<Error>,
+}
+
+enum Attr<'a> {
+    Written(flux_syntax::ast::Attr<'a>),
+    Expanded(flux_syntax::Parse),
+}
+
+impl<'a> Attrs<'a> {
+    pub(crate) fn new(attrs: impl IntoIterator<Item = flux_syntax::ast::Attr<'a>>) -> Self {
+        use flux_syntax::ast::AstNode;
+        let mut result = Self {
+            attrs: Vec::new(),
+            errors: Vec::new(),
+        };
+        for attr in attrs {
+            let mut toks = Vec::new();
+            if crate::item_tree::attr_name(attr) == Some("cfg_attr")
+                && attr.meta().is_some_and(|m| m.unsafe_token().is_none())
+            {
+                crate::macros::tt::tokens_of(attr.meta().unwrap().syntax(), &mut toks);
+                result.expand(attr, &toks, 0);
+            } else {
+                result.attrs.push(Attr::Written(attr));
+            }
+        }
+        result
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = flux_syntax::ast::Attr<'_>> {
+        use flux_syntax::ast::AstNode;
+        self.attrs.iter().map(|attr| match attr {
+            Attr::Written(attr) => *attr,
+            Attr::Expanded(parse) => parse
+                .root()
+                .descendants()
+                .find_map(flux_syntax::ast::Attr::cast)
+                .unwrap(),
+        })
+    }
+
+    fn expand(&mut self, original: flux_syntax::ast::Attr<'a>, toks: &[Tok], depth: usize) {
+        use flux_syntax::ast::AstNode;
+        let range = original.syntax().text_range();
+        if depth >= 128 {
+            self.errors.push((
+                range,
+                "recursion limit reached while expanding `cfg_attr`".into(),
+            ));
+            return;
+        }
+        let result = (|| {
+            let [_, open, inner @ .., close] = toks else {
+                return Err((
+                    range,
+                    "expected `cfg_attr` predicate and attributes in parentheses".into(),
+                ));
+            };
+            if open.kind != T!['('] || close.kind != T![')'] {
+                return Err((
+                    range,
+                    "expected `cfg_attr` predicate and attributes in parentheses".into(),
+                ));
+            }
+            let mut pos = 0;
+            let enabled = cfg_predicate(range, inner, &mut pos)?;
+            if !inner.get(pos).is_some_and(|t| t.kind == T![,]) {
+                return Err((range, "expected `,`".into()));
+            }
+            pos += 1;
+            let rest = &inner[pos..];
+            let mut parts = Vec::new();
+            let mut start = 0;
+            let mut nesting = 0;
+            for (i, t) in rest.iter().enumerate() {
+                match t.kind {
+                    T!['('] | T!['['] | T!['{'] => nesting += 1,
+                    T![')'] | T![']'] | T!['}'] => nesting -= 1,
+                    T![,] if nesting == 0 => {
+                        parts.push(&rest[start..i]);
+                        start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+            if start < rest.len() {
+                parts.push(&rest[start..]);
+            }
+            if parts.iter().any(|p| p.is_empty()) {
+                return Err((range, "expected an attribute".into()));
+            }
+            for part in parts {
+                let mut text = String::from("#[");
+                let mut origins = Vec::new();
+                for t in part {
+                    origins.push((text.len() as u32, t.origin));
+                    text.push_str(t.text.as_str());
+                    if !t.joint {
+                        text.push(' ');
+                    }
+                }
+                text.push_str("] struct __Cfg;");
+                let parse = flux_syntax::parse_expansion(
+                    text.into(),
+                    &origins,
+                    range,
+                    flux_syntax::parser::Fragment::Items,
+                );
+                if let Some(error) = parse.errors().first() {
+                    return Err((error.range, error.message.clone()));
+                }
+                if enabled {
+                    if part.first().is_some_and(|t| t.text.as_str() == "cfg_attr") {
+                        self.expand(original, part, depth + 1);
+                    } else {
+                        self.attrs.push(Attr::Expanded(parse));
+                    }
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.errors.push(error);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
