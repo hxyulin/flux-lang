@@ -1,0 +1,31 @@
+struct S;
+
+trait Invalid;
+
+impl S;
+
+fn builtin_predicates() -> () {
+    let _ = <missing>;
+    let _ = <missing>;
+    let _ = <missing>;
+    let _ = <missing>;
+}
+
+error 0..6: expected `cfg` predicate in parentheses
+error 20..35: expected `cfg` predicate in parentheses
+error 50..58: expected `cfg` predicate in parentheses
+error 76..84: expected identifier
+error 114..118: expected `,`
+error 144..157: expected 1 cfg-pattern
+error 176..199: expected 1 cfg-pattern
+error 236..237: expected a string literal
+error 271..275: expected one cfg-pattern
+error 315..316: expected one cfg-pattern
+error 362..375: expected 1 cfg-pattern
+error 409..434: expected 1 cfg-pattern
+error 519..523: expected `,`
+error 539..550: expected 1 cfg-pattern
+error 564..585: expected 1 cfg-pattern
+error 616..617: expected a string literal
+error 670..683: expected 1 cfg-pattern
+error 733..746: expected 1 cfg-pattern

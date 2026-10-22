@@ -20,6 +20,7 @@
 //! silently ignored.
 
 mod body;
+mod cfg;
 pub mod def_map;
 mod item_tree;
 mod library;

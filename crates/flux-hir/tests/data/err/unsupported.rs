@@ -8,7 +8,7 @@ fn generic<T>(x: T) -> &'static str {
     "text"
 }
 
-#[cfg(test)]
+#[cfg_attr(all(), inline)]
 fn attributes() {}
 
 fn expressions(v: i32) {

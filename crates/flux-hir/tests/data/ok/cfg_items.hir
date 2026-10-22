@@ -1,0 +1,55 @@
+struct S;
+
+trait Configured;
+
+impl S;
+
+impl Configured for S;
+
+fn generated() -> i32 {
+    11
+}
+
+fn value() -> i32 {
+    7
+}
+
+fn S::value() -> i32 {
+    13
+}
+
+fn method() -> i32;
+
+fn <S as Configured>::method() -> i32 {
+    19
+}
+
+fn width() -> i32 {
+    64
+}
+
+fn endian() -> i32 {
+    1
+}
+
+fn target() -> bool {
+    true
+}
+
+fn main() -> () {
+    {
+        _print(Arguments::new_v1((&["", " ", " ", " ", " ", " ", " ", " ", " ", "\n"]), (&match ((&value()), (&generated()), (&S::value()), (&VALUE), (&<S as Configured>::method()), (&<S as Configured>::VALUE), (&local()), (&width()), (&endian())) {
+            args@0 => [Argument::new_display(args@0.0), Argument::new_display(args@0.1), Argument::new_display(args@0.2), Argument::new_display(args@0.3), Argument::new_display(args@0.4), Argument::new_display(args@0.5), Argument::new_display(args@0.6), Argument::new_display(args@0.7), Argument::new_display(args@0.8)],
+        })));
+    };
+    {
+        _print(Arguments::new_v1((&["", "\n"]), (&match ((&target()),) {
+            args@1 => [Argument::new_display(args@1.0)],
+        })));
+    };
+}
+
+fn local() -> i32 {
+    29
+}
+
