@@ -36,6 +36,7 @@
 //! immutable locals are assigned once; and [`borrowck`], that borrows do
 //! not conflict with other uses of what they borrow.
 
+mod bitset;
 pub mod borrowck;
 mod build;
 pub mod drops;

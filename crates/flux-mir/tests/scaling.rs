@@ -1,7 +1,6 @@
 //! Building MIR and checking it takes time linear in the program: four
-//! times as many functions take about four times as long. Only MIR is
-//! timed. Long bodies do not yet scale linearly; their tests are ignored
-//! until they do.
+//! times as many functions, or statements in a body, take about four
+//! times as long. Only MIR is timed.
 
 #[path = "../../flux-syntax/tests/support/scaling.rs"]
 mod scaling;
@@ -61,10 +60,9 @@ fn body(n: usize, make: impl Fn(usize) -> String) -> (Hir, TypedFile) {
 }
 
 /// One block: each statement names the binding just before it. The
-/// borrow check copies the set of live locals, a `bool` each, at every
-/// statement: quadratic in the length of a body.
+/// borrow check once copied the set of live locals, a `bool` each, at
+/// every statement: quadratic in the length of a body.
 #[test]
-#[ignore = "live locals copied at each statement: quadratic"]
 fn long_block() {
     let make = |n| {
         body(n, |i| {
@@ -78,11 +76,14 @@ fn long_block() {
 }
 
 /// Each statement branches, borrows or calls, so starts a block. The
-/// initialization check's dataflow keeps a `bool` per move path for each
-/// block, and the borrow check one per local for each statement: both
-/// quadratic in the length of such a body.
+/// initialization check's dataflow once kept a `bool` per move path for
+/// each block, and the borrow check one per local for each statement and
+/// block, and looked through every loan at each: quadratic in the length
+/// of such a body. The initialization check keeps a bit per move path
+/// for each block, still quadratic but 64 times smaller, and the borrow
+/// check lists the locals holding loans that are live at each block's
+/// end.
 #[test]
-#[ignore = "dataflow state per block and per statement: quadratic"]
 fn long_body() {
     let make = |n| {
         body(n, |i| {
