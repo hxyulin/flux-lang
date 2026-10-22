@@ -468,7 +468,7 @@ impl Ctx<'_> {
             }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, self.normalize(t, origin))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.normalize(t, origin)),
-            TyKind::Array(t, len) => Ty::array(self.normalize(t, origin), len),
+            TyKind::Array(t, len) => Ty::array_of(self.normalize(t, origin), len),
             TyKind::Slice(t) => Ty::slice(self.normalize(t, origin)),
             TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(|t| self.normalize(t, origin)),
             _ => ty,
@@ -876,7 +876,7 @@ impl Ctx<'_> {
             && !self.unknown(var).0
         {
             let elem = self.new_var(false, TextRange::default());
-            self.unify(rhs, Ty::array(elem, len));
+            self.unify(rhs, Ty::array_of(elem, len));
         }
         let args: Vec<Ty> = pred
             .trait_ref
@@ -1105,7 +1105,11 @@ impl Ctx<'_> {
                 .lang
                 .is_some_and(|l| l.as_str() == "Default")
         {
-            return len == 0 || (len <= 32 && self.may_hold(elem, t, None, depth + 1));
+            return match self.shallow(len).as_usize() {
+                Some(len) => len == 0 || (len <= 32 && self.may_hold(elem, t, None, depth + 1)),
+                // Not known yet: it may be.
+                None => matches!(self.shallow(len).kind(), TyKind::Infer(_)),
+            };
         }
         if let TyKind::Array(elem, _) = ty.kind()
             && matches!(self.items.traits[t].lang, Some(l) if matches!(l.as_str(), "copy" | "clone" | "eq" | "total_eq" | "partial_ord" | "Ord" | "Debug"))
@@ -1334,11 +1338,16 @@ impl Ctx<'_> {
                 .and_then(|g| g.ty.clone());
             let trait_args = match written {
                 Some(written) => {
-                    let want = items.traits[t].generics.len();
+                    let params = &items.traits[t].generics.params;
+                    let want = params.len();
                     let args: Vec<Ty> = written
                         .types
                         .iter()
-                        .map(|&ty| self.resolve_type_ref(ty))
+                        .enumerate()
+                        .map(|(i, &ty)| match params.get(i) {
+                            Some(param) => self.resolve_generic_arg_ref(ty, param),
+                            None => self.resolve_type_ref(ty),
+                        })
                         .collect();
                     if args.len() != want {
                         if !args.contains(&Ty::ERROR) {

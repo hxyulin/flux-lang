@@ -399,7 +399,29 @@ signatures once with the lengths it knows (those written as literals,
 or named by constants whose values are literals, need no evaluation),
 evaluates the constants that were missing and resolves them again,
 and infers a body again if it named one only it does. A constant whose
-value needs its own length is a cycle.
+value needs its own length is a cycle. A length written as another
+expression (`[u8; N + 1]`) is an *anonymous constant*, as in rustc:
+the item tree collects one per such expression in each item and body
+(`ItemTree::anon_consts`, by file and node; `Const::anon`), of type
+`usize`, lowered and evaluated like any constant; rustc's
+`min_const_generics` rules (no generic parameters, no generic `Self`)
+are checked as it is collected.
+
+Constants in types are types too: a length or const generic argument
+is a `TyKind::Value` (a value and its type), a const parameter is a
+`TyKind::Param` like a type parameter (the item's `generic_consts`
+says which are const, and their types), and one to infer a variable.
+So an array is `TyKind::Array(T, len)` with `len` such a type, generic
+arguments stay one list, and substitution, unification (`[i32; ?N]`
+with `[i32; 3]`), `impl` matching (`impl<T, const N: usize> Tr for [T;
+N]`) and monomorphization treat them as they treat types. A generic
+argument is resolved for its parameter (`resolve_generic_arg`): a path
+is a type if it names one, else a constant, and a `{ expr }` block an
+anonymous constant whose type, its parameter's, is known only once
+the path is resolved (`Signatures::arg_tys`), so it is evaluated in
+the next round. A const parameter used as a value is MIR's
+`Constant::TyConst`, which substitution makes an integer, `bool` or
+`char`.
 
 Where the type an expression must have is known before it is inferred
 (a `let` with a type, an argument, a field, a return value), it is

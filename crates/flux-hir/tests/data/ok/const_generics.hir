@@ -1,0 +1,83 @@
+struct Stack<T, const N: usize> { items: [T; N], len: usize }
+
+struct P;
+
+trait Width;
+
+trait Pick<const I: usize>;
+
+impl<T, const N: usize> Stack<T, N> where T: Copy;
+
+impl<T, const N: usize> Width for [T; N];
+
+impl Pick<0> for P;
+
+fn Stack::new(fill@0: T) -> Stack<T, N> {
+    Stack { items: [fill@0; N], len: 0 }
+}
+
+fn Stack::push(self@0: &mut Self, value@1: T) -> bool {
+    if (self@0.len == N) {
+        return false;
+    }
+    (self@0.items[self@0.len] = value@1);
+    (self@0.len += 1);
+    true
+}
+
+fn pick(&Self) -> i32;
+
+fn <P as Pick<0>>::pick(self@0: &Self) -> i32 {
+    10
+}
+
+fn sum<const N: usize>(a@0: [i32; N]) -> i32 {
+    let mut total@1 = 0;
+    let mut i@2 = 0;
+    loop#2 /* while */ if (i@2 < N) {
+        (total@1 += a@0[i@2]);
+        (i@2 += 1);
+    } else {
+        break#2
+    }
+    total@1
+}
+
+fn twice<const N: usize>(a@0: [i32; N]) -> i32 {
+    (sum::<N>(a@0) + sum(a@0))
+}
+
+fn offset<const D: i32>(x@0: i32) -> i32 {
+    (x@0 + D)
+}
+
+fn flag<const B: bool, const C: char>() -> u32 {
+    if B {
+        (C as u32)
+    } else {
+        0
+    }
+}
+
+fn zeros<const N: usize>() -> [u8; N] {
+    let a@0: [u8; N] = [0; N];
+    a@0
+}
+
+fn width<A>(_a@0: &A) -> usize where A: Width {
+    <A>::WIDTH
+}
+
+fn main() -> () {
+    let a@0 = sum([1, 2, 3]);
+    let b@1 = twice::<2>([10, 20]);
+    let mut s@2 = Stack::new[Self<i32, 4>](0);
+    s@2.push(5);
+    let t@3: Stack<u8, LIMIT> = Stack::new(1);
+    let c@4 = (offset::<{const}>(1) + offset::<7>(1));
+    let d@5 = flag::<true, 'a'>();
+    let z@6 = zeros::<5>();
+    let w@7 = (width((&z@6)) + CAPACITY);
+    let p@8 = <P as Pick>::pick[Self<0>]((&P));
+}
+

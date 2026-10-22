@@ -1,0 +1,35 @@
+fn grown<const N: usize>() -> [u8; {const}] {
+    loop#0 {}
+}
+
+fn doubled<const N: usize>() -> usize {
+    let a@0 = [0u8; {const}];
+    a@0.len()
+}
+
+fn in_pattern<const N: usize>(x@0: usize) -> bool {
+    match x@0 {
+        <missing> => true,
+        _ => false,
+    }
+}
+
+fn shadowed<const N: usize>() -> () {
+    let <missing> = 1;
+}
+
+fn arg<const N: usize>() -> usize {
+    N
+}
+
+fn call<const N: usize>() -> usize {
+    arg::<{const}>()
+}
+
+fn main() -> () {}
+
+error 191..192: generic parameters may not be used in const operations
+error 273..274: generic parameters may not be used in const operations
+error 368..369: constant parameters cannot be referenced in patterns
+error 452..453: let bindings cannot shadow const parameters
+error 556..557: generic parameters may not be used in const operations

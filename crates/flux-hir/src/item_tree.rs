@@ -690,6 +690,25 @@ pub struct GenericParam {
     /// Made for an `impl Trait` parameter type (`x: impl Copy`), named
     /// as it is written, which turbofish cannot give.
     pub synthetic: bool,
+    pub kind: ParamKind,
+}
+
+/// Whether a generic parameter is a type or a constant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParamKind {
+    Type,
+    /// `const N: usize`: a constant of type `ty` (an integer type, `bool`
+    /// or `char`), written at `ty_range`.
+    Const {
+        ty: TypeRef,
+        ty_range: TextRange,
+    },
+}
+
+impl GenericParam {
+    pub fn is_const(&self) -> bool {
+        matches!(self.kind, ParamKind::Const { .. })
+    }
 }
 
 /// Where defaults for type parameters may be written.
@@ -711,9 +730,11 @@ impl std::fmt::Display for Generics {
         if self.params.is_empty() && self.lifetimes.is_empty() {
             return Ok(());
         }
-        let names: Vec<String> = (self.lifetimes.iter().map(|l| l.name))
-            .chain(self.params.iter().map(|p| p.name))
-            .map(|n| n.to_string())
+        let names: Vec<String> = (self.lifetimes.iter().map(|l| l.name.to_string()))
+            .chain(self.params.iter().map(|p| match &p.kind {
+                ParamKind::Type => p.name.to_string(),
+                ParamKind::Const { ty, .. } => format!("const {}: {ty}", p.name),
+            }))
             .collect();
         write!(f, "<{}>", names.join(", "))
     }
@@ -974,6 +995,10 @@ pub enum TypeRef {
     /// The `impl Trait` of a function's return type with this index in
     /// [`Function::opaques`].
     Opaque(u32),
+    /// A const generic argument written as other than a path (`3`,
+    /// `{ N + 1 }`); a path (`N`) is a [`TypeRef::Path`] until it is
+    /// resolved, as in rustc.
+    Const(ArrayLen),
     /// Unsupported or malformed; already reported.
     Error,
 }
@@ -1017,6 +1042,10 @@ pub enum ArrayLenKind {
     Lit { value: u128, suffix: Option<Symbol> },
     /// A path to a constant, resolved where the type is.
     Path(Path),
+    /// `true` or `false`, a const generic argument.
+    Bool(bool),
+    /// A `char`, a const generic argument.
+    Char(char),
     /// Another expression, at this node: an anonymous constant
     /// ([`ItemTree::anon_consts`]), unless it was an error (reported).
     Anon(NodeId),
@@ -1036,6 +1065,8 @@ impl std::fmt::Display for ArrayLen {
                 suffix: None,
             } => write!(f, "{value}"),
             ArrayLenKind::Path(path) => write!(f, "{path}"),
+            ArrayLenKind::Bool(b) => write!(f, "{b}"),
+            ArrayLenKind::Char(c) => write!(f, "{c:?}"),
             ArrayLenKind::Anon(_) => f.write_str("{const}"),
             ArrayLenKind::Error => f.write_str("<error>"),
         }
@@ -1099,6 +1130,7 @@ impl std::fmt::Display for TypeRef {
                 write!(f, "{m}{pointee}")
             }
             TypeRef::Array { elem, len } => write!(f, "[{elem}; {len}]"),
+            TypeRef::Const(value) => write!(f, "{value}"),
             TypeRef::Slice(elem) => write!(f, "[{elem}]"),
             TypeRef::Infer => f.write_str("_"),
             TypeRef::ImplTrait(it) => write!(f, "{}", it.name),
@@ -2295,9 +2327,14 @@ impl Collector<'_> {
             diagnostics,
         );
         if in_extern_block && !generics.is_empty() {
+            let what = if generics.params.iter().all(GenericParam::is_const) {
+                "const"
+            } else {
+                "type"
+            };
             diagnostics.push(Diagnostic::new(
                 TextRange::new(def_start(f.syntax()), f.syntax().text_range().end()),
-                "foreign items may not have type parameters",
+                format!("foreign items may not have {what} parameters"),
             ));
         }
         {
@@ -3440,13 +3477,14 @@ impl Collector<'_> {
                 range: p.range,
                 default: None,
                 synthetic: false,
+                kind: p.kind.clone(),
             })
             .collect();
         // As rustc expands it: each parameter's own bounds and the
         // trait's, then the struct's `where` clause.
         let inline = |p: &WherePredicate| p.ty_range.end() <= s.generics.range.end();
         let mut predicates = Vec::new();
-        for param in params.iter() {
+        for param in params.iter().filter(|p| !p.is_const()) {
             let ty = TypeRef::Path(Path::single(param.name));
             predicates.extend(
                 s.generics
@@ -4062,7 +4100,15 @@ pub(crate) fn lower_generic_args(
                 });
                 continue;
             }
-            ast::GenericArg::ConstArg(_) => "const arguments",
+            ast::GenericArg::ConstArg(arg) => {
+                types.push(TypeRef::Const(lower_const_arg(
+                    arg.expr(),
+                    range,
+                    diagnostics,
+                )));
+                ranges.push(range);
+                continue;
+            }
             ast::GenericArg::AssocTypeArg(_) => "associated type bounds",
         };
         unsupported(diagnostics, range, what);
@@ -4164,6 +4210,7 @@ fn param_projections(ty: &TypeRef, params: &[GenericParam], out: &mut Vec<TypeRe
         }
         TypeRef::Never
         | TypeRef::Infer
+        | TypeRef::Const(_)
         | TypeRef::ImplTrait(_)
         | TypeRef::ImplParam(_)
         | TypeRef::Opaque(_)
@@ -4734,7 +4781,7 @@ fn collect_generics_as_written(
     };
     for param in list.generic_params() {
         let range = param.syntax().text_range();
-        let what = match param {
+        match param {
             ast::GenericParam::TypeParam(param) => {
                 check_attrs(param.attrs(), diagnostics);
                 let Some(name) = param.name() else {
@@ -4804,6 +4851,39 @@ fn collect_generics_as_written(
                     range: name_range,
                     default,
                     synthetic: false,
+                    kind: ParamKind::Type,
+                });
+                continue;
+            }
+            ast::GenericParam::ConstParam(param) => {
+                check_attrs(param.attrs(), diagnostics);
+                let Some(name) = param.name() else {
+                    continue;
+                };
+                let name_range = name.syntax().text_range();
+                let ty_range = param.ty().map_or(range, |t| t.syntax().text_range());
+                let ty = lower_type(param.ty(), diagnostics);
+                if let Some(default) = param.default_val() {
+                    let at = default.syntax().text_range();
+                    match defaults {
+                        Defaults::No => diagnostics.push(Diagnostic::new(
+                            at,
+                            "defaults for generic parameters are not allowed here",
+                        )),
+                        _ => unsupported(diagnostics, at, "defaults for const parameters"),
+                    }
+                }
+                let name = Symbol::intern(name.text());
+                if params.iter().any(|p| p.name == name) {
+                    diagnostics.push(Diagnostic::new(name_range, already_used(name)));
+                    continue;
+                }
+                params.push(GenericParam {
+                    name,
+                    range: name_range,
+                    default: None,
+                    synthetic: false,
+                    kind: ParamKind::Const { ty, ty_range },
                 });
                 continue;
             }
@@ -4855,9 +4935,7 @@ fn collect_generics_as_written(
                 });
                 continue;
             }
-            ast::GenericParam::ConstParam(_) => "const generics",
-        };
-        unsupported(diagnostics, range, what);
+        }
     }
     where_predicates(
         &mut predicates,
@@ -5060,6 +5138,7 @@ fn visit_impl_traits(ty: &mut TypeRef, at: Nested, f: &mut dyn FnMut(&mut TypeRe
         | TypeRef::Infer
         | TypeRef::ImplParam(_)
         | TypeRef::Opaque(_)
+        | TypeRef::Const(_)
         | TypeRef::Error => {}
     }
 }
@@ -5205,6 +5284,7 @@ fn desugar_impl_param(
         range: it.range,
         default: None,
         synthetic: true,
+        kind: ParamKind::Type,
     });
     for bound in it.bounds.iter_mut() {
         visit_path_impl_traits(&mut bound.path, Nested::Site, &mut |t, at| {
@@ -5297,6 +5377,13 @@ pub(crate) fn lower_array_len(
                 ));
                 ArrayLenKind::Error
             }
+            Some(ast::LiteralKind::Char) => {
+                diagnostics.push(Diagnostic::new(
+                    range,
+                    "mismatched types: expected `usize`, found `char`",
+                ));
+                ArrayLenKind::Error
+            }
             _ => ArrayLenKind::Error,
         },
         ast::Expr::PathExpr(path) => {
@@ -5306,6 +5393,45 @@ pub(crate) fn lower_array_len(
             }
         }
         _ => ArrayLenKind::Error,
+    };
+    ArrayLen { kind, range }
+}
+
+/// Lowers a const generic argument written as an expression, `expr`,
+/// missing (and reported by the parser) within `whole`: a literal, a
+/// path in braces (`{ N }`), or an anonymous constant.
+pub(crate) fn lower_const_arg(
+    expr: Option<ast::Expr<'_>>,
+    whole: TextRange,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ArrayLen {
+    let Some(expr) = expr.map(const_expr_root) else {
+        return ArrayLen {
+            kind: ArrayLenKind::Error,
+            range: whole,
+        };
+    };
+    let range = expr.syntax().text_range();
+    let kind = match expr {
+        _ if is_anon_const(expr) => ArrayLenKind::Anon(expr.syntax().id()),
+        ast::Expr::Literal(literal) => match literal.kind() {
+            Some(ast::LiteralKind::Bool(b)) => ArrayLenKind::Bool(b),
+            Some(ast::LiteralKind::Char) => {
+                match literal
+                    .value()
+                    .map(|t| crate::literal::unescape_char(t.text()))
+                {
+                    Some(Ok(c)) => ArrayLenKind::Char(c),
+                    Some(Err(message)) => {
+                        diagnostics.push(Diagnostic::new(range, message));
+                        ArrayLenKind::Error
+                    }
+                    None => ArrayLenKind::Error,
+                }
+            }
+            _ => return lower_array_len(Some(expr), whole, diagnostics),
+        },
+        _ => return lower_array_len(Some(expr), whole, diagnostics),
     };
     ArrayLen { kind, range }
 }
@@ -5342,7 +5468,7 @@ pub(crate) fn is_anon_const(expr: ast::Expr<'_>) -> bool {
     match expr {
         ast::Expr::Literal(literal) => !matches!(
             literal.kind(),
-            Some(ast::LiteralKind::Int | ast::LiteralKind::Bool(_))
+            Some(ast::LiteralKind::Int | ast::LiteralKind::Bool(_) | ast::LiteralKind::Char)
         ),
         ast::Expr::PathExpr(_) => false,
         _ => true,

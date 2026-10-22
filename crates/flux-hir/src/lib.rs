@@ -37,8 +37,8 @@ pub use item_tree::{
     ArrayLen, ArrayLenKind, AssocBinding, AssocItem, Bound, Const, ConstId, CrateData, CrateId,
     Derive, Discriminant, Field, Function, FunctionId, GenericArgs, GenericParam, Generics, Impl,
     ImplId, ImplTarget, ImplTraitRef, ImplType, ItemCounts, ItemLoc, ItemTree, LifetimeParam,
-    LifetimeRef, MISPLACED_BINDING, Module, ModuleId, OutlivesPredicate, Owner, Param, Path,
-    PathAnchor, QSelf, Struct, StructId, StructKind, Trait, TraitId, TraitType, TypeAlias,
+    LifetimeRef, MISPLACED_BINDING, Module, ModuleId, OutlivesPredicate, Owner, Param, ParamKind,
+    Path, PathAnchor, QSelf, Struct, StructId, StructKind, Trait, TraitId, TraitType, TypeAlias,
     TypeAliasId, TypeOutlives, TypeRef, UseCapture, Variant, VariantData, Visibility,
     WherePredicate, is_primitive, slice_target,
 };

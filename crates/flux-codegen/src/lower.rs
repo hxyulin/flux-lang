@@ -279,7 +279,7 @@ fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: I
             TyKind::Array(elem, len) => {
                 feed(b"[");
                 encode(elem, feed);
-                feed(&len.to_le_bytes());
+                feed(&array_len(len).to_le_bytes());
                 feed(b"]");
             }
             TyKind::Slice(elem) => {
@@ -314,6 +314,11 @@ fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: I
                 feed(&(def.function.index() as u32).to_le_bytes());
                 def.args.iter().for_each(|&a| encode(a, feed));
                 feed(b";");
+            }
+            TyKind::Value(value) => {
+                feed(b"V");
+                encode(value.ty, feed);
+                feed(&value.bits().to_le_bytes());
             }
             TyKind::Param(_)
             | TyKind::Alias(_)
@@ -364,8 +369,15 @@ fn keel_type(ty: Ty) -> Option<Type> {
         | TyKind::Never
         | TyKind::CStr
         | TyKind::Infer(_)
+        | TyKind::Value(_)
         | TyKind::Error => None,
     }
+}
+
+/// The length of an array type, `len`: known once monomorphized.
+fn array_len(len: Ty) -> u64 {
+    len.as_usize()
+        .expect("arrays' lengths are known once monomorphized")
 }
 
 /// The type of the discriminant of `ty`, an enum.
@@ -467,7 +479,7 @@ fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
 /// discriminant and a struct of each variant's fields.
 fn layout(sigs: &Signatures, ty: Ty) -> Layout {
     if let TyKind::Array(elem, len) = ty.kind() {
-        return Layout::Array(Box::new(layout(sigs, elem)), len as u32);
+        return Layout::Array(Box::new(layout(sigs, elem)), array_len(len) as u32);
     }
     if is_fat(ty) {
         return Layout::Struct(vec![Layout::Scalar(Type::Ptr), Layout::Scalar(Type::I64)]);
@@ -1190,7 +1202,7 @@ impl Lower<'_, '_, '_> {
                     unreachable!("repeats make arrays")
                 };
                 let values = self.operand(operand);
-                self.repeat(address, elem, &values, *count);
+                self.repeat(address, elem, &values, array_len(*count));
             }
             _ => unreachable!("only aggregates are built in memory"),
         }
@@ -1429,6 +1441,7 @@ impl Lower<'_, '_, '_> {
                 Some(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)))
             }
             Constant::Item { .. } => unreachable!("handled by `operand`"),
+            Constant::TyConst { .. } => unreachable!("monomorphized constants are known"),
             Constant::Static { id, .. } => Some(self.static_addr(id)),
             Constant::Promoted { index, ty } => {
                 let pointee = match ty.kind() {
@@ -1524,7 +1537,7 @@ impl Lower<'_, '_, '_> {
             },
             Rvalue::Len { place, .. } => match self.body.place_ty(place, self.sigs).kind() {
                 TyKind::Array(_, len) => {
-                    vec![self.int_const(u128::from(len), IntTy::Usize)]
+                    vec![self.int_const(u128::from(array_len(len)), IntTy::Usize)]
                 }
                 _ => vec![self.read(&pointer_of(place))[1]],
             },
@@ -1532,7 +1545,7 @@ impl Lower<'_, '_, '_> {
                 let from = self.body.operand_ty(operand, self.sigs);
                 let len = match from.kind() {
                     TyKind::Ref(_, array) | TyKind::RawPtr(_, array) => match array.kind() {
-                        TyKind::Array(_, len) => len,
+                        TyKind::Array(_, len) => array_len(len),
                         _ => 0,
                     },
                     _ => 0,

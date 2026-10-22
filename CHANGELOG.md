@@ -689,6 +689,20 @@
   const operations", "constant expression depends on a generic
   parameter") and a generic `Self`. A constant needing one that waits
   for its own length is a cycle, no longer a panic.
+- Support const generics (`min_const_generics`): const parameters of
+  integer types, `bool` and `char` on structs, `impl` blocks, functions
+  and traits (`struct Stack<T, const N: usize>`, `impl<T, const N:
+  usize> Tr for [T; N]`, `trait Pick<const I: usize>`), used as values,
+  array lengths, repeat counts and arguments; arguments as literals,
+  constants, parameters, `{ expr }` blocks (anonymous constants of the
+  parameter's type) and `_`, or inferred (`sum([1, 2, 3])`).
+  Constants are types in the type system (`TyKind::Value`, arrays'
+  lengths among them), so substitution, inference, `impl` matching and
+  monomorphization handle them as types; MIR's `Constant::TyConst` is a
+  parameter's value until substituted. rustc's errors: E0770, forbidden
+  parameter types, E0747, E0107, E0308 with sizes and values, E0284,
+  E0158, E0530, and "generic parameters may not be used in const
+  operations".
 
 ### Performance
 

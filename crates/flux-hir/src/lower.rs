@@ -1400,6 +1400,8 @@ struct Ctx<'a> {
     /// The generic parameters in scope: the `impl` block's, then the
     /// function's.
     generics: Vec<Symbol>,
+    /// Those of them that are const parameters, which are values.
+    const_params: Vec<Symbol>,
     exprs: Arena<Expr>,
     pats: Arena<Pat>,
     bindings: Arena<Binding>,
@@ -1445,6 +1447,12 @@ impl<'a> Ctx<'a> {
             .chain(own)
             .flat_map(|g| g.params.iter().map(|p| p.name))
             .collect();
+        let const_params = items
+            .owner_generics(owner)
+            .into_iter()
+            .chain(own)
+            .flat_map(|g| g.params.iter().filter(|p| p.is_const()).map(|p| p.name))
+            .collect();
         let imp = owner.and_then(Owner::as_impl).map(|i| &items.impls[i]);
         Ctx {
             place: None,
@@ -1452,6 +1460,7 @@ impl<'a> Ctx<'a> {
             items,
             module,
             generics,
+            const_params,
             in_impl: owner.is_some(),
             // A trait's block for a struct may use its constructor as
             // `Self`.
@@ -2851,7 +2860,7 @@ impl<'a> Ctx<'a> {
             Res::Const(c) if self.items.consts[c].owner.is_some() && last > 0 => {
                 (None, Some(last - 1))
             }
-            Res::Local(_) | Res::Const(_) | Res::Static(_) => (None, None),
+            Res::Local(_) | Res::Const(_) | Res::Static(_) | Res::ConstParam(_) => (None, None),
             Res::Err => return (res, None),
         };
         // `Self` has no generic arguments of its own.
@@ -3001,6 +3010,9 @@ impl<'a> Ctx<'a> {
         if let Some(name) = path.as_name() {
             if let Some(binding) = self.scopes.get(name) {
                 return Res::Local(binding);
+            }
+            if self.const_params.contains(&name) {
+                return Res::ConstParam(name);
             }
             if name == kw::SelfLower {
                 self.error(range, "cannot find value `self` in this scope");
@@ -3628,6 +3640,13 @@ impl<'a> Ctx<'a> {
                 );
                 Pat::Missing
             }
+            Expr::Path(Res::ConstParam(_)) => {
+                self.error(
+                    range,
+                    "constant parameters cannot be referenced in patterns",
+                );
+                Pat::Missing
+            }
             Expr::Path(Res::Err) => Pat::Missing,
             _ => Pat::Expr(expr),
         };
@@ -3778,6 +3797,22 @@ impl<'a> Ctx<'a> {
         // A local of the name hides the items, as rustc's ribs do: the
         // pattern binds anew.
         let local = self.scopes.get(name).is_some();
+        if !local && self.const_params.contains(&name) {
+            if plain {
+                self.error(
+                    range,
+                    "constant parameters cannot be referenced in patterns",
+                );
+            } else {
+                let site = match site {
+                    PatSite::Let => "let bindings",
+                    PatSite::Param => "function parameters",
+                    PatSite::Match => "match bindings",
+                };
+                self.error(range, format!("{site} cannot shadow const parameters"));
+            }
+            return Pat::Missing;
+        }
         let item = if local {
             None
         } else {

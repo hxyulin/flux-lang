@@ -1,0 +1,48 @@
+struct Stack<T, const N: usize> { items: [T; N], len: usize }
+fn depends<T, const N: T>() -> ()
+fn text<const S: &'static str>() -> ()
+fn float<const F: f32>() -> ()
+fn sum<const N: usize>([i32; N]) -> i32
+    a@0: [i32; N]
+fn make<const N: usize>() -> [u8; N]
+fn byte<const B: u8>() -> u8
+fn size<const N: usize>() -> usize
+fn generic_len<const N: usize>([u8; N]) -> [u8; 3]
+    x@0: [u8; N]
+fn as_type<const N: usize>({error}) -> ()
+    x@0: {error}
+fn takes(Stack<i32, 3>) -> ()
+    s@0: Stack<i32, 3>
+fn main() -> ()
+    x@0: [i32; 3]
+    s@1: {error}
+    t@2: {error}
+    u@3: {error}
+    y@4: [u8; 3]
+    v@5: Stack<i32, 4>
+    b@6: usize
+    c@7: usize
+    e@8: usize
+    f@9: {error}
+    g@10: i32
+fn uninferred() -> ()
+    a@0: [u8; {error}]
+const M: u8
+error 302..303: the type of const parameters must not depend on other generic parameters
+error 328..340: `&'static str` is forbidden as the type of a const generic parameter
+error 366..369: `f32` is forbidden as the type of a const generic parameter
+error 633..634: mismatched types: expected an array with a size of 3, found one with a size of N
+error 668..669: cannot find type `N` in this scope
+error 740..751: mismatched types: expected `[i32; 3]`, found `[u8; 4]`
+error 764..769: struct takes 2 generic arguments but 1 generic argument was supplied
+error 797..802: struct takes 2 generic arguments but 3 generic arguments were supplied
+error 842..843: constant provided when a type was expected
+error 871..874: type provided when a constant was expected
+error 903..915: mismatched types: expected an array with a size of 3, found one with a size of 4
+error 978..979: mismatched types: expected `Stack<i32, 3>`, found `Stack<i32, 4>`
+error 1001..1005: mismatched types: expected `usize`, found `bool`
+error 1029..1030: mismatched types: expected `usize`, found `u8`
+error 1054..1057: mismatched types: expected `usize`, found `char`
+error 1078..1079: mismatched types: expected `usize`, found `u8`
+error 1099..1102: function takes 1 generic argument but 2 generic arguments were supplied
+error 1146..1147: type annotations needed for `[u8; _]`

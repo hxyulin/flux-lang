@@ -262,12 +262,7 @@ pub fn trait_ref(
         _ => {}
     }
     let mut args: Vec<Ty> = written.map_or(Vec::new(), |written| {
-        written
-            .types
-            .iter()
-            .zip(&written.ranges)
-            .map(|(ty, &range)| resolve_type(items, module, ty, scope, range, errors))
-            .collect()
+        crate::resolve_generic_args(items, module, &data.generics.params, written, scope, errors)
     });
     let defaults = scope.defaults.and_then(|d| d.get(t)).map_or(&[][..], |d| d);
     let required = data
@@ -790,7 +785,9 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
         (TyKind::Ref(m, x), TyKind::Ref(n, y)) | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
             m == n && match_ty(x, y, binds)
         }
-        (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && match_ty(x, y, binds),
+        (TyKind::Array(x, m), TyKind::Array(y, n)) => {
+            match_ty(m, n, binds) && match_ty(x, y, binds)
+        }
         (TyKind::Slice(x), TyKind::Slice(y)) => match_ty(x, y, binds),
         (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
             x.is_unsafe == y.is_unsafe
@@ -926,7 +923,7 @@ impl Normalizer<'_> {
             }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, self.go(t, depth + 1))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.go(t, depth + 1)),
-            TyKind::Array(t, len) => Ty::array(self.go(t, depth + 1), len),
+            TyKind::Array(t, len) => Ty::array_of(self.go(t, depth + 1), len),
             TyKind::Slice(t) => Ty::slice(self.go(t, depth + 1)),
             TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(|t| self.go(t, depth + 1)),
             _ => ty,
@@ -1394,14 +1391,16 @@ pub fn builtin_array_impl(items: &ItemTree, goal: Predicate) -> Option<Predicate
         // rustc's `core` has `Default` for arrays of up to 32 elements,
         // those of none for any element type (`()`'s holds).
         "Default" => match goal.self_ty.kind() {
-            TyKind::Array(_, 0) => Some(Predicate {
+            TyKind::Array(_, len) if len.as_usize() == Some(0) => Some(Predicate {
                 self_ty: Ty::UNIT,
                 ..goal
             }),
-            TyKind::Array(elem, len) if len <= 32 => Some(Predicate {
-                self_ty: elem,
-                ..goal
-            }),
+            TyKind::Array(elem, len) if len.as_usize().is_some_and(|n| n <= 32) => {
+                Some(Predicate {
+                    self_ty: elem,
+                    ..goal
+                })
+            }
             _ => None,
         },
         // Arrays of one length, element by element.
@@ -1558,7 +1557,7 @@ pub fn drop_impl(items: &ItemTree, sigs: &Signatures, strukt: StructId) -> Optio
 pub fn needs_drop(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Tuple(elements) => elements.iter().any(|&e| needs_drop(items, sigs, env, e)),
-        TyKind::Array(elem, len) => len > 0 && needs_drop(items, sigs, env, elem),
+        TyKind::Array(elem, len) => len.as_usize() != Some(0) && needs_drop(items, sigs, env, elem),
         TyKind::Closure(_, args) => ClosureArgs::split(args)
             .upvar_types()
             .iter()
@@ -3078,8 +3077,12 @@ fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
             TyKind::Adt(_, list) | TyKind::Tuple(list) => list
                 .iter()
                 .any(|&t| occurs(bound, var, (side, t), depth + 1)),
-            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Slice(t) => {
                 occurs(bound, var, (side, t), depth + 1)
+            }
+            TyKind::Array(t, len) => {
+                occurs(bound, var, (side, t), depth + 1)
+                    || occurs(bound, var, (side, len), depth + 1)
             }
             _ => false,
         }
@@ -3114,7 +3117,8 @@ fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
                 m == n && unify(bound, (a.0, x), (b.0, y), depth + 1)
             }
             (TyKind::Array(x, m), TyKind::Array(y, n)) => {
-                m == n && unify(bound, (a.0, x), (b.0, y), depth + 1)
+                unify(bound, (a.0, m), (b.0, n), depth + 1)
+                    && unify(bound, (a.0, x), (b.0, y), depth + 1)
             }
             (TyKind::Slice(x), TyKind::Slice(y)) => unify(bound, (a.0, x), (b.0, y), depth + 1),
             _ => a.1 == b.1,
@@ -3134,7 +3138,10 @@ fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
             TyKind::Tuple(list) => Ty::tuple(&apply_all(list)),
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, apply(bound, (side, t), depth + 1))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, apply(bound, (side, t), depth + 1)),
-            TyKind::Array(t, len) => Ty::array(apply(bound, (side, t), depth + 1), len),
+            TyKind::Array(t, len) => Ty::array_of(
+                apply(bound, (side, t), depth + 1),
+                apply(bound, (side, len), depth + 1),
+            ),
             TyKind::Slice(t) => Ty::slice(apply(bound, (side, t), depth + 1)),
             _ => ty,
         }

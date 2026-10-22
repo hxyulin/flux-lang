@@ -1205,6 +1205,7 @@ fn has_ref(ty: &flux_hir::TypeRef) -> bool {
         T::FnPtr { .. }
         | T::Never
         | T::Infer
+        | T::Const(_)
         | T::ImplTrait(_)
         | T::ImplParam(_)
         | T::Opaque(_)
@@ -1499,6 +1500,11 @@ impl Builder<'_> {
                 };
                 Operand::Const(Constant::int((*value as i128).wrapping_neg(), ty))
             }
+            Expr::Path(Res::ConstParam(_))
+                if let Some(&param) = self.types.const_params.get(expr) =>
+            {
+                Operand::Const(Constant::of_ty_const(param, self.expr_ty(expr)))
+            }
             Expr::Path(res @ (Res::Const(_) | Res::Assoc { .. }))
                 if self.types.reborrows.get(expr).is_none()
                     && let Some(c) = self.const_of(expr, *res) =>
@@ -1645,7 +1651,7 @@ impl Builder<'_> {
         let local = self.temp(usize);
         self.lower_into(index, &local.into());
         let len = match self.place_ty(&place).kind() {
-            TyKind::Array(_, len) => Operand::Const(Constant::int(i128::from(len), IntTy::Usize)),
+            TyKind::Array(_, len) => Operand::Const(Constant::of_ty_const(len, usize)),
             _ => {
                 let len = self.temp(usize);
                 let rvalue = Rvalue::Len {
@@ -2125,7 +2131,7 @@ impl Builder<'_> {
         let range = self.range(expr);
         let body = self.body;
         match &body.exprs[expr] {
-            Expr::Path(Res::Const(_)) => {
+            Expr::Path(Res::Const(_) | Res::ConstParam(_)) => {
                 let operand = self.direct_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
             }
@@ -2265,7 +2271,7 @@ impl Builder<'_> {
             Expr::Repeat { value, .. } => {
                 let count = match self.expr_ty(expr).kind() {
                     TyKind::Array(_, count) => count,
-                    _ => 0,
+                    _ => Ty::usize_value(0),
                 };
                 let operand = self.lower_operand(*value);
                 self.assign(dest, Rvalue::Repeat(operand, count), range);

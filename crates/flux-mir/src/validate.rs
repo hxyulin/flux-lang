@@ -232,7 +232,7 @@ impl Validator<'_> {
             }
             Rvalue::Repeat(op, count) => {
                 let elem = self.operand_ty(op);
-                self.check(ty, Ty::array(elem, *count), what);
+                self.check(ty, Ty::array_of(elem, *count), what);
             }
             Rvalue::Unsize(op, to) => {
                 let (from, to) = (self.operand_ty(op), self.norm(*to));
