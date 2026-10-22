@@ -2676,7 +2676,16 @@ fn extend_signatures(
                 return ty;
             }
             if ty.is_unsized() {
-                let mut d = Diagnostic::new(range, unsized_error(ty));
+                // A trait object here has its default bound, `'static`,
+                // which rustc names.
+                let message = if ty.is_dyn() {
+                    format!(
+                        "the size for values of type `({ty} + 'static)` cannot be known at compilation time"
+                    )
+                } else {
+                    unsized_error(ty)
+                };
+                let mut d = Diagnostic::new(range, message);
                 d.file = function.loc.file;
                 reported.push(d);
                 return Ty::ERROR;

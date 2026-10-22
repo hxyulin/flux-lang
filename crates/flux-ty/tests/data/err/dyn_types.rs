@@ -70,6 +70,15 @@ fn calls(k: &dyn Tr) {
     k.nope();
 }
 
+// A trait object implements its trait and supertraits itself (E0371).
+trait Sub: Tr {}
+impl Tr for dyn Sub {
+    fn get(&self) -> i32 {
+        0
+    }
+    fn by(self) {}
+}
+
 // rustc reports this after type checking (E0161, with E0507).
 fn by_value(k: &dyn Tr) {
     k.by();
