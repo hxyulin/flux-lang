@@ -324,7 +324,7 @@ pub struct ImplType {
 
 /// A trait bound as written: `Tr` or `Tr<A>` in `T: Tr`, or the trait of
 /// `impl Tr for S`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Bound {
     pub path: Path,
     pub range: TextRange,
@@ -573,6 +573,10 @@ pub struct Function {
     pub item_range: TextRange,
     /// `(x: i32)`
     pub param_list: TextRange,
+    /// The `impl Trait` types of its return type, which
+    /// [`TypeRef::Opaque`] names by index: each an opaque type whose
+    /// hidden type its body decides.
+    pub opaques: Box<[ImplTraitRef]>,
     /// Made by `#[derive]` on this struct, with a body made for its
     /// fields: `clone`, `eq`, `Eq`'s check, `partial_cmp` or `cmp`.
     /// `Derive::Copy` is a `clone`
@@ -657,6 +661,9 @@ pub struct GenericParam {
     pub range: TextRange,
     /// `= Self` in `trait Add<Rhs = Self>`: traits' parameters only.
     pub default: Option<(TypeRef, TextRange)>,
+    /// Made for an `impl Trait` parameter type (`x: impl Copy`), named
+    /// as it is written, which turbofish cannot give.
+    pub synthetic: bool,
 }
 
 /// Where defaults for type parameters may be written.
@@ -689,6 +696,13 @@ impl std::fmt::Display for Generics {
 impl Generics {
     pub fn len(&self) -> usize {
         self.params.len()
+    }
+
+    /// How many of its type parameters are written, rather than made
+    /// for `impl Trait` parameter types: what generic arguments may
+    /// give.
+    pub fn explicit_len(&self) -> usize {
+        self.params.iter().filter(|p| !p.synthetic).count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -923,8 +937,42 @@ pub enum TypeRef {
         ret: Box<TypeRef>,
         is_unsafe: bool,
     },
+    /// `impl Tr + 'a`, where it is not (yet) known what it stands for.
+    /// Lowering an item makes those in a function's parameters
+    /// [`TypeRef::ImplParam`]s, those in its return type
+    /// [`TypeRef::Opaque`]s, and reports the others.
+    ImplTrait(Box<ImplTraitRef>),
+    /// The type parameter made for an `impl Trait` parameter type, by
+    /// its index among the function's, its owner's first.
+    ImplParam(u32),
+    /// The `impl Trait` of a function's return type with this index in
+    /// [`Function::opaques`].
+    Opaque(u32),
     /// Unsupported or malformed; already reported.
     Error,
+}
+
+/// `impl Tr + 'a + use<'a, T>`, as written.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ImplTraitRef {
+    /// Its trait bounds, at least one.
+    pub bounds: Box<[Bound]>,
+    /// `'a` in `impl Tr + 'a`.
+    pub lifetimes: Box<[LifetimeRef]>,
+    /// What `use<'a, T>` says it captures, if written.
+    pub captures: Option<Box<[UseCapture]>>,
+    /// The `use<..>` bound's range, if written.
+    pub use_range: TextRange,
+    pub range: TextRange,
+    /// As written, which is how rustc names it: `impl Iterator<Item = u32>`.
+    pub name: Symbol,
+}
+
+/// A generic parameter in `use<'a, T>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UseCapture {
+    Lifetime(LifetimeRef),
+    Param(Symbol, TextRange),
 }
 
 /// The length of an array type or a repeat expression (`[x; N]`): a
@@ -1023,6 +1071,9 @@ impl std::fmt::Display for TypeRef {
             TypeRef::Array { elem, len } => write!(f, "[{elem}; {len}]"),
             TypeRef::Slice(elem) => write!(f, "[{elem}]"),
             TypeRef::Infer => f.write_str("_"),
+            TypeRef::ImplTrait(it) => write!(f, "{}", it.name),
+            TypeRef::ImplParam(i) => write!(f, "<impl param {i}>"),
+            TypeRef::Opaque(i) => write!(f, "<opaque {i}>"),
             TypeRef::Error => f.write_str("<error>"),
         }
     }
@@ -1506,7 +1557,12 @@ impl Collector<'_> {
             generics.predicates = predicates.into();
         }
         let (ty, ty_range) = match t.ty() {
-            Some(ty) => (lower_type(Some(ty), diagnostics), ty.syntax().text_range()),
+            Some(ty) => {
+                let mut lowered = lower_type(Some(ty), diagnostics);
+                let site = ImplTraitSite::Unstable("type aliases");
+                reject_impl_trait(&mut lowered, site, diagnostics);
+                (lowered, ty.syntax().text_range())
+            }
             None => {
                 diagnostics.push(Diagnostic::new(item_range, "free type alias without body"));
                 (TypeRef::Error, item_range)
@@ -1565,6 +1621,9 @@ impl Collector<'_> {
         let mut bounds = Vec::new();
         if let Some(list) = t.type_bound_list() {
             lower_bounds(list, &mut bounds, None, diagnostics);
+        }
+        for bound in &mut bounds {
+            reject_impl_trait_in_path(&mut bound.path, IN_BOUNDS, diagnostics);
         }
         let name_range = name.syntax().text_range();
         let name = Symbol::intern(name.text());
@@ -1625,7 +1684,12 @@ impl Collector<'_> {
                 match generic {
                     // Reported; defined, as far as the trait is concerned.
                     Some(_) => (TypeRef::Error, range),
-                    None => (lower_type(Some(ty), diagnostics), range),
+                    None => {
+                        let mut lowered = lower_type(Some(ty), diagnostics);
+                        let site = ImplTraitSite::Unstable("associated types");
+                        reject_impl_trait(&mut lowered, site, diagnostics);
+                        (lowered, range)
+                    }
                 }
             }
             None => {
@@ -1684,6 +1748,9 @@ impl Collector<'_> {
         let mut supertraits = Vec::new();
         if let Some(list) = t.type_bound_list() {
             lower_bounds(list, &mut supertraits, None, diagnostics);
+        }
+        for bound in &mut supertraits {
+            reject_impl_trait_in_path(&mut bound.path, IN_BOUNDS, diagnostics);
         }
         let name_range = name.syntax().text_range();
         let id = self.items.traits.alloc(Trait {
@@ -1984,7 +2051,11 @@ impl Collector<'_> {
         );
         let trait_ref = match imp.trait_ty() {
             Some(ty) => match lower_bound_type(ty, diagnostics) {
-                Some(bound) => Some(bound),
+                Some(mut bound) => {
+                    let site = ImplTraitSite::NotAllowed("traits");
+                    reject_impl_trait_in_path(&mut bound.path, site, diagnostics);
+                    Some(bound)
+                }
                 None => return,
             },
             // `impl for S`, reported by the parser.
@@ -1999,7 +2070,12 @@ impl Collector<'_> {
                 "inherent impls cannot be unsafe",
             ));
         }
-        let self_ty = lower_type(imp.self_ty(), diagnostics);
+        let mut self_ty = lower_type(imp.self_ty(), diagnostics);
+        reject_impl_trait(
+            &mut self_ty,
+            ImplTraitSite::NotAllowed("impl headers"),
+            diagnostics,
+        );
         let self_range = imp.self_ty().map_or(range, |t| t.syntax().text_range());
         let header_end = imp
             .where_clause()
@@ -2133,8 +2209,20 @@ impl Collector<'_> {
                 }),
             None => Default::default(),
         };
+        // Where the type parameters `impl Trait` parameter types make
+        // start: after its owner's and its own.
+        let owner_params = match owner {
+            Some(Owner::Trait(t)) => 1 + self.items.traits[t].generics.params.len(),
+            Some(Owner::Impl(imp)) => self.items.impls[imp].generics.params.len(),
+            None => 0,
+        };
+        let in_trait_or_trait_impl = match owner {
+            Some(Owner::Trait(_)) => true,
+            Some(Owner::Impl(imp)) => self.items.impls[imp].trait_ref.is_some(),
+            None => false,
+        };
         let diagnostics = &mut self.items.diagnostics;
-        let generics = collect_generics(
+        let mut generics = collect_generics(
             f.generic_param_list(),
             f.where_clause(),
             Defaults::No,
@@ -2181,6 +2269,10 @@ impl Collector<'_> {
         let mut params = Vec::new();
         let mut is_variadic = false;
         let mut has_self = false;
+        let mut impl_params = ImplParams {
+            first: (owner_params + generics.params.len()) as u32,
+            ..ImplParams::default()
+        };
         if let Some(list) = f.param_list() {
             if let Some(param) = list.self_param() {
                 let range = param.syntax().text_range();
@@ -2235,8 +2327,15 @@ impl Collector<'_> {
                     Some(ast::Pat::IdentPat(pat)) => pat.name().map(|n| Symbol::intern(n.text())),
                     _ => None,
                 };
+                let mut ty = lower_type(param.ty(), diagnostics);
+                if in_extern_block {
+                    let site = ImplTraitSite::NotAllowed("`extern fn` parameters");
+                    reject_impl_trait(&mut ty, site, diagnostics);
+                } else {
+                    desugar_impl_params(&mut ty, &mut impl_params, diagnostics);
+                }
                 params.push(Param {
-                    ty: lower_type(param.ty(), diagnostics),
+                    ty,
                     range: param
                         .ty()
                         .map_or(param.syntax().text_range(), |t| t.syntax().text_range()),
@@ -2245,7 +2344,17 @@ impl Collector<'_> {
                 });
             }
         }
-        let (ret, ret_range) = match f.ret_type() {
+        if !impl_params.params.is_empty() {
+            fn extend<T>(list: &mut Box<[T]>, more: Vec<T>) {
+                let mut all = std::mem::take(list).into_vec();
+                all.extend(more);
+                *list = all.into();
+            }
+            extend(&mut generics.params, impl_params.params);
+            extend(&mut generics.predicates, impl_params.predicates);
+            extend(&mut generics.type_outlives, impl_params.type_outlives);
+        }
+        let (mut ret, ret_range) = match f.ret_type() {
             Some(ret) => (
                 lower_type(ret.ty(), diagnostics),
                 ret.ty()
@@ -2253,6 +2362,18 @@ impl Collector<'_> {
             ),
             None => (TypeRef::unit(), name.syntax().text_range()),
         };
+        let mut opaques = Vec::new();
+        if in_extern_block {
+            let site = ImplTraitSite::NotAllowed("`extern fn` return types");
+            reject_impl_trait(&mut ret, site, diagnostics);
+        } else if in_trait_or_trait_impl {
+            let site = ImplTraitSite::Unsupported(
+                "`impl Trait` types in the return types of trait methods",
+            );
+            reject_impl_trait(&mut ret, site, diagnostics);
+        } else {
+            collect_opaques(&mut ret, &mut opaques, diagnostics);
+        }
         let has_body = f.body().is_some();
         if matches!(owner, Some(Owner::Impl(_))) && !has_body {
             diagnostics.push(Diagnostic::new(
@@ -2332,6 +2453,7 @@ impl Collector<'_> {
             node: f.syntax().id(),
             name_range: name.syntax().text_range(),
             derived: None,
+            opaques: opaques.into(),
         });
         if lang.is_some_and(|l| l.as_str() == "panic") {
             self.items.panic_fn = Some(id);
@@ -2425,7 +2547,12 @@ impl Collector<'_> {
             .or_else(|| c.underscore_token().map(|t| t.text_range().end()))?;
         let diagnostics = &mut self.items.diagnostics;
         let ty = match c.ty() {
-            Some(ty) => lower_type(Some(ty), diagnostics),
+            Some(ty) => {
+                let mut ty = lower_type(Some(ty), diagnostics);
+                let site = ImplTraitSite::NotAllowed("const types");
+                reject_impl_trait(&mut ty, site, diagnostics);
+                ty
+            }
             None => {
                 diagnostics.push(Diagnostic::new(
                     TextRange::empty(name_end),
@@ -2484,7 +2611,12 @@ impl Collector<'_> {
         let name_end = name.syntax().text_range().end();
         let diagnostics = &mut self.items.diagnostics;
         let ty = match st.ty() {
-            Some(ty) => lower_type(Some(ty), diagnostics),
+            Some(ty) => {
+                let mut ty = lower_type(Some(ty), diagnostics);
+                let site = ImplTraitSite::NotAllowed("static types");
+                reject_impl_trait(&mut ty, site, diagnostics);
+                ty
+            }
             None => {
                 diagnostics.push(Diagnostic::new(
                     TextRange::empty(name_end),
@@ -2615,9 +2747,11 @@ impl Collector<'_> {
                     ));
                     continue;
                 }
+                let mut ty = lower_type(field.ty(), diagnostics);
+                reject_impl_trait(&mut ty, FIELD_TYPES, diagnostics);
                 fields.push(Field {
                     name: field_name,
-                    ty: lower_type(field.ty(), diagnostics),
+                    ty,
                     vis,
                     range: field
                         .ty()
@@ -2632,9 +2766,12 @@ impl Collector<'_> {
                 check_inert_attrs(field.attrs(), &mut self.items.diagnostics);
                 let vis = field_vis(self, field.visibility());
                 let range = field.syntax().text_range();
+                let diagnostics = &mut self.items.diagnostics;
+                let mut ty = lower_type(field.ty(), diagnostics);
+                reject_impl_trait(&mut ty, FIELD_TYPES, diagnostics);
                 fields.push(Field {
                     name: Symbol::intern(&i.to_string()),
-                    ty: lower_type(field.ty(), &mut self.items.diagnostics),
+                    ty,
                     vis,
                     range: field.ty().map_or(range, |t| t.syntax().text_range()),
                     name_range: range,
@@ -3004,6 +3141,7 @@ impl Collector<'_> {
                 name: p.name,
                 range: p.range,
                 default: None,
+                synthetic: false,
             })
             .collect();
         // As rustc expands it: each parameter's own bounds and the
@@ -3194,6 +3332,7 @@ impl Collector<'_> {
             item_range: range,
             param_list: range,
             derived: Some((strukt, if copies { Derive::Copy } else { derive })),
+            opaques: Box::default(),
         });
         self.items.impls[id].functions.push(function);
     }
@@ -3725,7 +3864,12 @@ fn param_projections(ty: &TypeRef, params: &[GenericParam], out: &mut Vec<TypeRe
                 param_projections(p, params, out);
             }
         }
-        TypeRef::Never | TypeRef::Infer | TypeRef::Error => {}
+        TypeRef::Never
+        | TypeRef::Infer
+        | TypeRef::ImplTrait(_)
+        | TypeRef::ImplParam(_)
+        | TypeRef::Opaque(_)
+        | TypeRef::Error => {}
     }
 }
 
@@ -4188,6 +4332,30 @@ fn collect_generics(
     defaults: Defaults,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Generics {
+    let mut generics = collect_generics_as_written(list, where_clause, defaults, diagnostics);
+    let bounds = ImplTraitSite::NotAllowed("bounds");
+    for p in generics.predicates.iter_mut() {
+        reject_impl_trait(&mut p.ty, bounds, diagnostics);
+        reject_impl_trait_in_path(&mut p.bound.path, IN_BOUNDS, diagnostics);
+    }
+    for p in generics.type_outlives.iter_mut() {
+        reject_impl_trait(&mut p.ty, bounds, diagnostics);
+    }
+    for p in generics.params.iter_mut() {
+        if let Some((ty, _)) = &mut p.default {
+            let site = ImplTraitSite::NotAllowed("generic parameter defaults");
+            reject_impl_trait(ty, site, diagnostics);
+        }
+    }
+    generics
+}
+
+fn collect_generics_as_written(
+    list: Option<ast::GenericParamList<'_>>,
+    where_clause: Option<ast::WhereClause<'_>>,
+    defaults: Defaults,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Generics {
     let mut predicates = Vec::new();
     let mut outlives = Vec::new();
     let mut type_outlives = Vec::new();
@@ -4337,6 +4505,7 @@ fn collect_generics(
                     name,
                     range: name_range,
                     default,
+                    synthetic: false,
                 });
                 continue;
             }
@@ -4441,7 +4610,7 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
         ast::Type::DynTraitType(_) => "trait objects",
         ast::Type::FnPtrType(ptr) => return lower_fn_ptr(ptr, diagnostics),
         ast::Type::ForType(_) => "higher-ranked types",
-        ast::Type::ImplTraitType(_) => "`impl Trait` types",
+        ast::Type::ImplTraitType(it) => return lower_impl_trait(it, diagnostics),
         ast::Type::InferType(_) => return TypeRef::Infer,
         ast::Type::MacroType(_) => "macros",
         ast::Type::PtrType(ptr) => {
@@ -4468,6 +4637,324 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
     };
     unsupported(diagnostics, ty.syntax().text_range(), what);
     TypeRef::Error
+}
+
+/// `impl Tr + 'a + use<'a, T>`: what it stands for depends on where it
+/// is, which lowering the item decides ([`desugar_impl_params`],
+/// [`collect_opaques`], [`reject_impl_trait`]).
+fn lower_impl_trait(it: ast::ImplTraitType<'_>, diagnostics: &mut Vec<Diagnostic>) -> TypeRef {
+    let range = it.syntax().text_range();
+    let mut bounds = Vec::new();
+    let mut lifetimes = Vec::new();
+    let mut captures: Option<Box<[UseCapture]>> = None;
+    let mut use_range = TextRange::default();
+    // Its name as rustc prints it: the bounds, without `use<..>`.
+    let mut names: Vec<String> = Vec::new();
+    let collapse = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for bound in it.type_bound_list().into_iter().flat_map(|l| l.bounds()) {
+        let bound_range = bound.syntax().text_range();
+        if let Some(lifetime) = bound.lifetime() {
+            lifetimes.push(lower_lifetime(lifetime));
+            names.push(collapse(bound.syntax().text()));
+            continue;
+        }
+        if bound.use_token().is_some() {
+            if captures.is_some() {
+                diagnostics.push(Diagnostic::new(
+                    bound_range,
+                    "duplicate `use<...>` precise capturing syntax",
+                ));
+                continue;
+            }
+            use_range = bound_range;
+            let mut list = Vec::new();
+            if let Some(args) = bound.use_bound_generic_args() {
+                list.extend(
+                    args.lifetimes()
+                        .map(|l| UseCapture::Lifetime(lower_lifetime(l))),
+                );
+                list.extend(
+                    args.name_refs().map(|n| {
+                        UseCapture::Param(Symbol::intern(n.text()), n.syntax().text_range())
+                    }),
+                );
+            }
+            captures = Some(list.into());
+            continue;
+        }
+        let what = if bound.question_token().is_some() {
+            "`?Sized` bounds"
+        } else if bound.for_token().is_some() {
+            "higher-ranked bounds"
+        } else if bound.l_paren_token().is_some() {
+            "parenthesized bounds"
+        } else {
+            let Some(path) = bound.path_type().and_then(|p| p.path()) else {
+                continue;
+            };
+            if let Some(path) = lower_trait_path(path, diagnostics) {
+                bounds.push(Bound {
+                    path,
+                    range: bound_range,
+                });
+                names.push(collapse(bound.syntax().text()));
+            }
+            continue;
+        };
+        unsupported(diagnostics, bound_range, what);
+        return TypeRef::Error;
+    }
+    if bounds.is_empty() {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "at least one trait must be specified",
+        ));
+        return TypeRef::Error;
+    }
+    TypeRef::ImplTrait(Box::new(ImplTraitRef {
+        bounds: bounds.into(),
+        lifetimes: lifetimes.into(),
+        captures,
+        use_range,
+        range,
+        name: Symbol::intern(&format!("impl {}", names.join(" + "))),
+    }))
+}
+
+/// Where in a type an `impl Trait` is nested, for rustc's E0562.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Nested {
+    /// Not inside any of the below.
+    Site,
+    FnPtrParam,
+    FnPtrRet,
+    /// The parameters of `Fn(A) -> B` in a bound.
+    FnParam,
+    FnRet,
+}
+
+/// Calls `f` on each `impl Trait` in `ty` (not inside them), with where
+/// it is nested.
+fn visit_impl_traits(ty: &mut TypeRef, at: Nested, f: &mut dyn FnMut(&mut TypeRef, Nested)) {
+    match ty {
+        TypeRef::ImplTrait(_) => f(ty, at),
+        TypeRef::Path(path) => visit_path_impl_traits(path, at, f),
+        TypeRef::Tuple(list) => {
+            for t in list.iter_mut() {
+                visit_impl_traits(t, at, f);
+            }
+        }
+        TypeRef::Ptr { pointee, .. }
+        | TypeRef::Ref { pointee, .. }
+        | TypeRef::Array { elem: pointee, .. }
+        | TypeRef::Slice(pointee) => visit_impl_traits(pointee, at, f),
+        TypeRef::FnPtr { params, ret, .. } => {
+            let (p, r) = match at {
+                Nested::Site => (Nested::FnPtrParam, Nested::FnPtrRet),
+                at => (at, at),
+            };
+            for t in params.iter_mut() {
+                visit_impl_traits(t, p, f);
+            }
+            visit_impl_traits(ret, r, f);
+        }
+        TypeRef::Never
+        | TypeRef::Infer
+        | TypeRef::ImplParam(_)
+        | TypeRef::Opaque(_)
+        | TypeRef::Error => {}
+    }
+}
+
+/// [`visit_impl_traits`] for the types in `path`.
+fn visit_path_impl_traits(path: &mut Path, at: Nested, f: &mut dyn FnMut(&mut TypeRef, Nested)) {
+    if let Some(qself) = &mut path.qself {
+        visit_impl_traits(&mut qself.ty, at, f);
+        if let Some(t) = &mut qself.trait_ {
+            visit_path_impl_traits(t, at, f);
+        }
+    }
+    for args in path.args.iter_mut().flatten() {
+        let (p, r) = match (args.parenthesized, at) {
+            (true, Nested::Site) => (Nested::FnParam, Nested::FnRet),
+            _ => (at, at),
+        };
+        for t in args.types.iter_mut() {
+            visit_impl_traits(t, p, f);
+        }
+        for b in args.bindings.iter_mut() {
+            visit_impl_traits(&mut b.ty, r, f);
+        }
+    }
+}
+
+/// rustc's E0562 for an `impl Trait` nested `at` in a type written in
+/// `site` ("field types").
+fn not_allowed(at: Nested, site: &str) -> String {
+    let position = match at {
+        Nested::Site => site,
+        Nested::FnPtrParam => "`fn` pointer parameters",
+        Nested::FnPtrRet => "`fn` pointer return types",
+        Nested::FnParam => "the parameters of `Fn` trait bounds",
+        Nested::FnRet => "the return type of `Fn` trait bounds",
+    };
+    format!("`impl Trait` is not allowed in {position}")
+}
+
+const FIELD_TYPES: ImplTraitSite = ImplTraitSite::NotAllowed("field types");
+/// Bounds' generic arguments, where rustc allows an `impl Trait` as an
+/// associated type bound would be.
+const IN_BOUNDS: ImplTraitSite = ImplTraitSite::Unsupported("`impl Trait` types in bounds");
+
+/// Where an `impl Trait` may not be, what rustc says of one there.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ImplTraitSite {
+    /// E0562: "`impl Trait` is not allowed in {0}".
+    NotAllowed(&'static str),
+    /// E0658: "`impl Trait` in {0} is unstable".
+    Unstable(&'static str),
+    /// Valid Rust: "{0} are not supported yet".
+    Unsupported(&'static str),
+}
+
+/// Reports each `impl Trait` in `ty`, written at `site`, and makes it an
+/// error.
+pub(crate) fn reject_impl_trait(
+    ty: &mut TypeRef,
+    site: ImplTraitSite,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    visit_impl_traits(ty, Nested::Site, &mut |t, at| {
+        report_impl_trait(t, at, site, diagnostics);
+    });
+}
+
+/// [`reject_impl_trait`] for the types in a bound's path.
+fn reject_impl_trait_in_path(
+    path: &mut Path,
+    site: ImplTraitSite,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    visit_path_impl_traits(path, Nested::Site, &mut |t, at| {
+        report_impl_trait(t, at, site, diagnostics);
+    });
+}
+
+fn report_impl_trait(
+    ty: &mut TypeRef,
+    at: Nested,
+    site: ImplTraitSite,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let TypeRef::ImplTrait(it) = ty else { return };
+    let message = match (site, at) {
+        (ImplTraitSite::NotAllowed(site), _) => not_allowed(at, site),
+        (_, Nested::Site) => match site {
+            ImplTraitSite::Unstable(site) => format!("`impl Trait` in {site} is unstable"),
+            ImplTraitSite::Unsupported(what) => format!("{what} are not supported yet"),
+            ImplTraitSite::NotAllowed(_) => unreachable!(),
+        },
+        _ => not_allowed(at, ""),
+    };
+    diagnostics.push(Diagnostic::new(it.range, message));
+    *ty = TypeRef::Error;
+}
+
+/// The type parameters a function's `impl Trait` parameter types
+/// become, as rustc's are: after its others, each named as written and
+/// bounded by its bounds.
+#[derive(Debug, Default)]
+struct ImplParams {
+    /// The index of the first, among the function's parameters.
+    first: u32,
+    params: Vec<GenericParam>,
+    predicates: Vec<WherePredicate>,
+    type_outlives: Vec<TypeOutlives>,
+}
+
+/// Makes each `impl Trait` in `ty`, a parameter's type, a type
+/// parameter of its own ([`TypeRef::ImplParam`]), and those in its
+/// bounds too.
+fn desugar_impl_params(ty: &mut TypeRef, out: &mut ImplParams, diagnostics: &mut Vec<Diagnostic>) {
+    visit_impl_traits(ty, Nested::Site, &mut |t, at| {
+        desugar_impl_param(t, at, out, diagnostics)
+    });
+}
+
+fn desugar_impl_param(
+    ty: &mut TypeRef,
+    at: Nested,
+    out: &mut ImplParams,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if at != Nested::Site {
+        report_impl_trait(ty, at, ImplTraitSite::NotAllowed(""), diagnostics);
+        return;
+    }
+    let TypeRef::ImplTrait(it) = std::mem::replace(ty, TypeRef::Error) else {
+        return;
+    };
+    let mut it = *it;
+    if it.captures.is_some() {
+        diagnostics.push(Diagnostic::new(
+            it.use_range,
+            "`use<...>` precise capturing syntax not allowed in argument-position `impl Trait`",
+        ));
+    }
+    let index = out.first + out.params.len() as u32;
+    out.params.push(GenericParam {
+        name: it.name,
+        range: it.range,
+        default: None,
+        synthetic: true,
+    });
+    for bound in it.bounds.iter_mut() {
+        visit_path_impl_traits(&mut bound.path, Nested::Site, &mut |t, at| {
+            desugar_impl_param(t, at, out, diagnostics)
+        });
+    }
+    let param = TypeRef::ImplParam(index);
+    out.predicates
+        .extend(it.bounds.iter().map(|bound| WherePredicate {
+            ty: param.clone(),
+            ty_range: it.range,
+            bound: bound.clone(),
+        }));
+    out.type_outlives
+        .extend(it.lifetimes.iter().map(|&lifetime| TypeOutlives {
+            ty: param.clone(),
+            ty_range: it.range,
+            lifetime,
+        }));
+    *ty = param;
+}
+
+/// Makes each `impl Trait` in `ty`, a function's return type, an opaque
+/// type ([`TypeRef::Opaque`]) in `out`.
+fn collect_opaques(
+    ty: &mut TypeRef,
+    out: &mut Vec<ImplTraitRef>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    visit_impl_traits(ty, Nested::Site, &mut |t, at| {
+        if at != Nested::Site {
+            report_impl_trait(t, at, ImplTraitSite::NotAllowed(""), diagnostics);
+            return;
+        }
+        let TypeRef::ImplTrait(it) = std::mem::replace(t, TypeRef::Error) else {
+            return;
+        };
+        let mut it = *it;
+        for bound in it.bounds.iter_mut() {
+            reject_impl_trait_in_path(
+                &mut bound.path,
+                ImplTraitSite::Unsupported("nested `impl Trait` types"),
+                diagnostics,
+            );
+        }
+        *t = TypeRef::Opaque(out.len() as u32);
+        out.push(it);
+    });
 }
 
 /// Lowers the length of an array type or repeat expression, `expr`,

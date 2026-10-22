@@ -58,6 +58,8 @@ const STATIC: Var = 0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Category {
     Return,
+    /// What an opaque type's hidden type must outlive.
+    OpaqueType,
     CallArgument,
     Assignment,
     Boring,
@@ -160,6 +162,7 @@ pub(crate) fn infer(
     let mut cx = Cx::new(body, items, sigs, requirements);
     cx.universal_regions();
     cx.generate();
+    cx.member_constraints();
     let points = Points::new(body);
     let liveness = cx.liveness(&points);
     let solution = cx.solve(&points, &liveness);
@@ -426,6 +429,21 @@ struct Cx<'a> {
     own_requirements: Vec<(Ext, Ext, TextRange)>,
     /// Errors found while making constraints.
     errors: Vec<Diagnostic>,
+    /// In a function returning opaque types, the slots of their hidden
+    /// types in its return value.
+    hidden: Vec<HiddenSlots>,
+}
+
+/// The slots of an opaque type's hidden type in its function's return
+/// value, and the universal regions it must outlive one of (those it
+/// captures) or all of (its `+ 'a` bounds).
+struct HiddenSlots {
+    ty: Ty,
+    vars: Vec<Var>,
+    captures: Vec<Var>,
+    outlives: Vec<Var>,
+    range: TextRange,
+    name: flux_intern::Symbol,
 }
 
 /// A region's value: points, and the universal regions it must
@@ -484,6 +502,7 @@ impl<'a> Cx<'a> {
             requirements,
             own_requirements: Vec::new(),
             errors: Vec::new(),
+            hidden: Vec::new(),
         }
     }
 
@@ -630,7 +649,14 @@ impl<'a> Cx<'a> {
                 let vars = self.instantiate_sig(ty, regions, &mut map_var, &[], &[]);
                 signature.push((Local::from_raw(i as u32 + 1), vars));
             }
-            let vars = self.instantiate_sig(sig.ret, &r.ret, &mut map_var, &[], &[]);
+            let vars = if r.opaques.is_empty() {
+                self.instantiate_sig(sig.ret, &r.ret, &mut map_var, &[], &[])
+            } else {
+                let hidden = body.locals[Body::RETURN].ty;
+                let mut out = Vec::new();
+                self.reveal_sig(f, sig.ret, hidden, &r.ret, &mut 0, &mut out)
+                    .then_some(out)
+            };
             signature.push((Body::RETURN, vars));
         } else if body.owner.is_none() && body.upvars.is_none() {
             // A constant's or static's value lives forever.
@@ -690,6 +716,196 @@ impl<'a> Cx<'a> {
             }
         }
         self.close_known();
+    }
+
+    /// The slots of `hidden`, `f`'s return type `sig_ty` (with slots
+    /// `own`) with its opaque types revealed, as `f`'s body has it, into
+    /// `out`: those of its opaque types' hidden types are new variables,
+    /// which [`Self::member_constraints`] relates to what they capture.
+    /// False if the two cannot be matched.
+    #[allow(clippy::too_many_arguments)]
+    fn reveal_sig(
+        &mut self,
+        f: flux_hir::FunctionId,
+        sig_ty: Ty,
+        hidden: Ty,
+        own: &[Region],
+        next: &mut usize,
+        out: &mut Vec<Var>,
+    ) -> bool {
+        let map = |r: Region| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => Some(1 + i),
+            Region::Erased => None,
+        };
+        if !sig_ty.has_opaques() {
+            let mut map = map;
+            return self.inst(sig_ty, own, next, &mut map, &[], &[], out);
+        }
+        let own_slot = |next: &mut usize, out: &mut Vec<Var>| -> bool {
+            let r = own.get(*next).copied().unwrap_or(Region::Erased);
+            *next += 1;
+            match map(r) {
+                Some(v) => {
+                    out.push(v);
+                    true
+                }
+                None => false,
+            }
+        };
+        match (sig_ty.kind(), hidden.kind()) {
+            (TyKind::Opaque(o), _) if o.function == f => {
+                let mut captures = Vec::new();
+                for _ in 0..o.lifetimes {
+                    if !own_slot(next, &mut captures) {
+                        return false;
+                    }
+                }
+                let regions = self.sigs.regions.fns.get(f);
+                let decl = regions.and_then(|r| r.opaques.get(o.index as usize));
+                let outlives = decl.map_or(Vec::new(), |d| {
+                    d.outlives.iter().filter_map(|&r| map(r)).collect()
+                });
+                let range = self.items.functions[f]
+                    .opaques
+                    .get(o.index as usize)
+                    .map_or(TextRange::default(), |d| d.range);
+                let name = o.name;
+                let n = self.slots(hidden);
+                let vars = self.fresh_list(n);
+                out.extend(&vars);
+                self.hidden.push(HiddenSlots {
+                    ty: hidden,
+                    vars,
+                    captures,
+                    outlives,
+                    range,
+                    name,
+                });
+                true
+            }
+            (TyKind::Ref(_, a), TyKind::Ref(_, b)) => {
+                own_slot(next, out) && self.reveal_sig(f, a, b, own, next, out)
+            }
+            (TyKind::RawPtr(_, a), TyKind::RawPtr(_, b))
+            | (TyKind::Array(a, _), TyKind::Array(b, _))
+            | (TyKind::Slice(a), TyKind::Slice(b)) => self.reveal_sig(f, a, b, own, next, out),
+            (TyKind::Tuple(xs), TyKind::Tuple(ys)) if xs.len() == ys.len() => xs
+                .iter()
+                .zip(ys)
+                .all(|(&a, &b)| self.reveal_sig(f, a, b, own, next, out)),
+            (TyKind::Adt(x, xs), TyKind::Adt(y, ys)) if x.strukt == y.strukt => {
+                let n = self.items.structs[x.strukt].generics.lifetimes.len();
+                (0..n).all(|_| own_slot(next, out))
+                    && xs
+                        .iter()
+                        .zip(ys)
+                        .all(|(&a, &b)| self.reveal_sig(f, a, b, own, next, out))
+            }
+            _ => false,
+        }
+    }
+
+    /// What each hidden type of the body's opaque types must outlive, as
+    /// rustc's member constraints say: each of its lifetimes one of
+    /// those the opaque type captures (`'static` if none), the least
+    /// that what flows into it allows; all of its `+ 'a` bounds.
+    fn member_constraints(&mut self) {
+        if self.hidden.is_empty() {
+            return;
+        }
+        // What each variable is outlived by, through the constraints so
+        // far: the universal regions above it.
+        let n = self.vars as usize;
+        let mut by_sub: Vec<Vec<Var>> = vec![Vec::new(); n];
+        for c in &self.constraints {
+            by_sub[c.sub as usize].push(c.sup);
+        }
+        let hidden = std::mem::take(&mut self.hidden);
+        let mut uncaptured = false;
+        for h in &hidden {
+            for &b in &h.outlives {
+                self.type_outlives(h.ty, b, h.range);
+            }
+            for &v in &h.vars {
+                if !h.outlives.is_empty() {
+                    for &b in &h.outlives {
+                        self.outlives(v, b, Category::OpaqueType, h.range);
+                    }
+                    continue;
+                }
+                let mut above = Vec::new();
+                let mut seen = BitSet::new_empty(n);
+                let mut stack = vec![v];
+                seen.insert(v as usize);
+                while let Some(x) = stack.pop() {
+                    if let Some(&u) = self.universal_of.get(&x) {
+                        above.push(u);
+                    }
+                    for &sup in &by_sub[x as usize] {
+                        if !seen.contains(sup as usize) {
+                            seen.insert(sup as usize);
+                            stack.push(sup);
+                        }
+                    }
+                }
+                // One of the function's lifetimes that it does not
+                // capture: rustc's E0700.
+                if above.iter().any(|&u| {
+                    let var = self.universal[u as usize].0;
+                    var != STATIC && !h.captures.contains(&var) && self.closure_ext.is_empty()
+                }) {
+                    if !uncaptured {
+                        uncaptured = true;
+                        let at = self.return_range().unwrap_or(h.range);
+                        self.errors.push(Diagnostic::new(
+                            at,
+                            format!(
+                                "hidden type for `{}` captures lifetime that does not appear in bounds",
+                                h.name
+                            ),
+                        ));
+                    }
+                    continue;
+                }
+                let Some(&first) = h.captures.first() else {
+                    self.outlives(v, STATIC, Category::OpaqueType, h.range);
+                    continue;
+                };
+                let index = |c: Var| self.universal_of[&c];
+                let fits = |c: Var| above.iter().all(|&u| self.known(u, index(c)));
+                let fitting: Vec<Var> = h.captures.iter().copied().filter(|&c| fits(c)).collect();
+                // The least: one every other that fits outlives.
+                let chosen = fitting
+                    .iter()
+                    .copied()
+                    .find(|&c| fitting.iter().all(|&d| self.known(index(d), index(c))))
+                    .or(fitting.first().copied())
+                    .unwrap_or(first);
+                self.outlives(v, chosen, Category::OpaqueType, h.range);
+            }
+        }
+        self.hidden = hidden;
+    }
+
+    /// Where the body's return value is made: the first assignment or
+    /// call into `_0`.
+    fn return_range(&self) -> Option<TextRange> {
+        let is_return = |p: &Place| p.local == Body::RETURN && p.projection.is_empty();
+        self.body.blocks.values().find_map(|data| {
+            let assigned = data.statements.iter().find_map(|s| match &s.kind {
+                StatementKind::Assign(p, _) if is_return(p) => Some(s.range),
+                _ => None,
+            });
+            assigned.or(match &data.terminator.kind {
+                TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. }
+                    if is_return(dest) =>
+                {
+                    Some(data.terminator.range)
+                }
+                _ => None,
+            })
+        })
     }
 
     /// `known` from `known_pairs`: reflexive, with `'static` outliving
@@ -796,6 +1012,13 @@ impl<'a> Cx<'a> {
             TyKind::Closure(_, list) => {
                 let upvars = flux_ty::ClosureArgs::split(list).upvars;
                 self.inst(upvars, own, next, map, args, arg_vars, out)
+            }
+            TyKind::Opaque(opaque) => {
+                (0..opaque.lifetimes).all(|_| own_slot(next, out))
+                    && opaque
+                        .args
+                        .iter()
+                        .all(|&t| self.inst(t, own, next, map, args, arg_vars, out))
             }
             TyKind::Alias(alias) => {
                 let instance = if args.is_empty() { ty } else { ty.subst(args) };
@@ -1068,6 +1291,15 @@ impl<'a> Cx<'a> {
                         .zip(ys)
                         .all(|(&a, &b)| self.match_at(a, table, t, b, vars, v, binding, eqs))
             }
+            (TyKind::Opaque(x), TyKind::Opaque(y))
+                if (x.function, x.index) == (y.function, y.index) =>
+            {
+                (0..x.lifetimes).all(|_| slot(t, v, binding, eqs))
+                    && x.args
+                        .iter()
+                        .zip(y.args)
+                        .all(|(&a, &b)| self.match_at(a, table, t, b, vars, v, binding, eqs))
+            }
             _ => {
                 // Types without slots of their own to bind.
                 let n = self.slots(actual) as usize;
@@ -1179,6 +1411,16 @@ impl<'a> Cx<'a> {
                 let upvars = flux_ty::ClosureArgs::split(args).upvars;
                 let v = variance.xform(Variance::Invariant);
                 self.relate_at(upvars, sub, sup, next, v, category, range);
+            }
+            // As in rustc, invariant in what it captures.
+            TyKind::Opaque(opaque) => {
+                let v = variance.xform(Variance::Invariant);
+                for _ in 0..opaque.lifetimes {
+                    slot(self, next, v);
+                }
+                for &t in opaque.args {
+                    self.relate_at(t, sub, sup, next, v, category, range);
+                }
             }
             _ => {}
         }
@@ -1311,9 +1553,11 @@ impl<'a> Cx<'a> {
         }
     }
 
-    /// The category of a constraint for a value going into `dest`.
-    fn into(dest: &Place) -> Category {
-        if dest.local == Body::RETURN && dest.projection.is_empty() {
+    /// The category of a constraint for a value going into `dest`. What
+    /// goes into an opaque type is what its hidden type must outlive
+    /// that counts, as rustc's errors have it.
+    fn category_into(&self, dest: &Place) -> Category {
+        if dest.local == Body::RETURN && dest.projection.is_empty() && self.hidden.is_empty() {
             Category::Return
         } else {
             Category::Assignment
@@ -1354,7 +1598,7 @@ impl<'a> Cx<'a> {
     }
 
     fn assign(&mut self, dest: &Place, rvalue: &Rvalue, range: TextRange) {
-        let category = Cx::into(dest);
+        let category = self.category_into(dest);
         let (dest_ty, dest_vars) = self.place_regions(dest);
         match rvalue {
             // A raw pointer holds no loan: a reference cast to one relates
@@ -1621,7 +1865,7 @@ impl<'a> Cx<'a> {
                 None => unmatched_inputs.extend(&actual),
             }
         }
-        let category = Cx::into(dest);
+        let category = self.category_into(dest);
         let (dest_ty, dest_vars) = self.place_regions(dest);
         match self.instantiate_sig(sig.ret, &regions.ret, &mut map, generic_args, &type_vars) {
             Some(formal) => self.relate(
@@ -2018,7 +2262,7 @@ impl<'a> Cx<'a> {
             Ext::Arg(k) => arg_vars.get(k as usize).copied(),
             Ext::Ret(k) => dest_vars.get(k as usize).copied(),
         };
-        let category = Cx::into(dest);
+        let category = self.category_into(dest);
         for &(a, b, _) in &required.outlives {
             let category = match b {
                 Ext::Ret(_) => category,
@@ -2065,6 +2309,12 @@ impl<'a> Cx<'a> {
                 let upvars = flux_ty::ClosureArgs::split(list).upvars;
                 self.closures_in(upvars, vars, next, out);
             }
+            TyKind::Opaque(opaque) => {
+                *next += opaque.lifetimes as usize;
+                for &t in opaque.args {
+                    self.closures_in(t, vars, next, out);
+                }
+            }
             _ => {}
         }
     }
@@ -2091,7 +2341,7 @@ impl<'a> Cx<'a> {
             inputs.extend(self.operand_regions(op).1);
         }
         let (_, dest_vars) = self.place_regions(dest);
-        let category = Cx::into(dest);
+        let category = self.category_into(dest);
         for &(a, b, at) in &required.outlives {
             match (a, b) {
                 (Ext::Arg(_), _) => {
@@ -2136,7 +2386,7 @@ impl<'a> Cx<'a> {
             self.sinks(ty, &vars, &mut next, false, &mut Vec::new(), &mut sinks);
             inputs.extend(vars);
         }
-        let category = Cx::into(dest);
+        let category = self.category_into(dest);
         let (_, dest_vars) = self.place_regions(dest);
         for &d in &dest_vars {
             for &i in &inputs {
@@ -2200,6 +2450,14 @@ impl<'a> Cx<'a> {
             TyKind::Closure(_, list) => {
                 let upvars = flux_ty::ClosureArgs::split(list).upvars;
                 self.sinks(upvars, vars, next, behind_mut, enclosing, out);
+            }
+            TyKind::Opaque(opaque) => {
+                for _ in 0..opaque.lifetimes {
+                    slot(next, enclosing, out);
+                }
+                for &t in opaque.args {
+                    self.sinks(t, vars, next, behind_mut, enclosing, out);
+                }
             }
             _ => {}
         }

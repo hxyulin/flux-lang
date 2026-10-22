@@ -315,7 +315,11 @@ fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: I
                 def.args.iter().for_each(|&a| encode(a, feed));
                 feed(b";");
             }
-            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Infer(_) | TyKind::Error => {
+            TyKind::Param(_)
+            | TyKind::Alias(_)
+            | TyKind::Opaque(_)
+            | TyKind::Infer(_)
+            | TyKind::Error => {
                 unreachable!("instances are of concrete types")
             }
         }
@@ -356,6 +360,7 @@ fn keel_type(ty: Ty) -> Option<Type> {
         | TyKind::Closure(..)
         | TyKind::Param(_)
         | TyKind::Alias(_)
+        | TyKind::Opaque(_)
         | TyKind::Never
         | TyKind::CStr
         | TyKind::Infer(_)

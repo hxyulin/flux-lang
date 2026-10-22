@@ -568,7 +568,8 @@ pub fn build(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Body {
     let sig = &typed.sigs[function];
     let sig = &flux_ty::FnSig {
         params: sig.params.iter().map(|&p| norm(p)).collect(),
-        ret: norm(sig.ret),
+        // What its body returns: its opaque types' hidden types.
+        ret: norm(flux_ty::traits::reveal_own(&typed.sigs, function, sig.ret)),
     };
     let data = &hir.items.functions[function];
     let mut built = build_body(
@@ -1201,7 +1202,13 @@ fn has_ref(ty: &flux_hir::TypeRef) -> bool {
             .iter()
             .flatten()
             .any(|a| !a.lifetimes.is_empty() || a.types.iter().any(has_ref)),
-        T::FnPtr { .. } | T::Never | T::Infer | T::Error => false,
+        T::FnPtr { .. }
+        | T::Never
+        | T::Infer
+        | T::ImplTrait(_)
+        | T::ImplParam(_)
+        | T::Opaque(_)
+        | T::Error => false,
     }
 }
 

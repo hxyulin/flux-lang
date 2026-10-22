@@ -1,0 +1,40 @@
+struct S { n: i32 }
+
+impl S;
+
+fn S::adder(self@0: &Self) -> <opaque 0> {
+    move |x@1| (x@1 + self@0.n)
+}
+
+fn S::apply<T, impl Fn(T) -> i32>(self@0: &Self, t@1: T, f@2: <impl param 1>) -> i32 where T: Copy, <impl param 1>: Fn<(T,), Output = i32> {
+    (f@2(t@1) + self@0.n)
+}
+
+fn apply<impl Fn(i32) -> i32>(f@0: <impl param 0>, x@1: i32) -> i32 where <impl param 0>: Fn<(i32,), Output = i32> {
+    f@0(x@1)
+}
+
+fn both<impl Copy, impl Copy>(a@0: <impl param 0>, b@1: &<impl param 1>) -> (<opaque 0>, <opaque 1>) where <impl param 0>: Copy, <impl param 1>: Copy {
+    (a@0, (*b@1))
+}
+
+fn nested<impl Iterator<Item = impl Copy>, impl Copy>(it@0: <impl param 0>) -> usize where <impl param 1>: Copy, <impl param 0>: Iterator<Item = <impl param 1>> {
+    it@0.count()
+}
+
+fn evens(limit@0: u32) -> <opaque 0> {
+    Range { start: 0, end: limit@0 }.filter(|n@1| ((n@1 % 2) == 0))
+}
+
+fn captures<'a>(x@0: &'a u32, _y@1: &u32) -> <opaque 0> {
+    (*x@0)
+}
+
+fn main() -> () {
+    let s@0 = S { n: 1 };
+    let _ = ((s@0.adder()(2) + s@0.apply(3, |x@1| x@1)) + apply(|x@2| (x@2 + 1), 2));
+    let _ = both(1, (&2));
+    let _ = nested(evens(5));
+    let _ = captures((&1), (&2));
+}
+

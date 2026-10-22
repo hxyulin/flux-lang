@@ -51,6 +51,10 @@ pub enum TyKind {
     /// `<T as Tr>::Out`: a trait's associated type for a type, where it
     /// cannot be replaced by what it is (yet).
     Alias(AliasTy),
+    /// The `impl Trait` of a function's return type: a type of its own,
+    /// known only by its bounds, but for code generation, which reveals
+    /// the type the function's body returns.
+    Opaque(OpaqueTy),
     /// `!`
     Never,
     /// `*const T` and `*mut T`.
@@ -123,6 +127,21 @@ impl AliasTy {
     pub fn self_ty(self) -> Ty {
         self.args[0]
     }
+}
+
+/// The `impl Trait` with index `index` in `function`'s return type, with
+/// generic arguments for all of the function's parameters (its owner's
+/// first), which it captures, as edition 2024 does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OpaqueTy {
+    pub function: FunctionId,
+    pub index: u32,
+    /// As written, which is how rustc names it: `impl Iterator<Item = u32>`.
+    pub name: Symbol,
+    pub args: GenericArgs,
+    /// How many lifetimes it captures: its region slots, before its
+    /// arguments'.
+    pub lifetimes: u32,
 }
 
 /// A function's signature as a type: its parameters' types then its
@@ -381,6 +400,8 @@ const HAS_PARAM: u8 = 1;
 const HAS_INFER: u8 = 2;
 /// The type contains an associated type.
 const HAS_ALIAS: u8 = 4;
+/// The type contains an opaque type.
+const HAS_OPAQUE: u8 = 8;
 
 /// Interned in this order, so the constants below are their indices.
 const PREDEFINED: [TyKind; 6] = [
@@ -427,6 +448,7 @@ impl Interner {
                 list.iter().fold(0, |f, &t| f | of(t))
             }
             TyKind::Alias(alias) => alias.args.iter().fold(HAS_ALIAS, |f, &t| f | of(t)),
+            TyKind::Opaque(opaque) => opaque.args.iter().fold(HAS_OPAQUE, |f, &t| f | of(t)),
             TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
                 of(t)
             }
@@ -577,6 +599,54 @@ impl Ty {
         Ty::new(TyKind::Alias(alias))
     }
 
+    /// Whether the type contains an opaque type.
+    pub fn has_opaques(self) -> bool {
+        self.flags() & HAS_OPAQUE != 0
+    }
+
+    pub fn opaque(opaque: OpaqueTy) -> Ty {
+        Ty::new(TyKind::Opaque(opaque))
+    }
+
+    /// The type with each opaque type replaced by `f`'s, inside out.
+    pub fn map_opaques(self, f: &mut dyn FnMut(OpaqueTy) -> Ty) -> Ty {
+        if !self.has_opaques() {
+            return self;
+        }
+        let mut go = |t: Ty| t.map_opaques(f);
+        match self.kind() {
+            TyKind::Opaque(opaque) => {
+                let args: Vec<Ty> = opaque.args.iter().map(|&a| go(a)).collect();
+                f(OpaqueTy {
+                    args: Ty::list(&args),
+                    ..opaque
+                })
+            }
+            TyKind::Tuple(list) => Ty::tuple(&list.iter().map(|&t| go(t)).collect::<Vec<_>>()),
+            TyKind::Adt(adt, list) => {
+                let list: Vec<Ty> = list.iter().map(|&t| go(t)).collect();
+                Ty::new(TyKind::Adt(adt, Ty::list(&list)))
+            }
+            TyKind::Closure(id, list) => {
+                let list: Vec<Ty> = list.iter().map(|&t| go(t)).collect();
+                Ty::closure(id, &list)
+            }
+            TyKind::Alias(alias) => {
+                let list: Vec<Ty> = alias.args.iter().map(|&t| go(t)).collect();
+                Ty::alias(AliasTy {
+                    args: Ty::list(&list),
+                    ..alias
+                })
+            }
+            TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
+            TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
+            TyKind::Array(t, len) => Ty::array(go(t), len),
+            TyKind::Slice(t) => Ty::slice(go(t)),
+            TyKind::FnDef(_) | TyKind::FnPtr(_) => self.map_fn(go),
+            _ => self,
+        }
+    }
+
     /// The type with each generic parameter replaced by its argument in
     /// `args`.
     pub fn subst(self, args: &[Ty]) -> Ty {
@@ -593,6 +663,10 @@ impl Ty {
             TyKind::Alias(alias) => Ty::alias(AliasTy {
                 args: Ty::list(&subst_list(alias.args, args)),
                 ..alias
+            }),
+            TyKind::Opaque(opaque) => Ty::opaque(OpaqueTy {
+                args: Ty::list(&subst_list(opaque.args, args)),
+                ..opaque
             }),
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, pointee.subst(args)),
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, pointee.subst(args))),
@@ -642,6 +716,7 @@ impl Ty {
         match self.kind() {
             TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => list.to_vec(),
             TyKind::Alias(alias) => alias.args.to_vec(),
+            TyKind::Opaque(opaque) => opaque.args.to_vec(),
             TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
                 vec![t]
             }
@@ -807,6 +882,7 @@ impl fmt::Display for Ty {
                 f.write_str(">")
             }
             TyKind::Param(param) => write!(f, "{}", param.name),
+            TyKind::Opaque(opaque) => write!(f, "{}", opaque.name),
             TyKind::Alias(alias) => {
                 write!(f, "<{} as {}", alias.args[0], alias.trait_name)?;
                 if alias.args.len() > 1 {

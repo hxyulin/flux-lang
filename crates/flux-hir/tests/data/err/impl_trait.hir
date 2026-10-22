@@ -1,0 +1,68 @@
+struct S { f: <error> }
+
+struct T(<error>);
+
+type A = <error>;
+
+trait Tr;
+
+impl Tr for S;
+
+fn m(&Self) -> <error>;
+
+fn <S as Tr>::m(self@0: &Self) -> <error> {
+    1
+}
+
+fn fn_pointers(f@0: fn(<error>)) -> fn() -> <error> {
+    loop#0 {}
+}
+
+fn fn_bounds<F, G>(f@0: F, g@1: G) -> () where F: Fn<(), Output = <error>>, G: Fn<(<error>,), Output = ()> {}
+
+fn where_bounds() -> () where <error>: Tr {}
+
+fn nested() -> <opaque 0> {
+    Range { start: 0, end: 1 }
+}
+
+fn use_in_argument<impl Copy>(x@0: <impl param 0>) -> () where <impl param 0>: Copy {}
+
+fn no_trait() -> <error> {}
+
+unsafe extern fn ext(<error>) -> <error>;
+
+fn bodies() -> () {
+    let x@0: <error> = 1;
+    let v@1: Option<<error>> = Option::None;
+    let c@3 = |y@2: <error>| -> <error> {
+        y@2
+    };
+    let e@4 = (1 as <error>);
+}
+
+fn main() -> () {}
+
+error 86..95: `impl Trait` is not allowed in field types
+error 109..118: `impl Trait` is not allowed in field types
+error 131..140: `impl Trait` is not allowed in const types
+error 158..167: `impl Trait` is not allowed in static types
+error 183..192: `impl Trait` in type aliases is unstable
+error 240..249: `impl Trait` types in the return types of trait methods are not supported yet
+error 285..294: `impl Trait` in associated types is unstable
+error 316..325: `impl Trait` types in the return types of trait methods are not supported yet
+error 368..377: `impl Trait` is not allowed in `fn` pointer parameters
+error 391..400: `impl Trait` is not allowed in `fn` pointer return types
+error 442..451: `impl Trait` is not allowed in the return type of `Fn` trait bounds
+error 459..468: `impl Trait` is not allowed in the parameters of `Fn` trait bounds
+error 515..524: `impl Trait` is not allowed in bounds
+error 571..580: nested `impl Trait` types are not supported yet
+error 630..635: `use<...>` precise capturing syntax not allowed in argument-position `impl Trait`
+error 658..670: at least one trait must be specified
+error 709..718: `impl Trait` is not allowed in `extern fn` parameters
+error 723..732: `impl Trait` is not allowed in `extern fn` return types
+error 762..771: `impl Trait` is not allowed in the type of variable bindings
+error 795..804: `impl Trait` is not allowed in the type of variable bindings
+error 830..839: `impl Trait` is not allowed in closure parameters
+error 844..853: `impl Trait` is not allowed in closure return types
+error 878..887: `impl Trait` is not allowed in cast expression types

@@ -45,7 +45,7 @@ pub use infer::{
 pub use traits::{Predicate, Projection, TraitRef, TraitSig};
 pub use ty::{
     AdtId, AliasTy, ClosureArgs, ClosureId, ClosureKind, FnDefTy, FnSigTy, GenericArgs, InferVar,
-    IntTy, Mutability, ParamTy, Ty, TyKind, subst_list,
+    IntTy, Mutability, OpaqueTy, ParamTy, Ty, TyKind, subst_list,
 };
 
 /// Which `Fn`-family trait `t` is, if it is one: `core`'s
@@ -141,6 +141,13 @@ pub struct Signatures {
     pub fn_projections: ArenaMap<Function, Box<[Projection]>>,
     /// The associated types each trait's `impl` block defines, by name.
     pub impl_types: ArenaMap<Impl, Box<[(Symbol, Ty)]>>,
+    /// The bounds of each function's opaque types (the `impl Trait`s of
+    /// its return type), by index: [`traits::opaque_bounds`].
+    pub opaques: ArenaMap<Function, Box<[OpaqueSig]>>,
+    /// The hidden type of each opaque type, in terms of its function's
+    /// generic parameters, once the function's body is inferred: what
+    /// code generation sees ([`traits::reveal`]).
+    pub hidden: rustc_hash::FxHashMap<(FunctionId, u32), Ty>,
     /// The defaults of each trait's parameters.
     pub trait_defaults: traits::TraitDefaults,
     /// The `impl` blocks of each trait by the constructor of their type.
@@ -157,6 +164,15 @@ pub struct Signatures {
     pub regions: regions::RegionSigs,
     /// What field types need of the items to normalize without them.
     pub builtins: Builtins,
+}
+
+/// What an opaque type is known to be: its bounds and what they say its
+/// associated types are, in terms of its function's generic parameters
+/// and, for itself, one more parameter after them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpaqueSig {
+    pub predicates: Box<[Predicate]>,
+    pub projections: Box<[Projection]>,
 }
 
 /// The traits and structs of `core` that [`Signatures::field_types`]
@@ -323,7 +339,7 @@ impl Signatures {
         let rigid = |t: Ty| {
             matches!(
                 t.kind(),
-                TyKind::Param(_) | TyKind::Alias(_) | TyKind::Infer(_)
+                TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Infer(_)
             )
         };
         if p.self_ty == Ty::ERROR || p.trait_ref.args.contains(&Ty::ERROR) {
@@ -460,7 +476,7 @@ impl Signatures {
                 }
                 let rigid = matches!(
                     args[0].kind(),
-                    TyKind::Param(_) | TyKind::Alias(_) | TyKind::Infer(_)
+                    TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Infer(_)
                 );
                 let definite = judged.iter().filter(|j| j.2).count();
                 let chosen = match (definite, judged.len()) {
@@ -543,6 +559,7 @@ fn max_param(ty: Ty) -> u32 {
             list.iter().map(|&t| max_param(t)).max().unwrap_or(0)
         }
         TyKind::Alias(alias) => alias.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
+        TyKind::Opaque(opaque) => opaque.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
             max_param(t)
         }
@@ -577,6 +594,9 @@ pub struct TypeScope<'a> {
     pub defaults: Option<&'a traits::TraitDefaults>,
     /// The values of the constants array lengths name, where known.
     pub lens: Option<&'a ArrayLens<'a>>,
+    /// In a function's signature, the function, whose opaque types its
+    /// return type names.
+    pub function: Option<FunctionId>,
 }
 
 /// The values of the constants that array lengths name (`[u8; N]`), as
@@ -887,6 +907,32 @@ pub fn resolve_type(
             }
             Ty::slice(elem)
         }
+        TypeRef::ImplParam(index) => match scope.generics.get(*index as usize) {
+            Some(&name) => Ty::param(*index, name),
+            None => Ty::ERROR,
+        },
+        TypeRef::Opaque(index) => {
+            let Some(function) = scope.function else {
+                return Ty::ERROR;
+            };
+            let Some(decl) = items.functions[function].opaques.get(*index as usize) else {
+                return Ty::ERROR;
+            };
+            Ty::opaque(OpaqueTy {
+                function,
+                index: *index,
+                name: decl.name,
+                args: Ty::list(&params_of_names(scope.generics)),
+                lifetimes: 0,
+            })
+        }
+        // One lowering did not make something else, which is in a path
+        // in a body (`Option::<impl Copy>::None`), as rustc names it.
+        TypeRef::ImplTrait(it) => fail(
+            errors,
+            it.range,
+            "`impl Trait` is not allowed in paths".to_owned(),
+        ),
         TypeRef::Infer => match scope.signature_of {
             Some(items) => fail(
                 errors,
@@ -1377,7 +1423,12 @@ fn visit_paths(ty: &TypeRef, f: &mut impl FnMut(&Path)) {
             .iter()
             .chain([&**ret])
             .for_each(|t| visit_paths(t, f)),
-        TypeRef::Never | TypeRef::Infer | TypeRef::Error => {}
+        TypeRef::Never
+        | TypeRef::Infer
+        | TypeRef::ImplTrait(_)
+        | TypeRef::ImplParam(_)
+        | TypeRef::Opaque(_)
+        | TypeRef::Error => {}
     }
 }
 
@@ -1561,6 +1612,7 @@ pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
         TyKind::FnDef(_) | TyKind::FnPtr(_) => {
             ty.children().into_iter().any(|t| mentions_param(t, index))
         }
+        TyKind::Opaque(opaque) => opaque.args.iter().any(|&t| mentions_param(t, index)),
         _ => false,
     }
 }
@@ -1570,6 +1622,7 @@ pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
 fn uses_param(ty: Ty, index: u32) -> bool {
     match ty.kind() {
         TyKind::Alias(alias) => alias.args.iter().any(|&t| uses_param(t, index)),
+        TyKind::Opaque(opaque) => opaque.args.iter().any(|&t| uses_param(t, index)),
         TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
             uses_param(t, index)
         }
@@ -1582,6 +1635,79 @@ fn uses_param(ty: Ty, index: u32) -> bool {
 }
 
 /// The parameters of `generics` as types, numbered from `first`.
+/// The bounds of `function`'s opaque types, resolved in `scope`, its
+/// signature's: each in terms of the function's generic parameters and,
+/// for the opaque type itself, one after them.
+fn opaque_sigs(
+    items: &ItemTree,
+    function: &flux_hir::Function,
+    scope: TypeScope<'_>,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Box<[OpaqueSig]> {
+    let module = function.loc.module;
+    let count = scope.generics.len() as u32;
+    let mut out = Vec::new();
+    for decl in function.opaques.iter() {
+        let this = Ty::param(count, decl.name);
+        let mut predicates = Vec::new();
+        let mut projections = Vec::new();
+        for b in decl.bounds.iter() {
+            if let Some((trait_ref, bindings)) =
+                traits::resolve_bound(items, module, b, this, scope, errors)
+            {
+                predicates.push(Predicate {
+                    self_ty: this,
+                    trait_ref,
+                });
+                projections.extend(bindings);
+            }
+        }
+        // `use<..>` must list every type parameter in scope, as rustc
+        // requires so far.
+        if let Some(captures) = &decl.captures {
+            let listed = |name: Symbol| {
+                captures
+                    .iter()
+                    .any(|c| matches!(c, flux_hir::UseCapture::Param(n, _) if *n == name))
+            };
+            let generics = items
+                .owner_generics(function.owner)
+                .into_iter()
+                .chain([&function.generics]);
+            if generics
+                .flat_map(|g| g.params.iter())
+                .any(|p| p.synthetic || !listed(p.name))
+            {
+                errors.push((
+                    decl.range,
+                    "`impl Trait` must mention all type parameters in scope in `use<...>`"
+                        .to_owned(),
+                ));
+            }
+            for c in captures.iter() {
+                if let flux_hir::UseCapture::Param(name, range) = *c
+                    && scope.param(name).is_none()
+                    && name != kw::SelfUpper
+                {
+                    errors.push((range, format!("cannot find type `{name}` in this scope")));
+                }
+            }
+        }
+        out.push(OpaqueSig {
+            predicates: predicates.into(),
+            projections: projections.into(),
+        });
+    }
+    out.into()
+}
+
+/// The generic parameters called `names`, in order.
+fn params_of_names(names: &[Symbol]) -> Vec<Ty> {
+    (names.iter().enumerate())
+        .map(|(i, &name)| Ty::param(i as u32, name))
+        .collect()
+}
+
 pub fn params_of(generics: &Generics, first: usize) -> Vec<Ty> {
     generics
         .params
@@ -1932,6 +2058,7 @@ fn extend_signatures(
             self_types: &[],
             defaults: Some(&sigs.trait_defaults),
             lens,
+            function: None,
         };
         let mut ty = resolve(
             items,
@@ -2043,12 +2170,21 @@ fn extend_signatures(
             items,
             function.loc,
             &function.ret,
-            scope,
+            TypeScope {
+                function: Some(id),
+                ..scope
+            },
             function.ret_range,
             &mut reported,
         );
         let ret = sized(ret, function.ret_range, &mut reported);
         sigs.fns.insert(id, FnSig { params, ret });
+        if !function.opaques.is_empty() {
+            let mut errors = Vec::new();
+            let opaques = opaque_sigs(items, function, scope, &mut errors);
+            in_file(errors, function.loc.file, &mut reported);
+            sigs.opaques.insert(id, opaques);
+        }
         if !own.predicates.is_empty() {
             sigs.fn_predicates.insert(id, own.predicates.into());
         }
@@ -2646,6 +2782,12 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
         for id in redo {
             let (body, source_map) = hir.body(id).expect("inferred above");
             bodies.insert(id, infer_body(items, &sigs, id, body, source_map));
+        }
+    }
+    // What code generation sees of opaque types.
+    for (id, result) in bodies.iter() {
+        for (i, &ty) in result.opaques.iter().enumerate() {
+            sigs.hidden.insert((id, i as u32), ty);
         }
     }
     for (id, result) in consts.iter() {

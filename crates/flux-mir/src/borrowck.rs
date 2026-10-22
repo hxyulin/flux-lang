@@ -550,6 +550,19 @@ impl Checker<'_> {
         let local = loan.place.local;
         let kind = self.body.locals[local].kind;
         let is_param = self.body.is_param(local);
+        // A closure's borrow of what it captures, which must outlive the
+        // function: rustc's E0373, at the closure.
+        if self.regions.escapes[id].is_some()
+            && self.body.upvars.is_none()
+            && let Some(closure) = self.capturing_closure(id)
+        {
+            let message = format!(
+                "closure may outlive the current function, but it borrows `{}`, which is owned by the current function",
+                self.name(&loan.place)
+            );
+            self.error(closure, message);
+            return;
+        }
         if let Some((regions::Category::Return, at)) = self.regions.escapes[id]
             && self.body.owner.is_some()
         {
@@ -581,6 +594,30 @@ impl Checker<'_> {
         }
         let message = format!("`{}` does not live long enough", self.name(&loan.place));
         self.error(loan.range, message);
+    }
+
+    /// Where the closure is made whose capture loan `id` is, if it is one.
+    fn capturing_closure(&self, id: usize) -> Option<TextRange> {
+        let (loan, temp) = &self.loans[id];
+        let body = self.body;
+        body.capture_uses
+            .iter()
+            .find(|&&(b, s, _, _)| b == loan.block && s == loan.statement)?;
+        body.blocks[loan.block]
+            .statements
+            .iter()
+            .skip(loan.statement + 1)
+            .find_map(|statement| match &statement.kind {
+                StatementKind::Assign(_, Rvalue::Aggregate(crate::AggregateKind::Closure, ops))
+                    if ops.iter().any(|op| match op {
+                        Operand::Move(p) | Operand::Copy(p) => p.local == *temp,
+                        Operand::Const(_) => false,
+                    }) =>
+                {
+                    Some(statement.range)
+                }
+                _ => None,
+            })
     }
 
     fn operand(&mut self, operand: &Operand, live: &Live, range: TextRange) {

@@ -181,6 +181,13 @@ impl Ctx<'_> {
                 at: range,
             });
         }
+        // Where an opaque type's hidden type is expected (a closure
+        // returned as `impl Fn(i32) -> i32`), its bounds'.
+        if hint.is_none()
+            && let Some(&expected) = self.expected.get(id)
+        {
+            hint = self.opaque_hint(expected, range);
+        }
         // Where rustc reports a signature that does not fit: at the
         // callee it is passed to.
         let head = match hint {
@@ -354,6 +361,46 @@ impl Ctx<'_> {
         })
     }
 
+    /// The signature expected of a closure whose type is `expected`, the
+    /// hidden type of one of the body's opaque types, from that type's
+    /// `Fn`-family bounds, as rustc deduces it from them.
+    fn opaque_hint(&mut self, expected: Ty, at: TextRange) -> Option<Hint> {
+        let TyKind::Infer(var) = self.shallow(expected).kind() else {
+            return None;
+        };
+        let owner = self.owner_fn?;
+        let vars = self.own_opaques.clone();
+        let index = vars
+            .iter()
+            .position(|&v| matches!(self.shallow(v).kind(), TyKind::Infer(w) if w == var))?;
+        let sig = self.sigs.opaques.get(owner)?.get(index)?;
+        let mut args = self.own_opaque_args.to_vec();
+        args.push(expected);
+        let items = self.items;
+        let mut kind: Option<ClosureKind> = None;
+        let mut params = None;
+        for p in sig.predicates.iter() {
+            let Some(k) = crate::fn_trait_kind(items, p.trait_ref.trait_) else {
+                continue;
+            };
+            kind = Some(kind.map_or(k, |old| old.min(k)));
+            params = p.trait_ref.args.first().map(|&a| a.subst(&args));
+        }
+        let ret = sig.projections.iter().find_map(|p| {
+            let is_output = crate::fn_trait_kind(items, p.alias.trait_)
+                == Some(ClosureKind::FnOnce)
+                && p.alias.name.as_str() == "Output";
+            is_output.then(|| p.ty.subst(&args))
+        });
+        let ret = ret.map(|r| self.normalize(r, at));
+        Some(Hint {
+            kind: kind?,
+            params: params?,
+            ret,
+            at,
+        })
+    }
+
     /// Notes the signatures expected of the closures among `args`, passed
     /// to `function` with generic arguments `generic_args` as parameters
     /// of types `params`.
@@ -418,8 +465,14 @@ impl Ctx<'_> {
                 });
                 parts.ret()
             }
-            TyKind::Param(_) | TyKind::Alias(_) => {
+            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => {
                 let items = self.items;
+                // An opaque type's bounds are its own.
+                let base = self.known(base);
+                let own = match base.kind() {
+                    TyKind::Opaque(opaque) => crate::traits::opaque_bounds(self.sigs, opaque),
+                    _ => Vec::new(),
+                };
                 let found = [ClosureKind::Fn, ClosureKind::FnMut, ClosureKind::FnOnce]
                     .into_iter()
                     .find_map(|kind| {
@@ -427,6 +480,7 @@ impl Ctx<'_> {
                         let bound = self
                             .param_env
                             .iter()
+                            .chain(&own)
                             .find(|p| p.trait_ref.trait_ == t && p.self_ty == base)?;
                         Some((kind, bound.trait_ref))
                     });

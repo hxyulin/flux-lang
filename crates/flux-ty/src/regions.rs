@@ -128,6 +128,19 @@ pub struct FnRegions {
     /// (`I: Iterator<Item = &'a T>`), as [`Signatures::fn_projections`]
     /// lists them.
     pub projections: Box<[Box<[Region]>]>,
+    /// Its opaque types', by index.
+    pub opaques: Box<[OpaqueRegions]>,
+}
+
+/// The lifetimes of an opaque type (an `impl Trait` in a function's
+/// return type), in terms of its function's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpaqueRegions {
+    /// Those it captures, which are its region slots: in edition 2024,
+    /// all of its function's, or those `use<..>` lists.
+    pub captures: Box<[Region]>,
+    /// `'a` in `impl Tr + 'a`: what its hidden type outlives.
+    pub outlives: Box<[Region]>,
 }
 
 /// The lifetimes of a struct's or enum's fields.
@@ -203,6 +216,9 @@ pub fn slots(items: &ItemTree, ty: Ty) -> usize {
                 + args.iter().map(|&t| slots(items, t)).sum::<usize>()
         }
         TyKind::Closure(_, args) => slots(items, ClosureArgs::split(args).upvars),
+        TyKind::Opaque(opaque) => {
+            opaque.lifetimes as usize + opaque.args.iter().map(|&t| slots(items, t)).sum::<usize>()
+        }
         _ => 0,
     }
 }
@@ -262,6 +278,14 @@ fn instantiate_at<R: Copy>(
             let upvars = ClosureArgs::split(list).upvars;
             instantiate_at(items, upvars, own, next, region, args, out);
         }
+        TyKind::Opaque(opaque) => {
+            for _ in 0..opaque.lifetimes {
+                own_slot(next, out);
+            }
+            for &t in opaque.args {
+                instantiate_at(items, t, own, next, region, args, out);
+            }
+        }
         _ => {}
     }
 }
@@ -299,6 +323,9 @@ pub(crate) struct Walker<'a> {
     pub elided: Elided,
     /// The lifetime parameters elided lifetimes made, after `names`.
     pub fresh: Vec<TextRange>,
+    /// In a function's return type, the lifetimes each of its opaque
+    /// types captures, which are their slots.
+    pub opaque_captures: Vec<Box<[Region]>>,
     pub errors: Vec<(TextRange, String)>,
 }
 
@@ -313,6 +340,7 @@ impl<'a> Walker<'a> {
             scope: TypeScope::default(),
             elided: Elided::Is(Region::Erased),
             fresh: Vec::new(),
+            opaque_captures: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -404,6 +432,12 @@ impl<'a> Walker<'a> {
                 }
             }
             (TypeRef::FnPtr { params, ret, .. }, _) => self.fn_ptr(params, ret),
+            (TypeRef::Opaque(i), TyKind::Opaque(opaque)) => {
+                match self.opaque_captures.get(*i as usize) {
+                    Some(captures) => out.extend_from_slice(captures),
+                    None => out.extend((0..opaque.lifetimes).map(|_| Region::Erased)),
+                }
+            }
             (TypeRef::Path(path), _) => self.path(path, ty, out),
             _ => {}
         }
@@ -703,7 +737,12 @@ pub(crate) fn lifetimes_in(ty: &TypeRef, out: &mut Vec<LifetimeRef>) {
             params.iter().for_each(|t| lifetimes_in(t, out));
             lifetimes_in(ret, out);
         }
-        TypeRef::Never | TypeRef::Infer | TypeRef::Error => {}
+        TypeRef::Never
+        | TypeRef::Infer
+        | TypeRef::ImplTrait(_)
+        | TypeRef::ImplParam(_)
+        | TypeRef::Opaque(_)
+        | TypeRef::Error => {}
     }
 }
 
@@ -743,7 +782,13 @@ pub(crate) fn elided_in(ty: &TypeRef, out: &mut Vec<TextRange>) {
         | TypeRef::Array { elem: pointee, .. }
         | TypeRef::Slice(pointee) => elided_in(pointee, out),
         // A function pointer's own.
-        TypeRef::FnPtr { .. } | TypeRef::Never | TypeRef::Infer | TypeRef::Error => {}
+        TypeRef::FnPtr { .. }
+        | TypeRef::Never
+        | TypeRef::Infer
+        | TypeRef::ImplTrait(_)
+        | TypeRef::ImplParam(_)
+        | TypeRef::Opaque(_)
+        | TypeRef::Error => {}
     }
 }
 
@@ -891,6 +936,12 @@ fn implied_at<R: Copy + PartialEq>(
             next,
             out,
         ),
+        TyKind::Opaque(opaque) => {
+            *next += opaque.lifetimes as usize;
+            for &t in opaque.args {
+                implied_at(items, sigs, t, regions, next, out);
+            }
+        }
         _ => {}
     }
 }

@@ -18,7 +18,7 @@ use flux_intern::{Symbol, kw};
 use flux_syntax::TextRange;
 
 use crate::regions::{ImplRegions, Outlives, Region, StructRegions};
-use crate::ty::{AliasTy, ClosureArgs, GenericArgs, Mutability, Ty, TyKind};
+use crate::ty::{AliasTy, ClosureArgs, GenericArgs, Mutability, OpaqueTy, Ty, TyKind};
 use crate::{ConstInstance, Instance, Signatures, TypeScope, resolve_type, wrong_arg_count};
 
 /// A trait with generic arguments for its own parameters, not `Self`:
@@ -607,6 +607,9 @@ pub fn elaborate(sigs: &Signatures, predicates: &[Predicate]) -> Vec<Predicate> 
 /// `env` says its `Self` implements the trait: `<T as Tr>::Out: Bound`
 /// from `type Out: Bound;` in `Tr`, given `T: Tr`. None for other types.
 pub fn alias_bounds(sigs: &Signatures, env: &[Predicate], ty: Ty) -> Vec<Predicate> {
+    if let TyKind::Opaque(opaque) = ty.kind() {
+        return opaque_bounds(sigs, opaque);
+    }
     let TyKind::Alias(alias) = ty.kind() else {
         return Vec::new();
     };
@@ -631,8 +634,75 @@ pub fn alias_bounds(sigs: &Signatures, env: &[Predicate], ty: Ty) -> Vec<Predica
 /// `Self`'s trait do if that is an associated type.
 pub fn in_env(sigs: &Signatures, env: &[Predicate], goal: Predicate) -> bool {
     env.contains(&goal)
-        || (matches!(goal.self_ty.kind(), TyKind::Alias(_))
+        || (matches!(goal.self_ty.kind(), TyKind::Alias(_) | TyKind::Opaque(_))
             && alias_bounds(sigs, env, goal.self_ty).contains(&goal))
+}
+
+/// The bounds of `opaque`, with their supertraits: all that is known of
+/// it outside its function's body, as rustc's item bounds of an opaque
+/// type are.
+pub fn opaque_bounds(sigs: &Signatures, opaque: OpaqueTy) -> Vec<Predicate> {
+    let Some(sig) = opaque_sig(sigs, opaque) else {
+        return Vec::new();
+    };
+    let args = opaque_args(opaque);
+    let bounds: Vec<Predicate> = sig.predicates.iter().map(|p| p.subst(&args)).collect();
+    elaborate(sigs, &bounds)
+}
+
+/// What the bounds of `opaque` say its associated types are
+/// (`impl Iterator<Item = u32>`), and what their traits say.
+pub fn opaque_projections(sigs: &Signatures, opaque: OpaqueTy) -> Vec<Projection> {
+    let Some(sig) = opaque_sig(sigs, opaque) else {
+        return Vec::new();
+    };
+    let args = opaque_args(opaque);
+    let mut out: Vec<Projection> = sig.projections.iter().map(|p| p.subst(&args)).collect();
+    out.extend(implied_projections(sigs, &opaque_bounds(sigs, opaque)));
+    out
+}
+
+fn opaque_sig(sigs: &Signatures, opaque: OpaqueTy) -> Option<&crate::OpaqueSig> {
+    sigs.opaques
+        .get(opaque.function)?
+        .get(opaque.index as usize)
+}
+
+/// What an opaque type's bounds are substituted with: its arguments,
+/// then itself.
+fn opaque_args(opaque: OpaqueTy) -> Vec<Ty> {
+    let mut args = opaque.args.to_vec();
+    args.push(Ty::opaque(opaque));
+    args
+}
+
+/// `ty` with each opaque type replaced by its hidden type, as far as
+/// [`Signatures::hidden`] has them: what code generation sees.
+pub fn reveal(sigs: &Signatures, ty: Ty) -> Ty {
+    reveal_at(sigs, ty, 0)
+}
+
+/// `ty`, in `function`'s signature, with the function's own opaque
+/// types replaced by their hidden types, and no others: the types its
+/// body has.
+pub fn reveal_own(sigs: &Signatures, function: FunctionId, ty: Ty) -> Ty {
+    if !ty.has_opaques() {
+        return ty;
+    }
+    ty.map_opaques(&mut |o| match sigs.hidden.get(&(o.function, o.index)) {
+        Some(&hidden) if o.function == function => hidden.subst(o.args),
+        _ => Ty::opaque(o),
+    })
+}
+
+fn reveal_at(sigs: &Signatures, ty: Ty, depth: u32) -> Ty {
+    if !ty.has_opaques() || depth > 64 {
+        return ty;
+    }
+    ty.map_opaques(&mut |o| match sigs.hidden.get(&(o.function, o.index)) {
+        Some(&hidden) => reveal_at(sigs, hidden.subst(o.args), depth + 1),
+        None => Ty::opaque(o),
+    })
 }
 
 /// `Self: Tr` for `<Self as Tr>::Out`.
@@ -736,6 +806,13 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
                     .zip(b.args)
                     .all(|(&x, &y)| match_ty(x, y, binds))
         }
+        (TyKind::Opaque(a), TyKind::Opaque(b)) => {
+            (a.function, a.index) == (b.function, b.index)
+                && a.args
+                    .iter()
+                    .zip(b.args)
+                    .all(|(&x, &y)| match_ty(x, y, binds))
+        }
         _ => pattern == ty,
     }
 }
@@ -820,6 +897,13 @@ impl Normalizer<'_> {
                 {
                     return self.go(p.ty, depth + 1);
                 }
+                if let TyKind::Opaque(opaque) = args[0].kind()
+                    && let Some(p) = opaque_projections(sigs, opaque)
+                        .into_iter()
+                        .find(|p| p.alias == alias)
+                {
+                    return self.go(p.ty, depth + 1);
+                }
                 let goal = alias_predicate(alias);
                 if let Some((imp, impl_args)) = select_impl(items, sigs, goal)
                     && let Some(t) = impl_type(sigs, imp, alias.name)
@@ -872,7 +956,7 @@ pub fn instance_sig(
 /// `ty` with generic arguments `args` substituted and its associated
 /// types normalized: a type of an instance, for code generation.
 pub fn instance_ty(items: &ItemTree, sigs: &Signatures, ty: Ty, args: &[Ty]) -> Ty {
-    normalize(items, sigs, &[], ty.subst(args))
+    normalize(items, sigs, &[], reveal(sigs, ty.subst(args)))
 }
 
 /// The `impl` block for `goal` and its generic arguments: the only one
@@ -933,7 +1017,7 @@ pub fn select_impl(
 fn is_rigid(ty: Ty) -> bool {
     matches!(
         ty.kind(),
-        TyKind::Param(_) | TyKind::Alias(_) | TyKind::Infer(_)
+        TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Infer(_)
     )
 }
 
@@ -1206,7 +1290,9 @@ fn normalize_predicate(items: &ItemTree, sigs: &Signatures, p: Predicate) -> Pre
 pub fn is_builtin_copy(items: &ItemTree, t: TraitId, ty: Ty) -> bool {
     let lang = items.traits[t].lang;
     match ty.kind() {
-        TyKind::Ref(Mutability::Not, _) => {
+        // `!` is too, as rustc's `core` has it, which the hidden type
+        // of a function that only calls itself is.
+        TyKind::Ref(Mutability::Not, _) | TyKind::Never => {
             matches!(lang, Some(l) if l.as_str() == "copy" || l.as_str() == "clone")
         }
         // Function items and pointers are `Copy`; `core` implements
@@ -1379,7 +1465,7 @@ pub fn is_copy(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -
             .iter()
             .all(|&t| is_copy(items, sigs, env, t)),
         TyKind::Ref(Mutability::Mut, _) => false,
-        TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) => {
+        TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => {
             let Some(&copy) = items.lang_traits.get(&flux_intern::sym::copy) else {
                 return false;
             };
@@ -1485,7 +1571,7 @@ pub fn needs_drop(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty
                     .iter()
                     .any(|f| needs_drop(items, sigs, env, f.subst(args)))
         }
-        TyKind::Param(_) | TyKind::Alias(_) => !is_copy(items, sigs, env, ty),
+        TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => !is_copy(items, sigs, env, ty),
         _ => false,
     }
 }
