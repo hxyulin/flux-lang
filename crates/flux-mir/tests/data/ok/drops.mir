@@ -45,6 +45,7 @@ fn scopes(_1: Noisy) -> () {
     }
 
     bb2: {
+        StorageDead(_4);
         _6 = make() -> bb3;
     }
 
@@ -58,6 +59,7 @@ fn scopes(_1: Noisy) -> () {
     }
 
     bb5: {
+        StorageDead(_6);
         _0 = const ();
         drop(_3) -> bb6;
     }
@@ -94,6 +96,7 @@ fn extended() -> i32 {
     }
 
     bb2: {
+        StorageDead(_2);
         return;
     }
 }
@@ -264,6 +267,7 @@ fn main() -> () {
     }
 
     bb7: {
+        StorageDead(_14);
         _16 = Noisy(const 9_i32);
         _15 = generic::<Noisy, i32>(move _16, const 1_i32) -> bb8;
     }

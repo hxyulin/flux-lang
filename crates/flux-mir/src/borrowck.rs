@@ -37,9 +37,17 @@ use crate::{
     TerminatorKind, place_name,
 };
 
+pub use regions::{ClosureRequirements, Ext, Requirements};
+
 /// The diagnostics for `body`'s conflicting borrows and its writes and
-/// moves through pointers.
-pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
+/// moves through pointers, given the requirements of the closures it
+/// makes; and if it is a closure's, its requirements.
+pub fn check(
+    body: &Body,
+    items: &ItemTree,
+    sigs: &Signatures,
+    requirements: &Requirements,
+) -> (Vec<Diagnostic>, ClosureRequirements) {
     let loans = collect_loans(body);
     let infos: Vec<regions::LoanInfo<'_>> = loans
         .iter()
@@ -49,7 +57,7 @@ pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
             statement: loan.statement,
         })
         .collect();
-    let regions = regions::infer(body, items, sigs, &infos);
+    let mut regions = regions::infer(body, items, sigs, &infos, requirements);
     // The loans of each local's places, and those made into each local.
     let mut borrowed = vec![Vec::new(); body.locals.len()];
     let mut made_into = vec![Vec::new(); body.locals.len()];
@@ -78,9 +86,38 @@ pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
         checker.terminator(&data.terminator.kind, data.terminator.range, point);
     }
     let mut diagnostics = checker.diagnostics;
-    for d in regions.errors {
+    for d in std::mem::take(&mut regions.errors) {
         if !diagnostics.iter().any(|e| e.range == d.range) {
             diagnostics.push(d);
+        }
+    }
+    (diagnostics, std::mem::take(&mut regions.requirements))
+}
+
+/// The methods of the program's trait `impl` blocks whose lifetimes ask
+/// more than their traits' methods do, which calls through the trait
+/// could not know: rustc's "`impl` item signature doesn't match `trait`
+/// item signature".
+pub fn check_impl_methods(items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (imp, data) in items.impls.iter().skip(items.core.impls as usize) {
+        let Some(t) = data.trait_ else { continue };
+        for &method in &data.functions {
+            let function = &items.functions[method];
+            if function.derived.is_some() {
+                continue;
+            }
+            let Some(trait_fn) = items.traits[t].function(items, function.name) else {
+                continue;
+            };
+            if !regions::impl_method_matches(items, sigs, imp, method, trait_fn) {
+                let mut d = Diagnostic::new(
+                    function.def_range,
+                    "`impl` item signature doesn't match `trait` item signature",
+                );
+                d.file = function.loc.file;
+                diagnostics.push(d);
+            }
         }
     }
     diagnostics

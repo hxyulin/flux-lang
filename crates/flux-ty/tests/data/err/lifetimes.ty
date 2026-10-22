@@ -39,9 +39,6 @@ fn elided_in_bound<T>(T) -> ()
     x@0: T
 fn main() -> ()
 type Alias = &i32
-error 142..144: structs with lifetime parameters are not supported yet
-error 177..179: structs with lifetime parameters are not supported yet
-error 213..215: structs with lifetime parameters are not supported yet
 error 276..278: use of undeclared lifetime name `'b`
 error 317..318: missing lifetime specifier
 help: this function's return type contains a borrowed value, but the signature does not say whether it is borrowed from `x` or `y`
@@ -55,15 +52,12 @@ error 533..534: missing lifetime specifier
 help: this function's return type contains a borrowed value with an elided lifetime, but the lifetime cannot be derived from the arguments
 error 580..581: missing lifetime specifier
 help: this function's return type contains a borrowed value, but the signature does not say which one of `x`'s 2 lifetimes it is borrowed from
-error 621..633: references inside other types are not supported yet
 error 638..639: missing lifetime specifier
 help: this function's return type contains a borrowed value, but the signature does not say which one of argument 1's 2 lifetimes it is borrowed from
 error 682..683: missing lifetime specifier
 error 715..716: missing lifetime specifier
 error 746..747: missing lifetime specifier
-error 769..771: structs with lifetime parameters are not supported yet
 error 783..785: missing lifetime specifier
-error 824..826: structs with lifetime parameters are not supported yet
 error 824..826: lifetime parameter `'a` is never used
 error 850..851: struct takes 1 lifetime argument but 2 lifetime arguments were supplied
 error 888..889: missing lifetime specifier

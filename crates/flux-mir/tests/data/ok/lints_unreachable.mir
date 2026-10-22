@@ -8,6 +8,7 @@ fn dead_literal() -> () {
 
     bb1: {
         _1 = Add(const 255_u8, const 1_u8);
+        StorageDead(_1);
         _0 = const ();
         goto -> bb3;
     }
@@ -36,6 +37,7 @@ fn dead_local() -> () {
         _1 = const 255_u8;
         _3 = copy _1;
         _2 = Add(copy _3, const 1_u8);
+        StorageDead(_2);
         _0 = const ();
         StorageDead(_1);
         goto -> bb3;
@@ -113,6 +115,7 @@ fn known_condition() -> i32 {
 
     bb7: {
         _15 = Add(const MAX, const 1_i32);
+        StorageDead(_15);
         _13 = const ();
         goto -> bb9;
     }
@@ -149,6 +152,7 @@ fn main() -> () {
     }
 
     bb3: {
+        StorageDead(_3);
         _0 = const ();
         return;
     }

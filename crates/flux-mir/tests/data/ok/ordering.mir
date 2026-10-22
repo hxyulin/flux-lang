@@ -104,6 +104,9 @@ fn main() -> () {
     }
 
     bb5: {
+        StorageDead(_9);
+        StorageDead(_12);
+        StorageDead(_10);
         _0 = const ();
         return;
     }
@@ -164,6 +167,7 @@ fn <Pair as ::core::cmp::PartialOrd>::partial_cmp(_1: &Pair, _2: &Pair) -> Optio
     }
 
     bb2: {
+        StorageDead(_3);
         return;
     }
 

@@ -2760,12 +2760,6 @@ impl Ctx<'_> {
                 ),
             }
         }
-        if function.is_none() && crate::contains_ref(sig.ret()) {
-            self.error(
-                self.range(id),
-                "calls returning references are not supported yet",
-            );
-        }
         sig.ret()
     }
 
@@ -4198,14 +4192,6 @@ impl Ctx<'_> {
                 .map(|&a| self.resolve(a, &mut reported))
                 .collect();
             let args = Ty::list(&args);
-            // Without lifetimes, a reference a call returns cannot be
-            // tied to what it borrows.
-            if crate::contains_ref(self.sigs[function].ret.subst(args)) {
-                self.error(
-                    self.range(expr),
-                    "calls returning references are not supported yet",
-                );
-            }
             self.check_sized_args(expr, function, args);
             calls.insert(expr, Instance { function, args });
         }
@@ -4268,7 +4254,6 @@ impl Ctx<'_> {
         }
         self.run_deferred(&mut reported);
         self.check_sized();
-        self.check_references();
         let receivers: Vec<(ExprId, Mutability)> = self
             .methods
             .iter()
@@ -4611,72 +4596,6 @@ impl Ctx<'_> {
             .collect();
         for (expr, ty) in unsized_values {
             self.error(self.range(expr), crate::unsized_error(ty));
-        }
-    }
-
-    /// Reports references where flux cannot check them yet. Without
-    /// lifetimes, a reference can be checked only while each one lives in
-    /// a single local that is assigned once: not in a `mut` binding, a
-    /// binding declared without a value, another type, or a `break`
-    /// value.
-    fn check_references(&mut self) {
-        let body = self.body;
-        for (pat, data) in body.pats.iter() {
-            let Pat::Bind { binding, .. } = data else {
-                continue;
-            };
-            let ty = self
-                .binding_types
-                .get(*binding)
-                .copied()
-                .unwrap_or(Ty::ERROR);
-            if !crate::contains_ref(ty) {
-                continue;
-            }
-            let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
-            let data = &body.bindings[*binding];
-            // `mut x` where a pattern borrows implicitly is an error of its
-            // own, reported with the checks of patterns.
-            let implicit = data.by_ref.is_none() && self.binding_refs.get(*binding).is_some();
-            if data.mutable && implicit {
-                continue;
-            }
-            if data.mutable {
-                self.error(range, "`mut` bindings of references are not supported yet");
-            } else if self.uninit_bindings.contains(binding) {
-                self.error(
-                    range,
-                    "references in variables declared without a value are not supported yet",
-                );
-            }
-        }
-        // `core`'s impls for references see references to references.
-        let mut reported = self.items.is_core(self.module);
-        for (expr, data) in body.exprs.iter() {
-            let ty = self.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
-            let nested = match ty.kind() {
-                TyKind::Ref(_, pointee) => crate::contains_ref(pointee),
-                _ => crate::contains_ref(ty),
-            };
-            if nested && !reported {
-                reported = true;
-                self.error(
-                    self.range(expr),
-                    "references inside other types are not supported yet",
-                );
-            }
-            if let Expr::Break {
-                value: Some(value), ..
-            } = data
-            {
-                let ty = self.expr_types.get(*value).copied().unwrap_or(Ty::ERROR);
-                if crate::contains_ref(ty) {
-                    self.error(
-                        self.range(*value),
-                        "`break` with a reference is not supported yet",
-                    );
-                }
-            }
         }
     }
 

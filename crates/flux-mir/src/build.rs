@@ -19,10 +19,14 @@ use crate::{
 /// have no diagnostics from lowering or type checking.
 pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut diagnostics = Vec::new();
-    let check = |body: &Body, file, is_const| {
-        check_body(hir, typed, body, is_const)
+    let none = crate::borrowck::Requirements::default();
+    let check = |body: &Body, file, is_const, requirements: &crate::borrowck::Requirements| {
+        let (found, own) = check_body(hir, typed, body, is_const, requirements);
+        let found: Vec<_> = found
             .into_iter()
             .map(move |d| flux_hir::Diagnostic { file, ..d })
+            .collect();
+        (found, own)
     };
     // Every constant, and every function of the program; `core`'s
     // functions only if something calls them.
@@ -31,7 +35,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut unchecked = Vec::new();
     for (id, _) in hir.const_bodies() {
         let body = build_const(hir, typed, id);
-        let found: Vec<_> = check(&body, hir.items.consts[id].loc.file, true).collect();
+        let found = check(&body, hir.items.consts[id].loc.file, true, &none).0;
         if !found.is_empty() {
             unchecked.push(id);
         }
@@ -78,13 +82,15 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     }
     // Patterns that name constants are checked with their values; rustc
     // does not borrow-check the bodies whose patterns have errors.
+    diagnostics.extend(crate::borrowck::check_impl_methods(&hir.items, &typed.sigs));
     let (found, failed) = check_patterns(hir, typed, &bodies, &consts, &unchecked, true);
     diagnostics.extend(found);
     for (id, body) in bodies.iter() {
         let data = &hir.items.functions[id];
         if !failed.contains(&id) {
-            diagnostics.extend(check(body, data.loc.file, data.is_const));
-            // Its closures' own bodies; shims need no checks.
+            // Its closures' own bodies first, innermost first, for what
+            // they require of the bodies that make them; shims need no
+            // checks.
             let mut own: Vec<_> = closures
                 .iter()
                 .filter(|((c, kind), _)| {
@@ -92,9 +98,15 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
                 })
                 .collect();
             own.sort_by_key(|((c, _), _)| c.expr.into_raw());
-            for (_, closure) in own {
-                diagnostics.extend(check(closure, data.loc.file, false));
+            let mut requirements = crate::borrowck::Requirements::default();
+            let mut found = Vec::new();
+            for ((c, _), closure) in own {
+                let (errors, required) = check(closure, data.loc.file, false, &requirements);
+                found.extend(errors);
+                requirements.insert(*c, required);
             }
+            diagnostics.extend(check(body, data.loc.file, data.is_const, &requirements).0);
+            diagnostics.extend(found);
         }
     }
     let mut const_values = crate::eval::ConstValues::default();
@@ -175,21 +187,24 @@ pub fn check_clean_bodies(
         }
         let body = build(hir, typed, id);
         let file = data.loc.file;
-        diagnostics.extend(
-            check_body(hir, typed, &body, data.is_const)
-                .into_iter()
-                .map(|d| flux_hir::Diagnostic { file, ..d }),
-        );
+        // Its closures first, for what they require of it.
         let mut found: Vec<ExprId> = result.closures.iter().map(|(e, _)| e).collect();
         found.sort_by_key(|e| e.into_raw());
+        let mut requirements = crate::borrowck::Requirements::default();
+        let mut errors = Vec::new();
         for expr in found {
             let closure = build_closure(hir, typed, id, expr);
-            diagnostics.extend(
-                check_body(hir, typed, &closure, false)
-                    .into_iter()
-                    .map(|d| flux_hir::Diagnostic { file, ..d }),
-            );
+            let (found, required) = check_body(hir, typed, &closure, false, &requirements);
+            errors.extend(found);
+            requirements.insert(flux_ty::ClosureId { owner: id, expr }, required);
         }
+        let (found, _) = check_body(hir, typed, &body, data.is_const, &requirements);
+        diagnostics.extend(
+            found
+                .into_iter()
+                .chain(errors)
+                .map(|d| flux_hir::Diagnostic { file, ..d }),
+        );
     }
     diagnostics
 }
@@ -302,13 +317,18 @@ fn check_body(
     typed: &TypedFile,
     body: &Body,
     is_const: bool,
-) -> Vec<flux_hir::Diagnostic> {
+    requirements: &crate::borrowck::Requirements,
+) -> (
+    Vec<flux_hir::Diagnostic>,
+    crate::borrowck::ClosureRequirements,
+) {
     let mut found = body.init_errors.clone();
-    found.extend(crate::borrowck::check(body, &hir.items, &typed.sigs));
+    let (errors, required) = crate::borrowck::check(body, &hir.items, &typed.sigs, requirements);
+    found.extend(errors);
     if is_const {
         found.extend(crate::drops::check_const(body));
     }
-    found
+    (found, required)
 }
 
 /// Evaluates the constants rustc evaluates: enums' discriminants
@@ -778,6 +798,7 @@ fn build_body(
         upvars: Vec::new(),
         capture_uses: Vec::new(),
         promoted: Vec::new(),
+        storage_temps: Default::default(),
     };
     b.locals.alloc(LocalDecl {
         ty: sig.ret,
@@ -874,6 +895,13 @@ fn build_body(
                             && !c.projection.contains(&flux_ty::CaptureProj::Deref)
                     })
                     .collect(),
+                annotated_refs: match &body.exprs[expr] {
+                    Expr::Closure { param_types, .. } => param_types
+                        .iter()
+                        .flatten()
+                        .any(|&t| has_ref(&body.types[t])),
+                    _ => false,
+                },
             })
         }
         _ => None,
@@ -1047,12 +1075,33 @@ struct Builder<'a> {
     upvars: Vec<(flux_ty::Capture, Place)>,
     /// [`Body::capture_uses`].
     capture_uses: Vec<(BasicBlock, usize, TextRange, bool)>,
+    /// The temporaries that may be borrowed, which die where their
+    /// scope ends.
+    storage_temps: rustc_hash::FxHashSet<Local>,
     /// [`Body::promoted`].
     promoted: Vec<crate::eval::Value>,
 }
 
 /// Whether `expr` denotes a place: a local, a field or element of one, or
 /// what a pointer points to.
+/// Whether type `ty`, as written, has a reference.
+fn has_ref(ty: &flux_hir::TypeRef) -> bool {
+    use flux_hir::TypeRef as T;
+    match ty {
+        T::Ref { .. } => true,
+        T::Tuple(list) => list.iter().any(has_ref),
+        T::Ptr { pointee, .. } | T::Array { elem: pointee, .. } | T::Slice(pointee) => {
+            has_ref(pointee)
+        }
+        T::Path(path) => path
+            .args
+            .iter()
+            .flatten()
+            .any(|a| !a.lifetimes.is_empty() || a.types.iter().any(has_ref)),
+        T::FnPtr { .. } | T::Never | T::Infer | T::Error => false,
+    }
+}
+
 fn is_place(body: &flux_hir::Body, expr: ExprId) -> bool {
     match body.exprs[expr] {
         Expr::Path(Res::Local(_) | Res::Static(_)) => true,
@@ -1256,11 +1305,20 @@ impl Builder<'_> {
             if self.needs_drop(self.locals[local].ty) {
                 self.drop_place(local.into(), at);
             }
-            if kill && block && matches!(self.locals[local].kind, LocalKind::User { .. }) {
+            let user = matches!(self.locals[local].kind, LocalKind::User { .. });
+            if kill && block && user {
                 let block = self.block();
                 self.blocks[block.index()].0.push(Statement {
                     kind: StatementKind::StorageDead(local),
                     range,
+                });
+            } else if kill && self.storage_temps.contains(&local) {
+                // A temporary's, where it was made, as rustc reports
+                // one dropped while borrowed.
+                let block = self.block();
+                self.blocks[block.index()].0.push(Statement {
+                    kind: StatementKind::StorageDead(local),
+                    range: at,
                 });
             }
         }
@@ -1367,12 +1425,14 @@ impl Builder<'_> {
             }
             Expr::Path(Res::Static(id)) => self.static_place(id, self.range(expr)),
             _ => {
+                // A temporary that may be borrowed dies where its scope
+                // ends (`StorageDead`), whether it needs dropping or not.
                 let temp = match (std::mem::take(&mut self.extending), self.extend_at) {
                     (true, Some((scope, at))) => {
                         let ty = self.value_ty(expr);
                         let temp = self.temp(ty);
                         self.lower_into(expr, &temp.into());
-                        if self.needs_drop(ty) && scope != usize::MAX {
+                        if scope != usize::MAX {
                             let range = self.range(expr);
                             let at = at.min(self.scopes[scope].locals.len());
                             self.scopes[scope].locals.insert(at, (temp, range));
@@ -1380,8 +1440,17 @@ impl Builder<'_> {
                         }
                         temp
                     }
-                    _ => self.temp_for(expr),
+                    _ => {
+                        let temp = self.temp_for(expr);
+                        if !self.needs_drop(self.locals[temp].ty) {
+                            let range = self.range(expr);
+                            let scope = self.scopes.last_mut().expect("bodies have a scope");
+                            scope.locals.push((temp, range));
+                        }
+                        temp
+                    }
                 };
+                self.storage_temps.insert(temp);
                 temp.into()
             }
         }

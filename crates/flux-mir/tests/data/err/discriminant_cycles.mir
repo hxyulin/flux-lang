@@ -10,6 +10,7 @@ fn matches() -> isize {
     }
 
     bb1: {
+        StorageDead(_1);
         return;
     }
 

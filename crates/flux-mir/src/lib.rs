@@ -147,6 +147,10 @@ pub struct Upvars {
     /// Captured by value from a `mut` binding (or a place in one), so
     /// that the closure may change it.
     pub mutable: Vec<bool>,
+    /// A parameter's written type has a reference, whose lifetime is
+    /// the closure's own (higher-ranked), as in rustc: what it is
+    /// given there may not outlive the call.
+    pub annotated_refs: bool,
 }
 
 impl Upvars {
@@ -176,6 +180,24 @@ impl Body {
 
     pub fn entry() -> BasicBlock {
         BasicBlock::from_raw(0)
+    }
+
+    /// A body without locals or blocks, of `owner`.
+    pub(crate) fn empty(owner: Option<FunctionId>) -> Body {
+        Body {
+            locals: Arena::new(),
+            blocks: Arena::new(),
+            param_count: 0,
+            c_strings: Vec::new(),
+            in_core: false,
+            inherits_overflow_checks: false,
+            live_drops: Vec::new(),
+            init_errors: Vec::new(),
+            upvars: None,
+            capture_uses: Vec::new(),
+            owner,
+            promoted: Vec::new(),
+        }
     }
 
     /// The locals holding the parameters, in order.

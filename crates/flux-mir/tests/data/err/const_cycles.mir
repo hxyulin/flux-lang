@@ -15,6 +15,7 @@ fn main() -> () {
     bb0: {
         _2 = Add(const A, const SELF);
         _1 = Add(copy _2, const LOOPED);
+        StorageDead(_1);
         _0 = const ();
         return;
     }

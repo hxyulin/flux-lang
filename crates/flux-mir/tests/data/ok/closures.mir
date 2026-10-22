@@ -239,6 +239,7 @@ fn loops() -> i32 {
     }
 
     bb2: {
+        StorageDead(_3);
         _0 = copy _1;
         StorageDead(_1);
         return;
@@ -269,6 +270,7 @@ fn loops() -> i32 {
     }
 
     bb8: {
+        StorageDead(_8);
         _6 = const ();
         goto -> bb5;
     }
@@ -284,6 +286,7 @@ fn loops() -> i32 {
 
     bb11: {
         _2 = const ();
+        StorageDead(_8);
         goto -> bb6;
     }
 

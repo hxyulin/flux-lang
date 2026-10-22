@@ -20,6 +20,7 @@ fn main() -> () {
 
     bb1: {
         _1 = Add(copy _2, const <Square as Shape>::DOUBLE);
+        StorageDead(_1);
         _0 = const ();
         return;
     }

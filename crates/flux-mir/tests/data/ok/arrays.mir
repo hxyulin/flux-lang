@@ -161,6 +161,7 @@ fn main() -> () {
     bb4: {
         _13 = copy _10[_14];
         _11 = (copy _12, copy _13, const TOTAL);
+        StorageDead(_11);
         _17 = Noisy;
         _18 = Noisy;
         _16 = [move _17, move _18];

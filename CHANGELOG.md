@@ -359,6 +359,19 @@
   and is checked at the function's end too: returning a borrow of a
   local, parameter or temporary is E0515. Constant expressions borrowed
   (`&5`, `&[1, 2]`) are promoted to static memory, as in rustc.
+- Support references anywhere: returned (`fn first(&self) -> &T`,
+  `Option<&T>`), in structs and enums (`struct Parser<'a> { src: &'a
+  [u8] }`), tuples and other references, in `mut` bindings, bindings
+  declared without a value and `break` values, and returned by
+  closures. A closure's body is checked first, and tells its creator
+  how the lifetimes of what it captures, its parameters and its result
+  must relate, where it is made and where it is called; one passed to
+  a generic function may not keep its parameters' references (not
+  supported yet). Trait `impl` blocks' methods may not ask more of
+  their lifetimes than their traits' ("`impl` item signature doesn't
+  match `trait` item signature"), and their headers must hold for
+  every lifetime (others are not supported yet). Borrowed temporaries
+  die at the end of their scope, so one still borrowed there is E0716.
 
 ### Performance
 

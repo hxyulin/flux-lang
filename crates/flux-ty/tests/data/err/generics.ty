@@ -151,6 +151,3 @@ error 3491..3492: field `b` of struct `Open` is private
 error 3539..3545: method `secret` is private
 error 3663..3666: mismatched types: expected `i32`, found `u8`
 error 3743..3746: mismatched types: expected `i32`, found `u8`
-error 3882..3884: calls returning references are not supported yet
-error 3921..3931: references inside other types are not supported yet
-error 3992..4013: references inside other types are not supported yet

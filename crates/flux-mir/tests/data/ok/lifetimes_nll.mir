@@ -1,0 +1,786 @@
+fn sum_list(_1: &Node) -> i32 {
+    let mut _0: i32;
+    let mut _2: i32; // total
+    let _3: ();
+    let _4: ();
+    let _5: &Node; // next
+    let _6: isize;
+    let _7: ();
+    let _8: i32;
+    let _9: i32;
+    let _10: ();
+    let _11: &Node;
+
+    bb0: {
+        _2 = copy (*_1).0;
+        goto -> bb1;
+    }
+
+    bb1: {
+        _6 = discriminant((*_1).1);
+        switchInt(copy _6) -> [1: bb6, otherwise: bb4];
+    }
+
+    bb2: {
+        _0 = copy _2;
+        StorageDead(_2);
+        return;
+    }
+
+    bb3: {
+        _8 = copy (*_5).0;
+        _9 = copy _2;
+        _2 = Add(copy _9, copy _8);
+        _7 = const ();
+        _11 = copy _5;
+        _1 = copy _11;
+        _10 = const ();
+        _4 = const ();
+        StorageDead(_5);
+        goto -> bb5;
+    }
+
+    bb4: {
+        StorageDead(_5);
+        _3 = const ();
+        goto -> bb2;
+    }
+
+    bb5: {
+        goto -> bb1;
+    }
+
+    bb6: {
+        _5 = copy ((*_1).1 as #1).0;
+        goto -> bb3;
+    }
+}
+
+fn Counter::slot(_1: &mut Counter, _2: usize) -> &mut i32 {
+    let mut _0: &mut i32;
+    let _3: &mut i32;
+    let _4: usize;
+    let _5: bool;
+
+    bb0: {
+        _4 = copy _2;
+        _5 = Lt(copy _4, const 4_usize);
+        assert(copy _5, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _3 = &mut (*_1).0[_4];
+        _0 = &mut (*_3);
+        return;
+    }
+}
+
+fn Counter::bump(_1: &mut Counter, _2: usize) -> () {
+    let mut _0: ();
+    let _3: ();
+    let _4: &mut i32;
+    let _5: &mut Counter;
+    let _6: usize;
+    let _7: i32;
+    let _8: ();
+    let _9: i32;
+
+    bb0: {
+        _5 = &two_phase (*_1);
+        _6 = copy _2;
+        _4 = slot(move _5, copy _6) -> bb1;
+    }
+
+    bb1: {
+        _7 = copy (*_4);
+        (*_4) = Add(copy _7, const 1_i32);
+        _3 = const ();
+        StorageDead(_4);
+        _9 = copy (*_1).1;
+        (*_1).1 = Add(copy _9, const 1_i32);
+        _8 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn Counter::max_ref(_1: &Counter) -> &i32 {
+    let mut _0: &i32;
+    let mut _2: &i32; // best
+    let _3: usize;
+    let _4: bool;
+    let mut _5: usize; // i
+    let _6: ();
+    let _7: ();
+    let _8: bool;
+    let _9: usize;
+    let _10: ();
+    let _11: bool;
+    let _12: i32;
+    let _13: usize;
+    let _14: bool;
+    let _15: i32;
+    let _16: ();
+    let _17: &i32;
+    let _18: usize;
+    let _19: bool;
+    let _20: ();
+    let _21: usize;
+
+    bb0: {
+        _3 = const 0_usize;
+        _4 = Lt(copy _3, const 4_usize);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _2 = &(*_1).0[_3];
+        _5 = const 1_usize;
+        goto -> bb2;
+    }
+
+    bb2: {
+        _9 = copy _5;
+        _8 = Lt(copy _9, const 4_usize);
+        switchInt(copy _8) -> [0: bb5, otherwise: bb4];
+    }
+
+    bb3: {
+        _0 = copy _2;
+        StorageDead(_5);
+        StorageDead(_2);
+        return;
+    }
+
+    bb4: {
+        _13 = copy _5;
+        _14 = Lt(copy _13, const 4_usize);
+        assert(copy _14, "index out of bounds") -> bb7;
+    }
+
+    bb5: {
+        _6 = const ();
+        goto -> bb3;
+    }
+
+    bb6: {
+        goto -> bb2;
+    }
+
+    bb7: {
+        _12 = copy (*_1).0[_13];
+        _15 = copy (*_2);
+        _11 = Gt(copy _12, copy _15);
+        switchInt(copy _11) -> [0: bb9, otherwise: bb8];
+    }
+
+    bb8: {
+        _18 = copy _5;
+        _19 = Lt(copy _18, const 4_usize);
+        assert(copy _19, "index out of bounds") -> bb11;
+    }
+
+    bb9: {
+        _10 = const ();
+        goto -> bb10;
+    }
+
+    bb10: {
+        _21 = copy _5;
+        _5 = Add(copy _21, const 1_usize);
+        _20 = const ();
+        _7 = const ();
+        goto -> bb6;
+    }
+
+    bb11: {
+        _17 = &(*_1).0[_18];
+        _2 = copy _17;
+        _16 = const ();
+        _10 = const ();
+        goto -> bb10;
+    }
+}
+
+fn split(_1: &mut (i32, i32)) -> Split {
+    let mut _0: Split;
+    let _2: &mut i32;
+    let _3: &mut i32;
+    let _4: &mut i32;
+    let _5: &mut i32;
+
+    bb0: {
+        _3 = &mut (*_1).0;
+        _2 = &mut (*_3);
+        _5 = &mut (*_1).1;
+        _4 = &mut (*_5);
+        _0 = Split { left: move _2, right: move _4 };
+        return;
+    }
+}
+
+fn find(_1: &[i32], _2: i32) -> Option<&i32> {
+    let mut _0: Option<&i32>;
+    let mut _3: usize; // i
+    let _4: ();
+    let _5: ();
+    let _6: bool;
+    let _7: usize;
+    let _8: usize;
+    let _9: ();
+    let _10: bool;
+    let _11: i32;
+    let _12: usize;
+    let _13: usize;
+    let _14: bool;
+    let _15: i32;
+    let _16: !;
+    let _17: &i32;
+    let _18: usize;
+    let _19: usize;
+    let _20: bool;
+    let _21: ();
+    let _22: usize;
+
+    bb0: {
+        _3 = const 0_usize;
+        goto -> bb1;
+    }
+
+    bb1: {
+        _7 = copy _3;
+        _8 = Len(&(*_1));
+        _6 = Lt(copy _7, copy _8);
+        switchInt(copy _6) -> [0: bb4, otherwise: bb3];
+    }
+
+    bb2: {
+        _0 = Option::None;
+        StorageDead(_3);
+        return;
+    }
+
+    bb3: {
+        _12 = copy _3;
+        _13 = Len((*_1));
+        _14 = Lt(copy _12, copy _13);
+        assert(copy _14, "index out of bounds") -> bb6;
+    }
+
+    bb4: {
+        _4 = const ();
+        goto -> bb2;
+    }
+
+    bb5: {
+        goto -> bb1;
+    }
+
+    bb6: {
+        _11 = copy (*_1)[_12];
+        _15 = copy _2;
+        _10 = Eq(copy _11, copy _15);
+        switchInt(copy _10) -> [0: bb8, otherwise: bb7];
+    }
+
+    bb7: {
+        _18 = copy _3;
+        _19 = Len((*_1));
+        _20 = Lt(copy _18, copy _19);
+        assert(copy _20, "index out of bounds") -> bb10;
+    }
+
+    bb8: {
+        _9 = const ();
+        goto -> bb9;
+    }
+
+    bb9: {
+        _22 = copy _3;
+        _3 = Add(copy _22, const 1_usize);
+        _21 = const ();
+        _5 = const ();
+        goto -> bb5;
+    }
+
+    bb10: {
+        _17 = &(*_1)[_18];
+        _0 = Option::Some(copy _17);
+        return;
+    }
+
+    bb11: {
+        _9 = const ();
+        goto -> bb9;
+    }
+}
+
+fn first_or<'a>(_1: &[i32], _2: &i32) -> &i32 {
+    let mut _0: &i32;
+    let _3: bool;
+    let _4: usize;
+    let _5: usize;
+    let _6: usize;
+    let _7: bool;
+
+    bb0: {
+        _4 = Len(&(*_1));
+        _3 = Eq(copy _4, const 0_usize);
+        switchInt(copy _3) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _0 = copy _2;
+        goto -> bb3;
+    }
+
+    bb2: {
+        _5 = const 0_usize;
+        _6 = Len((*_1));
+        _7 = Lt(copy _5, copy _6);
+        assert(copy _7, "index out of bounds") -> bb4;
+    }
+
+    bb3: {
+        return;
+    }
+
+    bb4: {
+        _0 = &(*_1)[_5];
+        goto -> bb3;
+    }
+}
+
+fn swap_refs<'a>(_1: &mut &i32, _2: &mut &i32) -> () {
+    let mut _0: ();
+    let _3: &i32; // t
+    let _4: ();
+    let _5: &i32;
+    let _6: ();
+    let _7: &i32;
+
+    bb0: {
+        _3 = copy (*_1);
+        _5 = copy (*_2);
+        (*_1) = copy _5;
+        _4 = const ();
+        _7 = copy _3;
+        (*_2) = copy _7;
+        _6 = const ();
+        _0 = const ();
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn apply<F>(_1: F, _2: &i32) -> i32 {
+    let mut _0: i32;
+    let _3: &F;
+    let _4: &i32;
+    let _5: (&i32,);
+
+    bb0: {
+        _3 = &_1;
+        _4 = copy _2;
+        _5 = (copy _4,);
+        _0 = call::<F, (&i32,)>(copy _3, move _5) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: Node; // tail
+    let _2: Option<&Node>;
+    let _3: Node; // mid
+    let _4: Option<&Node>;
+    let _5: &Node;
+    let _6: Node; // head
+    let _7: Option<&Node>;
+    let _8: &Node;
+    let mut _9: i32; // total
+    let _10: &Node;
+    let mut _11: Counter; // c
+    let _12: [i32; 4];
+    let _13: ();
+    let _14: &mut Counter;
+    let _15: ();
+    let _16: &mut Counter;
+    let _17: ();
+    let _18: &mut Counter;
+    let _19: ();
+    let _20: i32;
+    let _21: &i32;
+    let _22: &Counter;
+    let _23: i32;
+    let _24: ();
+    let _25: &mut Counter;
+    let mut _26: (i32, i32); // p
+    let _27: ();
+    let _28: Split; // s
+    let _29: &mut (i32, i32);
+    let _30: &mut (i32, i32);
+    let _31: ();
+    let _32: i32;
+    let _33: ();
+    let _34: i32;
+    let _35: ();
+    let _36: i32;
+    let _37: i32;
+    let _38: i32;
+    let _39: i32;
+    let _40: [i32; 3]; // v
+    let _41: ();
+    let _42: Option<&i32>;
+    let _43: &[i32];
+    let _44: &[i32; 3];
+    let _45: &i32; // r
+    let _46: isize;
+    let _47: ();
+    let _48: i32;
+    let _49: i32;
+    let _50: i32; // d
+    let _51: ();
+    let _52: i32;
+    let _53: &i32;
+    let _54: &[i32];
+    let _55: &[i32; 3];
+    let _56: &i32;
+    let _57: i32;
+    let _58: i32; // x
+    let _59: i32; // y
+    let mut _60: &i32; // a
+    let mut _61: &i32; // b
+    let _62: ();
+    let _63: &mut &i32;
+    let _64: &mut &i32;
+    let _65: &mut &i32;
+    let _66: &mut &i32;
+    let _67: ();
+    let _68: i32;
+    let _69: i32;
+    let _70: i32;
+    let _71: i32;
+    let _72: i32;
+    let _73: i32; // k
+    let _74: ();
+    let _75: i32;
+    let _76: {closure};
+    let _77: &i32;
+    let _78: &i32;
+    let _79: i32;
+    let mut _80: i32; // acc
+    let mut _81: {closure}; // add
+    let _82: &mut i32;
+    let _83: ();
+    let _84: &mut {closure};
+    let _85: &i32;
+    let _86: (&i32,);
+    let _87: ();
+    let _88: &mut {closure};
+    let _89: &i32;
+    let _90: (&i32,);
+    let _91: ();
+    let _92: i32;
+    let _93: i32;
+    let _94: bool;
+    let _95: i32;
+    let _96: ();
+
+    bb0: {
+        _2 = Option::None;
+        _1 = Node { value: const 3_i32, next: copy _2 };
+        _5 = &_1;
+        _4 = Option::Some(copy _5);
+        _3 = Node { value: const 2_i32, next: copy _4 };
+        _8 = &_3;
+        _7 = Option::Some(copy _8);
+        _6 = Node { value: const 1_i32, next: copy _7 };
+        _10 = &_6;
+        _9 = sum_list(copy _10) -> bb1;
+    }
+
+    bb1: {
+        _12 = [const 0_i32; 4];
+        _11 = Counter { counts: copy _12, total: const 0_i32 };
+        _14 = &two_phase _11;
+        _13 = bump(move _14, const 1_usize) -> bb2;
+    }
+
+    bb2: {
+        _16 = &two_phase _11;
+        _15 = bump(move _16, const 1_usize) -> bb3;
+    }
+
+    bb3: {
+        _18 = &two_phase _11;
+        _17 = bump(move _18, const 2_usize) -> bb4;
+    }
+
+    bb4: {
+        _22 = &_11;
+        _21 = max_ref(copy _22) -> bb5;
+    }
+
+    bb5: {
+        _20 = copy (*_21);
+        _23 = copy _9;
+        _9 = Add(copy _23, copy _20);
+        _19 = const ();
+        StorageDead(_21);
+        _25 = &two_phase _11;
+        _24 = bump(move _25, const 3_usize) -> bb6;
+    }
+
+    bb6: {
+        _26 = (const 1_i32, const 2_i32);
+        _30 = &mut _26;
+        _29 = &mut (*_30);
+        _28 = split(move _29) -> bb7;
+    }
+
+    bb7: {
+        _32 = copy (*_28.0);
+        (*_28.0) = Add(copy _32, const 10_i32);
+        _31 = const ();
+        _34 = copy (*_28.1);
+        (*_28.1) = Add(copy _34, const 20_i32);
+        _33 = const ();
+        _27 = const ();
+        StorageDead(_28);
+        _37 = copy _26.0;
+        _38 = copy _26.1;
+        _36 = Add(copy _37, copy _38);
+        _39 = copy _9;
+        _9 = Add(copy _39, copy _36);
+        _35 = const ();
+        _40 = [const 4_i32, const 5_i32, const 6_i32];
+        _44 = &_40;
+        _43 = copy _44 as &[i32] (unsize);
+        _42 = find(copy _43, const 5_i32) -> bb11;
+    }
+
+    bb8: {
+        _48 = copy (*_45);
+        _49 = copy _9;
+        _9 = Add(copy _49, copy _48);
+        _47 = const ();
+        _41 = const ();
+        StorageDead(_45);
+        StorageDead(_42);
+        goto -> bb10;
+    }
+
+    bb9: {
+        StorageDead(_45);
+        StorageDead(_42);
+        _41 = const ();
+        goto -> bb10;
+    }
+
+    bb10: {
+        _50 = const 0_i32;
+        _55 = &_40;
+        _54 = copy _55 as &[i32] (unsize);
+        _56 = &_50;
+        _53 = first_or(copy _54, copy _56) -> bb13;
+    }
+
+    bb11: {
+        _46 = discriminant(_42);
+        switchInt(copy _46) -> [1: bb12, otherwise: bb9];
+    }
+
+    bb12: {
+        _45 = copy (_42 as #1).0;
+        goto -> bb8;
+    }
+
+    bb13: {
+        _52 = copy (*_53);
+        _57 = copy _9;
+        _9 = Add(copy _57, copy _52);
+        _51 = const ();
+        StorageDead(_53);
+        _58 = const 1_i32;
+        _59 = const 2_i32;
+        _60 = &_58;
+        _61 = &_59;
+        _64 = &mut _60;
+        _63 = &mut (*_64);
+        _66 = &mut _61;
+        _65 = &mut (*_66);
+        _62 = swap_refs(move _63, move _65) -> bb14;
+    }
+
+    bb14: {
+        _70 = copy (*_60);
+        _69 = Mul(copy _70, const 10_i32);
+        _71 = copy (*_61);
+        _68 = Add(copy _69, copy _71);
+        _72 = copy _9;
+        _9 = Add(copy _72, copy _68);
+        _67 = const ();
+        _73 = const 3_i32;
+        _77 = &_73;
+        _76 = {closure}(move _77);
+        _78 = &_58;
+        _75 = apply::<{closure}>(copy _76, copy _78) -> bb15;
+    }
+
+    bb15: {
+        _79 = copy _9;
+        _9 = Add(copy _79, copy _75);
+        _74 = const ();
+        _80 = const 0_i32;
+        _82 = &mut _80;
+        _81 = {closure}(move _82);
+        _84 = &two_phase _81;
+        _85 = &_58;
+        _86 = (copy _85,);
+        _83 = call_mut::<{closure}, (&i32,)>(move _84, move _86) -> bb16;
+    }
+
+    bb16: {
+        _88 = &two_phase _81;
+        _89 = &_59;
+        _90 = (copy _89,);
+        _87 = call_mut::<{closure}, (&i32,)>(move _88, move _90) -> bb17;
+    }
+
+    bb17: {
+        _92 = copy _80;
+        _93 = copy _9;
+        _9 = Add(copy _93, copy _92);
+        _91 = const ();
+        _95 = copy _9;
+        _94 = Eq(copy _95, const 0_i32);
+        switchInt(copy _94) -> [0: bb19, otherwise: bb18];
+    }
+
+    bb18: {
+        goto -> bb21;
+    }
+
+    bb19: {
+        _0 = const ();
+        goto -> bb20;
+    }
+
+    bb20: {
+        StorageDead(_81);
+        StorageDead(_80);
+        StorageDead(_73);
+        StorageDead(_61);
+        StorageDead(_60);
+        StorageDead(_59);
+        StorageDead(_58);
+        StorageDead(_50);
+        StorageDead(_40);
+        StorageDead(_26);
+        StorageDead(_11);
+        StorageDead(_9);
+        StorageDead(_6);
+        StorageDead(_3);
+        StorageDead(_1);
+        return;
+    }
+
+    bb21: {
+        _96 = const ();
+        goto -> bb21;
+    }
+
+    bb22: {
+        goto -> bb20;
+    }
+}
+
+fn main::{closure#119} as Fn(_1: &{closure}, _2: (&i32,)) -> i32 {
+    let mut _0: i32;
+    let _3: &i32; // r
+    let _4: i32;
+    let _5: i32;
+
+    bb0: {
+        _3 = copy _2.0;
+        _4 = copy (*_3);
+        _5 = copy (*(*_1).0);
+        _0 = Add(copy _4, copy _5);
+        return;
+    }
+}
+
+fn main::{closure#119} as FnMut(_1: &mut {closure}, _2: (&i32,)) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&i32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#119} as FnOnce(_1: {closure}, _2: (&i32,)) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&i32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#129} as FnMut(_1: &mut {closure}, _2: (&i32,)) -> () {
+    let mut _0: ();
+    let _3: &i32; // r
+    let _4: i32;
+    let _5: i32;
+
+    bb0: {
+        _3 = copy _2.0;
+        _4 = copy (*_3);
+        _5 = copy (*(*_1).0);
+        (*(*_1).0) = Add(copy _5, copy _4);
+        _0 = const ();
+        return;
+    }
+}
+
+fn main::{closure#129} as FnOnce(_1: {closure}, _2: (&i32,)) -> () {
+    let mut _0: ();
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, (&i32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+

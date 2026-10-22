@@ -84,12 +84,6 @@ error 884..886: mismatched types: expected `&mut S`, found `&S`
 error 957..958: mismatched types: expected `&mut i32`, found `{integer}`
 error 1006..1008: type `{integer}` cannot be dereferenced
 error 1055..1056: no field `b` on type `&S`
-error 1107..1112: `mut` bindings of references are not supported yet
-error 1176..1177: references in variables declared without a value are not supported yet
-error 1246..1253: references inside other types are not supported yet
-error 1310..1313: references inside other types are not supported yet
-error 1353..1357: returning references is not supported yet
-error 1432..1434: `break` with a reference is not supported yet
 error 1536..1542: cannot assign twice to immutable variable `r`
 error 1615..1620: cannot assign to immutable argument `r`
 error 1655..1656: missing lifetime specifier

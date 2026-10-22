@@ -316,6 +316,7 @@ fn generic_copy_param<T>(_1: Pair<T>) -> (T, T, Pair<T>) {
         _4 = copy _5.0;
         _7 = copy _1;
         _0 = (copy _2, copy _4, copy _7);
+        StorageDead(_5);
         return;
     }
 }

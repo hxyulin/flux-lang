@@ -135,7 +135,9 @@ fn dropped_while_borrowed() -> i32 {
     }
 
     bb1: {
+        StorageDead(_3);
         _1 = copy (*_2).0;
+        StorageDead(_2);
         _0 = copy _1;
         StorageDead(_1);
         return;
