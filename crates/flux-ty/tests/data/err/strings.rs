@@ -14,4 +14,11 @@ fn index(s: &str) -> u8 {
     s[0]
 }
 
+fn patterns(r: &&str) -> i32 {
+    match r {
+        "x" => 1,
+        _ => 2,
+    }
+}
+
 fn main() {}

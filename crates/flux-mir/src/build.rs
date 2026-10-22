@@ -2982,6 +2982,11 @@ impl Builder<'_> {
                         range,
                     );
                     self.current = Some(ok);
+                } else if let Some(&eq) = self.types.overloads.get(*expr) {
+                    // A string is compared by `<str as PartialEq>::eq`, as
+                    // rustc's MIR does.
+                    let value = self.lower_operand(*expr);
+                    self.str_eq_test(eq, place, value, fail, range);
                 } else {
                     let value = self.lower_operand(*expr);
                     self.compare(BinOp::Eq, place, value, fail, range);
@@ -3142,6 +3147,31 @@ impl Builder<'_> {
             Rvalue::BinaryOp(op, Operand::Copy(place), value),
             range,
         );
+        let ok = self.new_block();
+        self.terminate(
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(holds.into()),
+                targets: vec![(0, fail)],
+                otherwise: ok,
+                variants: None,
+            },
+            range,
+        );
+        self.current = Some(ok);
+    }
+
+    /// Goes on if the `&str` in `place` equals `value`, to `fail` if not.
+    fn str_eq_test(
+        &mut self,
+        eq: flux_ty::Instance,
+        place: Place,
+        value: Operand,
+        fail: BasicBlock,
+        range: TextRange,
+    ) {
+        let holds = self.temp(Ty::BOOL);
+        let args = vec![Operand::Copy(place), value];
+        self.call(eq.function, eq.args, args, &holds.into(), range);
         let ok = self.new_block();
         self.terminate(
             TerminatorKind::SwitchInt {

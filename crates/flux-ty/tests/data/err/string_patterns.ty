@@ -1,0 +1,10 @@
+fn strings(&str) -> i32
+    s@0: &str
+fn tuples(&str) -> i32
+    s@0: &str
+fn refutable(&str) -> ()
+    s@0: &str
+fn main() -> ()
+error 39..40: non-exhaustive patterns: `&_` not covered
+error 126..132: non-exhaustive patterns: `(&_, i32::MIN..=1_i32)` and `(&_, 3_i32..=i32::MAX)` not covered
+error 220..223: refutable pattern in local binding: pattern `&_` not covered
