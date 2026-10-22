@@ -195,13 +195,25 @@ literal is a `&'static str`; `str` is unsized like `[u8]`, its UTF-8
 bytes. `core` gives `u8` and `[u8]` their ASCII methods, `char` those
 that need no Unicode tables (`to_digit`, `from_digit`, `from_u32`,
 `len_utf8`, `is_whitespace`, the ASCII ones), and `str` `len`,
-`as_bytes`, `as_ptr`, `bytes`, `chars`, `char_indices`, comparisons,
-`starts_with`, `ends_with`, `contains` and `find` (with a `&str` or a
-`char`), `str::from_utf8`, indexing by ranges of bytes (`&s[1..4]`,
-which panics, as rustc's does, unless they are within the string and
-at character boundaries) and the methods that give parts of it:
-`split_at`, `trim`, `trim_start`, `trim_end`, `split` (by a `&str` or
-a `char`), `lines` and `split_whitespace`, with `char::encode_utf8`.
+`as_bytes`, `as_ptr`, `bytes`, `chars`, `char_indices` (`Bytes` is an
+`ExactSizeIterator`, and all three are iterators from both ends, with
+rustc's `size_hint`s), comparisons, `str::from_utf8`, indexing by
+ranges of bytes (`&s[1..4]`, which panics, as rustc's does, unless they
+are within the string and at character boundaries, and `get`, which
+gives `None` there) and the methods that give parts of it: `split_at`,
+`trim`, `trim_start`, `trim_end`, `lines` and `split_whitespace`, with
+`char::encode_utf8`. Its searching methods take rustc's patterns: a
+`&str` (an empty one matching at every character boundary), a `char`, a
+`[char; N]`, `&[char; N]` or `&[char]` (any of its characters), or a
+closure or function `FnMut(char) -> bool` (the characters it is `true`
+for): `starts_with`, `ends_with`, `contains`, `find`, `rfind`,
+`strip_prefix`, `strip_suffix`, `split_once`, `rsplit_once`,
+`trim_start_matches`, `trim_end_matches`, `split`, `rsplit`,
+`split_terminator`, `split_inclusive`, `splitn`, `rsplitn`, `matches`,
+`rmatches`, `match_indices` and `rmatch_indices`, whose matches and
+parts are rustc's, overlapping `&str` matches included; as in rustc,
+`trim_matches` and the iterators' back ends take only the patterns of
+single characters (not a `&str`).
 `char`'s Unicode-table methods (`is_alphabetic`, `to_uppercase`) are
 not supported yet. Programs print with `println!` and the other
 printing macros (below), or through C.
@@ -337,7 +349,9 @@ and references to them either way round: `s == [1, 2]`, `w == b"fn"`),
 of up to 32 elements (any element type for none), and `IntoIterator`
 for `[T; N]`, `&[T; N]` and `&mut [T; N]`; and `array::from_fn` and
 arrays' `map`, `as_slice`, `as_mut_slice` and `each_ref` (`each_mut`
-is not supported yet). `core::slice` gives slices `first`, `last` and `get` (`Option<&T>`),
+is not supported yet). `core::slice` gives slices `first`, `last` and
+`get` (`Option<&T>` for an index, `Option<&[T]>` for any range of
+them, through rustc's `SliceIndex`),
 `iter` and `iter_mut`, iterators over references from both ends
 (`Iter<'a, T>`, `IterMut<'a, T>`), and `IntoIterator` for `&[T]` and
 `&mut [T]`, so `for x in slice` works, and `for x in &array` and `for
@@ -349,7 +363,9 @@ has `first_mut`, `last_mut`, `get_mut`, `split_first`, `split_last`,
 `swap`, `reverse`, `rotate_left`, `rotate_right`, `split_at`,
 `split_at_mut`, `copy_from_slice`, `clone_from_slice`, `fill`,
 `contains`, `starts_with`, `ends_with`, `windows`, `chunks`,
-`chunks_exact`, `chunks_mut` (iterators from both ends), `binary_search`
+`chunks_exact`, `chunks_mut`, `chunks_exact_mut` (with
+`into_remainder`), `rchunks`, `rchunks_exact` (iterators from both
+ends), `copy_within` (with any range, `core::ops::RangeBounds`), `binary_search`
 (`_by`, `_by_key`, rustc's algorithm, so it finds the same one of equal
 elements), `is_sorted`, and `sort`, `sort_by`, `sort_by_key` (in
 rustc's `alloc`, which flux has none of) and their `sort_unstable`
@@ -593,7 +609,9 @@ types) (`Sized`, `Copy`, `Clone`, `Drop`, `PartialEq`,
 it, the integers included, `cmp`, `max`, `min` and `clamp`, and
 `Ordering` has `is_eq`, `is_ne`, `is_lt`, `is_gt`, `is_le`, `is_ge`,
 `reverse`, `then` (`const`, as in rustc) and `then_with`, with
-`cmp::{max_by, min_by, max_by_key, min_by_key}`. `From` converts each type
+`cmp::{max_by, min_by, max_by_key, min_by_key}`, and `cmp::Reverse`,
+which orders the other way round (`sort_by_key(|x| Reverse(x.n))`).
+`bool` has `then_some` and `then`. `From` converts each type
 from itself, `bool` to the integers, and integers to the wider ones
 that hold all their values, as in rustc; `Into` comes later. `Option` has `is_some`,
 `is_none`, `unwrap`, `expect`, `unwrap_or`, `ok_or`, `and`, `or` and
@@ -618,7 +636,8 @@ of an `Option<&T>` (`const` where rustc's are, except `take` and
 prelude), which bounds name as `Fn(A, B) -> C` (the angle-bracket
 form, and parentheses on other traits, are errors, as in rustc), and
 the range structs `Range`, `RangeInclusive`, `RangeFrom`, `RangeTo`,
-`RangeToInclusive` and `RangeFull`, with `contains`. `core::iter` has
+`RangeToInclusive` and `RangeFull`, with `contains`, all `RangeBounds`
+(with `Bound`, as `(Bound<T>, Bound<T>)` is too). `core::iter` has
 `Iterator` (in the prelude) with `next` and the provided methods
 `size_hint`, `rposition`, `count`, `last`, `nth`, `step_by`, `chain`, `zip`, `map`, `for_each`,
 `filter`, `filter_map`, `enumerate`, `skip_while`, `take_while`,
@@ -631,8 +650,10 @@ the range structs `Range`, `RangeInclusive`, `RangeFrom`, `RangeTo`,
 `nth_back`, `rfind`), which the adapters implement where rustc's do;
 `ExactSizeIterator` (`len`, in the prelude), for the slice, array and `Option`
 iterators, the ranges of rustc's types and the adapters that keep it;
-`IntoIterator`, which every iterator implements; and `Sum` and
-`Product` for the integers and references to them. Every adapter's
+`IntoIterator`, which every iterator implements; `Sum` and
+`Product` for the integers and references to them; and the iterators
+`empty`, `once`, `once_with`, `repeat`, `repeat_with`, `repeat_n` (the
+value's clones, then the value itself), `successors` and `from_fn`. Every adapter's
 `size_hint` is rustc's. `&mut I` is an iterator where `I` is. The ranges of
 integers are iterators (`Range`, `RangeFrom` and `RangeInclusive`, the
 first and last from both ends). `try_fold`, `try_for_each` and
@@ -662,6 +683,8 @@ and `Fn` otherwise, and `Copy` if what it captures is. The borrow
 checker treats a closure as holding the borrows of what it captures,
 for as long as it, or any value it is moved into (an adapter like
 `Map`, a struct, a call's result), may be used, with rustc's messages.
+A closure implements other traits through blanket `impl` blocks, as
+any type does (`impl<F: FnMut(char) -> bool> Pattern for F`).
 Safe function items and pointers implement the `Fn`-family traits too,
 so they may be passed where closures are, and a closure that captures
 nothing coerces to a function pointer of its signature (one that

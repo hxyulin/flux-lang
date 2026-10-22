@@ -1200,12 +1200,12 @@ fn holds_at(
         };
     }
     if let TyKind::Closure(_, args) = goal.self_ty.kind() {
-        return match closure_goal(items, goal.trait_ref.trait_, args) {
+        match closure_goal(items, goal.trait_ref.trait_, args) {
             ClosureGoal::Fn(kind, params) => {
-                ClosureArgs::split(args)
+                return ClosureArgs::split(args)
                     .closure_kind()
                     .is_some_and(|k| k <= kind)
-                    && goal.trait_ref.args.first() == Some(&params)
+                    && goal.trait_ref.args.first() == Some(&params);
             }
             ClosureGoal::Upvars(upvars) => {
                 stack.push(goal);
@@ -1218,10 +1218,11 @@ fn holds_at(
                     holds_at(items, sigs, env, goal, stack)
                 });
                 stack.pop();
-                all
+                return all;
             }
-            ClosureGoal::No => false,
-        };
+            // Other traits hold through blanket `impl` blocks, below.
+            ClosureGoal::No => {}
+        }
     }
     let mut impls = sigs
         .impl_index

@@ -9,6 +9,7 @@ mod macros;
 
 pub mod array;
 pub mod ascii;
+mod bool;
 pub mod char;
 pub mod clone;
 pub mod cmp;
