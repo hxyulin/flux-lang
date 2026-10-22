@@ -40,7 +40,11 @@ mod hidden {
 fn hidden_fn() { #![cfg(any())] missing_macro!(); }
 
 fn sum(a: i32, b: i32) -> i32 { a + b }
+#[cfg_attr(all(), repr(align(64)))]
+struct Aligned(u8);
 fn main() {
+    let aligned = Aligned(7);
+    println!("{} {} {}", core::mem::align_of::<Aligned>(), core::mem::size_of::<Aligned>(), aligned.0);
     trace!("disabled logging");
     configured_statement!();
     #[cfg_attr(all(), cfg(any()))]

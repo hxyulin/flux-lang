@@ -25,6 +25,7 @@ fn cached_unicode_ident_normalized_manifest_selects_2021_library() {
     let result = plan(&Options {
         manifest_path: root.join("Cargo.toml"),
         bin: None,
+        optimize: false,
     });
     std::fs::remove_dir_all(root).unwrap();
     let plan = result.unwrap();

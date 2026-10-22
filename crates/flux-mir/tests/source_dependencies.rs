@@ -282,3 +282,30 @@ fn dependency_item_macros_cannot_bypass_later_shadowing() {
     ]);
     assert!(!errors.is_empty(), "`$crate` matched an ident fragment");
 }
+
+#[test]
+fn conditional_no_std_controls_the_dependency_prelude() {
+    for (condition, expects_error) in [("all()", true), ("any()", false)] {
+        let source = format!(
+            "#![cfg_attr({condition}, cfg_attr(all(), no_std))] pub fn f() {{ let _ = Vec::<i32>::new(); }}"
+        );
+        let errors = check(&[
+            ("leaf", &source, &[]),
+            ("app", "fn main() { dep::f(); }", &[("dep", 0)]),
+        ]);
+        assert_eq!(!errors.is_empty(), expects_error, "{condition}: {errors:?}");
+    }
+    let errors = check(&[
+        (
+            "leaf",
+            "#![cfg_attr(all(), no_std)] pub fn f() -> Option<i32> { Some(7) }",
+            &[],
+        ),
+        (
+            "app",
+            "fn main() { assert_eq!(dep::f(), Some(7)); }",
+            &[("dep", 0)],
+        ),
+    ]);
+    assert!(errors.is_empty(), "{errors:?}");
+}

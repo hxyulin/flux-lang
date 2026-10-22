@@ -7,10 +7,13 @@
 - Resolve associated-type value paths such as `V::Mask::first` through trait
   bounds. Add primitive `core::u8`/`core::u32` compatibility constants and
   the `unreachable_unchecked` intrinsic, including const-evaluation errors.
-- Compile unchanged unicode-ident sources under an explicit edition-2024
-  wrapper; compare classification of every Unicode scalar with rustc in
-  both optimization modes. Original edition-2021 manifest loading remains
-  a separate milestone.
+- Compile the original cached unicode-ident package with its unchanged
+  edition-2021 manifest and sources; compare every Unicode scalar with rustc
+  in both optimization modes. Propagate editions through source graphs and
+  reject 2021 constructs whose edition-specific semantics remain unsupported.
+- Apply nested `cfg_attr` and prune disabled items and body positions before
+  lowering; validate module `macro_use` and preserve source editions while
+  inspecting conditional modules.
 
 - Honor validated `repr(align(N))` in aggregate/enum layouts and aligned
   storage, and add unsafe slice element `get_unchecked`/`get_unchecked_mut`.

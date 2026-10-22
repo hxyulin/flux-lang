@@ -395,7 +395,7 @@ is manifest support, not Cargo compiler compatibility.
 
 ### C1: source dependencies, whole program
 
-Implemented subset: edition-2024 local path libraries, including transitive
+Implemented subset: edition-2024 and bounded edition-2021 local path libraries, including transitive
 edges, aliases, shared crate identities and privacy. Sources compile together
 without `.rlib` artifacts. Exported declarative dependency macros preserve
 `$crate` identity through aliases/reexports. Registry/git packages, workspaces,

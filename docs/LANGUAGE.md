@@ -2,6 +2,8 @@
 
 flux accepts a subset of Rust, edition 2024. Anything flux accepts must be
 valid Rust with the same meaning, so `rustc` can check flux's behavior.
+Package source graphs also accept a deliberately bounded
+[edition-2021 subset](EDITION_2021.md); file commands default to 2024.
 This page covers syntax; later stages will narrow what is accepted further
 (no `async` at first, for example) and will be documented here as they land.
 
@@ -176,8 +178,11 @@ reported as "not supported yet":
   `windows`, and the target's `target_os`, `target_family`, `target_arch`,
   `target_pointer_width`, `target_endian` and `target_vendor`. `test`,
   features and unknown predicates are false; there are no build flags or
-  test builds yet. `cfg_attr`, inner `cfg`, and `cfg` on fields, variants,
-  parameters, statements and expressions are not supported yet.
+  test builds yet. Nested `cfg_attr` applies its selected attributes before
+  semantic consumers inspect them. Inner file/module `cfg` and conditional
+  statements, list elements and match arms are pruned before lowering.
+  Conditional fields, variants and parameters, and expressions whose removal
+  would leave a required operand missing, remain unsupported.
   Also `allow`, `warn`, `deny`, `expect`, `inline`,
   `cold`, `must_use` and `doc`, which are ignored, `derive` on structs
   and enums,
