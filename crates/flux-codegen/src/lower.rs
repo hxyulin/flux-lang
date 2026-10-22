@@ -529,7 +529,12 @@ enum Return {
 
 fn return_kind(sigs: &Signatures, ret: Ty) -> Return {
     if is_memory(sigs, ret) {
-        return Return::Memory(layout(sigs, ret));
+        let layout = layout(sigs, ret);
+        // Nothing to return (`[T; 0]`): keel has no empty `sret`.
+        if layout.size() == 0 {
+            return Return::Values(Vec::new());
+        }
+        return Return::Memory(layout);
     }
     let leaves = leaves_of(sigs, ret);
     if leaves.len() <= 1 {
@@ -1108,7 +1113,12 @@ impl Lower<'_, '_, '_> {
             }
             Location::Memory(address) if is_memory(self.sigs, ty) => {
                 let size = layout(self.sigs, ty).size();
-                self.copy(address, values[0], size);
+                // A value with no size (`[T; 0]`) may come as no value.
+                if let Some(&value) = values.first()
+                    && size > 0
+                {
+                    self.copy(address, value, size);
+                }
             }
             Location::Memory(address) => {
                 let leaves = layout(self.sigs, ty).leaves();
@@ -1791,6 +1801,10 @@ impl Lower<'_, '_, '_> {
                             let address = self.offset(pointer, offset);
                             self.b.ins().store_with_flags(value, address, aligned(ty));
                         }
+                        self.b.ins().return_(&[]);
+                    }
+                    // A value with no size returns nothing.
+                    None if is_memory(self.sigs, ret) => {
                         self.b.ins().return_(&[]);
                     }
                     None => {

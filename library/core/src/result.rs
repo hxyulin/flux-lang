@@ -58,6 +58,17 @@ impl<T, E> Result<T, E> {
         }
     }
 
+    /// The value, or `T`'s default on `Err`.
+    pub fn unwrap_or_default(self) -> T
+    where
+        T: crate::default::Default,
+    {
+        match self {
+            Ok(value) => value,
+            Err(_) => T::default(),
+        }
+    }
+
     /// `res` if it is `Ok`, else its error.
     #[rustc_const_unstable]
     pub fn and<U>(self, res: Result<U, E>) -> Result<U, E> {

@@ -205,7 +205,9 @@ fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
     if Some(instance.function) == lang_method(items, "eq", "eq") {
         return matches!(instance.args, [lhs, rhs] if flux_ty::traits::array_eq_elems(*lhs, *rhs).is_some());
     }
-    of_array && Some(instance.function) == lang_method(items, "clone", "clone")
+    of_array
+        && (Some(instance.function) == lang_method(items, "clone", "clone")
+            || Some(instance.function) == lang_method(items, "Default", "default"))
 }
 
 /// `Clone::clone` for an array of `T`: a copy if `T` is `Copy`, else
@@ -217,6 +219,9 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
     }
     if is_fn_shim(items, instance) {
         return Some(fn_shim(items, sigs, instance));
+    }
+    if Some(instance.function) == lang_method(items, "Default", "default") {
+        return Some(default_shim(instance));
     }
     if Some(instance.function) == lang_method(items, "eq", "eq") {
         if let (TyKind::Array(..), TyKind::Array(..)) =
@@ -501,6 +506,92 @@ fn slice_eq_shim(instance: Instance) -> Body {
         locals,
         blocks,
         param_count: 2,
+        c_strings: Vec::new(),
+        in_core: true,
+        inherits_overflow_checks: false,
+        live_drops: Vec::new(),
+        init_errors: Vec::new(),
+        upvars: None,
+        capture_uses: Vec::new(),
+        owner: None,
+        promoted: Vec::new(),
+    }
+}
+
+/// `Default::default` for an array of `T`: `T::default()` for each
+/// element in turn.
+fn default_shim(instance: Instance) -> Body {
+    let array = instance.args[0];
+    let TyKind::Array(elem, len) = array.kind() else {
+        unreachable!("defaults arrays")
+    };
+    let usize = Ty::int(flux_ty::IntTy::Usize);
+    let mut locals = flux_arena::Arena::new();
+    let mut local = |ty, kind| locals.alloc(LocalDecl { ty, kind });
+    let ret = local(array, LocalKind::Return);
+    let counter = local(usize, LocalKind::Temp);
+    let within = local(Ty::BOOL, LocalKind::Temp);
+    let range = flux_syntax::TextRange::default();
+    let statement = |place: Local, rvalue| Statement {
+        kind: StatementKind::Assign(place.into(), rvalue),
+        range,
+    };
+    let terminator = |kind| Terminator { kind, range };
+    let int = |value: u64| Operand::Const(Constant::int(i128::from(value), flux_ty::IntTy::Usize));
+    let block = BasicBlock::from_raw;
+    let (head, body, step, exit) = (block(1), block(2), block(3), block(4));
+    let mut blocks = flux_arena::Arena::new();
+    let mut push = |statements, kind| {
+        blocks.alloc(BasicBlockData {
+            statements,
+            terminator: terminator(kind),
+        })
+    };
+    push(
+        vec![statement(counter, Rvalue::Use(int(0)))],
+        // No elements: nothing to call, and `T` need not have a default.
+        if len == 0 {
+            TerminatorKind::Return
+        } else {
+            TerminatorKind::Goto(head)
+        },
+    );
+    if len > 0 {
+        push(
+            vec![statement(
+                within,
+                Rvalue::BinaryOp(crate::BinOp::Lt, Operand::Copy(counter.into()), int(len)),
+            )],
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(within.into()),
+                targets: vec![(0, exit)],
+                otherwise: body,
+                variants: None,
+            },
+        );
+        push(
+            Vec::new(),
+            TerminatorKind::Call {
+                func: instance.function,
+                generic_args: Ty::list(&[elem]),
+                args: Vec::new(),
+                dest: Place::from(ret).index(counter),
+                target: Some(step),
+            },
+        );
+        push(
+            vec![statement(
+                counter,
+                Rvalue::BinaryOp(crate::BinOp::Add, Operand::Copy(counter.into()), int(1)),
+            )],
+            TerminatorKind::Goto(head),
+        );
+        push(Vec::new(), TerminatorKind::Return);
+    }
+    Body {
+        locals,
+        blocks,
+        param_count: 0,
         c_strings: Vec::new(),
         in_core: true,
         inherits_overflow_checks: false,

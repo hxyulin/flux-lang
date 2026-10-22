@@ -1,0 +1,34 @@
+enum NoDefault { A = 0, B = 1 }
+
+enum Two { A = 0, B = 1 }
+
+enum WithFields { A(i32) = 0, B = 1 }
+
+enum NotDerived { A = 0 }
+
+enum Valued { A = 0 }
+
+enum Fine { A = 0, B = 1 }
+
+impl ::core::default::Default for Valued;
+
+impl ::core::default::Default for Fine;
+
+fn main() -> () {
+    let _ = <Fine>::default();
+    let _ = <Valued>::default();
+}
+
+fn <Valued as ::core::default::Default>::default() -> Self {
+    Valued::A
+}
+
+fn <Fine as ::core::default::Default>::default() -> Self {
+    Fine::B
+}
+
+error 169..176: `#[derive(Default)]` on enum with no `#[default]`
+error 222..229: multiple declared defaults
+error 346..347: the `#[default]` attribute may only be used on unit enum variants
+error 388..395: cannot find attribute `default` in this scope
+error 444..458: `#[default]` attribute does not accept a value

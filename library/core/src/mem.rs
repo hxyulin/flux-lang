@@ -40,3 +40,9 @@ pub fn replace<T>(dest: &mut T, src: T) -> T {
     swap(dest, &mut src);
     src
 }
+
+/// Takes the value `dest` refers to, leaving its type's default.
+#[rustc_const_unstable]
+pub fn take<T: crate::default::Default>(dest: &mut T) -> T {
+    replace(dest, T::default())
+}

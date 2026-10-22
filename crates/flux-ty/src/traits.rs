@@ -1226,9 +1226,9 @@ fn array_into_iter_instance(items: &ItemTree, instance: Instance) -> Option<Inst
     })
 }
 
-/// For `ty: t` where `ty` is an array and `t` is `Copy`, `Clone`, `Eq`
-/// or `PartialEq<[U; N]>`, what its element type must meet: `T: Copy`,
-/// `T: Clone`, `T: Eq`, `T: PartialEq<U>`. rustc's `core` implements them for
+/// For `ty: t` where `ty` is an array and `t` is `Copy`, `Clone`, `Eq`,
+/// `Default` or `PartialEq<[U; N]>`, what its element type must meet:
+/// `T: Copy`, `T: Clone`, `T: Eq`, `T: Default`, `T: PartialEq<U>`. rustc's `core` implements them for
 /// arrays with const generics, which flux does not have, so they are
 /// built in, and code generation makes their methods.
 pub fn builtin_array_impl(items: &ItemTree, goal: Predicate) -> Option<Predicate> {
@@ -1236,6 +1236,19 @@ pub fn builtin_array_impl(items: &ItemTree, goal: Predicate) -> Option<Predicate
     match lang.as_str() {
         "copy" | "clone" | "total_eq" => match goal.self_ty.kind() {
             TyKind::Array(elem, _) => Some(Predicate {
+                self_ty: elem,
+                ..goal
+            }),
+            _ => None,
+        },
+        // rustc's `core` has `Default` for arrays of up to 32 elements,
+        // those of none for any element type (`()`'s holds).
+        "Default" => match goal.self_ty.kind() {
+            TyKind::Array(_, 0) => Some(Predicate {
+                self_ty: Ty::UNIT,
+                ..goal
+            }),
+            TyKind::Array(elem, len) if len <= 32 => Some(Predicate {
                 self_ty: elem,
                 ..goal
             }),

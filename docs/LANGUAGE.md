@@ -197,10 +197,10 @@ shared references, tuples and arrays of `Copy` types, structs that
 implement `Copy` and type parameters bounded by it. Other values are moved, and
 flux reports uses after a move, including partial moves of fields, as
 rustc's borrow checker does. `#[derive(Clone, Copy, PartialEq, Eq,
-PartialOrd, Ord)]` implements those traits for a struct as rustc does
-(for a generic one, where its parameters implement them), comparing
-fields in order for `PartialOrd` and `Ord`; other derives are not
-supported yet.
+PartialOrd, Ord, Default)]` implements those traits for a struct as
+rustc does (for a generic one, where its parameters implement them),
+comparing fields in order for `PartialOrd` and `Ord`, and making each
+field's default for `Default`; other derives are not supported yet.
 
 Values are dropped as in rustc: a binding at the end of its block, in
 reverse order of declaration, then the function's parameters; a
@@ -254,7 +254,8 @@ borrows the array, whatever the index: `&mut a[0]` and `&mut a[1]`
 conflict (E0499), and elements may not be moved out of (E0508).
 `len` and `is_empty` are built into the compiler, as is the length of
 an array, `Copy`, `Clone` and `PartialEq` (`==` and `!=` on arrays of
-one length) of arrays whose elements implement them, and
+one length) of arrays whose elements implement them, `Default` of
+arrays of up to 32 elements (any element type for none), and
 `IntoIterator` for `[T; N]`, `&[T; N]` and `&mut [T; N]`: rustc's
 `core` writes these with const generics, which flux does not have yet.
 `core::slice` gives slices `first`, `last` and `get` (`Option<&T>`),
@@ -363,6 +364,10 @@ moved-out fields drop what the variant they hold still has.
 `#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]` works on
 enums as on structs; `PartialOrd` and `Ord` order variants by their
 discriminants, then the fields of the same variant, as rustc's do.
+`#[derive(Default)]` on an enum makes the unit variant marked
+`#[default]`, without bounds on its parameters, with rustc's errors for
+none, several, one with fields or with a value, and `#[default]`
+without the derive.
 
 Operators work on references to integers and `bool` as in rustc,
 which match ergonomics makes common (`match &p { (a, b) => a + b }`):
@@ -452,7 +457,9 @@ and the others of bits and signs, the `checked_`, `wrapping_`,
 `next_power_of_two`, `div_ceil`, `next_multiple_of`, `swap_bytes`,
 `reverse_bits` and the byte-order conversions (`to_le_bytes`, ...), all
 `const` and panicking or overflowing in constants as rustc's do,
-`core::mem::{drop, swap, replace}` (`drop` also in the prelude;
+`core::default::Default` (in the prelude) for the integers, `bool`,
+`()`, `Option`, tuples of up to twelve elements and `Range`,
+`core::mem::{drop, swap, replace, take}` (`drop` also in the prelude;
 `swap`'s body is the compiler's, and it is not `const` yet, as rustc's
 is), `core::convert::{identity, From}`,
 `core::marker::{Sized, Copy}`, `core::clone::Clone`, the operator
@@ -481,7 +488,8 @@ Of the methods that take closures, `Option` has `map`, `map_or`,
 `Result` has `map`, `map_err`, `map_or`, `map_or_else`, `and_then`,
 `or_else`, `unwrap_or_else`, `is_ok_and` and `is_err_and`. `Option`
 also has `as_ref`, `as_mut`, `take`, `take_if`, `replace`, `insert`,
-`get_or_insert`, `get_or_insert_with` and `iter`, `copied` and `cloned`
+`get_or_insert`, `get_or_insert_with`, `get_or_insert_default`,
+`unwrap_or_default` (as `Result` has) and `iter`, `copied` and `cloned`
 of an `Option<&T>` (`const` where rustc's are, except `take` and
 `replace`, which flux's constant evaluation cannot run yet), and is
 `IntoIterator`, by value and by reference. Anything else in

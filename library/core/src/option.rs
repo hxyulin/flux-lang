@@ -178,6 +178,27 @@ impl<T> Option<T> {
         }
     }
 
+    /// The value, or `T`'s default on `None`.
+    #[rustc_const_unstable]
+    pub fn unwrap_or_default(self) -> T
+    where
+        T: crate::default::Default,
+    {
+        match self {
+            Some(value) => value,
+            None => T::default(),
+        }
+    }
+
+    /// The value, after putting `T`'s default in if it is `None`.
+    #[rustc_const_unstable]
+    pub fn get_or_insert_default(&mut self) -> &mut T
+    where
+        T: crate::default::Default,
+    {
+        self.get_or_insert_with(T::default)
+    }
+
     /// A reference to the value, if any.
     pub const fn as_ref(&self) -> Option<&T> {
         match self {

@@ -5,12 +5,12 @@ use crate::cmp::PartialOrd;
 
 /// `..`: everything.
 #[lang = "RangeFull"]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct RangeFull;
 
 /// `start..end`: from `start`, up to but not including `end`.
 #[lang = "Range"]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Range<Idx> {
     pub start: Idx,
     pub end: Idx,

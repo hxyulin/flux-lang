@@ -572,6 +572,16 @@
   selected before closure arguments are checked, as rustc does, so
   `it.copied().map(|p| p.x)` knows `p`'s type, and bounds on a method's
   own parameters that no argument mentions are reported at its name.
+- Add `core::default::Default` (in the prelude) for the integers,
+  `bool`, `()`, `Option`, tuples of up to twelve elements, `Range` and
+  `RangeFull`, and arrays of up to 32 elements, built into the compiler
+  as their `Clone` is; `#[derive(Default)]` on structs, and on enums
+  with a `#[default]` unit variant, with rustc's errors (E0665,
+  "multiple declared defaults", non-unit and valued `#[default]`, and
+  `#[default]` without the derive); `Option::unwrap_or_default` and
+  `get_or_insert_default`, `Result::unwrap_or_default` and
+  `core::mem::take`. Fix functions returning values without size (`[T;
+  0]`), which produced invalid keel IR.
 
 ### Performance
 
