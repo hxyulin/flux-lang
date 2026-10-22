@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod build;
+mod package;
 
 use clap::{Parser, Subcommand};
 use flux_hir::{Diagnostic, Hir, SourceDb};
@@ -16,6 +17,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Build or run a restricted standalone Cargo package with Flux.
+    Package {
+        #[command(subcommand)]
+        command: package::Command,
+    },
     /// Print the tokens of a file, trivia included.
     Lex { file: PathBuf },
     /// Print the syntax tree of a file.
@@ -62,6 +68,15 @@ struct BuildOptions {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Command::Package { command } = &cli.command {
+        return match package::execute(command) {
+            Ok(code) => code,
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if let Command::Run {
         file,
         options,
@@ -146,7 +161,7 @@ fn run(command: Command) -> Result<bool, String> {
             let output = output.unwrap_or_else(|| PathBuf::from(build::crate_name(&file)));
             build::build(&file, &output, options)
         }
-        Command::Run { .. } => unreachable!("handled in main"),
+        Command::Package { .. } | Command::Run { .. } => unreachable!("handled in main"),
         Command::Check { files } => {
             let mut ok = true;
             for file in &files {

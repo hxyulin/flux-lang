@@ -52,6 +52,30 @@ impl Timings {
 /// Compiles `file` to an executable at `output`. `Ok(false)` means the
 /// program had errors, which were reported.
 pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result<bool, String> {
+    compile(CompileRequest {
+        file,
+        crate_name: &crate_name(file),
+        output,
+        options,
+    })
+}
+
+/// One source crate compiled with Flux's fixed edition-2024 host configuration.
+/// No Cargo profile, feature, target or rustc option is implied by this request.
+pub(crate) struct CompileRequest<'a> {
+    pub file: &'a Path,
+    pub crate_name: &'a str,
+    pub output: &'a Path,
+    pub options: BuildOptions,
+}
+
+pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
+    let CompileRequest {
+        file,
+        crate_name,
+        output,
+        options,
+    } = request;
     let mut timings = Timings::default();
     // `core`'s files are parsed with the database.
     let (mut db, root) = timings.time("parse", || {
@@ -61,7 +85,7 @@ pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result
     });
     let root = root?;
     let hir = timings.time("hir", || {
-        flux_hir::lower(&mut db, root, Symbol::intern(&crate_name(file)))
+        flux_hir::lower(&mut db, root, Symbol::intern(crate_name))
     });
     let typed = timings.time("types", || flux_mir::check_file(&hir));
     let mut errors = db.syntax_errors();
@@ -128,7 +152,7 @@ pub(crate) fn run(file: &Path, options: BuildOptions, args: &[String]) -> Result
     Ok(ExitCode::from(exit_code(status)))
 }
 
-fn exit_code(status: std::process::ExitStatus) -> u8 {
+pub(crate) fn exit_code(status: std::process::ExitStatus) -> u8 {
     if let Some(code) = status.code() {
         return code as u8;
     }
