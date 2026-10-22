@@ -401,6 +401,31 @@ impl<T> [T] {
         binary_search(self, &mut |k: &T| f(k).cmp(b))
     }
 
+    /// The index separating the initial elements for which `pred` is true
+    /// from the remaining elements for which it is false.
+    ///
+    /// The slice must be partitioned by `pred`; otherwise the result is
+    /// unspecified and meaningless. Returns 0 for an empty slice or when
+    /// no elements match, and `self.len()` when all elements match.
+    ///
+    /// Uses binary search with logarithmically many predicate calls. The
+    /// predicate may mutate captured state, but its answers must preserve
+    /// the partition. Call order and the exact number of calls are not
+    /// guaranteed.
+    pub fn partition_point<P: FnMut(&T) -> bool>(&self, mut pred: P) -> usize {
+        let mut left = 0;
+        let mut right = self.len();
+        while left < right {
+            let mid = left + (right - left) / 2;
+            if pred(&self[mid]) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        left
+    }
+
     /// Whether the elements are in order.
     pub fn is_sorted(&self) -> bool
     where
