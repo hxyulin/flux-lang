@@ -1,0 +1,3 @@
+fn main() -> ()
+    valid@0: NonZeroU32
+error 98..99: field `0` of struct `NonZeroU32` is private

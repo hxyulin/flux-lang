@@ -6,6 +6,36 @@
 //! caller does (in constants), as Rust's `core` does. `min` and `max`
 //! are `Ord`'s, as in Rust.
 
+/// A nonzero `u32`. Only checked construction and value access are
+/// implemented so far, together with comparison, copying and formatting.
+/// The private field and checked constructor preserve the nonzero validity
+/// range; the compiler uses zero for `Option<NonZeroU32>::None`.
+#[lang = "nonzero_u32"]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NonZeroU32(u32);
+
+impl NonZeroU32 {
+    pub const fn new(value: u32) -> Option<NonZeroU32> {
+        if value == 0 { None } else { Some(NonZeroU32(value)) }
+    }
+
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl crate::fmt::Debug for NonZeroU32 {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl crate::fmt::Display for NonZeroU32 {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::fmt::Display::fmt(&self.0, f)
+    }
+}
+
 /// Why an integer is not of another integer type: what `TryFrom`
 /// gives where the value is out of its range, too large or too small.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
