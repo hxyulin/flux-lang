@@ -1695,8 +1695,12 @@ fn extend_signatures(
                     message,
                 });
             };
-            if contains_ref(ty) {
-                error("references in statics are not supported yet".to_owned());
+            fn mutable_ref(ty: Ty) -> bool {
+                matches!(ty.kind(), TyKind::Ref(Mutability::Mut, _))
+                    || ty.children().into_iter().any(mutable_ref)
+            }
+            if mutable_ref(ty) {
+                error("mutable references in statics are not supported yet".to_owned());
             } else if !mutable && let Some(pointer) = not_sync(&sigs, ty, &mut Vec::new()) {
                 // Without `Sync`, the one type flux has that is not.
                 error(format!(

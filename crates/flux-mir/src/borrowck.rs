@@ -469,7 +469,10 @@ impl Checker<'_> {
         }
         // What the function returns may not borrow what dies with it:
         // its parameters and temporaries (bindings die before).
-        if let TerminatorKind::Return = kind {
+        // A constant's temporaries in its value live forever.
+        if let TerminatorKind::Return = kind
+            && self.body.owner.is_some()
+        {
             for id in 0..self.loans.len() {
                 let place = &self.loans[id].0.place;
                 let local = self.body.locals[place.local].kind;
@@ -523,7 +526,9 @@ impl Checker<'_> {
         let local = loan.place.local;
         let kind = self.body.locals[local].kind;
         let is_param = self.body.is_param(local);
-        if let Some((regions::Category::Return, at)) = self.regions.escapes[id] {
+        if let Some((regions::Category::Return, at)) = self.regions.escapes[id]
+            && self.body.owner.is_some()
+        {
             let reference = if at == loan.range {
                 "reference to"
             } else {
