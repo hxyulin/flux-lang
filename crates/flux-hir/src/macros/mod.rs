@@ -122,7 +122,11 @@ impl ItemTree {
 
     /// The macro named `name` in textual scope at `scope`: the latest
     /// definition of the name that is `scope` or one of its ancestors.
-    fn textual_macro(&self, scope: Option<MacroScopeId>, name: Symbol) -> Option<MacroId> {
+    pub(crate) fn textual_macro(
+        &self,
+        scope: Option<MacroScopeId>,
+        name: Symbol,
+    ) -> Option<MacroId> {
         let scope = scope?;
         let candidates = self.macro_names.get(&name)?;
         let depth = self.macro_scopes[scope].depth;
@@ -276,6 +280,23 @@ pub(crate) fn resolve<'a, L>(
         .position(|c| c.is_core)
         .map(|i| CrateId(i as u32));
     let exported = |k: CrateId| items.exported_macros.get(&(k, name)).copied();
+    // A macro by path, through the def map: what modules export or import.
+    let by_path = || {
+        // Collecting items, the crate's names are not resolved yet.
+        if items.def_map.scopes.len() < items.modules.len() {
+            return None;
+        }
+        let lowered = crate::item_tree::lower_path(path, &mut Vec::new())?;
+        match items.resolve(module, &lowered, crate::def_map::Ns::Macros) {
+            Ok(crate::def_map::Resolved::Def(crate::def_map::Def::Macro(id))) => Some(id),
+            _ => None,
+        }
+    };
+    if segments.len() > 1
+        && let Some(id) = by_path()
+    {
+        return Ok(Resolved::Def(id));
+    }
     match (global, segments.as_slice()) {
         (false, [_]) => {
             if let Some((_, l)) = local.iter().rev().find(|(n, _)| *n == name) {
@@ -283,6 +304,9 @@ pub(crate) fn resolve<'a, L>(
             }
             if let Some(def) = items.textual_macro(scope, name) {
                 return Ok(Resolved::Def(def));
+            }
+            if let Some(id) = by_path() {
+                return Ok(Resolved::Def(id));
             }
             let at_root = items.modules[items.named_module(module)].parent.is_none();
             if at_root && let Some(id) = exported(krate) {
