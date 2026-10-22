@@ -141,6 +141,7 @@ pub fn lower_module(
         reified: collected.reified,
         uses_abort: false,
         strings: HashMap::new(),
+        promoted: HashMap::new(),
         data: Vec::new(),
     };
     for instance in instances {
@@ -172,15 +173,7 @@ pub fn lower_module(
             continue;
         };
         let ty = typed.sigs.consts[id];
-        let layout = layout(&typed.sigs, ty);
-        let mut bits = Vec::new();
-        ctx.value_bits(value, ty, &mut bits);
-        let mut bytes = vec![0u8; layout.size().max(1) as usize];
-        for ((offset, leaf), value) in layout.leaves().into_iter().zip(bits) {
-            let width = leaf.bytes().unwrap_or(8) as usize;
-            let offset = offset as usize;
-            bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
-        }
+        let (bytes, align) = ctx.value_bytes(value, ty);
         ctx.data.push(DataObject {
             name: symbol.clone(),
             thread_local: false,
@@ -189,7 +182,7 @@ pub fn lower_module(
             hidden: false,
             init: Some(DataInit {
                 constant: !items.consts[id].is_static_mut(),
-                align: layout.align() as u32,
+                align,
                 items: vec![DataItem::Bytes(bytes)],
             }),
         });
@@ -654,6 +647,9 @@ struct Ctx<'a> {
     uses_abort: bool,
     /// The data object holding each distinct C string, by its bytes.
     strings: HashMap<Box<[u8]>, String>,
+    /// The data objects of promoted constants, by their bytes and
+    /// alignment.
+    promoted: HashMap<(Vec<u8>, u32), String>,
     data: Vec<DataObject>,
 }
 
@@ -698,6 +694,46 @@ impl Ctx<'_> {
         function
     }
 
+    /// `value`, of type `ty`, laid out in memory: its bytes and
+    /// alignment.
+    fn value_bytes(&mut self, value: &flux_mir::eval::Value, ty: Ty) -> (Vec<u8>, u32) {
+        let layout = layout(&self.typed.sigs, ty);
+        let mut bits = Vec::new();
+        self.value_bits(value, ty, &mut bits);
+        let mut bytes = vec![0u8; layout.size().max(1) as usize];
+        for ((offset, leaf), value) in layout.leaves().into_iter().zip(bits) {
+            let width = leaf.bytes().unwrap_or(8) as usize;
+            let offset = offset as usize;
+            bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        (bytes, layout.align() as u32)
+    }
+
+    /// The name of the read-only data object holding `value`, of type
+    /// `ty`: a promoted constant, shared by identical ones.
+    fn promoted(&mut self, value: &flux_mir::eval::Value, ty: Ty) -> String {
+        let (bytes, align) = self.value_bytes(value, ty);
+        let key = (bytes.clone(), align);
+        if let Some(name) = self.promoted.get(&key) {
+            return name.clone();
+        }
+        let name = format!("__flux_promoted{}", self.data.len());
+        self.promoted.insert(key, name.clone());
+        self.data.push(DataObject {
+            name: name.clone(),
+            thread_local: false,
+            local: true,
+            weak_odr: false,
+            hidden: false,
+            init: Some(DataInit {
+                constant: true,
+                align,
+                items: vec![DataItem::Bytes(bytes)],
+            }),
+        });
+        name
+    }
+
     /// The bits of each scalar leaf of `value`, of type `ty`, in the
     /// order of its leaves; zeros for the variants an enum does not
     /// hold.
@@ -707,6 +743,12 @@ impl Ctx<'_> {
         match value {
             V::Int { bits, .. } => out.push(*bits),
             V::Bool(b) => out.push(u128::from(*b)),
+            V::Aggregate(fields) if matches!(ty.kind(), TyKind::Array(..)) => {
+                let elem = ty.sequence_elem().unwrap_or(Ty::ERROR);
+                for field in fields {
+                    self.value_bits(field, elem, out);
+                }
+            }
             V::Aggregate(fields) => {
                 let types = sigs.fields(ty).unwrap_or_default();
                 for (field, &field_ty) in fields.iter().zip(types) {
@@ -1273,6 +1315,16 @@ impl Lower<'_, '_, '_> {
             }
             Constant::Item { .. } => unreachable!("handled by `operand`"),
             Constant::Static { id, .. } => Some(self.static_addr(id)),
+            Constant::Promoted { index, ty } => {
+                let pointee = match ty.kind() {
+                    TyKind::Ref(_, pointee) => pointee,
+                    _ => unreachable!("promoted constants are references"),
+                };
+                let value = self.body.promoted[index as usize].clone();
+                let name = self.ctx.promoted(&value, pointee);
+                let data = self.b.import_data(&name);
+                Some(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)))
+            }
             Constant::Fn { function, args, .. } => {
                 let callee = self.callee(function, args);
                 Some(self.b.ins().symbol_addr(keel_ir::Symbol::Func(callee)))

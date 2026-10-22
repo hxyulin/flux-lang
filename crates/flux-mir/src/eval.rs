@@ -537,6 +537,10 @@ impl<'a> Evaluator<'a> {
             }
             Operand::Const(constant) => match *constant {
                 Constant::Static { id, .. } => Ok(Value::Static(id)),
+                Constant::Promoted { .. } => Err(error(
+                    range,
+                    "references in constants are not supported yet".to_owned(),
+                )),
                 Constant::Fn { .. } => Err(error(
                     range,
                     "function pointers in constants are not supported yet".to_owned(),

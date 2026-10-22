@@ -70,8 +70,7 @@ fn main() -> () {
     let _14: &i32;
     let _15: &i32;
     let _16: i32;
-    let _17: i32;
-    let _18: &S;
+    let _17: &S;
 
     bb0: {
         _1 = S { a: const 1_i32 };
@@ -91,19 +90,18 @@ fn main() -> () {
 
     bb2: {
         _14 = &_6;
-        _16 = const 5_i32;
-        _15 = &_16;
+        _15 = const &promoted[0];
         _13 = elided(copy _14, copy _15) -> bb3;
     }
 
     bb3: {
         _8 = Add(copy _9, copy _13);
-        _18 = &_1;
-        _17 = get(copy _18) -> bb4;
+        _17 = &_1;
+        _16 = get(copy _17) -> bb4;
     }
 
     bb4: {
-        _7 = Add(copy _8, copy _17);
+        _7 = Add(copy _8, copy _16);
         PlaceMention(_7);
         _0 = const ();
         StorageDead(_7);

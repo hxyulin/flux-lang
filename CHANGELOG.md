@@ -347,6 +347,18 @@
   (E0262, E0637), duplicate and shadowing names (E0403, E0496), wrong
   numbers of lifetime arguments (E0107, E0747) and unused lifetime
   parameters (E0392) are reported.
+- The borrow checker infers regions as rustc's NLL does: a region
+  variable for every lifetime in every local's type, each borrow and
+  each callee's lifetimes, outlives constraints from subtyping (with
+  variance), reborrows and callees' bounds, values from liveness over
+  the body's points, and the function's lifetime parameters as
+  universal regions that must outlive only what its bounds say
+  ("lifetime may not live long enough"). A loan is in scope where its
+  region reaches from where it is made, until what it borrows is
+  overwritten, which replaces the locals-holding-loans approximation,
+  and is checked at the function's end too: returning a borrow of a
+  local, parameter or temporary is E0515. Constant expressions borrowed
+  (`&5`, `&[1, 2]`) are promoted to static memory, as in rustc.
 
 ### Performance
 

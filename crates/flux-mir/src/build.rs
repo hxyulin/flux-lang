@@ -714,6 +714,8 @@ pub fn closure_shims(
                 init_errors: Vec::new(),
                 upvars: None,
                 capture_uses: Vec::new(),
+                owner: None,
+                promoted: Vec::new(),
             },
         ));
     }
@@ -775,6 +777,7 @@ fn build_body(
         needs_drop: Default::default(),
         upvars: Vec::new(),
         capture_uses: Vec::new(),
+        promoted: Vec::new(),
     };
     b.locals.alloc(LocalDecl {
         ty: sig.ret,
@@ -914,6 +917,11 @@ fn build_body(
         init_errors: Vec::new(),
         upvars,
         capture_uses: b.capture_uses,
+        owner: match item {
+            Item::Function(f) | Item::Closure(f, _) => Some(f),
+            Item::Const(_) => None,
+        },
+        promoted: b.promoted,
     };
     built.init_errors = crate::init::check(&built, &hir.items, &typed.sigs);
     built.init_errors.extend(b.errors);
@@ -1039,6 +1047,8 @@ struct Builder<'a> {
     upvars: Vec<(flux_ty::Capture, Place)>,
     /// [`Body::capture_uses`].
     capture_uses: Vec<(BasicBlock, usize, TextRange, bool)>,
+    /// [`Body::promoted`].
+    promoted: Vec<crate::eval::Value>,
 }
 
 /// Whether `expr` denotes a place: a local, a field or element of one, or
@@ -1655,6 +1665,46 @@ impl Builder<'_> {
         self.lower_reborrowed(expr, dest);
     }
 
+    /// The value of `expr` if rustc would promote a borrow of it to a
+    /// constant: a literal, or a tuple or array of them, of a type
+    /// whose value needs no dropping.
+    fn promotable(&self, expr: ExprId) -> Option<crate::eval::Value> {
+        use crate::eval::Value;
+        if self.types.reified.get(expr).is_some() || self.types.unsizes.get(expr).is_some() {
+            return None;
+        }
+        let ty = self.own_ty(expr);
+        match &self.body.exprs[expr] {
+            Expr::Literal(Literal::Int { value, .. }) => Some(Value::Int {
+                bits: Constant::int(*value as i128, ty.as_int()?).int_bits()?,
+                ty: ty.as_int()?,
+            }),
+            Expr::Literal(Literal::Bool(b)) => Some(Value::Bool(*b)),
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } => match &self.body.exprs[*operand] {
+                Expr::Literal(Literal::Int { value, .. }) => {
+                    let int = ty.as_int()?;
+                    Some(Value::Int {
+                        bits: Constant::int((*value as i128).wrapping_neg(), int).int_bits()?,
+                        ty: int,
+                    })
+                }
+                _ => None,
+            },
+            Expr::Tuple(fields) | Expr::Array(fields) => {
+                if matches!(ty.kind(), TyKind::Array(..)) && fields.is_empty() {
+                    return None;
+                }
+                let values: Option<Vec<Value>> =
+                    fields.iter().map(|&f| self.promotable(f)).collect();
+                Some(Value::Aggregate(values?))
+            }
+            _ => None,
+        }
+    }
+
     /// Evaluates `expr` and stores its value in `dest`, reborrowing it if
     /// type checking said so.
     fn lower_reborrowed(&mut self, expr: ExprId, dest: &Place) {
@@ -1789,6 +1839,16 @@ impl Builder<'_> {
             } => {
                 if *mutable && is_place(body, *inner) {
                     self.check_guard_write(*inner, true, range);
+                }
+                // A constant expression borrowed is promoted to a value
+                // that lives forever, as rustc does.
+                if !*mutable && let Some(value) = self.promotable(*inner) {
+                    let index = self.promoted.len() as u32;
+                    self.promoted.push(value);
+                    let ty = self.own_ty(expr);
+                    let constant = Constant::Promoted { index, ty };
+                    self.assign(dest, Rvalue::Use(Operand::Const(constant)), range);
+                    return;
                 }
                 self.extending = self.extended_refs.contains(&expr);
                 let place = self.lower_place(*inner);

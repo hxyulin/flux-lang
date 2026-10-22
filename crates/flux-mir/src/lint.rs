@@ -214,7 +214,11 @@ fn operand(
             Value::Aggregate(_) | Value::Variant { .. } | Value::Static(_) => None,
         },
         Operand::Const(
-            Constant::Unit | Constant::CStr(_) | Constant::Static { .. } | Constant::Fn { .. },
+            Constant::Unit
+            | Constant::CStr(_)
+            | Constant::Static { .. }
+            | Constant::Fn { .. }
+            | Constant::Promoted { .. },
         ) => None,
     }
 }

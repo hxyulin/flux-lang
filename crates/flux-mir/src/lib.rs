@@ -42,6 +42,7 @@ mod build;
 pub mod drops;
 pub mod eval;
 pub mod init;
+mod interval;
 mod lens;
 pub mod lint;
 pub mod mono;
@@ -125,6 +126,11 @@ pub struct Body {
     /// statement: where the capture's use is in the closure, which rustc
     /// reports for some errors, and whether it assigns the place.
     pub capture_uses: Vec<(BasicBlock, usize, TextRange, bool)>,
+    /// The function whose body (or closure in its body) this is: whose
+    /// signature and bounds it has.
+    pub owner: Option<FunctionId>,
+    /// The values [`Constant::Promoted`] refers to.
+    pub promoted: Vec<eval::Value>,
 }
 
 /// What a closure's body captures, for messages and for what it may
@@ -506,6 +512,13 @@ pub enum Constant {
         id: flux_hir::ConstId,
         ty: Ty,
     },
+    /// A reference, of type `ty`, to the body's `promoted[index]`: a
+    /// constant expression borrowed (`&5`, `&[1, 2]`), which rustc
+    /// *promotes* to a value in static memory that lives forever.
+    Promoted {
+        index: u32,
+        ty: Ty,
+    },
 }
 
 impl Constant {
@@ -515,11 +528,22 @@ impl Constant {
             Constant::Bool(_) => Ty::BOOL,
             Constant::Unit => Ty::UNIT,
             Constant::CStr(_) => flux_ty::c_str_ref(),
-            Constant::Item { ty, .. } | Constant::Static { ty, .. } | Constant::Fn { ty, .. } => ty,
+            Constant::Item { ty, .. }
+            | Constant::Static { ty, .. }
+            | Constant::Fn { ty, .. }
+            | Constant::Promoted { ty, .. } => ty,
         }
     }
 
     /// `value` as a constant of type `ty`.
+    /// An integer constant's bits.
+    pub fn int_bits(self) -> Option<u128> {
+        match self {
+            Constant::Int { bits, .. } => Some(bits),
+            _ => None,
+        }
+    }
+
     pub fn int(value: i128, ty: IntTy) -> Constant {
         let bits = ty.bits();
         let mask = if bits == 128 {

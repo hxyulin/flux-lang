@@ -321,6 +321,8 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
         init_errors: Vec::new(),
         upvars: None,
         capture_uses: Vec::new(),
+        owner: None,
+        promoted: Vec::new(),
     })
 }
 
@@ -414,6 +416,8 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
         init_errors: Vec::new(),
         upvars: None,
         capture_uses: Vec::new(),
+        owner: None,
+        promoted: Vec::new(),
     }
 }
 
@@ -517,6 +521,8 @@ fn eq_shim(instance: Instance) -> Body {
         init_errors: Vec::new(),
         upvars: None,
         capture_uses: Vec::new(),
+        owner: None,
+        promoted: Vec::new(),
     }
 }
 
