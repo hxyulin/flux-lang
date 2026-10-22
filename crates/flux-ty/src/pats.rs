@@ -173,6 +173,7 @@ fn has_error(ty: Ty) -> bool {
         | TyKind::RawPtr(_, pointee)
         | TyKind::Array(pointee, _)
         | TyKind::Slice(pointee) => has_error(pointee),
+        TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().into_iter().any(has_error),
         _ => false,
     }
 }

@@ -125,7 +125,7 @@ pub fn check(
                     ));
                 }
             }
-            TerminatorKind::Call { dest, .. } => {
+            TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. } => {
                 known.remove(&dest.local);
             }
             _ => {}
@@ -157,7 +157,9 @@ fn modes(body: &Body) -> Vec<Mode> {
                 }
             }
         }
-        if let TerminatorKind::Call { dest, .. } = &data.terminator.kind {
+        if let TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. } =
+            &data.terminator.kind
+        {
             assignments[dest.local.index()] += 1;
         }
     }
@@ -211,7 +213,9 @@ fn operand(
             value @ (Value::Int { .. } | Value::Bool(_)) => Some(value.clone()),
             Value::Aggregate(_) | Value::Variant { .. } | Value::Static(_) => None,
         },
-        Operand::Const(Constant::Unit | Constant::CStr(_) | Constant::Static { .. }) => None,
+        Operand::Const(
+            Constant::Unit | Constant::CStr(_) | Constant::Static { .. } | Constant::Fn { .. },
+        ) => None,
     }
 }
 

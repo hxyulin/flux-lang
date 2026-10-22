@@ -635,6 +635,12 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
         }
         (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && match_ty(x, y, binds),
         (TyKind::Slice(x), TyKind::Slice(y)) => match_ty(x, y, binds),
+        (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
+            x.is_unsafe == y.is_unsafe
+                && x.inputs_output.len() == y.inputs_output.len()
+                && (x.inputs_output.iter().zip(y.inputs_output))
+                    .all(|(&a, &b)| match_ty(a, b, binds))
+        }
         (TyKind::Alias(a), TyKind::Alias(b)) => {
             a.trait_ == b.trait_
                 && a.name == b.name
@@ -744,6 +750,7 @@ impl Normalizer<'_> {
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.go(t, depth + 1)),
             TyKind::Array(t, len) => Ty::array(self.go(t, depth + 1), len),
             TyKind::Slice(t) => Ty::slice(self.go(t, depth + 1)),
+            TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(|t| self.go(t, depth + 1)),
             _ => ty,
         }
     }
@@ -881,8 +888,16 @@ fn normalize_predicate(items: &ItemTree, sigs: &Signatures, p: Predicate) -> Pre
 /// `Copy` and `Clone`, which `core` cannot write until functions may
 /// return references.
 pub fn is_builtin_copy(items: &ItemTree, t: TraitId, ty: Ty) -> bool {
-    matches!(ty.kind(), TyKind::Ref(Mutability::Not, _))
-        && matches!(items.traits[t].lang, Some(l) if l.as_str() == "copy" || l.as_str() == "clone")
+    let lang = items.traits[t].lang;
+    match ty.kind() {
+        TyKind::Ref(Mutability::Not, _) => {
+            matches!(lang, Some(l) if l.as_str() == "copy" || l.as_str() == "clone")
+        }
+        // Function items and pointers are `Copy`; `core` implements
+        // `Clone` for pointers of up to three parameters.
+        TyKind::FnDef(_) | TyKind::FnPtr(_) => matches!(lang, Some(l) if l.as_str() == "copy"),
+        _ => false,
+    }
 }
 
 /// For `ty: t` where `ty` is an array and `t` is `Copy`, `Clone` or
@@ -2140,6 +2155,11 @@ fn collect_aliases(ty: Ty, out: &mut Vec<AliasTy>) {
         }
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
             collect_aliases(t, out)
+        }
+        TyKind::FnDef(_) | TyKind::FnPtr(_) => {
+            ty.children()
+                .into_iter()
+                .for_each(|t| collect_aliases(t, out));
         }
         _ => {}
     }

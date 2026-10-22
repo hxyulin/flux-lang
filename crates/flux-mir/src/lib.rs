@@ -434,6 +434,14 @@ pub enum Constant {
         args: GenericArgs,
         ty: Ty,
     },
+    /// A pointer to a function, `function` with generic arguments
+    /// `args`, of function pointer type `ty`: a function item coerced to
+    /// one.
+    Fn {
+        function: FunctionId,
+        args: GenericArgs,
+        ty: Ty,
+    },
     /// The address of static `id`: of type `ty`, `&T` for a `static`
     /// and `*mut T` for a `static mut`, as rustc's MIR has it.
     Static {
@@ -449,7 +457,7 @@ impl Constant {
             Constant::Bool(_) => Ty::BOOL,
             Constant::Unit => Ty::UNIT,
             Constant::CStr(_) => flux_ty::c_str_ref(),
-            Constant::Item { ty, .. } | Constant::Static { ty, .. } => ty,
+            Constant::Item { ty, .. } | Constant::Static { ty, .. } | Constant::Fn { ty, .. } => ty,
         }
     }
 
@@ -537,6 +545,14 @@ pub enum TerminatorKind {
         dest: Place,
         target: Option<BasicBlock>,
     },
+    /// Calls the function `callee`, a function pointer, points to, as
+    /// [`TerminatorKind::Call`] does.
+    CallIndirect {
+        callee: Operand,
+        args: Vec<Operand>,
+        dest: Place,
+        target: Option<BasicBlock>,
+    },
     /// Drops the value in `place`, if its type needs it: runs its
     /// `Drop` impl, then drops its fields in order. After [`drops`],
     /// the place is initialized here.
@@ -601,7 +617,9 @@ impl TerminatorKind {
                 .map(|&(_, bb)| bb)
                 .chain(Some(*otherwise))
                 .collect(),
-            TerminatorKind::Call { target, .. } => target.iter().copied().collect(),
+            TerminatorKind::Call { target, .. } | TerminatorKind::CallIndirect { target, .. } => {
+                target.iter().copied().collect()
+            }
             TerminatorKind::Assert { target, .. } | TerminatorKind::Drop { target, .. } => {
                 vec![*target]
             }
@@ -691,6 +709,9 @@ impl TerminatorKind {
         match self {
             TerminatorKind::SwitchInt { discr, .. } => vec![discr],
             TerminatorKind::Call { args, .. } => args.iter().collect(),
+            TerminatorKind::CallIndirect { callee, args, .. } => {
+                std::iter::once(callee).chain(args).collect()
+            }
             TerminatorKind::Assert { cond, .. } => vec![cond],
             TerminatorKind::Goto(_)
             | TerminatorKind::Drop { .. }

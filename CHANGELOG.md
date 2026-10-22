@@ -259,6 +259,24 @@
   for bindings that shadow one, E0080 for a constant reading a `static
   mut`, and E0015 for non-`const` calls in initializers. Statics whose
   types hold references are not supported yet.
+- Support functions as values: a path to a function (`double`,
+  `S::new`, `<S as Tr>::m`, `id::<u8>`) is a value of its function item
+  type (`fn(i32) -> i32 {double}`), which has no size and coerces to a
+  function pointer type (`fn(i32) -> i32`, `unsafe fn()`) where one is
+  wanted: in `let`s, arguments, fields, return values, `as` casts, and
+  `if` and `match` arms naming different functions. Values of either
+  type may be called, and pointers stored and passed anywhere. Calls of
+  function items are direct; calls through pointers are keel's indirect
+  calls, and a function whose address is taken uses C's calling
+  convention rather than `cc(fast)`, which keel allows for direct calls
+  only. `core` implements `Clone` for function pointers of up to three
+  parameters. Errors are rustc's: E0308 for mismatched signatures and
+  unsafe functions where safe pointers are wanted, E0133 for calling an
+  `unsafe` one outside `unsafe`, E0618, E0061, and calls through
+  pointers in constants and `const fn`s. The message for calling an
+  `unsafe` function outside `unsafe` is now rustc's. Constructors of
+  tuple structs and variants as values, `extern` function pointer types
+  and casts of functions to integers are not supported yet.
 
 ### Performance
 

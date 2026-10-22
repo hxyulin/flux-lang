@@ -1,0 +1,8 @@
+fn danger() -> i32
+fn main() -> ()
+    g@0: unsafe fn() -> i32 {danger}
+    p@1: unsafe fn() -> i32
+    a@2: i32
+error 121..124: call to unsafe function `danger` is unsafe and requires unsafe function or block
+error 127..130: call to unsafe function is unsafe and requires unsafe function or block
+error 133..141: call to unsafe function `danger` is unsafe and requires unsafe function or block

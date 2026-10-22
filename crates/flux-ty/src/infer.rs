@@ -40,6 +40,9 @@ pub struct InferenceResult {
     /// used, rather than moved: `&*r` or `&mut *r` with this mutability.
     /// rustc does this where a reference is expected.
     pub reborrows: ArenaMap<Expr, Mutability>,
+    /// Expressions of a function item's type that coerce to a function
+    /// pointer where they are used: `let f: fn(i32) -> i32 = double;`.
+    pub reified: ArenaMap<Expr, ()>,
     /// The function each call calls, with its generic arguments: at the
     /// callee `Path`, or the `MethodCall`. Not always the path's: of the
     /// associated functions of a generic struct with one name, the one
@@ -255,6 +258,7 @@ impl<'a> Ctx<'a> {
             field_derefs: ArenaMap::new(),
             methods: ArenaMap::new(),
             reborrows: ArenaMap::new(),
+            reified: ArenaMap::new(),
             calls: ArenaMap::new(),
             overloads: ArenaMap::new(),
             consts: ArenaMap::new(),
@@ -402,6 +406,7 @@ struct Ctx<'a> {
     field_derefs: ArenaMap<Expr, u32>,
     methods: ArenaMap<Expr, Method>,
     reborrows: ArenaMap<Expr, Mutability>,
+    reified: ArenaMap<Expr, ()>,
     calls: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     overloads: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     consts: ArenaMap<Expr, (ConstId, Vec<Ty>)>,
@@ -531,6 +536,7 @@ impl Ctx<'_> {
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, self.known(pointee))),
             TyKind::Array(elem, len) => Ty::array(self.known(elem), len),
             TyKind::Slice(elem) => Ty::slice(self.known(elem)),
+            TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(|t| self.known(t)),
             TyKind::Tuple(elements) => {
                 let elements: Vec<Ty> = elements.iter().map(|&e| self.known(e)).collect();
                 Ty::tuple(&elements)
@@ -589,6 +595,24 @@ impl Ctx<'_> {
                 }
                 ok
             }
+            (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
+                let mut ok =
+                    x.is_unsafe == y.is_unsafe && x.inputs_output.len() == y.inputs_output.len();
+                for (&a, &b) in x.inputs_output.iter().zip(y.inputs_output) {
+                    ok &= self.unify(a, b);
+                }
+                ok
+            }
+            (TyKind::FnDef(x), TyKind::FnDef(y)) if x.function == y.function => {
+                let mut ok = true;
+                for (&a, &b) in x.args.iter().zip(y.args) {
+                    ok &= self.unify(a, b);
+                }
+                for (&a, &b) in x.sig.inputs_output.iter().zip(y.sig.inputs_output) {
+                    ok &= self.unify(a, b);
+                }
+                ok
+            }
             _ => false,
         }
     }
@@ -642,6 +666,25 @@ impl Ctx<'_> {
         {
             self.reborrows.insert(expr, m);
             if !self.unify(pointee, expected_pointee) {
+                let range = self.range(blamed);
+                self.mismatch(expected, actual, range);
+            }
+            return;
+        }
+        // A function item where a function pointer is wanted becomes
+        // one, unless it is unsafe and the pointer is not.
+        if let (TyKind::FnDef(def), TyKind::FnPtr(ptr)) =
+            (self.shallow(actual).kind(), self.shallow(expected).kind())
+        {
+            let extern_fn = self.items.functions[def.function].is_extern;
+            let reified = Ty::new(TyKind::FnPtr(crate::FnSigTy {
+                is_unsafe: ptr.is_unsafe,
+                ..def.sig
+            }));
+            if !extern_fn && (ptr.is_unsafe || !def.sig.is_unsafe) && self.unify(reified, expected)
+            {
+                self.reified.insert(expr, ());
+            } else {
                 let range = self.range(blamed);
                 self.mismatch(expected, actual, range);
             }
@@ -751,6 +794,19 @@ impl Ctx<'_> {
                         .zip(b.args)
                         .all(|(&x, &y)| self.can_unify(x, y))
             }
+            (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
+                x.is_unsafe == y.is_unsafe
+                    && x.inputs_output.len() == y.inputs_output.len()
+                    && (x.inputs_output.iter().zip(y.inputs_output))
+                        .all(|(&a, &b)| self.can_unify(a, b))
+            }
+            (TyKind::FnDef(x), TyKind::FnDef(y)) => {
+                x.function == y.function
+                    && x.args
+                        .iter()
+                        .zip(y.args)
+                        .all(|(&a, &b)| self.can_unify(a, b))
+            }
             _ => false,
         }
     }
@@ -786,6 +842,16 @@ impl Ctx<'_> {
                 let args: Vec<String> = args.iter().map(|&a| self.describe(a)).collect();
                 format!("{}<{}>", adt.name, args.join(", "))
             }
+            TyKind::FnPtr(sig) => self.describe_sig(sig),
+            TyKind::FnDef(def) => {
+                let mut text = format!("{} {{{}", self.describe_sig(def.sig), def.name);
+                if !def.args.is_empty() {
+                    let args: Vec<String> = def.args.iter().map(|&a| self.describe(a)).collect();
+                    text.push_str(&format!("::<{}>", args.join(", ")));
+                }
+                text.push('}');
+                text
+            }
             TyKind::Alias(alias) => {
                 let args: Vec<String> = alias.args.iter().map(|&a| self.describe(a)).collect();
                 let trait_args = if args.len() > 1 {
@@ -800,6 +866,18 @@ impl Ctx<'_> {
             }
             _ => ty.to_string(),
         }
+    }
+
+    /// `fn(A, B) -> R` for messages, as [`Self::describe`] describes
+    /// types.
+    fn describe_sig(&mut self, sig: crate::FnSigTy) -> String {
+        let params: Vec<String> = sig.params().iter().map(|&p| self.describe(p)).collect();
+        let unsafety = if sig.is_unsafe { "unsafe " } else { "" };
+        let mut text = format!("{unsafety}fn({})", params.join(", "));
+        if self.shallow(sig.ret()) != Ty::UNIT {
+            text.push_str(&format!(" -> {}", self.describe(sig.ret())));
+        }
+        text
     }
 
     fn mismatch(&mut self, expected: Ty, actual: Ty, range: TextRange) {
@@ -887,6 +965,7 @@ impl Ctx<'_> {
                 Ty::adt(adt.strukt, adt.name, &args)
             }
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, self.fill_placeholders(pointee, origin)),
+            TyKind::FnPtr(_) => ty.map_fn(|t| self.fill_placeholders(t, origin)),
             TyKind::Ref(m, pointee) => {
                 Ty::new(TyKind::Ref(m, self.fill_placeholders(pointee, origin)))
             }
@@ -1214,6 +1293,12 @@ impl Ctx<'_> {
             | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => m == n && self.impl_applies(x, y),
             (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && self.impl_applies(x, y),
             (TyKind::Slice(x), TyKind::Slice(y)) => self.impl_applies(x, y),
+            (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
+                x.is_unsafe == y.is_unsafe
+                    && x.inputs_output.len() == y.inputs_output.len()
+                    && (x.inputs_output.iter().zip(y.inputs_output))
+                        .all(|(&a, &b)| self.impl_applies(a, b))
+            }
             _ => pattern == ty,
         }
     }
@@ -1700,21 +1785,23 @@ impl Ctx<'_> {
                         );
                         Ty::ERROR
                     }
-                    Some((AssocItem::Function(_), ..)) => {
-                        self.error(self.range(id), "functions as values are not supported yet");
-                        Ty::ERROR
+                    Some((AssocItem::Function(f), target, trait_args)) => {
+                        self.fn_item(id, f, target, trait_args)
                     }
                     None => Ty::ERROR,
                 }
             }
-            Expr::Path(Res::Function(_)) => {
-                self.error(self.range(id), "functions as values are not supported yet");
-                Ty::ERROR
-            }
+            Expr::Path(Res::Function(f)) => match self.select_path_fn(id, *f) {
+                Some((f, target, trait_args)) => self.fn_item(id, f, target, trait_args),
+                None => Ty::ERROR,
+            },
             Expr::Path(Res::Struct(strukt)) => match self.items.structs[*strukt].kind {
                 StructKind::Unit => self.instantiate_struct(*strukt, Some(id), self.range(id)),
                 _ => {
-                    self.error(self.range(id), "functions as values are not supported yet");
+                    self.error(
+                        self.range(id),
+                        "tuple struct constructors as values are not supported yet",
+                    );
                     Ty::ERROR
                 }
             },
@@ -1726,7 +1813,10 @@ impl Ctx<'_> {
                         ty
                     }
                     _ => {
-                        self.error(self.range(id), "functions as values are not supported yet");
+                        self.error(
+                            self.range(id),
+                            "tuple variant constructors as values are not supported yet",
+                        );
                         Ty::ERROR
                     }
                 }
@@ -1845,6 +1935,11 @@ impl Ctx<'_> {
                     }
                     Some(else_branch) => {
                         let else_ty = self.infer_expr(*else_branch);
+                        if let Some(ptr) =
+                            self.fn_lub(&[(*then_branch, then_ty), (*else_branch, else_ty)])
+                        {
+                            return ptr;
+                        }
                         self.join(then_ty, else_ty, id)
                     }
                 }
@@ -1956,6 +2051,11 @@ impl Ctx<'_> {
                 {
                     self.unify(from, to);
                 }
+                // `f as fn(i32) -> i32`: a coercion.
+                if let TyKind::FnPtr(_) = to.kind() {
+                    self.coerce(from, to, *expr);
+                    return to;
+                }
                 self.deferred.push(Deferred::Cast { expr: id, from, to });
                 to
             }
@@ -2060,6 +2160,7 @@ impl Ctx<'_> {
         let ty = self.infer_expr(scrutinee);
         let expected = self.expected.get(id).copied();
         let mut result: Option<Ty> = None;
+        let mut values = Vec::new();
         for arm in arms {
             self.check_pat(arm.pat, ty, false);
             if let Some(guard) = arm.guard {
@@ -2071,6 +2172,13 @@ impl Ctx<'_> {
             }
             let arm_ty = self.infer_expr(arm.body);
             if self.shallow(arm_ty) == Ty::NEVER {
+                continue;
+            }
+            values.push((arm.body, arm_ty));
+            if values.len() > 1
+                && let Some(ptr) = self.fn_lub(&values)
+            {
+                result = Some(ptr);
                 continue;
             }
             match result {
@@ -2153,6 +2261,34 @@ impl Ctx<'_> {
         }
     }
 
+    /// Where `values` are function items of different functions, their
+    /// common function pointer type, which each coerces to (rustc's
+    /// least upper bound); `None` otherwise.
+    fn fn_lub(&mut self, values: &[(ExprId, Ty)]) -> Option<Ty> {
+        let mut defs = Vec::new();
+        for &(expr, ty) in values {
+            match self.shallow(ty).kind() {
+                TyKind::FnDef(def) => defs.push((expr, def)),
+                TyKind::Never => {}
+                _ => return None,
+            }
+        }
+        let (_, first) = *defs.first()?;
+        if defs.iter().all(|(_, d)| d.function == first.function) {
+            return None;
+        }
+        let is_unsafe = defs.iter().any(|(_, d)| d.sig.is_unsafe);
+        let ptr = Ty::new(TyKind::FnPtr(crate::FnSigTy {
+            is_unsafe,
+            ..first.sig
+        }));
+        for &(expr, def) in &defs {
+            let ty = Ty::new(TyKind::FnDef(def));
+            self.coerce(ty, ptr, expr);
+        }
+        Some(ptr)
+    }
+
     /// The type of an `if` with both branches: the branches' common type,
     /// where a `!` branch takes the other's type.
     fn join(&mut self, then_ty: Ty, else_ty: Ty, expr: ExprId) -> Ty {
@@ -2201,7 +2337,16 @@ impl Ctx<'_> {
             Expr::Path(Res::Err) | Expr::Missing => None,
             _ => {
                 let ty = self.infer_expr(callee);
-                self.not_callable(callee, ty);
+                match self.shallow(ty).kind() {
+                    TyKind::FnDef(def) => {
+                        return self.call_value(id, callee, def.sig, Some(def.function), args);
+                    }
+                    TyKind::FnPtr(sig) => return self.call_value(id, callee, sig, None, args),
+                    TyKind::Infer(var) if !self.unknown(var).0 => {
+                        self.annotations_needed(callee, var, self.range(callee));
+                    }
+                    _ => self.not_callable(callee, ty),
+                }
                 None
             }
         };
@@ -2286,7 +2431,7 @@ impl Ctx<'_> {
         if data.is_unsafe && self.unsafe_depth == 0 {
             self.error(
                 self.range(id),
-                format!("call to unsafe function `{name}` requires an `unsafe` block"),
+                format!("call to unsafe function `{name}` is unsafe and requires unsafe function or block"),
             );
         }
         self.check_signature_privacy(sig, id);
@@ -2316,6 +2461,135 @@ impl Ctx<'_> {
             );
         }
         sig.ret
+    }
+
+    /// The type of a path to `function`, used as a value rather than
+    /// called: its function item type, with the generic arguments the
+    /// path gives or new variables, whose bounds must hold, as at a call.
+    fn fn_item(
+        &mut self,
+        expr: ExprId,
+        function: FunctionId,
+        target: Option<Ty>,
+        trait_args: Option<Vec<Ty>>,
+    ) -> Ty {
+        let items = self.items;
+        let data = &items.functions[function];
+        if data.is_variadic {
+            self.error(
+                self.range(expr),
+                "variadic functions as values are not supported yet",
+            );
+            return Ty::ERROR;
+        }
+        if crate::traits::is_destructor(items, function) {
+            self.error(self.range(expr), "explicit use of destructor method");
+        }
+        let range = self.range(expr);
+        let args = self.instantiate_fn(expr, function, target, trait_args.as_deref(), range);
+        let sig = self.instance_sig(function, &args).into_owned();
+        let segment = self.source_map.segments.get(expr).copied();
+        let site = CallSite {
+            callee: segment.unwrap_or(range),
+            whole: range,
+            receiver: None,
+            args: &[],
+            qself: self.qself_range(expr),
+            expr,
+        };
+        let known = match self.body.exprs[expr] {
+            Expr::Path(Res::Assoc { ty: Some(_), .. }) => target,
+            _ => target.filter(|_| {
+                self.body
+                    .generic_args
+                    .get(expr)
+                    .is_some_and(|g| g.ty.is_some())
+            }),
+        };
+        self.register_call_bounds(function, &args, site, known);
+        self.check_signature_privacy(&sig, expr);
+        let name = Symbol::intern(&items.function_path(data));
+        Ty::new(TyKind::FnDef(crate::FnDefTy {
+            function,
+            name,
+            args: Ty::list(&args),
+            sig: crate::FnSigTy::new(&sig.params, sig.ret, data.is_unsafe),
+        }))
+    }
+
+    /// A call `id` of `callee`, a value of a function item's type (whose
+    /// function is `function`) or a function pointer's, with signature
+    /// `sig`.
+    fn call_value(
+        &mut self,
+        id: ExprId,
+        callee: ExprId,
+        sig: crate::FnSigTy,
+        function: Option<FunctionId>,
+        args: &[ExprId],
+    ) -> Ty {
+        let params = sig.params();
+        let (want, got) = (params.len(), args.len());
+        if want != got {
+            let verb = if got == 1 { "was" } else { "were" };
+            self.error(
+                self.range(callee),
+                format!(
+                    "this function takes {want} argument{} but {got} argument{} {verb} supplied",
+                    plural(want),
+                    plural(got)
+                ),
+            );
+        }
+        for (i, &arg) in args.iter().enumerate() {
+            if let Some(&param) = params.get(i) {
+                self.expect(arg, param);
+            }
+            let ty = self.infer_expr(arg);
+            if let Some(&param) = params.get(i) {
+                self.coerce(ty, param, arg);
+            }
+        }
+        if sig.is_unsafe && self.unsafe_depth == 0 {
+            let message = match function {
+                Some(f) => format!(
+                    "call to unsafe function `{}` is unsafe and requires unsafe function or block",
+                    function_name(self.items, f)
+                ),
+                None => "call to unsafe function is unsafe and requires unsafe function or block"
+                    .to_owned(),
+            };
+            self.error(self.range(id), message);
+        }
+        if let Some(context) = self.const_context {
+            match function {
+                Some(f) if !self.items.functions[f].is_const => {
+                    let data = &self.items.functions[f];
+                    let what = if data.owner.is_some() {
+                        "associated function"
+                    } else {
+                        "function"
+                    };
+                    let name = self.items.function_path(data);
+                    self.error(
+                        self.range(id),
+                        format!("cannot call non-const {what} `{name}` in {context}"),
+                    );
+                }
+                Some(_) => {}
+                None => self.error(
+                    self.range(id),
+                    format!("function pointer calls are not allowed in {context}"),
+                ),
+            }
+        }
+        if function.is_none() && crate::contains_ref(sig.ret()) {
+            self.error(
+                self.range(id),
+                "calls returning references are not supported yet",
+            );
+        }
+        sig.ret()
     }
 
     /// The function a path names, `function` as resolved, and the type
@@ -3101,7 +3375,7 @@ impl Ctx<'_> {
             let name = self.items.function_path(&self.items.functions[function]);
             self.error(
                 self.range(id),
-                format!("call to unsafe function `{name}` requires an `unsafe` block"),
+                format!("call to unsafe function `{name}` is unsafe and requires unsafe function or block"),
             );
         }
         sig.ret
@@ -3813,6 +4087,7 @@ impl Ctx<'_> {
             field_derefs: self.field_derefs,
             methods: self.methods,
             reborrows: self.reborrows,
+            reified: self.reified,
             calls,
             overloads,
             consts,
@@ -3974,6 +4249,11 @@ impl Ctx<'_> {
             }
             TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
                 self.unknown_vars(t, out)
+            }
+            TyKind::FnDef(_) | TyKind::FnPtr(_) => {
+                for t in ty.children() {
+                    self.unknown_vars(t, out);
+                }
             }
             _ => {}
         }
@@ -4165,6 +4445,9 @@ impl Ctx<'_> {
                 ty
             }
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, self.resolve(pointee, reported)),
+            TyKind::FnDef(_) | TyKind::FnPtr(_) if ty.has_infer() => {
+                ty.map_fn(|t| self.resolve(t, reported))
+            }
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, self.resolve(pointee, reported))),
             TyKind::Array(elem, len) => Ty::array(self.resolve(elem, reported), len),
             TyKind::Slice(elem) => Ty::slice(self.resolve(elem, reported)),
@@ -4479,7 +4762,9 @@ impl Ctx<'_> {
                         _ => from == to,
                     };
                     if !ok {
-                        let message = if from.is_pointer() || to.is_pointer() {
+                        let message = if from.fn_sig().is_some() || to.fn_sig().is_some() {
+                            "casts of function items and pointers are not supported yet".to_owned()
+                        } else if from.is_pointer() || to.is_pointer() {
                             "casts of pointers are not supported yet".to_owned()
                         } else if to == Ty::BOOL && from.as_int().is_some() {
                             format!("cannot cast `{from}` as `bool`")

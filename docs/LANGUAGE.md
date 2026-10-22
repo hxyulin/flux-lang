@@ -87,7 +87,8 @@ reported as "not supported yet":
   variants are named through it (`E::A`, `Self::A`) or imported
   (`use E::*;`, `use E::{A, B};`).
 - **Types:** paths (`i32`, `bool`, `Self`, `m::S`, `crate::m::S`,
-  `Pair<i32>`, a type parameter `T`), associated types (`T::Out`,
+  `Pair<i32>`, a type parameter `T`), function pointers (`fn(i32) ->
+  i32`, `unsafe fn()`, but not `extern "C" fn`), associated types (`T::Out`,
   `Self::Out`, `<T as Tr>::Out`), tuples, `!`, references without
   lifetimes (`&T`, `&mut T`), raw pointers (`*const T`, `*mut T`),
   arrays (`[T; N]`, whose length is an integer literal or a path to a
@@ -319,6 +320,19 @@ them all. So is
 arithmetic in ordinary code that rustc can tell overflows, such as
 `let x: u8 = 255; x + 1` (its deny-by-default `arithmetic_overflow`
 lint), even with overflow checks off.
+
+A path to a function (`double`, `S::new`, `<S as Tr>::m`, `id::<u8>`)
+not called is a value of the function's own item type, written by
+rustc as `fn(i32) -> i32 {double}`, which holds nothing; it coerces to
+a function pointer of its signature where one is wanted (an annotation,
+an argument, a field, a return value, an `as` cast), and `if` or
+`match` arms naming different functions coerce to one, as in rustc.
+An `unsafe fn` coerces only to an `unsafe fn` pointer, and `extern`
+functions not at all. Calling either type works as calling the
+function does; through a pointer, in constants and `const fn`s, is an
+error, as in rustc. Function items and pointers are `Copy`, and `core`
+implements `Clone` for pointers of up to three parameters (rustc's for
+any). Tuple structs' and variants' constructors are not values yet.
 
 A static is one place in memory, initialized with its initializer's
 value, evaluated at compile time as a constant's is (it may read other

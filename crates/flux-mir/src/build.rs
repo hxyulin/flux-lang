@@ -729,7 +729,20 @@ impl Builder<'_> {
         self.source_map.pats.get(pat).copied().unwrap_or_default()
     }
 
+    /// The type of `expr`'s value where it is used: a function item that
+    /// coerces to a pointer is the pointer.
     fn expr_ty(&self, expr: ExprId) -> Ty {
+        let ty = self.own_ty(expr);
+        match ty.kind() {
+            TyKind::FnDef(def) if self.types.reified.get(expr).is_some() => {
+                Ty::new(TyKind::FnPtr(def.sig))
+            }
+            _ => ty,
+        }
+    }
+
+    /// The type of `expr` itself, before coercions.
+    fn own_ty(&self, expr: ExprId) -> Ty {
         self.types
             .expr_types
             .get(expr)
@@ -1085,6 +1098,22 @@ impl Builder<'_> {
     /// Evaluates `expr` and stores its value in `dest`, reborrowing it if
     /// type checking said so.
     fn lower_into(&mut self, expr: ExprId, dest: &Place) {
+        // A function item coerced to a pointer: the item is evaluated,
+        // for what its expression does, then its address taken.
+        if self.types.reified.get(expr).is_some()
+            && let TyKind::FnDef(def) = self.own_ty(expr).kind()
+        {
+            let item = self.temp(self.own_ty(expr));
+            self.lower_value(expr, &item.into());
+            let ty = self.place_ty(dest);
+            let pointer = Constant::Fn {
+                function: def.function,
+                args: def.args,
+                ty,
+            };
+            self.assign(dest, Rvalue::Use(Operand::Const(pointer)), self.range(expr));
+            return;
+        }
         // A reference to an array as one to a slice: the reference, then
         // its unsizing.
         if let Some(&ty) = self.types.unsizes.get(expr) {
@@ -1152,6 +1181,16 @@ impl Builder<'_> {
             Expr::Path(Res::Assoc { .. }) if self.types.consts.get(expr).is_some() => {
                 let operand = self.lower_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
+            }
+            // A function item has no value but its type.
+            Expr::Path(Res::Function(_) | Res::Assoc { .. })
+                if matches!(self.own_ty(expr).kind(), TyKind::FnDef(_)) =>
+            {
+                self.assign(
+                    dest,
+                    Rvalue::Aggregate(AggregateKind::Tuple, Vec::new()),
+                    range,
+                );
             }
             Expr::Missing | Expr::Path(Res::Function(_) | Res::Assoc { .. } | Res::Err) => {
                 self.terminate(TerminatorKind::Unreachable, range);
@@ -1415,7 +1454,31 @@ impl Builder<'_> {
                         range,
                     );
                 }
-                _ => self.terminate(TerminatorKind::Unreachable, range),
+                // A value of a function item's or pointer's type.
+                _ => match self.expr_ty(*callee).kind() {
+                    TyKind::FnDef(def) => {
+                        // Evaluated for what it does; it holds nothing.
+                        self.lower_operand(*callee);
+                        let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                        self.call(def.function, def.args, args, dest, range);
+                    }
+                    TyKind::FnPtr(sig) => {
+                        let callee = self.lower_operand(*callee);
+                        let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                        let target = (sig.ret() != Ty::NEVER).then(|| self.new_block());
+                        self.terminate(
+                            TerminatorKind::CallIndirect {
+                                callee,
+                                args,
+                                dest: dest.clone(),
+                                target,
+                            },
+                            range,
+                        );
+                        self.current = target;
+                    }
+                    _ => self.terminate(TerminatorKind::Unreachable, range),
+                },
             },
             Expr::MethodCall { receiver, args, .. }
                 if let Some(&method) = self.types.methods.get(expr) =>

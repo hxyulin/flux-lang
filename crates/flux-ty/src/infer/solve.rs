@@ -162,6 +162,11 @@ impl Ctx<'_> {
             TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
                 self.register_wf(t, range, written)
             }
+            TyKind::FnPtr(sig) => {
+                for &t in sig.inputs_output {
+                    self.register_wf(t, range, written);
+                }
+            }
             _ => {}
         }
     }
@@ -181,6 +186,7 @@ impl Ctx<'_> {
             TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
                 self.signature_wf(t)
             }
+            TyKind::FnPtr(sig) => sig.inputs_output.iter().for_each(|&t| self.signature_wf(t)),
             _ => {}
         }
     }
@@ -444,6 +450,7 @@ impl Ctx<'_> {
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.normalize(t, origin)),
             TyKind::Array(t, len) => Ty::array(self.normalize(t, origin), len),
             TyKind::Slice(t) => Ty::slice(self.normalize(t, origin)),
+            TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(|t| self.normalize(t, origin)),
             _ => ty,
         }
     }
@@ -561,6 +568,11 @@ impl Ctx<'_> {
                 };
                 self.require_alias_traits(t, pointee, range);
             }
+            TyKind::FnPtr(sig) => {
+                for &t in sig.inputs_output {
+                    self.require_alias_traits(t, None, range);
+                }
+            }
             _ => {}
         }
     }
@@ -629,6 +641,11 @@ impl Ctx<'_> {
             }
             TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
                 self.int_vars(t, out)
+            }
+            TyKind::FnDef(_) | TyKind::FnPtr(_) => {
+                for t in ty.children() {
+                    self.int_vars(t, out);
+                }
             }
             _ => {}
         }
@@ -1494,6 +1511,7 @@ pub(super) fn first_param(ty: Ty) -> Option<u32> {
             first_param(t)
         }
         TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().find_map(|&t| first_param(t)),
+        TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().into_iter().find_map(first_param),
         _ => None,
     }
 }

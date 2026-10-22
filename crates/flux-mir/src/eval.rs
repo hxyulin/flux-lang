@@ -398,6 +398,13 @@ impl<'a> Evaluator<'a> {
                         None => return Err(error(range, "entering unreachable code".to_owned())),
                     }
                 }
+                // Reported by type checking.
+                TerminatorKind::CallIndirect { .. } => {
+                    return Err(error(
+                        range,
+                        "function pointer calls are not allowed in constants".to_owned(),
+                    ));
+                }
                 TerminatorKind::Assert {
                     cond,
                     expected,
@@ -530,6 +537,10 @@ impl<'a> Evaluator<'a> {
             }
             Operand::Const(constant) => match *constant {
                 Constant::Static { id, .. } => Ok(Value::Static(id)),
+                Constant::Fn { .. } => Err(error(
+                    range,
+                    "function pointers in constants are not supported yet".to_owned(),
+                )),
                 Constant::Int { bits, ty } => Ok(Value::Int { bits, ty }),
                 Constant::Bool(b) => Ok(Value::Bool(b)),
                 Constant::Unit => Ok(Value::Aggregate(Vec::new())),

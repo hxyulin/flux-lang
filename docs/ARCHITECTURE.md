@@ -465,6 +465,10 @@ semantics become explicit, so code generation never sees expressions:
   them, and runs before they are moved. `if let` and `let`-`else` are
   the same tests, with the scrutinee's temporaries and the bindings
   dropped before the `else` branch runs, as in edition 2024.
+- A function item's value has no data: its type says which function
+  it is, so a call of one is a direct call. Coerced to a pointer, it is
+  a constant (`Constant::Fn`), and a call through a pointer is a
+  `CallIndirect` terminator.
 - A static is a place behind a temporary that holds its address, as in
   rustc's MIR: `&T`, or `*mut T` for a `static mut`, so `X.a` is
   `(*_3).a`. Borrow checking sees it behind a pointer, and names it as
@@ -612,6 +616,11 @@ executable. No C compiler or system linker is involved.
   becomes a module-local, read-only data object ending in a NUL byte,
   and each static a data object holding its evaluated initial value,
   laid out as in memory, writable only for a `static mut`.
+- A function pointer is a keel `ptr`, a function's `symbol_addr`, and
+  a call through one keel's `call_indirect` with C's convention. Since
+  keel allows `cc(fast)` for direct calls only, monomorphization
+  collects the instances whose address is taken, and those use C's
+  convention everywhere.
 - Calls to C-variadic functions use a variadic keel signature, which
   gives the platform's convention (on Apple arm64, variadic arguments go
   on the stack).
