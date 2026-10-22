@@ -1,0 +1,19 @@
+fn a(ControlFlow<i32, ()>) -> Option<i32>
+    c@0: ControlFlow<i32, ()>
+fn b(ControlFlow<i32, ()>) -> Result<i32, i32>
+    c@0: ControlFlow<i32, ()>
+fn c(ControlFlow<i32, ()>) -> ControlFlow<u8, ()>
+    c@0: ControlFlow<i32, ()>
+fn d(Option<i32>) -> ControlFlow<u8, ()>
+    c@0: Option<i32>
+fn e(Result<i32, i32>) -> ControlFlow<i32, ()>
+    c@0: Result<i32, i32>
+fn f(ControlFlow<i32, ()>) -> i32
+    c@0: ControlFlow<i32, ()>
+fn main() -> ()
+error 339..340: the `?` operator can only be used on `Option`s in a function that returns `Option`
+error 407..408: the `?` operator can only be used on `Result`s in a function that returns `Result`
+error 475..476: the `?` operator in a function that returns `ControlFlow<B, _>` can only be used on other `ControlFlow<B, _>`s (with the same Break type)
+error 558..559: the `?` operator can only be used on `ControlFlow`s in a function that returns `ControlFlow`
+error 647..648: the `?` operator can only be used on `ControlFlow`s in a function that returns `ControlFlow`
+error 723..724: the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)

@@ -1559,24 +1559,79 @@ pub fn struct_type(
             errors.push((b.range(), flux_hir::MISPLACED_BINDING.into()));
         }
     }
-    let Some(written) = path.args(last) else {
-        if want == 0 {
-            return Ty::adt(strukt, def.name, &[]);
+    let none;
+    let written = match path.args(last) {
+        Some(written) => written,
+        None if want == 0 => return Ty::adt(strukt, def.name, &[]),
+        // `S` for `struct S<T = i32>` is `S<i32>`.
+        None if def.generics.params[0].default.is_some() => {
+            none = flux_hir::GenericArgs {
+                lifetimes: Box::new([]),
+                types: Box::new([]),
+                ranges: Box::new([]),
+                bindings: Box::new([]),
+                range: at,
+                parenthesized: false,
+            };
+            &none
         }
-        let kind = if def.is_enum() { "enum" } else { "struct" };
-        errors.push((at, format!("missing generics for {kind} `{}`", def.name)));
-        return Ty::ERROR;
+        None => {
+            let kind = if def.is_enum() { "enum" } else { "struct" };
+            errors.push((at, format!("missing generics for {kind} `{}`", def.name)));
+            return Ty::ERROR;
+        }
     };
-    if written.types.len() != want {
+    let required = (def.generics.params.iter())
+        .take_while(|p| p.default.is_none())
+        .count();
+    let got = written.types.len();
+    if got > want || got < required {
         let kind = if def.is_enum() { "enum" } else { "struct" };
-        errors.push((at, wrong_arg_count(kind, want, written.types.len())));
+        let verb = if got == 1 { "was" } else { "were" };
+        let message = if required < want && got > want {
+            format!(
+                "{kind} takes at most {} but {} {verb} supplied",
+                generic_arguments(want),
+                generic_arguments(got),
+            )
+        } else if required < want {
+            format!(
+                "{kind} takes at least {} but {} {verb} supplied",
+                generic_arguments(required),
+                generic_arguments(got),
+            )
+        } else {
+            wrong_arg_count(kind, want, got)
+        };
+        errors.push((at, message));
         return Ty::ERROR;
     }
-    let args = resolve_generic_args(items, module, &def.generics.params, written, scope, errors);
-    if args.len() != want {
+    let mut args =
+        resolve_generic_args(items, module, &def.generics.params, written, scope, errors);
+    if args.len() != got {
         let kind = if def.is_enum() { "enum" } else { "struct" };
         errors.push((at, wrong_arg_count(kind, want, args.len())));
         return Ty::ERROR;
+    }
+    // Those left out are their defaults, in terms of the ones before.
+    if args.len() < want {
+        let names = generic_names(items, None, &def.generics);
+        let own = TypeScope {
+            generics: &names,
+            signature_of: Some("structs"),
+            lens: scope.lens,
+            defaults: scope.defaults,
+            ..TypeScope::default()
+        };
+        while args.len() < want {
+            let Some((ty, ty_range)) = &def.generics.params[args.len()].default else {
+                return Ty::ERROR;
+            };
+            let mut ignored = Vec::new();
+            let ty = resolve_type(items, def.loc.module, ty, own, *ty_range, &mut ignored);
+            let ty = ty.subst(&args);
+            args.push(ty);
+        }
     }
     if args.contains(&Ty::ERROR) {
         return Ty::ERROR;

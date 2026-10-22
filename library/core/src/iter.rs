@@ -5,7 +5,7 @@
 use crate::clone::Clone;
 use crate::cmp::{Ord, PartialEq, PartialOrd};
 use crate::marker::{Copy, Sized};
-use crate::ops::{FnMut, Range, RangeFrom, RangeInclusive};
+use crate::ops::{ControlFlow, FnMut, FromResidual, Range, RangeFrom, RangeInclusive, Try};
 use crate::option::Option::{self, None, Some};
 
 /// Something that gives a sequence of items, one per call of `next`,
@@ -196,6 +196,41 @@ pub trait Iterator {
             accum = f(accum, x);
         }
         accum
+    }
+
+    /// `fold` with an `f` that may stop early: an `Option`, `Result` or
+    /// `ControlFlow` whose `None`, `Err` or `Break` is returned at once.
+    fn try_fold<B, F, R>(&mut self, init: B, mut f: F) -> R
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> R,
+        R: Try<Output = B>,
+    {
+        let mut accum = init;
+        while let Some(x) = self.next() {
+            match f(accum, x).branch() {
+                ControlFlow::Continue(c) => accum = c,
+                ControlFlow::Break(r) => return R::from_residual(r),
+            }
+        }
+        R::from_output(accum)
+    }
+
+    /// Calls `f` with each item, stopping at the first `None`, `Err` or
+    /// `Break` it gives, which it returns.
+    fn try_for_each<F, R>(&mut self, mut f: F) -> R
+    where
+        Self: Sized,
+        F: FnMut(Self::Item) -> R,
+        R: Try<Output = ()>,
+    {
+        while let Some(x) = self.next() {
+            match f(x).branch() {
+                ControlFlow::Continue(()) => {}
+                ControlFlow::Break(r) => return R::from_residual(r),
+            }
+        }
+        R::from_output(())
     }
 
     /// Whether `f` is `true` for every item, stopping at one it is not.
@@ -567,6 +602,23 @@ pub trait DoubleEndedIterator: Iterator {
             n -= 1;
         }
         None
+    }
+
+    /// `try_fold` from the back.
+    fn try_rfold<B, F, R>(&mut self, init: B, mut f: F) -> R
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> R,
+        R: Try<Output = B>,
+    {
+        let mut accum = init;
+        while let Some(x) = self.next_back() {
+            match f(accum, x).branch() {
+                ControlFlow::Continue(c) => accum = c,
+                ControlFlow::Break(r) => return R::from_residual(r),
+            }
+        }
+        R::from_output(accum)
     }
 
     /// The first item from the back `predicate` is `true` for.

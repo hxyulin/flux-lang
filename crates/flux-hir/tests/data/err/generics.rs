@@ -86,8 +86,4 @@ where
 {
 }
 
-struct Default<T = i32> {
-    a: T,
-}
-
 fn main() {}

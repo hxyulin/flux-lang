@@ -2,8 +2,6 @@ struct S<T> { a: T }
 
 struct DupStruct<T> { a: T }
 
-struct Default<T> { a: T }
-
 impl<T> S<T>;
 
 impl<T> S<T>;
@@ -82,4 +80,3 @@ error 933..949: foreign items may not have type parameters
 error 1005..1014: no nominal type found for inherent implementation
 error 1019..1035: cannot define inherent `impl` for primitive types
 error 1040..1054: cannot define inherent `impl` for primitive types
-error 1246..1249: defaults for type parameters of structs are not supported yet

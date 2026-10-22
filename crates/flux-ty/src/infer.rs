@@ -2663,11 +2663,23 @@ impl Ctx<'_> {
         let question = self.source_map.ops.get(id).copied().unwrap_or(whole);
         let lang = |name: &str| self.items.lang_enums.get(&Symbol::intern(name)).copied();
         let (option, result) = (lang("Option"), lang("Result"));
+        let control_flow = lang("ControlFlow");
         let arg = |args: &[Ty], i: usize| args.get(i).copied().unwrap_or(Ty::ERROR);
-        let (output, error) = match ty.kind() {
-            TyKind::Adt(adt, args) if Some(adt.strukt) == option => (arg(args, 0), None),
+        // What it breaks with: `None`, an error, or a `Break` value.
+        enum Residual {
+            Option,
+            Result(Ty),
+            Break(Ty),
+        }
+        let (output, residual) = match ty.kind() {
+            TyKind::Adt(adt, args) if Some(adt.strukt) == option => {
+                (arg(args, 0), Residual::Option)
+            }
             TyKind::Adt(adt, args) if Some(adt.strukt) == result => {
-                (arg(args, 0), Some(arg(args, 1)))
+                (arg(args, 0), Residual::Result(arg(args, 1)))
+            }
+            TyKind::Adt(adt, args) if Some(adt.strukt) == control_flow => {
+                (arg(args, 1), Residual::Break(arg(args, 0)))
             }
             TyKind::Error => return Ty::ERROR,
             TyKind::Infer(var) if !self.unknown(var).0 => {
@@ -2702,9 +2714,32 @@ impl Ctx<'_> {
             TyKind::Adt(adt, args) => Some((adt.strukt, args)),
             _ => None,
         };
-        match (error, ret_adt) {
-            (None, Some((s, _))) if Some(s) == option => {}
-            (Some(error), Some((s, args))) if Some(s) == result => {
+        let in_control_flow = "the `?` operator can only be used on `ControlFlow`s in a function that returns `ControlFlow`";
+        match (residual, ret_adt) {
+            (Residual::Option, Some((s, _))) if Some(s) == option => {}
+            (Residual::Break(b), Some((s, args))) if Some(s) == control_flow => {
+                let wanted = arg(args, 0);
+                if self.can_unify(b, wanted) {
+                    self.unify(b, wanted);
+                } else {
+                    self.error(
+                        question,
+                        "the `?` operator in a function that returns `ControlFlow<B, _>` can only be used on other `ControlFlow<B, _>`s (with the same Break type)",
+                    );
+                }
+            }
+            (Residual::Break(_), Some((s, _))) if Some(s) == option => self.error(
+                question,
+                "the `?` operator can only be used on `Option`s in a function that returns `Option`",
+            ),
+            (Residual::Break(_), Some((s, _))) if Some(s) == result => self.error(
+                question,
+                "the `?` operator can only be used on `Result`s in a function that returns `Result`",
+            ),
+            (Residual::Option | Residual::Result(_), Some((s, _))) if Some(s) == control_flow => {
+                self.error(question, in_control_flow)
+            }
+            (Residual::Result(error), Some((s, args))) if Some(s) == result => {
                 let target = arg(args, 1);
                 let from = self.items.lang_traits.get(&Symbol::intern("From")).copied();
                 let function = from.and_then(|t| {
@@ -2726,11 +2761,11 @@ impl Ctx<'_> {
                     self.select_obligations();
                 }
             }
-            (None, Some((s, _))) if Some(s) == result => self.error(
+            (Residual::Option, Some((s, _))) if Some(s) == result => self.error(
                 question,
                 "the `?` operator can only be used on `Result`s, not `Option`s, in a function that returns `Result`",
             ),
-            (Some(_), Some((s, _))) if Some(s) == option => self.error(
+            (Residual::Result(_), Some((s, _))) if Some(s) == option => self.error(
                 question,
                 "the `?` operator can only be used on `Option`s, not `Result`s, in a function that returns `Option`",
             ),

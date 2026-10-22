@@ -1,0 +1,12 @@
+struct S<T, U> { 0: T, 1: U }
+enum E<A, B, C> { X { 0: A }, Y { 0: B }, Z { 0: C } }
+fn few({error}) -> ()
+    s@0: {error}
+fn many({error}) -> ()
+    s@0: {error}
+fn many_e({error}) -> ()
+    e@0: {error}
+fn main() -> ()
+error 220..221: missing generics for struct `S`
+error 237..238: struct takes at most 2 generic arguments but 3 generic arguments were supplied
+error 269..270: enum takes at most 3 generic arguments but 4 generic arguments were supplied

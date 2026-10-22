@@ -2719,9 +2719,12 @@ impl Builder<'_> {
             return;
         };
         let strukt = adt.strukt;
-        let option = self.items.lang_enums.get(&Symbol::intern("Option")) == Some(&strukt);
+        let lang = |name: &str| self.items.lang_enums.get(&Symbol::intern(name)) == Some(&strukt);
+        let option = lang("Option");
         let (value, residual) = if option {
             ("Some", "None")
+        } else if lang("ControlFlow") {
+            ("Continue", "Break")
         } else {
             ("Ok", "Err")
         };
