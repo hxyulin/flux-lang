@@ -92,6 +92,19 @@ pub(crate) fn file(hir: &Hir) -> String {
         .unwrap();
         out.push('\n');
     }
+    for a in items
+        .type_aliases
+        .values()
+        .filter(|a| items.in_main_crate(a.loc.module))
+    {
+        let (name, generics, bounds) = (a.name, &a.generics, where_clause(&a.generics));
+        writeln!(
+            out,
+            "type {name}{generics}{bounds} = {};\n",
+            type_ref(&a.ty)
+        )
+        .unwrap();
+    }
     for t in items
         .traits
         .values()
@@ -244,6 +257,9 @@ impl Printer<'_> {
         }
         if let Some(ty) = ty {
             write!(self.out, "[Self<{ty}>]").unwrap();
+        }
+        if let Some(alias) = generics.alias {
+            write!(self.out, "[{}]", type_ref(&self.body.types[alias])).unwrap();
         }
     }
 

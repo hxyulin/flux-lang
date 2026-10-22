@@ -950,6 +950,14 @@ impl Ctx<'_> {
         {
             return self_ty;
         }
+        // Named through a type alias: its type.
+        if let Some(alias) = generics.and_then(|g| g.alias) {
+            let ty = self.resolve_type_ref(alias);
+            return match ty.kind() {
+                TyKind::Adt(adt, _) if adt.strukt == strukt => ty,
+                _ => Ty::ERROR,
+            };
+        }
         let written = generics.and_then(|g| g.item.clone().or_else(|| g.ty.clone()));
         if def.generics.is_empty() && written.is_none() {
             return Ty::adt(strukt, def.name, &[]);

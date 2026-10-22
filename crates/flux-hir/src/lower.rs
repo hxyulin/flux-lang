@@ -7,6 +7,7 @@ use flux_syntax::{SyntaxNode, SyntaxTree, TextRange};
 
 use flux_arena::ArenaMap;
 
+use crate::body::TypeRefId;
 use crate::body::{
     Binding, BindingId, Body, BodySourceMap, Expr, ExprId, Literal, LoopSource, MatchArm, Pat,
     PatId, PathGenerics, Res, SegmentArgs, Stmt,
@@ -1143,6 +1144,7 @@ impl<'a> Ctx<'a> {
                 imp.target.or_else(|| match &imp.self_ty {
                     TypeRef::Path(path) => match items.resolve(imp.module, path, Ns::Types) {
                         Ok(Resolved::Def(Def::Struct(s))) => Some(ImplTarget::Struct(s)),
+                        Ok(Resolved::Def(Def::TypeAlias(a))) => items.alias_target(a),
                         _ => None,
                     },
                     _ => None,
@@ -1533,11 +1535,67 @@ impl<'a> Ctx<'a> {
         };
         let item = item.filter(|&i| !is_self(i));
         let ty = ty.filter(|&i| !is_self(i));
+        // A type alias for the struct or enum: its arguments are the
+        // alias's.
+        let alias_len = match (is_enum, last) {
+            (true, 0) => None,
+            (true, _) => Some(last),
+            (false, _) => Some(last + 1),
+        };
+        if let Some(len) = alias_len
+            && let Some(alias) = self.alias_prefix(path, len, range)
+        {
+            // The alias's own arguments are in its type.
+            let (item, ty) = if is_enum {
+                (item, Some(len - 1))
+            } else {
+                (Some(len - 1), None)
+            };
+            let mut generics = self
+                .path_generics(path, range, item, ty, Res::Err)
+                .unwrap_or_default();
+            if is_enum {
+                generics.ty = None;
+            } else {
+                generics.item = None;
+            }
+            generics.alias = Some(alias);
+            return Some(generics);
+        }
         let mut generics = self.path_generics(path, range, item, ty, Res::Err);
         if self_type {
             generics.get_or_insert_default().self_type = true;
         }
         generics
+    }
+
+    /// If the first `len` segments of `path` name a type alias, a type of
+    /// the body for them, with the alias's generic arguments.
+    fn alias_prefix(&mut self, path: &Path, len: usize, range: TextRange) -> Option<TypeRefId> {
+        if path.qself.is_some() || len == 0 || len > path.segments.len() {
+            return None;
+        }
+        let prefix = Path {
+            segments: path.segments[..len].into(),
+            ranges: path.ranges[..len.min(path.ranges.len())].into(),
+            args: path.args[..len.min(path.args.len())].into(),
+            ..path.clone()
+        };
+        let resolved = match self.items.resolve(self.module, &prefix, Ns::Types) {
+            Ok(resolved) => resolved,
+            Err(ResolveError::Private { resolved, .. }) => resolved,
+            Err(_) => return None,
+        };
+        let Resolved::Def(Def::TypeAlias(_)) = resolved else {
+            return None;
+        };
+        let ty_range = TextRange::new(
+            range.start(),
+            path.range(len - 1, range).end().max(range.start()),
+        );
+        let ty = self.types.alloc(TypeRef::Path(prefix));
+        self.source_map.types.insert(ty, ty_range);
+        Some(ty)
     }
 
     /// The struct or variant a path in a pattern names, and the path.
@@ -1619,8 +1677,15 @@ impl<'a> Ctx<'a> {
                 args: path.args[..last.min(path.args.len())].into(),
                 ..path.clone()
             };
-            if let Ok(Resolved::Def(Def::Struct(e))) =
-                self.items.resolve(self.module, &prefix, Ns::Types)
+            let prefix_struct = match self.items.resolve(self.module, &prefix, Ns::Types) {
+                Ok(Resolved::Def(Def::Struct(e))) => Some(e),
+                Ok(Resolved::Def(Def::TypeAlias(a))) => match self.items.alias_target(a) {
+                    Some(ImplTarget::Struct(e)) => Some(e),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(e) = prefix_struct
                 && self.items.structs[e].is_enum()
                 && self.items.structs[e]
                     .variant_named(path.segments[last])
@@ -1657,6 +1722,20 @@ impl<'a> Ctx<'a> {
         ) {
             Ok(Resolved::Def(Def::Struct(strukt))) => Some(found(self.items, strukt)),
             Ok(Resolved::Def(Def::Variant(e, v))) => Some(Ok((e, v))),
+            // A struct with braces may be named through an alias, a tuple
+            // or unit struct's constructor may not.
+            Ok(Resolved::Def(Def::TypeAlias(a))) if record => match self.items.alias_target(a) {
+                Some(ImplTarget::Struct(strukt)) => Some(found(self.items, strukt)),
+                _ => {
+                    let last = path.segments.len() - 1;
+                    let message = format!(
+                        "expected struct, variant or union type, found type alias `{}`",
+                        path.segments[last]
+                    );
+                    self.error(path.range(last, range), message);
+                    None
+                }
+            },
             Ok(Resolved::Def(Def::Module(m))) => {
                 let last = path.segments.len() - 1;
                 let message = format!(
@@ -1671,6 +1750,15 @@ impl<'a> Ctx<'a> {
                     unreachable!()
                 };
                 self.error(e.range(path, range), message.clone());
+                None
+            }
+            Ok(Resolved::Def(Def::TypeAlias(_))) => {
+                let last = path.segments.len() - 1;
+                let message = format!(
+                    "cannot find tuple struct or tuple variant `{}` in this scope",
+                    path.segments[last]
+                );
+                self.error(path.range(last, range), message);
                 None
             }
             result => {
@@ -2056,6 +2144,18 @@ impl<'a> Ctx<'a> {
         };
         let ty = ty.filter(|&i| !is_self(i));
         let item = item.filter(|&i| !is_self(i));
+        // A variant through a type alias, `A::V`: the alias's arguments.
+        if let Res::Variant(..) = res
+            && last > 0
+            && let Some(alias) = self.alias_prefix(&path, last, range)
+        {
+            let mut generics = self
+                .path_generics(&path, range, item, ty, res)
+                .unwrap_or_default();
+            generics.ty = None;
+            generics.alias = Some(alias);
+            return (res, Some(generics));
+        }
         // A constant has no generic parameters.
         let last_args = path.args(last).filter(|_| matches!(res, Res::Const(_)));
         if let Some(args) = last_args {
@@ -2295,6 +2395,7 @@ impl<'a> Ctx<'a> {
                     return Res::Err;
                 }
                 let is_struct = matches!(in_types, Ok(Resolved::Def(Def::Struct(_))));
+                let is_alias = matches!(in_types, Ok(Resolved::Def(Def::TypeAlias(_))));
                 let name = path.segments[segment];
                 let place = match module {
                     // rustc's wording for `self::f`.
@@ -2312,6 +2413,12 @@ impl<'a> Ctx<'a> {
                             "cannot find function, tuple struct or tuple variant `{name}` in {place}"
                         ),
                         call,
+                    ),
+                    Some(_) if is_alias => (
+                        format!(
+                            "cannot find function, tuple struct or tuple variant `{name}` in {place}"
+                        ),
+                        path.range(segment, range),
                     ),
                     Some(_) => (
                         format!("cannot find function `{name}` in {place}"),

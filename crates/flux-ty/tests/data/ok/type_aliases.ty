@@ -1,0 +1,45 @@
+struct Pair<T> { a: T, b: T }
+enum Shape<T> { Circle { 0: T }, Square { side: T } }
+fn new(T, T) -> Pair<T>
+    a@0: T
+    b@1: T
+fn first(&Pair<T>) -> T
+    self@0: &Pair<T>
+fn total(&Self) -> i64
+fn sum(&Pair<i32>) -> i32
+    self@0: &Pair<i32>
+fn total(&Pair<i32>) -> i64
+    self@0: &Pair<i32>
+fn swap<T>((T, T)) -> (T, T)
+    t@0: (T, T)
+fn read(*const u8) -> u8
+    p@0: *const u8
+fn side(&Shape<u8>) -> u8
+    s@0: &Shape<u8>
+    r@1: &u8
+    side@2: &u8
+fn main() -> ()
+    p@0: Pair<i32>
+    q@1: Pair<i32>
+    a@2: i32
+    z@3: Pair<i32>
+    o@4: Option<u8>
+    x@5: u8
+    n@6: u8
+    t@7: (i32, i32)
+    c@8: Shape<u8>
+    s@9: u8
+    w@10: i64
+fn clone(&Pair<T>) -> Pair<T>
+    self@0: &Pair<T>
+fn eq(&Pair<T>, &Pair<T>) -> bool
+    self@0: &Pair<T>
+    other@1: &Pair<T>
+type Ints = Pair<i32>
+type Twice<T> = (T, T)
+type Opt = Option<u8>
+type Id<T> = T
+type Nested<T> = (T, T)
+type Ptr<T> = *const T
+type Small = Shape<u8>
+const ZERO: Pair<i32>

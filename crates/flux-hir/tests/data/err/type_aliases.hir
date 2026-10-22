@@ -1,0 +1,28 @@
+struct P(i32, i32);
+
+struct U;
+
+enum E { A = 0 }
+
+type PA = P;
+
+type UA = U;
+
+type EA = E;
+
+type NoBody = <error>;
+
+type WithBounds = i32;
+
+fn main() -> () {
+    let a@0 = <error>(1, 2);
+    let u@1 = <error>;
+    let <missing> = P(1, 2);
+    let e@4 = <EA>::B;
+}
+
+error 88..100: free type alias without body
+error 118..122: bounds on `type`s in this context have no effect
+error 155..157: cannot find function, tuple struct or tuple variant `PA` in this scope
+error 177..179: cannot find value `UA` in this scope
+error 189..191: cannot find tuple struct or tuple variant `PA` in this scope

@@ -495,6 +495,9 @@ pub fn resolve_type(
                 Ok(Resolved::Def(Def::Struct(id))) => {
                     struct_type(items, module, id, path, scope, range, errors)
                 }
+                Ok(Resolved::Def(Def::TypeAlias(id))) => {
+                    alias_type(items, module, id, path, scope, range, errors)
+                }
                 Ok(Resolved::Primitive(name)) => {
                     no_args(errors, format!("builtin type `{name}`"));
                     match primitive(name) {
@@ -880,6 +883,160 @@ pub fn struct_type(
 /// rustc's E0277 for a value of unsized type `ty`.
 pub fn unsized_error(ty: Ty) -> String {
     format!("the size for values of type `{ty}` cannot be known at compilation time")
+}
+
+thread_local! {
+    /// The type aliases being expanded, innermost last: one met again
+    /// is a cycle, reported where the alias is checked.
+    static EXPANDING: std::cell::RefCell<Vec<flux_hir::TypeAliasId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Type alias `alias`, named by `path`, with the generic arguments
+/// written after its last segment: the type it stands for, with them
+/// for its parameters. Errors in the alias itself are reported where it
+/// is checked, not at each use.
+pub fn alias_type(
+    items: &ItemTree,
+    module: ModuleId,
+    alias: flux_hir::TypeAliasId,
+    path: &Path,
+    scope: TypeScope<'_>,
+    range: TextRange,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Ty {
+    let def = &items.type_aliases[alias];
+    let last = path.segments.len().saturating_sub(1);
+    let at = path.range(last, range);
+    let want = def.generics.len();
+    for args in path.args.iter().flatten() {
+        for b in args.bindings.iter() {
+            errors.push((b.range(), flux_hir::MISPLACED_BINDING.into()));
+        }
+    }
+    let args: Vec<Ty> = match path.args(last) {
+        None if want == 0 => Vec::new(),
+        None => {
+            errors.push((
+                at,
+                format!("missing generics for type alias `{}`", def.name),
+            ));
+            return Ty::ERROR;
+        }
+        Some(written) => {
+            let args: Vec<Ty> = written
+                .types
+                .iter()
+                .zip(&written.ranges)
+                .map(|(ty, &range)| resolve_type(items, module, ty, scope, range, errors))
+                .collect();
+            if args.len() != want {
+                errors.push((at, wrong_arg_count("type alias", want, args.len())));
+                return Ty::ERROR;
+            }
+            args
+        }
+    };
+    let ty = expand_alias(items, alias, &mut Vec::new());
+    if args.contains(&Ty::ERROR) {
+        return Ty::ERROR;
+    }
+    ty.subst(&args)
+}
+
+/// The type alias `alias` stands for, in terms of its parameters, with
+/// the errors in it; an error if it is part of a cycle of aliases.
+fn expand_alias(
+    items: &ItemTree,
+    alias: flux_hir::TypeAliasId,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Ty {
+    let cycle = EXPANDING.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if stack.contains(&alias) {
+            return true;
+        }
+        stack.push(alias);
+        false
+    });
+    if cycle {
+        return Ty::ERROR;
+    }
+    let def = &items.type_aliases[alias];
+    let generics: Vec<Symbol> = def.generics.params.iter().map(|p| p.name).collect();
+    let scope = TypeScope {
+        generics: &generics,
+        signature_of: Some("type aliases"),
+        ..TypeScope::default()
+    };
+    let ty = resolve_type(items, def.loc.module, &def.ty, scope, def.ty_range, errors);
+    EXPANDING.with(|stack| stack.borrow_mut().pop());
+    ty
+}
+
+/// Whether expanding type alias `alias` meets `alias` again.
+fn alias_cycle(items: &ItemTree, alias: flux_hir::TypeAliasId) -> bool {
+    let def = &items.type_aliases[alias];
+    let mut found = false;
+    visit_paths(&def.ty, &mut |path: &Path| {
+        if !found
+            && let Ok(Resolved::Def(Def::TypeAlias(next))) =
+                items.resolve(def.loc.module, path, Ns::Types)
+        {
+            found = reaches_alias(items, next, alias, &mut Vec::new());
+        }
+    });
+    found
+}
+
+/// Whether type alias `from` names `target`, through other aliases.
+fn reaches_alias(
+    items: &ItemTree,
+    from: flux_hir::TypeAliasId,
+    target: flux_hir::TypeAliasId,
+    seen: &mut Vec<flux_hir::TypeAliasId>,
+) -> bool {
+    if from == target {
+        return true;
+    }
+    if seen.contains(&from) {
+        return false;
+    }
+    seen.push(from);
+    let def = &items.type_aliases[from];
+    let mut found = false;
+    visit_paths(&def.ty, &mut |path: &Path| {
+        if !found
+            && let Ok(Resolved::Def(Def::TypeAlias(next))) =
+                items.resolve(def.loc.module, path, Ns::Types)
+        {
+            found = reaches_alias(items, next, target, seen);
+        }
+    });
+    found
+}
+
+/// Calls `f` on every path in `ty`, generic arguments included.
+fn visit_paths(ty: &TypeRef, f: &mut impl FnMut(&Path)) {
+    match ty {
+        TypeRef::Path(path) => {
+            f(path);
+            for args in path.args.iter().flatten() {
+                for arg in args.types.iter() {
+                    visit_paths(arg, f);
+                }
+            }
+            if let Some(qself) = &path.qself {
+                visit_paths(&qself.ty, f);
+            }
+        }
+        TypeRef::Tuple(elements) => elements.iter().for_each(|e| visit_paths(e, f)),
+        TypeRef::Ptr { pointee, .. }
+        | TypeRef::Ref { pointee, .. }
+        | TypeRef::Array { elem: pointee, .. }
+        | TypeRef::Slice(pointee) => visit_paths(pointee, f),
+        TypeRef::Never | TypeRef::Infer | TypeRef::Error => {}
+    }
 }
 
 /// The primitive type called `name`.
@@ -1505,6 +1662,9 @@ fn extend_signatures(
             }
         }
     }
+    for (id, alias) in items.type_aliases.iter().skip(from.type_aliases as usize) {
+        check_alias(items, id, alias, &mut reported);
+    }
     traits::check_well_formed(items, &sigs, from, &mut reported);
     duplicate_assoc_items(items, &sigs, &mut reported, from.impls as usize);
     traits::check_impls(items, &sigs, &mut reported, checked_impls);
@@ -1613,6 +1773,63 @@ fn extend_signatures(
     (sigs, diagnostics)
 }
 
+/// Reports what is wrong with type alias `id` itself: errors in its
+/// type, a cycle of aliases (once, at its first alias), parameters it
+/// does not use, and traits its (unenforced) bounds name that do not
+/// resolve.
+fn check_alias(
+    items: &ItemTree,
+    id: flux_hir::TypeAliasId,
+    alias: &flux_hir::TypeAlias,
+    reported: &mut Vec<Diagnostic>,
+) {
+    let mut push = |range, message: String| {
+        reported.push(Diagnostic {
+            file: alias.loc.file,
+            range,
+            message,
+        });
+    };
+    for p in alias.generics.predicates.iter() {
+        if let (_, Some((range, message))) = items.resolve_trait(alias.loc.module, &p.bound) {
+            push(range, message);
+        }
+    }
+    if alias_cycle(items, id) {
+        let earlier = items
+            .type_aliases
+            .iter()
+            .take(id.index())
+            .any(|(other, _)| {
+                reaches_alias(items, other, id, &mut Vec::new())
+                    && reaches_alias(items, id, other, &mut Vec::new())
+            });
+        if !earlier {
+            push(
+                alias.ty_range,
+                format!("cycle detected when expanding type alias `{}`", alias.name),
+            );
+        }
+        return;
+    }
+    let mut errors = Vec::new();
+    let ty = expand_alias(items, id, &mut errors);
+    for (range, message) in errors {
+        push(range, message);
+    }
+    if ty == Ty::ERROR {
+        return;
+    }
+    for (i, param) in alias.generics.params.iter().enumerate() {
+        if !uses_param(ty, i as u32) {
+            push(
+                param.range,
+                format!("type parameter `{}` is never used", param.name),
+            );
+        }
+    }
+}
+
 /// Whether a value of `ty`, which is `strukt` itself at the top, contains
 /// another `strukt` by value; `seen` guards against cycles that do not
 /// involve `strukt`.
@@ -1682,7 +1899,26 @@ fn impl_type(
         }
         return ty;
     }
+    let through_alias = |path: &Path| {
+        matches!(
+            items.resolve(imp.module, path, Ns::Types),
+            Ok(Resolved::Def(Def::TypeAlias(_)))
+                | Err(ResolveError::Private {
+                    resolved: Resolved::Def(Def::TypeAlias(_)),
+                    ..
+                })
+        )
+    };
     let ty = match (imp.target, &imp.self_ty) {
+        // `impl A` for `type A = S<u8>;`: the alias's type.
+        (Some(ImplTarget::Struct(_)), TypeRef::Path(path)) if through_alias(path) => resolve_type(
+            items,
+            imp.module,
+            &imp.self_ty,
+            scope,
+            imp.self_range,
+            &mut errors,
+        ),
         (Some(ImplTarget::Struct(strukt)), TypeRef::Path(path)) => struct_type(
             items,
             imp.module,
@@ -2145,6 +2381,12 @@ impl TypedFile {
                         .unwrap_or(Ty::ERROR);
                     writeln!(out, "    {}@{}: {ty}", data.name, binding.index()).unwrap();
                 }
+            }
+        }
+        for (id, alias) in items.type_aliases.iter() {
+            if items.in_main_crate(alias.loc.module) {
+                let ty = expand_alias(items, id, &mut Vec::new());
+                writeln!(out, "type {}{} = {ty}", alias.name, alias.generics).unwrap();
             }
         }
         for (id, konst) in items.consts.iter() {

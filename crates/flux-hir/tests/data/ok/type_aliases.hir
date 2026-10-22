@@ -1,0 +1,52 @@
+struct Pair<T> { a: T, b: T }
+
+enum Shape<T> { Circle(T) = 0, Square { side: T } = 1, Empty = 2 }
+
+type Ints = Pair<i32>;
+
+type Twice<T> = (T, T);
+
+type Bounded<T> where T: Copy = Pair<T>;
+
+type Bytes = Shape<u8>;
+
+type Count = u32;
+
+type Alias = super::Ints;
+
+impl<T> Pair<T>;
+
+impl Ints;
+
+fn Pair::new(a@0: T, b@1: T) -> Self {
+    Pair { a: a@0, b: b@1 }
+}
+
+fn Pair::sum(self@0: &Self) -> i32 {
+    (self@0.a + self@0.b)
+}
+
+fn swap<T>(t@0: Twice<T>) -> Twice<T> {
+    (t@0.1, t@0.0)
+}
+
+fn shapes(s@0: Bytes) -> u8 {
+    match s@0 {
+        Shape::Circle(r@1) => r@1,
+        Shape::Square { side: side@2 } => side@2,
+        Shape::Empty => 0,
+    }
+}
+
+fn main() -> () {
+    let p@0 = <Ints>::new(1, 2);
+    let q@1 = Pair[m::Alias] { a: 3, b: 4 };
+    let Pair { a: a@2, .. } = q@1;
+    let c@3: Count = 5;
+    let t@4 = swap::<i32>((a@2, p@0.sum()));
+    let s@5 = Shape::Circle[Bytes](1);
+    let e@6 = Shape::Empty[Bytes];
+    let b@7: Bounded<u8> = Pair::new(1, 2);
+    let n@8 = shapes(Shape::Square[Bytes] { side: b@7.a });
+}
+

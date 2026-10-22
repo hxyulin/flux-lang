@@ -191,6 +191,10 @@ pub struct PathGenerics {
     /// The type is `Self`, whose generic arguments are the `impl`
     /// block's parameters: `Self::f`, `Self(x)`, `Self { .. }`.
     pub self_type: bool,
+    /// The struct or enum is named by a type alias, whose type, with
+    /// the arguments written for the alias, gives its generic
+    /// arguments: `A { .. }`, `A::V(x)` for `type A = E<u8>;`.
+    pub alias: Option<TypeRefId>,
 }
 
 /// The generic arguments after one segment of a path.

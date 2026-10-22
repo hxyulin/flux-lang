@@ -19,6 +19,7 @@ pub type ImplId = Idx<Impl>;
 pub type ModuleId = Idx<Module>;
 pub type ConstId = Idx<Const>;
 pub type TraitId = Idx<Trait>;
+pub type TypeAliasId = Idx<TypeAlias>;
 
 /// A crate, an index into [`ItemTree::crates`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,6 +39,7 @@ pub struct ItemTree {
     pub impls: LayeredArena<Impl>,
     /// Free and associated constants.
     pub consts: LayeredArena<Const>,
+    pub type_aliases: LayeredArena<TypeAlias>,
     pub uses: Vec<Use>,
     /// What each module's names mean, imports included.
     pub def_map: DefMap,
@@ -75,6 +77,7 @@ pub struct ItemCounts {
     pub traits: u32,
     pub impls: u32,
     pub consts: u32,
+    pub type_aliases: u32,
     pub uses: u32,
 }
 
@@ -171,6 +174,21 @@ pub struct Const {
     /// constant of the enum's `repr` type, in no scope, whose `node` is
     /// the variant.
     pub discriminant: Option<(StructId, u32)>,
+}
+
+/// A type alias: `type Pair<T> = (T, T);`, another name for a type,
+/// generic over its parameters.
+#[derive(Debug, Clone)]
+pub struct TypeAlias {
+    pub name: Symbol,
+    /// Its parameters; bounds on them are not enforced, as in rustc.
+    pub generics: Generics,
+    pub ty: TypeRef,
+    pub ty_range: TextRange,
+    pub loc: ItemLoc,
+    pub name_range: TextRange,
+    /// `type Pair`, where rustc reports errors about the whole alias.
+    pub def_range: TextRange,
 }
 
 /// What an associated item is in.
@@ -561,6 +579,8 @@ enum Defaults {
     Trait,
     /// A struct's: valid Rust, not supported yet.
     Struct,
+    /// A type alias's: valid Rust, not supported yet.
+    Alias,
     /// Functions' and `impl` blocks': an error.
     No,
 }
@@ -903,6 +923,7 @@ impl ItemTree {
         items.traits.freeze();
         items.impls.freeze();
         items.consts.freeze();
+        items.type_aliases.freeze();
         items
     }
 
@@ -930,6 +951,7 @@ impl ItemTree {
             traits: self.traits.len() as u32,
             impls: self.impls.len() as u32,
             consts: self.consts.len() as u32,
+            type_aliases: self.type_aliases.len() as u32,
             uses: self.uses.len() as u32,
         }
     }
@@ -1179,7 +1201,10 @@ impl Collector<'_> {
                 self.collect_trait(ctx, t);
                 return;
             }
-            ast::Item::TypeAlias(_) => "type aliases",
+            ast::Item::TypeAlias(t) => {
+                self.collect_type_alias(ctx, t);
+                return;
+            }
         };
         unsupported(
             &mut self.items.diagnostics,
@@ -1292,6 +1317,58 @@ impl Collector<'_> {
             ));
         }
         trait_vis
+    }
+
+    /// `type Pair<T> = (T, T);`, outside traits and `impl` blocks.
+    fn collect_type_alias(&mut self, ctx: Ctx, t: ast::TypeAlias<'_>) {
+        check_attrs(t.attrs(), &mut self.items.diagnostics);
+        let vis = self.visibility(ctx, t.visibility());
+        let Some(name) = t.name() else {
+            return;
+        };
+        let diagnostics = &mut self.items.diagnostics;
+        let item_range = TextRange::new(def_start(t.syntax()), t.syntax().text_range().end());
+        if let Some(list) = t.type_bound_list() {
+            diagnostics.push(Diagnostic::new(
+                list.syntax().text_range(),
+                "bounds on `type`s in this context have no effect",
+            ));
+        }
+        // Bounds on its parameters are not enforced, as in rustc: they
+        // are kept only to resolve their traits.
+        let mut generics = collect_generics(
+            t.generic_param_list(),
+            t.where_clauses().next(),
+            Defaults::Alias,
+            diagnostics,
+        );
+        if let Some(clause) = t.where_clauses().nth(1) {
+            let mut more = collect_generics(None, Some(clause), Defaults::No, diagnostics);
+            let mut predicates = generics.predicates.into_vec();
+            predicates.extend(std::mem::take(&mut more.predicates));
+            generics.predicates = predicates.into();
+        }
+        let (ty, ty_range) = match t.ty() {
+            Some(ty) => (lower_type(Some(ty), diagnostics), ty.syntax().text_range()),
+            None => {
+                diagnostics.push(Diagnostic::new(item_range, "free type alias without body"));
+                (TypeRef::Error, item_range)
+            }
+        };
+        let name_range = name.syntax().text_range();
+        self.items.type_aliases.alloc(TypeAlias {
+            name: Symbol::intern(name.text()),
+            generics,
+            ty,
+            ty_range,
+            loc: ItemLoc {
+                module: ctx.module,
+                file: ctx.file,
+                vis,
+            },
+            name_range,
+            def_range: TextRange::new(def_start(t.syntax()), name_range.end()),
+        });
     }
 
     /// `type Out: Bound;` in trait `id`.
@@ -3569,6 +3646,11 @@ fn collect_generics(
                             diagnostics,
                             ty_range,
                             "defaults for type parameters of structs",
+                        ),
+                        Defaults::Alias => unsupported(
+                            diagnostics,
+                            ty_range,
+                            "defaults for type parameters of type aliases",
                         ),
                         Defaults::No => diagnostics.push(Diagnostic::new(
                             range,
