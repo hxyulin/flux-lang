@@ -446,6 +446,19 @@
   and the others name C's integer types, so a program can print a
   byte string with `printf(c"%.*s".as_ptr(), s.len() as i32,
   s.as_ptr())`. `char` may be passed to C-variadic functions.
+- Support `str` and string literals (`"..."`, `r#"..."#`, a `&'static
+  str`): `str` is unsized like `[u8]`, so a `&str` is a pointer and a
+  length, in constants and statics too. `core::str` gives it `len`,
+  `is_empty`, `as_bytes`, `as_ptr`, `bytes`, `chars` and
+  `char_indices` (UTF-8 decoding, from both ends), `is_char_boundary`,
+  `is_ascii`, `eq_ignore_ascii_case`, `starts_with`, `ends_with`,
+  `contains` and `find` with a `&str` or `char` pattern, `==`, `<` and
+  the other comparisons (`PartialEq`, `Eq`, `PartialOrd`, `Ord`), and
+  `str::from_utf8` (also `core::str::from_utf8`), which validates as
+  rustc's does and reports a `Utf8Error` with `valid_up_to` and
+  `error_len`. Indexing a `str` by an integer is rustc's E0277; by
+  ranges, and the methods that need parts of a string, are not
+  supported yet.
 
 ### Performance
 

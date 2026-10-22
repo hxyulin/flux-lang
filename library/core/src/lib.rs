@@ -20,3 +20,4 @@ mod panicking;
 pub mod prelude;
 pub mod result;
 pub mod slice;
+pub mod str;
