@@ -646,8 +646,8 @@ DebugMap, write}` as rustc's (`Debug` for the integers, `bool`,
 `Octal`, `Binary`, `LowerExp` and `UpperExp` for the integers, and
 `Pointer` for pointers and references; `Formatter`'s `pad`,
 `pad_integral`, `write_str`, `write_fmt`, the options' accessors and
-the `debug_*` builders, whose `field` and `entry` take any `&T` where
-`T: Debug`, as flux has no `&dyn Debug` yet), `core::panic::Location`
+the `debug_*` builders, whose `field` and `entry` take `&dyn Debug`,
+as rustc's do), `core::panic::Location`
 (`caller`, `file`, `line`, `column`),
 `core::hint::black_box`, `core::hash::{Hash, Hasher, BuildHasher,
 BuildHasherDefault}` (`Hash` for the integers, `bool`, `char`, `str`,

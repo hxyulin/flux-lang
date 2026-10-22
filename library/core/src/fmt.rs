@@ -3,12 +3,9 @@
 //! placeholder's options, `Write`, which such places implement, and
 //! `Arguments`, what `format_args!` makes.
 //!
-//! flux has no trait objects yet, so where rustc's `Formatter` holds a
-//! `&mut dyn Write`, flux's holds the writer's address and a function
-//! that writes to it, made for its type (`Buf`); the same goes for the
-//! values `Arguments` holds. The builders' methods (`field`, `entry`)
-//! are generic over the values they take, where rustc's take `&dyn
-//! Debug`.
+//! As rustc's, `Formatter` writes through a `&mut dyn Write`, and the
+//! builders' methods (`field`, `entry`) take `&dyn Debug`; the values
+//! `Arguments` holds are their addresses and functions that format them.
 
 use crate::marker::PhantomData;
 use crate::option::Option::{self, None, Some};
@@ -75,40 +72,6 @@ impl<W: Write + ?Sized> Write for &mut W {
     }
 }
 
-/// A writer, as its address and a function that writes `str`s to it:
-/// what rustc's `&mut dyn Write` is.
-#[derive(Clone, Copy)]
-pub(crate) struct Buf<'a> {
-    out: *mut (),
-    write: fn(*mut (), &str) -> Result,
-    _marker: PhantomData<&'a mut ()>,
-}
-
-/// Writes `s` to the `W` at `out`.
-fn write_str_to<W: Write>(out: *mut (), s: &str) -> Result {
-    unsafe { (*(out as *mut W)).write_str(s) }
-}
-
-impl<'a> Buf<'a> {
-    pub(crate) fn new<W: Write>(out: &'a mut W) -> Buf<'a> {
-        Buf {
-            out: out as *mut W as *mut (),
-            write: write_str_to::<W>,
-            _marker: PhantomData,
-        }
-    }
-
-    pub(crate) fn write_str(&mut self, s: &str) -> Result {
-        (self.write)(self.out, s)
-    }
-
-    pub(crate) fn write_char(&mut self, c: char) -> Result {
-        let mut bytes = [0u8; 4];
-        let s: &str = c.encode_utf8(&mut bytes);
-        (self.write)(self.out, s)
-    }
-}
-
 /// rustc's layout of a placeholder's options: the fill character in the
 /// low 21 bits of `flags`, then the flags below.
 pub(crate) mod flags {
@@ -151,7 +114,7 @@ impl FormattingOptions {
 /// writer.
 pub struct Formatter<'a> {
     pub(crate) options: FormattingOptions,
-    pub(crate) buf: Buf<'a>,
+    pub(crate) buf: &'a mut (dyn Write + 'a),
 }
 
 impl<'a> Formatter<'a> {
@@ -159,15 +122,7 @@ impl<'a> Formatter<'a> {
     pub(crate) fn new<W: Write>(out: &'a mut W) -> Formatter<'a> {
         Formatter {
             options: FormattingOptions::new(),
-            buf: Buf::new(out),
-        }
-    }
-
-    /// A formatter with this one's options, writing to `out`.
-    pub(crate) fn wrap<'b, W: Write>(&self, out: &'b mut W) -> Formatter<'b> {
-        Formatter {
-            options: self.options,
-            buf: Buf::new(out),
+            buf: out,
         }
     }
 
@@ -181,7 +136,7 @@ impl<'a> Formatter<'a> {
     pub fn write_fmt(&mut self, fmt: Arguments<'_>) -> Result {
         match fmt.as_statically_known_str() {
             Some(s) => self.buf.write_str(s),
-            None => write_to(self.buf, fmt),
+            None => write(self.buf, fmt),
         }
     }
 
@@ -523,7 +478,7 @@ impl<'a> Arguments<'a> {
 
 impl Display for Arguments<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        write_to(f.buf, *self)
+        write(f.buf, *self)
     }
 }
 
@@ -533,14 +488,9 @@ impl Debug for Arguments<'_> {
     }
 }
 
-/// Writes `args` to `output`.
-pub fn write<W: Write>(output: &mut W, args: Arguments<'_>) -> Result {
-    write_to(Buf::new(output), args)
-}
-
 /// Writes `args` to `buf`: each piece, then its placeholder's value,
 /// written with a formatter of its own options.
-pub(crate) fn write_to(mut buf: Buf<'_>, args: Arguments<'_>) -> Result {
+pub fn write(buf: &mut dyn Write, args: Arguments<'_>) -> Result {
     if let Some(s) = args.as_str() {
         return buf.write_str(s);
     }
@@ -554,7 +504,7 @@ pub(crate) fn write_to(mut buf: Buf<'_>, args: Arguments<'_>) -> Result {
                 }
                 let mut f = Formatter {
                     options: FormattingOptions::new(),
-                    buf,
+                    buf: &mut *buf,
                 };
                 args.args[idx].fmt(&mut f)?;
                 idx += 1;
@@ -582,7 +532,10 @@ pub(crate) fn write_to(mut buf: Buf<'_>, args: Arguments<'_>) -> Result {
                     options.precision = precision;
                     options.flags |= flags::PRECISION_FLAG;
                 }
-                let mut f = Formatter { options, buf };
+                let mut f = Formatter {
+                    options,
+                    buf: &mut *buf,
+                };
                 args.args[p.position].fmt(&mut f)?;
                 idx += 1;
             }
