@@ -305,6 +305,23 @@
   binding in scope, `impl` blocks of one trait compared and searched
   pairwise, the traits in scope listed pairwise for each body, and the
   MIR checks' state per block and per statement.
+- Fix the slowdowns the ignored `scaling` tests recorded, which now run:
+  a local name is looked up through a map to its innermost binding, not
+  through every binding in scope; the traits in scope are listed once
+  per module, and a method lookup goes through those with its name when
+  they are fewer; a trait's `impl` blocks are indexed by the outermost
+  constructor of their type, as rustc's `SimplifiedType` has them, for
+  goals and the overlap check, and a function's call targets are queued
+  for checking once rather than at every call; and the borrow check and
+  initialization check keep their dataflow state in bitsets per block,
+  the borrow check finding the live locals at each statement by undoing
+  each statement's changes rather than copying the set. Four times as
+  many statements naming a parameter took 8.5 times as long to lower,
+  and now 4.0; four times as many traits in scope took 22 times as long
+  to check, `impl` blocks of one trait 13.6, now 3.7 and 3.8; a block
+  four times as long took 13.3 times as long to build MIR for, a body
+  branching at each statement 10.6, now 3.9 and 4.2. Diagnostics and
+  snapshots are unchanged.
 - Speed up the front end on one thread: about 245 MiB/s for whole-file
   parsing instead of 200 (`just bench`: lexing 6.3 to 5.4 ns/token,
   parsing 5.2 to 3.9, building 6.0 to 4.9). The parser's lookahead is
