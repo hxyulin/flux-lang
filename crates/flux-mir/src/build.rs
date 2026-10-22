@@ -1451,6 +1451,9 @@ impl Builder<'_> {
                 op: UnaryOp::Deref,
                 operand,
             } => self.lower_place_deref(operand, 1),
+            Expr::Index { base, index } if let Some(&instance) = self.types.overloads.get(expr) => {
+                self.overloaded_index(expr, (base, index), instance)
+            }
             Expr::Index { base, index } => {
                 let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
                 let place = self.lower_place_deref(base, derefs);
@@ -1494,6 +1497,58 @@ impl Builder<'_> {
                 temp.into()
             }
         }
+    }
+
+    /// `base[index]` through `Index::index(&base, index)` or
+    /// `IndexMut::index_mut(&mut base, index)`, as type checking chose:
+    /// the place the reference it returns points to. As in rustc, the
+    /// base is borrowed before the index is evaluated, and not two-phase
+    /// (`&mut a[..a.len()]` is E0502); it is unsized if it is an array
+    /// indexed as a slice.
+    fn overloaded_index(
+        &mut self,
+        expr: ExprId,
+        (base, index): (ExprId, ExprId),
+        instance: flux_ty::Instance,
+    ) -> Place {
+        let range = self.range(expr);
+        let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
+        let place = self.lower_place_deref(base, derefs);
+        let mutability = if self.items.functions[instance.function].name.as_str() == "index_mut" {
+            Mutability::Mut
+        } else {
+            Mutability::Not
+        };
+        let ty = self.place_ty(&place);
+        let reference = self.temp(Ty::new(TyKind::Ref(mutability, ty)));
+        let borrow = Rvalue::Ref {
+            mutability,
+            place,
+            two_phase: false,
+        };
+        self.assign(&reference.into(), borrow, range);
+        let mut receiver = reference;
+        if self.types.unsized_indices.get(expr).is_some()
+            && let TyKind::Array(elem, _) = ty.kind()
+        {
+            let slice = Ty::new(TyKind::Ref(mutability, Ty::slice(elem)));
+            let unsized_ = self.temp(slice);
+            let operand = self.read(reference.into());
+            self.assign(&unsized_.into(), Rvalue::Unsize(operand, slice), range);
+            receiver = unsized_;
+        }
+        let index = self.lower_operand(index);
+        let output = Ty::new(TyKind::Ref(mutability, self.expr_ty(expr)));
+        let result = self.temp(output);
+        let args = vec![Operand::Move(receiver.into()), index];
+        self.call(
+            instance.function,
+            instance.args,
+            args,
+            &result.into(),
+            range,
+        );
+        Place::from(result).deref()
     }
 
     /// The element of the array or slice at `place` at `index`, after

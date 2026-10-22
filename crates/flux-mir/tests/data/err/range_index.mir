@@ -1,0 +1,208 @@
+fn <G as Index<usize>>::index(_1: &G, _2: usize) -> &i32 {
+    let mut _0: &i32;
+    let _3: usize;
+    let _4: bool;
+
+    bb0: {
+        _3 = copy _2;
+        _4 = Lt(copy _3, const 4_usize);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _0 = &(*_1).0[_3];
+        return;
+    }
+}
+
+fn <G as IndexMut<usize>>::index_mut(_1: &mut G, _2: usize) -> &mut i32 {
+    let mut _0: &mut i32;
+    let _3: &mut i32;
+    let _4: usize;
+    let _5: bool;
+
+    bb0: {
+        _4 = copy _2;
+        _5 = Lt(copy _4, const 4_usize);
+        assert(copy _5, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _3 = &mut (*_1).0[_4];
+        _0 = &mut (*_3);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let mut _1: [i32; 4]; // a
+    let _2: &[i32]; // s
+    let _3: &[i32; 4];
+    let _4: &[i32];
+    let _5: RangeFrom<usize>;
+    let _6: &[i32];
+    let _7: ();
+    let _8: usize;
+    let _9: bool;
+    let _10: usize;
+    let _11: &mut [i32]; // m
+    let _12: &mut [i32; 4];
+    let _13: &mut [i32];
+    let _14: RangeTo<usize>;
+    let _15: &mut [i32];
+    let _16: &[i32]; // n
+    let _17: &[i32; 4];
+    let _18: &[i32];
+    let _19: RangeFrom<usize>;
+    let _20: &[i32];
+    let _21: ();
+    let _22: usize;
+    let _23: usize;
+    let _24: bool;
+    let _25: usize;
+    let _26: [i32; 3]; // v
+    let _27: &[i32]; // w
+    let _28: &[i32; 3];
+    let _29: &[i32];
+    let _30: RangeFrom<usize>;
+    let _31: &[i32];
+    let _32: ();
+    let _33: usize;
+    let _34: usize;
+    let _35: bool;
+    let _36: &mut [i32]; // t
+    let _37: &mut [i32; 4];
+    let _38: &mut [i32; 4];
+    let _39: &mut [i32]; // u
+    let _40: &mut [i32];
+    let _41: RangeTo<usize>;
+    let _42: usize;
+    let _43: usize;
+    let _44: &mut [i32];
+    let _45: ();
+    let _46: usize;
+    let _47: usize;
+    let _48: bool;
+    let mut _49: G; // g
+    let _50: [i32; 4];
+    let _51: ();
+    let _52: &mut G;
+    let _53: usize;
+    let _54: &mut i32;
+
+    bb0: {
+        _1 = [const 1_i32, const 2_i32, const 3_i32, const 4_i32];
+        _3 = &_1;
+        _4 = copy _3 as &[i32] (unsize);
+        _5 = RangeFrom { start: const 1_usize };
+        _6 = index::<[i32], RangeFrom<usize>>(move _4, move _5) -> bb1;
+    }
+
+    bb1: {
+        _2 = &(*_6);
+        _8 = const 0_usize;
+        _9 = Lt(copy _8, const 4_usize);
+        assert(copy _9, "index out of bounds") -> bb2;
+    }
+
+    bb2: {
+        _1[_8] = const 5_i32;
+        _7 = const ();
+        _10 = Len(&(*_2));
+        StorageDead(_10);
+        _12 = &mut _1;
+        _13 = move _12 as &mut [i32] (unsize);
+        _14 = RangeTo { end: const 2_usize };
+        _15 = index_mut::<[i32], RangeTo<usize>>(move _13, copy _14) -> bb3;
+    }
+
+    bb3: {
+        _11 = &mut (*_15);
+        _17 = &_1;
+        _18 = copy _17 as &[i32] (unsize);
+        _19 = RangeFrom { start: const 2_usize };
+        _20 = index::<[i32], RangeFrom<usize>>(move _18, move _19) -> bb4;
+    }
+
+    bb4: {
+        _16 = &(*_20);
+        _22 = const 0_usize;
+        _23 = Len((*_11));
+        _24 = Lt(copy _22, copy _23);
+        assert(copy _24, "index out of bounds") -> bb5;
+    }
+
+    bb5: {
+        (*_11)[_22] = const 1_i32;
+        _21 = const ();
+        _25 = Len(&(*_16));
+        StorageDead(_25);
+        _26 = [const 1_i32, const 2_i32, const 3_i32];
+        _28 = &_26;
+        _29 = copy _28 as &[i32] (unsize);
+        _30 = RangeFrom { start: const 1_usize };
+        _31 = index::<[i32], RangeFrom<usize>>(move _29, move _30) -> bb6;
+    }
+
+    bb6: {
+        _27 = &(*_31);
+        _33 = const 0_usize;
+        _34 = Len((*_27));
+        _35 = Lt(copy _33, copy _34);
+        assert(copy _35, "index out of bounds") -> bb7;
+    }
+
+    bb7: {
+        (*_27)[_33] = const 3_i32;
+        _32 = const ();
+        _38 = &mut _1;
+        _37 = &mut (*_38);
+        _36 = move _37 as &mut [i32] (unsize);
+        _40 = &mut (*_36);
+        _43 = Len(&(*_36));
+        _42 = Sub(copy _43, const 1_usize);
+        _41 = RangeTo { end: copy _42 };
+        _44 = index_mut::<[i32], RangeTo<usize>>(move _40, copy _41) -> bb8;
+    }
+
+    bb8: {
+        _39 = &mut (*_44);
+        _46 = const 0_usize;
+        _47 = Len((*_39));
+        _48 = Lt(copy _46, copy _47);
+        assert(copy _48, "index out of bounds") -> bb9;
+    }
+
+    bb9: {
+        (*_39)[_46] = const 3_i32;
+        _45 = const ();
+        _50 = [const 0_i32; 4];
+        _49 = G { cells: copy _50, w: const 2_usize };
+        _52 = &mut _49;
+        _53 = copy _49.1;
+        _54 = index_mut::<G, usize>(move _52, copy _53) -> bb10;
+    }
+
+    bb10: {
+        (*_54) = const 1_i32;
+        _51 = const ();
+        _0 = const ();
+        StorageDead(_49);
+        StorageDead(_39);
+        StorageDead(_36);
+        StorageDead(_27);
+        StorageDead(_26);
+        StorageDead(_16);
+        StorageDead(_11);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+error 595..603: cannot assign to `a[_]` because it is borrowed
+error 664..670: cannot borrow `a` as immutable because it is also borrowed as mutable
+error 755..763: cannot assign to `w[_]`, which is behind a `&` reference
+error 818..819: cannot borrow `*t` as immutable because it is also borrowed as mutable
+error 895..898: cannot use `g.w` because it was mutably borrowed

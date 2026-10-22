@@ -191,8 +191,11 @@ fn statement_transfer(kind: &StatementKind, set: &mut dyn FnMut(Local, bool)) {
             }
             place_uses(dest, &mut uses);
             match rvalue {
-                Rvalue::Ref { place, .. } => {
-                    // Borrowing a value that holds loans uses them.
+                // Borrowing a value that holds loans uses them, and so
+                // does reading the length of a slice behind one.
+                Rvalue::Ref { place, .. }
+                | Rvalue::Len { place, .. }
+                | Rvalue::Discriminant(place) => {
                     place_uses(place, &mut uses);
                     uses.push(place.local);
                 }

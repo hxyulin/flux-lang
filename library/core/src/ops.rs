@@ -13,9 +13,11 @@
 //! implement.
 
 mod function;
+mod index;
 mod range;
 
 pub use function::{Fn, FnMut, FnOnce};
+pub use index::{Index, IndexMut};
 pub use range::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
 /// The `+` operator: addition.

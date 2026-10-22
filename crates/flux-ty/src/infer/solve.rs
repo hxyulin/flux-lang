@@ -1068,8 +1068,24 @@ impl Ctx<'_> {
             };
         }
         let alias_bounds = self.alias_bounds(ty);
-        let in_env = self.param_env.iter().chain(&alias_bounds).any(|p| {
-            p.self_ty == ty && p.trait_ref.trait_ == t && args.is_none_or(|a| a == p.trait_ref.args)
+        let candidates: Vec<Predicate> = self
+            .param_env
+            .iter()
+            .chain(&alias_bounds)
+            .filter(|p| p.self_ty == ty && p.trait_ref.trait_ == t)
+            .copied()
+            .collect();
+        // A bound whose arguments unify with those wanted (`C: Index<usize>`
+        // for `c[0]`, whose index is an integer variable).
+        let in_env = candidates.iter().any(|p| {
+            args.is_none_or(|a| {
+                a.len() == p.trait_ref.args.len()
+                    && self.probe(|cx| {
+                        a.iter()
+                            .zip(p.trait_ref.args)
+                            .all(|(&x, &y)| cx.unify(x, y))
+                    })
+            })
         });
         if in_env {
             return true;
@@ -1564,7 +1580,7 @@ impl Ctx<'_> {
     }
 
     /// Whether `ty` has variables nothing gave a type yet.
-    fn has_unknown(&mut self, ty: Ty) -> bool {
+    pub(super) fn has_unknown(&mut self, ty: Ty) -> bool {
         let mut unknown = Vec::new();
         self.unknown_vars(ty, &mut unknown);
         self.int_vars(ty, &mut unknown);
