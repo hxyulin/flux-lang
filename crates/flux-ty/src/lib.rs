@@ -160,6 +160,9 @@ pub struct Signatures {
     /// The values of the constants that array lengths name, evaluated
     /// before bodies are inferred.
     pub array_lens: LenValues,
+    /// The types of the anonymous constants of const generic arguments
+    /// (`f::<{ N + 1 }>`), their parameters'.
+    pub arg_tys: ArgTys,
     /// The lifetimes in the signatures, for the borrow checker.
     pub regions: regions::RegionSigs,
     /// What field types need of the items to normalize without them.
@@ -540,7 +543,7 @@ impl Signatures {
             }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
-            TyKind::Array(t, len) => Ty::array(go(t), len),
+            TyKind::Array(t, len) => Ty::array_of(go(t), len),
             TyKind::Slice(t) => Ty::slice(go(t)),
             TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(go),
             _ => ty,
@@ -560,9 +563,8 @@ fn max_param(ty: Ty) -> u32 {
         }
         TyKind::Alias(alias) => alias.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
         TyKind::Opaque(opaque) => opaque.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
-        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
-            max_param(t)
-        }
+        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Slice(t) => max_param(t),
+        TyKind::Array(t, len) => max_param(t).max(max_param(len)),
         TyKind::FnDef(_) | TyKind::FnPtr(_) => {
             ty.children().into_iter().map(max_param).max().unwrap_or(0)
         }
@@ -576,6 +578,10 @@ fn max_param(ty: Ty) -> u32 {
 pub struct TypeScope<'a> {
     pub self_ty: Option<Ty>,
     pub generics: &'a [Symbol],
+    /// The type of each of `generics` that is a const parameter, `None`
+    /// for a type parameter ([`generic_consts`]); empty where they are
+    /// not known, and then each is taken for what its use needs.
+    pub consts: &'a [Option<Ty>],
     /// In an item's signature, where `_` is not allowed, what rustc
     /// calls such items ("functions"); `None` in a body, where `_` is a
     /// type to infer.
@@ -610,29 +616,57 @@ pub struct ArrayLens<'a> {
     /// The constants named whose values are not in `values`, as types
     /// were resolved: what to evaluate.
     pub missing: std::cell::RefCell<Vec<ConstId>>,
+    /// The types of the anonymous constants of const generic arguments
+    /// (`f::<{ N + 1 }>`), their parameters', as far as known.
+    pub arg_tys: &'a ArgTys,
+    /// Those found as types were resolved that `arg_tys` lacks.
+    pub new_arg_tys: std::cell::RefCell<Vec<(ConstId, Ty)>>,
 }
 
-/// The evaluated values of constants that array lengths name.
-pub type LenValues = rustc_hash::FxHashMap<ConstId, Option<u64>>;
+/// The types of the anonymous constants of const generic arguments.
+pub type ArgTys = rustc_hash::FxHashMap<ConstId, Ty>;
+
+/// The evaluated values of constants that array lengths and const
+/// generic arguments name, as bits (`1` for `true`).
+pub type LenValues = rustc_hash::FxHashMap<ConstId, Option<u128>>;
 
 /// Evaluates the constants array lengths name, given the signatures
 /// so far (whose [`Signatures::array_lens`] it may extend as it needs):
 /// each constant's value, `None` if its evaluation failed, with the
 /// diagnostics that say why.
 pub type LenEvaluator<'e> =
-    &'e dyn Fn(&Hir, &Signatures, &[ConstId]) -> (Vec<(ConstId, Option<u64>)>, Vec<Diagnostic>);
+    &'e dyn Fn(&Hir, &Signatures, &[ConstId]) -> (Vec<(ConstId, Option<u128>)>, Vec<Diagnostic>);
 
 impl<'a> ArrayLens<'a> {
-    pub fn new(values: &'a LenValues) -> ArrayLens<'a> {
+    pub fn new(values: &'a LenValues, arg_tys: &'a ArgTys) -> ArrayLens<'a> {
         ArrayLens {
             values,
             missing: Default::default(),
+            arg_tys,
+            new_arg_tys: Default::default(),
+        }
+    }
+
+    /// The type of `konst`, the anonymous constant of a const generic
+    /// argument, if known.
+    pub fn arg_ty(&self, konst: ConstId) -> Option<Ty> {
+        self.arg_tys.get(&konst).copied()
+    }
+
+    /// Notes that `konst`, the anonymous constant of a const generic
+    /// argument, has type `ty`.
+    fn found_arg_ty(&self, konst: ConstId, ty: Ty) {
+        if ty != Ty::ERROR && !self.arg_tys.contains_key(&konst) {
+            let mut new = self.new_arg_tys.borrow_mut();
+            if !new.iter().any(|&(k, _)| k == konst) {
+                new.push((konst, ty));
+            }
         }
     }
 
     /// The value of constant `konst`, if known; one not evaluated yet is
     /// noted as missing.
-    fn value(&self, konst: ConstId) -> Option<u64> {
+    fn value(&self, konst: ConstId) -> Option<u128> {
         match self.values.get(&konst) {
             Some(value) => *value,
             None => {
@@ -652,6 +686,263 @@ impl TypeScope<'_> {
         let index = self.generics.iter().rposition(|&n| n == name)?;
         Some(Ty::param(index as u32, name))
     }
+
+    /// The type of the const parameter called `name`, if it is one in
+    /// scope (an error if that is not known).
+    pub fn const_param(&self, name: Symbol) -> Option<Ty> {
+        let index = self.generics.iter().rposition(|&n| n == name)?;
+        match self.consts.get(index) {
+            Some(ty) => *ty,
+            None => Some(Ty::ERROR),
+        }
+    }
+
+    /// Whether `name` is a type parameter in scope, known not to be a
+    /// const one.
+    fn type_param(&self, name: Symbol) -> bool {
+        self.generics
+            .iter()
+            .rposition(|&n| n == name)
+            .is_some_and(|i| matches!(self.consts.get(i), Some(None)))
+    }
+}
+
+/// The types of the const parameters of an item in `owner` with its own
+/// `generics`, `None` for its type parameters, in the order of
+/// [`generic_names`].
+pub fn generic_consts(items: &ItemTree, owner: Option<Owner>, own: &Generics) -> Vec<Option<Ty>> {
+    let mut consts = Vec::new();
+    if let Some(Owner::Trait(_)) = owner {
+        consts.push(None);
+    }
+    consts.extend(
+        items
+            .owner_generics(owner)
+            .into_iter()
+            .chain([own])
+            .flat_map(|g| g.params.iter().map(param_const_ty)),
+    );
+    consts
+}
+
+/// The type of a const parameter, `None` for a type parameter.
+pub fn param_const_ty(param: &flux_hir::GenericParam) -> Option<Ty> {
+    match &param.kind {
+        flux_hir::ParamKind::Type => None,
+        flux_hir::ParamKind::Const { ty, .. } => Some(const_param_ty(ty)),
+    }
+}
+
+/// The type of a const parameter written as `ty`: an integer type,
+/// `bool` or `char` ([`check_const_params`] reports others), or an
+/// error.
+pub fn const_param_ty(ty: &TypeRef) -> Ty {
+    let TypeRef::Path(path) = ty else {
+        return Ty::ERROR;
+    };
+    path.as_name()
+        .and_then(|name| primitive(name).ok())
+        .filter(|t| t.as_int().is_some() || *t == Ty::BOOL || *t == Ty::CHAR)
+        .unwrap_or(Ty::ERROR)
+}
+
+/// rustc's errors for the types of the const parameters of `generics`,
+/// in `module` with the generic parameters `names` in scope: one that
+/// names a generic parameter (E0770), and one that is not an integer
+/// type, `bool` or `char`.
+pub fn check_const_params(
+    items: &ItemTree,
+    module: ModuleId,
+    generics: &Generics,
+    names: &[Symbol],
+    errors: &mut Vec<(TextRange, String)>,
+) {
+    for param in generics.params.iter() {
+        let flux_hir::ParamKind::Const { ty, ty_range } = &param.kind else {
+            continue;
+        };
+        let mut generic = false;
+        visit_paths(ty, &mut |path| {
+            if let Some(&first) = path.segments.first()
+                && path.anchor == flux_hir::PathAnchor::Plain
+                && (names.contains(&first) || first == kw::SelfUpper)
+            {
+                generic = true;
+            }
+        });
+        if generic {
+            errors.push((
+                *ty_range,
+                "the type of const parameters must not depend on other generic parameters"
+                    .to_owned(),
+            ));
+            continue;
+        }
+        if const_param_ty(ty) != Ty::ERROR {
+            continue;
+        }
+        // The other primitive types, which flux lacks or which are not
+        // sized.
+        if let TypeRef::Path(path) = ty
+            && let Some(name) = path.as_name()
+            && matches!(name.as_str(), "f16" | "f32" | "f64" | "f128" | "str")
+        {
+            errors.push((
+                *ty_range,
+                format!("`{name}` is forbidden as the type of a const generic parameter"),
+            ));
+            continue;
+        }
+        let resolved = resolve_type(
+            items,
+            module,
+            ty,
+            TypeScope::default(),
+            *ty_range,
+            &mut Vec::new(),
+        );
+        if resolved != Ty::ERROR
+            && resolved.as_int().is_none()
+            && resolved != Ty::BOOL
+            && resolved != Ty::CHAR
+        {
+            errors.push((
+                *ty_range,
+                format!("`{ty}` is forbidden as the type of a const generic parameter"),
+            ));
+        } else if resolved != Ty::ERROR {
+            errors.push((
+                *ty_range,
+                "const parameters of types named through aliases are not supported yet".to_owned(),
+            ));
+        } else {
+            // Reported where the type is resolved.
+            resolve_type(items, module, ty, TypeScope::default(), *ty_range, errors);
+        }
+    }
+}
+
+/// The generic argument `arg`, written at `range`, for `param`: a type
+/// for a type parameter, a constant ([`TyKind::Value`] or a const
+/// parameter) for a const one. A path is a type if it names one, and
+/// otherwise a constant, as rustc reads it.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_generic_arg(
+    items: &ItemTree,
+    module: ModuleId,
+    param: Option<&flux_hir::GenericParam>,
+    arg: &TypeRef,
+    scope: TypeScope<'_>,
+    range: TextRange,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Ty {
+    let want = match param.map(|p| &p.kind) {
+        Some(flux_hir::ParamKind::Const { ty, .. }) => const_param_ty(ty),
+        _ => {
+            if let TypeRef::Const(_) = arg {
+                errors.push((
+                    range,
+                    "constant provided when a type was expected".to_owned(),
+                ));
+                return Ty::ERROR;
+            }
+            return resolve_type(items, module, arg, scope, range, errors);
+        }
+    };
+    let value = match arg {
+        TypeRef::Const(value) => value.clone(),
+        TypeRef::Infer if scope.signature_of.is_none() => {
+            return Ty::infer(ty::InferVar::PLACEHOLDER);
+        }
+        TypeRef::Path(path) if names_type(items, module, path, scope) != Some(true) => {
+            flux_hir::ArrayLen {
+                kind: flux_hir::ArrayLenKind::Path(path.clone()),
+                range,
+            }
+        }
+        _ => {
+            errors.push((
+                range,
+                "type provided when a constant was expected".to_owned(),
+            ));
+            return Ty::ERROR;
+        }
+    };
+    const_value(items, module, &value, want, scope, errors).unwrap_or(Ty::ERROR)
+}
+
+/// Whether `path`, a generic argument, names a type rather than a
+/// constant; `None` for a generic parameter of a kind not known.
+fn names_type(
+    items: &ItemTree,
+    module: ModuleId,
+    path: &Path,
+    scope: TypeScope<'_>,
+) -> Option<bool> {
+    if path.qself.is_some() || path.args.iter().any(Option::is_some) {
+        return Some(true);
+    }
+    if let Some(name) = path.as_name() {
+        if let Some(index) = scope.generics.iter().rposition(|&n| n == name) {
+            return scope.consts.get(index).map(Option::is_none);
+        }
+        if name == kw::SelfUpper {
+            return Some(true);
+        }
+    }
+    if path.segments.len() > 1
+        && path.anchor == flux_hir::PathAnchor::Plain
+        && (path.segments[0] == kw::SelfUpper || scope.generics.contains(&path.segments[0]))
+    {
+        // `Self::N`, `T::Out`: an associated constant or type, as the
+        // parameter wants.
+        return None;
+    }
+    Some(items.resolve(module, path, Ns::Types).is_ok())
+}
+
+/// The generic arguments `written` (with their ranges) for parameters
+/// `params`, as [`resolve_generic_arg`] resolves each.
+pub fn resolve_generic_args(
+    items: &ItemTree,
+    module: ModuleId,
+    params: &[flux_hir::GenericParam],
+    written: &flux_hir::GenericArgs,
+    scope: TypeScope<'_>,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Vec<Ty> {
+    // rustc reports only the first argument of the wrong kind (E0747).
+    let wrong_kind = written
+        .types
+        .iter()
+        .zip(&written.ranges)
+        .zip(params)
+        .find_map(|((arg, &range), param)| {
+            let is_const = match arg {
+                TypeRef::Const(_) => true,
+                TypeRef::Path(path) => !names_type(items, module, path, scope)?,
+                TypeRef::Infer => return None,
+                _ => false,
+            };
+            match (param.is_const(), is_const) {
+                (false, true) => Some((range, "constant provided when a type was expected")),
+                (true, false) => Some((range, "type provided when a constant was expected")),
+                _ => None,
+            }
+        });
+    if let Some((range, message)) = wrong_kind {
+        errors.push((range, message.to_owned()));
+        return vec![Ty::ERROR; written.types.len()];
+    }
+    written
+        .types
+        .iter()
+        .zip(&written.ranges)
+        .enumerate()
+        .map(|(i, (arg, &range))| {
+            resolve_generic_arg(items, module, params.get(i), arg, scope, range, errors)
+        })
+        .collect()
 }
 
 /// The names of the generic parameters of an item in `owner` with its
@@ -738,6 +1029,16 @@ pub fn resolve_type(
             if let Some(name) = path.as_name()
                 && let Some(param) = scope.param(name)
             {
+                if scope.const_param(name).is_some()
+                    && !scope.type_param(name)
+                    && !scope.consts.is_empty()
+                {
+                    return fail(
+                        errors,
+                        range,
+                        format!("cannot find type `{name}` in this scope"),
+                    );
+                }
                 no_args(errors, format!("type parameter `{name}`"));
                 return param;
             }
@@ -894,9 +1195,14 @@ pub fn resolve_type(
             match (elem, len) {
                 (Ty::ERROR, _) | (_, None) => Ty::ERROR,
                 (elem, _) if elem.is_unsized() => fail(errors, range, unsized_error(elem)),
-                (elem, Some(len)) => Ty::array(elem, len),
+                (elem, Some(len)) => Ty::array_of(elem, len),
             }
         }
+        TypeRef::Const(_) => fail(
+            errors,
+            range,
+            "constant provided when a type was expected".to_owned(),
+        ),
         TypeRef::Slice(elem) => {
             let elem = resolve_type(items, module, elem, scope, range, errors);
             if elem == Ty::ERROR {
@@ -947,44 +1253,97 @@ pub fn resolve_type(
     }
 }
 
-/// The value of an array's length, `len`, written in `module`: an
-/// integer literal or a constant of type `usize`, whose value `scope`
-/// knows. `None` if it is not known (reported unless it is waiting for
-/// evaluation).
+/// The value of an array's length, `len`, written in `module`: a
+/// constant of type `usize` ([`const_value`]).
 pub fn array_len(
     items: &ItemTree,
     module: ModuleId,
     len: &flux_hir::ArrayLen,
     scope: TypeScope<'_>,
     errors: &mut Vec<(TextRange, String)>,
-) -> Option<u64> {
+) -> Option<Ty> {
+    const_value(items, module, len, Ty::int(IntTy::Usize), scope, errors)
+}
+
+/// The value of a constant written in a type, `len` (an array's length
+/// or a const generic argument), of type `want`, in `module`: a
+/// [`TyKind::Value`], or a const parameter. `None` if it is not known
+/// (reported unless it is waiting for evaluation).
+pub fn const_value(
+    items: &ItemTree,
+    module: ModuleId,
+    len: &flux_hir::ArrayLen,
+    want: Ty,
+    scope: TypeScope<'_>,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Option<Ty> {
     let range = len.range;
     let mismatch = |errors: &mut Vec<(TextRange, String)>, found: &dyn std::fmt::Display| {
         errors.push((
             range,
-            format!("mismatched types: expected `usize`, found `{found}`"),
+            format!("mismatched types: expected `{want}`, found {found}"),
         ));
         None
     };
+    let value = |bits: u128| Some(Ty::value(want, bits));
     let konst = match &len.kind {
         flux_hir::ArrayLenKind::Error => return None,
         flux_hir::ArrayLenKind::Anon(node) => {
             let file = items.modules[module].file;
             // One that uses generic parameters is reported, and has none.
             let konst = *items.anon_consts.get(&(file, *node))?;
-            return scope.lens?.value(konst);
+            let lens = scope.lens?;
+            if items.consts[konst].anon.is_some_and(|a| a.is_arg) {
+                lens.found_arg_ty(konst, want);
+            }
+            return lens.value(konst).and_then(value);
         }
-        flux_hir::ArrayLenKind::Lit { value, suffix } => {
-            return match suffix {
-                Some(suffix) if *suffix != sym::usize => mismatch(errors, suffix),
-                _ => match u64::try_from(*value) {
-                    Ok(value) => Some(value),
-                    Err(_) => {
-                        errors.push((range, "literal out of range for `usize`".to_owned()));
-                        None
-                    }
-                },
+        flux_hir::ArrayLenKind::Lit {
+            value: bits,
+            suffix,
+        } => {
+            let Some(int) = want.as_int() else {
+                if want == Ty::ERROR {
+                    return None;
+                }
+                return mismatch(errors, &"integer");
             };
+            return match suffix {
+                Some(suffix) if *suffix != int.name() => mismatch(errors, &format!("`{suffix}`")),
+                _ if *bits > int.max() => {
+                    errors.push((range, format!("literal out of range for `{want}`")));
+                    None
+                }
+                _ => value(*bits),
+            };
+        }
+        flux_hir::ArrayLenKind::Bool(b) => {
+            if want != Ty::BOOL {
+                return mismatch(errors, &"`bool`");
+            }
+            return value(u128::from(*b));
+        }
+        flux_hir::ArrayLenKind::Char(c) => {
+            if want != Ty::CHAR {
+                return mismatch(errors, &"`char`");
+            }
+            return value(u128::from(*c));
+        }
+        flux_hir::ArrayLenKind::Path(path)
+            if let Some(name) = path.as_name()
+                && let Some(ty) = scope.const_param(name) =>
+        {
+            if scope.type_param(name) {
+                errors.push((
+                    range,
+                    format!("expected value, found type parameter `{name}`"),
+                ));
+                return None;
+            }
+            if ty != want && ty != Ty::ERROR && want != Ty::ERROR {
+                return mismatch(errors, &format!("`{ty}`"));
+            }
+            return scope.param(name);
         }
         flux_hir::ArrayLenKind::Path(path)
             if path.segments.first() == Some(&kw::SelfUpper)
@@ -1033,13 +1392,13 @@ pub fn array_len(
         data.ty_range,
         &mut Vec::new(),
     );
-    if ty != Ty::int(IntTy::Usize) {
-        if ty == Ty::ERROR {
+    if ty != want {
+        if ty == Ty::ERROR || want == Ty::ERROR {
             return None;
         }
-        return mismatch(errors, &ty);
+        return mismatch(errors, &format!("`{ty}`"));
     }
-    scope.lens?.value(konst)
+    scope.lens?.value(konst).and_then(value)
 }
 
 /// Whether `name` is a generic parameter, or `Self`, of a function whose
@@ -1260,12 +1619,12 @@ pub fn struct_type(
         errors.push((at, format!("missing generics for {kind} `{}`", def.name)));
         return Ty::ERROR;
     };
-    let args: Vec<Ty> = written
-        .types
-        .iter()
-        .zip(&written.ranges)
-        .map(|(ty, &range)| resolve_type(items, module, ty, scope, range, errors))
-        .collect();
+    if written.types.len() != want {
+        let kind = if def.is_enum() { "enum" } else { "struct" };
+        errors.push((at, wrong_arg_count(kind, want, written.types.len())));
+        return Ty::ERROR;
+    }
+    let args = resolve_generic_args(items, module, &def.generics.params, written, scope, errors);
     if args.len() != want {
         let kind = if def.is_enum() { "enum" } else { "struct" };
         errors.push((at, wrong_arg_count(kind, want, args.len())));
@@ -1325,12 +1684,8 @@ pub fn alias_type(
             return Ty::ERROR;
         }
         Some(written) => {
-            let args: Vec<Ty> = written
-                .types
-                .iter()
-                .zip(&written.ranges)
-                .map(|(ty, &range)| resolve_type(items, module, ty, scope, range, errors))
-                .collect();
+            let args =
+                resolve_generic_args(items, module, &def.generics.params, written, scope, errors);
             if args.len() != want {
                 errors.push((at, wrong_arg_count("type alias", want, args.len())));
                 return Ty::ERROR;
@@ -1442,6 +1797,7 @@ fn visit_paths(ty: &TypeRef, f: &mut impl FnMut(&Path)) {
             .for_each(|t| visit_paths(t, f)),
         TypeRef::Never
         | TypeRef::Infer
+        | TypeRef::Const(_)
         | TypeRef::ImplTrait(_)
         | TypeRef::ImplParam(_)
         | TypeRef::Opaque(_)
@@ -1599,7 +1955,7 @@ pub(crate) fn overlap(a: Ty, b: Ty) -> bool {
         (TyKind::Ref(m, x), TyKind::Ref(n, y)) | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
             m == n && overlap(x, y)
         }
-        (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && overlap(x, y),
+        (TyKind::Array(x, m), TyKind::Array(y, n)) => overlap(m, n) && overlap(x, y),
         (TyKind::Slice(x), TyKind::Slice(y)) => overlap(x, y),
         (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
             x.is_unsafe == y.is_unsafe
@@ -1620,9 +1976,8 @@ pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
     }
     match ty.kind() {
         TyKind::Param(param) => param.index == index,
-        TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
-            mentions_param(t, index)
-        }
+        TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => mentions_param(t, index),
+        TyKind::Array(t, len) => mentions_param(t, index) || mentions_param(len, index),
         TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
             list.iter().any(|&t| mentions_param(t, index))
         }
@@ -1640,9 +1995,8 @@ fn uses_param(ty: Ty, index: u32) -> bool {
     match ty.kind() {
         TyKind::Alias(alias) => alias.args.iter().any(|&t| uses_param(t, index)),
         TyKind::Opaque(opaque) => opaque.args.iter().any(|&t| uses_param(t, index)),
-        TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
-            uses_param(t, index)
-        }
+        TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => uses_param(t, index),
+        TyKind::Array(t, len) => uses_param(t, index) || mentions_param(len, index),
         TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
             list.iter().any(|&t| uses_param(t, index))
         }
@@ -1869,11 +2223,16 @@ fn extend_signatures(
     sigs.trait_defaults = defaults;
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let generics = generic_names(items, Some(Owner::Trait(id)), &Generics::default());
+        let consts = generic_consts(items, Some(Owner::Trait(id)), &Generics::default());
         let self_param = Ty::param(0, kw::SelfUpper);
         let bounds = [traits::trait_self_predicate(items, id)];
+        let mut errors = Vec::new();
+        check_const_params(items, t.loc.module, &t.generics, &generics, &mut errors);
+        in_file(errors, t.loc.file, &mut reported);
         let scope = TypeScope {
             self_ty: Some(self_param),
             generics: &generics,
+            consts: &consts,
             signature_of: Some("traits"),
             bounds: &bounds,
             defaults: Some(&sigs.trait_defaults),
@@ -1944,15 +2303,18 @@ fn extend_signatures(
     // the associated type of a bound on `T`.
     for (id, s) in items.structs.iter().skip(from.structs as usize) {
         let generics: Vec<Symbol> = s.generics.params.iter().map(|p| p.name).collect();
+        let consts: Vec<Option<Ty>> = s.generics.params.iter().map(param_const_ty).collect();
         let scope = TypeScope {
             self_ty: Some(Ty::adt(id, s.name, &params_of(&s.generics, 0))),
             generics: &generics,
+            consts: &consts,
             signature_of: Some("structs"),
             defaults: Some(&sigs.trait_defaults),
             lens,
             ..TypeScope::default()
         };
         let mut errors = Vec::new();
+        check_const_params(items, s.loc.module, &s.generics, &generics, &mut errors);
         let own = resolve_predicates(items, &sigs, s.loc.module, &s.generics, scope, &mut errors);
         in_file(errors, s.loc.file, &mut reported);
         let bounds = traits::elaborate(&sigs, &own.predicates);
@@ -1994,10 +2356,12 @@ fn extend_signatures(
             continue;
         }
         let generics = generic_names(items, Some(Owner::Impl(id)), &Generics::default());
+        let consts = generic_consts(items, Some(Owner::Impl(id)), &Generics::default());
         let self_ty = sigs.impls[id];
         let scope = TypeScope {
             self_ty: Some(self_ty),
             generics: &generics,
+            consts: &consts,
             signature_of: Some("implementations"),
             defaults: Some(&sigs.trait_defaults),
             lens,
@@ -2056,12 +2420,20 @@ fn extend_signatures(
                 .insert(id, Ty::int(discriminant_ty(items, strukt)));
             continue;
         }
+        // A const generic argument has its parameter's type, known once
+        // the path it is in is resolved.
+        if konst.anon.is_some_and(|a| a.is_arg) {
+            let ty = lens.and_then(|l| l.arg_ty(id)).unwrap_or(Ty::ERROR);
+            sigs.consts.insert(id, ty);
+            continue;
+        }
         let generics = generic_names(items, konst.owner, &Generics::default());
         // Its owner's bounds, for `Self::A` or `T::A` in its type.
         let bounds = traits::elaborate(&sigs, &traits::owner_predicates(items, &sigs, konst.owner));
         let scope = TypeScope {
             self_ty: self_ty(&sigs, konst.owner),
             generics: &generics,
+            consts: &[],
             signature_of: Some(match (konst.owner, konst.is_static) {
                 (Some(_), _) => "associated constants",
                 (None, Some(_)) => "static variables",
@@ -2116,6 +2488,16 @@ fn extend_signatures(
     }
     for (id, function) in items.functions.iter().skip(from.functions as usize) {
         let generics = generic_names(items, function.owner, &function.generics);
+        let consts = generic_consts(items, function.owner, &function.generics);
+        let mut errors = Vec::new();
+        check_const_params(
+            items,
+            function.loc.module,
+            &function.generics,
+            &generics,
+            &mut errors,
+        );
+        in_file(errors, function.loc.file, &mut reported);
         let self_trait = items
             .impl_of(id)
             .and_then(|imp| sigs.impl_traits.get(imp).copied());
@@ -2129,6 +2511,7 @@ fn extend_signatures(
         let scope = TypeScope {
             self_ty: self_ty(&sigs, function.owner),
             generics: &generics,
+            consts: &consts,
             signature_of: Some("functions"),
             self_trait,
             self_types: &self_types,
@@ -2217,6 +2600,10 @@ fn extend_signatures(
         }
         for (i, param) in s.generics.params.iter().enumerate() {
             let fields = sigs.structs[id];
+            // Const parameters need not be used, as in rustc.
+            if param.is_const() {
+                continue;
+            }
             if !fields.iter().any(|&f| uses_param(f, i as u32)) && !fields.contains(&Ty::ERROR) {
                 error(
                     s.loc.file,
@@ -2378,7 +2765,7 @@ fn check_alias(
         return;
     }
     for (i, param) in alias.generics.params.iter().enumerate() {
-        if !uses_param(ty, i as u32) {
+        if !param.is_const() && !uses_param(ty, i as u32) {
             push(
                 param.range,
                 format!("type parameter `{}` is never used", param.name),
@@ -2449,9 +2836,18 @@ fn impl_type(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Ty {
     let generics: Vec<Symbol> = imp.generics.params.iter().map(|p| p.name).collect();
+    let consts: Vec<Option<Ty>> = imp.generics.params.iter().map(param_const_ty).collect();
+    let mut errors = Vec::new();
+    check_const_params(items, imp.module, &imp.generics, &generics, &mut errors);
+    diagnostics.extend(errors.into_iter().map(|(range, message)| Diagnostic {
+        file: imp.file,
+        range,
+        message,
+    }));
     let scope = TypeScope {
         self_ty: None,
         generics: &generics,
+        consts: &consts,
         signature_of: Some("implementations"),
         lens,
         ..TypeScope::default()
@@ -2618,7 +3014,7 @@ fn literal_lens(
     hir: &Hir,
     _: &Signatures,
     wanted: &[ConstId],
-) -> (Vec<(ConstId, Option<u64>)>, Vec<Diagnostic>) {
+) -> (Vec<(ConstId, Option<u128>)>, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let values = wanted
         .iter()
@@ -2627,8 +3023,9 @@ fn literal_lens(
                 hir.const_body(konst)
                     .and_then(|(body, source_map)| match &body.exprs[body.root] {
                         flux_hir::Expr::Literal(flux_hir::Literal::Int { value, .. }) => {
-                            u64::try_from(*value).ok()
+                            Some(*value)
                         }
+                        flux_hir::Expr::Literal(flux_hir::Literal::Bool(b)) => Some(u128::from(*b)),
                         _ => {
                             let mut d = Diagnostic::new(
                                 source_map.exprs.get(body.root).copied().unwrap_or_default(),
@@ -2656,24 +3053,33 @@ fn lens_signatures(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> (Signatures,
         .const_bodies()
         .filter_map(|(id, (body, _))| match &body.exprs[body.root] {
             flux_hir::Expr::Literal(flux_hir::Literal::Int { value, .. }) => {
-                Some((id, Some(u64::try_from(*value).ok()?)))
+                Some((id, Some(*value)))
             }
+            flux_hir::Expr::Literal(flux_hir::Literal::Bool(b)) => Some((id, Some(u128::from(*b)))),
             _ => None,
         })
         .collect();
-    let lens = ArrayLens::new(&known);
+    let mut arg_tys = ArgTys::default();
+    let lens = ArrayLens::new(&known, &arg_tys);
     let (mut sigs, diagnostics) = signatures_checked(items, all, Some(&lens));
     let missing = lens.missing.into_inner();
-    if missing.is_empty() {
+    let new_tys = lens.new_arg_tys.into_inner();
+    if missing.is_empty() && new_tys.is_empty() {
         sigs.array_lens = known;
         return (sigs, diagnostics);
     }
+    arg_tys.extend(new_tys);
+    for (&konst, &ty) in &arg_tys {
+        sigs.consts.insert(konst, ty);
+    }
+    sigs.arg_tys = arg_tys.clone();
     sigs.array_lens = known.clone();
     let (values, mut failures) = eval(hir, &sigs, &missing);
     known.extend(values);
-    let lens = ArrayLens::new(&known);
+    let lens = ArrayLens::new(&known, &arg_tys);
     let (mut sigs, mut diagnostics) = signatures_checked(items, all, Some(&lens));
     sigs.array_lens = known;
+    sigs.arg_tys = arg_tys;
     diagnostics.append(&mut failures);
     (sigs, diagnostics)
 }
@@ -2765,8 +3171,10 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
         bodies.insert(id, result);
     }
     // Array lengths in bodies that name constants not evaluated yet:
-    // evaluated now, and those bodies inferred again.
+    // evaluated now, and those bodies inferred again; so are the
+    // constants of const generic arguments whose types they found.
     let mut missing: Vec<ConstId> = Vec::new();
+    let mut new_tys: Vec<ConstId> = Vec::new();
     let results = consts
         .iter()
         .map(|(_, r)| r)
@@ -2777,14 +3185,20 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
                 missing.push(c);
             }
         }
+        for &(c, ty) in &result.new_arg_tys {
+            if sigs.arg_tys.insert(c, ty).is_none() {
+                sigs.consts.insert(c, ty);
+                new_tys.push(c);
+            }
+        }
     }
-    if !missing.is_empty() {
+    if !missing.is_empty() || !new_tys.is_empty() {
         let (values, failures) = eval(hir, &sigs, &missing);
         sigs.array_lens.extend(values);
         diagnostics.extend(failures);
         let redo: Vec<ConstId> = consts
             .iter()
-            .filter(|(_, r)| !r.missing_lens.is_empty())
+            .filter(|(id, r)| !r.missing_lens.is_empty() || new_tys.contains(id))
             .map(|(id, _)| id)
             .collect();
         for id in redo {
@@ -2793,7 +3207,7 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
         }
         let redo: Vec<FunctionId> = bodies
             .iter()
-            .filter(|(_, r)| !r.missing_lens.is_empty())
+            .filter(|(_, r)| !r.missing_lens.is_empty() || !r.new_arg_tys.is_empty())
             .map(|(id, _)| id)
             .collect();
         for id in redo {

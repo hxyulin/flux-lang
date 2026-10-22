@@ -612,6 +612,15 @@ impl<'a> Evaluator<'a> {
                     range,
                     "C strings in constants are not supported yet".to_owned(),
                 )),
+                Constant::TyConst { value, ty } => {
+                    match Constant::of_ty_const(value.subst(generics), ty) {
+                        Constant::TyConst { .. } => Err(error(
+                            range,
+                            "constant depends on a generic parameter".to_owned(),
+                        )),
+                        known => self.operand(locals, generics, &Operand::Const(known), range),
+                    }
+                }
                 Constant::Item { id, args, .. } => {
                     let c = ConstInstance {
                         konst: id,
@@ -657,19 +666,20 @@ impl<'a> Evaluator<'a> {
             }
             Rvalue::Repeat(op, count) => {
                 let value = self.operand(locals, generics, op, range)?;
-                if *count > MAX_ELEMENTS {
+                let count = count.subst(generics).as_usize().unwrap_or(0);
+                if count > MAX_ELEMENTS {
                     return Err(error(
                         range,
                         "arrays this large in constants are not supported yet".to_owned(),
                     ));
                 }
-                Ok(Value::Aggregate(vec![value; *count as usize]))
+                Ok(Value::Aggregate(vec![value; count as usize]))
             }
             // An array's length is its type's; a slice is behind a
             // reference.
             Rvalue::Len { place, .. } => match body.place_ty(place, self.sigs).kind() {
                 flux_ty::TyKind::Array(_, len) => Ok(Value::Int {
-                    bits: u128::from(len),
+                    bits: u128::from(len.subst(generics).as_usize().unwrap_or(0)),
                     ty: IntTy::Usize,
                 }),
                 // A slice's, behind a reference: its elements.

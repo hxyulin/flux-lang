@@ -61,8 +61,9 @@ pub enum TyKind {
     RawPtr(Mutability, Ty),
     /// `&T` and `&mut T`.
     Ref(Mutability, Ty),
-    /// `[T; N]`, with its length evaluated.
-    Array(Ty, u64),
+    /// `[T; N]`: its element type and its length, a constant of type
+    /// `usize` ([`TyKind::Value`], a const parameter, or a variable).
+    Array(Ty, Ty),
     /// `[T]`: unsized, so only behind a pointer.
     Slice(Ty),
     /// `core::ffi::CStr`: a NUL-terminated string, only behind a reference.
@@ -78,6 +79,12 @@ pub enum TyKind {
     Closure(ClosureId, GenericArgs),
     /// An inference variable; never present after inference.
     Infer(InferVar),
+    /// A constant as a generic argument or array length (`3` in `[T;
+    /// 3]` and `Stack<i32, 3>`): not a type, but held as one, so that
+    /// generic arguments, substitution and inference treat types and
+    /// constants alike, as const parameters are generic parameters
+    /// ([`TyKind::Param`]) and inferred ones variables.
+    Value(ConstVal),
     /// The type of an erroneous expression, already reported. It unifies
     /// with everything, so one error does not cause others.
     Error,
@@ -104,6 +111,48 @@ pub enum IntTy {
     U64,
     U128,
     Usize,
+}
+
+/// The value of a constant of type `ty` (an integer type, `bool` or
+/// `char`), as bits, an integer's truncated to its width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConstVal {
+    pub ty: Ty,
+    lo: u64,
+    hi: u64,
+}
+
+impl ConstVal {
+    pub fn new(ty: Ty, bits: u128) -> ConstVal {
+        ConstVal {
+            ty,
+            lo: bits as u64,
+            hi: (bits >> 64) as u64,
+        }
+    }
+
+    pub fn bits(self) -> u128 {
+        (u128::from(self.hi) << 64) | u128::from(self.lo)
+    }
+}
+
+impl fmt::Display for ConstVal {
+    /// As rustc writes const arguments: `3`, `-1`, `true`, `'a'`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bits = self.bits();
+        match self.ty.kind() {
+            TyKind::Bool => write!(f, "{}", bits != 0),
+            TyKind::Char => match char::from_u32(bits as u32) {
+                Some(c) => write!(f, "{c:?}"),
+                None => write!(f, "{bits}"),
+            },
+            TyKind::Int(int) if int.is_signed() => {
+                let shift = 128 - int.bits();
+                write!(f, "{}", ((bits as i128) << shift) >> shift)
+            }
+            _ => write!(f, "{bits}"),
+        }
+    }
 }
 
 /// A struct, and its name for messages.
@@ -449,9 +498,8 @@ impl Interner {
             }
             TyKind::Alias(alias) => alias.args.iter().fold(HAS_ALIAS, |f, &t| f | of(t)),
             TyKind::Opaque(opaque) => opaque.args.iter().fold(HAS_OPAQUE, |f, &t| f | of(t)),
-            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
-                of(t)
-            }
+            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => of(t),
+            TyKind::Array(t, len) => of(t) | of(len),
             TyKind::FnPtr(sig) => sig.inputs_output.iter().fold(0, |f, &t| f | of(t)),
             TyKind::FnDef(def) => def
                 .args
@@ -464,6 +512,7 @@ impl Interner {
             | TyKind::Str
             | TyKind::Never
             | TyKind::CStr
+            | TyKind::Value(_)
             | TyKind::Error => 0,
         };
         let id = self.next.fetch_add(1, Ordering::Relaxed);
@@ -640,7 +689,7 @@ impl Ty {
             }
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
-            TyKind::Array(t, len) => Ty::array(go(t), len),
+            TyKind::Array(t, len) => Ty::array_of(go(t), go(len)),
             TyKind::Slice(t) => Ty::slice(go(t)),
             TyKind::FnDef(_) | TyKind::FnPtr(_) => self.map_fn(go),
             _ => self,
@@ -670,15 +719,53 @@ impl Ty {
             }),
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, pointee.subst(args)),
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, pointee.subst(args))),
-            TyKind::Array(elem, len) => Ty::array(elem.subst(args), len),
+            TyKind::Array(elem, len) => Ty::array_of(elem.subst(args), len.subst(args)),
             TyKind::Slice(elem) => Ty::slice(elem.subst(args)),
             TyKind::FnDef(_) | TyKind::FnPtr(_) => self.map_fn(|t| t.subst(args)),
             _ => self,
         }
     }
 
+    /// `[elem; len]`.
     pub fn array(elem: Ty, len: u64) -> Ty {
+        Ty::array_of(elem, Ty::usize_value(len))
+    }
+
+    /// `[elem; len]`, with `len` a constant of type `usize`.
+    pub fn array_of(elem: Ty, len: Ty) -> Ty {
         Ty::new(TyKind::Array(elem, len))
+    }
+
+    /// The constant `bits` of type `ty`.
+    pub fn value(ty: Ty, bits: u128) -> Ty {
+        Ty::new(TyKind::Value(ConstVal::new(ty, bits)))
+    }
+
+    /// The `usize` constant `n`.
+    pub fn usize_value(n: u64) -> Ty {
+        Ty::value(Ty::int(IntTy::Usize), u128::from(n))
+    }
+
+    /// The value of this constant, if it is one.
+    pub fn as_value(self) -> Option<ConstVal> {
+        match self.kind() {
+            TyKind::Value(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// The value of this constant of type `usize`, if it is one.
+    pub fn as_usize(self) -> Option<u64> {
+        self.as_value().map(|v| v.bits() as u64)
+    }
+
+    /// The length of an array type, if it is known: always once
+    /// monomorphized.
+    pub fn array_len(self) -> Option<u64> {
+        match self.kind() {
+            TyKind::Array(_, len) => len.as_usize(),
+            _ => None,
+        }
     }
 
     pub fn slice(elem: Ty) -> Ty {
@@ -717,9 +804,8 @@ impl Ty {
             TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => list.to_vec(),
             TyKind::Alias(alias) => alias.args.to_vec(),
             TyKind::Opaque(opaque) => opaque.args.to_vec(),
-            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
-                vec![t]
-            }
+            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => vec![t],
+            TyKind::Array(t, len) => vec![t, len],
             TyKind::FnPtr(sig) => sig.inputs_output.to_vec(),
             TyKind::FnDef(def) => def
                 .args
@@ -913,6 +999,7 @@ impl fmt::Display for Ty {
             }
             TyKind::Closure(..) => f.write_str("{closure}"),
             TyKind::Infer(_) => f.write_str("_"),
+            TyKind::Value(value) => write!(f, "{value}"),
             TyKind::Error => f.write_str("{error}"),
         }
     }
@@ -938,7 +1025,7 @@ fn write_sig(f: &mut fmt::Formatter<'_>, sig: FnSigTy) -> fmt::Result {
 pub(crate) fn array_iter_len(name: flux_intern::Symbol, args: &[Ty]) -> Option<u64> {
     match args {
         [elem, array] if name.as_str() == "IntoIter" => match array.kind() {
-            TyKind::Array(e, len) if e == *elem => Some(len),
+            TyKind::Array(e, len) if e == *elem => len.as_usize(),
             _ => None,
         },
         _ => None,

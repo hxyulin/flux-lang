@@ -268,6 +268,8 @@ pub enum Res {
     Const(ConstId),
     /// A static, `static X` or `static mut X`: a place, not a value.
     Static(ConstId),
+    /// A const generic parameter, `N` in `fn f<const N: usize>`, by name.
+    ConstParam(Symbol),
     /// An associated item that type checking finds from a type's inherent
     /// and trait items: `T::f`, `S::f` for a trait's `f`, `Self::f` in a
     /// trait, `<T as Tr>::f` (with `trait_`), or `Tr::f` (without `ty`,

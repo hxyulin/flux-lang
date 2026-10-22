@@ -68,7 +68,8 @@ reported as "not supported yet":
   trait bounds in their lists and `where` clauses (`fn f<T: A + B>`,
   `where T: Tr<u8>`), without defaults (`fn id<T>(x: T) -> T`,
   `struct Pair<T>`, `impl<T> Pair<T>`, `impl Pair<i32>`), structs
-  included (`struct W<T: Tr>`, `where` clauses); associated constants
+  included (`struct W<T: Tr>`, `where` clauses); const parameters
+  (below), without defaults; associated constants
   in traits, with or without a default, in their `impl` blocks and in
   generic inherent blocks (`const N: u32;`, `const N: u32 = 1;`);
   constants (`const N: i32 = 5;`); statics (`static X: T = v;`,
@@ -95,7 +96,8 @@ reported as "not supported yet":
   without lifetimes (`&T`, `&'a mut T`), raw pointers (`*const T`, `*mut T`),
   arrays (`[T; N]`, whose length is a constant expression of type
   `usize`: `[u8; 4]`, `[u8; N]`, `[u8; m::N]`, `[u8; N * 2 + 1]`,
-  `[u8; double(N)]`, `[u8; Self::CAP]`), slices and `str` behind
+  `[u8; double(N)]`, `[u8; Self::CAP]`, or a const parameter), slices
+  and `str` behind
   pointers (`&[T]`, `&mut [T]`, `&str`, `*const [u8]`),
   `core::ffi::CStr` behind a reference, and `_` inside bodies (`let p:
   Pair<_> = ...`).
@@ -324,6 +326,27 @@ named: `<T as Tr>::Out` needs `T: Tr` (E0277) in signatures, bounds,
 Blocks for different instances of a struct (`impl Pair<i32>` and
 `impl Pair<u8>`) may define the same name, and the type a method is
 called on picks one.
+
+Const parameters (`struct Stack<T, const N: usize>`, `impl<T, const N:
+usize> Stack<T, N>`, `fn sum<const N: usize>(a: [i32; N])`, `trait
+Pick<const I: usize>`) are stable Rust's `min_const_generics`: of an
+integer type, `bool` or `char` (other types are rustc's "`f32` is
+forbidden as the type of a const generic parameter", and one naming
+another parameter E0770). A parameter is a value of its type in
+expressions (`N`), an array's length (`[T; N]`, `[x; N]`) and an
+argument of other items (`Stack<T, N>`, `sum::<N>`), but not part of a
+constant expression: `[T; N + 1]` is "generic parameters may not be
+used in const operations", as `generic_const_exprs` is unstable, and a
+pattern may not name one (E0158). Arguments are literals (`3`, `true`,
+`'a'`), constants and parameters (`Stack<i32, LIMIT>`), blocks of
+constant expressions (`{ N * 2 }`, `{ -1 }`), each an anonymous
+constant of the parameter's type, `_`, or inferred (`sum([1, 2, 3])`
+has `N = 3`; one that cannot be is E0284). A path argument is a type
+if it names one, else a constant, as in rustc, and one of the wrong
+kind is E0747; wrong counts are E0107, and arrays or instances of
+different values are E0308 (`expected an array with a size of 3, found
+one with a size of 4`, `expected `Stack<i32, 3>`, found `Stack<i32,
+4>``). Each instance is monomorphized per value, as rustc does.
 
 A struct's bounds must hold wherever it is named, and are not assumed
 there, as in rustc: `fn f<T>(w: W<T>)` with `struct W<T: Tr>` needs

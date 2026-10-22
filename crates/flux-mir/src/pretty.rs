@@ -335,6 +335,7 @@ fn constant_text(hir: &Hir, constant: Constant) -> String {
         }
         Constant::Bool(value) => value.to_string(),
         Constant::Char(c) => format!("{c:?}"),
+        Constant::TyConst { value, ty } => format!("{value}_{ty}"),
         Constant::Unit => "()".to_owned(),
         Constant::FnItem(ty) => match ty.kind() {
             flux_ty::TyKind::FnDef(def) => {

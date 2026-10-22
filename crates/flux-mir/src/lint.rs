@@ -219,6 +219,7 @@ fn operand(
         },
         Operand::Const(
             Constant::Unit
+            | Constant::TyConst { .. }
             | Constant::FnItem(_)
             | Constant::CStr(_)
             | Constant::Static { .. }

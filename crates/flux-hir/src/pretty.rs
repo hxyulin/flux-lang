@@ -432,6 +432,7 @@ impl Printer<'_> {
                 self.out.push_str(&path);
                 self.generic_args(id);
             }
+            Expr::Path(Res::ConstParam(name)) => write!(self.out, "{name}").unwrap(),
             Expr::Path(Res::Const(c) | Res::Static(c)) => {
                 let name = self.hir.items.consts[*c].name;
                 write!(

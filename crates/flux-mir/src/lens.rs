@@ -22,10 +22,10 @@ fn eval_lens(
     hir: &Hir,
     sigs: &Signatures,
     wanted: &[ConstId],
-) -> (Vec<(ConstId, Option<u64>)>, Vec<Diagnostic>) {
+) -> (Vec<(ConstId, Option<u128>)>, Vec<Diagnostic>) {
     let items = &hir.items;
     let mut sigs = sigs.clone();
-    let mut done: Vec<(ConstId, Option<u64>)> = Vec::new();
+    let mut done: Vec<(ConstId, Option<u128>)> = Vec::new();
     let mut diagnostics = Vec::new();
     let mut pending: Vec<ConstId> = wanted.to_vec();
     while !pending.is_empty() {
@@ -82,7 +82,8 @@ fn eval_lens(
             }
             progress = true;
             let value = match result {
-                Ok(crate::eval::Value::Int { bits, .. }) => u64::try_from(bits).ok(),
+                Ok(crate::eval::Value::Int { bits, .. }) => Some(bits),
+                Ok(crate::eval::Value::Bool(b)) => Some(u128::from(b)),
                 _ => None,
             };
             done.push((c, value));

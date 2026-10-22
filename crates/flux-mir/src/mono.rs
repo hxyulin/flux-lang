@@ -278,7 +278,7 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
     }
     let array = instance.args[0];
     let (elem, len) = match array.kind() {
-        TyKind::Array(elem, len) => (elem, len),
+        TyKind::Array(elem, len) => (elem, mono_len(len)),
         // A closure, `Copy`: a copy of it.
         TyKind::Closure(..) => (array, 0),
         _ => return None,
@@ -573,6 +573,7 @@ fn default_shim(instance: Instance) -> Body {
     let TyKind::Array(elem, len) = array.kind() else {
         unreachable!("defaults arrays")
     };
+    let len = mono_len(len);
     let usize = Ty::int(flux_ty::IntTy::Usize);
     let mut locals = flux_arena::Arena::new();
     let mut local = |ty, kind| locals.alloc(LocalDecl { ty, kind });
@@ -753,6 +754,7 @@ fn eq_shim(instance: Instance) -> Body {
     else {
         unreachable!("compares arrays")
     };
+    let len = mono_len(len);
     let usize = Ty::int(flux_ty::IntTy::Usize);
     let mut locals = flux_arena::Arena::new();
     let mut local = |ty, kind| locals.alloc(LocalDecl { ty, kind });
@@ -1028,6 +1030,12 @@ enum Glue {
     },
 }
 
+/// The length of an array in a monomorphized body, `len`, which is known.
+pub(crate) fn mono_len(len: Ty) -> u64 {
+    len.as_usize()
+        .expect("arrays' lengths are known once monomorphized")
+}
+
 /// The stand-in for the counter of the `depth`th loop over an array's
 /// elements: a local no body has.
 fn element_index(depth: usize) -> Local {
@@ -1082,6 +1090,7 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
         }
         TyKind::Tuple(_) | TyKind::Closure(..) => {}
         TyKind::Array(elem, len) => {
+            let len = mono_len(len);
             let depth = place.index_locals().count();
             let index = element_index(depth);
             let mut glue = Vec::new();
@@ -1362,6 +1371,9 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
         if let Operand::Const(Constant::FnItem(ty)) = op {
             *ty = subst(*ty);
         }
+        if let Operand::Const(Constant::TyConst { value, ty }) = *op {
+            *op = Operand::Const(Constant::of_ty_const(subst(value), subst(ty)));
+        }
         if let Operand::Const(
             Constant::Item {
                 ty,
@@ -1400,7 +1412,10 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
                     }
                     ops.iter_mut().for_each(operand)
                 }
-                Rvalue::Repeat(op, _) => operand(op),
+                Rvalue::Repeat(op, count) => {
+                    operand(op);
+                    *count = subst(*count);
+                }
                 Rvalue::Unsize(op, ty) => {
                     operand(op);
                     *ty = subst(*ty);

@@ -101,6 +101,14 @@ pub struct InferenceResult {
     /// The constants array lengths in the body name whose values were
     /// not known: the body is inferred again once they are.
     pub missing_lens: Vec<ConstId>,
+    /// The types of the anonymous constants of the const generic
+    /// arguments in the body, found from their parameters
+    /// ([`Signatures::arg_tys`]): it is inferred again once they are
+    /// known.
+    pub new_arg_tys: Vec<(ConstId, Ty)>,
+    /// The const parameter each path to one is (`N`), a
+    /// [`TyKind::Param`].
+    pub const_params: ArenaMap<Expr, Ty>,
     /// What each closure expression captures, and its kind. A call of a
     /// value (`f(x)`, a closure or a type parameter) is in `methods`
     /// and `calls` as a call of its `Fn`-family trait's method, with the
@@ -157,6 +165,7 @@ pub fn infer_body(
         module: data.loc.module,
         self_ty: self_ty(sigs, data.owner),
         generics: generic_names(items, data.owner, &data.generics),
+        consts: crate::generic_consts(items, data.owner, &data.generics),
         is_unsafe: data.is_unsafe,
         // `core`'s panic aborts, which constant evaluation does not run.
         const_context: (data.is_const && items.panic_fn != Some(function))
@@ -207,6 +216,7 @@ pub fn infer_const(
         module: data.loc.module,
         self_ty: enum_ty.or_else(|| self_ty(sigs, data.owner)),
         generics: generic_names(items, data.owner, &Generics::default()),
+        consts: crate::generic_consts(items, data.owner, &Generics::default()),
         is_unsafe: false,
         const_context: Some(if data.is_static.is_some() {
             "statics"
@@ -248,6 +258,8 @@ struct Owner {
     self_ty: Option<Ty>,
     /// The generic parameters in scope, by index.
     generics: Vec<Symbol>,
+    /// The types of those that are const parameters.
+    consts: Vec<Option<Ty>>,
     is_unsafe: bool,
     /// "constants" or "constant functions", where only `const fn`s may be
     /// called.
@@ -274,6 +286,8 @@ impl<'a> Ctx<'a> {
             sigs,
             self_ty: owner.self_ty,
             generics: owner.generics,
+            const_params: owner.consts,
+            const_param_uses: ArenaMap::new(),
             module: owner.module,
             owner_fn: owner.function,
             const_context: owner.const_context,
@@ -319,7 +333,7 @@ impl<'a> Ctx<'a> {
             deferred: Vec::new(),
             unsizes: ArenaMap::new(),
             builtin_methods: ArenaMap::new(),
-            lens: crate::ArrayLens::new(&sigs.array_lens),
+            lens: crate::ArrayLens::new(&sigs.array_lens, &sigs.arg_tys),
             closures: Vec::new(),
             closure_calls: Vec::new(),
             kind_requirements: Vec::new(),
@@ -434,6 +448,10 @@ struct Ctx<'a> {
     self_ty: Option<Ty>,
     /// The generic parameters in scope, by index.
     generics: Vec<Symbol>,
+    /// The types of those that are const parameters ([`TypeScope::consts`]).
+    const_params: Vec<Option<Ty>>,
+    /// [`InferenceResult::const_params`].
+    const_param_uses: ArenaMap<Expr, Ty>,
     /// The function's module, where the types in its body are resolved.
     module: flux_hir::ModuleId,
     /// The function whose body this is, whose closures' types name it.
@@ -610,7 +628,7 @@ impl Ctx<'_> {
         match ty.kind() {
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, self.known(pointee)),
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, self.known(pointee))),
-            TyKind::Array(elem, len) => Ty::array(self.known(elem), len),
+            TyKind::Array(elem, len) => Ty::array_of(self.known(elem), self.known(len)),
             TyKind::Slice(elem) => Ty::slice(self.known(elem)),
             TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(|t| self.known(t)),
             TyKind::Tuple(elements) => {
@@ -742,7 +760,7 @@ impl Ctx<'_> {
             (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y))
             | (TyKind::Ref(m, x), TyKind::Ref(n, y)) => m == n && self.unify(x, y),
             // The elements learn their type even if the lengths differ.
-            (TyKind::Array(x, m), TyKind::Array(y, n)) => self.unify(x, y) && m == n,
+            (TyKind::Array(x, m), TyKind::Array(y, n)) => self.unify(x, y) && self.unify(m, n),
             (TyKind::Slice(x), TyKind::Slice(y)) => self.unify(x, y),
             (TyKind::Tuple(xs), TyKind::Tuple(ys)) => {
                 // Every element is unified, even after a mismatch, so that
@@ -1044,7 +1062,9 @@ impl Ctx<'_> {
             (_, TyKind::Infer(var)) => !self.unknown(var).0 || a.as_int().is_some(),
             (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y))
             | (TyKind::Ref(m, x), TyKind::Ref(n, y)) => m == n && self.can_unify(x, y),
-            (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && self.can_unify(x, y),
+            (TyKind::Array(x, m), TyKind::Array(y, n)) => {
+                self.can_unify(m, n) && self.can_unify(x, y)
+            }
             (TyKind::Slice(x), TyKind::Slice(y)) => self.can_unify(x, y),
             (TyKind::Tuple(xs), TyKind::Tuple(ys)) => {
                 xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, &y)| self.can_unify(x, y))
@@ -1104,7 +1124,9 @@ impl Ctx<'_> {
                 let m = if m == Mutability::Mut { "mut " } else { "" };
                 format!("&{m}{}", self.describe(pointee))
             }
-            TyKind::Array(elem, len) => format!("[{}; {len}]", self.describe(elem)),
+            TyKind::Array(elem, len) => {
+                format!("[{}; {}]", self.describe(elem), self.describe(len))
+            }
             TyKind::Slice(elem) => format!("[{}]", self.describe(elem)),
             TyKind::Tuple(elements) if !elements.is_empty() => {
                 let elements: Vec<String> = elements.iter().map(|&e| self.describe(e)).collect();
@@ -1163,7 +1185,8 @@ impl Ctx<'_> {
     fn mismatch(&mut self, expected: Ty, actual: Ty, range: TextRange) {
         if let (TyKind::Array(x, want), TyKind::Array(y, got)) =
             (self.shallow(expected).kind(), self.shallow(actual).kind())
-            && want != got
+            && let (want, got) = (self.shallow(want), self.shallow(got))
+            && !self.can_unify(want, got)
             && self.can_unify(x, y)
         {
             self.error(
@@ -1204,6 +1227,7 @@ impl Ctx<'_> {
         let scope = TypeScope {
             self_ty: self.self_ty,
             generics: &self.generics,
+            consts: &self.const_params,
             signature_of: None,
             bounds: &self.param_env,
             self_trait: self.self_trait,
@@ -1296,7 +1320,10 @@ impl Ctx<'_> {
             TyKind::Ref(m, pointee) => {
                 Ty::new(TyKind::Ref(m, self.fill_placeholders(pointee, origin)))
             }
-            TyKind::Array(elem, len) => Ty::array(self.fill_placeholders(elem, origin), len),
+            TyKind::Array(elem, len) => Ty::array_of(
+                self.fill_placeholders(elem, origin),
+                self.fill_placeholders(len, origin),
+            ),
             TyKind::Slice(elem) => Ty::slice(self.fill_placeholders(elem, origin)),
             _ => ty,
         }
@@ -1310,27 +1337,68 @@ impl Ctx<'_> {
     fn own_args(
         &mut self,
         kind: &str,
-        count: usize,
+        params: &[flux_hir::GenericParam],
         written: Option<&SegmentArgs>,
         origin: TextRange,
     ) -> Vec<Ty> {
+        let count = params.len();
         // `f::<>` is `f`.
         let Some(written) = written.filter(|w| !w.types.is_empty()) else {
             return (0..count).map(|_| self.new_var(false, origin)).collect();
         };
-        let args: Vec<Ty> = written
-            .types
-            .iter()
-            .map(|&ty| self.resolve_type_ref(ty))
-            .collect();
-        if args.len() != count {
-            // An unsupported argument was reported already.
-            if !args.contains(&Ty::ERROR) {
-                self.error(written.segment, wrong_arg_count(kind, count, args.len()));
-            }
+        if written.types.len() != count {
+            self.error(
+                written.segment,
+                wrong_arg_count(kind, count, written.types.len()),
+            );
             return vec![Ty::ERROR; count];
         }
-        args
+        written
+            .types
+            .iter()
+            .zip(params)
+            .map(|(&ty, param)| self.resolve_generic_arg_ref(ty, param))
+            .collect()
+    }
+
+    /// The generic argument `ty_ref` of the body, for `param`: a type, or
+    /// for a const parameter, a constant.
+    fn resolve_generic_arg_ref(&mut self, ty_ref: TypeRefId, param: &flux_hir::GenericParam) -> Ty {
+        if !param.is_const() {
+            return self.resolve_type_ref(ty_ref);
+        }
+        let range = self
+            .source_map
+            .types
+            .get(ty_ref)
+            .copied()
+            .unwrap_or_default();
+        let scope = TypeScope {
+            self_ty: self.self_ty,
+            generics: &self.generics,
+            consts: &self.const_params,
+            signature_of: None,
+            bounds: &self.param_env,
+            self_trait: self.self_trait,
+            self_types: &[],
+            defaults: Some(&self.sigs.trait_defaults),
+            lens: Some(&self.lens),
+            function: None,
+        };
+        let mut errors = Vec::new();
+        let ty = crate::resolve_generic_arg(
+            self.items,
+            self.module,
+            Some(param),
+            &self.body.types[ty_ref],
+            scope,
+            range,
+            &mut errors,
+        );
+        for (at, message) in errors {
+            self.error(at, message);
+        }
+        self.fill_placeholders(ty, range)
     }
 
     /// Struct or enum `strukt` as used by expression `at`, whose generic
@@ -1373,7 +1441,7 @@ impl Ctx<'_> {
             return Ty::adt(strukt, def.name, &[]);
         }
         let kind = if def.is_enum() { "enum" } else { "struct" };
-        let args = self.own_args(kind, def.generics.len(), written.as_ref(), origin);
+        let args = self.own_args(kind, &def.generics.params, written.as_ref(), origin);
         Ty::adt(strukt, def.name, &args)
     }
 
@@ -1424,8 +1492,8 @@ impl Ctx<'_> {
         let TyKind::Adt(adt, _) = self.sigs.impls.get(owner)?.kind() else {
             return None;
         };
-        let want = self.items.structs[adt.strukt].generics.len();
-        let args = self.own_args("struct", want, Some(&written), self.range(expr));
+        let params = &self.items.structs[adt.strukt].generics.params;
+        let args = self.own_args("struct", params, Some(&written), self.range(expr));
         let ty = Ty::adt(adt.strukt, adt.name, &args);
         // `W::<u8>`, which must meet `W`'s bounds.
         let range = TextRange::new(self.range(expr).start(), written.range.end());
@@ -1618,7 +1686,9 @@ impl Ctx<'_> {
             }
             (TyKind::Ref(m, x), TyKind::Ref(n, y))
             | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => m == n && self.impl_applies(x, y),
-            (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && self.impl_applies(x, y),
+            (TyKind::Array(x, m), TyKind::Array(y, n)) => {
+                self.impl_applies(m, n) && self.impl_applies(x, y)
+            }
             (TyKind::Slice(x), TyKind::Slice(y)) => self.impl_applies(x, y),
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
                 x.is_unsafe == y.is_unsafe
@@ -1684,7 +1754,12 @@ impl Ctx<'_> {
             .and_then(|g| g.item.clone());
         // Those made for `impl Trait` parameters cannot be written.
         let explicit = data.generics.explicit_len();
-        let own = self.own_args(kind, explicit, written.as_ref(), origin);
+        let own = self.own_args(
+            kind,
+            &data.generics.params[..explicit],
+            written.as_ref(),
+            origin,
+        );
         args.extend(own);
         for _ in explicit..data.generics.len() {
             args.push(self.new_var(false, origin));
@@ -2181,6 +2256,19 @@ impl Ctx<'_> {
                 }
             }
             Expr::Path(Res::Const(c)) => self.path_const(id, *c),
+            // A const parameter's value has its type.
+            Expr::Path(Res::ConstParam(name)) => {
+                let Some(index) = self.generics.iter().rposition(|n| n == name) else {
+                    return Ty::ERROR;
+                };
+                self.const_param_uses
+                    .insert(id, Ty::param(index as u32, *name));
+                self.const_params
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(Ty::ERROR)
+            }
             Expr::Path(Res::Static(c)) => {
                 if self.items.consts[*c].is_static_mut() && self.unsafe_depth == 0 {
                     self.error(
@@ -2252,6 +2340,9 @@ impl Ctx<'_> {
                 };
                 let mut errors = Vec::new();
                 let scope = TypeScope {
+                    self_ty: self.self_ty,
+                    generics: &self.generics,
+                    consts: &self.const_params,
                     lens: Some(&self.lens),
                     ..TypeScope::default()
                 };
@@ -2267,7 +2358,7 @@ impl Ctx<'_> {
                     body.exprs[*value],
                     Expr::Path(Res::Const(_) | Res::Assoc { .. })
                 );
-                if len > 1
+                if len.as_usize().is_none_or(|n| n > 1)
                     && !constant
                     && let Some(&copy) = self.items.lang_traits.get(&flux_intern::sym::copy)
                 {
@@ -2283,7 +2374,7 @@ impl Ctx<'_> {
                         solve::ObligationKind::Bound,
                     );
                 }
-                Ty::array(elem, len)
+                Ty::array_of(elem, len)
             }
             Expr::Index { base, index } => self.infer_index(id, *base, *index),
             Expr::Record {
@@ -5070,6 +5161,8 @@ impl Ctx<'_> {
             builtin_methods: self.builtin_methods,
             missing_lens: self.lens.missing.into_inner(),
             opaques,
+            new_arg_tys: self.lens.new_arg_tys.into_inner(),
+            const_params: self.const_param_uses,
             diagnostics: self.diagnostics,
         }
     }
@@ -5239,8 +5332,12 @@ impl Ctx<'_> {
                     self.unknown_vars(t, out);
                 }
             }
-            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => {
                 self.unknown_vars(t, out)
+            }
+            TyKind::Array(t, len) => {
+                self.unknown_vars(t, out);
+                self.unknown_vars(len, out);
             }
             TyKind::FnDef(_) | TyKind::FnPtr(_) => {
                 for t in ty.children() {
@@ -5387,7 +5484,9 @@ impl Ctx<'_> {
                 ty.map_fn(|t| self.resolve(t, reported))
             }
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, self.resolve(pointee, reported))),
-            TyKind::Array(elem, len) => Ty::array(self.resolve(elem, reported), len),
+            TyKind::Array(elem, len) => {
+                Ty::array_of(self.resolve(elem, reported), self.resolve(len, reported))
+            }
             TyKind::Slice(elem) => Ty::slice(self.resolve(elem, reported)),
             TyKind::Tuple(elements) => {
                 let elements: Vec<Ty> = elements

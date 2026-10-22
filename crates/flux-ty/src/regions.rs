@@ -743,6 +743,7 @@ pub(crate) fn lifetimes_in(ty: &TypeRef, out: &mut Vec<LifetimeRef>) {
         }
         TypeRef::Never
         | TypeRef::Infer
+        | TypeRef::Const(_)
         | TypeRef::ImplTrait(_)
         | TypeRef::ImplParam(_)
         | TypeRef::Opaque(_)
@@ -792,6 +793,7 @@ pub(crate) fn elided_in(ty: &TypeRef, out: &mut Vec<TextRange>) {
         | TypeRef::ImplTrait(_)
         | TypeRef::ImplParam(_)
         | TypeRef::Opaque(_)
+        | TypeRef::Const(_)
         | TypeRef::Error => {}
     }
 }

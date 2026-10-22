@@ -483,8 +483,10 @@ pub enum Rvalue {
         place: Place,
         borrows: bool,
     },
-    /// `[value; count]`: an array of `count` copies of `value`.
-    Repeat(Operand, u64),
+    /// `[value; count]`: an array of `count` copies of `value`, `count`
+    /// a constant of type `usize` ([`TyKind::Value`] once
+    /// monomorphized).
+    Repeat(Operand, Ty),
     /// A reference or raw pointer to an array, as one to a slice of its
     /// elements, of type `ty`: rustc's unsizing coercion.
     Unsize(Operand, Ty),
@@ -566,6 +568,14 @@ pub enum Constant {
         index: u32,
         ty: Ty,
     },
+    /// A constant of the type system, of type `ty`: a const parameter
+    /// (`N`), or an array's length that depends on one. Substituting
+    /// generic arguments makes it an `Int`, `Bool` or `Char`
+    /// ([`Constant::of_ty_const`]).
+    TyConst {
+        value: Ty,
+        ty: Ty,
+    },
 }
 
 impl Constant {
@@ -580,7 +590,8 @@ impl Constant {
             Constant::Item { ty, .. }
             | Constant::Static { ty, .. }
             | Constant::Fn { ty, .. }
-            | Constant::Promoted { ty, .. } => ty,
+            | Constant::Promoted { ty, .. }
+            | Constant::TyConst { ty, .. } => ty,
         }
     }
 
@@ -590,6 +601,23 @@ impl Constant {
         match self {
             Constant::Int { bits, .. } => Some(bits),
             _ => None,
+        }
+    }
+
+    /// The constant `value` of the type system, of type `ty`: its value
+    /// if it is known.
+    pub fn of_ty_const(value: Ty, ty: Ty) -> Constant {
+        let Some(v) = value.as_value() else {
+            return Constant::TyConst { value, ty };
+        };
+        match v.ty.kind() {
+            TyKind::Int(int) => Constant::Int {
+                bits: v.bits(),
+                ty: int,
+            },
+            TyKind::Bool => Constant::Bool(v.bits() != 0),
+            TyKind::Char => Constant::Char(char::from_u32(v.bits() as u32).unwrap_or('\0')),
+            _ => Constant::TyConst { value, ty },
         }
     }
 

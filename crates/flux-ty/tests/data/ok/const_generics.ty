@@ -1,0 +1,37 @@
+struct Stack<T, const N: usize> { items: [T; N], len: usize }
+struct P {}
+fn new(T) -> Stack<T, N>
+    fill@0: T
+fn push(&mut Stack<T, N>, T) -> bool
+    self@0: &mut Stack<T, N>
+    value@1: T
+fn pick(&Self) -> i32
+fn pick(&P) -> i32
+    self@0: &P
+fn sum<const N: usize>([i32; N]) -> i32
+    a@0: [i32; N]
+    total@1: i32
+    i@2: usize
+fn twice<const N: usize>([i32; N]) -> i32
+    a@0: [i32; N]
+fn offset<const D: i32>(i32) -> i32
+    x@0: i32
+fn flag<const B: bool, const C: char>() -> u32
+fn zeros<const N: usize>() -> [u8; N]
+    a@0: [u8; N]
+fn width<A>(&A) -> usize
+    _a@0: &A
+fn main() -> ()
+    a@0: i32
+    b@1: i32
+    s@2: Stack<i32, 4>
+    t@3: Stack<u8, 3>
+    c@4: i32
+    d@5: u32
+    z@6: [u8; 5]
+    w@7: usize
+    p@8: i32
+const LIMIT: usize
+const CAPACITY: usize
+const WIDTH: usize
+const WIDTH: usize
