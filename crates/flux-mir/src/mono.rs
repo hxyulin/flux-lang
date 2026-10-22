@@ -113,8 +113,11 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                             vtables.push((object, concrete));
                         }
                         while let Some((object, concrete)) = vtables.pop() {
-                            for entry in crate::vtable::entries(&hir.items, sigs, object, concrete)
-                            {
+                            let drop = crate::vtable::drop_entry(&hir.items, sigs, concrete)
+                                .map(crate::vtable::Entry::Method);
+                            let entries =
+                                crate::vtable::entries(&hir.items, sigs, object, concrete);
+                            for entry in drop.into_iter().chain(entries) {
                                 match entry {
                                     crate::vtable::Entry::Method(instance) => {
                                         reified.insert(instance);

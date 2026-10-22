@@ -998,9 +998,10 @@ impl Ctx<'_> {
     }
 
     /// The name of the read-only data object of `concrete`'s vtable as
-    /// trait object `object` ([`flux_mir::vtable`]): no drop function
-    /// yet (nothing drops a trait object), its size and alignment, then
-    /// its slots.
+    /// trait object `object` ([`flux_mir::vtable`]): the function that
+    /// drops a value of the type in place (if it needs one and `core`
+    /// has `ptr::drop_in_place`), its size and alignment, then its
+    /// slots.
     fn vtable(&mut self, object: Ty, concrete: Ty) -> String {
         if let Some(name) = self.vtables.get(&(object, concrete)) {
             return name.clone();
@@ -1013,7 +1014,14 @@ impl Ctx<'_> {
             ty: Type::I64,
             value: value as i64,
         };
-        let mut items = vec![DataItem::Zero(8), word(layout.size()), word(layout.align())];
+        let drop = match flux_mir::vtable::drop_entry(&self.hir.items, sigs, concrete) {
+            Some(instance) => DataItem::Ptr {
+                symbol: instance_symbol(self.hir, self.symbols, instance),
+                addend: 0,
+            },
+            None => DataItem::Zero(8),
+        };
+        let mut items = vec![drop, word(layout.size()), word(layout.align())];
         let entries = flux_mir::vtable::entries(&self.hir.items, sigs, object, concrete);
         for entry in entries {
             items.push(match entry {

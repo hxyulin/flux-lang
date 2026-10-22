@@ -921,7 +921,8 @@ executable. No C compiler or system linker is involved.
 - A pointer to a trait object is two leaves: the address of the
   value and that of its type's vtable
   ([`vtable`](../crates/flux-mir/src/vtable.rs)), a read-only data
-  object of the drop function (none yet), size and alignment, the
+  object of the drop function (`core::ptr::drop_in_place::<T>` where
+  dropping a `T` runs code, else empty), size and alignment, the
   addresses of its supertraits' vtables, then each method of the trait
   and its supertraits, the type's `impl` block's or the provided one
   (empty for one with `where Self: Sized`). Unsizing to a trait object
