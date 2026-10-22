@@ -453,6 +453,15 @@ pub(crate) fn expand(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Expansion> {
     let call_range = call_range(call);
+    if site.items.edition(site.module) == flux_syntax::Edition::E2021
+        && matches!(def.kind, MacroKind::Rules(_))
+    {
+        diagnostics.push(Diagnostic::new(
+            call_range,
+            "macro_rules invocations in edition 2021 are not supported yet",
+        ));
+        return None;
+    }
     let mut toks = Vec::new();
     let tt = call
         .children()
@@ -644,7 +653,13 @@ pub(crate) fn expand(
         .zip(&output)
         .map(|(&s, t)| (s, t.origin))
         .collect();
-    let parse = flux_syntax::parse_expansion(text.into(), &origins, call_range, fragment);
+    let parse = flux_syntax::parse_expansion_with_edition(
+        text.into(),
+        &origins,
+        call_range,
+        fragment,
+        site.items.edition(site.module),
+    );
     for error in parse.errors() {
         let message = if error.message == EXPANSION_IGNORES {
             let tree = parse.tree();

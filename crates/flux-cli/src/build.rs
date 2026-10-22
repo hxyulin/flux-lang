@@ -61,7 +61,7 @@ pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result
     })
 }
 
-/// One source crate compiled with Flux's fixed edition-2024 host configuration.
+/// One compilation under Flux's host configuration; source crates retain their editions.
 /// No Cargo profile, feature, target or rustc option is implied by this request.
 pub(crate) struct CompileRequest<'a> {
     pub file: &'a Path,
@@ -73,6 +73,7 @@ pub(crate) struct CompileRequest<'a> {
 }
 
 pub(crate) struct SourceInput {
+    pub edition: flux_syntax::Edition,
     pub file: std::path::PathBuf,
     pub name: String,
     pub dependencies: Vec<(String, usize)>,
@@ -90,14 +91,17 @@ pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
     // `core`'s files are parsed with the database.
     let (mut db, root) = timings.time("parse", || {
         let mut db = SourceDb::new();
-        let root = db.load(file);
+        let edition = sources
+            .last()
+            .map_or(flux_syntax::Edition::E2024, |s| s.edition);
+        let root = db.load_with_edition(file, edition);
         (db, root)
     });
     let root = root?;
     let mut graph = Vec::new();
     for source in sources {
         graph.push(flux_hir::SourceCrate {
-            root: db.load(&source.file)?,
+            root: db.load_with_edition(&source.file, source.edition)?,
             name: Symbol::intern(&source.name),
             dependencies: source
                 .dependencies

@@ -31,6 +31,14 @@ pub use tree::{
     TextRange, TokenOrigin,
 };
 
+/// Rust edition of one source crate. The default standalone-file mode is 2024.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Edition {
+    E2021,
+    #[default]
+    E2024,
+}
+
 /// A problem found while lexing or parsing. Parsing always produces a
 /// tree; errors describe where it differs from valid flux.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -82,7 +90,12 @@ pub fn parse_source_file(text: &str) -> Parse {
 
 /// Parses a whole source file, which the tree takes ownership of.
 pub fn parse_source_text(text: Box<str>) -> Parse {
-    let lexed = LexedStr::new(&text);
+    parse_source_text_with_edition(text, Edition::E2024)
+}
+
+/// Parses owned source under the selected crate edition.
+pub fn parse_source_text_with_edition(text: Box<str>, edition: Edition) -> Parse {
+    let lexed = LexedStr::with_edition(&text, edition);
     let input = parser::Input::from_lexed(&lexed);
     let output = parser::parse_source_file(&input);
     let (parts, errors) = build::build(lexed, output);
@@ -103,7 +116,18 @@ pub fn parse_expansion(
     call_site: TextRange,
     fragment: parser::Fragment,
 ) -> Parse {
-    let lexed = LexedStr::new(&text);
+    parse_expansion_with_edition(text, origins, call_site, fragment, Edition::E2024)
+}
+
+/// Parses an expansion under its source crate edition.
+pub fn parse_expansion_with_edition(
+    text: Box<str>,
+    origins: &[(u32, TokenOrigin)],
+    call_site: TextRange,
+    fragment: parser::Fragment,
+    edition: Edition,
+) -> Parse {
+    let lexed = LexedStr::with_edition(&text, edition);
     let input = parser::Input::from_lexed(&lexed);
     let output = parser::parse_expansion(&input, fragment);
     let (parts, mut errors) = build::build(lexed, output);

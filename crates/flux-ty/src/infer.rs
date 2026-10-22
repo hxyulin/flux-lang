@@ -5916,6 +5916,22 @@ impl Ctx<'_> {
         for (expr, _) in self.body.exprs.iter() {
             if let Some(&ty) = self.expr_types.get(expr) {
                 let ty = self.resolve(ty, &mut reported);
+                // MIR currently uses 2024 temporary scopes. Keep 2021's accepted
+                // subset free of observable destructor order, including generic
+                // values that may acquire Drop after monomorphization. A tuple
+                // constructor only transfers its parameters into the result; it
+                // creates no scoped temporaries and is safe in either edition.
+                if self.items.edition(self.module) == flux_syntax::Edition::E2021
+                    && !self
+                        .owner_fn
+                        .is_some_and(|f| self.items.functions[f].ctor.is_some())
+                    && crate::traits::needs_drop(self.items, self.sigs, &self.param_env, ty)
+                {
+                    self.error(
+                        self.range(expr),
+                        "values requiring drop in edition 2021 are not supported yet",
+                    );
+                }
                 self.expr_types.insert(expr, ty);
             }
         }
@@ -6038,6 +6054,11 @@ impl Ctx<'_> {
                 && self.in_static_mut(receiver)
             {
                 self.static_mut_ref(call, m == Mutability::Mut);
+            }
+        }
+        if self.items.edition(self.module) == flux_syntax::Edition::E2021 {
+            for (_, message) in &mut self.mode_errors {
+                *message = "binding modifiers under match ergonomics in edition 2021 are not supported yet";
             }
         }
         let mut deferred_pats = false;
@@ -6461,7 +6482,15 @@ impl Ctx<'_> {
                     VarValue::Unknown { int: true, .. } => Ty::int(IntTy::I32),
                     VarValue::Unknown {
                         diverging: true, ..
-                    } => Ty::NEVER,
+                    } => {
+                        if self.items.edition(self.module) == flux_syntax::Edition::E2021 {
+                            self.error(
+                                origin,
+                                "never type fallback in edition 2021 is not supported yet",
+                            );
+                        }
+                        Ty::NEVER
+                    }
                     _ => {
                         if reported.insert(var) && !self.tainted {
                             self.error(origin, "type annotations needed");

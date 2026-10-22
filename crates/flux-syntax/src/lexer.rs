@@ -38,6 +38,11 @@ pub struct LexError {
 
 impl<'a> LexedStr<'a> {
     pub fn new(text: &'a str) -> LexedStr<'a> {
+        Self::with_edition(text, crate::Edition::E2024)
+    }
+
+    /// Lexes keywords using the source crate edition.
+    pub fn with_edition(text: &'a str, edition: crate::Edition) -> LexedStr<'a> {
         assert!(
             u32::try_from(text.len()).is_ok(),
             "source files are limited to 4 GiB"
@@ -59,6 +64,13 @@ impl<'a> LexedStr<'a> {
         };
         while lexer.pos < text.len() {
             lexer.token();
+        }
+        if edition == crate::Edition::E2021 {
+            for kind in &mut lexer.res.kinds {
+                if *kind == GEN_KW {
+                    *kind = IDENT;
+                }
+            }
         }
         lexer.res.starts.push(text.len() as u32);
         lexer.res

@@ -120,6 +120,7 @@ pub struct ItemCounts {
 
 #[derive(Debug, Clone)]
 pub struct CrateData {
+    pub edition: flux_syntax::Edition,
     pub name: Symbol,
     pub root: ModuleId,
     /// flux's own `core` or `alloc`, which may define methods on
@@ -1265,6 +1266,11 @@ impl ItemTree {
         items
     }
 
+    /// The edition of the source crate containing a module.
+    pub fn edition(&self, module: ModuleId) -> flux_syntax::Edition {
+        self.crates[self.modules[module].krate.0 as usize].edition
+    }
+
     /// Source crates in dependency order, followed by the executable crate.
     pub fn from_sources(db: &mut SourceDb, sources: &[crate::SourceCrate]) -> ItemTree {
         let mut items = crate::Core::get().items.clone();
@@ -1636,6 +1642,7 @@ impl Collector<'_> {
             block: None,
         });
         self.items.crates.push(CrateData {
+            edition: self.db.file(root).edition,
             name,
             root: module,
             is_core,
@@ -1696,6 +1703,24 @@ impl Collector<'_> {
             let start = self.items.diagnostics.len();
             let shared = self.db.shared(ctx.file);
             if item_enabled(shared.parse.tree().node(node), &mut self.items.diagnostics) {
+                if shared.edition == flux_syntax::Edition::E2021 {
+                    for syntax in shared.parse.tree().node(node).descendants() {
+                        let sensitive = if macros::is_macro_rules(syntax) {
+                            Some("macro definitions in edition 2021")
+                        } else {
+                            match syntax.kind() {
+                                SyntaxKind::LET_EXPR => {
+                                    Some("if-let, while-let and let chains in edition 2021")
+                                }
+                                SyntaxKind::IMPL_TRAIT_TYPE => Some("impl Trait in edition 2021"),
+                                _ => None,
+                            }
+                        };
+                        if let Some(what) = sensitive {
+                            unsupported(&mut self.items.diagnostics, syntax.text_range(), what);
+                        }
+                    }
+                }
                 self.collect_item_expanding_types(ctx, node);
                 self.collect_anon_consts(ctx, node);
             }
@@ -2445,7 +2470,10 @@ impl Collector<'_> {
                         return;
                     }
                 };
-                match self.db.load(&path) {
+                match self
+                    .db
+                    .load_with_edition(&path, self.db.file(ctx.file).edition)
+                {
                     Ok(file) => {
                         self.items.modules[module].file = file;
                         self.collect_file(module, file);
@@ -4390,6 +4418,7 @@ impl Collector<'_> {
     }
 
     fn collect_extern_block(&mut self, ctx: Ctx, block: ast::ExternBlock<'_>) {
+        let edition = self.db.file(ctx.file).edition;
         let diagnostics = &mut self.items.diagnostics;
         check_attrs(block.attrs(), diagnostics);
         let abi = block.abi();
@@ -4402,7 +4431,7 @@ impl Collector<'_> {
                 "ABIs other than \"C\"",
             );
         }
-        if block.unsafe_token().is_none() {
+        if edition == flux_syntax::Edition::E2024 && block.unsafe_token().is_none() {
             let range = abi.map_or(block.syntax().text_range(), |a| a.syntax().text_range());
             diagnostics.push(Diagnostic::new(
                 range,

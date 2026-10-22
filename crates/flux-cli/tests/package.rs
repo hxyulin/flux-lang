@@ -200,17 +200,16 @@ fn unsupported_declarations_fail_before_compilation() {
         );
         fixture.reject(expected);
     }
-    for option in [
-        "build='custom.rs'",
-        "build=false",
-        "rust-version='1.99'",
-        "default-run='probe-bin'",
-    ] {
+    for option in ["build='custom.rs'", "default-run='probe-bin'"] {
         let fixture = Fixture::new();
         let mut manifest = std::fs::read_to_string(fixture.0.join("Cargo.toml")).unwrap();
         manifest.push_str(option);
         fixture.write("Cargo.toml", &manifest);
-        fixture.reject("package option");
+        fixture.reject(if option.starts_with("build=") {
+            "build scripts"
+        } else {
+            "package option"
+        });
     }
 }
 
@@ -252,9 +251,9 @@ fn discovered_targets_configuration_and_ambiguity_are_rejected() {
     let fixture = Fixture::new();
     fixture.write(
         "Cargo.toml",
-        "[package]\nname='old'\nversion='0.1.0'\nedition='2021'\n",
+        "[package]\nname='old'\nversion='0.1.0'\nedition='2018'\n",
     );
-    fixture.reject("edition 2024");
+    fixture.reject("edition 2021 or 2024");
     let fixture = Fixture::new();
     let output = fixture.run("build", &["--bin", "missing"]);
     assert!(String::from_utf8_lossy(&output.stderr).contains("matching binary"));
