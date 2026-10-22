@@ -338,6 +338,7 @@ impl<'a> Ctx<'a> {
             kind_requirements: Vec::new(),
             closure_hints: ArenaMap::new(),
             mismatched_closures: HashSet::new(),
+            hinted_closures: HashSet::new(),
             closure_infos: Default::default(),
             closure_locals: Vec::new(),
             unit_matches: HashSet::new(),
@@ -538,6 +539,9 @@ struct Ctx<'a> {
     closure_hints: ArenaMap<Expr, closure::Hint>,
     /// Closures whose signature or kind was reported as wrong.
     mismatched_closures: HashSet<ExprId>,
+    /// The closures whose signatures follow from the `Fn`-family bounds
+    /// of the parameters they are passed as.
+    hinted_closures: HashSet<ExprId>,
     /// What each closure analyzed captures, innermost first.
     closure_infos: rustc_hash::FxHashMap<ExprId, ClosureInfo>,
     /// The bindings of the closures being inferred, innermost last.
@@ -5136,6 +5140,7 @@ impl Ctx<'_> {
                     ty,
                     kind: info.kind,
                     captures,
+                    hinted: info.hinted,
                 },
             );
         }

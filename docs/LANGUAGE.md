@@ -656,12 +656,17 @@ captures is E0308, as in rustc).
 Closures are returned as `impl Fn` (below); they cannot be `async`,
 nor appear in constants or `const fn`s; calls of
 `Fn::call` and the other methods by name, and `impl Fn for S`, are
-unstable in rustc and not supported. A closure may return references
-to what it captures or is given; one passed to a generic function may
-not keep or return references to its parameters (not supported yet),
-and, as in rustc, one whose parameters' written types have references
-may not let them outlive the call ("lifetime may not live long
-enough").
+unstable in rustc and not supported. A closure may return or keep
+references to what it captures or is given. Passed to a generic
+function, it gets the lifetimes the callee's `Fn`-family bounds say
+its parameters and result have, as rustc's closure signatures do:
+`Self::Item` of `map`'s `F: FnMut(Self::Item) -> B` is the iterator's
+items, which it may return or keep, while a reference the bound
+writes (`&Self::Item` of `filter`) is any lifetime at each call,
+which nothing else may outlive (E0521, "lifetime may not live long
+enough"). As in rustc, one whose parameters' written types have
+references, and whose signature no bound gives, may not let them
+outlive the call ("lifetime may not live long enough").
 
 `impl Trait` in a function's parameter type (`f: impl Fn(i32) ->
 i32`, `it: impl Iterator<Item = impl Copy>`) is an anonymous type
