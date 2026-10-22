@@ -1,0 +1,70 @@
+fn pick(_1: Option<u8>) -> u8 {
+    let mut _0: u8;
+    let _2: Option<u8>;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = expect::<u8>(copy _2, const &promoted[0]) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn named(_1: &str) -> usize {
+    let mut _0: usize;
+    let _2: ();
+    let _3: bool;
+    let _4: usize;
+    let _5: &str;
+    let _6: !;
+    let _7: !;
+    let _8: &&str;
+    let _9: &str;
+
+    bb0: {
+        _5 = &(*_1);
+        _4 = len(copy _5) -> bb1;
+    }
+
+    bb1: {
+        _3 = Gt(copy _4, const 3_usize);
+        switchInt(copy _3) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb2: {
+        _8 = &_1;
+        _7 = panic_display::<&str>(copy _8) -> !;
+    }
+
+    bb3: {
+        _2 = const ();
+        goto -> bb4;
+    }
+
+    bb4: {
+        _9 = &(*_1);
+        _0 = len(copy _9) -> bb5;
+    }
+
+    bb5: {
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: (u8, usize, (), ());
+
+    bb0: {
+        _1 = (const A, const B, const C, const D);
+        StorageDead(_1);
+        _0 = const ();
+        return;
+    }
+}
+
+error 313..323: evaluation panicked: needed a value
+error 342..360: evaluation panicked: long name
+error 376..398: evaluation panicked: direct
