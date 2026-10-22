@@ -52,6 +52,7 @@ pub struct LoweredBody {
 /// without parameters.
 pub fn lower_const<'a>(tree: &'a SyntaxTree, items: &'a ItemTree, konst: ConstId) -> LoweredBody {
     let data = &items.consts[konst];
+    let _file = crate::item_tree::TypesFile::enter(data.loc.file);
     if let Some((strukt, _)) = data.discriminant {
         // An enum's discriminant, in the enum's scope: `Self` is the
         // enum, which is not generic (reported otherwise).
@@ -102,6 +103,7 @@ pub fn lower_body<'a>(
     if let Some((strukt, derive)) = data.derived {
         return derived_body(items, function, strukt, derive);
     }
+    let _file = crate::item_tree::TypesFile::enter(data.loc.file);
     let node = tree.node(data.node);
     let f = ast::Fn::cast(node).expect("functions point at FN nodes");
     let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));

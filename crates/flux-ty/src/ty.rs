@@ -451,6 +451,8 @@ const HAS_INFER: u8 = 2;
 const HAS_ALIAS: u8 = 4;
 /// The type contains an opaque type.
 const HAS_OPAQUE: u8 = 8;
+/// The type contains [`Ty::ERROR`].
+const HAS_ERROR: u8 = 16;
 
 /// Interned in this order, so the constants below are their indices.
 const PREDEFINED: [TyKind; 6] = [
@@ -512,8 +514,8 @@ impl Interner {
             | TyKind::Str
             | TyKind::Never
             | TyKind::CStr
-            | TyKind::Value(_)
-            | TyKind::Error => 0,
+            | TyKind::Value(_) => 0,
+            TyKind::Error => HAS_ERROR,
         };
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         assert!(id < EMPTY.0, "more than u32::MAX types interned");
@@ -651,6 +653,11 @@ impl Ty {
     /// Whether the type contains an opaque type.
     pub fn has_opaques(self) -> bool {
         self.flags() & HAS_OPAQUE != 0
+    }
+
+    /// Whether the type is or contains [`Ty::ERROR`].
+    pub fn has_error(self) -> bool {
+        self.flags() & HAS_ERROR != 0
     }
 
     pub fn opaque(opaque: OpaqueTy) -> Ty {

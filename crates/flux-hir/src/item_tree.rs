@@ -1091,9 +1091,11 @@ pub enum ArrayLenKind {
     Bool(bool),
     /// A `char`, a const generic argument.
     Char(char),
-    /// Another expression, at this node: an anonymous constant
-    /// ([`ItemTree::anon_consts`]), unless it was an error (reported).
-    Anon(NodeId),
+    /// Another expression, at this node of this file's tree (a macro
+    /// expansion's items are in a file of their own): an anonymous
+    /// constant ([`ItemTree::anon_consts`]), unless it was an error
+    /// (reported).
+    Anon(FileId, NodeId),
     /// Unsupported or malformed; already reported.
     Error,
 }
@@ -1112,7 +1114,7 @@ impl std::fmt::Display for ArrayLen {
             ArrayLenKind::Path(path) => write!(f, "{path}"),
             ArrayLenKind::Bool(b) => write!(f, "{b}"),
             ArrayLenKind::Char(c) => write!(f, "{c:?}"),
-            ArrayLenKind::Anon(_) => f.write_str("{const}"),
+            ArrayLenKind::Anon(..) => f.write_str("{const}"),
             ArrayLenKind::Error => f.write_str("<error>"),
         }
     }
@@ -1509,6 +1511,7 @@ impl Collector<'_> {
 
     /// Items by node, so that collecting them can read more files.
     fn collect_items(&mut self, ctx: Ctx, items: &[NodeId]) {
+        let _file = TypesFile::enter(ctx.file);
         for &node in items {
             let start = self.items.diagnostics.len();
             self.collect_item_expanding_types(ctx, node);
@@ -5720,6 +5723,28 @@ pub(crate) fn body_expansion(delta: i32) {
     BODY_EXPANSIONS.with(|c| c.set(c.get().wrapping_add_signed(delta)));
 }
 
+thread_local! {
+    /// The file whose tree the types being lowered are in, which the
+    /// item tree's anonymous constants are keyed by: an item a macro
+    /// expansion makes is in a file of its own, not its module's.
+    static TYPES_FILE: std::cell::Cell<Option<FileId>> = const { std::cell::Cell::new(None) };
+}
+
+/// While it lives, types are lowered from the tree of `file`.
+pub(crate) struct TypesFile(Option<FileId>);
+
+impl TypesFile {
+    pub(crate) fn enter(file: FileId) -> TypesFile {
+        TypesFile(TYPES_FILE.with(|f| f.replace(Some(file))))
+    }
+}
+
+impl Drop for TypesFile {
+    fn drop(&mut self) {
+        TYPES_FILE.with(|f| f.set(self.0));
+    }
+}
+
 /// The anonymous constant `expr` is, if the item tree has it.
 fn anon_kind(expr: ast::Expr<'_>, diagnostics: &mut Vec<Diagnostic>) -> ArrayLenKind {
     if BODY_EXPANSIONS.with(std::cell::Cell::get) > 0 {
@@ -5730,7 +5755,13 @@ fn anon_kind(expr: ast::Expr<'_>, diagnostics: &mut Vec<Diagnostic>) -> ArrayLen
         );
         return ArrayLenKind::Error;
     }
-    ArrayLenKind::Anon(expr.syntax().id())
+    match TYPES_FILE.with(std::cell::Cell::get) {
+        Some(file) => ArrayLenKind::Anon(file, expr.syntax().id()),
+        None => {
+            debug_assert!(false, "types are lowered in a file");
+            ArrayLenKind::Error
+        }
+    }
 }
 
 /// Lowers the length of an array type or repeat expression, `expr`,
