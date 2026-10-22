@@ -4196,6 +4196,8 @@ impl Ctx<'_> {
         (rhs, rhs_ty): (ExprId, Ty),
     ) -> Option<Ty> {
         let operand = self.shallow(lhs);
+        // Tuples compare through `core`'s impls (`()` built in), and
+        // have no others, reported as for structs.
         let overloadable = matches!(
             operand.kind(),
             TyKind::Adt(..)
@@ -4204,6 +4206,7 @@ impl Ctx<'_> {
                 | TyKind::Ref(..)
                 | TyKind::Array(..)
                 | TyKind::Slice(_)
+                | TyKind::Tuple([_, ..])
         );
         let op_range = self.source_map.ops.get(id).copied().unwrap_or_default();
         if let BinaryOp::Cmp(_) = op
@@ -4212,23 +4215,14 @@ impl Ctx<'_> {
             self.error(op_range, message);
             return Some(Ty::BOOL);
         }
-        // `core` does not compare tuples or pointers yet, by reference
-        // either.
+        // `core` does not compare pointers yet, by reference either.
         if let (BinaryOp::Cmp(_), TyKind::Ref(..)) = (op, operand.kind()) {
             let mut leaf = operand;
             while let TyKind::Ref(_, pointee) = leaf.kind() {
                 leaf = self.shallow(pointee);
             }
-            let what = match leaf.kind() {
-                TyKind::Tuple([_, ..]) => "tuples",
-                TyKind::RawPtr(..) => "pointers",
-                _ => "",
-            };
-            if !what.is_empty() {
-                self.error(
-                    self.range(id),
-                    format!("comparing {what} is not supported yet"),
-                );
+            if let TyKind::RawPtr(..) = leaf.kind() {
+                self.error(self.range(id), "comparing pointers is not supported yet");
                 return Some(Ty::BOOL);
             }
         }
@@ -5490,10 +5484,6 @@ impl Ctx<'_> {
                             BinaryOp::Cmp(_),
                             TyKind::Int(_) | TyKind::Bool | TyKind::Char | TyKind::Tuple([]),
                         ) => true,
-                        (BinaryOp::Cmp(_), TyKind::Tuple(_)) => {
-                            self.error(self.range(expr), "comparing tuples is not supported yet");
-                            true
-                        }
                         (BinaryOp::Cmp(_), TyKind::RawPtr(..)) => {
                             self.error(self.range(expr), "comparing pointers is not supported yet");
                             true

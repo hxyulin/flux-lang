@@ -1234,7 +1234,7 @@ fn array_into_iter_instance(items: &ItemTree, instance: Instance) -> Option<Inst
 pub fn builtin_array_impl(items: &ItemTree, goal: Predicate) -> Option<Predicate> {
     let lang = items.traits[goal.trait_ref.trait_].lang?;
     match lang.as_str() {
-        "copy" | "clone" | "total_eq" | "Debug" => match goal.self_ty.kind() {
+        "copy" | "clone" | "total_eq" | "Ord" | "Debug" => match goal.self_ty.kind() {
             TyKind::Array(elem, _) => Some(Predicate {
                 self_ty: elem,
                 ..goal
@@ -1251,6 +1251,17 @@ pub fn builtin_array_impl(items: &ItemTree, goal: Predicate) -> Option<Predicate
             TyKind::Array(elem, len) if len <= 32 => Some(Predicate {
                 self_ty: elem,
                 ..goal
+            }),
+            _ => None,
+        },
+        // Arrays of one length, element by element.
+        "partial_ord" => match (goal.self_ty.kind(), goal.trait_ref.args.first()?.kind()) {
+            (TyKind::Array(elem, len), TyKind::Array(other, n)) if n == len => Some(Predicate {
+                self_ty: elem,
+                trait_ref: TraitRef {
+                    args: Ty::list(&[other]),
+                    ..goal.trait_ref
+                },
             }),
             _ => None,
         },

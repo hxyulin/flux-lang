@@ -1,0 +1,12 @@
+struct S {}
+struct OnlyEq {}
+fn main() -> ()
+fn eq(&OnlyEq, &OnlyEq) -> bool
+    self@0: &OnlyEq
+    other@1: &OnlyEq
+error 219..221: binary operation `==` cannot be applied to type `({integer}, S)`
+error 254..255: binary operation `<` cannot be applied to type `({integer}, OnlyEq)`
+error 291..300: mismatched types: expected a tuple with 2 elements, found one with 3 elements
+error 330..334: mismatched types: expected `u8`, found `u16`
+error 364..365: binary operation `<` cannot be applied to type `[OnlyEq; 1]`
+error 395..396: cannot add `({integer}, {integer})` to `({integer}, {integer})`

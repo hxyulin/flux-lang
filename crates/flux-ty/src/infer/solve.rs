@@ -845,7 +845,7 @@ impl Ctx<'_> {
         if let TyKind::Array(_, len) = self_ty.kind()
             && self.items.traits[t]
                 .lang
-                .is_some_and(|l| l.as_str() == "eq")
+                .is_some_and(|l| matches!(l.as_str(), "eq" | "partial_ord"))
             && let Some(&rhs) = pred.trait_ref.args.first()
             && let TyKind::Infer(var) = self.shallow(rhs).kind()
             && !self.unknown(var).0
@@ -1074,8 +1074,16 @@ impl Ctx<'_> {
                 return self.may_hold(a, t, Some(&[b]), depth + 1);
             }
         }
+        // `Default` for arrays of up to 32 elements, any for none.
+        if let TyKind::Array(elem, len) = ty.kind()
+            && self.items.traits[t]
+                .lang
+                .is_some_and(|l| l.as_str() == "Default")
+        {
+            return len == 0 || (len <= 32 && self.may_hold(elem, t, None, depth + 1));
+        }
         if let TyKind::Array(elem, _) = ty.kind()
-            && matches!(self.items.traits[t].lang, Some(l) if matches!(l.as_str(), "copy" | "clone" | "eq" | "total_eq"))
+            && matches!(self.items.traits[t].lang, Some(l) if matches!(l.as_str(), "copy" | "clone" | "eq" | "total_eq" | "partial_ord" | "Ord" | "Debug"))
         {
             let args = args.map(|a| {
                 a.iter()

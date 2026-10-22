@@ -208,7 +208,9 @@ fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
     of_array
         && (Some(instance.function) == lang_method(items, "clone", "clone")
             || Some(instance.function) == lang_method(items, "Default", "default")
-            || Some(instance.function) == lang_method(items, "Debug", "fmt"))
+            || Some(instance.function) == lang_method(items, "Debug", "fmt")
+            || Some(instance.function) == lang_method(items, "partial_ord", "partial_cmp")
+            || Some(instance.function) == lang_method(items, "Ord", "cmp"))
 }
 
 /// `Clone::clone` for an array of `T`: a copy if `T` is `Copy`, else
@@ -224,8 +226,14 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
     if Some(instance.function) == lang_method(items, "Default", "default") {
         return Some(default_shim(instance));
     }
+    // `fmt`, `partial_cmp` and `cmp` of arrays: the slices' impls'.
     if Some(instance.function) == lang_method(items, "Debug", "fmt") {
-        return Some(debug_shim(items, sigs, instance));
+        return Some(slice_shim(items, sigs, instance, 1));
+    }
+    if Some(instance.function) == lang_method(items, "partial_ord", "partial_cmp")
+        || Some(instance.function) == lang_method(items, "Ord", "cmp")
+    {
+        return Some(slice_shim(items, sigs, instance, 2));
     }
     if Some(instance.function) == lang_method(items, "eq", "eq") {
         if let (TyKind::Array(..), TyKind::Array(..)) =
@@ -608,34 +616,70 @@ fn default_shim(instance: Instance) -> Body {
     }
 }
 
-/// `Debug::fmt` for an array: the slice's, as rustc's `core` has it.
-fn debug_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
+/// A method of an array's built-in impl that calls the same method of
+/// the slice's impl, with its first `slices` parameters as slices and
+/// the others as they are: `Debug::fmt`, `PartialOrd::partial_cmp` and
+/// `Ord::cmp`, as rustc's `core` has them.
+fn slice_shim(items: &ItemTree, sigs: &Signatures, instance: Instance, slices: usize) -> Body {
     let TyKind::Array(elem, _) = instance.args[0].kind() else {
-        unreachable!("formats arrays")
+        unreachable!("an array's method")
     };
     let sig = flux_ty::traits::instance_sig(items, sigs, instance.function, instance.args);
     let slice_ref = Ty::new(TyKind::Ref(Mutability::Not, Ty::slice(elem)));
     let mut locals = flux_arena::Arena::new();
-    let mut local = |ty, kind| locals.alloc(LocalDecl { ty, kind });
-    let ret = local(sig.ret, LocalKind::Return);
-    let this = local(sig.params[0], LocalKind::Param);
-    let formatter = local(sig.params[1], LocalKind::Param);
-    let slice = local(slice_ref, LocalKind::Temp);
+    let ret = locals.alloc(LocalDecl {
+        ty: sig.ret,
+        kind: LocalKind::Return,
+    });
+    let params: Vec<Local> = sig
+        .params
+        .iter()
+        .map(|&ty| {
+            locals.alloc(LocalDecl {
+                ty,
+                kind: LocalKind::Param,
+            })
+        })
+        .collect();
     let range = flux_syntax::TextRange::default();
+    let mut statements = Vec::new();
+    let mut args = Vec::new();
+    for (i, &param) in params.iter().enumerate() {
+        if i < slices {
+            let slice = locals.alloc(LocalDecl {
+                ty: slice_ref,
+                kind: LocalKind::Temp,
+            });
+            statements.push(Statement {
+                kind: StatementKind::Assign(
+                    slice.into(),
+                    Rvalue::Unsize(Operand::Copy(param.into()), slice_ref),
+                ),
+                range,
+            });
+            args.push(Operand::Move(slice.into()));
+        } else {
+            args.push(Operand::Move(param.into()));
+        }
+    }
+    // The trait's arguments, arrays as slices: `[T]: PartialOrd<[U]>`.
+    let generic_args: Vec<Ty> = instance
+        .args
+        .iter()
+        .map(|&a| match a.kind() {
+            TyKind::Array(elem, _) => Ty::slice(elem),
+            _ => a,
+        })
+        .collect();
+    let generic_args = Ty::list(&generic_args);
     let mut blocks = flux_arena::Arena::new();
     blocks.alloc(BasicBlockData {
-        statements: vec![Statement {
-            kind: StatementKind::Assign(
-                slice.into(),
-                Rvalue::Unsize(Operand::Copy(this.into()), slice_ref),
-            ),
-            range,
-        }],
+        statements,
         terminator: Terminator {
             kind: TerminatorKind::Call {
                 func: instance.function,
-                generic_args: Ty::list(&[Ty::slice(elem)]),
-                args: vec![Operand::Move(slice.into()), Operand::Move(formatter.into())],
+                generic_args,
+                args,
                 dest: ret.into(),
                 target: Some(BasicBlock::from_raw(1)),
             },
@@ -652,7 +696,7 @@ fn debug_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
     Body {
         locals,
         blocks,
-        param_count: 2,
+        param_count: params.len(),
         c_strings: Vec::new(),
         in_core: true,
         inherits_overflow_checks: false,

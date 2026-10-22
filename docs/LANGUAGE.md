@@ -153,8 +153,9 @@ Type checking follows rustc for this subset: the integer types, `bool`,
 `char`, `str`, tuples, arrays, slices, structs, enums and `!`; integer
 literals default to `i32`; no implicit conversions; operators need
 operands of the same type, except shifts, and work on integers and
-`bool` only, `char`s comparing too (comparing tuples or pointers is not
-supported yet), and on references to them, as below. `isize` and
+`bool` only, `char`s comparing too (comparing pointers is not supported
+yet; tuples compare through `core`'s impls, as below), and on references
+to them, as below. `isize` and
 `usize` are 64 bits. `c"..."` is a `&'static CStr` (`core::ffi::CStr`),
 and `.as_ptr()` gives the `*const c_char` (`*const i8` on both targets)
 that C functions take. As in rustc, arguments after a variadic
@@ -257,9 +258,10 @@ runtime"), or E0080 in a constant. As in rustc, borrowing an element
 borrows the array, whatever the index: `&mut a[0]` and `&mut a[1]`
 conflict (E0499), and elements may not be moved out of (E0508).
 `len` and `is_empty` are built into the compiler, as is the length of
-an array, `Copy`, `Clone` and `PartialEq` (`==` and `!=` on arrays of
-one length) of arrays whose elements implement them, `Default` of
-arrays of up to 32 elements (any element type for none), and
+an array, `Copy`, `Clone`, `PartialEq` (`==` and `!=` on arrays of one
+length), `Eq`, `PartialOrd`, `Ord` (`<` and the others, as slices
+compare) and `Debug` of arrays whose elements implement them, `Default`
+of arrays of up to 32 elements (any element type for none), and
 `IntoIterator` for `[T; N]`, `&[T; N]` and `&mut [T; N]`: rustc's
 `core` writes these with const generics, which flux does not have yet.
 `core::slice` gives slices `first`, `last` and `get` (`Option<&T>`),
@@ -286,12 +288,11 @@ elements (it may order them differently beyond). Slices are
 (`a[..2] == b[..2]`, `s < t`), and arrays compare with slices and
 references to them either way round (`s == [1, 2]`, `w == b"fn"`),
 which the compiler implements, as rustc's `core` does with const
-generics. Iterators have `size_hint`, and
-`ExactSizeIterator` (`len`, in the prelude) and `rposition` exist for
-the slice and array iterators. Slices' methods are found on arrays, and references to them,
+generics. The slice and array iterators are `ExactSizeIterator`s (see
+`core::iter` below). Slices'' methods are found on arrays, and references to them,
 as rustc's method probe finds them: the array is borrowed and the
 reference unsized to a slice's (`arr.iter()`, `(&mut arr).last()`). Other
-methods of arrays and slices, comparisons with `<`, and arrays in `const
+methods of arrays and slices, and arrays in `const
 fn`s through references are not supported yet; neither is slicing in
 constants, which rustc's `core` allows only unstably (E0658).
 
@@ -469,7 +470,11 @@ tuples, `Option`, `Result`, `Ordering` and the ranges),
 `core::mem::{drop, swap, replace, take}` (`drop` also in the prelude;
 `swap`'s body is the compiler's, and it is not `const` yet, as rustc's
 is), `core::convert::{identity, From}`,
-`core::marker::{Sized, Copy}`, `core::clone::Clone`, the operator
+`core::marker::{Sized, Copy}`, `core::clone::Clone` (as `Copy`,
+`PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Debug` and `Default`, for
+tuples of up to twelve elements, comparing them element by element as
+rustc's do: `==`, `<` and the others work on tuples, by reference too),
+the operator
 traits of `core::ops` with `Drop`, `core::cmp::{PartialEq, Eq,
 PartialOrd, Ord, Ordering, max, min}`, `core::option::Option` and
 `core::result::Result`, `core::char` (`from_u32`, `from_digit`),
