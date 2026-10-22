@@ -1,4 +1,4 @@
-SOURCE_FILE@0..1531
+SOURCE_FILE@0..1680
   FN@0..319
     FN_KW@0..2 "fn"
     WHITESPACE@2..3 " "
@@ -1658,3 +1658,136 @@ SOURCE_FILE@0..1531
       WHITESPACE@1528..1529 "\n"
       R_CURLY@1529..1530 "}"
   WHITESPACE@1530..1531 "\n"
+  FN@1531..1679
+    FN_KW@1531..1533 "fn"
+    WHITESPACE@1533..1534 " "
+    NAME@1534..1545
+      IDENT@1534..1545 "raw_borrows"
+    PARAM_LIST@1545..1547
+      L_PAREN@1545..1546 "("
+      R_PAREN@1546..1547 ")"
+    WHITESPACE@1547..1548 " "
+    BLOCK_EXPR@1548..1679
+      L_CURLY@1548..1549 "{"
+      WHITESPACE@1549..1554 "\n    "
+      LET_STMT@1554..1575
+        LET_KW@1554..1557 "let"
+        WHITESPACE@1557..1558 " "
+        IDENT_PAT@1558..1559
+          NAME@1558..1559
+            IDENT@1558..1559 "a"
+        WHITESPACE@1559..1560 " "
+        EQ@1560..1561 "="
+        WHITESPACE@1561..1562 " "
+        REF_EXPR@1562..1574
+          AMP@1562..1563 "&"
+          IDENT@1563..1566 "raw"
+          WHITESPACE@1566..1567 " "
+          CONST_KW@1567..1572 "const"
+          WHITESPACE@1572..1573 " "
+          PATH_EXPR@1573..1574
+            PATH@1573..1574
+              PATH_SEGMENT@1573..1574
+                NAME_REF@1573..1574
+                  IDENT@1573..1574 "x"
+        SEMICOLON@1574..1575 ";"
+      WHITESPACE@1575..1580 "\n    "
+      LET_STMT@1580..1601
+        LET_KW@1580..1583 "let"
+        WHITESPACE@1583..1584 " "
+        IDENT_PAT@1584..1585
+          NAME@1584..1585
+            IDENT@1584..1585 "b"
+        WHITESPACE@1585..1586 " "
+        EQ@1586..1587 "="
+        WHITESPACE@1587..1588 " "
+        REF_EXPR@1588..1600
+          AMP@1588..1589 "&"
+          IDENT@1589..1592 "raw"
+          WHITESPACE@1592..1593 " "
+          MUT_KW@1593..1596 "mut"
+          WHITESPACE@1596..1597 " "
+          FIELD_EXPR@1597..1600
+            PATH_EXPR@1597..1598
+              PATH@1597..1598
+                PATH_SEGMENT@1597..1598
+                  NAME_REF@1597..1598
+                    IDENT@1597..1598 "y"
+            DOT@1598..1599 "."
+            NAME_REF@1599..1600
+              IDENT@1599..1600 "f"
+        SEMICOLON@1600..1601 ";"
+      WHITESPACE@1601..1606 "\n    "
+      LET_STMT@1606..1619
+        LET_KW@1606..1609 "let"
+        WHITESPACE@1609..1610 " "
+        IDENT_PAT@1610..1611
+          NAME@1610..1611
+            IDENT@1610..1611 "c"
+        WHITESPACE@1611..1612 " "
+        EQ@1612..1613 "="
+        WHITESPACE@1613..1614 " "
+        REF_EXPR@1614..1618
+          AMP@1614..1615 "&"
+          PATH_EXPR@1615..1618
+            PATH@1615..1618
+              PATH_SEGMENT@1615..1618
+                NAME_REF@1615..1618
+                  IDENT@1615..1618 "raw"
+        SEMICOLON@1618..1619 ";"
+      WHITESPACE@1619..1624 "\n    "
+      LET_STMT@1624..1641
+        LET_KW@1624..1627 "let"
+        WHITESPACE@1627..1628 " "
+        IDENT_PAT@1628..1629
+          NAME@1628..1629
+            IDENT@1628..1629 "d"
+        WHITESPACE@1629..1630 " "
+        EQ@1630..1631 "="
+        WHITESPACE@1631..1632 " "
+        REF_EXPR@1632..1640
+          AMP@1632..1633 "&"
+          MUT_KW@1633..1636 "mut"
+          WHITESPACE@1636..1637 " "
+          PATH_EXPR@1637..1640
+            PATH@1637..1640
+              PATH_SEGMENT@1637..1640
+                NAME_REF@1637..1640
+                  IDENT@1637..1640 "raw"
+        SEMICOLON@1640..1641 ";"
+      WHITESPACE@1641..1646 "\n    "
+      LET_STMT@1646..1677
+        LET_KW@1646..1649 "let"
+        WHITESPACE@1649..1650 " "
+        IDENT_PAT@1650..1651
+          NAME@1650..1651
+            IDENT@1650..1651 "e"
+        WHITESPACE@1651..1652 " "
+        EQ@1652..1653 "="
+        WHITESPACE@1653..1654 " "
+        CAST_EXPR@1654..1676
+          REF_EXPR@1654..1667
+            AMP@1654..1655 "&"
+            IDENT@1655..1658 "raw"
+            WHITESPACE@1658..1659 " "
+            CONST_KW@1659..1664 "const"
+            WHITESPACE@1664..1665 " "
+            PREFIX_EXPR@1665..1667
+              STAR@1665..1666 "*"
+              PATH_EXPR@1666..1667
+                PATH@1666..1667
+                  PATH_SEGMENT@1666..1667
+                    NAME_REF@1666..1667
+                      IDENT@1666..1667 "p"
+          WHITESPACE@1667..1668 " "
+          AS_KW@1668..1670 "as"
+          WHITESPACE@1670..1671 " "
+          PATH_TYPE@1671..1676
+            PATH@1671..1676
+              PATH_SEGMENT@1671..1676
+                NAME_REF@1671..1676
+                  IDENT@1671..1676 "usize"
+        SEMICOLON@1676..1677 ";"
+      WHITESPACE@1677..1678 "\n"
+      R_CURLY@1678..1679 "}"
+  WHITESPACE@1679..1680 "\n"

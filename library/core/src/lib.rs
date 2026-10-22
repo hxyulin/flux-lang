@@ -9,6 +9,7 @@ mod macros;
 
 pub mod array;
 pub mod ascii;
+pub mod cell;
 mod bool;
 pub mod char;
 pub mod clone;
@@ -17,6 +18,7 @@ pub mod convert;
 pub mod default;
 pub mod ffi;
 pub mod fmt;
+pub mod hash;
 pub mod hint;
 mod intrinsics;
 #[doc(hidden)]
@@ -31,6 +33,7 @@ pub mod panic;
 #[doc(hidden)]
 pub mod panicking;
 pub mod prelude;
+pub mod ptr;
 pub mod result;
 pub mod slice;
 pub mod str;

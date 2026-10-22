@@ -10,7 +10,7 @@ pub const fn identity<T>(x: T) -> T {
 }
 
 /// The error of a conversion that cannot fail: a type without values.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum Infallible {}
 
 /// Conversion from a `T`, which cannot fail. `?` converts the error of a

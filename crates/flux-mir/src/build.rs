@@ -2273,6 +2273,33 @@ impl Builder<'_> {
                 };
                 self.assign(dest, rvalue, range);
             }
+            // A reference, at once cast to a raw pointer: the place is
+            // accessed as a borrow of it is, but no loan outlives it.
+            Expr::RawRef {
+                mutable,
+                expr: inner,
+            } => {
+                if *mutable {
+                    self.check_guard_write(*inner, true, range);
+                }
+                let mutability = if *mutable {
+                    Mutability::Mut
+                } else {
+                    Mutability::Not
+                };
+                let place = self.lower_place(*inner);
+                let pointee = self.place_ty(&place);
+                let temp = self.temp(Ty::new(TyKind::Ref(mutability, pointee)));
+                let rvalue = Rvalue::Ref {
+                    mutability,
+                    place,
+                    two_phase: false,
+                };
+                self.assign(&temp.into(), rvalue, range);
+                let operand = self.read(temp.into());
+                let ty = self.expr_ty(expr);
+                self.assign(dest, Rvalue::Cast(operand, ty), range);
+            }
             Expr::Record {
                 strukt,
                 variant,

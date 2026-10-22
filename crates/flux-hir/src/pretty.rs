@@ -662,6 +662,15 @@ impl Printer<'_> {
                 self.expr(*expr);
                 self.out.push(')');
             }
+            Expr::RawRef { mutable, expr } => {
+                self.out.push_str(if *mutable {
+                    "(&raw mut "
+                } else {
+                    "(&raw const "
+                });
+                self.expr(*expr);
+                self.out.push(')');
+            }
             Expr::Field { expr, name } => {
                 self.expr(*expr);
                 write!(self.out, ".{name}").unwrap();

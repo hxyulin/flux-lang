@@ -3193,7 +3193,7 @@ impl<'t> AstNode<'t> for RecordPatFieldList<'t> {
 
 /// ```text
 /// RefExpr =
-///   Attr* '&' 'mut'? Expr
+///   Attr* '&' 'ident'? 'const'? 'mut'? Expr
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RefExpr<'t> {
@@ -3206,6 +3206,12 @@ impl<'t> RefExpr<'t> {
     }
     pub fn amp_token(self) -> Option<SyntaxToken<'t>> {
         support::token(self.syntax, AMP)
+    }
+    pub fn ident_token(self) -> Option<SyntaxToken<'t>> {
+        support::token(self.syntax, IDENT)
+    }
+    pub fn const_token(self) -> Option<SyntaxToken<'t>> {
+        support::token(self.syntax, CONST_KW)
     }
     pub fn mut_token(self) -> Option<SyntaxToken<'t>> {
         support::token(self.syntax, MUT_KW)

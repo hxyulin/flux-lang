@@ -42,6 +42,8 @@ impl ::core::default::Default for Mixed;
 
 impl ::core::marker::Copy for Mixed;
 
+impl ::core::hash::Hash for Mixed;
+
 impl ::core::cmp::PartialOrd for Ordered;
 
 impl ::core::cmp::Ord for Ordered;
@@ -75,6 +77,8 @@ fn <Mixed as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
 fn <Mixed as ::core::default::Default>::default() -> Self {
     Mixed {  }
 }
+
+fn <Mixed as ::core::hash::Hash>::hash<__H>(self@0: &Self, state@1: &mut __H) -> () where __H: ::core::hash::Hasher {}
 
 fn <Ordered as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
     Option::Some(Ordering::Equal)
@@ -111,7 +115,6 @@ error 507..527: `derive` may only be applied to `struct`s, `enum`s and `union`s
 error 590..606: `derive` may only be applied to `struct`s, `enum`s and `union`s
 error 667..676: malformed `derive` attribute input
 error 691..710: malformed `derive` attribute input
-error 880..884: deriving `Hash` is not supported yet
 error 1023..1041: paths in `derive` are not supported yet
 error 1043..1065: paths in `derive` are not supported yet
 error 1137..1138: expected identifier, found `,`

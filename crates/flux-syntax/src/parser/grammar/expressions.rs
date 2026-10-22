@@ -370,7 +370,16 @@ fn lhs(p: &mut Parser<'_>, r: Restrictions) -> Option<(CompletedMarker, BlockLik
         T![&] => {
             m = p.start();
             p.bump(T![&]);
-            p.eat(T![mut]);
+            // `&raw const place` and `&raw mut place`: `raw` is an
+            // identifier, and only there may `const` or `mut` follow one.
+            if p.at(IDENT) && (p.nth_at(1, T![const]) || p.nth_at(1, T![mut])) {
+                p.bump(IDENT);
+                if !p.eat(T![const]) {
+                    p.bump(T![mut]);
+                }
+            } else {
+                p.eat(T![mut]);
+            }
             REF_EXPR
         }
         T![*] | T![!] | T![-] => {

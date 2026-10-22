@@ -57,6 +57,9 @@ const CORE_FILES: &[(&str, &str)] = &[
         include_str!("../../../library/core/src/macros.rs"),
     ),
     ("hint.rs", include_str!("../../../library/core/src/hint.rs")),
+    ("ptr.rs", include_str!("../../../library/core/src/ptr.rs")),
+    ("cell.rs", include_str!("../../../library/core/src/cell.rs")),
+    ("hash.rs", include_str!("../../../library/core/src/hash.rs")),
     ("bool.rs", include_str!("../../../library/core/src/bool.rs")),
     (
         "ascii.rs",

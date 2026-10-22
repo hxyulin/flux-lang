@@ -56,3 +56,8 @@ impl<T> Clone for PhantomData<T> {
 }
 
 impl<T> Copy for PhantomData<T> {}
+
+/// It hashes nothing.
+impl<T> crate::hash::Hash for PhantomData<T> {
+    fn hash<H: crate::hash::Hasher>(&self, _state: &mut H) {}
+}

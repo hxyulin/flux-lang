@@ -219,6 +219,9 @@ fn derived_body(
     if derive == Derive::Debug {
         return derived_debug_body(items, function, strukt);
     }
+    if derive == Derive::Hash {
+        return derived_hash_body(items, function, strukt);
+    }
     if s.is_enum() {
         return derived_enum_body(items, function, strukt, derive);
     }
@@ -352,6 +355,7 @@ fn derived_body(
         Derive::PartialOrd | Derive::Ord => unreachable!("made by `derived_ord_body`"),
         Derive::Default => unreachable!("made by `derived_default_body`"),
         Derive::Debug => unreachable!("made by `derived_debug_body`"),
+        Derive::Hash => unreachable!("made by `derived_hash_body`"),
         Derive::Copy => {
             // `{ assert_param_is_clone(&self.a); ..; *self }`
             let res = assert_param_is_clone(items, data.loc.module);
@@ -653,6 +657,204 @@ fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) 
     ctx.finish(params, root)
 }
 
+/// The body of `hash` that `#[derive(Hash)]` makes for `strukt`, as
+/// rustc expands it: for an enum of more than one variant, `Hash::hash`
+/// of its discriminant (of its `repr` type, `isize` by default), then of
+/// each field of the struct or of the variant `self` holds, in order,
+/// each at its field, where rustc reports one that does not implement
+/// `Hash`.
+fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -> LoweredBody {
+    let data = &items.functions[function];
+    let s = &items.structs[strukt];
+    let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
+    let whole = s.name_range;
+    let mut params = Vec::new();
+    let mut bindings = Vec::new();
+    for name in [kw::SelfLower, Symbol::intern("state")] {
+        let binding = ctx.bindings.alloc(Binding {
+            name,
+            mutable: false,
+            by_ref: None,
+        });
+        params.push(ctx.alloc_pat(Pat::Bind { binding, sub: None }, data.def_range));
+        bindings.push(binding);
+    }
+    let hash = match items.lang_traits.get(&Symbol::intern("Hash")) {
+        Some(&t) => Res::Assoc {
+            ty: None,
+            trait_: Some(t),
+            name: Symbol::intern("hash"),
+        },
+        None => Res::Err,
+    };
+    let state = bindings[1];
+    // `Hash::hash(value, state);`
+    let call = |ctx: &mut Ctx<'_>, value: ExprId, at: TextRange| {
+        let callee = ctx.alloc_expr(Expr::Path(hash), at);
+        ctx.source_map.segments.insert(callee, at);
+        let f = ctx.alloc_expr(Expr::Path(Res::Local(state)), at);
+        let expr = ctx.alloc_expr(
+            Expr::Call {
+                callee,
+                args: Box::new([value, f]),
+            },
+            at,
+        );
+        Stmt::Expr {
+            expr,
+            has_semicolon: true,
+        }
+    };
+    let mut stmts = Vec::new();
+    match s.variants.as_deref() {
+        None => {
+            for field in s.fields.iter() {
+                let at = field.def_range;
+                let base = ctx.alloc_expr(Expr::Path(Res::Local(bindings[0])), at);
+                let place = ctx.alloc_expr(
+                    Expr::Field {
+                        expr: base,
+                        name: field.name,
+                    },
+                    at,
+                );
+                ctx.source_map
+                    .expr_fields
+                    .insert(place, Box::new([field.name_range]));
+                let value = ctx.alloc_expr(
+                    Expr::Ref {
+                        mutable: false,
+                        expr: place,
+                    },
+                    at,
+                );
+                stmts.push(call(&mut ctx, value, at));
+            }
+        }
+        Some(variants) => {
+            if variants.len() > 1 {
+                // `let __self_discr = match self { E::A(..) => 0isize, .. };
+                // Hash::hash(&__self_discr, state);`
+                let repr = s.repr.unwrap_or_else(|| Symbol::intern("isize"));
+                let mut arms = Vec::new();
+                for (v, variant) in variants.iter().enumerate() {
+                    let at = variant.def_range;
+                    let pat = match variant.kind {
+                        StructKind::Tuple => Pat::TupleStruct {
+                            strukt,
+                            variant: v as u32,
+                            pats: Box::default(),
+                            rest: Some(0),
+                        },
+                        StructKind::Record => Pat::Record {
+                            strukt,
+                            variant: v as u32,
+                            fields: Box::default(),
+                            rest: true,
+                        },
+                        StructKind::Unit => Pat::Unit(strukt, v as u32),
+                    };
+                    let pat = ctx.alloc_pat(pat, at);
+                    let body = discriminant(&mut ctx, variant.discriminant, repr, at);
+                    arms.push(MatchArm {
+                        pat,
+                        guard: None,
+                        body,
+                    });
+                }
+                let scrutinee = ctx.alloc_expr(Expr::Path(Res::Local(bindings[0])), whole);
+                let init = ctx.alloc_expr(
+                    Expr::Match {
+                        scrutinee,
+                        arms: arms.into(),
+                    },
+                    whole,
+                );
+                let binding = ctx.bindings.alloc(Binding {
+                    name: Symbol::intern("__self_discr"),
+                    mutable: false,
+                    by_ref: None,
+                });
+                let pat = ctx.alloc_pat(Pat::Bind { binding, sub: None }, whole);
+                stmts.push(Stmt::Let {
+                    pat,
+                    ty: None,
+                    init: Some(init),
+                    else_branch: None,
+                });
+                let discr = ctx.alloc_expr(Expr::Path(Res::Local(binding)), whole);
+                let value = ctx.alloc_expr(
+                    Expr::Ref {
+                        mutable: false,
+                        expr: discr,
+                    },
+                    whole,
+                );
+                stmts.push(call(&mut ctx, value, whole));
+            }
+            let mut arms = Vec::new();
+            for (v, variant) in variants.iter().enumerate() {
+                let (pat, mine) = variant_pat(&mut ctx, strukt, v as u32, "__self_");
+                let calls: Box<[Stmt]> = variant
+                    .fields
+                    .iter()
+                    .zip(&mine)
+                    .map(|(field, &b)| {
+                        let at = field.def_range;
+                        let value = ctx.alloc_expr(Expr::Path(Res::Local(b)), at);
+                        call(&mut ctx, value, at)
+                    })
+                    .collect();
+                let body = ctx.alloc_expr(
+                    Expr::Block {
+                        stmts: calls,
+                        tail: None,
+                        is_unsafe: false,
+                    },
+                    variant.def_range,
+                );
+                arms.push(MatchArm {
+                    pat,
+                    guard: None,
+                    body,
+                });
+            }
+            let mut scrutinee = ctx.alloc_expr(Expr::Path(Res::Local(bindings[0])), whole);
+            if variants.is_empty() {
+                // `match *self {}`, as a reference is never empty.
+                let operand = scrutinee;
+                scrutinee = ctx.alloc_expr(
+                    Expr::Unary {
+                        op: ast::UnaryOp::Deref,
+                        operand,
+                    },
+                    whole,
+                );
+            }
+            let matched = ctx.alloc_expr(
+                Expr::Match {
+                    scrutinee,
+                    arms: arms.into(),
+                },
+                whole,
+            );
+            stmts.push(Stmt::Expr {
+                expr: matched,
+                has_semicolon: true,
+            });
+        }
+    }
+    let root = ctx.alloc_expr(
+        Expr::Block {
+            stmts: stmts.into(),
+            tail: None,
+            is_unsafe: false,
+        },
+        whole,
+    );
+    ctx.finish(params, root)
+}
+
 /// The body of the method `#[derive]` makes for enum `strukt`: a `match`
 /// on its variants, with a binding for each field. `Clone` builds the
 /// variant from the fields' clones, `PartialEq` compares the fields of
@@ -800,6 +1002,7 @@ fn derived_enum_body(
             Derive::PartialOrd | Derive::Ord => unreachable!("made by `derived_ord_body`"),
             Derive::Default => unreachable!("made by `derived_default_body`"),
             Derive::Debug => unreachable!("made by `derived_debug_body`"),
+            Derive::Hash => unreachable!("made by `derived_hash_body`"),
             Derive::Eq | Derive::Copy => {
                 let check = if copies {
                     assert_clone
@@ -1406,6 +1609,8 @@ struct Ctx<'a> {
     place: Option<Place<'a>>,
     /// [`Body::block_modules`].
     block_modules: ArenaMap<Expr, ModuleId>,
+    /// [`Body::const_blocks`].
+    const_blocks: ArenaMap<Expr, ()>,
     items: &'a ItemTree,
     /// Lowering a function in an `impl` block, where `Self` means its
     /// type: `self_target`, unless that did not resolve.
@@ -1497,6 +1702,7 @@ impl<'a> Ctx<'a> {
         Ctx {
             place: None,
             block_modules: ArenaMap::new(),
+            const_blocks: ArenaMap::new(),
             items,
             module,
             generics,
@@ -1555,6 +1761,7 @@ impl<'a> Ctx<'a> {
                 alt_by_ref: self.alt_by_ref,
                 root,
                 block_modules: self.block_modules,
+                const_blocks: self.const_blocks,
             },
             source_map: self.source_map,
             diagnostics: self.diagnostics,
@@ -1981,9 +2188,30 @@ impl<'a> Ctx<'a> {
             ast::Expr::RecordExpr(record) => return self.lower_record(record),
             ast::Expr::RefExpr(r) => {
                 let expr = self.lower_opt(r.expr(), syntax);
-                Expr::Ref {
-                    mutable: r.mut_token().is_some(),
-                    expr,
+                match r.ident_token() {
+                    // `&raw const place`, `&raw mut place`.
+                    Some(raw) if raw.text() == "raw" => Expr::RawRef {
+                        mutable: r.mut_token().is_some(),
+                        expr,
+                    },
+                    Some(ident) => {
+                        let keyword = if r.mut_token().is_some() {
+                            "mut"
+                        } else {
+                            "const"
+                        };
+                        self.error(
+                            ident.text_range(),
+                            format!(
+                                "expected one of `!`, `.`, `::`, `;`, `?`, `{{`, `}}`, or an operator, found keyword `{keyword}`"
+                            ),
+                        );
+                        Expr::Missing
+                    }
+                    None => Expr::Ref {
+                        mutable: r.mut_token().is_some(),
+                        expr,
+                    },
                 }
             }
             ast::Expr::TryExpr(t) => {
@@ -2026,6 +2254,26 @@ impl<'a> Ctx<'a> {
                 self.check_type_lens(ret);
             }
             _ => {}
+        }
+    }
+
+    /// An inline constant (`const { .. }`, its expressions from
+    /// `expr_start` on) may not name the locals around it, those before
+    /// `binding_start`, as rustc's anonymous constants cannot (E0435).
+    fn check_const_block_locals(&mut self, expr_start: usize, binding_start: usize) {
+        let ids: Vec<ExprId> = self
+            .exprs
+            .iter()
+            .skip(expr_start)
+            .filter_map(|(id, e)| match e {
+                Expr::Path(Res::Local(b)) if b.index() < binding_start => Some(id),
+                _ => None,
+            })
+            .collect();
+        for id in ids {
+            let range = self.source_map.exprs.get(id).copied().unwrap_or_default();
+            self.error(range, "attempt to use a non-constant value in a constant");
+            self.exprs[id] = Expr::Path(Res::Err);
         }
     }
 
@@ -2496,13 +2744,15 @@ impl<'a> Ctx<'a> {
         if let Some(label) = block.label() {
             self.unsupported(label.syntax().text_range(), "labeled blocks");
         }
-        for token in [block.const_token(), block.async_token(), block.move_token()]
+        for token in [block.async_token(), block.move_token()]
             .into_iter()
             .flatten()
         {
             let what = format!("`{}` blocks", token.text());
             self.unsupported(token.text_range(), &what);
         }
+        let is_const = block.const_token().is_some() && block.async_token().is_none();
+        let (expr_start, binding_start) = (self.exprs.len(), self.bindings.len());
         let scope = self.scopes.len();
         // A block with items is a module of its own, where its names
         // are resolved.
@@ -2527,6 +2777,10 @@ impl<'a> Ctx<'a> {
             },
             syntax.text_range(),
         );
+        if is_const {
+            self.const_blocks.insert(id, ());
+            self.check_const_block_locals(expr_start, binding_start);
+        }
         if module != outer_module {
             self.block_modules.insert(id, module);
         }

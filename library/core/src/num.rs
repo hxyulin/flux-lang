@@ -8,7 +8,7 @@
 
 /// Why an integer is not of another integer type: what `TryFrom`
 /// gives where the value is out of its range.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct TryFromIntError(pub(crate) ());
 
 impl i8 {

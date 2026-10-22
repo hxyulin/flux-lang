@@ -102,7 +102,7 @@ impl<A: Eq> Eq for &mut A {}
 /// The result of comparing two values: `1.cmp(&2)` is `Less`.
 #[lang = "Ordering"]
 #[repr(i8)]
-#[derive(Debug)]
+#[derive(Debug, Hash)]
 pub enum Ordering {
     Less = -1,
     Equal = 0,
@@ -329,7 +329,7 @@ pub fn min_by_key<T, F: crate::ops::FnMut(&T) -> K, K: Ord>(v1: T, v2: T, mut f:
 /// A value that orders the other way round: `Reverse(a) < Reverse(b)`
 /// where `b < a`, to sort descending by a key or make a max-heap a
 /// min-heap.
-#[derive(PartialEq, Eq, Debug, Copy, Default)]
+#[derive(PartialEq, Eq, Debug, Copy, Default, Hash)]
 pub struct Reverse<T>(pub T);
 
 impl<T: PartialOrd> PartialOrd for Reverse<T> {

@@ -63,3 +63,10 @@ fn attributes() {
     #[rustfmt::skip]
     call();
 }
+fn raw_borrows() {
+    let a = &raw const x;
+    let b = &raw mut y.f;
+    let c = &raw;
+    let d = &mut raw;
+    let e = &raw const *p as usize;
+}

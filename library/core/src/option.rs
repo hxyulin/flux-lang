@@ -6,7 +6,7 @@ use crate::panicking::panic;
 /// A value that may be absent. `?` returns `None` from a function
 /// that returns an `Option` if it is `None`.
 #[lang = "Option"]
-#[derive(Debug)]
+#[derive(Debug, Hash)]
 pub enum Option<T> {
     None,
     Some(T),
