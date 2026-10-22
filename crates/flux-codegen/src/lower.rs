@@ -28,8 +28,9 @@ use flux_ty::{FnSig, GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind, Typ
 use keel_frontend::{FunctionBuilder, Variable};
 use keel_ir::StackSlot;
 use keel_ir::{
-    AbiParam, ArgExt, Block, BlockCall, DataInit, DataItem, DataObject, FuncDecl, FuncRef,
-    Function, FunctionAttrs, IntCC, Layout, MemoryFlags, Module, Purpose, Signature, Type, Value,
+    AbiParam, ArgExt, Block, BlockCall, CallConv, DataInit, DataItem, DataObject, FuncDecl,
+    FuncRef, Function, FunctionAttrs, IntCC, Layout, MemoryFlags, Module, Purpose, Signature, Type,
+    Value,
 };
 
 /// The keel module for a type-checked program and its MIR, `core`
@@ -431,6 +432,21 @@ fn signature(sigs: &Signatures, sig: &FnSig, variadic: bool) -> Signature {
     signature
 }
 
+/// The signature of a function flux defines: keel's private convention
+/// (`cc(fast)`), which leaves narrow values unextended, where it allows
+/// it; that is for one result at most, and every function flux defines is
+/// local and called directly.
+fn flux_signature(sigs: &Signatures, sig: &FnSig) -> Signature {
+    let mut signature = signature(sigs, sig, false);
+    if signature.returns.len() <= 1 {
+        signature.cc = CallConv::Fast;
+        for param in signature.params.iter_mut().chain(&mut signature.returns) {
+            param.ext = ArgExt::None;
+        }
+    }
+    signature
+}
+
 fn attrs(sig: &FnSig) -> FunctionAttrs {
     FunctionAttrs {
         noreturn: sig.ret == Ty::NEVER,
@@ -451,7 +467,7 @@ fn entry_point(rust_main: &str, sigs: &Signatures, sig: &FnSig) -> Function {
     b.switch_to_block(entry);
     b.append_block_param(entry, Type::I32);
     b.append_block_param(entry, Type::Ptr);
-    let callee = b.import_function(rust_main, signature(sigs, sig, false));
+    let callee = b.import_function(rust_main, flux_signature(sigs, sig));
     b.ins().call(callee, &[]);
     if sig.ret == Ty::NEVER {
         b.ins().trap();
@@ -502,8 +518,9 @@ impl Ctx<'_> {
         );
         let mut function = Function::new(
             instance_symbol(self.hir, self.symbols, instance),
-            signature(&self.typed.sigs, sig, false),
+            flux_signature(&self.typed.sigs, sig),
         );
+        function.local = true;
         function.attrs = attrs(sig);
         let typed = self.typed;
         let lower = Lower {
@@ -535,6 +552,8 @@ impl Ctx<'_> {
             name: name.clone(),
             thread_local: false,
             local: true,
+            weak_odr: false,
+            hidden: false,
             init: Some(DataInit {
                 constant: true,
                 align: 1,
@@ -1144,14 +1163,18 @@ impl Lower<'_, '_, '_> {
         if let Some(&callee) = self.callees.get(&instance) {
             return callee;
         }
-        let variadic = self.ctx.hir.items.functions[func].is_variadic;
+        let function = &self.ctx.hir.items.functions[func];
         let sig = flux_ty::traits::instance_sig(
             &self.ctx.hir.items,
             &self.ctx.typed.sigs,
             func,
             generic_args,
         );
-        let sig = signature(self.sigs, &sig, variadic);
+        let sig = if function.is_extern {
+            signature(self.sigs, &sig, function.is_variadic)
+        } else {
+            flux_signature(self.sigs, &sig)
+        };
         let symbol = instance_symbol(self.ctx.hir, self.ctx.symbols, instance);
         let callee = self.b.import_function(&symbol, sig);
         self.callees.insert(instance, callee);

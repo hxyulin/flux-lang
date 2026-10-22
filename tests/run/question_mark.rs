@@ -105,28 +105,18 @@ fn record(total: &mut i64, label: *const i8, v: i64) {
     *total = *total * 31 + v;
 }
 
-// Each arm prints, which keeps keel's optimizer from turning these
-// `match`es into a `switch` that passes the value to the return block:
-// its arm64 code generation loses the jump to the default target then.
+// A `match` that keel turns into a `switch` passing the payload to the
+// return block, whose default target arm64 code once lost under `-O`.
 fn option_code(o: Option<i64>) -> i64 {
     match o {
-        Some(v) => {
-            show(c"some".as_ptr(), v);
-            v
-        }
-        None => {
-            show(c"none".as_ptr(), 0);
-            -1
-        }
+        Some(v) => v,
+        None => -1,
     }
 }
 
 fn result_code(r: Result<i64, ParseError>) -> i64 {
     match r {
-        Ok(v) => {
-            show(c"ok".as_ptr(), v);
-            v
-        }
+        Ok(v) => v,
         Err(ParseError::Empty) => -2,
         Err(ParseError::Negative(n)) => n * 100,
     }
