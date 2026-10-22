@@ -1,0 +1,11 @@
+struct S {}
+fn measure(&Self) -> u32
+fn measure(&u32) -> u32
+    self@0: &u32
+fn measure(&S) -> u32
+    self@0: &S
+fn outside() -> u32
+fn no_clone(Box<[S]>) -> ()
+    elements@0: Box<[S]>
+error 351..358: no method named `measure` found for type `u32` in the current scope
+error 414..419: the method `clone` exists for struct `Box<[S]>`, but its trait bounds were not satisfied
