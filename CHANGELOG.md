@@ -422,6 +422,13 @@
   four times as long took 13.3 times as long to build MIR for, a body
   branching at each statement 10.6, now 3.9 and 4.2. Diagnostics and
   snapshots are unchanged.
+- Intern types without contention: a thread looks a type or a list of
+  types up in its own cache first, then in one of 64 shards of the
+  table, each with its own lock on its own cache line, rather than all
+  threads taking one global lock for every type they build. A file whose
+  arrays make thousands of types took 6 ms alone but 450 ms while 17
+  other threads checked copies of it; now 9 ms. Type-checking the corpus
+  on 18 threads takes about 40% less CPU time, and slightly less alone.
 - Speed up the front end on one thread: about 245 MiB/s for whole-file
   parsing instead of 200 (`just bench`: lexing 6.3 to 5.4 ns/token,
   parsing 5.2 to 3.9, building 6.0 to 4.9). The parser's lookahead is
