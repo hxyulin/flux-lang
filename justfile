@@ -7,6 +7,10 @@ default:
 build:
     cargo build
 
+# Compile selected compiler modules with rustc and flux and compare execution.
+selfhost-subset:
+    cargo test --release -p flux-cli --test run compiler_modules_match_rustc -- --nocapture
+
 # Format, lint, test, then check that the workspace and examples parse without errors.
 check:
     cargo fmt --all -- --check

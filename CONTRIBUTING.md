@@ -100,11 +100,13 @@ programs so rustc cannot fold them at compile time (pass values through
 function parameters), or its overflow lints reject them.
 
 The runtime harness also bundles the actual differential generator's
-choice-tape module and MIR's dataflow bitset with the driver in
-`tests/run/support/compiler_internals.rs`. Both compilers compile those
-sources and compare their behavior. This covers compiler implementations
-as they change; it does not yet build the entire compiler with flux.
-The modules are bundled because flux does not support `#[path]` yet.
+choice-tape module and MIR's dataflow bitset and interval sets with the
+driver in `tests/run/support/compiler_internals.rs`. Both compilers compile
+those sources and compare their behavior. Run `just selfhost-subset` for
+this test alone. This covers compiler implementations as they change; it
+does not yet build the entire compiler with flux. The modules are bundled
+because flux does not support `#[path]` yet. See the
+[self-compilation milestones and gaps](docs/SELF_HOSTING.md).
 
 ## Differential testing
 
