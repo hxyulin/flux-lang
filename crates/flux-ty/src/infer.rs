@@ -89,6 +89,8 @@ pub struct InferenceResult {
     /// The type of the value each pattern matches, after the references
     /// it sees through.
     pub pat_types: ArenaMap<Pat, Ty>,
+    /// Resolved local annotations and their region slots, before pattern dereferencing.
+    pub let_regions: ArenaMap<Pat, (Ty, Box<[crate::regions::Region]>)>,
     /// How many references a pattern that is not a binding sees through
     /// before it matches: one for `Some(x)` matching a `&Option<i32>`.
     pub pat_derefs: ArenaMap<Pat, u32>,
@@ -332,6 +334,7 @@ impl<'a> Ctx<'a> {
             compared_refs: ArenaMap::new(),
             try_conversions: ArenaMap::new(),
             pat_types: ArenaMap::new(),
+            let_annotations: ArenaMap::new(),
             pat_derefs: ArenaMap::new(),
             binding_refs: ArenaMap::new(),
             mode_errors: Vec::new(),
@@ -504,6 +507,7 @@ struct Ctx<'a> {
     compared_refs: ArenaMap<Expr, ()>,
     try_conversions: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     pat_types: ArenaMap<Pat, Ty>,
+    let_annotations: ArenaMap<Pat, (TypeRefId, Ty)>,
     pat_derefs: ArenaMap<Pat, u32>,
     binding_refs: ArenaMap<Binding, Mutability>,
     /// Binding modifiers and reference patterns written where a pattern
@@ -1549,6 +1553,10 @@ impl Ctx<'_> {
     }
 
     fn resolve_type_ref(&mut self, ty_ref: TypeRefId) -> Ty {
+        self.resolve_body_type(ty_ref, false)
+    }
+
+    fn resolve_body_type(&mut self, ty_ref: TypeRefId, local: bool) -> Ty {
         let range = self
             .source_map
             .types
@@ -1576,7 +1584,7 @@ impl Ctx<'_> {
             range,
             &mut self.diagnostics,
         );
-        self.check_written_lifetimes(ty_ref, ty);
+        self.check_written_lifetimes(ty_ref, ty, local);
         let ty = self.fill_placeholders(ty, range);
         if ty.has_aliases() {
             let body = self.body;
@@ -1590,8 +1598,8 @@ impl Ctx<'_> {
     /// Checks the lifetimes written in type `ty_ref` of the body, which
     /// resolved to `ty`: each must be in scope, and a struct's as many
     /// as it has. Elided ones are inferred by the borrow checker; flux
-    /// does not enforce named ones in bodies yet.
-    fn check_written_lifetimes(&mut self, ty_ref: TypeRefId, ty: Ty) {
+    /// enforces explicit `'static` in local annotations in MIR.
+    fn check_written_lifetimes(&mut self, ty_ref: TypeRefId, ty: Ty, local: bool) {
         let written = &self.body.types[ty_ref];
         let mut found = Vec::new();
         crate::regions::lifetimes_in(written, &mut found);
@@ -1611,14 +1619,30 @@ impl Ctx<'_> {
             names.extend(generics.lifetimes.iter().map(|l| Some(l.name)));
         }
         let mut walker = crate::regions::Walker::new(self.items, self.module, names);
+        walker.body = local;
+        walker.scope = TypeScope {
+            self_ty: self.self_ty,
+            generics: &self.generics,
+            consts: &self.const_params,
+            bounds: &self.param_env,
+            defaults: Some(&self.sigs.trait_defaults),
+            ..TypeScope::default()
+        };
         let regions = walker.regions(written, ty);
         let errors = std::mem::take(&mut walker.errors);
-        let unsupported =
-            errors.is_empty() && regions.iter().any(|&r| r != crate::regions::Region::Erased);
+        let unsupported = errors.is_empty()
+            && regions.iter().any(|&r| {
+                r != crate::regions::Region::Erased
+                    && !(local && r == crate::regions::Region::Static)
+            });
         for (range, message) in errors {
             self.error(range, message);
         }
-        if unsupported && let Some(l) = found.iter().find(|l| !l.is_anonymous()) {
+        if unsupported
+            && let Some(l) = found
+                .iter()
+                .find(|l| !l.is_anonymous() && !(local && l.is_static()))
+        {
             self.error(
                 l.range,
                 "named lifetimes in types in bodies are not supported yet",
@@ -3315,7 +3339,10 @@ impl Ctx<'_> {
                     init,
                     else_branch,
                 } => {
-                    let declared = ty.map(|ty| self.resolve_type_ref(ty));
+                    let declared = ty.map(|ty| self.resolve_body_type(ty, true));
+                    if let (Some(written), Some(declared)) = (ty, declared) {
+                        self.let_annotations.insert(pat, (written, declared));
+                    }
                     let ty = match (declared, init) {
                         (Some(declared), Some(init)) => {
                             self.expect(init, declared);
@@ -5957,6 +5984,41 @@ impl Ctx<'_> {
         for (pat, ty) in matched {
             pat_types.insert(pat, self.resolve(ty, &mut reported));
         }
+        // Walk after inference so placeholders and substituted aliases have the
+        // same slot layout as the locals MIR will build.
+        let annotations = std::mem::take(&mut self.let_annotations);
+        let mut let_regions = ArenaMap::new();
+        for (pat, &(written, ty)) in annotations.iter() {
+            let ty = self.resolve(ty, &mut reported);
+            let mut walker = crate::regions::Walker::new(self.items, self.module, Vec::new());
+            walker.body = true;
+            walker.scope = TypeScope {
+                self_ty: self.self_ty,
+                generics: &self.generics,
+                consts: &self.const_params,
+                bounds: &self.param_env,
+                defaults: Some(&self.sigs.trait_defaults),
+                ..TypeScope::default()
+            };
+            let regions = walker.regions(&self.body.types[written], ty);
+            for (range, message) in walker.errors {
+                // Resolution already checked written lifetimes. This pass may
+                // additionally find an unmappable projection hidden in an alias.
+                if message != crate::regions::BODY_PROJECTION_LIFETIMES {
+                    continue;
+                }
+                if !self
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.range == range && d.message == message)
+                {
+                    self.error(range, message);
+                }
+            }
+            if regions.contains(&crate::regions::Region::Static) {
+                let_regions.insert(pat, (ty, regions));
+            }
+        }
         self.run_deferred(&mut reported);
         self.check_sized();
         let receivers: Vec<(ExprId, Mutability)> = self
@@ -6037,6 +6099,7 @@ impl Ctx<'_> {
             compared_refs: self.compared_refs,
             try_conversions,
             pat_types,
+            let_regions,
             pat_derefs: self.pat_derefs,
             binding_refs: self.binding_refs,
             deferred_pats,

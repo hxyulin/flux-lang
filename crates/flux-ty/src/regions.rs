@@ -34,6 +34,9 @@ use flux_syntax::TextRange;
 
 use crate::{ClosureArgs, Signatures, Ty, TyKind, TypeScope};
 
+pub(crate) const BODY_PROJECTION_LIFETIMES: &str =
+    "lifetimes in associated type annotations are not supported yet";
+
 mod resolve;
 
 pub(crate) use resolve::resolve_regions;
@@ -334,6 +337,8 @@ pub(crate) struct Walker<'a> {
     pub self_types: &'a [(Symbol, Box<[Region]>)],
     /// For resolving the types an alias is given.
     pub scope: TypeScope<'a>,
+    /// Local annotations cannot yet map associated projections' written lifetimes.
+    pub body: bool,
     pub elided: Elided,
     /// The lifetime parameters elided lifetimes made, after `names`.
     pub fresh: Vec<TextRange>,
@@ -355,6 +360,7 @@ impl<'a> Walker<'a> {
             self_regions: None,
             self_types: &[],
             scope: TypeScope::default(),
+            body: false,
             elided: Elided::Is(Region::Erased),
             fresh: Vec::new(),
             opaque_captures: Vec::new(),
@@ -470,6 +476,9 @@ impl<'a> Walker<'a> {
                 }
             }
             (TypeRef::Path(path), _) => self.path(path, ty, out),
+            (TypeRef::Infer, _) => {
+                out.extend(std::iter::repeat_n(Region::Erased, slots(self.items, ty)))
+            }
             _ => {}
         }
     }
@@ -499,6 +508,14 @@ impl<'a> Walker<'a> {
     }
 
     fn path(&mut self, path: &Path, ty: Ty, out: &mut Vec<Region>) {
+        if self.body && path.qself.is_some() {
+            let mut found = Vec::new();
+            lifetimes_in(&TypeRef::Path(path.clone()), &mut found);
+            if let Some(l) = found.iter().find(|l| !l.is_anonymous()) {
+                self.errors
+                    .push((l.range, BODY_PROJECTION_LIFETIMES.to_owned()));
+            }
+        }
         if matches!(ty.kind(), TyKind::Param(_) | TyKind::Alias(_)) {
             self.check_args(path);
             return;
@@ -521,7 +538,17 @@ impl<'a> Walker<'a> {
         let resolved = match self.items.resolve(self.module, path, Ns::Types) {
             Ok(r) => r,
             Err(flux_hir::def_map::ResolveError::Private { resolved, .. }) => resolved,
-            Err(_) => return,
+            Err(_) => {
+                if self.body && path.qself.is_none() {
+                    let mut found = Vec::new();
+                    lifetimes_in(&TypeRef::Path(path.clone()), &mut found);
+                    if let Some(l) = found.iter().find(|l| !l.is_anonymous()) {
+                        self.errors
+                            .push((l.range, BODY_PROJECTION_LIFETIMES.to_owned()));
+                    }
+                }
+                return;
+            }
         };
         let last = path.segments.len().saturating_sub(1);
         let args = path.args(last);
@@ -535,14 +562,71 @@ impl<'a> Walker<'a> {
                 let def = &self.items.structs[id];
                 let kind = if def.is_enum() { "enum" } else { "struct" };
                 let want = def.generics.lifetimes.len();
+                let start = out.len();
                 self.lifetime_args(path, kind, want, out);
-                if let (Some(args), TyKind::Adt(_, types)) = (args, ty.kind()) {
-                    for (written, &t) in args.types.iter().zip(types) {
-                        self.walk(written, t, out);
+                let lifetimes = out[start..].to_vec();
+                if let TyKind::Adt(_, types) = ty.kind() {
+                    let mut type_regions = Vec::new();
+                    for (i, &t) in types.iter().enumerate() {
+                        let mut regions = Vec::new();
+                        if let Some(written) = args.and_then(|a| a.types.get(i)) {
+                            self.walk(written, t, &mut regions);
+                        } else if let Some((written, range)) =
+                            def.generics.params.get(i).and_then(|p| p.default.as_ref())
+                        {
+                            // Defaults are written in the declaration's scope,
+                            // and can refer to earlier lifetime/type arguments.
+                            let names = def
+                                .generics
+                                .lifetimes
+                                .iter()
+                                .map(|l| Some(l.name))
+                                .collect();
+                            let generics: Vec<_> =
+                                def.generics.params.iter().map(|p| p.name).collect();
+                            let consts = crate::generic_consts(self.items, None, &def.generics);
+                            let scope = TypeScope {
+                                generics: &generics,
+                                consts: &consts,
+                                ..TypeScope::default()
+                            };
+                            let generic = crate::resolve_type(
+                                self.items,
+                                def.loc.module,
+                                written,
+                                scope,
+                                *range,
+                                &mut Vec::new(),
+                            );
+                            let mut walker = Walker::new(self.items, def.loc.module, names);
+                            walker.scope = scope;
+                            walker.body = self.body;
+                            let table = walker.regions(written, generic);
+                            self.errors.append(&mut walker.errors);
+                            let mut map = |r| match r {
+                                Region::Param(i) => {
+                                    lifetimes.get(i as usize).copied().unwrap_or(Region::Erased)
+                                }
+                                r => r,
+                            };
+                            let argument =
+                                |j: u32| type_regions.get(j as usize).cloned().unwrap_or_default();
+                            instantiate(
+                                self.items,
+                                generic,
+                                &table,
+                                &mut map,
+                                &argument,
+                                &mut regions,
+                            );
+                        }
+                        regions.resize(slots(self.items, t), Region::Erased);
+                        out.extend_from_slice(&regions);
+                        type_regions.push(regions);
                     }
                 }
             }
-            Resolved::Def(Def::TypeAlias(id)) => self.alias(path, id, out),
+            Resolved::Def(Def::TypeAlias(id)) => self.alias(path, id, ty, out),
             _ => self.check_args(path),
         }
     }
@@ -627,7 +711,7 @@ impl<'a> Walker<'a> {
 
     /// Type alias `id` named by `path`: its slots with its parameters'
     /// substituted.
-    fn alias(&mut self, path: &Path, id: TypeAliasId, out: &mut Vec<Region>) {
+    fn alias(&mut self, path: &Path, id: TypeAliasId, ty: Ty, out: &mut Vec<Region>) {
         let def = &self.items.type_aliases[id];
         let last = path.segments.len().saturating_sub(1);
         let mut lifetimes = Vec::new();
@@ -637,20 +721,39 @@ impl<'a> Walker<'a> {
             def.generics.lifetimes.len(),
             &mut lifetimes,
         );
-        let table = alias_regions(self.items, id, &mut Vec::new());
+        let table = alias_regions_in(self.items, id, &mut self.errors, self.body);
         let Some(alias_ty) = table.ty else { return };
+        // Match against the resolved instance rather than resolving `_` again:
+        // an inferred argument's slots must precede the alias's later slots.
+        fn arguments(generic: Ty, instance: Ty, out: &mut Vec<Option<Ty>>) {
+            if let TyKind::Param(p) = generic.kind() {
+                let i = p.index as usize;
+                if out.len() <= i {
+                    out.resize(i + 1, None);
+                }
+                out[i] = Some(instance);
+            } else {
+                for (g, t) in generic.children().into_iter().zip(instance.children()) {
+                    arguments(g, t, out);
+                }
+            }
+        }
+        let mut resolved = Vec::new();
+        arguments(alias_ty, ty, &mut resolved);
         let mut types: Vec<Vec<Region>> = Vec::new();
         if let Some(args) = path.args(last) {
-            for (written, &range) in args.types.iter().zip(&args.ranges) {
+            for (i, (written, &range)) in args.types.iter().zip(&args.ranges).enumerate() {
                 let mut scratch = Vec::new();
-                let t = crate::resolve_type(
-                    self.items,
-                    self.module,
-                    written,
-                    self.scope,
-                    range,
-                    &mut scratch,
-                );
+                let t = resolved.get(i).copied().flatten().unwrap_or_else(|| {
+                    crate::resolve_type(
+                        self.items,
+                        self.module,
+                        written,
+                        self.scope,
+                        range,
+                        &mut scratch,
+                    )
+                });
                 let mut regions = Vec::new();
                 self.walk(written, t, &mut regions);
                 types.push(regions);
@@ -671,6 +774,15 @@ pub(crate) fn alias_regions(
     items: &ItemTree,
     id: TypeAliasId,
     errors: &mut Vec<(TextRange, String)>,
+) -> AliasRegions {
+    alias_regions_in(items, id, errors, false)
+}
+
+fn alias_regions_in(
+    items: &ItemTree,
+    id: TypeAliasId,
+    errors: &mut Vec<(TextRange, String)>,
+    body: bool,
 ) -> AliasRegions {
     thread_local! {
         static ACTIVE: std::cell::RefCell<Vec<TypeAliasId>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -703,6 +815,7 @@ pub(crate) fn alias_regions(
     );
     let mut walker = Walker::new(items, def.loc.module, names);
     walker.scope = scope;
+    walker.body = body;
     walker.elided = Elided::Missing(None);
     let regions = walker.regions(&def.ty, ty);
     errors.append(&mut walker.errors);
@@ -900,8 +1013,21 @@ pub fn implied_outlives<R: Copy + PartialEq>(
     regions: &[R],
     out: &mut Vec<Outlives<R>>,
 ) {
+    implied_outlives_with_static(items, sigs, ty, regions, None, out);
+}
+
+/// As [`implied_outlives`], also mapping explicit `'static` bounds of
+/// ADTs to `static_region` when checking a local annotation's well-formedness.
+pub fn implied_outlives_with_static<R: Copy + PartialEq>(
+    items: &ItemTree,
+    sigs: &Signatures,
+    ty: Ty,
+    regions: &[R],
+    static_region: Option<R>,
+    out: &mut Vec<Outlives<R>>,
+) {
     let mut next = 0;
-    implied_at(items, sigs, ty, regions, &mut next, out);
+    implied_at(items, sigs, ty, regions, &mut next, static_region, out);
 }
 
 fn implied_at<R: Copy + PartialEq>(
@@ -910,6 +1036,7 @@ fn implied_at<R: Copy + PartialEq>(
     ty: Ty,
     regions: &[R],
     next: &mut usize,
+    static_region: Option<R>,
     out: &mut Vec<Outlives<R>>,
 ) {
     match ty.kind() {
@@ -917,7 +1044,7 @@ fn implied_at<R: Copy + PartialEq>(
             let Some(&r) = regions.get(*next) else { return };
             *next += 1;
             let start = *next;
-            implied_at(items, sigs, inner, regions, next, out);
+            implied_at(items, sigs, inner, regions, next, static_region, out);
             // Everything in the pointee outlives the reference.
             for &inner_r in &regions[start..*next] {
                 if inner_r != r {
@@ -927,11 +1054,11 @@ fn implied_at<R: Copy + PartialEq>(
             outlives_params(inner, r, out);
         }
         TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
-            implied_at(items, sigs, t, regions, next, out)
+            implied_at(items, sigs, t, regions, next, static_region, out)
         }
         TyKind::Tuple(list) => {
             for &t in list {
-                implied_at(items, sigs, t, regions, next, out);
+                implied_at(items, sigs, t, regions, next, static_region, out);
             }
         }
         TyKind::Adt(adt, args) => {
@@ -941,7 +1068,7 @@ fn implied_at<R: Copy + PartialEq>(
             let mut arg_ranges = Vec::new();
             for &t in args {
                 let from = *next;
-                implied_at(items, sigs, t, regions, next, out);
+                implied_at(items, sigs, t, regions, next, static_region, out);
                 arg_ranges.push((from, *next));
             }
             let Some(def) = sigs.regions.structs.get(adt.strukt) else {
@@ -949,6 +1076,7 @@ fn implied_at<R: Copy + PartialEq>(
             };
             let lifetime = |r: Region| match r {
                 Region::Param(i) => regions.get(start + i as usize).copied(),
+                Region::Static => static_region,
                 _ => None,
             };
             for p in def.outlives.iter() {
@@ -983,12 +1111,13 @@ fn implied_at<R: Copy + PartialEq>(
             ClosureArgs::split(args).upvars,
             regions,
             next,
+            static_region,
             out,
         ),
         TyKind::Opaque(opaque) => {
             *next += opaque.lifetimes as usize;
             for &t in opaque.args {
-                implied_at(items, sigs, t, regions, next, out);
+                implied_at(items, sigs, t, regions, next, static_region, out);
             }
         }
         TyKind::Dynamic(_) => *next += 1,

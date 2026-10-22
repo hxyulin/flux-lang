@@ -479,6 +479,8 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
     }
     Some(Body {
         locals,
+        region_annotations: Vec::new(),
+        region_relations: Vec::new(),
         blocks,
         param_count: 1,
         c_strings: Vec::new(),
@@ -576,6 +578,8 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
     });
     Body {
         locals,
+        region_annotations: Vec::new(),
+        region_relations: Vec::new(),
         blocks,
         param_count: 2,
         c_strings: Vec::new(),

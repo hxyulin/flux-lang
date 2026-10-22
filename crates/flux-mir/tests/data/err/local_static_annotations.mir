@@ -1,0 +1,725 @@
+fn direct() -> () {
+    let mut _0: ();
+    let _1: i32; // x
+    let _2: &i32; // _r
+    let _3: &i32;
+
+    bb0: {
+        _1 = const 1_i32;
+        _2 = &_1;
+        _0 = const ();
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn parameter(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: &i32; // _r
+    let _3: &i32;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn nested(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: &&i32; // _r
+    let _3: &&i32;
+
+    bb0: {
+        _2 = &_1;
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn nested_outer(_1: &&i32) -> () {
+    let mut _0: ();
+    let _2: &&i32; // _r
+    let _3: &&i32;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn aggregate(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: (i32, [&i32; 1]); // _r
+    let _3: (i32, [&i32; 1]);
+    let _4: [&i32; 1];
+    let _5: &i32;
+
+    bb0: {
+        _5 = copy _1;
+        _4 = [copy _5];
+        _2 = (const 1_i32, copy _4);
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn adt_lifetime(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: Hold<i32>; // _s
+    let _3: Hold<i32>;
+    let _4: &i32;
+
+    bb0: {
+        _4 = copy _1;
+        _2 = Hold { value: copy _4 };
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn adt_type(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: Hold<&i32>; // _t
+    let _3: Hold<&i32>;
+    let _4: &&i32;
+
+    bb0: {
+        _4 = &_1;
+        _2 = Hold { value: copy _4 };
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn alias_static(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: &i32; // _r
+    let _3: &i32;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn alias_type(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: (&i32,); // _s
+    let _3: (&i32,);
+    let _4: &i32;
+
+    bb0: {
+        _4 = copy _1;
+        _2 = (copy _4,);
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn alias_lifetime(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: &i32; // _t
+    let _3: &i32;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn later(_1: &i32, _2: bool) -> () {
+    let mut _0: ();
+    let _3: &i32; // r
+    let _4: &i32;
+    let _5: ();
+    let _6: bool;
+    let _7: ();
+    let _8: &i32;
+    let _9: ();
+    let _10: &i32;
+
+    bb0: {
+        _6 = copy _2;
+        switchInt(copy _6) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _8 = copy _1;
+        _3 = copy _8;
+        _7 = const ();
+        _5 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _10 = const &promoted[0];
+        _3 = copy _10;
+        _9 = const ();
+        _5 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        PlaceMention(_3);
+        _0 = const ();
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn reassign(_1: &i32) -> () {
+    let mut _0: ();
+    let mut _2: &i32; // r
+    let _3: &i32;
+    let _4: ();
+    let _5: &i32;
+
+    bb0: {
+        _2 = const &promoted[0];
+        _5 = copy _1;
+        _2 = copy _5;
+        _4 = const ();
+        PlaceMention(_2);
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn destructured(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: &i32; // a
+    let _3: &i32; // b
+    let _4: (&i32, &i32);
+    let _5: ();
+    let _6: &i32;
+    let _7: ();
+    let _8: &i32;
+    let _9: (&i32, &i32);
+    let _10: &i32;
+    let _11: &i32;
+
+    bb0: {
+        _6 = copy _1;
+        _2 = copy _6;
+        _5 = const ();
+        _8 = const &promoted[0];
+        _3 = copy _8;
+        _7 = const ();
+        _10 = copy _2;
+        _11 = copy _3;
+        _9 = (copy _10, copy _11);
+        StorageDead(_9);
+        _0 = const ();
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn wildcard(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: &i32;
+
+    bb0: {
+        PlaceMention(_1);
+        _0 = const ();
+        return;
+    }
+}
+
+fn wild_tuple(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: (&i32, i32);
+    let _3: (&i32, i32);
+    let _4: &i32;
+
+    bb0: {
+        _4 = copy _1;
+        _3 = (copy _4, const 0_i32);
+        StorageDead(_3);
+        _0 = const ();
+        return;
+    }
+}
+
+fn pattern(_1: &i32) -> () {
+    let mut _0: ();
+    let mut _2: &i32; // a
+    let _3: (&i32,);
+    let _4: (&i32,);
+    let _5: &i32;
+    let _6: ();
+    let _7: &i32;
+
+    bb0: {
+        _5 = const &promoted[0];
+        _4 = (copy _5,);
+        _2 = copy _4.0;
+        StorageDead(_4);
+        _7 = copy _1;
+        _2 = copy _7;
+        _6 = const ();
+        PlaceMention(_2);
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn record_pattern(_1: &i32) -> () {
+    let mut _0: ();
+    let mut _2: &i32; // b
+    let _3: Hold<i32>;
+    let _4: Hold<i32>;
+    let _5: &i32;
+    let _6: ();
+    let _7: &i32;
+
+    bb0: {
+        _5 = const &promoted[0];
+        _4 = Hold { value: copy _5 };
+        _2 = copy _4.0;
+        StorageDead(_4);
+        _7 = copy _1;
+        _2 = copy _7;
+        _6 = const ();
+        PlaceMention(_2);
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn branch(_1: &i32, _2: bool) -> () {
+    let mut _0: ();
+    let _3: &i32; // _r
+    let _4: &i32;
+    let _5: bool;
+
+    bb0: {
+        _5 = copy _2;
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _3 = const &promoted[0];
+        goto -> bb3;
+    }
+
+    bb2: {
+        _3 = copy _1;
+        goto -> bb3;
+    }
+
+    bb3: {
+        _0 = const ();
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn generic_wf<T>() -> () {
+    let mut _0: ();
+    let _1: Option<&T>;
+    let _2: Option<&T>;
+
+    bb0: {
+        _2 = Option::None;
+        StorageDead(_2);
+        _0 = const ();
+        return;
+    }
+}
+
+fn nested_adt_wf<T>() -> () {
+    let mut _0: ();
+    let _1: Option<Hold<T>>;
+    let _2: Option<Hold<T>>;
+
+    bb0: {
+        _2 = Option::None;
+        StorageDead(_2);
+        _0 = const ();
+        return;
+    }
+}
+
+fn closure(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: {closure}; // f
+    let _3: ();
+    let _4: &{closure};
+    let _5: ();
+
+    bb0: {
+        _2 = {closure}();
+        _4 = &_2;
+        _5 = ();
+        _3 = call::<{closure}, ()>(copy _4, move _5) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn closure::{closure#2} as Fn(_1: &{closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: &i32;
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn closure::{closure#2} as FnMut(_1: &mut {closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn closure::{closure#2} as FnOnce(_1: {closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn captured(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: {closure}; // f
+    let _3: &&i32;
+    let _4: ();
+    let _5: &{closure};
+    let _6: ();
+
+    bb0: {
+        _3 = &_1;
+        _2 = {closure}(move _3);
+        _5 = &_2;
+        _6 = ();
+        _4 = call::<{closure}, ()>(copy _5, move _6) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn captured::{closure#2} as Fn(_1: &{closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: &i32; // _r
+    let _4: &i32;
+
+    bb0: {
+        _3 = copy (*(*_1).0);
+        _0 = const ();
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn captured::{closure#2} as FnMut(_1: &mut {closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn captured::{closure#2} as FnOnce(_1: {closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn default_static(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: DefaultRef<&i32>;
+    let _3: DefaultRef<&i32>;
+    let _4: &i32;
+
+    bb0: {
+        _4 = copy _1;
+        _3 = DefaultRef { value: copy _4 };
+        StorageDead(_3);
+        _0 = const ();
+        return;
+    }
+}
+
+fn default_substitute(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: DefaultCopy<&i32, &i32>;
+    let _3: DefaultCopy<&i32, &i32>;
+    let _4: &i32;
+    let _5: &i32;
+
+    bb0: {
+        _4 = const &promoted[0];
+        _5 = copy _1;
+        _3 = DefaultCopy { first: copy _4, second: copy _5 };
+        StorageDead(_3);
+        _0 = const ();
+        return;
+    }
+}
+
+fn alias_placeholder(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: (i32, &i32);
+    let _3: (i32, &i32);
+    let _4: &i32;
+
+    bb0: {
+        _4 = copy _1;
+        _3 = (const 0_i32, copy _4);
+        StorageDead(_3);
+        _0 = const ();
+        return;
+    }
+}
+
+fn mutable() -> () {
+    let mut _0: ();
+    let mut _1: i32; // x
+    let _2: &mut i32;
+    let _3: &mut i32;
+    let _4: &mut i32;
+
+    bb0: {
+        _1 = const 1_i32;
+        _4 = &mut _1;
+        _3 = &mut (*_4);
+        StorageDead(_3);
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn local_slice() -> () {
+    let mut _0: ();
+    let _1: [i32; 2]; // a
+    let _2: &[i32];
+    let _3: &[i32];
+    let _4: &[i32; 2];
+
+    bb0: {
+        _1 = [const 1_i32, const 2_i32];
+        _4 = &_1;
+        _3 = copy _4 as &[i32] (unsize);
+        StorageDead(_3);
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn enum_lifetime(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: Choice;
+    let _3: Choice;
+    let _4: &i32;
+
+    bb0: {
+        _4 = copy _1;
+        _3 = Choice::Some(copy _4);
+        StorageDead(_3);
+        _0 = const ();
+        return;
+    }
+}
+
+fn match_branch(_1: &i32, _2: bool) -> () {
+    let mut _0: ();
+    let _3: &i32;
+    let _4: &i32;
+
+    bb0: {
+        switchInt(copy _2) -> [0: bb2, otherwise: bb3];
+    }
+
+    bb1: {
+        StorageDead(_4);
+        _0 = const ();
+        return;
+    }
+
+    bb2: {
+        switchInt(copy _2) -> [0: bb6, otherwise: bb5];
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _4 = const &promoted[0];
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        goto -> bb7;
+    }
+
+    bb7: {
+        _4 = copy _1;
+        goto -> bb1;
+    }
+}
+
+fn tuple_placeholder(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: (&i32, &i32);
+    let _3: (&i32, &i32);
+    let _4: &i32;
+    let _5: &i32;
+
+    bb0: {
+        _4 = const &promoted[0];
+        _5 = copy _1;
+        _3 = (copy _4, copy _5);
+        StorageDead(_3);
+        _0 = const ();
+        return;
+    }
+}
+
+fn static_adt_bound(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: Bound<&i32>;
+    let _3: Bound<&i32>;
+    let _4: &();
+    let _5: &i32;
+
+    bb0: {
+        _4 = const &promoted[0];
+        _5 = copy _1;
+        _3 = Bound { lifetime: copy _4, value: copy _5 };
+        StorageDead(_3);
+        _0 = const ();
+        return;
+    }
+}
+
+fn adt_outlives(_1: &i32) -> () {
+    let mut _0: ();
+    let _2: Related;
+    let _3: Related;
+    let _4: &i32;
+    let _5: &i32;
+
+    bb0: {
+        _4 = copy _1;
+        _5 = const &promoted[0];
+        _3 = Related { first: copy _4, second: copy _5 };
+        StorageDead(_3);
+        _0 = const ();
+        return;
+    }
+}
+
+error 179..181: `x` does not live long enough
+error 217..219: lifetime may not live long enough
+error 270..272: lifetime may not live long enough
+error 332..334: lifetime may not live long enough
+error 332..334: lifetime may not live long enough
+error 389..391: lifetime may not live long enough
+error 467..469: lifetime may not live long enough
+error 544..546: lifetime may not live long enough
+error 630..632: lifetime may not live long enough
+error 689..691: lifetime may not live long enough
+error 762..764: lifetime may not live long enough
+error 835..836: lifetime may not live long enough
+error 939..944: lifetime may not live long enough
+error 1028..1034: lifetime may not live long enough
+error 1142..1143: lifetime may not live long enough
+error 1198..1204: lifetime may not live long enough
+error 1268..1276: lifetime may not live long enough
+error 1368..1389: lifetime may not live long enough
+error 1500..1502: lifetime may not live long enough
+error 1576..1577: the parameter type `T` may not live long enough
+error 1640..1641: the parameter type `T` may not live long enough
+error 1721..1722: lifetime annotations on uncaptured places in closures are not supported yet
+error 1804..1836: lifetime may not live long enough
+error 1988..1989: lifetime may not live long enough
+error 2072..2073: lifetime may not live long enough
+error 2221..2222: lifetime may not live long enough
+error 2312..2318: `x` does not live long enough
+error 2389..2391: `a` does not live long enough
+error 2471..2472: lifetime may not live long enough
+error 2557..2558: lifetime may not live long enough
+error 2655..2656: lifetime may not live long enough
+error 2788..2789: lifetime may not live long enough
+error 2949..2950: lifetime may not live long enough

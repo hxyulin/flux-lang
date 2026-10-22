@@ -823,6 +823,37 @@ impl<'a> Cx<'a> {
                 }
             }
         }
+        // A written local annotation constrains every assignment to its
+        // bindings, even if the binding is unused or initialized on a branch.
+        for (local, table, range) in &body.region_annotations {
+            let vars = self.local_vars(*local);
+            for (&v, r) in vars.iter().zip(table.iter()) {
+                if *r == Region::Static {
+                    self.equate(v, STATIC, Category::Assignment, *range);
+                }
+            }
+            let ty = body.locals[*local].ty;
+            let mut implied = Vec::new();
+            flux_ty::regions::implied_outlives_with_static(
+                self.items,
+                sigs,
+                ty,
+                &vars,
+                Some(STATIC),
+                &mut implied,
+            );
+            for constraint in implied {
+                match constraint {
+                    Outlives::Region(a, b) => self.outlives(a, b, Category::Assignment, *range),
+                    Outlives::Type(t, b) => self.type_outlives(t, b, *range),
+                }
+            }
+        }
+        for (source, dest, variance, range) in &body.region_relations {
+            let (_, from) = self.place_regions(source);
+            let (ty, to) = self.place_regions(dest);
+            self.relate(ty, &from, &to, *variance, Category::Assignment, *range);
+        }
         self.close_known();
     }
 

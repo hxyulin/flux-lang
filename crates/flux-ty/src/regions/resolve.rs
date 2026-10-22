@@ -928,13 +928,20 @@ fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors:
             let fields = sigs.structs[id];
             let field_regions = sigs.regions.structs[id].fields.clone();
             for (&ty, regions) in fields.iter().zip(field_regions.iter()) {
-                implied_outlives(items, sigs, ty, regions, &mut out);
+                implied_outlives_with_static(
+                    items,
+                    sigs,
+                    ty,
+                    regions,
+                    Some(Region::Static),
+                    &mut out,
+                );
             }
             out.retain(|p| match *p {
                 Outlives::Region(a, b) => {
                     a != Region::Erased && b != Region::Erased && a != b && a != Region::Static
                 }
-                Outlives::Type(_, b) => b != Region::Erased && b != Region::Static,
+                Outlives::Type(_, b) => b != Region::Erased,
             });
             dedup(&mut out);
             if out.len() != sigs.regions.structs[id].outlives.len() {
