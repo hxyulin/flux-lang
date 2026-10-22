@@ -49,6 +49,13 @@ impl<'t> NameRef<'t> {
     pub fn text(self) -> &'t str {
         unraw(first_token(self.syntax).map_or("", SyntaxToken::text))
     }
+
+    /// The name's one token: an identifier, `self`, `super`, `crate`,
+    /// `Self` or a tuple index. Finds it once, where asking for each
+    /// keyword's token looks for each in turn.
+    pub fn token(self) -> Option<SyntaxToken<'t>> {
+        first_token(self.syntax)
+    }
 }
 
 fn unraw(text: &str) -> &str {
