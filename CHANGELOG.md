@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Add unsafe unaligned reads for u8/u16/u32/u64/usize with alignment-one loads
+  and explicit unsupported-substitution and const-evaluation errors.
+
 - Support all six thin raw-pointer comparisons with unsigned address ordering
   and rustc-compatible coercions; reject wide and const pointer comparisons.
 

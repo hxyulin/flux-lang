@@ -116,3 +116,10 @@ pub(crate) unsafe fn c_str_from_ptr<'a>(ptr: *const u8) -> &'a crate::ffi::CStr 
 pub(crate) fn caller_location() -> &'static crate::panic::Location<'static> {
     loop {}
 }
+
+/// An alignment-one scalar read from initialized, readable memory.
+/// Monomorphization rejects types outside the bounded unsigned subset.
+#[rustc_intrinsic]
+pub(crate) unsafe fn read_unaligned<T>(src: *const T) -> T {
+    loop {}
+}

@@ -63,6 +63,14 @@ pub unsafe fn read<T>(src: *const T) -> T {
     unsafe { crate::intrinsics::read(&*src) }
 }
 
+/// Reads an initialized value without requiring `src` to be aligned.
+/// The caller must provide readable memory for the entire value. Currently
+/// only `u8`, `u16`, `u32`, `u64` and `usize` are supported; other types are
+/// rejected after substitution. Constant evaluation is not supported.
+pub unsafe fn read_unaligned<T>(src: *const T) -> T {
+    unsafe { crate::intrinsics::read_unaligned(src) }
+}
+
 /// Writes `value` at `dst`, without dropping what was there.
 pub unsafe fn write<T>(dst: *mut T, value: T) {
     unsafe { crate::intrinsics::write(&mut *dst, value) }
@@ -180,6 +188,12 @@ impl<T> *const T {
         unsafe { read(self) }
     }
 
+    /// Reads an initialized value without requiring pointer alignment.
+    /// See [`read_unaligned`] for the supported types and safety contract.
+    pub unsafe fn read_unaligned(self) -> T {
+        unsafe { read_unaligned(self) }
+    }
+
     /// Copies `count` values from the pointer to `dest`.
     pub unsafe fn copy_to(self, dest: *mut T, count: usize) {
         unsafe { copy(self, dest, count) }
@@ -293,6 +307,12 @@ impl<T> *mut T {
     /// Sets `count` values' bytes to `value`.
     pub unsafe fn write_bytes(self, value: u8, count: usize) {
         unsafe { write_bytes(self, value, count) }
+    }
+
+    /// Reads an initialized value without requiring pointer alignment.
+    /// See [`read_unaligned`] for the supported types and safety contract.
+    pub unsafe fn read_unaligned(self) -> T {
+        unsafe { read_unaligned(self) }
     }
 
     /// Copies `count` values from the pointer to `dest`.
