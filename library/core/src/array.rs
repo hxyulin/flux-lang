@@ -71,6 +71,7 @@ impl<T, const N: usize> IntoIter<T, N> {
 impl<T, const N: usize> IntoIterator for [T; N] {
     type Item = T;
     type IntoIter = IntoIter<T, N>;
+    const __CONST_SIZE: Option<usize> = Some(N);
 
     fn into_iter(self) -> IntoIter<T, N> {
         IntoIter {
@@ -84,6 +85,7 @@ impl<T, const N: usize> IntoIterator for [T; N] {
 impl<'a, T, const N: usize> IntoIterator for &'a [T; N] {
     type Item = &'a T;
     type IntoIter = Iter<'a, T>;
+    const __CONST_SIZE: Option<usize> = Some(N);
 
     fn into_iter(self) -> Iter<'a, T> {
         self.iter()
@@ -93,6 +95,7 @@ impl<'a, T, const N: usize> IntoIterator for &'a [T; N] {
 impl<'a, T, const N: usize> IntoIterator for &'a mut [T; N] {
     type Item = &'a mut T;
     type IntoIter = IterMut<'a, T>;
+    const __CONST_SIZE: Option<usize> = Some(N);
 
     fn into_iter(self) -> IterMut<'a, T> {
         self.iter_mut()
@@ -101,6 +104,7 @@ impl<'a, T, const N: usize> IntoIterator for &'a mut [T; N] {
 
 impl<T, const N: usize> Iterator for IntoIter<T, N> {
     type Item = T;
+    const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<T> {
         if self.start < self.end {

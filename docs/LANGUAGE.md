@@ -736,7 +736,7 @@ the range structs `Range`, `RangeInclusive`, `RangeFrom`, `RangeTo`,
 `copied`, `cloned`, `flat_map`, `flatten`, `peekable` (with `peek`,
 `peek_mut`, `next_if` and `next_if_eq`), `scan`, `map_while`,
 `inspect`, `cycle` and `fuse`; `DoubleEndedIterator` (`next_back`,
-`nth_back`, `rfind`), which the adapters implement where rustc's do;
+`nth_back`, `rfind`, `rfold`), which the adapters implement where rustc's do;
 `ExactSizeIterator` (`len`, in the prelude), for the slice, array and `Option`
 iterators, the ranges of rustc's types and the adapters that keep it;
 `IntoIterator`, which every iterator implements; `FromIterator`,
@@ -747,7 +747,19 @@ collection, which stop at the first `None` or `Err`), and `Extend`
 integers, references to them, and `Option`s and `Result`s of them; and the iterators
 `empty`, `once`, `once_with`, `repeat`, `repeat_with`, `repeat_n` (the
 value's clones, then the value itself), `successors` and `from_fn`. Every adapter's
-`size_hint` is rustc's. `&mut I` is an iterator where `I` is. The ranges of
+`size_hint` is rustc's, and the consumers and adapters that fold in
+rustc's `core` (`count`, `last`, `for_each`, `sum`, `max`, ... and
+`map`'s, `filter`'s, `chain`'s, ... `fold`s) fold here too, so their
+closures run as often as in rustc. rustc specializes `Zip` and `eq`
+for its `TrustedLen` and `TrustedRandomAccess` iterators (ranges,
+slice, array, `str::bytes` and chunk iterators, flattened arrays, the
+sources above, and adapters of them), pulling no item the other side
+cannot pair; flux's `core` marks the same iterators with hidden
+associated constants of `Iterator` (and arrays with one of
+`IntoIterator`), which its `Zip` and `eq` test, so they behave alike;
+marked `#[rustc_specialization]`, they leave `Iterator` dyn
+compatible.
+`&mut I` is an iterator where `I` is. The ranges of
 integers are iterators (`Range`, `RangeFrom` and `RangeInclusive`, the
 first and last from both ends). `try_fold`, `try_for_each` and
 `DoubleEndedIterator::try_rfold` take a closure that returns an

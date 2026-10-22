@@ -466,6 +466,13 @@ impl<'a, T> crate::clone::Clone for Iter<'a, T> {
 
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
+    const __TRUSTED_LEN: bool = true;
+    const __RANDOM_ACCESS: bool = true;
+    const __MAY_HAVE_SIDE_EFFECT: bool = false;
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> &'a T {
+        &self.slice[self.start + idx]
+    }
 
     fn next(&mut self) -> Option<&'a T> {
         if self.start < self.end {
@@ -528,6 +535,16 @@ pub struct IterMut<'a, T> {
 
 impl<'a, T> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
+    const __TRUSTED_LEN: bool = true;
+    const __RANDOM_ACCESS: bool = true;
+    const __MAY_HAVE_SIDE_EFFECT: bool = false;
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> &'a mut T {
+        let i = self.start + idx;
+        // Each index is asked for once.
+        let rest = unsafe { subslice_mut(self.slice, i, i + 1) };
+        &mut rest[0]
+    }
 
     fn next(&mut self) -> Option<&'a mut T> {
         if self.start < self.end {
@@ -1035,6 +1052,13 @@ pub struct Windows<'a, T> {
 
 impl<'a, T> Iterator for Windows<'a, T> {
     type Item = &'a [T];
+    const __TRUSTED_LEN: bool = true;
+    const __RANDOM_ACCESS: bool = true;
+    const __MAY_HAVE_SIDE_EFFECT: bool = false;
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> &'a [T] {
+        unsafe { subslice(self.v, idx, idx + self.size) }
+    }
 
     fn next(&mut self) -> Option<&'a [T]> {
         if self.size > self.v.len() {
@@ -1075,6 +1099,15 @@ pub struct Chunks<'a, T> {
 
 impl<'a, T> Iterator for Chunks<'a, T> {
     type Item = &'a [T];
+    const __TRUSTED_LEN: bool = true;
+    const __RANDOM_ACCESS: bool = true;
+    const __MAY_HAVE_SIDE_EFFECT: bool = false;
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> &'a [T] {
+        let start = idx * self.chunk_size;
+        let end = crate::cmp::min(start + self.chunk_size, self.v.len());
+        unsafe { subslice(self.v, start, end) }
+    }
 
     fn next(&mut self) -> Option<&'a [T]> {
         let len = self.v.len();
@@ -1128,6 +1161,14 @@ impl<'a, T> ChunksExact<'a, T> {
 
 impl<'a, T> Iterator for ChunksExact<'a, T> {
     type Item = &'a [T];
+    const __TRUSTED_LEN: bool = true;
+    const __RANDOM_ACCESS: bool = true;
+    const __MAY_HAVE_SIDE_EFFECT: bool = false;
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> &'a [T] {
+        let start = idx * self.chunk_size;
+        unsafe { subslice(self.v, start, start + self.chunk_size) }
+    }
 
     fn next(&mut self) -> Option<&'a [T]> {
         let len = self.v.len();
@@ -1171,6 +1212,16 @@ pub struct ChunksMut<'a, T> {
 
 impl<'a, T> Iterator for ChunksMut<'a, T> {
     type Item = &'a mut [T];
+    const __TRUSTED_LEN: bool = true;
+    const __RANDOM_ACCESS: bool = true;
+    const __MAY_HAVE_SIDE_EFFECT: bool = false;
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> &'a mut [T] {
+        let start = self.start + idx * self.chunk_size;
+        let end = crate::cmp::min(start + self.chunk_size, self.end);
+        // Each index is asked for once.
+        unsafe { subslice_mut(self.v, start, end) }
+    }
 
     fn next(&mut self) -> Option<&'a mut [T]> {
         if self.start == self.end {

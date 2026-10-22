@@ -241,6 +241,11 @@ pub struct Const {
     /// evaluated like a constant's, rather than a value copied at each
     /// use. Its `node` is a `STATIC`.
     pub is_static: Option<bool>,
+    /// `#[rustc_specialization]` in `core`: an associated constant
+    /// standing in for what rustc's `core` learns by specialization
+    /// (whether an iterator is `TrustedLen`, ...), which as there does
+    /// not keep its trait off trait objects.
+    pub specialization: bool,
     /// An anonymous constant (`[u8; N + 1]`): see [`AnonConst`]. Its
     /// `node` is the expression.
     pub anon: Option<AnonConst>,
@@ -3224,6 +3229,7 @@ impl Collector<'_> {
             item_range: range,
             discriminant: None,
             is_static: None,
+            specialization: false,
             anon: Some(AnonConst {
                 function: scope.function,
                 item: scope.item,
@@ -3243,7 +3249,15 @@ impl Collector<'_> {
         c: ast::Const<'_>,
         owner: Option<Owner>,
     ) -> Option<ConstId> {
-        check_attrs(c.attrs(), &mut self.items.diagnostics);
+        let is_core = self.items.is_core(ctx.module);
+        let mut specialization = false;
+        for attr in c.attrs() {
+            if is_core && attr_name(attr) == Some("rustc_specialization") {
+                specialization = true;
+            } else {
+                check_attr(attr, &mut self.items.diagnostics);
+            }
+        }
         let vis = self.item_visibility(ctx, c.visibility(), owner);
         let name = c.name();
         let name_end = name
@@ -3299,6 +3313,7 @@ impl Collector<'_> {
             discriminant: None,
             anon: None,
             is_static: None,
+            specialization,
             macro_scope: self.macro_scope,
         });
         if let Some(body) = c.body() {
@@ -3357,6 +3372,7 @@ impl Collector<'_> {
             discriminant: None,
             anon: None,
             is_static: Some(st.mut_token().is_some()),
+            specialization: false,
             macro_scope: self.macro_scope,
         });
         if let Some(body) = st.body() {
@@ -3682,6 +3698,7 @@ impl Collector<'_> {
                     item_range: range,
                     discriminant: Some((strukt, variants.len() as u32)),
                     is_static: None,
+                    specialization: false,
                     anon: None,
                     macro_scope: self.macro_scope,
                 });

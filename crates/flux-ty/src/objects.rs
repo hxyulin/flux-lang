@@ -144,7 +144,12 @@ pub fn dyn_incompatibility(items: &ItemTree, t: TraitId) -> Option<String> {
                 return Some("it uses `Self` as a type parameter".into());
             }
         }
-        if let Some(&c) = data.consts.first() {
+        // `core`'s stand-ins for specialization are not rustc's consts.
+        if let Some(&c) = data
+            .consts
+            .iter()
+            .find(|&&c| !items.consts[c].specialization)
+        {
             let name = items.consts[c].name.map_or("_", |n| n.as_str());
             return Some(format!("it contains associated const `{name}`"));
         }
