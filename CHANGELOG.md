@@ -660,6 +660,26 @@
   borrowed (`out[n] = Token::Ident(&src[a..b])` in a loop), which was
   E0506: as in rustc, a write of a pointer leaves loans of what it
   points to alone. `&[]` is promoted for any element type, as in rustc.
+- Support `impl Trait`. In a function's parameters (`f: impl Fn(i32)
+  -> i32`, `it: impl Iterator<Item = u32>`, nested ones too) each is an
+  anonymous type parameter after the others, named as written, which
+  turbofish cannot give (E0107). In a function's or inherent method's
+  return type (`-> impl Iterator<Item = u64>`, `-> impl Fn(i32) -> i32
+  + '_`, `Option<impl Fn()>`, `use<'a>`) each is an opaque type
+  (`TyKind::Opaque`): callers know it by its bounds (methods, calls,
+  `for` loops, `Copy` only if bounded), its body decides its hidden
+  type, which must meet them (E0277, E0271) and be the same for every
+  return (E0308, "expected `u32`, found opaque type"), and code
+  generation reveals it, so returned closures and iterator pipelines
+  compile. As in edition 2024, it captures every generic parameter and
+  lifetime in scope unless `use<..>` says otherwise, keeping what they
+  borrow borrowed where it is used, and the borrow checker relates its
+  hidden type to them as rustc's member constraints do (E0700, E0597,
+  E0373 for a returned closure that borrows, "lifetime may not live
+  long enough" for `Item = &'a T` it does not meet). `impl Trait`
+  elsewhere is rustc's E0562 (or E0658 in type aliases and associated
+  types); in trait methods' return types, nested in an opaque type's
+  bounds, and in bounds' generic arguments it is not supported yet.
 
 ### Performance
 

@@ -342,6 +342,25 @@ meets `Fn`-family bounds on closures, function items and pointers
 from their signatures, and normalizes `FnOnce::Output` to their
 return types.
 
+An `impl Trait` in a function's parameters is lowered, in the item
+tree, to a type parameter of its own after the function's others
+(`GenericParam::synthetic`, `TypeRef::ImplParam`), which generic
+arguments cannot give. One in its return type is an *opaque type*
+(`TyKind::Opaque`): the function, its index among the function's
+(`Function::opaques`), and the function's generic parameters as its
+arguments, since edition 2024 captures them all. Its bounds
+(`Signatures::opaques`, with the opaque type as an extra parameter)
+are all that is known of it, as a parameter's are: the solver's item
+bounds (`traits::alias_bounds`) and normalization give its methods and
+associated types. Inferring the function's own body, each of its
+opaque types is a variable instead (and so is the type a call of
+itself returns), whose bounds are obligations; once the body is
+inferred, the variable's value is the *hidden type*
+(`Signatures::hidden`). MIR building gives the body's return place the
+hidden types, and monomorphization (`traits::instance_ty`) and the MIR
+validator reveal every opaque type, so code generation sees only the
+hidden ones.
+
 `x?` stays an expression in HIR (`Expr::Try`), since what it does
 depends on `x`'s type: `core`'s `#[lang = "Option"]` and `#[lang =
 "Result"]` enums are the only types with `Try` on stable Rust that flux
@@ -690,7 +709,17 @@ body, what it captures is a field of `self`, through the reference it
 captured unless by value, and is named and checked as the captured
 variable (E0594 and E0596 for an `Fn` closure's, E0507 for moves out
 of an `FnMut` closure's). A constant's value is `'static`, while the
-temporaries in it live forever. A trait's `impl` block's methods are
+temporaries in it live forever. An opaque type's region slots are the
+lifetimes it captures, then its arguments'; it is invariant in all of
+them, and a caller's value of it keeps them live. In its function's
+body, its hidden type's slots are new variables, each of which must
+outlive one of the lifetimes it captures (`'static` if none), the
+least that what flows into it allows, or all of its `+ 'a` bounds, as
+rustc's member constraints say; one of the function's lifetimes it
+does not capture flowing into it is E0700, and what its bounds say
+associated types are (`Item = &'a T`) bounds the hidden type's (or,
+where that cannot be told, all of its lifetimes). A capture's loan
+escaping that way is E0373. A trait's `impl` block's methods are
 checked against the trait's signatures the same way, with the trait
 method's lifetimes universal: they may ask no more of them.
 
