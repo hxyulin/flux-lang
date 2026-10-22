@@ -537,6 +537,16 @@
   memory (`None => panic(...)` in `Option<[T; N]>::unwrap`), which
   crashed the compiler, and constant evaluation of a static indexing
   another static at a computed index, which panicked.
+- Add the integer methods rustc's `core` has beyond the basic ones:
+  `checked_`, `wrapping_`, `saturating_` and `overflowing_` arithmetic
+  (`add`, `sub`, `mul`, `div`, `rem`, `neg`, `shl`, `shr`, `pow`,
+  `abs`, the Euclidean divisions and the mixed-sign ones), `div_euclid`,
+  `rem_euclid`, `ilog2`, `ilog10`, `ilog`, `isqrt`, `midpoint`,
+  `next_power_of_two`, `div_ceil`, `next_multiple_of`, `leading_ones`,
+  `trailing_ones`, `swap_bytes`, `reverse_bits`, `unbounded_shl`,
+  `cast_signed` and the byte-order conversions. All are `const`; in
+  constants, `next_power_of_two` and `next_multiple_of` report overflow
+  and the logarithms and square roots their panics, as rustc does.
 
 ### Performance
 

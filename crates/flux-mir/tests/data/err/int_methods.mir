@@ -1,0 +1,19 @@
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 220..245: attempt to compute `u8::MAX + 1_u8`, which would overflow
+error 273..298: attempt to compute `254_u8 + 5_u8`, which would overflow
+error 322..334: evaluation panicked: argument of integer logarithm must be positive
+error 359..375: evaluation panicked: argument of integer logarithm must be positive
+error 399..413: evaluation panicked: base of integer logarithm must be at least 2
+error 437..452: evaluation panicked: argument of integer square root cannot be negative
+error 480..500: attempt to divide `1_i32` by zero
+error 529..550: attempt to divide `1_u8` by zero
+error 575..597: attempt to compute `i8::MIN / -1_i8`, which would overflow
+error 623..641: attempt to calculate the remainder of `7_u64` with a divisor of zero
