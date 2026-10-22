@@ -1137,8 +1137,9 @@ fn <Token<'a> as ::core::fmt::Debug>::fmt(_1: &Token, _2: &mut Formatter) -> Res
     let _8: DebugTuple;
     let _9: &mut Formatter;
     let _10: &mut DebugTuple;
-    let _11: &&[u8];
-    let _12: &mut DebugTuple;
+    let _11: &dyn Debug;
+    let _12: &&[u8];
+    let _13: &mut DebugTuple;
 
     bb0: {
         _3 = discriminant((*_1));
@@ -1183,13 +1184,14 @@ fn <Token<'a> as ::core::fmt::Debug>::fmt(_1: &Token, _2: &mut Formatter) -> Res
 
     bb9: {
         _10 = &two_phase _8;
-        _11 = copy _5;
-        _7 = field::<&[u8]>(move _10, copy _11) -> bb10;
+        _12 = copy _5;
+        _11 = copy _12 as &dyn Debug (unsize);
+        _7 = field(move _10, copy _11) -> bb10;
     }
 
     bb10: {
-        _12 = &two_phase (*_7);
-        _0 = finish(move _12) -> bb11;
+        _13 = &two_phase (*_7);
+        _0 = finish(move _13) -> bb11;
     }
 
     bb11: {

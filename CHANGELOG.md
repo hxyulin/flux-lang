@@ -892,6 +892,9 @@
   first), and `rest @ ..` binds by reference and mutably too. Moving
   out of a slice is E0508, and a place of unsized type may be matched
   (`match *s`).
+- `core::fmt`'s `Formatter` writes through a `&mut dyn Write` and its
+  `debug_*` builders take `&dyn Debug`, as rustc's do, with output
+  unchanged; `fmt::write` takes a `&mut dyn Write`.
 
 ### Performance
 

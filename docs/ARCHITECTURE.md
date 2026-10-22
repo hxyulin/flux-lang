@@ -961,12 +961,10 @@ executable. No C compiler or system linker is involved.
 
 ### Formatting
 
-[`core::fmt`](../library/core/src/fmt.rs) is rustc's design without
-trait objects: a `Formatter` holds its options (`flags` with the fill
-character in its low bits, `width` and `precision`, as rustc's) and a
-`Buf`, a writer's address and a function that writes a `str` to a
-writer of its type (`write_str_to::<W>`), which is what a `&mut dyn
-Write` would be. An `rt::Argument` is likewise a value's address and
+[`core::fmt`](../library/core/src/fmt.rs) is rustc's design: a
+`Formatter` holds its options (`flags` with the fill character in its
+low bits, `width` and `precision`, as rustc's) and a `&mut dyn Write`,
+and the builders take `&dyn Debug`. An `rt::Argument` is a value's address and
 the function that formats a `T` there with the trait the placeholder
 names (`display_at::<T>`). `fmt::write` walks the pieces and
 placeholders, giving each value a formatter with its options, and the
@@ -975,9 +973,8 @@ placeholders, giving each value a formatter with its options, and the
 writes to file descriptors 1 and 2 through C's `write`, buffering
 stdout by lines in a `static mut` as std's `LineWriter` does, and
 prints panics as std's default hook does, with the thread id from
-`pthread_threadid_np`. Once trait objects and `alloc` land,
-`Formatter` can hold a `&mut dyn Write` and `String` implement
-`Write`, which `format!` and `to_string` need; nothing else changes.
+`pthread_threadid_np`. Once `alloc` lands, `String` can implement
+`Write`, which `format!` and `to_string` need.
 
 Generic functions are *monomorphized*:
 [`mono`](../crates/flux-mir/src/mono.rs) collects the instances the

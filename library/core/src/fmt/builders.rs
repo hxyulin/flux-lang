@@ -19,7 +19,7 @@ impl PadAdapterState {
 /// Indents every line written through it by four spaces: what `{:#?}`
 /// writes a nested value through.
 struct PadAdapter<'buf, 'state> {
-    buf: Buf<'buf>,
+    buf: &'buf mut (dyn Write + 'buf),
     state: &'state mut PadAdapterState,
 }
 
@@ -55,12 +55,16 @@ impl Write for PadAdapter<'_, '_> {
 }
 
 /// Writes `value` with `fmt`'s options, indented, then `suffix`.
-fn pretty<T: Debug>(fmt: &mut Formatter<'_>, state: &mut PadAdapterState, value: &T, suffix: &str) -> Result {
+fn pretty(fmt: &mut Formatter<'_>, state: &mut PadAdapterState, value: &dyn Debug, suffix: &str) -> Result {
+    let options = fmt.options;
     let mut pad = PadAdapter {
-        buf: fmt.buf,
+        buf: &mut *fmt.buf,
         state,
     };
-    let mut writer = fmt.wrap(&mut pad);
+    let mut writer = Formatter {
+        options,
+        buf: &mut pad,
+    };
     Debug::fmt(value, &mut writer)?;
     writer.write_str(suffix)
 }
@@ -69,7 +73,7 @@ fn pretty<T: Debug>(fmt: &mut Formatter<'_>, state: &mut PadAdapterState, value:
 fn pretty_str(fmt: &mut Formatter<'_>, s: &str) -> Result {
     let mut state = PadAdapterState::new();
     let mut pad = PadAdapter {
-        buf: fmt.buf,
+        buf: &mut *fmt.buf,
         state: &mut state,
     };
     pad.write_str(s)
@@ -93,7 +97,7 @@ pub(super) fn debug_struct_new<'a, 'b>(fmt: &'a mut Formatter<'b>, name: &str) -
 
 impl<'a, 'b: 'a> DebugStruct<'a, 'b> {
     /// Adds a field, `name: value`.
-    pub fn field<T: Debug>(&mut self, name: &str, value: &T) -> &mut DebugStruct<'a, 'b> {
+    pub fn field(&mut self, name: &str, value: &dyn Debug) -> &mut DebugStruct<'a, 'b> {
         if self.result.is_ok() {
             self.result = self.write_field(name, value);
         }
@@ -101,17 +105,21 @@ impl<'a, 'b: 'a> DebugStruct<'a, 'b> {
         self
     }
 
-    fn write_field<T: Debug>(&mut self, name: &str, value: &T) -> Result {
+    fn write_field(&mut self, name: &str, value: &dyn Debug) -> Result {
         if self.fmt.alternate() {
             if !self.has_fields {
                 self.fmt.write_str(" {\n")?;
             }
             let mut state = PadAdapterState::new();
+            let options = self.fmt.options;
             let mut pad = PadAdapter {
-                buf: self.fmt.buf,
+                buf: &mut *self.fmt.buf,
                 state: &mut state,
             };
-            let mut writer = self.fmt.wrap(&mut pad);
+            let mut writer = Formatter {
+                options,
+                buf: &mut pad,
+            };
             writer.write_str(name)?;
             writer.write_str(": ")?;
             Debug::fmt(value, &mut writer)?;
@@ -176,7 +184,7 @@ pub(super) fn debug_tuple_new<'a, 'b>(fmt: &'a mut Formatter<'b>, name: &str) ->
 
 impl<'a, 'b: 'a> DebugTuple<'a, 'b> {
     /// Adds a field.
-    pub fn field<T: Debug>(&mut self, value: &T) -> &mut DebugTuple<'a, 'b> {
+    pub fn field(&mut self, value: &dyn Debug) -> &mut DebugTuple<'a, 'b> {
         if self.result.is_ok() {
             self.result = self.write_field(value);
         }
@@ -184,7 +192,7 @@ impl<'a, 'b: 'a> DebugTuple<'a, 'b> {
         self
     }
 
-    fn write_field<T: Debug>(&mut self, value: &T) -> Result {
+    fn write_field(&mut self, value: &dyn Debug) -> Result {
         if self.fmt.alternate() {
             if self.fields == 0 {
                 self.fmt.write_str("(\n")?;
@@ -239,14 +247,14 @@ struct DebugInner<'a, 'b: 'a> {
 }
 
 impl<'a, 'b: 'a> DebugInner<'a, 'b> {
-    fn entry<T: Debug>(&mut self, entry: &T) {
+    fn entry(&mut self, entry: &dyn Debug) {
         if self.result.is_ok() {
             self.result = self.write_entry(entry);
         }
         self.has_fields = true;
     }
 
-    fn write_entry<T: Debug>(&mut self, entry: &T) -> Result {
+    fn write_entry(&mut self, entry: &dyn Debug) -> Result {
         if self.fmt.alternate() {
             if !self.has_fields {
                 self.fmt.write_str("\n")?;
@@ -304,7 +312,7 @@ pub(super) fn debug_set_new<'a, 'b>(fmt: &'a mut Formatter<'b>) -> DebugSet<'a, 
 }
 
 impl<'a, 'b: 'a> DebugSet<'a, 'b> {
-    pub fn entry<T: Debug>(&mut self, entry: &T) -> &mut DebugSet<'a, 'b> {
+    pub fn entry(&mut self, entry: &dyn Debug) -> &mut DebugSet<'a, 'b> {
         self.inner.entry(entry);
         self
     }
@@ -342,7 +350,7 @@ pub(super) fn debug_list_new<'a, 'b>(fmt: &'a mut Formatter<'b>) -> DebugList<'a
 }
 
 impl<'a, 'b: 'a> DebugList<'a, 'b> {
-    pub fn entry<T: Debug>(&mut self, entry: &T) -> &mut DebugList<'a, 'b> {
+    pub fn entry(&mut self, entry: &dyn Debug) -> &mut DebugList<'a, 'b> {
         self.inner.entry(entry);
         self
     }
@@ -385,12 +393,12 @@ pub(super) fn debug_map_new<'a, 'b>(fmt: &'a mut Formatter<'b>) -> DebugMap<'a, 
 
 impl<'a, 'b: 'a> DebugMap<'a, 'b> {
     /// Adds an entry, `key: value`.
-    pub fn entry<K: Debug, V: Debug>(&mut self, key: &K, value: &V) -> &mut DebugMap<'a, 'b> {
+    pub fn entry(&mut self, key: &dyn Debug, value: &dyn Debug) -> &mut DebugMap<'a, 'b> {
         self.key(key);
         self.value(value)
     }
 
-    pub fn key<K: Debug>(&mut self, key: &K) -> &mut DebugMap<'a, 'b> {
+    pub fn key(&mut self, key: &dyn Debug) -> &mut DebugMap<'a, 'b> {
         if self.result.is_ok() {
             if self.has_key {
                 crate::panicking::panic(
@@ -403,7 +411,7 @@ impl<'a, 'b: 'a> DebugMap<'a, 'b> {
         self
     }
 
-    fn write_key<K: Debug>(&mut self, key: &K) -> Result {
+    fn write_key(&mut self, key: &dyn Debug) -> Result {
         if self.fmt.alternate() {
             if !self.has_fields {
                 self.fmt.write_str("\n")?;
@@ -419,7 +427,7 @@ impl<'a, 'b: 'a> DebugMap<'a, 'b> {
         }
     }
 
-    pub fn value<V: Debug>(&mut self, value: &V) -> &mut DebugMap<'a, 'b> {
+    pub fn value(&mut self, value: &dyn Debug) -> &mut DebugMap<'a, 'b> {
         if self.result.is_ok() {
             if !self.has_key {
                 crate::panicking::panic("attempted to format a map value before its key");

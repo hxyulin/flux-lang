@@ -53,8 +53,7 @@ and `core`'s macros (`assert!`, `assert_eq!`, `matches!`, `panic!`),
 formatting as rustc's (`core::fmt`, `#[derive(Debug)]`, `println!`
 and friends) and panics with rustc's messages and `#[track_caller]`
 locations. Macros still lack items made inside function bodies;
-`format!` and `to_string` wait for `alloc`'s `String`, and
-`&dyn Debug` in `Formatter`'s builders for trait objects.
+`format!` and `to_string` wait for `alloc`'s `String`.
 In order next:
 
 1. `core` defines the pointer methods, `mem::replace` and `CStr`'s
