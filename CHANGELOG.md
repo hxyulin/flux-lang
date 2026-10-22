@@ -933,6 +933,13 @@
   associated type (`G: FnMut(Acc, B)` where `Item = B`) is no longer
   E0276 against the trait's (`F: FnMut(B, Self::Item)`).
 
+- Match rustc's Unicode printability tables when escaping characters in
+  `Debug` formatting, and preserve parentheses in panic source locations.
+  Array `IntoIter` and `Skip`/`Rev` use the same skipping paths and drop
+  order as rustc. Normalize both sides of impl method bounds containing
+  associated types before comparing them. Differential tests also order
+  `clamp` bounds using the generated integer type.
+
 ### Performance
 
 - Guard against slowdowns worse than linear. The corpus tests fail on a
