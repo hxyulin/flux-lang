@@ -113,6 +113,10 @@ const CORE_FILES: &[(&str, &str)] = &[
         "slice.rs",
         include_str!("../../../library/core/src/slice.rs"),
     ),
+    (
+        "slice/sort.rs",
+        include_str!("../../../library/core/src/slice/sort.rs"),
+    ),
 ];
 
 /// `core`'s files, in [`CORE_FILES`] order, parsed in parallel the first

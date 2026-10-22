@@ -150,7 +150,7 @@ fn main() -> () {
     bb18: {
         StorageDead(_21);
         _39 = [const 1_i32, const 2_i32];
-        _41 = &two_phase _39;
+        _41 = &mut _39;
         _42 = move _41 as &mut [i32] (unsize);
         _40 = iter_mut::<i32>(move _42) -> bb32;
     }

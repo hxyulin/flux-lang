@@ -113,6 +113,8 @@ pub(crate) struct Regions {
     pub errors: Vec<Diagnostic>,
     /// A closure's body's requirements of its creator.
     pub requirements: ClosureRequirements,
+    /// The points where each local that holds references is live.
+    pub liveness: Vec<IntervalSet>,
 }
 
 /// A lifetime a closure is given, by where it is: in the reference to
@@ -178,6 +180,7 @@ pub(crate) fn infer(
         loan_scopes,
         escapes,
         errors,
+        liveness,
         requirements: ClosureRequirements {
             outlives: std::mem::take(&mut cx.own_requirements),
         },

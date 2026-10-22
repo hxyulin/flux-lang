@@ -1203,9 +1203,9 @@ fn array_into_iter_instance(items: &ItemTree, instance: Instance) -> Option<Inst
     })
 }
 
-/// For `ty: t` where `ty` is an array and `t` is `Copy`, `Clone` or
-/// `PartialEq<[U; N]>`, what its element type must meet: `T: Copy`,
-/// `T: Clone`, `T: PartialEq<U>`. rustc's `core` implements them for
+/// For `ty: t` where `ty` is an array and `t` is `Copy`, `Clone`, `Eq`
+/// or `PartialEq<[U; N]>`, what its element type must meet: `T: Copy`,
+/// `T: Clone`, `T: Eq`, `T: PartialEq<U>`. rustc's `core` implements them for
 /// arrays with const generics, which flux does not have, so they are
 /// built in, and code generation makes their methods.
 pub fn builtin_array_impl(items: &ItemTree, goal: Predicate) -> Option<Predicate> {
@@ -1214,7 +1214,7 @@ pub fn builtin_array_impl(items: &ItemTree, goal: Predicate) -> Option<Predicate
     };
     let lang = items.traits[goal.trait_ref.trait_].lang?;
     match lang.as_str() {
-        "copy" | "clone" => Some(Predicate {
+        "copy" | "clone" | "total_eq" => Some(Predicate {
             self_ty: elem,
             ..goal
         }),

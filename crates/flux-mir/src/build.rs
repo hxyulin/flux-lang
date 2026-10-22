@@ -1797,11 +1797,13 @@ impl Builder<'_> {
             let scope = self.scopes.last_mut().expect("bodies have a scope");
             scope.locals.push((temp, receiver_range));
         }
+        // rustc's two-phase borrows are for autoref alone, not unsizing:
+        // `arr.swap(0, arr.len() - 1)` is E0502.
         let rvalue = match method.autoref {
             Some(mutability) => Rvalue::Ref {
                 mutability,
                 place,
-                two_phase: mutability == Mutability::Mut,
+                two_phase: mutability == Mutability::Mut && !method.unsize,
             },
             None => Rvalue::Use(self.read(place)),
         };

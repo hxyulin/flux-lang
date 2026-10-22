@@ -61,9 +61,11 @@ pub fn check(
     // The loans of each local's places, and those made into each local.
     let mut borrowed = vec![Vec::new(); body.locals.len()];
     let mut made_into = vec![Vec::new(); body.locals.len()];
+    let mut holders: Vec<Local> = Vec::with_capacity(loans.len());
     for (id, (loan, holder)) in loans.iter().enumerate() {
         borrowed[loan.place.local.index()].push(id as u32);
         made_into[holder.index()].push(id as u32);
+        holders.push(*holder);
     }
     let mut checker = Checker {
         body,
@@ -73,6 +75,7 @@ pub fn check(
         regions: &regions,
         borrowed: &borrowed,
         made_into: &made_into,
+        holders: &holders,
         diagnostics: Vec::new(),
         reported_dead: vec![false; loans.len()],
         in_aggregate: false,
@@ -86,6 +89,18 @@ pub fn check(
         checker.terminator(&data.terminator.kind, data.terminator.range, point);
     }
     let mut diagnostics = checker.diagnostics;
+    // A two-phase borrow conflicting with an earlier one, now active, is
+    // reported where it is made; its activation repeats it.
+    let mut seen = Vec::new();
+    diagnostics.retain(|d| {
+        if !d.message.starts_with("cannot borrow") {
+            return true;
+        }
+        let key = (d.range.start(), d.message.clone());
+        let new = !seen.contains(&key);
+        seen.push(key);
+        new
+    });
     for d in std::mem::take(&mut regions.errors) {
         if !diagnostics.iter().any(|e| e.range == d.range) {
             diagnostics.push(d);
@@ -309,6 +324,9 @@ struct Checker<'a> {
     borrowed: &'a [Vec<u32>],
     /// The loans made into each local, in order.
     made_into: &'a [Vec<u32>],
+    /// The local each loan is made into, which holds a two-phase one
+    /// until its call.
+    holders: &'a [Local],
     diagnostics: Vec<Diagnostic>,
     /// Loans already reported for outliving what they borrow.
     reported_dead: Vec<bool>,
@@ -866,8 +884,15 @@ impl Checker<'_> {
             if !self.is_live(id, live) || !overlaps(place, &loan.place) {
                 continue;
             }
-            // A two-phase loan is shared until its call.
-            let loan_mut = loan.mutability == Mutability::Mut && !loan.two_phase;
+            // A two-phase loan is shared until its call, while what
+            // holds it is still to be passed.
+            let reserved = loan.two_phase
+                && self
+                    .regions
+                    .liveness
+                    .get(self.holders[id].index())
+                    .is_some_and(|l| l.contains(live.point));
+            let loan_mut = loan.mutability == Mutability::Mut && !reserved;
             let name = self.name(place);
             let message = match access {
                 Access::Read if loan_mut => {

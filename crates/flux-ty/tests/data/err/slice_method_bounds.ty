@@ -1,0 +1,12 @@
+struct S { 0: i32 }
+fn main() -> ()
+    a@0: [S; 2]
+    b@1: [S; 1]
+    c@2: [S; 2]
+    d@3: bool
+    e@4: [i32; 3]
+    f@5: Result<usize, usize>
+error 126..130: the trait bound `S: Ord` is not satisfied
+error 164..179: the trait bound `S: Copy` is not satisfied
+error 230..238: can't compare `S` with `S`
+error 298..299: mismatched types: expected `&{integer}`, found `{integer}`

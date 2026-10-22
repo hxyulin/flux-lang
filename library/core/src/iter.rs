@@ -18,6 +18,12 @@ pub trait Iterator {
     /// The next item, or `None` once there are no more.
     fn next(&mut self) -> Option<Self::Item>;
 
+    /// Bounds on how many items are left: at least the first, at most
+    /// the second if it is `Some`.
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, None)
+    }
+
     /// How many items are left, going through them.
     fn count(mut self) -> usize
     where
@@ -258,6 +264,22 @@ pub trait Iterator {
         None
     }
 
+    /// The index of the last item, from the front, for which `predicate`
+    /// holds, searching from the back.
+    fn rposition<P: FnMut(Self::Item) -> bool>(&mut self, mut predicate: P) -> Option<usize>
+    where
+        Self: Sized + ExactSizeIterator + DoubleEndedIterator,
+    {
+        let mut i = self.len();
+        while let Some(x) = self.next_back() {
+            i -= 1;
+            if predicate(x) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
     /// The largest item, the last of equal ones.
     fn max(mut self) -> Option<Self::Item>
     where
@@ -400,6 +422,15 @@ pub trait Iterator {
                 },
             }
         }
+    }
+}
+
+/// An iterator that knows how many items it has left.
+pub trait ExactSizeIterator: Iterator {
+    /// How many items are left.
+    fn len(&self) -> usize {
+        let (lower, _) = self.size_hint();
+        lower
     }
 }
 

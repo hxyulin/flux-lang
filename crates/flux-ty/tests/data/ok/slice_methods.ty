@@ -1,0 +1,52 @@
+struct Card { rank: u8 }
+fn main() -> ()
+    a@0: [i32; 4]
+    left@1: &[i32]
+    right@2: &[i32]
+    l@3: &mut [i32]
+    r@4: &mut [i32]
+    first@5: Option<&mut i32>
+    last@6: Option<&mut i32>
+    item@7: Option<&mut i32>
+    split@8: Option<(&i32, &[i32])>
+    b@9: [i32; 4]
+    has@10: bool
+    starts@11: bool
+    ends@12: bool
+    windows@13: Windows<i32>
+    chunks@14: Rev<Chunks<i32>>
+    exact@15: &[i32]
+    mutable@16: ChunksMut<i32>
+    found@17: Result<usize, usize>
+    x@18: &i32
+    by@19: Result<usize, usize>
+    x@20: &i32
+    by_key@21: Result<usize, usize>
+    x@22: &i32
+    y@23: &i32
+    x@24: &i32
+    y@25: &i32
+    cards@26: [Card; 2]
+    c@27: &Card
+    c@28: &Card
+    sorted@29: bool
+    x@30: &i32
+    position@31: Option<usize>
+    len@32: usize
+    hint@33: (usize, Option<usize>)
+    equal@34: bool
+    less@35: bool
+    order@36: Ordering
+fn clone(&Card) -> Card
+    self@0: &Card
+fn eq(&Card, &Card) -> bool
+    self@0: &Card
+    other@1: &Card
+fn assert_receiver_is_total_eq(&Card) -> ()
+    self@0: &Card
+fn partial_cmp(&Card, &Card) -> Option<Ordering>
+    self@0: &Card
+    other@1: &Card
+fn cmp(&Card, &Card) -> Ordering
+    self@0: &Card
+    other@1: &Card

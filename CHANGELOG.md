@@ -486,6 +486,21 @@
   constants, E0502 for `&mut s[..s.len() - 1]`, as rustc borrows the
   base first). Reading a slice's length (`len`) now keeps the reference
   it reads live for the borrow checker, which missed conflicts with it.
+- Add slices' methods to `core`: `swap`, `reverse`, `rotate_left`,
+  `rotate_right`, `split_at`, `split_at_mut`, `copy_from_slice`,
+  `clone_from_slice`, `fill`, `contains`, `starts_with`, `ends_with`,
+  `windows`, `chunks`, `chunks_exact`, `chunks_mut`, `first_mut`,
+  `last_mut`, `get_mut`, `split_first`, `split_last`, `binary_search`
+  (`_by`, `_by_key`, as rustc's finds among equal elements), `is_sorted`,
+  and `sort`, `sort_by`, `sort_by_key` and their unstable forms, a
+  stable in-place merge sort; `PartialEq`, `Eq`, `PartialOrd` and `Ord`
+  for slices, which may be compared as places (`a[..2] == b[..2]`);
+  `Iterator::size_hint` and `rposition`, and `ExactSizeIterator`.
+  Arrays are `Eq` where their elements are.
+- Fix two-phase borrows: once its call has activated it, a method
+  receiver's `&mut` conflicts with later shared borrows (E0502), which
+  flux missed; as in rustc, an array unsized for a method's receiver is
+  not borrowed two-phase (`a.swap(0, a.len() - 1)` is E0502).
 
 ### Performance
 
