@@ -1004,6 +1004,12 @@
   compare `str` with `&str`", E0277 at the argument: a method's trait
   bound unmet for arguments its arguments gave is reported there), and
   `&str == String` uses the impl for the reference.
+- Bound field and index autoderef to 128 steps, so cyclic or growing
+  `Deref` targets report a recursion-limit error instead of hanging.
+  Mark `Vec::IntoIter` as trusted-length so collecting its adapters
+  reserves the known element count. Exercise partial boxed-array
+  patterns, nested boxes, boxed slices and trait objects, drains and
+  partially consumed iterators with repeated ownership transfers.
 
 ### Performance
 

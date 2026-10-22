@@ -112,8 +112,8 @@ and methods, `mem::drop`, `convert::identity`, `convert::From`,
 methods that need no Unicode tables, the ASCII methods, and
 `core::ffi`; its [`library/alloc`](../library/alloc) has `Box`, `Vec`
 and `String` over C's `malloc`, as rustc's `std` prelude names them
-(next: `collect`, `format!` and `fmt::Write` for `String`, moving out
-of `*b`, `drain`, `Box<[T]>`). Their front end (parsing,
+(including `collect`, `format!` and `fmt::Write` for `String`, moving out
+of `*b`, `Vec::drain`, `Box<[T]>` and `Box<dyn Trait>`). Their front end (parsing,
 item tree, names, signatures, constants' values, and bodies as they are
 reached) is done once per process and shared by every compilation in
 it, and only the functions a program calls are type-checked and

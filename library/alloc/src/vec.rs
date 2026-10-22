@@ -766,6 +766,11 @@ impl<T> IntoIter<T> {
 impl<T> Iterator for IntoIter<T> {
     type Item = T;
 
+    #[doc(hidden)]
+    fn __trusted_len(&self) -> bool {
+        true
+    }
+
     fn next(&mut self) -> Option<T> {
         if self.start == self.end {
             return None;

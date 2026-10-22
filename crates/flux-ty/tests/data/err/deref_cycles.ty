@@ -1,0 +1,16 @@
+struct A {}
+struct B {}
+struct Growing<T> { 0: T }
+fn deref(&A) -> &B
+    self@0: &A
+fn deref(&B) -> &A
+    self@0: &B
+fn deref(&Growing<T>) -> &Growing<Growing<T>>
+    self@0: &Growing<T>
+fn main() -> ()
+    a@0: A
+    growing@1: Growing<u8>
+error 418..425: reached the recursion limit while auto-dereferencing `A`
+error 439..440: reached the recursion limit while auto-dereferencing `A`
+error 497..504: reached the recursion limit while auto-dereferencing `Growing<Growing<_>>`
+error 518..525: reached the recursion limit while auto-dereferencing `Growing<Growing<_>>`

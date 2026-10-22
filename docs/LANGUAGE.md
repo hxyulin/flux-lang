@@ -465,6 +465,8 @@ writing through a type without `DerefMut` is E0594 or E0596 ("cannot
 assign to data in dereference of `W`"), moving out of one is E0507
 ("cannot move out of dereference of `W`", or "of index of `I`" for
 `Index`), and a type that does not dereference is E0614.
+Field and index autoderef stop after 128 steps with a recursion-limit
+diagnostic if dereferencing continues, including cyclic `Deref` targets.
 
 Methods are found as rustc finds them: on the receiver's type, then on
 each type it dereferences to, the type's own methods before those of
@@ -778,7 +780,9 @@ and `repeat`. `Box<T>` may hold an unsized value: `Box<[T]>` and
 with the size it records; `core::mem::{size_of_val, align_of_val}`,
 `Layout::for_value` and `ptr::drop_in_place` take unsized values too.
 `Box<str>`, `String::drain` and the other `alloc` collections are not
-supported yet; a panic inside `alloc` that rustc reports at its own
+supported yet. Collecting an owning iterator does not reuse its source
+allocation as rustc sometimes does, so capacities can differ in those
+cases; a panic inside `alloc` that rustc reports at its own
 source (`swap_remove`, `drain` out of range) is reported at flux's.
 
 `core::ops` has the `Fn`, `FnMut` and `FnOnce` traits (in the

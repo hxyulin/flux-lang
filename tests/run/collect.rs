@@ -9,6 +9,14 @@
 fn main() {
     let v: Vec<i32> = (0..10).map(|x| x * 2).collect();
     println!("{v:?} {}", v.capacity());
+    // An owning iterator remains trusted through adapters, including
+    // after consuming from either end. Changing element size prevents
+    // rustc's separate allocation-reuse specialization from applying.
+    let mut owned = vec![1u8, 2, 3].into_iter();
+    let _ = owned.next();
+    let _ = owned.next_back();
+    let text: Vec<String> = owned.map(|x| x.to_string()).collect();
+    println!("{text:?} {}", text.capacity());
     let f: Vec<i32> = v.iter().filter(|&&x| x > 5).copied().collect();
     println!("{f:?} {}", f.capacity());
     let e: Vec<(usize, char)> = "héllo".chars().enumerate().collect();
