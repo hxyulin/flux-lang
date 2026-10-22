@@ -288,9 +288,10 @@ impl<T> [T] {
 
     /// An iterator over mutable chunks of exactly `chunk_size` elements,
     /// in order, without the remainder; panics if `chunk_size` is 0.
+    #[track_caller]
     pub fn chunks_exact_mut(&mut self, chunk_size: usize) -> ChunksExactMut<'_, T> {
         if chunk_size == 0 {
-            panic(c"chunk size must be non-zero")
+            panic("chunk size must be non-zero")
         }
         let len = self.len();
         let fst_len = len - len % chunk_size;
@@ -307,9 +308,10 @@ impl<T> [T] {
     /// An iterator over chunks of `chunk_size` elements from the end, the
     /// last one (the slice's start) shorter if the length is not a
     /// multiple; panics if `chunk_size` is 0.
+    #[track_caller]
     pub fn rchunks(&self, chunk_size: usize) -> RChunks<'_, T> {
         if chunk_size == 0 {
-            panic(c"chunk size must be non-zero")
+            panic("chunk size must be non-zero")
         }
         RChunks {
             v: self,
@@ -320,9 +322,10 @@ impl<T> [T] {
     /// An iterator over chunks of exactly `chunk_size` elements from the
     /// end, without the remainder at the start; panics if `chunk_size` is
     /// 0.
+    #[track_caller]
     pub fn rchunks_exact(&self, chunk_size: usize) -> RChunksExact<'_, T> {
         if chunk_size == 0 {
-            panic(c"chunk size must be non-zero")
+            panic("chunk size must be non-zero")
         }
         let rem = self.len() % chunk_size;
         let (fst, snd) = self.split_at(rem);
@@ -336,6 +339,7 @@ impl<T> [T] {
     /// Copies the elements of `src`, a range of indices, to the ones from
     /// `dest` on, which may overlap them; panics if either is out of
     /// bounds.
+    #[track_caller]
     pub fn copy_within<R: RangeBounds<usize>>(&mut self, src: R, dest: usize)
     where
         T: Copy,
@@ -344,7 +348,7 @@ impl<T> [T] {
         let r = bounds_range(src, len);
         let count = r.end - r.start;
         if dest > len - count {
-            panic(c"dest is out of bounds")
+            panic("dest is out of bounds")
         }
         if dest <= r.start {
             let mut i = 0;
@@ -847,12 +851,13 @@ impl<E> SliceIndex<E> for RangeToInclusive<usize> {
 
 /// The bounds `range` gives for a slice of length `len`, which panics
 /// as rustc's `slice::range` does where they are not within it.
+#[track_caller]
 fn bounds_range<R: RangeBounds<usize>>(range: R, len: usize) -> Range<usize> {
     let start = match range.start_bound() {
         Bound::Included(&start) => start,
         Bound::Excluded(&start) => {
             if start == usize::MAX {
-                panic(c"attempted to index slice from after maximum usize")
+                panic("attempted to index slice from after maximum usize")
             }
             start + 1
         }

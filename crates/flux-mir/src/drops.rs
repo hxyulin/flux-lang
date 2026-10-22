@@ -451,6 +451,12 @@ fn merge_dead(body: &mut Body, dead: &[BasicBlock]) {
             let data = &mut body.blocks[block];
             data.statements.extend(merged.statements);
             data.terminator = merged.terminator;
+            // Where a call's `#[track_caller]` location points goes with
+            // its terminator.
+            match body.fn_spans.remove(&next) {
+                Some(span) => body.fn_spans.insert(block, span),
+                None => body.fn_spans.remove(&block),
+            };
             if !dead_set.contains(&next) {
                 break;
             }
@@ -469,6 +475,11 @@ fn merge_dead(body: &mut Body, dead: &[BasicBlock]) {
         retarget(&mut data.terminator.kind, &map);
     }
     body.blocks = kept;
+    body.fn_spans = std::mem::take(&mut body.fn_spans)
+        .into_iter()
+        .filter(|(b, _)| !removed[b.index()])
+        .map(|(b, span)| (map[b.index()], span))
+        .collect();
 }
 
 fn retarget(kind: &mut TerminatorKind, map: &[BasicBlock]) {

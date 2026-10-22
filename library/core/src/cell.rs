@@ -159,10 +159,11 @@ impl<T> RefCell<T> {
     }
 
     /// A shared loan of the value; panics if it is lent mutably.
+    #[track_caller]
     pub fn borrow(&self) -> Ref<'_, T> {
         match self.try_borrow() {
             Ok(r) => r,
-            Err(_) => panic(c"already mutably borrowed: BorrowError"),
+            Err(_) => panic("RefCell already mutably borrowed"),
         }
     }
 
@@ -177,10 +178,11 @@ impl<T> RefCell<T> {
     }
 
     /// A mutable loan of the value; panics if it is lent.
+    #[track_caller]
     pub fn borrow_mut(&self) -> RefMut<'_, T> {
         match self.try_borrow_mut() {
             Ok(r) => r,
-            Err(_) => panic(c"already borrowed: BorrowMutError"),
+            Err(_) => panic("RefCell already borrowed"),
         }
     }
 
@@ -194,6 +196,7 @@ impl<T> RefCell<T> {
     }
 
     /// Stores `t`, returning the old value; panics if it is lent.
+    #[track_caller]
     pub fn replace(&self, t: T) -> T {
         let mut r = self.borrow_mut();
         mem::replace(r.value_mut(), t)
@@ -201,6 +204,7 @@ impl<T> RefCell<T> {
 
     /// Replaces the value with `f` of it, returning the old one; panics
     /// if it is lent.
+    #[track_caller]
     pub fn replace_with<F: FnOnce(&mut T) -> T>(&self, f: F) -> T {
         let mut r = self.borrow_mut();
         let new = f(r.value_mut());
@@ -208,6 +212,7 @@ impl<T> RefCell<T> {
     }
 
     /// Swaps the values of two cells; panics if either is lent.
+    #[track_caller]
     pub fn swap(&self, other: &RefCell<T>) {
         let mut a = self.borrow_mut();
         let mut b = other.borrow_mut();
@@ -229,6 +234,7 @@ impl<T> RefCell<T> {
 impl<T: Default> RefCell<T> {
     /// The value, leaving the default in its place; panics if it is
     /// lent.
+    #[track_caller]
     pub fn take(&self) -> T {
         self.replace(T::default())
     }
@@ -236,6 +242,7 @@ impl<T: Default> RefCell<T> {
 
 impl<T: Clone> Clone for RefCell<T> {
     /// Panics if the value is lent mutably.
+    #[track_caller]
     fn clone(&self) -> RefCell<T> {
         let r = self.borrow();
         RefCell::new(r.value.clone())
@@ -250,6 +257,7 @@ impl<T: Default> Default for RefCell<T> {
 
 impl<T: PartialEq> PartialEq for RefCell<T> {
     /// Panics if either value is lent mutably.
+    #[track_caller]
     fn eq(&self, other: &RefCell<T>) -> bool {
         let (a, b) = (self.borrow(), other.borrow());
         *a.value == *b.value
