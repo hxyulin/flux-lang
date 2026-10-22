@@ -163,10 +163,18 @@ pub fn place_name(
 ) -> String {
     let mut text = match body.locals[place.local].kind {
         LocalKind::User { name, .. } => name.to_string(),
+        LocalKind::Static(id) => items.consts[id]
+            .name
+            .map_or("_".to_owned(), |n| n.to_string()),
         _ => format!("_{}", place.local.index()),
     };
     let mut ty = PlaceTy::from(body.locals[place.local].ty);
     for (i, &elem) in place.projection.iter().enumerate() {
+        // A static is named by itself, not the address it is used through.
+        if i == 0 && matches!(body.locals[place.local].kind, LocalKind::Static(_)) {
+            ty = ty.project(elem, sigs);
+            continue;
+        }
         match elem {
             // A field or element of a reference's target is written as if
             // the reference were the struct or array: `r.a`, `s[_]`.
@@ -323,6 +331,9 @@ pub enum LocalKind {
         mutable: bool,
     },
     Temp,
+    /// A temporary holding the address of a static, which its uses go
+    /// through: `(*_3).a` is the static's field `a`.
+    Static(flux_hir::ConstId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,6 +434,12 @@ pub enum Constant {
         args: GenericArgs,
         ty: Ty,
     },
+    /// The address of static `id`: of type `ty`, `&T` for a `static`
+    /// and `*mut T` for a `static mut`, as rustc's MIR has it.
+    Static {
+        id: flux_hir::ConstId,
+        ty: Ty,
+    },
 }
 
 impl Constant {
@@ -432,7 +449,7 @@ impl Constant {
             Constant::Bool(_) => Ty::BOOL,
             Constant::Unit => Ty::UNIT,
             Constant::CStr(_) => flux_ty::c_str_ref(),
-            Constant::Item { ty, .. } => ty,
+            Constant::Item { ty, .. } | Constant::Static { ty, .. } => ty,
         }
     }
 

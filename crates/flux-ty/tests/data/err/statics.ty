@@ -1,0 +1,18 @@
+struct Holder { p: *mut u8 }
+fn not_const() -> u32
+fn main() -> ()
+    a@0: u32
+    b@1: u32
+const COUNT: u32
+const PLACEHOLDER: {error}
+const POINTER: Option<*const i32>
+const HOLDER: Option<Holder>
+const MUT_POINTER: Option<*const i32>
+const CALLS: u32
+error 82..83: the placeholder `_` is not allowed within types on item signatures for static variables
+error 105..123: `*const i32` cannot be shared between threads safely
+error 147..161: `*mut u8` cannot be shared between threads safely
+error 275..286: cannot call non-const function `not_const` in statics
+error 313..318: use of mutable static is unsafe and requires unsafe function or block
+error 324..329: use of mutable static is unsafe and requires unsafe function or block
+error 339..344: use of mutable static is unsafe and requires unsafe function or block

@@ -1,0 +1,15 @@
+fn shadow(ONE@0: i32) -> () {}
+
+fn main() -> () {
+    let ONE@0 = 2;
+    match 5 {
+        ONE@1 => {},
+        _ => {},
+    }
+    let h@2 = HIDDEN;
+}
+
+error 21..42: free static item without body
+error 93..96: function parameters cannot shadow statics
+error 127..130: let bindings cannot shadow statics
+error 205..211: static `HIDDEN` is private

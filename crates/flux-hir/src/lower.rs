@@ -51,9 +51,15 @@ pub fn lower_const(tree: &SyntaxTree, items: &ItemTree, konst: ConstId) -> Lower
         let root = ctx.lower_opt(v.expr(), v.syntax());
         return ctx.finish(Vec::new(), root);
     }
-    let c = ast::Const::cast(tree.node(data.node)).expect("constants point at CONST nodes");
+    let node = tree.node(data.node);
     let mut ctx = Ctx::new(items, data.loc.module, data.owner, None);
-    let root = ctx.lower_opt(c.body(), c.syntax());
+    let root = match ast::Static::cast(node) {
+        Some(st) => ctx.lower_opt(st.body(), node),
+        None => {
+            let c = ast::Const::cast(node).expect("constants point at CONST nodes");
+            ctx.lower_opt(c.body(), node)
+        }
+    };
     ctx.finish(Vec::new(), root)
 }
 
@@ -2131,7 +2137,7 @@ impl<'a> Ctx<'a> {
             Res::Const(c) if self.items.consts[c].owner.is_some() && last > 0 => {
                 (None, Some(last - 1))
             }
-            Res::Local(_) | Res::Const(_) => (None, None),
+            Res::Local(_) | Res::Const(_) | Res::Static(_) => (None, None),
             Res::Err => return (res, None),
         };
         // `Self` has no generic arguments of its own.
@@ -2346,6 +2352,7 @@ impl<'a> Ctx<'a> {
             },
             Ok(Resolved::Def(Def::Function(f)) | Resolved::Assoc(f)) => Res::Function(f),
             Ok(Resolved::Def(Def::Const(c)) | Resolved::AssocConst(c)) => Res::Const(c),
+            Ok(Resolved::Def(Def::Static(c))) => Res::Static(c),
             Ok(Resolved::Def(Def::Variant(e, v))) => Res::Variant(e, v),
             Ok(Resolved::Def(Def::Struct(strukt))) if self.items.structs[strukt].is_enum() => {
                 self.error(
@@ -2800,11 +2807,13 @@ impl<'a> Ctx<'a> {
         }
         matches!(
             self.items.resolve(self.module, &path, Ns::Values),
-            Ok(Resolved::Def(Def::Const(_) | Def::Function(_))
-                | Resolved::AssocConst(_)
-                | Resolved::Assoc(_)
-                | Resolved::TraitItem(..)
-                | Resolved::TypeRelative(_))
+            Ok(
+                Resolved::Def(Def::Const(_) | Def::Static(_) | Def::Function(_))
+                    | Resolved::AssocConst(_)
+                    | Resolved::Assoc(_)
+                    | Resolved::TraitItem(..)
+                    | Resolved::TypeRelative(_)
+            )
         )
     }
 
@@ -2824,6 +2833,16 @@ impl<'a> Ctx<'a> {
                     range,
                     format!(
                         "expected unit struct, unit variant or constant, found {what} `{path}`"
+                    ),
+                );
+                Pat::Missing
+            }
+            Expr::Path(Res::Static(_)) => {
+                let path = path.map_or(String::new(), |p| p.syntax().text().to_string());
+                self.error(
+                    range,
+                    format!(
+                        "expected unit struct, unit variant or constant, found static `{path}`"
                     ),
                 );
                 Pat::Missing
@@ -2975,7 +2994,15 @@ impl<'a> Ctx<'a> {
         let range = name.syntax().text_range();
         let name = Symbol::intern(name.text());
         let plain = ident.mut_token().is_none() && ident.ref_token().is_none() && sub.is_none();
-        let shadowed = match self.items.lookup(self.module, name, Ns::Values) {
+        // A local of the name hides the items, as rustc's ribs do: the
+        // pattern binds anew.
+        let local = self.scopes.iter().any(|&(n, _)| n == name);
+        let item = if local {
+            None
+        } else {
+            self.items.lookup(self.module, name, Ns::Values)
+        };
+        let shadowed = match item {
             Some(Resolved::Def(Def::Struct(id))) => Some((id, 0)),
             Some(Resolved::Def(Def::Variant(id, v))) => Some((id, v)),
             // A constant's name is a pattern matching only its value.
@@ -2990,6 +3017,15 @@ impl<'a> Ctx<'a> {
                     PatSite::Match => "match bindings",
                 };
                 self.error(range, format!("{site} cannot shadow constants"));
+                None
+            }
+            Some(Resolved::Def(Def::Static(_))) => {
+                let site = match site {
+                    PatSite::Let => "let bindings",
+                    PatSite::Param => "function parameters",
+                    PatSite::Match => "match bindings",
+                };
+                self.error(range, format!("{site} cannot shadow statics"));
                 None
             }
             _ => None,

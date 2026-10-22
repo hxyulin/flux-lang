@@ -104,6 +104,23 @@ pub fn lower_module(
             });
         }
     }
+    // Each static's symbol, from its path as a function's is.
+    let statics: HashMap<flux_hir::ConstId, String> = items
+        .consts
+        .iter()
+        .filter(|(_, c)| c.is_static.is_some())
+        .map(|(id, c)| {
+            let mut path = Vec::new();
+            let mut m = Some(c.loc.module);
+            while let Some(id) = m {
+                path.push(items.modules[id].name.as_str());
+                m = items.modules[id].parent;
+            }
+            path.reverse();
+            path.push(c.name.map_or("_", |n| n.as_str()));
+            (id, mangle(&path))
+        })
+        .collect();
     let names = |id: flux_hir::ConstId| items.const_name(id);
     let mut ctx = Ctx {
         hir,
@@ -119,6 +136,7 @@ pub fn lower_module(
         ),
         instance_values: HashMap::new(),
         symbols: &symbols,
+        statics: &statics,
         uses_abort: false,
         strings: HashMap::new(),
         data: Vec::new(),
@@ -145,6 +163,36 @@ pub fn lower_module(
         errors.dedup();
         return Err(errors);
     }
+    // Every static, with its initial value, in memory a `static mut`
+    // may write.
+    for (&id, symbol) in &statics {
+        let Some(value) = mir.const_values.items.get(id) else {
+            continue;
+        };
+        let ty = typed.sigs.consts[id];
+        let layout = layout(&typed.sigs, ty);
+        let mut bits = Vec::new();
+        ctx.value_bits(value, ty, &mut bits);
+        let mut bytes = vec![0u8; layout.size().max(1) as usize];
+        for ((offset, leaf), value) in layout.leaves().into_iter().zip(bits) {
+            let width = leaf.bytes().unwrap_or(8) as usize;
+            let offset = offset as usize;
+            bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
+        }
+        ctx.data.push(DataObject {
+            name: symbol.clone(),
+            thread_local: false,
+            local: true,
+            weak_odr: false,
+            hidden: false,
+            init: Some(DataInit {
+                constant: !items.consts[id].is_static_mut(),
+                align: layout.align() as u32,
+                items: vec![DataItem::Bytes(bytes)],
+            }),
+        });
+    }
+    ctx.data.sort_by(|a, b| a.name.cmp(&b.name));
     module.data = ctx.data;
     if ctx.uses_abort && !declared_abort {
         module.decls.push(FuncDecl {
@@ -560,6 +608,8 @@ struct Ctx<'a> {
     evaluator: flux_mir::eval::Evaluator<'a>,
     instance_values: HashMap<flux_ty::ConstInstance, flux_mir::eval::Value>,
     symbols: &'a HashMap<FunctionId, String>,
+    /// The data object of each static.
+    statics: &'a HashMap<flux_hir::ConstId, String>,
     uses_abort: bool,
     /// The data object holding each distinct C string, by its bytes.
     strings: HashMap<Box<[u8]>, String>,
@@ -605,6 +655,46 @@ impl Ctx<'_> {
         };
         lower.body();
         function
+    }
+
+    /// The bits of each scalar leaf of `value`, of type `ty`, in the
+    /// order of its leaves; zeros for the variants an enum does not
+    /// hold.
+    fn value_bits(&mut self, value: &flux_mir::eval::Value, ty: Ty, out: &mut Vec<u128>) {
+        use flux_mir::eval::Value as V;
+        let sigs = &self.typed.sigs;
+        match value {
+            V::Int { bits, .. } => out.push(*bits),
+            V::Bool(b) => out.push(u128::from(*b)),
+            V::Aggregate(fields) => {
+                let types = sigs.fields(ty).unwrap_or_default();
+                for (field, &field_ty) in fields.iter().zip(types) {
+                    self.value_bits(field, field_ty, out);
+                }
+            }
+            V::Variant {
+                strukt,
+                index,
+                fields,
+            } => {
+                out.push(self.discriminant(*strukt, *index));
+                let variants = self.typed.sigs.variants(ty).unwrap_or_default();
+                for (v, types) in variants.into_iter().enumerate() {
+                    if v as u32 == *index {
+                        for (field, &field_ty) in fields.iter().zip(types) {
+                            self.value_bits(field, field_ty, out);
+                        }
+                    } else {
+                        for &field_ty in types {
+                            let count = leaf_count(&self.typed.sigs, field_ty);
+                            out.extend(std::iter::repeat_n(0, count));
+                        }
+                    }
+                }
+            }
+            // References are not in statics' types.
+            V::Static(_) => out.push(0),
+        }
     }
 
     /// The name of the read-only data object holding `bytes` and a
@@ -1094,6 +1184,7 @@ impl Lower<'_, '_, '_> {
         match value {
             V::Int { bits, ty } => out.push(self.int_const(*bits, *ty)),
             V::Bool(b) => out.push(self.b.ins().iconst(Type::I8, i64::from(*b))),
+            V::Static(id) => out.push(self.static_addr(*id)),
             V::Aggregate(fields) => {
                 let types = self.sigs.fields(ty).unwrap_or_default();
                 for (field, &field_ty) in fields.iter().zip(types) {
@@ -1140,7 +1231,14 @@ impl Lower<'_, '_, '_> {
                 Some(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)))
             }
             Constant::Item { .. } => unreachable!("handled by `operand`"),
+            Constant::Static { id, .. } => Some(self.static_addr(id)),
         }
+    }
+
+    /// The address of static `id`.
+    fn static_addr(&mut self, id: flux_hir::ConstId) -> Value {
+        let data = self.b.import_data(&self.ctx.statics[&id]);
+        self.b.ins().symbol_addr(keel_ir::Symbol::Data(data))
     }
 
     /// An integer constant from its bits; 128-bit values that do not fit

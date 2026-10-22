@@ -44,6 +44,9 @@ pub enum Value {
         index: u32,
         fields: Vec<Value>,
     },
+    /// The address of a static, which reading through gives its
+    /// initial value.
+    Static(ConstId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +205,37 @@ impl<'a> Evaluator<'a> {
         result
     }
 
+    /// The initial value of static `id`, read at `range`. A constant may
+    /// not read a `static mut`, whose value may change; a static's
+    /// initializer reads its initial value.
+    fn static_value(&mut self, id: ConstId, range: TextRange) -> Result<Value, EvalError> {
+        let in_static = self
+            .in_progress
+            .first()
+            .is_some_and(|c| self.items.consts[c.konst].is_static.is_some());
+        if self.items.consts[id].is_static_mut() && !in_static {
+            return Err(error(
+                range,
+                "constant accesses mutable global memory".to_owned(),
+            ));
+        }
+        let outermost = self.in_progress.len() == 1;
+        self.eval_const(id).map_err(|e| used(e, range, outermost))
+    }
+
+    /// Why writing to a static at compile time fails, as rustc says.
+    fn static_write(&self) -> &'static str {
+        let in_static = self
+            .in_progress
+            .first()
+            .is_some_and(|c| self.items.consts[c.konst].is_static.is_some());
+        if in_static {
+            "modifying a static's initial value from another static's initializer"
+        } else {
+            "constant accesses mutable global memory"
+        }
+    }
+
     /// The discriminant of variant `variant` of enum `strukt`, as bits:
     /// a literal's, or its constant's value plus the variants since.
     pub fn discriminant(
@@ -288,6 +322,11 @@ impl<'a> Evaluator<'a> {
                     ));
                 }
                 if let StatementKind::Assign(dest, rvalue) = &statement.kind {
+                    if let Some(Some(Value::Static(_))) = locals.get(dest.local.index())
+                        && !dest.projection.is_empty()
+                    {
+                        return Err(error(statement.range, self.static_write().to_owned()));
+                    }
                     let value =
                         self.rvalue(body, &locals, generics, rvalue, statement.range, !checked)?;
                     write(&mut locals, dest, value, statement.range)?;
@@ -307,7 +346,7 @@ impl<'a> Evaluator<'a> {
                     let value = match self.operand(&locals, generics, discr, range)? {
                         Value::Int { bits, .. } => bits,
                         Value::Bool(b) => u128::from(b),
-                        Value::Aggregate(_) | Value::Variant { .. } => {
+                        Value::Aggregate(_) | Value::Variant { .. } | Value::Static(_) => {
                             unreachable!("switches on scalars")
                         }
                     };
@@ -475,8 +514,22 @@ impl<'a> Evaluator<'a> {
         range: TextRange,
     ) -> Result<Value, EvalError> {
         match operand {
-            Operand::Copy(place) | Operand::Move(place) => read(locals, place, range),
+            Operand::Copy(place) | Operand::Move(place) => {
+                // Through a static's address: its initial value.
+                if let Some(Some(Value::Static(id))) = locals.get(place.local.index())
+                    && place.projection.first() == Some(&ProjectionElem::Deref)
+                {
+                    let value = self.static_value(*id, range)?;
+                    let rest = Place {
+                        local: crate::Local::from_raw(0),
+                        projection: place.projection[1..].into(),
+                    };
+                    return read(&[Some(value)], &rest, range);
+                }
+                read(locals, place, range)
+            }
             Operand::Const(constant) => match *constant {
+                Constant::Static { id, .. } => Ok(Value::Static(id)),
                 Constant::Int { bits, ty } => Ok(Value::Int { bits, ty }),
                 Constant::Bool(b) => Ok(Value::Bool(b)),
                 Constant::Unit => Ok(Value::Aggregate(Vec::new())),
@@ -569,7 +622,7 @@ impl<'a> Evaluator<'a> {
                 let bits = match value {
                     Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                     Value::Bool(b) => u128::from(b),
-                    Value::Aggregate(_) | Value::Variant { .. } => {
+                    Value::Aggregate(_) | Value::Variant { .. } | Value::Static(_) => {
                         unreachable!("casts are of scalars")
                     }
                 };
@@ -882,6 +935,7 @@ pub fn show(value: &Value) -> String {
         }
         Value::Bool(b) => b.to_string(),
         Value::Aggregate(_) | Value::Variant { .. } => "{aggregate}".to_owned(),
+        Value::Static(_) => "{static}".to_owned(),
     }
 }
 

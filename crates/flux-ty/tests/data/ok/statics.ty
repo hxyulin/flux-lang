@@ -1,0 +1,27 @@
+struct Point { x: i32, y: i32 }
+fn sum(&Point) -> i32
+    self@0: &Point
+fn square(u32) -> u32
+    n@0: u32
+fn read(&Point) -> i32
+    p@0: &Point
+fn bump() -> u64
+fn reset() -> ()
+fn main() -> ()
+    a@0: i32
+    r@1: &u32
+    b@2: u32
+    c@3: u64
+    p@4: Point
+    n@5: ()
+    o@6: u8
+fn clone(&Point) -> Point
+    self@0: &Point
+const ORIGIN: Point
+const LIMIT: u32
+const TWICE: u32
+const COUNT: u64
+const POS: Point
+const NOTHING: ()
+const CHOICE: Option<u8>
+const FROM_STATIC: u32

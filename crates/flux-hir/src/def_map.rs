@@ -46,6 +46,8 @@ pub enum Def {
     Variant(StructId, u32),
     /// `type A = T;`, in the types namespace.
     TypeAlias(TypeAliasId),
+    /// `static X: T = v;`, in the values namespace.
+    Static(ConstId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,6 +367,7 @@ impl ItemTree {
             Def::Trait(_) => "trait",
             Def::Function(_) => "function",
             Def::Const(_) => "constant",
+            Def::Static(_) => "static",
             Def::Variant(..) => "variant",
             Def::TypeAlias(_) => "type alias",
         };
@@ -622,7 +625,7 @@ impl ItemTree {
             Def::Struct(s) => self.structs[s].loc.vis,
             Def::Trait(t) => self.traits[t].loc.vis,
             Def::Function(f) => self.functions[f].loc.vis,
-            Def::Const(c) => self.consts[c].loc.vis,
+            Def::Const(c) | Def::Static(c) => self.consts[c].loc.vis,
             Def::Variant(s, _) => self.structs[s].loc.vis,
             Def::TypeAlias(a) => self.type_aliases[a].loc.vis,
         }
@@ -637,6 +640,7 @@ impl ItemTree {
             Def::Trait(_) => "trait",
             Def::Function(_) => "function",
             Def::Const(_) => "constant",
+            Def::Static(_) => "static",
             Def::TypeAlias(_) => "type alias",
             Def::Variant(s, v) => match self.structs[s].variant(v).kind {
                 StructKind::Record => "struct variant",
@@ -726,7 +730,11 @@ fn define_items(items: &mut ItemTree, from: ItemCounts) {
     }
     for (id, c) in items.consts.iter().skip(from.consts as usize) {
         if let (None, Some(name)) = (c.owner, c.name) {
-            let binding = item(Def::Const(id), c.loc.vis, c.loc.file, c.def_range);
+            let def = match c.is_static {
+                Some(_) => Def::Static(id),
+                None => Def::Const(id),
+            };
+            let binding = item(def, c.loc.vis, c.loc.file, c.def_range);
             defined.push((c.loc.module, name, &[Ns::Values], binding));
         }
     }
