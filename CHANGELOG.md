@@ -590,6 +590,13 @@
   field, as in rustc. Nothing formats yet. Fix `#[derive(PartialOrd)]`
   inside `core` outside its root module, which named `Option` without
   its arguments.
+- Fix derives of `Clone` and `Copy` together on a struct with fields
+  inside `core`, whose `clone` named `::core::clone`, which `core`
+  cannot, and failed in MIR building of unrelated programs ("call of a
+  value that is not callable"); `Utf8Error` derives its traits again.
+  `Debug` and `Default` for `char` and `str` (`&str`), `Result`'s
+  `unwrap`, `expect`, `unwrap_err` and `expect_err`, `Option::expect`,
+  and `size_hint` for ranges of `char`.
 
 ### Performance
 

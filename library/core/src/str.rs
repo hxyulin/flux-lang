@@ -37,29 +37,12 @@ pub const unsafe fn from_utf8_unchecked_mut(v: &mut [u8]) -> &mut str {
 /// Why bytes are not UTF-8: where the valid prefix ends, and how long
 /// the invalid sequence after it is (`None` if the input ended inside
 /// a character).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Utf8Error {
     valid_up_to: usize,
     /// 0 for `None`.
     error_len: u8,
 }
-
-// As `#[derive(Clone, Copy, PartialEq, Eq)]` would, which `core`'s own
-// items cannot use.
-impl Clone for Utf8Error {
-    fn clone(&self) -> Utf8Error {
-        *self
-    }
-}
-
-impl Copy for Utf8Error {}
-
-impl PartialEq for Utf8Error {
-    fn eq(&self, other: &Utf8Error) -> bool {
-        self.valid_up_to == other.valid_up_to && self.error_len == other.error_len
-    }
-}
-
-impl Eq for Utf8Error {}
 
 impl Utf8Error {
     /// How many bytes from the start are valid UTF-8.

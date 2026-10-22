@@ -40,6 +40,15 @@ impl<T> Option<T> {
         }
     }
 
+    /// The value; panics with `msg` on `None`.
+    #[rustc_allow_const_fn_unstable(const_precise_live_drops)]
+    pub const fn expect(self, msg: &str) -> T {
+        match self {
+            Some(value) => value,
+            None => panic(msg),
+        }
+    }
+
     /// The value, or `default` on `None`.
     #[rustc_const_unstable]
     pub fn unwrap_or(self, default: T) -> T {

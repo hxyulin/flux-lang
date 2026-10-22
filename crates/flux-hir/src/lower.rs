@@ -329,20 +329,7 @@ fn derived_body(
         Derive::Debug => unreachable!("made by `derived_debug_body`"),
         Derive::Copy => {
             // `{ assert_param_is_clone(&self.a); ..; *self }`
-            let path = Path {
-                anchor: PathAnchor::Global,
-                qself: None,
-                segments: ["core", "clone", "assert_param_is_clone"]
-                    .map(Symbol::intern)
-                    .into(),
-                ranges: Box::default(),
-                anchor_ranges: Box::default(),
-                args: Box::default(),
-            };
-            let res = match items.resolve(data.loc.module, &path, Ns::Values) {
-                Ok(Resolved::Def(Def::Function(f))) => Res::Function(f),
-                _ => Res::Err,
-            };
+            let res = assert_param_is_clone(items, data.loc.module);
             let mut stmts = Vec::new();
             for f in s.fields.iter() {
                 let at = f.def_range;
@@ -387,6 +374,39 @@ fn derived_body(
         whole,
     );
     ctx.finish(params, root)
+}
+
+/// `core::clone::assert_param_is_clone`, which a derived `Clone` that
+/// copies calls for each field: `::core::...` from a program, and
+/// `crate::...` from `core` itself, where `::core` names nothing.
+fn assert_param_is_clone(items: &ItemTree, module: ModuleId) -> Res {
+    let (anchor, segments): (PathAnchor, Box<[Symbol]>) = if items.is_core(module) {
+        (
+            PathAnchor::Crate,
+            ["clone", "assert_param_is_clone"]
+                .map(Symbol::intern)
+                .into(),
+        )
+    } else {
+        (
+            PathAnchor::Global,
+            ["core", "clone", "assert_param_is_clone"]
+                .map(Symbol::intern)
+                .into(),
+        )
+    };
+    let path = Path {
+        anchor,
+        qself: None,
+        segments,
+        ranges: Box::default(),
+        anchor_ranges: Box::default(),
+        args: Box::default(),
+    };
+    match items.resolve(module, &path, Ns::Values) {
+        Ok(Resolved::Def(Def::Function(f))) => Res::Function(f),
+        _ => Res::Err,
+    }
 }
 
 /// The body of `default` that `#[derive(Default)]` makes for `strukt`:
@@ -663,22 +683,7 @@ fn derived_enum_body(
         },
         None => Res::Err,
     };
-    let assert_clone = {
-        let path = Path {
-            anchor: PathAnchor::Global,
-            qself: None,
-            segments: ["core", "clone", "assert_param_is_clone"]
-                .map(Symbol::intern)
-                .into(),
-            ranges: Box::default(),
-            anchor_ranges: Box::default(),
-            args: Box::default(),
-        };
-        match items.resolve(data.loc.module, &path, Ns::Values) {
-            Ok(Resolved::Def(Def::Function(f))) => Res::Function(f),
-            _ => Res::Err,
-        }
-    };
+    let assert_clone = assert_param_is_clone(items, data.loc.module);
     let copies = derive == Derive::Copy;
     let mut arms = Vec::new();
     for (v, variant) in variants.iter().enumerate() {

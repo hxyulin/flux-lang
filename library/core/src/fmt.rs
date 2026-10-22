@@ -41,6 +41,8 @@ impl Debug for u128 { fn fmt(&self, _f: &mut Formatter<'_>) -> Result { Ok(()) }
 impl Debug for usize { fn fmt(&self, _f: &mut Formatter<'_>) -> Result { Ok(()) } }
 impl Debug for bool { fn fmt(&self, _f: &mut Formatter<'_>) -> Result { Ok(()) } }
 impl Debug for () { fn fmt(&self, _f: &mut Formatter<'_>) -> Result { Ok(()) } }
+impl Debug for char { fn fmt(&self, _f: &mut Formatter<'_>) -> Result { Ok(()) } }
+impl Debug for str { fn fmt(&self, _f: &mut Formatter<'_>) -> Result { Ok(()) } }
 impl<T> Debug for *const T { fn fmt(&self, _f: &mut Formatter<'_>) -> Result { Ok(()) } }
 impl<T> Debug for *mut T { fn fmt(&self, _f: &mut Formatter<'_>) -> Result { Ok(()) } }
 
