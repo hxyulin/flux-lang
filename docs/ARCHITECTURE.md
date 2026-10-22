@@ -267,7 +267,19 @@ a time, and a fragment (`$e:expr`) is read by the parser
 call's cost is linear in its tokens. Macros the compiler implements
 (`assert!`, `format_args!`, `cfg!`, ...) are `core`'s
 `#[rustc_builtin_macro]` declarations, expanded by
-[`builtin`](../crates/flux-hir/src/macros/builtin.rs).
+[`builtin`](../crates/flux-hir/src/macros/builtin.rs). `format_args!`
+expands as rustc's lowering does: `Arguments::new_v1(&[pieces], &match
+(&a, &b) { args => [rt::Argument::new_display(args.0), ..] })`, each
+argument evaluated once and borrowed, one `rt::Argument` per argument
+and trait (a width or precision from an argument is
+`Argument::from_usize`), and `new_v1_formatted` with an array of
+`rt::Placeholder`s (the argument, flags and fill in rustc's bit
+layout, width and precision) where a placeholder has options or the
+arguments are not in order. Each constructor call is at its argument,
+so an unmet bound is reported there, and errors inside the string
+point into it, through escapes (`source_offsets`). `std`'s printing
+macros are `macro_rules!` in `core` that call `core::io`'s `_print`;
+resolution finds them by name or through `std::`, never `core::`.
 
 An expansion's tokens are written out as text and parsed as what the
 call's position wants (`parser::Fragment`: items, statements, an
@@ -570,7 +582,7 @@ semantics become explicit, so code generation never sees expressions:
   checks, and shift amounts are masked to the left operand's width.
 - `/` and `%` are preceded by assertions that the divisor is not zero
   and, for signed types, that the operation is not `MIN / -1`. rustc
-  checks these even in release builds; a failed assertion aborts.
+  checks these even in release builds; a failed assertion panics.
 - `a[i]` copies `i` into a temporary, asserts that it is less than the
   length (an array's, or a slice's from the pointer it is behind),
   and is the place `a[_n]`; a move out of it is E0508, and borrowck
@@ -669,8 +681,11 @@ so is overflow in a constant's own initializer ("attempt to compute
 wraps, as rustc compiles functions with flux's `-C overflow-checks=off`,
 unless it is marked `#[rustc_inherit_overflow_checks]`, as `core`'s
 `abs` and `pow` are: then it is checked where its caller's is. `core`'s
-`#[lang = "panic"]` function aborts at run time; evaluation reports a
-call of it as rustc's "evaluation panicked", with its message. Uses of a
+`#[lang = "panic"]` function (and `panic_display` of a `&str`) prints
+its message and aborts at run time; evaluation reports a call of it as
+rustc's "evaluation panicked", with its message, and never runs its
+body, which `#[rustc_do_not_const_check]` exempts from the rules of
+`const fn`s. Uses of a
 constant refer to it with its generic arguments, and code generation
 emits its value. The value of a trait's constant, or one of a generic
 block, depends on its arguments: for them, it is the `impl` block's
@@ -869,7 +884,43 @@ executable. No C compiler or system linker is involved.
 - Rust functions get mangled symbols from their whole path
   (`_ZN3fib3fibE`, `_ZN4core3num3i323absE` for `core::num::i32::abs`), so
   they cannot collide with C names or each other. The C `main` is a wrapper that calls the Rust
-  `main` and returns 0. A failed MIR assertion calls `abort`.
+  `main`, then `core::io::flush_stdout` (std's runtime writes out
+  what stdout holds as `main` returns), and returns 0.
+- A `#[track_caller]` function takes a pointer to a
+  `core::panic::Location` after its parameters (unless its address is
+  taken: a pointer's signature has no room for it), which every call
+  of it passes: the caller's own, if the caller takes one, else a
+  read-only data object of the call's file, line and column, counted
+  in characters as rustc counts them. Which function a call reaches is
+  known only once it is resolved for its instance, so code generation
+  decides, as rustc's does. A method call is located at its name
+  (`Body::fn_spans`), an overloaded index at its `[`, other calls at
+  their start. The `caller_location` intrinsic, which
+  `Location::caller` calls, is that pointer. A failed MIR assertion
+  calls `core::panicking`'s function for its message
+  (`panic_bounds_check` with the index and length,
+  `panic_const_div_by_zero`, ...), which the collector and type
+  checking always reach (`flux_ty::core_roots`), at the assertion.
+
+### Formatting
+
+[`core::fmt`](../library/core/src/fmt.rs) is rustc's design without
+trait objects: a `Formatter` holds its options (`flags` with the fill
+character in its low bits, `width` and `precision`, as rustc's) and a
+`Buf`, a writer's address and a function that writes a `str` to a
+writer of its type (`write_str_to::<W>`), which is what a `&mut dyn
+Write` would be. An `rt::Argument` is likewise a value's address and
+the function that formats a `T` there with the trait the placeholder
+names (`display_at::<T>`). `fmt::write` walks the pieces and
+placeholders, giving each value a formatter with its options, and the
+`{:#?}` builders write nested values through a `Formatter` over a
+`PadAdapter`, which indents. [`core::io`](../library/core/src/io.rs)
+writes to file descriptors 1 and 2 through C's `write`, buffering
+stdout by lines in a `static mut` as std's `LineWriter` does, and
+prints panics as std's default hook does, with the thread id from
+`pthread_threadid_np`. Once trait objects and `alloc` land,
+`Formatter` can hold a `&mut dyn Write` and `String` implement
+`Write`, which `format!` and `to_string` need; nothing else changes.
 
 Generic functions are *monomorphized*:
 [`mono`](../crates/flux-mir/src/mono.rs) collects the instances the
@@ -981,4 +1032,4 @@ of 1.1 ms. A single `flux build` still builds `core` once.
 | `flux-hir` `tests/hir.rs` | Snapshot HIR for `tests/data/{ok,err}`; lowering never panics on any parser fixture prefix |
 | `flux-ty` `tests/ty.rs` | Snapshot types and diagnostics for `tests/data/{ok,err}`; `main` rules; `core` is clean; signatures resolved after `core`'s shared ones match resolving everything; never panics |
 | `flux-mir` `tests/mir.rs` | Snapshot MIR and initialization errors for `tests/data/{ok,err}` |
-| `flux-cli` `tests/run.rs` | Every program in `tests/run`, built with rustc and with flux (with and without `-O`), produces the same output and exit status |
+| `flux-cli` `tests/run.rs` | Every program in `tests/run`, built with rustc and with flux (with and without `-O`), produces the same output, panic messages and exit status |

@@ -91,7 +91,9 @@ does not match `flux.ungram`.
 
 Programs in `tests/run` are compiled with rustc (`-C overflow-checks=off
 -C panic=abort`) and with flux, with and without `-O`, and must produce
-the same output and exit status: `cargo test -p flux-cli --test run`.
+the same output, panic messages and exit status: `cargo test -p
+flux-cli --test run`. Both are given the program's path relative to the
+repository, which panic messages show.
 This needs arm64 macOS, where flux can link executables so far. Write
 programs so rustc cannot fold them at compile time (pass values through
 function parameters), or its overflow lints reject them.

@@ -200,8 +200,8 @@ at character boundaries) and the methods that give parts of it:
 `split_at`, `trim`, `trim_start`, `trim_end`, `split` (by a `&str` or
 a `char`), `lines` and `split_whitespace`, with `char::encode_utf8`.
 `char`'s Unicode-table methods (`is_alphabetic`, `to_uppercase`) are
-not supported yet. A program prints a `&str` or `&[u8]` through C, as
-`printf(c"%.*s".as_ptr(), s.len() as i32, s.as_ptr())`.
+not supported yet. Programs print with `println!` and the other
+printing macros (below), or through C.
 
 Values of `Copy` types are copied: integers, `bool`, raw pointers,
 shared references, tuples and arrays of `Copy` types, structs that
@@ -213,10 +213,10 @@ as rustc does (for a generic one, where its parameters implement them;
 one with lifetime parameters, for every lifetime),
 comparing fields in order for `PartialOrd` and `Ord`, and making each
 field's default for `Default`; other derives (`Hash`) are not supported
-yet. `Debug` type-checks as rustc's (a field that does not implement it
-is "`T` doesn't implement `Debug`", at the field), but nothing can format
-a value yet: `core::fmt::Formatter` is opaque, and writing to one
-(`write!`) shows nothing.
+yet. `Debug` writes what rustc's expansion writes (`Point { x: 1, y: 2
+}`, `Pair(1, "a")`, `Unit`, and `{:#?}` over several lines), and a
+field that does not implement it is "`T` doesn't implement `Debug`", at
+the field.
 
 Macro calls are expanded where they are written: in items, statements,
 expressions, patterns and types. `macro_rules!` macros work as in rustc:
@@ -241,17 +241,32 @@ compiles as rustc does without `-O`), `panic!`, `unreachable!`,
 `todo!`, `unimplemented!`, `matches!`, `format_args!`, `write!`,
 `writeln!`, `concat!`, `stringify!`, `line!`, `column!`, `file!`,
 `module_path!`, `cfg!` (`debug_assertions`, `panic`, the target's
-`target_os` and the like) and `compile_error!`. Format strings are
-checked as rustc checks them (arguments counted, named and captured,
-each implementing `Display`, `Debug`, `LowerHex` and the others its
-placeholders name, `core::fmt`'s, reported at the argument), but
-messages are never formatted: a panic aborts, printing nothing, and
-constant evaluation reports a literal message as rustc does and a
-formatted one as "explicit panic". `std`'s macros (`println!`,
-`vec!`), `env!`, `include!` and the like, items a macro makes inside a
-function body, and calls in item position of macros named through
-modules (`a::m!();` at a module's top level; `crate::m!` and `core::m!`
-work) are not supported yet.
+`target_os` and the like) and `compile_error!`, and `std`'s `print!`,
+`println!`, `eprint!`, `eprintln!` and `dbg!`, which programs see as
+rustc's see them in `std`'s prelude, by name or as `std::println!`
+(not `core::println!`). Format strings are read and checked as rustc
+reads them: positional, named and captured arguments, `{{` and `}}`,
+fill, alignment, sign, `#`, `0`, width and precision (written, `1$`,
+`name$` or `.*`), and the traits `Display`, `Debug` (with `x?` and
+`X?`), `LowerHex`, `UpperHex`, `Octal`, `Binary`, `LowerExp`,
+`UpperExp` and `Pointer`, each argument implementing its
+placeholders', with rustc's errors where rustc reports them. Output is
+byte for byte rustc's. stdout is line-buffered as std's is (what is
+left without a newline is written when `main` returns, and lost if the
+program panics); stderr is not. A panic prints std's message to stderr
+(`thread 'main' (id) panicked at file:line:column:`, the message, and
+the note about `RUST_BACKTRACE`) and aborts; the location is where
+rustc's is, through `#[track_caller]` functions (`unwrap`, `expect`,
+indexing, `clamp`, and the program's own), with the file named as it
+was given to the compiler, except that code a `macro_rules!` macro
+defines reports where it is written rather than the macro's call.
+Constant evaluation reports a literal message, and `panic!("{}", s)`
+of a `&str`, as rustc does. `let args = format_args!(..);` (rustc
+keeps the arguments alive for the `let`), `format!`, `vec!`, `env!`,
+`include!` and the like, items a macro makes inside a function body,
+and calls in item position of macros named through modules (`a::m!();`
+at a module's top level; `crate::m!` and `core::m!` work) are not
+supported yet.
 
 Values are dropped as in rustc: a binding at the end of its block, in
 reverse order of declaration, then the function's parameters; a
@@ -301,9 +316,8 @@ and then, for an array, on the slice it unsizes to, as in rustc; the
 base is borrowed before the index is evaluated, without a two-phase
 borrow, so `&mut s[..s.len() - 1]` is E0502 as in rustc. `core`
 implements both for `[T]` with each range type, which panic as rustc's
-do (a start after the end, an end past the length; rustc's messages
-are not printed yet), and the program may implement them. Indexing is
-checked at run time: an index past the end panics, which aborts, and
+do, with rustc's messages, and the program may implement them.
+Indexing is checked at run time: an index past the end panics, and
 one known at compile time to be past an array's end is rustc's
 deny-by-default `unconditional_panic` ("this operation will panic at
 runtime"), or E0080 in a constant. As in rustc, borrowing an element
@@ -535,12 +549,19 @@ and the others of bits and signs, the `checked_`, `wrapping_`,
 `next_power_of_two`, `div_ceil`, `next_multiple_of`, `swap_bytes`,
 `reverse_bits` and the byte-order conversions (`to_le_bytes`, ...), all
 `const` and panicking or overflowing in constants as rustc's do,
-`core::fmt::{Debug, Display, Formatter, Arguments, Result, Error}`
-(`Debug` for the integers, `bool`, `char`, `str`, `()`, raw pointers,
-references, slices, arrays, tuples, `Option`, `Result`, `Ordering` and
-the ranges; `Display` for the integers, `bool`, `char`, `str` and
-references; `LowerHex`, `UpperHex`, `Octal`, `Binary`, `LowerExp` and
-`UpperExp` for the integers, and `Pointer` for pointers),
+`core::fmt::{Debug, Display, Formatter, Arguments, Write, Result,
+Error, Alignment, DebugStruct, DebugTuple, DebugList, DebugSet,
+DebugMap, write}` as rustc's (`Debug` for the integers, `bool`,
+`char`, `str`, `()`, raw pointers, references, slices, arrays, tuples,
+`Option`, `Result`, `Ordering`, `CStr`, `Utf8Error` and the ranges;
+`Display` for the integers, `bool`, `char`, `str`, `Arguments`,
+`Utf8Error`, `Location` and references; `LowerHex`, `UpperHex`,
+`Octal`, `Binary`, `LowerExp` and `UpperExp` for the integers, and
+`Pointer` for pointers and references; `Formatter`'s `pad`,
+`pad_integral`, `write_str`, `write_fmt`, the options' accessors and
+the `debug_*` builders, whose `field` and `entry` take any `&T` where
+`T: Debug`, as flux has no `&dyn Debug` yet), `core::panic::Location`
+(`caller`, `file`, `line`, `column`),
 `core::hint::black_box`,
 `core::default::Default` (in the prelude) for the integers, `bool`,
 `char`, `&str`, `&[T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,
@@ -714,8 +735,10 @@ forever, as rustc promotes it.
 
 At run time flux matches rustc with `-C overflow-checks=off -C
 panic=abort`: arithmetic wraps, shift amounts are masked to the type's
-width, and division by zero or `MIN / -1` aborts. Programs call C through
-`unsafe extern "C"` blocks; there is no standard library yet.
+width, and division by zero or `MIN / -1` panics. Programs print with
+`println!` and its relatives and call C through `unsafe extern "C"`
+blocks; there is no standard library yet, so programs name `core::fmt`
+rather than `std::fmt`.
 
 ## Deliberately rejected
 

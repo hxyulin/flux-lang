@@ -735,6 +735,34 @@
   ranges are where its tokens came from, so diagnostics point where
   rustc's do: into the definition of a local macro, at the call of
   `core`'s.
+- Format and print. `core::fmt` formats as rustc's does, byte for
+  byte: `Formatter` with fill, alignment, sign, `#`, `0`, width and
+  precision (`pad`, `pad_integral`, the options' accessors), `Write`
+  with `write_str`, `write_char` and `write_fmt`, `Arguments` built by
+  `format_args!` as rustc lowers it (positional, named and captured
+  arguments, `{:1$}`, `{:.*}`, `{:width$}`), `Display`, `Debug`,
+  `LowerHex`, `UpperHex`, `Octal`, `Binary`, `LowerExp` and `UpperExp`
+  for the integers, `bool`, `char` and `str` as rustc's have them,
+  `Debug` for tuples, slices, arrays, references, `()`, `Option`,
+  `Result`, `Ordering`, the ranges, `CStr` and `Utf8Error`, the
+  `debug_struct`, `debug_tuple`, `debug_list`, `debug_set` and
+  `debug_map` builders with `{:#?}`'s indentation, and
+  `#[derive(Debug)]` as rustc expands it. `print!`, `println!`,
+  `eprint!`, `eprintln!` and `dbg!` are there as `std`'s prelude has
+  them, writing through C's `write`, stdout buffered by lines as std's
+  is; `write!` and `writeln!` work on any `fmt::Write`. Format string
+  errors point inside the string, where rustc's do.
+- Panics print rustc's message to stderr, `thread 'main' (id)
+  panicked at file:line:column:` and the message, then abort: `panic!`
+  and `unreachable!` with their formatted messages, failed assertions
+  (`assert_eq!`'s `left`/`right`), `unwrap` and `expect` of `Option`
+  and `Result` (with the error's `Debug`), indices past the end, slice
+  and string ranges out of bounds or inside a character, division by
+  zero and `clamp`. `#[track_caller]` works as in rustc: such a
+  function reports where it was called, through others, in
+  `core::panic::Location::caller()` and its panics. `tests/run` now
+  compares stderr too, and constant evaluation reports `panic!("{}",
+  s)` of a `&str` with its message.
 
 ### Performance
 
