@@ -281,9 +281,18 @@ pub fn place_name(
                     place.projection[i + 1..]
                         .iter()
                         .find(|e| !matches!(e, ProjectionElem::Deref)),
-                    Some(ProjectionElem::Field(_) | ProjectionElem::Index(_))
+                    Some(
+                        ProjectionElem::Field(_)
+                            | ProjectionElem::Index(_)
+                            | ProjectionElem::ConstantIndex { .. }
+                            | ProjectionElem::Subslice { .. }
+                    )
                 ) => {}
             ProjectionElem::Index(_) => text = format!("{text}[_]"),
+            // As rustc writes a slice pattern's elements and rest.
+            ProjectionElem::ConstantIndex { .. } | ProjectionElem::Subslice { .. } => {
+                text = format!("{text}[..]")
+            }
             ProjectionElem::Deref => text = format!("*{text}"),
             // rustc names a variant's field as if it were the enum's:
             // `o.0` for `(o as Some).0`.
@@ -334,8 +343,20 @@ impl PlaceTy {
                 pointee
             }
             (ProjectionElem::Deref, _) => Ty::ERROR,
-            (ProjectionElem::Index(_), TyKind::Array(elem, _) | TyKind::Slice(elem)) => elem,
-            (ProjectionElem::Index(_), _) => Ty::ERROR,
+            (
+                ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. },
+                TyKind::Array(elem, _) | TyKind::Slice(elem),
+            ) => elem,
+            (ProjectionElem::Subslice { from, to, .. }, TyKind::Array(elem, _)) => {
+                Ty::array_of(elem, Ty::usize_value(u64::from(to.saturating_sub(from))))
+            }
+            (ProjectionElem::Subslice { .. }, TyKind::Slice(_)) => self.ty,
+            (
+                ProjectionElem::Index(_)
+                | ProjectionElem::ConstantIndex { .. }
+                | ProjectionElem::Subslice { .. },
+                _,
+            ) => Ty::ERROR,
         };
         PlaceTy::from(ty)
     }
@@ -363,6 +384,19 @@ pub enum ProjectionElem {
     /// The element of an array or slice at the index in this local, a
     /// `usize` checked against the length first: `_1[_2]`.
     Index(Local),
+    /// The element `offset` from the start, or with `from_end` from the
+    /// end (`offset` 1 is the last), of an array or slice at least
+    /// `min_length` long: what a slice pattern's elements are, as
+    /// rustc's. Elements at different constant indices are different
+    /// places.
+    ConstantIndex {
+        offset: u32,
+        min_length: u32,
+        from_end: bool,
+    },
+    /// The elements `from..to` of an array, or with `from_end`,
+    /// `from..len - to` of a slice: what `rest @ ..` binds.
+    Subslice { from: u32, to: u32, from_end: bool },
 }
 
 impl Place {

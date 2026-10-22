@@ -1623,9 +1623,15 @@ impl<'a> Cx<'a> {
                     ty = inner;
                 }
                 (ProjectionElem::Deref, TyKind::RawPtr(_, inner)) => ty = inner,
-                (ProjectionElem::Index(_), TyKind::Array(elem, _) | TyKind::Slice(elem)) => {
-                    ty = elem
+                (
+                    ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. },
+                    TyKind::Array(elem, _) | TyKind::Slice(elem),
+                ) => ty = elem,
+                // Of the same elements: the same slots.
+                (ProjectionElem::Subslice { from, to, .. }, TyKind::Array(elem, _)) => {
+                    ty = Ty::array_of(elem, Ty::usize_value(u64::from(to.saturating_sub(from))))
                 }
+                (ProjectionElem::Subslice { .. }, TyKind::Slice(_)) => {}
                 (ProjectionElem::Downcast(v), _) => {
                     variant = Some(v);
                     continue;

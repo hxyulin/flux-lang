@@ -279,6 +279,84 @@ impl Open<'_> {
             }
             return;
         }
+        // An array some of whose elements a slice pattern moved out (or
+        // borrowed): as rustc's `open_drop_for_array`, the runs of elements
+        // without paths of their own and those with, last run first, each
+        // run's elements in order.
+        if let (TyKind::Array(elem, len), false) = (ty.kind(), children.is_empty()) {
+            if !(self.needs_drop)(elem) {
+                return;
+            }
+            let n = len.as_usize().unwrap_or(0) as u32;
+            let children = children.clone();
+            let child_of = |paths: &MovePaths, i: u32| {
+                children
+                    .iter()
+                    .copied()
+                    .find(|&c| match paths.paths[c].fields.last() {
+                        Some(&ProjectionElem::ConstantIndex {
+                            offset,
+                            from_end: false,
+                            ..
+                        }) => offset == i,
+                        Some(&ProjectionElem::Subslice {
+                            from,
+                            to,
+                            from_end: false,
+                        }) => from <= i && i < to,
+                        _ => false,
+                    })
+            };
+            enum Run {
+                Drop(u32, u32),
+                Keep(u32, usize),
+            }
+            let mut runs = Vec::new();
+            let (mut dropping, mut start) = (true, 0);
+            for i in 0..n {
+                let child = child_of(self.paths, i);
+                if dropping && child.is_some() {
+                    runs.push(Run::Drop(start, i));
+                    dropping = false;
+                } else if !dropping && child.is_none() {
+                    dropping = true;
+                    start = i;
+                }
+                if let Some(child) = child {
+                    runs.push(Run::Keep(i, child));
+                }
+            }
+            if dropping {
+                runs.push(Run::Drop(start, n));
+            }
+            let element = |i: u32| {
+                let mut projection = place.projection.to_vec();
+                projection.push(ProjectionElem::ConstantIndex {
+                    offset: i,
+                    min_length: n,
+                    from_end: false,
+                });
+                Place {
+                    local: place.local,
+                    projection: projection.into(),
+                }
+            };
+            for run in runs.into_iter().rev() {
+                match run {
+                    Run::Keep(i, child) => self.drop(child, element(i), elem),
+                    Run::Drop(from, to) => {
+                        for i in from..to {
+                            if !self.state.maybe_held[path] {
+                                break;
+                            }
+                            let flag = self.state.maybe_uninit[path].then_some(path);
+                            self.step(element(i), flag);
+                        }
+                    }
+                }
+            }
+            return;
+        }
         let fields = self.sigs.fields(ty);
         let (Some(fields), false, false) = (fields, children.is_empty(), has_drop_impl) else {
             self.step(place, Some(path));
