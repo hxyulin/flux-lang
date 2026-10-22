@@ -384,6 +384,16 @@
   linker filling in addresses inside statics. A constant's value is
   `'static`, so borrowing its locals is E0597, while temporaries in it
   live forever, as in rustc. Mutable ones are not supported yet.
+- Accept trait `impl` blocks for references whose parameters have
+  bounds (`impl<'a, T: Copy> IntoIterator for &'a Bag<T>`): of several
+  `impl` blocks whose headers match, one whose unmet bounds are all on
+  generic parameters is chosen over one whose bounds fail for known
+  types. In a trait `impl` block's methods, `Self::Out` and `<Self as
+  Tr>::Out` are the block's own type, with its lifetimes, so `fn
+  into_iter(self) -> Self::IntoIter` matches its trait and returns a
+  value borrowing `self`. References to references coerce to the
+  reference expected (`&&T` to `&T`, rustc's deref coercion), and
+  references to sized values may be passed to C-variadic functions.
 - Add a scaling test of many regions and constraints in a long body,
   and an ignored one recording a quadratic case rustc's NLL shares: a
   `mut` reference reassigned from each new borrow through a body.

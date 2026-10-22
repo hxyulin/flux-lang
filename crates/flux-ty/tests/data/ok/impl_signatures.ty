@@ -1,0 +1,99 @@
+struct Bag<T> { items: [T; 2] }
+struct It<'a, T> { bag: &Bag<T>, i: usize }
+struct Pair { items: [i32; 2] }
+struct PairIt<'a> { pair: &Pair, i: usize }
+struct Wrap<T> { v: [T; 2] }
+struct WrapIt<'a, T> { w: &Wrap<T>, i: usize }
+struct V<T> { x: T, y: T }
+struct Square { 0: i32 }
+struct W { 0: i32 }
+fn next(&mut It<T>) -> Option<&T>
+    self@0: &mut It<T>
+fn into_iter(&Bag<T>) -> It<T>
+    self@0: &Bag<T>
+fn next(&mut PairIt) -> Option<&i32>
+    self@0: &mut PairIt
+fn into_iter(&Pair) -> PairIt
+    self@0: &Pair
+fn next(&mut WrapIt<T>) -> Option<T>
+    self@0: &mut WrapIt<T>
+fn into_iter(&Wrap<T>) -> WrapIt<T>
+    self@0: &Wrap<T>
+fn total<T>(&Wrap<T>, T) -> T
+    w@0: &Wrap<T>
+    zero@1: T
+    t@2: T
+    iter@3: WrapIt<T>
+    x@4: T
+fn sum_bag<T>(&Bag<T>, fn(T) -> i64) -> i64
+    b@0: &Bag<T>
+    f@1: fn(T) -> i64
+    t@2: i64
+    iter@3: It<T>
+    x@4: &T
+fn add(&V<T>, &V<T>) -> V<T>
+    self@0: &V<T>
+    o@1: &V<T>
+fn mul(&V<T>, &V<T>) -> T
+    self@0: &V<T>
+    o@1: &V<T>
+fn neg(&V<T>) -> V<T>
+    self@0: &V<T>
+fn add_refs<T>(&V<T>, &V<T>) -> V<T>
+    a@0: &V<T>
+    b@1: &V<T>
+fn area(&Self) -> <Self as Shape>::Unit
+fn twice(&Self, <Self as Shape>::Unit) -> (<Self as Shape>::Unit, <Self as Shape>::Unit)
+    self@0: &Self
+    u@1: <Self as Shape>::Unit
+fn sides(&Self) -> i32
+    self@0: &Self
+fn area(&Square) -> i32
+    self@0: &Square
+fn twice(&Square, i32) -> (i32, i32)
+    self@0: &Square
+    u@1: i32
+fn area(&&S) -> <S as Shape>::Unit
+    self@0: &&S
+fn visit<F>(&Self, F) -> <Self as Visit>::Out
+fn visit2<G>(&Self, G) -> i32
+fn visit<H>(&W, H) -> i32
+    self@0: &W
+    h@1: H
+fn visit2<G>(&W, G) -> i32
+    self@0: &W
+    g@1: G
+fn visit<F>(&&W, F) -> &W
+    self@0: &&W
+    _f@1: F
+fn visit2<G>(&&W, G) -> i32
+    self@0: &&W
+    g@1: G
+fn widen(u8) -> i64
+    x@0: u8
+fn main() -> ()
+    b@0: Bag<i32>
+    t@1: i32
+    iter@2: It<i32>
+    x@3: &i32
+    p@4: Pair
+    iter@5: PairIt
+    x@6: &i32
+    w@7: Wrap<u8>
+    a@8: V<i32>
+    c@9: V<i32>
+    sum@10: V<i32>
+    dot@11: i32
+    neg@12: V<i32>
+    s@13: Square
+    r@14: &Square
+    u@15: i32
+    v@16: i32
+    k@17: W
+    kr@18: &W
+    x@19: i32
+    x@20: i32
+    x@21: i32
+    x@22: i32
+fn clone(&V<T>) -> V<T>
+    self@0: &V<T>

@@ -1,0 +1,19 @@
+struct Bag { items: [i32; 2] }
+struct It<'a> { bag: &Bag, i: usize }
+struct S {}
+struct Q {}
+fn next(&mut It) -> Option<&i32>
+    self@0: &mut It
+fn into_iter(&Bag) -> &i32
+    self@0: &Bag
+fn f(&Self, <Self as Tr>::A) -> i32
+fn f(&S, u8) -> u32
+    self@0: &S
+    a@1: u8
+fn f(&Q, u8) -> u8
+    self@0: &Q
+    a@1: u8
+fn main() -> ()
+error 456..466: method `into_iter` has an incompatible type for trait
+error 648..651: method `f` has an incompatible type for trait
+error 756..771: method `f` has an incompatible type for trait

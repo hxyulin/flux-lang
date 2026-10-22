@@ -889,15 +889,26 @@ pub fn select_impl(
     if found.len() <= 1 {
         return found.into_iter().next();
     }
-    let all = found.clone();
-    found
-        .into_iter()
-        .find(|(imp, args)| {
-            sigs.impl_predicates
-                .get(*imp)
-                .is_none_or(|preds| preds.iter().all(|p| holds(items, sigs, &[], p.subst(args))))
+    // Bounds on generic parameters may hold where the bounds in scope
+    // say so, which this does not know: of the blocks whose bounds do
+    // not all hold, one whose failing bounds are all on parameters
+    // (`impl<'a, T: Copy> IntoIterator for &'a Bag<T>`, for `T`) is
+    // still the one, where another's fail for known types (the blanket
+    // `impl<I: Iterator> IntoIterator for I`, as `&Bag<T>` is not an
+    // iterator).
+    let bounds_hold = |(imp, args): &(ImplId, Vec<Ty>), may: bool| {
+        sigs.impl_predicates.get(*imp).is_none_or(|preds| {
+            preds.iter().all(|p| {
+                let p = p.subst(args);
+                (may && matches!(p.self_ty.kind(), TyKind::Param(_) | TyKind::Alias(_)))
+                    || holds(items, sigs, &[], p)
+            })
         })
-        .or_else(|| all.into_iter().next())
+    };
+    let pick = |may| found.iter().find(|c| bounds_hold(c, may)).cloned();
+    pick(false)
+        .or_else(|| pick(true))
+        .or_else(|| found.first().cloned())
 }
 
 /// The generic arguments for which `impl` block `imp`'s header is

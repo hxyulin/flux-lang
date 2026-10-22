@@ -7,8 +7,7 @@
 //! `unwrap` instead), no `Default` (`new` takes a fill value), no
 //! `size_hint`/`ExactSizeIterator`/`rposition` (`rev().position()`), no
 //! `Debug`/`Default` derives, no iterating arrays by value, no `Sum<&u32>`
-//! (`map(|x| *x)` first); the struct, `get`, `iter` and the iterator's impls are
-//! unbounded, around a false rejection (`bugs/into_iter_bounded_impl.rs`).
+//! (`map(|x| *x)` first).
 
 unsafe extern "C" {
     fn printf(format: *const i8, ...) -> i32;
@@ -17,7 +16,7 @@ unsafe extern "C" {
 const CAP: usize = 8;
 
 #[derive(Clone, Copy)]
-struct RingBuffer<T> {
+struct RingBuffer<T: Copy> {
     items: [T; CAP],
     head: usize,
     len: usize,
@@ -68,9 +67,7 @@ impl<T: Copy> RingBuffer<T> {
         self.len -= 1;
         Some(self.items[(self.head + self.len) % CAP])
     }
-}
 
-impl<T> RingBuffer<T> {
     fn get(&self, i: usize) -> Option<&T> {
         if i < self.len { Some(&self.items[(self.head + i) % CAP]) } else { None }
     }
@@ -80,13 +77,13 @@ impl<T> RingBuffer<T> {
     }
 }
 
-struct Iter<'a, T> {
+struct Iter<'a, T: Copy> {
     ring: &'a RingBuffer<T>,
     front: usize,
     back: usize,
 }
 
-impl<'a, T> Iterator for Iter<'a, T> {
+impl<'a, T: Copy> Iterator for Iter<'a, T> {
     type Item = &'a T;
     fn next(&mut self) -> Option<&'a T> {
         if self.front == self.back {
@@ -98,7 +95,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 }
 
-impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
+impl<'a, T: Copy> DoubleEndedIterator for Iter<'a, T> {
     fn next_back(&mut self) -> Option<&'a T> {
         if self.front == self.back {
             return None;
@@ -108,7 +105,7 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
     }
 }
 
-impl<'a, T> IntoIterator for &'a RingBuffer<T> {
+impl<'a, T: Copy> IntoIterator for &'a RingBuffer<T> {
     type Item = &'a T;
     type IntoIter = Iter<'a, T>;
     fn into_iter(self) -> Iter<'a, T> {

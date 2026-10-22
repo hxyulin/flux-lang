@@ -6,8 +6,7 @@
 //! Rewritten for flux from `original/shapes.rs`: no `&CStr` type (names
 //! are C pointers, so squares are counted by shape, not by name), no
 //! `Debug` derive, no `sort_by` (an insertion sort taking a comparator),
-//! no `Iterator::copied`, no range slicing, array methods through slices,
-//! no deref coercion (`&&Figure` to `&Figure`).
+//! no `Iterator::copied`, no range slicing, array methods through slices.
 
 use core::cmp::Ordering;
 
@@ -185,7 +184,7 @@ fn main() {
     unsafe {
         printf(c"biggest: %s, roundest: %s\n".as_ptr(), biggest.name(), roundest.name());
     }
-    let squares = figures.iter().filter(|f| matches_square(*f)).count();
+    let squares = figures.iter().filter(|f| matches_square(f)).count();
     unsafe { printf(c"%zu square(s)\n".as_ptr(), squares) };
 
     let corners: &[Point] = &[Point { x: 3, y: 1 }, Point { x: -2, y: 8 }, Point { x: 3, y: 0 }, Point { x: 1, y: 1 }];

@@ -1,0 +1,135 @@
+fn <It<'a> as Iterator>::next(_1: &mut It) -> Option<&i32> {
+    let mut _0: Option<&i32>;
+    let _2: bool;
+    let _3: usize;
+    let _4: ();
+    let _5: usize;
+    let _6: &i32;
+    let _7: usize;
+    let _8: usize;
+    let _9: bool;
+
+    bb0: {
+        _3 = copy (*_1).1;
+        _2 = Lt(copy _3, const 2_usize);
+        switchInt(copy _2) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _5 = copy (*_1).1;
+        (*_1).1 = Add(copy _5, const 1_usize);
+        _4 = const ();
+        _8 = copy (*_1).1;
+        _7 = Sub(copy _8, const 1_usize);
+        _9 = Lt(copy _7, const 2_usize);
+        assert(copy _9, "index out of bounds") -> bb4;
+    }
+
+    bb2: {
+        _0 = Option::None;
+        goto -> bb3;
+    }
+
+    bb3: {
+        return;
+    }
+
+    bb4: {
+        _6 = &(*(*_1).0).0[_7];
+        _0 = Option::Some(copy _6);
+        goto -> bb3;
+    }
+}
+
+fn <&'a Bag as IntoIterator>::into_iter(_1: &Bag) -> It {
+    let mut _0: It;
+    let _2: Bag; // b
+    let _3: [i32; 2];
+    let _4: &Bag;
+
+    bb0: {
+        _3 = [const 1_i32, const 2_i32];
+        _2 = Bag { items: copy _3 };
+        _4 = &_2;
+        _0 = It { bag: copy _4, i: const 0_usize };
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn too_long<'x>(_1: &Bag) -> It {
+    let mut _0: It;
+    let _2: &Bag;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = into_iter::<&Bag>(copy _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn escape(_1: &Bag) -> &Bag {
+    let mut _0: &Bag;
+    let _2: &&Bag;
+    let _3: &&Bag; // r
+
+    bb0: {
+        _3 = &_1;
+        _2 = copy _3;
+        StorageDead(_3);
+        _0 = &(*(*_2));
+        return;
+    }
+}
+
+fn write_while_shared() -> () {
+    let mut _0: ();
+    let mut _1: Bag; // f
+    let _2: [i32; 2];
+    let mut _3: &mut Bag; // m
+    let _4: &mut &mut Bag; // mm
+    let _5: &Bag; // x
+    let _6: ();
+    let _7: usize;
+    let _8: bool;
+
+    bb0: {
+        _2 = [const 1_i32, const 2_i32];
+        _1 = Bag { items: copy _2 };
+        _3 = &mut _1;
+        _4 = &mut _3;
+        _5 = &(*(*_4));
+        _7 = const 0_usize;
+        _8 = Lt(copy _7, const 2_usize);
+        assert(copy _8, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        (*(*_4)).0[_7] = const 3_i32;
+        _6 = const ();
+        PlaceMention(_5);
+        _0 = const ();
+        StorageDead(_5);
+        StorageDead(_4);
+        StorageDead(_3);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 520..540: cannot return value referencing local variable `b`
+error 599..612: lifetime may not live long enough
+error 673..674: lifetime may not live long enough
+error 814..829: cannot assign to `mm.items[_]` because it is borrowed

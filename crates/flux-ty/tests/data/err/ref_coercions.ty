@@ -1,0 +1,22 @@
+struct F { v: i32 }
+fn printf(*const i8) -> i32
+fn set(&mut F) -> ()
+    f@0: &mut F
+fn shared_to_unique() -> ()
+    f@0: F
+    m@1: &mut F
+    r@2: &&mut F
+fn deref_then_unsize() -> ()
+    a@0: [i32; 3]
+    r@1: &[i32; 3]
+    s@2: &[i32]
+fn not_the_pointee() -> ()
+    f@0: F
+    r@1: &F
+    x@2: &i32
+fn function_item() -> ()
+fn main() -> ()
+error 227..228: mismatched types: expected `&mut F`, found `&&mut F`
+error 318..320: mismatched types: expected `&[i32]`, found `&&[{integer}; 3]`
+error 421..423: mismatched types: expected `&i32`, found `&&F`
+error 508..511: can't pass a function item to a variadic function

@@ -351,6 +351,10 @@ pub struct TypeScope<'a> {
     pub bounds: &'a [Predicate],
     /// In a trait's `impl` block, its trait: `Self::Out` is its type.
     pub self_trait: Option<TraitRef>,
+    /// In a trait's `impl` block's items, its associated types: what
+    /// `Self::Out` and `<Self as Tr>::Out` are, as rustc normalizes them
+    /// there (the block is the one for its `Self`).
+    pub self_types: &'a [(Symbol, Ty)],
     /// The defaults of traits' parameters, for bounds that leave them
     /// out.
     pub defaults: Option<&'a traits::TraitDefaults>,
@@ -847,6 +851,15 @@ fn assoc_type(
             ));
             return Ty::ERROR;
         }
+        let self_written = path.qself.as_ref().is_some_and(
+            |q| matches!(&q.ty, TypeRef::Path(p) if p.as_name() == Some(kw::SelfUpper)),
+        );
+        if self_written
+            && Some(trait_ref) == scope.self_trait
+            && let Some(&(_, ty)) = scope.self_types.iter().find(|(n, _)| *n == name)
+        {
+            return ty;
+        }
         return Ty::alias(traits::alias_of(trait_ref, self_ty, name));
     }
     // `Self::Out` in a trait's `impl` block: the block's own.
@@ -858,6 +871,11 @@ fn assoc_type(
         && (written_self || !matches!(self_ty.kind(), TyKind::Param(_)))
     {
         if has_type(trait_ref.trait_) {
+            if written_self
+                && let Some(&(_, ty)) = scope.self_types.iter().find(|(n, _)| *n == name)
+            {
+                return ty;
+            }
             return Ty::alias(traits::alias_of(trait_ref, self_ty, name));
         }
         if path.qself.is_none() && path.segments[0] == kw::SelfUpper {
@@ -1670,6 +1688,7 @@ fn extend_signatures(
                 .owner
                 .and_then(Owner::as_impl)
                 .and_then(|imp| sigs.impl_traits.get(imp).copied()),
+            self_types: &[],
             defaults: Some(&sigs.trait_defaults),
             lens,
         };
@@ -1716,11 +1735,18 @@ fn extend_signatures(
             .impl_of(id)
             .and_then(|imp| sigs.impl_traits.get(imp).copied());
         let owner_bounds = traits::owner_predicates(items, &sigs, function.owner);
+        let self_types: Vec<(Symbol, Ty)> = match items.impl_of(id) {
+            Some(imp) if self_trait.is_some() => {
+                sigs.impl_types.get(imp).map_or(Vec::new(), |t| t.to_vec())
+            }
+            _ => Vec::new(),
+        };
         let scope = TypeScope {
             self_ty: self_ty(&sigs, function.owner),
             generics: &generics,
             signature_of: Some("functions"),
             self_trait,
+            self_types: &self_types,
             defaults: Some(&sigs.trait_defaults),
             lens,
             ..TypeScope::default()
