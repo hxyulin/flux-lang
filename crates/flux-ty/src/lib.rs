@@ -1914,6 +1914,7 @@ pub fn impl_target(items: &ItemTree, ty: Ty) -> Option<ImplTarget> {
         TyKind::Str => Some(ImplTarget::Primitive(sym::str)),
         TyKind::Slice(_) => Some(ImplTarget::Primitive(flux_hir::slice_target())),
         TyKind::Array(..) => Some(ImplTarget::Primitive(flux_hir::array_target())),
+        TyKind::Dynamic(d) => Some(ImplTarget::Object(d.trait_)),
         _ => None,
     }
 }
@@ -3046,6 +3047,14 @@ fn impl_type(
             )
         }
         (Some(ImplTarget::Primitive(name)), _) => primitive(name).unwrap_or(Ty::ERROR),
+        (Some(ImplTarget::Object(_)), TypeRef::Dyn(_)) => resolve_type(
+            items,
+            imp.module,
+            &imp.self_ty,
+            scope,
+            imp.self_range,
+            &mut errors,
+        ),
         _ => Ty::ERROR,
     };
     diagnostics.extend(errors.into_iter().map(|(at, message)| Diagnostic {

@@ -509,8 +509,9 @@ unsizing coercion allows), and a parameter's lifetime bound (`T:
 rustc reports them). References and trait objects in a trait object's
 generic arguments, trait objects in constants and statics (which are
 not `Sync` anyway), references to trait objects cast to raw pointers,
-`Box<dyn Tr>`, `dyn Any` and inherent `impl dyn Tr` blocks are not
-supported yet.
+`Box<dyn Tr>` and `dyn Any` are not supported yet. A trait's crate may
+write inherent `impl dyn Tr` blocks (E0116 elsewhere), whose methods
+trait objects of it have.
 
 A pattern that is not a binding sees through references, and then binds
 by reference, as rustc's default binding modes do: `Some(x)` matching a

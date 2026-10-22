@@ -895,6 +895,10 @@
 - `core::fmt`'s `Formatter` writes through a `&mut dyn Write` and its
   `debug_*` builders take `&dyn Debug`, as rustc's do, with output
   unchanged; `fmt::write` takes a `&mut dyn Write`.
+- Support inherent `impl dyn Tr` blocks, in the trait's crate (E0116
+  elsewhere), and reach every method of a trait object's traits, so
+  that `core`'s provided ones (`Write::write_char`, `Iterator::nth`)
+  are built for vtables.
 
 ### Performance
 

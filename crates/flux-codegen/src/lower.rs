@@ -78,6 +78,7 @@ pub fn lower_module(
                 match (target, f.owner) {
                     (Some(ImplTarget::Struct(s)), _) => path.push(items.structs[s].name.as_str()),
                     (Some(ImplTarget::Primitive(name)), _) => path.push(name.as_str()),
+                    (Some(ImplTarget::Object(t)), _) => path.push(items.traits[t].name.as_str()),
                     (None, Some(Owner::Trait(t))) => path.push(items.traits[t].name.as_str()),
                     (None, Some(Owner::Impl(imp))) => {
                         if let Some(t) = items.impls[imp].trait_ {

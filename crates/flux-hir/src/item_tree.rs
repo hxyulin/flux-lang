@@ -416,6 +416,8 @@ pub enum AssocItem {
 pub enum ImplTarget {
     Struct(StructId),
     Primitive(Symbol),
+    /// `impl dyn Tr`: trait objects of a trait.
+    Object(TraitId),
 }
 
 /// A struct, `struct S { a: i32 }`, `struct P(i32);` or `struct U;`, or
@@ -1342,6 +1344,9 @@ impl ItemTree {
                 format!("{}::{}", self.structs[strukt].name, function.name)
             }
             Some(ImplTarget::Primitive(name)) => format!("{name}::{}", function.name),
+            Some(ImplTarget::Object(t)) => {
+                format!("<dyn {}>::{}", self.traits[t].name, function.name)
+            }
             None => function.name.to_string(),
         }
     }

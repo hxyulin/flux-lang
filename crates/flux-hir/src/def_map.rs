@@ -1347,15 +1347,25 @@ fn resolve_impls(items: &mut ItemTree, from: usize) {
             TypeRef::Array { .. } if items.is_core(module) => {
                 Some(ImplTarget::Primitive(crate::item_tree::array_target()))
             }
-            TypeRef::Dyn(_) => {
-                let range = items.impls[id].self_range;
-                error(
-                    items,
-                    range,
-                    "inherent `impl` blocks for trait objects are not supported yet".into(),
-                );
-                None
-            }
+            // `impl dyn Tr`, in the trait's crate only, as rustc's
+            // coherence says.
+            TypeRef::Dyn(d) => match d.bounds.first().map(|b| items.resolve_trait(module, b)) {
+                Some((Some(t), _)) => {
+                    let krate = |m: crate::ModuleId| items.is_core(m);
+                    if krate(items.traits[t].loc.module) != krate(module) {
+                        let range = items.impls[id].def_range;
+                        error(
+                            items,
+                            range,
+                            "cannot define inherent `impl` for a type outside of the crate where the type is defined".into(),
+                        );
+                        None
+                    } else {
+                        Some(ImplTarget::Object(t))
+                    }
+                }
+                _ => None,
+            },
             _ => {
                 let range = items.impls[id].def_range;
                 error(
