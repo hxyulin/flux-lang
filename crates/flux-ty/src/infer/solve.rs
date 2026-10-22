@@ -1530,6 +1530,14 @@ impl Ctx<'_> {
             let (range, kind) = match (data.owner, known) {
                 (Some(Owner::Trait(_)), _) if k == 0 => match (site.qself, known) {
                     (Some(qself), _) => (qself, ObligationKind::Bound),
+                    // The trait's arguments are the arguments' to come
+                    // (`str: PartialEq<?R>` of `a.eq(&b)`): unmet, it is
+                    // rustc's E0277 at the argument that gave them.
+                    (None, Some(_))
+                        if let Some(arg) = self.trait_args_argument(function, &pred, site) =>
+                    {
+                        (self.range(arg), ObligationKind::Bound)
+                    }
                     (None, Some(ty)) => (
                         site.callee,
                         ObligationKind::ItemBounds {
@@ -1600,6 +1608,32 @@ impl Ctx<'_> {
     /// the generic argument written for the parameter it bounds, else at
     /// the one argument whose type mentions it, else at the callee if
     /// several do, else at the whole call.
+    /// The one argument of method call `site` whose parameter's type
+    /// mentions the trait's generic parameters, if the trait's
+    /// arguments in `pred`, its `Self` bound, are still unknown.
+    fn trait_args_argument(
+        &mut self,
+        function: FunctionId,
+        pred: &Predicate,
+        site: CallSite<'_>,
+    ) -> Option<ExprId> {
+        if site.receiver.is_none() || !pred.trait_ref.args.iter().any(|&t| self.has_unknown(t)) {
+            return None;
+        }
+        let count = pred.trait_ref.args.len() as u32;
+        let params = &self.sigs[function].params;
+        let mut mentioning = params
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter(|(_, ty)| (1..=count).any(|i| mentions(**ty, i)));
+        let (i, _) = mentioning.next()?;
+        if mentioning.next().is_some() {
+            return None;
+        }
+        site.args.get(i - 1).copied()
+    }
+
     fn bound_range(&self, function: FunctionId, p: Predicate, site: CallSite<'_>) -> TextRange {
         let (items, sigs) = (self.items, self.sigs);
         let data = &items.functions[function];
