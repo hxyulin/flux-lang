@@ -2023,12 +2023,10 @@ fn check_method(
         .get(imp)
         .map_or(&[][..], |p| p)
         .to_vec();
-    let declared = sigs.fn_predicates.get(required).map_or(&[][..], |p| p);
-    // With the block's associated types normalized, as its signature's
-    // are: `F: FnMut(B, Self::Item)` of `Iterator::fold` is `F: FnMut(B,
-    // T)` in a block whose `Item` is `T`.
-    env.extend(declared.iter().map(|p| {
-        let p = p.subst(&args);
+    // Both sides with the block's associated types normalized, as the
+    // signatures are: the trait's `F: FnMut(B, Self::Item)` is the
+    // block's `F: FnMut(B, I::Item)`.
+    let norm_predicate = |p: Predicate| {
         let args: Vec<Ty> = p
             .trait_ref
             .args
@@ -2042,10 +2040,12 @@ fn check_method(
                 ..p.trait_ref
             },
         }
-    }));
+    };
+    let declared = sigs.fn_predicates.get(required).map_or(&[][..], |p| p);
+    env.extend(declared.iter().map(|p| norm_predicate(p.subst(&args))));
     let env = elaborate(sigs, &env);
     for (written, &p) in function.generics.predicates.iter().zip(own) {
-        if !holds(items, sigs, &env, p) {
+        if !holds(items, sigs, &env, norm_predicate(p)) {
             error(
                 written.bound.range,
                 "impl has stricter requirements than trait".to_owned(),

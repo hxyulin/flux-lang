@@ -1,0 +1,29 @@
+struct Up { 0: u32 }
+struct Twice<W> { 0: W }
+struct Same<W> { 0: W }
+fn step(&mut Self) -> Option<<Self as Walk>::Item>
+fn walk<B, F>(Self, B, F) -> B
+    self@0: Self
+    init@1: B
+    f@2: F
+    acc@3: B
+    x@4: <Self as Walk>::Item
+fn step(&mut Up) -> Option<u32>
+    self@0: &mut Up
+fn step(&mut Twice<W>) -> Option<<W as Walk>::Item>
+    self@0: &mut Twice<W>
+fn walk<B, F>(Twice<W>, B, F) -> B
+    self@0: Twice<W>
+    init@1: B
+    f@2: F
+fn step(&mut Same<W>) -> Option<<W as Walk>::Item>
+    self@0: &mut Same<W>
+fn walk<B, F>(Same<W>, B, F) -> B
+    self@0: Same<W>
+    init@1: B
+    f@2: F
+fn main() -> ()
+    a@0: u32
+    x@1: u32
+    a@2: u32
+    x@3: u32
