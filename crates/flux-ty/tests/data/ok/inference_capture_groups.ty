@@ -1,0 +1,6 @@
+struct Pair { 0: i32, 1: i32 }
+fn main() -> ()
+    a@0: Pair
+    b@1: Pair
+    c@2: i32
+    capture@3: {closure}

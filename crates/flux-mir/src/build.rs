@@ -3620,6 +3620,46 @@ impl Builder<'_> {
                 here(self)
             }
             Pat::Or(alternatives) => {
+                // Disjoint, exhaustive boolean literals have one way of
+                // matching any particular value, with no bindings. Share
+                // their continuation instead of multiplying the exits of
+                // every subsequent field (2^n for n boolean columns).
+                // A failed guard can skip both alternatives: the other
+                // literal cannot match. Keep the read, including captures
+                // and initialization/borrow checks, even though both switch
+                // targets are the same. Overlapping alternatives must retain
+                // separate exits, since a guard can run again for each.
+                let boolean = |pat| match body.pats[pat] {
+                    Pat::Expr(expr) => match body.exprs[expr] {
+                        Expr::Literal(Literal::Bool(value)) => Some(value),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let [a, b] = &self.body.lists[*alternatives][..]
+                    && let (Some(av), Some(bv)) = (boolean(*a), boolean(*b))
+                    && av != bv
+                    && self.types.pat_derefs.get(*a) == self.types.pat_derefs.get(*b)
+                {
+                    // Match ergonomics records implicit dereferences on the
+                    // literal children, not on the or-pattern itself.
+                    for _ in 0..self.types.pat_derefs.get(*a).copied().unwrap_or(0) {
+                        place = place.deref();
+                    }
+                    let place = self.resolve(place, range);
+                    let ok = self.new_block();
+                    self.terminate(
+                        TerminatorKind::SwitchInt {
+                            discr: Operand::Copy(place),
+                            targets: vec![(0, ok)],
+                            otherwise: ok,
+                            variants: None,
+                        },
+                        range,
+                    );
+                    self.current = Some(ok);
+                    return here(self);
+                }
                 let mut exits = Vec::new();
                 for (i, &alt) in self.body.lists[*alternatives].iter().enumerate() {
                     let last = i + 1 == alternatives.len();

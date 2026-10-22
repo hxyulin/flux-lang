@@ -1,0 +1,2 @@
+fn main() -> ()
+error 20..37: cycle detected when computing the super clauses of `Expanding`

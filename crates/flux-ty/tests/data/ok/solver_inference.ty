@@ -1,0 +1,6 @@
+struct S {}
+fn choose<T>(&S, T) -> T
+    value@0: T
+fn main() -> ()
+    a@0: u8
+    b@1: u16

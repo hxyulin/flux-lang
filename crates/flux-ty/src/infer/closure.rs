@@ -25,7 +25,7 @@
 //! `Fn`. Its captures are ordered by binding, in the order each is first
 //! used, and by field within one.
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use flux_hir::{
     BinaryOp, BindingId, Expr, ExprId, FunctionId, Pat, PatId, Res, Stmt, StructId, TypeRefId,
@@ -761,7 +761,7 @@ impl Ctx<'_> {
             kind = kind.max(k);
         }
         // The places, as few and as short as rustc's.
-        let mut captures: Vec<(Place, CaptureMode, TextRange, bool)> = Vec::new();
+        let mut captures = PendingCaptures::default();
         for (place, use_kind, range) in found {
             let mode = match use_kind {
                 UseKind::Move => CaptureMode::ByValue,
@@ -771,35 +771,9 @@ impl Ctx<'_> {
             };
             let (place, mode) = self.truncate_capture(place, mode, closure.is_move);
             let assigned = use_kind == UseKind::Assign;
-            insert_capture(&mut captures, (place, mode, range, assigned));
+            captures.insert((place, mode, range, assigned));
         }
-        // Grouped by binding, in the order each is first used, and each
-        // binding's places in the order of their fields, as rustc orders
-        // them (which is the order they are dropped in).
-        let mut bindings: Vec<BindingId> = Vec::new();
-        for ((binding, _), ..) in &captures {
-            if !bindings.contains(binding) {
-                bindings.push(*binding);
-            }
-        }
-        captures.sort_by(|((a, pa), ..), ((b, pb), ..)| {
-            let rank = |x: &BindingId| bindings.iter().position(|y| y == x);
-            let fields = |p: &[CaptureProj]| {
-                p.iter()
-                    .filter_map(|p| match p {
-                        CaptureProj::Field(i) => Some(*i),
-                        CaptureProj::Deref => None,
-                    })
-                    .collect::<Vec<_>>()
-            };
-            rank(a).cmp(&rank(b)).then_with(|| {
-                let (fa, fb) = (fields(pa), fields(pb));
-                fa.iter()
-                    .zip(&fb)
-                    .find(|(x, y)| x != y)
-                    .map_or(std::cmp::Ordering::Equal, |(x, y)| x.cmp(y))
-            })
-        });
+        let captures = captures.ordered();
         let captures = captures
             .into_iter()
             .map(|((binding, projection), mode, range, assigned)| {
@@ -1629,8 +1603,51 @@ impl Ctx<'_> {
 /// the strongest mode.
 type PendingCapture = (Place, CaptureMode, TextRange, bool);
 
+/// Captures of different bindings cannot overlap. Keep their merge searches
+/// separate and retain first-use order without searching a growing binding list.
+#[derive(Default)]
+struct PendingCaptures {
+    bindings: FxHashMap<BindingId, usize>,
+    groups: Vec<Vec<PendingCapture>>,
+}
+
+impl PendingCaptures {
+    fn insert(&mut self, capture: PendingCapture) {
+        let next = self.groups.len();
+        let index = *self.bindings.entry(capture.0.0).or_insert(next);
+        if index == next {
+            self.groups.push(Vec::new());
+        }
+        let group = &mut self.groups[index];
+        insert_capture(group, capture);
+    }
+
+    /// Grouped by binding in first-use order, then by field within each
+    /// binding, preserving the order of captures with equal field paths.
+    fn ordered(mut self) -> Vec<PendingCapture> {
+        for group in &mut self.groups {
+            group.sort_by(|((_, a), ..), ((_, b), ..)| {
+                let fields = |p: &CaptureProj| match p {
+                    CaptureProj::Field(i) => Some(*i),
+                    CaptureProj::Deref => None,
+                };
+                a.iter()
+                    .filter_map(fields)
+                    .zip(b.iter().filter_map(fields))
+                    .find_map(|(a, b)| (a != b).then(|| a.cmp(&b)))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        self.groups.into_iter().flatten().collect()
+    }
+}
+
 fn insert_capture(captures: &mut Vec<PendingCapture>, new: PendingCapture) {
-    let is_prefix = |a: &Place, b: &Place| a.0 == b.0 && b.1.starts_with(&a.1);
+    let is_prefix = |a: &Place, b: &Place| {
+        #[cfg(test)]
+        tests::PREFIX_COMPARISONS.with(|count| count.set(count.get() + 1));
+        a.0 == b.0 && b.1.starts_with(&a.1)
+    };
     // The stronger of two uses decides, and where it is reported.
     let merge = |into: &mut PendingCapture, other: &PendingCapture| {
         if other.1.rank() > into.1.rank() {
@@ -1806,4 +1823,69 @@ enum Stop {
     Indexed,
     /// At an overloaded dereference, which borrows its base so.
     Overloaded(Mutability),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    thread_local! {
+        pub(super) static PREFIX_COMPARISONS: std::cell::Cell<usize> = const {
+            std::cell::Cell::new(0)
+        };
+    }
+
+    #[test]
+    fn capture_merge_work_is_linear_across_bindings() {
+        let n = 20_000;
+        PREFIX_COMPARISONS.set(0);
+        let mut captures = PendingCaptures::default();
+        for pass in 0..4 {
+            for i in (0..n).rev() {
+                captures.insert((
+                    (BindingId::from_raw(i), Vec::new()),
+                    if pass == 3 {
+                        CaptureMode::ByRef(Mutability::Mut)
+                    } else {
+                        CaptureMode::ByRef(Mutability::Not)
+                    },
+                    TextRange::default(),
+                    pass == 3,
+                ));
+            }
+        }
+        // Each repeated use searches only its binding's single capture;
+        // a global capture list would examine quadratically many entries.
+        assert_eq!(PREFIX_COMPARISONS.get(), 3 * n as usize);
+        let ordered = captures.ordered();
+        assert_eq!(ordered.len(), n as usize);
+        for (capture, binding) in ordered.iter().zip((0..n).rev()) {
+            assert_eq!(capture.0.0, BindingId::from_raw(binding));
+            assert_eq!(capture.1, CaptureMode::ByRef(Mutability::Mut));
+            assert!(capture.3);
+        }
+    }
+
+    #[test]
+    fn capture_groups_preserve_order_and_prefix_merging() {
+        let mut captures = PendingCaptures::default();
+        let a = BindingId::from_raw(7);
+        let b = BindingId::from_raw(2);
+        let shared = CaptureMode::ByRef(Mutability::Not);
+        let mutable = CaptureMode::ByRef(Mutability::Mut);
+        let range = TextRange::default();
+        captures.insert(((a, vec![CaptureProj::Field(2)]), shared, range, false));
+        captures.insert(((b, vec![CaptureProj::Field(1)]), mutable, range, true));
+        captures.insert(((a, vec![CaptureProj::Field(0)]), shared, range, false));
+        captures.insert(((b, vec![]), shared, range, false));
+        let ordered = captures.ordered();
+        assert_eq!(
+            ordered,
+            vec![
+                ((a, vec![CaptureProj::Field(0)]), shared, range, false),
+                ((a, vec![CaptureProj::Field(2)]), shared, range, false),
+                ((b, vec![]), mutable, range, true),
+            ]
+        );
+    }
 }

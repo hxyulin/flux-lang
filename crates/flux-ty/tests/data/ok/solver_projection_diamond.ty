@@ -1,0 +1,6 @@
+struct S {}
+fn get(&Self) -> u8
+    self@0: &Self
+fn require<T>(&T) -> u8
+    value@0: &T
+fn main() -> ()

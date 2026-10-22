@@ -1,0 +1,7 @@
+fn identity<T>((((T, T), (T, T)), ((T, T), (T, T)))) -> (((T, T), (T, T)), ((T, T), (T, T)))
+    x@0: (((T, T), (T, T)), ((T, T), (T, T)))
+fn main() -> ()
+    x@0: (((bool, bool), (bool, bool)), ((bool, bool), (bool, bool)))
+type D0<T> = (T, T)
+type D1<T> = ((T, T), (T, T))
+type D2<T> = (((T, T), (T, T)), ((T, T), (T, T)))

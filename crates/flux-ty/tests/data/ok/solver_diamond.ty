@@ -1,0 +1,4 @@
+struct S {}
+fn f(&Self) -> ()
+    self@0: &Self
+fn main() -> ()

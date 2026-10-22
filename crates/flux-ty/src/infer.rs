@@ -676,6 +676,8 @@ impl Ctx<'_> {
 
     /// `ty` with every known variable replaced, at any depth.
     fn known(&mut self, ty: Ty) -> Ty {
+        #[cfg(test)]
+        solve::tests::resolution_step();
         let ty = self.shallow(ty);
         if !ty.has_infer() {
             return ty;
