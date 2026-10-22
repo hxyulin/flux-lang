@@ -583,11 +583,17 @@ pub(crate) fn resolve(items: &mut ItemTree, from: ItemCounts) {
     items.def_map.prelude = find_prelude(items);
     resolve_imports(items, from.uses as usize);
     resolve_impls(items, from.impls as usize);
-    // An import into both namespaces reports its problems once.
-    let mut seen = FxHashSet::default();
-    items
-        .diagnostics
-        .retain(|d| seen.insert((d.file, d.range, d.message.clone())));
+    // An import into both namespaces reports its problems once. Large
+    // crates have hundreds of thousands of diagnostics: compare their
+    // messages in place rather than copying each.
+    let keep: Vec<bool> = {
+        let mut seen = FxHashSet::default();
+        (items.diagnostics.iter())
+            .map(|d| seen.insert((d.file, d.range, d.message.as_str())))
+            .collect()
+    };
+    let mut keep = keep.into_iter();
+    items.diagnostics.retain(|_| keep.next() == Some(true));
 }
 
 fn define(items: &mut ItemTree, module: ModuleId, name: Symbol, ns: Ns, binding: Binding) -> bool {

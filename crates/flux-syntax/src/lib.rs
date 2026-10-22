@@ -75,13 +75,21 @@ impl Parse {
     }
 }
 
-/// Parses a whole source file.
+/// Parses a whole source file, copying `text` into the tree.
 pub fn parse_source_file(text: &str) -> Parse {
-    let lexed = LexedStr::new(text);
+    parse_source_text(text.into())
+}
+
+/// Parses a whole source file, which the tree takes ownership of.
+pub fn parse_source_text(text: Box<str>) -> Parse {
+    let lexed = LexedStr::new(&text);
     let input = parser::Input::from_lexed(&lexed);
     let output = parser::parse_source_file(&input);
-    let (tree, errors) = build::build_tree(lexed, output);
-    Parse { tree, errors }
+    let (parts, errors) = build::build(lexed, output);
+    Parse {
+        tree: parts.into_tree(text),
+        errors,
+    }
 }
 
 #[cfg(test)]

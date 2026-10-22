@@ -316,62 +316,16 @@ impl SyntaxKind {
 
     /// The keyword spelled `ident`, in edition 2024.
     pub fn from_keyword(ident: &str) -> Option<SyntaxKind> {
-        let kind = match ident {
-            "as" => AS_KW,
-            "async" => ASYNC_KW,
-            "await" => AWAIT_KW,
-            "break" => BREAK_KW,
-            "const" => CONST_KW,
-            "continue" => CONTINUE_KW,
-            "crate" => CRATE_KW,
-            "dyn" => DYN_KW,
-            "else" => ELSE_KW,
-            "enum" => ENUM_KW,
-            "extern" => EXTERN_KW,
-            "false" => FALSE_KW,
-            "fn" => FN_KW,
-            "for" => FOR_KW,
-            "if" => IF_KW,
-            "impl" => IMPL_KW,
-            "in" => IN_KW,
-            "let" => LET_KW,
-            "loop" => LOOP_KW,
-            "match" => MATCH_KW,
-            "mod" => MOD_KW,
-            "move" => MOVE_KW,
-            "mut" => MUT_KW,
-            "pub" => PUB_KW,
-            "ref" => REF_KW,
-            "return" => RETURN_KW,
-            "self" => SELF_KW,
-            "Self" => SELF_TYPE_KW,
-            "static" => STATIC_KW,
-            "struct" => STRUCT_KW,
-            "super" => SUPER_KW,
-            "trait" => TRAIT_KW,
-            "true" => TRUE_KW,
-            "type" => TYPE_KW,
-            "unsafe" => UNSAFE_KW,
-            "use" => USE_KW,
-            "where" => WHERE_KW,
-            "while" => WHILE_KW,
-            "abstract" => ABSTRACT_KW,
-            "become" => BECOME_KW,
-            "box" => BOX_KW,
-            "do" => DO_KW,
-            "final" => FINAL_KW,
-            "gen" => GEN_KW,
-            "macro" => MACRO_KW,
-            "override" => OVERRIDE_KW,
-            "priv" => PRIV_KW,
-            "try" => TRY_KW,
-            "typeof" => TYPEOF_KW,
-            "unsized" => UNSIZED_KW,
-            "virtual" => VIRTUAL_KW,
-            "yield" => YIELD_KW,
-            _ => return None,
-        };
-        Some(kind)
+        // Every keyword fits in a `u64`: look its bytes up in a perfect
+        // hash table rather than comparing with each keyword in turn.
+        // A trailing NUL would read as padding.
+        let bytes = ident.as_bytes();
+        if bytes.len() > 8 || bytes.last().is_none_or(|&b| b == 0) {
+            return None;
+        }
+        let word = pack_word(bytes);
+        let (key, kind) = KEYWORD_TABLE[keyword_slot(word)];
+        (key == word).then_some(kind)
     }
 
     /// The single-character punctuation token for `c`.
@@ -412,6 +366,7 @@ impl SyntaxKind {
 
     /// The single-character tokens a composite punctuation token is glued
     /// from, or `None` for a token that is not composite.
+    #[inline]
     pub fn composite_parts(self) -> Option<&'static [SyntaxKind]> {
         let parts: &'static [SyntaxKind] = match self {
             DOT2 => &[DOT, DOT],
@@ -464,6 +419,115 @@ impl SyntaxKind {
         )
     }
 }
+
+/// Every keyword of edition 2024, strict and reserved.
+const KEYWORDS: [(&str, SyntaxKind); 52] = [
+    ("as", AS_KW),
+    ("async", ASYNC_KW),
+    ("await", AWAIT_KW),
+    ("break", BREAK_KW),
+    ("const", CONST_KW),
+    ("continue", CONTINUE_KW),
+    ("crate", CRATE_KW),
+    ("dyn", DYN_KW),
+    ("else", ELSE_KW),
+    ("enum", ENUM_KW),
+    ("extern", EXTERN_KW),
+    ("false", FALSE_KW),
+    ("fn", FN_KW),
+    ("for", FOR_KW),
+    ("if", IF_KW),
+    ("impl", IMPL_KW),
+    ("in", IN_KW),
+    ("let", LET_KW),
+    ("loop", LOOP_KW),
+    ("match", MATCH_KW),
+    ("mod", MOD_KW),
+    ("move", MOVE_KW),
+    ("mut", MUT_KW),
+    ("pub", PUB_KW),
+    ("ref", REF_KW),
+    ("return", RETURN_KW),
+    ("self", SELF_KW),
+    ("Self", SELF_TYPE_KW),
+    ("static", STATIC_KW),
+    ("struct", STRUCT_KW),
+    ("super", SUPER_KW),
+    ("trait", TRAIT_KW),
+    ("true", TRUE_KW),
+    ("type", TYPE_KW),
+    ("unsafe", UNSAFE_KW),
+    ("use", USE_KW),
+    ("where", WHERE_KW),
+    ("while", WHILE_KW),
+    ("abstract", ABSTRACT_KW),
+    ("become", BECOME_KW),
+    ("box", BOX_KW),
+    ("do", DO_KW),
+    ("final", FINAL_KW),
+    ("gen", GEN_KW),
+    ("macro", MACRO_KW),
+    ("override", OVERRIDE_KW),
+    ("priv", PRIV_KW),
+    ("try", TRY_KW),
+    ("typeof", TYPEOF_KW),
+    ("unsized", UNSIZED_KW),
+    ("virtual", VIRTUAL_KW),
+    ("yield", YIELD_KW),
+];
+
+/// Multiplier of the keyword hash, chosen so that no two keywords share
+/// a slot: building [`KEYWORD_TABLE`] fails to compile if they do.
+const KEYWORD_HASH: u64 = 0x203d_5d64_077c_f60d;
+
+/// The slot of a keyword's bytes, as [`pack_word`] gives them.
+const fn keyword_slot(word: u64) -> usize {
+    (word.wrapping_mul(KEYWORD_HASH) >> 57) as usize
+}
+
+/// At most 8 bytes as a little-endian `u64`, zero-padded. Reads two
+/// overlapping halves, which agree where they overlap, rather than byte
+/// by byte or through `memcpy`.
+#[inline]
+const fn pack_word(b: &[u8]) -> u64 {
+    let n = b.len();
+    debug_assert!(n <= 8);
+    match n {
+        0 => 0,
+        1 => b[0] as u64,
+        2 | 3 => {
+            let lo = u16::from_le_bytes([b[0], b[1]]) as u64;
+            let hi = u16::from_le_bytes([b[n - 2], b[n - 1]]) as u64;
+            lo | hi << (8 * (n - 2))
+        }
+        _ => {
+            let lo = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u64;
+            let hi = u32::from_le_bytes([b[n - 4], b[n - 3], b[n - 2], b[n - 1]]) as u64;
+            lo | hi << (8 * (n - 4))
+        }
+    }
+}
+
+/// Each keyword's bytes and kind, in its slot; other slots hold a key
+/// no identifier has.
+const KEYWORD_TABLE: [(u64, SyntaxKind); 128] = {
+    let mut table = [(0, IDENT); 128];
+    let mut i = 0;
+    while i < KEYWORDS.len() {
+        let (text, kind) = KEYWORDS[i];
+        let bytes = text.as_bytes();
+        assert!(bytes.len() <= 8, "keywords fit in a u64");
+        let word = pack_word(bytes);
+        let slot = keyword_slot(word);
+        assert!(
+            table[slot].0 == 0,
+            "two keywords share a slot: change KEYWORD_HASH"
+        );
+        table[slot] = (word, kind);
+        i += 1;
+    }
+    table
+};
 
 /// The token kind for punctuation or a keyword, by its spelling:
 /// `T![;]`, `T![::]`, `T![fn]`.
@@ -559,4 +623,42 @@ macro_rules! T {
     [use] => { $crate::SyntaxKind::USE_KW };
     [where] => { $crate::SyntaxKind::WHERE_KW };
     [while] => { $crate::SyntaxKind::WHILE_KW };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keywords() {
+        for (text, kind) in KEYWORDS {
+            assert_eq!(SyntaxKind::from_keyword(text), Some(kind), "{text}");
+            assert!(kind.is_keyword());
+        }
+        let count = (AS_KW as u16..=YIELD_KW as u16).count();
+        assert_eq!(KEYWORDS.len(), count, "every keyword kind has a spelling");
+        for text in [
+            "",
+            "a",
+            "As",
+            "self_",
+            "continues",
+            "fn\0",
+            "\0",
+            "matches",
+            "_",
+        ] {
+            assert_eq!(SyntaxKind::from_keyword(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn pack_word_is_little_endian() {
+        let bytes = b"abcdefgh";
+        for n in 0..=8 {
+            let mut word = [0; 8];
+            word[..n].copy_from_slice(&bytes[..n]);
+            assert_eq!(pack_word(&bytes[..n]), u64::from_le_bytes(word), "{n}");
+        }
+    }
 }

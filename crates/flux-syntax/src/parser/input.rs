@@ -15,7 +15,10 @@ pub struct Input {
 
 impl Input {
     pub fn from_lexed(lexed: &LexedStr<'_>) -> Input {
-        let mut input = Input::default();
+        let mut input = Input {
+            kinds: Vec::with_capacity(lexed.len()),
+            joint: Vec::with_capacity(lexed.len() / 64 + 1),
+        };
         let mut was_joint = false;
         for (i, &kind) in lexed.kinds().iter().enumerate() {
             if kind.is_trivia() {

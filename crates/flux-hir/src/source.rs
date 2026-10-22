@@ -22,8 +22,14 @@ impl FileId {
 #[derive(Debug)]
 pub struct SourceFile {
     pub path: PathBuf,
-    pub text: String,
+    /// The file's syntax tree, which holds its text.
     pub parse: Parse,
+}
+
+impl SourceFile {
+    pub fn text(&self) -> &str {
+        self.parse.tree().text()
+    }
 }
 
 /// Every file read so far. `core`'s files, under [`CORE_ROOT`], come
@@ -33,6 +39,8 @@ pub struct SourceFile {
 #[derive(Debug)]
 pub struct SourceDb {
     files: Vec<Arc<SourceFile>>,
+    /// The first file at each path: crates can have thousands of files.
+    by_path: rustc_hash::FxHashMap<PathBuf, FileId>,
 }
 
 /// Where `core`'s files appear to be, in paths and messages.
@@ -87,7 +95,6 @@ pub(crate) fn core_files() -> &'static [Arc<SourceFile>] {
                 .map(|&(name, text)| {
                     scope.spawn(move || SourceFile {
                         path: root.join(name),
-                        text: text.to_owned(),
                         parse: flux_syntax::parse_source_file(text),
                     })
                 })
@@ -109,27 +116,28 @@ impl Default for SourceDb {
 impl SourceDb {
     /// A database of `core`'s files only.
     pub fn new() -> SourceDb {
-        SourceDb {
-            files: core_files().to_vec(),
-        }
+        let files = core_files().to_vec();
+        let by_path = (files.iter().enumerate())
+            .map(|(i, f)| (f.path.clone(), FileId(i as u32)))
+            .collect();
+        SourceDb { files, by_path }
     }
 
     /// Parses `text` as the file at `path`.
     pub fn add(&mut self, path: impl Into<PathBuf>, text: impl Into<String>) -> FileId {
-        let text = text.into();
-        let parse = flux_syntax::parse_source_file(&text);
-        self.files.push(Arc::new(SourceFile {
-            path: path.into(),
-            text,
-            parse,
-        }));
-        FileId(self.files.len() as u32 - 1)
+        let text: String = text.into();
+        let parse = flux_syntax::parse_source_text(text.into_boxed_str());
+        let id = FileId(self.files.len() as u32);
+        let path = path.into();
+        self.by_path.entry(path.clone()).or_insert(id);
+        self.files.push(Arc::new(SourceFile { path, parse }));
+        id
     }
 
     /// The file at `path`, read and parsed if it was not already.
     pub fn load(&mut self, path: &Path) -> Result<FileId, String> {
-        if let Some(id) = self.files.iter().position(|f| f.path == path) {
-            return Ok(FileId(id as u32));
+        if let Some(&id) = self.by_path.get(path) {
+            return Ok(id);
         }
         // `core`'s files are all here already.
         if path.starts_with(CORE_ROOT) {
