@@ -9,6 +9,7 @@ pub mod char;
 pub mod clone;
 pub mod cmp;
 pub mod convert;
+pub mod ffi;
 pub mod iter;
 pub mod marker;
 pub mod mem;

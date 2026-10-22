@@ -20,4 +20,3 @@ error 336..342: this function takes at least 1 argument but 0 arguments were sup
 error 409..420: `as_ptr` takes 0 arguments but 1 argument was supplied
 error 436..444: the method `to_bytes` on `&CStr` is not supported yet
 error 521..537: mismatched types: expected `*const u8`, found `*const i8`
-error 588..598: casts of pointers are not supported yet

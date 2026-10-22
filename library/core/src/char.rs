@@ -5,6 +5,7 @@
 //! held as its `u32` value.
 
 use crate::convert::From;
+use crate::iter::Step;
 use crate::option::Option::{self, None, Some};
 
 /// The `char` for a digit `num` in `radix`, if it is one: `char::from_digit`.
@@ -12,11 +13,38 @@ pub const fn from_digit(num: u32, radix: u32) -> Option<char> {
     char::from_digit(num, radix)
 }
 
+/// The `char` whose value is `i`, if there is one: `char::from_u32`.
+pub const fn from_u32(i: u32) -> Option<char> {
+    char::from_u32(i)
+}
+
+/// The `char` whose value is `i`, which must be one:
+/// `char::from_u32_unchecked`.
+pub const unsafe fn from_u32_unchecked(i: u32) -> char {
+    unsafe { char::from_u32_unchecked(i) }
+}
+
 impl char {
     /// The highest code point.
     pub const MAX: char = '\u{10FFFF}';
     /// `U+FFFD`, which decoding puts in place of what is not UTF-8.
     pub const REPLACEMENT_CHARACTER: char = '\u{FFFD}';
+
+    /// The `char` whose value is `i`, if there is one: not past
+    /// `char::MAX`, nor a surrogate (`0xD800..=0xDFFF`).
+    pub const fn from_u32(i: u32) -> Option<char> {
+        if i > 0x10FFFF || (i >= 0xD800 && i <= 0xDFFF) {
+            None
+        } else {
+            Some(unsafe { char::from_u32_unchecked(i) })
+        }
+    }
+
+    /// The `char` whose value is `i`, which must be one.
+    pub const unsafe fn from_u32_unchecked(i: u32) -> char {
+        // A `char` is held as its `u32` value.
+        unsafe { *(&i as *const u32 as *const char) }
+    }
 
     /// The `char` for a digit `num` in `radix`, lowercase past 9, if
     /// `num` is less than `radix`. Panics if `radix` is not between 2
@@ -216,5 +244,24 @@ impl From<char> for u64 {
 impl From<char> for u128 {
     fn from(c: char) -> u128 {
         c as u128
+    }
+}
+
+/// `'a'..='z'` iterates, skipping the surrogates.
+impl Step for char {
+    fn forward_one(self) -> char {
+        let next = match self as u32 {
+            0xD7FF => 0xE000,
+            code => code + 1,
+        };
+        unsafe { char::from_u32_unchecked(next) }
+    }
+
+    fn backward_one(self) -> char {
+        let before = match self as u32 {
+            0xE000 => 0xD7FF,
+            code => code.wrapping_sub(1),
+        };
+        unsafe { char::from_u32_unchecked(before) }
     }
 }

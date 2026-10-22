@@ -788,13 +788,21 @@ impl Ctx<'_> {
             }
             return;
         }
-        if let (TyKind::Ref(..), TyKind::RawPtr(..)) =
+        // A reference where a raw pointer is wanted becomes one, after
+        // a reborrow if it is a `&mut`: `&T` to `*const T`, `&mut T` to
+        // `*mut T` or `*const T`.
+        if let (TyKind::Ref(from, pointee), TyKind::RawPtr(to, expected_pointee)) =
             (self.shallow(actual).kind(), self.shallow(expected).kind())
         {
-            self.error(
-                self.range(blamed),
-                "coercing references to raw pointers is not supported yet",
-            );
+            if (from == to || from == Mutability::Mut) && self.unify(pointee, expected_pointee) {
+                if from == Mutability::Mut {
+                    self.reborrows.insert(expr, to);
+                }
+                self.unsizes.insert(expr, expected);
+            } else {
+                let range = self.range(blamed);
+                self.mismatch(expected, actual, range);
+            }
             return;
         }
         // A tuple expression is checked element by element, as rustc
@@ -2239,6 +2247,29 @@ impl Ctx<'_> {
                     && self.can_unify(from, to)
                 {
                     self.unify(from, to);
+                }
+                // `r as *const T`: the coercion of a reference to a raw
+                // pointer, which reborrows a `&mut`, then maybe a cast of
+                // the pointer. A reference to an array may become a
+                // pointer to its first element.
+                if let (TyKind::Ref(m, pointee), TyKind::RawPtr(to_m, target)) =
+                    (self.shallow(from).kind(), self.shallow(to).kind())
+                {
+                    let target = self.shallow(target);
+                    let elem = match self.shallow(pointee).kind() {
+                        TyKind::Array(elem, _) => Some(elem),
+                        _ => None,
+                    };
+                    if self.can_unify(pointee, target) {
+                        self.unify(pointee, target);
+                    } else if let Some(elem) = elem
+                        && self.can_unify(elem, target)
+                    {
+                        self.unify(elem, target);
+                    }
+                    if m == Mutability::Mut {
+                        self.reborrows.insert(*expr, to_m);
+                    }
                 }
                 // `f as fn(i32) -> i32`: a coercion.
                 if let TyKind::FnPtr(_) = to.kind() {
@@ -4992,6 +5023,21 @@ impl Ctx<'_> {
                         (TyKind::Error | TyKind::Never, _) | (_, TyKind::Error) => true,
                         (TyKind::Int(_) | TyKind::Bool | TyKind::Char, TyKind::Int(_)) => true,
                         (TyKind::Int(IntTy::U8), TyKind::Char) => true,
+                        // A reference as a pointer to what it points to,
+                        // or to an array's first element.
+                        (TyKind::Ref(m, pointee), TyKind::RawPtr(to_m, target)) => {
+                            (m == to_m || m == Mutability::Mut)
+                                && (pointee == target
+                                    || pointee.sequence_elem() == Some(target)
+                                        && matches!(pointee.kind(), TyKind::Array(..)))
+                        }
+                        // A pointer to a sized type takes no length; a
+                        // pointer to a slice or `str` keeps its length.
+                        (TyKind::RawPtr(_, a), TyKind::RawPtr(_, b)) => {
+                            !b.is_unsized() || a.is_unsized()
+                        }
+                        (TyKind::RawPtr(_, pointee), TyKind::Int(_)) => !pointee.is_unsized(),
+                        (TyKind::Int(_), TyKind::RawPtr(_, pointee)) => !pointee.is_unsized(),
                         // A fieldless enum, to its discriminant.
                         (TyKind::Adt(adt, _), TyKind::Int(_)) => {
                             self.sigs.variants(from).is_some_and(|variants| {
@@ -5004,8 +5050,15 @@ impl Ctx<'_> {
                     if !ok {
                         let message = if from.fn_sig().is_some() || to.fn_sig().is_some() {
                             "casts of function items and pointers are not supported yet".to_owned()
+                        } else if let (TyKind::RawPtr(..), TyKind::RawPtr(_, b)) =
+                            (from.kind(), to.kind())
+                            && b.is_unsized()
+                        {
+                            format!("cannot cast thin pointer `{from}` to wide pointer `{to}`")
+                        } else if to == Ty::BOOL && from.is_pointer() {
+                            format!("cannot cast `{from}` as `bool`")
                         } else if from.is_pointer() || to.is_pointer() {
-                            "casts of pointers are not supported yet".to_owned()
+                            format!("casting `{from}` as `{to}` is invalid")
                         } else if to == Ty::BOOL && (from.as_int().is_some() || from == Ty::CHAR) {
                             format!("cannot cast `{from}` as `bool`")
                         } else if to == Ty::CHAR && (from.as_int().is_some() || from == Ty::BOOL) {
@@ -5037,10 +5090,15 @@ impl Ctx<'_> {
                     // A reference to a sized value is a pointer, as a raw
                     // pointer is.
                     let ok = match ty.kind() {
-                        TyKind::Ref(_, pointee) => {
-                            !matches!(pointee.kind(), TyKind::Slice(_) | TyKind::CStr)
-                        }
-                        TyKind::Int(_) | TyKind::RawPtr(..) | TyKind::Error | TyKind::Never => true,
+                        TyKind::Ref(_, pointee) => !matches!(
+                            pointee.kind(),
+                            TyKind::Slice(_) | TyKind::Str | TyKind::CStr
+                        ),
+                        TyKind::Int(_)
+                        | TyKind::Char
+                        | TyKind::RawPtr(..)
+                        | TyKind::Error
+                        | TyKind::Never => true,
                         _ => false,
                     };
                     if let Some(cast_to) = cast_to {

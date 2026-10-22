@@ -1845,7 +1845,7 @@ impl Builder<'_> {
             return;
         }
         // A reference to an array as one to a slice: the reference, then
-        // its unsizing.
+        // its unsizing; a reference as a raw pointer, the same.
         if let Some(&ty) = self.types.unsizes.get(expr) {
             let reference = match self.types.reborrows.get(expr) {
                 Some(&m) => {
@@ -1860,7 +1860,13 @@ impl Builder<'_> {
             let temp = self.temp(reference);
             self.lower_reborrowed(expr, &temp.into());
             let operand = self.read(temp.into());
-            self.assign(dest, Rvalue::Unsize(operand, ty), self.range(expr));
+            // A reference coerced to a raw pointer is cast to one.
+            let rvalue = if let TyKind::RawPtr(..) = ty.kind() {
+                Rvalue::Cast(operand, ty)
+            } else {
+                Rvalue::Unsize(operand, ty)
+            };
+            self.assign(dest, rvalue, self.range(expr));
             return;
         }
         self.lower_reborrowed(expr, dest);
