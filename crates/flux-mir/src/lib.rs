@@ -511,6 +511,8 @@ pub enum Constant {
         ty: IntTy,
     },
     Bool(bool),
+    /// A `char`, held as its `u32` value.
+    Char(char),
     Unit,
     /// A `c"..."` literal: a pointer to NUL-terminated static bytes, the
     /// body's `c_strings[index]`.
@@ -551,6 +553,7 @@ impl Constant {
         match self {
             Constant::Int { ty, .. } => Ty::int(ty),
             Constant::Bool(_) => Ty::BOOL,
+            Constant::Char(_) => Ty::CHAR,
             Constant::Unit => Ty::UNIT,
             Constant::CStr(_) => flux_ty::c_str_ref(),
             Constant::Item { ty, .. }

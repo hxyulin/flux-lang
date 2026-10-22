@@ -1627,6 +1627,11 @@ impl Ctx<'_> {
                 if let Expr::Unary { .. } = body.exprs[*expr] {
                     self.negated_pats.insert(*expr);
                 }
+                if let Expr::Literal(Literal::Str(_) | Literal::ByteStr(_) | Literal::CStr(_)) =
+                    body.exprs[*expr]
+                {
+                    self.error(range, "string literals in patterns are not supported yet");
+                }
                 if let Expr::Path(_) = body.exprs[*expr] {
                     self.const_pats.insert(*expr);
                     self.deferred.push(Deferred::ConstPat {
@@ -1891,6 +1896,12 @@ impl Ctx<'_> {
             Expr::Missing => Ty::ERROR,
             Expr::Literal(Literal::Bool(_)) => Ty::BOOL,
             Expr::Literal(Literal::CStr(_)) => c_str_ref(),
+            Expr::Literal(Literal::Char(_)) => Ty::CHAR,
+            Expr::Literal(Literal::Str(_)) => Ty::new(TyKind::Ref(Mutability::Not, Ty::STR)),
+            Expr::Literal(Literal::ByteStr(bytes)) => Ty::new(TyKind::Ref(
+                Mutability::Not,
+                Ty::array(Ty::int(IntTy::U8), bytes.len() as u64),
+            )),
             Expr::Literal(Literal::Int { value, suffix }) => {
                 self.deferred.push(Deferred::IntLiteral {
                     expr: id,

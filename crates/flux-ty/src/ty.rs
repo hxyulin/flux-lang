@@ -37,6 +37,11 @@ pub struct Ty(u32);
 pub enum TyKind {
     Int(IntTy),
     Bool,
+    /// `char`: a Unicode scalar value, held as a `u32`.
+    Char,
+    /// `str`: UTF-8 text, unsized like a slice of bytes, so only behind
+    /// a pointer.
+    Str,
     /// `(A, B)`; `()` is the empty tuple, [`Ty::UNIT`].
     Tuple(&'static [Ty]),
     /// A struct, with its generic arguments.
@@ -378,11 +383,13 @@ const HAS_INFER: u8 = 2;
 const HAS_ALIAS: u8 = 4;
 
 /// Interned in this order, so the constants below are their indices.
-const PREDEFINED: [TyKind; 4] = [
+const PREDEFINED: [TyKind; 6] = [
     TyKind::Error,
     TyKind::Tuple(&[]),
     TyKind::Bool,
     TyKind::Never,
+    TyKind::Char,
+    TyKind::Str,
 ];
 
 static INTERNER: LazyLock<Interner> = LazyLock::new(|| {
@@ -429,7 +436,13 @@ impl Interner {
                 .iter()
                 .chain(def.sig.inputs_output)
                 .fold(0, |f, &t| f | of(t)),
-            TyKind::Int(_) | TyKind::Bool | TyKind::Never | TyKind::CStr | TyKind::Error => 0,
+            TyKind::Int(_)
+            | TyKind::Bool
+            | TyKind::Char
+            | TyKind::Str
+            | TyKind::Never
+            | TyKind::CStr
+            | TyKind::Error => 0,
         };
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         assert!(id < EMPTY.0, "more than u32::MAX types interned");
@@ -462,6 +475,8 @@ impl Ty {
     pub const UNIT: Ty = Ty(1);
     pub const BOOL: Ty = Ty(2);
     pub const NEVER: Ty = Ty(3);
+    pub const CHAR: Ty = Ty(4);
+    pub const STR: Ty = Ty(5);
 
     pub const fn int(int: IntTy) -> Ty {
         Ty(PREDEFINED.len() as u32 + int as u32)
@@ -795,6 +810,8 @@ impl fmt::Display for Ty {
             TyKind::Array(elem, len) => write!(f, "[{elem}; {len}]"),
             TyKind::Slice(elem) => write!(f, "[{elem}]"),
             TyKind::CStr => f.write_str("CStr"),
+            TyKind::Char => f.write_str("char"),
+            TyKind::Str => f.write_str("str"),
             TyKind::FnPtr(sig) => write_sig(f, sig),
             TyKind::FnDef(def) => {
                 write_sig(f, def.sig)?;

@@ -254,6 +254,8 @@ fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: I
         match ty.kind() {
             TyKind::Int(int) => feed(int.name().as_str().as_bytes()),
             TyKind::Bool => feed(b"b"),
+            TyKind::Char => feed(b"c"),
+            TyKind::Str => feed(b"str"),
             TyKind::Never => feed(b"!"),
             TyKind::CStr => feed(b"CStr"),
             TyKind::Tuple(elements) => {
@@ -334,6 +336,7 @@ fn keel_type(ty: Ty) -> Option<Type> {
     match ty.kind() {
         TyKind::Int(int) => Some(int_type(int)),
         TyKind::Bool => Some(Type::I8),
+        TyKind::Char => Some(Type::I32),
         // `&CStr` is a thin pointer here: flux needs only `as_ptr`.
         TyKind::RawPtr(..) | TyKind::Ref(..) | TyKind::FnPtr(_) => Some(Type::Ptr),
         // A function item has no value: it is its type.
@@ -342,6 +345,7 @@ fn keel_type(ty: Ty) -> Option<Type> {
         | TyKind::Adt(..)
         | TyKind::Array(..)
         | TyKind::Slice(_)
+        | TyKind::Str
         | TyKind::Closure(..)
         | TyKind::Param(_)
         | TyKind::Alias(_)
@@ -773,6 +777,12 @@ impl Ctx<'_> {
             (TyKind::Slice(elem), flux_mir::eval::Value::Aggregate(elements)) => {
                 let len = elements.len() as u64;
                 let array = Ty::array(elem, len);
+                (self.promoted(pointee, array), Some(len))
+            }
+            // A `str` is its UTF-8 bytes.
+            (TyKind::Str, flux_mir::eval::Value::Aggregate(bytes)) => {
+                let len = bytes.len() as u64;
+                let array = Ty::array(Ty::int(IntTy::U8), len);
                 (self.promoted(pointee, array), Some(len))
             }
             _ => (self.promoted(pointee, target), None),
@@ -1241,6 +1251,15 @@ impl Lower<'_, '_, '_> {
                 self.value_leaves(&value, *ty, &mut leaves);
                 leaves
             }
+            // A reference to a slice or `str` is two leaves.
+            Operand::Const(Constant::Promoted { index, ty }) => {
+                let value = flux_mir::eval::Value::Ref(Box::new(
+                    self.body.promoted[*index as usize].clone(),
+                ));
+                let mut leaves = Vec::new();
+                self.value_leaves(&value, *ty, &mut leaves);
+                leaves
+            }
             Operand::Const(constant) => self.constant(*constant).into_iter().collect(),
         }
     }
@@ -1377,6 +1396,7 @@ impl Lower<'_, '_, '_> {
         match constant {
             Constant::Int { bits, ty } => Some(self.int_const(bits, ty)),
             Constant::Bool(value) => Some(self.b.ins().iconst(Type::I8, i64::from(value))),
+            Constant::Char(c) => Some(self.b.ins().iconst(Type::I32, i64::from(u32::from(c)))),
             Constant::Unit => None,
             Constant::CStr(index) => {
                 let name = self.ctx.c_string(&self.body.c_strings[index as usize]);

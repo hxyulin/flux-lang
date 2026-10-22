@@ -50,6 +50,10 @@ pub const CORE_ROOT: &str = "<core>";
 const CORE_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/core/src/lib.rs")),
     (
+        "ascii.rs",
+        include_str!("../../../library/core/src/ascii.rs"),
+    ),
+    (
         "clone.rs",
         include_str!("../../../library/core/src/clone.rs"),
     ),

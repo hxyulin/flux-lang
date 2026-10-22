@@ -282,6 +282,13 @@ impl Lexer<'_> {
             (Some(c), _) if is_ident_start(c) => {
                 self.pos += c.len_utf8();
                 self.ident_continue();
+                // `'ab'` is a char literal of more than one character, as
+                // in rustc.
+                if self.byte(0) == b'\'' {
+                    self.pos += 1;
+                    *error = Some("character literal may only contain one codepoint".to_string());
+                    return CHAR;
+                }
                 LIFETIME_IDENT
             }
             _ => {
@@ -599,7 +606,7 @@ FLOAT_NUMBER "0.5"
     #[test]
     fn lifetimes_and_chars() {
         check(
-            r"'a 'a' '\n' b'x' 'static",
+            r"'a 'a' '\n' b'x' 'static 'ab'",
             r#"
 LIFETIME_IDENT "'a"
 WHITESPACE " "
@@ -610,6 +617,9 @@ WHITESPACE " "
 BYTE "b'x'"
 WHITESPACE " "
 LIFETIME_IDENT "'static"
+WHITESPACE " "
+CHAR "'ab'"
+error at token 10: character literal may only contain one codepoint
 "#,
         );
     }

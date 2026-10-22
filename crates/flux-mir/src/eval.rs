@@ -576,6 +576,10 @@ impl<'a> Evaluator<'a> {
                 )),
                 Constant::Int { bits, ty } => Ok(Value::Int { bits, ty }),
                 Constant::Bool(b) => Ok(Value::Bool(b)),
+                Constant::Char(c) => Ok(Value::Int {
+                    bits: u128::from(c),
+                    ty: IntTy::U32,
+                }),
                 Constant::Unit => Ok(Value::Aggregate(Vec::new())),
                 Constant::CStr(_) => Err(error(
                     range,

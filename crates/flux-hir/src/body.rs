@@ -243,6 +243,13 @@ pub enum Literal {
         suffix: Option<Symbol>,
     },
     Bool(bool),
+    /// `'a'`: a `char`.
+    Char(char),
+    /// `"..."` or `r"..."`: the text, escapes decoded.
+    Str(Box<str>),
+    /// `b"..."` or `br"..."`: the bytes, escapes decoded. (A byte
+    /// literal, `b'a'`, is an [`Literal::Int`] with the suffix `u8`.)
+    ByteStr(Box<[u8]>),
     /// `c"..."`: the bytes, escapes decoded, without the terminating NUL.
     CStr(Box<[u8]>),
 }
