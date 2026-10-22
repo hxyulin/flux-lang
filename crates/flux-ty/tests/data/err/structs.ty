@@ -175,6 +175,6 @@ error 2586..2587: mismatched types: expected `bool`, found `{integer}`
 error 2647..2656: mismatched types: expected a tuple with 2 elements, found one with 3 elements
 error 2733..2734: mismatched types: expected `(i32,)`, found `{integer}`
 error 2797..2798: mismatched types: expected `A`, found `B`
-error 2861..2862: tuple struct constructors as values are not supported yet
+error 2861..2862: mismatched types: expected `P`, found `fn(i32, i32) -> P {P}`
 error 2914..2916: binary operation `==` cannot be applied to type `S`
 error 2959..2960: cannot add `({integer}, {integer})` to `({integer}, {integer})`

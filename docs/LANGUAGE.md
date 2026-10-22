@@ -559,7 +559,11 @@ functions not at all. Calling either type works as calling the
 function does; through a pointer, in constants and `const fn`s, is an
 error, as in rustc. Function items and pointers are `Copy`, and `core`
 implements `Clone` for pointers of up to three parameters (rustc's for
-any). Tuple structs' and variants' constructors are not values yet.
+any). A tuple struct's or tuple variant's constructor is a function
+too, as in rustc: its path not called (`Token::Num`, `Some`, `Wrapper`)
+is a value of its own function item type (`fn(i64) -> Token
+{Token::Num}`), which `.map(Some)` passes and which coerces to a
+function pointer.
 
 A static is one place in memory, initialized with its initializer's
 value, evaluated at compile time as a constant's is (it may read other

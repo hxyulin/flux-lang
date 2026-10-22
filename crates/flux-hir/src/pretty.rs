@@ -133,7 +133,7 @@ pub(crate) fn file(hir: &Hir) -> String {
     let functions = items
         .functions
         .iter()
-        .filter(|(_, f)| items.in_main_crate(f.loc.module));
+        .filter(|(_, f)| items.in_main_crate(f.loc.module) && f.ctor.is_none());
     for (id, function) in functions {
         match hir.bodies.get(id) {
             Some((body, _)) => {

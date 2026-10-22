@@ -46,6 +46,7 @@ error 829..830: the trait bound `T: Tr` is not satisfied
 error 873..874: the trait bound `T: Tr` is not satisfied
 error 927..941: the trait bound `T: Tr` is not satisfied
 error 946..963: the trait bound `T: Tr` is not satisfied
+error 953..960: the trait bound `T: Tr` is not satisfied
 error 1012..1094: the trait bound `T: Tr` is not satisfied
 error 1106..1168: the trait bound `T: Tr` is not satisfied
 error 1175..1197: the trait bound `T: Tr` is not satisfied
