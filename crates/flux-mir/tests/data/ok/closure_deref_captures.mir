@@ -1,0 +1,336 @@
+fn S::get(_1: &S) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy (*_1).0;
+        return;
+    }
+}
+
+fn by_mut(_1: &mut S) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: i32;
+
+    bb0: {
+        _3 = copy (*_1).0;
+        (*_1).0 = Add(copy _3, const 1_i32);
+        _2 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: S; // s
+    let _2: &S; // r
+    let _3: {closure}; // method
+    let _4: &S;
+    let _5: i32;
+    let _6: &{closure};
+    let _7: ();
+    let _8: {closure}; // pattern
+    let _9: &S;
+    let _10: i32;
+    let _11: &{closure};
+    let _12: ();
+    let _13: {closure}; // ignored
+    let _14: ();
+    let _15: &{closure};
+    let _16: ();
+    let _17: [i32; 3]; // a
+    let _18: &[i32]; // slice
+    let _19: &[i32; 3];
+    let _20: {closure}; // len
+    let _21: &[i32];
+    let _22: usize;
+    let _23: &{closure};
+    let _24: ();
+    let mut _25: S; // t
+    let _26: &mut S; // m
+    let mut _27: {closure}; // reborrow
+    let _28: &mut S;
+    let _29: ();
+    let _30: &mut {closure};
+    let _31: ();
+
+    bb0: {
+        _1 = S { v: const 7_i32 };
+        _2 = &_1;
+        _4 = &(*_2);
+        _3 = {closure}(move _4);
+        _6 = &_3;
+        _7 = ();
+        _5 = call::<{closure}, ()>(copy _6, move _7) -> bb1;
+    }
+
+    bb1: {
+        _9 = &(*_2);
+        _8 = {closure}(move _9);
+        _11 = &_8;
+        _12 = ();
+        _10 = call::<{closure}, ()>(copy _11, move _12) -> bb2;
+    }
+
+    bb2: {
+        _13 = {closure}();
+        _15 = &_13;
+        _16 = ();
+        _14 = call::<{closure}, ()>(copy _15, move _16) -> bb3;
+    }
+
+    bb3: {
+        _17 = [const 1_i32, const 2_i32, const 3_i32];
+        _19 = &_17;
+        _18 = copy _19 as &[i32] (unsize);
+        _21 = &(*_18);
+        _20 = {closure}(move _21);
+        _23 = &_20;
+        _24 = ();
+        _22 = call::<{closure}, ()>(copy _23, move _24) -> bb4;
+    }
+
+    bb4: {
+        _25 = S { v: const 1_i32 };
+        _26 = &mut _25;
+        _28 = &mut (*_26);
+        _27 = {closure}(move _28);
+        _30 = &two_phase _27;
+        _31 = ();
+        _29 = call_mut::<{closure}, ()>(move _30, move _31) -> bb5;
+    }
+
+    bb5: {
+        _0 = const ();
+        StorageDead(_27);
+        StorageDead(_26);
+        StorageDead(_25);
+        StorageDead(_20);
+        StorageDead(_18);
+        StorageDead(_17);
+        StorageDead(_13);
+        StorageDead(_8);
+        StorageDead(_3);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main::{closure#6} as Fn(_1: &{closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &S;
+
+    bb0: {
+        _3 = &(*(*_1).0);
+        _0 = get(copy _3) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#6} as FnMut(_1: &mut {closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#6} as FnOnce(_1: {closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#13} as Fn(_1: &{closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &i32; // v
+
+    bb0: {
+        _3 = &(*(*_1).0).0;
+        goto -> bb3;
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        unreachable;
+    }
+
+    bb3: {
+        _0 = copy (*_3);
+        StorageDead(_3);
+        goto -> bb1;
+    }
+}
+
+fn main::{closure#13} as FnMut(_1: &mut {closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#13} as FnOnce(_1: {closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#18} as Fn(_1: &{closure}, _2: ()) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn main::{closure#18} as FnMut(_1: &mut {closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#18} as FnOnce(_1: {closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#29} as Fn(_1: &{closure}, _2: ()) -> usize {
+    let mut _0: usize;
+
+    bb0: {
+        _0 = Len(&(*(*_1).0));
+        return;
+    }
+}
+
+fn main::{closure#29} as FnMut(_1: &mut {closure}, _2: ()) -> usize {
+    let mut _0: usize;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#29} as FnOnce(_1: {closure}, _2: ()) -> usize {
+    let mut _0: usize;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#39} as FnMut(_1: &mut {closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: &mut S;
+
+    bb0: {
+        _3 = &mut (*(*_1).0);
+        _0 = by_mut(move _3) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#39} as FnOnce(_1: {closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+

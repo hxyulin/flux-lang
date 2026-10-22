@@ -6,8 +6,7 @@
 //! Rewritten for flux from `original/primes.rs`: no `impl Iterator`
 //! return types (a named `Primes` iterator and `Take<slice::Iter>`), no
 //! array length expressions (`LIMIT + 1` is a constant of its own), no
-//! iterating an array by value; the closure in `goldbach` is `move`
-//! around a flux miscompilation (`bugs/closure_method_on_captured_ref.rs`).
+//! iterating an array by value.
 
 unsafe extern "C" {
     fn printf(format: *const i8, ...) -> i32;
@@ -119,7 +118,7 @@ fn divisor_sum(n: u64) -> u64 {
 }
 
 fn goldbach(n: usize, sieve: &Sieve) -> Option<(usize, usize)> {
-    sieve.primes().take_while(|&p| p <= n / 2).find(move |&p| sieve.is_prime(n - p)).map(|p| (p, n - p))
+    sieve.primes().take_while(|&p| p <= n / 2).find(|&p| sieve.is_prime(n - p)).map(|p| (p, n - p))
 }
 
 fn print_factors(n: u64, sieve: &Sieve) {

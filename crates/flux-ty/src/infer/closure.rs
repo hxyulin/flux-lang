@@ -884,14 +884,20 @@ impl Ctx<'_> {
 
     /// The receiver of a method or of a call of a value, dereferenced
     /// `derefs` times, then borrowed by `autoref` or used by value.
-    fn adjusted(&mut self, expr: ExprId, method: Method, uses: &mut Uses<'_>) {
+    fn adjusted(
+        &mut self,
+        expr: ExprId,
+        derefs: u32,
+        autoref: Option<Mutability>,
+        uses: &mut Uses<'_>,
+    ) {
         self.walk_indices(expr, uses);
         let Some((binding, mut proj)) = self.capture_place(expr) else {
             self.walk(expr, uses);
             return;
         };
-        proj.extend((0..method.derefs).map(|_| CaptureProj::Deref));
-        let kind = match method.autoref {
+        proj.extend((0..derefs).map(|_| CaptureProj::Deref));
+        let kind = match autoref {
             Some(m) => UseKind::Borrow(m),
             None => {
                 let ty = self.capture_place_ty(binding, &proj);
@@ -903,6 +909,22 @@ impl Ctx<'_> {
             }
         };
         uses.add((binding, proj), kind, self.range(expr));
+    }
+
+    /// Whether `expr` is a `&mut` reference.
+    fn is_mut_ref(&mut self, expr: ExprId) -> bool {
+        let ty = self.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
+        matches!(self.known(ty).kind(), TyKind::Ref(Mutability::Mut, _))
+    }
+
+    /// `expr`, a reference, passed on as a shared one: copied, or
+    /// reborrowed (`&*r`) if it is a `&mut`.
+    fn shared_ref(&mut self, expr: ExprId, uses: &mut Uses<'_>) {
+        if self.is_mut_ref(expr) {
+            self.adjusted(expr, 1, Some(Mutability::Not), uses);
+        } else {
+            self.consume(expr, uses);
+        }
     }
 
     /// The uses of places in evaluating `expr` for its value.
@@ -1014,7 +1036,7 @@ impl Ctx<'_> {
             }
             Expr::Call { callee, args } => {
                 match self.methods.get(expr).copied() {
-                    Some(method) => self.adjusted(*callee, method, uses),
+                    Some(m) => self.adjusted(*callee, m.derefs, m.autoref, uses),
                     None if matches!(body.exprs[*callee], Expr::Path(_)) => {}
                     None => self.walk(*callee, uses),
                 }
@@ -1023,9 +1045,13 @@ impl Ctx<'_> {
                 }
             }
             Expr::MethodCall { receiver, args, .. } => {
-                match self.methods.get(expr).copied() {
-                    Some(method) => self.adjusted(*receiver, method, uses),
-                    None => self.consume(*receiver, uses),
+                if let Some(m) = self.methods.get(expr).copied() {
+                    self.adjusted(*receiver, m.derefs, m.autoref, uses);
+                } else if let Some(&(_, derefs)) = self.builtin_methods.get(expr) {
+                    // `len` and `is_empty` of arrays and slices take `&self`.
+                    self.adjusted(*receiver, derefs, Some(Mutability::Not), uses);
+                } else {
+                    self.consume(*receiver, uses);
                 }
                 for &arg in args.iter() {
                     self.consume(arg, uses);
@@ -1042,6 +1068,19 @@ impl Ctx<'_> {
                     BinaryOp::Cmp(_) if overloaded && self.compared_refs.get(expr).is_none() => {
                         self.borrow(*lhs, Some(Mutability::Not), uses);
                         self.borrow(*rhs, Some(Mutability::Not), uses);
+                    }
+                    // References compared are passed on as they are, but a
+                    // `&mut` is reborrowed rather than moved: `&*a` for
+                    // `==`, and `PartialOrd::lt(&a, &mut *b)`, as in rustc.
+                    BinaryOp::Cmp(cmp) if self.compared_refs.get(expr).is_some() => {
+                        let ordered = !matches!(cmp, flux_hir::CmpOp::Eq | flux_hir::CmpOp::Ne);
+                        if ordered && self.is_mut_ref(*lhs) {
+                            self.borrow(*lhs, Some(Mutability::Not), uses);
+                            self.adjusted(*rhs, 1, Some(Mutability::Mut), uses);
+                        } else {
+                            self.shared_ref(*lhs, uses);
+                            self.shared_ref(*rhs, uses);
+                        }
                     }
                     _ => {
                         self.consume(*lhs, uses);
