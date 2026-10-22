@@ -680,6 +680,15 @@
   elsewhere is rustc's E0562 (or E0658 in type aliases and associated
   types); in trait methods' return types, nested in an opaque type's
   bounds, and in bounds' generic arguments it is not supported yet.
+- Support array lengths and repeat counts written as any constant
+  expression (`[bool; LIMIT + 1]`, `[u8; double(N)]`, `[T; { 3 }]`,
+  `[u8; Self::CAP * 2]`): each is an anonymous constant of type `usize`,
+  as in rustc, evaluated while types are checked, with its errors
+  (E0080) at the expression and rustc's for locals (E0435, in types
+  too), generic parameters ("generic parameters may not be used in
+  const operations", "constant expression depends on a generic
+  parameter") and a generic `Self`. A constant needing one that waits
+  for its own length is a cycle, no longer a panic.
 
 ### Performance
 

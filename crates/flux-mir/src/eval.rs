@@ -117,6 +117,8 @@ pub struct Evaluator<'a> {
     /// The constants whose own value failed, in the order they did,
     /// with why: what [`Self::eval_instance`]'s callers report.
     pub failures: Vec<(ConstInstance, EvalError)>,
+    /// The constants asked for that had no MIR, in order.
+    pub unbuilt: Vec<ConstId>,
     steps: u64,
 }
 
@@ -139,6 +141,7 @@ impl<'a> Evaluator<'a> {
             discriminants: HashMap::new(),
             switched: HashSet::new(),
             failures: Vec::new(),
+            unbuilt: Vec::new(),
             steps: 0,
             promoted: Vec::new(),
         }
@@ -162,6 +165,7 @@ impl<'a> Evaluator<'a> {
             return result.clone();
         }
         let Some(body) = self.consts.get(c.konst) else {
+            self.unbuilt.push(c.konst);
             return Err(error(
                 TextRange::default(),
                 "constant without a value".to_owned(),

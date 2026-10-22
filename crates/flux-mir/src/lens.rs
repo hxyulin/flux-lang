@@ -67,8 +67,21 @@ fn eval_lens(
                 waiting.push(c);
                 continue;
             }
+            let (failed, unbuilt) = (evaluator.failures.len(), evaluator.unbuilt.len());
+            let result = evaluator.eval_const(c);
+            // One that needs a constant waiting for lengths waits too
+            // (`A::{constant#0}` in `const A: usize = [0u8; A + 1].len();`).
+            if result.is_err()
+                && evaluator.unbuilt[unbuilt..]
+                    .iter()
+                    .any(|&k| (typed.consts.get(k)).is_some_and(|r| !r.missing_lens.is_empty()))
+            {
+                evaluator.failures.truncate(failed);
+                waiting.push(c);
+                continue;
+            }
             progress = true;
-            let value = match evaluator.eval_const(c) {
+            let value = match result {
                 Ok(crate::eval::Value::Int { bits, .. }) => u64::try_from(bits).ok(),
                 _ => None,
             };
@@ -85,8 +98,14 @@ fn eval_lens(
         waiting.dedup();
         if !progress && waiting.iter().all(|w| pending.contains(w)) {
             // Each waits for another that waits: a cycle.
+            // rustc names the items, not their array lengths.
+            let named = waiting.iter().any(|&c| items.consts[c].anon.is_none());
             for &c in &waiting {
                 let data = &items.consts[c];
+                if named && data.anon.is_some() {
+                    done.push((c, None));
+                    continue;
+                }
                 let mut d = Diagnostic::new(
                     data.def_range,
                     format!(

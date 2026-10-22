@@ -134,6 +134,47 @@ fn main() {
         type_errors(text),
         ["1:1: cycle detected when evaluating type-level constant `A`"]
     );
+    // The same through an anonymous constant, reported at the item.
+    let text = "\
+const A: usize = [0u8; A + 1].len();
+fn main() {
+    let _: [u8; A] = [];
+}
+";
+    assert_eq!(
+        type_errors(text),
+        ["1:1: cycle detected when evaluating type-level constant `A`"]
+    );
+    // Lengths written as expressions are anonymous constants, whose
+    // errors are reported at them, as rustc reports them.
+    let text = "\
+const BIG: usize = usize::MAX;
+const LIMIT: usize = 4;
+fn overflow() -> [u8; BIG + 1] {
+    loop {}
+}
+fn by_zero(x: [u8; 1 / 0]) {}
+struct S {
+    a: [bool; LIMIT - 5],
+}
+const fn half(n: usize) -> usize {
+    n / 2
+}
+fn main() {
+    let b = [0u8; LIMIT * 2 - 9];
+    let c: [i32; half(0) - 1] = [];
+}
+";
+    assert_eq!(
+        type_errors(text),
+        [
+            "3:23: attempt to compute `usize::MAX + 1_usize`, which would overflow",
+            "6:20: attempt to divide `1_usize` by zero",
+            "8:15: attempt to compute `4_usize - 5_usize`, which would overflow",
+            "14:19: attempt to compute `8_usize - 9_usize`, which would overflow",
+            "15:18: attempt to compute `0_usize - 1_usize`, which would overflow",
+        ]
+    );
 }
 
 /// The messages of the errors in `text` as `flux mir` finds them where

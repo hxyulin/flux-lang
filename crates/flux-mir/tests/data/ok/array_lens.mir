@@ -1,0 +1,54 @@
+fn double(_1: usize) -> usize {
+    let mut _0: usize;
+    let _2: usize;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = Mul(copy _2, const 2_usize);
+        return;
+    }
+}
+
+fn Buffer::fresh() -> [u8; 4] {
+    let mut _0: [u8; 4];
+
+    bb0: {
+        _0 = [const 7_u8; 4];
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: Sieve; // s
+    let _2: [bool; 7];
+    let _3: [u16; 6]; // d
+    let _4: [u8; 4]; // b
+    let _5: usize; // n
+    let _6: usize;
+    let _7: usize;
+    let _8: usize;
+    let _9: usize;
+
+    bb0: {
+        _2 = [const false; 7];
+        _1 = Sieve { composite: copy _2 };
+        _3 = [const 5_u16; 6];
+        _4 = fresh() -> bb1;
+    }
+
+    bb1: {
+        _7 = Len(&_1.0);
+        _8 = Len(&_3);
+        _6 = Add(copy _7, copy _8);
+        _9 = Len(&_4);
+        _5 = Add(copy _6, copy _9);
+        _0 = const ();
+        StorageDead(_5);
+        StorageDead(_4);
+        StorageDead(_3);
+        StorageDead(_1);
+        return;
+    }
+}
+
