@@ -491,7 +491,9 @@ trait as a type is E0782. A method with `where Self: Sized` "cannot be
 invoked on a trait object". A trait object's lifetime bound is the
 reference it is behind, rustc's default (`'static` behind a raw
 pointer), so what a value made one holds must outlive it; other bounds
-(`&'a (dyn Tr + 'static)`), references and trait objects in a trait
+(`&'a (dyn Tr + 'static)`), trait objects as arguments of parameters
+with lifetime bounds (`T: 'static`, which rustc checks against the
+object's bound), references and trait objects in a trait
 object's generic arguments, trait objects in constants and statics
 (which are not `Sync` anyway), references to trait objects cast to raw
 pointers, `Box<dyn Tr>`, `dyn Any` and inherent `impl dyn Tr` blocks

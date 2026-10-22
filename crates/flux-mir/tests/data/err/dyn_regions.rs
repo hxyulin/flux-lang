@@ -43,3 +43,13 @@ fn overwritten() {
 }
 
 fn main() {}
+
+// A trait object's lifetime bound cannot be checked against an `impl`
+// block's parameter's: rustc's E0521 here, not supported yet in flux.
+trait Two {
+    fn two(&self) {}
+}
+impl<T: ?Sized + 'static> Two for T {}
+fn escapes_through_impl<'a>(x: &'a dyn Tr) {
+    x.two();
+}
