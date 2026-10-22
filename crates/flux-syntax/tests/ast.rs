@@ -114,6 +114,40 @@ fn range_patterns() {
 }
 
 #[test]
+fn attributed_macro_expansion_tails() {
+    for expression in [
+        "match x { 1 => true, _ => false }",
+        "{ true }",
+        "matches!(x, 1 | 3)",
+        "true",
+    ] {
+        for semicolon in [false, true] {
+            let text = format!(
+                "let x = 1; #[allow(unused)] {expression}{}",
+                if semicolon { ";" } else { "" },
+            );
+            let parse = flux_syntax::parse_expansion(
+                text.into_boxed_str(),
+                &[],
+                flux_syntax::TextRange::new(0, 0),
+                flux_syntax::parser::Fragment::Stmts,
+            );
+            assert!(parse.errors().is_empty(), "{}", parse.debug_dump());
+            parse.tree().validate().unwrap();
+            let root = ast::MacroStmts::cast(parse.root()).unwrap();
+            assert_eq!(root.stmts().count(), if semicolon { 2 } else { 1 });
+            assert_eq!(root.tail_expr().is_some(), !semicolon);
+            if let Some(tail) = root.tail_expr() {
+                assert_eq!(
+                    tail.syntax().children().filter_map(ast::Attr::cast).count(),
+                    1
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn if_else_chains() {
     let parse = parse("fn f() { if a { 1 } else if { b } { 2 } else { 3 } }");
     let outer: ast::IfExpr = find(&parse);

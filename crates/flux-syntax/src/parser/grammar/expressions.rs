@@ -137,8 +137,8 @@ fn stmt_list(p: &mut Parser<'_>) {
 }
 
 /// One statement. An expression at the end of a block without a `;` is
-/// the block's value and is not wrapped in `EXPR_STMT`, unless it has
-/// attributes.
+/// the block's value and is not wrapped in `EXPR_STMT`. Its attributes
+/// belong to the tail expression.
 pub(super) fn stmt(p: &mut Parser<'_>) {
     if p.eat(T![;]) {
         return;
@@ -164,7 +164,7 @@ pub(super) fn stmt(p: &mut Parser<'_>) {
         }
         return;
     }
-    let Some((_, blocklike)) = expr_bp(p, STMT, 1) else {
+    let Some((expr, blocklike)) = expr_bp(p, STMT, 1) else {
         if has_attrs {
             m.complete(p, ERROR);
         } else {
@@ -172,8 +172,12 @@ pub(super) fn stmt(p: &mut Parser<'_>) {
         }
         return;
     };
-    if p.at_block_end() && !has_attrs {
-        m.abandon(p);
+    if p.at_block_end() {
+        if has_attrs {
+            expr.extend_to(p, m);
+        } else {
+            m.abandon(p);
+        }
         return;
     }
     if !p.eat(T![;]) && blocklike == BlockLike::NotBlock && !p.at_block_end() {

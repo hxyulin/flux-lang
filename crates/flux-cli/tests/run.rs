@@ -148,11 +148,26 @@ fn programs_match_rustc() {
     let dir = std::env::temp_dir().join(format!("flux-run-tests-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
+    // Compile unchanged compiler implementations, rather than copies of
+    // their algorithms. Bundle modules until flux supports `#[path]`.
+    let internals = dir.join("compiler_internals.rs");
+    std::fs::write(
+        &internals,
+        format!(
+            "mod rng {{\n{}\n}}\nmod bitset {{\n{}\n}}\n{}",
+            include_str!("../../flux-difftest/src/rng.rs"),
+            include_str!("../../flux-mir/src/bitset.rs"),
+            include_str!("../../../tests/run/support/compiler_internals.rs"),
+        ),
+    )
+    .unwrap();
+    programs.push(internals);
+
     let mut failures = Vec::new();
     for program in &programs {
         let name = program.file_stem().unwrap().to_string_lossy().into_owned();
         // As given on the command line, which panic messages show.
-        let program = program.strip_prefix(&root).unwrap();
+        let program = program.strip_prefix(&root).unwrap_or(program);
         let reference = dir.join(format!("{name}-rustc"));
         let result = compile(
             Command::new("rustc")

@@ -149,12 +149,13 @@ weights! {
     /// Closure parameters left for inference, else annotated, percent.
     unannotated_closures = 25,
 
+    /// Parenthesized range-to patterns, `(..=5)`, percent.
+    paren_patterns = 25,
+    /// `matches!(..)` unparenthesized, so it may end a block, percent.
+    bare_macros = 25,
+
     // Constructs flux rejects for now (see tests/difftest/bugs): 0 keeps
     // campaigns from being swamped by known bugs; raise them once fixed.
-    /// Parenthesized range-to patterns, `(..=5)` (bug 002), percent.
-    paren_patterns = 0,
-    /// `matches!(..)` unparenthesized, so it may end a block (bug 003), percent.
-    bare_macros = 0,
     /// `rev()` after `zip`, `step_by`, `skip`, `take` and `enumerate` (bug 004), percent.
     rev_adapters = 0,
     /// `ref` bindings in `let ... else` (bug 005), percent.

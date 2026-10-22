@@ -4613,6 +4613,10 @@ impl u8 {
         self % rhs
     }
 
+    pub const fn is_multiple_of(self, rhs: u8) -> bool {
+        if rhs == 0 { self == 0 } else { self % rhs == 0 }
+    }
+
     pub const fn div_ceil(self, rhs: u8) -> u8 {
         let d = self / rhs;
         let r = self % rhs;
@@ -5073,6 +5077,10 @@ impl u16 {
 
     pub const fn rem_euclid(self, rhs: u16) -> u16 {
         self % rhs
+    }
+
+    pub const fn is_multiple_of(self, rhs: u16) -> bool {
+        if rhs == 0 { self == 0 } else { self % rhs == 0 }
     }
 
     pub const fn div_ceil(self, rhs: u16) -> u16 {
@@ -5537,6 +5545,10 @@ impl u32 {
         self % rhs
     }
 
+    pub const fn is_multiple_of(self, rhs: u32) -> bool {
+        if rhs == 0 { self == 0 } else { self % rhs == 0 }
+    }
+
     pub const fn div_ceil(self, rhs: u32) -> u32 {
         let d = self / rhs;
         let r = self % rhs;
@@ -5997,6 +6009,10 @@ impl u64 {
 
     pub const fn rem_euclid(self, rhs: u64) -> u64 {
         self % rhs
+    }
+
+    pub const fn is_multiple_of(self, rhs: u64) -> bool {
+        if rhs == 0 { self == 0 } else { self % rhs == 0 }
     }
 
     pub const fn div_ceil(self, rhs: u64) -> u64 {
@@ -6461,6 +6477,10 @@ impl u128 {
         self % rhs
     }
 
+    pub const fn is_multiple_of(self, rhs: u128) -> bool {
+        if rhs == 0 { self == 0 } else { self % rhs == 0 }
+    }
+
     pub const fn div_ceil(self, rhs: u128) -> u128 {
         let d = self / rhs;
         let r = self % rhs;
@@ -6921,6 +6941,10 @@ impl usize {
 
     pub const fn rem_euclid(self, rhs: usize) -> usize {
         self % rhs
+    }
+
+    pub const fn is_multiple_of(self, rhs: usize) -> bool {
+        if rhs == 0 { self == 0 } else { self % rhs == 0 }
     }
 
     pub const fn div_ceil(self, rhs: usize) -> usize {

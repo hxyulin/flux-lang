@@ -1152,3 +1152,11 @@ of 1.1 ms. A single `flux build` still builds `core` once.
 | `flux-ty` `tests/ty.rs` | Snapshot types and diagnostics for `tests/data/{ok,err}`; `main` rules; `core` is clean; signatures resolved after `core`'s shared ones match resolving everything; never panics |
 | `flux-mir` `tests/mir.rs` | Snapshot MIR and initialization errors for `tests/data/{ok,err}` |
 | `flux-cli` `tests/run.rs` | Every program in `tests/run`, built with rustc and with flux (with and without `-O`), produces the same output, panic messages and exit status |
+
+The runtime harness also compiles the compiler's own choice-tape
+(`flux-difftest/src/rng.rs`) and dataflow bitset (`flux-mir/src/bitset.rs`)
+implementations with both compilers. It embeds the current source files
+as modules alongside `tests/run/support/compiler_internals.rs`, which
+exercises random draws, replay, bit updates, unions and word boundaries.
+This is executable coverage of compiler components; full self-compilation
+still needs more language and library support.
