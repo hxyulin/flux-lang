@@ -52,6 +52,10 @@ pub struct ItemTree {
     pub trait_fns: rustc_hash::FxHashMap<Symbol, Vec<TraitId>>,
     /// The module of each block with items, by its file and node.
     pub block_modules: rustc_hash::FxHashMap<(FileId, NodeId), ModuleId>,
+    /// The anonymous constant of each array length, repeat count and
+    /// const generic argument written as an expression other than a
+    /// literal or a path, by its file and the expression's node.
+    pub anon_consts: rustc_hash::FxHashMap<(FileId, NodeId), ConstId>,
     /// The traits the compiler knows, by their `#[lang = "..."]` names.
     pub lang_traits: rustc_hash::FxHashMap<Symbol, TraitId>,
     /// `core`'s structs and enums the compiler knows, by their
@@ -202,6 +206,28 @@ pub struct Const {
     /// evaluated like a constant's, rather than a value copied at each
     /// use. Its `node` is a `STATIC`.
     pub is_static: Option<bool>,
+    /// An anonymous constant (`[u8; N + 1]`): see [`AnonConst`]. Its
+    /// `node` is the expression.
+    pub anon: Option<AnonConst>,
+}
+
+/// An array length, repeat count or const generic argument written as an
+/// expression other than a literal or a path (`[u8; N + 1]`): an
+/// anonymous constant, of type `usize` for a length, which sees no
+/// generic parameters (rustc's `min_const_generics`), and `Self` only
+/// in an `impl` block without any, which is then its owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnonConst {
+    /// The function whose signature or body it is in, whose locals it
+    /// cannot use (E0435).
+    pub function: Option<FunctionId>,
+    /// The item it is in, and how many anonymous constants come before
+    /// it there: rustc's `f::{constant#0}`.
+    pub item: Symbol,
+    pub index: u32,
+    /// A const generic argument (`f::<{ N + 1 }>`), whose type is its
+    /// parameter's, rather than an array's length.
+    pub is_arg: bool,
 }
 
 impl Const {
@@ -991,6 +1017,9 @@ pub enum ArrayLenKind {
     Lit { value: u128, suffix: Option<Symbol> },
     /// A path to a constant, resolved where the type is.
     Path(Path),
+    /// Another expression, at this node: an anonymous constant
+    /// ([`ItemTree::anon_consts`]), unless it was an error (reported).
+    Anon(NodeId),
     /// Unsupported or malformed; already reported.
     Error,
 }
@@ -1007,6 +1036,7 @@ impl std::fmt::Display for ArrayLen {
                 suffix: None,
             } => write!(f, "{value}"),
             ArrayLenKind::Path(path) => write!(f, "{path}"),
+            ArrayLenKind::Anon(_) => f.write_str("{const}"),
             ArrayLenKind::Error => f.write_str("<error>"),
         }
     }
@@ -1118,6 +1148,8 @@ impl ItemTree {
             items: self,
             derives: Vec::new(),
             block_counts: rustc_hash::FxHashMap::default(),
+            fn_ids: rustc_hash::FxHashMap::default(),
+            impl_ids: rustc_hash::FxHashMap::default(),
         };
         collector.collect_crate(root, name, is_core);
         collector.expand_derives();
@@ -1258,6 +1290,9 @@ impl ItemTree {
     /// the enum's module in its crate.
     pub fn const_name(&self, id: ConstId) -> String {
         let konst = &self.consts[id];
+        if let Some(anon) = konst.anon {
+            return format!("{}::{{constant#{}}}", anon.item, anon.index);
+        }
         match (konst.name, konst.discriminant) {
             (Some(name), _) => name.to_string(),
             (None, Some((strukt, variant))) => {
@@ -1289,6 +1324,35 @@ struct Collector<'a> {
     /// How many blocks with items each function has had, for their
     /// modules' names.
     block_counts: rustc_hash::FxHashMap<Option<FunctionId>, u32>,
+    /// The functions and `impl` blocks collected, by their nodes: what
+    /// their anonymous constants are in.
+    fn_ids: rustc_hash::FxHashMap<(FileId, NodeId), FunctionId>,
+    impl_ids: rustc_hash::FxHashMap<(FileId, NodeId), ImplId>,
+}
+
+/// What the anonymous constants of an item see: the module, the `impl`
+/// block (if `Self` may be used), the generic parameters (and whether
+/// each is a const one), whether `Self` is generic, the function, and
+/// the item's name, for rustc's names of them.
+#[derive(Clone)]
+struct AnonScope {
+    module: ModuleId,
+    owner: Option<Owner>,
+    generics: Vec<(Symbol, bool)>,
+    generic_self: bool,
+    function: Option<FunctionId>,
+    item: Symbol,
+}
+
+/// Where an anonymous constant is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnonUse {
+    /// An array type's length.
+    Len,
+    /// A repeat expression's count.
+    Repeat,
+    /// A const generic argument.
+    Arg,
 }
 
 /// What collecting is inside of.
@@ -1352,6 +1416,7 @@ impl Collector<'_> {
         for &node in items {
             let start = self.items.diagnostics.len();
             self.collect_item(ctx, node);
+            self.collect_anon_consts(ctx, node);
             self.tag(start, ctx.file);
         }
     }
@@ -2097,6 +2162,7 @@ impl Collector<'_> {
             consts: Vec::new(),
             types: Vec::new(),
         });
+        self.impl_ids.insert((ctx.file, imp.syntax().id()), id);
         let Some(list) = imp.assoc_item_list() else {
             return;
         };
@@ -2455,6 +2521,7 @@ impl Collector<'_> {
             derived: None,
             opaques: opaques.into(),
         });
+        self.fn_ids.insert((ctx.file, f.syntax().id()), id);
         if lang.is_some_and(|l| l.as_str() == "panic") {
             self.items.panic_fn = Some(id);
         } else if let Some(lang) = lang {
@@ -2533,6 +2600,234 @@ impl Collector<'_> {
         }
     }
 
+    /// Allocates the anonymous constants of item `node` (array lengths,
+    /// repeat counts and const generic arguments written as expressions
+    /// other than literals and paths), its associated items' and its
+    /// body's, but not those of items inside it, which are collected on
+    /// their own. Uses of generic parameters in them are rustc's errors,
+    /// and they get none.
+    fn collect_anon_consts(&mut self, ctx: Ctx, node: NodeId) {
+        let shared = self.db.shared(ctx.file);
+        let tree = shared.parse.tree();
+        let root = tree.node(node);
+        // Most items have none: they are found without a walk.
+        if !root.descendants().any(|n| {
+            matches!(
+                n.kind(),
+                SyntaxKind::ARRAY_TYPE | SyntaxKind::ARRAY_EXPR | SyntaxKind::CONST_ARG
+            )
+        }) {
+            return;
+        }
+        let mut scope = AnonScope {
+            module: ctx.module,
+            owner: None,
+            generics: Vec::new(),
+            generic_self: false,
+            function: None,
+            item: kw::Empty,
+        };
+        let mut counts = rustc_hash::FxHashMap::default();
+        self.anon_walk(ctx.file, root, &mut scope, &mut counts);
+    }
+
+    fn anon_walk(
+        &mut self,
+        file: FileId,
+        node: SyntaxNode<'_>,
+        scope: &mut AnonScope,
+        counts: &mut rustc_hash::FxHashMap<Symbol, u32>,
+    ) {
+        let kind = node.kind();
+        let outer = scope.clone();
+        if is_item_kind(kind) {
+            if let Some(list) = node
+                .children()
+                .find(|c| c.kind() == SyntaxKind::GENERIC_PARAM_LIST)
+                .and_then(ast::GenericParamList::cast)
+            {
+                for param in list.generic_params() {
+                    let (name, is_const) = match param {
+                        ast::GenericParam::TypeParam(p) => (p.name(), false),
+                        ast::GenericParam::ConstParam(p) => (p.name(), true),
+                        ast::GenericParam::LifetimeParam(_) => {
+                            if kind == SyntaxKind::IMPL {
+                                scope.generic_self = true;
+                            }
+                            continue;
+                        }
+                    };
+                    if let Some(name) = name {
+                        scope.generics.push((Symbol::intern(name.text()), is_const));
+                        if matches!(kind, SyntaxKind::IMPL | SyntaxKind::TRAIT) {
+                            scope.generic_self = true;
+                        }
+                    }
+                }
+            }
+            if let Some(name) = node
+                .children()
+                .find(|c| c.kind() == SyntaxKind::NAME)
+                .map(|n| Symbol::intern(n.text().trim()))
+                && scope.item == kw::Empty
+            {
+                scope.item = name;
+            }
+            match kind {
+                SyntaxKind::FN => {
+                    scope.function = self.fn_ids.get(&(file, node.id())).copied();
+                    if let Some(f) = scope.function {
+                        scope.item = self.items.functions[f].name;
+                    }
+                }
+                SyntaxKind::IMPL => {
+                    scope.owner = self
+                        .impl_ids
+                        .get(&(file, node.id()))
+                        .filter(|_| !scope.generic_self)
+                        .map(|&imp| Owner::Impl(imp));
+                }
+                SyntaxKind::TRAIT => scope.generic_self = true,
+                _ => {}
+            }
+        }
+        match kind {
+            SyntaxKind::BLOCK_EXPR => {
+                if let Some(&module) = self.items.block_modules.get(&(file, node.id())) {
+                    scope.module = module;
+                }
+            }
+            SyntaxKind::ARRAY_TYPE => {
+                if let Some(expr) = ast::ArrayType::cast(node).and_then(|a| a.expr()) {
+                    self.anon_const(file, expr, AnonUse::Len, scope, counts);
+                }
+            }
+            SyntaxKind::ARRAY_EXPR => {
+                if let Some(array) = ast::ArrayExpr::cast(node)
+                    && array.semicolon_token().is_some()
+                    && let Some(expr) = array.exprs().nth(1)
+                {
+                    self.anon_const(file, expr, AnonUse::Repeat, scope, counts);
+                }
+            }
+            SyntaxKind::CONST_ARG => {
+                if let Some(expr) = ast::ConstArg::cast(node).and_then(|a| a.expr()) {
+                    self.anon_const(file, expr, AnonUse::Arg, scope, counts);
+                }
+            }
+            _ => {}
+        }
+        // Associated items and those of `extern` blocks are this item's;
+        // others are collected on their own.
+        let own_items = matches!(
+            kind,
+            SyntaxKind::ASSOC_ITEM_LIST | SyntaxKind::EXTERN_ITEM_LIST
+        );
+        for child in node.children() {
+            if is_item_kind(child.kind()) && !own_items {
+                continue;
+            }
+            self.anon_walk(file, child, scope, counts);
+        }
+        *scope = outer;
+    }
+
+    /// The anonymous constant of `expr`, used as `what`, if it is one
+    /// and does not use generic parameters (reported).
+    fn anon_const(
+        &mut self,
+        file: FileId,
+        expr: ast::Expr<'_>,
+        what: AnonUse,
+        scope: &AnonScope,
+        counts: &mut rustc_hash::FxHashMap<Symbol, u32>,
+    ) {
+        let expr = const_expr_root(expr);
+        if !is_anon_const(expr) {
+            return;
+        }
+        let range = expr.syntax().text_range();
+        let count = counts.entry(scope.item).or_default();
+        let index = *count;
+        *count += 1;
+        let diagnostics = &mut self.items.diagnostics;
+        let mut generic = false;
+        let mut depends = false;
+        for token in expr.syntax().tokens() {
+            match token.kind() {
+                SyntaxKind::SELF_TYPE_KW if scope.generic_self => {
+                    diagnostics.push(Diagnostic::new(
+                        token.text_range(),
+                        "generic `Self` types are currently not permitted in anonymous constants",
+                    ));
+                    generic = true;
+                }
+                SyntaxKind::IDENT => {
+                    let Some(&(_, is_const)) = scope
+                        .generics
+                        .iter()
+                        .rev()
+                        .find(|(n, _)| n.as_str() == token.text())
+                    else {
+                        continue;
+                    };
+                    generic = true;
+                    // A repeat count may name type parameters, as rustc
+                    // allows for compatibility; its value then depends
+                    // on them.
+                    if what == AnonUse::Repeat && !is_const {
+                        depends = true;
+                        continue;
+                    }
+                    diagnostics.push(Diagnostic::new(
+                        token.text_range(),
+                        "generic parameters may not be used in const operations",
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if depends {
+            diagnostics.push(Diagnostic::new(
+                range,
+                "constant expression depends on a generic parameter",
+            ));
+        }
+        if generic {
+            return;
+        }
+        let ty = match what {
+            AnonUse::Arg => TypeRef::Infer,
+            AnonUse::Len | AnonUse::Repeat => TypeRef::Path(Path::single(sym::usize)),
+        };
+        let konst = self.items.consts.alloc(Const {
+            name: None,
+            ty,
+            ty_range: range,
+            loc: ItemLoc {
+                module: scope.module,
+                file,
+                vis: Visibility::Public,
+            },
+            owner: scope.owner,
+            node: expr.syntax().id(),
+            has_body: true,
+            def_range: range,
+            item_range: range,
+            discriminant: None,
+            is_static: None,
+            anon: Some(AnonConst {
+                function: scope.function,
+                item: scope.item,
+                index,
+                is_arg: what == AnonUse::Arg,
+            }),
+        });
+        self.items
+            .anon_consts
+            .insert((file, expr.syntax().id()), konst);
+    }
+
     fn collect_const(
         &mut self,
         ctx: Ctx,
@@ -2593,6 +2888,7 @@ impl Collector<'_> {
             def_range: TextRange::new(def_start, header_end),
             item_range,
             discriminant: None,
+            anon: None,
             is_static: None,
         });
         if let Some(body) = c.body() {
@@ -2649,6 +2945,7 @@ impl Collector<'_> {
             def_range: TextRange::new(def_start, header_end),
             item_range,
             discriminant: None,
+            anon: None,
             is_static: Some(st.mut_token().is_some()),
         });
         if let Some(body) = st.body() {
@@ -2973,6 +3270,7 @@ impl Collector<'_> {
                     item_range: range,
                     discriminant: Some((strukt, variants.len() as u32)),
                     is_static: None,
+                    anon: None,
                 });
                 discriminant = Discriminant::Const { konst, offset: 0 };
             }
@@ -4964,15 +5262,20 @@ pub(crate) fn lower_array_len(
     whole: TextRange,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> ArrayLen {
-    let Some(expr) = expr else {
+    let Some(expr) = expr.map(const_expr_root) else {
         return ArrayLen {
             kind: ArrayLenKind::Error,
             range: whole,
         };
     };
     let range = expr.syntax().text_range();
+    if is_anon_const(expr) {
+        return ArrayLen {
+            kind: ArrayLenKind::Anon(expr.syntax().id()),
+            range,
+        };
+    }
     let kind = match expr {
-        ast::Expr::ParenExpr(paren) => return lower_array_len(paren.expr(), range, diagnostics),
         ast::Expr::Literal(literal) => match literal.kind() {
             Some(ast::LiteralKind::Int) => {
                 let parsed = literal.value().map(|t| crate::literal::parse_int(t.text()));
@@ -4994,14 +5297,7 @@ pub(crate) fn lower_array_len(
                 ));
                 ArrayLenKind::Error
             }
-            _ => {
-                unsupported(
-                    diagnostics,
-                    range,
-                    "array lengths other than integers and constants",
-                );
-                ArrayLenKind::Error
-            }
+            _ => ArrayLenKind::Error,
         },
         ast::Expr::PathExpr(path) => {
             match path.path().and_then(|p| lower_generic_path(p, diagnostics)) {
@@ -5009,16 +5305,48 @@ pub(crate) fn lower_array_len(
                 None => ArrayLenKind::Error,
             }
         }
-        _ => {
-            unsupported(
-                diagnostics,
-                range,
-                "array lengths other than integers and constants",
-            );
-            ArrayLenKind::Error
-        }
+        _ => ArrayLenKind::Error,
     };
     ArrayLen { kind, range }
+}
+
+/// The expression a constant written as `expr` is: `expr` without
+/// parentheses, or braces around nothing but a literal or a path
+/// (`{ N }`, which rustc reads as `N`).
+pub(crate) fn const_expr_root(expr: ast::Expr<'_>) -> ast::Expr<'_> {
+    match expr {
+        ast::Expr::ParenExpr(paren) => match paren.expr() {
+            Some(inner) => const_expr_root(inner),
+            None => expr,
+        },
+        ast::Expr::BlockExpr(block)
+            if block.label().is_none()
+                && block.unsafe_token().is_none()
+                && block.const_token().is_none()
+                && block.async_token().is_none()
+                && block.attrs().next().is_none()
+                && block.stmts().next().is_none() =>
+        {
+            match block.tail_expr().map(const_expr_root) {
+                Some(inner @ (ast::Expr::Literal(_) | ast::Expr::PathExpr(_))) => inner,
+                _ => expr,
+            }
+        }
+        _ => expr,
+    }
+}
+
+/// Whether the constant `expr`, a [`const_expr_root`], is an anonymous
+/// constant: neither an integer or `bool` literal nor a path.
+pub(crate) fn is_anon_const(expr: ast::Expr<'_>) -> bool {
+    match expr {
+        ast::Expr::Literal(literal) => !matches!(
+            literal.kind(),
+            Some(ast::LiteralKind::Int | ast::LiteralKind::Bool(_))
+        ),
+        ast::Expr::PathExpr(_) => false,
+        _ => true,
+    }
 }
 
 /// `fn(A, B) -> R`, `unsafe fn(A)`; `extern "C" fn` and C-variadic ones

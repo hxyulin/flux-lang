@@ -968,6 +968,12 @@ pub fn array_len(
     };
     let konst = match &len.kind {
         flux_hir::ArrayLenKind::Error => return None,
+        flux_hir::ArrayLenKind::Anon(node) => {
+            let file = items.modules[module].file;
+            // One that uses generic parameters is reported, and has none.
+            let konst = *items.anon_consts.get(&(file, *node))?;
+            return scope.lens?.value(konst);
+        }
         flux_hir::ArrayLenKind::Lit { value, suffix } => {
             return match suffix {
                 Some(suffix) if *suffix != sym::usize => mismatch(errors, suffix),
@@ -979,6 +985,17 @@ pub fn array_len(
                     }
                 },
             };
+        }
+        flux_hir::ArrayLenKind::Path(path)
+            if path.segments.first() == Some(&kw::SelfUpper)
+                && scope.self_ty.is_some_and(Ty::has_params) =>
+        {
+            errors.push((
+                path.range(0, range),
+                "generic `Self` types are currently not permitted in anonymous constants"
+                    .to_owned(),
+            ));
+            return None;
         }
         flux_hir::ArrayLenKind::Path(path) => match items.resolve(module, path, Ns::Values) {
             Ok(Resolved::Def(Def::Const(konst))) => konst,

@@ -66,6 +66,12 @@ pub fn lower_const<'a>(tree: &'a SyntaxTree, items: &'a ItemTree, konst: ConstId
         function: None,
         item_start: data.item_range.start(),
     });
+    if let Some(anon) = data.anon {
+        // An array length or the like, whose node is the expression.
+        ctx.anon_in = anon.function;
+        let root = ctx.lower_opt(ast::Expr::cast(node), node);
+        return ctx.finish(Vec::new(), root);
+    }
     let root = match ast::Static::cast(node) {
         Some(st) => ctx.lower_opt(st.body(), node),
         None => {
@@ -1418,6 +1424,9 @@ struct Ctx<'a> {
     /// Lowering a closure's body, where `break` cannot leave a loop
     /// outside it.
     in_closure: bool,
+    /// Lowering an anonymous constant in this function's signature or
+    /// body, whose locals it cannot use (E0435).
+    anon_in: Option<FunctionId>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -1474,6 +1483,7 @@ impl<'a> Ctx<'a> {
             alt_mode: None,
             loops: Vec::new(),
             in_closure: false,
+            anon_in: None,
             diagnostics: Vec::new(),
         }
     }
@@ -1613,7 +1623,7 @@ impl<'a> Ctx<'a> {
             ast::Expr::CastExpr(cast) => {
                 let expr = self.lower_opt(cast.expr(), syntax);
                 let ty_range = cast.ty().map_or(range, |t| t.syntax().text_range());
-                let mut ty = lower_type(cast.ty(), &mut self.diagnostics);
+                let mut ty = self.lower_body_type(cast.ty());
                 let site = ImplTraitSite::NotAllowed("cast expression types");
                 reject_impl_trait(&mut ty, site, &mut self.diagnostics);
                 let ty = self.types.alloc(ty);
@@ -1630,7 +1640,10 @@ impl<'a> Ctx<'a> {
                             semicolon.text_range(),
                             &mut self.diagnostics,
                         );
-                        self.check_repeat_count(&count);
+                        let mut count = count;
+                        if self.check_repeat_count(&count) {
+                            count.kind = crate::ArrayLenKind::Error;
+                        }
                         Expr::Repeat { value, count }
                     }
                     None => Expr::Array(exprs.map(|e| self.lower_expr(e)).collect()),
@@ -1731,9 +1744,37 @@ impl<'a> Ctx<'a> {
         self.alloc_expr(hir, range)
     }
 
+    /// A type written in the body, whose array lengths may not name
+    /// locals (E0435), as a repeat expression's count may not.
+    fn lower_body_type(&mut self, ty: Option<ast::Type<'_>>) -> TypeRef {
+        let mut ty = lower_type(ty, &mut self.diagnostics);
+        self.check_type_lens(&mut ty);
+        ty
+    }
+
+    fn check_type_lens(&mut self, ty: &mut TypeRef) {
+        match ty {
+            TypeRef::Array { elem, len } => {
+                self.check_type_lens(elem);
+                if self.check_repeat_count(len) {
+                    len.kind = crate::ArrayLenKind::Error;
+                }
+            }
+            TypeRef::Tuple(fields) => fields.iter_mut().for_each(|f| self.check_type_lens(f)),
+            TypeRef::Ptr { pointee, .. }
+            | TypeRef::Ref { pointee, .. }
+            | TypeRef::Slice(pointee) => self.check_type_lens(pointee),
+            TypeRef::FnPtr { params, ret, .. } => {
+                params.iter_mut().for_each(|p| self.check_type_lens(p));
+                self.check_type_lens(ret);
+            }
+            _ => {}
+        }
+    }
+
     /// A repeat expression's count may not name a local, as rustc's
-    /// anonymous constants cannot (E0435).
-    fn check_repeat_count(&mut self, count: &crate::ArrayLen) {
+    /// anonymous constants cannot (E0435): whether it does.
+    fn check_repeat_count(&mut self, count: &crate::ArrayLen) -> bool {
         if let crate::ArrayLenKind::Path(path) = &count.kind
             && let Some(name) = path.as_name()
             && self.scopes.get(name).is_some()
@@ -1742,7 +1783,9 @@ impl<'a> Ctx<'a> {
                 count.range,
                 "attempt to use a non-constant value in a constant",
             );
+            return true;
         }
+        false
     }
 
     /// A range, as rustc lowers it: `a..b` is `Range { start: a, end: b }`,
@@ -2232,7 +2275,7 @@ impl<'a> Ctx<'a> {
                     }
                     let ty = let_stmt.ty().map(|ty| {
                         let range = ty.syntax().text_range();
-                        let mut ty = lower_type(Some(ty), &mut self.diagnostics);
+                        let mut ty = self.lower_body_type(Some(ty));
                         let site = ImplTraitSite::NotAllowed("the type of variable bindings");
                         reject_impl_trait(&mut ty, site, &mut self.diagnostics);
                         let id = self.types.alloc(ty);
@@ -2702,7 +2745,7 @@ impl<'a> Ctx<'a> {
             }
             let ty = param.ty().map(|ty| {
                 let at = ty.syntax().text_range();
-                let mut ty = lower_type(Some(ty), &mut self.diagnostics);
+                let mut ty = self.lower_body_type(Some(ty));
                 let site = ImplTraitSite::NotAllowed("closure parameters");
                 reject_impl_trait(&mut ty, site, &mut self.diagnostics);
                 let id = self.types.alloc(ty);
@@ -2716,7 +2759,7 @@ impl<'a> Ctx<'a> {
             let at = ret
                 .ty()
                 .map_or(ret.syntax().text_range(), |t| t.syntax().text_range());
-            let mut ty = lower_type(ret.ty(), &mut self.diagnostics);
+            let mut ty = self.lower_body_type(ret.ty());
             let site = ImplTraitSite::NotAllowed("closure return types");
             reject_impl_trait(&mut ty, site, &mut self.diagnostics);
             let id = self.types.alloc(ty);
@@ -3139,11 +3182,18 @@ impl<'a> Ctx<'a> {
         };
         let mut module = Some(self.module);
         let mut seen: Vec<FunctionId> = Vec::new();
+        let mut anon_in = self.anon_in;
         while let Some(m) = module {
-            let data = &self.items.modules[m];
-            module = data.parent;
-            let Some(outer) = data.block.and_then(|b| b.function) else {
-                continue;
+            let outer = match anon_in.take() {
+                Some(f) => f,
+                None => {
+                    let data = &self.items.modules[m];
+                    module = data.parent;
+                    let Some(outer) = data.block.and_then(|b| b.function) else {
+                        continue;
+                    };
+                    outer
+                }
             };
             if Some(outer) == place.function || seen.contains(&outer) {
                 continue;

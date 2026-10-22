@@ -93,9 +93,9 @@ reported as "not supported yet":
   `Self::Out`, `<T as Tr>::Out`), `impl Trait` in functions'
   parameters and return types (below), tuples, `!`, references with or
   without lifetimes (`&T`, `&'a mut T`), raw pointers (`*const T`, `*mut T`),
-  arrays (`[T; N]`, whose length is an integer literal or a path to a
-  constant of type `usize`: `[u8; 4]`, `[u8; N]`, `[u8; m::N]`; other
-  constant expressions are not supported yet), slices and `str` behind
+  arrays (`[T; N]`, whose length is a constant expression of type
+  `usize`: `[u8; 4]`, `[u8; N]`, `[u8; m::N]`, `[u8; N * 2 + 1]`,
+  `[u8; double(N)]`, `[u8; Self::CAP]`), slices and `str` behind
   pointers (`&[T]`, `&mut [T]`, `&str`, `*const [u8]`),
   `core::ffi::CStr` behind a reference, and `_` inside bodies (`let p:
   Pair<_> = ...`).
@@ -241,7 +241,12 @@ A length written as a constant is evaluated while types are checked,
 by the same evaluator as other constants, so its errors (E0080, a
 cycle) stop type checking, as in rustc. A repeat expression's value
 must be `Copy` unless the length is 0 or 1 or the value is a constant
-(E0277), and its length may not name a local (E0435). A slice (`[T]`)
+(E0277), and its length may not name a local (E0435). A length other
+than a literal or a path is an anonymous constant, as in rustc: it may
+not use generic parameters ("generic parameters may not be used in
+const operations"; a repeat count that names a type parameter is
+"constant expression depends on a generic parameter"), nor `Self`
+where it is generic. A slice (`[T]`)
 has no size of its own, so it exists only behind a pointer: a value,
 binding, parameter or field of a slice type is E0277, as in rustc
 (unsized struct fields are not supported yet). A reference to an array
