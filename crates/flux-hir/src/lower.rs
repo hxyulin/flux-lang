@@ -21,6 +21,9 @@ use crate::{
     StructId, StructKind, TypeRef,
 };
 
+mod scopes;
+use scopes::Scopes;
+
 /// Where a pattern binds, for "cannot shadow" messages.
 #[derive(Clone, Copy)]
 enum PatSite {
@@ -1162,7 +1165,7 @@ struct Ctx<'a> {
     source_map: BodySourceMap,
     generic_args: ArenaMap<Expr, PathGenerics>,
     /// Bindings in scope, innermost last; a block truncates it on exit.
-    scopes: Vec<(Symbol, BindingId)>,
+    scopes: Scopes,
     /// The bindings of the pattern being lowered so far.
     pat_binds: Vec<(Symbol, BindingId)>,
     /// For each or-pattern being lowered, the bindings of its first
@@ -1223,7 +1226,7 @@ impl<'a> Ctx<'a> {
             types: Arena::new(),
             source_map: BodySourceMap::default(),
             generic_args: ArenaMap::new(),
-            scopes: Vec::new(),
+            scopes: Scopes::new(),
             pat_binds: Vec::new(),
             or_reuse: Vec::new(),
             pat_args: ArenaMap::new(),
@@ -1498,7 +1501,7 @@ impl<'a> Ctx<'a> {
     fn check_repeat_count(&mut self, count: &crate::ArrayLen) {
         if let crate::ArrayLenKind::Path(path) = &count.kind
             && let Some(name) = path.as_name()
-            && self.scopes.iter().any(|&(n, _)| n == name)
+            && self.scopes.get(name).is_some()
         {
             self.error(
                 count.range,
@@ -2349,7 +2352,7 @@ impl<'a> Ctx<'a> {
     /// it is called, which changes rustc's messages.
     fn resolve_value(&mut self, path: &Path, range: TextRange, call: Option<TextRange>) -> Res {
         if let Some(name) = path.as_name() {
-            if let Some(&(_, binding)) = self.scopes.iter().rev().find(|(n, _)| *n == name) {
+            if let Some(binding) = self.scopes.get(name) {
                 return Res::Local(binding);
             }
             if name == kw::SelfLower {
@@ -3014,7 +3017,7 @@ impl<'a> Ctx<'a> {
                         .path()
                         .and_then(|p| lower_generic_path(p, &mut Vec::new()))
                         .and_then(|p| p.as_name())
-                        .is_some_and(|name| this.scopes.iter().any(|&(n, _)| n == name));
+                        .is_some_and(|name| this.scopes.get(name).is_some());
                     if local {
                         this.error(at, "runtime values cannot be referenced in patterns");
                         return Err(());
@@ -3110,7 +3113,7 @@ impl<'a> Ctx<'a> {
         let plain = ident.mut_token().is_none() && ident.ref_token().is_none() && sub.is_none();
         // A local of the name hides the items, as rustc's ribs do: the
         // pattern binds anew.
-        let local = self.scopes.iter().any(|&(n, _)| n == name);
+        let local = self.scopes.get(name).is_some();
         let item = if local {
             None
         } else {
