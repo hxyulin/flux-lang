@@ -65,6 +65,8 @@ pub struct ItemTree {
     /// "..."]` names: those that the built-in `impl` blocks of arrays
     /// call (`array_into_iter`).
     pub lang_fns: rustc_hash::FxHashMap<Symbol, FunctionId>,
+    /// The variant each enum deriving `Default` marks `#[default]`.
+    pub default_variants: rustc_hash::FxHashMap<StructId, u32>,
     /// Problems found collecting the items and resolving their names;
     /// [`lower`](crate::lower) moves them into the [`Hir`](crate::Hir)'s.
     pub diagnostics: Vec<Diagnostic>,
@@ -2700,8 +2702,28 @@ impl Collector<'_> {
         // enum with fields only with an integer `repr`.
         let mut written = false;
         let mut duplicates = Vec::new();
+        // `#[default]` on variants: the variant's index, the attribute's
+        // range and whether it has a value, and the name's range.
+        let mut defaults: Vec<(u32, TextRange, bool, TextRange)> = Vec::new();
         for v in e.variant_list().into_iter().flat_map(|l| l.variants()) {
-            check_attrs(v.attrs(), &mut self.items.diagnostics);
+            let mut marked = Vec::new();
+            for attr in v.attrs() {
+                if attr_name(attr) == Some("default") {
+                    let meta = attr.meta();
+                    let has_value = meta.is_some_and(|m| {
+                        m.token_tree().is_some()
+                            || m.syntax()
+                                .children_with_tokens()
+                                .any(|t| t.kind() == SyntaxKind::EQ)
+                    });
+                    let name = meta
+                        .and_then(|m| m.path())
+                        .map_or(attr.syntax().text_range(), |p| p.syntax().text_range());
+                    marked.push((attr.syntax().text_range(), has_value, name));
+                } else {
+                    check_attr(attr, &mut self.items.diagnostics);
+                }
+            }
             if let Some(vis) = v.visibility() {
                 self.items.diagnostics.push(Diagnostic::new(
                     vis.syntax().text_range(),
@@ -2828,6 +2850,8 @@ impl Collector<'_> {
                     offset: offset + 1,
                 }),
             };
+            let index = variants.len() as u32;
+            defaults.extend(marked.into_iter().map(|(a, v, n)| (index, a, v, n)));
             variants.push(Variant {
                 name: v_name,
                 kind,
@@ -2862,7 +2886,65 @@ impl Collector<'_> {
         if let Some(lang) = lang {
             self.items.lang_enums.insert(lang, id);
         }
+        let derives_default = derives.iter().find(|(d, _)| *d == Derive::Default);
+        let mut default_ok = true;
+        match derives_default {
+            // `#[default]` is the derive's helper attribute: without it,
+            // an unknown attribute.
+            None => {
+                for &(_, _, _, name) in &defaults {
+                    self.items.diagnostics.push(Diagnostic::new(
+                        name,
+                        "cannot find attribute `default` in this scope",
+                    ));
+                }
+            }
+            Some(&(_, at)) => {
+                let variants = self.items.structs[id]
+                    .variants
+                    .as_deref()
+                    .unwrap_or_default();
+                for &(_, attr, has_value, _) in &defaults {
+                    if has_value {
+                        self.items.diagnostics.push(Diagnostic::new(
+                            attr,
+                            "`#[default]` attribute does not accept a value",
+                        ));
+                    }
+                }
+                match defaults.as_slice() {
+                    [] => {
+                        self.items.diagnostics.push(Diagnostic::new(
+                            at,
+                            "`#[derive(Default)]` on enum with no `#[default]`",
+                        ));
+                        default_ok = false;
+                    }
+                    &[(v, ..)] => {
+                        let variant = &variants[v as usize];
+                        if variant.kind == StructKind::Unit {
+                            self.items.default_variants.insert(id, v);
+                        } else {
+                            self.items.diagnostics.push(Diagnostic::new(
+                                variant.name_range,
+                                "the `#[default]` attribute may only be used on unit enum variants",
+                            ));
+                            default_ok = false;
+                        }
+                    }
+                    _ => {
+                        self.items
+                            .diagnostics
+                            .push(Diagnostic::new(at, "multiple declared defaults"));
+                        default_ok = false;
+                    }
+                }
+            }
+        }
         for (derive, range) in derives {
+            if derive == Derive::Default && !default_ok {
+                continue;
+            }
             self.derives.push((ctx, id, derive, range, e.syntax().id()));
         }
     }
@@ -2902,7 +2984,11 @@ impl Collector<'_> {
             Derive::Eq => ("cmp", "Eq"),
             Derive::PartialOrd => ("cmp", "PartialOrd"),
             Derive::Ord => ("cmp", "Ord"),
+            Derive::Default => ("default", "Default"),
         };
+        // rustc's `Default` for an enum bounds no parameters: its
+        // default variant has no fields.
+        let bounds_params = !(derive == Derive::Default && s.is_enum());
         let in_core = self.items.is_core(ctx.module);
         let trait_path = core_path(module, name, in_core);
         let bound = Bound {
@@ -2932,11 +3018,13 @@ impl Collector<'_> {
                     .filter(|p| inline(p) && p.ty == ty)
                     .cloned(),
             );
-            predicates.push(WherePredicate {
-                ty,
-                ty_range: param.range,
-                bound: bound.clone(),
-            });
+            if bounds_params {
+                predicates.push(WherePredicate {
+                    ty,
+                    ty_range: param.range,
+                    bound: bound.clone(),
+                });
+            }
         }
         predicates.extend(s.generics.predicates.iter().filter(|p| !inline(p)).cloned());
         // And the trait for each field type's associated types of the
@@ -2944,7 +3032,9 @@ impl Collector<'_> {
         let mut projections = Vec::new();
         let variant_fields = s.variants.iter().flatten().flat_map(|v| v.fields.iter());
         for field in s.fields.iter().chain(variant_fields) {
-            param_projections(&field.ty, &params, &mut projections);
+            if bounds_params {
+                param_projections(&field.ty, &params, &mut projections);
+            }
         }
         for ty in projections {
             predicates.push(WherePredicate {
@@ -3051,7 +3141,9 @@ impl Collector<'_> {
                 vec![self_ref(), self_ref()],
                 TypeRef::Path(core_path("cmp", "Ordering", in_core)),
             ),
+            Derive::Default => ("default", Vec::new(), self_ty()),
         };
+        let has_self = !params.is_empty();
         let function = self.items.functions.alloc(Function {
             name: Symbol::intern(method),
             generics: Generics::default(),
@@ -3072,7 +3164,7 @@ impl Collector<'_> {
             intrinsic: false,
             is_variadic: false,
             owner: Some(Owner::Impl(id)),
-            has_self: true,
+            has_self,
             has_body: true,
             node,
             name_range: range,
@@ -3802,6 +3894,7 @@ pub enum Derive {
     Eq,
     PartialOrd,
     Ord,
+    Default,
 }
 
 /// `::core::module::name`, as `#[derive]` names its traits and their
@@ -3942,7 +4035,8 @@ fn derive_attr(
             "Eq" => Derive::Eq,
             "PartialOrd" => Derive::PartialOrd,
             "Ord" => Derive::Ord,
-            "Debug" | "Default" | "Hash" => {
+            "Default" => Derive::Default,
+            "Debug" | "Hash" => {
                 error(range, format!("deriving `{name}` is not supported yet"));
                 continue;
             }

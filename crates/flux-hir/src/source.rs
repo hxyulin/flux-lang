@@ -77,6 +77,10 @@ const CORE_FILES: &[(&str, &str)] = &[
         "intrinsics.rs",
         include_str!("../../../library/core/src/intrinsics.rs"),
     ),
+    (
+        "default.rs",
+        include_str!("../../../library/core/src/default.rs"),
+    ),
     ("iter.rs", include_str!("../../../library/core/src/iter.rs")),
     ("mem.rs", include_str!("../../../library/core/src/mem.rs")),
     ("num.rs", include_str!("../../../library/core/src/num.rs")),

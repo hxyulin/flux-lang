@@ -36,6 +36,8 @@ impl S;
 
 impl ::core::clone::Clone for Mixed;
 
+impl ::core::default::Default for Mixed;
+
 impl ::core::marker::Copy for Mixed;
 
 impl ::core::cmp::PartialOrd for Ordered;
@@ -62,6 +64,10 @@ fn main() -> () {}
 
 fn <Mixed as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
     (*self@0)
+}
+
+fn <Mixed as ::core::default::Default>::default() -> Self {
+    Mixed {  }
 }
 
 fn <Ordered as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
@@ -100,7 +106,6 @@ error 590..606: `derive` may only be applied to `struct`s, `enum`s and `union`s
 error 667..676: malformed `derive` attribute input
 error 691..710: malformed `derive` attribute input
 error 803..808: deriving `Debug` is not supported yet
-error 845..852: deriving `Default` is not supported yet
 error 860..864: deriving `Hash` is not supported yet
 error 1003..1021: paths in `derive` are not supported yet
 error 1023..1045: paths in `derive` are not supported yet

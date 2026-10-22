@@ -10,6 +10,7 @@ pub mod char;
 pub mod clone;
 pub mod cmp;
 pub mod convert;
+pub mod default;
 pub mod ffi;
 mod intrinsics;
 pub mod iter;

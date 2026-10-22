@@ -188,6 +188,9 @@ fn derived_body(
     if matches!(derive, Derive::PartialOrd | Derive::Ord) {
         return derived_ord_body(items, function, strukt, derive);
     }
+    if derive == Derive::Default {
+        return derived_default_body(items, function, strukt);
+    }
     if s.is_enum() {
         return derived_enum_body(items, function, strukt, derive);
     }
@@ -319,6 +322,7 @@ fn derived_body(
             (stmts, None)
         }
         Derive::PartialOrd | Derive::Ord => unreachable!("made by `derived_ord_body`"),
+        Derive::Default => unreachable!("made by `derived_default_body`"),
         Derive::Copy => {
             // `{ assert_param_is_clone(&self.a); ..; *self }`
             let path = Path {
@@ -379,6 +383,73 @@ fn derived_body(
         whole,
     );
     ctx.finish(params, root)
+}
+
+/// The body of `default` that `#[derive(Default)]` makes for `strukt`:
+/// a struct of its fields' defaults (`S { a: Default::default(), .. }`,
+/// each at its field, where rustc reports one without a default), or
+/// an enum's `#[default]` variant.
+fn derived_default_body(items: &ItemTree, function: FunctionId, strukt: StructId) -> LoweredBody {
+    let data = &items.functions[function];
+    let s = &items.structs[strukt];
+    let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
+    let whole = s.name_range;
+    let value = match s.variants.as_deref() {
+        Some(variants) => {
+            let v = items.default_variants.get(&strukt).copied().unwrap_or(0);
+            let at = variants.get(v as usize).map_or(whole, |v| v.def_range);
+            build_variant(&mut ctx, strukt, v, Vec::new(), at)
+        }
+        None => {
+            let default = match items.lang_traits.get(&Symbol::intern("Default")) {
+                Some(&t) => Res::Assoc {
+                    ty: None,
+                    trait_: Some(t),
+                    name: Symbol::intern("default"),
+                },
+                None => Res::Err,
+            };
+            let fields: Box<[(Symbol, ExprId)]> = s
+                .fields
+                .iter()
+                .map(|f| {
+                    let at = f.def_range;
+                    let callee = ctx.alloc_expr(Expr::Path(default), at);
+                    ctx.source_map.segments.insert(callee, at);
+                    let call = ctx.alloc_expr(
+                        Expr::Call {
+                            callee,
+                            args: Box::default(),
+                        },
+                        at,
+                    );
+                    (f.name, call)
+                })
+                .collect();
+            let record = ctx.alloc_expr(
+                Expr::Record {
+                    strukt,
+                    variant: 0,
+                    fields,
+                    spread: None,
+                },
+                whole,
+            );
+            let names: Box<[TextRange]> = s.fields.iter().map(|f| f.name_range).collect();
+            ctx.source_map.expr_fields.insert(record, names);
+            ctx.source_map.paths.insert(record, whole);
+            record
+        }
+    };
+    let root = ctx.alloc_expr(
+        Expr::Block {
+            stmts: Box::default(),
+            tail: Some(value),
+            is_unsafe: false,
+        },
+        whole,
+    );
+    ctx.finish(Vec::new(), root)
 }
 
 /// The body of the method `#[derive]` makes for enum `strukt`: a `match`
@@ -541,6 +612,7 @@ fn derived_enum_body(
                 )
             }
             Derive::PartialOrd | Derive::Ord => unreachable!("made by `derived_ord_body`"),
+            Derive::Default => unreachable!("made by `derived_default_body`"),
             Derive::Eq | Derive::Copy => {
                 let check = if copies {
                     assert_clone

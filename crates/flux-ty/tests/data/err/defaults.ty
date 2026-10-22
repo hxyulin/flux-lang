@@ -1,0 +1,11 @@
+struct NoDefault {}
+struct S { a: i32, b: NoDefault }
+struct W<T> { 0: T }
+enum E<T> { A, B { 0: T } }
+fn main() -> ()
+fn default() -> S
+fn default() -> W<T>
+fn default() -> E<T>
+error 295..307: the trait bound `NoDefault: Default` is not satisfied
+error 533..551: the trait bound `[u8; 33]: Default` is not satisfied
+error 623..640: the trait bound `NoDefault: Default` is not satisfied
