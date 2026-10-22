@@ -1,0 +1,11 @@
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 24..47: evaluation panicked: from_digit: radix is too high (maximum 36)
+error 72..88: evaluation panicked: to_digit: invalid radix -- radix must be in the range 2 to 36 inclusive

@@ -396,12 +396,32 @@ impl<'a> Evaluator<'a> {
                     dest,
                     target,
                 } => {
-                    // `core`'s panic, with its message, a `c"..."`.
+                    // `core`'s panic, with its message, a `c"..."` or a
+                    // `"..."`.
                     if Some(*func) == self.items.panic_fn {
                         let message = match args.first() {
                             Some(Operand::Const(Constant::CStr(index))) => {
                                 String::from_utf8_lossy(&body.c_strings[*index as usize])
                                     .into_owned()
+                            }
+                            Some(Operand::Const(Constant::Promoted { index, ty }))
+                                if *ty
+                                    == Ty::new(flux_ty::TyKind::Ref(
+                                        flux_ty::Mutability::Not,
+                                        Ty::STR,
+                                    )) =>
+                            {
+                                let bytes: Vec<u8> = match body.promoted.get(*index as usize) {
+                                    Some(Value::Aggregate(bytes)) => bytes
+                                        .iter()
+                                        .map(|b| match b {
+                                            Value::Int { bits, .. } => *bits as u8,
+                                            _ => b'?',
+                                        })
+                                        .collect(),
+                                    _ => Vec::new(),
+                                };
+                                String::from_utf8_lossy(&bytes).into_owned()
                             }
                             _ => "explicit panic".to_owned(),
                         };
