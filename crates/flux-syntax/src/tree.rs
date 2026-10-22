@@ -23,9 +23,15 @@ pub struct TextRange {
 }
 
 impl TextRange {
+    /// The range from `start` to `end`. Ranges in a macro expansion's
+    /// tree are where its tokens came from, so one made from two of its
+    /// nodes' (from one's start to another's end) may end before it
+    /// starts: it is empty, at `start`.
     pub fn new(start: u32, end: u32) -> TextRange {
-        assert!(start <= end, "invalid range {start}..{end}");
-        TextRange { start, end }
+        TextRange {
+            start,
+            end: end.max(start),
+        }
     }
 
     pub fn empty(offset: u32) -> TextRange {
@@ -100,6 +106,45 @@ pub struct SyntaxTree {
     /// Start offset of each token, plus one final entry at `text.len()`.
     starts: Vec<u32>,
     nodes: Vec<NodeData>,
+    /// For a macro expansion, where its tokens and nodes came from.
+    spans: Option<Box<Spans>>,
+}
+
+/// Where a token of a macro expansion came from, as the expander says:
+/// its range in the file the expansion is part of, a *group* (tokens of
+/// one group are in one stretch of that file, in order; see
+/// [`TokenOrigin::SYNTHETIC`]), and a hygiene context, which only name
+/// resolution interprets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenOrigin {
+    pub range: TextRange,
+    pub group: u32,
+    pub ctxt: u32,
+}
+
+impl TokenOrigin {
+    /// A token with no place of its own in the file: a node that has one
+    /// is at the expansion's call site.
+    pub const SYNTHETIC: u32 = 0;
+    /// Trivia, which do not count for a node's range.
+    const TRIVIA: u32 = u32::MAX;
+}
+
+/// Whether token `b`, after `a`, continues `a`'s stretch of the file.
+fn in_order(a: TokenOrigin, b: TokenOrigin) -> bool {
+    a.group == b.group
+        && b.group != TokenOrigin::SYNTHETIC
+        && a.range.start <= b.range.start
+        && a.range.end <= b.range.end
+}
+
+/// The ranges of a macro expansion's tokens and nodes in the file it is
+/// part of, rather than in its own text, and its tokens' hygiene
+/// contexts.
+#[derive(Clone, PartialEq, Eq)]
+struct Spans {
+    tokens: Box<[TokenOrigin]>,
+    nodes: Box<[TextRange]>,
 }
 
 impl SyntaxTree {
@@ -117,6 +162,153 @@ impl SyntaxTree {
             kinds,
             starts,
             nodes,
+            spans: None,
+        }
+    }
+
+    /// Makes this tree a macro expansion's: `origins` are the expander's
+    /// tokens, by the offset in this tree's text each starts at, in
+    /// order, with where each came from. A token's range becomes its
+    /// origin's (a composite token's, its parts' together), and a node's
+    /// the range from its first token's to its last's if all its tokens
+    /// are of one group and in order there, and `call_site` otherwise.
+    pub fn set_origins(&mut self, origins: &[(u32, TokenOrigin)], call_site: TextRange) {
+        let synthetic = TokenOrigin {
+            range: call_site,
+            group: TokenOrigin::SYNTHETIC,
+            ctxt: 0,
+        };
+        let n = self.kinds.len();
+        let mut tokens = Vec::with_capacity(n);
+        let mut next = 0;
+        for i in 0..n {
+            let (start, end) = (self.starts[i], self.starts[i + 1]);
+            while next < origins.len() && origins[next].0 < start {
+                next += 1;
+            }
+            if self.kinds[i].is_trivia() {
+                tokens.push(TokenOrigin {
+                    range: TextRange::empty(call_site.start()),
+                    group: TokenOrigin::TRIVIA,
+                    ctxt: 0,
+                });
+                continue;
+            }
+            let first = next;
+            while next < origins.len() && origins[next].0 < end {
+                next += 1;
+            }
+            let parts = &origins[first..next];
+            let token = match parts {
+                [] => synthetic,
+                [(_, one)] => *one,
+                [(_, a), .., (_, b)] => {
+                    if parts.windows(2).all(|w| in_order(w[0].1, w[1].1)) {
+                        let end = b.range.end.max(a.range.start);
+                        TokenOrigin {
+                            range: TextRange::new(a.range.start, end),
+                            ..*a
+                        }
+                    } else {
+                        TokenOrigin {
+                            ctxt: a.ctxt,
+                            ..synthetic
+                        }
+                    }
+                }
+            };
+            tokens.push(token);
+        }
+        // Counts before each token of synthetic tokens and of significant
+        // tokens out of order with the significant token before them, and
+        // the last significant token before each token and the first at
+        // or after it.
+        let mut synthetic_before = Vec::with_capacity(n + 1);
+        let mut unordered_before = Vec::with_capacity(n + 1);
+        let mut prev_sig = Vec::with_capacity(n + 1);
+        let (mut synth, mut unordered) = (0u32, 0u32);
+        let mut last: Option<usize> = None;
+        for (i, t) in tokens.iter().enumerate() {
+            synthetic_before.push(synth);
+            unordered_before.push(unordered);
+            prev_sig.push(last.map_or(u32::MAX, |l| l as u32));
+            if t.group == TokenOrigin::TRIVIA {
+                continue;
+            }
+            if t.group == TokenOrigin::SYNTHETIC {
+                synth += 1;
+            }
+            if last.is_some_and(|l| !in_order(tokens[l], *t)) {
+                unordered += 1;
+            }
+            last = Some(i);
+        }
+        synthetic_before.push(synth);
+        unordered_before.push(unordered);
+        prev_sig.push(last.map_or(u32::MAX, |l| l as u32));
+        let mut next_sig = vec![u32::MAX; n + 1];
+        for i in (0..n).rev() {
+            next_sig[i] = if tokens[i].group == TokenOrigin::TRIVIA {
+                next_sig[i + 1]
+            } else {
+                i as u32
+            };
+        }
+        let nodes = self
+            .nodes
+            .iter()
+            .map(|node| {
+                let (a, b) = (node.first_token as usize, node.end_token as usize);
+                let (first, last) = (next_sig[a], prev_sig[b]);
+                if first == u32::MAX || first as usize >= b || last == u32::MAX {
+                    return TextRange::empty(call_site.start());
+                }
+                let (first, last) = (first as usize, last as usize);
+                let clean = synthetic_before[b] == synthetic_before[a]
+                    && unordered_before[last + 1] == unordered_before[first + 1];
+                if clean {
+                    let (start, end) = (tokens[first].range.start, tokens[last].range.end);
+                    TextRange::new(start, end.max(start))
+                } else {
+                    call_site
+                }
+            })
+            .collect();
+        self.spans = Some(Box::new(Spans {
+            tokens: tokens.into(),
+            nodes,
+        }));
+    }
+
+    /// The hygiene context of token `index`: 0 outside macro expansions.
+    pub fn token_ctxt(&self, index: usize) -> u32 {
+        self.spans.as_ref().map_or(0, |s| s.tokens[index].ctxt)
+    }
+
+    /// Where token `index` came from: `None` outside macro expansions.
+    pub fn token_origin(&self, index: usize) -> Option<TokenOrigin> {
+        self.spans.as_ref().map(|s| s.tokens[index])
+    }
+
+    /// Whether this tree is a macro expansion's.
+    pub fn is_expansion(&self) -> bool {
+        self.spans.is_some()
+    }
+
+    /// Where a syntax error at `range` of this tree's own text is in its
+    /// file: the range of the significant token it is at, or the one
+    /// before it, for an expansion.
+    pub fn map_text_range(&self, range: TextRange) -> TextRange {
+        let Some(spans) = &self.spans else {
+            return range;
+        };
+        let i = self.starts.partition_point(|&s| s <= range.start()).max(1) - 1;
+        let sig = (i..self.kinds.len())
+            .find(|&j| !self.kinds[j].is_trivia())
+            .or_else(|| (0..i).rev().find(|&j| !self.kinds[j].is_trivia()));
+        match sig {
+            Some(j) => spans.tokens[j].range,
+            None => spans.nodes[0],
         }
     }
 
@@ -155,6 +347,13 @@ impl SyntaxTree {
     }
 
     fn token_range(&self, index: u32) -> TextRange {
+        if let Some(spans) = &self.spans {
+            return spans.tokens[index as usize].range;
+        }
+        self.raw_token_range(index)
+    }
+
+    fn raw_token_range(&self, index: u32) -> TextRange {
         let i = index as usize;
         TextRange::new(self.starts[i], self.starts[i + 1])
     }
@@ -236,13 +435,33 @@ impl<'t> SyntaxNode<'t> {
         self.data().kind
     }
 
+    /// The node's range in its file: in a macro expansion's tree, where
+    /// its tokens came from (see [`SyntaxTree::set_origins`]).
     pub fn text_range(self) -> TextRange {
+        if let Some(spans) = &self.tree.spans {
+            return spans.nodes[self.id.index()];
+        }
+        self.raw_range()
+    }
+
+    /// The node's range in its tree's own text.
+    pub fn raw_range(self) -> TextRange {
         let data = self.data();
         self.tree.range_of_tokens(data.first_token, data.end_token)
     }
 
     pub fn text(self) -> &'t str {
-        &self.tree.text[self.text_range()]
+        &self.tree.text[self.raw_range()]
+    }
+
+    /// The hygiene context of the node's first token: 0 outside macro
+    /// expansions.
+    pub fn ctxt(self) -> u32 {
+        let data = self.data();
+        if data.first_token == data.end_token {
+            return 0;
+        }
+        self.tree.token_ctxt(data.first_token as usize)
     }
 
     /// Child nodes, without tokens.
@@ -384,8 +603,22 @@ impl<'t> SyntaxToken<'t> {
         self.tree.token_range(self.index)
     }
 
+    /// The token's range in its tree's own text.
+    pub fn raw_range(self) -> TextRange {
+        self.tree.raw_token_range(self.index)
+    }
+
     pub fn text(self) -> &'t str {
-        &self.tree.text[self.text_range()]
+        &self.tree.text[self.raw_range()]
+    }
+
+    /// The token's hygiene context: 0 outside macro expansions.
+    pub fn ctxt(self) -> u32 {
+        self.tree.token_ctxt(self.index as usize)
+    }
+
+    pub fn tree(self) -> &'t SyntaxTree {
+        self.tree
     }
 }
 
@@ -434,6 +667,14 @@ impl<'t> SyntaxElement<'t> {
         match self {
             SyntaxElement::Node(node) => node.text_range(),
             SyntaxElement::Token(token) => token.text_range(),
+        }
+    }
+
+    /// The element's range in its tree's own text.
+    pub fn raw_range(self) -> TextRange {
+        match self {
+            SyntaxElement::Node(node) => node.raw_range(),
+            SyntaxElement::Token(token) => token.raw_range(),
         }
     }
 

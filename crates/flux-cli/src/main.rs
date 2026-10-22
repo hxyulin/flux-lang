@@ -175,6 +175,9 @@ fn load(file: &std::path::Path) -> Result<(SourceDb, Hir), String> {
 /// Reports `diagnostics` in order of file and position; whether there
 /// were none.
 pub(crate) fn report_all(db: &SourceDb, diagnostics: &mut [Diagnostic]) -> bool {
+    for d in diagnostics.iter_mut() {
+        d.file = db.real_file(d.file);
+    }
     Diagnostic::sort(diagnostics);
     for d in diagnostics.iter() {
         let f = db.file(d.file);

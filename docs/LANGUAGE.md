@@ -215,8 +215,41 @@ comparing fields in order for `PartialOrd` and `Ord`, and making each
 field's default for `Default`; other derives (`Hash`) are not supported
 yet. `Debug` type-checks as rustc's (a field that does not implement it
 is "`T` doesn't implement `Debug`", at the field), but nothing can format
-a value yet: `core::fmt::Formatter` is opaque, and there are no
-`format!` or `{:?}` without macros.
+a value yet: `core::fmt::Formatter` is opaque, and writing to one
+(`write!`) shows nothing.
+
+Macro calls are expanded where they are written: in items, statements,
+expressions, patterns and types. `macro_rules!` macros work as in rustc:
+rules tried in order, matched as rustc's macro parser matches them
+(fragments `expr`, `ident`, `ty`, `pat`, `pat_param`, `tt`, `literal`,
+`block`, `stmt`, `path`, `lifetime`, `vis`, `item` and `meta`,
+repetitions `$(..)*`, `+` and `?` with separators, nested), with rustc's
+errors ("no rules expected `x`", "unexpected end of macro invocation",
+local ambiguity, a fragment followed by what its kind does not allow,
+"recursion limit reached while expanding `m!`" past 128 nested
+expansions). A macro is in scope after its definition, to the end of
+its module or block (and after the module, with `#[macro_use]`), and
+everywhere as `crate::m!` with `#[macro_export]`; `$crate` names its
+crate. Hygiene is rustc's mixed-site hygiene: a local variable or label
+a macro's definition writes is not the caller's, and the reverse,
+except that a macro defined in a function sees the locals in scope at
+its definition. Items a macro defines are found by name, from anywhere.
+`core` has rustc's `assert!`, `assert_eq!`, `assert_ne!`,
+`debug_assert!`, `debug_assert_eq!` and `debug_assert_ne!` (on: flux
+compiles as rustc does without `-O`), `panic!`, `unreachable!`,
+`todo!`, `unimplemented!`, `matches!`, `format_args!`, `write!`,
+`writeln!`, `concat!`, `stringify!`, `line!`, `column!`, `file!`,
+`module_path!`, `cfg!` (`debug_assertions`, `panic`, the target's
+`target_os` and the like) and `compile_error!`. Format strings are
+checked as rustc checks them (arguments counted, named and captured,
+each implementing `Display`, `Debug`, `LowerHex` and the others its
+placeholders name, `core::fmt`'s, reported at the argument), but
+messages are never formatted: a panic aborts, printing nothing, and
+constant evaluation reports a literal message as rustc does and a
+formatted one as "explicit panic". `std`'s macros (`println!`,
+`vec!`), `env!`, `include!` and the like, items a macro makes inside a
+function body, and paths to macros through modules and `use` imports
+other than `crate::m!` and `core::m!` are not supported yet.
 
 Values are dropped as in rustc: a binding at the end of its block, in
 reverse order of declaration, then the function's parameters; a
@@ -500,9 +533,13 @@ and the others of bits and signs, the `checked_`, `wrapping_`,
 `next_power_of_two`, `div_ceil`, `next_multiple_of`, `swap_bytes`,
 `reverse_bits` and the byte-order conversions (`to_le_bytes`, ...), all
 `const` and panicking or overflowing in constants as rustc's do,
-`core::fmt::{Debug, Formatter, Result, Error}` (`Debug` for the
-integers, `bool`, `char`, `str`, `()`, raw pointers, references, slices, arrays,
-tuples, `Option`, `Result`, `Ordering` and the ranges),
+`core::fmt::{Debug, Display, Formatter, Arguments, Result, Error}`
+(`Debug` for the integers, `bool`, `char`, `str`, `()`, raw pointers,
+references, slices, arrays, tuples, `Option`, `Result`, `Ordering` and
+the ranges; `Display` for the integers, `bool`, `char`, `str` and
+references; `LowerHex`, `UpperHex`, `Octal`, `Binary`, `LowerExp` and
+`UpperExp` for the integers, and `Pointer` for pointers),
+`core::hint::black_box`,
 `core::default::Default` (in the prelude) for the integers, `bool`,
 `char`, `&str`, `&[T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,
 `core::mem::{drop, swap, replace, take}` (`drop` also in the prelude;

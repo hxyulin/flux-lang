@@ -25,6 +25,7 @@ mod item_tree;
 mod library;
 mod literal;
 mod lower;
+mod macros;
 mod pretty;
 mod source;
 
@@ -44,6 +45,7 @@ pub use item_tree::{
 };
 pub use library::Core;
 pub use lower::{LoweredBody, lower_body, lower_const};
+pub use macros::{Builtin, MacroDef, MacroId, MacroKind, MacroScope, MacroScopeId};
 pub use source::{CORE_ROOT, FileId, SourceDb, SourceFile};
 
 use flux_arena::ArenaMap;
@@ -113,6 +115,9 @@ fn lower_with(db: &mut SourceDb, root: FileId, crate_name: Symbol, with_core: bo
         }
     }
     let const_bodies = lower_consts(db, &items, items.core.consts as usize, &mut diagnostics);
+    for d in &mut diagnostics {
+        d.file = items.real_file(d.file);
+    }
     Diagnostic::sort(&mut diagnostics);
     Hir {
         items,

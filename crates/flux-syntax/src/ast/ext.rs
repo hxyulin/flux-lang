@@ -18,10 +18,10 @@ fn split_at<'t, N: AstNode<'t>>(
     let Some(op) = op else {
         return (support::child(node), None);
     };
-    let split = op.text_range().start();
+    let split = op.raw_range().start();
     let (mut before, mut after) = (None, None);
     for child in support::children::<N>(node) {
-        if child.syntax().text_range().end() <= split {
+        if child.syntax().raw_range().end() <= split {
             before = Some(child);
         } else if after.is_none() {
             after = Some(child);

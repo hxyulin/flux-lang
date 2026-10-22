@@ -17,6 +17,164 @@ pub struct Formatter<'a> {
     _out: &'a mut (),
 }
 
+impl Formatter<'_> {
+    /// Writes `data`, which flux's formatters never show.
+    pub fn write_str(&mut self, _data: &str) -> Result {
+        Ok(())
+    }
+
+    /// Writes `args` (`write!(f, ..)`), which flux's formatters never
+    /// show.
+    pub fn write_fmt(&mut self, _args: Arguments<'_>) -> Result {
+        Ok(())
+    }
+}
+
+/// What `format_args!` makes: the literal pieces of its format string.
+/// flux cannot format the arguments yet, so it does not keep them.
+#[derive(Clone, Copy)]
+pub struct Arguments<'a> {
+    pieces: &'a [&'static str],
+}
+
+impl<'a> Arguments<'a> {
+    #[doc(hidden)]
+    pub const fn new_const(pieces: &'a [&'static str]) -> Arguments<'a> {
+        Arguments { pieces }
+    }
+}
+
+impl Display for Arguments<'_> {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> Result {
+        Ok(())
+    }
+}
+
+impl Debug for Arguments<'_> {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> Result {
+        Ok(())
+    }
+}
+
+/// Types that can be shown to users, as `{}` would. A failing bound
+/// reads as rustc's.
+#[diagnostic::on_unimplemented(message = "`{Self}` doesn't implement `std::fmt::Display`")]
+pub trait Display {
+    /// Writes the value to `f`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result;
+}
+
+/// `{:x}`
+pub trait LowerHex {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result;
+}
+
+/// `{:X}`
+pub trait UpperHex {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result;
+}
+
+/// `{:o}`
+pub trait Octal {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result;
+}
+
+/// `{:b}`
+pub trait Binary {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result;
+}
+
+/// `{:e}`
+pub trait LowerExp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result;
+}
+
+/// `{:E}`
+pub trait UpperExp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result;
+}
+
+/// `{:p}`
+pub trait Pointer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result;
+}
+
+/// Implements formatting traits for types, writing nothing: nothing
+/// formats yet.
+macro_rules! nothing {
+    ($tr:ident for $($ty:ty),*) => {
+        $(
+            impl $tr for $ty {
+                fn fmt(&self, _f: &mut Formatter<'_>) -> Result {
+                    Ok(())
+                }
+            }
+        )*
+    };
+}
+
+nothing!(Display for i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, bool, char, str);
+nothing!(LowerHex for i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
+nothing!(UpperHex for i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
+nothing!(Octal for i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
+nothing!(Binary for i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
+nothing!(LowerExp for i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
+nothing!(UpperExp for i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
+
+impl<T: Display> Display for &T {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        Display::fmt(*self, f)
+    }
+}
+
+impl<T: Display> Display for &mut T {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        Display::fmt(&**self, f)
+    }
+}
+
+impl<T> Pointer for &T {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> Result {
+        Ok(())
+    }
+}
+
+impl<T> Pointer for &mut T {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> Result {
+        Ok(())
+    }
+}
+
+impl<T> Pointer for *const T {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> Result {
+        Ok(())
+    }
+}
+
+impl<T> Pointer for *mut T {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> Result {
+        Ok(())
+    }
+}
+
+/// What `format_args!` checks of its arguments: that each implements the
+/// trait its placeholder names.
+#[doc(hidden)]
+pub mod rt {
+    use super::*;
+
+    pub fn display<T: Display>(_: &T) {}
+    pub fn debug<T: Debug>(_: &T) {}
+    pub fn lower_hex<T: LowerHex>(_: &T) {}
+    pub fn upper_hex<T: UpperHex>(_: &T) {}
+    pub fn octal<T: Octal>(_: &T) {}
+    pub fn binary<T: Binary>(_: &T) {}
+    pub fn lower_exp<T: LowerExp>(_: &T) {}
+    pub fn upper_exp<T: UpperExp>(_: &T) {}
+    pub fn pointer<T: Pointer>(_: &T) {}
+    pub fn count(_: &usize) {}
+}
+
 /// Types that can be shown for debugging, as `{:?}` would. A failing
 /// bound reads "`T` doesn't implement `Debug`", as in rustc.
 #[lang = "Debug"]

@@ -175,10 +175,11 @@ pub(crate) fn write_diagnostics(out: &mut String, hir: &Hir, diagnostics: &[Diag
     let items = &hir.items;
     let root = items.modules[items.module_of(items.main_crate())].file;
     for d in diagnostics {
-        if d.file == root {
+        let file = items.real_file(d.file);
+        if file == root {
             writeln!(out, "error {:?}: {}", d.range, d.message).unwrap();
         } else {
-            writeln!(out, "error file{} {:?}: {}", d.file.0, d.range, d.message).unwrap();
+            writeln!(out, "error file{} {:?}: {}", file.0, d.range, d.message).unwrap();
         }
     }
 }

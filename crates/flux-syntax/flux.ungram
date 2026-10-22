@@ -75,6 +75,13 @@ Meta =
 SourceFile =
   Attr* Item*
 
+// What a macro call expanded to, in item and statement position.
+MacroItems =
+  Item*
+
+MacroStmts =
+  (Stmt | ';')* tail_expr:Expr?
+
 Item =
   Const
 | Enum

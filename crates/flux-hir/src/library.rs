@@ -12,7 +12,9 @@ use std::sync::OnceLock;
 
 use flux_arena::ArenaMap;
 
-use crate::source::core_files;
+use std::sync::Arc;
+
+use crate::source::SourceFile;
 use crate::{
     Body, BodySourceMap, Const, ConstId, Diagnostic, FunctionId, ItemTree, LoweredBody, SourceDb,
     lower_body,
@@ -22,6 +24,8 @@ use crate::{
 /// for.
 #[derive(Debug)]
 pub struct Core {
+    /// Its files, and the expansions of its macro calls in item position.
+    pub(crate) files: Vec<Arc<SourceFile>>,
     /// `core`'s crate alone.
     pub items: ItemTree,
     /// Function bodies, by function index, lowered when first asked for:
@@ -40,7 +44,7 @@ impl Core {
     }
 
     fn build() -> Core {
-        let mut db = SourceDb::new();
+        let mut db = SourceDb::core_only();
         let items = ItemTree::core(&mut db);
         let mut diagnostics = Vec::new();
         let const_bodies = crate::lower_consts(&db, &items, 0, &mut diagnostics);
@@ -48,6 +52,7 @@ impl Core {
             .map(|_| OnceLock::new())
             .collect();
         Core {
+            files: db.all_files(),
             items,
             bodies,
             const_bodies,
@@ -73,7 +78,7 @@ impl Core {
     pub fn lower_body(&self, function: FunctionId) -> LoweredBody {
         let file = self.items.functions[function].loc.file;
         lower_body(
-            core_files()[file.0 as usize].parse.tree(),
+            self.files[file.0 as usize].parse.tree(),
             &self.items,
             function,
         )
