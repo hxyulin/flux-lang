@@ -179,7 +179,13 @@ pub(crate) fn report_all(db: &SourceDb, diagnostics: &mut [Diagnostic]) -> bool 
         d.file = db.real_file(d.file);
     }
     Diagnostic::sort(diagnostics);
+    // Each expansion of a macro reports what is wrong in its definition
+    // again, at the same place: once is enough.
+    let mut seen = std::collections::HashSet::new();
     for d in diagnostics.iter() {
+        if !seen.insert((d.file, d.range, &d.message)) {
+            continue;
+        }
         let f = db.file(d.file);
         report(&f.path, f.text(), d.range, &d.message);
     }

@@ -1,0 +1,22 @@
+fn expected_first(u8) -> i32
+    x@0: u8
+fn expected_later(u8) -> i32
+    x@0: u8
+fn annotated(u8) -> ()
+    x@0: u8
+    _v@1: i32
+fn unexpected(u8) -> i32
+    x@0: u8
+    v@1: {error}
+fn statement(u8) -> ()
+    x@0: u8
+fn chain(u8) -> i32
+    x@0: u8
+fn main() -> ()
+error 233..239: mismatched types: expected `i32`, found `&str`
+error 363..368: `match` arms have incompatible types: expected `i32`, found `&str`
+error 477..483: mismatched types: expected `i32`, found `&str`
+error 612..617: `match` arms have incompatible types: expected `{integer}`, found `&str`
+error 736..741: `match` arms have incompatible types: expected `{integer}`, found `&str`
+error 869..872: mismatched types: expected `i32`, found `&str`
+error 882..887: mismatched types: expected `i32`, found `bool`

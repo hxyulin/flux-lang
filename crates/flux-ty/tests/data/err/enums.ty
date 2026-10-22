@@ -5,7 +5,7 @@ fn patterns(E, &mut E) -> ()
     e@0: E
     r@1: &mut E
     y@2: {error}
-    x@3: i32
+    x@3: {error}
 fn arms(i32) -> i32
     x@0: i32
     y@1: i32

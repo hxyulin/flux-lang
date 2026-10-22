@@ -157,6 +157,51 @@ fn or_pattern_binding_modes() {
     );
 }
 
+/// Errors are reported once, where they are, as rustc does not report
+/// errors involving error types: the names a rejected pattern binds,
+/// what matches a value of an error type, a receiver whose type is not
+/// known after errors, and what a failed import names.
+#[test]
+fn errors_do_not_cascade() {
+    let text = "use core::cmp::NoSuchThing;\n\
+                struct Holder { missing: Unknown }\n\
+                fn slice_bindings(v: &[u8]) -> u8 {\n\
+                    match v { [first, rest @ ..] => first.wrapping_add(rest.len() as u8), _ => 0 }\n\
+                }\n\
+                fn through_error(s: &str) -> usize {\n\
+                    match s.no_such_method() { Some(rest) => rest.trim().len() + rest.other(), None => 0 }\n\
+                }\n\
+                fn unknown_field(h: &Holder) -> usize {\n\
+                    let mut n = 0;\n\
+                    for x in &h.missing { n += x.size(); }\n\
+                    n\n\
+                }\n\
+                fn imported(r: NoSuchThing) -> u8 { let NoSuchThing(x) = r; x }\n\
+                fn main() {}\n";
+    let (_, _, hir) = flux_hir::lower_text(Path::new("main.rs"), text);
+    let lowered: Vec<&str> = hir.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        lowered,
+        [
+            "`core::cmp::NoSuchThing` is not supported yet",
+            "slice patterns are not supported yet",
+        ]
+    );
+    let typed = flux_ty::check_file(&hir);
+    let found: Vec<&str> = typed
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        found,
+        [
+            "cannot find type `Unknown` in this scope",
+            "the method `no_such_method` on `&str` is not supported yet",
+        ]
+    );
+}
+
 /// Associated types whose `impl` blocks define them by each other, twice
 /// over, normalize in time: each is normalized once, and a cycle stops.
 /// (rustc reports overflow, E0275, which flux does not yet.)
