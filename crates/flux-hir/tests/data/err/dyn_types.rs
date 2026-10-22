@@ -6,4 +6,9 @@ fn two_lifetimes<'a>(x: &'a (dyn Tr + 'a + 'a)) {}
 
 fn relaxed(x: &(dyn Tr + ?Sized)) {}
 
+// rustc accepts these; flux does not yet.
+impl dyn Tr {
+    fn helper(&self) {}
+}
+
 fn main() {}

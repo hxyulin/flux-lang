@@ -1120,6 +1120,12 @@ impl Ctx<'_> {
             }
             return ok;
         }
+        // A closure whose signature did not fit was reported.
+        if let TyKind::Closure(id, _) = source.kind()
+            && self.mismatched_closures.contains(&id.expr)
+        {
+            return true;
+        }
         let principal = crate::traits::dyn_principal(source, d);
         self.register(principal, range, solve::ObligationKind::Bound);
         for p in crate::traits::dyn_projections(self.sigs, target, d) {

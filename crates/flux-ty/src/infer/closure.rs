@@ -187,6 +187,21 @@ impl Ctx<'_> {
                 at: range,
             });
         }
+        // Where a `Fn`-family trait object is expected (`&|x| x + 1` for
+        // a `&dyn Fn(i32) -> i32`), its trait's, as rustc deduces it.
+        if hint.is_none()
+            && let Some(&expected) = self.expected.get(id)
+            && let TyKind::Dynamic(d) = self.shallow(expected).kind()
+            && let Some(kind) = crate::fn_trait_kind(self.items, d.trait_)
+            && let [tupled] = d.args
+        {
+            hint = Some(Hint {
+                kind,
+                params: *tupled,
+                ret: d.assoc(Symbol::intern("Output")),
+                at: self.closure_head(id, params, param_types),
+            });
+        }
         // Where an opaque type's hidden type is expected (a closure
         // returned as `impl Fn(i32) -> i32`), its bounds'.
         if hint.is_none()
@@ -251,7 +266,11 @@ impl Ctx<'_> {
             types.push(ty);
         }
         let declared_ret = ret.map(|t| self.resolve_type_ref(t));
-        let ret_ty = match (declared_ret, hint.and_then(|h| h.ret)) {
+        // A signature whose parameters did not fit says nothing more.
+        let hinted_ret = hint
+            .and_then(|h| h.ret)
+            .filter(|_| !self.mismatched_closures.contains(&id));
+        let ret_ty = match (declared_ret, hinted_ret) {
             (Some(declared), Some(expected)) => {
                 if self.can_unify(declared, expected) {
                     self.unify(declared, expected);

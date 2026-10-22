@@ -1347,6 +1347,15 @@ fn resolve_impls(items: &mut ItemTree, from: usize) {
             TypeRef::Array { .. } if items.is_core(module) => {
                 Some(ImplTarget::Primitive(crate::item_tree::array_target()))
             }
+            TypeRef::Dyn(_) => {
+                let range = items.impls[id].self_range;
+                error(
+                    items,
+                    range,
+                    "inherent `impl` blocks for trait objects are not supported yet".into(),
+                );
+                None
+            }
             _ => {
                 let range = items.impls[id].def_range;
                 error(
