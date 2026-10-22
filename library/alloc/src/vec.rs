@@ -726,6 +726,7 @@ impl<T> DoubleEndedIterator for Drain<'_, T> {
 }
 
 impl<T> ExactSizeIterator for Drain<'_, T> {}
+impl<T> core::iter::FusedIterator for Drain<'_, T> {}
 
 impl<T> Drop for Drain<'_, T> {
     /// The elements not given, in order, then the tail moved back.
@@ -789,6 +790,7 @@ impl<T> DoubleEndedIterator for IntoIter<T> {
 }
 
 impl<T> ExactSizeIterator for IntoIter<T> {}
+impl<T> core::iter::FusedIterator for IntoIter<T> {}
 
 impl<T> Drop for IntoIter<T> {
     fn drop(&mut self) {

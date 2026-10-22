@@ -1,12 +1,11 @@
-//! flux's own `core`, built once per process and shared by every
-//! compilation: its files, parsed; its item tree, with names resolved;
+//! flux's embedded `core`, `alloc` and `std`, built once per process
+//! and shared by every compilation: its files, parsed; its item tree, with names resolved;
 //! its constants' values and, as they are asked for, its functions'
 //! bodies, lowered.
 //!
-//! A program's item tree starts as a copy of `core`'s and adds the
-//! program's crate after it, so `core`'s items have the same ids in every
-//! compilation. `core` cannot name the program, so nothing here depends
-//! on one.
+//! A program clones the frozen library tree and adds its crate after it.
+//! Libraries have identical IDs in every compilation and cannot name the
+//! program, so neither their files nor lazy bodies depend on a program.
 
 use std::sync::OnceLock;
 
@@ -20,13 +19,12 @@ use crate::{
     lower_body,
 };
 
-/// `core`, lowered. [`Core::get`] builds it the first time it is asked
-/// for.
+/// The embedded libraries, lowered. [`Core::get`] builds them on first use.
 #[derive(Debug)]
 pub struct Core {
     /// Its files, and the expansions of its macro calls in item position.
     pub(crate) files: Vec<Arc<SourceFile>>,
-    /// `core`'s crate alone.
+    /// All three embedded crates, in dependency order.
     pub items: ItemTree,
     /// Function bodies, by function index, lowered when first asked for:
     /// a program uses few of them.

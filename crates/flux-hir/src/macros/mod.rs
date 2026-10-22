@@ -357,10 +357,6 @@ pub(crate) fn resolve<'a, L>(
             .and_then(exported)
             .map(Resolved::Def)
             .ok_or_else(not_found),
-        (_, [first, _]) if *first == sym::std => Err(Diagnostic::new(
-            range,
-            format!("the `{first}` crate is not supported yet; flux has only `core` and `alloc`"),
-        )),
         _ => Err(not_found()),
     }
 }
