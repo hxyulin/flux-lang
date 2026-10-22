@@ -543,7 +543,6 @@ fn main() -> () {
     let _43: V;
     let _44: bool;
     let _45: &bool;
-    let _46: bool;
 
     bb0: {
         _2 = V(const 1_i32);
@@ -634,8 +633,7 @@ fn main() -> () {
     }
 
     bb15: {
-        _46 = const true;
-        _45 = &_46;
+        _45 = const &promoted[0];
         _44 = generic_eq::<bool>(copy _45, const false) -> bb16;
     }
 

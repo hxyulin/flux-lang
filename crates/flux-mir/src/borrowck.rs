@@ -1,29 +1,31 @@
 //! Borrow checking: a borrow must not conflict with other uses of what it
 //! borrows while the reference may still be used.
 //!
-//! Each `&place` or `&mut place` is a *loan*. A reference lives in a local
-//! (a binding or a temporary), and copying it, or reborrowing through it
-//! (`&mut *r`), makes another local *hold* the loan too. A loan is *live*
-//! wherever a local holding it is live, that is, may still be read
-//! later. This is rustc's non-lexical lifetimes for the subset flux
-//! accepts, where a reference is never returned, stored in another type,
-//! or assigned to a local more than once: then a loan's region is exactly
-//! the points where its holders are live.
+//! Each `&place` or `&mut place` is a *loan*, whose region [`regions`]
+//! infers as rustc's non-lexical lifetimes do: the points where a
+//! reference made from it, or a value holding one, may still be used,
+//! and those its signature's lifetimes require (a reference returned,
+//! or stored where a parameter points). A loan is *in scope* at the
+//! points its region contains that are reachable from where it was made
+//! without passing a write of what it borrows.
 //!
-//! While a loan is live, its place may not be moved out of (E0505) or
-//! assigned (E0506); a mutable loan also forbids reading it (E0503) and
-//! borrowing it again (E0499, E0502), and a shared one forbids borrowing
-//! it mutably (E0502). Places conflict when one contains the other:
-//! `s.a` and `s.b` do not. A *two-phase* loan, a method receiver's
-//! auto-borrow, acts as a shared loan until the call activates it. A
-//! binding whose scope ends while borrowed does not live long enough
-//! (E0597).
+//! While a loan is in scope, its place may not be moved out of (E0505)
+//! or assigned (E0506); a mutable loan also forbids reading it (E0503)
+//! and borrowing it again (E0499, E0502), and a shared one forbids
+//! borrowing it mutably (E0502). Places conflict when one contains the
+//! other: `s.a` and `s.b` do not. A *two-phase* loan, a method
+//! receiver's auto-borrow, acts as a shared loan until the call
+//! activates it. A binding whose scope ends while borrowed does not live
+//! long enough (E0597), nor does a temporary (E0716) or a parameter; one
+//! whose loan the function returns is E0515.
 //!
 //! This pass also checks what may be written or borrowed mutably: a
 //! binding declared without `mut` (E0596, E0594, the latter for fields;
 //! assignments to whole locals are [`init`](crate::init)'s) and anything
 //! behind a shared reference or `*const` pointer, and that nothing is
 //! moved out from behind a pointer (E0507).
+
+mod regions;
 
 use flux_hir::{Diagnostic, ItemTree};
 use flux_syntax::TextRange;
@@ -39,14 +41,15 @@ use crate::{
 /// moves through pointers.
 pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
     let loans = collect_loans(body);
-    let holds = holders(body, &loans);
-    // The locals holding each loan, few, for finding the live loans.
-    let mut held_by: Vec<Vec<Local>> = vec![Vec::new(); loans.len()];
-    for (local, held) in holds.iter().enumerate() {
-        for &id in held {
-            held_by[id as usize].push(Local::from_raw(local as u32));
-        }
-    }
+    let infos: Vec<regions::LoanInfo<'_>> = loans
+        .iter()
+        .map(|(loan, _)| regions::LoanInfo {
+            place: &loan.place,
+            block: loan.block,
+            statement: loan.statement,
+        })
+        .collect();
+    let regions = regions::infer(body, items, sigs, &infos);
     // The loans of each local's places, and those made into each local.
     let mut borrowed = vec![Vec::new(); body.locals.len()];
     let mut made_into = vec![Vec::new(); body.locals.len()];
@@ -54,68 +57,33 @@ pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
         borrowed[loan.place.local.index()].push(id as u32);
         made_into[holder.index()].push(id as u32);
     }
-    let live_out = liveness(body, &holds);
     let mut checker = Checker {
         body,
         items,
         sigs,
         loans: &loans,
-        holds: &holds,
-        held_by: &held_by,
+        regions: &regions,
         borrowed: &borrowed,
         made_into: &made_into,
         diagnostics: Vec::new(),
         reported_dead: vec![false; loans.len()],
         in_aggregate: false,
     };
-    let mut live = BitSet::new_empty(body.locals.len());
-    // What the terminator and each statement, from the last, change in
-    // `live` walking backwards: each local set and whether it was live,
-    // and where each one's changes end.
-    let mut changes: Vec<(Local, bool)> = Vec::new();
-    let mut ends: Vec<usize> = Vec::new();
     for (block, data) in body.blocks.iter() {
-        // From the locals live at the block's end, walking backwards to
-        // its start; only those holding loans matter.
-        for &local in &live_out[block.index()] {
-            live.insert(local as usize);
-        }
-        changes.clear();
-        ends.clear();
-        let record = |changes: &mut Vec<_>, live: &mut BitSet, local: Local, value| {
-            if !holds[local.index()].is_empty() {
-                changes.push((local, live.set(local.index(), value)));
-            }
-        };
-        terminator_transfer(&data.terminator.kind, &mut |local, value| {
-            record(&mut changes, &mut live, local, value)
-        });
-        ends.push(changes.len());
-        for statement in data.statements.iter().rev() {
-            statement_transfer(&statement.kind, &mut |local, value| {
-                record(&mut changes, &mut live, local, value)
-            });
-            ends.push(changes.len());
-        }
-        // Then forwards, undoing each statement's changes for the locals
-        // live after it.
-        let count = data.statements.len();
         for (i, statement) in data.statements.iter().enumerate() {
-            let from_end = count - 1 - i;
-            for &(local, was) in changes[ends[from_end]..ends[from_end + 1]].iter().rev() {
-                live.set(local.index(), was);
-            }
-            checker.statement(block, i, &statement.kind, statement.range, &live);
+            let point = regions.points.point(block, i);
+            checker.statement(block, i, &statement.kind, statement.range, point);
         }
-        for &(local, was) in changes[..ends[0]].iter().rev() {
-            live.set(local.index(), was);
-        }
-        checker.terminator(&data.terminator.kind, data.terminator.range, &live);
-        for &local in &live_out[block.index()] {
-            live.remove(local as usize);
+        let point = regions.points.point(block, data.statements.len());
+        checker.terminator(&data.terminator.kind, data.terminator.range, point);
+    }
+    let mut diagnostics = checker.diagnostics;
+    for d in regions.errors {
+        if !diagnostics.iter().any(|e| e.range == d.range) {
+            diagnostics.push(d);
         }
     }
-    checker.diagnostics
+    diagnostics
 }
 
 struct Loan {
@@ -160,168 +128,6 @@ fn collect_loans(body: &Body) -> Vec<(Loan, Local)> {
         }
     }
     loans
-}
-
-/// For each local, the loans it may hold, in order: those made into it,
-/// those of references copied into it, and those of the reference a
-/// reborrow goes through. Closures that capture by reference hold loans
-/// too, as do values made of them (a struct holding a closure, a call's
-/// result whose type has one) and references to them; and a value
-/// written through a `&mut` to a place, by assignment or by a call it is
-/// passed to, gives its loans to that place's local.
-fn holders(body: &Body, loans: &[(Loan, Local)]) -> Vec<Vec<u32>> {
-    let mut holds = vec![Vec::new(); body.locals.len()];
-    for (id, (_, holder)) in loans.iter().enumerate() {
-        holds[holder.index()].push(id as u32);
-    }
-    let local_holds = |local: Local| may_hold_loans(body.locals[local].ty);
-    // `to` holds what `from` holds.
-    let mut flows: Vec<(Local, Local)> = Vec::new();
-    // What `from` holds goes to the locals `pointer`'s mutable loans are
-    // of.
-    let mut through: Vec<(Local, Local)> = Vec::new();
-    for (loan, holder) in loans {
-        if loan.place.has_deref() || local_holds(loan.place.local) {
-            flows.push((loan.place.local, *holder));
-        }
-    }
-    let operand_local = |op: &Operand| match op {
-        Operand::Copy(place) | Operand::Move(place) => Some(place.local),
-        Operand::Const(_) => None,
-    };
-    for data in body.blocks.values() {
-        for statement in &data.statements {
-            let StatementKind::Assign(dest, rvalue) = &statement.kind else {
-                continue;
-            };
-            let sources: Vec<Local> = match rvalue {
-                Rvalue::Use(Operand::Copy(src) | Operand::Move(src))
-                    if src.projection.is_empty() || local_holds(dest.local) =>
-                {
-                    vec![src.local]
-                }
-                Rvalue::Aggregate(_, ops) => ops.iter().filter_map(operand_local).collect(),
-                _ => Vec::new(),
-            };
-            for src in sources {
-                if dest.has_deref() {
-                    through.push((src, dest.local));
-                } else {
-                    flows.push((src, dest.local));
-                }
-            }
-        }
-        if let TerminatorKind::Call { args, dest, .. } = &data.terminator.kind {
-            let locals: Vec<Local> = args.iter().filter_map(operand_local).collect();
-            if local_holds(dest.local) {
-                flows.extend(locals.iter().map(|&a| (a, dest.local)));
-            }
-            for &pointer in &locals {
-                let TyKind::Ref(Mutability::Mut, pointee) = body.locals[pointer].ty.kind() else {
-                    continue;
-                };
-                if may_hold_loans(pointee) {
-                    through.extend(
-                        locals
-                            .iter()
-                            .filter(|&&a| a != pointer)
-                            .map(|&a| (a, pointer)),
-                    );
-                }
-            }
-        }
-    }
-    // Until nothing changes: the flows, then those the mutable loans
-    // that reach pointers written through add.
-    loop {
-        propagate(body, &mut holds, &mut flows);
-        let before = flows.len();
-        for &(from, pointer) in &through {
-            for &id in &holds[pointer.index()] {
-                let (loan, _) = &loans[id as usize];
-                if loan.mutability == Mutability::Mut {
-                    flows.push((from, loan.place.local));
-                }
-            }
-        }
-        flows.sort_unstable();
-        flows.dedup();
-        if flows.len() == before {
-            return holds;
-        }
-    }
-}
-
-/// Makes each `to` of `flows` hold what its `from` holds, until nothing
-/// changes, from each local whose loans grew.
-fn propagate(body: &Body, holds: &mut [Vec<u32>], flows: &mut Vec<(Local, Local)>) {
-    flows.sort_unstable();
-    flows.dedup();
-    let mut queued = BitSet::new_empty(body.locals.len());
-    let mut worklist: Vec<Local> = Vec::new();
-    for (local, held) in holds.iter().enumerate() {
-        if !held.is_empty() {
-            queued.insert(local);
-            worklist.push(Local::from_raw(local as u32));
-        }
-    }
-    let mut merged = Vec::new();
-    while let Some(from) = worklist.pop() {
-        queued.remove(from.index());
-        let start = flows.partition_point(|&(f, _)| f < from);
-        for &(_, to) in flows[start..].iter().take_while(|&&(f, _)| f == from) {
-            if to == from {
-                continue;
-            }
-            let (held, has) = (&holds[from.index()], &holds[to.index()]);
-            merged.clear();
-            let (mut i, mut j) = (0, 0);
-            while i < held.len() || j < has.len() {
-                let next = match (held.get(i), has.get(j)) {
-                    (Some(&a), Some(&b)) if a == b => {
-                        (i, j) = (i + 1, j + 1);
-                        a
-                    }
-                    (Some(&a), Some(&b)) if a < b => {
-                        i += 1;
-                        a
-                    }
-                    (Some(&a), None) => {
-                        i += 1;
-                        a
-                    }
-                    (_, Some(&b)) => {
-                        j += 1;
-                        b
-                    }
-                    (None, None) => unreachable!("one is left"),
-                };
-                merged.push(next);
-            }
-            if merged.len() > has.len() {
-                std::mem::swap(&mut holds[to.index()], &mut merged);
-                if !queued.contains(to.index()) {
-                    queued.insert(to.index());
-                    worklist.push(to);
-                }
-            }
-        }
-    }
-}
-
-/// Whether a value of `ty` may hold loans: a reference, a closure that
-/// captures by reference, or a value with one in it.
-fn may_hold_loans(ty: Ty) -> bool {
-    match ty.kind() {
-        TyKind::Ref(..) => true,
-        TyKind::Closure(_, args) => flux_ty::ClosureArgs::split(args)
-            .upvar_types()
-            .iter()
-            .any(|&t| may_hold_loans(t)),
-        TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().any(|&t| may_hold_loans(t)),
-        TyKind::Array(t, _) => may_hold_loans(t),
-        _ => false,
-    }
 }
 
 /// The locals a statement reads, as values or as pointers to go through.
@@ -391,11 +197,11 @@ fn terminator_transfer(kind: &TerminatorKind, set: &mut dyn FnMut(Local, bool)) 
     }
 }
 
-/// The locals live at the end of each block, in order, of those that
-/// `holds` says hold loans: whether one is live depends on its own uses
-/// alone, and only those holding loans matter. A block's are few, so
+/// The locals live at the end of each block, in order, of those
+/// `tracked`: whether one is live depends on its own uses alone, and
+/// only those whose types have lifetimes matter. A block's are few, so
 /// they are listed rather than a bit each for every local.
-fn liveness(body: &Body, holds: &[Vec<u32>]) -> Vec<Vec<u32>> {
+fn liveness_where(body: &Body, tracked: &[bool]) -> Vec<Vec<u32>> {
     let mut live_in = vec![Vec::new(); body.blocks.len()];
     let mut live_out = vec![Vec::new(); body.blocks.len()];
     // The locals live at a point, and a list of them that may also have
@@ -418,7 +224,7 @@ fn liveness(body: &Body, holds: &[Vec<u32>]) -> Vec<Vec<u32>> {
             members.sort_unstable();
             live_out[block.index()].clone_from(&members);
             let mut set = |local: Local, value: bool| {
-                if !holds[local.index()].is_empty() && !live.set(local.index(), value) && value {
+                if tracked[local.index()] && !live.set(local.index(), value) && value {
                     members.push(local.index() as u32);
                 }
             };
@@ -457,9 +263,7 @@ struct Checker<'a> {
     items: &'a ItemTree,
     sigs: &'a Signatures,
     loans: &'a [(Loan, Local)],
-    /// The loans each local holds, in order.
-    holds: &'a [Vec<u32>],
-    held_by: &'a [Vec<Local>],
+    regions: &'a regions::Regions,
     /// The loans of each local's places, in order: those an access to a
     /// place of it may conflict with.
     borrowed: &'a [Vec<u32>],
@@ -472,13 +276,11 @@ struct Checker<'a> {
     in_aggregate: bool,
 }
 
-/// The loans live at a point: those a live local holds and, during a
-/// call, those its arguments hold, except `except`.
+/// The loans in scope at a point, except `except`.
 #[derive(Clone, Copy)]
-struct Live<'b> {
-    locals: &'b BitSet,
+struct Live {
+    point: u32,
     except: Option<usize>,
-    args: &'b [Local],
 }
 
 /// Whether one place contains the other: they are the same local and
@@ -529,16 +331,9 @@ impl Checker<'_> {
         Some((name, data.is_static_mut(), place.projection.len() == 1))
     }
 
-    /// Whether loan `id` is `live`.
+    /// Whether loan `id` is in scope at `live`'s point.
     fn is_live(&self, id: usize, live: &Live) -> bool {
-        Some(id) != live.except
-            && (self.held_by[id]
-                .iter()
-                .any(|h| live.locals.contains(h.index()))
-                || live
-                    .args
-                    .iter()
-                    .any(|arg| self.holds[arg.index()].binary_search(&(id as u32)).is_ok()))
+        Some(id) != live.except && self.regions.loan_scopes[id].contains(live.point)
     }
 
     fn statement(
@@ -547,19 +342,14 @@ impl Checker<'_> {
         index: usize,
         kind: &StatementKind,
         range: TextRange,
-        live_after: &BitSet,
+        point: u32,
     ) {
+        let live = &Live {
+            point,
+            except: None,
+        };
         match kind {
             StatementKind::Assign(dest, rvalue) => {
-                let own = self
-                    .loans
-                    .binary_search_by_key(&(block, index), |(l, _)| (l.block, l.statement))
-                    .ok();
-                let live = &Live {
-                    locals: live_after,
-                    except: own,
-                    args: &[],
-                };
                 match rvalue {
                     Rvalue::Ref {
                         mutability,
@@ -605,33 +395,22 @@ impl Checker<'_> {
             }
             StatementKind::PlaceMention(_) => {}
             StatementKind::StorageDead(local) => {
-                let live = &Live {
-                    locals: live_after,
-                    except: None,
-                    args: &[],
-                };
                 let borrowed = self.borrowed;
                 for &id in &borrowed[local.index()] {
                     let id = id as usize;
-                    let loan = &self.loans[id].0;
-                    if self.is_live(id, live) && !loan.place.has_deref() && !self.reported_dead[id]
-                    {
-                        self.reported_dead[id] = true;
-                        let message =
-                            format!("`{}` does not live long enough", self.name(&loan.place));
-                        self.error(loan.range, message);
+                    if self.is_live(id, live) && !self.loans[id].0.place.has_deref() {
+                        self.dead(id, range);
                     }
                 }
             }
         }
     }
 
-    fn terminator(&mut self, kind: &TerminatorKind, range: TextRange, live_after: &BitSet) {
+    fn terminator(&mut self, kind: &TerminatorKind, range: TextRange, point: u32) {
         self.in_aggregate = false;
         let live = &Live {
-            locals: live_after,
+            point,
             except: None,
-            args: &[],
         };
         for operand in kind.operands() {
             self.operand(operand, live, range);
@@ -642,19 +421,34 @@ impl Checker<'_> {
         if let TerminatorKind::Drop { place, .. } = kind
             && self.body.locals[place.local].kind == LocalKind::Temp
             && !place.has_deref()
-            && self.borrowed[place.local.index()].iter().any(|&id| {
-                self.is_live(id as usize, live) && overlaps(place, &self.loans[id as usize].0.place)
-            })
         {
-            self.error(range, "temporary value dropped while borrowed".into());
+            let borrowed = self.borrowed;
+            let dead = borrowed[place.local.index()].iter().find(|&&id| {
+                self.is_live(id as usize, live) && overlaps(place, &self.loans[id as usize].0.place)
+            });
+            if let Some(&id) = dead {
+                self.dead(id as usize, range);
+            }
+        }
+        // What the function returns may not borrow what dies with it:
+        // its parameters and temporaries (bindings die before).
+        if let TerminatorKind::Return = kind {
+            for id in 0..self.loans.len() {
+                let place = &self.loans[id].0.place;
+                let local = self.body.locals[place.local].kind;
+                if !place.has_deref()
+                    && !matches!(local, LocalKind::Static(_) | LocalKind::Return)
+                    && self.is_live(id, live)
+                {
+                    self.dead(id, range);
+                }
+            }
         }
         let (TerminatorKind::Call { args, dest, .. }
         | TerminatorKind::CallIndirect { args, dest, .. }) = kind
         else {
             return;
         };
-        // The loans passed to the call are in use during it, together
-        // with those live after it.
         let passed: Vec<Local> = args
             .iter()
             .filter_map(|arg| match arg {
@@ -669,9 +463,8 @@ impl Checker<'_> {
                 let loan = &self.loans[id as usize].0;
                 if loan.two_phase {
                     let others = &Live {
-                        locals: live_after,
+                        point,
                         except: Some(id as usize),
-                        args: &passed,
                     };
                     let place = loan.place.clone();
                     self.access(&place, Access::Borrow(Mutability::Mut), others, range);
@@ -679,6 +472,49 @@ impl Checker<'_> {
             }
         }
         self.write(dest, live, range);
+    }
+
+    /// Loan `id` is in scope where what it borrows dies, at `range`:
+    /// E0515 if it does because the function returns it, otherwise
+    /// E0597, or E0716 for a temporary.
+    fn dead(&mut self, id: usize, range: TextRange) {
+        if self.reported_dead[id] {
+            return;
+        }
+        self.reported_dead[id] = true;
+        let loan = &self.loans[id].0;
+        let local = loan.place.local;
+        let kind = self.body.locals[local].kind;
+        let is_param = self.body.is_param(local);
+        if let Some((regions::Category::Return, at)) = self.regions.escapes[id] {
+            let reference = if at == loan.range {
+                "reference to"
+            } else {
+                "value referencing"
+            };
+            let what = match kind {
+                LocalKind::User { .. } | LocalKind::Param if is_param => match kind {
+                    LocalKind::User { .. } => {
+                        format!("function parameter `{}`", self.name(&loan.place))
+                    }
+                    _ => "function parameter".to_owned(),
+                },
+                LocalKind::User { .. } if loan.place.projection.is_empty() => {
+                    format!("local variable `{}`", self.name(&loan.place))
+                }
+                LocalKind::User { .. } => format!("local data `{}`", self.name(&loan.place)),
+                _ => "temporary value".to_owned(),
+            };
+            let message = format!("cannot return {reference} {what}");
+            self.error(at, message);
+            return;
+        }
+        if kind == LocalKind::Temp {
+            self.error(range, "temporary value dropped while borrowed".into());
+            return;
+        }
+        let message = format!("`{}` does not live long enough", self.name(&loan.place));
+        self.error(loan.range, message);
     }
 
     fn operand(&mut self, operand: &Operand, live: &Live, range: TextRange) {

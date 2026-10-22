@@ -339,6 +339,7 @@ fn constant_text(hir: &Hir, constant: Constant) -> String {
                 format!("{name}::<{}> as fn", types.join(", "))
             }
         }
+        Constant::Promoted { index, .. } => format!("&promoted[{index}]"),
         Constant::Static { id, .. } => {
             let name = hir.items.const_name(id);
             if hir.items.consts[id].is_static_mut() {
