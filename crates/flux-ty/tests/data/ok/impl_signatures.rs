@@ -207,6 +207,12 @@ trait Visit {
     fn visit2<G>(&self, g: G) -> i32
     where
         G: Fn(i32) -> i32;
+
+    // A bound naming the block's associated type, which an impl may
+    // write as the type it is.
+    fn visit_out<F: Fn(Self::Out) -> i32>(self, f: F) -> i32
+    where
+        Self: Sized;
 }
 
 struct W(i32);
@@ -224,6 +230,10 @@ impl Visit for W {
     {
         g(self.0) + 1
     }
+
+    fn visit_out<F: Fn(i32) -> i32>(self, f: F) -> i32 {
+        f(self.0)
+    }
 }
 
 impl<'a> Visit for &'a W {
@@ -235,6 +245,10 @@ impl<'a> Visit for &'a W {
 
     fn visit2<G: Fn(i32) -> i32>(&self, g: G) -> i32 {
         g(self.0) * 2
+    }
+
+    fn visit_out<F: Fn(Self::Out) -> i32>(self, f: F) -> i32 {
+        f(self)
     }
 }
 
@@ -278,5 +292,7 @@ fn main() {
         k.visit2(|x| x * 3),
         <&W as Visit>::visit(&kr, |x| x).0,
         <&W as Visit>::visit2(&kr, |x| x - 1),
+        W(6).visit_out(|x| x + 1),
+        kr.visit_out(|w| w.0),
     );
 }

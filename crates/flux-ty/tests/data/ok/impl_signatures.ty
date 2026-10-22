@@ -57,18 +57,25 @@ fn area(&&S) -> <S as Shape>::Unit
     self@0: &&S
 fn visit<F>(&Self, F) -> <Self as Visit>::Out
 fn visit2<G>(&Self, G) -> i32
+fn visit_out<F>(Self, F) -> i32
 fn visit<H>(&W, H) -> i32
     self@0: &W
     h@1: H
 fn visit2<G>(&W, G) -> i32
     self@0: &W
     g@1: G
+fn visit_out<F>(W, F) -> i32
+    self@0: W
+    f@1: F
 fn visit<F>(&&W, F) -> &W
     self@0: &&W
     _f@1: F
 fn visit2<G>(&&W, G) -> i32
     self@0: &&W
     g@1: G
+fn visit_out<F>(&W, F) -> i32
+    self@0: &W
+    f@1: F
 fn widen(u8) -> i64
     x@0: u8
 fn main() -> ()
@@ -95,5 +102,7 @@ fn main() -> ()
     x@20: i32
     x@21: i32
     x@22: i32
+    x@23: i32
+    w@24: &W
 fn clone(&V<T>) -> V<T>
     self@0: &V<T>
