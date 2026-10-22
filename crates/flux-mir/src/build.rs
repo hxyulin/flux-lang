@@ -3406,16 +3406,27 @@ impl Builder<'_> {
         fail: BasicBlock,
         range: TextRange,
     ) -> Vec<Exit> {
-        let place = self.resolve(place, range);
         let usize = IntTy::Usize;
         let (p, s) = (prefix.len() as u32, suffix.len() as u32);
         // An array's length is known: its elements are counted from the
         // start.
-        let array_len = match self.place_ty(&place).kind() {
+        let array_len = match self.pat_place_ty(&place).kind() {
             TyKind::Array(_, n) => Some(n.as_usize().unwrap_or(0) as u32),
             _ => None,
         };
-        if array_len.is_none() {
+        // Neither the length (`[..]` matches any) nor wildcards read the
+        // place, which a closure need not capture then.
+        let wild = |pat: &PatId| matches!(self.body.pats[*pat], Pat::Wild | Pat::Missing);
+        let any_len = prefix.is_empty() && suffix.is_empty() && slice.is_some();
+        if (array_len.is_some() || any_len) && prefix.iter().chain(&slice).chain(suffix).all(wild) {
+            return vec![Exit {
+                block: self.block(),
+                binds: Vec::new(),
+                resume: fail,
+            }];
+        }
+        let place = self.resolve(place, range);
+        if array_len.is_none() && !any_len {
             let len = self.temp(Ty::int(usize));
             self.assign(
                 &len.into(),

@@ -923,8 +923,10 @@ impl Ctx<'_> {
     }
 
     /// The indices in the place expression `expr`, which are evaluated
-    /// for their values.
+    /// for their values after the place they index is used, innermost
+    /// first, as rustc walks them.
     fn walk_indices(&mut self, expr: ExprId, uses: &mut Uses<'_>) {
+        let mut indices = Vec::new();
         let mut e = expr;
         loop {
             match self.body.exprs[e] {
@@ -934,17 +936,65 @@ impl Ctx<'_> {
                     operand: base,
                 } => e = base,
                 Expr::Index { base, index } => {
-                    self.consume(index, uses);
+                    indices.push(index);
                     e = base;
                 }
-                _ => return,
+                _ => break,
             }
+        }
+        for &index in indices.iter().rev() {
+            self.consume(index, uses);
         }
     }
 
     fn is_copy_ty(&mut self, ty: Ty) -> bool {
         let ty = self.known(ty);
         crate::traits::is_copy(self.items, self.sigs, &self.param_env, ty)
+    }
+
+    /// A use of the place `expr` denotes, as `kind` finds it from the
+    /// place, then its indices; false if `expr` is not a place.
+    ///
+    /// An element of an array or slice is not a place a closure captures:
+    /// rustc's capture analysis runs before builtin indexing is told from
+    /// `Index::index`, so indexing borrows the place indexed (mutably if
+    /// the element is used mutably), whatever is done with the element.
+    fn use_place(
+        &mut self,
+        expr: ExprId,
+        kind: impl FnOnce(&mut Self, &Place) -> UseKind,
+        uses: &mut Uses<'_>,
+    ) -> bool {
+        self.use_place_deref(expr, 0, kind, uses)
+    }
+
+    /// [`Self::use_place`] of the place `expr` denotes dereferenced
+    /// `derefs` times.
+    fn use_place_deref(
+        &mut self,
+        expr: ExprId,
+        derefs: u32,
+        kind: impl FnOnce(&mut Self, &Place) -> UseKind,
+        uses: &mut Uses<'_>,
+    ) -> bool {
+        let Some((place, indexed)) = self.capture_place_in(expr) else {
+            return false;
+        };
+        let (binding, mut proj) = place;
+        if !indexed {
+            proj.extend((0..derefs).map(|_| CaptureProj::Deref));
+        }
+        let place = (binding, proj);
+        let kind = match kind(self, &place) {
+            UseKind::Borrow(Mutability::Mut) | UseKind::Assign if indexed => {
+                UseKind::Borrow(Mutability::Mut)
+            }
+            _ if indexed => UseKind::Borrow(Mutability::Not),
+            kind => kind,
+        };
+        uses.add(place, kind, self.range(expr));
+        self.walk_indices(expr, uses);
+        true
     }
 
     /// `expr` used by value: a place is copied or moved.
@@ -1139,18 +1189,12 @@ impl Ctx<'_> {
             }
             Expr::Let { pat, expr: init } => self.walk_let(*pat, *init, uses),
             Expr::Match { scrutinee, arms } => {
-                match self.capture_place(*scrutinee) {
-                    Some(place)
-                        if self.reborrows.get(*scrutinee).is_none()
-                            && self.capture_place_stop(*scrutinee).is_none() =>
-                    {
-                        for arm in arms.iter() {
-                            self.walk_pat(arm.pat, place.clone(), uses);
-                        }
-                    }
-                    _ => self.consume(*scrutinee, uses),
-                }
+                let pats: Vec<PatId> = arms.iter().map(|arm| arm.pat).collect();
+                let place = self.scrutinee(*scrutinee, &pats, uses);
                 for arm in arms.iter() {
+                    if let Some(place) = &place {
+                        self.walk_pat(arm.pat, place.clone(), uses);
+                    }
                     if let Some(guard) = arm.guard {
                         self.consume(guard, uses);
                     }
@@ -1269,15 +1313,37 @@ impl Ctx<'_> {
 
     /// `let pat = init`: a place matched by the pattern, or a value.
     fn walk_let(&mut self, pat: PatId, init: ExprId, uses: &mut Uses<'_>) {
-        self.walk_indices(init, uses);
-        match self.capture_place(init) {
-            Some(place)
-                if self.reborrows.get(init).is_none()
-                    && self.capture_place_stop(init).is_none() =>
-            {
-                self.walk_pat(pat, place, uses)
+        if let Some(place) = self.scrutinee(init, &[pat], uses) {
+            self.walk_pat(pat, place, uses);
+        }
+    }
+
+    /// The place `expr` denotes, for patterns `pats` to match, which
+    /// decide how it is used; or its uses, if it is not such a place.
+    ///
+    /// An element of an array or slice is no place a closure captures
+    /// (see [`Self::use_place`]): the place indexed is borrowed, whether
+    /// the patterns read it or not (`let _ = a[i]` too), and mutably if
+    /// they bind `ref mut`, as rustc checks such a scrutinee as a place to
+    /// change.
+    fn scrutinee(&mut self, expr: ExprId, pats: &[PatId], uses: &mut Uses<'_>) -> Option<Place> {
+        match self.capture_place_in(expr) {
+            Some((place, false)) if self.reborrows.get(expr).is_none() => Some(place),
+            Some((_, true)) if self.reborrows.get(expr).is_none() => {
+                let body = self.body;
+                let ref_mut = pats.iter().any(|&p| has_ref_mut(body, p));
+                let m = if ref_mut {
+                    Mutability::Mut
+                } else {
+                    Mutability::Not
+                };
+                self.use_place(expr, |_, _| UseKind::Borrow(m), uses);
+                None
             }
-            _ => self.consume(init, uses),
+            _ => {
+                self.consume(expr, uses);
+                None
+            }
         }
     }
 
@@ -1305,9 +1371,12 @@ impl Ctx<'_> {
                 slice,
                 suffix,
             } => {
-                // A slice's length is read.
+                // A slice's length is read, unless any length matches.
                 let ty = self.pat_types.get(pat).copied().unwrap_or(Ty::ERROR);
-                if let TyKind::Slice(_) = self.shallow(ty).kind() {
+                let any_len = prefix.is_empty() && suffix.is_empty() && slice.is_some();
+                if let TyKind::Slice(_) = self.shallow(ty).kind()
+                    && !any_len
+                {
                     uses.add(place.clone(), UseKind::Borrow(Mutability::Not), range);
                 }
                 for &p in prefix.iter().chain(slice.iter()).chain(suffix.iter()) {
@@ -1541,6 +1610,17 @@ fn insert_capture(captures: &mut Vec<PendingCapture>, new: PendingCapture) {
     }
     let at = at.unwrap_or(captures.len());
     captures.insert(at, new);
+}
+
+/// Whether `pat` has a `ref mut` binding.
+fn has_ref_mut(body: &flux_hir::Body, pat: PatId) -> bool {
+    match &body.pats[pat] {
+        Pat::Bind { binding, sub } => {
+            body.bindings[*binding].by_ref == Some(true)
+                || sub.is_some_and(|sub| has_ref_mut(body, sub))
+        }
+        other => other.children().any(|p| has_ref_mut(body, p)),
+    }
 }
 
 /// The patterns of a tuple pattern with the fields they match.
