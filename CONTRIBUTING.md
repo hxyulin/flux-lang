@@ -67,6 +67,11 @@ text show up without dedicated tests.
 
 For performance work, run `just bench` before and after on the same
 corpus, at least twice: timings vary by several percent between runs.
+Each compiler crate's `tests/scaling.rs` fails if a stage given four
+times the input takes six times as long, and `just corpus` fails on any
+file that takes too long for its size; extend them when you fix a
+slowdown worse than linear, and check that the test fails without the
+fix. Ignored scaling tests record known quadratic behavior.
 Measuring inside the code under test (counters, timers) can distort it,
 especially with many threads.
 
