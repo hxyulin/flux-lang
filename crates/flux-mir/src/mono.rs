@@ -187,6 +187,14 @@ fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
     if is_fn_shim(items, instance) {
         return true;
     }
+    // A closure is cloned by a copy: it is `Clone` only where `Copy`.
+    if matches!(
+        instance.args.first().map(|t| t.kind()),
+        Some(TyKind::Closure(..))
+    ) && Some(instance.function) == lang_method(items, "clone", "clone")
+    {
+        return true;
+    }
     let of_array = matches!(
         instance.args.first().map(|t| t.kind()),
         Some(TyKind::Array(..))
@@ -210,8 +218,11 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
         return Some(eq_shim(instance));
     }
     let array = instance.args[0];
-    let TyKind::Array(elem, len) = array.kind() else {
-        return None;
+    let (elem, len) = match array.kind() {
+        TyKind::Array(elem, len) => (elem, len),
+        // A closure, `Copy`: a copy of it.
+        TyKind::Closure(..) => (array, 0),
+        _ => return None,
     };
     let usize = Ty::int(flux_ty::IntTy::Usize);
     let mut locals = flux_arena::Arena::new();

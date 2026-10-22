@@ -1288,14 +1288,18 @@ impl Ctx<'_> {
             crate::traits::ClosureGoal::Upvars(_) => {
                 let upvars = self.shallow(ClosureArgs::split(args).upvars);
                 match upvars.kind() {
-                    TyKind::Tuple(list) => ClosureSelection::Met(
-                        list.iter()
-                            .map(|&ty| Predicate {
-                                self_ty: ty,
-                                ..pred
-                            })
-                            .collect(),
-                    ),
+                    TyKind::Tuple(list) => {
+                        let trait_ref =
+                            crate::traits::copy_trait_ref(self.items).unwrap_or(pred.trait_ref);
+                        ClosureSelection::Met(
+                            list.iter()
+                                .map(|&ty| Predicate {
+                                    self_ty: ty,
+                                    trait_ref,
+                                })
+                                .collect(),
+                        )
+                    }
                     _ => ClosureSelection::Ambiguous,
                 }
             }

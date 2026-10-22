@@ -1013,10 +1013,11 @@ fn holds_at(
             }
             ClosureGoal::Upvars(upvars) => {
                 stack.push(goal);
+                let trait_ref = copy_trait_ref(items).unwrap_or(goal.trait_ref);
                 let all = upvars.iter().all(|&ty| {
                     let goal = Predicate {
                         self_ty: ty,
-                        ..goal
+                        trait_ref,
                     };
                     holds_at(items, sigs, env, goal, stack)
                 });
@@ -1169,12 +1170,24 @@ pub(crate) fn closure_goal(items: &ItemTree, t: TraitId, args: GenericArgs) -> C
     if let Some(kind) = crate::fn_trait_kind(items, t) {
         return ClosureGoal::Fn(kind, parts.params());
     }
+    // A closure is `Clone` only where it is `Copy`, cloned by a copy.
     match items.traits[t].lang {
         Some(l) if l.as_str() == "copy" || l.as_str() == "clone" => {
             ClosureGoal::Upvars(parts.upvar_types())
         }
         _ => ClosureGoal::No,
     }
+}
+
+/// `Copy`, which what a closure captures must be for it to be `Copy` or
+/// `Clone`.
+pub(crate) fn copy_trait_ref(items: &ItemTree) -> Option<TraitRef> {
+    let copy = *items.lang_traits.get(&flux_intern::sym::copy)?;
+    Some(TraitRef {
+        trait_: copy,
+        name: items.traits[copy].name,
+        args: Ty::list(&[]),
+    })
 }
 
 /// `<C as FnOnce<A>>::Output` for a closure `C`: what it returns.
