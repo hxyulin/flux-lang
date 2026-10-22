@@ -618,6 +618,16 @@
   as in rustc. Field types know arrays' built-in `IntoIterator` too.
   `tests/run/into_iterator_args.rs` passes arrays, slices, `Option`,
   ranges and iterators to `U: IntoIterator` parameters.
+- Record what MIR building lowers to `unreachable` because type checking
+  should have ruled it out (`Body::bugs`), instead of asserting on it.
+  Where the program has errors (a body naming what a failed import
+  should have brought) that is expected and no longer panics debug
+  builds; in a program without errors `build_file` panics in debug
+  builds and reports an internal compiler error in release builds, so
+  such code is never compiled to a trap, and `just corpus` fails on it.
+  A constant naming a failed import's type no longer reports "entering
+  unreachable code" when an array length needs it, and a call of an
+  associated function of such a type no longer panics.
 
 ### Performance
 

@@ -136,13 +136,78 @@ fn main() {
     );
 }
 
+/// The messages of the errors in `text` as `flux mir` finds them where
+/// lowering or type checking finds some: with the initialization and
+/// borrow errors of the bodies that have none.
+fn program_errors(text: &str) -> Vec<String> {
+    let (_db, _, hir) = flux_hir::lower_text("main.rs", text);
+    let typed = flux_mir::check_file(&hir);
+    let mut errors = hir.diagnostics.clone();
+    errors.extend(typed.diagnostics.iter().cloned());
+    assert!(!errors.is_empty());
+    let more = flux_mir::check_clean_bodies(&hir, &typed, &errors);
+    errors.extend(more);
+    errors.into_iter().map(|d| d.message).collect()
+}
+
+/// Bodies without errors of their own may name what an import that
+/// failed should have brought, which MIR building cannot lower (and
+/// which rustc does not report again): a length whose constant names
+/// it is unknown, and a call of it is never compiled.
+#[test]
+fn names_of_failed_imports() {
+    let text = "\
+use missing::U8;
+type IvLen = U8;
+const IV_LEN: usize = IvLen::USIZE;
+fn wrap(iv: [u8; IV_LEN]) -> usize {
+    iv.len()
+}
+fn main() {
+    let _ = wrap;
+}
+";
+    assert_eq!(program_errors(text), ["unresolved import `missing`"]);
+    let text = "\
+use missing::Vec;
+type VecType = Vec;
+struct Big {
+    data: VecType,
+}
+fn new() -> Big {
+    Big {
+        data: VecType::new(),
+    }
+}
+fn main() {
+    let _ = new;
+}
+";
+    assert_eq!(program_errors(text), ["unresolved import `missing`"]);
+    let text = "\
+use missing::Thing;
+fn src() -> Thing {
+    loop {}
+}
+fn count(from: usize, condition: fn(char) -> bool) -> usize {
+    src()[from..].find(|c| !condition(c)).unwrap_or(0)
+}
+fn main() {
+    let _ = count;
+}
+";
+    assert_eq!(program_errors(text), ["unresolved import `missing`"]);
+}
+
 #[path = "../../flux-syntax/tests/support/corpus.rs"]
 mod corpus;
 
 /// Every file under `FLUX_CORPUS` that lowers and type-checks cleanly as
 /// a program builds MIR in which every value has the type of the place
-/// it is stored in ([`flux_mir::validate`]), checked here in release
-/// builds too.
+/// it is stored in ([`flux_mir::validate`]), and without lowering
+/// anything to `unreachable` because type checking should have ruled it
+/// out ([`flux_mir::FileMir::bugs`], each a silent miscompilation if
+/// built), checked here in release builds too.
 #[test]
 #[ignore = "needs FLUX_CORPUS"]
 fn corpus_mir_is_well_typed() {
@@ -162,7 +227,11 @@ fn corpus_mir_is_well_typed() {
             return (bytes, None);
         }
         let mir = flux_mir::build_file(&hir, &typed);
-        let errors = flux_mir::validate::validate_file(&hir, &typed.sigs, &mir);
+        let mut errors = flux_mir::validate::validate_file(&hir, &typed.sigs, &mir);
+        errors.extend(mir.bugs.iter().map(|d| {
+            let path = db.file(d.file).path.display();
+            format!("{path} at {:?}: {}", d.range, d.message)
+        }));
         (bytes, Some(errors))
     });
     let built = results.iter().filter(|(_, r)| r.is_some()).count();
@@ -176,7 +245,7 @@ fn corpus_mir_is_well_typed() {
     println!("{built} files built MIR");
     assert!(
         failures.is_empty(),
-        "ill-typed MIR:\n{}",
+        "ill-typed MIR, or code type checking should have ruled out:\n{}",
         failures.join("\n")
     );
 }

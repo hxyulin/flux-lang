@@ -80,6 +80,18 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         }
         bodies.insert(id, body);
     }
+    // Code that type checking should have ruled out, in a program
+    // without errors: a bug in flux, which must not compile to a trap.
+    let bugs = bugs(hir, &bodies, &closures, &consts);
+    assert!(
+        !cfg!(debug_assertions) || bugs.is_empty(),
+        "MIR building: {}",
+        (bugs.iter())
+            .map(|d| format!("{} at {:?}", d.message, d.range))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+    diagnostics.extend(bugs.iter().cloned());
     // Patterns that name constants are checked with their values; rustc
     // does not borrow-check the bodies whose patterns have errors.
     diagnostics.extend(crate::borrowck::check_impl_methods(&hir.items, &typed.sigs));
@@ -150,6 +162,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         const_values,
         discriminants,
         diagnostics,
+        bugs,
     };
     // Code generation trusts the types of places: check them.
     if cfg!(debug_assertions) {
@@ -161,6 +174,40 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         );
     }
     mir
+}
+
+/// What building `bodies`, `closures` and `consts` lowered to
+/// `unreachable` because type checking should have ruled it out, as
+/// errors.
+fn bugs(
+    hir: &Hir,
+    bodies: &ArenaMap<flux_hir::Function, Body>,
+    closures: &std::collections::HashMap<(flux_ty::ClosureId, flux_ty::ClosureKind), Body>,
+    consts: &ArenaMap<flux_hir::Const, Body>,
+) -> Vec<flux_hir::Diagnostic> {
+    let functions = bodies
+        .iter()
+        .map(|(id, body)| (hir.items.functions[id].loc.file, body));
+    let closures =
+        (closures.iter()).map(|((c, _), body)| (hir.items.functions[c.owner].loc.file, body));
+    let consts = consts
+        .iter()
+        .map(|(id, body)| (hir.items.consts[id].loc.file, body));
+    let mut found: Vec<flux_hir::Diagnostic> = functions
+        .chain(closures)
+        .chain(consts)
+        .flat_map(|(file, body)| {
+            body.bugs
+                .iter()
+                .map(move |&(range, what)| flux_hir::Diagnostic {
+                    file,
+                    ..flux_hir::Diagnostic::new(range, format!("internal compiler error: {what}"))
+                })
+        })
+        .collect();
+    flux_hir::Diagnostic::sort(&mut found);
+    found.dedup();
+    found
 }
 
 /// The initialization and borrow errors of the program's functions whose
@@ -746,6 +793,7 @@ pub fn closure_shims(
                 capture_uses: Vec::new(),
                 owner: None,
                 promoted: Vec::new(),
+                bugs: Vec::new(),
             },
         ));
     }
@@ -809,6 +857,7 @@ fn build_body(
         capture_uses: Vec::new(),
         promoted: Vec::new(),
         storage_temps: Default::default(),
+        bugs: Vec::new(),
     };
     b.locals.alloc(LocalDecl {
         ty: sig.ret,
@@ -961,6 +1010,7 @@ fn build_body(
             Item::Const(_) => None,
         },
         promoted: b.promoted,
+        bugs: b.bugs,
     };
     built.init_errors = crate::init::check(&built, &hir.items, &typed.sigs);
     built.init_errors.extend(b.errors);
@@ -1131,6 +1181,8 @@ struct Builder<'a> {
     storage_temps: rustc_hash::FxHashSet<Local>,
     /// [`Body::promoted`].
     promoted: Vec<crate::eval::Value>,
+    /// [`Body::bugs`].
+    bugs: Vec<(TextRange, &'static str)>,
 }
 
 /// Whether `expr` denotes a place: a local, a field or element of one, or
@@ -1684,11 +1736,13 @@ impl Builder<'_> {
         }
     }
 
-    /// Code that type checking rules out, which MIR building never
-    /// expects to reach: a bug in flux, which debug builds report and
-    /// release builds lower to `unreachable`.
-    fn bug(&mut self, what: &str, range: TextRange) {
-        debug_assert!(false, "MIR building: {what} at {range:?}");
+    /// Code that type checking rules out, which MIR building lowers to
+    /// `unreachable` and records in [`Body::bugs`]: expected where the
+    /// program has errors (bodies are built to check them, or to
+    /// evaluate constants, before all errors are known), and a bug in
+    /// flux anywhere else, which [`build_file`] reports.
+    fn bug(&mut self, what: &'static str, range: TextRange) {
+        self.bugs.push((range, what));
         self.terminate(TerminatorKind::Unreachable, range);
     }
 
@@ -2350,7 +2404,10 @@ impl Builder<'_> {
             Expr::Call { callee, args } => match body.exprs[*callee] {
                 Expr::Path(Res::Function(_) | Res::Assoc { .. }) => {
                     let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
-                    let instance = self.types.calls[*callee];
+                    let Some(&instance) = self.types.calls.get(*callee) else {
+                        self.bug("a call of a function not resolved", range);
+                        return;
+                    };
                     self.call(instance.function, instance.args, args, dest, range);
                 }
                 Expr::Path(Res::Struct(strukt)) => {
