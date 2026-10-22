@@ -139,7 +139,7 @@ fn stmt_list(p: &mut Parser<'_>) {
 /// One statement. An expression at the end of a block without a `;` is
 /// the block's value and is not wrapped in `EXPR_STMT`, unless it has
 /// attributes.
-fn stmt(p: &mut Parser<'_>) {
+pub(super) fn stmt(p: &mut Parser<'_>) {
     if p.eat(T![;]) {
         return;
     }
@@ -172,11 +172,11 @@ fn stmt(p: &mut Parser<'_>) {
         }
         return;
     };
-    if p.at(T!['}']) && !has_attrs {
+    if p.at_block_end() && !has_attrs {
         m.abandon(p);
         return;
     }
-    if !p.eat(T![;]) && blocklike == BlockLike::NotBlock && !p.at(T!['}']) {
+    if !p.eat(T![;]) && blocklike == BlockLike::NotBlock && !p.at_block_end() {
         p.error("expected `;`");
     }
     m.complete(p, EXPR_STMT);
@@ -184,6 +184,11 @@ fn stmt(p: &mut Parser<'_>) {
 
 /// `let pattern: Type = init else { diverge };`.
 fn let_stmt(p: &mut Parser<'_>, m: Marker) {
+    let_stmt_with(p, m, true);
+}
+
+/// A `let` statement, whose `;` a statement fragment (`$s:stmt`) leaves out.
+fn let_stmt_with(p: &mut Parser<'_>, m: Marker, semicolon: bool) {
     p.bump(T![let]);
     patterns::pattern(p);
     if p.eat(T![:]) {
@@ -205,8 +210,28 @@ fn let_stmt(p: &mut Parser<'_>, m: Marker) {
             e.complete(p, LET_ELSE);
         }
     }
-    p.expect(T![;]);
+    if semicolon {
+        p.expect(T![;]);
+    }
     m.complete(p, LET_STMT);
+}
+
+/// A statement without its `;`, as a macro's `$s:stmt` matches.
+pub(super) fn stmt_fragment(p: &mut Parser<'_>) {
+    let m = p.start();
+    attributes::outer_attrs(p);
+    if p.at(T![let]) {
+        let_stmt_with(p, m, false);
+        return;
+    }
+    let m = match items::opt_item(p, m) {
+        Ok(()) => return,
+        Err(m) => m,
+    };
+    if !p.at_ts(EXPR_FIRST) || expr_bp(p, STMT, 1).is_none() {
+        p.error("expected a statement");
+    }
+    m.complete(p, EXPR_STMT);
 }
 
 // Operators.

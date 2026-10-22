@@ -25,6 +25,71 @@ pub fn parse_source_file(input: &Input) -> Output {
     p.output
 }
 
+/// A kind of syntax a macro's matcher can name (`$e:expr`), or that a
+/// macro call's expansion is parsed as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Fragment {
+    Expr,
+    /// A pattern, `|` included.
+    Pat,
+    /// A pattern without a top-level `|`.
+    PatParam,
+    Type,
+    /// A path, as in a type: `a::B<T>`.
+    Path,
+    Block,
+    /// A statement without its trailing `;`.
+    Stmt,
+    Item,
+    Vis,
+    Lifetime,
+    Literal,
+    /// An attribute's contents.
+    Meta,
+    /// Items until the end, as a module's: a macro call in item position.
+    Items,
+    /// Statements until the end, the last maybe an expression without
+    /// `;`, as a block's: a macro call in statement position.
+    Stmts,
+}
+
+/// Parses the whole of `input` as a macro expansion: one root node,
+/// `MACRO_ITEMS` or `MACRO_STMTS` for those fragments and
+/// `MACRO_FRAGMENT` around the fragment otherwise. Tokens left after a
+/// fragment are wrapped in an `ERROR` node with the error
+/// [`EXPANSION_IGNORES`].
+pub fn parse_expansion(input: &Input, fragment: Fragment) -> Output {
+    let mut p = Parser::new(input);
+    p.eof_ends_block = true;
+    grammar::expansion(&mut p, fragment);
+    p.output
+}
+
+/// The error a fragment with tokens after it has, at the first of them.
+pub const EXPANSION_IGNORES: &str = "macro expansion ignores the tokens after the fragment";
+
+/// How many raw tokens of `input`, from `start` on, a fragment of kind
+/// `fragment` takes: `None` if they do not make one without errors.
+pub fn fragment_len(input: &Input, start: usize, fragment: Fragment) -> Option<usize> {
+    fragment_or_error(input, start, fragment).ok()
+}
+
+/// Like [`fragment_len`], with the token where the parser found an error
+/// if there was one.
+pub fn fragment_or_error(input: &Input, start: usize, fragment: Fragment) -> Result<usize, usize> {
+    let mut p = Parser::starting_at(input, start);
+    grammar::fragment(&mut p, fragment);
+    let mut pos = start;
+    for e in &p.output.events {
+        match *e {
+            Event::Token { n_raw_tokens, .. } => pos += n_raw_tokens as usize,
+            Event::Error { .. } => return Err(pos),
+            _ => {}
+        }
+    }
+    Ok(p.pos - start)
+}
+
 /// A set of token kinds, for recovery and lookahead.
 #[derive(Clone, Copy)]
 pub(crate) struct TokenSet([u64; 3]);
@@ -68,6 +133,9 @@ pub(crate) struct Parser<'i> {
     output: Output,
     /// Guards against grammar bugs that loop without consuming input.
     steps: u32,
+    /// The end of the input closes a block, as at the end of statements
+    /// a macro expanded to.
+    eof_ends_block: bool,
 }
 
 const STEP_LIMIT: u32 = 15_000_000;
@@ -83,7 +151,29 @@ impl<'i> Parser<'i> {
                 errors: Vec::new(),
             },
             steps: 0,
+            eof_ends_block: false,
         }
+    }
+
+    /// A parser for a fragment starting at token `start`, which does not
+    /// expect to read the rest of the input.
+    fn starting_at(input: &'i Input, start: usize) -> Parser<'i> {
+        Parser {
+            input,
+            pos: start,
+            output: Output {
+                events: Vec::with_capacity(16),
+                errors: Vec::new(),
+            },
+            steps: 0,
+            eof_ends_block: false,
+        }
+    }
+
+    /// At the `}` that ends a block, or the end of statements a macro
+    /// expanded to.
+    pub(crate) fn at_block_end(&mut self) -> bool {
+        self.at(T!['}']) || (self.eof_ends_block && self.at_end())
     }
 
     // The lookahead functions below are inlined: grammar rules call them

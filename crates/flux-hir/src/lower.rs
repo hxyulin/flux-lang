@@ -3,7 +3,9 @@
 use flux_arena::Arena;
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::ast::{self, AstNode, BinaryOp, CmpOp, LiteralKind, LogicOp};
-use flux_syntax::{SyntaxNode, SyntaxTree, TextRange};
+use flux_syntax::parser::Fragment;
+use flux_syntax::{Parse, SyntaxNode, SyntaxTree, TextRange};
+use rustc_hash::FxHashMap;
 
 use flux_arena::ArenaMap;
 
@@ -15,18 +17,20 @@ use crate::body::{
 use crate::def_map::{Def, Ns, ResolveError, Resolved};
 use crate::item_tree::{GenericArgs, PathAnchor, lower_generic_args, lower_generic_path};
 use crate::item_tree::{
-    ImplTraitSite, check_attr, check_attrs, lower_type, reject_impl_trait, unsupported,
+    ImplTraitSite, check_attr, check_attrs, expand_types, lower_type, reject_impl_trait,
+    unsupported, with_macro_types,
 };
 use crate::literal::{
     parse_int, unescape_byte, unescape_byte_str, unescape_c_str, unescape_char, unescape_str,
 };
+use crate::macros::{self, CallSite, MacroDef, MacroScopeId, RECURSION_LIMIT};
 use crate::{
-    Bound, ConstId, Derive, Diagnostic, FunctionId, ImplTarget, ItemTree, ModuleId, Owner, Path,
-    StructId, StructKind, TypeRef,
+    Bound, ConstId, Derive, Diagnostic, FileId, FunctionId, ImplTarget, ItemTree, ModuleId, Owner,
+    Path, StructId, StructKind, TypeRef,
 };
 
 mod scopes;
-use scopes::Scopes;
+use scopes::{Ident, Scopes};
 
 /// Where a pattern binds, for "cannot shadow" messages.
 #[derive(Clone, Copy)]
@@ -60,6 +64,7 @@ pub fn lower_const<'a>(tree: &'a SyntaxTree, items: &'a ItemTree, konst: ConstId
     }
     let node = tree.node(data.node);
     let mut ctx = Ctx::new(items, data.loc.module, data.owner, None);
+    ctx.macro_scope = data.macro_scope;
     ctx.place = Some(Place {
         tree,
         file: data.loc.file,
@@ -72,13 +77,18 @@ pub fn lower_const<'a>(tree: &'a SyntaxTree, items: &'a ItemTree, konst: ConstId
         let root = ctx.lower_opt(ast::Expr::cast(node), node);
         return ctx.finish(Vec::new(), root);
     }
-    let root = match ast::Static::cast(node) {
-        Some(st) => ctx.lower_opt(st.body(), node),
-        None => {
-            let c = ast::Const::cast(node).expect("constants point at CONST nodes");
-            ctx.lower_opt(c.body(), node)
-        }
+    let body = match ast::Static::cast(node) {
+        Some(st) => st.body(),
+        None => ast::Const::cast(node)
+            .expect("constants point at CONST nodes")
+            .body(),
     };
+    let root = with_macro_types(|| {
+        if let Some(body) = body {
+            ctx.expand_types_in(body.syntax());
+        }
+        ctx.lower_opt(body, node)
+    });
     ctx.finish(Vec::new(), root)
 }
 
@@ -95,6 +105,7 @@ pub fn lower_body<'a>(
     let node = tree.node(data.node);
     let f = ast::Fn::cast(node).expect("functions point at FN nodes");
     let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
+    ctx.macro_scope = data.macro_scope;
     ctx.place = Some(Place {
         tree,
         file: data.loc.file,
@@ -109,7 +120,8 @@ pub fn lower_body<'a>(
                 mutable: param.amp_token().is_none() && param.mut_token().is_some(),
                 by_ref: None,
             });
-            ctx.scopes.push((kw::SelfLower, binding));
+            let self_name = Ident::new(kw::SelfLower, param.syntax().ctxt());
+            ctx.scopes.push((self_name, binding));
             let range = param.syntax().text_range();
             params.push(ctx.alloc_pat(Pat::Bind { binding, sub: None }, range));
         }
@@ -172,10 +184,13 @@ pub fn lower_body<'a>(
             }
         }
     }
-    let root = match f.body() {
-        Some(block) => ctx.lower_block(block),
+    let root = with_macro_types(|| match f.body() {
+        Some(block) => {
+            ctx.expand_types_in(block.syntax());
+            ctx.lower_block(block)
+        }
         None => ctx.alloc_expr(Expr::Missing, f.syntax().text_range()),
-    };
+    });
     ctx.finish(params, root)
 }
 
@@ -1411,10 +1426,10 @@ struct Ctx<'a> {
     /// Bindings in scope, innermost last; a block truncates it on exit.
     scopes: Scopes,
     /// The bindings of the pattern being lowered so far.
-    pat_binds: Vec<(Symbol, BindingId)>,
+    pat_binds: Vec<(Ident, BindingId)>,
     /// For each or-pattern being lowered, the bindings of its first
     /// alternative, which the others bind again.
-    or_reuse: Vec<Vec<(Symbol, BindingId)>>,
+    or_reuse: Vec<Vec<(Ident, BindingId)>>,
     pat_args: ArenaMap<Pat, PathGenerics>,
     /// [`Body::alt_by_ref`], and the entry for the binding pattern being
     /// lowered.
@@ -1422,7 +1437,7 @@ struct Ctx<'a> {
     alt_mode: Option<Option<bool>>,
     /// The enclosing loops and their labels, innermost last; a
     /// closure's body starts without any.
-    loops: Vec<(Option<Symbol>, ExprId)>,
+    loops: Vec<(Option<Ident>, ExprId)>,
     /// Lowering a closure's body, where `break` cannot leave a loop
     /// outside it.
     in_closure: bool,
@@ -1430,6 +1445,27 @@ struct Ctx<'a> {
     /// body, whose locals it cannot use (E0435).
     anon_in: Option<FunctionId>,
     diagnostics: Vec<Diagnostic>,
+    /// The `macro_rules!` macros in textual scope where the item is.
+    macro_scope: Option<MacroScopeId>,
+    /// The macros defined in the body so far that are in scope.
+    local_macros: Vec<(Symbol, LocalMacro)>,
+    /// How many macro expansions the code being lowered is in.
+    expansion_depth: u32,
+    /// For each hygiene context an expansion made, the context its
+    /// tokens had in the definition, and for a macro defined in this
+    /// body, how many bindings and loops were in scope there: its
+    /// tokens see those.
+    ctxt_parents: FxHashMap<u32, (u32, Option<(usize, usize)>)>,
+    /// The hygiene context of the path being resolved.
+    path_ctxt: u32,
+}
+
+/// A macro defined in the body being lowered, with how many bindings
+/// and loops were in scope at its definition.
+struct LocalMacro {
+    def: MacroDef,
+    bindings: usize,
+    loops: usize,
 }
 
 impl<'a> Ctx<'a> {
@@ -1494,6 +1530,11 @@ impl<'a> Ctx<'a> {
             in_closure: false,
             anon_in: None,
             diagnostics: Vec::new(),
+            macro_scope: None,
+            local_macros: Vec::new(),
+            expansion_depth: 0,
+            ctxt_parents: FxHashMap::default(),
+            path_ctxt: 0,
         }
     }
 
@@ -1515,6 +1556,201 @@ impl<'a> Ctx<'a> {
             diagnostics: self.diagnostics,
         }
     }
+    /// The local `name` written with hygiene context `ctxt`: one bound
+    /// with that context, or, for a token of a macro defined in this
+    /// body, one in scope at the definition, as its tokens had there.
+    fn lookup_local(&self, name: Symbol, ctxt: u32) -> Option<BindingId> {
+        let mut ident = Ident::new(name, ctxt);
+        let mut limit = usize::MAX;
+        loop {
+            if let Some(binding) = self.scopes.get_below(ident, limit) {
+                return Some(binding);
+            }
+            match self.ctxt_parents.get(&ident.ctxt) {
+                Some(&(parent, Some((bindings, _)))) => {
+                    ident.ctxt = parent;
+                    limit = limit.min(bindings);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// The loop labeled `label`, found as [`Ctx::lookup_local`] finds
+    /// locals.
+    fn find_label(&self, label: Ident) -> Option<ExprId> {
+        let mut label = label;
+        let mut limit = self.loops.len();
+        loop {
+            let found = self.loops[..limit]
+                .iter()
+                .rev()
+                .find(|(l, _)| *l == Some(label));
+            if let Some(&(_, id)) = found {
+                return Some(id);
+            }
+            match self.ctxt_parents.get(&label.ctxt) {
+                Some(&(parent, Some((_, loops)))) => {
+                    label.ctxt = parent;
+                    limit = limit.min(loops);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// The file the body is written in, not an expansion's.
+    fn real_file(&self) -> FileId {
+        self.place.map_or(FileId::UNKNOWN, |p| {
+            self.items
+                .expansion_files
+                .get(&p.file)
+                .copied()
+                .unwrap_or(p.file)
+        })
+    }
+
+    /// Expands the macro call `node` as `fragment`, reporting why not if
+    /// it cannot.
+    fn expand(&mut self, node: SyntaxNode<'_>, fragment: Fragment) -> Option<Parse> {
+        let path = node.children().find_map(ast::Path::cast)?;
+        let resolved = macros::resolve(
+            self.items,
+            path,
+            &self.local_macros,
+            self.macro_scope,
+            self.module,
+        );
+        let (def, local) = match resolved {
+            Ok(macros::Resolved::Def(id)) => (self.items.macros[id].clone(), None),
+            Ok(macros::Resolved::Local(l)) => (l.def.clone(), Some((l.bindings, l.loops))),
+            Err(d) => {
+                self.diagnostics.push(d);
+                return None;
+            }
+        };
+        if self.expansion_depth >= RECURSION_LIMIT {
+            self.error(
+                node.text_range(),
+                format!("recursion limit reached while expanding `{}!`", def.name),
+            );
+            return None;
+        }
+        let site = CallSite {
+            items: self.items,
+            krate: self.items.modules[self.module].krate,
+            module: self.module,
+            real_file: self.real_file(),
+        };
+        let expansion = macros::expand(&def, node, &site, fragment, &mut self.diagnostics)?;
+        for (new, old) in expansion.ctxts {
+            self.ctxt_parents.insert(new, (old, local));
+        }
+        if fragment != Fragment::Type {
+            self.expand_types_in(expansion.parse.tree().root());
+        }
+        Some(expansion.parse)
+    }
+
+    /// Expands the macro calls in type position in `node`, for
+    /// `lower_type` to find.
+    fn expand_types_in(&mut self, node: SyntaxNode<'_>) {
+        let mut diagnostics = Vec::new();
+        expand_types(node, &mut diagnostics, &mut |call, _| {
+            self.expansion_depth += 1;
+            crate::item_tree::body_expansion(1);
+            let parse = self.expand(call, Fragment::Type);
+            self.expansion_depth -= 1;
+            crate::item_tree::body_expansion(-1);
+            parse
+        });
+        self.diagnostics.extend(diagnostics);
+    }
+
+    /// `macro_rules! name { .. }` in a body: in scope until its block
+    /// ends.
+    fn define_local_macro(&mut self, node: SyntaxNode<'_>) {
+        let krate = self.items.modules[self.module].krate;
+        let file = self.real_file();
+        if let Some(def) = MacroDef::from_rules(node, krate, file, false, &mut self.diagnostics) {
+            self.local_macros.push((
+                def.name,
+                LocalMacro {
+                    def,
+                    bindings: self.scopes.len(),
+                    loops: self.loops.len(),
+                },
+            ));
+        }
+    }
+
+    /// A macro call in expression position.
+    fn lower_macro_expr(&mut self, m: ast::MacroExpr<'_>, range: TextRange) -> ExprId {
+        if macros::is_macro_rules(m.syntax()) {
+            self.error(
+                range,
+                "macro definitions are only allowed as statements here",
+            );
+            return self.alloc_expr(Expr::Missing, range);
+        }
+        let Some(parse) = self.expand(m.syntax(), Fragment::Expr) else {
+            return self.alloc_expr(Expr::Missing, range);
+        };
+        let root = parse.tree().root();
+        let expr = root.children().find_map(ast::Expr::cast);
+        self.expansion_depth += 1;
+        crate::item_tree::body_expansion(1);
+        let id = self.lower_opt(expr, root);
+        self.expansion_depth -= 1;
+        crate::item_tree::body_expansion(-1);
+        id
+    }
+
+    /// A macro call in statement position, `semicolon` if one follows
+    /// it: its expansion's statements go into `stmts`. Its last
+    /// expression is the block's value if `is_tail`, and returned.
+    fn lower_macro_stmts(
+        &mut self,
+        m: ast::MacroExpr<'_>,
+        semicolon: bool,
+        is_tail: bool,
+        stmts: &mut Vec<Stmt>,
+    ) -> Option<ExprId> {
+        if macros::is_macro_rules(m.syntax()) {
+            self.define_local_macro(m.syntax());
+            return None;
+        }
+        let range = m.syntax().text_range();
+        let Some(parse) = self.expand(m.syntax(), Fragment::Stmts) else {
+            let id = self.alloc_expr(Expr::Missing, range);
+            if is_tail && !semicolon {
+                return Some(id);
+            }
+            stmts.push(Stmt::Expr {
+                expr: id,
+                has_semicolon: true,
+            });
+            return None;
+        };
+        let root = ast::MacroStmts::cast(parse.tree().root())?;
+        self.expansion_depth += 1;
+        crate::item_tree::body_expansion(1);
+        let tail = self.lower_stmts(root.stmts(), root.tail_expr(), stmts);
+        self.expansion_depth -= 1;
+        crate::item_tree::body_expansion(-1);
+        match tail {
+            Some(tail) if is_tail && !semicolon => Some(tail),
+            Some(tail) => {
+                stmts.push(Stmt::Expr {
+                    expr: tail,
+                    has_semicolon: true,
+                });
+                None
+            }
+            None => None,
+        }
+    }
+
     fn alloc_expr(&mut self, expr: Expr, range: TextRange) -> ExprId {
         let id = self.exprs.alloc(expr);
         self.source_map.exprs.insert(id, range);
@@ -1690,7 +1926,7 @@ impl<'a> Ctx<'a> {
                 self.error(range, "expected expression, found `let` statement");
                 Expr::Missing
             }
-            ast::Expr::MacroExpr(_) => self.unsupported_expr(range, "macros"),
+            ast::Expr::MacroExpr(m) => return self.lower_macro_expr(m, range),
             ast::Expr::MatchExpr(m) => self.lower_match(m),
             ast::Expr::MethodCallExpr(call) => {
                 let generics = call.generic_arg_list().map(|list| {
@@ -1786,7 +2022,7 @@ impl<'a> Ctx<'a> {
     fn check_repeat_count(&mut self, count: &crate::ArrayLen) -> bool {
         if let crate::ArrayLenKind::Path(path) = &count.kind
             && let Some(name) = path.as_name()
-            && self.scopes.get(name).is_some()
+            && self.lookup_local(name, 0).is_some()
         {
             self.error(
                 count.range,
@@ -1894,6 +2130,7 @@ impl<'a> Ctx<'a> {
                     Some(expr) => self.lower_expr(expr),
                     // `S { a }` is `S { a: a }`.
                     None => {
+                        self.path_ctxt = name.syntax().ctxt();
                         let res = self.resolve_name(symbol, name_range);
                         self.alloc_expr(Expr::Path(res), name_range)
                     }
@@ -2257,12 +2494,40 @@ impl<'a> Ctx<'a> {
         // are resolved.
         let outer_module = self.module;
         if let Some(place) = self.place
+            && std::ptr::eq(syntax.tree(), place.tree)
             && let Some(&module) = self.items.block_modules.get(&(place.file, syntax.id()))
         {
             self.module = module;
         }
+        let macros = self.local_macros.len();
         let mut stmts = Vec::new();
-        for stmt in block.stmts() {
+        let tail = self.lower_stmts(block.stmts(), block.tail_expr(), &mut stmts);
+        self.local_macros.truncate(macros);
+        self.scopes.truncate(scope);
+        let module = std::mem::replace(&mut self.module, outer_module);
+        let id = self.alloc_expr(
+            Expr::Block {
+                stmts: stmts.into(),
+                tail,
+                is_unsafe: block.unsafe_token().is_some(),
+            },
+            syntax.text_range(),
+        );
+        if module != outer_module {
+            self.block_modules.insert(id, module);
+        }
+        id
+    }
+
+    /// A block's statements, into `stmts`, and its tail expression: those
+    /// of a macro call in statement position are lowered in their place.
+    fn lower_stmts<'t>(
+        &mut self,
+        list: ast::AstChildren<'t, ast::Stmt<'t>>,
+        tail: Option<ast::Expr<'t>>,
+        stmts: &mut Vec<Stmt>,
+    ) -> Option<ExprId> {
+        for stmt in list {
             match stmt {
                 ast::Stmt::LetStmt(let_stmt) => {
                     check_attrs(let_stmt.attrs(), &mut self.diagnostics);
@@ -2301,31 +2566,36 @@ impl<'a> Ctx<'a> {
                 }
                 ast::Stmt::ExprStmt(expr_stmt) => {
                     check_attrs(expr_stmt.attrs(), &mut self.diagnostics);
+                    let semicolon = expr_stmt.semicolon_token().is_some();
+                    if let Some(ast::Expr::MacroExpr(m)) = expr_stmt.expr() {
+                        self.lower_macro_stmts(m, semicolon, false, stmts);
+                        continue;
+                    }
                     let expr = self.lower_opt(expr_stmt.expr(), expr_stmt.syntax());
                     stmts.push(Stmt::Expr {
                         expr,
-                        has_semicolon: expr_stmt.semicolon_token().is_some(),
+                        has_semicolon: semicolon,
                     });
                 }
-                // Collected with the item tree, lowered on their own.
-                ast::Stmt::Item(_) => {}
+                // Collected with the item tree, lowered on their own;
+                // the item tree does not see those a macro made here.
+                ast::Stmt::Item(item) => {
+                    if self.expansion_depth > 0 {
+                        self.unsupported(
+                            item.syntax().text_range(),
+                            "items made by macros in function bodies",
+                        );
+                    }
+                }
             }
         }
-        let tail = block.tail_expr().map(|e| self.lower_expr(e));
-        self.scopes.truncate(scope);
-        let module = std::mem::replace(&mut self.module, outer_module);
-        let id = self.alloc_expr(
-            Expr::Block {
-                stmts: stmts.into(),
-                tail,
-                is_unsafe: block.unsafe_token().is_some(),
-            },
-            syntax.text_range(),
-        );
-        if module != outer_module {
-            self.block_modules.insert(id, module);
+        match tail {
+            Some(ast::Expr::MacroExpr(m)) if m.attrs().next().is_none() => {
+                self.lower_macro_stmts(m, false, true, stmts)
+            }
+            Some(e) => Some(self.lower_expr(e)),
+            None => None,
         }
-        id
     }
 
     fn lower_if(&mut self, if_expr: ast::IfExpr<'_>) -> Expr {
@@ -2507,9 +2777,12 @@ impl<'a> Ctx<'a> {
     }
 
     /// A loop's label, `'a` in `'a: loop {}`.
-    fn loop_label(&mut self, label: Option<ast::Label<'_>>) -> Option<Symbol> {
+    fn loop_label(&mut self, label: Option<ast::Label<'_>>) -> Option<Ident> {
         let lifetime = label?.lifetime()?;
-        Some(Symbol::intern(lifetime.text()))
+        Some(Ident::new(
+            Symbol::intern(lifetime.text()),
+            lifetime.syntax().ctxt(),
+        ))
     }
 
     /// The loop `break` or `continue` (`keyword`) at `range` leaves: the
@@ -2521,13 +2794,8 @@ impl<'a> Ctx<'a> {
         label: Option<ast::Lifetime<'_>>,
     ) -> Option<ExprId> {
         if let Some(label) = label {
-            let name = Symbol::intern(label.text());
-            let found = self
-                .loops
-                .iter()
-                .rev()
-                .find(|(l, _)| *l == Some(name))
-                .map(|&(_, id)| id);
+            let name = Ident::new(Symbol::intern(label.text()), label.syntax().ctxt());
+            let found = self.find_label(name);
             if found.is_none() {
                 self.error(
                     label.syntax().text_range(),
@@ -2842,6 +3110,7 @@ impl<'a> Ctx<'a> {
         range: TextRange,
         call: Option<TextRange>,
     ) -> (Res, Option<PathGenerics>) {
+        self.path_ctxt = path.map_or(0, |p| p.syntax().ctxt());
         let Some(path) = path.and_then(|p| lower_generic_path(p, &mut self.diagnostics)) else {
             return (Res::Err, None);
         };
@@ -3008,7 +3277,7 @@ impl<'a> Ctx<'a> {
     /// it is called, which changes rustc's messages.
     fn resolve_value(&mut self, path: &Path, range: TextRange, call: Option<TextRange>) -> Res {
         if let Some(name) = path.as_name() {
-            if let Some(binding) = self.scopes.get(name) {
+            if let Some(binding) = self.lookup_local(name, self.path_ctxt) {
                 return Res::Local(binding);
             }
             if self.const_params.contains(&name) {
@@ -3527,6 +3796,19 @@ impl<'a> Ctx<'a> {
                 self.error(range, "`..` patterns are not allowed here");
                 Pat::Missing
             }
+            ast::Pat::MacroPat(m) => {
+                let Some(parse) = self.expand(m.syntax(), Fragment::Pat) else {
+                    return self.alloc_pat(Pat::Missing, range);
+                };
+                let root = parse.tree().root();
+                let inner = root.children().find_map(ast::Pat::cast);
+                self.expansion_depth += 1;
+                crate::item_tree::body_expansion(1);
+                let id = self.lower_pat(inner, root, site);
+                self.expansion_depth -= 1;
+                crate::item_tree::body_expansion(-1);
+                return id;
+            }
             _ => {
                 let what = match pat {
                     ast::Pat::SlicePat(_) => "slice patterns",
@@ -3696,11 +3978,12 @@ impl<'a> Ctx<'a> {
                 }
                 Some(ast::Pat::PathPat(path)) => {
                     let at = path.syntax().text_range();
+                    let ctxt = path.syntax().ctxt();
                     let local = path
                         .path()
                         .and_then(|p| lower_generic_path(p, &mut Vec::new()))
                         .and_then(|p| p.as_name())
-                        .is_some_and(|name| this.scopes.get(name).is_some());
+                        .is_some_and(|name| this.lookup_local(name, ctxt).is_some());
                     if local {
                         this.error(at, "runtime values cannot be referenced in patterns");
                         return Err(());
@@ -3743,7 +4026,7 @@ impl<'a> Ctx<'a> {
     /// bind too, and do with the same bindings.
     fn lower_or_pat(&mut self, or: ast::OrPat<'_>, site: PatSite) -> Pat {
         let base = self.pat_binds.len();
-        let mut first: Option<(Vec<(Symbol, BindingId)>, TextRange)> = None;
+        let mut first: Option<(Vec<(Ident, BindingId)>, TextRange)> = None;
         let mut alternatives = Vec::new();
         for alt in or.pats() {
             let alt_range = alt.syntax().text_range();
@@ -3792,11 +4075,12 @@ impl<'a> Ctx<'a> {
         site: PatSite,
     ) -> Pat {
         let range = name.syntax().text_range();
+        let ctxt = name.syntax().ctxt();
         let name = Symbol::intern(name.text());
         let plain = ident.mut_token().is_none() && ident.ref_token().is_none() && sub.is_none();
         // A local of the name hides the items, as rustc's ribs do: the
         // pattern binds anew.
-        let local = self.scopes.get(name).is_some();
+        let local = self.lookup_local(name, ctxt).is_some();
         if !local && self.const_params.contains(&name) {
             if plain {
                 self.error(
@@ -3864,26 +4148,27 @@ impl<'a> Ctx<'a> {
             };
             self.error(range, format!("{site} cannot shadow {what}"));
         }
+        let ident_name = Ident::new(name, ctxt);
         // A later alternative of an or-pattern binds the first's.
         let reused = self
             .or_reuse
             .iter()
             .rev()
-            .find_map(|names| names.iter().find(|&&(n, _)| n == name))
+            .find_map(|names| names.iter().find(|&&(n, _)| n == ident_name))
             .map(|&(_, b)| b);
         // `ref mut x`'s `mut` follows `ref`; one before it, `mut ref x`,
         // makes the binding mutable, which is unstable.
-        let ref_start = ident.ref_token().map(|t| t.text_range().start());
+        let ref_start = ident.ref_token().map(|t| t.raw_range().start());
         let ref_mut = ref_start.is_some_and(|start| {
             ident
                 .syntax()
                 .children_with_tokens()
-                .any(|t| t.kind() == flux_syntax::T![mut] && t.text_range().start() > start)
+                .any(|t| t.kind() == flux_syntax::T![mut] && t.raw_range().start() > start)
         });
         if ident
             .mut_token()
             .zip(ref_start)
-            .is_some_and(|(m, start)| m.text_range().start() < start)
+            .is_some_and(|(m, start)| m.raw_range().start() < start)
         {
             self.error(range, "mutable by-reference bindings are experimental");
         }
@@ -3906,7 +4191,7 @@ impl<'a> Ctx<'a> {
                 binding
             }
             None => {
-                if self.pat_binds.iter().any(|&(n, _)| n == name) {
+                if self.pat_binds.iter().any(|&(n, _)| n == ident_name) {
                     self.error(
                         range,
                         format!("identifier `{name}` is bound more than once in the same pattern"),
@@ -3917,7 +4202,7 @@ impl<'a> Ctx<'a> {
                     mutable: ident.mut_token().is_some(),
                     by_ref,
                 });
-                self.scopes.push((name, binding));
+                self.scopes.push((ident_name, binding));
                 binding
             }
         };
@@ -3925,7 +4210,7 @@ impl<'a> Ctx<'a> {
             // `ref mut x`: the binding itself is not mutable.
             self.bindings[binding].mutable = false;
         }
-        self.pat_binds.push((name, binding));
+        self.pat_binds.push((ident_name, binding));
         Pat::Bind { binding, sub }
     }
 
@@ -3969,7 +4254,7 @@ impl<'a> Ctx<'a> {
                     .syntax()
                     .tokens()
                     .filter(|t| !t.kind().is_trivia())
-                    .find(|t| t.text_range().start() >= dots.syntax().text_range().end());
+                    .find(|t| t.raw_range().start() >= dots.syntax().raw_range().end());
                 if let Some(token) = after
                     && token.kind() != flux_syntax::T!['}']
                 {

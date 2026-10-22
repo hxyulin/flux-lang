@@ -715,6 +715,26 @@
   (through the new `uninit` intrinsic) and arrays' `map`, `as_slice`,
   `as_mut_slice` and `each_ref`. Comparing arrays of different element
   types (`[1u8] == [1i32]`) is E0277, no longer E0308.
+- Expand macro calls. `macro_rules!` macros match as rustc's macro
+  parser does (every fragment specifier, nested repetitions with
+  separators, rustc's errors for no rule matching, ambiguity and
+  fragments followed by what their kind does not allow), with textual
+  scope (`#[macro_use]` modules, macros in function bodies),
+  `#[macro_export]`, `$crate`, mixed-site hygiene for locals and labels,
+  and rustc's recursion limit of 128. Calls work in item, statement,
+  expression, pattern and type position. `core` defines rustc's
+  `assert!`, `assert_eq!`, `assert_ne!`, the `debug_assert!` family
+  (on, as in rustc without `-O`), `panic!`, `unreachable!`, `todo!`,
+  `unimplemented!`, `matches!`, `format_args!`, `write!`, `concat!`,
+  `stringify!`, `line!`, `column!`, `file!`, `module_path!`, `cfg!` and
+  `compile_error!`, with `core::fmt::Display` and the other formatting
+  traits that `{}`, `{:?}`, `{:x}` and friends check their arguments
+  against, where rustc reports them; messages are not formatted (a panic
+  aborts without one) but constant evaluation reports literal ones as
+  rustc does. Each expansion is parsed into a tree of its own whose
+  ranges are where its tokens came from, so diagnostics point where
+  rustc's do: into the definition of a local macro, at the call of
+  `core`'s.
 
 ### Performance
 

@@ -9,9 +9,12 @@ use flux_intern::{Symbol, kw, sym};
 use flux_syntax::ast::{self, AstChildren, AstNode};
 use flux_syntax::{NodeId, SyntaxElement, SyntaxKind, SyntaxNode, T, TextRange};
 
+use std::sync::Arc;
+
 use crate::Diagnostic;
 use crate::def_map::DefMap;
-use crate::source::{FileId, SourceDb};
+use crate::macros::{self, MacroDef, MacroId, MacroScope, MacroScopeId, RECURSION_LIMIT};
+use crate::source::{FileId, SourceDb, SourceFile};
 
 pub type FunctionId = Idx<Function>;
 pub type StructId = Idx<Struct>;
@@ -69,6 +72,24 @@ pub struct ItemTree {
     pub lang_fns: rustc_hash::FxHashMap<Symbol, FunctionId>,
     /// The variant each enum deriving `Default` marks `#[default]`.
     pub default_variants: rustc_hash::FxHashMap<StructId, u32>,
+    /// Every crate's macros: its `macro_rules!` definitions, and those
+    /// the compiler implements, which `core` declares.
+    pub macros: LayeredArena<MacroDef>,
+    /// The textual scopes of `macro_rules!` macros that items record.
+    pub macro_scopes: LayeredArena<MacroScope>,
+    /// The textual scopes that define each name.
+    pub macro_names: rustc_hash::FxHashMap<Symbol, Vec<MacroScopeId>>,
+    /// Each crate's `#[macro_export]` macros, which paths from its root
+    /// name (`crate::m!`, `core::assert!`).
+    pub exported_macros: rustc_hash::FxHashMap<(CrateId, Symbol), MacroId>,
+    /// `core`'s exported macros, which every crate sees by name: rustc's
+    /// `macro_use` prelude.
+    pub macro_prelude: rustc_hash::FxHashMap<Symbol, MacroId>,
+    /// The files read, for `line!`, `column!` and `file!`.
+    pub files: rustc_hash::FxHashMap<FileId, Arc<SourceFile>>,
+    /// The file each expansion of a macro call in item position is part
+    /// of, by the file its items are in.
+    pub expansion_files: rustc_hash::FxHashMap<FileId, FileId>,
     /// Problems found collecting the items and resolving their names;
     /// [`lower`](crate::lower) moves them into the [`Hir`](crate::Hir)'s.
     pub diagnostics: Vec<Diagnostic>,
@@ -207,6 +228,9 @@ pub struct Const {
     /// An anonymous constant (`[u8; N + 1]`): see [`AnonConst`]. Its
     /// `node` is the expression.
     pub anon: Option<AnonConst>,
+    /// The `macro_rules!` macros in textual scope where it is defined,
+    /// which its value may call.
+    pub macro_scope: Option<MacroScopeId>,
 }
 
 /// An array length, repeat count or const generic argument written as an
@@ -607,6 +631,9 @@ pub struct Function {
     /// that copies, for a struct without parameters that derives `Copy`
     /// too, as rustc's does.
     pub derived: Option<(StructId, Derive)>,
+    /// The `macro_rules!` macros in textual scope where it is defined,
+    /// which its body may call.
+    pub macro_scope: Option<MacroScopeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -1165,6 +1192,8 @@ impl ItemTree {
         items.impls.freeze();
         items.consts.freeze();
         items.type_aliases.freeze();
+        items.macros.freeze();
+        items.macro_scopes.freeze();
         items
     }
 
@@ -1180,6 +1209,9 @@ impl ItemTree {
             block_counts: rustc_hash::FxHashMap::default(),
             fn_ids: rustc_hash::FxHashMap::default(),
             impl_ids: rustc_hash::FxHashMap::default(),
+            macro_scope: None,
+            expansion_depth: 0,
+            expanding_types: false,
         };
         collector.collect_crate(root, name, is_core);
         collector.expand_derives();
@@ -1310,6 +1342,12 @@ impl ItemTree {
         }
     }
 
+    /// The file `file` is part of: itself, or for the items of a macro
+    /// call in item position, the call's.
+    pub fn real_file(&self, file: FileId) -> FileId {
+        self.expansion_files.get(&file).copied().unwrap_or(file)
+    }
+
     /// Whether `module` is in the crate being compiled.
     pub fn in_main_crate(&self, module: ModuleId) -> bool {
         self.modules[module].krate == self.main_crate()
@@ -1358,6 +1396,13 @@ struct Collector<'a> {
     /// their anonymous constants are in.
     fn_ids: rustc_hash::FxHashMap<(FileId, NodeId), FunctionId>,
     impl_ids: rustc_hash::FxHashMap<(FileId, NodeId), ImplId>,
+    /// The `macro_rules!` macros in textual scope where collecting is.
+    macro_scope: Option<MacroScopeId>,
+    /// How many macro expansions the items being collected are in.
+    expansion_depth: u32,
+    /// The macro calls in type position of the item being collected
+    /// have been expanded.
+    expanding_types: bool,
 }
 
 /// What the anonymous constants of an item see: the module, the `impl`
@@ -1432,6 +1477,7 @@ impl Collector<'_> {
     fn collect_file(&mut self, module: ModuleId, file: FileId) {
         let start = self.items.diagnostics.len();
         let shared = self.db.shared(file);
+        self.items.files.insert(file, Arc::clone(&shared));
         let tree = shared.parse.tree();
         let source = ast::SourceFile::cast(tree.root()).expect("the root is a SOURCE_FILE");
         let is_core = self.items.is_core(module);
@@ -1445,10 +1491,70 @@ impl Collector<'_> {
     fn collect_items(&mut self, ctx: Ctx, items: &[NodeId]) {
         for &node in items {
             let start = self.items.diagnostics.len();
-            self.collect_item(ctx, node);
+            self.collect_item_expanding_types(ctx, node);
             self.collect_anon_consts(ctx, node);
             self.tag(start, ctx.file);
         }
+    }
+
+    /// [`Collector::collect_item`], with the macro calls in type position
+    /// in it expanded first, unless an item around it did that.
+    fn collect_item_expanding_types(&mut self, ctx: Ctx, node: NodeId) {
+        if self.expanding_types {
+            self.collect_item(ctx, node);
+            return;
+        }
+        let shared = self.db.shared(ctx.file);
+        let syntax = shared.parse.tree().node(node);
+        if !syntax
+            .descendants()
+            .any(|d| d.kind() == SyntaxKind::MACRO_TYPE)
+        {
+            self.collect_item(ctx, node);
+            return;
+        }
+        with_macro_types(|| {
+            let mut diagnostics = Vec::new();
+            expand_types(syntax, &mut diagnostics, &mut |call, diagnostics| {
+                self.expand_type_call(ctx, call, diagnostics)
+            });
+            self.items.diagnostics.extend(diagnostics);
+            self.expanding_types = true;
+            self.collect_item(ctx, node);
+            self.expanding_types = false;
+        });
+    }
+
+    /// Expands `call`, a macro call in type position.
+    fn expand_type_call(
+        &self,
+        ctx: Ctx,
+        call: SyntaxNode<'_>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<flux_syntax::Parse> {
+        let path = call.children().find_map(ast::Path::cast)?;
+        let def = match macros::resolve::<()>(self.items, path, &[], self.macro_scope, ctx.module) {
+            Ok(macros::Resolved::Def(id)) => &self.items.macros[id],
+            Ok(macros::Resolved::Local(_)) => unreachable!("no local macros here"),
+            Err(d) => {
+                diagnostics.push(d);
+                return None;
+            }
+        };
+        let site = macros::CallSite {
+            items: self.items,
+            krate: self.items.modules[ctx.module].krate,
+            module: ctx.module,
+            real_file: self.real_file(ctx.file),
+        };
+        let expansion = macros::expand(
+            def,
+            call,
+            &site,
+            flux_syntax::parser::Fragment::Type,
+            diagnostics,
+        )?;
+        Some(expansion.parse)
     }
 
     fn collect_item(&mut self, ctx: Ctx, node: NodeId) {
@@ -1489,7 +1595,10 @@ impl Collector<'_> {
                 return;
             }
             ast::Item::ExternCrate(_) => "`extern crate` declarations",
-            ast::Item::MacroCall(_) => "macros",
+            ast::Item::MacroCall(mc) => {
+                self.collect_macro_call(ctx, mc);
+                return;
+            }
             ast::Item::Static(st) => {
                 self.collect_static(ctx, st);
                 return;
@@ -1508,6 +1617,117 @@ impl Collector<'_> {
             item.syntax().text_range(),
             what,
         );
+    }
+
+    /// The file `file` is part of: itself, or the file of the call a
+    /// macro expansion's items are from.
+    fn real_file(&self, file: FileId) -> FileId {
+        self.items
+            .expansion_files
+            .get(&file)
+            .copied()
+            .unwrap_or(file)
+    }
+
+    /// Defines the macro `macro_rules! name { .. }` at `node`, in textual
+    /// scope from here on.
+    fn define_macro(&mut self, ctx: Ctx, node: SyntaxNode<'_>, export: bool, builtin: bool) {
+        let krate = self.items.modules[ctx.module].krate;
+        let file = self.real_file(ctx.file);
+        let Some(def) =
+            MacroDef::from_rules(node, krate, file, builtin, &mut self.items.diagnostics)
+        else {
+            return;
+        };
+        let name = def.name;
+        let id = self.items.macros.alloc(def);
+        self.macro_scope = Some(self.items.push_macro_scope(self.macro_scope, name, id));
+        if export {
+            self.items.exported_macros.insert((krate, name), id);
+            if self.items.crates[krate.0 as usize].is_core {
+                self.items.macro_prelude.insert(name, id);
+            }
+        }
+    }
+
+    /// A macro call in item position: a `macro_rules!` definition, or a
+    /// call whose expansion's items are collected as if written here.
+    fn collect_macro_call(&mut self, ctx: Ctx, mc: ast::MacroCall<'_>) {
+        let is_core = self.items.is_core(ctx.module);
+        let (mut export, mut builtin) = (false, false);
+        for attr in mc.attrs() {
+            match attr_name(attr) {
+                Some("macro_export") => export = true,
+                Some("rustc_builtin_macro") if is_core => builtin = true,
+                _ => check_attr(attr, &mut self.items.diagnostics),
+            }
+        }
+        let node = mc.syntax();
+        if macros::is_macro_rules(node) {
+            self.define_macro(ctx, node, export, builtin);
+            return;
+        }
+        let Some(path) = mc.path() else {
+            return;
+        };
+        let resolved = macros::resolve::<()>(self.items, path, &[], self.macro_scope, ctx.module);
+        let def = match resolved {
+            Ok(macros::Resolved::Def(id)) => id,
+            Ok(macros::Resolved::Local(_)) => unreachable!("no local macros here"),
+            Err(d) => {
+                self.items.diagnostics.push(d);
+                return;
+            }
+        };
+        let def = self.items.macros[def].clone();
+        if self.expansion_depth >= RECURSION_LIMIT {
+            self.items.diagnostics.push(Diagnostic::new(
+                node.text_range(),
+                format!("recursion limit reached while expanding `{}!`", def.name),
+            ));
+            return;
+        }
+        let real = self.real_file(ctx.file);
+        let site = macros::CallSite {
+            items: self.items,
+            krate: self.items.modules[ctx.module].krate,
+            module: ctx.module,
+            real_file: real,
+        };
+        let mut diagnostics = Vec::new();
+        let expansion = macros::expand(
+            &def,
+            node,
+            &site,
+            flux_syntax::parser::Fragment::Items,
+            &mut diagnostics,
+        );
+        self.items.diagnostics.extend(diagnostics);
+        let Some(expansion) = expansion else {
+            return;
+        };
+        let file = self.db.add_expansion(expansion.parse, real);
+        self.items.expansion_files.insert(file, real);
+        let shared = self.db.shared(file);
+        let items: Vec<NodeId> = shared
+            .parse
+            .tree()
+            .root()
+            .children()
+            .filter(|c| is_item_kind(c.kind()))
+            .map(|c| c.id())
+            .collect();
+        self.expansion_depth += 1;
+        let start = self.items.diagnostics.len();
+        self.collect_items(
+            Ctx {
+                module: ctx.module,
+                file,
+            },
+            &items,
+        );
+        self.tag(start, file);
+        self.expansion_depth -= 1;
     }
 
     fn visibility(&mut self, ctx: Ctx, vis: Option<ast::Visibility<'_>>) -> Visibility {
@@ -1935,7 +2155,24 @@ impl Collector<'_> {
     }
 
     fn collect_module(&mut self, ctx: Ctx, m: ast::Module<'_>) {
-        check_attrs(m.attrs(), &mut self.items.diagnostics);
+        // Macros defined in a module are in scope until its end, or
+        // after it too with `#[macro_use]`.
+        let mut macro_use = false;
+        for attr in m.attrs() {
+            if attr_name(attr) == Some("macro_use") {
+                macro_use = true;
+            } else {
+                check_attr(attr, &mut self.items.diagnostics);
+            }
+        }
+        let outer_scope = self.macro_scope;
+        self.collect_module_inner(ctx, m);
+        if !macro_use {
+            self.macro_scope = outer_scope;
+        }
+    }
+
+    fn collect_module_inner(&mut self, ctx: Ctx, m: ast::Module<'_>) {
         let vis = self.visibility(ctx, m.visibility());
         let Some(name) = m.name() else {
             return;
@@ -2555,6 +2792,7 @@ impl Collector<'_> {
             name_range: name.syntax().text_range(),
             derived: None,
             opaques: opaques.into(),
+            macro_scope: self.macro_scope,
         });
         self.fn_ids.insert((ctx.file, f.syntax().id()), id);
         if lang.is_some_and(|l| l.as_str() == "panic") {
@@ -2590,23 +2828,18 @@ impl Collector<'_> {
     }
 
     /// Block `node`'s items, in a module of their own, then those of the
-    /// blocks inside it.
+    /// blocks inside it. A `macro_rules!` statement defines a macro for
+    /// the items and blocks after it.
     fn collect_block(&mut self, ctx: Ctx, node: NodeId, function: Option<FunctionId>) {
         let shared = self.db.shared(ctx.file);
         let tree = shared.parse.tree();
         let block = tree.node(node);
-        let items: Vec<NodeId> = block
-            .children()
-            .filter(|c| is_item_kind(c.kind()))
-            .map(|c| c.id())
-            .collect();
-        let mut inner = Vec::new();
-        for child in block.children().filter(|c| !is_item_kind(c.kind())) {
-            outer_blocks(child, &mut inner);
-        }
-        let ctx = if items.is_empty() {
-            ctx
-        } else {
+        let has_items = block.children().any(|c| is_item_kind(c.kind()));
+        let has_macros = block.children().any(|c| {
+            c.first_child()
+                .is_some_and(|m| m.kind() == SyntaxKind::MACRO_EXPR && macros::is_macro_rules(m))
+        });
+        let ctx = if has_items {
             let parent = &self.items.modules[ctx.module];
             let outer = function.map_or(kw::Empty, |f| self.items.functions[f].name);
             let count = self.block_counts.entry(function).or_default();
@@ -2623,16 +2856,43 @@ impl Collector<'_> {
                 block: Some(Block { function, node }),
             });
             self.items.block_modules.insert((ctx.file, node), module);
-            let ctx = Ctx {
+            Ctx {
                 module,
                 file: ctx.file,
-            };
-            self.collect_items(ctx, &items);
+            }
+        } else {
             ctx
         };
-        for block in inner {
+        let outer_scope = self.macro_scope;
+        // The blocks inside statements, with the macros in scope there,
+        // collected after the block's items.
+        let mut inner = Vec::new();
+        for child in block.children() {
+            if is_item_kind(child.kind()) {
+                let start = self.items.diagnostics.len();
+                self.collect_item(ctx, child.id());
+                self.tag(start, ctx.file);
+                continue;
+            }
+            if has_macros
+                && let Some(mac) = child.first_child()
+                && mac.kind() == SyntaxKind::MACRO_EXPR
+                && macros::is_macro_rules(mac)
+            {
+                // Lowering the body reports its errors.
+                let start = self.items.diagnostics.len();
+                self.define_macro(ctx, mac, false, false);
+                self.items.diagnostics.truncate(start);
+            }
+            let mut blocks = Vec::new();
+            outer_blocks(child, &mut blocks);
+            inner.extend(blocks.into_iter().map(|b| (b, self.macro_scope)));
+        }
+        for (block, scope) in inner {
+            self.macro_scope = scope;
             self.collect_block(ctx, block, function);
         }
+        self.macro_scope = outer_scope;
     }
 
     /// Allocates the anonymous constants of item `node` (array lengths,
@@ -2857,6 +3117,7 @@ impl Collector<'_> {
                 index,
                 is_arg: what == AnonUse::Arg,
             }),
+            macro_scope: self.macro_scope,
         });
         self.items
             .anon_consts
@@ -2925,6 +3186,7 @@ impl Collector<'_> {
             discriminant: None,
             anon: None,
             is_static: None,
+            macro_scope: self.macro_scope,
         });
         if let Some(body) = c.body() {
             self.collect_body_items(ctx, body.syntax().id(), None);
@@ -2982,6 +3244,7 @@ impl Collector<'_> {
             discriminant: None,
             anon: None,
             is_static: Some(st.mut_token().is_some()),
+            macro_scope: self.macro_scope,
         });
         if let Some(body) = st.body() {
             self.collect_body_items(ctx, body.syntax().id(), None);
@@ -3306,6 +3569,7 @@ impl Collector<'_> {
                     discriminant: Some((strukt, variants.len() as u32)),
                     is_static: None,
                     anon: None,
+                    macro_scope: self.macro_scope,
                 });
                 discriminant = Discriminant::Const { konst, offset: 0 };
             }
@@ -3667,6 +3931,7 @@ impl Collector<'_> {
             param_list: range,
             derived: Some((strukt, if copies { Derive::Copy } else { derive })),
             opaques: Box::default(),
+            macro_scope: None,
         });
         self.items.impls[id].functions.push(function);
     }
@@ -3933,7 +4198,7 @@ fn lower_path_with(
     let leading = |segment: &ast::PathSegment<'_>| {
         let colons = segment.colon2_token()?;
         let name = segment.name_ref()?;
-        Some(colons.text_range().start() < name.syntax().text_range().start())
+        Some(colons.raw_range().start() < name.syntax().raw_range().start())
     };
     let mut anchor = if qself.is_none() && leading(&segments[0]) == Some(true) {
         PathAnchor::Global
@@ -4986,7 +5251,12 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
         ast::Type::ForType(_) => "higher-ranked types",
         ast::Type::ImplTraitType(it) => return lower_impl_trait(it, diagnostics),
         ast::Type::InferType(_) => return TypeRef::Infer,
-        ast::Type::MacroType(_) => "macros",
+        ast::Type::MacroType(m) => {
+            if let Some(ty) = expanded_type(m.syntax()) {
+                return ty;
+            }
+            "macros in this position"
+        }
         ast::Type::PtrType(ptr) => {
             let pointee = lower_type(ptr.ty(), diagnostics);
             return TypeRef::Ptr {
@@ -5333,6 +5603,86 @@ fn collect_opaques(
     });
 }
 
+thread_local! {
+    /// The types macro calls in type position expanded to, lowered, by
+    /// their tree and node: [`expand_types`] fills it before the types
+    /// around them are lowered, which [`lower_type`] does without
+    /// knowing which macros are in scope.
+    static MACRO_TYPES: std::cell::RefCell<rustc_hash::FxHashMap<(usize, NodeId), TypeRef>> =
+        std::cell::RefCell::default();
+}
+
+fn macro_type_key(node: SyntaxNode<'_>) -> (usize, NodeId) {
+    (std::ptr::from_ref(node.tree()) as usize, node.id())
+}
+
+fn expanded_type(node: SyntaxNode<'_>) -> Option<TypeRef> {
+    MACRO_TYPES.with(|m| m.borrow().get(&macro_type_key(node)).cloned())
+}
+
+/// Runs `f` with the types of macro calls expanded so far set aside, and
+/// forgets those `f` expands: their trees may not outlive it.
+pub(crate) fn with_macro_types<R>(f: impl FnOnce() -> R) -> R {
+    let saved = MACRO_TYPES.with(|m| std::mem::take(&mut *m.borrow_mut()));
+    let result = f();
+    MACRO_TYPES.with(|m| *m.borrow_mut() = saved);
+    result
+}
+
+/// Expands the macro calls in type position in `node` with `expand`,
+/// for [`lower_type`] to find.
+pub(crate) fn expand_types(
+    node: SyntaxNode<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+    expand: &mut dyn FnMut(SyntaxNode<'_>, &mut Vec<Diagnostic>) -> Option<flux_syntax::Parse>,
+) {
+    if !node
+        .descendants()
+        .any(|d| d.kind() == SyntaxKind::MACRO_TYPE)
+    {
+        return;
+    }
+    for call in node
+        .descendants()
+        .filter(|d| d.kind() == SyntaxKind::MACRO_TYPE)
+    {
+        let ty = match expand(call, diagnostics) {
+            Some(parse) => {
+                let root = parse.tree().root();
+                expand_types(root, diagnostics, expand);
+                lower_type(root.children().find_map(ast::Type::cast), diagnostics)
+            }
+            None => TypeRef::Error,
+        };
+        MACRO_TYPES.with(|m| m.borrow_mut().insert(macro_type_key(call), ty));
+    }
+}
+
+thread_local! {
+    /// How many expansions of macro calls in a function body the code
+    /// being lowered is in: their trees are not files', so the item tree
+    /// has no anonymous constants for them.
+    static BODY_EXPANSIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Notes entering (`+1`) or leaving (`-1`) an expansion in a body.
+pub(crate) fn body_expansion(delta: i32) {
+    BODY_EXPANSIONS.with(|c| c.set(c.get().wrapping_add_signed(delta)));
+}
+
+/// The anonymous constant `expr` is, if the item tree has it.
+fn anon_kind(expr: ast::Expr<'_>, diagnostics: &mut Vec<Diagnostic>) -> ArrayLenKind {
+    if BODY_EXPANSIONS.with(std::cell::Cell::get) > 0 {
+        unsupported(
+            diagnostics,
+            expr.syntax().text_range(),
+            "constant expressions in macro expansions in function bodies",
+        );
+        return ArrayLenKind::Error;
+    }
+    ArrayLenKind::Anon(expr.syntax().id())
+}
+
 /// Lowers the length of an array type or repeat expression, `expr`,
 /// missing (and reported by the parser) within `whole`.
 pub(crate) fn lower_array_len(
@@ -5349,7 +5699,7 @@ pub(crate) fn lower_array_len(
     let range = expr.syntax().text_range();
     if is_anon_const(expr) {
         return ArrayLen {
-            kind: ArrayLenKind::Anon(expr.syntax().id()),
+            kind: anon_kind(expr, diagnostics),
             range,
         };
     }
@@ -5411,7 +5761,7 @@ pub(crate) fn lower_const_arg(
     };
     let range = expr.syntax().text_range();
     let kind = match expr {
-        _ if is_anon_const(expr) => ArrayLenKind::Anon(expr.syntax().id()),
+        _ if is_anon_const(expr) => anon_kind(expr, diagnostics),
         ast::Expr::Literal(literal) => match literal.kind() {
             Some(ast::LiteralKind::Bool(b)) => ArrayLenKind::Bool(b),
             Some(ast::LiteralKind::Char) => {

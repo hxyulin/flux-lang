@@ -1,0 +1,31 @@
+struct S {}
+struct D { 0: i32 }
+fn main() -> ()
+    d@0: D
+    left_val@1: &S
+    right_val@2: &S
+    kind@3: AssertKind
+    left_val@4: &D
+    right_val@5: &D
+    kind@6: AssertKind
+    args@7: (&i32,)
+    left_val@8: &D
+    right_val@9: &D
+    kind@10: AssertKind
+    args@11: (&S,)
+    x@12: u32
+    args@13: (&u32, &D)
+    args@14: (&Arguments,)
+fn fmt(&D, &mut Formatter) -> Result<(), Error>
+    self@0: &D
+    f@1: &mut Formatter
+fn eq(&D, &D) -> bool
+    self@0: &D
+    other@1: &D
+error 272..282: mismatched types: expected `bool`, found `{integer}`
+error 288..304: binary operation `==` cannot be applied to type `S`
+error 288..304: `S` doesn't implement `Debug`
+error 374..375: `S` doesn't implement `Debug`
+error 421..424: mismatched types: expected `u32`, found `u8`
+error 450..465: `S` doesn't implement `std::fmt::Display`
+error 521..522: `D` doesn't implement `std::fmt::Display`

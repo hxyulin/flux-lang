@@ -150,6 +150,39 @@ fn long_body_naming_parameter() {
     });
 }
 
+/// Many `macro_rules!` macros, each called from items and bodies after
+/// all of them: finding one in textual scope once walked them all.
+#[test]
+fn many_macros() {
+    let make = |n| {
+        let defs = repeat(n, |i| {
+            format!("macro_rules! m{i} {{ ($e:expr) => {{ $e + {i} }}; }}")
+        });
+        let uses = repeat(n, |i| {
+            format!(
+                "macro_rules! f{i} {{ () => {{ fn f{i}(x: u32) -> u32 {{ m{i}!(x) * 2 }} }}; }}\nf{i}!();"
+            )
+        });
+        format!("{defs}{uses}fn main() {{}}\n")
+    };
+    assert_scales("macros", 300, make, |text| lower(text, false));
+}
+
+/// One call with many repetitions, and a macro that recurses on its
+/// input's tail, as `macro_rules!` counting does.
+#[test]
+fn long_macro_input() {
+    let make = |n| {
+        let args = repeat(n, |i| format!("{i},"));
+        format!(
+            "macro_rules! array {{ ($($x:expr),* $(,)?) => {{ [$($x * 2),*] }}; }}\n\
+             macro_rules! count {{ () => {{ 0u32 }}; ($x:tt $($rest:tt)*) => {{ 1u32 + count!($($rest)*) }}; }}\n\
+             fn main() {{ let _ = array!({args}); let _ = count!(a b c d e f g h); }}\n"
+        )
+    };
+    assert_scales("macro input", 2000, make, |text| lower(text, false));
+}
+
 #[test]
 fn many_errors() {
     let make = |n| {

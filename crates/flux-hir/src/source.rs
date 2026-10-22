@@ -24,6 +24,9 @@ pub struct SourceFile {
     pub path: PathBuf,
     /// The file's syntax tree, which holds its text.
     pub parse: Parse,
+    /// For the items a macro call in item position expanded to, the
+    /// file the call is in, which the tree's ranges are in.
+    pub expansion_of: Option<FileId>,
 }
 
 impl SourceFile {
@@ -49,6 +52,11 @@ pub const CORE_ROOT: &str = "<core>";
 /// `library/core/src`, relative to [`CORE_ROOT`].
 const CORE_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/core/src/lib.rs")),
+    (
+        "macros.rs",
+        include_str!("../../../library/core/src/macros.rs"),
+    ),
+    ("hint.rs", include_str!("../../../library/core/src/hint.rs")),
     (
         "ascii.rs",
         include_str!("../../../library/core/src/ascii.rs"),
@@ -137,6 +145,7 @@ pub(crate) fn core_files() -> &'static [Arc<SourceFile>] {
                     scope.spawn(move || SourceFile {
                         path: root.join(name),
                         parse: flux_syntax::parse_source_file(text),
+                        expansion_of: None,
                     })
                 })
                 .collect();
@@ -155,13 +164,47 @@ impl Default for SourceDb {
 }
 
 impl SourceDb {
-    /// A database of `core`'s files only.
+    /// A database of `core`'s files only, with the expansions of its
+    /// macro calls in item position.
     pub fn new() -> SourceDb {
-        let files = core_files().to_vec();
+        SourceDb::with_files(crate::Core::get().files.clone())
+    }
+
+    /// `core`'s files as they are read, before its item tree is built.
+    pub(crate) fn core_only() -> SourceDb {
+        SourceDb::with_files(core_files().to_vec())
+    }
+
+    fn with_files(files: Vec<Arc<SourceFile>>) -> SourceDb {
         let by_path = (files.iter().enumerate())
+            .filter(|(_, f)| f.expansion_of.is_none())
             .map(|(i, f)| (f.path.clone(), FileId(i as u32)))
             .collect();
         SourceDb { files, by_path }
+    }
+
+    /// Adds the items a macro call in item position in `file` expanded
+    /// to, as a file of their own.
+    pub(crate) fn add_expansion(&mut self, parse: flux_syntax::Parse, file: FileId) -> FileId {
+        let id = FileId(self.files.len() as u32);
+        let path = self.file(file).path.clone();
+        self.files.push(Arc::new(SourceFile {
+            path,
+            parse,
+            expansion_of: Some(file),
+        }));
+        id
+    }
+
+    /// The file `id` is part of: itself, or for a macro expansion, the
+    /// file of the call it expands.
+    pub fn real_file(&self, id: FileId) -> FileId {
+        self.file(id).expansion_of.unwrap_or(id)
+    }
+
+    /// The files read so far, shared.
+    pub(crate) fn all_files(&self) -> Vec<Arc<SourceFile>> {
+        self.files.clone()
     }
 
     /// Parses `text` as the file at `path`.
@@ -171,7 +214,11 @@ impl SourceDb {
         let id = FileId(self.files.len() as u32);
         let path = path.into();
         self.by_path.entry(path.clone()).or_insert(id);
-        self.files.push(Arc::new(SourceFile { path, parse }));
+        self.files.push(Arc::new(SourceFile {
+            path,
+            parse,
+            expansion_of: None,
+        }));
         id
     }
 

@@ -21,31 +21,36 @@ fn attr(p: &mut Parser<'_>, inner: bool) {
         p.bump(T![!]);
     }
     if p.eat(T!['[']) {
-        let meta = p.start();
-        // `#[unsafe(no_mangle)]`: the attribute asserts a safety invariant.
-        let is_unsafe = p.at(T![unsafe]) && p.nth(1) == T!['('];
-        if is_unsafe {
-            p.bump(T![unsafe]);
-            p.bump(T!['(']);
-        }
-        paths::use_path(p);
-        match p.current() {
-            T![=] => {
-                p.bump(T![=]);
-                expressions::expr(p);
-            }
-            T!['('] | T!['['] | T!['{'] => token_tree(p),
-            _ => {}
-        }
-        if is_unsafe {
-            p.expect(T![')']);
-        }
-        meta.complete(p, META);
+        meta(p);
         p.expect(T![']']);
     } else {
         p.error("expected `[`");
     }
     m.complete(p, ATTR);
+}
+
+/// An attribute's contents: `path`, `path(tokens)` or `path = expr`.
+pub(super) fn meta(p: &mut Parser<'_>) {
+    let meta = p.start();
+    // `#[unsafe(no_mangle)]`: the attribute asserts a safety invariant.
+    let is_unsafe = p.at(T![unsafe]) && p.nth(1) == T!['('];
+    if is_unsafe {
+        p.bump(T![unsafe]);
+        p.bump(T!['(']);
+    }
+    paths::use_path(p);
+    match p.current() {
+        T![=] => {
+            p.bump(T![=]);
+            expressions::expr(p);
+        }
+        T!['('] | T!['['] | T!['{'] => token_tree(p),
+        _ => {}
+    }
+    if is_unsafe {
+        p.expect(T![')']);
+    }
+    meta.complete(p, META);
 }
 
 /// A delimited group of arbitrary tokens, as in a macro call. Only the

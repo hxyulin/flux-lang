@@ -286,6 +286,14 @@ pub enum SyntaxKind {
     LET_STMT,
     LET_ELSE,
     EXPR_STMT,
+
+    // Roots of macro expansions.
+    /// Items a macro call in item position expanded to.
+    MACRO_ITEMS,
+    /// Statements a macro call in statement position expanded to.
+    MACRO_STMTS,
+    /// An expression, pattern or type a macro call expanded to.
+    MACRO_FRAGMENT,
 }
 
 use SyntaxKind::*;

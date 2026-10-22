@@ -42,7 +42,8 @@ impl Input {
         self.kinds.push(kind);
     }
 
-    fn set_last_joint(&mut self) {
+    /// Marks the last token pushed as joint with the next.
+    pub fn set_last_joint(&mut self) {
         let idx = self.kinds.len() - 1;
         self.joint[idx / 64] |= 1 << (idx % 64);
     }

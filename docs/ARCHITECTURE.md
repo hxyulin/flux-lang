@@ -125,7 +125,8 @@ every error-free file of a corpus) matches the grammar, so the AST and
 the parser cannot silently drift apart.
 
 Macro calls get a kind per position (`MACRO_CALL` for items,
-`MACRO_EXPR`, `MACRO_TYPE`, `MACRO_PAT`) so that, for example, a `let`
+`MACRO_EXPR`, `MACRO_TYPE`, `MACRO_PAT`; see [Macros](#macros) for their
+expansions) so that, for example, a `let`
 statement's pattern, type and initializer stay distinguishable.
 
 ### Where type checking happens
@@ -247,6 +248,51 @@ in parallel, later). Syntax outside the [supported subset](LANGUAGE.md)
 becomes `Expr::Missing` with a "not supported yet" error; flux never
 silently ignores code, and ignores only attributes that cannot change a
 program's meaning (`allow`, `inline`, `doc`, ...).
+
+## Macros
+
+Macro calls are expanded where HIR meets them
+([`macros`](../crates/flux-hir/src/macros/mod.rs)): the item tree
+expands calls in item position as it collects a module's items, in
+textual order, and body lowering those in statement, expression and
+pattern position; calls in type position are expanded before the types
+around them are lowered (`expand_types`). Expansion works on tokens
+([`tt`](../crates/flux-hir/src/macros/tt.rs)): raw tokens with where
+each came from, glued into Rust's (`=>`, `::`) where matching compares
+them. `macro_rules!` rules are matched as rustc's `mbe::macro_parser`
+does ([`mbe`](../crates/flux-hir/src/macros/mbe.rs)): the matcher is
+flattened into positions, every way of matching is followed a token at
+a time, and a fragment (`$e:expr`) is read by the parser
+(`parser::fragment_len`) on one `Input` of the call's tokens, so a
+call's cost is linear in its tokens. Macros the compiler implements
+(`assert!`, `format_args!`, `cfg!`, ...) are `core`'s
+`#[rustc_builtin_macro]` declarations, expanded by
+[`builtin`](../crates/flux-hir/src/macros/builtin.rs).
+
+An expansion's tokens are written out as text and parsed as what the
+call's position wants (`parser::Fragment`: items, statements, an
+expression, ...) into a tree of its own, whose ranges are not its text's
+but where its tokens came from (`SyntaxTree::set_origins`): each token
+has a range in the file and a *group*, the file's own tokens or one
+macro definition's in that file, and a node is where its tokens are if
+they are all of one group and in order, and at the call otherwise. A
+call's arguments keep their ranges, a local macro's definition is
+pointed into, and everything `core`'s macros make is at the call, as in
+rustc's diagnostics. So the HIR made from an expansion has ranges in
+the file like any other, and nothing after it knows macros exist.
+Items an expansion in item position makes are in a file of their own
+in the `SourceDb` (`SourceFile::expansion_of`), whose diagnostics are
+reported in the call's file.
+
+Hygiene is rustc's for `macro_rules!`: each expansion gives the tokens
+its definition wrote a fresh context (a number on each token of the
+tree), and locals and labels are looked up by name and context
+(`lower::scopes::Ident`); a context made by a macro defined in the body
+being lowered also sees the bindings in scope at the definition, as
+rustc's ribs do. Items are found by name alone. A macro is in textual
+scope after its definition (`MacroScope`, a persistent list with jump
+pointers, so finding a name is logarithmic); functions and constants
+record theirs for lowering their bodies.
 
 ## Types
 

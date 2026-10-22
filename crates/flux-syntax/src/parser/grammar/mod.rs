@@ -18,7 +18,7 @@ mod paths;
 mod patterns;
 mod types;
 
-use super::{CompletedMarker, Marker, Parser, TokenSet};
+use super::{CompletedMarker, Fragment, Marker, Parser, TokenSet};
 use crate::SyntaxKind::{self, *};
 use crate::T;
 
@@ -27,6 +27,101 @@ pub(super) fn source_file(p: &mut Parser<'_>) {
     attributes::inner_attrs(p);
     items::mod_contents(p, false);
     m.complete(p, SOURCE_FILE);
+}
+
+/// A macro expansion as a whole; see [`crate::parser::parse_expansion`].
+pub(super) fn expansion(p: &mut Parser<'_>, kind: Fragment) {
+    let m = p.start();
+    let root = match kind {
+        Fragment::Items => {
+            items::mod_contents(p, false);
+            MACRO_ITEMS
+        }
+        Fragment::Stmts => {
+            while !p.at_end() {
+                expressions::stmt(p);
+            }
+            MACRO_STMTS
+        }
+        _ => {
+            fragment(p, kind);
+            // rustc allows (and lints) a `;` after an expression.
+            if kind == Fragment::Expr && p.at(T![;]) {
+                p.bump(T![;]);
+            }
+            if !p.at_end() {
+                let e = p.start();
+                p.error(crate::parser::EXPANSION_IGNORES);
+                while !p.at_end() {
+                    p.bump_any();
+                }
+                e.complete(p, ERROR);
+            }
+            MACRO_FRAGMENT
+        }
+    };
+    m.complete(p, root);
+}
+
+/// One fragment of kind `kind`, as a macro's matcher reads it.
+pub(super) fn fragment(p: &mut Parser<'_>, kind: Fragment) {
+    match kind {
+        Fragment::Expr => {
+            if p.at_ts(expressions::EXPR_FIRST) {
+                expressions::expr(p);
+            } else {
+                p.error("expected an expression");
+            }
+        }
+        Fragment::Pat => patterns::pattern(p),
+        Fragment::PatParam => patterns::pattern_single(p),
+        Fragment::Type => types::type_(p),
+        Fragment::Path => {
+            if paths::is_path_start(p) {
+                paths::type_path(p);
+            } else {
+                p.error("expected a path");
+            }
+        }
+        Fragment::Block => expressions::block_expr(p),
+        Fragment::Stmt => expressions::stmt_fragment(p),
+        Fragment::Item => {
+            let m = p.start();
+            attributes::outer_attrs(p);
+            match items::opt_item(p, m) {
+                Ok(()) => {}
+                Err(m) => {
+                    p.error("expected an item");
+                    m.abandon(p);
+                }
+            }
+        }
+        Fragment::Vis => {
+            opt_visibility(p);
+        }
+        Fragment::Lifetime => {
+            if p.at(LIFETIME_IDENT) {
+                lifetime(p);
+            } else {
+                p.error("expected a lifetime");
+            }
+        }
+        Fragment::Literal => {
+            p.eat(T![-]);
+            if p.at_ts(expressions::LITERAL_FIRST) {
+                expressions::literal(p);
+            } else {
+                p.error("expected a literal");
+            }
+        }
+        Fragment::Meta => attributes::meta(p),
+        Fragment::Items => items::mod_contents(p, false),
+        Fragment::Stmts => {
+            while !p.at_end() {
+                expressions::stmt(p);
+            }
+        }
+    }
 }
 
 fn name(p: &mut Parser<'_>) {

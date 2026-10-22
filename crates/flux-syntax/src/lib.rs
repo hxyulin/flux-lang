@@ -28,7 +28,7 @@ pub use lexer::LexedStr;
 pub use syntax_kind::SyntaxKind;
 pub use tree::{
     Children, ChildrenWithTokens, NodeId, SyntaxElement, SyntaxNode, SyntaxToken, SyntaxTree,
-    TextRange,
+    TextRange, TokenOrigin,
 };
 
 /// A problem found while lexing or parsing. Parsing always produces a
@@ -90,6 +90,29 @@ pub fn parse_source_text(text: Box<str>) -> Parse {
         tree: parts.into_tree(text),
         errors,
     }
+}
+
+/// Parses the text of a macro expansion as `fragment` (see
+/// [`parser::parse_expansion`]). `origins` gives, for each of the
+/// expander's tokens, the offset in `text` it starts at and where it
+/// came from, which become the tree's ranges, as do its errors'; nodes
+/// without one place of their own are at `call_site`.
+pub fn parse_expansion(
+    text: Box<str>,
+    origins: &[(u32, TokenOrigin)],
+    call_site: TextRange,
+    fragment: parser::Fragment,
+) -> Parse {
+    let lexed = LexedStr::new(&text);
+    let input = parser::Input::from_lexed(&lexed);
+    let output = parser::parse_expansion(&input, fragment);
+    let (parts, mut errors) = build::build(lexed, output);
+    let mut tree = parts.into_tree(text);
+    tree.set_origins(origins, call_site);
+    for error in &mut errors {
+        error.range = tree.map_text_range(error.range);
+    }
+    Parse { tree, errors }
 }
 
 #[cfg(test)]

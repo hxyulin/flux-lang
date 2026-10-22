@@ -1876,6 +1876,33 @@ impl<'t> AstNode<'t> for MacroExpr<'t> {
 }
 
 /// ```text
+/// MacroItems =
+///   Item*
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MacroItems<'t> {
+    pub(crate) syntax: SyntaxNode<'t>,
+}
+
+impl<'t> MacroItems<'t> {
+    pub fn items(self) -> AstChildren<'t, Item<'t>> {
+        support::children(self.syntax)
+    }
+}
+
+impl<'t> AstNode<'t> for MacroItems<'t> {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == MACRO_ITEMS
+    }
+    fn cast(syntax: SyntaxNode<'t>) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(MacroItems { syntax })
+    }
+    fn syntax(self) -> SyntaxNode<'t> {
+        self.syntax
+    }
+}
+
+/// ```text
 /// MacroPat =
 ///   Path '!' TokenTree
 /// ```
@@ -1902,6 +1929,39 @@ impl<'t> AstNode<'t> for MacroPat<'t> {
     }
     fn cast(syntax: SyntaxNode<'t>) -> Option<Self> {
         Self::can_cast(syntax.kind()).then_some(MacroPat { syntax })
+    }
+    fn syntax(self) -> SyntaxNode<'t> {
+        self.syntax
+    }
+}
+
+/// ```text
+/// MacroStmts =
+///   (Stmt | ';')* tail_expr:Expr?
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MacroStmts<'t> {
+    pub(crate) syntax: SyntaxNode<'t>,
+}
+
+impl<'t> MacroStmts<'t> {
+    pub fn stmts(self) -> AstChildren<'t, Stmt<'t>> {
+        support::children(self.syntax)
+    }
+    pub fn semicolon_token(self) -> Option<SyntaxToken<'t>> {
+        support::token(self.syntax, SEMICOLON)
+    }
+    pub fn tail_expr(self) -> Option<Expr<'t>> {
+        support::child(self.syntax)
+    }
+}
+
+impl<'t> AstNode<'t> for MacroStmts<'t> {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == MACRO_STMTS
+    }
+    fn cast(syntax: SyntaxNode<'t>) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(MacroStmts { syntax })
     }
     fn syntax(self) -> SyntaxNode<'t> {
         self.syntax

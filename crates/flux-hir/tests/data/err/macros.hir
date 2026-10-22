@@ -1,0 +1,27 @@
+fn main() -> () {
+    <missing>;
+    <missing>;
+    <missing>;
+    <missing>;
+    <missing>;
+    <missing>;
+    <missing>;
+    let _ = <missing>;
+    <missing>;
+    <missing>;
+    let x@0 = 1;
+    let _ = (<error> + x@0);
+}
+
+error 418..430: recursion limit reached while expanding `forever!`
+error 485..486: macro expansion ignores `2` and any tokens following
+error 565..579: meta-variable `a` repeats 2 times, but `b` repeats 1 time
+error 629..630: `$a:expr` is followed by `+`, which is not allowed for `expr` fragments
+error 694..695: cannot find value `x` in this scope
+error 722..727: cannot find macro `early` in this scope
+error 736..743: cannot find macro `unknown` in this scope
+error 759..760: no rules expected `2`
+error 774..775: unexpected end of macro invocation
+error 781..787: unexpected end of macro invocation
+error 804..805: local ambiguity when calling macro `ambiguous`: multiple parsing options: built-in NTs ident ('i') or ident ('j').
+error 880..881: expected expression, found end of macro arguments
