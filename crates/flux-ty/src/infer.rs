@@ -2796,6 +2796,7 @@ impl Ctx<'_> {
             Expr::Let { pat, expr } => {
                 let ty = self.infer_expr(*expr);
                 self.check_pat(*pat, ty, false);
+                self.mutable_pattern_place(*pat, *expr);
                 Ty::BOOL
             }
             Expr::Match { scrutinee, arms } => self.infer_match(id, *scrutinee, arms),
@@ -3235,6 +3236,7 @@ impl Ctx<'_> {
         let mut failed = false;
         for arm in arms {
             self.check_pat(arm.pat, ty, false);
+            self.mutable_pattern_place(arm.pat, scrutinee);
             if let Some(guard) = arm.guard {
                 let guard_ty = self.infer_expr(guard);
                 self.coerce(guard_ty, Ty::BOOL, guard);
@@ -3334,6 +3336,9 @@ impl Ctx<'_> {
                         }
                     };
                     self.check_pat(pat, ty, init.is_none());
+                    if let Some(init) = init {
+                        self.mutable_pattern_place(pat, init);
+                    }
                     if let Some(else_branch) = else_branch {
                         let else_ty = self.infer_expr(else_branch);
                         if !matches!(self.shallow(else_ty).kind(), TyKind::Never | TyKind::Error) {
@@ -4216,6 +4221,23 @@ impl Ctx<'_> {
         }
         self.select_obligations();
         Some(self.output(trait_ref, ty, range))
+    }
+
+    /// Explicit mutable bindings require mutable overloaded dereferences
+    /// and indexing of the scrutinee, just as an explicit `&mut` does.
+    fn mutable_pattern_place(&mut self, pat: PatId, expr: ExprId) {
+        fn has_ref_mut(body: &flux_hir::Body, pat: PatId) -> bool {
+            match &body.pats[pat] {
+                Pat::Bind { binding, sub } => {
+                    body.bindings[*binding].by_ref == Some(true)
+                        || sub.is_some_and(|p| has_ref_mut(body, p))
+                }
+                other => other.children().any(|p| has_ref_mut(body, p)),
+            }
+        }
+        if has_ref_mut(self.body, pat) {
+            self.mutable_place(expr, false, self.range(expr));
+        }
     }
 
     /// `expr` is a place assigned to (`assign`) or borrowed mutably, by

@@ -1040,6 +1040,10 @@
   iterator adapters using the function's signature, including invariant
   references; function-pointer outputs conservatively keep all argument
   lifetimes equal. This fixes false borrow errors in the JSON example.
+- Preserve overloaded `Deref` borrows when analyzing indexed and copied
+  closure captures, including deref coercions. Project capture types
+  through `Box`, and select `DerefMut`/`IndexMut` for scrutinees bound by
+  explicit `ref mut` patterns in `let`, `if let` and `match`.
 
 ### Performance
 

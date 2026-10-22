@@ -906,6 +906,9 @@ impl Ctx<'_> {
         let ty = self.known(ty);
         match (proj, ty.kind()) {
             (CaptureProj::Deref, TyKind::Ref(_, t) | TyKind::RawPtr(_, t)) => self.known(t),
+            (CaptureProj::Deref, TyKind::Adt(..)) if let Some(t) = crate::box_pointee(ty) => {
+                self.known(t)
+            }
             (CaptureProj::Field(i), _) => {
                 let field = self
                     .sigs
@@ -933,21 +936,6 @@ impl Ctx<'_> {
     /// or slice, as in rustc.
     fn capture_place(&self, expr: ExprId) -> Option<Place> {
         self.capture_place_in(expr).map(|(place, _)| place)
-    }
-
-    /// Where the place of `expr` stops, if it does before `expr`: the
-    /// overloaded dereference whose base it is, which borrows that base
-    /// (`Deref::deref(&w)`) with its mutability, as rustc's
-    /// `ExprUseVisitor` sees an overloaded deref.
-    fn place_overload(&self, expr: ExprId) -> Option<Mutability> {
-        self.capture_place_stop(expr).and_then(|stop| match stop {
-            Stop::Overloaded(m) => Some(m),
-            Stop::Indexed => None,
-        })
-    }
-
-    fn capture_place_stop(&self, expr: ExprId) -> Option<Stop> {
-        self.capture_place_in(expr).and_then(|(_, stop)| stop)
     }
 
     /// [`Self::capture_place`], and whether it stops before `expr`: at an
@@ -1060,6 +1048,11 @@ impl Ctx<'_> {
     fn consume(&mut self, expr: ExprId, uses: &mut Uses<'_>) {
         if let Some(&m) = self.reborrows.get(expr) {
             let derefs = self.deref_coercions.get(expr).copied().unwrap_or(1);
+            // A coercion borrows the base of its first overloaded deref.
+            let (derefs, m) = match self.coercion_derefs.get(expr).and_then(|s| s.first()) {
+                Some(o) => (o.step, o.mutability),
+                None => (derefs, m),
+            };
             let reborrow = |_: &mut Self, _: &Place| UseKind::Borrow(m);
             if self.use_place_deref(expr, derefs, reborrow, uses) {
                 return;
@@ -1080,20 +1073,25 @@ impl Ctx<'_> {
         kind: impl FnOnce(&mut Self, &Place) -> UseKind,
         uses: &mut Uses<'_>,
     ) -> bool {
-        let Some((place, indexed)) = self.capture_place_in(expr) else {
+        let Some((place, stop)) = self.capture_place_in(expr) else {
             return false;
         };
         let (binding, mut proj) = place;
-        if !indexed {
+        if stop.is_none() {
             proj.extend((0..derefs).map(|_| CaptureProj::Deref));
         }
         let place = (binding, proj);
-        let kind = match kind(self, &place) {
-            UseKind::Borrow(Mutability::Mut) | UseKind::Assign if indexed => {
-                UseKind::Borrow(Mutability::Mut)
-            }
-            _ if indexed => UseKind::Borrow(Mutability::Not),
-            kind => kind,
+        let kind = match stop {
+            // An overloaded deref always borrows its base, even when the
+            // resulting place is copied or matched only by wildcards.
+            Some(Stop::Overloaded(m)) => UseKind::Borrow(m),
+            Some(Stop::Indexed) => match kind(self, &place) {
+                UseKind::Borrow(Mutability::Mut) | UseKind::Assign => {
+                    UseKind::Borrow(Mutability::Mut)
+                }
+                _ => UseKind::Borrow(Mutability::Not),
+            },
+            None => kind(self, &place),
         };
         uses.add(place, kind, self.range(expr));
         self.walk_indices(expr, uses);
@@ -1120,6 +1118,11 @@ impl Ctx<'_> {
         autoref: Option<Mutability>,
         uses: &mut Uses<'_>,
     ) {
+        // Method receiver adjustment stops at the first overloaded deref.
+        let (derefs, autoref) = match overloaded {
+            Some(o) => (o.step, Some(o.mutability)),
+            None => (derefs, autoref),
+        };
         let kind = |this: &mut Self, (binding, proj): &Place| match autoref {
             Some(m) => UseKind::Borrow(m),
             None => {
@@ -1373,8 +1376,8 @@ impl Ctx<'_> {
     /// change.
     fn scrutinee(&mut self, expr: ExprId, pats: &[PatId], uses: &mut Uses<'_>) -> Option<Place> {
         match self.capture_place_in(expr) {
-            Some((place, false)) if self.reborrows.get(expr).is_none() => Some(place),
-            Some((_, true)) if self.reborrows.get(expr).is_none() => {
+            Some((place, None)) if self.reborrows.get(expr).is_none() => Some(place),
+            Some((_, Some(_))) if self.reborrows.get(expr).is_none() => {
                 let body = self.body;
                 let ref_mut = pats.iter().any(|&p| has_ref_mut(body, p));
                 let m = if ref_mut {
