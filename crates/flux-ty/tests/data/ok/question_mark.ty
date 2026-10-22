@@ -1,0 +1,30 @@
+struct Small {}
+struct Big {}
+fn from(Small) -> Big
+fn option(Option<i32>, Option<u8>) -> Option<u64>
+    a@0: Option<i32>
+    b@1: Option<u8>
+    x@2: i32
+    y@3: u8
+fn same_error(Result<i32, Small>) -> Result<i64, Small>
+    r@0: Result<i32, Small>
+fn converted(Result<i32, Small>) -> Result<i32, Big>
+    r@0: Result<i32, Small>
+    v@1: i32
+fn widened(Result<bool, u8>, Result<i8, bool>) -> Result<i16, i64>
+    r@0: Result<bool, u8>
+    s@1: Result<i8, bool>
+    flag@2: bool
+    n@3: i8
+fn generic<T, E>(Result<T, E>) -> Result<T, E>
+    r@0: Result<T, E>
+    value@1: T
+fn nested(Option<Option<i32>>) -> Option<i32>
+    o@0: Option<Option<i32>>
+fn literal() -> Option<u16>
+    n@0: u16
+fn early((Option<i32>, Option<i32>)) -> Option<i32>
+    values@0: (Option<i32>, Option<i32>)
+    a@1: Option<i32>
+    b@2: Option<i32>
+fn main() -> ()

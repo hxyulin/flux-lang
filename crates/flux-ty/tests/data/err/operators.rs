@@ -216,10 +216,4 @@ fn referents(r: &C, n: &N, m: &N, s: &S, t: &S, i: &i32) {
     let _c = r == i;
 }
 
-// Unary operators on references are valid Rust, through `core`'s impls.
-fn unary_on_references(x: &i32, b: &bool) {
-    let _a: i32 = -x;
-    let _b: bool = !b;
-}
-
 fn main() {}

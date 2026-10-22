@@ -104,7 +104,7 @@ reported as "not supported yet":
   `while let`, unlabeled `break` (with a value) and `continue`,
   `return`, calls, unary and binary operators, assignments (to locals
   and their fields), `as` casts between integers and from enums without
-  fields, and one method: `CStr::as_ptr`.
+  fields, `?` on `Option` and `Result`, and one method: `CStr::as_ptr`.
 - **Statements:** `let`, with a type, a value and `else` (`let Some(x) =
   o else { return };`).
 - **Patterns:** `x`, `mut x`, `ref x`, `ref mut x`, `x @ pat`, `_`,
@@ -126,7 +126,7 @@ Type checking follows rustc for this subset: the integer types, `bool`,
 tuples, structs, enums and `!`; integer literals default to `i32`; no implicit
 conversions; operators need operands of the same type, except shifts,
 and work on integers and `bool` only (comparing tuples or pointers is not
-supported yet); `as` converts between integers and from `bool`. `isize` and `usize` are
+supported yet), and on references to them, as below; `as` converts between integers and from `bool`. `isize` and `usize` are
 64 bits. `c"..."` is a `&'static CStr`, and `.as_ptr()` gives the
 `*const c_char` (`*const i8` on both targets) that C functions take. As
 in rustc, arguments after a variadic function's `...` must be at least
@@ -206,9 +206,7 @@ Operators on other types than integers and `bool` call the methods of
 integers and `bool` too, so generic code can use them; `&a == &b`
 compares `a` and `b`. There are no trait objects (`dyn Tr`) or
 `impl Trait` types, no generic associated types, and `PartialOrd` (so
-`<` on other types) is
-not supported yet, nor are operators on
-references to integers (`&a + &b`, `-&a`). `Sized` is, as a bound:
+`<` on other types) is not supported yet. `Sized` is, as a bound:
 every type flux has is sized, but a trait's provided methods must say
 `where Self: Sized` to take or hold `Self` by value, as in rustc.
 
@@ -232,6 +230,35 @@ a use of a partially moved value, as in rustc; drops of enums with
 moved-out fields drop what the variant they hold still has.
 `#[derive(Clone, Copy, PartialEq, Eq)]` works on enums as on structs.
 
+Operators work on references to integers and `bool` as in rustc,
+which match ergonomics makes common (`match &p { (a, b) => a + b }`):
+`&a + b`, `a + &b`, `&a + &b`, `a += &b`, `-&a` and `!&a` call
+`core`'s impls of the operator traits for references, which give the
+value's type; a shift takes any integer type on its right, by value or
+by reference; `==` and `!=` compare what references point to (`&mut`
+ones too), through `core`'s `impl PartialEq<&B> for &A`, so generic code
+bounded by these traits takes references. `<`, `<=`, `>` and `>=`
+compare the values two references to integers or `bool` point to; until
+`core` has `PartialOrd`, flux does this itself. Where the operands are,
+past one reference each, integers of different types, the error is
+rustc's pair (`&i32 + u8` is E0277 and E0308), and the other unmet
+combinations are E0277, E0369, E0368 and E0600 as in rustc. In
+constants and `const fn`s, an operator that calls a trait's method is
+an error, as rustc's are not stably `const`: E0658 for `core`'s impls,
+E0015 for the program's.
+
+`x?` is the value in `Some(x)` or `Ok(x)`; on `None` or `Err(e)`, the
+function returns `None`, or `Err(From::from(e))`, dropping its locals
+as `return` does. As in rustc, the function must return an `Option` for
+an `Option` and a `Result` for a `Result`, whose error type converts
+from `e`'s with `core::convert::From` (each type from itself, the
+program's impls, and the integer conversions that lose nothing), and
+the errors are rustc's E0277 messages for the `Try` and `FromResidual`
+bounds its desugaring has, E0308 where the value has another type than
+wanted, and E0572 and E0658 in constants and `const fn`s. `?` moves its
+operand, as rustc's `Try::branch(x)` does. rustc implements `Try` for
+`ControlFlow` and `Poll` too, which flux does not have.
+
 Constants are evaluated at compile time, calls to `const fn`s included,
 and overflow, division by zero or a panic (`None.unwrap()`) there is
 an error, as in rustc. So is
@@ -243,12 +270,14 @@ Every program can use flux's own `core` library, which has the parts of
 Rust's that flux supports so far: the integer types' constants (`MIN`,
 `MAX`, `BITS`) and methods such as `abs`, `pow`, `wrapping_add`,
 `count_ones`, `rotate_left`, `min` and `max`, `core::mem::drop` (also in
-the prelude, as `drop`), `core::convert::identity`,
+the prelude, as `drop`), `core::convert::{identity, From}`,
 `core::marker::{Sized, Copy}`, `core::clone::Clone`, the operator
 traits of `core::ops` with `Drop`, `core::cmp::{PartialEq, Eq}`,
 `core::option::Option` and `core::result::Result` (`Sized`, `Copy`,
-`Clone`, `Drop`, `PartialEq`, `Eq`, `Option`, `Some`, `None`,
-`Result`, `Ok` and `Err` in the prelude). `Option` has `is_some`,
+`Clone`, `Drop`, `PartialEq`, `Eq`, `From`, `Option`, `Some`, `None`,
+`Result`, `Ok` and `Err` in the prelude). `From` converts each type
+from itself, `bool` to the integers, and integers to the wider ones
+that hold all their values, as in rustc; `Into` comes later. `Option` has `is_some`,
 `is_none`, `unwrap`, `unwrap_or`, `ok_or`, `and`, `or` and `xor`;
 `Result` has `is_ok`, `is_err`, `ok`, `err`, `unwrap_or`, `and` and
 `or`; both implement `Clone`, `Copy`, `PartialEq` and `Eq` as rustc's
@@ -263,9 +292,8 @@ borrow-check them without lifetimes, with rustc's rules and messages
 (non-lexical lifetimes, two-phase borrows for method receivers, borrows
 of distinct fields). Anywhere else (in tuples, structs or other
 references, as return values, including a generic function's
-(`id(&x)`), in `mut` bindings) they are reported as not supported yet,
-and so are operators on references (`r + 1`; write `*r + 1`). A
-reference may be passed to a generic function that returns none.
+(`id(&x)`), in `mut` bindings) they are reported as not supported yet.
+A reference may be passed to a generic function that returns none.
 
 At run time flux matches rustc with `-C overflow-checks=off -C
 panic=abort`: arithmetic wraps, shift amounts are masked to the type's

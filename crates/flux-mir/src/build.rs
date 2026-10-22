@@ -1283,8 +1283,18 @@ impl Builder<'_> {
                     self.assign(dest, rvalue, range);
                 }
                 BinaryOp::Cmp(cmp) => {
-                    let l = self.lower_operand(*lhs);
-                    let r = self.lower_operand(*rhs);
+                    // `&a < &b` compares `a` and `b`.
+                    let layers = self.types.ordered_refs.get(expr).copied().unwrap_or(0);
+                    let (l, r) = if layers > 0
+                        && matches!(self.expr_ty(*lhs).kind(), TyKind::Ref(Mutability::Mut, _))
+                    {
+                        self.lower_mut_ordered(*lhs, *rhs, layers)
+                    } else {
+                        (
+                            self.lower_deref(*lhs, layers),
+                            self.lower_deref(*rhs, layers),
+                        )
+                    };
                     let op = match cmp {
                         CmpOp::Eq => BinOp::Eq,
                         CmpOp::Ne => BinOp::Ne,
@@ -1300,6 +1310,7 @@ impl Builder<'_> {
                     self.assign_unit(dest, range);
                 }
             },
+            Expr::Try { expr: operand } => self.lower_try(expr, *operand, dest, range),
             Expr::Cast { expr: inner, .. } => {
                 let ty = self.expr_ty(expr);
                 // A cast to the operand's own type is the operand.
@@ -1346,7 +1357,7 @@ impl Builder<'_> {
                 lhs,
                 rhs,
             } if self.types.compared_refs.get(expr).is_some() => {
-                vec![self.lower_operand(lhs), self.lower_operand(rhs)]
+                vec![self.shared_operand(lhs), self.shared_operand(rhs)]
             }
             Expr::Binary {
                 op: BinaryOp::Cmp(_),
@@ -1370,6 +1381,130 @@ impl Builder<'_> {
             _ => unreachable!("only operators are overloaded"),
         };
         self.call(instance.function, instance.args, args, dest, range);
+    }
+
+    /// `expr`, a reference, as a shared one: a `&mut` is reborrowed
+    /// (`&*r`), as rustc's `impl PartialEq<&mut B> for &A` takes it by
+    /// reference rather than moving it.
+    fn shared_operand(&mut self, expr: ExprId) -> Operand {
+        let TyKind::Ref(Mutability::Mut, pointee) = self.expr_ty(expr).kind() else {
+            return self.lower_operand(expr);
+        };
+        let range = self.range(expr);
+        let place = self.lower_place(expr).deref();
+        let temp = self.temp(Ty::new(TyKind::Ref(Mutability::Not, pointee)));
+        let rvalue = Rvalue::Ref {
+            mutability: Mutability::Not,
+            place,
+            two_phase: false,
+        };
+        self.assign(&temp.into(), rvalue, range);
+        Operand::Copy(temp.into())
+    }
+
+    /// The value `expr` points to through `layers` references, or
+    /// `expr`'s own value.
+    fn lower_deref(&mut self, expr: ExprId, layers: u32) -> Operand {
+        if layers == 0 {
+            return self.lower_operand(expr);
+        }
+        let mut place = self.lower_place(expr);
+        for _ in 0..layers {
+            place = place.deref();
+        }
+        self.read(place)
+    }
+
+    /// The operands of `a < b` where `a` and `b` are `&mut` references:
+    /// as rustc's `PartialOrd::lt(&a, &mut *b)`, which borrows `a` and
+    /// reborrows `b` mutably, so `m < m` is E0502.
+    fn lower_mut_ordered(&mut self, lhs: ExprId, rhs: ExprId, layers: u32) -> (Operand, Operand) {
+        let place = self.lower_place(lhs);
+        let ty = Ty::new(TyKind::Ref(Mutability::Not, self.place_ty(&place)));
+        let l = self.temp(ty);
+        let rvalue = Rvalue::Ref {
+            mutability: Mutability::Not,
+            place,
+            two_phase: false,
+        };
+        self.assign(&l.into(), rvalue, self.range(lhs));
+        let place = self.lower_place(rhs).deref();
+        let ty = Ty::new(TyKind::Ref(Mutability::Mut, self.place_ty(&place)));
+        let r = self.temp(ty);
+        let rvalue = Rvalue::Ref {
+            mutability: Mutability::Mut,
+            place,
+            two_phase: false,
+        };
+        self.assign(&r.into(), rvalue, self.range(rhs));
+        let mut l = Place::from(l).deref();
+        let mut r = Place::from(r);
+        for _ in 0..layers {
+            (l, r) = (l.deref(), r.deref());
+        }
+        (self.read(l), self.read(r))
+    }
+
+    /// `operand?`: moves the `Option` or `Result` into a temporary, as
+    /// rustc's `Try::branch(operand)` takes it, and tests its variant.
+    /// The `Some` or `Ok` value goes to `dest`; otherwise the function
+    /// returns `None`, or `Err` with the error, converted by `From::from`
+    /// if type checking said so, dropping what is in scope as `return`
+    /// does. Either way the temporary is moved out of, so it needs no
+    /// drop.
+    fn lower_try(&mut self, expr: ExprId, operand: ExprId, dest: &Place, range: TextRange) {
+        let ty = self.expr_ty(operand);
+        let TyKind::Adt(adt, _) = ty.kind() else {
+            self.terminate(TerminatorKind::Unreachable, range);
+            return;
+        };
+        let strukt = adt.strukt;
+        let option = self.items.lang_enums.get(&Symbol::intern("Option")) == Some(&strukt);
+        let (value, residual) = if option {
+            ("Some", "None")
+        } else {
+            ("Ok", "Err")
+        };
+        let data = &self.items.structs[strukt];
+        let (Some(value), Some(residual)) = (
+            data.variant_named(Symbol::intern(value)),
+            data.variant_named(Symbol::intern(residual)),
+        ) else {
+            self.terminate(TerminatorKind::Unreachable, range);
+            return;
+        };
+        let temp = self.temp(ty);
+        self.lower_into(operand, &temp.into());
+        let fail = self.new_block();
+        let place = self.test_variant(strukt, value, temp.into(), fail, range);
+        let output = self.read(place.field(0));
+        self.assign(dest, Rvalue::Use(output), range);
+        let next = self.current;
+        self.current = Some(fail);
+        let fields = if option {
+            Vec::new()
+        } else {
+            let error = self.read(Place::from(temp).downcast(residual).field(0));
+            match self.types.try_conversions.get(expr) {
+                Some(&instance) => {
+                    let converted = self.temp(instance.args[0]);
+                    self.call(
+                        instance.function,
+                        instance.args,
+                        vec![error],
+                        &converted.into(),
+                        range,
+                    );
+                    vec![self.read(converted.into())]
+                }
+                None => vec![error],
+            }
+        };
+        let rvalue = Rvalue::Aggregate(AggregateKind::Variant(strukt, residual), fields);
+        self.assign(&Body::RETURN.into(), rvalue, range);
+        self.leave_scopes(0, false, range);
+        self.terminate(TerminatorKind::Return, range);
+        self.current = next;
     }
 
     /// A reference to what `expr` denotes, in a temporary.

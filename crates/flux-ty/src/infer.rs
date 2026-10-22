@@ -58,6 +58,15 @@ pub struct InferenceResult {
     /// as they are: `PartialEq::eq::<A, B>(a, b)`, as `core`'s impl for
     /// references would.
     pub compared_refs: ArenaMap<Expr, ()>,
+    /// Comparisons with `<`, `<=`, `>` or `>=` of references, `&a < &b`,
+    /// with the number of references both operands are dereferenced
+    /// through first: built in for the integers and `bool`, which `core`'s
+    /// `PartialOrd` impls for references would forward to.
+    pub ordered_refs: ArenaMap<Expr, u32>,
+    /// The conversion of the error each `?` on a `Result` returns,
+    /// `From::from::<F, E>`, where the function's error type `F` is not
+    /// `E` itself.
+    pub try_conversions: ArenaMap<Expr, Instance>,
     /// The type of the value each pattern matches, after the references
     /// it sees through.
     pub pat_types: ArenaMap<Pat, Ty>,
@@ -219,6 +228,8 @@ impl<'a> Ctx<'a> {
             overloads: ArenaMap::new(),
             consts: ArenaMap::new(),
             compared_refs: ArenaMap::new(),
+            ordered_refs: ArenaMap::new(),
+            try_conversions: ArenaMap::new(),
             pat_types: ArenaMap::new(),
             pat_derefs: ArenaMap::new(),
             binding_refs: ArenaMap::new(),
@@ -361,6 +372,8 @@ struct Ctx<'a> {
     overloads: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     consts: ArenaMap<Expr, (ConstId, Vec<Ty>)>,
     compared_refs: ArenaMap<Expr, ()>,
+    ordered_refs: ArenaMap<Expr, u32>,
+    try_conversions: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     pat_types: ArenaMap<Pat, Ty>,
     pat_derefs: ArenaMap<Pat, u32>,
     binding_refs: ArenaMap<Binding, Mutability>,
@@ -607,6 +620,16 @@ impl Ctx<'_> {
         }
         if !self.unify(actual, expected) {
             let range = self.range(blamed);
+            if let Expr::Try { .. } = self.body.exprs[blamed] {
+                let (expected, actual) = (self.describe(expected), self.describe(actual));
+                self.error(
+                    range,
+                    format!(
+                        "`?` operator has incompatible types: expected `{expected}`, found `{actual}`"
+                    ),
+                );
+                return;
+            }
             self.mismatch(expected, actual, range);
         }
     }
@@ -1735,25 +1758,6 @@ impl Ctx<'_> {
                 if let Some(ty) = self.overload_unary(id, *op, ty) {
                     return ty;
                 }
-                // `-&1` and `!&true` are valid, through `core`'s impls for
-                // references.
-                if let TyKind::Ref(_, pointee) = self.shallow(ty).kind() {
-                    let pointee = self.shallow(pointee);
-                    let valid = match (op, pointee.kind()) {
-                        (UnaryOp::Neg, TyKind::Int(int)) => int.is_signed(),
-                        (UnaryOp::Neg, TyKind::Infer(var)) => self.unknown(var).0,
-                        (UnaryOp::Not, TyKind::Int(_) | TyKind::Bool) => true,
-                        (UnaryOp::Not, TyKind::Infer(var)) => self.unknown(var).0,
-                        _ => false,
-                    };
-                    if valid {
-                        self.error(
-                            self.range(id),
-                            "operators on references are not supported yet",
-                        );
-                        return Ty::ERROR;
-                    }
-                }
                 self.deferred.push(Deferred::Unary {
                     expr: id,
                     op: *op,
@@ -1762,6 +1766,7 @@ impl Ctx<'_> {
                 ty
             }
             Expr::Binary { op, lhs, rhs } => self.infer_binary(id, *op, *lhs, *rhs),
+            Expr::Try { expr } => self.infer_try(id, *expr),
             Expr::Cast { expr, ty } => {
                 let to = self.resolve_type_ref(*ty);
                 let from = self.infer_expr(*expr);
@@ -1785,6 +1790,98 @@ impl Ctx<'_> {
                 to
             }
         }
+    }
+
+    /// `expr?`: the `Some` or `Ok` value of `expr`, an `Option` or a
+    /// `Result`, whose `None` or `Err` the function returns, and so must
+    /// return an `Option` or a `Result` too. The error of a `Result` is
+    /// converted to the function's with `From::from`, as rustc's
+    /// `FromResidual` impl for `Result` does. rustc's errors are those
+    /// of the `Try` and `FromResidual` bounds its desugaring has.
+    fn infer_try(&mut self, id: ExprId, operand: ExprId) -> Ty {
+        let ty = self.infer_expr(operand);
+        let ty = self.shallow(ty);
+        let whole = self.range(id);
+        let question = self.source_map.ops.get(id).copied().unwrap_or(whole);
+        let lang = |name: &str| self.items.lang_enums.get(&Symbol::intern(name)).copied();
+        let (option, result) = (lang("Option"), lang("Result"));
+        let arg = |args: &[Ty], i: usize| args.get(i).copied().unwrap_or(Ty::ERROR);
+        let (output, error) = match ty.kind() {
+            TyKind::Adt(adt, args) if Some(adt.strukt) == option => (arg(args, 0), None),
+            TyKind::Adt(adt, args) if Some(adt.strukt) == result => {
+                (arg(args, 0), Some(arg(args, 1)))
+            }
+            TyKind::Error => return Ty::ERROR,
+            TyKind::Infer(var) if !self.unknown(var).0 => {
+                self.annotations_needed(operand, var, self.range(operand));
+                return Ty::ERROR;
+            }
+            _ => {
+                self.error(
+                    whole,
+                    "the `?` operator can only be applied to values that implement `Try`",
+                );
+                return Ty::ERROR;
+            }
+        };
+        match self.const_context {
+            // Its `return` is not allowed where there is no function.
+            Some("constants") => {
+                self.error(question, "return statement outside of function body");
+                return output;
+            }
+            Some(context) => {
+                let ty = self.describe(ty);
+                self.error(whole, format!("`?` is not allowed on `{ty}` in {context}"));
+                self.error(whole, "`Try` is not yet stable as a const trait");
+                self.error(whole, "`FromResidual` is not yet stable as a const trait");
+            }
+            None => {}
+        }
+        let ret = self.shallow(self.ret);
+        let ret_adt = match ret.kind() {
+            TyKind::Error => return output,
+            TyKind::Adt(adt, args) => Some((adt.strukt, args)),
+            _ => None,
+        };
+        match (error, ret_adt) {
+            (None, Some((s, _))) if Some(s) == option => {}
+            (Some(error), Some((s, args))) if Some(s) == result => {
+                let target = arg(args, 1);
+                let from = self.items.lang_traits.get(&Symbol::intern("From")).copied();
+                let function = from.and_then(|t| {
+                    let f = self.items.traits[t].function(self.items, Symbol::intern("from"))?;
+                    Some((t, f))
+                });
+                if let Some((t, function)) = function {
+                    let trait_ref = crate::TraitRef {
+                        trait_: t,
+                        name: self.items.traits[t].name,
+                        args: Ty::list(&[error]),
+                    };
+                    self.register(
+                        trait_ref.with_self(target),
+                        question,
+                        solve::ObligationKind::QuestionMark { target },
+                    );
+                    self.try_conversions.insert(id, (function, vec![target, error]));
+                    self.select_obligations();
+                }
+            }
+            (None, Some((s, _))) if Some(s) == result => self.error(
+                question,
+                "the `?` operator can only be used on `Result`s, not `Option`s, in a function that returns `Result`",
+            ),
+            (Some(_), Some((s, _))) if Some(s) == option => self.error(
+                question,
+                "the `?` operator can only be used on `Option`s, not `Result`s, in a function that returns `Option`",
+            ),
+            _ => self.error(
+                question,
+                "the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)",
+            ),
+        }
+        output
     }
 
     /// `match scrutinee { arms }`: the arms' common type, where `!` arms
@@ -2765,9 +2862,14 @@ impl Ctx<'_> {
                 }
                 Ty::BOOL
             }
-            BinaryOp::Cmp(_) => {
+            BinaryOp::Cmp(cmp) => {
                 let ty = self.infer_expr(lhs);
                 let rhs_ty = self.infer_expr(rhs);
+                if !matches!(cmp, CmpOp::Eq | CmpOp::Ne)
+                    && let TyKind::Ref(..) = self.shallow(ty).kind()
+                {
+                    return self.compare_refs(id, op, ty, (rhs, rhs_ty));
+                }
                 if let Some(ty) = self.overload(id, op, ty, (rhs, rhs_ty)) {
                     return ty;
                 }
@@ -2808,9 +2910,10 @@ impl Ctx<'_> {
         }
     }
 
-    /// `lhs op rhs` where `lhs` is a struct, a generic parameter or an
-    /// associated type: a call of the method of the operator's trait
-    /// (`Add::add`, `PartialEq::eq`, `AddAssign::add_assign`), whose
+    /// `lhs op rhs` where `lhs` is a struct, a generic parameter, an
+    /// associated type or a reference, or an integer or `bool` with a
+    /// reference on the right: a call of the method of the operator's
+    /// trait (`Add::add`, `PartialEq::eq`, `AddAssign::add_assign`), whose
     /// bound `L: Add<R>` is an obligation, with the type of the result;
     /// `None` for the built-in operators. As in rustc, the right operand
     /// is checked against what the `impl` block selected says it is.
@@ -2822,15 +2925,10 @@ impl Ctx<'_> {
         (rhs, rhs_ty): (ExprId, Ty),
     ) -> Option<Ty> {
         let operand = self.shallow(lhs);
-        let overloadable = match operand.kind() {
-            TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) => true,
-            // `&a + &b` on integers needs `core`'s impls for references.
-            TyKind::Ref(_, pointee) => matches!(
-                self.shallow(pointee).kind(),
-                TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_)
-            ),
-            _ => false,
-        };
+        let overloadable = matches!(
+            operand.kind(),
+            TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) | TyKind::Ref(..)
+        );
         let op_range = self.source_map.ops.get(id).copied().unwrap_or_default();
         if let BinaryOp::Cmp(_) = op
             && let Some(message) = self.cmp_ref_error(op, operand, rhs_ty)
@@ -2838,7 +2936,14 @@ impl Ctx<'_> {
             self.error(op_range, message);
             return Some(Ty::BOOL);
         }
-        if !overloadable {
+        // `1 + &2` and `x += &1`, through `core`'s `impl Add<&i32> for
+        // i32`. A comparison wants the same type on both sides.
+        let primitive = matches!(operand.kind(), TyKind::Int(_) | TyKind::Bool)
+            || matches!(operand.kind(), TyKind::Infer(var) if self.unknown(var).0);
+        let reference_rhs = primitive
+            && !matches!(op, BinaryOp::Cmp(_))
+            && matches!(self.shallow(rhs_ty).kind(), TyKind::Ref(..));
+        if !overloadable && !reference_rhs {
             // An integer or `bool` on the left and another type on the
             // right: no `impl` block of `core`'s takes it.
             let other = matches!(
@@ -2897,10 +3002,6 @@ impl Ctx<'_> {
             }
             return None;
         }
-        let range = match op {
-            BinaryOp::Assign(_) => self.range(id),
-            _ => self.source_map.ops.get(id).copied().unwrap_or_default(),
-        };
         let result = match op {
             BinaryOp::Cmp(_) => Ty::BOOL,
             BinaryOp::Assign(_) => Ty::UNIT,
@@ -2916,11 +3017,18 @@ impl Ctx<'_> {
         }
         let Some((t, function)) = self.lang_fn(op) else {
             let (lhs, rhs) = (self.describe(lhs), self.describe(rhs_ty));
-            self.error(range, binary_error(op, &lhs, &rhs));
+            self.error(op_range, binary_error(op, &lhs, &rhs));
             return Some(result);
         };
         // Reported if not: its result is then an error.
         let holds = self.may_implement(lhs_cmp, t);
+        // rustc reports a compound assignment whose trait the left side
+        // does not implement at all (E0368) at the whole expression, and
+        // other unmet operators (E0369, E0277) at the operator.
+        let range = match op {
+            BinaryOp::Assign(_) if !holds => self.range(id),
+            _ => op_range,
+        };
         // `&a == &b` where `a` has some `PartialEq`: through `core`'s
         // `impl PartialEq<&B> for &A where A: PartialEq<B>`, whose bound
         // is what fails.
@@ -2938,6 +3046,7 @@ impl Ctx<'_> {
             self.overloads
                 .insert(id, (function, vec![lhs_cmp, rhs_cmp]));
             self.select_obligations();
+            self.builtin_operands(op, lhs, (rhs, rhs_ty));
             return Some(result);
         }
         let r = self.new_var(false, self.range(rhs));
@@ -2946,15 +3055,19 @@ impl Ctx<'_> {
             name: self.items.traits[t].name,
             args: Ty::list(&[r]),
         };
-        self.register(
-            trait_ref.with_self(lhs_cmp),
-            range,
+        // With no `impl` block for the left operand at all, rustc reports
+        // the operator (E0369, E0368); with some, the unmet bound (E0277),
+        // in the words of its trait's `on_unimplemented`.
+        let kind = if holds {
+            solve::ObligationKind::Bound
+        } else {
             solve::ObligationKind::Operator {
                 op: solve::Op::Binary(op),
                 lhs,
                 rhs: rhs_ty,
-            },
-        );
+            }
+        };
+        self.register(trait_ref.with_self(lhs_cmp), range, kind);
         self.select_obligations();
         if matches!(self.shallow(r).kind(), TyKind::Infer(_)) {
             self.unify(r, rhs_cmp);
@@ -2966,10 +3079,114 @@ impl Ctx<'_> {
         }
         self.overloads.insert(id, (function, vec![lhs_cmp, r]));
         self.select_obligations();
-        Some(match op {
-            BinaryOp::Arith(_) if holds => self.output(trait_ref, lhs, range),
+        let builtin = self.builtin_operands(op, lhs, (rhs, rhs_ty));
+        // An unmet bound (reported) has no `Output`.
+        let met = holds && {
+            let (lhs_cmp, r) = (self.known(lhs_cmp), self.known(r));
+            self.probe(|cx| cx.may_hold(lhs_cmp, t, Some(&[r]), 0))
+        };
+        Some(match (op, builtin) {
+            (BinaryOp::Arith(_), Some(ty)) => ty,
+            (BinaryOp::Arith(_), None) if met => self.output(trait_ref, lhs, range),
             _ => result,
         })
+    }
+
+    /// rustc's `enforce_builtin_binop_types`: where the operands of an
+    /// operator are, past one shared reference each, both integers (or
+    /// both `bool`s for `&`, `|` and `^`, or scalars for `==` and `!=`),
+    /// they must have the same type, except for shifts, as the built-in
+    /// operator's do, and the result has the left one's type. A mismatch
+    /// is E0308 at the right operand, besides the unmet trait bound
+    /// (`&i32 + u8` is both). That type, for arithmetic.
+    fn builtin_operands(
+        &mut self,
+        op: BinaryOp,
+        lhs: Ty,
+        (rhs, rhs_ty): (ExprId, Ty),
+    ) -> Option<Ty> {
+        let peel = |cx: &mut Self, ty: Ty| match cx.shallow(ty).kind() {
+            TyKind::Ref(Mutability::Not, pointee) => cx.shallow(pointee),
+            _ => cx.shallow(ty),
+        };
+        let (l, r) = (peel(self, lhs), peel(self, rhs_ty));
+        let integral = |cx: &mut Self, ty: Ty| match ty.kind() {
+            TyKind::Int(_) => true,
+            TyKind::Infer(var) => cx.unknown(var).0,
+            _ => false,
+        };
+        let both_integral = integral(self, l) && integral(self, r);
+        let same = match op {
+            BinaryOp::Arith(ArithOp::Shl | ArithOp::Shr)
+            | BinaryOp::Assign(Some(ArithOp::Shl | ArithOp::Shr)) => {
+                return both_integral.then_some(l);
+            }
+            BinaryOp::Arith(arith) | BinaryOp::Assign(Some(arith)) => {
+                let bitwise = matches!(arith, ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor);
+                both_integral || (bitwise && l == Ty::BOOL && r == Ty::BOOL)
+            }
+            BinaryOp::Cmp(_) => {
+                let scalar = |cx: &mut Self, ty: Ty| {
+                    integral(cx, ty) || matches!(ty.kind(), TyKind::Bool | TyKind::RawPtr(..))
+                };
+                scalar(self, l) && scalar(self, r)
+            }
+            _ => false,
+        };
+        if !same {
+            return None;
+        }
+        if !self.unify(l, r) {
+            let range = self.range(rhs);
+            self.mismatch(l, r, range);
+        }
+        Some(l)
+    }
+
+    /// `a < b` (or `<=`, `>`, `>=`) where `a` is a reference: rustc's
+    /// `impl PartialOrd<&B> for &A` (and the one for `&mut`) compare what
+    /// they point to, so `b` must be a reference of the same kind, to
+    /// what `a`'s referent compares with, which for the integers and
+    /// `bool` is their own type. Built in until `core` has `PartialOrd`.
+    fn compare_refs(
+        &mut self,
+        id: ExprId,
+        op: BinaryOp,
+        lhs: Ty,
+        (rhs, rhs_ty): (ExprId, Ty),
+    ) -> Ty {
+        let mut layers = Vec::new();
+        let mut leaf = self.shallow(lhs);
+        while let TyKind::Ref(m, pointee) = leaf.kind() {
+            layers.push(m);
+            leaf = self.shallow(pointee);
+        }
+        let op_range = self.source_map.ops.get(id).copied().unwrap_or_default();
+        match leaf.kind() {
+            TyKind::Int(_) | TyKind::Bool | TyKind::Tuple([]) => {}
+            TyKind::Infer(var) if self.unknown(var).0 => {}
+            TyKind::Error => return Ty::BOOL,
+            TyKind::Tuple(_) => {
+                self.error(self.range(id), "comparing tuples is not supported yet");
+                return Ty::BOOL;
+            }
+            TyKind::RawPtr(..) => {
+                self.error(self.range(id), "comparing pointers is not supported yet");
+                return Ty::BOOL;
+            }
+            _ => {
+                let lhs = self.describe(lhs);
+                self.error(op_range, binary_error(op, &lhs, &""));
+                return Ty::BOOL;
+            }
+        }
+        let expected = layers
+            .iter()
+            .rev()
+            .fold(leaf, |ty, &m| Ty::new(TyKind::Ref(m, ty)));
+        self.coerce(rhs_ty, expected, rhs);
+        self.ordered_refs.insert(id, layers.len() as u32);
+        Ty::BOOL
     }
 
     /// The trait of operator `op` and its method: `Add` and `Add::add`.
@@ -3012,12 +3229,12 @@ impl Ctx<'_> {
         }
     }
 
-    /// `-a` or `!a` where `a` is a struct, a generic parameter or an
-    /// associated type: `Neg::neg(a)` or `Not::not(a)`.
+    /// `-a` or `!a` where `a` is a struct, a generic parameter, an
+    /// associated type or a reference: `Neg::neg(a)` or `Not::not(a)`.
     fn overload_unary(&mut self, id: ExprId, op: UnaryOp, ty: Ty) -> Option<Ty> {
         if !matches!(
             self.shallow(ty).kind(),
-            TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_)
+            TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) | TyKind::Ref(..)
         ) {
             return None;
         }
@@ -3237,6 +3454,23 @@ impl Ctx<'_> {
             let args = Ty::list(&args);
             overloads.insert(expr, Instance { function, args });
         }
+        self.check_const_operators(&overloads);
+        let converted: Vec<(ExprId, (FunctionId, Vec<Ty>))> = self
+            .try_conversions
+            .iter()
+            .map(|(e, call)| (e, call.clone()))
+            .collect();
+        let mut try_conversions = ArenaMap::new();
+        for (expr, (function, args)) in converted {
+            let args: Vec<Ty> = args
+                .iter()
+                .map(|&a| self.resolve(a, &mut reported))
+                .collect();
+            if args[0] != args[1] {
+                let args = Ty::list(&args);
+                try_conversions.insert(expr, Instance { function, args });
+            }
+        }
         let used: Vec<(ExprId, (ConstId, Vec<Ty>))> =
             self.consts.iter().map(|(e, c)| (e, c.clone())).collect();
         let mut consts = ArenaMap::new();
@@ -3295,11 +3529,71 @@ impl Ctx<'_> {
             overloads,
             consts,
             compared_refs: self.compared_refs,
+            ordered_refs: self.ordered_refs,
+            try_conversions,
             pat_types,
             pat_derefs: self.pat_derefs,
             binding_refs: self.binding_refs,
             deferred_pats,
             diagnostics: self.diagnostics,
+        }
+    }
+
+    /// In a constant or `const fn`, operators that call trait methods:
+    /// rustc's `core` implements the operator traits for the integers,
+    /// `bool`, references to them, `Option` and `Result` as `const`, but
+    /// unstably (E0658, and that the trait is not stable as a const
+    /// trait); other types' `impl` blocks are not `const` (E0015).
+    fn check_const_operators(&mut self, overloads: &ArenaMap<Expr, Instance>) {
+        let Some(context) = self.const_context else {
+            return;
+        };
+        let mut found: Vec<(ExprId, Option<Symbol>)> = overloads
+            .iter()
+            .map(|(expr, instance)| {
+                let function = &self.items.functions[instance.function];
+                let trait_name = match function.owner {
+                    Some(flux_hir::Owner::Trait(t)) => self.items.traits[t].name,
+                    _ => function.name,
+                };
+                let core = instance.args.iter().all(|&ty| self.const_operand(ty));
+                (expr, core.then_some(trait_name))
+            })
+            .collect();
+        let ordered = self.ordered_refs.iter().map(|(expr, _)| expr);
+        found.extend(ordered.map(|expr| (expr, Some(Symbol::intern("PartialOrd")))));
+        found.sort_by_key(|&(expr, _)| expr.into_raw());
+        for (expr, const_trait) in found {
+            let range = self.range(expr);
+            match const_trait {
+                Some(name) => {
+                    self.error(
+                        range,
+                        format!("cannot call conditionally-const operator in {context}"),
+                    );
+                    self.error(
+                        range,
+                        format!("`{name}` is not yet stable as a const trait"),
+                    );
+                }
+                None => self.error(
+                    range,
+                    format!("cannot call non-const operator in {context}"),
+                ),
+            }
+        }
+    }
+
+    /// Whether `core`'s operator impls for `ty` are `const` in rustc's.
+    fn const_operand(&self, ty: Ty) -> bool {
+        match ty.kind() {
+            TyKind::Int(_) | TyKind::Bool | TyKind::Tuple([]) | TyKind::Error => true,
+            TyKind::Ref(_, pointee) => self.const_operand(pointee),
+            TyKind::Adt(adt, args) => {
+                let data = &self.items.structs[adt.strukt];
+                self.items.is_core(data.loc.module) && args.iter().all(|&a| self.const_operand(a))
+            }
+            _ => false,
         }
     }
 
@@ -3431,7 +3725,8 @@ impl Ctx<'_> {
                 );
             }
         }
-        let mut reported = false;
+        // `core`'s impls for references see references to references.
+        let mut reported = self.items.is_core(self.module);
         for (expr, data) in body.exprs.iter() {
             let ty = self.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
             let nested = match ty.kind() {
@@ -3694,12 +3989,7 @@ impl Ctx<'_> {
                         };
                         // `&i32 + i32` and `&a == &b` are valid, through
                         // trait implementations.
-                        let message = if ty.is_pointer() || rhs.is_pointer() {
-                            "operators on references are not supported yet".to_owned()
-                        } else {
-                            binary_error(op, &ty, &rhs)
-                        };
-                        self.error(range, message);
+                        self.error(range, binary_error(op, &ty, &rhs));
                     }
                 }
                 Deferred::ShiftAmount { expr, ty } => {

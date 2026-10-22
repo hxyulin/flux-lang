@@ -52,6 +52,9 @@ pub(super) enum ObligationKind {
     /// An operator's trait, for operands of these types: "cannot add `S`
     /// to `S`".
     Operator { op: Op, lhs: Ty, rhs: Ty },
+    /// `F: From<E>` for `?` on a `Result<T, E>` in a function returning
+    /// `Result<U, F>`: "`?` couldn't convert the error to `F`".
+    QuestionMark { target: Ty },
 }
 
 /// An operator, for messages.
@@ -617,6 +620,12 @@ impl Ctx<'_> {
                         format!("cannot apply unary operator `{text}` to type `{lhs}`")
                     }
                 }
+            }
+            ObligationKind::QuestionMark { target } => {
+                format!(
+                    "`?` couldn't convert the error to `{}`",
+                    self.describe(target)
+                )
             }
             ObligationKind::ItemBounds { what, name, ty } => {
                 format!(

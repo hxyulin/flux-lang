@@ -2133,6 +2133,96 @@ pub fn unmet_leaf(
     goal
 }
 
+/// Unifies two `impl` headers, their types and trait arguments in turn,
+/// each block's parameters standing for any type, consistently (so
+/// `impl<T> From<T> for T` and `impl From<A> for B` do not overlap, nor
+/// do `impl<T> From<T> for T` and `impl<X> From<X> for W<X>`, as
+/// `X = W<X>` has no solution). Gives `b`'s header with what they share,
+/// its unconstrained parameters as `_`, if they may be for the same
+/// types.
+fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
+    /// A type in one block's header, and which block.
+    type Side = (bool, Ty);
+    type Bound = rustc_hash::FxHashMap<(bool, u32), Side>;
+    fn resolve(bound: &Bound, (mut side, mut ty): Side) -> Side {
+        while let TyKind::Param(p) = ty.kind()
+            && let Some(&next) = bound.get(&(side, p.index))
+        {
+            (side, ty) = next;
+        }
+        (side, ty)
+    }
+    fn occurs(bound: &Bound, var: (bool, u32), ty: Side, depth: u32) -> bool {
+        let (side, ty) = resolve(bound, ty);
+        if depth > 64 {
+            return false;
+        }
+        match ty.kind() {
+            TyKind::Param(p) => (side, p.index) == var,
+            TyKind::Adt(_, list) | TyKind::Tuple(list) => list
+                .iter()
+                .any(|&t| occurs(bound, var, (side, t), depth + 1)),
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => occurs(bound, var, (side, t), depth + 1),
+            _ => false,
+        }
+    }
+    fn unify(bound: &mut Bound, a: Side, b: Side, depth: u32) -> bool {
+        if depth > 64 {
+            return true;
+        }
+        let (a, b) = (resolve(bound, a), resolve(bound, b));
+        let mut all = |xs: &[Ty], ys: &[Ty]| {
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .zip(ys)
+                    .all(|(&s, &t)| unify(bound, (a.0, s), (b.0, t), depth + 1))
+        };
+        match (a.1.kind(), b.1.kind()) {
+            (TyKind::Error, _) | (_, TyKind::Error) => true,
+            (TyKind::Param(p), TyKind::Param(q)) if a.0 == b.0 && p.index == q.index => true,
+            (TyKind::Param(p), _) => {
+                let var = (a.0, p.index);
+                !occurs(bound, var, b, 0) && bound.insert(var, b).is_none()
+            }
+            (_, TyKind::Param(q)) => {
+                let var = (b.0, q.index);
+                !occurs(bound, var, a, 0) && bound.insert(var, a).is_none()
+            }
+            (TyKind::Adt(x, xs), TyKind::Adt(y, ys)) => x == y && all(xs, ys),
+            (TyKind::Tuple(xs), TyKind::Tuple(ys)) => all(xs, ys),
+            (TyKind::Ref(m, x), TyKind::Ref(n, y))
+            | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
+                m == n && unify(bound, (a.0, x), (b.0, y), depth + 1)
+            }
+            _ => a.1 == b.1,
+        }
+    }
+    fn apply(bound: &Bound, ty: Side, depth: u32) -> Ty {
+        let (side, ty) = resolve(bound, ty);
+        let apply_all = |list: &[Ty]| -> Vec<Ty> {
+            list.iter()
+                .map(|&t| apply(bound, (side, t), depth + 1))
+                .collect()
+        };
+        match ty.kind() {
+            _ if depth > 64 => ty,
+            TyKind::Param(_) => Ty::infer(crate::ty::InferVar(0)),
+            TyKind::Adt(adt, list) => Ty::adt(adt.strukt, adt.name, &apply_all(list)),
+            TyKind::Tuple(list) => Ty::tuple(&apply_all(list)),
+            TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, apply(bound, (side, t), depth + 1))),
+            TyKind::RawPtr(m, t) => Ty::raw_ptr(m, apply(bound, (side, t), depth + 1)),
+            _ => ty,
+        }
+    }
+    let mut bound = Bound::default();
+    let unified = a
+        .iter()
+        .zip(b)
+        .all(|(&x, &y)| unify(&mut bound, (false, x), (true, y), 0));
+    unified.then(|| b.iter().map(|&t| apply(&bound, (true, t), 0)).collect())
+}
+
 /// Reports `impl` blocks of one trait for types that may be the same.
 /// Reports `impl` blocks of a trait that overlap an earlier one (E0119);
 /// gives the traits that have any.
@@ -2158,37 +2248,42 @@ fn check_overlap(
             if b == Ty::ERROR {
                 continue;
             }
+            let b_header: Vec<Ty> = std::iter::once(b)
+                .chain(b_ref.args.iter().copied())
+                .collect();
             let earlier = impls[..i].iter().find(|&&a| {
                 let (Some(&a_ty), Some(a_ref)) = (sigs.impls.get(a), sigs.impl_traits.get(a))
                 else {
                     return false;
                 };
+                let a_header: Vec<Ty> = std::iter::once(a_ty)
+                    .chain(a_ref.args.iter().copied())
+                    .collect();
                 a_ty != Ty::ERROR
-                    && crate::overlap(a_ty, b)
-                    && a_ref
-                        .args
-                        .iter()
-                        .zip(b_ref.args)
-                        .all(|(&x, &y)| crate::overlap(x, y))
+                    && unify_headers(&a_header, &b_header).is_some()
                     && !excluded_by_bounds(items, sigs, a, later)
                     && !excluded_by_bounds(items, sigs, later, a)
             });
             let Some(&earlier) = earlier else {
                 continue;
             };
-            // The type both are for: the more specific one's.
-            let ty = if b.has_params() {
-                sigs.impls[earlier]
-            } else {
-                b
+            // What both are for, as rustc names it: `From<_>` for `W<_>`.
+            let a_header: Vec<Ty> = std::iter::once(sigs.impls[earlier])
+                .chain(sigs.impl_traits[earlier].args.iter().copied())
+                .collect();
+            let header = unify_headers(&a_header, &b_header).unwrap_or(b_header);
+            let trait_ref = TraitRef {
+                args: Ty::list(&header[1..]),
+                ..*b_ref
             };
+            let written = written_trait_ref(sigs, trait_ref.with_self(header[0]));
             let imp = &items.impls[later];
             diagnostics.push(Diagnostic {
                 file: imp.file,
                 range: imp.def_range,
                 message: format!(
-                    "conflicting implementations of trait `{}` for type `{ty}`",
-                    b_ref.name
+                    "conflicting implementations of trait `{written}` for type `{}`",
+                    header[0]
                 ),
             });
             if !conflicted.contains(&b_ref.trait_) {

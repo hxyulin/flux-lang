@@ -57,9 +57,6 @@ fn ref_to_ref(i32) -> i32
     r@1: &&i32
 fn returns_ref(&i32) -> &i32
     r@0: &i32
-fn add_refs(i32) -> i32
-    x@0: i32
-    r@1: &i32
 fn break_ref(i32) -> i32
     x@0: i32
     r@1: &i32
@@ -92,9 +89,8 @@ error 1176..1177: references in variables declared without a value are not suppo
 error 1246..1253: references inside other types are not supported yet
 error 1310..1313: references inside other types are not supported yet
 error 1353..1357: returning references is not supported yet
-error 1420..1421: operators on references are not supported yet
-error 1490..1492: `break` with a reference is not supported yet
-error 1594..1600: cannot assign twice to immutable variable `r`
-error 1673..1678: cannot assign to immutable argument `r`
-error 1713..1717: missing lifetime specifier
-error 1742..1746: missing lifetime specifier
+error 1432..1434: `break` with a reference is not supported yet
+error 1536..1542: cannot assign twice to immutable variable `r`
+error 1615..1620: cannot assign to immutable argument `r`
+error 1655..1659: missing lifetime specifier
+error 1684..1688: missing lifetime specifier

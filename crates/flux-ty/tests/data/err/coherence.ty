@@ -1,0 +1,30 @@
+struct S { 0: i32 }
+struct W<X> { 0: X }
+fn add(S, S) -> S
+    self@0: S
+    rhs@1: S
+fn add(S, S) -> S
+    self@0: S
+    rhs@1: S
+fn add(S, i32) -> S
+    self@0: S
+    _rhs@1: i32
+fn add(S, i32) -> S
+    self@0: S
+    _rhs@1: i32
+fn from(S) -> S
+    s@0: S
+fn from(S) -> i32
+    s@0: S
+fn from(X) -> W<X>
+    x@0: X
+fn from(X) -> W<X>
+    x@0: X
+fn from(W<X>) -> W<X>
+    w@0: W<X>
+fn main() -> ()
+error 485..502: conflicting implementations of trait `Add` for type `S`
+error 681..700: conflicting implementations of trait `Add<i32>` for type `S`
+error 782..800: conflicting implementations of trait `From<S>` for type `S`
+error 995..1019: conflicting implementations of trait `From<_>` for type `W<_>`
+error 1072..1099: conflicting implementations of trait `From<W<_>>` for type `W<_>`

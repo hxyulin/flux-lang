@@ -138,8 +138,7 @@ analysis. Semantic analysis will follow rustc's and rust-analyzer's split:
 1. **Item tree:** each file's items and signatures, with path-based IDs.
 2. **HIR:** each body lowered from the AST into an arena of expressions
    and patterns with names resolved and sugar removed (`for` to `loop`
-   and `match`, `?` to a `match`), keeping a map back to AST nodes for
-   diagnostics.
+   and `match`), keeping a map back to AST nodes for diagnostics.
 3. **Type inference and trait solving** on HIR bodies, one body at a time,
    given the item tree's signatures.
 4. **MIR** for borrow checking and lowering to keel.
@@ -281,10 +280,23 @@ in scope are those written with their supertraits; an associated type's
 own bounds (`type Smaller: Dimension;`) are found from its trait when a
 goal, method call or normalization names it, as rustc's *item bounds*
 are, since they nest without end. Operators
-on types other than integers and `bool` are calls of their traits'
-methods, found through `#[lang]` names (`a + b` is `Add::add(a, b)`, its
-type `<A as Add<B>>::Output`), and so are monomorphized like any other
-trait call. Outside bodies, where every type is known up to rigid parameters,
+on types other than integers and `bool`, references to them included,
+are calls of their traits' methods, found through `#[lang]` names (`a +
+b` is `Add::add(a, b)`, its type `<A as Add<B>>::Output`), and so are
+monomorphized like any other trait call. As rustc's
+`enforce_builtin_binop_types` does, where the operands are integers
+past one shared reference each, they must have the same type (except
+for shifts), and the result has it, before the trait's `impl` block is
+known. `<` on references compares their referents, built in, until
+`core` has `PartialOrd`.
+
+`x?` stays an expression in HIR (`Expr::Try`), since what it does
+depends on `x`'s type: `core`'s `#[lang = "Option"]` and `#[lang =
+"Result"]` enums are the only types with `Try` on stable Rust that flux
+has. Type checking matches rustc's `Try` and `FromResidual` bounds
+with the function's return type, and for a `Result`, records the
+`From::from` call that converts the error, an obligation like any
+other; MIR building tests the variant and returns the rest. Outside bodies, where every type is known up to rigid parameters,
 [`traits`](../crates/flux-ty/src/traits.rs) answers whether a predicate
 holds by matching `impl` headers, which checks supertraits, overlapping
 blocks (E0119, with bounds that rule types out) and blocks' methods
@@ -412,6 +424,11 @@ semantics become explicit, so code generation never sees expressions:
   them, and runs before they are moved. `if let` and `let`-`else` are
   the same tests, with the scrutinee's temporaries and the bindings
   dropped before the `else` branch runs, as in edition 2024.
+- `x?` moves `x` into a temporary, as rustc's `Try::branch(x)` takes
+  it, and tests its variant: the `Some` or `Ok` value is its result;
+  otherwise `_0` becomes `None`, or `Err` with the error passed through
+  `From::from` (unless the types are the same), and the function
+  returns, dropping what is in scope as `return` does.
 
 Only reachable code is built: every function of the program, and the
 functions of `core` that something calls. A generic function is built

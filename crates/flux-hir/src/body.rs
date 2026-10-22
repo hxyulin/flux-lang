@@ -50,7 +50,7 @@ pub struct BodySourceMap {
     /// Each field of a `Record` pattern: its name, and the whole field
     /// (`a: b`).
     pub pat_fields: ArenaMap<Pat, Box<[(TextRange, TextRange)]>>,
-    /// The operator of a `Binary` expression.
+    /// The operator of a `Binary` expression, and the `?` of a `Try`.
     pub ops: ArenaMap<Expr, TextRange>,
     /// The path of a `Record` expression.
     pub paths: ArenaMap<Expr, TextRange>,
@@ -131,6 +131,14 @@ pub enum Expr {
     Cast {
         expr: ExprId,
         ty: TypeRefId,
+    },
+    /// `expr?`: the value of an `Option`'s `Some` or a `Result`'s `Ok`,
+    /// or else a return of the `None`, or of the `Err` converted with
+    /// `From`. rustc desugars it through the unstable `Try` trait, which
+    /// only these implement on stable Rust (and `ControlFlow` and
+    /// `Poll`, which flux lacks).
+    Try {
+        expr: ExprId,
     },
     /// `expr.name`, also `tuple.0`; resolved during type checking.
     Field {

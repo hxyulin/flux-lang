@@ -116,11 +116,6 @@ fn returns_ref(r: &i32) -> &i32 {
     r
 }
 
-fn add_refs(x: i32) -> i32 {
-    let r = &x;
-    r + 1
-}
-
 fn break_ref(x: i32) -> i32 {
     let r = loop {
         break &x;
