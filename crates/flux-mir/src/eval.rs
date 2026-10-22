@@ -994,6 +994,14 @@ impl<'a> Evaluator<'a> {
                 }
             }
             Rvalue::BinaryOp(op, l, r) => {
+                // Pointer values do not carry concrete runtime addresses here.
+                // Never compare their referents or synthesize an address order.
+                if matches!(body.operand_ty(l, self.sigs).kind(), TyKind::RawPtr(..)) {
+                    return Err(error(
+                        range,
+                        "pointers cannot be reliably compared during const eval".to_owned(),
+                    ));
+                }
                 let l = self.operand(locals, generics, l, range)?;
                 let r = self.operand(locals, generics, r, range)?;
                 let result = if wrapping {

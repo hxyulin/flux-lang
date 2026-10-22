@@ -5352,8 +5352,18 @@ impl Ctx<'_> {
                 if let Some(ty) = self.overload(id, op, ty, (rhs, rhs_ty)) {
                     return ty;
                 }
-                if self.is_primitive_operand(ty) {
+                if self.is_primitive_operand(ty)
+                    || matches!(self.shallow(ty).kind(), TyKind::RawPtr(..))
+                {
                     self.coerce(rhs_ty, ty, rhs);
+                }
+                if matches!(self.shallow(ty).kind(), TyKind::RawPtr(..))
+                    && self.const_context.is_some()
+                {
+                    self.error(
+                        self.range(id),
+                        "pointers cannot be reliably compared during const eval",
+                    );
                 }
                 self.deferred.push(Deferred::Binary {
                     expr: id,
@@ -6846,8 +6856,13 @@ impl Ctx<'_> {
                             BinaryOp::Cmp(_),
                             TyKind::Int(_) | TyKind::Bool | TyKind::Char | TyKind::Tuple([]),
                         ) => true,
-                        (BinaryOp::Cmp(_), TyKind::RawPtr(..)) => {
-                            self.error(self.range(expr), "comparing pointers is not supported yet");
+                        (BinaryOp::Cmp(_), TyKind::RawPtr(_, pointee)) => {
+                            if self.is_unsized(pointee) {
+                                self.error(
+                                    self.range(expr),
+                                    "wide pointer comparisons are not supported yet",
+                                );
+                            }
                             true
                         }
                         (BinaryOp::Arith(op) | BinaryOp::Assign(Some(op)), TyKind::Bool) => {

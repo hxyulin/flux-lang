@@ -290,3 +290,36 @@ fn corpus_mir_is_well_typed() {
         failures.join("\n")
     );
 }
+
+#[test]
+fn const_eval_rejects_pointer_comparisons_even_without_const_check() {
+    // Exercise the evaluator's own guard, bypassing the normal const-fn
+    // type-checking rejection as core's internal attribute does.
+    for op in ["==", "!=", "<", "<=", ">", ">="] {
+        let text = format!(
+            "const fn compare(a: *const u8, b: *const u8) -> bool {{ a {op} b }}\n\
+             const RESULT: bool = compare(&1u8 as *const u8, &1u8 as *const u8);\n\
+             fn main() {{}}"
+        );
+        let (_, _, mut hir) = flux_hir::lower_text("main.rs", &text);
+        let function = hir
+            .items
+            .functions
+            .iter()
+            .find(|(_, function)| function.name.as_str() == "compare")
+            .map(|(id, _)| id)
+            .unwrap();
+        hir.items.functions[function].do_not_const_check = true;
+        assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+        let typed = flux_mir::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:#?}", typed.diagnostics);
+        let mir = flux_mir::build_file(&hir, &typed);
+        assert!(
+            mir.diagnostics
+                .iter()
+                .any(|d| d.message == "pointers cannot be reliably compared during const eval"),
+            "{op}: {:#?}",
+            mir.diagnostics
+        );
+    }
+}
