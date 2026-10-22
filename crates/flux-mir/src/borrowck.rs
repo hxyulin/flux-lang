@@ -823,11 +823,12 @@ impl Checker<'_> {
         None
     }
 
-    /// The type of the first pointer `place` goes through that does not
-    /// allow changing what is behind it, if any: writing through
-    /// `**r` needs both references to be mutable.
+    /// The type of the pointer `place` goes through that does not allow
+    /// changing what is behind it, if any: writing through `**r` needs
+    /// both references to be mutable, but what a `*mut` points to may be
+    /// changed however the pointer is reached (`**r` with `r: &*mut T`).
     fn immutable_pointer(&self, place: &Place) -> Option<Ty> {
-        for (i, &elem) in place.projection.iter().enumerate() {
+        for (i, &elem) in place.projection.iter().enumerate().rev() {
             if elem != ProjectionElem::Deref {
                 continue;
             }
@@ -836,11 +837,10 @@ impl Checker<'_> {
                 projection: place.projection[..i].into(),
             };
             let pointer = self.body.place_ty(&prefix, self.sigs);
-            if !matches!(
-                pointer.kind(),
-                TyKind::Ref(Mutability::Mut, _) | TyKind::RawPtr(Mutability::Mut, _)
-            ) {
-                return Some(pointer);
+            match pointer.kind() {
+                TyKind::RawPtr(Mutability::Mut, _) => return None,
+                TyKind::Ref(Mutability::Mut, _) => {}
+                _ => return Some(pointer),
             }
         }
         None

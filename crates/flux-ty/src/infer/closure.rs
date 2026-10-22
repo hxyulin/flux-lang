@@ -13,12 +13,17 @@
 //! rustc's edition-2021 analysis finds them, innermost first: each use
 //! of a place outside the closure (a binding, its fields and what its
 //! references point to) is a copy, a move, or a shared or mutable
-//! borrow; moved places are captured by value, others by reference
-//! (all by value with `move`), a place used whole and in part is
-//! captured whole, and places are cut at the first dereference when
-//! captured by value and at the last one of a shared reference when
-//! borrowed. A closure that moves what it captures is `FnOnce`, one
-//! that changes it `FnMut`, any other `Fn`.
+//! borrow; moved places are captured by value, others (copies too) by
+//! reference (all by value with `move`), and a place used whole and in
+//! part is captured whole. An element of an array or slice is no such
+//! place: indexing borrows the array. Places are cut before a raw
+//! pointer's dereference (what it points to is borrowed shared, even to
+//! change it), after the last dereference if it is of a shared
+//! reference, and when captured by value, before the first dereference
+//! and before a field of a type with a `Drop` impl. A closure that moves
+//! what it captures is `FnOnce`, one that changes it `FnMut`, any other
+//! `Fn`. Its captures are ordered by binding, in the order each is first
+//! used, and by field within one.
 
 use std::collections::HashSet;
 
@@ -735,7 +740,16 @@ impl Ctx<'_> {
             found: Vec::new(),
         };
         self.walk(*closure_body, &mut uses);
-        let found = uses.found;
+        let mut found = uses.found;
+        // What is reached through a raw pointer is borrowed shared, even
+        // to change it: the pointer is what is captured.
+        for (place, use_kind, _) in &mut found {
+            if matches!(use_kind, UseKind::Borrow(Mutability::Mut) | UseKind::Assign)
+                && self.through_raw_ptr(place)
+            {
+                *use_kind = UseKind::Borrow(Mutability::Not);
+            }
+        }
         // The kind, from how the places are used.
         let mut kind = ClosureKind::Fn;
         for (_, use_kind, _) in &found {
@@ -749,16 +763,43 @@ impl Ctx<'_> {
         // The places, as few and as short as rustc's.
         let mut captures: Vec<(Place, CaptureMode, TextRange, bool)> = Vec::new();
         for (place, use_kind, range) in found {
-            let mode = match (use_kind, closure.is_move) {
-                (UseKind::Move, _) | (_, true) => CaptureMode::ByValue,
-                (UseKind::Copy, false) => CaptureMode::ByRef(Mutability::Not),
-                (UseKind::Borrow(m), false) => CaptureMode::ByRef(m),
-                (UseKind::Assign, false) => CaptureMode::ByRef(Mutability::Mut),
+            let mode = match use_kind {
+                UseKind::Move => CaptureMode::ByValue,
+                UseKind::Copy => CaptureMode::ByRef(Mutability::Not),
+                UseKind::Borrow(m) => CaptureMode::ByRef(m),
+                UseKind::Assign => CaptureMode::ByRef(Mutability::Mut),
             };
-            let place = self.truncate_capture(place, mode);
+            let (place, mode) = self.truncate_capture(place, mode, closure.is_move);
             let assigned = use_kind == UseKind::Assign;
             insert_capture(&mut captures, (place, mode, range, assigned));
         }
+        // Grouped by binding, in the order each is first used, and each
+        // binding's places in the order of their fields, as rustc orders
+        // them (which is the order they are dropped in).
+        let mut bindings: Vec<BindingId> = Vec::new();
+        for ((binding, _), ..) in &captures {
+            if !bindings.contains(binding) {
+                bindings.push(*binding);
+            }
+        }
+        captures.sort_by(|((a, pa), ..), ((b, pb), ..)| {
+            let rank = |x: &BindingId| bindings.iter().position(|y| y == x);
+            let fields = |p: &[CaptureProj]| {
+                p.iter()
+                    .filter_map(|p| match p {
+                        CaptureProj::Field(i) => Some(*i),
+                        CaptureProj::Deref => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            rank(a).cmp(&rank(b)).then_with(|| {
+                let (fa, fb) = (fields(pa), fields(pb));
+                fa.iter()
+                    .zip(&fb)
+                    .find(|(x, y)| x != y)
+                    .map_or(std::cmp::Ordering::Equal, |(x, y)| x.cmp(y))
+            })
+        });
         let captures = captures
             .into_iter()
             .map(|((binding, projection), mode, range, assigned)| {
@@ -781,36 +822,74 @@ impl Ctx<'_> {
         }
     }
 
-    /// `place` as rustc captures it in `mode`: before a dereference of a
-    /// raw pointer; by value, before the first dereference; by shared
-    /// reference, after the last dereference of a shared reference.
-    fn truncate_capture(&mut self, (binding, mut proj): Place, mode: CaptureMode) -> Place {
-        let mut ty = self.known_binding_ty(binding);
-        let mut first_deref = None;
-        let mut last_shared = None;
-        for (i, &p) in proj.iter().enumerate() {
-            match p {
-                CaptureProj::Deref => {
-                    match ty.kind() {
-                        TyKind::RawPtr(..) => {
-                            proj.truncate(i);
-                            return (binding, proj);
-                        }
-                        TyKind::Ref(Mutability::Not, _) => last_shared = Some(i),
-                        _ => {}
-                    }
-                    first_deref.get_or_insert(i);
-                }
-                CaptureProj::Field(_) => {}
+    /// Whether `place` is reached through a raw pointer.
+    fn through_raw_ptr(&mut self, (binding, proj): &Place) -> bool {
+        let mut ty = self.known_binding_ty(*binding);
+        for &p in proj {
+            if p == CaptureProj::Deref && matches!(ty.kind(), TyKind::RawPtr(..)) {
+                return true;
             }
             ty = self.project_ty(ty, p);
         }
-        match (mode, first_deref, last_shared) {
-            (CaptureMode::ByValue, Some(i), _) => proj.truncate(i),
-            (CaptureMode::ByRef(Mutability::Not), _, Some(i)) => proj.truncate(i + 1),
-            _ => {}
+        false
+    }
+
+    /// `place`, used in `mode`, as rustc captures it (its
+    /// `process_collected_capture_information`): cut before a dereference
+    /// of a raw pointer; after the last dereference if that is of a shared
+    /// reference, as what is behind it can only be read; by value (all
+    /// places with `move`), before the first dereference and before a
+    /// field of a type with a `Drop` impl, which cannot be moved out of
+    /// unless it is `Copy`.
+    fn truncate_capture(
+        &mut self,
+        (binding, mut proj): Place,
+        mut mode: CaptureMode,
+        is_move: bool,
+    ) -> (Place, CaptureMode) {
+        // The type before each projection.
+        let mut tys = Vec::with_capacity(proj.len());
+        let mut ty = self.known_binding_ty(binding);
+        for &p in &proj {
+            tys.push(ty);
+            ty = self.project_ty(ty, p);
         }
-        (binding, proj)
+        let raw = (0..proj.len()).find(|&i| {
+            proj[i] == CaptureProj::Deref && matches!(tys[i].kind(), TyKind::RawPtr(..))
+        });
+        if let Some(i) = raw {
+            proj.truncate(i);
+        }
+        if let Some(i) = proj.iter().rposition(|&p| p == CaptureProj::Deref)
+            && let TyKind::Ref(Mutability::Not, _) = tys[i].kind()
+        {
+            proj.truncate(i + 1);
+        }
+        if is_move {
+            mode = CaptureMode::ByValue;
+        }
+        if mode == CaptureMode::ByValue {
+            if let Some(i) = proj.iter().position(|&p| p == CaptureProj::Deref) {
+                proj.truncate(i);
+            }
+            let ty = if proj.len() < tys.len() {
+                tys[proj.len()]
+            } else {
+                ty
+            };
+            if !self.is_copy_ty(ty) {
+                let dropped = (0..proj.len()).find(|&i| match tys[i].kind() {
+                    TyKind::Adt(adt, _) => {
+                        crate::traits::drop_impl(self.items, self.sigs, adt.strukt).is_some()
+                    }
+                    _ => false,
+                });
+                if let Some(i) = dropped {
+                    proj.truncate(i);
+                }
+            }
+        }
+        ((binding, proj), mode)
     }
 
     fn known_binding_ty(&mut self, binding: BindingId) -> Ty {
@@ -968,6 +1047,30 @@ impl Ctx<'_> {
         self.use_place_deref(expr, 0, kind, uses)
     }
 
+    /// Copied if `ty` is `Copy`, else moved.
+    fn by_value(&mut self, ty: Ty) -> UseKind {
+        if self.is_copy_ty(ty) {
+            UseKind::Copy
+        } else {
+            UseKind::Move
+        }
+    }
+
+    /// `expr` used by value: a place is copied or moved.
+    fn consume(&mut self, expr: ExprId, uses: &mut Uses<'_>) {
+        if let Some(&m) = self.reborrows.get(expr) {
+            let derefs = self.deref_coercions.get(expr).copied().unwrap_or(1);
+            let reborrow = |_: &mut Self, _: &Place| UseKind::Borrow(m);
+            if self.use_place_deref(expr, derefs, reborrow, uses) {
+                return;
+            }
+        }
+        let ty = self.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
+        if !self.use_place(expr, |this, _| this.by_value(ty), uses) {
+            self.walk(expr, uses);
+        }
+    }
+
     /// [`Self::use_place`] of the place `expr` denotes dereferenced
     /// `derefs` times.
     fn use_place_deref(
@@ -997,55 +1100,14 @@ impl Ctx<'_> {
         true
     }
 
-    /// `expr` used by value: a place is copied or moved.
-    fn consume(&mut self, expr: ExprId, uses: &mut Uses<'_>) {
-        self.walk_indices(expr, uses);
-        if let Some(m) = self.place_overload(expr)
-            && let Some(place) = self.capture_place(expr)
-        {
-            uses.add(place, UseKind::Borrow(m), self.range(expr));
-            return;
-        }
-        if let Some(&m) = self.reborrows.get(expr)
-            && let Some((binding, mut proj)) = self.capture_place(expr)
-        {
-            let derefs = self.deref_coercions.get(expr).copied().unwrap_or(1);
-            // Up to the first overloaded dereference, which borrows.
-            let (derefs, m) = match self.coercion_derefs.get(expr).and_then(|s| s.first()) {
-                Some(o) => (o.step, o.mutability),
-                None => (derefs, m),
-            };
-            proj.extend((0..derefs).map(|_| CaptureProj::Deref));
-            uses.add((binding, proj), UseKind::Borrow(m), self.range(expr));
-            return;
-        }
-        match self.capture_place(expr) {
-            Some(place) => {
-                let ty = self.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
-                let kind = if self.is_copy_ty(ty) {
-                    UseKind::Copy
-                } else {
-                    UseKind::Move
-                };
-                uses.add(place, kind, self.range(expr));
-            }
-            None => self.walk(expr, uses),
-        }
-    }
-
     /// `expr` borrowed, or written (`Borrow(Mut)`).
     fn borrow(&mut self, expr: ExprId, m: Option<Mutability>, uses: &mut Uses<'_>) {
-        self.walk_indices(expr, uses);
-        let overload = self.place_overload(expr);
-        match self.capture_place(expr) {
-            Some(place) => {
-                let kind = match (overload, m) {
-                    (Some(m), _) | (None, Some(m)) => UseKind::Borrow(m),
-                    (None, None) => UseKind::Assign,
-                };
-                uses.add(place, kind, self.range(expr));
-            }
-            None => self.walk(expr, uses),
+        let kind = match m {
+            Some(m) => UseKind::Borrow(m),
+            None => UseKind::Assign,
+        };
+        if !self.use_place(expr, |_, _| kind, uses) {
+            self.walk(expr, uses);
         }
     }
 
@@ -1058,33 +1120,16 @@ impl Ctx<'_> {
         autoref: Option<Mutability>,
         uses: &mut Uses<'_>,
     ) {
-        self.walk_indices(expr, uses);
-        let Some((binding, mut proj)) = self.capture_place(expr) else {
-            self.walk(expr, uses);
-            return;
-        };
-        if let Some(m) = self.place_overload(expr) {
-            uses.add((binding, proj), UseKind::Borrow(m), self.range(expr));
-            return;
-        }
-        // Up to the first overloaded dereference, which borrows.
-        let (derefs, autoref) = match overloaded {
-            Some(o) => (o.step, Some(o.mutability)),
-            None => (derefs, autoref),
-        };
-        proj.extend((0..derefs).map(|_| CaptureProj::Deref));
-        let kind = match autoref {
+        let kind = |this: &mut Self, (binding, proj): &Place| match autoref {
             Some(m) => UseKind::Borrow(m),
             None => {
-                let ty = self.capture_place_ty(binding, &proj);
-                if self.is_copy_ty(ty) {
-                    UseKind::Copy
-                } else {
-                    UseKind::Move
-                }
+                let ty = this.capture_place_ty(*binding, proj);
+                this.by_value(ty)
             }
         };
-        uses.add((binding, proj), kind, self.range(expr));
+        if !self.use_place_deref(expr, derefs, kind, uses) {
+            self.walk(expr, uses);
+        }
     }
 
     /// Whether `expr` is a `&mut` reference.
