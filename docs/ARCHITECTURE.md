@@ -1155,11 +1155,12 @@ of 1.1 ms. A single `flux build` still builds `core` once.
 
 The runtime harness also compiles the compiler's own choice-tape
 (`flux-difftest/src/rng.rs`) and dataflow bitset (`flux-mir/src/bitset.rs`)
-and interval-set (`flux-mir/src/interval.rs`) implementations with both
-compilers. It embeds the current source files
+and interval-set (`flux-mir/src/interval.rs`) implementations, plus
+`flux-syntax/src/syntax_kind.rs`, with both compilers. It embeds the current source files
 as modules alongside `tests/run/support/compiler_internals.rs`, which
 exercises random draws, replay, bit updates, unions, word boundaries and
-interval lookups. Run `just selfhost-subset` for this test alone.
+interval lookups, keyword hashing and promoted composite-token slices.
+Run `just selfhost-subset` for this test alone.
 This is executable coverage of compiler components; full self-compilation
 still needs more language and library support; see
 [the milestone plan](SELF_HOSTING.md).

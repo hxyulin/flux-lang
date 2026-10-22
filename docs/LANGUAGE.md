@@ -928,8 +928,12 @@ are (`I: Iterator<Item = &'a T>`). Traits may not have lifetime
 parameters yet, bounds may not name lifetimes in their trait's generic
 arguments (`T: Tr<&'a U>`; `&` without one is E0637, as in rustc), nor
 those of structs and traits in what they say associated types are.
-Named lifetimes in types inside bodies (`let x: &'a i32`) and function
-pointer types are not supported yet. A trait's `impl` block may be for
+Local `let` annotations can require `'static`, including nested reference
+and ADT types, aliases and defaults. The borrow checker enforces this on
+initialization, destructuring, later assignments and branches. Other named
+body lifetimes (`let x: &'a i32`), lifetimes in function-pointer types and
+lifetime-qualified associated projections are not supported yet. Nor are
+lifetime annotations on uncaptured places in closures. A trait's `impl` block may be for
 some lifetimes only:
 naming one twice (`impl<'a> PartialEq for Token<'a>`, whose `Rhs` is
 `Token<'a>` too), naming `'static` (`impl Tr for &'static S`), or

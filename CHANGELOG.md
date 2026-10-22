@@ -4,6 +4,12 @@
 
 ### Syntax
 
+- Enforce `'static` local type annotations through MIR region constraints,
+  including nested types, aliases, defaults, destructuring and later writes.
+  Promote borrowed arrays of fieldless enum values through matches and
+  unsizing while preserving destructor and discriminant-cycle checks.
+  The self-compilation subset now executes the unchanged syntax-kind module.
+
 - Accept a literal `$` at the end of a macro matcher group, including
   the compiler's own `T![$]` rule. Add a dedicated `just selfhost-subset`
   check that compiles real compiler modules and compares their execution
