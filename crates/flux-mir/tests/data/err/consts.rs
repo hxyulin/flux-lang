@@ -56,6 +56,13 @@ const ABS: i8 = i8::MIN.abs();
 const POW: i32 = 2i32.pow(31);
 const EUCLID: i32 = 7i32.rem_euclid(0);
 
+// A panic during evaluation, inside a `const fn` of `core`'s.
+const UNWRAPPED: i32 = {
+    let o: Option<i32> = None;
+    o.unwrap()
+};
+const UNWRAPPED_SOME: i32 = Some(5).unwrap();
+
 struct S;
 
 impl S {

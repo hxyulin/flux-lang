@@ -14,9 +14,12 @@ fn calls_plain(i32) -> i32
     x@0: i32
 fn calls_core(i32) -> i32
     x@0: i32
+fn calls_unstable(Result<i32, bool>) -> bool
+    r@0: Result<i32, bool>
 fn main() -> ()
     _all@0: i32
-    _wrong@1: (i32, (i32, bool), i32, u8, bool)
+    _unstable@1: (i32, bool, i32, bool)
+    _wrong@2: (i32, (i32, bool), i32, u8, bool)
 const BAD: i32
 const GOOD: i32
 const A: i32
@@ -25,6 +28,9 @@ const C: i32
 const D: i32
 const E: i32
 const F: i32
+const UNSTABLE: i32
+const UNSTABLE_GENERIC: bool
+const UNSTABLE_PATH: i32
 const WRONG: i32
 const WRONG_TUPLE: (i32, bool)
 const WRONG_STRUCT: S
@@ -42,8 +48,16 @@ error 773..782: cannot call non-const function `double` in constant functions
 error 785..793: cannot call non-const associated function `S::new` in constant functions
 error 794..799: cannot call non-const method `S::get` in constant functions
 error 858..865: cannot call non-const method `i32::min` in constant functions
-error 888..892: mismatched types: expected `i32`, found `bool`
-error 931..932: mismatched types: expected `bool`, found `{integer}`
-error 959..960: mismatched types: expected `S`, found `{integer}`
-error 981..982: mismatched types: expected `u8`, found `i32`
-error 1021..1022: mismatched types: expected `bool`, found `{integer}`
+error 1002..1022: `Option::<T>::unwrap_or` is not yet stable as a const fn
+error 1010..1022: cannot call conditionally-const method `Option::<i32>::unwrap_or` in constants
+error 1055..1073: `Option::<T>::ok_or` is not yet stable as a const fn
+error 1063..1073: cannot call conditionally-const method `Option::<i32>::ok_or::<u8>` in constants
+error 1110..1139: cannot call conditionally-const method `Option::<i32>::unwrap_or` in constants
+error 1110..1139: `Option::<T>::unwrap_or` is not yet stable as a const fn
+error 1202..1208: `Result::<T, E>::ok` is not yet stable as a const fn
+error 1204..1208: cannot call conditionally-const method `Result::<i32, bool>::ok` in constant functions
+error 1241..1245: mismatched types: expected `i32`, found `bool`
+error 1284..1285: mismatched types: expected `bool`, found `{integer}`
+error 1312..1313: mismatched types: expected `S`, found `{integer}`
+error 1334..1335: mismatched types: expected `u8`, found `i32`
+error 1374..1375: mismatched types: expected `bool`, found `{integer}`

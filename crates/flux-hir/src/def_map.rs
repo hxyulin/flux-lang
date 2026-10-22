@@ -1,8 +1,11 @@
 //! What names mean: each module's scope, built from its items and its
 //! `use` imports, and the resolution of paths against them.
 //!
-//! A scope has two namespaces, as in Rust: types (modules, structs) and
-//! values (functions, and the constructors of tuple and unit structs). A
+//! A scope has two namespaces, as in Rust: types (modules, structs,
+//! enums) and values (functions, and the constructors of tuple and unit
+//! structs). An enum's variants are in its own scope (`E::A`), in both
+//! namespaces but for record variants, in the types namespace only, and
+//! can be imported from it (`use E::A;`, `use E::*;`). A
 //! name not found in a module's scope is looked up in the prelude
 //! (`core::prelude::rust_2024`), then among crates (`core`), then, for
 //! types, among the primitive types, so items shadow them all.
@@ -39,6 +42,8 @@ pub enum Def {
     Trait(TraitId),
     Function(FunctionId),
     Const(ConstId),
+    /// Variant `index` of an enum.
+    Variant(StructId, u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,6 +351,7 @@ impl ItemTree {
     fn private_message(&self, binding: Binding, name: Symbol, ns: Ns) -> String {
         let what = match binding.def {
             Def::Module(_) => "module",
+            Def::Struct(s) if self.structs[s].is_enum() => "enum",
             Def::Struct(s) if ns == Ns::Values && self.structs[s].kind == StructKind::Unit => {
                 "unit struct"
             }
@@ -353,6 +359,7 @@ impl ItemTree {
             Def::Trait(_) => "trait",
             Def::Function(_) => "function",
             Def::Const(_) => "constant",
+            Def::Variant(..) => "variant",
         };
         let import = if binding.kind == BindingKind::Item {
             ""
@@ -377,6 +384,20 @@ impl ItemTree {
                 at: At::Segment(0),
                 message: "ambiguous associated type".into(),
             });
+        }
+        // An enum's variants come before its associated items.
+        if let ImplTarget::Struct(strukt) = target
+            && let Some(variant) = self.structs[strukt].variant_named(name)
+        {
+            // A record variant is a type only.
+            if ns == Ns::Values && self.structs[strukt].variant(variant).kind == StructKind::Record
+            {
+                return Err(ResolveError::NotFound {
+                    segment: index,
+                    module: None,
+                });
+            }
+            return Ok(Resolved::Def(Def::Variant(strukt, variant)));
         }
         // `S::Out` needs `<S as Tr>::Out`.
         if ns != Ns::Values {
@@ -528,6 +549,24 @@ impl ItemTree {
             Def::Trait(t) => self.traits[t].loc.vis,
             Def::Function(f) => self.functions[f].loc.vis,
             Def::Const(c) => self.consts[c].loc.vis,
+            Def::Variant(s, _) => self.structs[s].loc.vis,
+        }
+    }
+
+    /// What `def` is called in messages: "struct", "enum", "variant", ...
+    pub fn def_kind(&self, def: Def) -> &'static str {
+        match def {
+            Def::Module(_) => "module",
+            Def::Struct(s) if self.structs[s].is_enum() => "enum",
+            Def::Struct(_) => "struct",
+            Def::Trait(_) => "trait",
+            Def::Function(_) => "function",
+            Def::Const(_) => "constant",
+            Def::Variant(s, v) => match self.structs[s].variant(v).kind {
+                StructKind::Record => "struct variant",
+                StructKind::Tuple => "tuple variant",
+                StructKind::Unit => "unit variant",
+            },
         }
     }
 }
@@ -670,7 +709,13 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                     }
                     _ => continue,
                 };
-                if !module_only || matches!(def, Def::Module(_)) {
+                // `{self}` imports a module, or an enum.
+                let module_like = match def {
+                    Def::Module(_) => true,
+                    Def::Struct(e) => items.structs[e].is_enum(),
+                    _ => false,
+                };
+                if !module_only || module_like {
                     found.push((ns, def));
                 }
             }
@@ -706,6 +751,7 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
         let u = &items.uses[g];
         match items.resolve(u.module, &u.path, Ns::Types) {
             Ok(Resolved::Def(Def::Module(_))) => {}
+            Ok(Resolved::Def(Def::Struct(e))) if items.structs[e].is_enum() => {}
             Err(ResolveError::Private {
                 segment, message, ..
             }) => {
@@ -873,13 +919,7 @@ impl ItemTree {
         match resolved {
             Ok(Resolved::Def(Def::Trait(t))) => Ok(t),
             Ok(Resolved::Def(def)) => {
-                let what = match def {
-                    Def::Module(_) => "module",
-                    Def::Struct(_) => "struct",
-                    Def::Function(_) => "function",
-                    Def::Const(_) => "constant",
-                    Def::Trait(_) => unreachable!(),
-                };
+                let what = self.def_kind(def);
                 Err(Some((at, format!("expected trait, found {what} `{name}`"))))
             }
             Ok(Resolved::Primitive(p)) => Err(Some((
@@ -940,19 +980,24 @@ fn item_info(items: &ItemTree, item: AssocItem) -> ItemInfo {
 fn apply_glob(items: &mut ItemTree, index: usize) -> bool {
     let u = &items.uses[index];
     let (module, vis, u_file, u_range) = (u.module, u.vis, u.file, u.range);
-    let Ok(Resolved::Def(Def::Module(source))) = items.resolve(module, &u.path, Ns::Types) else {
-        return false;
+    let source = match items.resolve(module, &u.path, Ns::Types) {
+        Ok(Resolved::Def(Def::Module(source))) => Ok(source),
+        Ok(Resolved::Def(Def::Struct(e))) if items.structs[e].is_enum() => Err(e),
+        _ => return false,
     };
     let mut changed = false;
     for ns in [Ns::Types, Ns::Values] {
-        let names: Vec<(Symbol, Binding)> = items.def_map.scopes[source.index()]
-            .ns(ns)
-            .iter()
-            .filter(|(_, b)| {
-                b.kind != BindingKind::AmbiguousGlob && items.is_visible(b.vis, module)
-            })
-            .map(|(n, b)| (*n, *b))
-            .collect();
+        let names: Vec<(Symbol, Binding)> = match source {
+            Ok(source) => items.def_map.scopes[source.index()]
+                .ns(ns)
+                .iter()
+                .filter(|(_, b)| {
+                    b.kind != BindingKind::AmbiguousGlob && items.is_visible(b.vis, module)
+                })
+                .map(|(n, b)| (*n, *b))
+                .collect(),
+            Err(e) => enum_variants(items, e, ns),
+        };
         for (name, binding) in names {
             let scope = items.def_map.scopes[module.index()].ns_mut(ns);
             match scope.get(&name) {
@@ -986,6 +1031,27 @@ fn apply_glob(items: &mut ItemTree, index: usize) -> bool {
         }
     }
     changed
+}
+
+/// The variants of enum `e` in namespace `ns`, as bindings in its scope.
+fn enum_variants(items: &ItemTree, e: StructId, ns: Ns) -> Vec<(Symbol, Binding)> {
+    let data = &items.structs[e];
+    data.variants
+        .iter()
+        .flatten()
+        .enumerate()
+        .filter(|(_, v)| ns == Ns::Types || v.kind != StructKind::Record)
+        .map(|(i, v)| {
+            let binding = Binding {
+                def: Def::Variant(e, i as u32),
+                vis: data.loc.vis,
+                kind: BindingKind::Item,
+                file: data.loc.file,
+                range: v.name_range,
+            };
+            (v.name, binding)
+        })
+        .collect()
 }
 
 /// Finds the type of each `impl` block from `from` on, and checks that

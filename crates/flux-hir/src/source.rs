@@ -58,8 +58,20 @@ const CORE_FILES: &[(&str, &str)] = &[
     ("num.rs", include_str!("../../../library/core/src/num.rs")),
     ("ops.rs", include_str!("../../../library/core/src/ops.rs")),
     (
+        "option.rs",
+        include_str!("../../../library/core/src/option.rs"),
+    ),
+    (
+        "panicking.rs",
+        include_str!("../../../library/core/src/panicking.rs"),
+    ),
+    (
         "prelude.rs",
         include_str!("../../../library/core/src/prelude.rs"),
+    ),
+    (
+        "result.rs",
+        include_str!("../../../library/core/src/result.rs"),
     ),
 ];
 

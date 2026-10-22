@@ -376,17 +376,35 @@ impl Ctx<'_> {
         }
         match ty.kind() {
             TyKind::Alias(alias) => {
+                // Known variables replaced, so that an alias met again
+                // through an `impl` block's fresh variables is the same.
                 let args: Vec<Ty> = alias
                     .args
                     .iter()
-                    .map(|&a| self.normalize(a, origin))
+                    .map(|&a| {
+                        let a = self.normalize(a, origin);
+                        self.known(a)
+                    })
                     .collect();
                 let alias = AliasTy {
                     args: Ty::list(&args),
                     ..alias
                 };
+                if self.normalizing.contains(&alias) {
+                    let message = format!(
+                        "overflow evaluating the requirement `{} == _`",
+                        Ty::alias(alias)
+                    );
+                    if !self.diagnostics.iter().any(|d| d.message == message) {
+                        self.error(origin, message);
+                    }
+                    return Ty::ERROR;
+                }
                 if let Some(ty) = self.try_normalize(alias) {
-                    return self.normalize(ty, origin);
+                    self.normalizing.push(alias);
+                    let normalized = self.normalize(ty, origin);
+                    self.normalizing.pop();
+                    return normalized;
                 }
                 let self_ty = self.shallow(args[0]);
                 // A known type that does not implement the trait
@@ -642,6 +660,7 @@ impl Ctx<'_> {
     /// as rustc's method errors name it.
     pub(super) fn describe_kind(&mut self, ty: Ty) -> String {
         let kind = match self.shallow(ty).kind() {
+            TyKind::Adt(adt, _) if self.sigs.is_enum(adt.strukt) => "enum",
             TyKind::Adt(..) => "struct",
             TyKind::Ref(..) => "reference",
             TyKind::Tuple(_) => "tuple",
@@ -991,10 +1010,7 @@ impl Ctx<'_> {
                 return match self.select(candidates.into_iter(), Some(self_ty)) {
                     Ok(function) => Some((AssocItem::Function(function), Some(self_ty), None)),
                     Err(0) => {
-                        let message = format!(
-                            "no associated function or constant named `{name}` found for {} in the current scope",
-                            self.describe_kind(self_ty)
-                        );
+                        let message = self.not_found(Some(self_ty), name);
                         self.error(segment, message);
                         None
                     }
@@ -1026,10 +1042,7 @@ impl Ctx<'_> {
                     TyKind::Int(_) | TyKind::Bool if !in_some_trait => {
                         format!("`{}::{name}` is not supported yet", self.describe(self_ty))
                     }
-                    _ => format!(
-                        "no associated function or constant named `{name}` found for {} in the current scope",
-                        self.describe_kind(self_ty)
-                    ),
+                    _ => self.not_found(Some(self_ty), name),
                 };
                 self.error(segment, message);
                 None
@@ -1131,7 +1144,7 @@ impl Ctx<'_> {
             }
         }
         for (pat, data) in body.pats.iter() {
-            let flux_hir::Pat::Bind(binding) = *data else {
+            let flux_hir::Pat::Bind { binding, .. } = *data else {
                 continue;
             };
             let ty = self

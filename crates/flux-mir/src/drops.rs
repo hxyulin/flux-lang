@@ -14,7 +14,8 @@
 //!   moved, and is dropped if the flag is set.
 //! - One with some fields moved out is dropped field by field, each as
 //!   above; a struct with a `Drop` impl cannot be (E0509), so it is
-//!   dropped whole or not at all.
+//!   dropped whole or not at all. An enum with fields of a variant moved
+//!   out drops the fields of the variant it holds, which it tests.
 //!
 //! What remains are drops of initialized values, which code generation
 //! expands into calls of `Drop::drop` ([`mono::expand_drops`](crate::mono::expand_drops)).
@@ -27,15 +28,29 @@ use flux_ty::{Predicate, Signatures, Ty, TyKind};
 use crate::init::{Event, MovePaths, State, analyze, statement_events, terminator_events};
 use crate::{
     BasicBlock, BasicBlockData, Body, Constant, Local, LocalDecl, LocalKind, Operand, Place,
-    Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
+    ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
 };
 
-/// A drop to run: of `place`, if the flag of a move path says so.
-type Step = (Place, Option<usize>);
+/// A drop to run: of `place`, if the flag of a move path says so, and if
+/// each enum place holds its variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Step {
+    place: Place,
+    flag: Option<usize>,
+    variants: Vec<(Place, u32)>,
+}
 
 /// Elaborates `body`'s drops; `env` is its elaborated bounds, for what
-/// needs dropping.
-pub(crate) fn elaborate(body: &mut Body, items: &ItemTree, sigs: &Signatures, env: &[Predicate]) {
+/// needs dropping. The drops that may run code are those of values
+/// that may be held when dropped, or with `precise`, those elaboration
+/// keeps (rustc's `const_precise_live_drops`).
+pub(crate) fn elaborate(
+    body: &mut Body,
+    items: &ItemTree,
+    sigs: &Signatures,
+    env: &[Predicate],
+    precise: bool,
+) {
     let mut roots = HashSet::new();
     for data in body.blocks.values() {
         if let TerminatorKind::Drop { place, .. } = &data.terminator.kind
@@ -83,7 +98,7 @@ pub(crate) fn elaborate(body: &mut Body, items: &ItemTree, sigs: &Signatures, en
             }
             let mut subtree = Vec::new();
             paths.subtree(path, &mut subtree);
-            if subtree.iter().any(|&p| state.maybe_held[p]) {
+            if !precise && subtree.iter().any(|&p| state.maybe_held[p]) {
                 body.live_drops.push(live);
             }
             let ty = body.place_ty(place, sigs);
@@ -94,11 +109,15 @@ pub(crate) fn elaborate(body: &mut Body, items: &ItemTree, sigs: &Signatures, en
                 sigs,
                 needs_drop: &needs_drop,
                 steps: &mut steps,
+                variants: Vec::new(),
             };
             open.drop(path, place.clone(), ty);
+            if precise && !steps.is_empty() {
+                body.live_drops.push(live);
+            }
         }
-        for &(_, flag) in &steps {
-            if let Some(flag) = flag {
+        for step in &steps {
+            if let Some(flag) = step.flag {
                 flagged.insert(flag, Local::from_raw(0));
             }
         }
@@ -133,33 +152,64 @@ pub(crate) fn elaborate(body: &mut Body, items: &ItemTree, sigs: &Signatures, en
             .filter_map(|p| flagged.get(p))
             .map(|&flag| set(flag, false, range))
             .collect();
-        if resets.is_empty() && steps.len() == 1 && steps[0] == (place.clone(), None) {
+        let whole = Step {
+            place: place.clone(),
+            flag: None,
+            variants: Vec::new(),
+        };
+        if resets.is_empty() && steps.len() == 1 && steps[0] == whole {
             continue;
         }
         let mut next = target;
         if !resets.is_empty() {
             next = push(body, resets, TerminatorKind::Goto(target), range);
         }
-        for (i, (place, flag)) in steps.into_iter().enumerate().rev() {
-            let drop = TerminatorKind::Drop {
-                place,
+        for (i, step) in steps.into_iter().enumerate().rev() {
+            let mut kind = TerminatorKind::Drop {
+                place: step.place,
                 target: next,
             };
-            let kind = match flag {
-                None => drop,
-                Some(flag) => {
-                    let drop_block = push(body, Vec::new(), drop, range);
-                    TerminatorKind::SwitchInt {
-                        discr: Operand::Copy(flagged[&flag].into()),
-                        targets: vec![(0, next)],
-                        otherwise: drop_block,
-                    }
-                }
-            };
+            let mut statements = Vec::new();
+            if let Some(flag) = step.flag {
+                let drop_block = push(body, Vec::new(), kind, range);
+                kind = TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(flagged[&flag].into()),
+                    targets: vec![(0, next)],
+                    otherwise: drop_block,
+                };
+            }
+            // The innermost enum's test last, the outermost's first.
+            for (enum_place, variant) in step.variants.into_iter().rev() {
+                let ty = body.place_ty(&enum_place, sigs);
+                let TyKind::Adt(adt, _) = ty.kind() else {
+                    continue;
+                };
+                let test_block = push(body, std::mem::take(&mut statements), kind, range);
+                let discriminant = body.locals.alloc(LocalDecl {
+                    ty: Ty::int(flux_ty::discriminant_ty(items, adt.strukt)),
+                    kind: LocalKind::Temp,
+                });
+                statements.push(Statement {
+                    kind: StatementKind::Assign(
+                        discriminant.into(),
+                        Rvalue::Discriminant(enum_place),
+                    ),
+                    range,
+                });
+                kind = TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(discriminant.into()),
+                    targets: vec![(
+                        crate::discriminant_bits(items, adt.strukt, variant),
+                        test_block,
+                    )],
+                    otherwise: next,
+                };
+            }
             if i == 0 {
+                body.blocks[block].statements.extend(statements);
                 body.blocks[block].terminator.kind = kind;
             } else {
-                next = push(body, Vec::new(), kind, range);
+                next = push(body, statements, kind, range);
             }
         }
     }
@@ -184,9 +234,19 @@ struct Open<'a> {
     sigs: &'a Signatures,
     needs_drop: &'a dyn Fn(Ty) -> bool,
     steps: &'a mut Vec<Step>,
+    /// The enums, and their variants, the places dropped are inside of.
+    variants: Vec<(Place, u32)>,
 }
 
 impl Open<'_> {
+    fn step(&mut self, place: Place, flag: Option<usize>) {
+        self.steps.push(Step {
+            place,
+            flag,
+            variants: self.variants.clone(),
+        });
+    }
+
     /// Drops `place`, of type `ty`, whose move path is `path`.
     fn drop(&mut self, path: usize, place: Place, ty: Ty) {
         let mut subtree = Vec::new();
@@ -195,7 +255,7 @@ impl Open<'_> {
             return;
         }
         if subtree.iter().all(|&p| !self.state.maybe_uninit[p]) {
-            self.steps.push((place, None));
+            self.step(place, None);
             return;
         }
         let has_drop_impl = match ty.kind() {
@@ -204,29 +264,48 @@ impl Open<'_> {
             }
             _ => false,
         };
-        let fields = self.sigs.fields(ty);
         let children = &self.paths.paths[path].children;
+        if let (Some(variants), false, false) =
+            (self.sigs.variants(ty), children.is_empty(), has_drop_impl)
+        {
+            // Each variant's fields, if it is the one the enum holds.
+            for (v, fields) in variants.into_iter().enumerate() {
+                let v = v as u32;
+                let child = children.iter().copied().find(|&c| {
+                    self.paths.paths[c].fields.last() == Some(&ProjectionElem::Downcast(v))
+                });
+                self.variants.push((place.clone(), v));
+                self.fields(child.unwrap_or(path), path, &place.downcast(v), fields);
+                self.variants.pop();
+            }
+            return;
+        }
+        let fields = self.sigs.fields(ty);
         let (Some(fields), false, false) = (fields, children.is_empty(), has_drop_impl) else {
-            self.steps.push((place, Some(path)));
+            self.step(place, Some(path));
             return;
         };
-        // Field by field: those with move paths by theirs, the others
-        // by their parent's own state, which only it and its ancestors
-        // change.
+        self.fields(path, path, &place, fields);
+    }
+
+    /// Drops the fields of `place`, whose types are `fields`: those with
+    /// move paths below `path` by theirs, the others by `owner`'s own
+    /// state, which only it and its ancestors change.
+    fn fields(&mut self, path: usize, owner: usize, place: &Place, fields: &[Ty]) {
+        let children = self.paths.paths[path].children.clone();
         for (i, &field_ty) in fields.iter().enumerate() {
             if !(self.needs_drop)(field_ty) {
                 continue;
             }
             let field = place.field(i as u32);
-            let child = children
-                .iter()
-                .copied()
-                .find(|&c| self.paths.paths[c].fields.last() == Some(&(i as u32)));
+            let child = children.iter().copied().find(|&c| {
+                self.paths.paths[c].fields.last() == Some(&ProjectionElem::Field(i as u32))
+            });
             match child {
                 Some(child) => self.drop(child, field, field_ty),
-                None if !self.state.maybe_held[path] => {}
-                None if !self.state.maybe_uninit[path] => self.steps.push((field, None)),
-                None => self.steps.push((field, Some(path))),
+                None if !self.state.maybe_held[owner] => {}
+                None if !self.state.maybe_uninit[owner] => self.step(field, None),
+                None => self.step(field, Some(owner)),
             }
         }
     }

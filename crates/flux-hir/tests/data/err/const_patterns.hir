@@ -1,0 +1,49 @@
+struct S;
+
+impl S;
+
+fn f() -> () {}
+
+fn S::g() -> () {}
+
+fn shadowing(x@0: i32) -> () {
+    match x@0 {
+        ref N@1 => {},
+    }
+    match x@0 {
+        mut N@2 => {},
+    }
+    let ref N@3 = x@0;
+}
+
+fn shadowing_param(N@0 @ 1: i32) -> () {}
+
+fn not_constants(x@0: i32) -> i32 {
+    match x@0 {
+        <missing> => 1,
+        <missing> => 2,
+        _ => 0,
+    }
+}
+
+fn range_ends(x@0: i32) -> i32 {
+    let y@1 = 3;
+    match x@0 {
+        <missing> => 1,
+        <missing> => 2,
+        <missing> => 3,
+        _ => 0,
+    }
+}
+
+fn main() -> () {}
+
+error 173..174: match bindings cannot shadow constants
+error 213..214: match bindings cannot shadow constants
+error 239..240: let bindings cannot shadow constants
+error 268..269: function parameters cannot shadow constants
+error 340..348: expected unit struct, unit variant or constant, found function `crate::f`
+error 363..367: expected unit struct, unit variant or constant, found associated function `S::g`
+error 471..472: runtime values cannot be referenced in patterns
+error 491..492: only `char` and numeric types are allowed in range patterns
+error 511..512: cannot find value `Z` in this scope

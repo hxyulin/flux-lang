@@ -487,9 +487,19 @@ impl Checker<'_> {
                 }
             }
             None => {
-                if let LocalKind::User { mutable: false, .. } = self.body.locals[place.local].kind {
+                if let LocalKind::User {
+                    mutable: false,
+                    name: local,
+                } = self.body.locals[place.local].kind
+                {
+                    // A part of a binding is named with the binding.
+                    let what = if place.projection.is_empty() {
+                        "it".to_owned()
+                    } else {
+                        format!("`{local}`")
+                    };
                     let message = format!(
-                        "cannot borrow `{name}` as mutable, as it is not declared as mutable"
+                        "cannot borrow `{name}` as mutable, as {what} is not declared as mutable"
                     );
                     self.error(range, message);
                 }
@@ -504,6 +514,33 @@ impl Checker<'_> {
             Some(TyKind::Ref(Mutability::Mut, _)) => "a mutable reference",
             _ => "a raw pointer",
         };
+        // A variant's field is named with the variant: `r` as enum
+        // variant `A`.
+        if let Some(at) = place
+            .projection
+            .iter()
+            .rposition(|e| matches!(e, crate::ProjectionElem::Downcast(_)))
+            && let crate::ProjectionElem::Downcast(variant) = place.projection[at]
+        {
+            let mut base = Place {
+                local: place.local,
+                projection: place.projection[..at].into(),
+            };
+            let ty = self.body.place_ty(&base, self.sigs);
+            if let [rest @ .., crate::ProjectionElem::Deref] = &*base.projection {
+                base.projection = rest.into();
+            }
+            let name = match ty.kind() {
+                TyKind::Adt(adt, _) => self.items.structs[adt.strukt].variant(variant).name,
+                _ => flux_intern::kw::Empty,
+            };
+            let message = format!(
+                "cannot move out of `{}` as enum variant `{name}` which is behind {behind}",
+                self.name(&base)
+            );
+            self.error(range, message);
+            return;
+        }
         // rustc names a tuple struct rather than its field: `w`, not
         // `w.0`.
         let mut named = place.clone();

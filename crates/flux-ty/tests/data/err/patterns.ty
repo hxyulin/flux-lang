@@ -1,0 +1,71 @@
+enum E { A, B { 0: i32, 1: bool }, C { x: i32, y: bool }, D }
+enum Void {  }
+struct S { a: bool, b: bool }
+struct T { 0: bool, 1: u8 }
+fn variants(E) -> ()
+    e@0: E
+fn nested(Option<Option<bool>>) -> ()
+    o@0: Option<Option<bool>>
+fn integers(i32, u8, i128, usize, isize) -> ()
+    x@0: i32
+    y@1: u8
+    z@2: i128
+    w@3: usize
+    v@4: isize
+fn many(u8) -> ()
+    x@0: u8
+fn structs((bool, bool), S, T) -> ()
+    t@0: (bool, bool)
+    s@1: S
+    u@2: T
+fn references(&E) -> ()
+    e@0: &E
+fn mutable(&mut E) -> ()
+    e@0: &mut E
+fn guards(E, bool) -> ()
+    e@0: E
+    c@1: bool
+fn empty(i8, E, &E, bool) -> ()
+    x@0: i8
+    e@1: E
+    r@2: &E
+    b@3: bool
+fn uninhabited(Option<Void>, Void) -> i32
+    o@0: Option<Void>
+    v@1: Void
+fn refutable(E, u8) -> ()
+    e@0: E
+    x@1: u8
+fn parameter(E) -> ()
+fn ranges(u8) -> ()
+    x@0: u8
+fn modes(&Option<i32>) -> ()
+    o@0: &Option<i32>
+    x@1: &i32
+    y@2: &i32
+fn main() -> ()
+error 348..349: non-exhaustive patterns: `E::B(_, _)`, `E::C { .. }` and `E::D` not covered
+error 427..428: non-exhaustive patterns: `Some(Some(_))` not covered
+error 552..553: non-exhaustive patterns: `i32::MIN..=-1_i32` and `1_i32..=i32::MAX` not covered
+error 588..589: non-exhaustive patterns: `6_u8` and `8_u8..=u8::MAX` not covered
+error 644..645: non-exhaustive patterns: `i128::MIN..=-1_i128` and `1_i128..` not covered
+error 680..681: non-exhaustive patterns: `usize::MAX..` not covered
+error 739..740: non-exhaustive patterns: `..=-1_isize` not covered
+error 797..798: non-exhaustive patterns: `1_u8`, `3_u8`, `5_u8` and 2 more not covered
+error 942..943: non-exhaustive patterns: `(false, _)` not covered
+error 986..987: non-exhaustive patterns: `S { a: false, .. }` not covered
+error 1038..1039: non-exhaustive patterns: `T(false, _)` not covered
+error 1109..1110: non-exhaustive patterns: `&E::C { .. }` and `&E::D` not covered
+error 1186..1187: non-exhaustive patterns: `&mut E::B(_, _)`, `&mut E::C { .. }` and `&mut E::D` not covered
+error 1255..1256: non-exhaustive patterns: `E::A` not covered
+error 1386..1387: non-exhaustive patterns: type `i8` is non-empty
+error 1401..1402: non-exhaustive patterns: `E::A`, `E::B(_, _)`, `E::C { .. }` and 1 more not covered
+error 1416..1417: non-exhaustive patterns: type `&E` is non-empty
+error 1431..1432: non-exhaustive patterns: type `bool` is non-empty
+error 1582..1586: refutable pattern in local binding: patterns `E::B(_, _)`, `E::C { .. }` and `E::D` not covered
+error 1600..1601: refutable pattern in local binding: pattern `1_u8..=u8::MAX` not covered
+error 1623..1627: refutable pattern in function argument: patterns `E::B(_, _)`, `E::C { .. }` and `E::D` not covered
+error 1677..1682: lower bound for range pattern must be less than or equal to upper bound
+error 1697..1701: lower bound for range pattern must be less than upper bound
+error 1788..1791: cannot explicitly borrow within an implicitly-borrowing pattern
+error 1814..1817: cannot mutably bind by value within an implicitly-borrowing pattern

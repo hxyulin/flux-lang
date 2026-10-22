@@ -48,6 +48,16 @@ const fn calls_core(x: i32) -> i32 {
     x.min(10)
 }
 
+// `core`'s methods that rustc's makes conditionally const, which only
+// unstable Rust may call in constants.
+const UNSTABLE: i32 = Some(1).unwrap_or(2);
+const UNSTABLE_GENERIC: bool = Some(1).ok_or(2u8).is_ok();
+const UNSTABLE_PATH: i32 = Option::unwrap_or(Some(1), 2);
+
+const fn calls_unstable(r: Result<i32, bool>) -> bool {
+    r.ok().is_some()
+}
+
 const WRONG: i32 = true;
 const WRONG_TUPLE: (i32, bool) = (1, 2);
 const WRONG_STRUCT: S = 5;
@@ -59,5 +69,6 @@ impl S {
 
 fn main() {
     let _all = A + B + C + D + E + F + S::BAD + S::GOOD + calls_plain(1) + calls_core(2);
+    let _unstable = (UNSTABLE, UNSTABLE_GENERIC, UNSTABLE_PATH, calls_unstable(Ok(1)));
     let _wrong = (WRONG, WRONG_TUPLE, WRONG_STRUCT.value, NARROW, S::MISMATCH);
 }

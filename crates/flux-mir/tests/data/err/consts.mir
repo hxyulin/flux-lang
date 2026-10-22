@@ -103,7 +103,8 @@ error 1204..1210: attempt to compute `128_u8 * 2_u8`, which would overflow
 error 1335..1348: attempt to negate `i8::MIN`, which would overflow
 error 1367..1379: attempt to compute `32768_i32 * 65536_i32`, which would overflow
 error 1401..1419: attempt to calculate the remainder of `7_i32` with a divisor of zero
-error 1464..1476: attempt to compute `i32::MAX + 1_i32`, which would overflow
-error 1464..1476: this arithmetic operation will overflow
-error 1504..1518: attempt to compute `1073741823_i32 * 3_i32`, which would overflow
-error 1504..1518: this arithmetic operation will overflow
+error 1545..1555: evaluation panicked: called `Option::unwrap()` on a `None` value
+error 1648..1660: attempt to compute `i32::MAX + 1_i32`, which would overflow
+error 1648..1660: this arithmetic operation will overflow
+error 1688..1702: attempt to compute `1073741823_i32 * 3_i32`, which would overflow
+error 1688..1702: this arithmetic operation will overflow

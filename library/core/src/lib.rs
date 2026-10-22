@@ -11,4 +11,7 @@ pub mod marker;
 pub mod mem;
 pub mod num;
 pub mod ops;
+pub mod option;
+mod panicking;
 pub mod prelude;
+pub mod result;

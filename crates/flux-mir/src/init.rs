@@ -4,7 +4,7 @@
 //!
 //! The analysis tracks *move paths*: each user local and parameter, and
 //! every field path into one that the body mentions (`s`, `s.inner`,
-//! `s.inner.x`). Paths stop at a dereference: what a reference points to
+//! `s.inner.x`, and through a variant, `(o as Some).0`). Paths stop at a dereference: what a reference points to
 //! is not the function's to initialize or move (moving out of it is
 //! E0507, in [`borrowck`](crate::borrowck)), so using `(*r).a` uses `r`.
 //!
@@ -44,6 +44,7 @@ pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
         sigs,
         paths: &paths,
         reported: vec![false; body.locals.len()],
+        moved_uses: HashMap::new(),
         diagnostics: Vec::new(),
     };
     for (block, data) in body.blocks.iter() {
@@ -138,6 +139,8 @@ pub(crate) fn statement_events(kind: &StatementKind) -> Vec<Event<'_>> {
         StatementKind::Assign(dest, rvalue) => {
             let mut events: Vec<Event> = match rvalue {
                 Rvalue::Ref { place, .. } => vec![Event::Borrow(place)],
+                // Which variant a value holds is a read of all of it.
+                Rvalue::Discriminant(place) => vec![Event::Read(place)],
                 _ => rvalue
                     .operands()
                     .into_iter()
@@ -166,33 +169,34 @@ pub(crate) fn terminator_events(kind: &TerminatorKind) -> Vec<Event<'_>> {
     events
 }
 
-/// A local the analysis tracks, or a path of fields into one.
+/// A local the analysis tracks, or a path of fields (and variants) into
+/// one.
 pub(crate) struct MovePath {
     pub(crate) local: Local,
-    pub(crate) fields: Box<[u32]>,
+    pub(crate) fields: Box<[ProjectionElem]>,
     pub(crate) parent: Option<usize>,
     pub(crate) children: Vec<usize>,
 }
 
 pub(crate) struct MovePaths {
     pub(crate) paths: Vec<MovePath>,
-    ids: HashMap<(Local, Box<[u32]>), usize>,
+    ids: HashMap<(Local, Box<[ProjectionElem]>), usize>,
     /// Moves out of a struct with a `Drop` impl, E0509: they move
     /// nothing, as in rustc, so later uses are not errors too.
     forbidden: Vec<Place>,
 }
 
-/// The fields of `place` before its first dereference, and whether it
-/// has one.
-fn fields_before_deref(place: &Place) -> (Box<[u32]>, bool) {
-    let mut fields = Vec::new();
-    for elem in &place.projection {
-        match elem {
-            ProjectionElem::Field(field) => fields.push(*field),
-            ProjectionElem::Deref => return (fields.into(), true),
-        }
+/// The fields and variants of `place` before its first dereference, and
+/// whether it has one.
+fn fields_before_deref(place: &Place) -> (Box<[ProjectionElem]>, bool) {
+    match place
+        .projection
+        .iter()
+        .position(|&e| e == ProjectionElem::Deref)
+    {
+        Some(deref) => (place.projection[..deref].into(), true),
+        None => (place.projection.clone(), false),
     }
-    (fields.into(), false)
 }
 
 impl MovePaths {
@@ -253,7 +257,7 @@ impl MovePaths {
     }
 
     /// The path for `local` with `fields` and its prefixes.
-    fn insert(&mut self, local: Local, fields: &[u32]) -> usize {
+    fn insert(&mut self, local: Local, fields: &[ProjectionElem]) -> usize {
         if let Some(&id) = self.ids.get(&(local, fields.into())) {
             return id;
         }
@@ -342,13 +346,19 @@ impl MovePaths {
     }
 }
 
-/// Reports errors, a use of each local at most once.
+/// Reports errors: of the uses of uninitialized places, one per local;
+/// of the uses of moved ones, one per set of moved paths they find, as
+/// rustc reports one per set of moves, the use of the most specific
+/// place.
 struct Report<'a> {
     body: &'a Body,
     items: &'a ItemTree,
     sigs: &'a Signatures,
     paths: &'a MovePaths,
     reported: Vec<bool>,
+    /// For each set of moved paths a use found, its diagnostic and the
+    /// length of the place used.
+    moved_uses: HashMap<Vec<usize>, (usize, usize)>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -389,14 +399,48 @@ impl Report<'_> {
             .rev()
             .chain([&path])
             .find(|&&p| state.maybe_moved[p]);
-        let message = if let Some(&moved) = moved {
-            format!("{used} of moved value: `{}`", self.path_name(moved))
-        } else if below.iter().any(|&p| state.maybe_moved[p]) {
-            format!(
-                "{used} of partially moved value: `{}`",
-                self.path_name(path)
-            )
-        } else if above.iter().chain(&below).any(|&p| state.maybe_uninit[p]) {
+        let moves: Vec<usize> = match moved {
+            Some(&moved) => vec![moved],
+            None => below
+                .iter()
+                .copied()
+                .filter(|&p| state.maybe_moved[p])
+                .collect(),
+        };
+        if !moves.is_empty() {
+            // rustc does not name places inside variants.
+            let named = |path: usize| {
+                let name = self.path_name(path);
+                let in_variant = self.paths.paths[path]
+                    .fields
+                    .iter()
+                    .any(|e| matches!(e, ProjectionElem::Downcast(_)));
+                if in_variant {
+                    String::new()
+                } else {
+                    format!(": `{name}`")
+                }
+            };
+            let message = match moved {
+                Some(&moved) => format!("{used} of moved value{}", named(moved)),
+                None => format!("{used} of partially moved value{}", named(path)),
+            };
+            let specific = place.projection.len();
+            match self.moved_uses.get(&moves).copied() {
+                Some((_, length)) if length >= specific => {}
+                Some((index, _)) => {
+                    self.diagnostics[index] = Diagnostic::new(range, message);
+                    self.moved_uses.insert(moves, (index, specific));
+                }
+                None => {
+                    self.moved_uses
+                        .insert(moves, (self.diagnostics.len(), specific));
+                    self.error(range, message);
+                }
+            }
+            return;
+        }
+        let message = if above.iter().chain(&below).any(|&p| state.maybe_uninit[p]) {
             let root = self.local_name(place.local);
             let how = if state.maybe_init[path] {
                 "is possibly-uninitialized"
@@ -460,11 +504,7 @@ impl Report<'_> {
         let path = &self.paths.paths[path];
         let place = Place {
             local: path.local,
-            projection: path
-                .fields
-                .iter()
-                .map(|&f| ProjectionElem::Field(f))
-                .collect(),
+            projection: path.fields.clone(),
         };
         place_name(self.body, self.items, self.sigs, &place)
     }

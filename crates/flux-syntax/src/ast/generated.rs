@@ -4342,7 +4342,7 @@ impl<'t> AstNode<'t> for UseTreeList<'t> {
 
 /// ```text
 /// Variant =
-///   Attr* Name (RecordFieldList | TupleFieldList)? ('=' Expr)?
+///   Attr* Visibility? Name (RecordFieldList | TupleFieldList)? ('=' Expr)?
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Variant<'t> {
@@ -4352,6 +4352,9 @@ pub struct Variant<'t> {
 impl<'t> Variant<'t> {
     pub fn attrs(self) -> AstChildren<'t, Attr<'t>> {
         support::children(self.syntax)
+    }
+    pub fn visibility(self) -> Option<Visibility<'t>> {
+        support::child(self.syntax)
     }
     pub fn name(self) -> Option<Name<'t>> {
         support::child(self.syntax)

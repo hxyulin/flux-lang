@@ -1,0 +1,23 @@
+struct S {}
+fn f() -> ()
+fn f() -> ()
+fn generic<T>(i32) -> i32
+    x@0: i32
+fn method<T>(i32) -> i32
+    x@0: i32
+fn bool_range(bool) -> i32
+    x@0: bool
+fn wrong_type(u8) -> i32
+    x@0: u8
+fn tuple((i32, i32)) -> i32
+    x@0: (i32, i32)
+fn main() -> ()
+const B: bool
+const P: (i32, i32)
+const K: i32
+const K: i32
+error 282..286: constant pattern cannot depend on generic parameters
+error 374..378: expected unit struct, unit variant or constant, found associated function `T::f`
+error 464..469: only `char` and numeric types are allowed in range patterns
+error 553..557: mismatched types: expected `u8`, found `i32`
+error 644..645: constants of type `(i32, i32)` in patterns are not supported yet

@@ -25,6 +25,13 @@ pub struct Body {
     /// `MethodCall` expression, for those that have any or go through
     /// `Self`.
     pub generic_args: ArenaMap<Expr, PathGenerics>,
+    /// The same for struct and variant patterns, `E::<T>::A(x)`.
+    pub pat_generic_args: ArenaMap<Pat, PathGenerics>,
+    /// The bindings in later alternatives of or-patterns that bind by
+    /// reference where the first binds by value, or the reverse
+    /// (reported): how each binds, `ref` (`Some(false)`), `ref mut`
+    /// (`Some(true)`) or by value, for the types rustc reports.
+    pub alt_by_ref: ArenaMap<Pat, Option<bool>>,
     /// The function's block.
     pub root: ExprId,
 }
@@ -66,10 +73,24 @@ pub enum Expr {
         tail: Option<ExprId>,
         is_unsafe: bool,
     },
+    /// `if c { .. } else { .. }`. The condition may be or contain
+    /// [`Expr::Let`]s, joined by `&&`, whose bindings the `then` branch
+    /// sees.
     If {
         condition: ExprId,
         then_branch: ExprId,
         else_branch: Option<ExprId>,
+    },
+    /// `let pat = expr` in the condition of an `if` or `while`, alone or
+    /// in a chain of `&&`: true if the value matches the pattern.
+    Let {
+        pat: PatId,
+        expr: ExprId,
+    },
+    /// `match scrutinee { arms }`
+    Match {
+        scrutinee: ExprId,
+        arms: Box<[MatchArm]>,
     },
     Loop {
         body: ExprId,
@@ -121,12 +142,22 @@ pub enum Expr {
         mutable: bool,
         expr: ExprId,
     },
-    /// `S { a: 1, b, ..base }`, in source order.
+    /// `S { a: 1, b, ..base }` or `E::V { a: 1 }`, in source order.
     Record {
         strukt: StructId,
+        /// The variant of an enum; 0 for a struct.
+        variant: u32,
         fields: Box<[(Symbol, ExprId)]>,
         spread: Option<ExprId>,
     },
+}
+
+/// `pat if guard => body`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchArm {
+    pub pat: PatId,
+    pub guard: Option<ExprId>,
+    pub body: ExprId,
 }
 
 /// The generic arguments of an expression's path, by what they are for.
@@ -179,6 +210,9 @@ pub enum Res {
     Function(FunctionId),
     /// A tuple struct's constructor or a unit struct's value.
     Struct(StructId),
+    /// An enum's variant: a tuple variant's constructor or a unit
+    /// variant's value.
+    Variant(StructId, u32),
     /// A constant, free or associated.
     Const(ConstId),
     /// An associated item that type checking finds from a type's inherent
@@ -201,6 +235,9 @@ pub enum Stmt {
         pat: PatId,
         ty: Option<TypeRefId>,
         init: Option<ExprId>,
+        /// `let pat = init else { .. };`: the block, which must diverge,
+        /// run if `init` does not match `pat`.
+        else_branch: Option<ExprId>,
     },
     Expr {
         expr: ExprId,
@@ -214,46 +251,83 @@ pub enum Pat {
     Missing,
     /// `_`
     Wild,
-    /// `x` or `mut x`.
-    Bind(BindingId),
+    /// `x`, `mut x`, `ref x` or `ref mut x`, and with a pattern the value
+    /// must match too, `x @ pat`.
+    Bind {
+        binding: BindingId,
+        sub: Option<PatId>,
+    },
     /// `(a, b)`; `rest` is the position of `..`, as in `(a, .., z)`.
     Tuple {
         pats: Box<[PatId]>,
         rest: Option<u32>,
     },
-    /// `P(a, b)`, with `..` like a tuple pattern.
+    /// `P(a, b)` or `E::V(a, b)`, with `..` like a tuple pattern.
     TupleStruct {
         strukt: StructId,
+        /// The variant of an enum; 0 for a struct.
+        variant: u32,
         pats: Box<[PatId]>,
         rest: Option<u32>,
     },
-    /// `S { a, b: x, .. }`
+    /// `S { a, b: x, .. }` or `E::V { a, .. }`.
     Record {
         strukt: StructId,
+        variant: u32,
         fields: Box<[(Symbol, PatId)]>,
         rest: bool,
     },
-    /// A unit struct: `U`.
-    Unit(StructId),
+    /// A unit struct, `U`, or a unit variant, `E::A`.
+    Unit(StructId, u32),
+    /// A value to compare with, as an expression: a literal (`1`, `-1`,
+    /// `true`) or a path to a constant (`N`, `i32::MAX`, `Self::N`).
+    Expr(ExprId),
+    /// `a..=b`, `a..b`, `a..` or `..=b`, whose ends are literals or paths
+    /// to constants.
+    Range {
+        start: Option<ExprId>,
+        end: Option<ExprId>,
+        inclusive: bool,
+    },
+    /// `a | b`, each alternative binding the same names.
+    Or(Box<[PatId]>),
+    /// `&pat` or `&mut pat`.
+    Ref { pat: PatId, mutable: bool },
 }
 
 impl Pat {
     /// The patterns directly inside this one.
     pub fn children(&self) -> impl Iterator<Item = PatId> + '_ {
         let (pats, fields): (&[PatId], &[(Symbol, PatId)]) = match self {
-            Pat::Tuple { pats, .. } | Pat::TupleStruct { pats, .. } => (pats, &[]),
+            Pat::Tuple { pats, .. } | Pat::TupleStruct { pats, .. } | Pat::Or(pats) => (pats, &[]),
             Pat::Record { fields, .. } => (&[], fields),
-            Pat::Missing | Pat::Wild | Pat::Bind(_) | Pat::Unit(_) => (&[], &[]),
+            Pat::Bind { sub: Some(sub), .. } | Pat::Ref { pat: sub, .. } => {
+                (std::slice::from_ref(sub), &[])
+            }
+            Pat::Missing
+            | Pat::Wild
+            | Pat::Bind { sub: None, .. }
+            | Pat::Unit(..)
+            | Pat::Expr(_)
+            | Pat::Range { .. } => (&[], &[]),
         };
         pats.iter().copied().chain(fields.iter().map(|&(_, p)| p))
     }
 }
 
 impl Body {
-    /// Every binding in `pat`, in source order.
+    /// Every binding in `pat`, in source order, once: an or-pattern's
+    /// alternatives bind the same ones.
     pub fn pat_bindings(&self, pat: PatId, out: &mut Vec<BindingId>) {
-        if let Pat::Bind(binding) = self.pats[pat] {
-            out.push(binding);
+        match &self.pats[pat] {
+            Pat::Bind { binding, .. } if !out.contains(binding) => out.push(*binding),
+            Pat::Or(alternatives) => {
+                if let Some(&first) = alternatives.first() {
+                    self.pat_bindings(first, out);
+                }
+                return;
+            }
+            _ => {}
         }
         for child in self.pats[pat].children() {
             self.pat_bindings(child, out);
@@ -266,4 +340,9 @@ impl Body {
 pub struct Binding {
     pub name: Symbol,
     pub mutable: bool,
+    /// `ref x` (`Some(false)`) or `ref mut x` (`Some(true)`): binds a
+    /// reference to the matched place rather than its value. Matching a
+    /// reference with a pattern that is not one may make a plain binding
+    /// one too; type checking says which ([`flux_ty`]'s binding modes).
+    pub by_ref: Option<bool>,
 }

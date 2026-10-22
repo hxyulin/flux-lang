@@ -1,0 +1,316 @@
+fn double(_1: u8) -> u8 {
+    let mut _0: u8;
+    let _2: u8;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = Mul(copy _2, const 2_u8);
+        return;
+    }
+}
+
+fn missing_zero(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: bool;
+    let _3: bool;
+    let _4: bool;
+    let _5: bool;
+
+    bb0: {
+        _2 = Ge(copy _1, const MIN);
+        switchInt(copy _2) -> [0: bb2, otherwise: bb3];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        _4 = Ge(copy _1, const 1_i32);
+        switchInt(copy _4) -> [0: bb6, otherwise: bb7];
+    }
+
+    bb3: {
+        _3 = Le(copy _1, const -1_i32);
+        switchInt(copy _3) -> [0: bb2, otherwise: bb4];
+    }
+
+    bb4: {
+        goto -> bb5;
+    }
+
+    bb5: {
+        _0 = const 0_i32;
+        goto -> bb1;
+    }
+
+    bb6: {
+        unreachable;
+    }
+
+    bb7: {
+        _5 = Le(copy _1, const MAX);
+        switchInt(copy _5) -> [0: bb6, otherwise: bb8];
+    }
+
+    bb8: {
+        goto -> bb9;
+    }
+
+    bb9: {
+        _0 = const 1_i32;
+        goto -> bb1;
+    }
+}
+
+fn missing_false(_1: bool) -> i32 {
+    let mut _0: i32;
+    let _2: bool;
+
+    bb0: {
+        _2 = Eq(copy _1, const YES);
+        switchInt(copy _2) -> [0: bb2, otherwise: bb3];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        unreachable;
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _0 = const 1_i32;
+        goto -> bb1;
+    }
+}
+
+fn empty_range(_1: u8) -> i32 {
+    let mut _0: i32;
+    let _2: bool;
+    let _3: bool;
+
+    bb0: {
+        _2 = Ge(copy _1, const LOW);
+        switchInt(copy _2) -> [0: bb2, otherwise: bb3];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb7;
+    }
+
+    bb3: {
+        _3 = Le(copy _1, const HIGH);
+        switchInt(copy _3) -> [0: bb2, otherwise: bb4];
+    }
+
+    bb4: {
+        goto -> bb5;
+    }
+
+    bb5: {
+        _0 = const 0_i32;
+        goto -> bb1;
+    }
+
+    bb6: {
+        unreachable;
+    }
+
+    bb7: {
+        _0 = const 1_i32;
+        goto -> bb1;
+    }
+}
+
+fn computed(_1: u8) -> i32 {
+    let mut _0: i32;
+    let _2: bool;
+    let _3: bool;
+    let _4: bool;
+    let _5: bool;
+
+    bb0: {
+        _2 = Ge(copy _1, const 0_u8);
+        switchInt(copy _2) -> [0: bb2, otherwise: bb3];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        _4 = Ge(copy _1, const TWENTY);
+        switchInt(copy _4) -> [0: bb6, otherwise: bb7];
+    }
+
+    bb3: {
+        _3 = Lt(copy _1, const TWENTY);
+        switchInt(copy _3) -> [0: bb2, otherwise: bb4];
+    }
+
+    bb4: {
+        goto -> bb5;
+    }
+
+    bb5: {
+        _0 = const 0_i32;
+        goto -> bb1;
+    }
+
+    bb6: {
+        unreachable;
+    }
+
+    bb7: {
+        _5 = Le(copy _1, const LIMIT);
+        switchInt(copy _5) -> [0: bb6, otherwise: bb8];
+    }
+
+    bb8: {
+        goto -> bb9;
+    }
+
+    bb9: {
+        _0 = const 1_i32;
+        goto -> bb1;
+    }
+}
+
+fn refutable_let(_1: i32) -> () {
+    let mut _0: ();
+    let _2: bool;
+
+    bb0: {
+        _2 = Eq(copy _1, const N);
+        switchInt(copy _2) -> [0: bb1, otherwise: bb3];
+    }
+
+    bb1: {
+        unreachable;
+    }
+
+    bb2: {
+        _0 = const ();
+        return;
+    }
+
+    bb3: {
+        goto -> bb2;
+    }
+}
+
+fn refutable_param(_1: i32) -> () {
+    let mut _0: ();
+    let _2: bool;
+
+    bb0: {
+        _2 = Eq(copy _1, const N);
+        switchInt(copy _2) -> [0: bb1, otherwise: bb3];
+    }
+
+    bb1: {
+        unreachable;
+    }
+
+    bb2: {
+        _0 = const ();
+        return;
+    }
+
+    bb3: {
+        goto -> bb2;
+    }
+}
+
+fn failing(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: bool;
+
+    bb0: {
+        _2 = Eq(copy _1, const BAD);
+        switchInt(copy _2) -> [0: bb2, otherwise: bb3];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        goto -> bb6;
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _0 = const 0_i32;
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        _0 = const 1_i32;
+        goto -> bb1;
+    }
+}
+
+fn not_borrow_checked(_1: u8) -> i32 {
+    let mut _0: i32;
+    let _2: i32; // v
+    let _3: bool;
+
+    bb0: {
+        _3 = Eq(copy _1, const LOW);
+        switchInt(copy _3) -> [0: bb2, otherwise: bb3];
+    }
+
+    bb1: {
+        StorageDead(_2);
+        return;
+    }
+
+    bb2: {
+        unreachable;
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _0 = copy _2;
+        goto -> bb1;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 202..214: attempt to compute `i32::MAX + 1_i32`, which would overflow
+error 387..388: non-exhaustive patterns: `0_i32` not covered
+error 500..501: non-exhaustive patterns: `false` not covered
+error 584..594: lower bound for range pattern must be less than or equal to upper bound
+error 664..665: non-exhaustive patterns: `201_u8..=u8::MAX` not covered
+error 768..769: refutable pattern in local binding: patterns `i32::MIN..=4_i32` and `6_i32..=i32::MAX` not covered
+error 797..798: refutable pattern in function argument: patterns `i32::MIN..=4_i32` and `6_i32..=i32::MAX` not covered
+error 1024..1025: non-exhaustive patterns: `0_u8..=9_u8` and `11_u8..=u8::MAX` not covered

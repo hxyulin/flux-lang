@@ -8,13 +8,11 @@ use flux_syntax::{SyntaxNode, SyntaxTree, TextRange};
 use flux_arena::ArenaMap;
 
 use crate::body::{
-    Binding, BindingId, Body, BodySourceMap, Expr, ExprId, Literal, LoopSource, Pat, PatId,
-    PathGenerics, Res, SegmentArgs, Stmt,
+    Binding, BindingId, Body, BodySourceMap, Expr, ExprId, Literal, LoopSource, MatchArm, Pat,
+    PatId, PathGenerics, Res, SegmentArgs, Stmt,
 };
 use crate::def_map::{Def, Ns, ResolveError, Resolved};
-use crate::item_tree::{
-    GenericArgs, PathAnchor, lower_generic_args, lower_generic_path, lower_path,
-};
+use crate::item_tree::{GenericArgs, PathAnchor, lower_generic_args, lower_generic_path};
 use crate::item_tree::{check_attr, check_attrs, lower_type, unsupported};
 use crate::literal::{parse_int, unescape_c_str};
 use crate::{
@@ -27,6 +25,7 @@ use crate::{
 enum PatSite {
     Let,
     Param,
+    Match,
 }
 
 /// A lowered body with its source map and diagnostics.
@@ -62,23 +61,33 @@ pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> 
             let binding = ctx.bindings.alloc(Binding {
                 name: kw::SelfLower,
                 mutable: param.amp_token().is_none() && param.mut_token().is_some(),
+                by_ref: None,
             });
             ctx.scopes.push((kw::SelfLower, binding));
             let range = param.syntax().text_range();
-            params.push(ctx.alloc_pat(Pat::Bind(binding), range));
+            params.push(ctx.alloc_pat(Pat::Bind { binding, sub: None }, range));
         }
         for param in list.params() {
-            params.push(ctx.lower_pat(param.pat(), param.syntax(), PatSite::Param));
+            if let Some(pat @ ast::Pat::OrPat(_)) = param.pat() {
+                ctx.error(
+                    pat.syntax().text_range(),
+                    "function parameters require top-level or-patterns in parentheses",
+                );
+            }
+            params.push(ctx.lower_top_pat(param.pat(), param.syntax(), PatSite::Param));
         }
         // Each name may be bound by one parameter only. Most parameters
         // are names, compared without allocating.
         let name = |ctx: &Ctx<'_>, p: PatId| match ctx.pats[p] {
-            Pat::Bind(b) => Some(ctx.bindings[b].name),
+            Pat::Bind { binding, sub: None } => Some(ctx.bindings[binding].name),
             _ => None,
         };
-        let simple = params
-            .iter()
-            .all(|&p| matches!(ctx.pats[p], Pat::Bind(_) | Pat::Wild | Pat::Missing));
+        let simple = params.iter().all(|&p| {
+            matches!(
+                ctx.pats[p],
+                Pat::Bind { sub: None, .. } | Pat::Wild | Pat::Missing
+            )
+        });
         if simple {
             for i in 1..params.len() {
                 let Some(n) = name(&ctx, params[i]) else {
@@ -96,8 +105,8 @@ pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> 
             let mut binds = Vec::new();
             let mut stack: Vec<PatId> = params.iter().rev().copied().collect();
             while let Some(p) = stack.pop() {
-                if let Pat::Bind(b) = ctx.pats[p] {
-                    binds.push((ctx.bindings[b].name, p));
+                if let Pat::Bind { binding, .. } = ctx.pats[p] {
+                    binds.push((ctx.bindings[binding].name, p));
                 }
                 let first = stack.len();
                 stack.extend(ctx.pats[p].children());
@@ -138,6 +147,9 @@ fn derived_body(
 ) -> LoweredBody {
     let data = &items.functions[function];
     let s = &items.structs[strukt];
+    if s.is_enum() {
+        return derived_enum_body(items, function, strukt, derive);
+    }
     let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
     let mut params = Vec::new();
     let mut bindings = Vec::new();
@@ -148,8 +160,9 @@ fn derived_body(
         let binding = ctx.bindings.alloc(Binding {
             name,
             mutable: false,
+            by_ref: None,
         });
-        params.push(ctx.alloc_pat(Pat::Bind(binding), data.def_range));
+        params.push(ctx.alloc_pat(Pat::Bind { binding, sub: None }, data.def_range));
         bindings.push(binding);
     }
     // `binding.field`, at the field.
@@ -208,6 +221,7 @@ fn derived_body(
             let record = ctx.alloc_expr(
                 Expr::Record {
                     strukt,
+                    variant: 0,
                     fields,
                     spread: None,
                 },
@@ -325,6 +339,329 @@ fn derived_body(
     ctx.finish(params, root)
 }
 
+/// The body of the method `#[derive]` makes for enum `strukt`: a `match`
+/// on its variants, with a binding for each field. `Clone` builds the
+/// variant from the fields' clones, `PartialEq` compares the fields of
+/// the same variants (`E::A(a) => match other { E::A(b) => *a == *b, _
+/// => false }`),
+/// `Eq` checks each field's type, and `Clone` for an enum that derives
+/// `Copy` too checks its fields are `Clone`, then copies.
+fn derived_enum_body(
+    items: &ItemTree,
+    function: FunctionId,
+    strukt: StructId,
+    derive: Derive,
+) -> LoweredBody {
+    let data = &items.functions[function];
+    let s = &items.structs[strukt];
+    let variants = s.variants.as_deref().unwrap_or_default();
+    let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
+    let whole = s.name_range;
+    let mut params = Vec::new();
+    let mut receivers = Vec::new();
+    for name in [kw::SelfLower, Symbol::intern("other")]
+        .into_iter()
+        .take(data.params.len())
+    {
+        let binding = ctx.bindings.alloc(Binding {
+            name,
+            mutable: false,
+            by_ref: None,
+        });
+        params.push(ctx.alloc_pat(Pat::Bind { binding, sub: None }, data.def_range));
+        receivers.push(binding);
+    }
+    let local = |ctx: &mut Ctx<'_>, binding: BindingId, at: TextRange| {
+        ctx.alloc_expr(Expr::Path(Res::Local(binding)), at)
+    };
+    // `Tr::method(arg)`, for the lang trait `lang` or the function at
+    // `path` in `core`.
+    let call = |ctx: &mut Ctx<'_>, callee: Res, arg: ExprId, at: TextRange| {
+        let callee = ctx.alloc_expr(Expr::Path(callee), at);
+        ctx.source_map.segments.insert(callee, at);
+        ctx.alloc_expr(
+            Expr::Call {
+                callee,
+                args: Box::new([arg]),
+            },
+            at,
+        )
+    };
+    let lang_method = |lang: &str, method: &str| match items.lang_traits.get(&Symbol::intern(lang))
+    {
+        Some(&t) => Res::Assoc {
+            ty: None,
+            trait_: Some(t),
+            name: Symbol::intern(method),
+        },
+        None => Res::Err,
+    };
+    let assert_clone = {
+        let path = Path {
+            anchor: PathAnchor::Global,
+            qself: None,
+            segments: ["core", "clone", "assert_param_is_clone"]
+                .map(Symbol::intern)
+                .into(),
+            ranges: Box::default(),
+            anchor_ranges: Box::default(),
+            args: Box::default(),
+        };
+        match items.resolve(data.loc.module, &path, Ns::Values) {
+            Ok(Resolved::Def(Def::Function(f))) => Res::Function(f),
+            _ => Res::Err,
+        }
+    };
+    let copies = derive == Derive::Copy;
+    let mut arms = Vec::new();
+    for (v, variant) in variants.iter().enumerate() {
+        let v = v as u32;
+        let (pat, mine) = variant_pat(&mut ctx, strukt, v, "__self_");
+        let body = match derive {
+            Derive::Clone => {
+                let values: Vec<ExprId> = variant
+                    .fields
+                    .iter()
+                    .zip(&mine)
+                    .map(|(f, &b)| {
+                        let arg = local(&mut ctx, b, f.def_range);
+                        call(&mut ctx, lang_method("clone", "clone"), arg, f.def_range)
+                    })
+                    .collect();
+                build_variant(&mut ctx, strukt, v, values, variant.def_range)
+            }
+            Derive::PartialEq => {
+                let (other_pat, theirs) = variant_pat(&mut ctx, strukt, v, "__other_");
+                let mut all: Option<ExprId> = None;
+                for ((f, &a), &b) in variant.fields.iter().zip(&mine).zip(&theirs) {
+                    let at = f.def_range;
+                    let deref = |ctx: &mut Ctx<'_>, binding| {
+                        let operand = local(ctx, binding, at);
+                        ctx.alloc_expr(
+                            Expr::Unary {
+                                op: ast::UnaryOp::Deref,
+                                operand,
+                            },
+                            at,
+                        )
+                    };
+                    let (lhs, rhs) = (deref(&mut ctx, a), deref(&mut ctx, b));
+                    let eq = ctx.alloc_expr(
+                        Expr::Binary {
+                            op: BinaryOp::Cmp(CmpOp::Eq),
+                            lhs,
+                            rhs,
+                        },
+                        at,
+                    );
+                    ctx.source_map.ops.insert(eq, at);
+                    all = Some(match all {
+                        None => eq,
+                        Some(prev) => {
+                            let and = ctx.alloc_expr(
+                                Expr::Binary {
+                                    op: BinaryOp::Logic(LogicOp::And),
+                                    lhs: prev,
+                                    rhs: eq,
+                                },
+                                at,
+                            );
+                            ctx.source_map.ops.insert(and, at);
+                            and
+                        }
+                    });
+                }
+                let at = variant.def_range;
+                let equal =
+                    all.unwrap_or_else(|| ctx.alloc_expr(Expr::Literal(Literal::Bool(true)), at));
+                // Another variant is unequal.
+                let wild = ctx.alloc_pat(Pat::Wild, at);
+                let unequal = ctx.alloc_expr(Expr::Literal(Literal::Bool(false)), at);
+                let other = local(&mut ctx, receivers[1], at);
+                let arms = Box::new([
+                    MatchArm {
+                        pat: other_pat,
+                        guard: None,
+                        body: equal,
+                    },
+                    MatchArm {
+                        pat: wild,
+                        guard: None,
+                        body: unequal,
+                    },
+                ]);
+                ctx.alloc_expr(
+                    Expr::Match {
+                        scrutinee: other,
+                        arms,
+                    },
+                    at,
+                )
+            }
+            Derive::Eq | Derive::Copy => {
+                let check = if copies {
+                    assert_clone
+                } else {
+                    lang_method("total_eq", "assert_receiver_is_total_eq")
+                };
+                let stmts: Box<[Stmt]> = variant
+                    .fields
+                    .iter()
+                    .zip(&mine)
+                    .map(|(f, &b)| {
+                        let arg = local(&mut ctx, b, f.def_range);
+                        Stmt::Expr {
+                            expr: call(&mut ctx, check, arg, f.def_range),
+                            has_semicolon: true,
+                        }
+                    })
+                    .collect();
+                ctx.alloc_expr(
+                    Expr::Block {
+                        stmts,
+                        tail: None,
+                        is_unsafe: false,
+                    },
+                    variant.def_range,
+                )
+            }
+        };
+        arms.push(MatchArm {
+            pat,
+            guard: None,
+            body,
+        });
+    }
+    let scrutinee = local(&mut ctx, receivers[0], whole);
+    let matched = ctx.alloc_expr(
+        Expr::Match {
+            scrutinee,
+            arms: arms.into(),
+        },
+        whole,
+    );
+    let root = if copies {
+        // `{ match self { .. }; *self }`
+        let this = local(&mut ctx, receivers[0], whole);
+        let copy = ctx.alloc_expr(
+            Expr::Unary {
+                op: ast::UnaryOp::Deref,
+                operand: this,
+            },
+            whole,
+        );
+        ctx.alloc_expr(
+            Expr::Block {
+                stmts: Box::new([Stmt::Expr {
+                    expr: matched,
+                    has_semicolon: true,
+                }]),
+                tail: Some(copy),
+                is_unsafe: false,
+            },
+            whole,
+        )
+    } else {
+        ctx.alloc_expr(
+            Expr::Block {
+                stmts: Box::default(),
+                tail: Some(matched),
+                is_unsafe: false,
+            },
+            whole,
+        )
+    };
+    ctx.finish(params, root)
+}
+
+/// A pattern matching variant `v` of enum `strukt`, binding each field
+/// to a name made from `prefix`, and the bindings, in field order.
+fn variant_pat(
+    ctx: &mut Ctx<'_>,
+    strukt: StructId,
+    v: u32,
+    prefix: &str,
+) -> (PatId, Vec<BindingId>) {
+    let variant = &ctx.items.structs[strukt]
+        .variants
+        .as_deref()
+        .unwrap_or_default()[v as usize];
+    let mut bindings = Vec::new();
+    let mut pats = Vec::new();
+    for (i, f) in variant.fields.iter().enumerate() {
+        let binding = ctx.bindings.alloc(Binding {
+            name: Symbol::intern(&format!("{prefix}{i}")),
+            mutable: false,
+            by_ref: None,
+        });
+        bindings.push(binding);
+        pats.push((
+            f.name,
+            ctx.alloc_pat(Pat::Bind { binding, sub: None }, f.def_range),
+        ));
+    }
+    let at = variant.def_range;
+    let pat = match variant.kind {
+        StructKind::Tuple => Pat::TupleStruct {
+            strukt,
+            variant: v,
+            pats: pats.into_iter().map(|(_, p)| p).collect(),
+            rest: None,
+        },
+        StructKind::Record => Pat::Record {
+            strukt,
+            variant: v,
+            fields: pats.into(),
+            rest: false,
+        },
+        StructKind::Unit => Pat::Unit(strukt, v),
+    };
+    (ctx.alloc_pat(pat, at), bindings)
+}
+
+/// Variant `v` of enum `strukt` built from `values`, one per field.
+fn build_variant(
+    ctx: &mut Ctx<'_>,
+    strukt: StructId,
+    v: u32,
+    values: Vec<ExprId>,
+    at: TextRange,
+) -> ExprId {
+    let variant = &ctx.items.structs[strukt]
+        .variants
+        .as_deref()
+        .unwrap_or_default()[v as usize];
+    match variant.kind {
+        StructKind::Unit => ctx.alloc_expr(Expr::Path(Res::Variant(strukt, v)), at),
+        StructKind::Tuple => {
+            let callee = ctx.alloc_expr(Expr::Path(Res::Variant(strukt, v)), at);
+            ctx.alloc_expr(
+                Expr::Call {
+                    callee,
+                    args: values.into(),
+                },
+                at,
+            )
+        }
+        StructKind::Record => {
+            let names: Vec<Symbol> = variant.fields.iter().map(|f| f.name).collect();
+            let ranges: Box<[TextRange]> = variant.fields.iter().map(|f| f.name_range).collect();
+            let id = ctx.alloc_expr(
+                Expr::Record {
+                    strukt,
+                    variant: v,
+                    fields: names.into_iter().zip(values).collect(),
+                    spread: None,
+                },
+                at,
+            );
+            ctx.source_map.expr_fields.insert(id, ranges);
+            ctx.source_map.paths.insert(id, at);
+            id
+        }
+    }
+}
+
 struct Ctx<'a> {
     items: &'a ItemTree,
     /// Lowering a function in an `impl` block, where `Self` means its
@@ -347,6 +684,16 @@ struct Ctx<'a> {
     generic_args: ArenaMap<Expr, PathGenerics>,
     /// Bindings in scope, innermost last; a block truncates it on exit.
     scopes: Vec<(Symbol, BindingId)>,
+    /// The bindings of the pattern being lowered so far.
+    pat_binds: Vec<(Symbol, BindingId)>,
+    /// For each or-pattern being lowered, the bindings of its first
+    /// alternative, which the others bind again.
+    or_reuse: Vec<Vec<(Symbol, BindingId)>>,
+    pat_args: ArenaMap<Pat, PathGenerics>,
+    /// [`Body::alt_by_ref`], and the entry for the binding pattern being
+    /// lowered.
+    alt_by_ref: ArenaMap<Pat, Option<bool>>,
+    alt_mode: Option<Option<bool>>,
     /// The enclosing loops, innermost last.
     loops: Vec<ExprId>,
     diagnostics: Vec<Diagnostic>,
@@ -395,6 +742,11 @@ impl<'a> Ctx<'a> {
             source_map: BodySourceMap::default(),
             generic_args: ArenaMap::new(),
             scopes: Vec::new(),
+            pat_binds: Vec::new(),
+            or_reuse: Vec::new(),
+            pat_args: ArenaMap::new(),
+            alt_by_ref: ArenaMap::new(),
+            alt_mode: None,
             loops: Vec::new(),
             diagnostics: Vec::new(),
         }
@@ -409,6 +761,8 @@ impl<'a> Ctx<'a> {
                 types: self.types,
                 params: params.into(),
                 generic_args: self.generic_args,
+                pat_generic_args: self.pat_args,
+                alt_by_ref: self.alt_by_ref,
                 root,
             },
             source_map: self.source_map,
@@ -570,9 +924,12 @@ impl<'a> Ctx<'a> {
             }
             ast::Expr::ForExpr(_) => self.unsupported_expr(range, "`for` loops"),
             ast::Expr::IndexExpr(_) => self.unsupported_expr(range, "index expressions"),
-            ast::Expr::LetExpr(_) => self.unsupported_expr(range, "`let` conditions"),
+            ast::Expr::LetExpr(_) => {
+                self.error(range, "expected expression, found `let` statement");
+                Expr::Missing
+            }
             ast::Expr::MacroExpr(_) => self.unsupported_expr(range, "macros"),
-            ast::Expr::MatchExpr(_) => self.unsupported_expr(range, "`match` expressions"),
+            ast::Expr::MatchExpr(m) => self.lower_match(m),
             ast::Expr::MethodCallExpr(call) => {
                 let generics = call.generic_arg_list().map(|list| {
                     let args = lower_generic_args(list, &mut self.diagnostics);
@@ -637,9 +994,9 @@ impl<'a> Ctx<'a> {
             path.reject_bindings(&mut self.diagnostics);
         }
         let path_range = record.path().map_or(range, |p| p.syntax().text_range());
-        let strukt = path
+        let target = path
             .as_ref()
-            .and_then(|path| self.resolve_struct_path(path, path_range));
+            .and_then(|path| self.resolve_struct_path(path, path_range, true));
         let mut fields = Vec::new();
         let mut name_ranges = Vec::new();
         let mut spread = None;
@@ -669,12 +1026,13 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
-        let Some(strukt) = strukt else {
+        let Some((strukt, variant)) = target else {
             return self.alloc_expr(Expr::Missing, range);
         };
         let id = self.alloc_expr(
             Expr::Record {
                 strukt,
+                variant,
                 fields: fields.into(),
                 spread,
             },
@@ -685,32 +1043,136 @@ impl<'a> Ctx<'a> {
             self.source_map.paths.insert(id, path.syntax().text_range());
         }
         if let Some(path) = path {
-            let self_type = path.as_name() == Some(kw::SelfUpper);
-            let item = (!self_type).then_some(path.segments.len() - 1);
-            let mut generics = self.path_generics(&path, path_range, item, None, Res::Err);
-            if self_type {
-                generics.get_or_insert_default().self_type = true;
-            }
-            if let Some(generics) = generics {
+            let is_enum = self.items.structs[strukt].is_enum();
+            if let Some(generics) = self.variant_generics(&path, path_range, is_enum) {
                 self.generic_args.insert(id, generics);
             }
         }
         id
     }
 
-    /// The struct a path in a pattern names.
+    /// The generic arguments of a path to a struct, or to a variant if
+    /// `is_enum`, which may follow the enum (`E::<T>::A`) or the variant
+    /// (`E::A::<T>`). `Self` has none of its own.
+    fn variant_generics(
+        &mut self,
+        path: &Path,
+        range: TextRange,
+        is_enum: bool,
+    ) -> Option<PathGenerics> {
+        let last = path.segments.len() - 1;
+        let is_self = |i: usize| {
+            path.anchor == PathAnchor::Plain && path.segments.get(i) == Some(&kw::SelfUpper)
+        };
+        let (item, ty) = match (is_enum, last) {
+            (true, 0) => (Some(0), None),
+            (true, _) => (Some(last), Some(last - 1)),
+            (false, _) => (Some(last), None),
+        };
+        let self_type = match (is_enum, last) {
+            (true, 0) => false,
+            (true, _) => is_self(last - 1),
+            (false, _) => is_self(last),
+        };
+        let item = item.filter(|&i| !is_self(i));
+        let ty = ty.filter(|&i| !is_self(i));
+        let mut generics = self.path_generics(path, range, item, ty, Res::Err);
+        if self_type {
+            generics.get_or_insert_default().self_type = true;
+        }
+        generics
+    }
+
+    /// The struct or variant a path in a pattern names, and the path.
     fn resolve_struct(
         &mut self,
         path: Option<ast::Path<'_>>,
         range: TextRange,
-    ) -> Option<StructId> {
+        record: bool,
+    ) -> Option<(StructId, u32, Path)> {
         let range = path.map_or(range, |p| p.syntax().text_range());
-        let path = path.and_then(|p| lower_path(p, &mut self.diagnostics))?;
-        self.resolve_struct_path(&path, range)
+        let path = path.and_then(|p| lower_generic_path(p, &mut self.diagnostics))?;
+        path.reject_bindings(&mut self.diagnostics);
+        let (strukt, variant) = self.resolve_struct_path(&path, range, record)?;
+        Some((strukt, variant, path))
     }
 
-    /// The struct a path in a struct expression or pattern names.
-    fn resolve_struct_path(&mut self, path: &Path, range: TextRange) -> Option<StructId> {
+    /// The struct, or the enum and variant, a path in a struct
+    /// expression or pattern (with braces if `record`) names.
+    fn resolve_struct_path(
+        &mut self,
+        path: &Path,
+        range: TextRange,
+        record: bool,
+    ) -> Option<(StructId, u32)> {
+        let found = self.resolve_struct_or_enum(path, range, record)?;
+        match found {
+            Ok(variant) => Some(variant),
+            Err(e) => {
+                let message = format!(
+                    "expected struct, variant or union type, found enum `{}`",
+                    if path.as_name() == Some(kw::SelfUpper) {
+                        kw::SelfUpper
+                    } else {
+                        self.items.structs[e].name
+                    }
+                );
+                self.error(range, message);
+                None
+            }
+        }
+    }
+
+    /// What a struct path names: a struct or variant, or an enum (`Err`).
+    fn resolve_struct_or_enum(
+        &mut self,
+        path: &Path,
+        range: TextRange,
+        record: bool,
+    ) -> Option<Result<(StructId, u32), StructId>> {
+        let found = |items: &ItemTree, strukt: StructId| {
+            if items.structs[strukt].is_enum() {
+                Err(strukt)
+            } else {
+                Ok((strukt, 0))
+            }
+        };
+        // `Self::A`: a variant of the enum this block is for.
+        if path.anchor == PathAnchor::Plain
+            && path.segments.len() == 2
+            && path.segments[0] == kw::SelfUpper
+            && self.in_impl
+        {
+            let e = self.self_struct()?;
+            let name = path.segments[1];
+            return match self.items.structs[e].variant_named(name) {
+                Some(v) => Some(Ok((e, v))),
+                None => {
+                    self.no_variant(e, name, path.range(1, range), record);
+                    None
+                }
+            };
+        }
+        // `E::Z`, where `E` has no variant `Z`.
+        if path.segments.len() >= 2 {
+            let last = path.segments.len() - 1;
+            let prefix = Path {
+                segments: path.segments[..last].into(),
+                ranges: path.ranges[..last.min(path.ranges.len())].into(),
+                args: path.args[..last.min(path.args.len())].into(),
+                ..path.clone()
+            };
+            if let Ok(Resolved::Def(Def::Struct(e))) =
+                self.items.resolve(self.module, &prefix, Ns::Types)
+                && self.items.structs[e].is_enum()
+                && self.items.structs[e]
+                    .variant_named(path.segments[last])
+                    .is_none()
+            {
+                self.no_variant(e, path.segments[last], path.range(last, range), record);
+                return None;
+            }
+        }
         if path.anchor == PathAnchor::Plain && self.generics.contains(&path.segments[0]) {
             let message = match path.segments.len() {
                 1 => format!(
@@ -729,14 +1191,15 @@ impl<'a> Ctx<'a> {
                     "cannot find struct, variant or union type `Self` in this scope",
                 );
             }
-            return self.self_struct();
+            return self.self_struct().map(|s| found(self.items, s));
         }
         match self.reported(
             self.items.resolve(self.module, path, Ns::Types),
             path,
             range,
         ) {
-            Ok(Resolved::Def(Def::Struct(strukt))) => Some(strukt),
+            Ok(Resolved::Def(Def::Struct(strukt))) => Some(found(self.items, strukt)),
+            Ok(Resolved::Def(Def::Variant(e, v))) => Some(Ok((e, v))),
             Ok(Resolved::Def(Def::Module(m))) => {
                 let last = path.segments.len() - 1;
                 let message = format!(
@@ -775,6 +1238,23 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// Reports that `strukt`, an enum `Self` or a path names, has no
+    /// variant `name`, as rustc does for a path with braces after it
+    /// (`record`) or without.
+    fn no_variant(&mut self, strukt: StructId, name: Symbol, at: TextRange, record: bool) {
+        let data = &self.items.structs[strukt];
+        let what = if data.is_enum() { "enum" } else { "struct" };
+        let message = if record {
+            format!("no variant named `{name}` found for {what} `{}`", data.name)
+        } else {
+            format!(
+                "no variant, associated function, or constant named `{name}` found for {what} `{}` in the current scope",
+                data.name
+            )
+        };
+        self.error(at, message);
+    }
+
     fn unsupported_expr(&mut self, range: TextRange, what: &str) -> Expr {
         self.unsupported(range, what);
         Expr::Missing
@@ -810,12 +1290,22 @@ impl<'a> Ctx<'a> {
             match stmt {
                 ast::Stmt::LetStmt(let_stmt) => {
                     check_attrs(let_stmt.attrs(), &mut self.diagnostics);
-                    if let Some(let_else) = let_stmt.let_else() {
-                        self.unsupported(let_else.syntax().text_range(), "`let`-`else` statements");
-                    }
                     // The initializer is lowered before the pattern, whose
-                    // bindings it cannot see: `let x = x + 1;`.
+                    // bindings it cannot see: `let x = x + 1;`, and so is
+                    // the `else` block.
                     let init = let_stmt.initializer().map(|e| self.lower_expr(e));
+                    if let (Some(init), Some(_)) = (let_stmt.initializer(), let_stmt.let_else()) {
+                        self.check_let_else_init(init);
+                    }
+                    let else_branch = let_stmt
+                        .let_else()
+                        .map(|e| self.lower_opt_block(e.block_expr(), e.syntax()));
+                    if let Some(pat @ ast::Pat::OrPat(_)) = let_stmt.pat() {
+                        self.error(
+                            pat.syntax().text_range(),
+                            "`let` bindings require top-level or-patterns in parentheses",
+                        );
+                    }
                     let ty = let_stmt.ty().map(|ty| {
                         let range = ty.syntax().text_range();
                         let ty = lower_type(Some(ty), &mut self.diagnostics);
@@ -823,8 +1313,13 @@ impl<'a> Ctx<'a> {
                         self.source_map.types.insert(id, range);
                         id
                     });
-                    let pat = self.lower_pat(let_stmt.pat(), let_stmt.syntax(), PatSite::Let);
-                    stmts.push(Stmt::Let { pat, ty, init });
+                    let pat = self.lower_top_pat(let_stmt.pat(), let_stmt.syntax(), PatSite::Let);
+                    stmts.push(Stmt::Let {
+                        pat,
+                        ty,
+                        init,
+                        else_branch,
+                    });
                 }
                 ast::Stmt::ExprStmt(expr_stmt) => {
                     check_attrs(expr_stmt.attrs(), &mut self.diagnostics);
@@ -853,8 +1348,10 @@ impl<'a> Ctx<'a> {
 
     fn lower_if(&mut self, if_expr: ast::IfExpr<'_>) -> Expr {
         let syntax = if_expr.syntax();
-        let condition = self.lower_opt(if_expr.condition(), syntax);
+        let scope = self.scopes.len();
+        let condition = self.lower_condition(if_expr.condition(), syntax);
         let then_branch = self.lower_opt_block(if_expr.then_branch(), syntax);
+        self.scopes.truncate(scope);
         let else_branch = if_expr.else_branch().map(|branch| match branch {
             ast::ElseBranch::Block(block) => self.lower_block(block),
             ast::ElseBranch::If(nested) => {
@@ -880,8 +1377,10 @@ impl<'a> Ctx<'a> {
         }
         let id = self.alloc_expr(Expr::Missing, range);
         self.loops.push(id);
-        let condition = self.lower_opt(while_expr.condition(), syntax);
+        let scope = self.scopes.len();
+        let condition = self.lower_condition(while_expr.condition(), syntax);
         let then_branch = self.lower_opt_block(while_expr.loop_body(), syntax);
+        self.scopes.truncate(scope);
         self.loops.pop();
         let exit = self.alloc_expr(
             Expr::Break {
@@ -913,6 +1412,120 @@ impl<'a> Ctx<'a> {
         id
     }
 
+    /// What rustc forbids before the `else` of a `let`-`else`: an
+    /// initializer ending in `}`, which reads as an `if`'s, and one that is
+    /// `a && b` or `a || b`, which reads as a `let` chain.
+    fn check_let_else_init(&mut self, init: ast::Expr<'_>) {
+        let last = init
+            .syntax()
+            .tokens()
+            .filter(|t| !t.kind().is_trivia())
+            .last();
+        if let Some(last) = last
+            && last.kind() == flux_syntax::T!['}']
+        {
+            self.error(
+                last.text_range(),
+                "right curly brace `}` before `else` in a `let...else` statement not allowed",
+            );
+        } else if let ast::Expr::BinExpr(bin) = init
+            && let Some(BinaryOp::Logic(op)) = bin.op_kind()
+        {
+            let op = if op == LogicOp::And { "&&" } else { "||" };
+            self.error(
+                init.syntax().text_range(),
+                format!("a `{op}` expression cannot be directly assigned in `let...else`"),
+            );
+        }
+    }
+
+    /// The condition of an `if` or `while`: an expression, a `let`, or a
+    /// chain of them joined by `&&`. The bindings of its `let`s stay in
+    /// scope for the caller to end.
+    fn lower_condition(&mut self, cond: Option<ast::Expr<'_>>, parent: SyntaxNode<'_>) -> ExprId {
+        match cond {
+            Some(ast::Expr::LetExpr(let_expr)) => {
+                let range = let_expr.syntax().text_range();
+                self.check_attrs(let_expr.syntax());
+                let expr = self.lower_opt(let_expr.expr(), let_expr.syntax());
+                let pat = self.lower_top_pat(let_expr.pat(), let_expr.syntax(), PatSite::Let);
+                self.alloc_expr(Expr::Let { pat, expr }, range)
+            }
+            Some(ast::Expr::BinExpr(bin))
+                if bin.op_kind() == Some(BinaryOp::Logic(LogicOp::And))
+                    && Self::has_let(bin.syntax()) =>
+            {
+                let range = bin.syntax().text_range();
+                self.check_attrs(bin.syntax());
+                let lhs = self.lower_condition(bin.lhs(), bin.syntax());
+                let rhs = self.lower_condition(bin.rhs(), bin.syntax());
+                let id = self.alloc_expr(
+                    Expr::Binary {
+                        op: BinaryOp::Logic(LogicOp::And),
+                        lhs,
+                        rhs,
+                    },
+                    range,
+                );
+                if let Some(token) = bin.op() {
+                    self.source_map.ops.insert(id, token.text_range());
+                }
+                id
+            }
+            Some(ast::Expr::BinExpr(bin))
+                if bin.op_kind() == Some(BinaryOp::Logic(LogicOp::Or))
+                    && Self::has_let(bin.syntax()) =>
+            {
+                let range = bin
+                    .op()
+                    .map_or(bin.syntax().text_range(), |t| t.text_range());
+                self.error(
+                    range,
+                    "`||` operators are not supported in let chain conditions",
+                );
+                self.alloc_expr(Expr::Missing, bin.syntax().text_range())
+            }
+            Some(expr) => self.lower_expr(expr),
+            None => self.alloc_expr(Expr::Missing, parent.text_range()),
+        }
+    }
+
+    /// Whether a chain of `&&` or `||` has a `let` in it.
+    fn has_let(node: SyntaxNode<'_>) -> bool {
+        match ast::Expr::cast(node) {
+            Some(ast::Expr::LetExpr(_)) => true,
+            Some(ast::Expr::BinExpr(bin)) if matches!(bin.op_kind(), Some(BinaryOp::Logic(_))) => {
+                bin.lhs().is_some_and(|e| Self::has_let(e.syntax()))
+                    || bin.rhs().is_some_and(|e| Self::has_let(e.syntax()))
+            }
+            _ => false,
+        }
+    }
+
+    /// `match scrutinee { pat if guard => body, .. }`
+    fn lower_match(&mut self, m: ast::MatchExpr<'_>) -> Expr {
+        let scrutinee = self.lower_opt(m.expr(), m.syntax());
+        let mut arms = Vec::new();
+        if let Some(list) = m.match_arm_list() {
+            check_attrs(list.attrs(), &mut self.diagnostics);
+            for arm in list.arms() {
+                check_attrs(arm.attrs(), &mut self.diagnostics);
+                let scope = self.scopes.len();
+                let pat = self.lower_top_pat(arm.pat(), arm.syntax(), PatSite::Match);
+                let guard = arm
+                    .match_guard()
+                    .map(|g| self.lower_condition(g.condition(), g.syntax()));
+                let body = self.lower_opt(arm.expr(), arm.syntax());
+                self.scopes.truncate(scope);
+                arms.push(MatchArm { pat, guard, body });
+            }
+        }
+        Expr::Match {
+            scrutinee,
+            arms: arms.into(),
+        }
+    }
+
     fn loop_target(&mut self, range: TextRange, keyword: &str) -> Option<ExprId> {
         let target = self.loops.last().copied();
         if target.is_none() {
@@ -923,13 +1536,21 @@ impl<'a> Ctx<'a> {
 
     /// A path expression, called if `call` is the call's range.
     fn lower_path_expr(&mut self, path: ast::PathExpr<'_>, call: Option<TextRange>) -> ExprId {
-        let range = path.syntax().text_range();
+        self.lower_value_path(path.path(), path.syntax().text_range(), call)
+    }
+
+    /// A path in the value namespace, at `range`, as a `Path` expression.
+    fn lower_value_path(
+        &mut self,
+        path: Option<ast::Path<'_>>,
+        range: TextRange,
+        call: Option<TextRange>,
+    ) -> ExprId {
         let segment = path
-            .path()
             .filter(|p| p.qualifier().is_some())
             .and_then(|p| p.segment()?.name_ref())
             .map(|n| n.syntax().text_range());
-        let (res, generics) = self.resolve_path(path, call);
+        let (res, generics) = self.resolve_path(path, range, call);
         let id = self.alloc_expr(Expr::Path(res), range);
         if let Some(generics) = generics {
             self.generic_args.insert(id, generics);
@@ -943,14 +1564,11 @@ impl<'a> Ctx<'a> {
     /// A path expression's meaning and generic arguments.
     fn resolve_path(
         &mut self,
-        path: ast::PathExpr<'_>,
+        path: Option<ast::Path<'_>>,
+        range: TextRange,
         call: Option<TextRange>,
     ) -> (Res, Option<PathGenerics>) {
-        let range = path.syntax().text_range();
-        let Some(path) = path
-            .path()
-            .and_then(|p| lower_generic_path(p, &mut self.diagnostics))
-        else {
+        let Some(path) = path.and_then(|p| lower_generic_path(p, &mut self.diagnostics)) else {
             return (Res::Err, None);
         };
         path.reject_bindings(&mut self.diagnostics);
@@ -963,6 +1581,8 @@ impl<'a> Ctx<'a> {
                 (Some(last), Some(last - 1))
             }
             Res::Function(_) | Res::Struct(_) => (Some(last), None),
+            Res::Variant(..) if last > 0 => (Some(last), Some(last - 1)),
+            Res::Variant(..) => (Some(last), None),
             Res::Const(c) if self.items.consts[c].owner.is_some() && last > 0 => {
                 (None, Some(last - 1))
             }
@@ -1107,6 +1727,13 @@ impl<'a> Ctx<'a> {
                 let Some(strukt) = self.self_type(range) else {
                     return Res::Err;
                 };
+                if self.items.structs[strukt].is_enum() {
+                    self.error(
+                        range,
+                        "the `Self` constructor can only be used with tuple or unit structs",
+                    );
+                    return Res::Err;
+                }
                 if self.items.structs[strukt].kind == StructKind::Record {
                     self.error(
                         range,
@@ -1145,10 +1772,7 @@ impl<'a> Ctx<'a> {
                     }
                     None => {
                         if !self.in_impl {
-                            self.error(
-                                path.range(0, range),
-                                "cannot find type `Self` in this scope",
-                            );
+                            self.error(path.range(0, range), "cannot find `Self` in this scope");
                         }
                         return Res::Err;
                     }
@@ -1165,6 +1789,17 @@ impl<'a> Ctx<'a> {
             },
             Ok(Resolved::Def(Def::Function(f)) | Resolved::Assoc(f)) => Res::Function(f),
             Ok(Resolved::Def(Def::Const(c)) | Resolved::AssocConst(c)) => Res::Const(c),
+            Ok(Resolved::Def(Def::Variant(e, v))) => Res::Variant(e, v),
+            Ok(Resolved::Def(Def::Struct(strukt))) if self.items.structs[strukt].is_enum() => {
+                self.error(
+                    range,
+                    format!(
+                        "expected value, found enum `{}`",
+                        path.segments[path.segments.len() - 1]
+                    ),
+                );
+                Res::Err
+            }
             Ok(Resolved::Def(Def::Struct(strukt))) => {
                 let s = &self.items.structs[strukt];
                 let private = s.kind == StructKind::Tuple
@@ -1192,11 +1827,17 @@ impl<'a> Ctx<'a> {
             }
             Err(ResolveError::Private { .. } | ResolveError::Reported) => Res::Err,
             Err(ResolveError::NotFound { segment, module }) => {
-                // A struct with named fields is only in the type namespace.
-                let is_struct = matches!(
-                    self.items.resolve(self.module, path, Ns::Types),
-                    Ok(Resolved::Def(Def::Struct(_)))
-                );
+                // A struct with named fields is only in the type namespace,
+                // so is a variant with them.
+                let in_types = self.items.resolve(self.module, path, Ns::Types);
+                if let Ok(Resolved::Def(Def::Variant(..))) = in_types {
+                    self.error(
+                        range,
+                        format!("expected value, found struct variant `{path}`"),
+                    );
+                    return Res::Err;
+                }
+                let is_struct = matches!(in_types, Ok(Resolved::Def(Def::Struct(_))));
                 let name = path.segments[segment];
                 let place = match module {
                     // rustc's wording for `self::f`.
@@ -1341,10 +1982,10 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The struct `Self` names here.
+    /// The struct `Self` names here, as a value.
     fn self_type(&mut self, range: TextRange) -> Option<StructId> {
         if !self.in_impl {
-            self.error(range, "cannot find type `Self` in this scope");
+            self.error(range, "cannot find value `Self` in this scope");
         }
         self.self_struct()
     }
@@ -1392,6 +2033,20 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// A whole pattern: of a parameter, a `let`, a `match` arm or a
+    /// `let` condition. Its bindings come into scope as they are made.
+    fn lower_top_pat(
+        &mut self,
+        pat: Option<ast::Pat<'_>>,
+        parent: SyntaxNode<'_>,
+        site: PatSite,
+    ) -> PatId {
+        let saved = std::mem::take(&mut self.pat_binds);
+        let id = self.lower_pat(pat, parent, site);
+        self.pat_binds = saved;
+        id
+    }
+
     fn lower_pat(
         &mut self,
         pat: Option<ast::Pat<'_>>,
@@ -1404,14 +2059,11 @@ impl<'a> Ctx<'a> {
         let range = pat.syntax().text_range();
         let hir = match pat {
             ast::Pat::IdentPat(ident) => {
-                if let Some(token) = ident.ref_token() {
-                    self.unsupported(token.text_range(), "`ref` bindings");
-                }
-                if let Some(sub) = ident.pat() {
-                    self.unsupported(sub.syntax().text_range(), "`@` patterns");
-                }
+                let sub = ident
+                    .pat()
+                    .map(|sub| self.lower_pat(Some(sub), pat.syntax(), site));
                 match ident.name() {
-                    Some(name) => self.lower_ident_pat(name, ident, site),
+                    Some(name) => self.lower_ident_pat(name, ident, sub, site),
                     None => Pat::Missing,
                 }
             }
@@ -1422,43 +2074,71 @@ impl<'a> Ctx<'a> {
                 Pat::Tuple { pats, rest }
             }
             ast::Pat::TupleStructPat(tuple) => {
-                let strukt = self.resolve_struct(tuple.path(), range);
-                if let Some(strukt) = strukt {
+                let target = self.resolve_struct(tuple.path(), range, false);
+                if let Some((strukt, _, _)) = target {
                     self.check_constructor_privacy(strukt, tuple.path(), range);
                 }
                 let (pats, rest) = self.lower_tuple_fields(tuple.fields(), site);
-                let Some(strukt) = strukt else {
+                let Some((strukt, variant, path)) = target else {
                     return self.alloc_pat(Pat::Missing, range);
                 };
-                let s = &self.items.structs[strukt];
-                if s.kind != StructKind::Tuple {
-                    let message = format!(
-                        "cannot find tuple struct or tuple variant `{}` in this scope",
-                        s.name
-                    );
+                let v = self.items.structs[strukt].variant(variant);
+                if v.kind != StructKind::Tuple {
+                    let message = match v.kind {
+                        StructKind::Unit if v.enum_name.is_some() => format!(
+                            "expected tuple struct or tuple variant, found unit variant `{path}`"
+                        ),
+                        StructKind::Unit => format!(
+                            "expected tuple struct or tuple variant, found unit struct `{path}`"
+                        ),
+                        _ if v.enum_name.is_some() => format!(
+                            "expected tuple struct or tuple variant, found struct variant `{path}`"
+                        ),
+                        _ => format!(
+                            "cannot find tuple struct or tuple variant `{}` in this scope",
+                            v.name
+                        ),
+                    };
                     self.error(range, message);
                     Pat::Missing
                 } else {
-                    Pat::TupleStruct { strukt, pats, rest }
+                    let id = self.alloc_pat(
+                        Pat::TupleStruct {
+                            strukt,
+                            variant,
+                            pats,
+                            rest,
+                        },
+                        range,
+                    );
+                    self.pat_generics(id, &path, tuple.path(), range);
+                    return id;
                 }
             }
             ast::Pat::RecordPat(record) => return self.lower_record_pat(record, site),
-            ast::Pat::PathPat(path) => {
-                let strukt = self.resolve_struct(path.path(), range);
-                match strukt {
-                    Some(strukt) if self.items.structs[strukt].kind == StructKind::Unit => {
-                        Pat::Unit(strukt)
+            ast::Pat::PathPat(path_pat) => {
+                if self.names_value(path_pat.path()) {
+                    return self.lower_const_pat(path_pat.path(), range);
+                }
+                let target = self.resolve_struct(path_pat.path(), range, false);
+                match target {
+                    Some((strukt, variant, path))
+                        if self.items.structs[strukt].variant(variant).kind == StructKind::Unit =>
+                    {
+                        let id = self.alloc_pat(Pat::Unit(strukt, variant), range);
+                        self.pat_generics(id, &path, path_pat.path(), range);
+                        return id;
                     }
-                    Some(strukt) => {
-                        let s = &self.items.structs[strukt];
-                        let what = if s.kind == StructKind::Tuple {
-                            "tuple struct"
-                        } else {
-                            "struct"
+                    Some((strukt, variant, path)) => {
+                        let v = self.items.structs[strukt].variant(variant);
+                        let what = match (v.kind, v.enum_name.is_some()) {
+                            (StructKind::Tuple, false) => "tuple struct",
+                            (StructKind::Tuple, true) => "tuple variant",
+                            (_, false) => "struct",
+                            (_, true) => "struct variant",
                         };
                         let message = format!(
-                            "expected unit struct, unit variant or constant, found {what} `{}`",
-                            s.name
+                            "expected unit struct, unit variant or constant, found {what} `{path}`"
                         );
                         self.error(range, message);
                         Pat::Missing
@@ -1466,9 +2146,18 @@ impl<'a> Ctx<'a> {
                     None => Pat::Missing,
                 }
             }
-            ast::Pat::LiteralPat(_) | ast::Pat::RangePat(_) => {
-                self.unsupported(range, "literal and range patterns");
-                Pat::Missing
+            ast::Pat::LiteralPat(literal) => match self.lower_literal_pat(literal) {
+                Some(expr) => Pat::Expr(expr),
+                None => Pat::Missing,
+            },
+            ast::Pat::RangePat(range_pat) => self.lower_range_pat(range_pat),
+            ast::Pat::OrPat(or) => self.lower_or_pat(or, site),
+            ast::Pat::RefPat(r) => {
+                let inner = self.lower_pat(r.pat(), pat.syntax(), site);
+                Pat::Ref {
+                    pat: inner,
+                    mutable: r.mut_token().is_some(),
+                }
             }
             ast::Pat::RestPat(_) => {
                 self.error(range, "`..` patterns are not allowed here");
@@ -1477,57 +2166,351 @@ impl<'a> Ctx<'a> {
             _ => {
                 let what = match pat {
                     ast::Pat::SlicePat(_) => "slice patterns",
-                    ast::Pat::RefPat(_) => "reference patterns",
-                    ast::Pat::OrPat(_) => "or-patterns",
                     _ => "macros",
                 };
                 self.unsupported(range, what);
                 Pat::Missing
             }
         };
+        let id = self.alloc_pat(hir, range);
+        if let Some(by_ref) = self.alt_mode.take() {
+            self.alt_by_ref.insert(id, by_ref);
+        }
+        id
+    }
+
+    /// Records the generic arguments of a struct or variant pattern's
+    /// path.
+    fn pat_generics(
+        &mut self,
+        id: PatId,
+        path: &Path,
+        node: Option<ast::Path<'_>>,
+        range: TextRange,
+    ) {
+        if path.args.iter().all(Option::is_none) {
+            return;
+        }
+        let range = node.map_or(range, |p| p.syntax().text_range());
+        let strukt = match self.pats[id] {
+            Pat::TupleStruct { strukt, .. } | Pat::Record { strukt, .. } | Pat::Unit(strukt, _) => {
+                strukt
+            }
+            _ => return,
+        };
+        let is_enum = self.items.structs[strukt].is_enum();
+        if let Some(generics) = self.variant_generics(path, range, is_enum) {
+            self.pat_args.insert(id, generics);
+        }
+    }
+
+    /// Whether `path`, in a pattern, names a constant, or something else
+    /// in the value namespace that is not a struct or variant: what
+    /// [`Self::lower_const_pat`] lowers.
+    fn names_value(&self, path: Option<ast::Path<'_>>) -> bool {
+        let Some(path) = path.and_then(|p| lower_generic_path(p, &mut Vec::new())) else {
+            return false;
+        };
+        if path.qself.is_some() {
+            return true;
+        }
+        let first = path.segments[0];
+        if path.anchor == PathAnchor::Plain && path.segments.len() > 1 {
+            // `T::N`, and `Self::N` in a trait.
+            if self.generics.contains(&first) || (first == kw::SelfUpper && self.self_is_any) {
+                return true;
+            }
+            if first == kw::SelfUpper {
+                let variant = self
+                    .self_struct()
+                    .and_then(|e| self.items.structs[e].variant_named(path.segments[1]));
+                return variant.is_none()
+                    && self.self_target.is_some_and(|target| {
+                        matches!(
+                            self.items
+                                .resolve_assoc(self.module, target, &path, 1, Ns::Values),
+                            Ok(Resolved::AssocConst(_) | Resolved::Assoc(_))
+                        )
+                    });
+            }
+        }
+        matches!(
+            self.items.resolve(self.module, &path, Ns::Values),
+            Ok(Resolved::Def(Def::Const(_) | Def::Function(_))
+                | Resolved::AssocConst(_)
+                | Resolved::Assoc(_)
+                | Resolved::TraitItem(..)
+                | Resolved::TypeRelative(_))
+        )
+    }
+
+    /// A path pattern naming a constant, `N`, `i32::MAX` or `T::N`, which
+    /// matches only the constant's value.
+    fn lower_const_pat(&mut self, path: Option<ast::Path<'_>>, range: TextRange) -> PatId {
+        let expr = self.lower_value_path(path, range, None);
+        let hir = match self.exprs[expr] {
+            Expr::Path(Res::Function(f)) => {
+                let what = if self.items.functions[f].owner.is_some() {
+                    "associated function"
+                } else {
+                    "function"
+                };
+                let path = path.map_or(String::new(), |p| p.syntax().text().to_string());
+                self.error(
+                    range,
+                    format!(
+                        "expected unit struct, unit variant or constant, found {what} `{path}`"
+                    ),
+                );
+                Pat::Missing
+            }
+            Expr::Path(Res::Err) => Pat::Missing,
+            _ => Pat::Expr(expr),
+        };
         self.alloc_pat(hir, range)
     }
 
-    /// `x`, `mut x`, or a unit struct's name, which is a pattern matching
-    /// it rather than a new binding.
+    /// `1`, `-1` or `true`, as an expression; other literals are
+    /// reported.
+    fn lower_literal_pat(&mut self, pat: ast::LiteralPat<'_>) -> Option<ExprId> {
+        let range = pat.syntax().text_range();
+        let literal = pat.literal()?;
+        let lit_range = literal.syntax().text_range();
+        let hir = self.lower_literal(literal);
+        if hir == Expr::Missing {
+            return None;
+        }
+        let expr = self.alloc_expr(hir, lit_range);
+        if pat.minus_token().is_none() {
+            return Some(expr);
+        }
+        Some(self.alloc_expr(
+            Expr::Unary {
+                op: ast::UnaryOp::Neg,
+                operand: expr,
+            },
+            range,
+        ))
+    }
+
+    /// `a..=b`, `a..b`, `a..` or `..=b`, whose ends are literals or
+    /// paths to constants.
+    fn lower_range_pat(&mut self, pat: ast::RangePat<'_>) -> Pat {
+        let range = pat.syntax().text_range();
+        let Some(op) = pat.op() else {
+            return Pat::Missing;
+        };
+        if op.kind() == flux_syntax::T![...] {
+            self.error(range, "`...` range patterns are deprecated");
+            return Pat::Missing;
+        }
+        let inclusive = pat.op_kind() == Some(ast::RangeOp::Inclusive);
+        let end = |this: &mut Self, end: Option<ast::Pat<'_>>| -> Result<Option<ExprId>, ()> {
+            match end {
+                None => Ok(None),
+                Some(ast::Pat::LiteralPat(literal)) => {
+                    this.lower_literal_pat(literal).map(Some).ok_or(())
+                }
+                Some(ast::Pat::PathPat(path)) => {
+                    let at = path.syntax().text_range();
+                    let local = path
+                        .path()
+                        .and_then(|p| lower_generic_path(p, &mut Vec::new()))
+                        .and_then(|p| p.as_name())
+                        .is_some_and(|name| this.scopes.iter().any(|&(n, _)| n == name));
+                    if local {
+                        this.error(at, "runtime values cannot be referenced in patterns");
+                        return Err(());
+                    }
+                    let expr = this.lower_value_path(path.path(), at, None);
+                    match this.exprs[expr] {
+                        Expr::Path(Res::Err) => Err(()),
+                        // Not a number: rustc says so of the range.
+                        Expr::Path(Res::Function(_)) => {
+                            this.error(
+                                at,
+                                "only `char` and numeric types are allowed in range patterns",
+                            );
+                            Err(())
+                        }
+                        _ => Ok(Some(expr)),
+                    }
+                }
+                Some(other) => {
+                    this.unsupported(other.syntax().text_range(), "this range pattern end");
+                    Err(())
+                }
+            }
+        };
+        let (Ok(start), Ok(end_expr)) = (end(self, pat.start()), end(self, pat.end())) else {
+            return Pat::Missing;
+        };
+        if inclusive && end_expr.is_none() {
+            self.error(range, "inclusive range with no end");
+            return Pat::Missing;
+        }
+        Pat::Range {
+            start,
+            end: end_expr,
+            inclusive,
+        }
+    }
+
+    /// `a | b`: the first alternative's bindings, which the others must
+    /// bind too, and do with the same bindings.
+    fn lower_or_pat(&mut self, or: ast::OrPat<'_>, site: PatSite) -> Pat {
+        let base = self.pat_binds.len();
+        let mut first: Option<(Vec<(Symbol, BindingId)>, TextRange)> = None;
+        let mut alternatives = Vec::new();
+        for alt in or.pats() {
+            let alt_range = alt.syntax().text_range();
+            self.or_reuse
+                .push(first.as_ref().map(|(b, _)| b.clone()).unwrap_or_default());
+            let id = self.lower_pat(Some(alt), or.syntax(), site);
+            self.or_reuse.pop();
+            let mine = self.pat_binds.split_off(base);
+            match &first {
+                None => first = Some((mine, alt_range)),
+                Some((bound, first_range)) => {
+                    for &(name, _) in bound {
+                        if !mine.iter().any(|&(n, _)| n == name) {
+                            self.error(
+                                alt_range,
+                                format!("variable `{name}` is not bound in all patterns"),
+                            );
+                        }
+                    }
+                    for &(name, _) in &mine {
+                        if !bound.iter().any(|&(n, _)| n == name) {
+                            self.error(
+                                *first_range,
+                                format!("variable `{name}` is not bound in all patterns"),
+                            );
+                        }
+                    }
+                }
+            }
+            alternatives.push(id);
+        }
+        if let Some((bound, _)) = first {
+            self.pat_binds.extend(bound);
+        }
+        Pat::Or(alternatives.into())
+    }
+
+    /// `x`, `mut x`, `ref x`, `x @ pat`, or a unit struct's or unit
+    /// variant's name, which is a pattern matching it rather than a new
+    /// binding.
     fn lower_ident_pat(
         &mut self,
         name: ast::Name<'_>,
         ident: ast::IdentPat<'_>,
+        sub: Option<PatId>,
         site: PatSite,
     ) -> Pat {
         let range = name.syntax().text_range();
         let name = Symbol::intern(name.text());
+        let plain = ident.mut_token().is_none() && ident.ref_token().is_none() && sub.is_none();
         let shadowed = match self.items.lookup(self.module, name, Ns::Values) {
-            Some(Resolved::Def(Def::Struct(id))) => Some((id, &self.items.structs[id])),
+            Some(Resolved::Def(Def::Struct(id))) => Some((id, 0)),
+            Some(Resolved::Def(Def::Variant(id, v))) => Some((id, v)),
             // A constant's name is a pattern matching only its value.
+            Some(Resolved::Def(Def::Const(c))) if plain => {
+                let expr = self.alloc_expr(Expr::Path(Res::Const(c)), range);
+                return Pat::Expr(expr);
+            }
             Some(Resolved::Def(Def::Const(_))) => {
-                self.unsupported(range, "constant patterns");
-                return Pat::Missing;
+                let site = match site {
+                    PatSite::Let => "let bindings",
+                    PatSite::Param => "function parameters",
+                    PatSite::Match => "match bindings",
+                };
+                self.error(range, format!("{site} cannot shadow constants"));
+                None
             }
             _ => None,
         };
-        if let Some((id, s)) = shadowed {
-            if s.kind == StructKind::Unit && ident.mut_token().is_none() {
-                return Pat::Unit(id);
+        if let Some((id, variant)) = shadowed {
+            let v = self.items.structs[id].variant(variant);
+            if v.kind == StructKind::Unit && plain {
+                return Pat::Unit(id, variant);
             }
             let site = match site {
                 PatSite::Let => "let bindings",
                 PatSite::Param => "function parameters",
+                PatSite::Match => "match bindings",
             };
-            let what = if s.kind == StructKind::Unit {
-                "unit structs"
-            } else {
-                "tuple structs"
+            let what = match (v.kind, v.enum_name.is_some()) {
+                (StructKind::Unit, false) => "unit structs",
+                (StructKind::Unit, true) => "unit variants",
+                (_, false) => "tuple structs",
+                (_, true) => "tuple variants",
             };
             self.error(range, format!("{site} cannot shadow {what}"));
         }
-        let binding = self.bindings.alloc(Binding {
-            name,
-            mutable: ident.mut_token().is_some(),
+        // A later alternative of an or-pattern binds the first's.
+        let reused = self
+            .or_reuse
+            .iter()
+            .rev()
+            .find_map(|names| names.iter().find(|&&(n, _)| n == name))
+            .map(|&(_, b)| b);
+        // `ref mut x`'s `mut` follows `ref`; one before it, `mut ref x`,
+        // makes the binding mutable, which is unstable.
+        let ref_start = ident.ref_token().map(|t| t.text_range().start());
+        let ref_mut = ref_start.is_some_and(|start| {
+            ident
+                .syntax()
+                .children_with_tokens()
+                .any(|t| t.kind() == flux_syntax::T![mut] && t.text_range().start() > start)
         });
-        self.scopes.push((name, binding));
-        Pat::Bind(binding)
+        if ident
+            .mut_token()
+            .zip(ref_start)
+            .is_some_and(|(m, start)| m.text_range().start() < start)
+        {
+            self.error(range, "mutable by-reference bindings are experimental");
+        }
+        let by_ref = ref_start.map(|_| ref_mut);
+        let binding = match reused {
+            Some(binding) => {
+                let first = &self.bindings[binding];
+                let mutable = ident.mut_token().is_some() && by_ref.is_none();
+                if first.by_ref != by_ref {
+                    self.alt_mode = Some(by_ref);
+                }
+                if first.by_ref != by_ref || first.mutable != mutable {
+                    self.error(
+                        range,
+                        format!(
+                            "variable `{name}` is bound inconsistently across alternatives separated by `|`"
+                        ),
+                    );
+                }
+                binding
+            }
+            None => {
+                if self.pat_binds.iter().any(|&(n, _)| n == name) {
+                    self.error(
+                        range,
+                        format!("identifier `{name}` is bound more than once in the same pattern"),
+                    );
+                }
+                let binding = self.bindings.alloc(Binding {
+                    name,
+                    mutable: ident.mut_token().is_some(),
+                    by_ref,
+                });
+                self.scopes.push((name, binding));
+                binding
+            }
+        };
+        if ident.ref_token().is_some() && ident.mut_token().is_some() {
+            // `ref mut x`: the binding itself is not mutable.
+            self.bindings[binding].mutable = false;
+        }
+        self.pat_binds.push((name, binding));
+        Pat::Bind { binding, sub }
     }
 
     /// The fields of a tuple or tuple struct pattern, and where `..` is.
@@ -1555,15 +2538,29 @@ impl<'a> Ctx<'a> {
         (pats.into(), rest)
     }
 
-    /// `S { a, b: x, .. }`
+    /// `S { a, b: x, .. }` or `E::V { a, .. }`
     fn lower_record_pat(&mut self, record: ast::RecordPat<'_>, site: PatSite) -> PatId {
         let range = record.syntax().text_range();
-        let strukt = self.resolve_struct(record.path(), range);
+        let target = self.resolve_struct(record.path(), range, true);
         let mut fields = Vec::new();
         let mut name_ranges = Vec::new();
         let mut rest = false;
         if let Some(list) = record.record_pat_field_list() {
             rest = list.rest_pat().is_some();
+            // `..` must come last: rustc reports what follows it.
+            if let Some(dots) = list.rest_pat() {
+                let after = list
+                    .syntax()
+                    .tokens()
+                    .filter(|t| !t.kind().is_trivia())
+                    .find(|t| t.text_range().start() >= dots.syntax().text_range().end());
+                if let Some(token) = after
+                    && token.kind() != flux_syntax::T!['}']
+                {
+                    let message = format!("expected `}}`, found `{}`", token.text());
+                    self.error(token.text_range(), message);
+                }
+            }
             for field in list.fields() {
                 check_attrs(field.attrs(), &mut self.diagnostics);
                 let (name, name_range) = match (field.name_ref(), field.pat()) {
@@ -1580,18 +2577,20 @@ impl<'a> Ctx<'a> {
                 name_ranges.push((name_range, field.syntax().text_range()));
             }
         }
-        let Some(strukt) = strukt else {
+        let Some((strukt, variant, path)) = target else {
             return self.alloc_pat(Pat::Missing, range);
         };
         let id = self.alloc_pat(
             Pat::Record {
                 strukt,
+                variant,
                 fields: fields.into(),
                 rest,
             },
             range,
         );
         self.source_map.pat_fields.insert(id, name_ranges.into());
+        self.pat_generics(id, &path, record.path(), range);
         id
     }
 }

@@ -203,7 +203,7 @@ fn operand(
         Operand::Const(Constant::Bool(b)) => Some(Value::Bool(*b)),
         Operand::Const(Constant::Item { id, args, .. }) => match consts.get(*id, args)? {
             value @ (Value::Int { .. } | Value::Bool(_)) => Some(value.clone()),
-            Value::Aggregate(_) => None,
+            Value::Aggregate(_) | Value::Variant { .. } => None,
         },
         Operand::Const(Constant::Unit | Constant::CStr(_)) => None,
     }
@@ -274,7 +274,7 @@ fn evaluate(
             let bits = match operand(op, known, consts)? {
                 Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                 Value::Bool(b) => u128::from(b),
-                Value::Aggregate(_) => return None,
+                Value::Aggregate(_) | Value::Variant { .. } => return None,
             };
             let to = to.as_int()?;
             Some(Value::Int {
@@ -282,6 +282,6 @@ fn evaluate(
                 ty: to,
             })
         }
-        Rvalue::Aggregate(..) | Rvalue::Ref { .. } => None,
+        Rvalue::Aggregate(..) | Rvalue::Ref { .. } | Rvalue::Discriminant(_) => None,
     }
 }

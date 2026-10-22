@@ -21,6 +21,14 @@ enum Shape {
     Empty = 3,
 }
 
+// Visibility on a variant is an error after parsing, as in rustc.
+enum Visible {
+    pub A,
+}
+
+// So is an or-pattern parameter without parentheses.
+fn alternatives(Some(x) | None: Option<i32>) {}
+
 impl Shape {
     pub fn area(&self) -> f64 { 0.0 }
     fn consume(mut self) {}
