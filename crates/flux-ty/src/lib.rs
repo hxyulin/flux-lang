@@ -3093,6 +3093,14 @@ fn impl_type(
 pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
     let krate = items.main_crate();
     let root = items.module_of(krate);
+    let data = &items.crates[krate.0 as usize];
+    if data.no_std && !data.externs.contains(&sym::std) {
+        return Some(Diagnostic {
+            file: items.modules[root].file,
+            range: TextRange::empty(0),
+            message: "`no_std` executables without `extern crate std` are not supported yet".into(),
+        });
+    }
     let main = items.functions.iter().find(|(_, f)| {
         f.name == sym::main && !f.is_extern && f.owner.is_none() && f.loc.module == root
     });

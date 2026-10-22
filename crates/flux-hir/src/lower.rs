@@ -3660,11 +3660,11 @@ impl<'a> Ctx<'a> {
             && (self.generics.contains(&path.segments[0])
                 || (path.segments[0] == kw::SelfUpper && self.self_is_any))
         {
-            if path.segments.len() > 2 {
-                self.unsupported(path.range(1, range), "associated types");
+            if path.segments.len() > 3 {
+                self.unsupported(path.range(1, range), "associated types of associated types");
                 return Res::Err;
             }
-            return self.type_relative(path, 1, range);
+            return self.type_relative(path, path.segments.len() - 1, range);
         }
         // `Self::f`: an associated function of this block's type.
         let resolved = match (path.anchor, path.segments.first()) {
@@ -3861,8 +3861,11 @@ impl<'a> Ctx<'a> {
     /// `<T as Tr>::f` or `<T>::f`.
     fn resolve_qualified(&mut self, path: &Path, range: TextRange) -> Res {
         let qself = path.qself.as_ref().expect("a qualified path");
+        if path.segments.len() == 2 {
+            return self.type_relative(path, 1, range);
+        }
         if path.segments.len() != 1 {
-            self.unsupported(path.range(0, range), "associated types");
+            self.unsupported(path.range(0, range), "associated types of associated types");
             return Res::Err;
         }
         let name = path.segments[0];

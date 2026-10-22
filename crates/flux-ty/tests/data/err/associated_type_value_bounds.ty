@@ -1,0 +1,8 @@
+fn first(Self) -> usize
+fn missing_bound<V>(<V as Vector>::Mask) -> ()
+    value@0: <V as Vector>::Mask
+    first@1: {error}
+fn missing_item<V>() -> ()
+fn main() -> ()
+error 139..144: no associated function or constant named `first` found for type `<V as Vector>::Mask` in the current scope
+error 238..249: no associated function or constant named `NOT_A_CONST` found for type `<V as Vector>::Mask` in the current scope

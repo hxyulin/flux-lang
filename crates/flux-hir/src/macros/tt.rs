@@ -206,6 +206,10 @@ pub(crate) fn same_token(a: &[Tok], ga: Glued, b: &[Tok], gb: Glued) -> bool {
         return false;
     }
     match ga.kind {
+        T![crate] => {
+            super::definition_crate(a[ga.raw as usize].origin.ctxt)
+                == super::definition_crate(b[gb.raw as usize].origin.ctxt)
+        }
         SyntaxKind::IDENT | SyntaxKind::LIFETIME_IDENT => {
             a[ga.raw as usize].text == b[gb.raw as usize].text
         }

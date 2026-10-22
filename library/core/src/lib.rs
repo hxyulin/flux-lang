@@ -40,3 +40,15 @@ pub mod result;
 pub mod slice;
 pub mod str;
 mod unicode;
+
+/// Legacy integer constants used by existing Rust libraries.
+pub mod u8 {
+    pub const MIN: u8 = 0;
+    pub const MAX: u8 = 255;
+}
+
+/// Legacy integer constants used by existing Rust libraries.
+pub mod u32 {
+    pub const MIN: u32 = 0;
+    pub const MAX: u32 = 4_294_967_295;
+}

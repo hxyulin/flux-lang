@@ -4,6 +4,25 @@
 
 ### Syntax
 
+- Resolve associated-type value paths such as `V::Mask::first` through trait
+  bounds. Add primitive `core::u8`/`core::u32` compatibility constants and
+  the `unreachable_unchecked` intrinsic, including const-evaluation errors.
+- Compile unchanged unicode-ident sources under an explicit edition-2024
+  wrapper; compare classification of every Unicode scalar with rustc in
+  both optimization modes. Original edition-2021 manifest loading remains
+  a separate milestone.
+
+- Honor validated `repr(align(N))` in aggregate/enum layouts and aligned
+  storage, and add unsafe slice element `get_unchecked`/`get_unchecked_mut`.
+
+- Expand exported dependency macros through renamed imports and transitive
+  reexports with definition-crate `$crate` hygiene, privacy checks and guards
+  against later namespace shadowing. Preserve `$crate` through forwarding and
+  generated macros without matching it as a literal `crate` or identifier.
+- Support `no_std` library preludes and explicit alloc/std opt-in, including
+  real std printing macro reexports; accept inert `rustfmt::skip`. Add package
+  backend optimization with `-O` without changing the Cargo profile/cfg.
+
 - Build local path library dependencies through `flux package build/run`,
   including transitive graphs, renamed imports and shared dependency identity.
   Load sources as separate crates, enforce direct dependency scope and privacy,

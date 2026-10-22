@@ -277,7 +277,13 @@ expansions). A macro is in scope after its definition, to the end of
 its module or block (and after the module, with `#[macro_use]`), and
 everywhere as `crate::m!` with `#[macro_export]`; `use m;` makes it
 nameable by path (`crate::a::m!`, `self::m!`), as rustc's 2018 idiom
-`pub(crate) use m;` does; `$crate` names its crate. Hygiene is rustc's mixed-site hygiene: a local variable or label
+`pub(crate) use m;` does. In source dependency graphs, exported macros may
+be renamed or reexported transitively; `$crate` retains the defining crate's
+identity, including when captured tokens are forwarded or a macro generates
+another macro. It does not bypass privacy and is distinct from the literal
+`crate` token or an `ident` fragment. Item collection remains sequential;
+macro lookup requiring later imports or a general expansion fixed point may
+be rejected. Hygiene is rustc's mixed-site hygiene: a local variable or label
 a macro's definition writes is not the caller's, and the reverse,
 except that a macro defined in a function sees the locals in scope at
 its definition. Items a macro defines are found by name, from anywhere.
@@ -748,6 +754,11 @@ of an `Option<&T>` (`const` where rustc's are, except `take` and
 `core` is reported as not supported yet. A bounded `std` facade
 reexports implemented `core` and `alloc` APIs; see
 [library/std/README.md](../library/std/README.md) for its scope.
+Source library roots may use `#![no_std]`: they receive core's prelude,
+without implicit std or alloc types or printing macros. Explicit `extern
+crate alloc` and `extern crate std` opt into those libraries. Freestanding
+executables remain unsupported; no_std executable roots require explicit
+std. `#[rustfmt::skip]` is accepted as an inert tool attribute.
 
 flux's `alloc` library has heap memory, through C's `malloc`, `realloc`
 and `free` (`alloc::alloc::{alloc, alloc_zeroed, dealloc, realloc,
@@ -976,12 +987,19 @@ types are, and a type that is `Copy` for some lifetimes only where a
 value of it is copied. A borrowed constant expression (`&5`, `&[1, 2]`) lives
 forever, as rustc promotes it.
 
+Slices provide unsafe `get_unchecked` and `get_unchecked_mut` for `usize`
+indices. The caller must supply an in-bounds index; unchecked range indexing
+remains unsupported.
+
 Values are laid out in memory as rustc lays them out, so
 `core::mem::{size_of, align_of, size_of_val, align_of_val}` (in the
 prelude, as in rustc; `const fn`s, for sized types) give rustc's sizes:
 struct and tuple fields reordered to leave little padding (in
-declaration order with `#[repr(C)]`, on structs too now; other `repr`s of
-structs are not supported yet), enums' tags as small as their
+declaration order with `#[repr(C)]`). `#[repr(align(N))]` on structs and
+enums accepts unsuffixed power-of-two alignments through 2^29, preserving
+aggregate size/stride and alignment in stack, static, argument/return and
+heap storage; packed, transparent and SIMD representations remain unsupported.
+The layout also keeps enums' tags as small as their
 discriminants allow, and niches (`Option<&T>`, `Option<bool>`,
 `Option<NonNull<T>>` take no more room than what they hold). `core::ptr`
 has `null`, `null_mut`, `eq`, `read`, `write`, `copy`,

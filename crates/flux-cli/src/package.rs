@@ -26,6 +26,9 @@ pub(crate) struct Options {
     manifest_path: PathBuf,
     #[arg(long)]
     bin: Option<String>,
+    /// Enable Flux/Keel backend optimization (not a Cargo release profile).
+    #[arg(short = 'O', long)]
+    optimize: bool,
 }
 
 #[derive(Deserialize)]
@@ -75,7 +78,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         output: &plan.output,
         sources: &plan.sources,
         options: BuildOptions {
-            optimize: false,
+            optimize: options.optimize,
             timings: false,
         },
     })? {

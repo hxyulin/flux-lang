@@ -232,6 +232,7 @@ impl ItemTree {
         let segments = &path.segments;
         let (mut module, start) = match path.anchor {
             PathAnchor::Crate => (self.module_of(self.modules[from].krate), 0),
+            PathAnchor::DefinitionCrate(id) => (self.module_of(id), 0),
             PathAnchor::SelfModule => (self.named_module(from), 0),
             PathAnchor::Super(n) => {
                 let mut module = self.named_module(from);
@@ -345,6 +346,22 @@ impl ItemTree {
                 let message = format!("cannot find `{name}` in {}", self.module_desc(module));
                 return Err(fail(At::Segment(i), message));
             };
+            // Printing macros live in Flux's core for its shared runtime,
+            // but the public Rust API exports them through std, not core.
+            let target = &self.crates[self.modules[module].krate.0 as usize];
+            let source = &self.crates[self.modules[from].krate.0 as usize];
+            if ns_here == Ns::Macros
+                && target.is_core
+                && target.name == sym::core
+                && crate::macros::CORE_STD_MACROS.contains(&name.as_str())
+                && !source.is_core
+                && self.modules[source.root].file != crate::FileId::std_root()
+            {
+                return Err(ResolveError::NotFound {
+                    segment: i,
+                    module: Some(module),
+                });
+            }
             if binding.kind == BindingKind::AmbiguousGlob {
                 return Err(fail(At::Segment(i), format!("`{name}` is ambiguous")));
             }
@@ -601,7 +618,8 @@ impl ItemTree {
         {
             return Some(Resolved::Def(binding.def));
         }
-        let prelude = if self.is_core(module) {
+        let own = &self.crates[self.modules[module].krate.0 as usize];
+        let prelude = if own.is_core || own.no_std {
             self.def_map.prelude
         } else {
             self.def_map.std_prelude.or(self.def_map.prelude)
@@ -645,7 +663,7 @@ impl ItemTree {
             })
             .filter(|_| {
                 name == sym::core
-                    || name == sym::std
+                    || (name == sym::std && !own_data.no_std)
                     || own_data.is_core
                     || own_data.externs.contains(&name)
             })
@@ -656,6 +674,10 @@ impl ItemTree {
     /// declared or not.
     fn any_crate(&self, name: Symbol, module: ModuleId) -> Option<ModuleId> {
         let own = self.modules[module].krate;
+        let own_data = &self.crates[own.0 as usize];
+        if own_data.no_std && name != sym::core && !own_data.externs.contains(&name) {
+            return None;
+        }
         self.crates
             .iter()
             .enumerate()
