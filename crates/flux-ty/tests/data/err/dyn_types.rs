@@ -79,6 +79,13 @@ impl Tr for dyn Sub {
     fn by(self) {}
 }
 
+// rustc's E0308 ("one type is more general than the other") for most;
+// flux has no shims to call a vtable's method through a pointer.
+fn pointer(d: &'static (dyn Tr + 'static)) -> i32 {
+    let f: fn(&'static (dyn Tr + 'static)) -> i32 = <dyn Tr as Tr>::get;
+    f(d)
+}
+
 // rustc reports this after type checking (E0161, with E0507).
 fn by_value(k: &dyn Tr) {
     k.by();

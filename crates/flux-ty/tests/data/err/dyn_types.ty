@@ -38,6 +38,9 @@ fn get(&dyn Sub) -> i32
     self@0: &dyn Sub
 fn by({error}) -> ()
     self@0: {error}
+fn pointer(&dyn Tr) -> i32
+    d@0: &dyn Tr
+    f@1: fn(&dyn Tr) -> i32
 fn by_value(&dyn Tr) -> ()
     k@0: &dyn Tr
 fn main() -> ()
@@ -57,4 +60,6 @@ error 1131..1136: the `sized` method cannot be invoked on a trait object
 error 1146..1150: no method named `nope` found for reference `&dyn Tr` in the current scope
 error 1245..1264: the object type `(dyn Sub + 'static)` automatically implements the trait `Tr`
 error 1320..1324: the size for values of type `(dyn Sub + 'static)` cannot be known at compilation time
-error 1425..1426: cannot move a value of type `dyn Tr`
+error 1536..1543: lifetimes in function pointer types are not supported yet
+error 1573..1592: function pointers to trait objects' methods are not supported yet
+error 1699..1700: cannot move a value of type `dyn Tr`

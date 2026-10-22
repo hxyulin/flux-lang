@@ -1000,6 +1000,19 @@ impl Ctx<'_> {
         if let (TyKind::FnDef(def), TyKind::FnPtr(ptr)) =
             (self.shallow(actual).kind(), self.shallow(expected).kind())
         {
+            // A method of a trait object is called through its vtable,
+            // which a function pointer would need a shim for.
+            if matches!(
+                self.items.functions[def.function].owner,
+                Some(flux_hir::Owner::Trait(_))
+            ) && def.args.first().is_some_and(|&a| self.shallow(a).is_dyn())
+            {
+                self.error(
+                    self.range(blamed),
+                    "function pointers to trait objects' methods are not supported yet",
+                );
+                return;
+            }
             let extern_fn = self.items.functions[def.function].is_extern;
             let reified = Ty::new(TyKind::FnPtr(crate::FnSigTy {
                 is_unsafe: ptr.is_unsafe,
