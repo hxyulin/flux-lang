@@ -141,6 +141,11 @@ weights! {
     /// Arrays and tuples as values (in types chosen at random).
     aggregates = 40,
 
+    /// Statics whose type contains an enum, percent.
+    enum_statics = 25,
+    /// `zip` in iterator chains, percent.
+    zips = 25,
+
     // Constructs flux rejects for now (see tests/difftest/bugs): 0 keeps
     // campaigns from being swamped by known bugs; raise them once fixed.
     /// Parenthesized range-to patterns, `(..=5)` (bug 002), percent.
@@ -153,11 +158,6 @@ weights! {
     ref_let_else = 0,
     /// Closure parameters left for inference, else annotated (bug 007), percent.
     unannotated_closures = 0,
-    /// Statics whose type has an enum in it (miscompiled, bug 001), percent.
-    enum_statics = 0,
-    /// `zip` in iterator chains, whose `fold` runs closures more often than
-    /// rustc's (bug 006), percent.
-    zips = 0,
 }
 
 impl Default for Config {
