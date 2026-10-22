@@ -858,7 +858,10 @@ pub fn instance_body<'b>(
 /// - `array_as_slice(a)`, `array_as_mut_slice(a)`: `a` unsized to a
 ///   slice, where `A`, the array's type, is a generic argument;
 /// - `subslice(s, start, end)`, `subslice_mut(s, start, end)`:
-///   `&s[start..end]`, unchecked.
+///   `&s[start..end]`, unchecked;
+/// - `slice_from_raw_parts(data, len)`: `data` as a pointer to an empty
+///   array, unsized, then its first `len` elements, unchecked;
+/// - `c_str_from_ptr(p)`: `p` as the `&CStr` it is.
 pub fn expand_intrinsics(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
     let blocks: Vec<_> = body.blocks.iter().map(|(b, _)| b).collect();
     for block in blocks {

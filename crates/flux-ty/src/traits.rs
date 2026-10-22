@@ -1433,7 +1433,7 @@ pub(crate) fn closure_goal(items: &ItemTree, t: TraitId, args: GenericArgs) -> C
 
 /// `Copy`, which what a closure captures must be for it to be `Copy` or
 /// `Clone`.
-pub(crate) fn copy_trait_ref(items: &ItemTree) -> Option<TraitRef> {
+pub fn copy_trait_ref(items: &ItemTree) -> Option<TraitRef> {
     let copy = *items.lang_traits.get(&flux_intern::sym::copy)?;
     Some(TraitRef {
         trait_: copy,

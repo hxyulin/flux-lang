@@ -233,6 +233,33 @@ fn param_to_static<'b>(_1: &[i32]) -> () {
     }
 }
 
+fn <X<'static> as Clone>::clone(_1: &X) -> X {
+    let mut _0: X;
+    let _2: &i32;
+
+    bb0: {
+        _2 = copy (*_1).0;
+        _0 = X(copy _2);
+        return;
+    }
+}
+
+fn copied<'a>(_1: X) -> i32 {
+    let mut _0: i32;
+    let _2: X; // y
+    let _3: i32;
+    let _4: i32;
+
+    bb0: {
+        _2 = copy _1;
+        _3 = copy (*_1.0);
+        _4 = copy (*_2.0);
+        _0 = Add(copy _3, copy _4);
+        StorageDead(_2);
+        return;
+    }
+}
+
 fn main() -> () {
     let mut _0: ();
 
@@ -242,12 +269,13 @@ fn main() -> () {
     }
 }
 
-error 775..777: `s` does not live long enough
-error 895..897: `s` does not live long enough
-error 938..945: borrowed data escapes outside of function
-error 1145..1151: lifetime may not live long enough
-error 1145..1151: lifetime may not live long enough
-error 1324..1342: lifetime may not live long enough
-error 1407..1431: cannot return value referencing local variable `v`
-error 1552..1553: `v` does not live long enough
-error 1609..1630: borrowed data escapes outside of function
+error 834..836: `s` does not live long enough
+error 954..956: `s` does not live long enough
+error 997..1004: borrowed data escapes outside of function
+error 1204..1210: lifetime may not live long enough
+error 1204..1210: lifetime may not live long enough
+error 1383..1401: lifetime may not live long enough
+error 1466..1490: cannot return value referencing local variable `v`
+error 1611..1612: `v` does not live long enough
+error 1668..1689: borrowed data escapes outside of function
+error 1877..1878: lifetime may not live long enough

@@ -6,7 +6,8 @@
 // type's impl, each way round ("lifetime may not live long enough");
 // and what bounds say associated types are (`I: Iterator<Item = &'a
 // i32>`), which callers must meet (E0597, E0515, E0521) and the body
-// may not stretch.
+// may not stretch; and a copy of a type that is `Copy` for `'static`
+// only.
 
 trait Tr {
     fn get(self) -> i32;
@@ -75,6 +76,21 @@ fn local_to_static() {
 
 fn param_to_static<'b>(v: &'b [i32]) {
     need_static(v.iter());
+}
+
+struct X<'a>(&'a i32);
+
+impl Clone for X<'static> {
+    fn clone(&self) -> Self {
+        X(self.0)
+    }
+}
+
+impl Copy for X<'static> {}
+
+fn copied<'a>(x: X<'a>) -> i32 {
+    let y = x;
+    *x.0 + *y.0
 }
 
 fn main() {}

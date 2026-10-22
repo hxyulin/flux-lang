@@ -455,9 +455,13 @@ and reports its errors (E0106, E0261, E0107, ...); then each struct's
 parameters get their variances, and what its fields imply its
 parameters outlive (`&'a T` that `T: 'a`, rustc's inferred outlives
 requirements), and each function what its bounds and parameter types
-say its lifetimes outlive. A trait's `impl` block is chosen by types
-alone, so one whose header holds for some lifetimes only (`impl Tr for
-&'static S`) is not supported yet.
+say its lifetimes outlive. A function's and an `impl` block's bounds
+record the slots of the types they are on and of what they say
+associated types are (`I: Iterator<Item = &'a T>`), in the order of
+`fn_predicates` and `fn_projections`. A trait's `impl` block is chosen
+by types alone, as in rustc; what its header says of lifetimes
+(`impl<'a> PartialEq for Token<'a>`, `impl Tr for &'static S`) is the
+borrow checker's to enforce, below.
 
 It also makes the checks rustc makes before borrow checking: calling an
 `unsafe` function or dereferencing a raw pointer needs an `unsafe` block,
@@ -642,7 +646,17 @@ components share values, computed bottom-up as interval sets. The
 function's lifetime parameters and `'static` are *universal*: live
 everywhere, with an end marker each; one whose value has another's
 marker must outlive it, which the signature must say ("lifetime may
-not live long enough", at the constraint rustc would blame). Callee
+not live long enough", at the constraint rustc would blame, once per
+lifetime; E0521 where a parameter's must be `'static` for a call).
+A call's trait bounds (`Self: Tr` of a trait's method, then the
+callee's own) are proven as rustc's borrow checker proves them: the
+`impl` block chosen by types is matched to the bound's slots, which
+equates a lifetime or type its header names twice, and with `'static`
+one it names so; its lifetime bounds become constraints, and its own
+bounds are proven in turn; so is `Copy` where a struct or enum is
+copied out of a place. What the callee's bounds say associated
+types are must be what they normalize to, lifetimes included, and in
+the body, such an associated type has the bound's lifetimes. Callee
 signatures' associated types are normalized with their `impl` blocks'
 lifetimes; where a signature cannot be matched to the instance (an
 associated type no block decides, a function pointer), what the call

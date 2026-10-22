@@ -130,7 +130,7 @@ reported as "not supported yet":
   ones, nor ones returning references), assignments (to locals,
   their fields and elements), `as` casts (below), `?` on `Option` and
   `Result`, and the methods `CStr::as_ptr` and, of arrays and slices,
-  `len` and `is_empty`.
+  `len` and `is_empty`, built into the compiler.
 - **Statements:** `let`, with a type, a value and `else` (`let Some(x) =
   o else { return };`), and items.
 - **Patterns:** `x`, `mut x`, `ref x`, `ref mut x`, `x @ pat`, `_`,
@@ -158,7 +158,14 @@ yet; tuples compare through `core`'s impls, as below), and on references
 to them, as below. `isize` and
 `usize` are 64 bits. `c"..."` is a `&'static CStr` (`core::ffi::CStr`),
 and `.as_ptr()` gives the `*const c_char` (`*const i8` on both targets)
-that C functions take. As in rustc, arguments after a variadic
+that C functions take. `core` gives `CStr` rustc's `PartialEq` (with
+`CStr` and `&CStr`), `Eq`, `PartialOrd` and `Ord`, which compare its
+bytes, and `count_bytes`, `is_empty`, `to_bytes`, `to_bytes_with_nul`,
+`to_str`, `from_bytes_with_nul` and `from_bytes_until_nul` (with
+`FromBytesWithNulError` and `FromBytesUntilNulError`), which are not
+`const` yet, as rustc's are: a `&CStr` is a pointer to its first byte,
+where rustc's has its length too, so the length is counted where it is
+needed. As in rustc, arguments after a variadic
 function's `...` must be at least 32 bits wide or pointers (raw
 pointers, or references to sized values): `u8`, `i16` and `bool` need a
 cast to `c_int`/`c_uint` first, and a function item one to a function
@@ -199,7 +206,8 @@ implement `Copy` and type parameters bounded by it. Other values are moved, and
 flux reports uses after a move, including partial moves of fields, as
 rustc's borrow checker does. `#[derive(Clone, Copy, PartialEq, Eq,
 PartialOrd, Ord, Default, Debug)]` implements those traits for a struct
-as rustc does (for a generic one, where its parameters implement them),
+as rustc does (for a generic one, where its parameters implement them;
+one with lifetime parameters, for every lifetime),
 comparing fields in order for `PartialOrd` and `Ord`, and making each
 field's default for `Default`; other derives (`Hash`) are not supported
 yet. `Debug` type-checks as rustc's (a field that does not implement it
@@ -218,8 +226,9 @@ is not dropped, one moved out on some paths only is dropped where it
 was not, and a struct with some fields moved out drops the rest. As in
 rustc, `drop` may not be called directly (E0040), fields may not be
 moved out of a struct with a `Drop` impl (E0509), a `Drop` impl must be
-for a struct, with distinct type parameters as its arguments (E0120,
-E0366), and only the bounds the struct has or implies (E0367),
+for a struct, with distinct type and lifetime parameters as its
+arguments (E0120, E0366), and only the bounds, on types and lifetimes,
+that the struct has or implies (E0367),
 `Copy` is not for types with destructors (E0184), constants and
 `const fn`s may not drop values whose `drop` runs code (E0493), and a
 temporary may not be dropped while borrowed (E0716).
@@ -466,7 +475,7 @@ and the others of bits and signs, the `checked_`, `wrapping_`,
 integers, `bool`, `char`, `str`, `()`, raw pointers, references, slices, arrays,
 tuples, `Option`, `Result`, `Ordering` and the ranges),
 `core::default::Default` (in the prelude) for the integers, `bool`,
-`char`, `&str`, `()`, `Option`, tuples of up to twelve elements and `Range`,
+`char`, `&str`, `&[T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,
 `core::mem::{drop, swap, replace, take}` (`drop` also in the prelude;
 `swap` and `replace` are not `const` yet, as rustc's are), `core::convert::{identity, From}`,
 `core::marker::{Sized, Copy}`, `core::clone::Clone` (as `Copy`,
@@ -478,7 +487,8 @@ traits of `core::ops` with `Drop`, `core::cmp::{PartialEq, Eq,
 PartialOrd, Ord, Ordering, max, min}`, `core::option::Option` and
 `core::result::Result`, `core::char` (`from_u32`, `from_digit`),
 `core::str` (`from_utf8`, `Utf8Error`, `Chars`, `CharIndices`,
-`Bytes`), `core::ffi` (`CStr`, `c_char`, `c_int` and C's other integer
+`Bytes`), `core::ffi` (`CStr`, `FromBytesWithNulError`,
+`FromBytesUntilNulError`, `c_char`, `c_int` and C's other integer
 types) (`Sized`, `Copy`, `Clone`, `Drop`, `PartialEq`,
 `Eq`, `PartialOrd`, `Ord`, `From`, `Option`, `Some`, `None`, `Result`,
 `Ok` and `Err` in the prelude). `Ord` gives every type that implements
@@ -576,13 +586,19 @@ expressions yet), with rustc's elision rules for function signatures
 (E0106 with rustc's help where they find nothing), `impl` headers,
 constants and statics, and its errors for undeclared, outer, reserved
 and unused lifetimes (E0261, E0401, E0262, E0637, E0392) and wrong
-numbers of lifetime arguments (E0107, E0747). Traits may not have
-lifetime parameters yet, bounds may not name lifetimes in their
-generic arguments (`T: Tr<&'a U>`; `&` without one is E0637, as in
-rustc), `Fn` bounds may not return references, and named lifetimes in
-types inside bodies (`let x: &'a i32`) and function pointer types are
-not supported yet; a trait's `impl` block must hold for every lifetime
-of its header (`impl Tr for &'static S` is not supported yet).
+numbers of lifetime arguments (E0107, E0747). The bounds of functions
+and `impl` blocks may name lifetimes in what they say associated types
+are (`I: Iterator<Item = &'a T>`). Traits may not have lifetime
+parameters yet, bounds may not name lifetimes in their trait's generic
+arguments (`T: Tr<&'a U>`; `&` without one is E0637, as in rustc), nor
+those of structs and traits in what they say associated types are,
+`Fn` bounds may not return references, and named lifetimes in types
+inside bodies (`let x: &'a i32`) and function pointer types are not
+supported yet. A trait's `impl` block may be for some lifetimes only:
+naming one twice (`impl<'a> PartialEq for Token<'a>`, whose `Rhs` is
+`Token<'a>` too), naming `'static` (`impl Tr for &'static S`), or
+bounding them (`impl<'a, 'b: 'a>`); a lifetime only its associated
+types name is E0207, as in rustc.
 
 The borrow checker infers lifetimes as rustc's (non-lexical lifetimes,
 with two-phase borrows for method receivers and borrows of distinct
@@ -592,7 +608,14 @@ E0716 for temporaries), a function's lifetimes must relate as its
 signature and bounds say ("lifetime may not live long enough"), and a
 trait's `impl` block's method may not ask more of its lifetimes than
 the trait's ("`impl` item signature doesn't match `trait` item
-signature"). A borrowed constant expression (`&5`, `&[1, 2]`) lives
+signature"). As in rustc, a trait's `impl` block is chosen by types
+alone, and then its header's lifetimes and bounds must hold for the
+call's: `x == y` of an invariant type needs the same lifetime on both
+sides, and `impl Tr for &'static S` a `'static` reference (E0597 for a
+borrow of a local, E0521, "borrowed data escapes outside of function",
+for a parameter's). So must what a callee's bounds say its associated
+types are, and a type that is `Copy` for some lifetimes only where a
+value of it is copied. A borrowed constant expression (`&5`, `&[1, 2]`) lives
 forever, as rustc promotes it.
 
 At run time flux matches rustc with `-C overflow-checks=off -C

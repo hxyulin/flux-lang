@@ -407,6 +407,9 @@ struct Cx<'a> {
     /// What the bounds in scope say associated types are, where they
     /// name lifetimes (`I: Iterator<Item = &'a T>`): their slots.
     env_regions: Vec<(AliasTy, Vec<Var>)>,
+    /// The category of the constraints proving a bound makes: a call's
+    /// argument's, or, for a copy's `Copy`, none in particular.
+    proving: Category,
     constraints: Vec<Constraint>,
     /// `T: 'r`: what must hold of a parameter or associated type.
     type_tests: Vec<(Ty, Var, TextRange)>,
@@ -472,6 +475,7 @@ impl<'a> Cx<'a> {
             known_types: Vec::new(),
             in_params: Vec::new(),
             env_regions: Vec::new(),
+            proving: Category::CallArgument,
             constraints: Vec::new(),
             type_tests: Vec::new(),
             loan_vars: Vec::new(),
@@ -978,7 +982,7 @@ impl<'a> Cx<'a> {
             );
         }
         for (a, b) in eqs {
-            self.equate(a, b, Category::CallArgument, range);
+            self.equate(a, b, self.proving, range);
         }
         Some(binding)
     }
@@ -1319,13 +1323,20 @@ impl<'a> Cx<'a> {
     /// The constraints of every statement and call.
     fn generate(&mut self) {
         let body = self.body;
+        let copy = flux_ty::traits::copy_trait_ref(self.items);
         for data in body.blocks.values() {
             for statement in &data.statements {
                 if let StatementKind::Assign(dest, rvalue) = &statement.kind {
                     self.assign(dest, rvalue, statement.range);
+                    for op in rvalue.operands() {
+                        self.copy_bound(copy, op, statement.range);
+                    }
                 }
             }
             let range = data.terminator.range;
+            for op in data.terminator.kind.operands() {
+                self.copy_bound(copy, op, range);
+            }
             match &data.terminator.kind {
                 TerminatorKind::Call {
                     func,
@@ -1708,6 +1719,32 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// A copy of a struct or enum, or of an array of them, needs its type
+    /// to be `Copy` for its lifetimes too (`impl Copy for X<'static>`),
+    /// as rustc proves at each copy.
+    fn copy_bound(&mut self, copy: Option<flux_ty::TraitRef>, op: &Operand, range: TextRange) {
+        let (Some(copy), Operand::Copy(place)) = (copy, op) else {
+            return;
+        };
+        // rustc moves temporaries rather than copying them.
+        if place.projection.is_empty()
+            && self.body.locals[place.local].kind == crate::LocalKind::Temp
+        {
+            return;
+        }
+        let mut elem = self.body.place_ty(place, self.sigs);
+        while let TyKind::Array(t, _) = elem.kind() {
+            elem = t;
+        }
+        if !matches!(elem.kind(), TyKind::Adt(..)) || self.slots(elem) == 0 {
+            return;
+        }
+        let (ty, vars) = self.place_regions(place);
+        self.proving = Category::Boring;
+        self.prove(copy.with_self(ty), &[vars], range, 0);
+        self.proving = Category::CallArgument;
+    }
+
     /// The slots of an instance of `ty`, a type in a bound's terms (whose
     /// own lifetimes are not written down, so fresh), for generic
     /// arguments `args` with slots `arg_vars`; `None` where they cannot
@@ -1862,7 +1899,7 @@ impl<'a> Cx<'a> {
             match *p {
                 Outlives::Region(a, b) => {
                     if let (Some(a), Some(b)) = (map(a), map(b)) {
-                        self.outlives(a, b, Category::CallArgument, range);
+                        self.outlives(a, b, self.proving, range);
                     }
                 }
                 Outlives::Type(t, b) => {
@@ -1871,7 +1908,7 @@ impl<'a> Cx<'a> {
                         && let Some(vars) = type_vars.get(p.index as usize)
                     {
                         for &v in &vars.clone() {
-                            self.outlives(v, b, Category::CallArgument, range);
+                            self.outlives(v, b, self.proving, range);
                         }
                     }
                     let instance = self.normalize(t.subst(&impl_args));
