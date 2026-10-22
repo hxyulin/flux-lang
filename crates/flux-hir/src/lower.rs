@@ -6,7 +6,7 @@ use flux_arena::{Arena, SliceId};
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::ast::{self, AstNode, BinaryOp, CmpOp, LiteralKind, LogicOp};
 use flux_syntax::parser::Fragment;
-use flux_syntax::{Parse, SyntaxKind, SyntaxNode, SyntaxTree, TextRange};
+use flux_syntax::{Parse, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxTree, TextRange};
 use rustc_hash::FxHashMap;
 
 use flux_arena::ArenaMap;
@@ -2139,7 +2139,7 @@ impl<'a> Ctx<'a> {
             && !semicolon
             && m.token_tree()
                 .is_some_and(|tt| tt.l_curly_token().is_none());
-        let tail = self.lower_stmts(root.stmts(), root.tail_expr());
+        let tail = self.lower_stmts(root.syntax(), root.tail_expr());
         self.macro_tail_is_expr = outer_tail;
         self.expansion_file = outer_file;
         self.expansion_depth -= 1;
@@ -3164,7 +3164,7 @@ impl<'a> Ctx<'a> {
         let macros = self.local_macros.len();
         let stmts_start = self.stmt_scratch.len();
         let outer_tail = std::mem::replace(&mut self.macro_tail_is_expr, false);
-        let tail = self.lower_stmts(block.stmts(), block.tail_expr());
+        let tail = self.lower_stmts(syntax, block.tail_expr());
         self.macro_tail_is_expr = outer_tail;
         self.local_macros.truncate(macros);
         self.item_scopes.truncate(item_scopes);
@@ -3193,11 +3193,26 @@ impl<'a> Ctx<'a> {
     /// of a macro call in statement position are lowered in their place.
     fn lower_stmts<'t>(
         &mut self,
-        list: ast::AstChildren<'t, ast::Stmt<'t>>,
+        syntax: SyntaxNode<'t>,
         tail: Option<ast::Expr<'t>>,
     ) -> Option<ExprId> {
-        for stmt in list {
-            if !crate::item_tree::item_enabled(stmt.syntax(), &mut self.diagnostics) {
+        // Cfg removal precedes tail selection. Keep items and bare `;`
+        // tokens as barriers, even though neither produces a HIR statement.
+        let mut enabled = Vec::new();
+        for child in syntax.children_with_tokens() {
+            let node = match child {
+                SyntaxElement::Token(token) => {
+                    if token.kind() == flux_syntax::T![;] {
+                        enabled.push(None);
+                    }
+                    continue;
+                }
+                SyntaxElement::Node(node) => node,
+            };
+            let Some(stmt) = ast::Stmt::cast(node) else {
+                continue;
+            };
+            if !crate::item_tree::item_enabled(node, &mut self.diagnostics) {
                 continue;
             }
             if let ast::Stmt::ExprStmt(stmt) = stmt
@@ -3206,6 +3221,20 @@ impl<'a> Ctx<'a> {
             {
                 continue;
             }
+            enabled.push(Some(stmt));
+        }
+        let mut tail =
+            tail.filter(|e| crate::item_tree::item_enabled(e.syntax(), &mut self.diagnostics));
+        if tail.is_none()
+            && let Some(Some(ast::Stmt::ExprStmt(stmt))) = enabled.last()
+            && stmt.semicolon_token().is_none()
+            && let Some(expr) = stmt.expr()
+        {
+            check_attrs(stmt.attrs(), &mut self.diagnostics);
+            tail = Some(expr);
+            enabled.pop();
+        }
+        for stmt in enabled.into_iter().flatten() {
             match stmt {
                 ast::Stmt::LetStmt(let_stmt) => {
                     check_attrs(let_stmt.attrs(), &mut self.diagnostics);
@@ -3277,8 +3306,6 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
-        let tail =
-            tail.filter(|e| crate::item_tree::item_enabled(e.syntax(), &mut self.diagnostics));
         match tail {
             Some(ast::Expr::MacroExpr(m)) if m.attrs().next().is_none() => {
                 self.lower_macro_stmts(m, false, true)

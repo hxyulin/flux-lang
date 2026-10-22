@@ -1,0 +1,18 @@
+fn semicolon() -> u32
+fn item() -> u32
+fn enabled() -> u32
+fn bare_semicolon() -> u32
+fn unit() -> ()
+fn enabled_let() -> u32
+    value@0: i32
+fn main() -> ()
+const VALUE: u32
+error 22..64: mismatched types: expected `u32`, found `()`
+error 82..149: mismatched types: expected `u32`, found `()`
+error 90..91: mismatched types: expected `()`, found `{integer}`
+error 178..179: mismatched types: expected `()`, found `{integer}`
+error 239..302: mismatched types: expected `u32`, found `()`
+error 247..248: mismatched types: expected `()`, found `{integer}`
+error 321..322: mismatched types: expected `()`, found `{integer}`
+error 379..440: mismatched types: expected `u32`, found `()`
+error 387..388: mismatched types: expected `()`, found `{integer}`
