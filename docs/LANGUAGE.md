@@ -229,8 +229,9 @@ local ambiguity, a fragment followed by what its kind does not allow,
 "recursion limit reached while expanding `m!`" past 128 nested
 expansions). A macro is in scope after its definition, to the end of
 its module or block (and after the module, with `#[macro_use]`), and
-everywhere as `crate::m!` with `#[macro_export]`; `$crate` names its
-crate. Hygiene is rustc's mixed-site hygiene: a local variable or label
+everywhere as `crate::m!` with `#[macro_export]`; `use m;` makes it
+nameable by path (`crate::a::m!`, `self::m!`), as rustc's 2018 idiom
+`pub(crate) use m;` does; `$crate` names its crate. Hygiene is rustc's mixed-site hygiene: a local variable or label
 a macro's definition writes is not the caller's, and the reverse,
 except that a macro defined in a function sees the locals in scope at
 its definition. Items a macro defines are found by name, from anywhere.
@@ -248,8 +249,9 @@ messages are never formatted: a panic aborts, printing nothing, and
 constant evaluation reports a literal message as rustc does and a
 formatted one as "explicit panic". `std`'s macros (`println!`,
 `vec!`), `env!`, `include!` and the like, items a macro makes inside a
-function body, and paths to macros through modules and `use` imports
-other than `crate::m!` and `core::m!` are not supported yet.
+function body, and calls in item position of macros named through
+modules (`a::m!();` at a module's top level; `crate::m!` and `core::m!`
+work) are not supported yet.
 
 Values are dropped as in rustc: a binding at the end of its block, in
 reverse order of declaration, then the function's parameters; a

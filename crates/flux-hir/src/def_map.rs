@@ -25,13 +25,16 @@ use crate::item_tree::{
     AssocItem, ConstId, ImplTarget, ItemCounts, ItemTree, ModuleId, Path, PathAnchor, StructKind,
     TraitId, TypeAliasId, TypeRef, UseKind, Visibility, is_primitive,
 };
-use crate::{Diagnostic, FileId, FunctionId, StructId};
+use crate::{Diagnostic, FileId, FunctionId, MacroId, StructId};
 
 /// A namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ns {
     Types,
     Values,
+    /// Macros named by path: `#[macro_export]` ones at their crate's
+    /// root, and `use` imports of `macro_rules!` macros.
+    Macros,
 }
 
 /// An item a name can mean.
@@ -48,6 +51,8 @@ pub enum Def {
     TypeAlias(TypeAliasId),
     /// `static X: T = v;`, in the values namespace.
     Static(ConstId),
+    /// A macro, in the macros namespace.
+    Macro(MacroId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +81,7 @@ pub enum BindingKind {
 pub struct Scope {
     pub types: FxHashMap<Symbol, Binding>,
     pub values: FxHashMap<Symbol, Binding>,
+    pub macros: FxHashMap<Symbol, Binding>,
 }
 
 impl Scope {
@@ -83,6 +89,7 @@ impl Scope {
         match ns {
             Ns::Types => &self.types,
             Ns::Values => &self.values,
+            Ns::Macros => &self.macros,
         }
     }
 
@@ -90,6 +97,7 @@ impl Scope {
         match ns {
             Ns::Types => &mut self.types,
             Ns::Values => &mut self.values,
+            Ns::Macros => &mut self.macros,
         }
     }
 }
@@ -367,6 +375,7 @@ impl ItemTree {
             Def::Static(_) => "static",
             Def::Variant(..) => "variant",
             Def::TypeAlias(_) => "type alias",
+            Def::Macro(_) => "macro",
         };
         let import = if binding.kind == BindingKind::Item {
             ""
@@ -658,6 +667,14 @@ impl ItemTree {
             Def::Const(c) | Def::Static(c) => self.consts[c].loc.vis,
             Def::Variant(s, _) => self.structs[s].loc.vis,
             Def::TypeAlias(a) => self.type_aliases[a].loc.vis,
+            Def::Macro(m) => {
+                let krate = self.macros[m].krate;
+                if self.exported_macros.get(&(krate, self.macros[m].name)) == Some(&m) {
+                    Visibility::Public
+                } else {
+                    Visibility::Crate(krate)
+                }
+            }
         }
     }
 
@@ -672,6 +689,7 @@ impl ItemTree {
             Def::Const(_) => "constant",
             Def::Static(_) => "static",
             Def::TypeAlias(_) => "type alias",
+            Def::Macro(_) => "macro",
             Def::Variant(s, v) => match self.structs[s].variant(v).kind {
                 StructKind::Record => "struct variant",
                 StructKind::Tuple => "tuple variant",
@@ -775,6 +793,29 @@ fn define_items(items: &mut ItemTree, from: ItemCounts) {
             defined.push((f.loc.module, f.name, &[Ns::Values], binding));
         }
     }
+    // `#[macro_export]` macros are at their crate's root, and `use m;`
+    // of a `macro_rules!` macro where its import is.
+    if let Some((_, first)) = items.modules.iter().nth(from.modules as usize) {
+        let krate = first.krate;
+        let root = items.module_of(krate);
+        for (&(k, name), &id) in &items.exported_macros {
+            if k == krate {
+                let m = &items.macros[id];
+                let binding = item(Def::Macro(id), Visibility::Public, m.file, m.name_range);
+                defined.push((root, name, &[Ns::Macros], binding));
+            }
+        }
+    }
+    for import in std::mem::take(&mut items.macro_imports) {
+        let binding = Binding {
+            def: Def::Macro(import.def),
+            vis: import.vis,
+            kind: BindingKind::Import,
+            file: import.file,
+            range: import.range,
+        };
+        defined.push((import.module, import.name, &[Ns::Macros], binding));
+    }
     defined.sort_by_key(|(.., b)| (b.file, b.range.start()));
     for (module, name, namespaces, binding) in defined {
         let mut ok = true;
@@ -821,7 +862,7 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
             let module_only = matches!(u.kind, UseKind::Module(_));
             let mut found = Vec::new();
             let mut private = None;
-            for ns in [Ns::Types, Ns::Values] {
+            for ns in [Ns::Types, Ns::Values, Ns::Macros] {
                 let def = match items.resolve(u.module, &u.path, ns) {
                     Ok(Resolved::Def(def)) => def,
                     Err(ResolveError::Private {
@@ -1111,7 +1152,7 @@ fn apply_glob(items: &mut ItemTree, index: usize) -> bool {
         _ => return false,
     };
     let mut changed = false;
-    for ns in [Ns::Types, Ns::Values] {
+    for ns in [Ns::Types, Ns::Values, Ns::Macros] {
         let names: Vec<(Symbol, Binding)> = match source {
             Ok(source) => items.def_map.scopes[source.index()]
                 .ns(ns)

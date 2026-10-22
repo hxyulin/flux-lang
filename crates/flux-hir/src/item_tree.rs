@@ -90,6 +90,8 @@ pub struct ItemTree {
     /// The file each expansion of a macro call in item position is part
     /// of, by the file its items are in.
     pub expansion_files: rustc_hash::FxHashMap<FileId, FileId>,
+    /// `use m;` imports of `macro_rules!` macros, for the def map.
+    pub(crate) macro_imports: Vec<MacroImport>,
     /// Problems found collecting the items and resolving their names;
     /// [`lower`](crate::lower) moves them into the [`Hir`](crate::Hir)'s.
     pub diagnostics: Vec<Diagnostic>,
@@ -160,6 +162,17 @@ pub enum Visibility {
     /// Private, `pub(self)` or `pub(super)`: this module and the modules
     /// inside it.
     Module(ModuleId),
+}
+
+/// `use m;` of a `macro_rules!` macro in textual scope where it is.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MacroImport {
+    pub module: ModuleId,
+    pub name: Symbol,
+    pub def: MacroId,
+    pub vis: Visibility,
+    pub file: FileId,
+    pub range: TextRange,
 }
 
 /// Where an item is and who may name it.
@@ -2355,6 +2368,22 @@ impl Collector<'_> {
         } else {
             UseKind::Named(name)
         };
+        // `use m;` of a `macro_rules!` macro in textual scope makes it
+        // nameable by path, as `crate::m!` and so on.
+        if let (UseKind::Named(name), PathAnchor::Plain, [only]) =
+            (kind, path.anchor, &path.segments[..])
+            && let Some(def) = self.items.textual_macro(self.macro_scope, *only)
+        {
+            self.items.macro_imports.push(MacroImport {
+                module: ctx.module,
+                name,
+                def,
+                vis,
+                file: ctx.file,
+                range,
+            });
+            return;
+        }
         self.items.uses.push(Use {
             module: ctx.module,
             file: ctx.file,
