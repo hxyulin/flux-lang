@@ -4290,6 +4290,15 @@ impl Ctx<'_> {
         let mut place = expr;
         let mut past_deref = past_deref;
         loop {
+            // A call produces a fresh value. Its dereference adjustments
+            // belong to its callee/receiver, not to the returned temporary
+            // that is being borrowed mutably here (`v.iter().any(f)`).
+            if matches!(
+                self.body.exprs[place],
+                Expr::Call { .. } | Expr::MethodCall { .. }
+            ) {
+                return;
+            }
             self.make_derefs_mutable(place, site);
             // Past a dereference of a reference, rather than of a
             // `Deref` type's, what is behind it is the borrow checker's.

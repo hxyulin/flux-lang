@@ -1,7 +1,9 @@
 //! Slices' methods that allocate: `to_vec`, `into_vec`, `repeat`,
-//! `concat`.
+//! string `join`.
 
+use crate::string::String;
 use crate::vec::Vec;
+use core::borrow::Borrow;
 
 impl<T> [T] {
     /// A `Vec` of clones of the elements, with as much room as they take.
@@ -26,5 +28,21 @@ impl<T> [T] {
             v.extend_from_slice(self);
         }
         v
+    }
+}
+
+impl<T: Borrow<str>> [T] {
+    /// Concatenates the borrowed strings, with `separator` between elements.
+    pub fn join(&self, separator: &str) -> String {
+        let mut result = String::new();
+        let mut first = true;
+        for value in self {
+            if !first {
+                result.push_str(separator);
+            }
+            first = false;
+            result.push_str(value.borrow());
+        }
+        result
     }
 }

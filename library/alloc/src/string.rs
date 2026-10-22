@@ -438,3 +438,21 @@ impl Extend<String> for String {
         }
     }
 }
+
+impl core::borrow::Borrow<str> for String {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl core::borrow::BorrowMut<str> for String {
+    fn borrow_mut(&mut self) -> &mut str {
+        self.as_mut_str()
+    }
+}
+
+impl core::hash::Hash for String {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(self.as_str(), state);
+    }
+}

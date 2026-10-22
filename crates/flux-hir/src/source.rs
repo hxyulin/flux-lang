@@ -124,6 +124,10 @@ const CORE_FILES: &[(&str, &str)] = &[
     ("hash.rs", include_str!("../../../library/core/src/hash.rs")),
     ("bool.rs", include_str!("../../../library/core/src/bool.rs")),
     (
+        "borrow.rs",
+        include_str!("../../../library/core/src/borrow.rs"),
+    ),
+    (
         "alloc.rs",
         include_str!("../../../library/core/src/alloc.rs"),
     ),

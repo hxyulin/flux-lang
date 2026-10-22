@@ -160,3 +160,9 @@ impl<T> From<T> for Box<T> {
         Box::new(t)
     }
 }
+
+impl<T: ?Sized + core::hash::Hash> core::hash::Hash for Box<T> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        (**self).hash(state);
+    }
+}
