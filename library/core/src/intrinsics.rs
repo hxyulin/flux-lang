@@ -17,16 +17,17 @@ pub(crate) unsafe fn write<T>(dst: &mut T, value: T) {
     loop {}
 }
 
-/// The array `A`, which must be `[T; N]` for some `N`, as a slice.
+/// A value of type `T` that is not there: memory to write each part of
+/// before it is used (`array::from_fn`'s array).
 #[rustc_intrinsic]
-pub(crate) unsafe fn array_as_slice<A, T>(array: &A) -> &[T] {
+pub(crate) unsafe fn uninit<T>() -> T {
     loop {}
 }
 
-/// The array `A`, which must be `[T; N]` for some `N`, as a mutable
-/// slice.
+/// Whether `T` is `Copy`: what rustc's specialization of arrays'
+/// `Clone` asks.
 #[rustc_intrinsic]
-pub(crate) unsafe fn array_as_mut_slice<A, T>(array: &mut A) -> &mut [T] {
+pub(crate) fn is_copy<T>() -> bool {
     loop {}
 }
 

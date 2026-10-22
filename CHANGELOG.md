@@ -703,6 +703,18 @@
   parameter types, E0747, E0107, E0308 with sizes and values, E0284,
   E0158, E0530, and "generic parameters may not be used in const
   operations".
+- Move arrays' traits from the compiler into `core::array`, as
+  `impl<T, const N: usize>` blocks as rustc's `core` writes them:
+  `Copy`, `Clone` (a copy for `Copy` elements, as rustc's
+  specialization makes it, through the new `is_copy` intrinsic),
+  `PartialEq` with arrays, slices and references to slices either way
+  round, `Eq`, `PartialOrd`, `Ord`, `Debug`, `Default` for up to 32
+  elements, and `IntoIterator` for `[T; N]`, `&[T; N]` and `&mut [T;
+  N]`, with `array::IntoIter<T, N>` now rustc's type. The compiler's
+  shims and special cases for them are gone. Add `array::from_fn`
+  (through the new `uninit` intrinsic) and arrays' `map`, `as_slice`,
+  `as_mut_slice` and `each_ref`. Comparing arrays of different element
+  types (`[1u8] == [1i32]`) is E0277, no longer E0308.
 
 ### Performance
 

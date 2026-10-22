@@ -1,55 +1,110 @@
-//! Arrays' iterator by value. `IntoIterator` for `[T; N]`, `&[T; N]` and
-//! `&mut [T; N]` is built into the compiler, as rustc's `core` writes it
-//! with const generics, which flux does not have: its `into_iter` is
-//! [`IntoIter::new`], [`iter`] or [`iter_mut`] here, with `A` the
-//! array's type.
+//! Arrays' traits and methods, and their iterator by value, written
+//! with const generics as rustc's `core` writes them.
 
-use crate::intrinsics::{array_as_mut_slice, array_as_slice, read, subslice};
-use crate::iter::{DoubleEndedIterator, ExactSizeIterator, Iterator};
-use crate::marker::PhantomData;
+use crate::clone::Clone;
+use crate::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
+use crate::default::Default;
+use crate::fmt::{Debug, Formatter, Result};
+use crate::intrinsics::{is_copy, read, uninit, write};
+use crate::iter::{DoubleEndedIterator, ExactSizeIterator, IntoIterator, Iterator};
+use crate::marker::Copy;
 use crate::mem::{ManuallyDrop, drop};
-use crate::ops::Drop;
+use crate::ops::{Drop, FnMut};
 use crate::option::Option::{self, None, Some};
 use crate::slice::{Iter, IterMut};
 
+/// An array of `N` elements, each `cb(i)` for its index `i`, made in
+/// order.
+pub fn from_fn<T, const N: usize, F: FnMut(usize) -> T>(mut cb: F) -> [T; N] {
+    // Each element is written once before the array is used.
+    let mut array: ManuallyDrop<[T; N]> = ManuallyDrop::new(unsafe { uninit() });
+    let mut i = 0;
+    while i < N {
+        unsafe { write(&mut array.value[i], cb(i)) };
+        i += 1;
+    }
+    ManuallyDrop::into_inner(array)
+}
+
+impl<T, const N: usize> [T; N] {
+    /// An array of `f` applied to each element, in order.
+    pub fn map<U, F: FnMut(T) -> U>(self, mut f: F) -> [U; N] {
+        let mut iter = self.into_iter();
+        from_fn(|_| match iter.next() {
+            Some(item) => f(item),
+            None => loop {},
+        })
+    }
+
+    /// The array as a slice: `&self[..]`.
+    pub const fn as_slice(&self) -> &[T] {
+        self
+    }
+
+    /// The array as a mutable slice.
+    pub const fn as_mut_slice(&mut self) -> &mut [T] {
+        self
+    }
+
+    /// An array of references to each element.
+    pub fn each_ref(&self) -> [&T; N] {
+        from_fn(|i| &self[i])
+    }
+}
+
 /// An iterator over an array's elements by value: what `for x in array`
 /// and `array.into_iter()` give. Dropping it drops the elements it has
-/// not given. rustc's is `IntoIter<T, N>`; flux's has the array's type,
-/// `[T; N]`, in place of `N`.
-#[lang = "array_into_iter"]
-pub struct IntoIter<T, A> {
-    data: ManuallyDrop<A>,
+/// not given.
+pub struct IntoIter<T, const N: usize> {
+    data: ManuallyDrop<[T; N]>,
     start: usize,
     end: usize,
-    elem: PhantomData<T>,
 }
 
-impl<T, A> IntoIter<T, A> {
-    /// `IntoIterator::into_iter` of an array of type `A`, `[T; N]`.
-    #[lang = "array_into_iter_new"]
-    pub(crate) fn new(array: A) -> IntoIter<T, A> {
-        let end = unsafe { array_as_slice::<A, T>(&array) }.len();
-        IntoIter {
-            data: ManuallyDrop::new(array),
-            start: 0,
-            end,
-            elem: PhantomData,
-        }
-    }
-
+impl<T, const N: usize> IntoIter<T, N> {
     /// The elements not given yet.
     pub fn as_slice(&self) -> &[T] {
-        unsafe { subslice(array_as_slice::<A, T>(&self.data.value), self.start, self.end) }
+        &self.data.value[self.start..self.end]
     }
 }
 
-impl<T, A> Iterator for IntoIter<T, A> {
+impl<T, const N: usize> IntoIterator for [T; N] {
+    type Item = T;
+    type IntoIter = IntoIter<T, N>;
+
+    fn into_iter(self) -> IntoIter<T, N> {
+        IntoIter {
+            data: ManuallyDrop::new(self),
+            start: 0,
+            end: N,
+        }
+    }
+}
+
+impl<'a, T, const N: usize> IntoIterator for &'a [T; N] {
+    type Item = &'a T;
+    type IntoIter = Iter<'a, T>;
+
+    fn into_iter(self) -> Iter<'a, T> {
+        self.iter()
+    }
+}
+
+impl<'a, T, const N: usize> IntoIterator for &'a mut [T; N] {
+    type Item = &'a mut T;
+    type IntoIter = IterMut<'a, T>;
+
+    fn into_iter(self) -> IterMut<'a, T> {
+        self.iter_mut()
+    }
+}
+
+impl<T, const N: usize> Iterator for IntoIter<T, N> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> {
         if self.start < self.end {
-            let all = unsafe { array_as_slice::<A, T>(&self.data.value) };
-            let item = unsafe { read(&all[self.start]) };
+            let item = unsafe { read(&self.data.value[self.start]) };
             self.start += 1;
             Some(item)
         } else {
@@ -63,39 +118,169 @@ impl<T, A> Iterator for IntoIter<T, A> {
     }
 }
 
-impl<T, A> ExactSizeIterator for IntoIter<T, A> {}
+impl<T, const N: usize> ExactSizeIterator for IntoIter<T, N> {}
 
-impl<T, A> DoubleEndedIterator for IntoIter<T, A> {
+impl<T, const N: usize> DoubleEndedIterator for IntoIter<T, N> {
     fn next_back(&mut self) -> Option<T> {
         if self.start < self.end {
             self.end -= 1;
-            let all = unsafe { array_as_slice::<A, T>(&self.data.value) };
-            Some(unsafe { read(&all[self.end]) })
+            Some(unsafe { read(&self.data.value[self.end]) })
         } else {
             None
         }
     }
 }
 
-impl<T, A> Drop for IntoIter<T, A> {
-    #[lang = "array_into_iter_drop"]
+impl<T, const N: usize> Drop for IntoIter<T, N> {
     fn drop(&mut self) {
-        let all = unsafe { array_as_mut_slice::<A, T>(&mut self.data.value) };
         while self.start < self.end {
-            drop(unsafe { read(&all[self.start]) });
+            drop(unsafe { read(&self.data.value[self.start]) });
             self.start += 1;
         }
     }
 }
 
-/// `IntoIterator::into_iter` of a `&[T; N]`, of type `&A`.
-#[lang = "array_iter"]
-pub(crate) fn iter<T, A>(array: &A) -> Iter<'_, T> {
-    unsafe { array_as_slice::<A, T>(array) }.iter()
+impl<T: Copy, const N: usize> Copy for [T; N] {}
+
+/// A copy if `T` is `Copy`, as rustc's specialization makes it, else
+/// each element's clone in turn.
+impl<T: Clone, const N: usize> Clone for [T; N] {
+    fn clone(&self) -> [T; N] {
+        if is_copy::<T>() {
+            unsafe { read(self) }
+        } else {
+            from_fn(|i| self[i].clone())
+        }
+    }
 }
 
-/// `IntoIterator::into_iter` of a `&mut [T; N]`, of type `&mut A`.
-#[lang = "array_iter_mut"]
-pub(crate) fn iter_mut<T, A>(array: &mut A) -> IterMut<'_, T> {
-    unsafe { array_as_mut_slice::<A, T>(array) }.iter_mut()
+impl<A: PartialEq<B>, B, const N: usize> PartialEq<[B; N]> for [A; N] {
+    fn eq(&self, other: &[B; N]) -> bool {
+        self[..] == other[..]
+    }
+
+    fn ne(&self, other: &[B; N]) -> bool {
+        self[..] != other[..]
+    }
 }
+
+impl<A: PartialEq<B>, B, const N: usize> PartialEq<[B]> for [A; N] {
+    fn eq(&self, other: &[B]) -> bool {
+        self[..] == other[..]
+    }
+
+    fn ne(&self, other: &[B]) -> bool {
+        self[..] != other[..]
+    }
+}
+
+impl<A, B: PartialEq<A>, const N: usize> PartialEq<[A; N]> for [B] {
+    fn eq(&self, other: &[A; N]) -> bool {
+        self[..] == other[..]
+    }
+
+    fn ne(&self, other: &[A; N]) -> bool {
+        self[..] != other[..]
+    }
+}
+
+impl<A: PartialEq<B>, B, const N: usize> PartialEq<&[B]> for [A; N] {
+    fn eq(&self, other: &&[B]) -> bool {
+        self[..] == other[..]
+    }
+
+    fn ne(&self, other: &&[B]) -> bool {
+        self[..] != other[..]
+    }
+}
+
+impl<A, B: PartialEq<A>, const N: usize> PartialEq<[A; N]> for &[B] {
+    fn eq(&self, other: &[A; N]) -> bool {
+        self[..] == other[..]
+    }
+
+    fn ne(&self, other: &[A; N]) -> bool {
+        self[..] != other[..]
+    }
+}
+
+impl<A: PartialEq<B>, B, const N: usize> PartialEq<&mut [B]> for [A; N] {
+    fn eq(&self, other: &&mut [B]) -> bool {
+        self[..] == other[..]
+    }
+
+    fn ne(&self, other: &&mut [B]) -> bool {
+        self[..] != other[..]
+    }
+}
+
+impl<A, B: PartialEq<A>, const N: usize> PartialEq<[A; N]> for &mut [B] {
+    fn eq(&self, other: &[A; N]) -> bool {
+        self[..] == other[..]
+    }
+
+    fn ne(&self, other: &[A; N]) -> bool {
+        self[..] != other[..]
+    }
+}
+
+impl<T: Eq, const N: usize> Eq for [T; N] {}
+
+/// Arrays compare as slices do.
+impl<T: PartialOrd, const N: usize> PartialOrd for [T; N] {
+    fn partial_cmp(&self, other: &[T; N]) -> Option<Ordering> {
+        PartialOrd::partial_cmp(&&self[..], &&other[..])
+    }
+}
+
+impl<T: Ord, const N: usize> Ord for [T; N] {
+    fn cmp(&self, other: &[T; N]) -> Ordering {
+        Ord::cmp(&&self[..], &&other[..])
+    }
+}
+
+impl<T: Debug, const N: usize> Debug for [T; N] {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        Debug::fmt(&&self[..], f)
+    }
+}
+
+// `Default` for arrays of up to 32 elements, as rustc's `core` has it:
+// those of none for any element type.
+impl<T> Default for [T; 0] {
+    fn default() -> [T; 0] {
+        []
+    }
+}
+impl<T: Default> Default for [T; 1] { fn default() -> [T; 1] { [T::default()] } }
+impl<T: Default> Default for [T; 2] { fn default() -> [T; 2] { [T::default(), T::default()] } }
+impl<T: Default> Default for [T; 3] { fn default() -> [T; 3] { [T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 4] { fn default() -> [T; 4] { [T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 5] { fn default() -> [T; 5] { [T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 6] { fn default() -> [T; 6] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 7] { fn default() -> [T; 7] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 8] { fn default() -> [T; 8] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 9] { fn default() -> [T; 9] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 10] { fn default() -> [T; 10] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 11] { fn default() -> [T; 11] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 12] { fn default() -> [T; 12] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 13] { fn default() -> [T; 13] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 14] { fn default() -> [T; 14] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 15] { fn default() -> [T; 15] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 16] { fn default() -> [T; 16] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 17] { fn default() -> [T; 17] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 18] { fn default() -> [T; 18] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 19] { fn default() -> [T; 19] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 20] { fn default() -> [T; 20] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 21] { fn default() -> [T; 21] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 22] { fn default() -> [T; 22] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 23] { fn default() -> [T; 23] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 24] { fn default() -> [T; 24] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 25] { fn default() -> [T; 25] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 26] { fn default() -> [T; 26] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 27] { fn default() -> [T; 27] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 28] { fn default() -> [T; 28] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 29] { fn default() -> [T; 29] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 30] { fn default() -> [T; 30] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 31] { fn default() -> [T; 31] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+impl<T: Default> Default for [T; 32] { fn default() -> [T; 32] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }

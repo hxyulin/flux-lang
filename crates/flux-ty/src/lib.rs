@@ -178,33 +178,17 @@ pub struct OpaqueSig {
     pub projections: Box<[Projection]>,
 }
 
-/// The traits and structs of `core` that [`Signatures::field_types`]
-/// needs to know, recorded from the items: `Sized`, which every type
-/// implements, and arrays' built-in `IntoIterator`, with its iterators.
+/// The traits of `core` that [`Signatures::field_types`] needs to know,
+/// recorded from the items: `Sized`, which every type implements.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Builtins {
     pub sized: Option<flux_hir::TraitId>,
-    pub into_iterator: Option<flux_hir::TraitId>,
-    pub array_into_iter: Option<(StructId, Symbol)>,
-    pub slice_iter: Option<(StructId, Symbol)>,
-    pub slice_iter_mut: Option<(StructId, Symbol)>,
 }
 
 impl Builtins {
     fn of(items: &ItemTree) -> Builtins {
-        let strukt = |lang: &str| {
-            let s = *items.lang_enums.get(&Symbol::intern(lang))?;
-            Some((s, items.structs[s].name))
-        };
         Builtins {
             sized: items.lang_traits.get(&flux_intern::sym::sized).copied(),
-            into_iterator: items
-                .lang_traits
-                .get(&Symbol::intern("IntoIterator"))
-                .copied(),
-            array_into_iter: strukt("array_into_iter"),
-            slice_iter: strukt("slice_iter"),
-            slice_iter_mut: strukt("slice_iter_mut"),
         }
     }
 }
@@ -387,36 +371,6 @@ impl Signatures {
         found
     }
 
-    /// `Item` or `IntoIter` of an array's built-in `IntoIterator`.
-    fn array_into_iter_type(&self, alias: ty::AliasTy) -> Option<Ty> {
-        if Some(alias.trait_) != self.builtins.into_iterator {
-            return None;
-        }
-        let (by, elem, array) = match alias.args[0].kind() {
-            TyKind::Array(elem, _) => (None, elem, alias.args[0]),
-            TyKind::Ref(m, array) => match array.kind() {
-                TyKind::Array(elem, _) => (Some(m), elem, array),
-                _ => return None,
-            },
-            _ => return None,
-        };
-        match alias.name.as_str() {
-            "Item" => Some(match by {
-                None => elem,
-                Some(m) => Ty::new(TyKind::Ref(m, elem)),
-            }),
-            "IntoIter" => {
-                let ((strukt, name), args) = match by {
-                    None => (self.builtins.array_into_iter?, vec![elem, array]),
-                    Some(Mutability::Not) => (self.builtins.slice_iter?, vec![elem]),
-                    Some(Mutability::Mut) => (self.builtins.slice_iter_mut?, vec![elem]),
-                };
-                Some(Ty::adt(strukt, name, &args))
-            }
-            _ => None,
-        }
-    }
-
     /// `ty` with each associated type of known types replaced by what
     /// their trait's `impl` block for them says it is. `done` has what
     /// the types met so far normalize to, and `active` the aliases being
@@ -454,11 +408,6 @@ impl Signatures {
                     if let TyKind::Closure(_, closure) = args[0].kind() {
                         break 'alias go(ClosureArgs::split(closure).ret());
                     }
-                }
-                // Arrays' built-in `IntoIterator`, as
-                // [`traits::array_into_iter_type`] has it.
-                if let Some(ty) = self.array_into_iter_type(alias) {
-                    break 'alias go(ty);
                 }
                 // The one block whose header matches and whose bounds can
                 // hold, as [`traits::select_impl`] picks it: one whose
@@ -1836,6 +1785,7 @@ pub fn impl_target(items: &ItemTree, ty: Ty) -> Option<ImplTarget> {
         TyKind::Char => Some(ImplTarget::Primitive(sym::char)),
         TyKind::Str => Some(ImplTarget::Primitive(sym::str)),
         TyKind::Slice(_) => Some(ImplTarget::Primitive(flux_hir::slice_target())),
+        TyKind::Array(..) => Some(ImplTarget::Primitive(flux_hir::array_target())),
         _ => None,
     }
 }
@@ -2899,14 +2849,16 @@ fn impl_type(
             imp.self_range,
             &mut errors,
         ),
-        (Some(ImplTarget::Primitive(_)), TypeRef::Slice(_)) => resolve_type(
-            items,
-            imp.module,
-            &imp.self_ty,
-            scope,
-            imp.self_range,
-            &mut errors,
-        ),
+        (Some(ImplTarget::Primitive(_)), TypeRef::Slice(_) | TypeRef::Array { .. }) => {
+            resolve_type(
+                items,
+                imp.module,
+                &imp.self_ty,
+                scope,
+                imp.self_range,
+                &mut errors,
+            )
+        }
         (Some(ImplTarget::Primitive(name)), _) => primitive(name).unwrap_or(Ty::ERROR),
         _ => Ty::ERROR,
     };
@@ -3084,23 +3036,25 @@ fn lens_signatures(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> (Signatures,
     (sigs, diagnostics)
 }
 
+/// The `drop` methods of `core`'s `Drop` impls (`array::IntoIter`'s),
+/// which no call names but drop glue calls.
+pub fn core_drop_fns(items: &ItemTree) -> Vec<FunctionId> {
+    let Some(&t) = items.lang_traits.get(&sym::drop) else {
+        return Vec::new();
+    };
+    let impls = items.trait_impls.get(&t).into_iter().flatten();
+    impls
+        .filter(|&&imp| items.is_core(items.impls[imp].module))
+        .flat_map(|&imp| items.impls[imp].functions.iter().copied())
+        .collect()
+}
+
 /// The functions a call of `function` may run: itself, and for a
 /// trait's method, its definition in each `impl` block of the trait.
 pub fn call_targets(items: &ItemTree, function: FunctionId) -> Vec<FunctionId> {
     let mut out = vec![function];
     if let Some(Owner::Trait(t)) = items.functions[function].owner {
         let name = items.functions[function].name;
-        // Arrays' built-in `IntoIterator`, and their iterator's `Drop`.
-        if items.traits[t].lang == Some(Symbol::intern("IntoIterator")) {
-            for lang in [
-                "array_into_iter_new",
-                "array_iter",
-                "array_iter_mut",
-                "array_into_iter_drop",
-            ] {
-                out.extend(items.lang_fns.get(&Symbol::intern(lang)));
-            }
-        }
         let impls = items.trait_impls.get(&t).into_iter().flatten();
         out.extend(impls.flat_map(|&imp| {
             items.impls[imp]
@@ -3147,7 +3101,9 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
         reached(&result, &mut queue);
         consts.insert(id, result);
     }
-    // The program's bodies, then the `core` bodies they reach.
+    // `core`'s `Drop` impls, which drop glue may call, then the
+    // program's bodies, then the `core` bodies they reach.
+    queue.extend(core_drop_fns(items));
     queue.extend(
         hir.bodies
             .iter()

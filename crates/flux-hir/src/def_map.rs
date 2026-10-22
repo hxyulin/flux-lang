@@ -1302,6 +1302,9 @@ fn resolve_impls(items: &mut ItemTree, from: usize) {
             TypeRef::Slice(_) if items.is_core(module) => {
                 Some(ImplTarget::Primitive(crate::item_tree::slice_target()))
             }
+            TypeRef::Array { .. } if items.is_core(module) => {
+                Some(ImplTarget::Primitive(crate::item_tree::array_target()))
+            }
             _ => {
                 let range = items.impls[id].def_range;
                 error(

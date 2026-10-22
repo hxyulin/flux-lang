@@ -2198,25 +2198,6 @@ impl<'a> Cx<'a> {
         if depth > 8 || vars.iter().all(|v| v.is_empty()) {
             return;
         }
-        if let Some(elem) = flux_ty::traits::builtin_array_impl(items, goal) {
-            // Arrays' impls are built in, element by element.
-            let header = std::iter::once(goal.self_ty).chain(goal.trait_ref.args.iter().copied());
-            let mut elem_vars = Vec::new();
-            for (ty, vars) in header.zip(vars) {
-                // An array's or slice's slots are its element's; behind a
-                // reference (`[A; N] == &[B]`), after the reference's.
-                let vars = match ty.kind() {
-                    TyKind::Ref(_, inner)
-                        if matches!(inner.kind(), TyKind::Array(..) | TyKind::Slice(_)) =>
-                    {
-                        vars.get(1..).unwrap_or(&[])
-                    }
-                    _ => &vars[..],
-                };
-                elem_vars.push(vars.to_vec());
-            }
-            return self.prove(elem, &elem_vars, range, depth + 1);
-        }
         if matches!(
             goal.self_ty.kind(),
             TyKind::Param(_)

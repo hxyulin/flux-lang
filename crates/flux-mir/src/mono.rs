@@ -231,19 +231,7 @@ fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
     {
         return true;
     }
-    let of_array = matches!(
-        instance.args.first().map(|t| t.kind()),
-        Some(TyKind::Array(..))
-    );
-    if Some(instance.function) == lang_method(items, "eq", "eq") {
-        return matches!(instance.args, [lhs, rhs] if flux_ty::traits::array_eq_elems(*lhs, *rhs).is_some());
-    }
-    of_array
-        && (Some(instance.function) == lang_method(items, "clone", "clone")
-            || Some(instance.function) == lang_method(items, "Default", "default")
-            || Some(instance.function) == lang_method(items, "Debug", "fmt")
-            || Some(instance.function) == lang_method(items, "partial_ord", "partial_cmp")
-            || Some(instance.function) == lang_method(items, "Ord", "cmp"))
+    false
 }
 
 /// `Clone::clone` for an array of `T`: a copy if `T` is `Copy`, else
@@ -256,29 +244,8 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
     if is_fn_shim(items, instance) {
         return Some(fn_shim(items, sigs, instance));
     }
-    if Some(instance.function) == lang_method(items, "Default", "default") {
-        return Some(default_shim(instance));
-    }
-    // `fmt`, `partial_cmp` and `cmp` of arrays: the slices' impls'.
-    if Some(instance.function) == lang_method(items, "Debug", "fmt") {
-        return Some(slice_shim(items, sigs, instance, 1));
-    }
-    if Some(instance.function) == lang_method(items, "partial_ord", "partial_cmp")
-        || Some(instance.function) == lang_method(items, "Ord", "cmp")
-    {
-        return Some(slice_shim(items, sigs, instance, 2));
-    }
-    if Some(instance.function) == lang_method(items, "eq", "eq") {
-        if let (TyKind::Array(..), TyKind::Array(..)) =
-            (instance.args[0].kind(), instance.args[1].kind())
-        {
-            return Some(eq_shim(instance));
-        }
-        return Some(slice_eq_shim(instance));
-    }
     let array = instance.args[0];
     let (elem, len) = match array.kind() {
-        TyKind::Array(elem, len) => (elem, mono_len(len)),
         // A closure, `Copy`: a copy of it.
         TyKind::Closure(..) => (array, 0),
         _ => return None,
@@ -482,379 +449,6 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
     }
 }
 
-/// `PartialEq::eq` of an array and a slice (or a reference to one),
-/// either way round: each side as a `&[T]`, compared by `core`'s
-/// `PartialEq` for slices.
-fn slice_eq_shim(instance: Instance) -> Body {
-    let (lhs, rhs) = (instance.args[0], instance.args[1]);
-    let mut locals = flux_arena::Arena::new();
-    let mut local = |ty, kind| locals.alloc(LocalDecl { ty, kind });
-    let reference = |ty| Ty::new(TyKind::Ref(Mutability::Not, ty));
-    let ret = local(Ty::BOOL, LocalKind::Return);
-    let params = [
-        local(reference(lhs), LocalKind::Param),
-        local(reference(rhs), LocalKind::Param),
-    ];
-    let range = flux_syntax::TextRange::default();
-    let mut statements = Vec::new();
-    let mut slices = Vec::new();
-    let mut operands = Vec::new();
-    for (param, ty) in params.into_iter().zip([lhs, rhs]) {
-        let (slice, rvalue) = match ty.kind() {
-            TyKind::Array(elem, _) => {
-                let slice = reference(Ty::slice(elem));
-                (slice, Rvalue::Unsize(Operand::Copy(param.into()), slice))
-            }
-            // `&&[T]` or `&&mut [T]`: the reference it points to.
-            TyKind::Ref(_, s) => (
-                reference(s),
-                Rvalue::Ref {
-                    mutability: Mutability::Not,
-                    place: Place::from(param).deref().deref(),
-                    two_phase: false,
-                },
-            ),
-            _ => (reference(ty), Rvalue::Use(Operand::Copy(param.into()))),
-        };
-        let temp = local(slice, LocalKind::Temp);
-        statements.push(Statement {
-            kind: StatementKind::Assign(temp.into(), rvalue),
-            range,
-        });
-        slices.push(slice);
-        operands.push(Operand::Move(temp.into()));
-    }
-    let pointee = |t: Ty| match t.kind() {
-        TyKind::Ref(_, p) => p,
-        _ => t,
-    };
-    let mut blocks = flux_arena::Arena::new();
-    blocks.alloc(BasicBlockData {
-        statements,
-        terminator: Terminator {
-            kind: TerminatorKind::Call {
-                func: instance.function,
-                generic_args: Ty::list(&[pointee(slices[0]), pointee(slices[1])]),
-                args: operands,
-                dest: ret.into(),
-                target: Some(BasicBlock::from_raw(1)),
-            },
-            range,
-        },
-    });
-    blocks.alloc(BasicBlockData {
-        statements: Vec::new(),
-        terminator: Terminator {
-            kind: TerminatorKind::Return,
-            range,
-        },
-    });
-    Body {
-        locals,
-        blocks,
-        param_count: 2,
-        c_strings: Vec::new(),
-        in_core: true,
-        inherits_overflow_checks: false,
-        live_drops: Vec::new(),
-        init_errors: Vec::new(),
-        upvars: None,
-        capture_uses: Vec::new(),
-        owner: None,
-        promoted: Vec::new(),
-        bugs: Vec::new(),
-    }
-}
-
-/// `Default::default` for an array of `T`: `T::default()` for each
-/// element in turn.
-fn default_shim(instance: Instance) -> Body {
-    let array = instance.args[0];
-    let TyKind::Array(elem, len) = array.kind() else {
-        unreachable!("defaults arrays")
-    };
-    let len = mono_len(len);
-    let usize = Ty::int(flux_ty::IntTy::Usize);
-    let mut locals = flux_arena::Arena::new();
-    let mut local = |ty, kind| locals.alloc(LocalDecl { ty, kind });
-    let ret = local(array, LocalKind::Return);
-    let counter = local(usize, LocalKind::Temp);
-    let within = local(Ty::BOOL, LocalKind::Temp);
-    let range = flux_syntax::TextRange::default();
-    let statement = |place: Local, rvalue| Statement {
-        kind: StatementKind::Assign(place.into(), rvalue),
-        range,
-    };
-    let terminator = |kind| Terminator { kind, range };
-    let int = |value: u64| Operand::Const(Constant::int(i128::from(value), flux_ty::IntTy::Usize));
-    let block = BasicBlock::from_raw;
-    let (head, body, step, exit) = (block(1), block(2), block(3), block(4));
-    let mut blocks = flux_arena::Arena::new();
-    let mut push = |statements, kind| {
-        blocks.alloc(BasicBlockData {
-            statements,
-            terminator: terminator(kind),
-        })
-    };
-    push(
-        vec![statement(counter, Rvalue::Use(int(0)))],
-        // No elements: nothing to call, and `T` need not have a default.
-        if len == 0 {
-            TerminatorKind::Return
-        } else {
-            TerminatorKind::Goto(head)
-        },
-    );
-    if len > 0 {
-        push(
-            vec![statement(
-                within,
-                Rvalue::BinaryOp(crate::BinOp::Lt, Operand::Copy(counter.into()), int(len)),
-            )],
-            TerminatorKind::SwitchInt {
-                discr: Operand::Copy(within.into()),
-                targets: vec![(0, exit)],
-                otherwise: body,
-                variants: None,
-            },
-        );
-        push(
-            Vec::new(),
-            TerminatorKind::Call {
-                func: instance.function,
-                generic_args: Ty::list(&[elem]),
-                args: Vec::new(),
-                dest: Place::from(ret).index(counter),
-                target: Some(step),
-            },
-        );
-        push(
-            vec![statement(
-                counter,
-                Rvalue::BinaryOp(crate::BinOp::Add, Operand::Copy(counter.into()), int(1)),
-            )],
-            TerminatorKind::Goto(head),
-        );
-        push(Vec::new(), TerminatorKind::Return);
-    }
-    Body {
-        locals,
-        blocks,
-        param_count: 0,
-        c_strings: Vec::new(),
-        in_core: true,
-        inherits_overflow_checks: false,
-        live_drops: Vec::new(),
-        init_errors: Vec::new(),
-        upvars: None,
-        capture_uses: Vec::new(),
-        owner: None,
-        promoted: Vec::new(),
-        bugs: Vec::new(),
-    }
-}
-
-/// A method of an array's built-in impl that calls the same method of
-/// the slice's impl, with its first `slices` parameters as slices and
-/// the others as they are: `Debug::fmt`, `PartialOrd::partial_cmp` and
-/// `Ord::cmp`, as rustc's `core` has them.
-fn slice_shim(items: &ItemTree, sigs: &Signatures, instance: Instance, slices: usize) -> Body {
-    let TyKind::Array(elem, _) = instance.args[0].kind() else {
-        unreachable!("an array's method")
-    };
-    let sig = flux_ty::traits::instance_sig(items, sigs, instance.function, instance.args);
-    let slice_ref = Ty::new(TyKind::Ref(Mutability::Not, Ty::slice(elem)));
-    let mut locals = flux_arena::Arena::new();
-    let ret = locals.alloc(LocalDecl {
-        ty: sig.ret,
-        kind: LocalKind::Return,
-    });
-    let params: Vec<Local> = sig
-        .params
-        .iter()
-        .map(|&ty| {
-            locals.alloc(LocalDecl {
-                ty,
-                kind: LocalKind::Param,
-            })
-        })
-        .collect();
-    let range = flux_syntax::TextRange::default();
-    let mut statements = Vec::new();
-    let mut args = Vec::new();
-    for (i, &param) in params.iter().enumerate() {
-        if i < slices {
-            let slice = locals.alloc(LocalDecl {
-                ty: slice_ref,
-                kind: LocalKind::Temp,
-            });
-            statements.push(Statement {
-                kind: StatementKind::Assign(
-                    slice.into(),
-                    Rvalue::Unsize(Operand::Copy(param.into()), slice_ref),
-                ),
-                range,
-            });
-            args.push(Operand::Move(slice.into()));
-        } else {
-            args.push(Operand::Move(param.into()));
-        }
-    }
-    // The trait's arguments, arrays as slices: `[T]: PartialOrd<[U]>`.
-    let generic_args: Vec<Ty> = instance
-        .args
-        .iter()
-        .map(|&a| match a.kind() {
-            TyKind::Array(elem, _) => Ty::slice(elem),
-            _ => a,
-        })
-        .collect();
-    let generic_args = Ty::list(&generic_args);
-    let mut blocks = flux_arena::Arena::new();
-    blocks.alloc(BasicBlockData {
-        statements,
-        terminator: Terminator {
-            kind: TerminatorKind::Call {
-                func: instance.function,
-                generic_args,
-                args,
-                dest: ret.into(),
-                target: Some(BasicBlock::from_raw(1)),
-            },
-            range,
-        },
-    });
-    blocks.alloc(BasicBlockData {
-        statements: Vec::new(),
-        terminator: Terminator {
-            kind: TerminatorKind::Return,
-            range,
-        },
-    });
-    Body {
-        locals,
-        blocks,
-        param_count: params.len(),
-        c_strings: Vec::new(),
-        in_core: true,
-        inherits_overflow_checks: false,
-        live_drops: Vec::new(),
-        init_errors: Vec::new(),
-        upvars: None,
-        capture_uses: Vec::new(),
-        owner: None,
-        promoted: Vec::new(),
-        bugs: Vec::new(),
-    }
-}
-
-fn eq_shim(instance: Instance) -> Body {
-    let (TyKind::Array(elem, len), TyKind::Array(other, _)) =
-        (instance.args[0].kind(), instance.args[1].kind())
-    else {
-        unreachable!("compares arrays")
-    };
-    let len = mono_len(len);
-    let usize = Ty::int(flux_ty::IntTy::Usize);
-    let mut locals = flux_arena::Arena::new();
-    let mut local = |ty, kind| locals.alloc(LocalDecl { ty, kind });
-    let reference = |ty| Ty::new(TyKind::Ref(Mutability::Not, ty));
-    let ret = local(Ty::BOOL, LocalKind::Return);
-    let lhs = local(reference(instance.args[0]), LocalKind::Param);
-    let rhs = local(reference(instance.args[1]), LocalKind::Param);
-    let counter = local(usize, LocalKind::Temp);
-    let within = local(Ty::BOOL, LocalKind::Temp);
-    let a = local(reference(elem), LocalKind::Temp);
-    let b = local(reference(other), LocalKind::Temp);
-    let range = flux_syntax::TextRange::default();
-    let statement = |place: Local, rvalue| Statement {
-        kind: StatementKind::Assign(place.into(), rvalue),
-        range,
-    };
-    let terminator = |kind| Terminator { kind, range };
-    let int = |value: u64| Operand::Const(Constant::int(i128::from(value), flux_ty::IntTy::Usize));
-    let borrow = |pointer: Local| Rvalue::Ref {
-        mutability: Mutability::Not,
-        place: Place::from(pointer).deref().index(counter),
-        two_phase: false,
-    };
-    let block = |i| BasicBlock::from_raw(i);
-    let (head, body, compared, step, equal) = (block(1), block(2), block(3), block(4), block(5));
-    let mut blocks = flux_arena::Arena::new();
-    let mut push = |statements, kind| {
-        blocks.alloc(BasicBlockData {
-            statements,
-            terminator: terminator(kind),
-        })
-    };
-    push(
-        vec![statement(counter, Rvalue::Use(int(0)))],
-        TerminatorKind::Goto(head),
-    );
-    push(
-        vec![statement(
-            within,
-            Rvalue::BinaryOp(crate::BinOp::Lt, Operand::Copy(counter.into()), int(len)),
-        )],
-        TerminatorKind::SwitchInt {
-            discr: Operand::Copy(within.into()),
-            targets: vec![(0, equal)],
-            otherwise: body,
-            variants: None,
-        },
-    );
-    push(
-        vec![statement(a, borrow(lhs)), statement(b, borrow(rhs))],
-        TerminatorKind::Call {
-            func: instance.function,
-            generic_args: Ty::list(&[elem, other]),
-            args: vec![Operand::Move(a.into()), Operand::Move(b.into())],
-            dest: ret.into(),
-            target: Some(compared),
-        },
-    );
-    // A difference is the answer, `false`, in `_0`.
-    push(
-        Vec::new(),
-        TerminatorKind::SwitchInt {
-            discr: Operand::Copy(ret.into()),
-            targets: vec![(0, block(6))],
-            otherwise: step,
-            variants: None,
-        },
-    );
-    push(
-        vec![statement(
-            counter,
-            Rvalue::BinaryOp(crate::BinOp::Add, Operand::Copy(counter.into()), int(1)),
-        )],
-        TerminatorKind::Goto(head),
-    );
-    push(
-        vec![statement(
-            ret,
-            Rvalue::Use(Operand::Const(Constant::Bool(true))),
-        )],
-        TerminatorKind::Return,
-    );
-    push(Vec::new(), TerminatorKind::Return);
-    Body {
-        locals,
-        blocks,
-        param_count: 2,
-        c_strings: Vec::new(),
-        in_core: true,
-        inherits_overflow_checks: false,
-        live_drops: Vec::new(),
-        init_errors: Vec::new(),
-        upvars: None,
-        capture_uses: Vec::new(),
-        owner: None,
-        promoted: Vec::new(),
-        bugs: Vec::new(),
-    }
-}
-
 /// The MIR of `instance`, of a function whose MIR is `body`: with its
 /// generic arguments substituted and its drops expanded.
 pub fn instance_body<'b>(
@@ -890,8 +484,8 @@ pub fn instance_body<'b>(
 ///
 /// - `read(src)`: a copy of `*src`, which the caller will not drop;
 /// - `write(dst, value)`: `*dst = value`, without dropping `*dst`;
-/// - `array_as_slice(a)`, `array_as_mut_slice(a)`: `a` unsized to a
-///   slice, where `A`, the array's type, is a generic argument;
+/// - `uninit()`: nothing, its memory written before it is read;
+/// - `is_copy::<T>()`: whether `T` is `Copy`;
 /// - `subslice(s, start, end)`, `subslice_mut(s, start, end)`:
 ///   `&s[start..end]`, unchecked;
 /// - `slice_from_raw_parts(data, len)`: `data` as a pointer to an empty
@@ -903,16 +497,25 @@ pub fn expand_intrinsics(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
         let range = body.blocks[block].terminator.range;
         let TerminatorKind::Call {
             func,
+            generic_args,
             args,
             dest,
             target,
-            ..
         } = body.blocks[block].terminator.kind.clone()
         else {
             continue;
         };
         let data = &items.functions[func];
         if !data.intrinsic {
+            continue;
+        }
+        let goto = match target {
+            Some(target) => TerminatorKind::Goto(target),
+            None => TerminatorKind::Unreachable,
+        };
+        if data.name.as_str() == "uninit" {
+            // Nothing: its memory is written before it is read.
+            body.blocks[block].terminator.kind = goto;
             continue;
         }
         // A reference argument, in a temporary to dereference.
@@ -929,6 +532,11 @@ pub fn expand_intrinsics(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
             Place::from(temp)
         };
         let (place, rvalue) = match (data.name.as_str(), args.as_slice()) {
+            ("is_copy", []) => {
+                let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
+                let copy = flux_ty::traits::is_copy(items, sigs, &[], ty);
+                (dest, Rvalue::Use(Operand::Const(Constant::Bool(copy))))
+            }
             ("read", [src]) => {
                 let src = pointer(body, src);
                 (dest, Rvalue::Use(Operand::Copy(src.deref())))
@@ -936,10 +544,6 @@ pub fn expand_intrinsics(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
             ("write", [dst, value]) => {
                 let dst = pointer(body, dst);
                 (dst.deref(), Rvalue::Use(value.clone()))
-            }
-            ("array_as_slice" | "array_as_mut_slice", [array]) => {
-                let ty = body.place_ty(&dest, sigs);
-                (dest, Rvalue::Unsize(array.clone(), ty))
             }
             ("subslice" | "subslice_mut", [slice, start, end]) => (
                 dest,
@@ -1000,10 +604,7 @@ pub fn expand_intrinsics(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
             kind: StatementKind::Assign(place, rvalue),
             range,
         });
-        data.terminator.kind = match target {
-            Some(target) => TerminatorKind::Goto(target),
-            None => TerminatorKind::Unreachable,
-        };
+        data.terminator.kind = goto;
     }
 }
 
