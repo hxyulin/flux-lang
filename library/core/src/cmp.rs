@@ -273,7 +273,7 @@ pub trait Ord: Eq + PartialOrd {
         Self: Sized,
     {
         if min > max {
-            panic(c"assertion failed: min <= max");
+            panic("assertion failed: min <= max");
         }
         if self < min {
             min
@@ -327,29 +327,161 @@ pub fn min_by_key<T, F: crate::ops::FnMut(&T) -> K, K: Ord>(v1: T, v2: T, mut f:
 
 // The integers and `bool` compare with the built-in operators.
 impl PartialOrd for i8 { fn partial_cmp(&self, other: &i8) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &i8) -> bool { *self < *other } fn le(&self, other: &i8) -> bool { *self <= *other } fn gt(&self, other: &i8) -> bool { *self > *other } fn ge(&self, other: &i8) -> bool { *self >= *other } }
-impl Ord for i8 { fn cmp(&self, other: &i8) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for i8 {
+    fn cmp(&self, other: &i8) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: i8, max: i8) -> i8 {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for i16 { fn partial_cmp(&self, other: &i16) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &i16) -> bool { *self < *other } fn le(&self, other: &i16) -> bool { *self <= *other } fn gt(&self, other: &i16) -> bool { *self > *other } fn ge(&self, other: &i16) -> bool { *self >= *other } }
-impl Ord for i16 { fn cmp(&self, other: &i16) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for i16 {
+    fn cmp(&self, other: &i16) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: i16, max: i16) -> i16 {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for i32 { fn partial_cmp(&self, other: &i32) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &i32) -> bool { *self < *other } fn le(&self, other: &i32) -> bool { *self <= *other } fn gt(&self, other: &i32) -> bool { *self > *other } fn ge(&self, other: &i32) -> bool { *self >= *other } }
-impl Ord for i32 { fn cmp(&self, other: &i32) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for i32 {
+    fn cmp(&self, other: &i32) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: i32, max: i32) -> i32 {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for i64 { fn partial_cmp(&self, other: &i64) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &i64) -> bool { *self < *other } fn le(&self, other: &i64) -> bool { *self <= *other } fn gt(&self, other: &i64) -> bool { *self > *other } fn ge(&self, other: &i64) -> bool { *self >= *other } }
-impl Ord for i64 { fn cmp(&self, other: &i64) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for i64 {
+    fn cmp(&self, other: &i64) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: i64, max: i64) -> i64 {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for i128 { fn partial_cmp(&self, other: &i128) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &i128) -> bool { *self < *other } fn le(&self, other: &i128) -> bool { *self <= *other } fn gt(&self, other: &i128) -> bool { *self > *other } fn ge(&self, other: &i128) -> bool { *self >= *other } }
-impl Ord for i128 { fn cmp(&self, other: &i128) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for i128 {
+    fn cmp(&self, other: &i128) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: i128, max: i128) -> i128 {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for isize { fn partial_cmp(&self, other: &isize) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &isize) -> bool { *self < *other } fn le(&self, other: &isize) -> bool { *self <= *other } fn gt(&self, other: &isize) -> bool { *self > *other } fn ge(&self, other: &isize) -> bool { *self >= *other } }
-impl Ord for isize { fn cmp(&self, other: &isize) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for isize {
+    fn cmp(&self, other: &isize) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: isize, max: isize) -> isize {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for u8 { fn partial_cmp(&self, other: &u8) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &u8) -> bool { *self < *other } fn le(&self, other: &u8) -> bool { *self <= *other } fn gt(&self, other: &u8) -> bool { *self > *other } fn ge(&self, other: &u8) -> bool { *self >= *other } }
-impl Ord for u8 { fn cmp(&self, other: &u8) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for u8 {
+    fn cmp(&self, other: &u8) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: u8, max: u8) -> u8 {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for u16 { fn partial_cmp(&self, other: &u16) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &u16) -> bool { *self < *other } fn le(&self, other: &u16) -> bool { *self <= *other } fn gt(&self, other: &u16) -> bool { *self > *other } fn ge(&self, other: &u16) -> bool { *self >= *other } }
-impl Ord for u16 { fn cmp(&self, other: &u16) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for u16 {
+    fn cmp(&self, other: &u16) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: u16, max: u16) -> u16 {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for u32 { fn partial_cmp(&self, other: &u32) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &u32) -> bool { *self < *other } fn le(&self, other: &u32) -> bool { *self <= *other } fn gt(&self, other: &u32) -> bool { *self > *other } fn ge(&self, other: &u32) -> bool { *self >= *other } }
-impl Ord for u32 { fn cmp(&self, other: &u32) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for u32 {
+    fn cmp(&self, other: &u32) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: u32, max: u32) -> u32 {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for u64 { fn partial_cmp(&self, other: &u64) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &u64) -> bool { *self < *other } fn le(&self, other: &u64) -> bool { *self <= *other } fn gt(&self, other: &u64) -> bool { *self > *other } fn ge(&self, other: &u64) -> bool { *self >= *other } }
-impl Ord for u64 { fn cmp(&self, other: &u64) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for u64 {
+    fn cmp(&self, other: &u64) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: u64, max: u64) -> u64 {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for u128 { fn partial_cmp(&self, other: &u128) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &u128) -> bool { *self < *other } fn le(&self, other: &u128) -> bool { *self <= *other } fn gt(&self, other: &u128) -> bool { *self > *other } fn ge(&self, other: &u128) -> bool { *self >= *other } }
-impl Ord for u128 { fn cmp(&self, other: &u128) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for u128 {
+    fn cmp(&self, other: &u128) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: u128, max: u128) -> u128 {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for usize { fn partial_cmp(&self, other: &usize) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &usize) -> bool { *self < *other } fn le(&self, other: &usize) -> bool { *self <= *other } fn gt(&self, other: &usize) -> bool { *self > *other } fn ge(&self, other: &usize) -> bool { *self >= *other } }
-impl Ord for usize { fn cmp(&self, other: &usize) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl Ord for usize {
+    fn cmp(&self, other: &usize) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } }
+
+    /// As rustc's, which says where it was called.
+    #[track_caller]
+    fn clamp(self, min: usize, max: usize) -> usize {
+        if min > max {
+            crate::panicking::panic_fmt(format_args!("min > max. min = {min:?}, max = {max:?}"))
+        }
+        if self < min { min } else if self > max { max } else { self }
+    }
+}
 impl PartialOrd for bool { fn partial_cmp(&self, other: &bool) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &bool) -> bool { *self < *other } fn le(&self, other: &bool) -> bool { *self <= *other } fn gt(&self, other: &bool) -> bool { *self > *other } fn ge(&self, other: &bool) -> bool { *self >= *other } }
 impl Ord for bool { fn cmp(&self, other: &bool) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
 impl PartialOrd for char { fn partial_cmp(&self, other: &char) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &char) -> bool { *self < *other } fn le(&self, other: &char) -> bool { *self <= *other } fn gt(&self, other: &char) -> bool { *self > *other } fn ge(&self, other: &char) -> bool { *self >= *other } }

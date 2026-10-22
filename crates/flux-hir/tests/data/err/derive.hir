@@ -65,7 +65,7 @@ fn parameter(_x@0: i32) -> () {}
 fn main() -> () {}
 
 fn <Debugged as ::core::fmt::Debug>::fmt(self@0: &Self, f@1: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
-    Result::Ok(())
+    f@1.write_str("Debugged")
 }
 
 fn <Mixed as ::core::clone::Clone>::clone(self@0: &Self) -> Self {

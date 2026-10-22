@@ -3049,6 +3049,31 @@ pub fn core_drop_fns(items: &ItemTree) -> Vec<FunctionId> {
         .collect()
 }
 
+/// `core`'s functions code generation calls without MIR naming them:
+/// those a failed check panics through, and what the entry point calls
+/// after `main`, by their `#[lang]` names.
+pub const RUNTIME_LANG_FNS: &[&str] = &[
+    "panic_bounds_check",
+    "panic_const_div_by_zero",
+    "panic_const_rem_by_zero",
+    "panic_const_div_overflow",
+    "panic_const_rem_overflow",
+    "flush_stdout",
+];
+
+/// `core`'s functions every program may need whether or not its code
+/// calls them: its `Drop` impls, which drop glue may call, and
+/// [`RUNTIME_LANG_FNS`].
+pub fn core_roots(items: &ItemTree) -> Vec<FunctionId> {
+    let mut roots = core_drop_fns(items);
+    roots.extend(
+        RUNTIME_LANG_FNS
+            .iter()
+            .filter_map(|lang| items.lang_fns.get(&Symbol::intern(lang)).copied()),
+    );
+    roots
+}
+
 /// The functions a call of `function` may run: itself, and for a
 /// trait's method, its definition in each `impl` block of the trait.
 pub fn call_targets(items: &ItemTree, function: FunctionId) -> Vec<FunctionId> {
@@ -3101,9 +3126,10 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
         reached(&result, &mut queue);
         consts.insert(id, result);
     }
-    // `core`'s `Drop` impls, which drop glue may call, then the
-    // program's bodies, then the `core` bodies they reach.
-    queue.extend(core_drop_fns(items));
+    // `core`'s `Drop` impls, which drop glue may call, and the
+    // functions code generation calls, then the program's bodies, then
+    // the `core` bodies they reach.
+    queue.extend(core_roots(items));
     queue.extend(
         hir.bodies
             .iter()

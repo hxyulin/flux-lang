@@ -431,6 +431,20 @@ impl<'a> Evaluator<'a> {
                         };
                         return Err(error(range, format!("evaluation panicked: {message}")));
                     }
+                    // `panic!("{}", s)` and `expect(msg)`, with a `&str`
+                    // to show.
+                    let display = self
+                        .items
+                        .lang_fns
+                        .get(&flux_intern::Symbol::intern("panic_display"));
+                    if display == Some(func)
+                        && let Some(arg) = args.first()
+                    {
+                        let value = self.operand(&locals, generics, arg, range)?;
+                        if let Some(message) = str_value(&value) {
+                            return Err(error(range, format!("evaluation panicked: {message}")));
+                        }
+                    }
                     // Only code generation expands them.
                     if self.items.functions[*func].intrinsic {
                         return Err(error(
@@ -1120,5 +1134,27 @@ fn max_value(ty: IntTy) -> i128 {
         i128::MAX
     } else {
         (1i128 << (ty.bits() - 1)) - 1
+    }
+}
+
+/// The text of `value`, a `str` behind references, if it is one.
+fn str_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Ref(inner) => match &**inner {
+            Value::Aggregate(bytes) => bytes
+                .iter()
+                .map(|b| match b {
+                    Value::Int {
+                        bits,
+                        ty: IntTy::U8,
+                    } => Some(*bits as u8),
+                    _ => None,
+                })
+                .collect::<Option<Vec<u8>>>()
+                .and_then(|bytes| String::from_utf8(bytes).ok()),
+            inner @ Value::Ref(_) => str_value(inner),
+            _ => None,
+        },
+        _ => None,
     }
 }

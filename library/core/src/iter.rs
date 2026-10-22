@@ -67,7 +67,7 @@ pub trait Iterator {
         Self: Sized,
     {
         if step == 0 {
-            crate::panicking::panic(c"assertion failed: step != 0");
+            crate::panicking::panic("assertion failed: step != 0");
         }
         StepBy {
             iter: self,
@@ -589,7 +589,7 @@ pub trait ExactSizeIterator: Iterator {
     fn len(&self) -> usize {
         let (lower, upper) = self.size_hint();
         if upper != Some(lower) {
-            crate::panicking::panic(c"assertion `left == right` failed");
+            crate::panicking::panic("assertion `left == right` failed");
         }
         lower
     }

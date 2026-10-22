@@ -1609,27 +1609,30 @@ impl i8 {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: i8) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
@@ -1815,10 +1818,11 @@ impl i8 {
         if self < 0 { None } else { Some((self as u8).isqrt() as i8) }
     }
 
+    #[track_caller]
     pub const fn isqrt(self) -> i8 {
         match self.checked_isqrt() {
             Some(x) => x,
-            None => crate::panicking::panic(c"argument of integer square root cannot be negative"),
+            None => crate::panicking::panic("argument of integer square root cannot be negative"),
         }
     }
 
@@ -2071,27 +2075,30 @@ impl i16 {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: i16) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
@@ -2277,10 +2284,11 @@ impl i16 {
         if self < 0 { None } else { Some((self as u16).isqrt() as i16) }
     }
 
+    #[track_caller]
     pub const fn isqrt(self) -> i16 {
         match self.checked_isqrt() {
             Some(x) => x,
-            None => crate::panicking::panic(c"argument of integer square root cannot be negative"),
+            None => crate::panicking::panic("argument of integer square root cannot be negative"),
         }
     }
 
@@ -2533,27 +2541,30 @@ impl i32 {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: i32) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
@@ -2739,10 +2750,11 @@ impl i32 {
         if self < 0 { None } else { Some((self as u32).isqrt() as i32) }
     }
 
+    #[track_caller]
     pub const fn isqrt(self) -> i32 {
         match self.checked_isqrt() {
             Some(x) => x,
-            None => crate::panicking::panic(c"argument of integer square root cannot be negative"),
+            None => crate::panicking::panic("argument of integer square root cannot be negative"),
         }
     }
 
@@ -2995,27 +3007,30 @@ impl i64 {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: i64) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
@@ -3201,10 +3216,11 @@ impl i64 {
         if self < 0 { None } else { Some((self as u64).isqrt() as i64) }
     }
 
+    #[track_caller]
     pub const fn isqrt(self) -> i64 {
         match self.checked_isqrt() {
             Some(x) => x,
-            None => crate::panicking::panic(c"argument of integer square root cannot be negative"),
+            None => crate::panicking::panic("argument of integer square root cannot be negative"),
         }
     }
 
@@ -3457,27 +3473,30 @@ impl i128 {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: i128) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
@@ -3663,10 +3682,11 @@ impl i128 {
         if self < 0 { None } else { Some((self as u128).isqrt() as i128) }
     }
 
+    #[track_caller]
     pub const fn isqrt(self) -> i128 {
         match self.checked_isqrt() {
             Some(x) => x,
-            None => crate::panicking::panic(c"argument of integer square root cannot be negative"),
+            None => crate::panicking::panic("argument of integer square root cannot be negative"),
         }
     }
 
@@ -3919,27 +3939,30 @@ impl isize {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: isize) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
@@ -4125,10 +4148,11 @@ impl isize {
         if self < 0 { None } else { Some((self as usize).isqrt() as isize) }
     }
 
+    #[track_caller]
     pub const fn isqrt(self) -> isize {
         match self.checked_isqrt() {
             Some(x) => x,
-            None => crate::panicking::panic(c"argument of integer square root cannot be negative"),
+            None => crate::panicking::panic("argument of integer square root cannot be negative"),
         }
     }
 
@@ -4381,27 +4405,30 @@ impl u8 {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: u8) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
@@ -4840,27 +4867,30 @@ impl u16 {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: u16) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
@@ -5299,27 +5329,30 @@ impl u32 {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: u32) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
@@ -5758,27 +5791,30 @@ impl u64 {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: u64) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
@@ -6217,27 +6253,30 @@ impl u128 {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: u128) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
@@ -6676,27 +6715,30 @@ impl usize {
         }
     }
 
+    #[track_caller]
     pub const fn ilog2(self) -> u32 {
         match self.checked_ilog2() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog10(self) -> u32 {
         match self.checked_ilog10() {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 
+    #[track_caller]
     pub const fn ilog(self, base: usize) -> u32 {
         if base < 2 {
-            crate::panicking::panic(c"base of integer logarithm must be at least 2");
+            crate::panicking::panic("base of integer logarithm must be at least 2");
         }
         match self.checked_ilog(base) {
             Some(n) => n,
-            None => crate::panicking::panic(c"argument of integer logarithm must be positive"),
+            None => crate::panicking::panic("argument of integer logarithm must be positive"),
         }
     }
 

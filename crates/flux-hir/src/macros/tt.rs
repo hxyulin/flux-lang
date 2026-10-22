@@ -244,13 +244,36 @@ pub(crate) fn write_text(toks: &[Tok], starts: &mut Vec<u32>) -> String {
 
 /// `toks` as source text with the spacing they were written with:
 /// rustc's `stringify!`, approximately.
+///
+/// Tokens that came from the source are spaced as they were written
+/// there, even after passing through other macros (`dbg!(a+b)`'s
+/// `stringify!($val)`), and the parentheses that keep an expression
+/// fragment one expression, which are nowhere in the source, are left
+/// out, as rustc prints the fragment's expression.
 pub(crate) fn pretty(toks: &[Tok]) -> String {
+    let invisible = |t: &Tok| {
+        matches!(t.kind, T!['('] | T![')'])
+            && t.origin.range.is_empty()
+            && t.origin.group != TokenOrigin::SYNTHETIC
+    };
     let mut text = String::new();
-    for (i, t) in toks.iter().enumerate() {
-        if i > 0 && !toks[i - 1].joint {
-            text.push(' ');
+    let mut prev: Option<&Tok> = None;
+    for t in toks.iter().filter(|t| !invisible(t)) {
+        if let Some(p) = prev {
+            let from_source = p.origin.group == t.origin.group
+                && p.origin.group != TokenOrigin::SYNTHETIC
+                && p.origin.range.end() <= t.origin.range.start();
+            let space = if from_source {
+                p.origin.range.end() < t.origin.range.start()
+            } else {
+                !p.joint
+            };
+            if space {
+                text.push(' ');
+            }
         }
         text.push_str(t.text.as_str());
+        prev = Some(t);
     }
     text
 }

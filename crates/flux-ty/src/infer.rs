@@ -167,9 +167,8 @@ pub fn infer_body(
         generics: generic_names(items, data.owner, &data.generics),
         consts: crate::generic_consts(items, data.owner, &data.generics),
         is_unsafe: data.is_unsafe,
-        // `core`'s panic aborts, which constant evaluation does not run.
-        const_context: (data.is_const && items.panic_fn != Some(function))
-            .then_some("constant functions"),
+        // `core`'s panics abort, which constant evaluation does not run.
+        const_context: (data.is_const && !data.do_not_const_check).then_some("constant functions"),
         ret: sig.ret,
         param_env: elaborate(sigs, &predicates_of(items, sigs, function)),
         env_projections: crate::traits::projections_of(items, sigs, function),

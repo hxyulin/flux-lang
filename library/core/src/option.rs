@@ -33,19 +33,21 @@ impl<T> Option<T> {
 
     /// The value; panics on `None`.
     #[rustc_allow_const_fn_unstable(const_precise_live_drops)]
+    #[track_caller]
     pub const fn unwrap(self) -> T {
         match self {
             Some(value) => value,
-            None => panic(c"called `Option::unwrap()` on a `None` value"),
+            None => panic("called `Option::unwrap()` on a `None` value"),
         }
     }
 
     /// The value; panics with `msg` on `None`.
     #[rustc_allow_const_fn_unstable(const_precise_live_drops)]
+    #[track_caller]
     pub const fn expect(self, msg: &str) -> T {
         match self {
             Some(value) => value,
-            None => panic(msg),
+            None => crate::panicking::panic_str(msg),
         }
     }
 
@@ -247,34 +249,37 @@ impl<T> Option<T> {
 
     /// Puts `value` in, and gives a reference to it.
     #[rustc_const_unstable]
+    #[track_caller]
     pub fn insert(&mut self, value: T) -> &mut T {
         *self = Some(value);
         match self {
             Some(value) => value,
-            None => crate::panicking::panic(c"internal error: entered unreachable code"),
+            None => crate::panicking::panic("internal error: entered unreachable code"),
         }
     }
 
     /// The value, after putting `value` in if it is `None`.
     #[rustc_const_unstable]
+    #[track_caller]
     pub fn get_or_insert(&mut self, value: T) -> &mut T {
         if let None = self {
             *self = Some(value);
         }
         match self {
             Some(value) => value,
-            None => crate::panicking::panic(c"internal error: entered unreachable code"),
+            None => crate::panicking::panic("internal error: entered unreachable code"),
         }
     }
 
     /// The value, after putting `f()` in if it is `None`.
+    #[track_caller]
     pub fn get_or_insert_with<F: FnOnce() -> T>(&mut self, f: F) -> &mut T {
         if let None = self {
             *self = Some(f());
         }
         match self {
             Some(value) => value,
-            None => crate::panicking::panic(c"internal error: entered unreachable code"),
+            None => crate::panicking::panic("internal error: entered unreachable code"),
         }
     }
 

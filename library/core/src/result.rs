@@ -4,7 +4,6 @@
 use crate::fmt::Debug;
 use crate::ops::FnOnce;
 use crate::option::Option::{self, None, Some};
-use crate::panicking::panic;
 
 /// A value, or an error. `?` returns the error from a function that
 /// returns a `Result` if it is `Err`, converted with `From`.
@@ -62,45 +61,49 @@ impl<T, E> Result<T, E> {
     }
 
     /// The value; panics on `Err`.
+    #[track_caller]
     pub fn unwrap(self) -> T
     where
         E: Debug,
     {
         match self {
             Ok(value) => value,
-            Err(_) => panic(c"called `Result::unwrap()` on an `Err` value"),
+            Err(e) => crate::panicking::unwrap_failed("called `Result::unwrap()` on an `Err` value", &e),
         }
     }
 
     /// The value; panics with `msg` on `Err`.
+    #[track_caller]
     pub fn expect(self, msg: &str) -> T
     where
         E: Debug,
     {
         match self {
             Ok(value) => value,
-            Err(_) => panic(msg),
+            Err(e) => crate::panicking::unwrap_failed(msg, &e),
         }
     }
 
     /// The error; panics on `Ok`.
+    #[track_caller]
     pub fn unwrap_err(self) -> E
     where
         T: Debug,
     {
         match self {
-            Ok(_) => panic(c"called `Result::unwrap_err()` on an `Ok` value"),
+            Ok(t) => crate::panicking::unwrap_failed("called `Result::unwrap_err()` on an `Ok` value", &t),
             Err(e) => e,
         }
     }
 
     /// The error; panics with `msg` on `Ok`.
+    #[track_caller]
     pub fn expect_err(self, msg: &str) -> E
     where
         T: Debug,
     {
         match self {
-            Ok(_) => panic(msg),
+            Ok(t) => crate::panicking::unwrap_failed(msg, &t),
             Err(e) => e,
         }
     }

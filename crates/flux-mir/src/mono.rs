@@ -17,12 +17,13 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use flux_hir::{Diagnostic, FunctionId, Hir, ItemTree, StructId};
+use flux_intern::Symbol;
 pub use flux_ty::Instance;
 use flux_ty::{GenericArgs, Mutability, Signatures, Ty, TyKind};
 
 use crate::{
-    BasicBlock, BasicBlockData, Body, Constant, FileMir, Local, LocalDecl, LocalKind, Operand,
-    Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
+    AssertMessage, BasicBlock, BasicBlockData, Body, Constant, FileMir, Local, LocalDecl,
+    LocalKind, Operand, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
 };
 
 /// rustc's `recursion_limit`: how deep a chain of instances, each
@@ -65,6 +66,17 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         };
         depths.insert(instance, 0);
         instances.push(instance);
+        // What the entry point calls after `main`.
+        if let Some(&flush) = items.lang_fns.get(&Symbol::intern("flush_stdout"))
+            && mir.bodies.get(flush).is_some()
+        {
+            let instance = Instance {
+                function: flush,
+                args: &[],
+            };
+            depths.insert(instance, 0);
+            instances.push(instance);
+        }
     }
     let mut next = 0;
     while let Some(&caller) = instances.get(next) {
@@ -110,6 +122,16 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                     function: *func,
                     args: instance_args(&hir.items, sigs, generic_args, caller_args),
                 }],
+                // What a failed check calls.
+                TerminatorKind::Assert { msg, .. } => items
+                    .lang_fns
+                    .get(&Symbol::intern(msg.lang_fn()))
+                    .map(|&function| Instance {
+                        function,
+                        args: &[],
+                    })
+                    .into_iter()
+                    .collect(),
                 TerminatorKind::Drop { place, .. } => {
                     let ty = body.place_ty(place, sigs);
                     let ty = flux_ty::traits::instance_ty(&hir.items, sigs, ty, caller_args);
@@ -350,6 +372,7 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
         owner: None,
         promoted: Vec::new(),
         bugs: Vec::new(),
+        fn_spans: Default::default(),
     })
 }
 
@@ -446,6 +469,7 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
         owner: None,
         promoted: Vec::new(),
         bugs: Vec::new(),
+        fn_spans: Default::default(),
     }
 }
 
@@ -513,6 +537,10 @@ pub fn expand_intrinsics(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
             Some(target) => TerminatorKind::Goto(target),
             None => TerminatorKind::Unreachable,
         };
+        if data.name.as_str() == "caller_location" {
+            // Code generation's: where the call is.
+            continue;
+        }
         if data.name.as_str() == "uninit" {
             // Nothing: its memory is written before it is read.
             body.blocks[block].terminator.kind = goto;
@@ -1048,7 +1076,20 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
                 call_args.iter_mut().for_each(operand);
             }
             TerminatorKind::SwitchInt { discr, .. } => operand(discr),
-            TerminatorKind::Assert { cond, .. } => operand(cond),
+            TerminatorKind::Assert { cond, msg, .. } => {
+                operand(cond);
+                match msg {
+                    AssertMessage::DivisionByZero(a) | AssertMessage::RemainderByZero(a) => {
+                        operand(a)
+                    }
+                    AssertMessage::DivisionOverflow(a, b)
+                    | AssertMessage::RemainderOverflow(a, b)
+                    | AssertMessage::BoundsCheck { len: a, index: b } => {
+                        operand(a);
+                        operand(b);
+                    }
+                }
+            }
             TerminatorKind::Goto(_)
             | TerminatorKind::Drop { .. }
             | TerminatorKind::Return

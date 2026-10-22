@@ -499,12 +499,13 @@ fn derived_default_body(items: &ItemTree, function: FunctionId, strukt: StructId
     ctx.finish(Vec::new(), root)
 }
 
-/// The body of `fmt` that `#[derive(Debug)]` makes for `strukt`:
-/// `Debug::fmt` of each field in turn (`Debug::fmt(&self.a, f);`, each
-/// at its field, where rustc reports one that does not implement
-/// `Debug`), of the variant `self` holds for an enum, then `Ok(())`.
-/// Nothing writes through a `Formatter` yet, so what it writes is not
-/// rustc's.
+/// The body of `fmt` that `#[derive(Debug)]` makes for `strukt`, as
+/// rustc's expansion writes it: `f.write_str("Unit")` for a unit
+/// struct or variant, `f.debug_tuple("Name").field(&self.0).finish()`
+/// for a tuple one and `f.debug_struct("Name").field("a",
+/// &self.a).finish()` for one with named fields, each field's part at
+/// the field, where rustc reports one that does not implement `Debug`;
+/// for an enum, a `match` on the variant `self` holds.
 fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) -> LoweredBody {
     let data = &items.functions[function];
     let s = &items.structs[strukt];
@@ -521,38 +522,62 @@ fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) 
         params.push(ctx.alloc_pat(Pat::Bind { binding, sub: None }, data.def_range));
         bindings.push(binding);
     }
-    let fmt = match items.lang_traits.get(&Symbol::intern("Debug")) {
-        Some(&t) => Res::Assoc {
-            ty: None,
-            trait_: Some(t),
-            name: Symbol::intern("fmt"),
-        },
-        None => Res::Err,
-    };
     let formatter = bindings[1];
-    // `Debug::fmt(value, f);`
-    let call = |ctx: &mut Ctx<'_>, value: ExprId, at: TextRange| {
-        let callee = ctx.alloc_expr(Expr::Path(fmt), at);
-        ctx.source_map.segments.insert(callee, at);
-        let f = ctx.alloc_expr(Expr::Path(Res::Local(formatter)), at);
-        let expr = ctx.alloc_expr(
-            Expr::Call {
-                callee,
-                args: Box::new([value, f]),
-            },
-            at,
-        );
-        Stmt::Expr {
-            expr,
-            has_semicolon: true,
-        }
+    // `receiver.method(args)`, at `at`.
+    let method =
+        |ctx: &mut Ctx<'_>, receiver: ExprId, name: &str, args: Vec<ExprId>, at: TextRange| {
+            let call = ctx.alloc_expr(
+                Expr::MethodCall {
+                    receiver,
+                    method: Symbol::intern(name),
+                    args: args.into(),
+                },
+                at,
+            );
+            ctx.source_map.expr_fields.insert(call, Box::new([at]));
+            call
+        };
+    let string = |ctx: &mut Ctx<'_>, text: &str, at: TextRange| {
+        ctx.alloc_expr(Expr::Literal(Literal::Str(text.into())), at)
     };
-    let mut stmts = Vec::new();
-    match s.variants.as_deref() {
+    // What one struct or variant with fields `fields` writes, each
+    // field's value given by `value`.
+    let write = |ctx: &mut Ctx<'_>,
+                 name: Symbol,
+                 kind: StructKind,
+                 fields: &[crate::item_tree::Field],
+                 at: TextRange,
+                 value: &mut dyn FnMut(&mut Ctx<'_>, usize, TextRange) -> ExprId| {
+        let f = ctx.alloc_expr(Expr::Path(Res::Local(formatter)), at);
+        let name_expr = string(ctx, name.as_str(), at);
+        if kind == StructKind::Unit || (fields.is_empty() && kind != StructKind::Record) {
+            return method(ctx, f, "write_str", vec![name_expr], at);
+        }
+        let record = kind == StructKind::Record;
+        let builder = if record {
+            "debug_struct"
+        } else {
+            "debug_tuple"
+        };
+        let mut chain = method(ctx, f, builder, vec![name_expr], at);
+        for (i, field) in fields.iter().enumerate() {
+            let fat = field.def_range;
+            let v = value(ctx, i, fat);
+            let mut args = Vec::new();
+            if record {
+                args.push(string(ctx, field.name.as_str(), fat));
+            }
+            args.push(v);
+            chain = method(ctx, chain, "field", args, fat);
+        }
+        method(ctx, chain, "finish", Vec::new(), at)
+    };
+    let value = match s.variants.as_deref() {
         None => {
-            for field in s.fields.iter() {
-                let at = field.def_range;
-                let base = ctx.alloc_expr(Expr::Path(Res::Local(bindings[0])), at);
+            let this = bindings[0];
+            let mut field_value = |ctx: &mut Ctx<'_>, i: usize, at: TextRange| {
+                let field = &s.fields[i];
+                let base = ctx.alloc_expr(Expr::Path(Res::Local(this)), at);
                 let place = ctx.alloc_expr(
                     Expr::Field {
                         expr: base,
@@ -563,37 +588,30 @@ fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) 
                 ctx.source_map
                     .expr_fields
                     .insert(place, Box::new([field.name_range]));
-                let value = ctx.alloc_expr(
+                ctx.alloc_expr(
                     Expr::Ref {
                         mutable: false,
                         expr: place,
                     },
                     at,
-                );
-                stmts.push(call(&mut ctx, value, at));
-            }
+                )
+            };
+            write(&mut ctx, s.name, s.kind, &s.fields, whole, &mut field_value)
         }
         Some(variants) => {
             let mut arms = Vec::new();
             for (v, variant) in variants.iter().enumerate() {
                 let (pat, mine) = variant_pat(&mut ctx, strukt, v as u32, "__self_");
-                let calls: Box<[Stmt]> = variant
-                    .fields
-                    .iter()
-                    .zip(&mine)
-                    .map(|(field, &b)| {
-                        let at = field.def_range;
-                        let value = ctx.alloc_expr(Expr::Path(Res::Local(b)), at);
-                        call(&mut ctx, value, at)
-                    })
-                    .collect();
-                let body = ctx.alloc_expr(
-                    Expr::Block {
-                        stmts: calls,
-                        tail: None,
-                        is_unsafe: false,
-                    },
+                let mut field_value = |ctx: &mut Ctx<'_>, i: usize, at: TextRange| {
+                    ctx.alloc_expr(Expr::Path(Res::Local(mine[i])), at)
+                };
+                let body = write(
+                    &mut ctx,
+                    variant.name,
+                    variant.kind,
+                    &variant.fields,
                     variant.def_range,
+                    &mut field_value,
                 );
                 arms.push(MatchArm {
                     pat,
@@ -613,35 +631,19 @@ fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) 
                     whole,
                 );
             }
-            let matched = ctx.alloc_expr(
+            ctx.alloc_expr(
                 Expr::Match {
                     scrutinee,
                     arms: arms.into(),
                 },
                 whole,
-            );
-            stmts.push(Stmt::Expr {
-                expr: matched,
-                has_semicolon: true,
-            });
+            )
         }
-    }
-    // `Ok(())`
-    let ok = items
-        .lang_enums
-        .get(&Symbol::intern("Result"))
-        .and_then(|&r| Some((r, items.structs[r].variant_named(Symbol::intern("Ok"))?)));
-    let tail = match ok {
-        Some((result, v)) => {
-            let unit = ctx.alloc_expr(Expr::Tuple(Box::default()), whole);
-            build_variant(&mut ctx, result, v, vec![unit], whole)
-        }
-        None => ctx.alloc_expr(Expr::Missing, whole),
     };
     let root = ctx.alloc_expr(
         Expr::Block {
-            stmts: stmts.into(),
-            tail: Some(tail),
+            stmts: Box::default(),
+            tail: Some(value),
             is_unsafe: false,
         },
         whole,
@@ -1917,10 +1919,18 @@ impl<'a> Ctx<'a> {
                 }
             }
             ast::Expr::ForExpr(for_expr) => return self.lower_for(for_expr),
-            ast::Expr::IndexExpr(index) => {
-                let base = self.lower_opt(index.base(), syntax);
-                let index = self.lower_opt(index.index(), syntax);
-                Expr::Index { base, index }
+            ast::Expr::IndexExpr(e) => {
+                let base = self.lower_opt(e.base(), syntax);
+                let index = self.lower_opt(e.index(), syntax);
+                let id = self.alloc_expr(Expr::Index { base, index }, range);
+                // From the `[`: where rustc's `Index::index` call is.
+                if let Some(bracket) = e.l_brack_token() {
+                    self.source_map.ops.insert(
+                        id,
+                        TextRange::new(bracket.text_range().start(), range.end()),
+                    );
+                }
+                return id;
             }
             ast::Expr::LetExpr(_) => {
                 self.error(range, "expected expression, found `let` statement");

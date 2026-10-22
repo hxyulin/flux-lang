@@ -169,17 +169,16 @@ pub(crate) fn fresh_group() -> u32 {
 
 /// Macros `std` defines and `core` does not, which flux has no `std` for.
 const STD_MACROS: &[&str] = &[
-    "print",
-    "println",
-    "eprint",
-    "eprintln",
     "format",
     "vec",
-    "dbg",
     "thread_local",
     "is_x86_feature_detected",
     "is_aarch64_feature_detected",
 ];
+
+/// `std`'s macros that flux's `core` defines, as if in `std`'s prelude:
+/// named alone or through `std`, never through `core`.
+const CORE_STD_MACROS: &[&str] = &["print", "println", "eprint", "eprintln", "dbg"];
 
 impl MacroDef {
     /// Reads `macro_rules! name { rules }` from `call`, a macro call
@@ -292,7 +291,9 @@ pub(crate) fn resolve<'a, L>(
             _ => None,
         }
     };
+    let std_macro = CORE_STD_MACROS.contains(&name.as_str());
     if segments.len() > 1
+        && !std_macro
         && let Some(id) = by_path()
     {
         return Ok(Resolved::Def(id));
@@ -332,7 +333,15 @@ pub(crate) fn resolve<'a, L>(
             }
             exported(krate).map(Resolved::Def).ok_or_else(not_found)
         }
+        (_, [first, _]) if *first == sym::core && std_macro => Err(Diagnostic::new(
+            range,
+            format!("could not find `{name}` in `core`"),
+        )),
         (_, [first, _]) if *first == sym::core => core_crate
+            .and_then(exported)
+            .map(Resolved::Def)
+            .ok_or_else(not_found),
+        (_, [first, _]) if *first == sym::std && std_macro => core_crate
             .and_then(exported)
             .map(Resolved::Def)
             .ok_or_else(not_found),
