@@ -1237,10 +1237,9 @@ pub fn const_value(
     let value = |bits: u128| Some(Ty::value(want, bits));
     let konst = match &len.kind {
         flux_hir::ArrayLenKind::Error => return None,
-        flux_hir::ArrayLenKind::Anon(node) => {
-            let file = items.modules[module].file;
+        flux_hir::ArrayLenKind::Anon(file, node) => {
             // One that uses generic parameters is reported, and has none.
-            let konst = *items.anon_consts.get(&(file, *node))?;
+            let konst = *items.anon_consts.get(&(*file, *node))?;
             let lens = scope.lens?;
             if items.consts[konst].anon.is_some_and(|a| a.is_arg) {
                 lens.found_arg_ty(konst, want);
@@ -1642,7 +1641,7 @@ pub fn alias_type(
             args
         }
     };
-    let ty = expand_alias(items, alias, &mut Vec::new());
+    let ty = expand_alias(items, alias, scope.lens, &mut Vec::new());
     if args.contains(&Ty::ERROR) {
         return Ty::ERROR;
     }
@@ -1654,6 +1653,7 @@ pub fn alias_type(
 fn expand_alias(
     items: &ItemTree,
     alias: flux_hir::TypeAliasId,
+    lens: Option<&ArrayLens<'_>>,
     errors: &mut Vec<(TextRange, String)>,
 ) -> Ty {
     let cycle = EXPANDING.with(|stack| {
@@ -1672,6 +1672,7 @@ fn expand_alias(
     let scope = TypeScope {
         generics: &generics,
         signature_of: Some("type aliases"),
+        lens,
         ..TypeScope::default()
     };
     let ty = resolve_type(items, def.loc.module, &def.ty, scope, def.ty_range, errors);
@@ -2564,7 +2565,7 @@ fn extend_signatures(
         }
     }
     for (id, alias) in items.type_aliases.iter().skip(from.type_aliases as usize) {
-        check_alias(items, id, alias, &mut reported);
+        check_alias(items, id, alias, lens, &mut reported);
     }
     regions::resolve_regions(items, &mut sigs, from, &mut reported);
     traits::check_well_formed(items, &sigs, from, &mut reported);
@@ -2675,6 +2676,7 @@ fn check_alias(
     items: &ItemTree,
     id: flux_hir::TypeAliasId,
     alias: &flux_hir::TypeAlias,
+    lens: Option<&ArrayLens<'_>>,
     reported: &mut Vec<Diagnostic>,
 ) {
     let mut push = |range, message: String| {
@@ -2707,7 +2709,7 @@ fn check_alias(
         return;
     }
     let mut errors = Vec::new();
-    let ty = expand_alias(items, id, &mut errors);
+    let ty = expand_alias(items, id, lens, &mut errors);
     for (range, message) in errors {
         push(range, message);
     }
@@ -3384,9 +3386,10 @@ impl TypedFile {
                 }
             }
         }
+        let lens = ArrayLens::new(&self.sigs.array_lens, &self.sigs.arg_tys);
         for (id, alias) in items.type_aliases.iter() {
             if items.in_main_crate(alias.loc.module) {
-                let ty = expand_alias(items, id, &mut Vec::new());
+                let ty = expand_alias(items, id, Some(&lens), &mut Vec::new());
                 writeln!(out, "type {}{} = {ty}", alias.name, alias.generics).unwrap();
             }
         }

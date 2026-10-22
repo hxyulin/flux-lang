@@ -181,6 +181,20 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
             }
         }
     }
+    // Code generation needs concrete types: a type that is an error or
+    // a parameter here is a bug in flux, which must not reach it.
+    let abstract_ty = |a: &Ty| a.has_error() || a.has_params() || a.has_infer();
+    if let Some(bad) = instances.iter().find(|i| i.args.iter().any(abstract_ty)) {
+        let f = &hir.items.functions[bad.function];
+        let message = format!(
+            "internal compiler error: an instance of `{}` with generic arguments that are not concrete types",
+            items.function_path(f)
+        );
+        assert!(!cfg!(debug_assertions), "{message}");
+        let mut d = Diagnostic::new(f.def_range, message);
+        d.file = f.loc.file;
+        return Err(d);
+    }
     Ok(Collected { instances, reified })
 }
 

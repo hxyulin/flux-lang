@@ -866,15 +866,30 @@ pub fn fn_method_kind(items: &flux_hir::ItemTree, function: FunctionId) -> Optio
 }
 
 impl Body {
-    /// The functions the body calls or takes the address of.
+    /// The functions the body calls, or names as values: function items
+    /// (`.all(u8::is_ascii_digit)`), in its locals' types and its calls'
+    /// generic arguments, which a shim may call once monomorphized, and
+    /// functions coerced to pointers.
     pub fn callees(&self) -> Vec<FunctionId> {
         let mut found = Vec::new();
-        let mut operand = |op: &Operand| {
-            if let Operand::Const(Constant::Fn { function, .. }) = op {
-                found.push(*function);
-            }
-        };
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut stack: Vec<Ty> = self.locals.values().map(|l| l.ty).collect();
         for data in self.blocks.values() {
+            if let TerminatorKind::Call {
+                func, generic_args, ..
+            } = &data.terminator.kind
+            {
+                found.push(*func);
+                stack.extend(generic_args.iter().copied());
+            }
+            let mut operand = |op: &Operand| match op {
+                Operand::Const(Constant::Fn { function, args, .. }) => {
+                    found.push(*function);
+                    stack.extend(args.iter().copied());
+                }
+                Operand::Const(Constant::FnItem(ty)) => stack.push(*ty),
+                _ => {}
+            };
             for statement in &data.statements {
                 if let StatementKind::Assign(_, rvalue) = &statement.kind {
                     rvalue.operands().into_iter().for_each(&mut operand);
@@ -886,14 +901,15 @@ impl Body {
                 .into_iter()
                 .for_each(&mut operand);
         }
-        found.extend(
-            self.blocks
-                .values()
-                .filter_map(|data| match &data.terminator.kind {
-                    TerminatorKind::Call { func, .. } => Some(*func),
-                    _ => None,
-                }),
-        );
+        while let Some(ty) = stack.pop() {
+            if !seen.insert(ty) {
+                continue;
+            }
+            if let TyKind::FnDef(def) = ty.kind() {
+                found.push(def.function);
+            }
+            stack.extend(ty.children());
+        }
         found
     }
 

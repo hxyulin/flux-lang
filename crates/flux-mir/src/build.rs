@@ -998,6 +998,19 @@ fn build_body(
     for block in blocks {
         arena.alloc(block);
     }
+    // A type that is an error was reported where it was made, and
+    // programs with errors are not compiled: one that reaches MIR
+    // without a diagnostic would compile to nonsense.
+    if b.locals.values().any(|l| l.ty.has_error()) {
+        let at = (types.expr_types.iter())
+            .filter(|(_, ty)| ty.has_error())
+            .filter_map(|(e, _)| source_map.exprs.get(e).copied())
+            .min_by_key(|r| (r.start(), std::cmp::Reverse(r.end())));
+        b.bugs.push((
+            at.unwrap_or(range),
+            "a type that is an error, without a diagnostic",
+        ));
+    }
     let mut built = Body {
         locals: b.locals,
         blocks: arena,
