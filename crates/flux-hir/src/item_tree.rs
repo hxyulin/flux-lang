@@ -503,6 +503,10 @@ pub struct Function {
     /// From the first keyword to the end of the signature, where rustc
     /// reports errors about the whole function: `fn f(x: i32) -> i32`.
     pub def_range: TextRange,
+    /// `def_range` with the `where` clause, and the `;` of a function
+    /// without a body: where rustc reports an associated type in its
+    /// bounds (or its block's or trait's) whose trait does not hold.
+    pub sig_range: TextRange,
     /// The whole item, body included.
     pub item_range: TextRange,
     /// `(x: i32)`
@@ -1974,8 +1978,15 @@ impl Collector<'_> {
         .flatten()
         .next()
         .map_or(0, |n| n.text_range().end());
+        let sig_end = if has_body {
+            f.where_clause()
+                .map_or(signature_end, |w| w.syntax().text_range().end())
+        } else {
+            f.syntax().text_range().end()
+        };
         let id = self.items.functions.alloc(Function {
             def_range: TextRange::new(def_start(f.syntax()), signature_end),
+            sig_range: TextRange::new(def_start(f.syntax()), sig_end),
             item_range: TextRange::new(def_start(f.syntax()), f.syntax().text_range().end()),
             param_list: f
                 .param_list()
@@ -2576,6 +2587,7 @@ impl Collector<'_> {
             node,
             name_range: range,
             def_range: range,
+            sig_range: range,
             item_range: range,
             param_list: range,
             derived: Some((strukt, if copies { Derive::Copy } else { derive })),

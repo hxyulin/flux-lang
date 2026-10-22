@@ -297,8 +297,10 @@ blocks (E0119, with bounds that rule types out) and blocks' methods
 against their traits (E0046, E0053, ...).
 
 A struct's bounds are not assumed where it is named, as in rustc: each
-type in a signature must meet the bounds of the structs it names, given
-the item's own bounds (checked by `traits`), and in a body, a type
+type in a signature must meet the bounds of the structs it names, and
+each associated type its trait (`<T as Tr>::Out` needs `T: Tr`), given
+the item's own bounds (checked by `traits`, each unmet bound once per
+item, where rustc reports it), and in a body, a type
 written in an annotation or path, and the type a constructor or struct
 expression builds, adds them as obligations, reported at the value
 whose field's type has the bound's parameter, as rustc points. A field
