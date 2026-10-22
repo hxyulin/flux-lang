@@ -445,8 +445,14 @@ mut`'s (E0080).
 
 Every program can use flux's own `core` library, which has the parts of
 Rust's that flux supports so far: the integer types' constants (`MIN`,
-`MAX`, `BITS`) and methods such as `abs`, `pow`, `wrapping_add`,
-`count_ones` and `rotate_left`, `core::mem::drop` (also in the
+`MAX`, `BITS`) and methods: `abs`, `pow`, `count_ones`, `rotate_left`
+and the others of bits and signs, the `checked_`, `wrapping_`,
+`saturating_` and `overflowing_` arithmetic, `div_euclid` and
+`rem_euclid`, `ilog2`, `ilog10`, `ilog`, `isqrt`, `midpoint`,
+`next_power_of_two`, `div_ceil`, `next_multiple_of`, `swap_bytes`,
+`reverse_bits` and the byte-order conversions (`to_le_bytes`, ...), all
+`const` and panicking or overflowing in constants as rustc's do,
+`core::mem::drop` (also in the
 prelude, as `drop`), `core::convert::{identity, From}`,
 `core::marker::{Sized, Copy}`, `core::clone::Clone`, the operator
 traits of `core::ops` with `Drop`, `core::cmp::{PartialEq, Eq,
