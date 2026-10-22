@@ -67,12 +67,12 @@ impl Scopes {
         }
     }
 
-    /// The innermost binding named `name` among the first `limit`.
-    pub(super) fn get_below(&self, name: Ident, limit: usize) -> Option<BindingId> {
+    /// The innermost binding named `name` between `start` and `limit`.
+    pub(super) fn get_between(&self, name: Ident, start: usize, limit: usize) -> Option<BindingId> {
         let mut index = *self.innermost.get(&name)?;
         while index as usize >= limit {
             index = self.stack[index as usize].2?;
         }
-        Some(self.stack[index as usize].1)
+        (index as usize >= start).then_some(self.stack[index as usize].1)
     }
 }

@@ -1,0 +1,105 @@
+struct One(i32);
+
+impl One;
+
+fn value(x@0: i32) -> i32 {
+    (x@0 + 10)
+}
+
+fn One::value(self@0: &Self) -> i32 {
+    (self@0.0 + 20)
+}
+
+fn value(x@0: i32) -> i32 {
+    (x@0 + 30)
+}
+
+fn value(x@0: i32) -> i32 {
+    (x@0 + 100)
+}
+
+fn tail_import() -> () {
+    {
+        _print(Arguments::new_v1((&["tail=", "\n"]), (&match ((&value(11)),) {
+            args@0 => [Argument::new_display(args@0.0)],
+        })));
+    };
+}
+
+fn shadow(x@0: i32) -> () {
+    let chosen@1 = x@0;
+    {
+        {
+            _print(Arguments::new_v1((&["item-shadow=", " capture=", "\n"]), (&match ((&value(x@0)), (&value(x@0))) {
+                args@2 => [Argument::new_display(args@2.0), Argument::new_display(args@2.1)],
+            })));
+        };
+        let chosen@3 = (x@0 + 1);
+        {
+            _print(Arguments::new_v1((&["local-shadow=", "\n"]), (&match ((&chosen@3),) {
+                args@4 => [Argument::new_display(args@4.0)],
+            })));
+        };
+    }
+    {
+        _print(Arguments::new_v1((&["outer-restored=", "\n"]), (&match ((&chosen@1),) {
+            args@5 => [Argument::new_display(args@5.0)],
+        })));
+    };
+}
+
+fn main() -> () {
+    shadow(13);
+    tail_import();
+    {
+        {
+            _print(Arguments::new_v1((&["attributed=", "\n"]), (&match ((&value(12)),) {
+                args@0 => [Argument::new_display(args@0.0)],
+            })));
+        };
+    }
+    {
+        {
+            _print(Arguments::new_v1((&["before=", "\n"]), (&match ((&value(1)),) {
+                args@1 => [Argument::new_display(args@1.0)],
+            })));
+        };
+        {
+            _print(Arguments::new_v1((&["after=", "\n"]), (&match ((&One(2).value()),) {
+                args@2 => [Argument::new_display(args@2.0)],
+            })));
+        };
+    }
+    {
+        _print(Arguments::new_v1((&["nested=", " selected=", "\n"]), (&match ((&{
+            (value(3) + One(3).value())
+        }), (&{
+            {
+                value(4)
+            }
+        })) {
+            args@3 => [Argument::new_display(args@3.0), Argument::new_display(args@3.1)],
+        })));
+    };
+    {
+        {
+            _print(Arguments::new_v1((&["shadow=", " inner=", " restored=", "\n"]), (&match ((&value(5)), (&{
+                {
+                    value(6)
+                }
+            }), (&value(7))) {
+                args@4 => [Argument::new_display(args@4.0), Argument::new_display(args@4.1), Argument::new_display(args@4.2)],
+            })));
+        };
+    }
+    let x@5 = 8;
+    let x@6 = 9;
+    {
+        _print(Arguments::new_v1((&["hygiene=", " caller=", " sibling=", "\n"]), (&match ((&{
+            value(x@5)
+        }), (&x@6), (&value(10))) {
+            args@7 => [Argument::new_display(args@7.0), Argument::new_display(args@7.1), Argument::new_display(args@7.2)],
+        })));
+    };
+}
+

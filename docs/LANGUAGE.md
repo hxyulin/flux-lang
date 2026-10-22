@@ -293,7 +293,11 @@ identity, including when captured tokens are forwarded or a macro generates
 another macro. It does not bypass privacy and is distinct from the literal
 `crate` token or an `ident` fragment. Item collection remains sequential;
 macro lookup requiring later imports or a general expansion fixed point may
-be rejected. Hygiene is rustc's mixed-site hygiene: a local variable or label
+be rejected. Body macros can generate block-scoped `use` items, including
+inside nested expansions; other generated local item kinds remain unsupported.
+If later imports change a body macro's selected definition after collection,
+Flux rejects the call instead of reusing its earlier expansion.
+Hygiene is rustc's mixed-site hygiene: a local variable or label
 a macro's definition writes is not the caller's, and the reverse,
 except that a macro defined in a function sees the locals in scope at
 its definition. Items a macro defines are found by name, from anywhere.
