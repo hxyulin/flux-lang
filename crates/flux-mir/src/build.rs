@@ -2216,15 +2216,33 @@ impl Builder<'_> {
     }
 
     /// The value of `expr` if rustc would promote a borrow of it to a
-    /// constant: a literal, or a tuple or array of them, of a type
-    /// whose value needs no dropping.
+    /// constant: literals and fieldless enum values, or tuples and arrays
+    /// of them. The whitelist excludes runtime inputs and interior
+    /// mutability; even a fieldless enum may have a destructor.
     fn promotable(&self, expr: ExprId) -> Option<crate::eval::Value> {
         use crate::eval::Value;
         if self.types.reified.get(expr).is_some() || self.types.unsizes.get(expr).is_some() {
             return None;
         }
         let ty = self.own_ty(expr);
+        if self.needs_drop(ty) {
+            return None;
+        }
         match &self.body.exprs[expr] {
+            Expr::Path(Res::Variant(strukt, index))
+                if !matches!(ty.kind(), TyKind::FnDef(_))
+                    && self.items.structs[*strukt]
+                        .variants
+                        .as_ref()?
+                        .iter()
+                        .all(|v| v.fields.is_empty()) =>
+            {
+                Some(Value::Variant {
+                    strukt: *strukt,
+                    index: *index,
+                    fields: Vec::new(),
+                })
+            }
             Expr::Literal(Literal::Int { value, .. }) => Some(Value::Int {
                 bits: Constant::int(*value as i128, ty.as_int()?).int_bits()?,
                 ty: ty.as_int()?,
