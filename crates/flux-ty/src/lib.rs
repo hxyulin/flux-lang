@@ -3676,15 +3676,27 @@ pub fn check_deferred_patterns(
 ) -> (Vec<Diagnostic>, Vec<FunctionId>) {
     let functions = typed.bodies.iter().map(|(id, result)| {
         let file = hir.items.functions[id].loc.file;
-        (Some(id), hir.body(id), file, result)
+        (
+            Some(id),
+            hir.body(id),
+            file,
+            hir.items.functions[id].loc.module,
+            result,
+        )
     });
     let consts = typed.consts.iter().map(|(id, result)| {
         let file = hir.items.consts[id].loc.file;
-        (None, hir.const_body(id), file, result)
+        (
+            None,
+            hir.const_body(id),
+            file,
+            hir.items.consts[id].loc.module,
+            result,
+        )
     });
     let mut diagnostics = Vec::new();
     let mut failed = Vec::new();
-    'bodies: for (function, body, file, result) in functions.chain(consts) {
+    'bodies: for (function, body, file, module, result) in functions.chain(consts) {
         let Some((body, source_map)) = body else {
             continue;
         };
@@ -3716,6 +3728,7 @@ pub fn check_deferred_patterns(
         }
         let found = pats::check_body(
             &hir.items,
+            module,
             &typed.sigs,
             body,
             source_map,
