@@ -36,10 +36,10 @@ pub use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 pub use item_tree::{
     ArrayLen, ArrayLenKind, AssocBinding, AssocItem, Bound, Const, ConstId, CrateData, CrateId,
     Derive, Discriminant, Field, Function, FunctionId, GenericArgs, GenericParam, Generics, Impl,
-    ImplId, ImplTarget, ImplType, ItemCounts, ItemLoc, ItemTree, MISPLACED_BINDING, Module,
-    ModuleId, Owner, Param, Path, PathAnchor, QSelf, Struct, StructId, StructKind, Trait, TraitId,
-    TraitType, TypeAlias, TypeAliasId, TypeRef, Variant, VariantData, Visibility, WherePredicate,
-    is_primitive,
+    ImplId, ImplTarget, ImplType, ItemCounts, ItemLoc, ItemTree, LifetimeParam, LifetimeRef,
+    MISPLACED_BINDING, Module, ModuleId, OutlivesPredicate, Owner, Param, Path, PathAnchor, QSelf,
+    Struct, StructId, StructKind, Trait, TraitId, TraitType, TypeAlias, TypeAliasId, TypeOutlives,
+    TypeRef, Variant, VariantData, Visibility, WherePredicate, is_primitive,
 };
 pub use library::Core;
 pub use lower::{LoweredBody, lower_body, lower_const};

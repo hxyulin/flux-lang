@@ -1,0 +1,28 @@
+struct Misordered<'a, T> { x: &'a T }
+
+struct S<'a, T> { x: &'a T }
+
+struct Q<'a> { x: &'a i32 }
+
+impl<'a> Q<'a>;
+
+fn duplicate<'a>(x@0: &'a i32) -> () {}
+
+fn reserved(x@0: &'static i32) -> () {}
+
+fn anonymous() -> () {}
+
+fn type_first(x@0: S<i32>) -> () {}
+
+fn Q::shadows<'a>(self@0: &Self) -> () {}
+
+fn bounds<'a, T>(x@0: &'a T) -> () where T: Copy {}
+
+fn main() -> () {}
+
+error 105..107: lifetime parameters must be declared prior to type and const parameters
+error 145..147: the name `'a` is already used for a generic parameter in this item's generic parameters
+error 177..184: invalid lifetime parameter name: `'static`
+error 220..222: `'_` cannot be used here
+error 284..287: type provided when a lifetime was expected
+error 369..371: lifetime name `'a` shadows a lifetime name that is already in scope

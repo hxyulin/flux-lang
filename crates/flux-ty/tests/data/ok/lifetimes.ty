@@ -1,0 +1,19 @@
+struct S { a: i32 }
+fn get<'a>(&S) -> i32
+    self@0: &S
+fn add<'a, 'b>(&mut S, &S) -> ()
+    self@0: &mut S
+    other@1: &S
+fn sum<'a, 'b, T>(&i32, &i32, &T) -> i32
+    x@0: &i32
+    y@1: &i32
+    _t@2: &T
+fn elided(&i32, &i32) -> i32
+    x@0: &i32
+    y@1: &i32
+    z@2: &i32
+fn main() -> ()
+    s@0: S
+    t@1: S
+    x@2: i32
+    n@3: i32

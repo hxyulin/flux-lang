@@ -574,23 +574,71 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub ty: TypeRef,
+    /// The binding's name, if the pattern is one: `x` in `x: i32`,
+    /// `self`.
+    pub name: Option<Symbol>,
     /// The type's range; `self`'s whole.
     pub range: TextRange,
     /// `x: i32`
     pub whole: TextRange,
 }
 
-/// An item's generic parameters, `<T, U>`, and the bounds on them, from
-/// the list and its `where` clause. Only type parameters are supported.
+/// An item's generic parameters, `<'a, T, U>`, and the bounds on them,
+/// from the list and its `where` clause: lifetime and type parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Generics {
+    /// The type parameters.
     pub params: Box<[GenericParam]>,
+    /// The lifetime parameters, `'a`.
+    pub lifetimes: Box<[LifetimeParam]>,
     /// In source order: `T: A + B` in the list, then the `where` clause.
     pub predicates: Box<[WherePredicate]>,
+    /// `'a: 'b`, in the list (`<'a: 'b>`) or the `where` clause.
+    pub outlives: Box<[OutlivesPredicate]>,
+    /// `T: 'a`, in the list or the `where` clause.
+    pub type_outlives: Box<[TypeOutlives]>,
     /// From `<` to `>`; empty if there is no list.
     pub range: TextRange,
-    /// Had lifetime parameters (reported as not supported).
-    pub has_lifetimes: bool,
+}
+
+/// A lifetime as written: `'a`, `'static` or `'_`, with its range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LifetimeRef {
+    pub name: Symbol,
+    pub range: TextRange,
+}
+
+impl LifetimeRef {
+    pub fn is_static(&self) -> bool {
+        self.name == kw::StaticLifetime
+    }
+
+    /// `'_`
+    pub fn is_anonymous(&self) -> bool {
+        self.name == kw::UnderscoreLifetime
+    }
+}
+
+/// A lifetime parameter, `'a` in `<'a>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifetimeParam {
+    pub name: Symbol,
+    pub range: TextRange,
+}
+
+/// `'a: 'b`: lifetime `longer` outlives `shorter`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlivesPredicate {
+    pub longer: LifetimeRef,
+    pub shorter: LifetimeRef,
+}
+
+/// `T: 'a`: every reference in type `ty` outlives `lifetime`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeOutlives {
+    pub ty: TypeRef,
+    pub ty_range: TextRange,
+    pub lifetime: LifetimeRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -615,12 +663,15 @@ enum Defaults {
 }
 
 impl std::fmt::Display for Generics {
-    /// `<T, U>`, or nothing.
+    /// `<'a, T, U>`, or nothing.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.params.is_empty() {
+        if self.params.is_empty() && self.lifetimes.is_empty() {
             return Ok(());
         }
-        let names: Vec<String> = self.params.iter().map(|p| p.name.to_string()).collect();
+        let names: Vec<String> = (self.lifetimes.iter().map(|l| l.name))
+            .chain(self.params.iter().map(|p| p.name))
+            .map(|n| n.to_string())
+            .collect();
         write!(f, "<{}>", names.join(", "))
     }
 }
@@ -684,9 +735,11 @@ pub struct QSelf {
     pub range: TextRange,
 }
 
-/// Generic arguments as written: `<A, B>` or `::<A, B>`.
+/// Generic arguments as written: `<'a, A, B>` or `::<A, B>`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GenericArgs {
+    /// `'a` in `S<'a, T>`, which come before the types.
+    pub lifetimes: Box<[LifetimeRef]>,
     pub types: Box<[TypeRef]>,
     /// Each type's range.
     pub ranges: Box<[TextRange]>,
@@ -809,7 +862,8 @@ impl std::fmt::Display for Path {
             write!(f, "{segment}")?;
             if let Some(args) = self.args(i) {
                 f.write_str("<")?;
-                let types = args.types.iter().map(|t| t.to_string());
+                let lifetimes = args.lifetimes.iter().map(|l| l.name.to_string());
+                let types = lifetimes.chain(args.types.iter().map(|t| t.to_string()));
                 let bindings = args
                     .bindings
                     .iter()
@@ -839,8 +893,11 @@ pub enum TypeRef {
         mutable: bool,
         pointee: Box<TypeRef>,
     },
-    /// `&T` or `&mut T`.
+    /// `&T`, `&'a T` or `&mut T`.
     Ref {
+        lifetime: Option<LifetimeRef>,
+        /// The `&`'s range, where rustc reports a missing lifetime.
+        amp: TextRange,
         mutable: bool,
         pointee: Box<TypeRef>,
     },
@@ -940,9 +997,18 @@ impl std::fmt::Display for TypeRef {
                 let m = if *mutable { "mut" } else { "const" };
                 write!(f, "*{m} {pointee}")
             }
-            TypeRef::Ref { mutable, pointee } => {
+            TypeRef::Ref {
+                lifetime,
+                mutable,
+                pointee,
+                ..
+            } => {
+                f.write_str("&")?;
+                if let Some(lifetime) = lifetime {
+                    write!(f, "{} ", lifetime.name)?;
+                }
                 let m = if *mutable { "mut " } else { "" };
-                write!(f, "&{m}{pointee}")
+                write!(f, "{m}{pointee}")
             }
             TypeRef::Array { elem, len } => write!(f, "[{elem}; {len}]"),
             TypeRef::Slice(elem) => write!(f, "[{elem}]"),
@@ -1488,7 +1554,7 @@ impl Collector<'_> {
         }
         let mut bounds = Vec::new();
         if let Some(list) = t.type_bound_list() {
-            lower_bounds(list, &mut bounds, diagnostics);
+            lower_bounds(list, &mut bounds, None, diagnostics);
         }
         let name_range = name.syntax().text_range();
         let name = Symbol::intern(name.text());
@@ -1607,7 +1673,7 @@ impl Collector<'_> {
         );
         let mut supertraits = Vec::new();
         if let Some(list) = t.type_bound_list() {
-            lower_bounds(list, &mut supertraits, diagnostics);
+            lower_bounds(list, &mut supertraits, None, diagnostics);
         }
         let name_range = name.syntax().text_range();
         let id = self.items.traits.alloc(Trait {
@@ -2042,12 +2108,17 @@ impl Collector<'_> {
         }
         let vis = self.item_visibility(ctx, f.visibility(), owner);
         let name = f.name()?;
-        let outer: Vec<Symbol> = match f.generic_param_list() {
+        let (outer, outer_lifetimes): (Vec<Symbol>, Vec<Symbol>) = match f.generic_param_list() {
             Some(_) => self
                 .items
                 .owner_generics(owner)
-                .map_or(Vec::new(), |g| g.params.iter().map(|p| p.name).collect()),
-            None => Vec::new(),
+                .map_or_else(Default::default, |g| {
+                    (
+                        g.params.iter().map(|p| p.name).collect(),
+                        g.lifetimes.iter().map(|l| l.name).collect(),
+                    )
+                }),
+            None => Default::default(),
         };
         let diagnostics = &mut self.items.diagnostics;
         let generics = collect_generics(
@@ -2075,6 +2146,17 @@ impl Collector<'_> {
                     ));
                 }
             }
+            for lifetime in generics.lifetimes.iter() {
+                if outer_lifetimes.contains(&lifetime.name) {
+                    diagnostics.push(Diagnostic::new(
+                        lifetime.range,
+                        format!(
+                            "lifetime name `{}` shadows a lifetime name that is already in scope",
+                            lifetime.name
+                        ),
+                    ));
+                }
+            }
         }
         if let Some(token) = f.async_token() {
             unsupported(diagnostics, token.text_range(), "`async` functions");
@@ -2097,12 +2179,12 @@ impl Collector<'_> {
                     ));
                 } else if param.ty().is_some() {
                     unsupported(diagnostics, range, "`self` parameters with a type");
-                } else if let Some(lifetime) = param.lifetime() {
-                    unsupported(diagnostics, lifetime.syntax().text_range(), "lifetimes");
                 } else {
                     let self_ty = TypeRef::Path(Path::single(kw::SelfUpper));
                     let ty = match param.amp_token() {
                         Some(_) => TypeRef::Ref {
+                            lifetime: param.lifetime().map(lower_lifetime),
+                            amp: param.amp_token().map_or(range, |t| t.text_range()),
                             mutable: param.mut_token().is_some(),
                             pointee: Box::new(self_ty),
                         },
@@ -2112,6 +2194,7 @@ impl Collector<'_> {
                         ty,
                         range,
                         whole: range,
+                        name: Some(kw::SelfLower),
                     });
                     has_self = true;
                 }
@@ -2135,12 +2218,17 @@ impl Collector<'_> {
                     }
                     continue;
                 }
+                let name = match param.pat() {
+                    Some(ast::Pat::IdentPat(pat)) => pat.name().map(|n| Symbol::intern(n.text())),
+                    _ => None,
+                };
                 params.push(Param {
                     ty: lower_type(param.ty(), diagnostics),
                     range: param
                         .ty()
                         .map_or(param.syntax().text_range(), |t| t.syntax().text_range()),
                     whole: param.syntax().text_range(),
+                    name,
                 });
             }
         }
@@ -2853,8 +2941,17 @@ impl Collector<'_> {
         }
         let mut self_path = Path::single(s.name);
         self_path.ranges = Box::new([s.name_range]);
-        if !params.is_empty() {
+        if !params.is_empty() || !s.generics.lifetimes.is_empty() {
             self_path.args = Box::new([Some(GenericArgs {
+                lifetimes: s
+                    .generics
+                    .lifetimes
+                    .iter()
+                    .map(|l| LifetimeRef {
+                        name: l.name,
+                        range: l.range,
+                    })
+                    .collect(),
                 types: params
                     .iter()
                     .map(|p| TypeRef::Path(Path::single(p.name)))
@@ -2867,9 +2964,11 @@ impl Collector<'_> {
         }
         let generics = Generics {
             params,
+            lifetimes: s.generics.lifetimes.clone(),
             predicates: predicates.into(),
+            outlives: s.generics.outlives.clone(),
+            type_outlives: s.generics.type_outlives.clone(),
             range: s.generics.range,
-            has_lifetimes: s.generics.has_lifetimes,
         };
         let name_range = s.name_range;
         let id = self.items.impls.alloc(Impl {
@@ -2890,9 +2989,12 @@ impl Collector<'_> {
         let self_ty = || TypeRef::Path(Path::single(kw::SelfUpper));
         let self_ref = || Param {
             ty: TypeRef::Ref {
+                lifetime: None,
+                amp: range,
                 mutable: false,
                 pointee: Box::new(self_ty()),
             },
+            name: None,
             range,
             whole: range,
         };
@@ -2916,6 +3018,7 @@ impl Collector<'_> {
                     None,
                     None,
                     Some(GenericArgs {
+                        lifetimes: Box::default(),
                         types: Box::new([TypeRef::Path(core_path("cmp", "Ordering", in_core))]),
                         ranges: Box::new([range]),
                         bindings: Box::default(),
@@ -3337,17 +3440,38 @@ fn lower_path_with(
     })
 }
 
-/// `<A, B>`: type arguments only so far.
+/// `<'a, A, B>`: lifetime and type arguments, and associated types'.
 pub(crate) fn lower_generic_args(
     list: ast::GenericArgList<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> GenericArgs {
+    let mut lifetimes = Vec::new();
     let mut types = Vec::new();
     let mut ranges = Vec::new();
     let mut bindings = Vec::new();
+    let mut misordered = false;
     for arg in list.args() {
         let range = arg.syntax().text_range();
         let what = match arg {
+            ast::GenericArg::LifetimeArg(arg) => {
+                let Some(lifetime) = arg.lifetime() else {
+                    continue;
+                };
+                // Lifetimes come first: the type before it is where one
+                // was expected (or the item has none, E0107).
+                if let Some(&first) = ranges.first() {
+                    if !misordered {
+                        misordered = true;
+                        diagnostics.push(Diagnostic::new(
+                            first,
+                            "type provided when a lifetime was expected",
+                        ));
+                    }
+                    continue;
+                }
+                lifetimes.push(lower_lifetime(lifetime));
+                continue;
+            }
             ast::GenericArg::TypeArg(arg) => {
                 types.push(lower_type(arg.ty(), diagnostics));
                 ranges.push(range);
@@ -3373,7 +3497,6 @@ pub(crate) fn lower_generic_args(
                 });
                 continue;
             }
-            ast::GenericArg::LifetimeArg(_) => "lifetime arguments",
             ast::GenericArg::ConstArg(_) => "const arguments",
             ast::GenericArg::AssocTypeArg(_) => "associated type bounds",
         };
@@ -3382,6 +3505,7 @@ pub(crate) fn lower_generic_args(
         ranges.push(range);
     }
     GenericArgs {
+        lifetimes: lifetimes.into(),
         types: types.into(),
         ranges: ranges.into(),
         bindings: bindings.into(),
@@ -3413,6 +3537,7 @@ fn lower_parenthesized_args(
     };
     let end = ret.map_or(range, |r| r.syntax().text_range());
     GenericArgs {
+        lifetimes: Box::default(),
         types: Box::new([TypeRef::Tuple(params)]),
         ranges: Box::new([range]),
         bindings: Box::new([AssocBinding {
@@ -3874,16 +3999,33 @@ fn lower_bound_type(ty: ast::Type<'_>, diagnostics: &mut Vec<Diagnostic>) -> Opt
     Some(Bound { path, range })
 }
 
-/// The trait bounds in `list`, `A + B`; others are reported.
+/// A lifetime as written.
+pub(crate) fn lower_lifetime(lifetime: ast::Lifetime<'_>) -> LifetimeRef {
+    LifetimeRef {
+        name: Symbol::intern(lifetime.text()),
+        range: lifetime.syntax().text_range(),
+    }
+}
+
+/// The bounds in `list`, `A + B + 'a`: trait bounds into `out`, and
+/// lifetime bounds into `lifetimes` where they are allowed (`None`
+/// reports them as not supported); others are reported.
 fn lower_bounds(
     list: ast::TypeBoundList<'_>,
     out: &mut Vec<Bound>,
+    mut lifetimes: Option<&mut Vec<LifetimeRef>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for bound in list.bounds() {
         let range = bound.syntax().text_range();
-        let what = if bound.lifetime().is_some() {
-            "lifetime bounds"
+        let what = if let Some(lifetime) = bound.lifetime() {
+            match lifetimes.as_deref_mut() {
+                Some(lifetimes) => {
+                    lifetimes.push(lower_lifetime(lifetime));
+                    continue;
+                }
+                None => "lifetime bounds",
+            }
         } else if bound.use_token().is_some() {
             "`use` bounds"
         } else if bound.question_token().is_some() {
@@ -3905,8 +4047,9 @@ fn lower_bounds(
     }
 }
 
-/// An item's generic parameter list and `where` clause: type parameters
-/// without defaults, with distinct names, and trait bounds on types.
+/// An item's generic parameter list and `where` clause: lifetime and
+/// type parameters, type parameters without defaults, with distinct
+/// names, trait bounds on types and lifetime bounds.
 fn collect_generics(
     list: Option<ast::GenericParamList<'_>>,
     where_clause: Option<ast::WhereClause<'_>>,
@@ -3914,50 +4057,83 @@ fn collect_generics(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Generics {
     let mut predicates = Vec::new();
+    let mut outlives = Vec::new();
+    let mut type_outlives = Vec::new();
     let where_predicates = |predicates: &mut Vec<WherePredicate>,
+                            outlives: &mut Vec<OutlivesPredicate>,
+                            type_outlives: &mut Vec<TypeOutlives>,
                             diagnostics: &mut Vec<Diagnostic>| {
         let Some(clause) = where_clause else {
             return;
         };
         for pred in clause.predicates() {
             let range = pred.syntax().text_range();
-            if let Some(lifetime) = pred.lifetime() {
-                unsupported(
-                    diagnostics,
-                    lifetime.syntax().text_range(),
-                    "lifetime bounds",
-                );
-                continue;
-            }
             if pred.for_token().is_some() {
                 unsupported(diagnostics, range, "higher-ranked bounds");
                 continue;
             }
+            let mut bounds = Vec::new();
+            let mut lifetimes = Vec::new();
+            if let Some(lifetime) = pred.lifetime() {
+                // `'a: 'b + 'c`
+                let longer = lower_lifetime(lifetime);
+                if let Some(list) = pred.type_bound_list() {
+                    lower_bounds(list, &mut bounds, Some(&mut lifetimes), diagnostics);
+                }
+                for bound in bounds {
+                    diagnostics.push(Diagnostic::new(
+                        bound.range,
+                        "expected a lifetime, found a trait",
+                    ));
+                }
+                outlives.extend(
+                    lifetimes
+                        .into_iter()
+                        .map(|shorter| OutlivesPredicate { longer, shorter }),
+                );
+                continue;
+            }
             let ty_range = pred.ty().map_or(range, |t| t.syntax().text_range());
             let ty = lower_type(pred.ty(), diagnostics);
-            let mut bounds = Vec::new();
             if let Some(list) = pred.type_bound_list() {
-                lower_bounds(list, &mut bounds, diagnostics);
+                lower_bounds(list, &mut bounds, Some(&mut lifetimes), diagnostics);
             }
             predicates.extend(bounds.into_iter().map(|bound| WherePredicate {
                 ty: ty.clone(),
                 ty_range,
                 bound,
             }));
+            type_outlives.extend(lifetimes.into_iter().map(|lifetime| TypeOutlives {
+                ty: ty.clone(),
+                ty_range,
+                lifetime,
+            }));
         }
     };
     let Some(list) = list else {
-        where_predicates(&mut predicates, diagnostics);
+        where_predicates(
+            &mut predicates,
+            &mut outlives,
+            &mut type_outlives,
+            diagnostics,
+        );
         return Generics {
             predicates: predicates.into(),
+            outlives: outlives.into(),
+            type_outlives: type_outlives.into(),
             ..Generics::default()
         };
     };
     let mut params: Vec<GenericParam> = Vec::new();
-    let mut has_lifetimes = false;
+    let mut lifetimes: Vec<LifetimeParam> = Vec::new();
     // Parameters with defaults so far, which no parameter without one
     // may follow.
     let mut defaulted: Vec<TextRange> = Vec::new();
+    let already_used = |name: Symbol| {
+        format!(
+            "the name `{name}` is already used for a generic parameter in this item's generic parameters"
+        )
+    };
     for param in list.generic_params() {
         let range = param.syntax().text_range();
         let what = match param {
@@ -3968,13 +4144,21 @@ fn collect_generics(
                 };
                 if let Some(list) = param.type_bound_list() {
                     let mut bounds = Vec::new();
-                    lower_bounds(list, &mut bounds, diagnostics);
+                    let mut bound_lifetimes = Vec::new();
+                    lower_bounds(list, &mut bounds, Some(&mut bound_lifetimes), diagnostics);
                     let ty = TypeRef::Path(Path::single(Symbol::intern(name.text())));
                     let ty_range = name.syntax().text_range();
                     predicates.extend(bounds.into_iter().map(|bound| WherePredicate {
                         ty: ty.clone(),
                         ty_range,
                         bound,
+                    }));
+                    type_outlives.extend(bound_lifetimes.into_iter().map(|lifetime| {
+                        TypeOutlives {
+                            ty: ty.clone(),
+                            ty_range,
+                            lifetime,
+                        }
                     }));
                 }
                 let name_range = name.syntax().text_range();
@@ -4014,12 +4198,7 @@ fn collect_generics(
                 }
                 let name = Symbol::intern(name.text());
                 if params.iter().any(|p| p.name == name) {
-                    diagnostics.push(Diagnostic::new(
-                        name_range,
-                        format!(
-                            "the name `{name}` is already used for a generic parameter in this item's generic parameters"
-                        ),
-                    ));
+                    diagnostics.push(Diagnostic::new(name_range, already_used(name)));
                     continue;
                 }
                 params.push(GenericParam {
@@ -4029,20 +4208,71 @@ fn collect_generics(
                 });
                 continue;
             }
-            ast::GenericParam::LifetimeParam(_) => {
-                has_lifetimes = true;
-                "lifetime parameters"
+            ast::GenericParam::LifetimeParam(param) => {
+                check_attrs(param.attrs(), diagnostics);
+                let Some(lifetime) = param.lifetime() else {
+                    continue;
+                };
+                let lifetime = lower_lifetime(lifetime);
+                if !params.is_empty() {
+                    diagnostics.push(Diagnostic::new(
+                        lifetime.range,
+                        "lifetime parameters must be declared prior to type and const parameters",
+                    ));
+                }
+                if let Some(list) = param.type_bound_list() {
+                    let mut bounds = Vec::new();
+                    let mut shorter = Vec::new();
+                    lower_bounds(list, &mut bounds, Some(&mut shorter), diagnostics);
+                    for bound in bounds {
+                        diagnostics.push(Diagnostic::new(
+                            bound.range,
+                            "expected a lifetime, found a trait",
+                        ));
+                    }
+                    outlives.extend(shorter.into_iter().map(|shorter| OutlivesPredicate {
+                        longer: lifetime,
+                        shorter,
+                    }));
+                }
+                if lifetime.is_static() {
+                    diagnostics.push(Diagnostic::new(
+                        lifetime.range,
+                        "invalid lifetime parameter name: `'static`",
+                    ));
+                    continue;
+                }
+                if lifetime.is_anonymous() {
+                    diagnostics.push(Diagnostic::new(lifetime.range, "`'_` cannot be used here"));
+                    continue;
+                }
+                if lifetimes.iter().any(|l| l.name == lifetime.name) {
+                    diagnostics.push(Diagnostic::new(lifetime.range, already_used(lifetime.name)));
+                    continue;
+                }
+                lifetimes.push(LifetimeParam {
+                    name: lifetime.name,
+                    range: lifetime.range,
+                });
+                continue;
             }
             ast::GenericParam::ConstParam(_) => "const generics",
         };
         unsupported(diagnostics, range, what);
     }
-    where_predicates(&mut predicates, diagnostics);
+    where_predicates(
+        &mut predicates,
+        &mut outlives,
+        &mut type_outlives,
+        diagnostics,
+    );
     Generics {
         params: params.into(),
+        lifetimes: lifetimes.into(),
         predicates: predicates.into(),
+        outlives: outlives.into(),
+        type_outlives: type_outlives.into(),
         range: list.syntax().text_range(),
-        has_lifetimes,
     }
 }
 
@@ -4090,11 +4320,12 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
             };
         }
         ast::Type::RefType(r) => {
-            if let Some(lifetime) = r.lifetime() {
-                unsupported(diagnostics, lifetime.syntax().text_range(), "lifetimes");
-            }
             let pointee = lower_type(r.ty(), diagnostics);
             return TypeRef::Ref {
+                lifetime: r.lifetime().map(lower_lifetime),
+                amp: r
+                    .amp_token()
+                    .map_or(ty.syntax().text_range(), |t| t.text_range()),
                 mutable: r.mut_token().is_some(),
                 pointee: Box::new(pointee),
             };
