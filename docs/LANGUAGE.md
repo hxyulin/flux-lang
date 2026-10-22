@@ -201,10 +201,13 @@ Type checking follows rustc for this subset: the integer types, `bool`,
 `char`, `str`, tuples, arrays, slices, structs, enums and `!`; integer
 literals default to `i32`; no implicit conversions; operators need
 operands of the same type, except shifts, and work on integers and
-`bool` only, `char`s comparing too (comparing pointers is not supported
-yet; tuples compare through `core`'s impls, as below), and on references
+`bool` only, with comparisons also available for `char` and thin raw pointers
+(tuples compare through `core`'s impls, as below), and on references
 to them, as below. `isize` and
-`usize` are 64 bits. `c"..."` is a `&'static CStr` (`core::ffi::CStr`),
+`usize` are 64 bits. Thin raw pointers support all six comparisons with
+unsigned address ordering and compatible pointee/mutability coercions.
+Wide pointers, comparisons through references to pointers, and const pointer
+comparisons remain unsupported. `c"..."` is a `&'static CStr` (`core::ffi::CStr`),
 and `.as_ptr()` gives the `*const c_char` (`*const i8` on both targets)
 that C functions take. `core` gives `CStr` rustc's `PartialEq` (with
 `CStr` and `&CStr`), `Eq`, `PartialOrd` and `Ord`, which compare its

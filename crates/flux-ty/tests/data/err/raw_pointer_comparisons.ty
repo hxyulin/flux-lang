@@ -1,0 +1,31 @@
+fn incompatible(*const u8, *const u16, *mut u8) -> ()
+    a@0: *const u8
+    b@1: *const u16
+    m@2: *mut u8
+fn wide(*const [u8], *const [u8]) -> ()
+    a@0: *const [u8]
+    b@1: *const [u8]
+fn generic_wide<T>(*const T, *const T) -> ()
+    a@0: *const T
+    b@1: *const T
+fn equality(*const u8, *const u8) -> bool
+    a@0: *const u8
+    b@1: *const u8
+fn ordering(*const u8, *const u8) -> bool
+    a@0: *const u8
+    b@1: *const u8
+fn main() -> ()
+const INLINE: bool
+error 76..77: mismatched types: expected `*const u8`, found `*const u16`
+error 95..96: mismatched types: expected `*const u8`, found `*const u16`
+error 115..116: mismatched types: expected `*mut u8`, found `*const u8`
+error 134..135: mismatched types: expected `*mut u8`, found `*const u8`
+error 154..160: mismatched types: expected `*const u8`, found `usize`
+error 178..193: mismatched types: expected `*const u8`, found `*mut u16`
+error 209..210: cannot add `*const u8` to `*const u8`
+error 266..272: wide pointer comparisons are not supported yet
+error 282..287: wide pointer comparisons are not supported yet
+error 354..360: wide pointer comparisons are not supported yet
+error 420..426: pointers cannot be reliably compared during const eval
+error 485..490: pointers cannot be reliably compared during const eval
+error 522..558: pointers cannot be reliably compared during const eval

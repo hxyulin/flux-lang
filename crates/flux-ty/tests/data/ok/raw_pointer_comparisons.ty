@@ -1,0 +1,12 @@
+fn compare<T>(*const T, *mut T) -> bool
+    a@0: *const T
+    b@1: *mut T
+fn mutable<T>(*mut T, *mut T) -> bool
+    a@0: *mut T
+    b@1: *mut T
+fn inferred(*const u8) -> bool
+    a@0: *const u8
+fn reference_rhs(*const u8, &u8) -> bool
+    a@0: *const u8
+    b@1: &u8
+fn main() -> ()

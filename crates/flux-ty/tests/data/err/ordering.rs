@@ -63,8 +63,7 @@ fn max_mismatch(x: i32, y: i64) -> i32 {
     x.max(y)
 }
 
-// Not supported yet, though rustc accepts it: comparing pointers. Tuples
-// compare, by reference too.
+// Tuples compare by reference, and thin pointers compare addresses.
 fn unsupported(t: &(i32, u8), p: *const u8) -> bool {
     t < t || t == t || p < p
 }

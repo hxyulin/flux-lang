@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Support all six thin raw-pointer comparisons with unsigned address ordering
+  and rustc-compatible coercions; reject wide and const pointer comparisons.
+
 - Select block tail values after cfg pruning, preserving semicolons, item
   barriers and macro import scopes.
 

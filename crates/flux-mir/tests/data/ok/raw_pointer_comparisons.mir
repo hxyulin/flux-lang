@@ -1,0 +1,210 @@
+fn compare<T>(_1: *const T, _2: *mut T) -> bool {
+    let mut _0: bool;
+    let _3: bool;
+    let _4: bool;
+    let _5: bool;
+    let _6: bool;
+    let _7: bool;
+    let _8: *const T;
+    let _9: *const T;
+    let _10: *mut T;
+    let _11: *const T;
+    let _12: *const T;
+    let _13: *mut T;
+    let _14: *const T;
+    let _15: *const T;
+    let _16: *mut T;
+    let _17: *const T;
+    let _18: *const T;
+    let _19: *mut T;
+    let _20: *const T;
+    let _21: *const T;
+    let _22: *mut T;
+    let _23: *const T;
+    let _24: *const T;
+    let _25: *mut T;
+
+    bb0: {
+        _8 = copy _1;
+        _10 = copy _2;
+        _9 = copy _10 as *const T;
+        _7 = Eq(copy _8, copy _9);
+        switchInt(copy _7) -> [0: bb1, otherwise: bb2];
+    }
+
+    bb1: {
+        _11 = copy _1;
+        _13 = copy _2;
+        _12 = copy _13 as *const T;
+        _6 = Ne(copy _11, copy _12);
+        goto -> bb3;
+    }
+
+    bb2: {
+        _6 = const true;
+        goto -> bb3;
+    }
+
+    bb3: {
+        switchInt(copy _6) -> [0: bb4, otherwise: bb5];
+    }
+
+    bb4: {
+        _14 = copy _1;
+        _16 = copy _2;
+        _15 = copy _16 as *const T;
+        _5 = Lt(copy _14, copy _15);
+        goto -> bb6;
+    }
+
+    bb5: {
+        _5 = const true;
+        goto -> bb6;
+    }
+
+    bb6: {
+        switchInt(copy _5) -> [0: bb7, otherwise: bb8];
+    }
+
+    bb7: {
+        _17 = copy _1;
+        _19 = copy _2;
+        _18 = copy _19 as *const T;
+        _4 = Le(copy _17, copy _18);
+        goto -> bb9;
+    }
+
+    bb8: {
+        _4 = const true;
+        goto -> bb9;
+    }
+
+    bb9: {
+        switchInt(copy _4) -> [0: bb10, otherwise: bb11];
+    }
+
+    bb10: {
+        _20 = copy _1;
+        _22 = copy _2;
+        _21 = copy _22 as *const T;
+        _3 = Gt(copy _20, copy _21);
+        goto -> bb12;
+    }
+
+    bb11: {
+        _3 = const true;
+        goto -> bb12;
+    }
+
+    bb12: {
+        switchInt(copy _3) -> [0: bb13, otherwise: bb14];
+    }
+
+    bb13: {
+        _23 = copy _1;
+        _25 = copy _2;
+        _24 = copy _25 as *const T;
+        _0 = Ge(copy _23, copy _24);
+        goto -> bb15;
+    }
+
+    bb14: {
+        _0 = const true;
+        goto -> bb15;
+    }
+
+    bb15: {
+        return;
+    }
+}
+
+fn mutable<T>(_1: *mut T, _2: *mut T) -> bool {
+    let mut _0: bool;
+    let _3: bool;
+    let _4: *mut T;
+    let _5: *mut T;
+    let _6: *mut T;
+    let _7: *mut T;
+
+    bb0: {
+        _4 = copy _1;
+        _5 = copy _2;
+        _3 = Eq(copy _4, copy _5);
+        switchInt(copy _3) -> [0: bb1, otherwise: bb2];
+    }
+
+    bb1: {
+        _6 = copy _1;
+        _7 = copy _2;
+        _0 = Lt(copy _6, copy _7);
+        goto -> bb3;
+    }
+
+    bb2: {
+        _0 = const true;
+        goto -> bb3;
+    }
+
+    bb3: {
+        return;
+    }
+}
+
+fn inferred(_1: *const u8) -> bool {
+    let mut _0: bool;
+    let _2: *const u8;
+    let _3: *const u8;
+
+    bb0: {
+        _2 = copy _1;
+        _3 = const 0_i32 as *const u8;
+        _0 = Eq(copy _2, copy _3);
+        return;
+    }
+}
+
+fn reference_rhs(_1: *const u8, _2: &u8) -> bool {
+    let mut _0: bool;
+    let _3: bool;
+    let _4: *const u8;
+    let _5: *const u8;
+    let _6: &u8;
+    let _7: *const u8;
+    let _8: *const u8;
+    let _9: &u8;
+
+    bb0: {
+        _4 = copy _1;
+        _6 = copy _2;
+        _5 = copy _6 as *const u8;
+        _3 = Eq(copy _4, copy _5);
+        switchInt(copy _3) -> [0: bb1, otherwise: bb2];
+    }
+
+    bb1: {
+        _7 = copy _1;
+        _9 = copy _2;
+        _8 = copy _9 as *const u8;
+        _0 = Lt(copy _7, copy _8);
+        goto -> bb3;
+    }
+
+    bb2: {
+        _0 = const true;
+        goto -> bb3;
+    }
+
+    bb3: {
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
