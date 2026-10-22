@@ -109,15 +109,13 @@ error 1251..1252: mismatched types: expected `&mut i32`, found `&i32`
 error 1363..1364: binary operation `<` cannot be applied to type `T`
 error 1478..1483: the method `clamp` exists for struct `NotOrd`, but its trait bounds were not satisfied
 error 1600..1601: mismatched types: expected `i32`, found `i64`
-error 1765..1770: comparing tuples is not supported yet
-error 1774..1780: comparing tuples is not supported yet
-error 1784..1789: comparing pointers is not supported yet
-error 1976..1984: `Ord` is not yet stable as a const trait
-error 1978..1984: cannot call conditionally-const method `<i32 as Ord>::max` in constant functions
-error 1999..2015: cannot call conditionally-const method `<i32 as Ord>::cmp` in constant functions
-error 1999..2015: `Ord` is not yet stable as a const trait
-error 2030..2049: cannot call conditionally-const operator in constant functions
-error 2030..2049: `PartialOrd` is not yet stable as a const trait
-error 2066..2089: cannot call non-const method `<NotOrd as PartialOrd>::partial_cmp` in constant functions
-error 2148..2168: cannot call conditionally-const function `std::cmp::max::<i32>` in constants
-error 2148..2168: `std::cmp::max` is not yet stable as a const fn
+error 1787..1792: comparing pointers is not supported yet
+error 1979..1987: `Ord` is not yet stable as a const trait
+error 1981..1987: cannot call conditionally-const method `<i32 as Ord>::max` in constant functions
+error 2002..2018: cannot call conditionally-const method `<i32 as Ord>::cmp` in constant functions
+error 2002..2018: `Ord` is not yet stable as a const trait
+error 2033..2052: cannot call conditionally-const operator in constant functions
+error 2033..2052: `PartialOrd` is not yet stable as a const trait
+error 2069..2092: cannot call non-const method `<NotOrd as PartialOrd>::partial_cmp` in constant functions
+error 2151..2171: cannot call conditionally-const function `std::cmp::max::<i32>` in constants
+error 2151..2171: `std::cmp::max` is not yet stable as a const fn

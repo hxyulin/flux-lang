@@ -597,6 +597,15 @@
   `Debug` and `Default` for `char` and `str` (`&str`), `Result`'s
   `unwrap`, `expect`, `unwrap_err` and `expect_err`, `Option::expect`,
   and `size_hint` for ranges of `char`.
+- Support comparing tuples: `core` implements `PartialEq`, `Eq`,
+  `PartialOrd` and `Ord` for tuples of up to twelve elements as rustc's
+  does (`ne` with each pair's `!=`, `lt` and the others through each
+  pair's `partial_cmp` and the last pair's operator), so `==`, `<` and
+  the others work on tuples, by reference too, and derives of structs
+  with tuple fields; other operators on tuples are E0369 as in rustc.
+  Arrays are `Eq`, `PartialOrd` and `Ord` where their elements are,
+  built into the compiler, comparing elements in order through
+  `core`'s functions on slices.
 
 ### Performance
 

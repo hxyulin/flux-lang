@@ -406,3 +406,2276 @@ impl<A: Ord> Ord for &mut A {
         Ord::cmp(&**self, &**other)
     }
 }
+
+// Tuples of up to twelve elements compare element by element, the first
+// unequal pair deciding, as rustc's `core` has them: `ne` with `!=` of
+// each pair, and `lt` and the others through each pair's `partial_cmp`
+// but the last's operator.
+impl<A: PartialEq> PartialEq for (A,) {
+    fn eq(&self, other: &(A,)) -> bool {
+        self.0 == other.0
+    }
+    fn ne(&self, other: &(A,)) -> bool {
+        self.0 != other.0
+    }
+}
+impl<A: Eq> Eq for (A,) {}
+impl<A: PartialOrd> PartialOrd for (A,) {
+    fn partial_cmp(&self, other: &(A,)) -> Option<Ordering> {
+        PartialOrd::partial_cmp(&self.0, &other.0)
+    }
+
+    fn lt(&self, other: &(A,)) -> bool {
+        self.0 < other.0
+    }
+
+    fn le(&self, other: &(A,)) -> bool {
+        self.0 <= other.0
+    }
+
+    fn gt(&self, other: &(A,)) -> bool {
+        self.0 > other.0
+    }
+
+    fn ge(&self, other: &(A,)) -> bool {
+        self.0 >= other.0
+    }
+}
+impl<A: Ord> Ord for (A,) {
+    fn cmp(&self, other: &(A,)) -> Ordering {
+        Ord::cmp(&self.0, &other.0)
+    }
+}
+impl<A: PartialEq, B: PartialEq> PartialEq for (A, B) {
+    fn eq(&self, other: &(A, B)) -> bool {
+        self.0 == other.0 && self.1 == other.1
+    }
+    fn ne(&self, other: &(A, B)) -> bool {
+        self.0 != other.0 || self.1 != other.1
+    }
+}
+impl<A: Eq, B: Eq> Eq for (A, B) {}
+impl<A: PartialOrd, B: PartialOrd> PartialOrd for (A, B) {
+    fn partial_cmp(&self, other: &(A, B)) -> Option<Ordering> {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        PartialOrd::partial_cmp(&self.1, &other.1)
+    }
+
+    fn lt(&self, other: &(A, B)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.1 < other.1
+    }
+
+    fn le(&self, other: &(A, B)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.1 <= other.1
+    }
+
+    fn gt(&self, other: &(A, B)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.1 > other.1
+    }
+
+    fn ge(&self, other: &(A, B)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.1 >= other.1
+    }
+}
+impl<A: Ord, B: Ord> Ord for (A, B) {
+    fn cmp(&self, other: &(A, B)) -> Ordering {
+        match Ord::cmp(&self.0, &other.0) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        Ord::cmp(&self.1, &other.1)
+    }
+}
+impl<A: PartialEq, B: PartialEq, C: PartialEq> PartialEq for (A, B, C) {
+    fn eq(&self, other: &(A, B, C)) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2
+    }
+    fn ne(&self, other: &(A, B, C)) -> bool {
+        self.0 != other.0 || self.1 != other.1 || self.2 != other.2
+    }
+}
+impl<A: Eq, B: Eq, C: Eq> Eq for (A, B, C) {}
+impl<A: PartialOrd, B: PartialOrd, C: PartialOrd> PartialOrd for (A, B, C) {
+    fn partial_cmp(&self, other: &(A, B, C)) -> Option<Ordering> {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        PartialOrd::partial_cmp(&self.2, &other.2)
+    }
+
+    fn lt(&self, other: &(A, B, C)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.2 < other.2
+    }
+
+    fn le(&self, other: &(A, B, C)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.2 <= other.2
+    }
+
+    fn gt(&self, other: &(A, B, C)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.2 > other.2
+    }
+
+    fn ge(&self, other: &(A, B, C)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.2 >= other.2
+    }
+}
+impl<A: Ord, B: Ord, C: Ord> Ord for (A, B, C) {
+    fn cmp(&self, other: &(A, B, C)) -> Ordering {
+        match Ord::cmp(&self.0, &other.0) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.1, &other.1) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        Ord::cmp(&self.2, &other.2)
+    }
+}
+impl<A: PartialEq, B: PartialEq, C: PartialEq, D: PartialEq> PartialEq for (A, B, C, D) {
+    fn eq(&self, other: &(A, B, C, D)) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3
+    }
+    fn ne(&self, other: &(A, B, C, D)) -> bool {
+        self.0 != other.0 || self.1 != other.1 || self.2 != other.2 || self.3 != other.3
+    }
+}
+impl<A: Eq, B: Eq, C: Eq, D: Eq> Eq for (A, B, C, D) {}
+impl<A: PartialOrd, B: PartialOrd, C: PartialOrd, D: PartialOrd> PartialOrd for (A, B, C, D) {
+    fn partial_cmp(&self, other: &(A, B, C, D)) -> Option<Ordering> {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        PartialOrd::partial_cmp(&self.3, &other.3)
+    }
+
+    fn lt(&self, other: &(A, B, C, D)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.3 < other.3
+    }
+
+    fn le(&self, other: &(A, B, C, D)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.3 <= other.3
+    }
+
+    fn gt(&self, other: &(A, B, C, D)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.3 > other.3
+    }
+
+    fn ge(&self, other: &(A, B, C, D)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.3 >= other.3
+    }
+}
+impl<A: Ord, B: Ord, C: Ord, D: Ord> Ord for (A, B, C, D) {
+    fn cmp(&self, other: &(A, B, C, D)) -> Ordering {
+        match Ord::cmp(&self.0, &other.0) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.1, &other.1) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.2, &other.2) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        Ord::cmp(&self.3, &other.3)
+    }
+}
+impl<A: PartialEq, B: PartialEq, C: PartialEq, D: PartialEq, E: PartialEq> PartialEq for (A, B, C, D, E) {
+    fn eq(&self, other: &(A, B, C, D, E)) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3 && self.4 == other.4
+    }
+    fn ne(&self, other: &(A, B, C, D, E)) -> bool {
+        self.0 != other.0 || self.1 != other.1 || self.2 != other.2 || self.3 != other.3 || self.4 != other.4
+    }
+}
+impl<A: Eq, B: Eq, C: Eq, D: Eq, E: Eq> Eq for (A, B, C, D, E) {}
+impl<A: PartialOrd, B: PartialOrd, C: PartialOrd, D: PartialOrd, E: PartialOrd> PartialOrd for (A, B, C, D, E) {
+    fn partial_cmp(&self, other: &(A, B, C, D, E)) -> Option<Ordering> {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        PartialOrd::partial_cmp(&self.4, &other.4)
+    }
+
+    fn lt(&self, other: &(A, B, C, D, E)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.4 < other.4
+    }
+
+    fn le(&self, other: &(A, B, C, D, E)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.4 <= other.4
+    }
+
+    fn gt(&self, other: &(A, B, C, D, E)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.4 > other.4
+    }
+
+    fn ge(&self, other: &(A, B, C, D, E)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.4 >= other.4
+    }
+}
+impl<A: Ord, B: Ord, C: Ord, D: Ord, E: Ord> Ord for (A, B, C, D, E) {
+    fn cmp(&self, other: &(A, B, C, D, E)) -> Ordering {
+        match Ord::cmp(&self.0, &other.0) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.1, &other.1) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.2, &other.2) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.3, &other.3) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        Ord::cmp(&self.4, &other.4)
+    }
+}
+impl<A: PartialEq, B: PartialEq, C: PartialEq, D: PartialEq, E: PartialEq, F: PartialEq> PartialEq for (A, B, C, D, E, F) {
+    fn eq(&self, other: &(A, B, C, D, E, F)) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3 && self.4 == other.4 && self.5 == other.5
+    }
+    fn ne(&self, other: &(A, B, C, D, E, F)) -> bool {
+        self.0 != other.0 || self.1 != other.1 || self.2 != other.2 || self.3 != other.3 || self.4 != other.4 || self.5 != other.5
+    }
+}
+impl<A: Eq, B: Eq, C: Eq, D: Eq, E: Eq, F: Eq> Eq for (A, B, C, D, E, F) {}
+impl<A: PartialOrd, B: PartialOrd, C: PartialOrd, D: PartialOrd, E: PartialOrd, F: PartialOrd> PartialOrd for (A, B, C, D, E, F) {
+    fn partial_cmp(&self, other: &(A, B, C, D, E, F)) -> Option<Ordering> {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        PartialOrd::partial_cmp(&self.5, &other.5)
+    }
+
+    fn lt(&self, other: &(A, B, C, D, E, F)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.5 < other.5
+    }
+
+    fn le(&self, other: &(A, B, C, D, E, F)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.5 <= other.5
+    }
+
+    fn gt(&self, other: &(A, B, C, D, E, F)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.5 > other.5
+    }
+
+    fn ge(&self, other: &(A, B, C, D, E, F)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.5 >= other.5
+    }
+}
+impl<A: Ord, B: Ord, C: Ord, D: Ord, E: Ord, F: Ord> Ord for (A, B, C, D, E, F) {
+    fn cmp(&self, other: &(A, B, C, D, E, F)) -> Ordering {
+        match Ord::cmp(&self.0, &other.0) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.1, &other.1) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.2, &other.2) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.3, &other.3) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.4, &other.4) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        Ord::cmp(&self.5, &other.5)
+    }
+}
+impl<A: PartialEq, B: PartialEq, C: PartialEq, D: PartialEq, E: PartialEq, F: PartialEq, G: PartialEq> PartialEq for (A, B, C, D, E, F, G) {
+    fn eq(&self, other: &(A, B, C, D, E, F, G)) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3 && self.4 == other.4 && self.5 == other.5 && self.6 == other.6
+    }
+    fn ne(&self, other: &(A, B, C, D, E, F, G)) -> bool {
+        self.0 != other.0 || self.1 != other.1 || self.2 != other.2 || self.3 != other.3 || self.4 != other.4 || self.5 != other.5 || self.6 != other.6
+    }
+}
+impl<A: Eq, B: Eq, C: Eq, D: Eq, E: Eq, F: Eq, G: Eq> Eq for (A, B, C, D, E, F, G) {}
+impl<A: PartialOrd, B: PartialOrd, C: PartialOrd, D: PartialOrd, E: PartialOrd, F: PartialOrd, G: PartialOrd> PartialOrd for (A, B, C, D, E, F, G) {
+    fn partial_cmp(&self, other: &(A, B, C, D, E, F, G)) -> Option<Ordering> {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        PartialOrd::partial_cmp(&self.6, &other.6)
+    }
+
+    fn lt(&self, other: &(A, B, C, D, E, F, G)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.6 < other.6
+    }
+
+    fn le(&self, other: &(A, B, C, D, E, F, G)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.6 <= other.6
+    }
+
+    fn gt(&self, other: &(A, B, C, D, E, F, G)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.6 > other.6
+    }
+
+    fn ge(&self, other: &(A, B, C, D, E, F, G)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.6 >= other.6
+    }
+}
+impl<A: Ord, B: Ord, C: Ord, D: Ord, E: Ord, F: Ord, G: Ord> Ord for (A, B, C, D, E, F, G) {
+    fn cmp(&self, other: &(A, B, C, D, E, F, G)) -> Ordering {
+        match Ord::cmp(&self.0, &other.0) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.1, &other.1) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.2, &other.2) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.3, &other.3) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.4, &other.4) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.5, &other.5) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        Ord::cmp(&self.6, &other.6)
+    }
+}
+impl<A: PartialEq, B: PartialEq, C: PartialEq, D: PartialEq, E: PartialEq, F: PartialEq, G: PartialEq, H: PartialEq> PartialEq for (A, B, C, D, E, F, G, H) {
+    fn eq(&self, other: &(A, B, C, D, E, F, G, H)) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3 && self.4 == other.4 && self.5 == other.5 && self.6 == other.6 && self.7 == other.7
+    }
+    fn ne(&self, other: &(A, B, C, D, E, F, G, H)) -> bool {
+        self.0 != other.0 || self.1 != other.1 || self.2 != other.2 || self.3 != other.3 || self.4 != other.4 || self.5 != other.5 || self.6 != other.6 || self.7 != other.7
+    }
+}
+impl<A: Eq, B: Eq, C: Eq, D: Eq, E: Eq, F: Eq, G: Eq, H: Eq> Eq for (A, B, C, D, E, F, G, H) {}
+impl<A: PartialOrd, B: PartialOrd, C: PartialOrd, D: PartialOrd, E: PartialOrd, F: PartialOrd, G: PartialOrd, H: PartialOrd> PartialOrd for (A, B, C, D, E, F, G, H) {
+    fn partial_cmp(&self, other: &(A, B, C, D, E, F, G, H)) -> Option<Ordering> {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        PartialOrd::partial_cmp(&self.7, &other.7)
+    }
+
+    fn lt(&self, other: &(A, B, C, D, E, F, G, H)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.7 < other.7
+    }
+
+    fn le(&self, other: &(A, B, C, D, E, F, G, H)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.7 <= other.7
+    }
+
+    fn gt(&self, other: &(A, B, C, D, E, F, G, H)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.7 > other.7
+    }
+
+    fn ge(&self, other: &(A, B, C, D, E, F, G, H)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.7 >= other.7
+    }
+}
+impl<A: Ord, B: Ord, C: Ord, D: Ord, E: Ord, F: Ord, G: Ord, H: Ord> Ord for (A, B, C, D, E, F, G, H) {
+    fn cmp(&self, other: &(A, B, C, D, E, F, G, H)) -> Ordering {
+        match Ord::cmp(&self.0, &other.0) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.1, &other.1) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.2, &other.2) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.3, &other.3) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.4, &other.4) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.5, &other.5) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.6, &other.6) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        Ord::cmp(&self.7, &other.7)
+    }
+}
+impl<A: PartialEq, B: PartialEq, C: PartialEq, D: PartialEq, E: PartialEq, F: PartialEq, G: PartialEq, H: PartialEq, I: PartialEq> PartialEq for (A, B, C, D, E, F, G, H, I) {
+    fn eq(&self, other: &(A, B, C, D, E, F, G, H, I)) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3 && self.4 == other.4 && self.5 == other.5 && self.6 == other.6 && self.7 == other.7 && self.8 == other.8
+    }
+    fn ne(&self, other: &(A, B, C, D, E, F, G, H, I)) -> bool {
+        self.0 != other.0 || self.1 != other.1 || self.2 != other.2 || self.3 != other.3 || self.4 != other.4 || self.5 != other.5 || self.6 != other.6 || self.7 != other.7 || self.8 != other.8
+    }
+}
+impl<A: Eq, B: Eq, C: Eq, D: Eq, E: Eq, F: Eq, G: Eq, H: Eq, I: Eq> Eq for (A, B, C, D, E, F, G, H, I) {}
+impl<A: PartialOrd, B: PartialOrd, C: PartialOrd, D: PartialOrd, E: PartialOrd, F: PartialOrd, G: PartialOrd, H: PartialOrd, I: PartialOrd> PartialOrd for (A, B, C, D, E, F, G, H, I) {
+    fn partial_cmp(&self, other: &(A, B, C, D, E, F, G, H, I)) -> Option<Ordering> {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        PartialOrd::partial_cmp(&self.8, &other.8)
+    }
+
+    fn lt(&self, other: &(A, B, C, D, E, F, G, H, I)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.8 < other.8
+    }
+
+    fn le(&self, other: &(A, B, C, D, E, F, G, H, I)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.8 <= other.8
+    }
+
+    fn gt(&self, other: &(A, B, C, D, E, F, G, H, I)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.8 > other.8
+    }
+
+    fn ge(&self, other: &(A, B, C, D, E, F, G, H, I)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.8 >= other.8
+    }
+}
+impl<A: Ord, B: Ord, C: Ord, D: Ord, E: Ord, F: Ord, G: Ord, H: Ord, I: Ord> Ord for (A, B, C, D, E, F, G, H, I) {
+    fn cmp(&self, other: &(A, B, C, D, E, F, G, H, I)) -> Ordering {
+        match Ord::cmp(&self.0, &other.0) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.1, &other.1) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.2, &other.2) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.3, &other.3) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.4, &other.4) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.5, &other.5) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.6, &other.6) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.7, &other.7) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        Ord::cmp(&self.8, &other.8)
+    }
+}
+impl<A: PartialEq, B: PartialEq, C: PartialEq, D: PartialEq, E: PartialEq, F: PartialEq, G: PartialEq, H: PartialEq, I: PartialEq, J: PartialEq> PartialEq for (A, B, C, D, E, F, G, H, I, J) {
+    fn eq(&self, other: &(A, B, C, D, E, F, G, H, I, J)) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3 && self.4 == other.4 && self.5 == other.5 && self.6 == other.6 && self.7 == other.7 && self.8 == other.8 && self.9 == other.9
+    }
+    fn ne(&self, other: &(A, B, C, D, E, F, G, H, I, J)) -> bool {
+        self.0 != other.0 || self.1 != other.1 || self.2 != other.2 || self.3 != other.3 || self.4 != other.4 || self.5 != other.5 || self.6 != other.6 || self.7 != other.7 || self.8 != other.8 || self.9 != other.9
+    }
+}
+impl<A: Eq, B: Eq, C: Eq, D: Eq, E: Eq, F: Eq, G: Eq, H: Eq, I: Eq, J: Eq> Eq for (A, B, C, D, E, F, G, H, I, J) {}
+impl<A: PartialOrd, B: PartialOrd, C: PartialOrd, D: PartialOrd, E: PartialOrd, F: PartialOrd, G: PartialOrd, H: PartialOrd, I: PartialOrd, J: PartialOrd> PartialOrd for (A, B, C, D, E, F, G, H, I, J) {
+    fn partial_cmp(&self, other: &(A, B, C, D, E, F, G, H, I, J)) -> Option<Ordering> {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        PartialOrd::partial_cmp(&self.9, &other.9)
+    }
+
+    fn lt(&self, other: &(A, B, C, D, E, F, G, H, I, J)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.9 < other.9
+    }
+
+    fn le(&self, other: &(A, B, C, D, E, F, G, H, I, J)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.9 <= other.9
+    }
+
+    fn gt(&self, other: &(A, B, C, D, E, F, G, H, I, J)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.9 > other.9
+    }
+
+    fn ge(&self, other: &(A, B, C, D, E, F, G, H, I, J)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.9 >= other.9
+    }
+}
+impl<A: Ord, B: Ord, C: Ord, D: Ord, E: Ord, F: Ord, G: Ord, H: Ord, I: Ord, J: Ord> Ord for (A, B, C, D, E, F, G, H, I, J) {
+    fn cmp(&self, other: &(A, B, C, D, E, F, G, H, I, J)) -> Ordering {
+        match Ord::cmp(&self.0, &other.0) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.1, &other.1) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.2, &other.2) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.3, &other.3) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.4, &other.4) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.5, &other.5) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.6, &other.6) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.7, &other.7) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.8, &other.8) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        Ord::cmp(&self.9, &other.9)
+    }
+}
+impl<A: PartialEq, B: PartialEq, C: PartialEq, D: PartialEq, E: PartialEq, F: PartialEq, G: PartialEq, H: PartialEq, I: PartialEq, J: PartialEq, K: PartialEq> PartialEq for (A, B, C, D, E, F, G, H, I, J, K) {
+    fn eq(&self, other: &(A, B, C, D, E, F, G, H, I, J, K)) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3 && self.4 == other.4 && self.5 == other.5 && self.6 == other.6 && self.7 == other.7 && self.8 == other.8 && self.9 == other.9 && self.10 == other.10
+    }
+    fn ne(&self, other: &(A, B, C, D, E, F, G, H, I, J, K)) -> bool {
+        self.0 != other.0 || self.1 != other.1 || self.2 != other.2 || self.3 != other.3 || self.4 != other.4 || self.5 != other.5 || self.6 != other.6 || self.7 != other.7 || self.8 != other.8 || self.9 != other.9 || self.10 != other.10
+    }
+}
+impl<A: Eq, B: Eq, C: Eq, D: Eq, E: Eq, F: Eq, G: Eq, H: Eq, I: Eq, J: Eq, K: Eq> Eq for (A, B, C, D, E, F, G, H, I, J, K) {}
+impl<A: PartialOrd, B: PartialOrd, C: PartialOrd, D: PartialOrd, E: PartialOrd, F: PartialOrd, G: PartialOrd, H: PartialOrd, I: PartialOrd, J: PartialOrd, K: PartialOrd> PartialOrd for (A, B, C, D, E, F, G, H, I, J, K) {
+    fn partial_cmp(&self, other: &(A, B, C, D, E, F, G, H, I, J, K)) -> Option<Ordering> {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.9, &other.9) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        PartialOrd::partial_cmp(&self.10, &other.10)
+    }
+
+    fn lt(&self, other: &(A, B, C, D, E, F, G, H, I, J, K)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.9, &other.9) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.10 < other.10
+    }
+
+    fn le(&self, other: &(A, B, C, D, E, F, G, H, I, J, K)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.9, &other.9) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.10 <= other.10
+    }
+
+    fn gt(&self, other: &(A, B, C, D, E, F, G, H, I, J, K)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.9, &other.9) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.10 > other.10
+    }
+
+    fn ge(&self, other: &(A, B, C, D, E, F, G, H, I, J, K)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.9, &other.9) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.10 >= other.10
+    }
+}
+impl<A: Ord, B: Ord, C: Ord, D: Ord, E: Ord, F: Ord, G: Ord, H: Ord, I: Ord, J: Ord, K: Ord> Ord for (A, B, C, D, E, F, G, H, I, J, K) {
+    fn cmp(&self, other: &(A, B, C, D, E, F, G, H, I, J, K)) -> Ordering {
+        match Ord::cmp(&self.0, &other.0) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.1, &other.1) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.2, &other.2) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.3, &other.3) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.4, &other.4) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.5, &other.5) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.6, &other.6) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.7, &other.7) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.8, &other.8) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.9, &other.9) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        Ord::cmp(&self.10, &other.10)
+    }
+}
+impl<A: PartialEq, B: PartialEq, C: PartialEq, D: PartialEq, E: PartialEq, F: PartialEq, G: PartialEq, H: PartialEq, I: PartialEq, J: PartialEq, K: PartialEq, L: PartialEq> PartialEq for (A, B, C, D, E, F, G, H, I, J, K, L) {
+    fn eq(&self, other: &(A, B, C, D, E, F, G, H, I, J, K, L)) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3 && self.4 == other.4 && self.5 == other.5 && self.6 == other.6 && self.7 == other.7 && self.8 == other.8 && self.9 == other.9 && self.10 == other.10 && self.11 == other.11
+    }
+    fn ne(&self, other: &(A, B, C, D, E, F, G, H, I, J, K, L)) -> bool {
+        self.0 != other.0 || self.1 != other.1 || self.2 != other.2 || self.3 != other.3 || self.4 != other.4 || self.5 != other.5 || self.6 != other.6 || self.7 != other.7 || self.8 != other.8 || self.9 != other.9 || self.10 != other.10 || self.11 != other.11
+    }
+}
+impl<A: Eq, B: Eq, C: Eq, D: Eq, E: Eq, F: Eq, G: Eq, H: Eq, I: Eq, J: Eq, K: Eq, L: Eq> Eq for (A, B, C, D, E, F, G, H, I, J, K, L) {}
+impl<A: PartialOrd, B: PartialOrd, C: PartialOrd, D: PartialOrd, E: PartialOrd, F: PartialOrd, G: PartialOrd, H: PartialOrd, I: PartialOrd, J: PartialOrd, K: PartialOrd, L: PartialOrd> PartialOrd for (A, B, C, D, E, F, G, H, I, J, K, L) {
+    fn partial_cmp(&self, other: &(A, B, C, D, E, F, G, H, I, J, K, L)) -> Option<Ordering> {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.9, &other.9) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        match PartialOrd::partial_cmp(&self.10, &other.10) {
+            Some(Equal) => {}
+            ordering => return ordering,
+        }
+        PartialOrd::partial_cmp(&self.11, &other.11)
+    }
+
+    fn lt(&self, other: &(A, B, C, D, E, F, G, H, I, J, K, L)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.9, &other.9) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.10, &other.10) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.11 < other.11
+    }
+
+    fn le(&self, other: &(A, B, C, D, E, F, G, H, I, J, K, L)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.9, &other.9) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.10, &other.10) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Less,
+            None => return false,
+        }
+        self.11 <= other.11
+    }
+
+    fn gt(&self, other: &(A, B, C, D, E, F, G, H, I, J, K, L)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.9, &other.9) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.10, &other.10) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.11 > other.11
+    }
+
+    fn ge(&self, other: &(A, B, C, D, E, F, G, H, I, J, K, L)) -> bool {
+        match PartialOrd::partial_cmp(&self.0, &other.0) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.1, &other.1) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.2, &other.2) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.3, &other.3) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.4, &other.4) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.5, &other.5) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.6, &other.6) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.7, &other.7) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.8, &other.8) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.9, &other.9) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        match PartialOrd::partial_cmp(&self.10, &other.10) {
+            Some(Equal) => {}
+            Some(ordering) => return ordering == Greater,
+            None => return false,
+        }
+        self.11 >= other.11
+    }
+}
+impl<A: Ord, B: Ord, C: Ord, D: Ord, E: Ord, F: Ord, G: Ord, H: Ord, I: Ord, J: Ord, K: Ord, L: Ord> Ord for (A, B, C, D, E, F, G, H, I, J, K, L) {
+    fn cmp(&self, other: &(A, B, C, D, E, F, G, H, I, J, K, L)) -> Ordering {
+        match Ord::cmp(&self.0, &other.0) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.1, &other.1) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.2, &other.2) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.3, &other.3) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.4, &other.4) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.5, &other.5) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.6, &other.6) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.7, &other.7) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.8, &other.8) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.9, &other.9) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        match Ord::cmp(&self.10, &other.10) {
+            Equal => {}
+            ordering => return ordering,
+        }
+        Ord::cmp(&self.11, &other.11)
+    }
+}
