@@ -50,6 +50,8 @@ pub struct ItemTree {
     pub trait_impls: rustc_hash::FxHashMap<TraitId, Vec<ImplId>>,
     /// The traits with a function or constant of each name.
     pub trait_fns: rustc_hash::FxHashMap<Symbol, Vec<TraitId>>,
+    /// The module of each block with items, by its file and node.
+    pub block_modules: rustc_hash::FxHashMap<(FileId, NodeId), ModuleId>,
     /// The traits the compiler knows, by their `#[lang = "..."]` names.
     pub lang_traits: rustc_hash::FxHashMap<Symbol, TraitId>,
     /// `core`'s enums the compiler knows, by their `#[lang = "..."]`
@@ -102,6 +104,20 @@ pub struct Module {
     pub vis: Visibility,
     /// The `mod m` declaration, in the parent's file.
     pub def_range: TextRange,
+    /// A block with items, `{ fn f() {} .. }`: an anonymous module, whose
+    /// items only code in it sees, and through which names are looked
+    /// up in its parent. `self` and `super` skip it.
+    pub block: Option<Block>,
+}
+
+/// What a block with items is in.
+#[derive(Debug, Clone, Copy)]
+pub struct Block {
+    /// The function whose body it is in, if any: a constant's value may
+    /// have blocks with items too.
+    pub function: Option<FunctionId>,
+    /// The `BLOCK_EXPR` node.
+    pub node: NodeId,
 }
 
 /// Who may name an item.
@@ -969,6 +985,7 @@ impl ItemTree {
             db,
             items: self,
             derives: Vec::new(),
+            block_counts: rustc_hash::FxHashMap::default(),
         };
         collector.collect_crate(root, name, is_core);
         collector.expand_derives();
@@ -1000,6 +1017,18 @@ impl ItemTree {
 
     pub fn is_core(&self, module: ModuleId) -> bool {
         self.crates[self.modules[module].krate.0 as usize].is_core
+    }
+
+    /// `module`, or for a block, the module it is in: what `self` names.
+    pub fn named_module(&self, module: ModuleId) -> ModuleId {
+        let mut module = module;
+        while self.modules[module].block.is_some() {
+            match self.modules[module].parent {
+                Some(parent) => module = parent,
+                None => break,
+            }
+        }
+        module
     }
 
     /// `f`, `S::f` for an associated function, `Tr::f` for a trait's
@@ -1104,7 +1133,8 @@ impl ItemTree {
                     "{}::{{constant#0}}",
                     self.structs[strukt].variant(variant).path()
                 )];
-                let mut module = &self.modules[self.structs[strukt].loc.module];
+                let named = self.named_module(self.structs[strukt].loc.module);
+                let mut module = &self.modules[named];
                 while let Some(parent) = module.parent {
                     path.push(module.name.to_string());
                     module = &self.modules[parent];
@@ -1124,6 +1154,9 @@ struct Collector<'a> {
     /// The `#[derive]`s of a crate's structs, made into `impl` blocks
     /// after its other items, as rustc expands them.
     derives: Vec<(Ctx, StructId, Derive, TextRange, NodeId)>,
+    /// How many blocks with items each function has had, for their
+    /// modules' names.
+    block_counts: rustc_hash::FxHashMap<Option<FunctionId>, u32>,
 }
 
 /// What collecting is inside of.
@@ -1159,6 +1192,7 @@ impl Collector<'_> {
             dir,
             vis: Visibility::Public,
             def_range: TextRange::empty(0),
+            block: None,
         });
         self.items.crates.push(CrateData {
             name,
@@ -1250,6 +1284,12 @@ impl Collector<'_> {
     }
 
     fn visibility(&mut self, ctx: Ctx, vis: Option<ast::Visibility<'_>>) -> Visibility {
+        // An item in a block is private to the module the block is in, as
+        // in rustc: blocks scope names, not privacy.
+        let ctx = Ctx {
+            module: self.items.named_module(ctx.module),
+            ..ctx
+        };
         let private = Visibility::Module(ctx.module);
         let Some(vis) = vis else {
             return private;
@@ -1659,6 +1699,14 @@ impl Collector<'_> {
         };
         let name_text = name.text();
         let parent = &self.items.modules[ctx.module];
+        if parent.block.is_some() && m.item_list().is_none() {
+            let range = TextRange::new(def_start(m.syntax()), m.syntax().text_range().end());
+            self.items.diagnostics.push(Diagnostic::new(
+                range,
+                "cannot declare a file module inside a block unless it has a path attribute",
+            ));
+            return;
+        }
         let def_range = TextRange::new(def_start(m.syntax()), name.syntax().text_range().end());
         let child_dir = parent.dir.join(name_text);
         let krate = parent.krate;
@@ -1671,6 +1719,7 @@ impl Collector<'_> {
             dir: child_dir.clone(),
             vis,
             def_range,
+            block: None,
         });
         match m.item_list() {
             Some(list) => {
@@ -2180,7 +2229,77 @@ impl Collector<'_> {
         if lang.is_some_and(|l| l.as_str() == "panic") {
             self.items.panic_fn = Some(id);
         }
+        if let Some(body) = f.body() {
+            self.collect_body_items(ctx, body.syntax().id(), Some(id));
+        }
         Some(id)
+    }
+
+    /// The items declared in the blocks of a body, at `node` in
+    /// `ctx.file`, of `function` if it is one's: each block with items
+    /// becomes a module inside `ctx.module`.
+    fn collect_body_items(&mut self, ctx: Ctx, node: NodeId, function: Option<FunctionId>) {
+        let shared = self.db.shared(ctx.file);
+        let tree = shared.parse.tree();
+        // Most bodies have no items: they are found without a walk.
+        if !tree
+            .node(node)
+            .descendants()
+            .any(|n| is_item_kind(n.kind()))
+        {
+            return;
+        }
+        let mut blocks = Vec::new();
+        outer_blocks(tree.node(node), &mut blocks);
+        for block in blocks {
+            self.collect_block(ctx, block, function);
+        }
+    }
+
+    /// Block `node`'s items, in a module of their own, then those of the
+    /// blocks inside it.
+    fn collect_block(&mut self, ctx: Ctx, node: NodeId, function: Option<FunctionId>) {
+        let shared = self.db.shared(ctx.file);
+        let tree = shared.parse.tree();
+        let block = tree.node(node);
+        let items: Vec<NodeId> = block
+            .children()
+            .filter(|c| is_item_kind(c.kind()))
+            .map(|c| c.id())
+            .collect();
+        let mut inner = Vec::new();
+        for child in block.children().filter(|c| !is_item_kind(c.kind())) {
+            outer_blocks(child, &mut inner);
+        }
+        let ctx = if items.is_empty() {
+            ctx
+        } else {
+            let parent = &self.items.modules[ctx.module];
+            let outer = function.map_or(kw::Empty, |f| self.items.functions[f].name);
+            let count = self.block_counts.entry(function).or_default();
+            let index = *count;
+            *count += 1;
+            let module = self.items.modules.alloc(Module {
+                name: Symbol::intern(&format!("{outer}.{index}")),
+                parent: Some(ctx.module),
+                krate: parent.krate,
+                file: ctx.file,
+                dir: parent.dir.clone(),
+                vis: Visibility::Module(ctx.module),
+                def_range: TextRange::empty(0),
+                block: Some(Block { function, node }),
+            });
+            self.items.block_modules.insert((ctx.file, node), module);
+            let ctx = Ctx {
+                module,
+                file: ctx.file,
+            };
+            self.collect_items(ctx, &items);
+            ctx
+        };
+        for block in inner {
+            self.collect_block(ctx, block, function);
+        }
     }
 
     fn collect_const(
@@ -2221,27 +2340,29 @@ impl Collector<'_> {
                 diagnostics.push(Diagnostic::new(item_range, message));
             }
         }
-        Some(
-            self.items.consts.alloc(Const {
-                name: name.map(|n| Symbol::intern(n.text())),
-                ty,
-                ty_range: c
-                    .ty()
-                    .map_or(TextRange::empty(name_end), |t| t.syntax().text_range()),
-                loc: ItemLoc {
-                    module: ctx.module,
-                    file: ctx.file,
-                    vis,
-                },
-                owner,
-                node: c.syntax().id(),
-                has_body,
-                def_range: TextRange::new(def_start, header_end),
-                item_range,
-                discriminant: None,
-                is_static: None,
-            }),
-        )
+        let id = self.items.consts.alloc(Const {
+            name: name.map(|n| Symbol::intern(n.text())),
+            ty,
+            ty_range: c
+                .ty()
+                .map_or(TextRange::empty(name_end), |t| t.syntax().text_range()),
+            loc: ItemLoc {
+                module: ctx.module,
+                file: ctx.file,
+                vis,
+            },
+            owner,
+            node: c.syntax().id(),
+            has_body,
+            def_range: TextRange::new(def_start, header_end),
+            item_range,
+            discriminant: None,
+            is_static: None,
+        });
+        if let Some(body) = c.body() {
+            self.collect_body_items(ctx, body.syntax().id(), None);
+        }
+        Some(id)
     }
 
     /// `static X: T = v;` or `static mut X: T = v;`.
@@ -2289,6 +2410,9 @@ impl Collector<'_> {
             discriminant: None,
             is_static: Some(st.mut_token().is_some()),
         });
+        if let Some(body) = st.body() {
+            self.collect_body_items(ctx, body.syntax().id(), None);
+        }
     }
 
     fn collect_struct(&mut self, ctx: Ctx, s: ast::Struct<'_>) {
@@ -2867,6 +2991,41 @@ impl Collector<'_> {
                 )),
             }
         }
+    }
+}
+
+/// Whether a node of `kind` is an item.
+fn is_item_kind(kind: SyntaxKind) -> bool {
+    use SyntaxKind as K;
+    matches!(
+        kind,
+        K::FN
+            | K::STRUCT
+            | K::ENUM
+            | K::TRAIT
+            | K::IMPL
+            | K::CONST
+            | K::STATIC
+            | K::TYPE_ALIAS
+            | K::MODULE
+            | K::USE
+            | K::EXTERN_BLOCK
+            | K::EXTERN_CRATE
+            | K::MACRO_CALL
+    )
+}
+
+/// The outermost blocks in `node`, itself included, outside items.
+fn outer_blocks(node: SyntaxNode<'_>, out: &mut Vec<NodeId>) {
+    if node.kind() == SyntaxKind::BLOCK_EXPR {
+        out.push(node.id());
+        return;
+    }
+    if is_item_kind(node.kind()) {
+        return;
+    }
+    for child in node.children() {
+        outer_blocks(child, out);
     }
 }
 

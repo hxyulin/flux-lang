@@ -77,7 +77,8 @@ reported as "not supported yet":
   and struct expressions are named (`Alias::new()`, `Alias::A`,
   `Alias { .. }`), but not a tuple or unit struct's constructor
   (`Alias(1)`), and whose bounds are not enforced, as in rustc;
-  modules, inline (`mod m { }`) and in
+  items inside function bodies and constants' values, scoped to their
+  block; modules, inline (`mod m { }`) and in
   files (`mod m;` as `m.rs` or `m/mod.rs`); `use` declarations, with
   groups, renames, globs, `self`, `super` and `crate`; and
   `unsafe extern "C"` blocks of function declarations, including
@@ -120,7 +121,7 @@ reported as "not supported yet":
   enums without fields, `?` on `Option` and `Result`, and the methods
   `CStr::as_ptr` and, of arrays and slices, `len` and `is_empty`.
 - **Statements:** `let`, with a type, a value and `else` (`let Some(x) =
-  o else { return };`).
+  o else { return };`), and items.
 - **Patterns:** `x`, `mut x`, `ref x`, `ref mut x`, `x @ pat`, `_`,
   tuples, structs and variants (`S { a, b: x, .. }`, `E::V(x, ..)`,
   `None`), with `..` rest patterns, integer and `bool` literals
@@ -320,6 +321,15 @@ them all. So is
 arithmetic in ordinary code that rustc can tell overflows, such as
 `let x: u8 = 255; x + 1` (its deny-by-default `arithmetic_overflow`
 lint), even with overflow checks off.
+
+Items declared in a block are visible throughout it, before their
+declaration too, and in the blocks inside it, where they shadow outer
+items of their names, as in rustc: the block is an anonymous module
+whose names are looked up in the module around it. `self` and `super`
+name that module, and a private item in a block is private to it. An
+inner function sees none of its outer function's locals (E0434),
+generic parameters or `Self` (E0401), and an inner constant no local
+(E0435).
 
 A path to a function (`double`, `S::new`, `<S as Tr>::m`, `id::<u8>`)
 not called is a value of the function's own item type, written by

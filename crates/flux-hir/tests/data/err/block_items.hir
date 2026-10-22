@@ -1,0 +1,38 @@
+fn later() -> i32 {
+    0
+}
+
+fn outer(x@0: i32) -> i32 {
+    let y@1 = 5;
+    {}
+    <error>();
+    later();
+    <error>();
+    0
+}
+
+fn uses_local() -> i32 {
+    <error>
+}
+
+fn uses_param() -> i32 {
+    <error>
+}
+
+fn scoped() -> () {}
+
+fn private_items() -> () {
+    secret();
+}
+
+fn secret() -> () {}
+
+fn main() -> () {}
+
+error 107..108: can't capture dynamic environment in a fn item
+error 152..153: can't capture dynamic environment in a fn item
+error 179..180: attempt to use a non-constant value in a constant
+error 186..202: cannot declare a file module inside a block unless it has a path attribute
+error 242..248: cannot find function `scoped` in this scope
+error 275..280: too many leading `super` keywords within `crate`
+error 379..385: function `secret` is private

@@ -184,7 +184,12 @@ program's files:
   module's scope comes from the prelude, then from crates (`core`), then
   from the primitive types. An enum's variants are in its own scope,
   before its associated items (`E::A`), and imports and globs can bring
-  them into a module's (`use E::*;`).
+  them into a module's (`use E::*;`). A block with items in a body is
+  an anonymous module inside the item's (`Module::block`): a name not
+  in its scope is looked up in the scopes around it, `self` and
+  `super` skip it, and its private items are private to the module
+  around it. Lowering and type checking a body resolve the names in
+  such a block in its module (`Body::block_modules`).
 - A **body** per function and constant, lowered into arenas of
   expressions, patterns and bindings addressed by `Idx`. Names are resolved while lowering,
   through a stack of scopes and then the item tree, so an expression

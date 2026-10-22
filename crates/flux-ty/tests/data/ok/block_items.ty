@@ -1,0 +1,24 @@
+struct Square { side: i32 }
+struct Counter {}
+fn area(&Self) -> i32
+fn shapes(i32) -> i32
+    side@0: i32
+    s@1: Square
+fn area(&Square) -> i32
+    self@0: &Square
+fn perimeter(&Self) -> i32
+fn perimeter(&Square) -> i32
+    self@0: &Square
+fn generic<T>(T) -> (T, u8)
+    x@0: T
+    b@1: u8
+fn plain<U>(U) -> U
+    u@0: U
+fn count(&Counter) -> i32
+    self@0: &Counter
+fn base() -> i32
+fn main() -> ()
+    a@0: i32
+    g@1: (bool, u8)
+    c@2: i32
+type Byte = u8

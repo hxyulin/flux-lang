@@ -39,7 +39,7 @@ pub struct LoweredBody {
 
 /// Lowers the value of constant `konst`, which must have one: a body
 /// without parameters.
-pub fn lower_const(tree: &SyntaxTree, items: &ItemTree, konst: ConstId) -> LoweredBody {
+pub fn lower_const<'a>(tree: &'a SyntaxTree, items: &'a ItemTree, konst: ConstId) -> LoweredBody {
     let data = &items.consts[konst];
     if let Some((strukt, _)) = data.discriminant {
         // An enum's discriminant, in the enum's scope: `Self` is the
@@ -53,6 +53,12 @@ pub fn lower_const(tree: &SyntaxTree, items: &ItemTree, konst: ConstId) -> Lower
     }
     let node = tree.node(data.node);
     let mut ctx = Ctx::new(items, data.loc.module, data.owner, None);
+    ctx.place = Some(Place {
+        tree,
+        file: data.loc.file,
+        function: None,
+        item_start: data.item_range.start(),
+    });
     let root = match ast::Static::cast(node) {
         Some(st) => ctx.lower_opt(st.body(), node),
         None => {
@@ -64,7 +70,11 @@ pub fn lower_const(tree: &SyntaxTree, items: &ItemTree, konst: ConstId) -> Lower
 }
 
 /// Lowers the body of `function`, which must have one.
-pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> LoweredBody {
+pub fn lower_body<'a>(
+    tree: &'a SyntaxTree,
+    items: &'a ItemTree,
+    function: FunctionId,
+) -> LoweredBody {
     let data = &items.functions[function];
     if let Some((strukt, derive)) = data.derived {
         return derived_body(items, function, strukt, derive);
@@ -72,6 +82,12 @@ pub fn lower_body(tree: &SyntaxTree, items: &ItemTree, function: FunctionId) -> 
     let node = tree.node(data.node);
     let f = ast::Fn::cast(node).expect("functions point at FN nodes");
     let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
+    ctx.place = Some(Place {
+        tree,
+        file: data.loc.file,
+        function: Some(function),
+        item_start: data.item_range.start(),
+    });
     let mut params = Vec::new();
     if let Some(list) = f.param_list() {
         if let Some(param) = list.self_param().filter(|_| data.has_self) {
@@ -1086,7 +1102,46 @@ fn build_variant(
     }
 }
 
+/// The names `node`'s parameters and `let` statements bind before
+/// offset `at`, in the nodes around `at` only: what code at `at` sees.
+fn visible_bindings<'t>(node: SyntaxNode<'t>, at: u32, out: &mut Vec<&'t str>) {
+    let names = |pat: SyntaxNode<'t>, out: &mut Vec<&'t str>| {
+        let idents = pat.descendants().filter_map(ast::IdentPat::cast);
+        out.extend(idents.filter_map(|p| p.name()).map(|n| n.text()));
+    };
+    for child in node.children() {
+        let range = child.text_range();
+        if range.start() >= at {
+            break;
+        }
+        if range.end() > at {
+            visible_bindings(child, at, out);
+        } else if child.kind() == flux_syntax::SyntaxKind::PARAM_LIST {
+            names(child, out);
+        } else if let Some(pat) = ast::LetStmt::cast(child).and_then(|l| l.pat()) {
+            names(pat.syntax(), out);
+        }
+    }
+}
+
+/// Where the body being lowered is, for the blocks with items in it and
+/// the names it cannot see.
+#[derive(Clone, Copy)]
+struct Place<'a> {
+    tree: &'a SyntaxTree,
+    file: crate::FileId,
+    /// The function whose body it is, if it is one's.
+    function: Option<FunctionId>,
+    /// Where its item starts: bindings of functions around it before
+    /// this are what it cannot capture.
+    item_start: u32,
+}
+
 struct Ctx<'a> {
+    /// Where the body is; `None` for one made rather than lowered.
+    place: Option<Place<'a>>,
+    /// [`Body::block_modules`].
+    block_modules: ArenaMap<Expr, ModuleId>,
     items: &'a ItemTree,
     /// Lowering a function in an `impl` block, where `Self` means its
     /// type: `self_target`, unless that did not resolve.
@@ -1140,6 +1195,8 @@ impl<'a> Ctx<'a> {
             .collect();
         let imp = owner.and_then(Owner::as_impl).map(|i| &items.impls[i]);
         Ctx {
+            place: None,
+            block_modules: ArenaMap::new(),
             items,
             module,
             generics,
@@ -1189,6 +1246,7 @@ impl<'a> Ctx<'a> {
                 pat_generic_args: self.pat_args,
                 alt_by_ref: self.alt_by_ref,
                 root,
+                block_modules: self.block_modules,
             },
             source_map: self.source_map,
             diagnostics: self.diagnostics,
@@ -1836,6 +1894,14 @@ impl<'a> Ctx<'a> {
             self.unsupported(token.text_range(), &what);
         }
         let scope = self.scopes.len();
+        // A block with items is a module of its own, where its names
+        // are resolved.
+        let outer_module = self.module;
+        if let Some(place) = self.place
+            && let Some(&module) = self.items.block_modules.get(&(place.file, syntax.id()))
+        {
+            self.module = module;
+        }
         let mut stmts = Vec::new();
         for stmt in block.stmts() {
             match stmt {
@@ -1880,21 +1946,25 @@ impl<'a> Ctx<'a> {
                         has_semicolon: expr_stmt.semicolon_token().is_some(),
                     });
                 }
-                ast::Stmt::Item(item) => {
-                    self.unsupported(item.syntax().text_range(), "items inside functions");
-                }
+                // Collected with the item tree, lowered on their own.
+                ast::Stmt::Item(_) => {}
             }
         }
         let tail = block.tail_expr().map(|e| self.lower_expr(e));
         self.scopes.truncate(scope);
-        self.alloc_expr(
+        let module = std::mem::replace(&mut self.module, outer_module);
+        let id = self.alloc_expr(
             Expr::Block {
                 stmts: stmts.into(),
                 tail,
                 is_unsafe: block.unsafe_token().is_some(),
             },
             syntax.text_range(),
-        )
+        );
+        if module != outer_module {
+            self.block_modules.insert(id, module);
+        }
+        id
     }
 
     fn lower_if(&mut self, if_expr: ast::IfExpr<'_>) -> Expr {
@@ -2390,6 +2460,18 @@ impl<'a> Ctx<'a> {
                 Res::Err
             }
             Err(ResolveError::Private { .. } | ResolveError::Reported) => Res::Err,
+            Err(ResolveError::NotFound {
+                module: None,
+                segment: 0,
+            }) if path.as_name().is_some_and(|name| self.outer_local(name)) => {
+                let message = if self.place.is_some_and(|p| p.function.is_none()) {
+                    "attempt to use a non-constant value in a constant"
+                } else {
+                    "can't capture dynamic environment in a fn item"
+                };
+                self.error(range, message);
+                Res::Err
+            }
             Err(ResolveError::NotFound { segment, module }) => {
                 // A struct with named fields is only in the type namespace,
                 // so is a variant with them.
@@ -2440,6 +2522,38 @@ impl<'a> Ctx<'a> {
                 Res::Err
             }
         }
+    }
+
+    /// Whether `name` is a local of a function this item is declared in
+    /// (a parameter, or a binding before the item), which it cannot use.
+    fn outer_local(&self, name: Symbol) -> bool {
+        let Some(place) = self.place else {
+            return false;
+        };
+        let mut module = Some(self.module);
+        let mut seen: Vec<FunctionId> = Vec::new();
+        while let Some(m) = module {
+            let data = &self.items.modules[m];
+            module = data.parent;
+            let Some(outer) = data.block.and_then(|b| b.function) else {
+                continue;
+            };
+            if Some(outer) == place.function || seen.contains(&outer) {
+                continue;
+            }
+            seen.push(outer);
+            let function = &self.items.functions[outer];
+            if function.loc.file != place.file {
+                continue;
+            }
+            let mut names = Vec::new();
+            visible_bindings(place.tree.node(function.node), place.item_start, &mut names);
+            let is_self = name == kw::SelfLower && function.has_self;
+            if is_self || names.iter().any(|n| *n == name.as_str()) {
+                return true;
+            }
+        }
+        false
     }
 
     /// `T::f`, where the segments before `index` name a type `T`, and
