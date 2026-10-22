@@ -3210,7 +3210,21 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
         let methods = result.methods.iter().map(|(_, m)| m.function);
         let operators = result.overloads.iter().map(|(_, i)| i.function);
         let conversions = result.try_conversions.iter().map(|(_, i)| i.function);
-        for f in called.chain(methods).chain(operators).chain(conversions) {
+        // Functions named as values (`.map(Some)`), which their
+        // `Fn`-family impls call.
+        let values = result
+            .expr_types
+            .iter()
+            .filter_map(|(_, ty)| match ty.kind() {
+                TyKind::FnDef(def) => Some(def.function),
+                _ => None,
+            });
+        for f in called
+            .chain(methods)
+            .chain(operators)
+            .chain(conversions)
+            .chain(values)
+        {
             if expanded.insert(f) {
                 queue.extend(call_targets(items, f));
             }
@@ -3455,7 +3469,7 @@ impl TypedFile {
             .unwrap();
         }
         for (id, function) in items.functions.iter() {
-            if !hir.is_program(id) {
+            if !hir.is_program(id) || function.ctor.is_some() {
                 continue;
             }
             let sig = &self.sigs[id];

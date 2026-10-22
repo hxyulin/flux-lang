@@ -788,7 +788,8 @@ fn define_items(items: &mut ItemTree, from: ItemCounts) {
         }
     }
     for (id, f) in items.functions.iter().skip(from.functions as usize) {
-        if f.owner.is_none() {
+        // Constructors are named through their structs.
+        if f.owner.is_none() && f.ctor.is_none() {
             let binding = item(Def::Function(id), f.loc.vis, f.loc.file, f.def_range);
             defined.push((f.loc.module, f.name, &[Ns::Values], binding));
         }

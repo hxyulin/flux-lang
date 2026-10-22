@@ -104,6 +104,9 @@ pub fn lower_body<'a>(
         return derived_body(items, function, strukt, derive);
     }
     let _file = crate::item_tree::TypesFile::enter(data.loc.file);
+    if let Some((strukt, variant)) = data.ctor {
+        return ctor_body(items, function, strukt, variant);
+    }
     let node = tree.node(data.node);
     let f = ast::Fn::cast(node).expect("functions point at FN nodes");
     let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
@@ -851,6 +854,52 @@ fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -
             is_unsafe: false,
         },
         whole,
+    );
+    ctx.finish(params, root)
+}
+
+/// The body of the constructor function of tuple struct or variant
+/// `strukt`, `variant`: `S(_0, _1)`, of its parameters.
+fn ctor_body(
+    items: &ItemTree,
+    function: FunctionId,
+    strukt: StructId,
+    variant: u32,
+) -> LoweredBody {
+    let data = &items.functions[function];
+    let s = &items.structs[strukt];
+    let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
+    let at = data.name_range;
+    let mut params = Vec::new();
+    let mut values = Vec::new();
+    for i in 0..data.params.len() {
+        let binding = ctx.bindings.alloc(Binding {
+            name: Symbol::intern(&format!("_{i}")),
+            mutable: false,
+            by_ref: None,
+        });
+        params.push(ctx.alloc_pat(Pat::Bind { binding, sub: None }, at));
+        values.push(ctx.alloc_expr(Expr::Path(Res::Local(binding)), at));
+    }
+    let callee = match s.variants {
+        Some(_) => Res::Variant(strukt, variant),
+        None => Res::Struct(strukt),
+    };
+    let callee = ctx.alloc_expr(Expr::Path(callee), at);
+    let value = ctx.alloc_expr(
+        Expr::Call {
+            callee,
+            args: values.into(),
+        },
+        at,
+    );
+    let root = ctx.alloc_expr(
+        Expr::Block {
+            stmts: Box::default(),
+            tail: Some(value),
+            is_unsafe: false,
+        },
+        at,
     );
     ctx.finish(params, root)
 }

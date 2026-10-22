@@ -1,0 +1,7 @@
+enum Atom { Class { 0: u32 } }
+struct W { 0: u8 }
+fn main() -> ()
+    a@0: i32
+    b@1: i32
+error 145..156: mismatched types: expected `i32`, found `fn(u32) -> Atom {Atom::Class}`
+error 175..176: mismatched types: expected `i32`, found `fn(u8) -> W {W}`

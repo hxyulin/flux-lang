@@ -843,6 +843,11 @@
   contextual keyword, as only there may `const` or `mut` follow an
   identifier; safe of a `static mut`) and `core::ptr::{addr_of,
   addr_of_mut}`, with rustc's E0745 and E0596.
+- Make tuple structs' and tuple variants' constructors functions, as
+  rustc's are: their paths are values of function item types
+  (`.map(Some)`, `.map(Token::Num)`, `.map(Wrapper)`), and functions
+  used only as values, `core`'s included, are compiled. Add
+  `Option::flatten`.
 
 ### Performance
 

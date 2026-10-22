@@ -2252,13 +2252,17 @@ impl Ctx<'_> {
             },
             Expr::Path(Res::Struct(strukt)) => match self.items.structs[*strukt].kind {
                 StructKind::Unit => self.instantiate_struct(*strukt, Some(id), self.range(id)),
-                _ => {
-                    self.error(
-                        self.range(id),
-                        "tuple struct constructors as values are not supported yet",
-                    );
-                    Ty::ERROR
-                }
+                // Its constructor, a function (`.map(Wrapper)`).
+                _ => match self.items.ctor_fns.get(&(*strukt, 0)) {
+                    Some(&f) => self.fn_item(id, f, None, None),
+                    None => {
+                        self.error(
+                            self.range(id),
+                            "tuple struct constructors as values are not supported yet",
+                        );
+                        Ty::ERROR
+                    }
+                },
             },
             Expr::Path(Res::Variant(strukt, variant)) => {
                 match self.items.structs[*strukt].variant(*variant).kind {
@@ -2267,13 +2271,16 @@ impl Ctx<'_> {
                         self.meet_expectation(id, ty);
                         ty
                     }
-                    _ => {
-                        self.error(
-                            self.range(id),
-                            "tuple variant constructors as values are not supported yet",
-                        );
-                        Ty::ERROR
-                    }
+                    _ => match self.items.ctor_fns.get(&(*strukt, *variant)) {
+                        Some(&f) => self.fn_item(id, f, None, None),
+                        None => {
+                            self.error(
+                                self.range(id),
+                                "tuple variant constructors as values are not supported yet",
+                            );
+                            Ty::ERROR
+                        }
+                    },
                 }
             }
             Expr::Path(Res::Const(c)) => self.path_const(id, *c),

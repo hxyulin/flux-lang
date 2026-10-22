@@ -495,3 +495,13 @@ impl<'a, T> crate::iter::DoubleEndedIterator for Iter<'a, T> {
 }
 
 impl<'a, T> crate::iter::ExactSizeIterator for Iter<'a, T> {}
+
+impl<T> Option<Option<T>> {
+    /// The inner option: `None` if either is.
+    pub fn flatten(self) -> Option<T> {
+        match self {
+            Some(inner) => inner,
+            None => None,
+        }
+    }
+}

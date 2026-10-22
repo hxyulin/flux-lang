@@ -12,7 +12,9 @@ use crate::{
 
 pub(crate) fn file(mir: &FileMir, hir: &Hir) -> String {
     let mut out = String::new();
-    for (id, body) in mir.bodies.iter().filter(|&(id, _)| hir.is_program(id)) {
+    // Constructors' functions are made, not written.
+    let shown = |id| hir.is_program(id) && hir.items.functions[id].ctor.is_none();
+    for (id, body) in mir.bodies.iter().filter(|&(id, _)| shown(id)) {
         let function = &hir.items.functions[id];
         let name = format!("{}{}", hir.items.function_path(function), function.generics);
         body_text(&mut out, hir, &mir.discriminants, &name, body);

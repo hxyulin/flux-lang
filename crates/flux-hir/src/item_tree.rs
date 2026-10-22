@@ -70,6 +70,9 @@ pub struct ItemTree {
     pub panic_fn: Option<FunctionId>,
     /// `core`'s other functions with `#[lang = "..."]` names, by them.
     pub lang_fns: rustc_hash::FxHashMap<Symbol, FunctionId>,
+    /// The constructor function of each tuple struct and tuple variant
+    /// (variant 0 for a struct), which its path is as a value.
+    pub ctor_fns: rustc_hash::FxHashMap<(StructId, u32), FunctionId>,
     /// The variant each enum deriving `Default` marks `#[default]`.
     pub default_variants: rustc_hash::FxHashMap<StructId, u32>,
     /// Every crate's macros: its `macro_rules!` definitions, and those
@@ -651,6 +654,10 @@ pub struct Function {
     /// that copies, for a struct without parameters that derives `Copy`
     /// too, as rustc's does.
     pub derived: Option<(StructId, Derive)>,
+    /// The tuple struct (variant 0) or variant whose constructor this
+    /// is, as a function: `fn Some<T>(_0: T) -> Option<T>`, made rather
+    /// than written.
+    pub ctor: Option<(StructId, u32)>,
     /// The `macro_rules!` macros in textual scope where it is defined,
     /// which its body may call.
     pub macro_scope: Option<MacroScopeId>,
@@ -1231,6 +1238,7 @@ impl ItemTree {
             db,
             items: self,
             derives: Vec::new(),
+            ctors: Vec::new(),
             block_counts: rustc_hash::FxHashMap::default(),
             fn_ids: rustc_hash::FxHashMap::default(),
             impl_ids: rustc_hash::FxHashMap::default(),
@@ -1240,6 +1248,7 @@ impl ItemTree {
         };
         collector.collect_crate(root, name, is_core);
         collector.expand_derives();
+        collector.make_ctors();
         crate::def_map::resolve(self, from);
     }
 
@@ -1285,6 +1294,12 @@ impl ItemTree {
     /// `f`, `S::f` for an associated function, `Tr::f` for a trait's
     /// and `<S as Tr>::f` for one in a trait's `impl` block.
     pub fn function_path(&self, function: &Function) -> String {
+        // A variant's constructor is named through its enum.
+        if let Some((strukt, _)) = function.ctor
+            && self.structs[strukt].is_enum()
+        {
+            return format!("{}::{}", self.structs[strukt].name, function.name);
+        }
         let imp = match function.owner {
             Some(Owner::Trait(t)) => return format!("{}::{}", self.traits[t].name, function.name),
             Some(Owner::Impl(imp)) => &self.impls[imp],
@@ -1414,6 +1429,9 @@ struct Collector<'a> {
     /// The `#[derive]`s of a crate's structs, made into `impl` blocks
     /// after its other items, as rustc expands them.
     derives: Vec<(Ctx, StructId, Derive, TextRange, NodeId)>,
+    /// The crate's structs and enums, whose tuple constructors become
+    /// functions after its other items.
+    ctors: Vec<(Ctx, StructId, NodeId)>,
     /// How many blocks with items each function has had, for their
     /// modules' names.
     block_counts: rustc_hash::FxHashMap<Option<FunctionId>, u32>,
@@ -2845,6 +2863,7 @@ impl Collector<'_> {
             node: f.syntax().id(),
             name_range: name.syntax().text_range(),
             derived: None,
+            ctor: None,
             opaques: opaques.into(),
             macro_scope: self.macro_scope,
         });
@@ -3353,6 +3372,7 @@ impl Collector<'_> {
         for (derive, range) in derives {
             self.derives.push((ctx, id, derive, range, s.syntax().id()));
         }
+        self.ctors.push((ctx, id, s.syntax().id()));
     }
 
     /// The fields of a struct or variant, and so its kind. A variant's
@@ -3735,6 +3755,115 @@ impl Collector<'_> {
             }
             self.derives.push((ctx, id, derive, range, e.syntax().id()));
         }
+        self.ctors.push((ctx, id, e.syntax().id()));
+    }
+
+    /// A function for each tuple struct's and tuple variant's
+    /// constructor, with the struct's generics, its fields as parameters
+    /// and the struct as its type: what the constructor's path is as a
+    /// value (`.map(Some)`), as rustc's constructors are functions.
+    fn make_ctors(&mut self) {
+        let ctors = std::mem::take(&mut self.ctors);
+        for (ctx, strukt, node) in ctors {
+            let s = &self.items.structs[strukt];
+            let variants: Vec<(u32, Symbol, TextRange, Box<[Field]>)> = match &s.variants {
+                None if s.kind == StructKind::Tuple => {
+                    vec![(0, s.name, s.name_range, s.fields.clone())]
+                }
+                None => Vec::new(),
+                Some(variants) => variants
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| v.kind == StructKind::Tuple)
+                    .map(|(i, v)| (i as u32, v.name, v.name_range, v.fields.clone()))
+                    .collect(),
+            };
+            if variants.is_empty() {
+                continue;
+            }
+            let generics = Generics {
+                params: s
+                    .generics
+                    .params
+                    .iter()
+                    .map(|p| GenericParam {
+                        default: None,
+                        ..p.clone()
+                    })
+                    .collect(),
+                ..s.generics.clone()
+            };
+            let mut self_path = Path::single(s.name);
+            self_path.ranges = Box::new([s.name_range]);
+            if !generics.params.is_empty() || !generics.lifetimes.is_empty() {
+                self_path.args = Box::new([Some(GenericArgs {
+                    lifetimes: generics
+                        .lifetimes
+                        .iter()
+                        .map(|l| LifetimeRef {
+                            name: l.name,
+                            range: l.range,
+                        })
+                        .collect(),
+                    types: generics
+                        .params
+                        .iter()
+                        .map(|p| TypeRef::Path(Path::single(p.name)))
+                        .collect(),
+                    ranges: generics.params.iter().map(|p| p.range).collect(),
+                    bindings: Box::default(),
+                    range: s.generics.range,
+                    parenthesized: false,
+                })]);
+            }
+            for (v, name, range, fields) in variants {
+                let params: Box<[Param]> = fields
+                    .iter()
+                    .map(|f| Param {
+                        ty: f.ty.clone(),
+                        name: None,
+                        range: f.range,
+                        whole: f.def_range,
+                    })
+                    .collect();
+                let function = self.items.functions.alloc(Function {
+                    name,
+                    generics: generics.clone(),
+                    params,
+                    ret: TypeRef::Path(self_path.clone()),
+                    ret_range: range,
+                    loc: ItemLoc {
+                        module: ctx.module,
+                        file: ctx.file,
+                        vis: Visibility::Public,
+                    },
+                    is_unsafe: false,
+                    is_extern: false,
+                    is_const: true,
+                    inherits_overflow_checks: false,
+                    const_unstable: false,
+                    precise_live_drops: false,
+                    intrinsic: false,
+                    is_variadic: false,
+                    track_caller: false,
+                    do_not_const_check: false,
+                    owner: None,
+                    has_self: false,
+                    has_body: true,
+                    node,
+                    name_range: range,
+                    def_range: range,
+                    sig_range: range,
+                    item_range: range,
+                    param_list: range,
+                    derived: None,
+                    ctor: Some((strukt, v)),
+                    opaques: Box::default(),
+                    macro_scope: None,
+                });
+                self.items.ctor_fns.insert((strukt, v), function);
+            }
+        }
     }
 
     fn expand_derives(&mut self) {
@@ -4023,6 +4152,7 @@ impl Collector<'_> {
             item_range: range,
             param_list: range,
             derived: Some((strukt, if copies { Derive::Copy } else { derive })),
+            ctor: None,
             opaques: Box::default(),
             macro_scope: None,
         });

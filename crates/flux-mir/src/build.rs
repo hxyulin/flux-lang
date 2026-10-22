@@ -2162,10 +2162,11 @@ impl Builder<'_> {
                 let operand = self.direct_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
             }
-            // A function item has no value but its type.
-            Expr::Path(Res::Function(_) | Res::Assoc { .. })
-                if matches!(self.own_ty(expr).kind(), TyKind::FnDef(_)) =>
-            {
+            // A function item has no value but its type, a tuple
+            // struct's or variant's constructor too.
+            Expr::Path(
+                Res::Function(_) | Res::Assoc { .. } | Res::Struct(_) | Res::Variant(..),
+            ) if matches!(self.own_ty(expr).kind(), TyKind::FnDef(_)) => {
                 let item = Constant::FnItem(self.own_ty(expr));
                 self.assign(dest, Rvalue::Use(Operand::Const(item)), range);
             }
