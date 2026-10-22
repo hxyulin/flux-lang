@@ -250,6 +250,18 @@ pub struct CharTryFromError(pub(crate) ());
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TryFromCharError(pub(crate) ());
 
+impl crate::fmt::Display for CharTryFromError {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.pad("converted integer out of range for `char`")
+    }
+}
+
+impl crate::fmt::Display for TryFromCharError {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.pad("unicode code point out of range")
+    }
+}
+
 impl From<u8> for char {
     fn from(byte: u8) -> char {
         byte as char

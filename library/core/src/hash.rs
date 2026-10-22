@@ -236,6 +236,12 @@ impl<H> crate::cmp::PartialEq for BuildHasherDefault<H> {
 
 impl<H> crate::cmp::Eq for BuildHasherDefault<H> {}
 
+impl<H> crate::fmt::Debug for BuildHasherDefault<H> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_struct("BuildHasherDefault").finish()
+    }
+}
+
 // The integers hash through their `write_*` methods, and slices of them
 // as one `write` of their bytes.
 

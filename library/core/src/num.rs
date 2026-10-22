@@ -7,9 +7,34 @@
 //! are `Ord`'s, as in Rust.
 
 /// Why an integer is not of another integer type: what `TryFrom`
-/// gives where the value is out of its range.
+/// gives where the value is out of its range, too large or too small.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct TryFromIntError(pub(crate) ());
+pub struct TryFromIntError(pub(crate) IntErrorKind);
+
+/// rustc's: "number too large to fit in target type" and the like.
+impl crate::fmt::Display for TryFromIntError {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.pad(match self.0 {
+            IntErrorKind::NegOverflow => "number too small to fit in target type",
+            _ => "number too large to fit in target type",
+        })
+    }
+}
+
+/// Why converting or parsing an integer failed.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum IntErrorKind {
+    /// Nothing to parse.
+    Empty,
+    /// A character that is not a digit.
+    InvalidDigit,
+    /// Too large for the type.
+    PosOverflow,
+    /// Too small for the type.
+    NegOverflow,
+    /// Zero, for a non-zero type.
+    Zero,
+}
 
 impl i8 {
     pub const MIN: i8 = -128;

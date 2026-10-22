@@ -848,6 +848,11 @@
   (`.map(Some)`, `.map(Token::Num)`, `.map(Wrapper)`), and functions
   used only as values, `core`'s included, are compiled. Add
   `Option::flatten`.
+- Give `core`'s newer types rustc's `Debug` and `Display`: `Cell`,
+  `RefCell` (`<borrowed>` while lent mutably), `Ref`, `RefMut`,
+  `BorrowError`, `BorrowMutError`, `TryFromIntError` (now holding an
+  `IntErrorKind`, as rustc's), `CharTryFromError`, `TryFromCharError`,
+  `BuildHasherDefault`, `iter::Empty` and `iter::Repeat`.
 
 ### Performance
 

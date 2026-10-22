@@ -607,8 +607,10 @@ methods as rustc's, a `str` its bytes then `0xff` through `write_str`,
 a slice its length through `write_length_prefix` then its elements, all
 at once for integers, so a program's hasher gives rustc's hashes),
 `core::cell::{Cell, RefCell}` (a `RefCell`'s loans are counted, and
-`borrow_mut` while it is lent panics as rustc's does; its `Ref` and
-`RefMut` cannot be dereferenced yet, as flux has no `Deref`),
+a conflicting `borrow` or `borrow_mut` panics with rustc's message, at
+its caller; its `Ref` and `RefMut` cannot be dereferenced yet, as flux
+has no `Deref`; all of them, and `BorrowError` and `BorrowMutError`,
+are `Debug` as rustc writes them),
 `core::ptr::{addr_of, addr_of_mut}`,
 `core::default::Default` (in the prelude) for the integers, `bool`,
 `char`, `&str`, `&[T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,
@@ -642,7 +644,10 @@ that hold all their values, `u8` to `char` and `char` to `u32` and
 wider, and `T` to `Option<T>`, as in rustc, and every type converts
 `Into` those that convert from it. `TryFrom` (and `TryInto`, from it)
 converts between every other two integer types, giving
-`core::num::TryFromIntError` where the value does not fit, `u32` to
+`core::num::TryFromIntError` where the value does not fit (with its
+`core::num::IntErrorKind`, `PosOverflow` or `NegOverflow`, shown as
+rustc shows them; the enum is not `#[non_exhaustive]` yet, so a `match`
+on it need not have a wildcard arm, which rustc requires), `u32` to
 `char` (`core::char::CharTryFromError`) and `char` to `u8` and `u16`
 (`TryFromCharError`), and, with `Infallible`, wherever `From` does.
 `AsRef` and `AsMut` give slices of arrays and slices, `str` and its
