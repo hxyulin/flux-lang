@@ -1,5 +1,6 @@
 //! Optional values: `Option<T>` is `Some(T)` or `None`.
 
+use crate::ops::FnOnce;
 use crate::panicking::panic;
 
 /// A value that may be absent. `?` returns `None` from a function
@@ -83,6 +84,108 @@ impl<T> Option<T> {
                 None => Some(a),
             },
             None => optb,
+        }
+    }
+
+    /// Whether it is `Some` and `f` is `true` for the value.
+    pub fn is_some_and<F: FnOnce(T) -> bool>(self, f: F) -> bool {
+        match self {
+            Some(value) => f(value),
+            None => false,
+        }
+    }
+
+    /// Whether it is `None`, or `f` is `true` for the value.
+    pub fn is_none_or<F: FnOnce(T) -> bool>(self, f: F) -> bool {
+        match self {
+            Some(value) => f(value),
+            None => true,
+        }
+    }
+
+    /// `Some(f(value))`, or `None`.
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Option<U> {
+        match self {
+            Some(value) => Some(f(value)),
+            None => None,
+        }
+    }
+
+    /// Calls `f` with a reference to the value, if any, and gives itself.
+    pub fn inspect<F: FnOnce(&T)>(self, f: F) -> Self {
+        if let Some(value) = &self {
+            f(value);
+        }
+        self
+    }
+
+    /// `f(value)`, or `default` on `None`.
+    pub fn map_or<U, F: FnOnce(T) -> U>(self, default: U, f: F) -> U {
+        match self {
+            Some(value) => f(value),
+            None => default,
+        }
+    }
+
+    /// `f(value)`, or `default()` on `None`.
+    pub fn map_or_else<U, D: FnOnce() -> U, F: FnOnce(T) -> U>(self, default: D, f: F) -> U {
+        match self {
+            Some(value) => f(value),
+            None => default(),
+        }
+    }
+
+    /// `Ok` with the value, or `Err(err())` on `None`.
+    pub fn ok_or_else<E, F: FnOnce() -> E>(self, err: F) -> crate::result::Result<T, E> {
+        match self {
+            Some(value) => crate::result::Result::Ok(value),
+            None => crate::result::Result::Err(err()),
+        }
+    }
+
+    /// `f(value)`, or `None`.
+    pub fn and_then<U, F: FnOnce(T) -> Option<U>>(self, f: F) -> Option<U> {
+        match self {
+            Some(value) => f(value),
+            None => None,
+        }
+    }
+
+    /// Itself if it is `Some` and `predicate` is `true` for the value,
+    /// else `None`.
+    pub fn filter<P: FnOnce(&T) -> bool>(self, predicate: P) -> Self {
+        if let Some(value) = self {
+            if predicate(&value) {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    /// Itself if it is `Some`, else `f()`.
+    pub fn or_else<F: FnOnce() -> Option<T>>(self, f: F) -> Option<T> {
+        match self {
+            Some(value) => Some(value),
+            None => f(),
+        }
+    }
+
+    /// The value, or `f()` on `None`.
+    pub fn unwrap_or_else<F: FnOnce() -> T>(self, f: F) -> T {
+        match self {
+            Some(value) => value,
+            None => f(),
+        }
+    }
+
+    /// `Some((a, b))` if both are `Some`.
+    pub fn zip<U>(self, other: Option<U>) -> Option<(T, U)> {
+        match self {
+            Some(a) => match other {
+                Some(b) => Some((a, b)),
+                None => None,
+            },
+            None => None,
         }
     }
 }

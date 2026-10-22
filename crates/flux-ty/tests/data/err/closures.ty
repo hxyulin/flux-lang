@@ -1,0 +1,74 @@
+struct S {}
+fn apply<F>(F) -> i32
+    f@0: F
+fn only_fn<F>(F) -> ()
+    f@0: F
+fn not_fn<T>(T) -> ()
+    t@0: T
+fn arity() -> ()
+    a@0: i32
+    b@1: i32
+fn mismatch() -> ()
+    x@0: u8
+fn ret_mismatch() -> ()
+    x@0: i32
+fn call_args() -> ()
+    x@0: i32
+    f@1: {closure}
+fn not_callable() -> ()
+    x@0: i32
+fn unknown() -> ()
+    x@0: {error}
+    f@1: {closure}
+fn wrong_arg_type() -> ()
+    x@0: i32
+    f@1: {closure}
+fn wrong_kind() -> ()
+    s@0: S
+    c@1: {closure}
+fn bad_sugar<T>(T) -> ()
+    t@0: T
+fn unstable_form<F>(F) -> ()
+    f@0: F
+fn not_iterator() -> ()
+    iter@0: i32
+    x@1: {error}
+    iter@2: S
+    s@3: {error}
+fn refutable() -> ()
+    i@0: i32
+    iter@1: Map<Range<i32>, {closure}>
+    x@2: i32
+fn for_body() -> ()
+    iter@0: Range<i32>
+    i@1: i32
+fn for_break() -> ()
+    iter@0: Range<i32>
+    i@1: i32
+fn bad_range() -> ()
+    r@0: Range<i32>
+fn by_name() -> ()
+    x@0: i32
+    f@1: {closure}
+    a@2: i32
+    b@3: i32
+fn main() -> ()
+error 257..258: expected function, found `T`
+error 283..288: closure is expected to take 1 argument, but it takes 2 arguments
+error 327..332: type mismatch in closure arguments
+error 382..386: mismatched types: expected `i32`, found `bool`
+error 437..438: this function takes 1 argument but 2 arguments were supplied
+error 488..489: expected function, found `{integer}`
+error 524..525: type annotations needed
+error 587..591: mismatched types: expected `i32`, found `bool`
+error 642..652: expected a closure that implements the `Fn` trait, but this closure only implements `FnOnce`
+error 689..699: parenthetical notation is only stable when used with `Fn`-family traits
+error 731..741: the precise format of `Fn`-family traits' type parameters is subject to change
+error 786..787: `{integer}` is not an iterator
+error 804..805: `S` is not an iterator
+error 837..844: refutable pattern in `for` loop binding: pattern `None` not covered
+error 922..923: mismatched types: expected `()`, found `{integer}`
+error 978..985: `break` with value from a `for` loop
+error 1028..1032: mismatched types: expected `{integer}`, found `bool`
+error 1090..1094: use of unstable library feature `fn_traits`
+error 1114..1122: use of unstable library feature `fn_traits`

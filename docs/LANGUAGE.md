@@ -115,8 +115,14 @@ reported as "not supported yet":
   `unsafe`), `if`/`else`, `if let` and `let` chains (`if let Some(x) = a
   && x > 1 && let Ok(y) = b`), `match` with guards (`if let` guards
   too), `loop`, `while`,
-  `while let`, unlabeled `break` (with a value) and `continue`,
-  `return`, calls, unary and binary operators, assignments (to locals,
+  `while let`, `for` loops, labels on loops (`'a: for`, `break 'a`,
+  `continue 'a`; labeled blocks are not supported yet), `break` (with
+  a value) and `continue`,
+  `return`, calls, of functions, closures and values of types bounded
+  by the `Fn`-family traits (`f(x)`, `(self.f)(x)`), unary and binary
+  operators, ranges (`a..b`, `a..=b`, `a..`, `..b`, `..=b`, `..`),
+  closures (`|x| x + 1`, `move |x: i32| -> i32 { .. }`; not `async`
+  ones, nor ones returning references), assignments (to locals,
   their fields and elements), `as` casts between integers and from
   enums without fields, `?` on `Option` and `Result`, and the methods
   `CStr::as_ptr` and, of arrays and slices, `len` and `is_empty`.
@@ -370,17 +376,63 @@ PartialOrd, Ord, Ordering, max, min}`, `core::option::Option` and
 `Ok` and `Err` in the prelude). `Ord` gives every type that implements
 it, the integers included, `cmp`, `max`, `min` and `clamp`, and
 `Ordering` has `is_eq`, `is_ne`, `is_lt`, `is_gt`, `is_le`, `is_ge`,
-`reverse` and `then` (`const`, as in rustc); `then_with` takes a
-closure, and comes later. `From` converts each type
+`reverse`, `then` (`const`, as in rustc) and `then_with`, with
+`cmp::{max_by, min_by, max_by_key, min_by_key}`. `From` converts each type
 from itself, `bool` to the integers, and integers to the wider ones
 that hold all their values, as in rustc; `Into` comes later. `Option` has `is_some`,
 `is_none`, `unwrap`, `unwrap_or`, `ok_or`, `and`, `or` and `xor`;
 `Result` has `is_ok`, `is_err`, `ok`, `err`, `unwrap_or`, `and` and
 `or`; both implement `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`
 and `Ord` as rustc's do. As in rustc, constants may call `is_some`, `is_none`, `unwrap`,
-`is_ok` and `is_err`, and the others are reported as unstable there. Methods that take closures, or return references inside them
-(`as_ref`), come later. Anything else in
+`is_ok` and `is_err`, and the others are reported as unstable there.
+Of the methods that take closures, `Option` has `map`, `map_or`,
+`map_or_else`, `and_then`, `or_else`, `unwrap_or_else`, `filter`,
+`ok_or_else`, `is_some_and`, `is_none_or`, `inspect` and `zip`, and
+`Result` has `map`, `map_err`, `map_or`, `map_or_else`, `and_then`,
+`or_else`, `unwrap_or_else`, `is_ok_and` and `is_err_and`; methods
+that return references inside them (`as_ref`) come later. Anything else in
 `core` is reported as not supported yet, and so is `std`.
+
+`core::ops` has the `Fn`, `FnMut` and `FnOnce` traits (in the
+prelude), which bounds name as `Fn(A, B) -> C` (the angle-bracket
+form, and parentheses on other traits, are errors, as in rustc), and
+the range structs `Range`, `RangeInclusive`, `RangeFrom`, `RangeTo`,
+`RangeToInclusive` and `RangeFull`, with `contains`. `core::iter` has
+`Iterator` (in the prelude) with `next` and the provided methods
+`count`, `last`, `nth`, `step_by`, `chain`, `zip`, `map`, `for_each`,
+`filter`, `filter_map`, `enumerate`, `skip_while`, `take_while`,
+`skip`, `take`, `fold`, `all`, `any`, `find`, `find_map`, `position`,
+`max`, `min`, `max_by`, `min_by`, `max_by_key`, `min_by_key`, `rev`,
+`sum`, `product` and `eq`; `DoubleEndedIterator` (`next_back`,
+`nth_back`, `rfind`); `IntoIterator`, which every iterator
+implements; and `Sum` and `Product` for the integers. The ranges of
+integers are iterators (`Range`, `RangeFrom` and `RangeInclusive`, the
+first and last from both ends). `for pat in head { body }` is
+rustc's `match IntoIterator::into_iter(head) { mut iter => loop {
+match Iterator::next(&mut iter) { None => break, Some(pat) => body }
+} }`, so values are dropped as in rustc: the item's bindings at the end
+of each iteration, the iterator when the loop ends, and the head's
+temporaries after it. Its pattern must be irrefutable (E0005), its
+body `()`, and `break` in it has no value (E0571).
+
+A closure's parameter and return types come from its annotations,
+from the `Fn`-family bounds of the parameter it is passed to (which
+also fix which of the traits it implements), or from its body and
+calls; it is inferred with the body around it, as in rustc. It
+captures what its body uses of the bindings around it as rustc's
+edition-2021 rules say: each place it uses (`x`, `s.a`, `*r`) by
+shared reference, by mutable reference if it changes it, or by value
+if it moves it, all by value with `move` (cut at the first
+dereference); a place used whole and in part is captured whole. It is
+`FnOnce` if it moves what it captures out, `FnMut` if it changes it,
+and `Fn` otherwise, and `Copy` if what it captures is. The borrow
+checker treats a closure as holding the borrows of what it captures,
+for as long as it, or any value it is moved into (an adapter like
+`Map`, a struct, a call's result), may be used, with rustc's messages.
+Closures cannot be returned yet (no `impl Fn`), nor be `async`, nor
+return references, nor appear in constants or `const fn`s; calls of
+`Fn::call` and the other methods by name, and `impl Fn for S`, are
+unstable in rustc and not supported.
 
 References may be parameters, temporaries, and `let` bindings without
 `mut` that are given a value where they are declared. That is enough to

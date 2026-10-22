@@ -1,6 +1,7 @@
 //! Results of operations that may fail: `Result<T, E>` is `Ok(T)` or
 //! `Err(E)`.
 
+use crate::ops::FnOnce;
 use crate::option::Option::{self, None, Some};
 
 /// A value, or an error. `?` returns the error from a function that
@@ -72,6 +73,78 @@ impl<T, E> Result<T, E> {
         match self {
             Ok(value) => Ok(value),
             Err(_) => res,
+        }
+    }
+
+    /// Whether it is `Ok` and `f` is `true` for the value.
+    pub fn is_ok_and<F: FnOnce(T) -> bool>(self, f: F) -> bool {
+        match self {
+            Ok(value) => f(value),
+            Err(_) => false,
+        }
+    }
+
+    /// Whether it is `Err` and `f` is `true` for the error.
+    pub fn is_err_and<F: FnOnce(E) -> bool>(self, f: F) -> bool {
+        match self {
+            Ok(_) => false,
+            Err(err) => f(err),
+        }
+    }
+
+    /// `Ok(op(value))`, or the error.
+    pub fn map<U, F: FnOnce(T) -> U>(self, op: F) -> Result<U, E> {
+        match self {
+            Ok(value) => Ok(op(value)),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// `f(value)`, or `default` on an error.
+    pub fn map_or<U, F: FnOnce(T) -> U>(self, default: U, f: F) -> U {
+        match self {
+            Ok(value) => f(value),
+            Err(_) => default,
+        }
+    }
+
+    /// `f(value)`, or `default(err)` on an error.
+    pub fn map_or_else<U, D: FnOnce(E) -> U, F: FnOnce(T) -> U>(self, default: D, f: F) -> U {
+        match self {
+            Ok(value) => f(value),
+            Err(err) => default(err),
+        }
+    }
+
+    /// The value, or `Err(op(err))`.
+    pub fn map_err<F, O: FnOnce(E) -> F>(self, op: O) -> Result<T, F> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(err) => Err(op(err)),
+        }
+    }
+
+    /// `op(value)`, or the error.
+    pub fn and_then<U, F: FnOnce(T) -> Result<U, E>>(self, op: F) -> Result<U, E> {
+        match self {
+            Ok(value) => op(value),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Itself if it is `Ok`, else `op(err)`.
+    pub fn or_else<F, O: FnOnce(E) -> Result<T, F>>(self, op: O) -> Result<T, F> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(err) => op(err),
+        }
+    }
+
+    /// The value, or `op(err)` on an error.
+    pub fn unwrap_or_else<F: FnOnce(E) -> T>(self, op: F) -> T {
+        match self {
+            Ok(value) => value,
+            Err(err) => op(err),
         }
     }
 }

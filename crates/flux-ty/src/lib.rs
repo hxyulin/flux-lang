@@ -38,13 +38,35 @@ use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
 
 pub use infer::{
-    BuiltinMethod, InferenceResult, Method, c_char_ptr, c_str_ref, infer_body, infer_const,
+    BuiltinMethod, Capture, CaptureMode, CaptureProj, ClosureInfo, InferenceResult, Method,
+    c_char_ptr, c_str_ref, infer_body, infer_const,
 };
 pub use traits::{Predicate, Projection, TraitRef, TraitSig};
 pub use ty::{
-    AdtId, AliasTy, FnDefTy, FnSigTy, GenericArgs, InferVar, IntTy, Mutability, ParamTy, Ty,
-    TyKind, subst_list,
+    AdtId, AliasTy, ClosureArgs, ClosureId, ClosureKind, FnDefTy, FnSigTy, GenericArgs, InferVar,
+    IntTy, Mutability, ParamTy, Ty, TyKind, subst_list,
 };
+
+/// Which `Fn`-family trait `t` is, if it is one: `core`'s
+/// `#[lang = "fn"]`, `"fn_mut"` or `"fn_once"`.
+pub fn fn_trait_kind(items: &ItemTree, t: flux_hir::TraitId) -> Option<ClosureKind> {
+    match items.traits[t].lang?.as_str() {
+        "fn" => Some(ClosureKind::Fn),
+        "fn_mut" => Some(ClosureKind::FnMut),
+        "fn_once" => Some(ClosureKind::FnOnce),
+        _ => None,
+    }
+}
+
+/// The `Fn`-family trait of `kind`, if `core` has it.
+pub fn fn_trait(items: &ItemTree, kind: ClosureKind) -> Option<flux_hir::TraitId> {
+    let lang = match kind {
+        ClosureKind::Fn => "fn",
+        ClosureKind::FnMut => "fn_mut",
+        ClosureKind::FnOnce => "fn_once",
+    };
+    items.lang_traits.get(&Symbol::intern(lang)).copied()
+}
 
 /// A function's resolved signature. A generic function's mentions its
 /// parameters, its `impl` block's first.
@@ -148,6 +170,7 @@ impl Signatures {
             TyKind::Tuple(elements) => Some(elements),
             TyKind::Adt(adt, _) if self.is_enum(adt.strukt) => None,
             TyKind::Adt(adt, args) => Some(self.field_types(adt.strukt, args)),
+            TyKind::Closure(_, args) => Some(ClosureArgs::split(args).upvar_types()),
             _ => None,
         }
     }
@@ -188,6 +211,7 @@ impl Signatures {
         match ty.kind() {
             TyKind::Tuple(elements) => Some(elements),
             TyKind::Adt(adt, args) => Some(self.field_types(adt.strukt, args)),
+            TyKind::Closure(_, args) => Some(ClosureArgs::split(args).upvar_types()),
             _ => None,
         }
     }
@@ -274,6 +298,10 @@ impl Signatures {
                 let list: Vec<Ty> = list.iter().map(|&t| go(t)).collect();
                 Ty::adt(adt.strukt, adt.name, &list)
             }
+            TyKind::Closure(id, list) => {
+                let list: Vec<Ty> = list.iter().map(|&t| go(t)).collect();
+                Ty::closure(id, &list)
+            }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
             TyKind::Array(t, len) => Ty::array(go(t), len),
@@ -291,7 +319,7 @@ impl Signatures {
 fn max_param(ty: Ty) -> u32 {
     match ty.kind() {
         TyKind::Param(p) => p.index + 1,
-        TyKind::Tuple(list) | TyKind::Adt(_, list) => {
+        TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
             list.iter().map(|&t| max_param(t)).max().unwrap_or(0)
         }
         TyKind::Alias(alias) => alias.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
@@ -817,8 +845,12 @@ fn assoc_type(
         return Ty::alias(traits::alias_of(trait_ref, self_ty, name));
     }
     // `Self::Out` in a trait's `impl` block: the block's own.
+    // (Only written `Self`: `I::Item` in `impl<I: It> Tr for I` is `I`'s
+    // bounds', as in rustc.)
+    let written_self = path.qself.is_none() && path.segments[0] == kw::SelfUpper;
     if let Some(trait_ref) = scope.self_trait
         && Some(self_ty) == scope.self_ty
+        && (written_self || !matches!(self_ty.kind(), TyKind::Param(_)))
     {
         if has_type(trait_ref.trait_) {
             return Ty::alias(traits::alias_of(trait_ref, self_ty, name));
@@ -1259,7 +1291,7 @@ pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
         TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
             mentions_param(t, index)
         }
-        TyKind::Tuple(list) | TyKind::Adt(_, list) => {
+        TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
             list.iter().any(|&t| mentions_param(t, index))
         }
         TyKind::FnDef(_) | TyKind::FnPtr(_) => {
@@ -1277,7 +1309,9 @@ fn uses_param(ty: Ty, index: u32) -> bool {
         TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
             uses_param(t, index)
         }
-        TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().any(|&t| uses_param(t, index)),
+        TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
+            list.iter().any(|&t| uses_param(t, index))
+        }
         TyKind::FnPtr(_) => ty.children().into_iter().any(|t| uses_param(t, index)),
         _ => mentions_param(ty, index),
     }
@@ -1770,9 +1804,34 @@ fn extend_signatures(
     for (id, imp) in items.impls.iter().skip(from.impls as usize) {
         let ty = sigs.impls[id];
         let trait_args = sigs.impl_traits.get(id).map_or(&[][..], |t| t.args);
+        // As in rustc, a parameter an associated type of constrained ones
+        // is bound to is constrained too.
+        let count = imp.generics.params.len();
+        let mut constrained: Vec<bool> = (0..count as u32)
+            .map(|i| mentions_param(ty, i) || trait_args.iter().any(|&a| mentions_param(a, i)))
+            .collect();
+        loop {
+            let mut progress = false;
+            for p in sigs.impl_projections.get(id).into_iter().flatten() {
+                let inputs = (0..count as u32)
+                    .filter(|&i| p.alias.args.iter().any(|&a| mentions_param(a, i)))
+                    .all(|i| constrained[i as usize]);
+                if !inputs {
+                    continue;
+                }
+                for (i, c) in constrained.iter_mut().enumerate() {
+                    if !*c && mentions_param(p.ty, i as u32) {
+                        *c = true;
+                        progress = true;
+                    }
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
         for (i, param) in imp.generics.params.iter().enumerate() {
-            let constrained = mentions_param(ty, i as u32)
-                || trait_args.iter().any(|&a| mentions_param(a, i as u32));
+            let constrained = constrained[i];
             if ty != Ty::ERROR && !constrained {
                 error(
                     imp.file,

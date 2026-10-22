@@ -1,0 +1,12 @@
+fn main() -> ()
+    a@0: [i32; 3]
+    iter@1: {error}
+    x@2: {error}
+    iter@3: {error}
+    x@4: {error}
+    s@5: &[i32]
+    iter@6: {error}
+    x@7: {error}
+error 159..160: iterating over arrays and slices is not supported yet
+error 177..179: iterating over arrays and slices is not supported yet
+error 220..221: iterating over arrays and slices is not supported yet

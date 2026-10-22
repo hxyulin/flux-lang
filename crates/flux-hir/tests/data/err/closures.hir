@@ -1,0 +1,38 @@
+fn break_in_closure() -> () {
+    loop#0 {
+        let f@0 = || break;
+        let g@1 = || continue;
+    }
+    let h@2 = || break;
+}
+
+fn labels() -> () {
+    match IntoIterator::into_iter(Range { start: 0, end: 3 }) {
+        mut iter@0 => loop#5 /* for */ {
+            match Iterator::next((&mut iter@0)) {
+                Option::None => break#5,
+                Option::Some(i@1) => {
+                    break;
+                },
+            }
+        },
+    }
+    loop#16 {
+        continue;
+    }
+}
+
+fn params(f@0: i32) -> () {
+    let c@3 = |x@1: i32, x@2: i32| x@2;
+    let d@4 = <missing>;
+}
+
+fn main() -> () {}
+
+error 198..203: `break` inside of a closure
+error 224..232: `continue` inside of a closure
+error 255..260: `break` inside of a closure
+error 317..319: use of undeclared label `'b`
+error 355..357: use of undeclared label `'a`
+error 409..410: identifier `x` is bound more than once in this parameter list
+error 432..437: `async` closures are not supported yet

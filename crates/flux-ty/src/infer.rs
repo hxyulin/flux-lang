@@ -1,5 +1,6 @@
 //! Type inference for one body.
 
+mod closure;
 mod solve;
 
 use std::collections::{HashMap, HashSet};
@@ -19,6 +20,8 @@ use crate::{
     ConstInstance, FnSig, Instance, Signatures, TypeScope, function_name, generic_names,
     impl_target, resolve_or_report, self_ty, wrong_arg_count,
 };
+pub use closure::{Capture, CaptureMode, CaptureProj, ClosureInfo};
+
 use solve::{CallSite, Obligation};
 
 /// The types of one body.
@@ -90,6 +93,11 @@ pub struct InferenceResult {
     /// The constants array lengths in the body name whose values were
     /// not known: the body is inferred again once they are.
     pub missing_lens: Vec<ConstId>,
+    /// What each closure expression captures, and its kind. A call of a
+    /// value (`f(x)`, a closure or a type parameter) is in `methods`
+    /// and `calls` as a call of its `Fn`-family trait's method, with the
+    /// arguments as a tuple.
+    pub closures: ArenaMap<Expr, ClosureInfo>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -131,6 +139,7 @@ pub fn infer_body(
     let sig = &sigs[function];
     let data = &items.functions[function];
     let owner = Owner {
+        function: Some(function),
         module: data.loc.module,
         self_ty: self_ty(sigs, data.owner),
         generics: generic_names(items, data.owner, &data.generics),
@@ -179,6 +188,7 @@ pub fn infer_const(
         Ty::adt(strukt, name, &[])
     });
     let owner = Owner {
+        function: None,
         module: data.loc.module,
         self_ty: enum_ty.or_else(|| self_ty(sigs, data.owner)),
         generics: generic_names(items, data.owner, &Generics::default()),
@@ -217,6 +227,8 @@ pub fn infer_const(
 
 /// What a body belongs to, as far as inference cares.
 struct Owner {
+    /// The function whose body it is; `None` for a constant's.
+    function: Option<FunctionId>,
     module: flux_hir::ModuleId,
     self_ty: Option<Ty>,
     /// The generic parameters in scope, by index.
@@ -248,6 +260,7 @@ impl<'a> Ctx<'a> {
             self_ty: owner.self_ty,
             generics: owner.generics,
             module: owner.module,
+            owner_fn: owner.function,
             const_context: owner.const_context,
             body,
             source_map,
@@ -290,6 +303,15 @@ impl<'a> Ctx<'a> {
             unsizes: ArenaMap::new(),
             builtin_methods: ArenaMap::new(),
             lens: crate::ArrayLens::new(&sigs.array_lens),
+            closures: Vec::new(),
+            closure_calls: Vec::new(),
+            kind_requirements: Vec::new(),
+            closure_hints: ArenaMap::new(),
+            mismatched_closures: HashSet::new(),
+            closure_infos: Default::default(),
+            closure_locals: Vec::new(),
+            unit_matches: HashSet::new(),
+            for_heads: HashSet::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -393,6 +415,8 @@ struct Ctx<'a> {
     generics: Vec<Symbol>,
     /// The function's module, where the types in its body are resolved.
     module: flux_hir::ModuleId,
+    /// The function whose body this is, whose closures' types name it.
+    owner_fn: Option<FunctionId>,
     /// In a constant or `const fn`: what to call it in E0015.
     const_context: Option<&'static str>,
     body: &'a Body,
@@ -463,6 +487,25 @@ struct Ctx<'a> {
     builtin_methods: ArenaMap<Expr, (BuiltinMethod, u32)>,
     /// The values of the constants array lengths name.
     lens: crate::ArrayLens<'a>,
+    /// The closures inferred, whose captures are found once the body is.
+    closures: Vec<closure::PendingClosure>,
+    /// Calls of closures, whose methods follow from their kinds.
+    closure_calls: Vec<closure::ClosureCall>,
+    /// The `Fn`-family traits closures whose kinds are not known yet
+    /// must implement, by their expressions.
+    kind_requirements: Vec<(ExprId, crate::ClosureKind)>,
+    /// The signatures closures passed to calls are expected to have.
+    closure_hints: ArenaMap<Expr, closure::Hint>,
+    /// Closures whose signature or kind was reported as wrong.
+    mismatched_closures: HashSet<ExprId>,
+    /// What each closure analyzed captures, innermost first.
+    closure_infos: rustc_hash::FxHashMap<ExprId, ClosureInfo>,
+    /// The bindings of the closures being inferred, innermost last.
+    closure_locals: Vec<HashSet<BindingId>>,
+    /// The `match`es of `for` loops, whose arms must be `()`.
+    unit_matches: HashSet<ExprId>,
+    /// The calls of `IntoIterator::into_iter` of `for` loops' heads.
+    for_heads: HashSet<ExprId>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -543,6 +586,10 @@ impl Ctx<'_> {
                 let args: Vec<Ty> = args.iter().map(|&a| self.known(a)).collect();
                 Ty::adt(adt.strukt, adt.name, &args)
             }
+            TyKind::Closure(id, args) => {
+                let args: Vec<Ty> = args.iter().map(|&a| self.known(a)).collect();
+                Ty::closure(id, &args)
+            }
             _ => ty,
         }
     }
@@ -580,6 +627,13 @@ impl Ctx<'_> {
                 ok
             }
             (TyKind::Adt(a, xs), TyKind::Adt(b, ys)) if a == b => {
+                let mut ok = true;
+                for (&x, &y) in xs.iter().zip(ys) {
+                    ok &= self.unify(x, y);
+                }
+                ok
+            }
+            (TyKind::Closure(a, xs), TyKind::Closure(b, ys)) if a == b => {
                 let mut ok = true;
                 for (&x, &y) in xs.iter().zip(ys) {
                     ok &= self.unify(x, y);
@@ -782,6 +836,9 @@ impl Ctx<'_> {
                 xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, &y)| self.can_unify(x, y))
             }
             (TyKind::Adt(a, xs), TyKind::Adt(b, ys)) => {
+                a == b && xs.iter().zip(ys).all(|(&x, &y)| self.can_unify(x, y))
+            }
+            (TyKind::Closure(a, xs), TyKind::Closure(b, ys)) => {
                 a == b && xs.iter().zip(ys).all(|(&x, &y)| self.can_unify(x, y))
             }
             (TyKind::Alias(a), TyKind::Alias(b)) => {
@@ -1966,9 +2023,13 @@ impl Ctx<'_> {
                 source,
             } => {
                 let ty = match source {
-                    LoopSource::While => Ty::UNIT,
+                    LoopSource::While | LoopSource::For => Ty::UNIT,
                     LoopSource::Loop => self.new_var(false, self.range(id)),
                 };
+                // A `for` loop's body must be `()`, where it is written.
+                if let Some((inner, _)) = self.body.for_loop_match(id) {
+                    self.unit_matches.insert(inner);
+                }
                 self.loops.insert(
                     id,
                     LoopState {
@@ -1981,7 +2042,7 @@ impl Ctx<'_> {
                 self.coerce(body_ty, Ty::UNIT, *loop_body);
                 let state = self.loops.remove(id).expect("inserted above");
                 match source {
-                    LoopSource::While => Ty::UNIT,
+                    LoopSource::While | LoopSource::For => Ty::UNIT,
                     // A `loop` that nothing breaks out of never finishes.
                     LoopSource::Loop if state.broken => ty,
                     LoopSource::Loop => Ty::NEVER,
@@ -1993,6 +2054,8 @@ impl Ctx<'_> {
                 if let (Some(target), Some(state)) = (*target, state) {
                     if state.source == LoopSource::While && value.is_some() {
                         self.error(self.range(id), "`break` with value from a `while` loop");
+                    } else if state.source == LoopSource::For && value.is_some() {
+                        self.error(self.range(id), "`break` with value from a `for` loop");
                     } else {
                         self.coerce(value_ty.unwrap_or(Ty::UNIT), state.ty, value.unwrap_or(id));
                     }
@@ -2049,6 +2112,13 @@ impl Ctx<'_> {
             }
             Expr::Binary { op, lhs, rhs } => self.infer_binary(id, *op, *lhs, *rhs),
             Expr::Try { expr } => self.infer_try(id, *expr),
+            Expr::Closure {
+                params,
+                param_types,
+                ret,
+                body: closure_body,
+                is_move,
+            } => self.infer_closure(id, params, param_types, *ret, *closure_body, *is_move),
             Expr::Cast { expr, ty } => {
                 let to = self.resolve_type_ref(*ty);
                 let from = self.infer_expr(*expr);
@@ -2174,6 +2244,11 @@ impl Ctx<'_> {
     /// `match scrutinee { arms }`: the arms' common type, where `!` arms
     /// take the others'.
     fn infer_match(&mut self, id: ExprId, scrutinee: ExprId, arms: &[flux_hir::MatchArm]) -> Ty {
+        if let [arm] = arms
+            && self.body.for_loop_match(arm.body).is_some()
+        {
+            self.for_heads.insert(scrutinee);
+        }
         let ty = self.infer_expr(scrutinee);
         let expected = self.expected.get(id).copied();
         let mut result: Option<Ty> = None;
@@ -2188,6 +2263,11 @@ impl Ctx<'_> {
                 self.expect(arm.body, expected);
             }
             let arm_ty = self.infer_expr(arm.body);
+            if self.unit_matches.contains(&id) {
+                self.coerce(arm_ty, Ty::UNIT, arm.body);
+                result = Some(Ty::UNIT);
+                continue;
+            }
             if self.shallow(arm_ty) == Ty::NEVER {
                 continue;
             }
@@ -2362,7 +2442,7 @@ impl Ctx<'_> {
                     TyKind::Infer(var) if !self.unknown(var).0 => {
                         self.annotations_needed(callee, var, self.range(callee));
                     }
-                    _ => self.not_callable(callee, ty),
+                    _ => return self.infer_value_call(id, callee, ty, args),
                 }
                 None
             }
@@ -2375,6 +2455,7 @@ impl Ctx<'_> {
         if crate::traits::is_destructor(self.items, function) {
             self.error(self.range(callee), "explicit use of destructor method");
         }
+        self.check_fn_trait_method(function, self.range(callee));
         let name = function_name(self.items, function);
         let generic_args = self.instantiate_fn(
             callee,
@@ -2412,17 +2493,36 @@ impl Ctx<'_> {
                 ),
             );
         }
-        for (i, &arg) in args.iter().enumerate() {
-            if let Some(&param) = sig.params.get(i) {
-                self.expect(arg, param);
-            }
-            let ty = self.infer_expr(arg);
-            match sig.params.get(i) {
-                Some(&param) => self.coerce(ty, param, arg),
-                None if data.is_variadic => {
-                    self.deferred.push(Deferred::VariadicArg { expr: arg, ty });
+        let at = self.source_map.segments.get(callee).copied();
+        let at = at.unwrap_or_else(|| self.range(callee));
+        self.hint_closure_args(function, &generic_args, &sig.params, args, at);
+        // Closures last, as rustc checks them, so that the other
+        // arguments may tell their parameters' types.
+        for closures in [false, true] {
+            for (i, &arg) in args.iter().enumerate() {
+                if self.is_closure(arg) != closures {
+                    continue;
                 }
-                None => {}
+                if let Some(&param) = sig.params.get(i) {
+                    self.expect(arg, param);
+                }
+                let ty = self.infer_expr(arg);
+                // A `for` loop over an array or slice, which rustc's
+                // `core` makes iterable with const generics and lifetimes.
+                if self.for_heads.contains(&id) && self.is_sequence(ty) {
+                    self.error(
+                        self.range(arg),
+                        "iterating over arrays and slices is not supported yet",
+                    );
+                    return Ty::ERROR;
+                }
+                match sig.params.get(i) {
+                    Some(&param) => self.coerce(ty, param, arg),
+                    None if data.is_variadic => {
+                        self.deferred.push(Deferred::VariadicArg { expr: arg, ty });
+                    }
+                    None => {}
+                }
             }
         }
         let segment = self.source_map.segments.get(callee).copied();
@@ -3088,8 +3188,31 @@ impl Ctx<'_> {
         method: Symbol,
         args: &[ExprId],
     ) -> Ty {
+        let ty = self.probe_method_call(id, receiver, method, args);
+        // Closures not inferred with the method's signature, which was
+        // not found.
+        for &arg in args {
+            if self.is_closure(arg) && self.expr_types.get(arg).is_none() {
+                self.infer_expr(arg);
+            }
+        }
+        ty
+    }
+
+    fn probe_method_call(
+        &mut self,
+        id: ExprId,
+        receiver: ExprId,
+        method: Symbol,
+        args: &[ExprId],
+    ) -> Ty {
         let receiver_ty = self.infer_expr(receiver);
-        self.infer_args(args);
+        // Closures wait for the method's signature.
+        for &arg in args {
+            if !self.is_closure(arg) {
+                self.infer_expr(arg);
+            }
+        }
         let receiver_ty = self.shallow(receiver_ty);
         if receiver_ty == Ty::ERROR {
             return Ty::ERROR;
@@ -3321,6 +3444,7 @@ impl Ctx<'_> {
         if crate::traits::is_destructor(self.items, function) {
             self.error(name_range, "explicit use of destructor method");
         }
+        self.check_fn_trait_method(function, name_range);
         let generic_args = self.instantiate_fn(id, function, Some(base), trait_args, name_range);
         if !self.items.is_visible(data.loc.vis, self.module) {
             self.error(name_range, format!("method `{}` is private", data.name));
@@ -3371,6 +3495,13 @@ impl Ctx<'_> {
             },
         );
         let params = &sig.params[1..];
+        self.hint_closure_args(function, &generic_args, params, args, name_range);
+        for (&arg, &param) in args.iter().zip(params) {
+            if self.is_closure(arg) {
+                self.expect(arg, param);
+                self.infer_expr(arg);
+            }
+        }
         if params.len() != args.len() {
             let (want, got) = (params.len(), args.len());
             let verb = if got == 1 { "was" } else { "were" };
@@ -3829,7 +3960,11 @@ impl Ctx<'_> {
     fn is_primitive_operand(&mut self, ty: Ty) -> bool {
         !matches!(
             self.shallow(ty).kind(),
-            TyKind::Ref(..) | TyKind::Adt(..) | TyKind::Tuple([_, ..]) | TyKind::RawPtr(..)
+            TyKind::Ref(..)
+                | TyKind::Adt(..)
+                | TyKind::Closure(..)
+                | TyKind::Tuple([_, ..])
+                | TyKind::RawPtr(..)
         )
     }
 
@@ -3917,6 +4052,13 @@ impl Ctx<'_> {
                     );
                 }
             }
+            // A binding outside the closure being inferred is captured;
+            // the borrow checker checks what the closure does with it.
+            Expr::Path(Res::Local(binding))
+                if self
+                    .closure_locals
+                    .last()
+                    .is_some_and(|locals| !locals.contains(&binding)) => {}
             Expr::Path(Res::Local(binding)) => {
                 let data = &self.body.bindings[binding];
                 let first_assignment = plain && self.uninit_bindings.contains(&binding);
@@ -3964,6 +4106,13 @@ impl Ctx<'_> {
 
     fn finish(mut self) -> InferenceResult {
         let mut reported = std::mem::take(&mut self.reported_vars);
+        // What closures capture needs the types, as rustc finds it after
+        // inference, integer literals' defaults included.
+        if !self.closures.is_empty() {
+            self.select_obligations();
+            self.default_int_vars();
+            self.analyze_closures();
+        }
         self.finish_obligations(&mut reported);
         self.report_unknown_lets(&mut reported);
         let exprs: Vec<(ExprId, Ty)> = self.expr_types.iter().map(|(e, t)| (e, *t)).collect();
@@ -4097,7 +4246,29 @@ impl Ctx<'_> {
                 self.diagnostics.extend(found);
             }
         }
+        let infos = std::mem::take(&mut self.closure_infos);
+        let mut closures = ArenaMap::new();
+        for (expr, info) in infos {
+            let ty = self.resolve(info.ty, &mut reported);
+            let captures = info
+                .captures
+                .iter()
+                .map(|c| Capture {
+                    ty: self.resolve(c.ty, &mut reported),
+                    ..c.clone()
+                })
+                .collect();
+            closures.insert(
+                expr,
+                ClosureInfo {
+                    ty,
+                    kind: info.kind,
+                    captures,
+                },
+            );
+        }
         InferenceResult {
+            closures,
             expr_types: self.expr_types,
             binding_types: self.binding_types,
             field_indices: self.field_indices,
@@ -4187,6 +4358,17 @@ impl Ctx<'_> {
         }
         let body = self.body;
         let let_pat = match body.exprs[self.blame(expr)] {
+            // A closure's parameter, where rustc asks for its type.
+            Expr::Path(Res::Local(binding))
+                if let Some(pat) = body.exprs.values().find_map(|e| match e {
+                    Expr::Closure { params, .. } => params.iter().copied().find(
+                        |&p| matches!(body.pats[p], Pat::Bind { binding: b, .. } if b == binding),
+                    ),
+                    _ => None,
+                }) =>
+            {
+                Some(pat)
+            }
             Expr::Path(Res::Local(binding)) => body.exprs.values().find_map(|e| {
                 let Expr::Block { stmts, .. } = e else {
                     return None;
@@ -4254,7 +4436,7 @@ impl Ctx<'_> {
                     out.push(var);
                 }
             }
-            TyKind::Tuple(list) | TyKind::Adt(_, list) => {
+            TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
                 for &t in list {
                     self.unknown_vars(t, out);
                 }
@@ -4478,6 +4660,10 @@ impl Ctx<'_> {
             TyKind::Adt(adt, args) if ty.has_infer() => {
                 let args: Vec<Ty> = args.iter().map(|&a| self.resolve(a, reported)).collect();
                 Ty::adt(adt.strukt, adt.name, &args)
+            }
+            TyKind::Closure(id, args) if ty.has_infer() => {
+                let args: Vec<Ty> = args.iter().map(|&a| self.resolve(a, reported)).collect();
+                Ty::closure(id, &args)
             }
             TyKind::Alias(alias) if ty.has_infer() => {
                 let args: Vec<Ty> = alias

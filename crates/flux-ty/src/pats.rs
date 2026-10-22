@@ -86,7 +86,24 @@ pub(crate) fn check_body(
             cx.error(pat_range(param), message);
         }
     }
-    for data in body.exprs.values() {
+    // The `match`es `for` loops are, whose own pattern must cover
+    // everything.
+    let for_matches: Vec<(flux_hir::ExprId, PatId)> = body
+        .exprs
+        .iter()
+        .filter_map(|(id, _)| body.for_loop_match(id))
+        .collect();
+    for (id, data) in body.exprs.iter() {
+        if let Some(&(_, pat)) = for_matches.iter().find(|(m, _)| *m == id) {
+            if let Some(witnesses) = cx.refutable(pat) {
+                let message = format!(
+                    "refutable pattern in `for` loop binding: {}",
+                    not_covered(&witnesses)
+                );
+                cx.error(pat_range(pat), message);
+            }
+            continue;
+        }
         match data {
             Expr::Block { stmts, .. } => {
                 for stmt in stmts.iter() {

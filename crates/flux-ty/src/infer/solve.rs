@@ -76,7 +76,7 @@ pub(super) struct PendingProjection {
     pub expected: bool,
 }
 
-enum Selection {
+pub(super) enum Selection {
     /// Met, if these are.
     Met(Vec<Predicate>),
     Ambiguous,
@@ -446,6 +446,10 @@ impl Ctx<'_> {
                 let list: Vec<Ty> = list.iter().map(|&t| self.normalize(t, origin)).collect();
                 Ty::adt(adt.strukt, adt.name, &list)
             }
+            TyKind::Closure(id, list) => {
+                let list: Vec<Ty> = list.iter().map(|&t| self.normalize(t, origin)).collect();
+                Ty::closure(id, &list)
+            }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, self.normalize(t, origin))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.normalize(t, origin)),
             TyKind::Array(t, len) => Ty::array(self.normalize(t, origin), len),
@@ -477,6 +481,13 @@ impl Ctx<'_> {
         {
             return None;
         }
+        if let TyKind::Closure(..) = self_ty.kind() {
+            let alias = AliasTy {
+                args: Ty::list(&[&[self_ty][..], &alias.args[1..]].concat()),
+                ..alias
+            };
+            return crate::traits::closure_output(self.items, alias);
+        }
         let pred = Predicate {
             self_ty,
             trait_ref: TraitRef {
@@ -485,6 +496,21 @@ impl Ctx<'_> {
                 args: Ty::list(&alias.args[1..]),
             },
         };
+        // A type parameter (or rigid associated type) that a bound in
+        // scope says implements the trait: the bound decides, as rustc's
+        // where-clause candidates shadow `impl` blocks, so a blanket
+        // block does not apply to it.
+        if matches!(self_ty.kind(), TyKind::Param(_) | TyKind::Alias(_)) {
+            let alias_bounds = self.alias_bounds(self_ty);
+            if self
+                .param_env
+                .iter()
+                .chain(&alias_bounds)
+                .any(|p| p.trait_ref.trait_ == alias.trait_ && p.self_ty == self_ty)
+            {
+                return None;
+            }
+        }
         let (items, sigs) = (self.items, self.sigs);
         let impls = sigs.impl_index.impls_for(items, alias.trait_, self_ty);
         let found: Vec<ImplId> = impls
@@ -494,8 +520,22 @@ impl Ctx<'_> {
             return None;
         };
         let args = self.unify_impl(*imp, pred)?;
+        self.register_impl_projections(*imp, &args);
         let ty = crate::traits::impl_type(self.sigs, *imp, alias.name)?;
         Some(ty.subst(&args))
+    }
+
+    /// What the bounds of `impl` block `imp`, used with generic arguments
+    /// `args`, say associated types are: `B` in `impl<B, I, F> Iterator
+    /// for Map<I, F> where F: FnMut(I::Item) -> B` is what `F` returns.
+    fn register_impl_projections(&mut self, imp: ImplId, args: &[Ty]) {
+        let projections = self.sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+        if projections.is_empty() {
+            return;
+        }
+        for &p in projections {
+            self.register_projection(p.subst(args), TextRange::default());
+        }
     }
 
     /// For a type written in a body as `written`, at `range`,
@@ -624,7 +664,7 @@ impl Ctx<'_> {
         let ty = self.shallow(ty);
         match ty.kind() {
             TyKind::Infer(var) if self.unknown(var).0 => out.push(self.root(var)),
-            TyKind::Tuple(list) | TyKind::Adt(_, list) => {
+            TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
                 for &t in list {
                     self.int_vars(t, out);
                 }
@@ -789,6 +829,9 @@ impl Ctx<'_> {
         if let Some(elem) = crate::traits::builtin_array_impl(self.items, goal) {
             return Selection::Met(vec![elem]);
         }
+        if let TyKind::Closure(..) = self_ty.kind() {
+            return self.select_closure(pred);
+        }
         let mut env: Vec<Predicate> = self
             .param_env
             .iter()
@@ -840,6 +883,7 @@ impl Ctx<'_> {
             [] => Selection::Unmet,
             &[imp] => {
                 let args = self.unify_impl(imp, pred).expect("probed");
+                self.register_impl_projections(imp, &args);
                 let nested = self.sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
                 Selection::Met(nested.iter().map(|p| p.subst(&args)).collect())
             }
@@ -953,6 +997,21 @@ impl Ctx<'_> {
                     .collect::<Vec<_>>()
             });
             return self.may_hold(elem, t, args.as_deref(), depth + 1);
+        }
+        if let TyKind::Closure(_, closure_args) = ty.kind() {
+            return match crate::traits::closure_goal(self.items, t, closure_args) {
+                crate::traits::ClosureGoal::Fn(kind, params) => {
+                    let parts = crate::ClosureArgs::split(closure_args);
+                    let kind_ok = crate::ClosureKind::from_ty(self.shallow(parts.kind))
+                        .is_none_or(|k| k <= kind);
+                    kind_ok
+                        && args
+                            .and_then(|a| a.first())
+                            .is_none_or(|&a| self.unify(a, params))
+                }
+                crate::traits::ClosureGoal::Upvars(_) => true,
+                crate::traits::ClosureGoal::No => false,
+            };
         }
         let alias_bounds = self.alias_bounds(ty);
         let in_env = self.param_env.iter().chain(&alias_bounds).any(|p| {
@@ -1518,7 +1577,9 @@ pub(super) fn first_param(ty: Ty) -> Option<u32> {
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
             first_param(t)
         }
-        TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().find_map(|&t| first_param(t)),
+        TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
+            list.iter().find_map(|&t| first_param(t))
+        }
         TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().into_iter().find_map(first_param),
         _ => None,
     }

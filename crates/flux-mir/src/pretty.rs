@@ -17,6 +17,18 @@ pub(crate) fn file(mir: &FileMir, hir: &Hir) -> String {
         let name = format!("{}{}", hir.items.function_path(function), function.generics);
         body_text(&mut out, hir, &mir.discriminants, &name, body);
         out.push('\n');
+        // Its closures' bodies, in source order, with their kinds.
+        let mut closures: Vec<_> = mir
+            .closures
+            .iter()
+            .filter(|((c, _), _)| c.owner == id)
+            .collect();
+        closures.sort_by_key(|((c, kind), _)| (c.expr.into_raw(), *kind));
+        for ((c, kind), body) in closures {
+            let name = format!("{name}::{{closure#{}}} as {}", c.expr.index(), kind.name());
+            body_text(&mut out, hir, &mir.discriminants, &name, body);
+            out.push('\n');
+        }
     }
     hir.write_diagnostics(&mut out, &mir.diagnostics);
     out
@@ -239,6 +251,10 @@ fn rvalue_text(hir: &Hir, rvalue: &Rvalue) -> String {
         Rvalue::Aggregate(AggregateKind::Array(_), ops) => {
             let ops: Vec<String> = ops.iter().map(|o| operand(hir, o)).collect();
             format!("[{}]", ops.join(", "))
+        }
+        Rvalue::Aggregate(AggregateKind::Closure, ops) => {
+            let ops: Vec<String> = ops.iter().map(|o| operand(hir, o)).collect();
+            format!("{{closure}}({})", ops.join(", "))
         }
         Rvalue::Discriminant(p) => format!("discriminant({})", place(p)),
         Rvalue::Len {

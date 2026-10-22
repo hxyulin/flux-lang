@@ -1176,8 +1176,12 @@ struct Ctx<'a> {
     /// lowered.
     alt_by_ref: ArenaMap<Pat, Option<bool>>,
     alt_mode: Option<Option<bool>>,
-    /// The enclosing loops, innermost last.
-    loops: Vec<ExprId>,
+    /// The enclosing loops and their labels, innermost last; a
+    /// closure's body starts without any.
+    loops: Vec<(Option<Symbol>, ExprId)>,
+    /// Lowering a closure's body, where `break` cannot leave a loop
+    /// outside it.
+    in_closure: bool,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -1233,6 +1237,7 @@ impl<'a> Ctx<'a> {
             alt_by_ref: ArenaMap::new(),
             alt_mode: None,
             loops: Vec::new(),
+            in_closure: false,
             diagnostics: Vec::new(),
         }
     }
@@ -1309,11 +1314,9 @@ impl<'a> Ctx<'a> {
             ast::Expr::BlockExpr(block) => return self.lower_block(block),
             ast::Expr::IfExpr(if_expr) => self.lower_if(if_expr),
             ast::Expr::LoopExpr(loop_expr) => {
-                if let Some(label) = loop_expr.label() {
-                    self.unsupported(label.syntax().text_range(), "loop labels");
-                }
+                let label = self.loop_label(loop_expr.label());
                 let id = self.alloc_expr(Expr::Missing, range);
-                self.loops.push(id);
+                self.loops.push((label, id));
                 let body = self.lower_opt_block(loop_expr.loop_body(), syntax);
                 self.loops.pop();
                 self.exprs[id] = Expr::Loop {
@@ -1324,18 +1327,12 @@ impl<'a> Ctx<'a> {
             }
             ast::Expr::WhileExpr(while_expr) => return self.lower_while(while_expr),
             ast::Expr::BreakExpr(break_expr) => {
-                if let Some(label) = break_expr.lifetime() {
-                    self.unsupported(label.syntax().text_range(), "loop labels");
-                }
                 let value = break_expr.expr().map(|e| self.lower_expr(e));
-                let target = self.loop_target(range, "break");
+                let target = self.loop_target(range, "break", break_expr.lifetime());
                 Expr::Break { value, target }
             }
             ast::Expr::ContinueExpr(continue_expr) => {
-                if let Some(label) = continue_expr.lifetime() {
-                    self.unsupported(label.syntax().text_range(), "loop labels");
-                }
-                let target = self.loop_target(range, "continue");
+                let target = self.loop_target(range, "continue", continue_expr.lifetime());
                 Expr::Continue { target }
             }
             ast::Expr::ReturnExpr(return_expr) => {
@@ -1402,7 +1399,7 @@ impl<'a> Ctx<'a> {
                 }
             }
             ast::Expr::AwaitExpr(_) => self.unsupported_expr(range, "`.await` expressions"),
-            ast::Expr::ClosureExpr(_) => self.unsupported_expr(range, "closures"),
+            ast::Expr::ClosureExpr(closure) => return self.lower_closure(closure),
             ast::Expr::FieldExpr(field) => {
                 let base = self.lower_opt(field.expr(), syntax);
                 match field.name_ref() {
@@ -1423,7 +1420,7 @@ impl<'a> Ctx<'a> {
                     None => Expr::Missing,
                 }
             }
-            ast::Expr::ForExpr(_) => self.unsupported_expr(range, "`for` loops"),
+            ast::Expr::ForExpr(for_expr) => return self.lower_for(for_expr),
             ast::Expr::IndexExpr(index) => {
                 let base = self.lower_opt(index.base(), syntax);
                 let index = self.lower_opt(index.index(), syntax);
@@ -1472,7 +1469,7 @@ impl<'a> Ctx<'a> {
                     None => Expr::Missing,
                 }
             }
-            ast::Expr::RangeExpr(_) => self.unsupported_expr(range, "ranges"),
+            ast::Expr::RangeExpr(r) => return self.lower_range(r),
             ast::Expr::RecordExpr(record) => return self.lower_record(record),
             ast::Expr::RefExpr(r) => {
                 let expr = self.lower_opt(r.expr(), syntax);
@@ -1508,6 +1505,75 @@ impl<'a> Ctx<'a> {
                 "attempt to use a non-constant value in a constant",
             );
         }
+    }
+
+    /// A range, as rustc lowers it: `a..b` is `Range { start: a, end: b }`,
+    /// `a..=b` is `RangeInclusive::new(a, b)`, and so on, with `core`'s
+    /// range structs.
+    fn lower_range(&mut self, r: ast::RangeExpr<'_>) -> ExprId {
+        let syntax = r.syntax();
+        let range = syntax.text_range();
+        let start = r.start().map(|e| self.lower_expr(e));
+        let end = r.end().map(|e| self.lower_expr(e));
+        let inclusive = r.op_kind() == Some(ast::RangeOp::Inclusive);
+        let lang = match (start, end, inclusive) {
+            (None, None, false) => "RangeFull",
+            (Some(_), None, false) => "RangeFrom",
+            (None, Some(_), false) => "RangeTo",
+            (Some(_), Some(_), false) => "Range",
+            (Some(_), Some(_), true) => "RangeInclusive",
+            (None, Some(_), true) => "RangeToInclusive",
+            (_, None, true) => {
+                self.error(range, "inclusive range with no end");
+                return self.alloc_expr(Expr::Missing, range);
+            }
+        };
+        let Some(&strukt) = self.items.lang_enums.get(&Symbol::intern(lang)) else {
+            return self.unsupported_expr_id(range, "ranges");
+        };
+        if let (Some(start), Some(end), true) = (start, end, inclusive) {
+            let new = self
+                .items
+                .assoc_function(ImplTarget::Struct(strukt), Symbol::intern("new"));
+            let Some(new) = new else {
+                return self.unsupported_expr_id(range, "ranges");
+            };
+            let callee = self.alloc_expr(Expr::Path(Res::Function(new)), range);
+            self.source_map.segments.insert(callee, range);
+            return self.alloc_expr(
+                Expr::Call {
+                    callee,
+                    args: Box::new([start, end]),
+                },
+                range,
+            );
+        }
+        let fields: Vec<(Symbol, ExprId)> = [("start", start), ("end", end)]
+            .into_iter()
+            .filter_map(|(name, e)| Some((Symbol::intern(name), e?)))
+            .collect();
+        if fields.is_empty() {
+            self.alloc_expr(Expr::Path(Res::Struct(strukt)), range)
+        } else {
+            let ranges = fields.iter().map(|_| range).collect();
+            let id = self.alloc_expr(
+                Expr::Record {
+                    strukt,
+                    variant: 0,
+                    fields: fields.into(),
+                    spread: None,
+                },
+                range,
+            );
+            self.source_map.expr_fields.insert(id, ranges);
+            self.source_map.paths.insert(id, range);
+            id
+        }
+    }
+
+    fn unsupported_expr_id(&mut self, range: TextRange, what: &str) -> ExprId {
+        let expr = self.unsupported_expr(range, what);
+        self.alloc_expr(expr, range)
     }
 
     /// `S { a: 1, b, ..base }`
@@ -1996,11 +2062,9 @@ impl<'a> Ctx<'a> {
     fn lower_while(&mut self, while_expr: ast::WhileExpr<'_>) -> ExprId {
         let syntax = while_expr.syntax();
         let range = syntax.text_range();
-        if let Some(label) = while_expr.label() {
-            self.unsupported(label.syntax().text_range(), "loop labels");
-        }
+        let label = self.loop_label(while_expr.label());
         let id = self.alloc_expr(Expr::Missing, range);
-        self.loops.push(id);
+        self.loops.push((label, id));
         let scope = self.scopes.len();
         let condition = self.lower_condition(while_expr.condition(), syntax);
         let then_branch = self.lower_opt_block(while_expr.loop_body(), syntax);
@@ -2150,12 +2214,302 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn loop_target(&mut self, range: TextRange, keyword: &str) -> Option<ExprId> {
-        let target = self.loops.last().copied();
+    /// A loop's label, `'a` in `'a: loop {}`.
+    fn loop_label(&mut self, label: Option<ast::Label<'_>>) -> Option<Symbol> {
+        let lifetime = label?.lifetime()?;
+        Some(Symbol::intern(lifetime.text()))
+    }
+
+    /// The loop `break` or `continue` (`keyword`) at `range` leaves: the
+    /// innermost, or the one with `label`.
+    fn loop_target(
+        &mut self,
+        range: TextRange,
+        keyword: &str,
+        label: Option<ast::Lifetime<'_>>,
+    ) -> Option<ExprId> {
+        if let Some(label) = label {
+            let name = Symbol::intern(label.text());
+            let found = self
+                .loops
+                .iter()
+                .rev()
+                .find(|(l, _)| *l == Some(name))
+                .map(|&(_, id)| id);
+            if found.is_none() {
+                self.error(
+                    label.syntax().text_range(),
+                    format!("use of undeclared label `{name}`"),
+                );
+            }
+            return found;
+        }
+        let target = self.loops.last().map(|&(_, id)| id);
         if target.is_none() {
-            self.error(range, format!("`{keyword}` outside of a loop"));
+            let place = if self.in_closure {
+                "inside of a closure"
+            } else {
+                "outside of a loop"
+            };
+            self.error(range, format!("`{keyword}` {place}"));
         }
         target
+    }
+
+    /// `for pat in head { body }`, as rustc lowers it:
+    ///
+    /// ```text
+    /// match IntoIterator::into_iter(head) {
+    ///     mut iter => loop {
+    ///         match Iterator::next(&mut iter) {
+    ///             None => break,
+    ///             Some(pat) => body,
+    ///         }
+    ///     },
+    /// }
+    /// ```
+    ///
+    /// where `iter` cannot be named. Every node it adds maps to the
+    /// `for`, but the call of `into_iter`, which maps to `head`.
+    fn lower_for(&mut self, for_expr: ast::ForExpr<'_>) -> ExprId {
+        let syntax = for_expr.syntax();
+        let range = syntax.text_range();
+        let head = self.lower_opt(for_expr.iterable(), syntax);
+        let head_range = self.source_map.exprs.get(head).copied().unwrap_or(range);
+        let label = self.loop_label(for_expr.label());
+        let lang_fn = |this: &Self, lang: &str, name: &str| match this
+            .items
+            .lang_traits
+            .get(&Symbol::intern(lang))
+        {
+            Some(&t) => Res::Assoc {
+                ty: None,
+                trait_: Some(t),
+                name: Symbol::intern(name),
+            },
+            None => Res::Err,
+        };
+        let option = self
+            .items
+            .lang_enums
+            .get(&Symbol::intern("Option"))
+            .copied();
+        let (Res::Assoc { .. }, Res::Assoc { .. }, Some(option)) = (
+            lang_fn(self, "IntoIterator", "into_iter"),
+            lang_fn(self, "iterator", "next"),
+            option,
+        ) else {
+            return self.unsupported_expr_id(range, "`for` loops");
+        };
+        // `IntoIterator::into_iter(head)`
+        let into_iter = lang_fn(self, "IntoIterator", "into_iter");
+        let callee = self.alloc_expr(Expr::Path(into_iter), head_range);
+        self.source_map.segments.insert(callee, head_range);
+        let scrutinee = self.alloc_expr(
+            Expr::Call {
+                callee,
+                args: Box::new([head]),
+            },
+            head_range,
+        );
+        // `mut iter`
+        let iter_name = Symbol::intern("iter");
+        let iter = self.bindings.alloc(Binding {
+            name: iter_name,
+            mutable: true,
+            by_ref: None,
+        });
+        let iter_pat = self.alloc_pat(
+            Pat::Bind {
+                binding: iter,
+                sub: None,
+            },
+            range,
+        );
+        // `Iterator::next(&mut iter)`
+        let loop_id = self.alloc_expr(Expr::Missing, range);
+        let next = lang_fn(self, "iterator", "next");
+        let next_callee = self.alloc_expr(Expr::Path(next), head_range);
+        self.source_map.segments.insert(next_callee, head_range);
+        let iter_ref = self.alloc_expr(Expr::Path(Res::Local(iter)), head_range);
+        let iter_mut = self.alloc_expr(
+            Expr::Ref {
+                mutable: true,
+                expr: iter_ref,
+            },
+            head_range,
+        );
+        let next_call = self.alloc_expr(
+            Expr::Call {
+                callee: next_callee,
+                args: Box::new([iter_mut]),
+            },
+            head_range,
+        );
+        // `None => break`
+        let variant = |name: &str| {
+            self.items.structs[option]
+                .variants
+                .as_ref()
+                .and_then(|vs| vs.iter().position(|v| v.name.as_str() == name))
+                .unwrap_or(0) as u32
+        };
+        let (none, some) = (variant("None"), variant("Some"));
+        let none_pat = self.alloc_pat(Pat::Unit(option, none), range);
+        let exit = self.alloc_expr(
+            Expr::Break {
+                value: None,
+                target: Some(loop_id),
+            },
+            range,
+        );
+        // `Some(pat) => body`, the body seeing the pattern's bindings.
+        let scope = self.scopes.len();
+        let pat = self.lower_top_pat(for_expr.pat(), syntax, PatSite::Let);
+        let pat_range = self.source_map.pats.get(pat).copied().unwrap_or(range);
+        let some_pat = self.alloc_pat(
+            Pat::TupleStruct {
+                strukt: option,
+                variant: some,
+                pats: Box::new([pat]),
+                rest: None,
+            },
+            pat_range,
+        );
+        self.loops.push((label, loop_id));
+        let body = self.lower_opt_block(for_expr.loop_body(), syntax);
+        self.loops.pop();
+        self.scopes.truncate(scope);
+        let inner = self.alloc_expr(
+            Expr::Match {
+                scrutinee: next_call,
+                arms: Box::new([
+                    MatchArm {
+                        pat: none_pat,
+                        guard: None,
+                        body: exit,
+                    },
+                    MatchArm {
+                        pat: some_pat,
+                        guard: None,
+                        body,
+                    },
+                ]),
+            },
+            range,
+        );
+        let loop_body = self.alloc_expr(
+            Expr::Block {
+                stmts: Box::new([Stmt::Expr {
+                    expr: inner,
+                    has_semicolon: false,
+                }]),
+                tail: None,
+                is_unsafe: false,
+            },
+            range,
+        );
+        self.exprs[loop_id] = Expr::Loop {
+            body: loop_body,
+            source: LoopSource::For,
+        };
+        self.alloc_expr(
+            Expr::Match {
+                scrutinee,
+                arms: Box::new([MatchArm {
+                    pat: iter_pat,
+                    guard: None,
+                    body: loop_id,
+                }]),
+            },
+            range,
+        )
+    }
+
+    /// `|a, b: T| body` or `move |x| -> R { .. }`, whose body sees the
+    /// bindings in scope here but not the loops.
+    fn lower_closure(&mut self, closure: ast::ClosureExpr<'_>) -> ExprId {
+        let syntax = closure.syntax();
+        let range = syntax.text_range();
+        if let Some(token) = closure.async_token() {
+            self.unsupported(token.text_range(), "`async` closures");
+            return self.alloc_expr(Expr::Missing, range);
+        }
+        let scope = self.scopes.len();
+        let loops = std::mem::take(&mut self.loops);
+        let in_closure = std::mem::replace(&mut self.in_closure, true);
+        let mut params = Vec::new();
+        let mut param_types = Vec::new();
+        let mut names: Vec<Symbol> = Vec::new();
+        for param in closure.param_list().into_iter().flat_map(|l| l.params()) {
+            check_attrs(param.attrs(), &mut self.diagnostics);
+            let pat = self.lower_top_pat(param.pat(), param.syntax(), PatSite::Param);
+            // Each name may be bound by one parameter only.
+            let mut bound = Vec::new();
+            self.pat_bindings(pat, &mut bound);
+            for binding in bound {
+                let name = self.bindings[binding].name;
+                if names.contains(&name) {
+                    let at = self.source_map.pats.get(pat).copied().unwrap_or(range);
+                    self.error(
+                        at,
+                        format!(
+                            "identifier `{name}` is bound more than once in this parameter list"
+                        ),
+                    );
+                }
+                names.push(name);
+            }
+            let ty = param.ty().map(|ty| {
+                let at = ty.syntax().text_range();
+                let ty = lower_type(Some(ty), &mut self.diagnostics);
+                let id = self.types.alloc(ty);
+                self.source_map.types.insert(id, at);
+                id
+            });
+            params.push(pat);
+            param_types.push(ty);
+        }
+        let ret = closure.ret_type().map(|ret| {
+            let at = ret
+                .ty()
+                .map_or(ret.syntax().text_range(), |t| t.syntax().text_range());
+            let ty = lower_type(ret.ty(), &mut self.diagnostics);
+            let id = self.types.alloc(ty);
+            self.source_map.types.insert(id, at);
+            id
+        });
+        let body = self.lower_opt(closure.body(), syntax);
+        self.scopes.truncate(scope);
+        self.loops = loops;
+        self.in_closure = in_closure;
+        self.alloc_expr(
+            Expr::Closure {
+                params: params.into(),
+                param_types: param_types.into(),
+                ret,
+                body,
+                is_move: closure.move_token().is_some(),
+            },
+            range,
+        )
+    }
+
+    /// The bindings `pat` binds, in order, once each.
+    fn pat_bindings(&self, pat: PatId, out: &mut Vec<BindingId>) {
+        match &self.pats[pat] {
+            Pat::Bind { binding, .. } if !out.contains(binding) => out.push(*binding),
+            Pat::Or(alternatives) => {
+                if let Some(&first) = alternatives.first() {
+                    self.pat_bindings(first, out);
+                }
+                return;
+            }
+            _ => {}
+        }
+        for child in self.pats[pat].children() {
+            self.pat_bindings(child, out);
+        }
     }
 
     /// A path expression, called if `call` is the call's range.

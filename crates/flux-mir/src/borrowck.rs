@@ -141,13 +141,19 @@ fn collect_loans(body: &Body) -> Vec<(Loan, Local)> {
                 },
             ) = &statement.kind
             {
+                // A closure's capture outlives what it captures where it
+                // uses it, as rustc reports.
+                let capture = body
+                    .capture_uses
+                    .iter()
+                    .find(|&&(b, s, _, _)| b == block && s == i);
                 let loan = Loan {
                     place: place.clone(),
                     mutability: *mutability,
                     two_phase: *two_phase,
                     block,
                     statement: i,
-                    range: statement.range,
+                    range: capture.map_or(statement.range, |c| c.2),
                 };
                 loans.push((loan, dest.local));
             }
@@ -158,30 +164,97 @@ fn collect_loans(body: &Body) -> Vec<(Loan, Local)> {
 
 /// For each local, the loans it may hold, in order: those made into it,
 /// those of references copied into it, and those of the reference a
-/// reborrow goes through.
+/// reborrow goes through. Closures that capture by reference hold loans
+/// too, as do values made of them (a struct holding a closure, a call's
+/// result whose type has one) and references to them; and a value
+/// written through a `&mut` to a place, by assignment or by a call it is
+/// passed to, gives its loans to that place's local.
 fn holders(body: &Body, loans: &[(Loan, Local)]) -> Vec<Vec<u32>> {
     let mut holds = vec![Vec::new(); body.locals.len()];
     for (id, (_, holder)) in loans.iter().enumerate() {
         holds[holder.index()].push(id as u32);
     }
+    let local_holds = |local: Local| may_hold_loans(body.locals[local].ty);
     // `to` holds what `from` holds.
     let mut flows: Vec<(Local, Local)> = Vec::new();
+    // What `from` holds goes to the locals `pointer`'s mutable loans are
+    // of.
+    let mut through: Vec<(Local, Local)> = Vec::new();
     for (loan, holder) in loans {
-        if loan.place.has_deref() {
+        if loan.place.has_deref() || local_holds(loan.place.local) {
             flows.push((loan.place.local, *holder));
         }
     }
+    let operand_local = |op: &Operand| match op {
+        Operand::Copy(place) | Operand::Move(place) => Some(place.local),
+        Operand::Const(_) => None,
+    };
     for data in body.blocks.values() {
         for statement in &data.statements {
-            if let StatementKind::Assign(dest, Rvalue::Use(Operand::Copy(src) | Operand::Move(src))) =
-                &statement.kind
-                && src.projection.is_empty()
-            {
-                flows.push((src.local, dest.local));
+            let StatementKind::Assign(dest, rvalue) = &statement.kind else {
+                continue;
+            };
+            let sources: Vec<Local> = match rvalue {
+                Rvalue::Use(Operand::Copy(src) | Operand::Move(src))
+                    if src.projection.is_empty() || local_holds(dest.local) =>
+                {
+                    vec![src.local]
+                }
+                Rvalue::Aggregate(_, ops) => ops.iter().filter_map(operand_local).collect(),
+                _ => Vec::new(),
+            };
+            for src in sources {
+                if dest.has_deref() {
+                    through.push((src, dest.local));
+                } else {
+                    flows.push((src, dest.local));
+                }
+            }
+        }
+        if let TerminatorKind::Call { args, dest, .. } = &data.terminator.kind {
+            let locals: Vec<Local> = args.iter().filter_map(operand_local).collect();
+            if local_holds(dest.local) {
+                flows.extend(locals.iter().map(|&a| (a, dest.local)));
+            }
+            for &pointer in &locals {
+                let TyKind::Ref(Mutability::Mut, pointee) = body.locals[pointer].ty.kind() else {
+                    continue;
+                };
+                if may_hold_loans(pointee) {
+                    through.extend(
+                        locals
+                            .iter()
+                            .filter(|&&a| a != pointer)
+                            .map(|&a| (a, pointer)),
+                    );
+                }
             }
         }
     }
-    // Until nothing changes, from each local whose loans grew.
+    // Until nothing changes: the flows, then those the mutable loans
+    // that reach pointers written through add.
+    loop {
+        propagate(body, &mut holds, &mut flows);
+        let before = flows.len();
+        for &(from, pointer) in &through {
+            for &id in &holds[pointer.index()] {
+                let (loan, _) = &loans[id as usize];
+                if loan.mutability == Mutability::Mut {
+                    flows.push((from, loan.place.local));
+                }
+            }
+        }
+        flows.sort_unstable();
+        flows.dedup();
+        if flows.len() == before {
+            return holds;
+        }
+    }
+}
+
+/// Makes each `to` of `flows` hold what its `from` holds, until nothing
+/// changes, from each local whose loans grew.
+fn propagate(body: &Body, holds: &mut [Vec<u32>], flows: &mut Vec<(Local, Local)>) {
     flows.sort_unstable();
     flows.dedup();
     let mut queued = BitSet::new_empty(body.locals.len());
@@ -234,7 +307,21 @@ fn holders(body: &Body, loans: &[(Loan, Local)]) -> Vec<Vec<u32>> {
             }
         }
     }
-    holds
+}
+
+/// Whether a value of `ty` may hold loans: a reference, a closure that
+/// captures by reference, or a value with one in it.
+fn may_hold_loans(ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::Ref(..) => true,
+        TyKind::Closure(_, args) => flux_ty::ClosureArgs::split(args)
+            .upvar_types()
+            .iter()
+            .any(|&t| may_hold_loans(t)),
+        TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().any(|&t| may_hold_loans(t)),
+        TyKind::Array(t, _) => may_hold_loans(t),
+        _ => false,
+    }
 }
 
 /// The locals a statement reads, as values or as pointers to go through.
@@ -261,7 +348,11 @@ fn statement_transfer(kind: &StatementKind, set: &mut dyn FnMut(Local, bool)) {
             }
             place_uses(dest, &mut uses);
             match rvalue {
-                Rvalue::Ref { place, .. } => place_uses(place, &mut uses),
+                Rvalue::Ref { place, .. } => {
+                    // Borrowing a value that holds loans uses them.
+                    place_uses(place, &mut uses);
+                    uses.push(place.local);
+                }
                 _ => {
                     for operand in rvalue.operands() {
                         operand_uses(operand, &mut uses);
@@ -476,7 +567,17 @@ impl Checker<'_> {
                         two_phase,
                     } => {
                         if *mutability == Mutability::Mut {
-                            self.check_mutable_borrow(place, range);
+                            let capture = self
+                                .body
+                                .capture_uses
+                                .iter()
+                                .find(|&&(b, s, _, _)| b == block && s == index);
+                            match capture {
+                                Some(&(_, _, at, assigned)) => {
+                                    self.check_capture_borrow(place, at, assigned);
+                                }
+                                None => self.check_mutable_borrow(place, range),
+                            }
                         }
                         // A two-phase borrow is shared until the call.
                         let access = if *two_phase {
@@ -630,7 +731,10 @@ impl Checker<'_> {
             };
             return self.error(range, message);
         }
-        if let Some(pointer) = self.last_pointer(place)
+        if let Some(message) = self.captured_write(place, "assign to") {
+            return self.error(range, message);
+        }
+        if let Some(pointer) = self.immutable_pointer(place)
             && !matches!(
                 pointer.kind(),
                 TyKind::Ref(Mutability::Mut, _) | TyKind::RawPtr(Mutability::Mut, _)
@@ -650,6 +754,62 @@ impl Checker<'_> {
         drop_owner(self.body, self.items, self.sigs, place)
     }
 
+    /// In a closure's body, why `place`, in what it captures, may not be
+    /// changed (`what`, "assign to" or "borrow"): a captured variable in
+    /// an `Fn` closure, or one captured by value from a binding without
+    /// `mut`.
+    fn captured_write(&self, place: &Place, what: &str) -> Option<String> {
+        let upvars = self.body.upvars.as_ref()?;
+        let (field, len) = upvars.of(place)?;
+        // Through a reference the captured place holds, the reference
+        // decides.
+        if place.projection[len..].contains(&ProjectionElem::Deref) {
+            return None;
+        }
+        let name = self.name(place);
+        let suffix = if what == "borrow" { " as mutable" } else { "" };
+        if upvars.kind == flux_ty::ClosureKind::Fn {
+            return Some(format!(
+                "cannot {what} `{name}`{suffix}, as it is a captured variable in a `Fn` closure"
+            ));
+        }
+        if !upvars.by_ref[field] && !upvars.mutable[field] {
+            let captured = &upvars.names[field];
+            let it = if *captured == name {
+                "it".to_owned()
+            } else {
+                format!("`{captured}`")
+            };
+            return Some(format!(
+                "cannot {what} `{name}`{suffix}, as {it} is not declared as mutable"
+            ));
+        }
+        None
+    }
+
+    /// The type of the first pointer `place` goes through that does not
+    /// allow changing what is behind it, if any: writing through
+    /// `**r` needs both references to be mutable.
+    fn immutable_pointer(&self, place: &Place) -> Option<Ty> {
+        for (i, &elem) in place.projection.iter().enumerate() {
+            if elem != ProjectionElem::Deref {
+                continue;
+            }
+            let prefix = Place {
+                local: place.local,
+                projection: place.projection[..i].into(),
+            };
+            let pointer = self.body.place_ty(&prefix, self.sigs);
+            if !matches!(
+                pointer.kind(),
+                TyKind::Ref(Mutability::Mut, _) | TyKind::RawPtr(Mutability::Mut, _)
+            ) {
+                return Some(pointer);
+            }
+        }
+        None
+    }
+
     /// The type of the pointer the last dereference in `place` goes
     /// through, if any.
     fn last_pointer(&self, place: &Place) -> Option<Ty> {
@@ -662,6 +822,20 @@ impl Checker<'_> {
             projection: place.projection[..last].into(),
         };
         Some(self.body.place_ty(&prefix, self.sigs))
+    }
+
+    /// A closure's mutable borrow of `place`, used at `range` in it,
+    /// where rustc reports one of a binding without `mut` as the use:
+    /// "cannot assign to `x`" or "cannot borrow `x` as mutable".
+    fn check_capture_borrow(&mut self, place: &Place, range: TextRange, assigned: bool) {
+        let before = self.diagnostics.len();
+        self.check_mutable_borrow(place, range);
+        if assigned && let Some(d) = self.diagnostics.get_mut(before) {
+            d.message = d
+                .message
+                .replacen("cannot borrow", "cannot assign to", 1)
+                .replacen("` as mutable,", "`,", 1);
+        }
     }
 
     /// `&mut place` needs a `mut` binding, or a mutable pointer.
@@ -677,12 +851,12 @@ impl Checker<'_> {
             };
             return self.error(range, message);
         }
+        if let Some(message) = self.captured_write(place, "borrow") {
+            return self.error(range, message);
+        }
         match self.last_pointer(place) {
-            Some(pointer) => {
-                if !matches!(
-                    pointer.kind(),
-                    TyKind::Ref(Mutability::Mut, _) | TyKind::RawPtr(Mutability::Mut, _)
-                ) {
+            Some(_) => {
+                if let Some(pointer) = self.immutable_pointer(place) {
                     let message = format!(
                         "cannot borrow `{name}` as mutable, as it is behind {}",
                         pointer_kind(pointer)
@@ -722,6 +896,17 @@ impl Checker<'_> {
                     self.name(place)
                 )
             };
+            return self.error(range, message);
+        }
+        if let Some(upvars) = &self.body.upvars
+            && let Some((_, len)) = upvars.of(place)
+            && !place.projection[len..].contains(&ProjectionElem::Deref)
+        {
+            let message = format!(
+                "cannot move out of `{}`, a captured variable in an `{}` closure",
+                self.name(place),
+                upvars.kind.name()
+            );
             return self.error(range, message);
         }
         let behind = match self.last_pointer(place).map(|p| p.kind()) {
