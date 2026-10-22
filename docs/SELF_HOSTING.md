@@ -27,6 +27,12 @@ their algorithms:
 - `crates/flux-syntax/src/parser/event.rs`: compact parser events,
   forward-parent indices, error storage, cloning and equality. Its original
   eight-byte layout assertion remains enabled.
+- `crates/flux-difftest/src/generator/ty.rs`: integer boundaries and literal
+  generation, deterministic character choices, recursive type names, cloning,
+  equality and hashing.
+- `crates/flux-syntax/src/tree.rs`: lossless tokens, node navigation, tree
+  validation, expansion origins/context mapping, cloning and identity hashing.
+  Its original sixteen-byte node layout assertion remains enabled.
 
 The test embeds the source files as modules beside
 `tests/run/support/compiler_internals.rs`. It compares output and exit
@@ -44,7 +50,7 @@ and loading separately compiled dependency crates. The normal workspace
 suite includes this test; the dedicated recipe makes it quick to repeat
 while expanding the subset.
 
-On 2026-10-23 the five-module test matched rustc in both Flux modes,
+On 2026-10-23 the seven-module test matched rustc in both Flux modes,
 using the unchanged syntax-kind and event sources, including the explicit
 local `'static` annotation and original event layout assertion.
 With item configuration filtering,
@@ -141,9 +147,12 @@ and `alloc`, preserving their definition identities; see
 [its API boundary](../library/std/README.md). Its `thread::panicking` is
 always false in the supported abort-only runtime. The facade does not provide
 the missing runtime facilities above. Other
-observed API gaps include `Vec<String>::join`, Unicode case conversion,
-and `String::from_utf8_lossy`. Passing `&mut closure` as an `FnMut` argument
-also remains unsupported; the new partition-point tests pass closures by
+observed API gaps include Unicode case conversion and
+`String::from_utf8_lossy`. String-slice `join` now accepts `Borrow<str>`,
+including `String` and user-defined borrowers. Boxed slices and strings
+support cloning, and boxed slices support iterator collection. Pointer
+hashing currently accepts thin pointers only. Passing `&mut closure` as an
+`FnMut` argument also remains unsupported; the new partition-point tests pass closures by
 value, including closures that borrow mutable state.
 
 A deliberate standard-library/runtime plan is needed before the whole

@@ -101,7 +101,8 @@ function parameters), or its overflow lints reject them.
 
 The runtime harness also bundles the actual differential generator's
 choice-tape module, MIR's dataflow bitset and interval sets, and syntax-kind
-classification with the drivers in `tests/run/support/`. Both compilers compile
+classification, parser events, generator type helpers and syntax-tree
+navigation with the drivers in `tests/run/support/`. Both compilers compile
 those sources and compare their behavior. Run `just selfhost-subset` for
 this test alone. This covers compiler implementations as they change; it
 does not yet build the entire compiler with flux. The modules are bundled

@@ -792,9 +792,14 @@ and `repeat`. `Box<T>` may hold an unsized value: `Box<[T]>` and
 `From<Vec<T>>`, dropped through the vtable's drop function and freed
 with the size it records; `core::mem::{size_of_val, align_of_val}`,
 `Layout::for_value` and `ptr::drop_in_place` take unsized values too.
-`Box<str>`, `String::drain` and the other `alloc` collections are not
-supported yet. Collecting an owning iterator does not reuse its source
-allocation as rustc sometimes does, so capacities can differ in those
+Boxed slices support `Clone` and `FromIterator`; boxed strings support
+`From<&str>` and `Clone`. `core::borrow::{Borrow, BorrowMut}` are also
+reexported through `alloc::borrow` and `std::borrow`; String borrows as
+`str`, and slices of `Borrow<str>` values support string `join`. String,
+Vec and Box implement `Hash` when their contents do. `core::ptr::hash`
+supports thin pointers only. `String::drain` and the other `alloc`
+collections are not supported yet. Collecting an owning iterator does not
+reuse its source allocation as rustc sometimes does, so capacities can differ in those
 cases; a panic inside `alloc` that rustc reports at its own
 source (`swap_remove`, `drain` out of range) is reported at flux's.
 
