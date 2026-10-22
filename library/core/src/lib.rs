@@ -12,6 +12,7 @@ pub mod array;
 pub mod ascii;
 pub mod cell;
 mod bool;
+pub mod borrow;
 pub mod char;
 pub mod clone;
 pub mod cmp;

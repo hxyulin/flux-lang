@@ -797,3 +797,9 @@ impl<T> Drop for IntoIter<T> {
         unsafe { drop_range(self.buf.ptr(), self.start, self.end) };
     }
 }
+
+impl<T: core::hash::Hash> core::hash::Hash for Vec<T> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(self.as_slice(), state);
+    }
+}

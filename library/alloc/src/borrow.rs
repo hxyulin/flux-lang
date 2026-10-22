@@ -1,6 +1,8 @@
 //! `ToOwned`: owned copies of borrowed data, `"a".to_owned()` a `String`
 //! and `[1, 2][..].to_owned()` a `Vec`.
 
+pub use core::borrow::{Borrow, BorrowMut};
+
 use crate::string::String;
 use crate::vec::Vec;
 
