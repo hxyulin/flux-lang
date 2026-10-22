@@ -228,6 +228,32 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                 if crate::vtable::virtual_call(&hir.items, callee).is_some() {
                     continue;
                 }
+                let callee_data = &hir.items.functions[callee.function];
+                let name = callee_data.name;
+                if hir.items.is_core(callee_data.loc.module)
+                    && matches!(
+                        name.as_str(),
+                        "vgetq_lane_u64"
+                            | "vget_lane_u64"
+                            | "__neon_vgetq_lane_u64"
+                            | "__neon_vget_lane_u64"
+                    )
+                {
+                    let limit =
+                        if matches!(name.as_str(), "vgetq_lane_u64" | "__neon_vgetq_lane_u64") {
+                            2
+                        } else {
+                            1
+                        };
+                    if !matches!(callee.args.first().map(|ty| ty.kind()), Some(TyKind::Value(v)) if v.bits() < limit)
+                    {
+                        let mut d =
+                            Diagnostic::new(data.terminator.range, "lane index out of range");
+                        d.file = hir.items.functions[caller.function].loc.file;
+                        return Err(d);
+                    }
+                }
+
                 if hir.items.functions[callee.function].intrinsic {
                     // A size that would not be rustc's.
                     let name = hir.items.functions[callee.function].name;
@@ -682,7 +708,7 @@ pub fn expand_intrinsics(
             Some(target) => TerminatorKind::Goto(target),
             None => TerminatorKind::Unreachable,
         };
-        if data.name.as_str() == "caller_location" {
+        if data.name.as_str() == "caller_location" || is_neon_intrinsic(data.name.as_str()) {
             // Code generation's: where the call is.
             continue;
         }
@@ -1415,4 +1441,18 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
         }
     }
     body
+}
+
+/// Core's bounded NEON intrinsics are emitted as Keel vector operations.
+pub fn is_neon_intrinsic(name: &str) -> bool {
+    matches!(
+        name,
+        "__neon_vld1q_u8"
+            | "__neon_vdupq_n_u8"
+            | "__neon_vceqq_u8"
+            | "__neon_vandq_u8"
+            | "__neon_vorrq_u8"
+            | "__neon_vgetq_lane_u64"
+            | "__neon_vget_lane_u64"
+    )
 }

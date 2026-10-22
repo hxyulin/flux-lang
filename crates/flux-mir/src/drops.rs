@@ -75,7 +75,7 @@ pub(crate) fn elaborate(
             .collect();
         return;
     }
-    let paths = MovePaths::new(body, |local| roots.contains(&local));
+    let paths = MovePaths::new(body, sigs, |local| roots.contains(&local));
     let entry = analyze(body, &paths, true);
     let needs_drop = |ty| flux_ty::traits::needs_drop(items, sigs, env, ty);
 

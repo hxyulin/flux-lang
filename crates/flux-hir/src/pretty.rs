@@ -88,7 +88,11 @@ pub(crate) fn file(hir: &Hir) -> String {
             continue;
         }
         match s.kind {
-            StructKind::Record => writeln!(out, "struct {name}{generics}{bounds} {{ {fields} }}"),
+            StructKind::Record => writeln!(
+                out,
+                "{} {name}{generics}{bounds} {{ {fields} }}",
+                if s.is_union { "union" } else { "struct" }
+            ),
             StructKind::Tuple => writeln!(out, "struct {name}{generics}({fields}){bounds};"),
             StructKind::Unit => writeln!(out, "struct {name}{generics}{bounds};"),
         }

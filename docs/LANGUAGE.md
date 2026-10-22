@@ -15,7 +15,9 @@ qualifiers and bodiless declarations), structs (unit, tuple, record), enums
 traits, type aliases (including generic associated types), `const` and
 `static` items, inline and out-of-line modules, `use` trees, `extern crate`,
 `extern` blocks (including C-variadic declarations), `macro_rules!`
-definitions, and macro calls in item position. Visibilities: `pub`,
+definitions, macro calls in item position, and nongeneric unions with integer
+scalar fields (bounded as described below). `union` remains a contextual
+keyword, so identifiers and macros named `union` still work. Visibilities: `pub`,
 `pub(crate)`, `pub(self)`, `pub(super)`, `pub(in path)`.
 
 **Attributes:** outer and inner attributes, with any token tree or a
@@ -176,7 +178,10 @@ reported as "not supported yet":
   including loading out-of-line modules. Predicates share `cfg!`'s evaluator:
   `all`, `any`, `not`, `debug_assertions`, `panic = "abort"`, `unix`,
   `windows`, and the target's `target_os`, `target_family`, `target_arch`,
-  `target_pointer_width`, `target_endian` and `target_vendor`. `test`,
+  `target_pointer_width`, `target_endian` and `target_vendor`. The fixed
+  backend baseline currently recognizes `target_feature = "neon"` on AArch64 and
+  `"fxsr"`, `"sse"`, `"sse2"` on x86-64. Other feature predicates are false;
+  flags used to build Flux do not change this configuration. `test`,
   features and unknown predicates are false; there are no build flags or
   test builds yet. Nested `cfg_attr` applies its selected attributes before
   semantic consumers inspect them. Inner file/module `cfg` and conditional
@@ -995,6 +1000,30 @@ forever, as rustc promotes it.
 Slices provide unsafe `get_unchecked` and `get_unchecked_mut` for `usize`
 indices. The caller must supply an in-bounds index; unchecked range indexing
 remains unsupported.
+
+On AArch64, `core::arch::aarch64` provides distinct `uint8x16_t`,
+`uint16x8_t`, `uint64x2_t`, `uint8x8_t` and `uint64x1_t` types, with their
+Rust sizes/alignments and Copy/Clone/Debug. The bounded API includes
+`vld1q_u8`, `vdupq_n_u8`, `vceqq_u8`, `vandq_u8`, `vorrq_u8`,
+`vreinterpretq_u16_u8`, `vreinterpretq_u64_u8`, `vreinterpret_u64_u8`,
+`vgetq_lane_u64::<LANE>` and `vget_lane_u64::<LANE>`. Calls require an
+unsafe context; const lane indices are checked after substitution. Ordinary
+wrappers support unsafe function pointers; closures calling them inside an
+unsafe block can satisfy Fn bounds. Safe pointer conversions and direct
+Fn-bound use of the target-feature items are rejected. Caller
+`target_feature` attributes, legacy trailing lane arguments, narrowing shifts,
+pairwise maximum and vector C ABI support remain unsupported.
+
+Unions support signed/unsigned integer scalar fields, default/`repr(C)`
+layout, Copy/Clone and whole-value moves. Fields share storage at offset
+zero; size is the largest field size rounded to maximum alignment, and no
+field niche is reused. Field reads/references require unsafe code, writes
+require an initialized mutable union, and borrows of different fields overlap.
+Copy/Clone copy storage without reading inactive fields; scalar fields have
+no implicit destructors. Aggregate/generic fields, patterns, constant union
+storage, other derives/representation hints and field reinitialization after
+a move remain explicitly unsupported. Whole-value assignment can initialize
+or reinitialize a union; type-only size/alignment queries are supported.
 
 Values are laid out in memory as rustc lays them out, so
 `core::mem::{size_of, align_of, size_of_val, align_of_val}` (in the

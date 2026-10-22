@@ -1,0 +1,5 @@
+fn main() -> ()
+    v@0: uint8x16_t
+error 102..103: mismatched types: expected `uint16x8_t`, found `uint8x16_t`
+error 129..130: mismatched types: expected `uint64x2_t`, found `uint8x16_t`
+error 173..174: mismatched types: expected `uint64x2_t`, found `uint8x16_t`

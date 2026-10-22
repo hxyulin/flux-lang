@@ -3090,6 +3090,18 @@ impl Builder<'_> {
         dest: &Place,
         range: TextRange,
     ) {
+        if self.items.structs[strukt].is_union {
+            if let Some(&(name, value)) = fields.first() {
+                let operand = self.lower_operand(value);
+                let field = self.struct_field(strukt, variant, name);
+                self.assign(
+                    dest,
+                    Rvalue::Aggregate(AggregateKind::Union(strukt, field), vec![operand]),
+                    range,
+                );
+            }
+            return;
+        }
         let count = self.items.structs[strukt].variant(variant).fields.len();
         let mut operands: Vec<Option<Operand>> = vec![None; count];
         for &(name, value) in fields {

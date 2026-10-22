@@ -1,0 +1,13 @@
+union Bits<T> where T: Copy { byte: T, word: u64, neon: [u64; 2] }
+
+impl<T> ::core::marker::Copy for Bits<T> where T: Copy, T: ::core::marker::Copy;
+
+impl<T> ::core::clone::Clone for Bits<T> where T: Copy, T: ::core::clone::Clone;
+
+fn main() -> () {}
+
+fn <Bits<T> as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+    Bits { byte: Clone::clone((&self@0.byte)), word: Clone::clone((&self@0.word)), neon: Clone::clone((&self@0.neon)) }
+}
+
+error 0..289: generic unions are not supported yet

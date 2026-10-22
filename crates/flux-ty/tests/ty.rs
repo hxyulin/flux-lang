@@ -18,10 +18,21 @@ fn fixtures(dir: &str) -> Vec<PathBuf> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data")
         .join(dir);
-    let mut files: Vec<_> = fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+    let mut dirs = vec![dir.clone()];
+    // Architecture APIs are absent on other hosts. Keep their snapshots in
+    // a matching directory instead of weakening their expected diagnostics.
+    let arch = dir.join(std::env::consts::ARCH);
+    if arch.is_dir() {
+        dirs.push(arch);
+    }
+    let mut files: Vec<_> = dirs
+        .into_iter()
+        .flat_map(|dir| {
+            fs::read_dir(&dir)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        })
         .collect();
     files.sort();
     assert!(!files.is_empty(), "no fixtures in {}", dir.display());

@@ -22,7 +22,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use flux_arena::ArenaMap;
 use flux_hir::{ConstId, FunctionId, ItemTree};
 use flux_syntax::TextRange;
-use flux_ty::{ConstInstance, GenericArgs, IntTy, Signatures, Ty, subst_list};
+use flux_ty::{ConstInstance, GenericArgs, IntTy, Signatures, Ty, TyKind, subst_list};
 
 use crate::{
     AggregateKind, AssertMessage, BinOp, Body, Constant, Operand, Place, ProjectionElem, Rvalue,
@@ -438,6 +438,32 @@ impl<'a> Evaluator<'a> {
         depth: u32,
         checked: bool,
     ) -> Result<Value, EvalError> {
+        fn has_union(sigs: &Signatures, ty: Ty, seen: &mut HashSet<Ty>) -> bool {
+            if !seen.insert(ty) {
+                return false;
+            }
+            match ty.kind() {
+                TyKind::Adt(adt, _) if sigs.unions.contains(&adt.strukt) => true,
+                TyKind::Ref(_, t)
+                | TyKind::RawPtr(_, t)
+                | TyKind::Array(t, _)
+                | TyKind::Slice(t) => has_union(sigs, t, seen),
+                _ => sigs
+                    .contents(ty)
+                    .is_some_and(|fs| fs.iter().any(|&t| has_union(sigs, t, seen))),
+            }
+        }
+        let mut seen = HashSet::new();
+        if body
+            .locals
+            .values()
+            .any(|l| has_union(self.sigs, l.ty.subst(generics), &mut seen))
+        {
+            return Err(error(
+                body.blocks[Body::entry()].terminator.range,
+                "union constant evaluation is not supported yet".to_owned(),
+            ));
+        }
         let mut block = Body::entry();
         loop {
             let data = &body.blocks[block];
@@ -831,6 +857,12 @@ impl<'a> Evaluator<'a> {
                         index,
                         fields,
                     },
+                    AggregateKind::Union(..) => {
+                        return Err(error(
+                            range,
+                            "union constant evaluation is not supported yet".to_owned(),
+                        ));
+                    }
                     AggregateKind::Tuple
                     | AggregateKind::Struct(_)
                     | AggregateKind::Array(_)

@@ -246,6 +246,15 @@ fn rvalue_text(hir: &Hir, rvalue: &Rvalue) -> String {
                 _ => format!("({})", ops.join(", ")),
             }
         }
+        Rvalue::Aggregate(AggregateKind::Union(strukt, field), ops) => {
+            let def = &hir.items.structs[*strukt];
+            format!(
+                "{} {{ {}: {} }}",
+                def.name,
+                def.fields[*field as usize].name,
+                operand(hir, &ops[0])
+            )
+        }
         Rvalue::Aggregate(AggregateKind::Struct(strukt), ops) => {
             aggregate(hir, hir.items.structs[*strukt].variant(0), ops)
         }

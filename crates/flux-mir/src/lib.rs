@@ -586,6 +586,8 @@ pub enum AggregateKind {
     /// An array of elements of this type, from its elements.
     Array(Ty),
     Struct(StructId),
+    /// A union initialized through exactly this field.
+    Union(StructId, u32),
     /// Variant `index` of an enum, from its fields.
     Variant(StructId, u32),
     /// A closure, from what it captures.

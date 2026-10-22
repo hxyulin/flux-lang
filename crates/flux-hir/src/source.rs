@@ -136,6 +136,7 @@ const CORE_FILES: &[(&str, &str)] = &[
         "ascii.rs",
         include_str!("../../../library/core/src/ascii.rs"),
     ),
+    ("arch.rs", include_str!("../../../library/core/src/arch.rs")),
     ("char.rs", include_str!("../../../library/core/src/char.rs")),
     ("ffi.rs", include_str!("../../../library/core/src/ffi.rs")),
     ("str.rs", include_str!("../../../library/core/src/str.rs")),

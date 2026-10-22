@@ -1,0 +1,15 @@
+fn accepts_fn<F>(F) -> ()
+    f@0: F
+fn main() -> ()
+    _splat@0: fn(u8) -> uint8x16_t
+    _lane@1: fn(uint64x2_t) -> u64
+    _words@2: fn(uint8x16_t) -> uint64x2_t
+    _cast@3: fn(u8) -> uint8x16_t
+    direct@4: unsafe fn(u8) -> uint8x16_t {vdupq_n_u8}
+error 142..152: mismatched types: expected `fn(u8) -> uint8x16_t`, found `unsafe fn(u8) -> uint8x16_t {vdupq_n_u8}`
+error 193..212: mismatched types: expected `fn(uint64x2_t) -> u64`, found `unsafe fn(uint64x2_t) -> u64 {vgetq_lane_u64::<1>}`
+error 261..281: mismatched types: expected `fn(uint8x16_t) -> uint64x2_t`, found `unsafe fn(uint8x16_t) -> uint64x2_t {vreinterpretq_u64_u8}`
+error 299..309: mismatched types: expected `fn(u8) -> uint8x16_t`, found `unsafe fn(u8) -> uint8x16_t {vdupq_n_u8}`
+error 350..360: the trait bound `unsafe fn(u8) -> uint8x16_t {vdupq_n_u8}: Fn<(u8,)>` is not satisfied
+error 404..413: call to unsafe function `vdupq_n_u8` is unsafe and requires unsafe function or block
+error 427..440: call to unsafe function `vdupq_n_u8` is unsafe and requires unsafe function or block

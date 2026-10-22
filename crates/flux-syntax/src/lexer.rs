@@ -101,6 +101,12 @@ impl<'a> LexedStr<'a> {
         &self.text[self.starts[i] as usize..self.starts[i + 1] as usize]
     }
 
+    /// Contextual classification belongs to lexing; the parser receives only
+    /// token kinds and this bit, without consulting source text.
+    pub(crate) fn is_union_keyword(&self, i: usize) -> bool {
+        self.kind(i) == SyntaxKind::IDENT && self.token_text(i) == "union"
+    }
+
     pub fn token_range(&self, i: usize) -> TextRange {
         TextRange::new(self.starts[i], self.starts[i + 1])
     }

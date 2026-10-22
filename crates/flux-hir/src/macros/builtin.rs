@@ -166,7 +166,7 @@ type Arg<'a> = (Option<(Symbol, &'a [Tok])>, &'a [Tok]);
 fn split_exprs<'a>(cx: &BuiltinCx<'_>, toks: &'a [Tok], named: bool) -> Result<Args<'a>, Error> {
     let mut input = parser::Input::default();
     for t in toks {
-        input.push(t.kind);
+        input.push(t.kind, t.is_union_keyword());
         if t.joint {
             input.set_last_joint();
         }
@@ -260,7 +260,7 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
 fn assert(cx: &BuiltinCx<'_>, out: &mut Vec<Tok>) -> Result<(), Error> {
     let mut input = parser::Input::default();
     for t in cx.toks {
-        input.push(t.kind);
+        input.push(t.kind, t.is_union_keyword());
         if t.joint {
             input.set_last_joint();
         }

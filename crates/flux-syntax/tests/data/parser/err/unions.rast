@@ -1,0 +1,147 @@
+SOURCE_FILE@0..186
+  UNION@0..11
+    UNION_KW@0..5 "union"
+    WHITESPACE@5..6 " "
+    NAME@6..11
+      IDENT@6..11 "Tuple"
+  ERROR@11..12
+    L_PAREN@11..12 "("
+  ERROR@12..14
+    PATH@12..14
+      PATH_SEGMENT@12..14
+        NAME_REF@12..14
+          IDENT@12..14 "u8"
+  ERROR@14..15
+    R_PAREN@14..15 ")"
+  ERROR@15..16
+    SEMICOLON@15..16 ";"
+  WHITESPACE@16..17 "\n"
+  UNION@17..27
+    UNION_KW@17..22 "union"
+    WHITESPACE@22..23 " "
+    NAME@23..27
+      IDENT@23..27 "Unit"
+  ERROR@27..28
+    SEMICOLON@27..28 ";"
+  WHITESPACE@28..29 "\n"
+  UNION@29..48
+    UNION_KW@29..34 "union"
+    WHITESPACE@34..35 " "
+    NAME@35..48
+      IDENT@35..48 "MissingFields"
+  WHITESPACE@48..49 "\n"
+  UNION@49..77
+    UNION_KW@49..54 "union"
+    WHITESPACE@54..55 " "
+    NAME@55..66
+      IDENT@55..66 "MissingType"
+    WHITESPACE@66..67 " "
+    RECORD_FIELD_LIST@67..77
+      L_CURLY@67..68 "{"
+      WHITESPACE@68..69 " "
+      RECORD_FIELD@69..75
+        NAME@69..74
+          IDENT@69..74 "value"
+        COLON@74..75 ":"
+      WHITESPACE@75..76 " "
+      R_CURLY@76..77 "}"
+  WHITESPACE@77..78 "\n"
+  UNION@78..110
+    UNION_KW@78..83 "union"
+    WHITESPACE@83..84 " "
+    NAME@84..96
+      IDENT@84..96 "MissingColon"
+    WHITESPACE@96..97 " "
+    RECORD_FIELD_LIST@97..110
+      L_CURLY@97..98 "{"
+      WHITESPACE@98..99 " "
+      RECORD_FIELD@99..108
+        NAME@99..104
+          IDENT@99..104 "value"
+        WHITESPACE@104..105 " "
+        PATH_TYPE@105..108
+          PATH@105..108
+            PATH_SEGMENT@105..108
+              NAME_REF@105..108
+                IDENT@105..108 "u32"
+      WHITESPACE@108..109 " "
+      R_CURLY@109..110 "}"
+  WHITESPACE@110..111 "\n"
+  UNION@111..146
+    UNION_KW@111..116 "union"
+    WHITESPACE@116..117 " "
+    NAME@117..129
+      IDENT@117..129 "MissingComma"
+    WHITESPACE@129..130 " "
+    RECORD_FIELD_LIST@130..146
+      L_CURLY@130..131 "{"
+      WHITESPACE@131..132 " "
+      RECORD_FIELD@132..137
+        NAME@132..133
+          IDENT@132..133 "a"
+        COLON@133..134 ":"
+        WHITESPACE@134..135 " "
+        PATH_TYPE@135..137
+          PATH@135..137
+            PATH_SEGMENT@135..137
+              NAME_REF@135..137
+                IDENT@135..137 "u8"
+      WHITESPACE@137..138 " "
+      RECORD_FIELD@138..144
+        NAME@138..139
+          IDENT@138..139 "b"
+        COLON@139..140 ":"
+        WHITESPACE@140..141 " "
+        PATH_TYPE@141..144
+          PATH@141..144
+            PATH_SEGMENT@141..144
+              NAME_REF@141..144
+                IDENT@141..144 "u64"
+      WHITESPACE@144..145 " "
+      R_CURLY@145..146 "}"
+  WHITESPACE@146..147 "\n"
+  ERROR@147..154
+    PATH@147..154
+      PATH_SEGMENT@147..154
+        NAME_REF@147..154
+          IDENT@147..154 "r#union"
+  WHITESPACE@154..155 " "
+  ERROR@155..172
+    IDENT@155..158 "Raw"
+    WHITESPACE@158..159 " "
+    TOKEN_TREE@159..172
+      L_CURLY@159..160 "{"
+      WHITESPACE@160..161 " "
+      IDENT@161..166 "value"
+      COLON@166..167 ":"
+      WHITESPACE@167..168 " "
+      IDENT@168..170 "u8"
+      WHITESPACE@170..171 " "
+      R_CURLY@171..172 "}"
+  WHITESPACE@172..173 "\n"
+  FN@173..185
+    FN_KW@173..175 "fn"
+    WHITESPACE@175..176 " "
+    NAME@176..180
+      IDENT@176..180 "main"
+    PARAM_LIST@180..182
+      L_PAREN@180..181 "("
+      R_PAREN@181..182 ")"
+    WHITESPACE@182..183 " "
+    BLOCK_EXPR@183..185
+      L_CURLY@183..184 "{"
+      R_CURLY@184..185 "}"
+  WHITESPACE@185..186 "\n"
+error 11..11: expected `{`
+error 11..11: expected an item
+error 14..14: expected BANG
+error 14..14: expected an item
+error 15..15: expected an item
+error 27..27: expected `{`
+error 27..27: expected an item
+error 48..48: expected `{`
+error 75..75: expected a type
+error 104..104: expected `:`
+error 137..137: expected `,`
+error 154..154: expected BANG
+error 155..155: missing `struct` for struct definition

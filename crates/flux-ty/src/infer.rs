@@ -349,6 +349,7 @@ impl<'a> Ctx<'a> {
             uninit_bindings: FxHashSet::default(),
             tainted: false,
             unsafe_depth: u32::from(owner.is_unsafe),
+            union_write: None,
             ret: owner.ret,
             param_env: owner.param_env,
             unsized_params: owner.unsized_params,
@@ -539,6 +540,7 @@ struct Ctx<'a> {
     /// variables left unknown are then not reported.
     tainted: bool,
     unsafe_depth: u32,
+    union_write: Option<ExprId>,
     ret: Ty,
     /// The bounds in scope, with the supertraits they imply.
     param_env: Vec<Predicate>,
@@ -4636,6 +4638,12 @@ impl Ctx<'_> {
                 self.field_indices.insert(id, index as u32);
                 if let TyKind::Adt(adt, _) = base_ty.kind() {
                     let def = &items.structs[adt.strukt];
+                    if def.is_union && self.unsafe_depth == 0 && self.union_write != Some(id) {
+                        self.error(
+                            range,
+                            "access to union field is unsafe and requires unsafe function or block",
+                        );
+                    }
                     if !items.is_visible(def.fields[index].vis, self.module) {
                         self.error(
                             range,
@@ -4676,7 +4684,11 @@ impl Ctx<'_> {
     ) -> Ty {
         let items = self.items;
         let def = items.structs[strukt].variant(variant);
+        let union = items.structs[strukt].is_union;
         let range = self.range(id);
+        if union && (fields.len() != 1 || spread.is_some()) {
+            self.error(range, "union expressions must have exactly one field");
+        }
         let origin = self.source_map.paths.get(id).copied().unwrap_or(range);
         let ty = self.instantiate_struct(strukt, Some(id), origin);
         self.meet_expectation(id, ty);
@@ -4754,7 +4766,7 @@ impl Ctx<'_> {
                     .filter(|name| !seen.contains(name))
                     .collect();
                 // rustc reports unknown fields instead of missing ones.
-                if !missing.is_empty() && !unknown {
+                if !union && !missing.is_empty() && !unknown {
                     let message = format!(
                         "missing {} in initializer of `{}`",
                         list_fields(&missing),
@@ -5312,7 +5324,12 @@ impl Ctx<'_> {
                 if arith.is_none() {
                     self.check_place(id, lhs, true);
                 }
+                let previous = self.union_write;
+                if arith.is_none() {
+                    self.union_write = Some(lhs);
+                }
                 let ty = self.infer_expr(lhs);
+                self.union_write = previous;
                 self.mutable_place(lhs, true, self.range(id));
                 match arith {
                     None => {

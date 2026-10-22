@@ -9,6 +9,8 @@ mod macros;
 
 pub mod alloc;
 pub mod array;
+#[cfg(target_arch = "aarch64")]
+pub mod arch;
 pub mod ascii;
 pub mod cell;
 mod bool;

@@ -11,6 +11,8 @@ use crate::lexer::LexedStr;
 pub struct Input {
     kinds: Vec<SyntaxKind>,
     joint: Vec<u64>,
+    /// Identifiers spelled `union`, excluding raw identifiers.
+    union_keywords: Vec<u64>,
 }
 
 impl Input {
@@ -18,6 +20,7 @@ impl Input {
         let mut input = Input {
             kinds: Vec::with_capacity(lexed.len()),
             joint: Vec::with_capacity(lexed.len() / 64 + 1),
+            union_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
         };
         let mut was_joint = false;
         for (i, &kind) in lexed.kinds().iter().enumerate() {
@@ -28,16 +31,22 @@ impl Input {
             if was_joint {
                 input.set_last_joint();
             }
-            input.push(kind);
+            input.push(kind, lexed.is_union_keyword(i));
             was_joint = i + 1 < lexed.len() && !lexed.kind(i + 1).is_trivia();
         }
         input
     }
 
-    pub fn push(&mut self, kind: SyntaxKind) {
+    /// Adds a token and its lexer-supplied contextual classification. The
+    /// grammar still sees `IDENT` except where it requests a keyword.
+    pub fn push(&mut self, kind: SyntaxKind, is_union: bool) {
         let idx = self.kinds.len();
         if idx.is_multiple_of(64) {
             self.joint.push(0);
+            self.union_keywords.push(0);
+        }
+        if kind == SyntaxKind::IDENT && is_union {
+            self.union_keywords[idx / 64] |= 1 << (idx % 64);
         }
         self.kinds.push(kind);
     }
@@ -59,6 +68,12 @@ impl Input {
     /// The kind of token `i`, or `EOF` past the end.
     pub fn kind(&self, i: usize) -> SyntaxKind {
         self.kinds.get(i).copied().unwrap_or(SyntaxKind::EOF)
+    }
+
+    pub(crate) fn is_union_keyword(&self, i: usize) -> bool {
+        self.union_keywords
+            .get(i / 64)
+            .is_some_and(|word| word & (1 << (i % 64)) != 0)
     }
 
     /// Whether token `i` is immediately followed by token `i + 1`.

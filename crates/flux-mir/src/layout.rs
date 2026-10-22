@@ -389,6 +389,18 @@ impl<'a> Layouts<'a> {
         let lang = |name: &str| flux_ty::is_lang_struct(items, strukt, name);
         let Some(variants) = self.sigs.variants(ty) else {
             let fields = self.sigs.fields(ty).unwrap_or_default();
+            if data.is_union {
+                let align = fields.iter().map(|&f| self.of(f).align).max().unwrap_or(1);
+                let size = fields.iter().map(|&f| self.of(f).size).max().unwrap_or(0);
+                return Layout {
+                    size: align_to(size, align),
+                    align,
+                    niche: None,
+                    uninhabited: false,
+                    exact: true,
+                    shape: Shape::Struct(vec![0; fields.len()].into()),
+                };
+            }
             // A struct's last field is unsized only if its type may be,
             // which flux's never may.
             let mut layout = self.univariant_layout(

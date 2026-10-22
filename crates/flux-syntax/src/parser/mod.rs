@@ -247,6 +247,15 @@ impl<'i> Parser<'i> {
         );
     }
 
+    pub(crate) fn at_union(&mut self) -> bool {
+        self.at(IDENT) && self.input.is_union_keyword(self.pos)
+    }
+
+    pub(crate) fn bump_union(&mut self) {
+        assert!(self.at_union());
+        self.do_bump(UNION_KW, 1);
+    }
+
     /// Consumes the next raw token as-is.
     pub(crate) fn bump_any(&mut self) {
         let kind = self.current();
