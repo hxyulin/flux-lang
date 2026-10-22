@@ -67,9 +67,9 @@ In order next:
    other array methods of rustc's `core`.
    Returning closures (`impl Fn`), which needs opaque types.
    What trait objects leave: `Box<dyn Tr>` (with drop through the
-   vtable, once `alloc` exists), lifetime bounds other than their
-   reference's, references in their arguments, trait objects in
-   constants, `impl dyn Tr` blocks, unsized structs, and `dyn Any`.
+   vtable, once `alloc` exists), references in their arguments
+   (`dyn Fn(&T)`, higher-ranked), trait objects in constants, function
+   pointers to their methods, unsized structs, and `dyn Any`.
 2. Lifetimes, what is left: lifetime parameters on traits and in the
    trait arguments of bounds (`T: Tr<&'a U>`), lifetimes in the bounds
    of structs, traits and associated types, higher-ranked bounds

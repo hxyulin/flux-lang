@@ -5979,6 +5979,9 @@ impl Ctx<'_> {
                 let name = match block.target {
                     Some(flux_hir::ImplTarget::Struct(s)) => items.structs[s].name.to_string(),
                     Some(flux_hir::ImplTarget::Primitive(p)) => p.to_string(),
+                    Some(flux_hir::ImplTarget::Object(t)) => {
+                        format!("dyn {}", items.traits[t].name)
+                    }
                     None => String::new(),
                 };
                 let params: Vec<String> = block
