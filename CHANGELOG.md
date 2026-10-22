@@ -203,6 +203,25 @@
 
 ### Performance
 
+- Speed up the front end on one thread: about 245 MiB/s for whole-file
+  parsing instead of 200 (`just bench`: lexing 6.3 to 5.4 ns/token,
+  parsing 5.2 to 3.9, building 6.0 to 4.9). The parser's lookahead is
+  inlined, so its test for composite tokens folds away for the constant
+  kinds the grammar asks for; the tree builder no longer rewrites every
+  event, nor counts the trivia before nodes that take no comments; the
+  lexer finds keywords through a perfect hash of their bytes and no
+  longer tracks the last two significant tokens for every token; and
+  the token, input and node arrays are sized so that they do not grow.
+- A file's text moves into its tree instead of being copied, paths in
+  the item tree allocate each of their arrays once at its final size,
+  the item tree's diagnostics are moved into the HIR's rather than
+  cloned and deduplicated without copying their messages, and a crate's
+  files are found by path through a map rather than a scan: windows'
+  module tree (672 files, 114 MB) lowers in 1.3 s instead of 1.6 s.
+  Type checking it takes 0.17 s instead of 0.80 s: resolving the type
+  of each `impl` block of a trait looked through every diagnostic so
+  far for those without a file, rather than through its own.
+
 - Run the corpus tests on every core, and print the files they spent
   longest on: `just corpus ~/.cargo/registry/src` takes 13 s instead of
   about two and a half minutes. Derives no longer look for a `Copy`

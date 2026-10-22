@@ -7,7 +7,7 @@ use std::path::{Path as FsPath, PathBuf};
 use flux_arena::{Idx, LayeredArena};
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::ast::{self, AstChildren, AstNode};
-use flux_syntax::{NodeId, SyntaxElement, SyntaxKind, SyntaxNode, TextRange};
+use flux_syntax::{NodeId, SyntaxElement, SyntaxKind, SyntaxNode, T, TextRange};
 
 use crate::Diagnostic;
 use crate::def_map::DefMap;
@@ -56,6 +56,8 @@ pub struct ItemTree {
     /// `core`'s `#[lang = "panic"]` function, which aborts, and which
     /// constant evaluation reports as a panic with its message.
     pub panic_fn: Option<FunctionId>,
+    /// Problems found collecting the items and resolving their names;
+    /// [`lower`](crate::lower) moves them into the [`Hir`](crate::Hir)'s.
     pub diagnostics: Vec<Diagnostic>,
     /// How many of each item came from [`Core`](crate::Core), built and
     /// resolved before the program's: the items with smaller indices
@@ -2761,7 +2763,15 @@ pub(crate) fn lower_generic_path(
     path: ast::Path<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Path> {
-    let mut segments = Vec::new();
+    // Large crates lower millions of paths: each array is allocated once,
+    // at its final size.
+    let mut count = 1;
+    let mut current = path.qualifier();
+    while let Some(p) = current {
+        count += 1;
+        current = p.qualifier();
+    }
+    let mut segments = Vec::with_capacity(count);
     let mut current = Some(path);
     while let Some(p) = current {
         let segment = p.segment()?;
@@ -2777,10 +2787,12 @@ pub(crate) fn lower_generic_path(
         current = p.qualifier();
     }
     segments.reverse();
+    let mut segments = &segments[..];
     // `<T as Tr>::f`: the qualified segment comes first.
     let mut qself = None;
     if segments[0].name_ref().is_none() && segments[0].l_angle_token().is_some() {
-        let segment = segments.remove(0);
+        let segment = segments[0];
+        segments = &segments[1..];
         let ty_range = segment
             .self_ty()
             .map_or(segment.syntax().text_range(), |t| t.syntax().text_range());
@@ -2811,16 +2823,19 @@ pub(crate) fn lower_generic_path(
         PathAnchor::Plain
     };
     let count = segments.len();
-    let (mut names, mut ranges, mut anchor_ranges) = (Vec::new(), Vec::new(), Vec::new());
-    let mut args = Vec::new();
+    // `crate`, `self` and `super` come before every name: the names are
+    // the segments from the first one on.
+    let mut anchors = 0;
+    let (mut names, mut ranges, mut args) = (Vec::new(), Vec::new(), Vec::new());
     for (i, segment) in segments.iter().enumerate() {
         let name = segment.name_ref()?;
+        let kind = name.token().map(|t| t.kind());
         let range = name.syntax().text_range();
         let list = segment.generic_arg_list();
         if let Some(list) = list
-            && (name.crate_token().is_some()
-                || name.super_token().is_some()
-                || (name.self_token().is_some() && count > 1))
+            && (kind == Some(T![crate])
+                || kind == Some(T![super])
+                || (kind == Some(T![self]) && count > 1))
         {
             unsupported(
                 diagnostics,
@@ -2833,22 +2848,18 @@ pub(crate) fn lower_generic_path(
             let message = format!("`{}` in paths can only be used in {what}", name.text());
             diagnostics.push(Diagnostic::new(range, message));
         };
-        if qself.is_some()
-            && (name.crate_token().is_some()
-                || name.super_token().is_some()
-                || name.self_token().is_some())
-        {
+        if qself.is_some() && matches!(kind, Some(T![crate] | T![super] | T![self])) {
             misplaced("start position", diagnostics);
             return None;
         }
-        if name.crate_token().is_some() {
+        if kind == Some(T![crate]) {
             if i != 0 || anchor != PathAnchor::Plain {
                 misplaced("start position", diagnostics);
                 return None;
             }
             anchor = PathAnchor::Crate;
-            anchor_ranges.push(range);
-        } else if name.super_token().is_some() {
+            anchors += 1;
+        } else if kind == Some(T![super]) {
             anchor = match anchor {
                 _ if !names.is_empty() => {
                     misplaced("start position", diagnostics);
@@ -2861,18 +2872,25 @@ pub(crate) fn lower_generic_path(
                     return None;
                 }
             };
-            anchor_ranges.push(range);
-        } else if name.self_token().is_some() && i == 0 && count > 1 {
+            anchors += 1;
+        } else if kind == Some(T![self]) && i == 0 && count > 1 {
             anchor = PathAnchor::SelfModule;
-            anchor_ranges.push(range);
-        } else if name.self_token().is_some() && i != 0 && i + 1 != count {
+            anchors += 1;
+        } else if kind == Some(T![self]) && i != 0 && i + 1 != count {
             misplaced("start position or last position", diagnostics);
             return None;
         } else {
+            if names.is_empty() {
+                names.reserve_exact(count - i);
+                ranges.reserve_exact(count - i);
+            }
             names.push(Symbol::intern(name.text()));
             ranges.push(range);
             // Most paths have no arguments, and get no list of them.
             if let Some(list) = list {
+                if args.is_empty() {
+                    args.reserve_exact(count - anchors);
+                }
                 args.resize(names.len() - 1, None);
                 args.push(Some(lower_generic_args(list, diagnostics)));
             }
@@ -2881,12 +2899,19 @@ pub(crate) fn lower_generic_path(
     if !args.is_empty() {
         args.resize(names.len(), None);
     }
+    let anchor_ranges = segments[..anchors]
+        .iter()
+        .map(|s| {
+            s.name_ref()
+                .map_or(TextRange::default(), |n| n.syntax().text_range())
+        })
+        .collect();
     Some(Path {
         anchor,
         qself,
         segments: names.into(),
         ranges: ranges.into(),
-        anchor_ranges: anchor_ranges.into(),
+        anchor_ranges,
         args: args.into(),
     })
 }

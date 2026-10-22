@@ -42,8 +42,10 @@ impl<'a> LexedStr<'a> {
             u32::try_from(text.len()).is_ok(),
             "source files are limited to 4 GiB"
         );
-        // Rust averages about one token per four bytes, trivia included.
-        let capacity = text.len() / 4 + 1;
+        // Rust averages a little over one token per four bytes, trivia
+        // included; denser files would grow the arrays, copying them.
+        // The tree built from them frees what is left over.
+        let capacity = text.len() / 3 + 1;
         let mut lexer = Lexer {
             text,
             bytes: text.as_bytes(),
@@ -54,7 +56,6 @@ impl<'a> LexedStr<'a> {
                 starts: Vec::with_capacity(capacity + 1),
                 errors: Vec::new(),
             },
-            last_significant: [None; 2],
         };
         while lexer.pos < text.len() {
             lexer.token();
@@ -113,9 +114,6 @@ struct Lexer<'a> {
     bytes: &'a [u8],
     pos: usize,
     res: LexedStr<'a>,
-    /// The last two non-trivia tokens, used only to lex `x.0.1` as two
-    /// tuple indices rather than a float, while `..0.5` stays a float.
-    last_significant: [Option<SyntaxKind>; 2],
 }
 
 impl Lexer<'_> {
@@ -145,9 +143,6 @@ impl Lexer<'_> {
         }
         self.res.kinds.push(kind);
         self.res.starts.push(start as u32);
-        if !kind.is_trivia() {
-            self.last_significant = [self.last_significant[1], Some(kind)];
-        }
     }
 
     fn token(&mut self) {
@@ -237,12 +232,13 @@ impl Lexer<'_> {
 
     fn ident_continue(&mut self) {
         loop {
-            match self.byte(0) {
-                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' => self.pos += 1,
-                0x80.. => match self.char_at(self.pos) {
-                    Some(c) if is_ident_continue(c) => self.pos += c.len_utf8(),
-                    _ => return,
-                },
+            let rest = &self.bytes[self.pos..];
+            self.pos += rest
+                .iter()
+                .position(|&b| !is_ascii_ident_continue(b))
+                .unwrap_or(rest.len());
+            match self.char_at(self.pos) {
+                Some(c) if !c.is_ascii() && is_ident_continue(c) => self.pos += c.len_utf8(),
                 _ => return,
             }
         }
@@ -420,8 +416,7 @@ impl Lexer<'_> {
         }
 
         let mut kind = INT_NUMBER;
-        let after_field_dot =
-            self.last_significant[1] == Some(DOT) && self.last_significant[0] != Some(DOT);
+        let after_field_dot = after_field_dot(&self.res.kinds);
         self.decimal_digits();
         // A tuple index (`t.0.1`) never has a fraction. Otherwise `1.` is a
         // float unless the dot starts a range (`1..2`) or a field or method
@@ -477,6 +472,31 @@ fn is_whitespace(c: char) -> bool {
             | '\u{2028}'
             | '\u{2029}'
     )
+}
+
+/// Whether a number after the tokens `before` follows a field's `.`
+/// (`x.0`) rather than a range's (`..0`), so that `x.0.1` is two tuple
+/// indices rather than a float. Looks back past trivia: numbers are rare
+/// enough that this is cheaper than tracking it for every token.
+fn after_field_dot(before: &[SyntaxKind]) -> bool {
+    let mut significant = before.iter().rev().filter(|k| !k.is_trivia());
+    significant.next() == Some(&DOT) && significant.next() != Some(&DOT)
+}
+
+/// Whether `b` continues an identifier, for ASCII bytes: a table lookup
+/// rather than a chain of range checks.
+#[inline]
+fn is_ascii_ident_continue(b: u8) -> bool {
+    const TABLE: [bool; 256] = {
+        let mut table = [false; 256];
+        let mut b = 0;
+        while b < 128 {
+            table[b] = (b as u8).is_ascii_alphanumeric() || b == b'_' as usize;
+            b += 1;
+        }
+        table
+    };
+    TABLE[b as usize]
 }
 
 fn is_ident_start(c: char) -> bool {

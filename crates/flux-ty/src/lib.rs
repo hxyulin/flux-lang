@@ -1428,6 +1428,9 @@ fn impl_type(items: &ItemTree, imp: &Impl, diagnostics: &mut Vec<Diagnostic>) ->
     };
     let mut errors = Vec::new();
     if imp.trait_ref.is_some() {
+        // Only the diagnostics added here: looking through all of them
+        // for each `impl` block would be quadratic.
+        let start = diagnostics.len();
         let ty = resolve_or_report(
             items,
             imp.module,
@@ -1436,10 +1439,7 @@ fn impl_type(items: &ItemTree, imp: &Impl, diagnostics: &mut Vec<Diagnostic>) ->
             imp.self_range,
             diagnostics,
         );
-        for d in diagnostics
-            .iter_mut()
-            .filter(|d| d.file == flux_hir::FileId::UNKNOWN)
-        {
+        for d in &mut diagnostics[start..] {
             d.file = imp.file;
         }
         return ty;

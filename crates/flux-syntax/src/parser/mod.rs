@@ -86,45 +86,58 @@ impl<'i> Parser<'i> {
         }
     }
 
+    // The lookahead functions below are inlined: grammar rules call them
+    // with constant kinds, for which the test for composite tokens folds
+    // away.
+
     /// The kind of the `n`th token ahead, as raw (single-character) tokens.
+    #[inline]
     pub(crate) fn nth(&mut self, n: usize) -> SyntaxKind {
         self.steps += 1;
         assert!(self.steps < STEP_LIMIT, "the parser seems stuck");
         self.input.kind(self.pos + n)
     }
 
+    #[inline]
     pub(crate) fn current(&mut self) -> SyntaxKind {
         self.nth(0)
     }
 
     /// Whether the next token is `kind`. Composite kinds (`::`) match when
     /// their parts are present and joint.
+    #[inline]
     pub(crate) fn at(&mut self, kind: SyntaxKind) -> bool {
         self.nth_at(0, kind)
     }
 
+    #[inline]
     pub(crate) fn nth_at(&mut self, n: usize, kind: SyntaxKind) -> bool {
         match kind.composite_parts() {
             None => self.nth(n) == kind,
-            Some(parts) => {
-                let start = self.pos + n;
-                parts.iter().enumerate().all(|(i, &part)| {
-                    self.input.kind(start + i) == part
-                        && (i + 1 == parts.len() || self.input.is_joint(start + i))
-                })
-            }
+            Some(parts) => self.nth_at_composite(n, parts),
         }
     }
 
+    fn nth_at_composite(&self, n: usize, parts: &[SyntaxKind]) -> bool {
+        let start = self.pos + n;
+        parts.iter().enumerate().all(|(i, &part)| {
+            self.input.kind(start + i) == part
+                && (i + 1 == parts.len() || self.input.is_joint(start + i))
+        })
+    }
+
+    #[inline]
     pub(crate) fn at_ts(&mut self, set: TokenSet) -> bool {
         set.contains(self.current())
     }
 
+    #[inline]
     pub(crate) fn at_end(&mut self) -> bool {
         self.at(EOF)
     }
 
     /// Consumes the next token if it is `kind`.
+    #[inline]
     pub(crate) fn eat(&mut self, kind: SyntaxKind) -> bool {
         if !self.at(kind) {
             return false;
