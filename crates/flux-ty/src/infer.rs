@@ -5343,6 +5343,7 @@ impl Ctx<'_> {
                 .collect();
             let args = Ty::list(&args);
             self.check_sized_args(expr, function, args);
+            self.check_object_bounds(expr, function, args);
             calls.insert(expr, Instance { function, args });
         }
         let overloaded: Vec<(ExprId, (FunctionId, Vec<Ty>))> = self
@@ -5718,6 +5719,42 @@ impl Ctx<'_> {
             .and_then(|i| values.get(i))
             .map_or(self.range(expr), |&v| self.range(v));
         self.error(at, crate::unsized_error(arg));
+    }
+
+    /// A trait object's lifetime bound is its reference's, which a
+    /// parameter's lifetime bound (`T: 'static`) cannot be checked
+    /// against once the object is an argument for it: not supported.
+    fn check_object_bounds(&mut self, expr: ExprId, function: FunctionId, args: &[Ty]) {
+        fn has_object(ty: Ty) -> bool {
+            ty.is_dyn() || ty.children().into_iter().any(has_object)
+        }
+        if !args.iter().any(|&a| has_object(a)) {
+            return;
+        }
+        let items = self.items;
+        let data = &items.functions[function];
+        let names = crate::generic_names(items, data.owner, &data.generics);
+        let bounded = |name: Symbol| {
+            items
+                .owner_generics(data.owner)
+                .into_iter()
+                .chain([&data.generics])
+                .any(|g| {
+                    g.type_outlives.iter().any(|o| {
+                        matches!(&o.ty, flux_hir::TypeRef::Path(p) if p.as_name() == Some(name))
+                    })
+                })
+        };
+        if names
+            .iter()
+            .zip(args)
+            .any(|(&name, &arg)| has_object(arg) && bounded(name))
+        {
+            self.error(
+                self.range(expr),
+                "trait objects as arguments of parameters with lifetime bounds are not supported yet",
+            );
+        }
     }
 
     /// Values must have a size known at compile time (E0277): a slice is

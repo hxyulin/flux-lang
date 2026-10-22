@@ -2295,7 +2295,10 @@ impl<'a> Cx<'a> {
     /// nothing of lifetimes.
     fn prove(&mut self, goal: flux_ty::Predicate, vars: &[Vec<Var>], range: TextRange, depth: u32) {
         let (items, sigs) = (self.items, self.sigs);
-        if depth > 8 || vars.iter().all(|v| v.is_empty()) {
+        // A trait object has no slots, but its lifetime bound matters
+        // to the block's bounds.
+        let object = has_object(goal.self_ty) || goal.trait_ref.args.iter().any(|&a| has_object(a));
+        if depth > 8 || vars.iter().all(|v| v.is_empty()) && !object {
             return;
         }
         if matches!(
@@ -2360,6 +2363,17 @@ impl<'a> Cx<'a> {
                         }
                     }
                     let instance = self.normalize(t.subst(&impl_args));
+                    // A trait object's lifetime bound is not known here.
+                    if has_object(instance) {
+                        let message = "trait objects as arguments of parameters with lifetime bounds are not supported yet";
+                        if !self
+                            .errors
+                            .iter()
+                            .any(|d| d.range == range && d.message == message)
+                        {
+                            self.errors.push(Diagnostic::new(range, message));
+                        }
+                    }
                     self.type_outlives(instance, b, range);
                 }
             }
@@ -3237,4 +3251,9 @@ fn tarjan(edges: &[Vec<u32>]) -> (Vec<u32>, Vec<u32>) {
         }
     }
     (scc, order)
+}
+
+/// Whether `ty` contains a trait object.
+fn has_object(ty: Ty) -> bool {
+    ty.is_dyn() || ty.children().into_iter().any(has_object)
 }

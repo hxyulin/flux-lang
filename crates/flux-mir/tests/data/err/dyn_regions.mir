@@ -116,9 +116,35 @@ fn main() -> () {
     }
 }
 
+fn Two::two(_1: &Self) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn escapes_through_impl<'a>(_1: &dyn Tr) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: &dyn Tr;
+
+    bb0: {
+        _3 = &(*_1);
+        _2 = two::<dyn Tr>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+}
+
 error 425..426: lifetime may not live long enough
 error 425..426: lifetime may not live long enough
 error 485..486: lifetime may not live long enough
 error 569..571: `x` does not live long enough
 error 586..588: `s` does not live long enough
 error 698..703: cannot assign to `x` because it is borrowed
+error 1000..1007: trait objects as arguments of parameters with lifetime bounds are not supported yet

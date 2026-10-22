@@ -75,4 +75,11 @@ fn by_value(k: &dyn Tr) {
     k.by();
 }
 
+// A trait object's lifetime bound cannot be checked against a
+// parameter's: rustc's E0521 here, not supported yet in flux.
+fn need_static<T: ?Sized + 'static>(_: &T) {}
+fn escapes<'a>(x: &'a dyn Tr) {
+    need_static(x);
+}
+
 fn main() {}
