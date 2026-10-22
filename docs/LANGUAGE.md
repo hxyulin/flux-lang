@@ -543,7 +543,8 @@ takes `&self` or `&mut self` (or `self`, which cannot be called on a
 trait object, E0161), has no type parameters, and names `Self` only in
 its receiver or as `Self::Item`); every associated type must be given
 (E0191) and every parameter whose default names `Self` (E0393); other
-traits than the first are E0225 (flux has no auto traits), and a bare
+traits than the first are rejected (including extra auto-trait bounds,
+which remain unsupported on trait objects), and a bare
 trait as a type is E0782. A method with `where Self: Sized` "cannot be
 invoked on a trait object". A trait object's lifetime bound (`dyn Tr +
 'a`) is, unless written, rustc's default: the reference it is behind,
@@ -672,6 +673,16 @@ its type must be `Sync`, which rules out raw pointers (E0277), and a
 explicit or made by a method call, so it is read and written by value.
 A constant may read an immutable static's value, but not a `static
 mut`'s (E0080).
+
+Core's `Send` and `Sync` propagate structurally through supported fields,
+arrays, tuples, closures and PhantomData. Shared references require `T: Sync`
+for either marker; mutable references require `T: Send` for Send and `T: Sync`
+for Sync. Raw pointers do not receive either marker automatically, and Cell
+is not Sync. Explicit unsafe implementations replace structural propagation,
+including their generic obligations; shared statics use the same Sync rules.
+Lifetime specialization/bounds in marker implementations and custom auto
+traits remain unsupported. Recursive structural proofs are conservatively
+depth-limited; no threading APIs are implied by these markers.
 
 Every program can use flux's own `core` library, which has the parts of
 Rust's that flux supports so far: the integer types' constants (`MIN`,
