@@ -362,6 +362,139 @@ fn local() -> Copied<Iter<u32>> {
     }
 }
 
+fn refs<'a>(_1: &[u32]) -> Filter<Iter<u32>, {closure}> {
+    let mut _0: Filter<Iter<u32>, {closure}>;
+    let _2: Iter<u32>;
+    let _3: &[u32];
+    let _4: Iter<u32>;
+    let _5: {closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _2 = iter::<u32>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _4 = move _2;
+        _5 = {closure}();
+        _0 = filter::<Iter<u32>, {closure}>(move _4, copy _5) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn refs<'a>::{closure#9} as FnMut(_1: &mut {closure}, _2: (&&u32,)) -> bool {
+    let mut _0: bool;
+    let _3: &&u32; // x
+    let _4: u32;
+    let _5: u32;
+
+    bb0: {
+        _3 = copy _2.0;
+        _5 = copy (*(*_3));
+        _4 = Rem(copy _5, const 2_u32);
+        _0 = Eq(copy _4, const 0_u32);
+        return;
+    }
+}
+
+fn refs<'a>::{closure#9} as FnOnce(_1: {closure}, _2: (&&u32,)) -> bool {
+    let mut _0: bool;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, (&&u32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn other<'a, 'b>(_1: &[u32], _2: &[u32]) -> Iter<u32> {
+    let mut _0: Iter<u32>;
+    let _3: &[u32];
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = iter::<u32>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn forever<'a>(_1: &[u32]) -> Iter<u32> {
+    let mut _0: Iter<u32>;
+    let _2: &[u32];
+
+    bb0: {
+        _2 = &(*_1);
+        _0 = iter::<u32>(copy _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn dangling() -> u32 {
+    let mut _0: u32;
+    let _1: Option<&u32>; // r
+    let _2: ();
+    let _3: [u32; 2]; // v
+    let _4: ();
+    let _5: Option<&u32>;
+    let _6: impl Iterator<Item = &'a u32> + 'a;
+    let _7: &[u32];
+    let _8: &[u32; 2];
+    let _9: &mut impl Iterator<Item = &'a u32> + 'a;
+    let _10: &u32;
+    let _11: Option<&u32>;
+
+    bb0: {
+        _3 = [const 1_u32, const 2_u32];
+        _8 = &_3;
+        _7 = copy _8 as &[u32] (unsize);
+        _6 = refs(copy _7) -> bb1;
+    }
+
+    bb1: {
+        _9 = &two_phase _6;
+        _5 = next::<impl Iterator<Item = &'a u32> + 'a>(move _9) -> bb2;
+    }
+
+    bb2: {
+        _1 = copy _5;
+        _4 = const ();
+        drop(_6) -> bb3;
+    }
+
+    bb3: {
+        StorageDead(_6);
+        _2 = const ();
+        StorageDead(_3);
+        _11 = copy _1;
+        _10 = unwrap::<&u32>(copy _11) -> bb4;
+    }
+
+    bb4: {
+        _0 = copy (*_10);
+        StorageDead(_10);
+        StorageDead(_1);
+        return;
+    }
+}
+
 fn kept() -> () {
     let mut _0: ();
     let mut _1: Bag; // bag
@@ -395,6 +528,15 @@ fn kept() -> () {
     let _29: [u32; 2];
     let _30: usize;
     let _31: impl Iterator<Item = u32>;
+    let mut _32: [u32; 2]; // c
+    let _33: Option<&u32>; // first
+    let _34: impl Iterator<Item = &'a u32> + 'a;
+    let _35: &[u32];
+    let _36: &[u32; 2];
+    let _37: &mut impl Iterator<Item = &'a u32> + 'a;
+    let _38: ();
+    let _39: usize;
+    let _40: bool;
 
     bb0: {
         _2 = [const 0_u32; 4];
@@ -470,7 +612,35 @@ fn kept() -> () {
 
     bb12: {
         StorageDead(_30);
+        _32 = [const 1_u32, const 2_u32];
+        _36 = &_32;
+        _35 = copy _36 as &[u32] (unsize);
+        _34 = refs(copy _35) -> bb13;
+    }
+
+    bb13: {
+        _37 = &two_phase _34;
+        _33 = next::<impl Iterator<Item = &'a u32> + 'a>(move _37) -> bb14;
+    }
+
+    bb14: {
+        drop(_34) -> bb15;
+    }
+
+    bb15: {
+        StorageDead(_34);
+        _39 = const 0_usize;
+        _40 = Lt(copy _39, const 2_usize);
+        assert(copy _40, "index out of bounds") -> bb16;
+    }
+
+    bb16: {
+        _32[_39] = const 3_u32;
+        _38 = const ();
+        PlaceMention(_33);
         _0 = const ();
+        StorageDead(_33);
+        StorageDead(_32);
         StorageDead(_25);
         StorageDead(_24);
         StorageDead(_16);
@@ -527,18 +697,23 @@ fn moved() -> () {
 
 fn main() -> () {
     let mut _0: ();
-    let _1: ();
+    let _1: u32;
     let _2: ();
+    let _3: ();
 
     bb0: {
-        _1 = kept() -> bb1;
+        _1 = dangling() -> bb1;
     }
 
     bb1: {
-        _2 = moved() -> bb2;
+        _2 = kept() -> bb2;
     }
 
     bb2: {
+        _3 = moved() -> bb3;
+    }
+
+    bb3: {
         _0 = const ();
         return;
     }
@@ -547,7 +722,11 @@ fn main() -> () {
 error 680..697: hidden type for `impl Iterator<Item = u32>` captures lifetime that does not appear in bounds
 error 747..756: closure may outlive the current function, but it borrows `n`, which is owned by the current function
 error 829..830: `a` does not live long enough
-error 962..973: cannot borrow `bag` as mutable because it is also borrowed as immutable
-error 1027..1038: cannot borrow `bag` as mutable because it is also borrowed as immutable
-error 1123..1131: cannot assign to `a[_]` because it is borrowed
-error 1306..1307: borrow of moved value: `f`
+error 1042..1050: lifetime may not live long enough
+error 1127..1135: lifetime may not live long enough
+error 1223..1225: `v` does not live long enough
+error 1372..1383: cannot borrow `bag` as mutable because it is also borrowed as immutable
+error 1437..1448: cannot borrow `bag` as mutable because it is also borrowed as immutable
+error 1533..1541: cannot assign to `a[_]` because it is borrowed
+error 1715..1723: cannot assign to `c[_]` because it is borrowed
+error 1809..1810: borrow of moved value: `f`

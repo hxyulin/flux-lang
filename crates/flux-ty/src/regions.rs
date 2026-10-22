@@ -141,6 +141,10 @@ pub struct OpaqueRegions {
     pub captures: Box<[Region]>,
     /// `'a` in `impl Tr + 'a`: what its hidden type outlives.
     pub outlives: Box<[Region]>,
+    /// The slots of what its bounds say associated types are
+    /// (`impl Iterator<Item = &'a T>`), as [`crate::OpaqueSig`] lists
+    /// them; none where they cannot be matched, which only errors cause.
+    pub projections: Box<[Box<[Region]>]>,
 }
 
 /// The lifetimes of a struct's or enum's fields.

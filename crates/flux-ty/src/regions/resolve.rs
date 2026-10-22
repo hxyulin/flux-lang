@@ -367,7 +367,8 @@ fn functions(
                 Elided::Missing(Some(elision_help(&per_param, named)))
             }
         };
-        let opaques = opaque_regions(function, &mut walker);
+        let opaque_sigs = sigs.opaques.get(id).cloned().unwrap_or_default();
+        let opaques = opaque_regions(function, &opaque_sigs, &mut walker);
         if !opaques.is_empty() {
             // Its opaque types' slots are what they capture.
             sig_ret = sig_ret.map_opaques(&mut |o| {
@@ -498,12 +499,17 @@ fn bound_regions(
 /// The lifetimes of `function`'s opaque types, with `walker` past its
 /// parameters (so with the lifetimes elided there) and set up for its
 /// return type: those each captures, all of the function's unless
-/// `use<..>` lists them, and those its `+ 'a` bounds name. Lifetimes in
-/// their bounds' generic arguments are reported as not supported yet.
-fn opaque_regions(function: &flux_hir::Function, walker: &mut Walker<'_>) -> Vec<OpaqueRegions> {
+/// `use<..>` lists them, those its `+ 'a` bounds name, and those of what
+/// its bounds say associated types are (`Item = &'a T`, with lifetimes
+/// elided as in the return type), whose resolved bounds are `sigs`.
+fn opaque_regions(
+    function: &flux_hir::Function,
+    sigs: &[crate::OpaqueSig],
+    walker: &mut Walker<'_>,
+) -> Vec<OpaqueRegions> {
     let all = walker.names.len() + walker.fresh.len();
     let mut out = Vec::new();
-    for decl in function.opaques.iter() {
+    for (i, decl) in function.opaques.iter().enumerate() {
         let captures: Box<[Region]> = match &decl.captures {
             None => (0..all as u32).map(Region::Param).collect(),
             Some(list) => {
@@ -538,17 +544,32 @@ fn opaque_regions(function: &flux_hir::Function, walker: &mut Walker<'_>) -> Vec
             .collect();
         let mut list = Vec::new();
         let generics = Generics::default();
-        check_bounds(&generics, decl.bounds.iter(), false, false, &mut list);
-        // Elided lifetimes are allowed there, as in the return type, but
-        // flux does not track them yet either.
-        for (_, message) in &mut list {
-            if message.starts_with("`&` without an explicit lifetime name") {
-                *message =
-                    "lifetimes in the generic arguments of bounds are not supported yet".to_owned();
+        check_bounds(&generics, decl.bounds.iter(), false, true, &mut list);
+        // Elided lifetimes are allowed in what they say associated types
+        // are, as in the return type.
+        list.retain(|(_, message)| !message.starts_with("`&` without an explicit lifetime name"));
+        walker.errors.append(&mut list);
+        let mut projections: Vec<Box<[Region]>> = Vec::new();
+        if let Some(sig) = sigs.get(i) {
+            let bindings = decl.bounds.iter().flat_map(|b| {
+                let last = b.path.segments.len().saturating_sub(1);
+                b.path.args(last).map_or(&[][..], |a| &a.bindings)
+            });
+            for (b, p) in bindings.zip(sig.projections.iter()) {
+                if b.name != p.alias.name {
+                    break;
+                }
+                projections.push(walker.regions(&b.ty, p.ty));
+            }
+            if projections.len() != sig.projections.len() {
+                projections.clear();
             }
         }
-        walker.errors.append(&mut list);
-        out.push(OpaqueRegions { captures, outlives });
+        out.push(OpaqueRegions {
+            captures,
+            outlives,
+            projections: projections.into(),
+        });
     }
     out
 }
