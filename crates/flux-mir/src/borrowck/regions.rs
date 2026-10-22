@@ -1221,6 +1221,25 @@ impl<'a> Cx<'a> {
             let inputs = arg_vars.get(1).map_or(&[][..], Vec::as_slice);
             return Some(self.closure_output(id, list, arg_vars.first()?, inputs));
         }
+        if self.is_fn_output(alias) {
+            let inputs = arg_vars.get(1)?;
+            if let TyKind::FnDef(_) = alias.args[0].kind() {
+                return self.function_output(alias.args[0], inputs);
+            }
+            if let TyKind::FnPtr(sig) = alias.args[0].kind() {
+                // Pointer signatures erase lifetimes here. Conservatively
+                // equate their result's slots with every argument slot,
+                // preserving invariance through nested mutable references.
+                let n = self.slots(sig.ret());
+                let outs = self.fresh_list(n);
+                for &out in &outs {
+                    for &input in inputs {
+                        self.equate(input, out, Category::CallArgument, self.call_range);
+                    }
+                }
+                return Some(outs);
+            }
+        }
         let (items, sigs) = (self.items, self.sigs);
         let self_ty = alias.args[0];
         let goal = flux_ty::Predicate {
@@ -1264,6 +1283,74 @@ impl<'a> Cx<'a> {
             return self.instantiate_sig(value, &table, &mut map, &impl_args, &type_vars);
         }
         None
+    }
+
+    /// A function item's output, instantiated from the same signature as
+    /// a direct call. It may borrow its arguments, never an adapter that
+    /// stores it; invariant slots must stay equal to the inputs' slots.
+    fn function_output(&mut self, ty: Ty, inputs: &[Var]) -> Option<Vec<Var>> {
+        let TyKind::FnDef(def) = ty.kind() else {
+            return None;
+        };
+        let sigs = self.sigs;
+        let sig = &sigs.fns[def.function];
+        let regions = sigs.regions.fns.get(def.function)?;
+        let lifetimes = self.fresh_list(regions.names.len() as u32);
+        let mut type_vars = Vec::new();
+        for &arg in def.args {
+            let n = self.slots(arg);
+            type_vars.push(self.fresh_list(n));
+        }
+        let mut map = |r: Region| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => lifetimes.get(i as usize).copied(),
+            Region::Erased => None,
+        };
+        let range = self.call_range;
+        let mut at = 0;
+        for (i, &ty) in def.sig.params().iter().enumerate() {
+            let n = self.slots(ty) as usize;
+            let actual = inputs.get(at..at + n)?;
+            at += n;
+            let formal = self.instantiate_sig(
+                *sig.params.get(i)?,
+                regions.params.get(i)?,
+                &mut map,
+                def.args,
+                &type_vars,
+            )?;
+            self.relate(
+                ty,
+                actual,
+                &formal,
+                Variance::Covariant,
+                Category::CallArgument,
+                range,
+            );
+        }
+        let output = self.instantiate_sig(sig.ret, &regions.ret, &mut map, def.args, &type_vars)?;
+        for p in regions.outlives.iter() {
+            match *p {
+                Outlives::Region(a, b) => {
+                    if let (Some(a), Some(b)) = (map(a), map(b)) {
+                        self.outlives(a, b, Category::CallArgument, range);
+                    }
+                }
+                Outlives::Type(t, b) => {
+                    let Some(b) = map(b) else { continue };
+                    if let TyKind::Param(p) = t.kind()
+                        && let Some(vars) = type_vars.get(p.index as usize)
+                    {
+                        for &v in vars {
+                            self.outlives(v, b, Category::CallArgument, range);
+                        }
+                    }
+                    let instance = self.normalize(t.subst(def.args));
+                    self.type_outlives(instance, b, range);
+                }
+            }
+        }
+        Some(output)
     }
 
     /// The slots of what `opaque`'s bounds say `alias` (of it) is, where
@@ -1367,7 +1454,7 @@ impl<'a> Cx<'a> {
             // A closure's `Output` binds the parameters it is, which
             // its header may not name (`B` of `impl<B, I, F: FnMut(I::Item)
             // -> B> Iterator for Map<I, F>`).
-            if table.is_empty() && !self.is_closure_output(alias) {
+            if table.is_empty() && !self.is_callable_output(alias) {
                 continue;
             }
             let type_vars: Vec<Vec<Var>> = binding
@@ -2448,7 +2535,7 @@ impl<'a> Cx<'a> {
         let TyKind::Alias(alias) = Ty::alias(p.alias).subst(args).kind() else {
             return;
         };
-        if table.is_empty() && !self.is_closure_output(alias) {
+        if table.is_empty() && !self.is_callable_output(alias) {
             return;
         }
         let mut alias_vars = Vec::with_capacity(p.alias.args.len());
@@ -2535,9 +2622,12 @@ impl<'a> Cx<'a> {
             && alias.name.as_str() == "Output"
     }
 
-    /// Whether `alias` is a closure's `Output`.
-    fn is_closure_output(&self, alias: AliasTy) -> bool {
-        matches!(alias.args[0].kind(), TyKind::Closure(..)) && self.is_fn_output(alias)
+    /// Whether `alias` is a concrete callable's `Output`.
+    fn is_callable_output(&self, alias: AliasTy) -> bool {
+        matches!(
+            alias.args[0].kind(),
+            TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_)
+        ) && self.is_fn_output(alias)
     }
 
     /// Closure `id`, whose captures have slots `upvars` (unknown if

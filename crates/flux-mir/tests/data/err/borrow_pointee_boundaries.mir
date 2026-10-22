@@ -1,0 +1,526 @@
+fn shared_then_mut(_1: &&mut i32) -> () {
+    let mut _0: ();
+    let _2: ();
+
+    bb0: {
+        (*(*_1)) = const 2_i32;
+        _2 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn mut_then_shared(_1: &mut &i32) -> () {
+    let mut _0: ();
+    let _2: ();
+
+    bb0: {
+        (*(*_1)) = const 2_i32;
+        _2 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn raw_then_shared(_1: *mut &i32) -> () {
+    let mut _0: ();
+    let _2: ();
+
+    bb0: {
+        (*(*_1)) = const 2_i32;
+        _2 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn shared_then_const(_1: &*const i32) -> () {
+    let mut _0: ();
+    let _2: ();
+
+    bb0: {
+        (*(*_1)) = const 2_i32;
+        _2 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn borrow_shared_then_mut(_1: &&mut i32) -> () {
+    let mut _0: ();
+    let _2: &mut i32;
+
+    bb0: {
+        _2 = &mut (*(*_1));
+        StorageDead(_2);
+        _0 = const ();
+        return;
+    }
+}
+
+fn borrow_raw_then_shared(_1: *mut &i32) -> () {
+    let mut _0: ();
+    let _2: &mut i32;
+
+    bb0: {
+        _2 = &mut (*(*_1));
+        StorageDead(_2);
+        _0 = const ();
+        return;
+    }
+}
+
+fn whole_mut(_1: &mut S) -> () {
+    let mut _0: ();
+    let _2: &i32; // r
+    let _3: &mut S; // other
+    let _4: ();
+    let _5: ();
+    let _6: Arguments;
+    let _7: &[&str];
+    let _8: &[&str; 3];
+    let _9: &[Argument; 2];
+    let _10: [Argument; 2];
+    let _11: (&&i32, &&mut i32);
+    let _12: &&i32;
+    let _13: &&mut i32;
+    let _14: (&&i32, &&mut i32); // args
+    let _15: Argument;
+    let _16: &&i32;
+    let _17: Argument;
+    let _18: &&mut i32;
+
+    bb0: {
+        _2 = &(*(*_1).0);
+        _3 = &mut (*_1);
+        _8 = const &promoted[0];
+        _7 = copy _8 as &[&str] (unsize);
+        _12 = &_2;
+        _13 = &(*_3).0;
+        _11 = (copy _12, copy _13);
+        _14 = copy _11;
+        goto -> bb3;
+    }
+
+    bb1: {
+        _9 = &_10;
+        _6 = new_v1::<2>(copy _7, copy _9) -> bb6;
+    }
+
+    bb2: {
+        unreachable;
+    }
+
+    bb3: {
+        _16 = copy _14.0;
+        _15 = new_display::<&i32>(copy _16) -> bb4;
+    }
+
+    bb4: {
+        _18 = copy _14.1;
+        _17 = new_display::<&mut i32>(copy _18) -> bb5;
+    }
+
+    bb5: {
+        _10 = [copy _15, copy _17];
+        StorageDead(_14);
+        goto -> bb1;
+    }
+
+    bb6: {
+        _5 = _print(copy _6) -> bb7;
+    }
+
+    bb7: {
+        StorageDead(_10);
+        StorageDead(_11);
+        _4 = const ();
+        _0 = const ();
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn whole_shared(_1: &mut S) -> () {
+    let mut _0: ();
+    let _2: &mut i32; // r
+    let _3: &S; // other
+    let _4: ();
+    let _5: ();
+    let _6: Arguments;
+    let _7: &[&str];
+    let _8: &[&str; 3];
+    let _9: &[Argument; 2];
+    let _10: [Argument; 2];
+    let _11: (&&mut i32, &&mut i32);
+    let _12: &&mut i32;
+    let _13: &&mut i32;
+    let _14: (&&mut i32, &&mut i32); // args
+    let _15: Argument;
+    let _16: &&mut i32;
+    let _17: Argument;
+    let _18: &&mut i32;
+
+    bb0: {
+        _2 = &mut (*(*_1).0);
+        _3 = &(*_1);
+        _8 = const &promoted[0];
+        _7 = copy _8 as &[&str] (unsize);
+        _12 = &_2;
+        _13 = &(*_3).0;
+        _11 = (copy _12, copy _13);
+        _14 = copy _11;
+        goto -> bb3;
+    }
+
+    bb1: {
+        _9 = &_10;
+        _6 = new_v1::<2>(copy _7, copy _9) -> bb6;
+    }
+
+    bb2: {
+        unreachable;
+    }
+
+    bb3: {
+        _16 = copy _14.0;
+        _15 = new_display::<&mut i32>(copy _16) -> bb4;
+    }
+
+    bb4: {
+        _18 = copy _14.1;
+        _17 = new_display::<&mut i32>(copy _18) -> bb5;
+    }
+
+    bb5: {
+        _10 = [copy _15, copy _17];
+        StorageDead(_14);
+        goto -> bb1;
+    }
+
+    bb6: {
+        _5 = _print(copy _6) -> bb7;
+    }
+
+    bb7: {
+        StorageDead(_10);
+        StorageDead(_11);
+        _4 = const ();
+        _0 = const ();
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn escape_item() -> &str {
+    let mut _0: &str;
+    let _1: [u8; 1]; // bytes
+    let _2: &str; // text
+    let _3: Result<&str, Utf8Error>;
+    let _4: &[u8];
+    let _5: &[u8; 1];
+    let _6: Result<&str, Utf8Error>;
+    let _7: Option<&str>;
+    let _8: MapWhile<IntoIter<Result<&str, ()>, 1>, fn(Result<&str, ()>) -> Option<&str> {Result::ok::<&str, ()>}>;
+    let _9: IntoIter<Result<&str, ()>, 1>;
+    let _10: [Result<&str, ()>; 1];
+    let _11: Result<&str, ()>;
+    let _12: &str;
+    let _13: [Result<&str, ()>; 1];
+    let _14: IntoIter<Result<&str, ()>, 1>;
+    let _15: fn(Result<&str, ()>) -> Option<&str> {Result::ok::<&str, ()>};
+    let _16: &mut MapWhile<IntoIter<Result<&str, ()>, 1>, fn(Result<&str, ()>) -> Option<&str> {Result::ok::<&str, ()>}>;
+    let _17: Option<&str>;
+
+    bb0: {
+        _1 = [const 97_u8];
+        _5 = &_1;
+        _4 = copy _5 as &[u8] (unsize);
+        _3 = from_utf8(copy _4) -> bb1;
+    }
+
+    bb1: {
+        _6 = copy _3;
+        _2 = unwrap::<&str, Utf8Error>(copy _6) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_3);
+        _12 = copy _2;
+        _11 = Result::Ok(copy _12);
+        _10 = [copy _11];
+        _13 = copy _10;
+        _9 = into_iter::<[Result<&str, ()>; 1]>(copy _13) -> bb3;
+    }
+
+    bb3: {
+        _14 = move _9;
+        _15 = const Result::ok::<&str, ()>;
+        _8 = map_while::<IntoIter<Result<&str, ()>, 1>, &str, fn(Result<&str, ()>) -> Option<&str> {Result::ok::<&str, ()>}>(move _14, copy _15) -> bb4;
+    }
+
+    bb4: {
+        _16 = &two_phase _8;
+        _7 = next::<MapWhile<IntoIter<Result<&str, ()>, 1>, fn(Result<&str, ()>) -> Option<&str> {Result::ok::<&str, ()>}>>(move _16) -> bb5;
+    }
+
+    bb5: {
+        _17 = copy _7;
+        _0 = unwrap::<&str>(copy _17) -> bb6;
+    }
+
+    bb6: {
+        StorageDead(_7);
+        drop(_8) -> bb7;
+    }
+
+    bb7: {
+        StorageDead(_8);
+        StorageDead(_9);
+        StorageDead(_10);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn keep(_1: &str) -> Option<&str> {
+    let mut _0: Option<&str>;
+    let _2: &str;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = Option::Some(copy _2);
+        return;
+    }
+}
+
+fn escape_pointer() -> &str {
+    let mut _0: &str;
+    let _1: [u8; 1]; // bytes
+    let _2: &str; // text
+    let _3: Result<&str, Utf8Error>;
+    let _4: &[u8];
+    let _5: &[u8; 1];
+    let _6: Result<&str, Utf8Error>;
+    let _7: fn(&str) -> Option<&str>; // f
+    let _8: fn(&str) -> Option<&str> {keep};
+    let _9: Option<&str>;
+    let _10: MapWhile<IntoIter<&str, 1>, fn(&str) -> Option<&str>>;
+    let _11: IntoIter<&str, 1>;
+    let _12: [&str; 1];
+    let _13: &str;
+    let _14: [&str; 1];
+    let _15: IntoIter<&str, 1>;
+    let _16: fn(&str) -> Option<&str>;
+    let _17: &mut MapWhile<IntoIter<&str, 1>, fn(&str) -> Option<&str>>;
+    let _18: Option<&str>;
+
+    bb0: {
+        _1 = [const 98_u8];
+        _5 = &_1;
+        _4 = copy _5 as &[u8] (unsize);
+        _3 = from_utf8(copy _4) -> bb1;
+    }
+
+    bb1: {
+        _6 = copy _3;
+        _2 = unwrap::<&str, Utf8Error>(copy _6) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_3);
+        _8 = const keep;
+        _7 = const keep as fn;
+        _13 = copy _2;
+        _12 = [copy _13];
+        _14 = copy _12;
+        _11 = into_iter::<[&str; 1]>(copy _14) -> bb3;
+    }
+
+    bb3: {
+        _15 = move _11;
+        _16 = copy _7;
+        _10 = map_while::<IntoIter<&str, 1>, &str, fn(&str) -> Option<&str>>(move _15, copy _16) -> bb4;
+    }
+
+    bb4: {
+        _17 = &two_phase _10;
+        _9 = next::<MapWhile<IntoIter<&str, 1>, fn(&str) -> Option<&str>>>(move _17) -> bb5;
+    }
+
+    bb5: {
+        _18 = copy _9;
+        _0 = unwrap::<&str>(copy _18) -> bb6;
+    }
+
+    bb6: {
+        StorageDead(_9);
+        drop(_10) -> bb7;
+    }
+
+    bb7: {
+        StorageDead(_10);
+        StorageDead(_11);
+        StorageDead(_12);
+        StorageDead(_7);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn identity<T>(_1: T) -> Option<T> {
+    let mut _0: Option<T>;
+    let _2: T;
+
+    bb0: {
+        _2 = move _1;
+        _0 = Option::Some(move _2);
+        return;
+    }
+}
+
+fn invariant_item<'a>(_1: &mut &i32) -> () {
+    let mut _0: ();
+    let _2: i32; // local
+    let _3: &mut &i32; // r
+    let _4: Option<&mut &i32>;
+    let _5: MapWhile<IntoIter<&mut &i32, 1>, fn(&mut &i32) -> Option<&mut &i32> {identity::<&mut &i32>}>;
+    let _6: IntoIter<&mut &i32, 1>;
+    let _7: [&mut &i32; 1];
+    let _8: &mut &i32;
+    let _9: [&mut &i32; 1];
+    let _10: IntoIter<&mut &i32, 1>;
+    let _11: fn(&mut &i32) -> Option<&mut &i32> {identity::<&mut &i32>};
+    let _12: &mut MapWhile<IntoIter<&mut &i32, 1>, fn(&mut &i32) -> Option<&mut &i32> {identity::<&mut &i32>}>;
+    let _13: Option<&mut &i32>;
+    let _14: ();
+    let _15: &i32;
+
+    bb0: {
+        _2 = const 0_i32;
+        _8 = move _1;
+        _7 = [move _8];
+        _9 = move _7;
+        _6 = into_iter::<[&mut &i32; 1]>(move _9) -> bb1;
+    }
+
+    bb1: {
+        _10 = move _6;
+        _11 = const identity::<&mut &i32>;
+        _5 = map_while::<IntoIter<&mut &i32, 1>, &mut &i32, fn(&mut &i32) -> Option<&mut &i32> {identity::<&mut &i32>}>(move _10, copy _11) -> bb2;
+    }
+
+    bb2: {
+        _12 = &two_phase _5;
+        _4 = next::<MapWhile<IntoIter<&mut &i32, 1>, fn(&mut &i32) -> Option<&mut &i32> {identity::<&mut &i32>}>>(move _12) -> bb3;
+    }
+
+    bb3: {
+        _13 = move _4;
+        _3 = unwrap::<&mut &i32>(move _13) -> bb4;
+    }
+
+    bb4: {
+        StorageDead(_4);
+        drop(_5) -> bb5;
+    }
+
+    bb5: {
+        StorageDead(_5);
+        StorageDead(_6);
+        StorageDead(_7);
+        _15 = &_2;
+        (*_3) = copy _15;
+        _14 = const ();
+        _0 = const ();
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn shorten<'a, 'b>(_1: &i32) -> Option<&i32> {
+    let mut _0: Option<&i32>;
+    let _2: &i32;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = Option::Some(copy _2);
+        return;
+    }
+}
+
+fn escape_bound(_1: &i32) -> &i32 {
+    let mut _0: &i32;
+    let _2: Option<&i32>;
+    let _3: MapWhile<IntoIter<&i32, 1>, fn(&i32) -> Option<&i32> {shorten}>;
+    let _4: IntoIter<&i32, 1>;
+    let _5: [&i32; 1];
+    let _6: &i32;
+    let _7: [&i32; 1];
+    let _8: IntoIter<&i32, 1>;
+    let _9: fn(&i32) -> Option<&i32> {shorten};
+    let _10: &mut MapWhile<IntoIter<&i32, 1>, fn(&i32) -> Option<&i32> {shorten}>;
+    let _11: Option<&i32>;
+
+    bb0: {
+        _6 = copy _1;
+        _5 = [copy _6];
+        _7 = copy _5;
+        _4 = into_iter::<[&i32; 1]>(copy _7) -> bb1;
+    }
+
+    bb1: {
+        _8 = move _4;
+        _9 = const shorten;
+        _3 = map_while::<IntoIter<&i32, 1>, &i32, fn(&i32) -> Option<&i32> {shorten}>(move _8, copy _9) -> bb2;
+    }
+
+    bb2: {
+        _10 = &two_phase _3;
+        _2 = next::<MapWhile<IntoIter<&i32, 1>, fn(&i32) -> Option<&i32> {shorten}>>(move _10) -> bb3;
+    }
+
+    bb3: {
+        _11 = copy _2;
+        _0 = unwrap::<&i32>(copy _11) -> bb4;
+    }
+
+    bb4: {
+        StorageDead(_2);
+        drop(_3) -> bb5;
+    }
+
+    bb5: {
+        StorageDead(_3);
+        StorageDead(_4);
+        StorageDead(_5);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 109..116: cannot assign to `**r`, which is behind a `&` reference
+error 160..167: cannot assign to `**r`, which is behind a `&` reference
+error 220..227: cannot assign to `**p`, which is behind a `&` reference
+error 286..293: cannot assign to `**r`, which is behind a `*const` pointer
+error 354..362: cannot borrow `**r` as mutable, as it is behind a `&` reference
+error 429..437: cannot borrow `**p` as mutable, as it is behind a `&` reference
+error 625..632: cannot borrow `*s` as mutable because it is also borrowed as immutable
+error 751..754: cannot borrow `*s` as immutable because it is also borrowed as mutable
+error 986..1055: cannot return value referencing local variable `bytes`
+error 1267..1314: cannot return value referencing local variable `bytes`
+error 1574..1580: `local` does not live long enough
+error 1701..1751: lifetime may not live long enough

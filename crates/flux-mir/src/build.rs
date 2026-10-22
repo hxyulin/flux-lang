@@ -3528,9 +3528,10 @@ impl Builder<'_> {
         if !data.is_enum() {
             return place;
         }
-        // The fields of an enum's variant are captured with the enum.
-        let place = self.resolve(place, range);
-        if data.variant_count() > 1 {
+        // A single-variant enum needs no discriminant read. If none of
+        // its fields are read either, a closure need not capture it.
+        let place = if data.variant_count() > 1 {
+            let place = self.resolve(place, range);
             let int = flux_ty::discriminant_ty(self.items, strukt);
             let discriminant = self.temp(Ty::int(int));
             self.assign(
@@ -3549,8 +3550,16 @@ impl Builder<'_> {
                 range,
             );
             self.current = Some(ok);
+            PatPlace::Place(place)
+        } else {
+            place
+        };
+        // Fields of a variant are captured with the whole enum, so an
+        // unresolved single-variant upvar has no fields that are read.
+        match place {
+            PatPlace::Place(place) => PatPlace::Place(place.downcast(variant)),
+            place @ PatPlace::Upvar(..) => place,
         }
-        PatPlace::Place(place.downcast(variant))
     }
 
     /// The discriminant of variant `variant` of enum `strukt`: a literal's
