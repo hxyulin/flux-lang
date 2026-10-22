@@ -26,4 +26,14 @@ fn main() {
     println!("skip past the end: {n}");
     let mut it = [D(17), D(18), D(19), D(20)].into_iter().rev();
     println!("rev nth_back(1): {:?}", it.nth_back(1).map(|d| d.0));
+    let mut it = [D(21), D(22), D(23), D(24)].into_iter().rev().skip(1);
+    println!("skip nth: {:?}", it.nth(1).map(|d| d.0));
+    drop(it);
+    println!("skip last: {:?}", [D(25), D(26), D(27)].into_iter().rev().skip(1).last().map(|d| d.0));
+    let mut it = [D(28), D(29), D(30), D(31)].into_iter().rev().skip(2);
+    let first: Result<i32, i32> = it.try_fold(0, |_, d| Err(d.0));
+    println!("try_fold: {first:?}, next: {:?}", it.next().map(|d| d.0));
+    drop(it);
+    let mut it = [D(32), D(33)].into_iter().rev().skip(usize::MAX);
+    println!("overflowing skip nth: {:?}", it.nth(1).map(|d| d.0));
 }
