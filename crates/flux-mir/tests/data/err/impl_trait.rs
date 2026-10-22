@@ -38,6 +38,27 @@ fn local() -> impl Iterator<Item = u32> {
     a.iter().copied()
 }
 
+fn refs<'a>(v: &'a [u32]) -> impl Iterator<Item = &'a u32> + 'a {
+    v.iter().filter(|x| **x % 2 == 0)
+}
+
+fn other<'a, 'b>(v: &'a [u32], _w: &'b [u32]) -> impl Iterator<Item = &'b u32> {
+    v.iter()
+}
+
+fn forever<'a>(v: &'a [u32]) -> impl Iterator<Item = &'static u32> {
+    v.iter()
+}
+
+fn dangling() -> u32 {
+    let r;
+    {
+        let v = [1u32, 2];
+        r = refs(&v).next();
+    }
+    *r.unwrap()
+}
+
 fn kept() {
     let mut bag = Bag {
         items: [0; 4],
@@ -57,6 +78,10 @@ fn kept() {
     let f = evens_of(&b);
     drop(b);
     let _ = f.count();
+    let mut c = [1u32, 2];
+    let first = refs(&c).next();
+    c[0] = 3;
+    let _ = first;
 }
 
 fn moved() {
@@ -66,6 +91,7 @@ fn moved() {
 }
 
 fn main() {
+    dangling();
     kept();
     moved();
 }

@@ -670,7 +670,7 @@ fn opaque_sig(sigs: &Signatures, opaque: OpaqueTy) -> Option<&crate::OpaqueSig> 
 
 /// What an opaque type's bounds are substituted with: its arguments,
 /// then itself.
-fn opaque_args(opaque: OpaqueTy) -> Vec<Ty> {
+pub fn opaque_args(opaque: OpaqueTy) -> Vec<Ty> {
     let mut args = opaque.args.to_vec();
     args.push(Ty::opaque(opaque));
     args

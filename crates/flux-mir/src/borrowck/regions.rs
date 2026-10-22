@@ -438,6 +438,7 @@ struct Cx<'a> {
 /// value, and the universal regions it must outlive one of (those it
 /// captures) or all of (its `+ 'a` bounds).
 struct HiddenSlots {
+    opaque: flux_ty::OpaqueTy,
     ty: Ty,
     vars: Vec<Var>,
     captures: Vec<Var>,
@@ -775,6 +776,7 @@ impl<'a> Cx<'a> {
                 let vars = self.fresh_list(n);
                 out.extend(&vars);
                 self.hidden.push(HiddenSlots {
+                    opaque: o,
                     ty: hidden,
                     vars,
                     captures,
@@ -823,7 +825,18 @@ impl<'a> Cx<'a> {
         }
         let hidden = std::mem::take(&mut self.hidden);
         let mut uncaptured = false;
+        // Where rustc blames what the hidden type must outlive: the
+        // value returned.
+        let returned = self.return_range();
         for h in &hidden {
+            let h = &HiddenSlots {
+                range: returned.unwrap_or(h.range),
+                vars: h.vars.clone(),
+                captures: h.captures.clone(),
+                outlives: h.outlives.clone(),
+                ..*h
+            };
+            self.hidden_projections(h);
             for &b in &h.outlives {
                 self.type_outlives(h.ty, b, h.range);
             }
@@ -857,9 +870,8 @@ impl<'a> Cx<'a> {
                 }) {
                     if !uncaptured {
                         uncaptured = true;
-                        let at = self.return_range().unwrap_or(h.range);
                         self.errors.push(Diagnostic::new(
-                            at,
+                            h.range,
                             format!(
                                 "hidden type for `{}` captures lifetime that does not appear in bounds",
                                 h.name
@@ -886,6 +898,70 @@ impl<'a> Cx<'a> {
             }
         }
         self.hidden = hidden;
+    }
+
+    /// What the bounds of `h`'s opaque type say its associated types are,
+    /// with lifetimes (`impl Iterator<Item = &'a u32>`), its hidden
+    /// type's must outlive: what callers are told they are. Where flux
+    /// cannot tell the hidden type's (an adapter's closure decides it),
+    /// each lifetime of the hidden type must outlive each of them.
+    fn hidden_projections(&mut self, h: &HiddenSlots) {
+        let sigs = self.sigs;
+        let o = h.opaque;
+        let (Some(sig), Some(decl)) = (
+            sigs.opaques
+                .get(o.function)
+                .and_then(|s| s.get(o.index as usize)),
+            sigs.regions
+                .fns
+                .get(o.function)
+                .and_then(|r| r.opaques.get(o.index as usize)),
+        ) else {
+            return;
+        };
+        let mut args = o.args.to_vec();
+        args.push(h.ty);
+        let map = |r: Region| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => Some(1 + i),
+            Region::Erased => None,
+        };
+        for (p, table) in sig.projections.iter().zip(decl.projections.iter()) {
+            if table.is_empty() {
+                continue;
+            }
+            let mut map = map;
+            let Some(declared) = self.instantiate_sig(p.ty, table, &mut map, &[], &[]) else {
+                continue;
+            };
+            let alias = p.subst(&args).alias;
+            let mut alias_vars = vec![h.vars.clone()];
+            for &a in &alias.args[1..] {
+                let mut vars = Vec::new();
+                let mut none = |_| None;
+                self.inst(a, &[], &mut 0, &mut none, &[], &[], &mut vars);
+                alias_vars.push(vars);
+            }
+            match self.normalize_regions(alias, &alias_vars, 0) {
+                Some(found) if found.len() == declared.len() => {
+                    self.relate(
+                        p.ty,
+                        &found,
+                        &declared,
+                        Variance::Covariant,
+                        Category::OpaqueType,
+                        h.range,
+                    );
+                }
+                _ => {
+                    for &v in &h.vars {
+                        for &d in &declared {
+                            self.outlives(v, d, Category::OpaqueType, h.range);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Where the body's return value is made: the first assignment or
@@ -1071,6 +1147,9 @@ impl<'a> Cx<'a> {
         if let Some((_, vars)) = self.env_regions.iter().find(|(e, _)| *e == alias) {
             return Some(vars.clone());
         }
+        if let TyKind::Opaque(opaque) = alias.args[0].kind() {
+            return self.opaque_projection(opaque, alias, arg_vars.first()?);
+        }
         let (items, sigs) = (self.items, self.sigs);
         let self_ty = alias.args[0];
         let goal = flux_ty::Predicate {
@@ -1114,6 +1193,50 @@ impl<'a> Cx<'a> {
             return self.instantiate_sig(value, &table, &mut map, &impl_args, &type_vars);
         }
         None
+    }
+
+    /// The slots of what `opaque`'s bounds say `alias` (of it) is, where
+    /// `opaque`'s own slots are `vars`: its lifetimes are those it
+    /// captures, which its bounds may name (`impl Iterator<Item = &'a
+    /// u32>`).
+    fn opaque_projection(
+        &mut self,
+        opaque: flux_ty::OpaqueTy,
+        alias: AliasTy,
+        vars: &[Var],
+    ) -> Option<Vec<Var>> {
+        let sigs = self.sigs;
+        let sig = sigs
+            .opaques
+            .get(opaque.function)?
+            .get(opaque.index as usize)?;
+        let regions = sigs.regions.fns.get(opaque.function)?;
+        let decl = regions.opaques.get(opaque.index as usize)?;
+        let args = flux_ty::traits::opaque_args(opaque);
+        let j = sig
+            .projections
+            .iter()
+            .position(|p| p.subst(&args).alias == alias)?;
+        let table = decl.projections.get(j)?;
+        let captures = &decl.captures;
+        let mut map = |r: Region| match r {
+            Region::Static => Some(STATIC),
+            r @ Region::Param(_) => {
+                let at = captures.iter().position(|&c| c == r)?;
+                vars.get(at).copied()
+            }
+            Region::Erased => None,
+        };
+        // Its arguments' slots follow its own.
+        let mut next = captures.len();
+        let mut type_vars = Vec::with_capacity(opaque.args.len());
+        for &a in opaque.args {
+            let n = self.slots(a) as usize;
+            type_vars.push(vars.get(next..next + n)?.to_vec());
+            next += n;
+        }
+        let ty = sig.projections[j].ty;
+        self.instantiate_sig(ty, table, &mut map, opaque.args, &type_vars)
     }
 
     /// Matches `impl` block `imp`'s header, with generic arguments

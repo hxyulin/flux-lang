@@ -1,7 +1,8 @@
 //! `impl Trait`: iterator pipelines returned as `impl Iterator`, closures
 //! returned as `impl Fn`, `impl Trait` parameters taking closures and
 //! iterators, opaque types that borrow (`+ '_`) and that are generic,
-//! and hidden types with drop glue.
+//! hidden types with drop glue, and bounds with lifetimes (`impl
+//! Iterator<Item = &'a i64>`).
 
 unsafe extern "C" {
     fn printf(format: *const i8, ...) -> i32;
@@ -88,6 +89,22 @@ impl Ring {
     }
 }
 
+fn even_refs<'a>(v: &'a [i64]) -> impl Iterator<Item = &'a i64> + 'a {
+    v.iter().filter(|x| **x % 2 == 0)
+}
+
+fn last_refs(v: &[i64]) -> impl Iterator<Item = &i64> {
+    v.iter().rev()
+}
+
+fn sum_refs<'a>(it: impl Iterator<Item = &'a i64>) -> i64 {
+    let mut s = 0;
+    for x in it {
+        s += *x;
+    }
+    s
+}
+
 struct Noisy {
     id: i64,
 }
@@ -138,5 +155,11 @@ fn main() {
     show(12, ring.iter().filter(|x| x % 2 == 0).count() as i64);
     let g = guarded(21);
     show(13, g());
+    let values = [3i64, 8, 5, 10, 12];
+    let mut refs = even_refs(&values);
+    let a = refs.next();
+    let b = refs.next();
+    show(15, *a.unwrap_or(&0) * 100 + *b.unwrap_or(&0));
+    show(16, sum_refs(last_refs(&values).take(2)) + sum_refs(even_refs(&values[2..])));
     show(14, evens(100).skip(3).step_by(4).take(3).sum::<u64>() as i64);
 }
