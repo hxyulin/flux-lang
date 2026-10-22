@@ -54,6 +54,38 @@ fn largest<'a>(items: &'a [Item]) -> Option<&'a Item> {
     })
 }
 
+struct Applier<T, F> {
+    f: F,
+    last: Option<T>,
+}
+
+impl<T: Copy, F: FnMut(T)> Applier<T, F> {
+    fn apply(&mut self, t: T) {
+        self.last = Some(t);
+        (self.f)(t)
+    }
+}
+
+fn first_ref<'a, I: Iterator<Item = &'a i32>>(mut it: I) -> Option<&'a i32> {
+    it.next()
+}
+
+fn stored(v: &[i32; 3]) -> i32 {
+    let mut out: Option<&i32> = None;
+    let mut a = Applier {
+        f: |x| out = Some(x),
+        last: None,
+    };
+    a.apply(&v[1]);
+    let last = *a.last.unwrap();
+    drop(a);
+    let r = first_ref(v.iter().map(|x| x).filter(|x| **x > 1));
+    let mut it = v.iter().map(|x| x);
+    let p = it.next();
+    let q = it.next();
+    *out.unwrap() * 1000 + last * 100 + *r.unwrap() * 10 + *p.unwrap() + *q.unwrap()
+}
+
 fn main() {
     let slots = [Slot::Full(5), Slot::Empty, Slot::Full(7)];
     let total: i32 = slots
@@ -112,4 +144,5 @@ fn main() {
     let pairs = [(1, "one"), (2, "two")];
     let second = pairs.iter().map(|(_, s)| s).nth(1).copied().unwrap_or("");
     show(13, second.len() as i32);
+    show(14, stored(&[1, 2, 3]));
 }
