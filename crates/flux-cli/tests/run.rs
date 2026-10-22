@@ -171,12 +171,14 @@ fn compiler_modules_match_rustc() {
     std::fs::write(
         &internals,
         format!(
-            "mod syntax_kind {{\n{}\n{}\n}}\npub use syntax_kind::SyntaxKind;\nmod rng {{\n{}\n}}\nmod bitset {{\n{}\n}}\nmod interval {{\n{}\n}}\n{}",
+            "mod syntax_kind {{\n{}\n{}\n}}\npub use syntax_kind::SyntaxKind;\nmod rng {{\n{}\n}}\nmod bitset {{\n{}\n}}\nmod interval {{\n{}\n}}\nmod event {{\n{}\n{}\n}}\n{}",
             include_str!("../../flux-syntax/src/syntax_kind.rs"),
             include_str!("../../../tests/run/support/compiler_syntax_kind.rs"),
             include_str!("../../flux-difftest/src/rng.rs"),
             include_str!("../../flux-mir/src/bitset.rs"),
             include_str!("../../flux-mir/src/interval.rs"),
+            include_str!("../../flux-syntax/src/parser/event.rs"),
+            include_str!("../../../tests/run/support/compiler_events.rs"),
             include_str!("../../../tests/run/support/compiler_internals.rs"),
         ),
     )
