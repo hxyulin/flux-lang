@@ -48,3 +48,17 @@ pub(crate) unsafe fn subslice_mut<'a, 'b, T>(
 ) -> &'b mut [T] {
     loop {}
 }
+
+/// The `len` elements from `data` on, as a slice, unchecked: they must
+/// be there for as long as the slice is used.
+#[rustc_intrinsic]
+pub(crate) unsafe fn slice_from_raw_parts<'a, T>(data: *const T, len: usize) -> &'a [T] {
+    loop {}
+}
+
+/// The C string at `ptr`, which must end in NUL and stay there for as
+/// long as the reference is used. A `&CStr` is the pointer itself.
+#[rustc_intrinsic]
+pub(crate) unsafe fn c_str_from_ptr<'a>(ptr: *const u8) -> &'a crate::ffi::CStr {
+    loop {}
+}

@@ -911,6 +911,50 @@ pub fn expand_intrinsics(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
                     end: end.clone(),
                 },
             ),
+            ("c_str_from_ptr", [ptr]) => {
+                let ty = body.place_ty(&dest, sigs);
+                (dest, Rvalue::Cast(ptr.clone(), ty))
+            }
+            // `data` as a pointer to an empty array, unsized, as a
+            // reference, then its first `len` elements.
+            ("slice_from_raw_parts", [data, len]) => {
+                let slice_ref = body.place_ty(&dest, sigs);
+                let elem = match slice_ref.kind() {
+                    TyKind::Ref(_, slice) => slice.sequence_elem().unwrap_or(Ty::ERROR),
+                    _ => Ty::ERROR,
+                };
+                let temp = |body: &mut Body, ty: Ty, rvalue: Rvalue| -> Operand {
+                    let local = body.locals.alloc(LocalDecl {
+                        ty,
+                        kind: LocalKind::Temp,
+                    });
+                    body.blocks[block].statements.push(Statement {
+                        kind: StatementKind::Assign(local.into(), rvalue),
+                        range,
+                    });
+                    Operand::Move(local.into())
+                };
+                let array = Ty::new(TyKind::RawPtr(Mutability::Not, Ty::array(elem, 0)));
+                let raw_slice = Ty::new(TyKind::RawPtr(
+                    Mutability::Not,
+                    Ty::new(TyKind::Slice(elem)),
+                ));
+                let array_ptr = temp(body, array, Rvalue::Cast(data.clone(), array));
+                let raw = temp(body, raw_slice, Rvalue::Unsize(array_ptr, raw_slice));
+                let empty = temp(body, slice_ref, Rvalue::Cast(raw, slice_ref));
+                let zero = Operand::Const(Constant::Int {
+                    bits: 0,
+                    ty: flux_ty::IntTy::Usize,
+                });
+                (
+                    dest,
+                    Rvalue::Subslice {
+                        slice: empty,
+                        start: zero,
+                        end: len.clone(),
+                    },
+                )
+            }
             _ => unreachable!("`core`'s intrinsics are these"),
         };
         let data = &mut body.blocks[block];

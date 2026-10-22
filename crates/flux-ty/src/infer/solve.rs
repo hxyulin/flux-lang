@@ -1328,7 +1328,7 @@ impl Ctx<'_> {
         }
         let self_ty = self.shallow(self_ty?);
         // `<S>::f`: the type's own items come before its traits'.
-        if let Some(target) = crate::impl_target(self_ty) {
+        if let Some(target) = crate::impl_target(self.items, self_ty) {
             let candidates = self.items.assoc_functions(target, name);
             if !candidates.is_empty() {
                 return match self.select(candidates.into_iter(), Some(self_ty)) {

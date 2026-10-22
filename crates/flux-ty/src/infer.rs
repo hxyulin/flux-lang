@@ -3783,7 +3783,7 @@ impl Ctx<'_> {
         let items = self.items;
         let traits = items.trait_fns.contains_key(&method);
         let inherent = |ty: Ty| {
-            impl_target(ty)
+            impl_target(items, ty)
                 .and_then(|t| items.assoc.get(&(t, method)))
                 .map_or(&[][..], |v| v)
         };
@@ -3886,6 +3886,22 @@ impl Ctx<'_> {
                 return ret;
             }
         }
+        // Built in: a `&CStr` is the pointer.
+        if receiver_ty == c_str_ref() && method.as_str() == "as_ptr" {
+            if !args.is_empty() {
+                let got = args.len();
+                let verb = if got == 1 {
+                    "argument was"
+                } else {
+                    "arguments were"
+                };
+                self.error(
+                    self.range(id),
+                    format!("`as_ptr` takes 0 arguments but {got} {verb} supplied"),
+                );
+            }
+            return c_char_ptr();
+        }
         if let Some(ty) = unmet {
             let what = self.describe_kind(ty);
             self.error(
@@ -3903,7 +3919,8 @@ impl Ctx<'_> {
                 .is_some_and(|f| self.items.functions[f].has_self)
         });
         let other = matches!(base.kind(), TyKind::Tuple(_) | TyKind::RawPtr(..));
-        if in_some_trait && (other || impl_target(base).is_some()) || base.has_params() {
+        if in_some_trait && (other || impl_target(self.items, base).is_some()) || base.has_params()
+        {
             let what = match base.kind() {
                 TyKind::Adt(adt, _)
                     if receiver_ty == base && self.other_instance_has(base, method) =>
@@ -3920,7 +3937,7 @@ impl Ctx<'_> {
             );
             return Ty::ERROR;
         }
-        if let Some(target) = impl_target(base) {
+        if let Some(target) = impl_target(self.items, base) {
             if matches!(target, flux_hir::ImplTarget::Primitive(_)) {
                 let what = self.describe(receiver_ty);
                 self.error(
@@ -3935,21 +3952,6 @@ impl Ctx<'_> {
                 format!("no method named `{method}` found for {what} in the current scope"),
             );
             return Ty::ERROR;
-        }
-        if receiver_ty == c_str_ref() && method.as_str() == "as_ptr" {
-            if !args.is_empty() {
-                let got = args.len();
-                let verb = if got == 1 {
-                    "argument was"
-                } else {
-                    "arguments were"
-                };
-                self.error(
-                    self.range(id),
-                    format!("`as_ptr` takes 0 arguments but {got} {verb} supplied"),
-                );
-            }
-            return c_char_ptr();
         }
         let ty = self.describe(receiver_ty);
         let message = match receiver_ty.kind() {
@@ -4206,6 +4208,8 @@ impl Ctx<'_> {
                 | TyKind::Ref(..)
                 | TyKind::Array(..)
                 | TyKind::Slice(_)
+                | TyKind::Str
+                | TyKind::CStr
                 | TyKind::Tuple([_, ..])
         );
         let op_range = self.source_map.ops.get(id).copied().unwrap_or_default();

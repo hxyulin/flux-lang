@@ -1,0 +1,15 @@
+fn with_str(&CStr, &str) -> bool
+    a@0: &CStr
+    b@1: &str
+fn reference_with_value(&CStr, &CStr) -> bool
+    a@0: &CStr
+    b@1: &CStr
+fn reference_with_str(&CStr) -> bool
+    a@0: &CStr
+fn value_with_reference(&CStr, &CStr) -> bool
+    a@0: &CStr
+    b@1: &CStr
+fn main() -> ()
+error 221..223: can't compare `CStr` with `str`
+error 290..292: can't compare `&CStr` with `CStr`
+error 347..349: can't compare `CStr` with `str`
