@@ -36,9 +36,6 @@ fn calls(&dyn Tr) -> ()
     k@0: &dyn Tr
 fn by_value(&dyn Tr) -> ()
     k@0: &dyn Tr
-fn need_static<T>(&T) -> ()
-fn escapes<'a>(&dyn Tr) -> ()
-    x@0: &dyn Tr
 fn main() -> ()
 error 348..352: the size for values of type `str` cannot be known at compilation time
 error 668..672: the type parameter `Rhs` must be explicitly specified
@@ -55,4 +52,3 @@ error 1098..1099: the size for values of type `T` cannot be known at compilation
 error 1131..1136: the `sized` method cannot be invoked on a trait object
 error 1146..1150: no method named `nope` found for reference `&dyn Tr` in the current scope
 error 1250..1251: cannot move a value of type `dyn Tr`
-error 1469..1480: trait objects as arguments of parameters with lifetime bounds are not supported yet

@@ -167,7 +167,15 @@ pub(crate) fn infer(
     let liveness = cx.liveness(&points);
     let solution = cx.solve(&points, &liveness);
     let mut errors = cx.check_universal(&solution);
-    errors.extend(cx.check_type_tests(&solution));
+    // A type that may not live long enough where a lifetime already
+    // does not is the same error, which rustc reports once.
+    let type_errors = cx.check_type_tests(&solution);
+    let regions_at: Vec<TextRange> = errors.iter().map(|d| d.range).collect();
+    errors.extend(
+        type_errors
+            .into_iter()
+            .filter(|d| !regions_at.contains(&d.range)),
+    );
     errors.append(&mut cx.errors);
     let loan_scopes = cx.loan_scopes(&points, &solution, loans);
     let escapes = (0..loans.len())
@@ -839,6 +847,7 @@ impl<'a> Cx<'a> {
                         .zip(ys)
                         .all(|(&a, &b)| self.reveal_sig(f, a, b, own, next, out))
             }
+            (TyKind::Dynamic(_), TyKind::Dynamic(_)) => own_slot(next, out),
             _ => false,
         }
     }
@@ -1131,6 +1140,7 @@ impl<'a> Cx<'a> {
                         .iter()
                         .all(|&t| self.inst(t, own, next, map, args, arg_vars, out))
             }
+            TyKind::Dynamic(_) => own_slot(next, out),
             TyKind::Alias(alias) => {
                 let instance = if args.is_empty() { ty } else { ty.subst(args) };
                 let normalized = self.normalize(instance);
@@ -1471,6 +1481,7 @@ impl<'a> Cx<'a> {
                         .zip(y.args)
                         .all(|(&a, &b)| self.match_at(a, table, t, b, vars, v, binding, eqs))
             }
+            (TyKind::Dynamic(_), TyKind::Dynamic(_)) => slot(t, v, binding, eqs),
             _ => {
                 // Types without slots of their own to bind.
                 let n = self.slots(actual) as usize;
@@ -1593,6 +1604,8 @@ impl<'a> Cx<'a> {
                     self.relate_at(t, sub, sup, next, v, category, range);
                 }
             }
+            // Covariant in its lifetime bound.
+            TyKind::Dynamic(_) => slot(self, next, variance),
             _ => {}
         }
     }
@@ -1808,23 +1821,30 @@ impl<'a> Cx<'a> {
             Rvalue::Unsize(op, to) if matches!(to.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn()) =>
             {
                 let (op_ty, vars) = self.operand_regions(op);
-                match (op_ty.kind(), dest_ty.kind()) {
-                    // `&'r T` already says `T: 'r` for its parameters.
-                    (TyKind::Ref(..), TyKind::Ref(..)) => {
+                // The reference's own region relates; then the object's
+                // bound is what the value holds must outlive (or, upcast,
+                // what the object's bound must).
+                let (pointee, inner, bound) = match (op_ty.kind(), dest_ty.kind()) {
+                    (TyKind::Ref(_, pointee), TyKind::Ref(..)) => {
                         if let (Some(&from), Some(&to)) = (vars.first(), dest_vars.first()) {
                             self.outlives(from, to, category, range);
-                            for &v in &vars[1..] {
-                                self.outlives(v, to, category, range);
-                            }
                         }
+                        (
+                            pointee,
+                            vars.get(1..).unwrap_or(&[]),
+                            dest_vars.get(1).copied(),
+                        )
                     }
                     (TyKind::RawPtr(_, pointee), _) => {
-                        for &v in &vars {
-                            self.outlives(v, STATIC, category, range);
-                        }
-                        self.type_outlives(pointee, STATIC, range);
+                        (pointee, &vars[..], dest_vars.first().copied())
                     }
-                    _ => {}
+                    _ => (op_ty, &[][..], None),
+                };
+                if let Some(bound) = bound {
+                    for &v in inner {
+                        self.outlives(v, bound, category, range);
+                    }
+                    self.type_outlives(pointee, bound, range);
                 }
             }
             Rvalue::Unsize(op, _) | Rvalue::Subslice { slice: op, .. } => {
@@ -1858,9 +1878,12 @@ impl<'a> Cx<'a> {
                 let (place_ty, place_vars) = self.place_regions(place);
                 if let Some((&first, rest)) = dest_vars.split_first() {
                     self.outlives(loan, first, category, range);
+                    // A trait object reborrowed mutably may shorten its
+                    // lifetime bound, as rustc's unsizing coercion does
+                    // (no other object can be written in its place).
                     let variance = match mutability {
-                        Mutability::Not => Variance::Covariant,
-                        Mutability::Mut => Variance::Invariant,
+                        Mutability::Mut if !place_ty.is_dyn() => Variance::Invariant,
+                        _ => Variance::Covariant,
                     };
                     self.relate(place_ty, &place_vars, rest, variance, category, range);
                 }
@@ -2295,10 +2318,7 @@ impl<'a> Cx<'a> {
     /// nothing of lifetimes.
     fn prove(&mut self, goal: flux_ty::Predicate, vars: &[Vec<Var>], range: TextRange, depth: u32) {
         let (items, sigs) = (self.items, self.sigs);
-        // A trait object has no slots, but its lifetime bound matters
-        // to the block's bounds.
-        let object = has_object(goal.self_ty) || goal.trait_ref.args.iter().any(|&a| has_object(a));
-        if depth > 8 || vars.iter().all(|v| v.is_empty()) && !object {
+        if depth > 8 || vars.iter().all(|v| v.is_empty()) {
             return;
         }
         if matches!(
@@ -2363,17 +2383,6 @@ impl<'a> Cx<'a> {
                         }
                     }
                     let instance = self.normalize(t.subst(&impl_args));
-                    // A trait object's lifetime bound is not known here.
-                    if has_object(instance) {
-                        let message = "trait objects as arguments of parameters with lifetime bounds are not supported yet";
-                        if !self
-                            .errors
-                            .iter()
-                            .any(|d| d.range == range && d.message == message)
-                        {
-                            self.errors.push(Diagnostic::new(range, message));
-                        }
-                    }
                     self.type_outlives(instance, b, range);
                 }
             }
@@ -3251,9 +3260,4 @@ fn tarjan(edges: &[Vec<u32>]) -> (Vec<u32>, Vec<u32>) {
         }
     }
     (scc, order)
-}
-
-/// Whether `ty` contains a trait object.
-fn has_object(ty: Ty) -> bool {
-    ty.is_dyn() || ty.children().into_iter().any(has_object)
 }

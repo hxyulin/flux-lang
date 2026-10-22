@@ -441,11 +441,14 @@ associated types normalize to what it gives (`dyn_projections`).
 `coerce` unsizes a reference or pointer to a value whose type must then
 implement the trait, with its associated types, and be sized
 (obligations), and upcasts one to an object whose trait has the target's
-as a supertrait; casts try the same coercion. A trait object has no
-region slot: its lifetime bound is the reference it is behind, rustc's
-default, so that is the only bound flux accepts written, and borrow
-checking an unsizing makes what the value holds outlive the
-reference's region (or `'static` behind a raw pointer).
+as a supertrait; casts try the same coercion. A trait object has one
+region slot, its lifetime bound, covariant: as written, or rustc's
+default, the reference it is behind (`'static` elsewhere); elision
+counts each parameter's distinct lifetimes, as rustc does, so `&dyn
+Tr` has one. Borrow checking an unsizing makes what the value holds
+(its slots, and its parameters by type tests) outlive the bound, and
+a mutable reborrow of a trait object may shorten it, as rustc's
+unsizing coercion may.
 
 `x?` stays an expression in HIR (`Expr::Try`), since what it does
 depends on `x`'s type: `core`'s `#[lang = "Option"]` and `#[lang =

@@ -116,6 +116,87 @@ fn main() -> () {
     }
 }
 
+fn need_static<T>(_1: &T) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn escapes<'a>(_1: &dyn Tr) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: &dyn Tr;
+
+    bb0: {
+        _3 = copy _1;
+        _2 = need_static::<dyn Tr>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn still_static(_1: &dyn Tr) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: &dyn Tr;
+
+    bb0: {
+        _3 = copy _1;
+        _2 = need_static::<dyn Tr>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn param_bound<'a, T>(_1: &T) -> &dyn Tr {
+    let mut _0: &dyn Tr;
+    let _2: &T;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = copy _2 as &dyn Tr (unsize);
+        return;
+    }
+}
+
+fn too_short<'a, 'b>(_1: &dyn Tr) -> &dyn Tr {
+    let mut _0: &dyn Tr;
+
+    bb0: {
+        _0 = copy _1;
+        return;
+    }
+}
+
+fn shorter<'a>(_1: &dyn Tr) -> &dyn Tr {
+    let mut _0: &dyn Tr;
+
+    bb0: {
+        _0 = copy _1;
+        return;
+    }
+}
+
+fn reborrowed<'a>(_1: &mut dyn Tr) -> &mut dyn Tr {
+    let mut _0: &mut dyn Tr;
+    let _2: &mut dyn Tr;
+
+    bb0: {
+        _2 = move _1;
+        _0 = &mut (*_2);
+        return;
+    }
+}
+
 fn Two::two(_1: &Self) -> () {
     let mut _0: ();
 
@@ -147,4 +228,7 @@ error 485..486: lifetime may not live long enough
 error 569..571: `x` does not live long enough
 error 586..588: `s` does not live long enough
 error 698..703: cannot assign to `x` because it is borrowed
-error 1000..1007: trait objects as arguments of parameters with lifetime bounds are not supported yet
+error 883..897: borrowed data escapes outside of function
+error 1090..1091: the parameter type `T` may not live long enough
+error 1169..1170: lifetime may not live long enough
+error 1440..1447: borrowed data escapes outside of function
