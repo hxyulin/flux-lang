@@ -530,6 +530,17 @@ fn copy_source_package(source: &std::path::Path, target: &std::path::Path) {
 #[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn unicode_ident_sources_match_rustc_on_every_unicode_scalar() {
+    unicode_ident_comparison(false);
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn original_unicode_ident_package_matches_rustc_on_every_unicode_scalar() {
+    unicode_ident_comparison(true);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn unicode_ident_comparison(original_manifest: bool) {
     // Locate the version Cargo already built for this workspace. The reference
     // compilation below is an explicit oracle, separate from Flux invocations
     // whose rejecting wrappers must continue to record zero compiler calls.
@@ -557,14 +568,19 @@ fn unicode_ident_sources_match_rustc_on_every_unicode_scalar() {
         .unwrap();
     let manifest = std::path::Path::new(package["manifest_path"].as_str().unwrap());
     let fixture = Fixture::new();
-    // Preserve the original package and sources. The explicit wrapper selects
-    // edition 2024; loading the original edition-2021 manifest is a later gate.
+    // Preserve the original manifest and sources. Exercise both the original
+    // edition-2021 package and the explicit edition-2024 source wrapper.
     copy_source_package(
         manifest.parent().unwrap(),
         &fixture.0.join("unicode-ident-src"),
     );
-    fixture.write("unicode-ident/Cargo.toml", "[package]\nname='unicode-ident'\nversion='0.1.0'\nedition='2024'\n[lib]\npath='../unicode-ident-src/src/lib.rs'\n");
-    fixture.write("Cargo.toml", "[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nunicode-ident={path='unicode-ident'}\n");
+    let (dependency, edition) = if original_manifest {
+        ("unicode-ident-src", package["edition"].as_str().unwrap())
+    } else {
+        fixture.write("unicode-ident/Cargo.toml", "[package]\nname='unicode-ident'\nversion='0.1.0'\nedition='2024'\n[lib]\npath='../unicode-ident-src/src/lib.rs'\n");
+        ("unicode-ident", "2024")
+    };
+    fixture.write("Cargo.toml", &format!("[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nunicode-ident={{path='{dependency}'}}\n"));
     fixture.write("src/main.rs", r#"
 fn main() {
     let mut starts = 0u64;
@@ -590,7 +606,7 @@ fn main() {
             "--crate-name",
             "unicode_ident",
             "--edition",
-            "2024",
+            edition,
         ])
         .arg(fixture.0.join("unicode-ident-src/src/lib.rs"))
         .arg("-o")

@@ -19,22 +19,25 @@ Flux's existing language and embedded-library limitations still apply.
 The supported manifest subset is deliberately narrow:
 
 - One standalone binary package and zero or more standalone local library
-  dependencies, each with explicit `edition = "2024"`.
+  dependencies, each with explicit edition 2021 or 2024. Edition 2021
+  uses the deliberately restricted [documented subset](EDITION_2021.md).
   Workspace manifests, workspace membership and inherited fields are
   unsupported, including a single-member workspace.
 - Package keys: `name`, `version`, `edition`, `authors`, `description`,
   `license`, `license-file`, `readme`, `repository`, `homepage`,
-  `documentation`, `keywords`, `categories`, `publish`. Cargo validates
+  `documentation`, `keywords`, `categories`, `publish`, `rust-version`,
+  opaque `metadata`, target discovery booleans and `build = false`. Cargo validates
   these fields; descriptive fields have no compiler effect.
 - Inferred binary targets and explicit `[[bin]]` tables with only `name`
   and `path`. Select with `--bin` when there is more than one binary.
   `default-run` is unsupported. The selected name, with hyphens changed
   to underscores, is the compilation's crate name.
-- All discovered root targets must be edition-2024 binaries. Each dependency
+- All discovered root targets must be supported binaries. Each dependency
   must expose exactly one ordinary library target, inferred from `src/lib.rs`
-  or configured with `[lib]` containing only `name` and `path`. Root libraries,
-  dependency binaries, proc macros, examples, tests, benches and custom-build
-  targets are rejected even when another supported target was selected.
+  or configured with `[lib]` containing only `name` and `path`. Unselected
+  dependency binary/example/test/benchmark targets and their dev dependencies
+  are not compiled or resolved. Root libraries, proc macros and custom-build
+  targets remain unsupported.
 - Normal `[dependencies]` entries support only `{ path = "..." }` and
   `{ path = "...", package = "..." }`. Transitive dependencies, renamed
   imports and shared diamond dependencies are supported. Canonical manifest
@@ -44,12 +47,11 @@ The supported manifest subset is deliberately narrow:
   become underscores in Rust import names. The names `core`, `alloc` and
   `std` are reserved for the embedded libraries.
 - No other top-level declarations or package/binary options. In
-  particular, registry/git/version dependencies, dev/build/target-specific
-  dependencies, optional dependencies, feature/default-feature settings,
-  declared features, profiles, target tables, patches, replacements, lints
-  and Cargo unstable options are rejected.
-  A root `build.rs` is rejected; `package.build` is unsupported even when
-  set to `false`.
+  particular, registry/git/version dependencies, build dependencies, normal
+  target-specific dependencies, optional dependencies, feature/default-feature
+  settings, nonempty declared features, profiles, patches, replacements, lints
+  and Cargo unstable options are rejected. Root dev dependencies are also
+  rejected. A `build.rs` is rejected unless `package.build = false` disables it.
 - No nonempty Cargo configuration files: both `.cargo/config` and
   `.cargo/config.toml` in the package directory or any ancestor, plus
   `config` and `config.toml` in `CARGO_HOME` (default `$HOME/.cargo`), are
@@ -77,8 +79,8 @@ std/alloc types or printing macros. Explicit `extern crate alloc` or
 `extern crate std` can opt into their APIs. Freestanding executable support
 is not added: a no_std executable currently requires `extern crate std`.
 
-Package builds always use the current Flux host configuration: edition
-2024, debug assertions enabled, panic abort, no user features, no test
+Package builds retain each crate's selected edition and use Flux's current
+host configuration: debug assertions enabled, panic abort, no user features, no test
 configuration and no emitted debug information. Backend optimization is off
 by default; `-O` enables Keel optimization without selecting a Cargo release
 profile or changing `cfg(debug_assertions)`. Cargo's
@@ -126,8 +128,9 @@ The package tests also compile the unchanged compiler `rng.rs` as an ordinary
 path library, exercise a generic call through a renamed diamond graph, and
 verify dependency edits and failures cannot silently reuse an old executable.
 
-The unchanged `unicode-ident` sources are exercised through a separate
-edition-2024 wrapper manifest. Classification counts and a digest across
-all Unicode scalar values match rustc with and without Flux optimization.
-This does not yet establish support for the original edition-2021 package
-manifest or registry dependency resolution.
+The original cached `unicode-ident 1.0.27` package is compiled as a local
+path dependency using its unchanged edition-2021 manifest and sources.
+Classification counts and a digest across every Unicode scalar match rustc
+with and without Flux optimization. The edition-2024 source-wrapper test
+also remains. This does not add registry resolution or compilation of its
+dev dependencies. `memchr` still requires missing language and library APIs.

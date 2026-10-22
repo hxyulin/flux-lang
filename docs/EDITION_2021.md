@@ -115,8 +115,9 @@ checks the selected library's edition and path, and verifies the dependency's
 manifest and both Rust source files are byte-identical afterward. It does not
 require downloading or compiling the crate's dev dependencies.
 
-At the base commit, compiling that unchanged dependency additionally needs
-`no_std`, `rustfmt::skip`, `repr(align)`, and slice `get_unchecked` support.
-Those changes are separate from edition and package-unit selection. The cache
-planning test passes independently; it does not claim full codegen succeeds
-before those compiler changes are integrated.
+The integrated package runtime test compiles the original cached manifest
+and unchanged library sources and compares classification counts and a digest
+across every Unicode scalar with rustc, with and without Flux optimization.
+The earlier explicit edition-2024 source-wrapper test remains as separate
+coverage. These tests exercise a local path package; registry resolution and
+compilation of the package's dev dependencies are not implemented.

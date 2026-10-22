@@ -2448,7 +2448,9 @@ impl Collector<'_> {
                 _ => None,
             };
             if let Some(path) = path
-                && let Ok(file) = self.db.load(&path)
+                && let Ok(file) = self
+                    .db
+                    .load_with_edition(&path, self.db.file(ctx.file).edition)
             {
                 let start = self.items.diagnostics.len();
                 let shared = self.db.shared(file);
