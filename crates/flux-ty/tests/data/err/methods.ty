@@ -92,5 +92,6 @@ error 1353..1357: returning references is not supported yet
 error 1432..1434: `break` with a reference is not supported yet
 error 1536..1542: cannot assign twice to immutable variable `r`
 error 1615..1620: cannot assign to immutable argument `r`
-error 1655..1659: missing lifetime specifier
-error 1684..1688: missing lifetime specifier
+error 1655..1656: missing lifetime specifier
+error 1684..1685: missing lifetime specifier
+help: this function's return type contains a borrowed value, but there is no value for it to be borrowed from

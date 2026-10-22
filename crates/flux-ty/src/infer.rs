@@ -1008,6 +1008,7 @@ impl Ctx<'_> {
             range,
             &mut self.diagnostics,
         );
+        self.check_written_lifetimes(ty_ref, ty);
         let ty = self.fill_placeholders(ty, range);
         if ty.has_aliases() {
             let body = self.body;
@@ -1016,6 +1017,45 @@ impl Ctx<'_> {
         let ty = self.normalize(ty, range);
         self.register_wf(ty, range, true);
         ty
+    }
+
+    /// Checks the lifetimes written in type `ty_ref` of the body, which
+    /// resolved to `ty`: each must be in scope, and a struct's as many
+    /// as it has. Elided ones are inferred by the borrow checker; flux
+    /// does not enforce named ones in bodies yet.
+    fn check_written_lifetimes(&mut self, ty_ref: TypeRefId, ty: Ty) {
+        let written = &self.body.types[ty_ref];
+        let mut found = Vec::new();
+        crate::regions::lifetimes_in(written, &mut found);
+        if found.is_empty() {
+            return;
+        }
+        let mut names: Vec<Option<Symbol>> = Vec::new();
+        let owner = match self.owner_fn {
+            Some(f) => self.items.functions[f].owner,
+            None => None,
+        };
+        if let Some(generics) = self.items.owner_generics(owner) {
+            names.extend(generics.lifetimes.iter().map(|l| Some(l.name)));
+        }
+        if let Some(f) = self.owner_fn {
+            let generics = &self.items.functions[f].generics;
+            names.extend(generics.lifetimes.iter().map(|l| Some(l.name)));
+        }
+        let mut walker = crate::regions::Walker::new(self.items, self.module, names);
+        let regions = walker.regions(written, ty);
+        let errors = std::mem::take(&mut walker.errors);
+        let unsupported =
+            errors.is_empty() && regions.iter().any(|&r| r != crate::regions::Region::Erased);
+        for (range, message) in errors {
+            self.error(range, message);
+        }
+        if unsupported && let Some(l) = found.iter().find(|l| !l.is_anonymous()) {
+            self.error(
+                l.range,
+                "named lifetimes in types in bodies are not supported yet",
+            );
+        }
     }
 
     /// `ty` with each `_` in it a new variable.

@@ -334,6 +334,19 @@
   `T`'s bound's `Item` rather than the block's own, and a bound in
   scope on a type parameter keeps blanket `impl` blocks from deciding
   its associated types.
+- Support lifetime syntax: lifetime parameters on functions, structs,
+  enums and `impl` blocks with their bounds (`<'a, 'b: 'a, T: 'a>`,
+  `where 'a: 'b, T: 'a`), `&'a T`, `&'a self`, `'static`, `'_` and
+  lifetime arguments (`Parser<'a>`). Signatures record each type's
+  lifetimes beside it (`flux_ty::regions`), with rustc's elision rules
+  for function signatures, `impl` headers, constants and statics, the
+  variances of structs' parameters, and the outlives requirements
+  their fields and functions' parameters imply. rustc's errors for
+  undeclared and outer lifetimes (E0261, E0401), elision that finds
+  nothing (E0106, with its help), `'static` and `'_` as parameters
+  (E0262, E0637), duplicate and shadowing names (E0403, E0496), wrong
+  numbers of lifetime arguments (E0107, E0747) and unused lifetime
+  parameters (E0392) are reported.
 
 ### Performance
 

@@ -2684,6 +2684,12 @@ impl<'a> Ctx<'a> {
 
     /// Generic arguments in an expression, as types of the body.
     fn segment_args(&mut self, segment: TextRange, args: &GenericArgs) -> SegmentArgs {
+        if let (Some(first), Some(last)) = (args.lifetimes.first(), args.lifetimes.last()) {
+            self.unsupported(
+                TextRange::new(first.range.start(), last.range.end()),
+                "lifetime arguments in expressions",
+            );
+        }
         let types = args
             .types
             .iter()

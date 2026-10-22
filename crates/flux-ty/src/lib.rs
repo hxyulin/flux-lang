@@ -20,6 +20,7 @@ mod impl_index;
 mod in_scope;
 mod infer;
 mod pats;
+pub mod regions;
 pub mod traits;
 mod ty;
 
@@ -152,6 +153,8 @@ pub struct Signatures {
     /// The values of the constants that array lengths name, evaluated
     /// before bodies are inferred.
     pub array_lens: LenValues,
+    /// The lifetimes in the signatures, for the borrow checker.
+    pub regions: regions::RegionSigs,
 }
 
 impl Index<FunctionId> for Signatures {
@@ -635,7 +638,9 @@ pub fn resolve_type(
             }
             Ty::raw_ptr(mutability(*mutable), pointee)
         }
-        TypeRef::Ref { mutable, pointee } => {
+        TypeRef::Ref {
+            mutable, pointee, ..
+        } => {
             let pointee = resolve_type(items, module, pointee, scope, range, errors);
             if pointee == Ty::ERROR {
                 return Ty::ERROR;
@@ -1796,6 +1801,7 @@ fn extend_signatures(
     for (id, alias) in items.type_aliases.iter().skip(from.type_aliases as usize) {
         check_alias(items, id, alias, &mut reported);
     }
+    regions::resolve_regions(items, &mut sigs, from, &mut reported);
     traits::check_well_formed(items, &sigs, from, &mut reported);
     duplicate_assoc_items(items, &sigs, &mut reported, from.impls as usize);
     traits::check_impls(items, &sigs, &mut reported, checked_impls);
@@ -1853,11 +1859,12 @@ fn extend_signatures(
                 &format!("recursive type `{}` has infinite size", s.name),
             );
         }
-        for (field, &ty) in all_fields(s).zip(sigs.structs[id]) {
-            // With lifetime parameters, already reported.
-            if contains_ref(ty) && !s.generics.has_lifetimes {
-                error(s.loc.file, field.range, "missing lifetime specifier");
-            }
+        if let Some(l) = s.generics.lifetimes.first() {
+            error(
+                s.loc.file,
+                l.range,
+                "structs with lifetime parameters are not supported yet",
+            );
         }
     }
     for (id, function) in items.functions.iter().skip(from.functions as usize) {
@@ -1909,20 +1916,18 @@ fn extend_signatures(
                 }
             }
         }
-        if contains_ref(sig.ret) {
-            if sig.params.iter().any(|&p| contains_ref(p)) {
-                error(
-                    function.loc.file,
-                    function.ret_range,
-                    "returning references is not supported yet",
-                );
-            } else {
-                error(
-                    function.loc.file,
-                    function.ret_range,
-                    "missing lifetime specifier",
-                );
-            }
+        // A return type whose lifetimes are missing is reported.
+        let elided = sigs
+            .regions
+            .fns
+            .get(id)
+            .is_some_and(|r| r.ret.iter().all(|&r| r != regions::Region::Erased));
+        if regions::slots(items, sig.ret) > 0 && elided {
+            error(
+                function.loc.file,
+                function.ret_range,
+                "returning references is not supported yet",
+            );
         }
     }
     diagnostics.extend(reported);

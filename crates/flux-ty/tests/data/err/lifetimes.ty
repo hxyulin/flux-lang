@@ -1,0 +1,74 @@
+struct S<'a, T> { x: &T }
+struct Q<'a> { x: &i32 }
+struct Two<'a, 'b> { x: &i32, y: &i32 }
+struct Field { x: &i32 }
+struct Hidden { x: S<i32> }
+struct Bare { x: Q }
+struct Anonymous<'a> { x: &i32, y: &i32 }
+struct Unused<'a> { 0: i32 }
+fn undeclared(&i32) -> ()
+    x@0: &i32
+fn both(&i32, &i32) -> &i32
+    x@0: &i32
+    y@1: &i32
+fn three(&i32, &i32, &i32) -> &i32
+    x@0: &i32
+    y@1: &i32
+    z@2: &i32
+fn nothing() -> &i32
+fn no_reference(i32) -> &i32
+    x@0: i32
+fn named_twice<'a>(&i32, &i32) -> &i32
+    x@0: &i32
+    y@1: &i32
+fn hidden_two(Two) -> &i32
+    x@0: Two
+fn pattern((&i32, &i32)) -> &i32
+    x@0: &i32
+    y@1: &i32
+fn too_many(Q) -> ()
+    x@0: Q
+fn outer<'a>(&i32) -> ()
+    x@0: &i32
+    z@1: &i32
+fn inner(&i32) -> ()
+    y@0: &i32
+fn bad_bound<T>() -> ()
+fn where_bound<'a, T>() -> ()
+fn elided_in_bound<T>(T) -> ()
+    x@0: T
+fn main() -> ()
+type Alias = &i32
+error 142..144: structs with lifetime parameters are not supported yet
+error 177..179: structs with lifetime parameters are not supported yet
+error 213..215: structs with lifetime parameters are not supported yet
+error 276..278: use of undeclared lifetime name `'b`
+error 317..318: missing lifetime specifier
+help: this function's return type contains a borrowed value, but the signature does not say whether it is borrowed from `x` or `y`
+error 378..379: missing lifetime specifier
+help: this function's return type contains a borrowed value, but the signature does not say whether it is borrowed from `x`, `y`, or `z`
+error 416..417: missing lifetime specifier
+help: this function's return type contains a borrowed value, but there is no value for it to be borrowed from
+error 465..466: missing lifetime specifier
+help: this function's return type contains a borrowed value, but there is no value for it to be borrowed from
+error 533..534: missing lifetime specifier
+help: this function's return type contains a borrowed value with an elided lifetime, but the lifetime cannot be derived from the arguments
+error 580..581: missing lifetime specifier
+help: this function's return type contains a borrowed value, but the signature does not say which one of `x`'s 2 lifetimes it is borrowed from
+error 621..633: references inside other types are not supported yet
+error 638..639: missing lifetime specifier
+help: this function's return type contains a borrowed value, but the signature does not say which one of argument 1's 2 lifetimes it is borrowed from
+error 682..683: missing lifetime specifier
+error 715..716: missing lifetime specifier
+error 746..747: missing lifetime specifier
+error 769..771: structs with lifetime parameters are not supported yet
+error 783..785: missing lifetime specifier
+error 824..826: structs with lifetime parameters are not supported yet
+error 824..826: lifetime parameter `'a` is never used
+error 850..851: struct takes 1 lifetime argument but 2 lifetime arguments were supplied
+error 888..889: missing lifetime specifier
+error 939..941: can't use generic parameters from outer item
+error 962..964: use of undeclared lifetime name `'b`
+error 993..995: use of undeclared lifetime name `'b`
+error 1041..1043: use of undeclared lifetime name `'c`
+error 1093..1094: `&` without an explicit lifetime name cannot be used here
