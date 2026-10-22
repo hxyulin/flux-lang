@@ -822,6 +822,25 @@ pub(crate) fn decode_char(bytes: &[u8], i: usize) -> char {
     unsafe { crate::char::from_u32_unchecked(c) }
 }
 
+/// Writes byte `b` as `u8::escape_ascii` does.
+pub(crate) fn escape_ascii(b: u8, f: &mut Formatter<'_>) -> Result {
+    match b {
+        b'\t' => f.write_str("\\t"),
+        b'\r' => f.write_str("\\r"),
+        b'\n' => f.write_str("\\n"),
+        b'\\' => f.write_str("\\\\"),
+        b'\'' => f.write_str("\\'"),
+        b'"' => f.write_str("\\\""),
+        0x20..=0x7E => f.write_char(b as char),
+        _ => {
+            let hex = b"0123456789abcdef";
+            f.write_str("\\x")?;
+            f.write_char(hex[(b >> 4) as usize] as char)?;
+            f.write_char(hex[(b & 0xF) as usize] as char)
+        }
+    }
+}
+
 /// How `{:?}` escapes a `char`: a backslash and a letter, or `\u{..}`.
 pub(crate) enum Escape {
     Backslash(char),

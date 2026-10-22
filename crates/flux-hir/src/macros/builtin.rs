@@ -376,6 +376,10 @@ struct FormatString {
     literal: String,
     pieces: Vec<String>,
     placeholders: Vec<Placeholder>,
+    /// Where each placeholder is, braces included.
+    spans: Vec<TextRange>,
+    /// Each argument a placeholder names, by index or name, and where.
+    refs: Vec<(ArgRef, TextRange)>,
 }
 
 /// A placeholder: the argument it shows, how (`trait_`, the `rt`
@@ -383,6 +387,8 @@ struct FormatString {
 #[derive(Debug, Clone)]
 struct Placeholder {
     arg: ArgRef,
+    /// The arguments it names by index or name, and where in its text.
+    refs: Vec<(ArgRef, usize, usize)>,
     /// `display` for `{}`, `debug` for `{:?}`, ...
     trait_: &'static str,
     fill: Option<char>,
@@ -461,25 +467,83 @@ enum ArgRef {
     Name(Symbol),
 }
 
+/// For each byte of the text of string literal `token` (`len` bytes),
+/// and the end, its offset in the token: escapes and line
+/// continuations take more of the token than of the text.
+fn source_offsets(token: &str, len: usize) -> Option<Vec<u32>> {
+    let quote = token.find('"')?;
+    let raw = token[..quote].contains('r');
+    let hashes = token[..quote].matches('#').count();
+    let body_end = token.len().checked_sub(hashes + 1)?;
+    let body = token.get(quote + 1..body_end)?;
+    let base = quote + 1;
+    let mut map = Vec::with_capacity(len + 1);
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if raw || bytes[i] != b'\\' {
+            let c = body[i..].chars().next()?;
+            for _ in 0..c.len_utf8() {
+                map.push((base + i) as u32);
+            }
+            i += c.len_utf8();
+            continue;
+        }
+        let start = i;
+        match bytes.get(i + 1)? {
+            b'\n' => {
+                // A line continuation: the newline and the whitespace
+                // after it are no text.
+                i += 2;
+                while i < bytes.len() && body[i..].starts_with(char::is_whitespace) {
+                    i += body[i..].chars().next()?.len_utf8();
+                }
+                continue;
+            }
+            b'x' => i += 4,
+            b'u' => i += body[i..].find('}')? + 1,
+            _ => i += 2,
+        }
+        let c = crate::literal::unescape_str(&format!("\"{}\"", &body[start..i])).ok()?;
+        for _ in 0..c.len() {
+            map.push((base + start) as u32);
+        }
+    }
+    map.push((base + bytes.len()) as u32);
+    (map.len() == len + 1).then_some(map)
+}
+
 fn parse_format(literal: &Tok, cx: &BuiltinCx<'_>) -> Result<FormatString, Error> {
     let at = literal.range();
-    let text = crate::literal::unescape_str(literal.text.as_str()).map_err(|e| (at, e))?;
+    let token = literal.text.as_str();
+    let text = crate::literal::unescape_str(token).map_err(|e| (at, e))?;
+    // Where each byte of the text is written in the literal, if the
+    // literal is where its token says.
+    let offsets = (at.len() as usize == token.len())
+        .then(|| source_offsets(token, text.len()))
+        .flatten();
+    let span = |lo: usize, hi: usize| match &offsets {
+        Some(map) => TextRange::new(at.start() + map[lo], at.start() + map[hi]),
+        None => at,
+    };
     let invalid = |m: &str| (at, format!("invalid format string: {m}"));
     let mut out = FormatString {
         literal: String::new(),
         pieces: Vec::new(),
         placeholders: Vec::new(),
+        spans: Vec::new(),
+        refs: Vec::new(),
     };
     let mut piece = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
         match c {
-            '{' if chars.peek() == Some(&'{') => {
+            '{' if chars.peek().map(|&(_, c)| c) == Some('{') => {
                 chars.next();
                 piece.push('{');
                 out.literal.push('{');
             }
-            '}' if chars.peek() == Some(&'}') => {
+            '}' if chars.peek().map(|&(_, c)| c) == Some('}') => {
                 chars.next();
                 piece.push('}');
                 out.literal.push('}');
@@ -487,17 +551,24 @@ fn parse_format(literal: &Tok, cx: &BuiltinCx<'_>) -> Result<FormatString, Error
             '}' => return Err(invalid("unmatched `}` found")),
             '{' => {
                 let mut inner = String::new();
-                loop {
+                let end = loop {
                     match chars.next() {
-                        Some('}') => break,
-                        Some('{') => return Err(invalid("expected `}`, found `{`")),
-                        Some(c) => inner.push(c),
+                        Some((j, '}')) => break j + 1,
+                        Some((_, '{')) => return Err(invalid("expected `}`, found `{`")),
+                        Some((_, c)) => inner.push(c),
                         None => return Err(invalid("expected `}` but string was terminated")),
                     }
-                }
+                };
                 out.pieces.push(std::mem::take(&mut piece));
-                out.placeholders
-                    .push(placeholder(&inner).map_err(|m| invalid(&m))?);
+                let p = placeholder(&inner).map_err(|(message, within)| match within {
+                    Some((lo, hi)) => (span(i + 1 + lo, i + 1 + hi), message),
+                    None => (at, format!("invalid format string: {message}")),
+                })?;
+                for (r, lo, hi) in &p.refs {
+                    out.refs.push((r.clone(), span(i + 1 + lo, i + 1 + hi)));
+                }
+                out.placeholders.push(p);
+                out.spans.push(span(i, end));
             }
             c => {
                 piece.push(c);
@@ -513,7 +584,10 @@ fn parse_format(literal: &Tok, cx: &BuiltinCx<'_>) -> Result<FormatString, Error
 /// `arg:spec`, a placeholder's text between its braces, as rustc's
 /// `rustc_parse_format` reads it: `[[fill]align][sign]['#']['0'][width]
 /// ['.' precision][type]`.
-fn placeholder(inner: &str) -> Result<Placeholder, String> {
+///
+/// An error is its message, and where in `inner` it is if rustc points
+/// there (then it is not an "invalid format string").
+fn placeholder(inner: &str) -> Result<Placeholder, (String, Option<(usize, usize)>)> {
     let (arg, spec) = match inner.find(':') {
         Some(i) => (&inner[..i], Some(&inner[i + 1..])),
         None => (inner, None),
@@ -535,8 +609,15 @@ fn placeholder(inner: &str) -> Result<Placeholder, String> {
             Err(format!("invalid argument name `{s}`"))
         }
     };
+    let lead = arg.len() - arg.trim_start().len();
+    let named = arg_ref(arg).map_err(|m| (m, None))?;
+    let mut refs = Vec::new();
+    if named != ArgRef::Next {
+        refs.push((named.clone(), lead, lead + arg.trim().len()));
+    }
     let mut p = Placeholder {
-        arg: arg_ref(arg)?,
+        refs: Vec::new(),
+        arg: named,
         trait_: "display",
         fill: None,
         align: None,
@@ -548,9 +629,13 @@ fn placeholder(inner: &str) -> Result<Placeholder, String> {
         precision: None,
     };
     let Some(spec) = spec else {
+        p.refs = refs;
         return Ok(p);
     };
     let chars: Vec<char> = spec.chars().collect();
+    let spec_start = inner.len() - spec.len();
+    // The byte offset in `inner` of character `k` of the spec.
+    let byte = |k: usize| spec_start + chars[..k].iter().map(|c| c.len_utf8()).sum::<usize>();
     let align_of = |c: char| match c {
         '<' => Some(Align::Left),
         '>' => Some(Align::Right),
@@ -579,7 +664,7 @@ fn placeholder(inner: &str) -> Result<Placeholder, String> {
         i += 1;
     }
     // A count: a number, or `n$` or `name$` for an argument's value.
-    let count = |i: &mut usize| -> Result<Option<Count>, String> {
+    let mut count = |i: &mut usize| -> Result<Option<Count>, (String, Option<(usize, usize)>)> {
         let start = *i;
         let mut end = start;
         if chars.get(start).is_some_and(|c| c.is_ascii_digit()) {
@@ -597,12 +682,19 @@ fn placeholder(inner: &str) -> Result<Placeholder, String> {
         let s: String = chars[start..end].iter().collect();
         if chars.get(end) == Some(&'$') {
             *i = end + 1;
-            return Ok(Some(Count::Arg(arg_ref(&s)?)));
+            let r = arg_ref(&s).map_err(|m| (m, None))?;
+            refs.push((r.clone(), byte(start), byte(end)));
+            return Ok(Some(Count::Arg(r)));
         }
         if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
             *i = end;
             let n: u16 = s.parse().map_err(|_| {
-                format!("integer `{s}` does not fit into the type `u16` whose range is `0..=65535`")
+                (
+                    format!(
+                        "invalid format string: integer `{s}` does not fit into the type `u16` whose range is `0..=65535`"
+                    ),
+                    Some((byte(start), byte(end))),
+                )
             })?;
             return Ok(Some(Count::Is(n)));
         }
@@ -617,10 +709,11 @@ fn placeholder(inner: &str) -> Result<Placeholder, String> {
         } else {
             match count(&mut i)? {
                 Some(c) => p.precision = Some(c),
-                None => return Err("expected `}`, found a precision".into()),
+                None => return Err(("expected `}`, found a precision".into(), None)),
             }
         }
     }
+    p.refs = refs;
     let ty: String = chars[i..].iter().collect();
     p.trait_ = match ty.trim() {
         "" => "display",
@@ -640,7 +733,14 @@ fn placeholder(inner: &str) -> Result<Placeholder, String> {
         "e" => "lower_exp",
         "E" => "upper_exp",
         "p" => "pointer",
-        other => return Err(format!("unknown format trait `{other}`")),
+        other => {
+            let lead = ty.len() - ty.trim_start().len();
+            let lo = byte(i) + lead;
+            return Err((
+                format!("unknown format trait `{other}`"),
+                Some((lo, lo + other.len())),
+            ));
+        }
     };
     Ok(p)
 }
@@ -726,7 +826,11 @@ fn format_args(
                         text: *n,
                         joint: false,
                         origin: TokenOrigin {
-                            range: fmt_tok.range(),
+                            range: format
+                                .refs
+                                .iter()
+                                .find(|(r, _)| r == &ArgRef::Name(*n))
+                                .map_or(fmt_tok.range(), |&(_, at)| at),
                             group: fmt_tok.origin.group,
                             ctxt: fmt_tok.origin.ctxt,
                         },
@@ -804,7 +908,15 @@ fn format_args(
                 }
             )
         };
-        return Err((fmt_tok.range(), message));
+        let at = match bad_index.filter(|_| next <= positional.len()) {
+            Some(i) => format
+                .refs
+                .iter()
+                .find(|(r, _)| r == &ArgRef::Index(i))
+                .map(|&(_, at)| at),
+            None => format.spans.first().copied(),
+        };
+        return Err((at.unwrap_or(fmt_tok.range()), message));
     }
     let unused: Vec<usize> = (0..positional.len() + named.len())
         .filter(|&i| !used[i])

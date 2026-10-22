@@ -138,10 +138,69 @@ impl Default for &CStr {
     }
 }
 
+/// Its bytes in quotes, as rustc's (a `ByteStr`'s): ASCII escaped as
+/// `u8::escape_ascii` does, other characters as `char::escape_debug`,
+/// and bytes that are not UTF-8 as `\xNN`.
 impl Debug for CStr {
-    fn fmt(&self, _f: &mut Formatter<'_>) -> fmt::Result {
-        Ok(())
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("\"")?;
+        let bytes = self.to_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b < 0x80 {
+                fmt::escape_ascii(b, f)?;
+                i += 1;
+                continue;
+            }
+            match utf8_char(bytes, i) {
+                Some((c, len)) => {
+                    match fmt::escape_debug(c, true, true) {
+                        Some(escape) => escape.write(f)?,
+                        None => fmt::Write::write_char(f, c)?,
+                    }
+                    i += len;
+                }
+                None => {
+                    fmt::escape_ascii(b, f)?;
+                    i += 1;
+                }
+            }
+        }
+        f.write_str("\"")
     }
+}
+
+/// The `char` whose UTF-8 bytes start at `bytes[i]`, and how many there
+/// are, if they are UTF-8.
+fn utf8_char(bytes: &[u8], i: usize) -> Option<(char, usize)> {
+    let b = bytes[i] as u32;
+    let (len, init, min) = if b >= 0xC2 && b < 0xE0 {
+        (2, b & 0x1F, 0x80)
+    } else if b >= 0xE0 && b < 0xF0 {
+        (3, b & 0x0F, 0x800)
+    } else if b >= 0xF0 && b < 0xF5 {
+        (4, b & 0x07, 0x10000)
+    } else {
+        return None;
+    };
+    if i + len > bytes.len() {
+        return None;
+    }
+    let mut c = init;
+    let mut k = 1;
+    while k < len {
+        let next = bytes[i + k] as u32;
+        if next & 0xC0 != 0x80 {
+            return None;
+        }
+        c = (c << 6) | (next & 0x3F);
+        k += 1;
+    }
+    if c < min || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF) {
+        return None;
+    }
+    Some((unsafe { crate::char::from_u32_unchecked(c) }, len))
 }
 
 pub type c_char = i8;

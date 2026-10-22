@@ -1,0 +1,14 @@
+struct S {}
+fn main() -> ()
+    w@0: i32
+    args@1: (&i32, &i32)
+    args@2: (&u8, &i32)
+    args@3: (&i32,)
+    args@4: (&S, &S)
+    args@5: (&S,)
+error 196..197: mismatched types: expected `&usize`, found `&i32`
+error 222..225: mismatched types: expected `&usize`, found `&u8`
+error 252..253: the trait bound `{integer}: std::fmt::Pointer` is not satisfied
+error 282..283: the trait bound `S: LowerHex` is not satisfied
+error 285..286: the trait bound `S: LowerExp` is not satisfied
+error 310..311: `S` doesn't implement `Debug`
