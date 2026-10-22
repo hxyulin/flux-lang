@@ -15,14 +15,20 @@ pub(crate) fn file(mir: &FileMir, hir: &Hir) -> String {
     for (id, body) in mir.bodies.iter().filter(|&(id, _)| hir.is_program(id)) {
         let function = &hir.items.functions[id];
         let name = format!("{}{}", hir.items.function_path(function), function.generics);
-        body_text(&mut out, hir, &name, body);
+        body_text(&mut out, hir, &mir.discriminants, &name, body);
         out.push('\n');
     }
     hir.write_diagnostics(&mut out, &mir.diagnostics);
     out
 }
 
-fn body_text(out: &mut String, hir: &Hir, name: &str, body: &Body) {
+fn body_text(
+    out: &mut String,
+    hir: &Hir,
+    discriminants: &crate::Discriminants,
+    name: &str,
+    body: &Body,
+) {
     let params: Vec<String> = body
         .params()
         .map(|p| format!("_{}: {}", p.index(), body.locals[p].ty))
@@ -81,10 +87,28 @@ fn body_text(out: &mut String, hir: &Hir, name: &str, body: &Body) {
                 discr,
                 targets,
                 otherwise,
+                variants,
             } => {
                 let mut arms: Vec<String> = targets
                     .iter()
-                    .map(|(value, bb)| format!("{value}: bb{}", bb.index()))
+                    .map(|&(value, bb)| {
+                        // A variant's discriminant, or its path if that
+                        // is not known.
+                        let value = match variants {
+                            Some(strukt) => crate::discriminant_bits(
+                                &hir.items,
+                                discriminants,
+                                *strukt,
+                                value as u32,
+                            )
+                            .map_or_else(
+                                || hir.items.structs[*strukt].variant(value as u32).path(),
+                                |bits| bits.to_string(),
+                            ),
+                            None => value.to_string(),
+                        };
+                        format!("{value}: bb{}", bb.index())
+                    })
                     .collect();
                 arms.push(format!("otherwise: bb{}", otherwise.index()));
                 format!(
@@ -258,8 +282,7 @@ fn constant_text(hir: &Hir, constant: Constant) -> String {
         Constant::Unit => "()".to_owned(),
         Constant::CStr(index) => format!("c_str{index}"),
         Constant::Item { id, args, .. } => {
-            let name = hir.items.consts[id].name;
-            let name = name.map_or("_".to_owned(), |n| n.to_string());
+            let name = hir.items.const_name(id);
             let items = &hir.items;
             match items.consts[id].owner {
                 // `<T as Tr>::N`

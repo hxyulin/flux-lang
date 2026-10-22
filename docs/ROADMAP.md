@@ -31,14 +31,13 @@ functions, structs and `impl` blocks, monomorphized, traits with
 bounds, statically dispatched, associated types and constants,
 overloaded operators, `Copy`/`Clone`/`PartialEq`/`Eq` with `#[derive]`,
 `Drop`, with rustc's drop order and drop flags, bounds on structs, and
-enums with `match`, `if let`, `let`-`else`, exhaustiveness checking and
-rustc's default binding modes.
+enums with `match`, `if let`, `let`-`else`, exhaustiveness checking,
+rustc's default binding modes and discriminants written as constant
+expressions.
 In order next:
 
 1. Operators on references (`r + 1`, which match ergonomics makes
-   common) and `?`, then `Ordering` and `PartialOrd`. Discriminants
-   other than literals (`A = 1 << 2`), which MIR building needs the
-   values of before constants are evaluated.
+   common) and `?`, then `Ordering` and `PartialOrd`.
 2. `core` defines the pointer methods, `mem::replace` and `CStr` (now
    built into the compiler) through lang items and intrinsics. `for`
    loops over `Iterator`, which needs closures for most of its methods.

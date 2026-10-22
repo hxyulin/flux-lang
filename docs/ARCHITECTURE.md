@@ -165,7 +165,13 @@ program's files:
   enum's `variants`), since their generics, bounds, derives and `impl`
   blocks work alike; what a constructor, struct expression or pattern
   names is a struct or one variant of an enum, by index, and
-  `Struct::variant` gives either's fields the same way.
+  `Struct::variant` gives either's fields the same way. A variant's
+  discriminant is a value when it is written as a literal or counted
+  from one; one written as another expression (`A = 1 << 2`) is an
+  anonymous constant (`Const::discriminant`) of the enum's `repr` type,
+  lowered in the enum's module with `Self` the enum, and the variants
+  after it are its value plus how many variants later they come
+  (`Discriminant::Const`).
 - The **def map** ([`def_map`](../crates/flux-hir/src/def_map.rs)): what
   each module's names mean, in Rust's two namespaces (types and values),
   from its items and its `use` imports. Imports are resolved together,
@@ -405,7 +411,11 @@ semantics become explicit, so code generation never sees expressions:
   the place matched that it looks at (a discriminant, a comparison with
   a literal or a range's ends), each going on or to where matching
   fails, and then its bindings, each assigned from its part of the
-  place, or a reference to it. An or-pattern has a way of matching per
+  place, or a reference to it. A test of a discriminant names the
+  variant, since one that is a constant's is known only once constants
+  are evaluated, which may run this very body; a unit variant cast to
+  an integer (`E::A as i32`) is its discriminant, a literal or its
+  constant plus the variants since, as in rustc. An or-pattern has a way of matching per
   alternative, each with its own bindings and the next alternative to
   resume at, so a guard that fails tries it. A `match` tests its arms in
   order; a guard reads the parts its arm would move instead of moving
@@ -436,6 +446,14 @@ it uses. As in rustc, the constants evaluated are the free ones and
 those that code without generic parameters names, with the arguments
 it gives, whether that code is used or not; errors (E0080) are reported
 at the constant that failed, and the lint below knows their values.
+Discriminants written as expressions are evaluated before the other
+constants, as rustc checks enums first, as far as each use needs, as in
+rustc: a cast of a unit variant needs that variant's, but making a
+value of the enum or running a body that matches on it needs them all,
+so a discriminant that needs itself is a cycle (E0391), reported once,
+at the discriminant it started from. Then the values of each enum are
+checked for E0370 and E0081, and kept in `FileMir::discriminants` for
+code generation and MIR dumps.
 Those that generic code names are evaluated by code generation for the
 instances it builds, so their errors come from `flux build` only, as
 rustc reports them only in a full build; more than 128 constants deep

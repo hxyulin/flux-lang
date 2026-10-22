@@ -46,7 +46,7 @@ error 294..295: cannot add `i32` to `u8`
 error 296..300: mismatched types: expected `u8`, found `i32`
 error 333..338: literal out of range for `u8`
 error 356..359: literal out of range for `i8`
-error 374..379: literal out of range for `i8`
+error 373..379: literal out of range for `i8`
 error 421..427: call to unsafe function `abs` requires an `unsafe` block
 error 441..446: this function takes 0 arguments but 1 argument was supplied
 error 472..475: this function takes 1 argument but 0 arguments were supplied

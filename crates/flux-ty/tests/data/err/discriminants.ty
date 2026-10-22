@@ -1,0 +1,18 @@
+enum NotAnInteger { A }
+enum WrongInteger { A, B }
+enum Widened { A, B }
+enum NotConst { A }
+fn runtime() -> isize
+fn main() -> ()
+const M: i32
+const NotAnInteger::A::{constant#0}: isize
+const WrongInteger::A::{constant#0}: u8
+const WrongInteger::B::{constant#0}: u8
+const Widened::A::{constant#0}: isize
+const Widened::B::{constant#0}: isize
+const NotConst::A::{constant#0}: isize
+error 217..221: mismatched types: expected `isize`, found `bool`
+error 266..267: mismatched types: expected `u8`, found `i32`
+error 277..285: mismatched types: expected `u8`, found `u16`
+error 335..339: mismatched types: expected `isize`, found `i64`
+error 370..379: cannot call non-const function `runtime` in constants

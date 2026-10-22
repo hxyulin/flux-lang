@@ -67,6 +67,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         }
     }
     let mut const_values = crate::eval::ConstValues::default();
+    let mut discriminants = crate::Discriminants::new();
     if diagnostics.is_empty() {
         diagnostics.extend(evaluate_consts(
             hir,
@@ -74,6 +75,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
             &bodies,
             &consts,
             &mut const_values,
+            &mut discriminants,
         ));
         // rustc lints associated constants even where they are unused.
         let linted = bodies
@@ -97,6 +99,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         bodies,
         consts,
         const_values,
+        discriminants,
         diagnostics,
     }
 }
@@ -203,11 +206,7 @@ fn check_patterns(
         return Default::default();
     }
     let items = &hir.items;
-    let names = |id: ConstId| {
-        items.consts[id]
-            .name
-            .map_or("_".to_owned(), |n| n.to_string())
-    };
+    let names = |id: ConstId| items.const_name(id);
     let mut evaluator = crate::eval::Evaluator::new(items, &typed.sigs, bodies, consts, &names);
     let (mut diagnostics, failed) = flux_ty::check_deferred_patterns(hir, typed, &mut |c| {
         if skip.contains(&c.konst) {
@@ -261,26 +260,25 @@ fn check_body(
     found
 }
 
-/// Evaluates the constants rustc evaluates: free ones, and those that
-/// code without generic parameters names, with the arguments it gives,
-/// whether it is used or not. Errors are E0080, at the value of the
-/// constant that failed. The other constants without generic parameters
-/// are evaluated for their values only; those with some, for the
-/// instances code generation needs.
+/// Evaluates the constants rustc evaluates: enums' discriminants
+/// first, as rustc checks enums before evaluating constants, then free
+/// constants, and those that code without generic parameters names,
+/// with the arguments it gives, whether it is used or not. Errors are
+/// E0080, at the value of the constant that failed. The other constants
+/// without generic parameters are evaluated for their values only;
+/// those with some, for the instances code generation needs.
 fn evaluate_consts(
     hir: &Hir,
     typed: &TypedFile,
     bodies: &ArenaMap<flux_hir::Function, Body>,
     consts: &ArenaMap<flux_hir::Const, Body>,
     values: &mut crate::eval::ConstValues,
+    discriminants: &mut crate::Discriminants,
 ) -> Vec<flux_hir::Diagnostic> {
     let items = &hir.items;
-    let names = |id: ConstId| {
-        items.consts[id]
-            .name
-            .map_or("_".to_owned(), |n| n.to_string())
-    };
+    let names = |id: ConstId| items.const_name(id);
     let mut evaluator = crate::eval::Evaluator::new(items, &typed.sigs, bodies, consts, &names);
+    let mut checked = evaluate_discriminants(items, &mut evaluator, discriminants);
     let mut wanted: Vec<flux_ty::ConstInstance> = items
         .consts
         .iter()
@@ -316,7 +314,8 @@ fn evaluate_consts(
             }
         }
     }
-    let diagnostics = eval_failures(items, &evaluator);
+    let mut diagnostics = eval_failures(items, &evaluator);
+    diagnostics.append(&mut checked);
     for (id, _) in items.consts.iter() {
         if consts.get(id).is_some()
             && !is_generic_const(items, id)
@@ -325,6 +324,79 @@ fn evaluate_consts(
         {
             values.items.insert(id, value);
         }
+    }
+    diagnostics
+}
+
+/// Evaluates the discriminants of every enum with some written as
+/// expressions other than literals, into `table`, and checks them as
+/// rustc does: one counted past the type's maximum is E0370 (and wraps
+/// around), and a value assigned more than once E0081, at the enum.
+/// Evaluation errors are the evaluator's failures.
+fn evaluate_discriminants(
+    items: &ItemTree,
+    evaluator: &mut crate::eval::Evaluator<'_>,
+    table: &mut crate::Discriminants,
+) -> Vec<flux_hir::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (id, s) in items.structs.iter() {
+        if !s.has_const_discriminants() {
+            continue;
+        }
+        let int = flux_ty::discriminant_ty(items, id);
+        let error = |range, message: String| flux_hir::Diagnostic {
+            file: s.loc.file,
+            range,
+            message,
+        };
+        let mut values: Vec<u128> = Vec::new();
+        let mut failed = false;
+        for (v, variant) in s.variants.iter().flatten().enumerate() {
+            let value = match (variant.discriminant, values.last()) {
+                (flux_hir::Discriminant::Const { offset, .. }, Some(&previous)) if offset > 0 => {
+                    let next = crate::eval::truncate(previous.wrapping_add(1), int);
+                    let wrapped = if int.is_signed() {
+                        next == 1u128 << (int.bits() - 1)
+                    } else {
+                        next == 0
+                    };
+                    if wrapped {
+                        diagnostics.push(error(
+                            variant.name_range,
+                            "enum discriminant overflowed".to_owned(),
+                        ));
+                    }
+                    next
+                }
+                _ => match evaluator.discriminant(id, v as u32) {
+                    Ok(bits) => bits,
+                    Err(_) => {
+                        failed = true;
+                        break;
+                    }
+                },
+            };
+            values.push(value);
+        }
+        if failed {
+            continue;
+        }
+        let mut reported = Vec::new();
+        for (i, &value) in values.iter().enumerate() {
+            if values[..i].contains(&value) && !reported.contains(&value) {
+                reported.push(value);
+                let shown = if int.is_signed() {
+                    crate::eval::sign_extend(value, int).to_string()
+                } else {
+                    value.to_string()
+                };
+                diagnostics.push(error(
+                    s.def_range,
+                    format!("discriminant value `{shown}` assigned more than once"),
+                ));
+            }
+        }
+        table.insert(id, values.into());
     }
     diagnostics
 }
@@ -1121,6 +1193,7 @@ impl Builder<'_> {
                         discr: cond,
                         targets: vec![(0, else_block)],
                         otherwise: then_block,
+                        variants: None,
                     },
                     range,
                 );
@@ -1307,22 +1380,27 @@ impl Builder<'_> {
                     self.lower_into(*inner, dest);
                     return;
                 }
-                // A fieldless enum is cast through its discriminant.
-                let operand = if matches!(self.expr_ty(*inner).kind(), TyKind::Adt(..)) {
-                    // The cast takes the value: moves it unless it is `Copy`.
-                    let mut place = self.lower_place(*inner);
-                    if let Operand::Move(_) = self.read(place.clone()) {
-                        let value = self.temp(self.expr_ty(*inner));
-                        self.assign(&value.into(), Rvalue::Use(Operand::Move(place)), range);
-                        place = value.into();
-                    }
-                    let int = self.typed.sigs.discriminant_ty(self.expr_ty(*inner));
-                    let discriminant = self.temp(Ty::int(int.unwrap_or(IntTy::Isize)));
-                    self.assign(&discriminant.into(), Rvalue::Discriminant(place), range);
-                    Operand::Copy(discriminant.into())
-                } else {
-                    self.lower_operand(*inner)
-                };
+                // A unit variant's path is its discriminant, as in rustc,
+                // which needs the value of that variant's discriminant only;
+                // other values of a fieldless enum are cast through it.
+                let operand =
+                    if let Expr::Path(Res::Variant(strukt, variant)) = self.body.exprs[*inner] {
+                        self.variant_discriminant(strukt, variant, range)
+                    } else if matches!(self.expr_ty(*inner).kind(), TyKind::Adt(..)) {
+                        // The cast takes the value: moves it unless it is `Copy`.
+                        let mut place = self.lower_place(*inner);
+                        if let Operand::Move(_) = self.read(place.clone()) {
+                            let value = self.temp(self.expr_ty(*inner));
+                            self.assign(&value.into(), Rvalue::Use(Operand::Move(place)), range);
+                            place = value.into();
+                        }
+                        let int = self.typed.sigs.discriminant_ty(self.expr_ty(*inner));
+                        let discriminant = self.temp(Ty::int(int.unwrap_or(IntTy::Isize)));
+                        self.assign(&discriminant.into(), Rvalue::Discriminant(place), range);
+                        Operand::Copy(discriminant.into())
+                    } else {
+                        self.lower_operand(*inner)
+                    };
                 self.assign(dest, Rvalue::Cast(operand, ty), range);
             }
         }
@@ -1763,6 +1841,7 @@ impl Builder<'_> {
                             discr: Operand::Copy(place),
                             targets: vec![(0, on_false)],
                             otherwise,
+                            variants: None,
                         },
                         range,
                     );
@@ -1859,18 +1938,54 @@ impl Builder<'_> {
                 range,
             );
             let ok = self.new_block();
-            let bits = crate::discriminant_bits(self.items, strukt, variant);
             self.terminate(
                 TerminatorKind::SwitchInt {
                     discr: Operand::Copy(discriminant.into()),
-                    targets: vec![(bits, ok)],
+                    targets: vec![(u128::from(variant), ok)],
                     otherwise: fail,
+                    variants: Some(strukt),
                 },
                 range,
             );
             self.current = Some(ok);
         }
         place.downcast(variant)
+    }
+
+    /// The discriminant of variant `variant` of enum `strukt`: a literal's
+    /// value, or the constant of an expression plus the variants since.
+    fn variant_discriminant(
+        &mut self,
+        strukt: StructId,
+        variant: u32,
+        range: TextRange,
+    ) -> Operand {
+        let int = flux_ty::discriminant_ty(self.items, strukt);
+        let variants = self.items.structs[strukt]
+            .variants
+            .as_ref()
+            .expect("an enum");
+        match variants[variant as usize].discriminant {
+            flux_hir::Discriminant::Value(value) => Operand::Const(Constant::int(value, int)),
+            flux_hir::Discriminant::Const { konst, offset } => {
+                let value = Operand::Const(Constant::Item {
+                    id: konst,
+                    args: Ty::list(&[]),
+                    ty: Ty::int(int),
+                });
+                if offset == 0 {
+                    return value;
+                }
+                let sum = self.temp(Ty::int(int));
+                let offset = Operand::Const(Constant::int(i128::from(offset), int));
+                self.assign(
+                    &sum.into(),
+                    Rvalue::BinaryOp(BinOp::Add, value, offset),
+                    range,
+                );
+                Operand::Copy(sum.into())
+            }
+        }
     }
 
     /// Goes on if `place op value`, else to `fail`.
@@ -1894,6 +2009,7 @@ impl Builder<'_> {
                 discr: Operand::Copy(holds.into()),
                 targets: vec![(0, fail)],
                 otherwise: ok,
+                variants: None,
             },
             range,
         );
@@ -2013,6 +2129,7 @@ impl Builder<'_> {
                                     discr: cond,
                                     targets: vec![(0, failed)],
                                     otherwise: pass,
+                                    variants: None,
                                 },
                                 guard_range,
                             );
@@ -2154,6 +2271,7 @@ impl Builder<'_> {
                         discr: value,
                         targets: vec![(0, otherwise)],
                         otherwise: then,
+                        variants: None,
                     },
                     range,
                 );
@@ -2184,6 +2302,7 @@ impl Builder<'_> {
                 discr: l,
                 targets: vec![(0, on_false)],
                 otherwise: on_true,
+                variants: None,
             },
             range,
         );

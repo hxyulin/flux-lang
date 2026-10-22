@@ -1,0 +1,19 @@
+enum E { A = (1 << 2), B = (N + 1), C = B + 1, D = twice(3), F = 50, G = 51 }
+
+#[repr(u8)] enum R { X = {
+    let x@0 = 200;
+    (x@0 + 50)
+}, Y = X + 1, Z = ((R::X as u8) - 5) }
+
+enum S { A = 3, B = ((S::A as isize) + 1) }
+
+#[repr(u16)] enum Message<T> { Quit = (1 + 1), Move(T) = 600, Write(T) = 601 }
+
+enum Inner { A = (HIDDEN as isize) }
+
+fn twice(x@0: isize) -> isize {
+    (x@0 * 2)
+}
+
+fn main() -> () {}
+

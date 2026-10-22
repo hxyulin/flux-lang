@@ -176,6 +176,7 @@ pub(crate) fn elaborate(
                     discr: Operand::Copy(flagged[&flag].into()),
                     targets: vec![(0, next)],
                     otherwise: drop_block,
+                    variants: None,
                 };
             }
             // The innermost enum's test last, the outermost's first.
@@ -198,11 +199,9 @@ pub(crate) fn elaborate(
                 });
                 kind = TerminatorKind::SwitchInt {
                     discr: Operand::Copy(discriminant.into()),
-                    targets: vec![(
-                        crate::discriminant_bits(items, adt.strukt, variant),
-                        test_block,
-                    )],
+                    targets: vec![(u128::from(variant), test_block)],
                     otherwise: next,
+                    variants: Some(adt.strukt),
                 };
             }
             if i == 0 {
