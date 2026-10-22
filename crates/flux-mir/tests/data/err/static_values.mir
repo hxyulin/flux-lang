@@ -1,0 +1,12 @@
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 71..79: attempt to divide `1_i32` by zero
+error 113..118: constant accesses mutable global memory
+error 245..263: attempt to compute `u8::MAX + 8_u8`, which would overflow

@@ -174,6 +174,18 @@ pub struct Const {
     /// constant of the enum's `repr` type, in no scope, whose `node` is
     /// the variant.
     pub discriminant: Option<(StructId, u32)>,
+    /// A static, `static X: T = v;` (`Some(false)`) or `static mut`
+    /// (`Some(true)`): one place in memory, whose initial value is
+    /// evaluated like a constant's, rather than a value copied at each
+    /// use. Its `node` is a `STATIC`.
+    pub is_static: Option<bool>,
+}
+
+impl Const {
+    /// Whether it is a `static mut`.
+    pub fn is_static_mut(&self) -> bool {
+        self.is_static == Some(true)
+    }
 }
 
 /// A type alias: `type Pair<T> = (T, T);`, another name for a type,
@@ -1196,7 +1208,10 @@ impl Collector<'_> {
             }
             ast::Item::ExternCrate(_) => "`extern crate` declarations",
             ast::Item::MacroCall(_) => "macros",
-            ast::Item::Static(_) => "statics",
+            ast::Item::Static(st) => {
+                self.collect_static(ctx, st);
+                return;
+            }
             ast::Item::Trait(t) => {
                 self.collect_trait(ctx, t);
                 return;
@@ -2203,8 +2218,56 @@ impl Collector<'_> {
                 def_range: TextRange::new(def_start, header_end),
                 item_range,
                 discriminant: None,
+                is_static: None,
             }),
         )
+    }
+
+    /// `static X: T = v;` or `static mut X: T = v;`.
+    fn collect_static(&mut self, ctx: Ctx, st: ast::Static<'_>) {
+        check_attrs(st.attrs(), &mut self.items.diagnostics);
+        let vis = self.visibility(ctx, st.visibility());
+        let Some(name) = st.name() else {
+            return;
+        };
+        let name_end = name.syntax().text_range().end();
+        let diagnostics = &mut self.items.diagnostics;
+        let ty = match st.ty() {
+            Some(ty) => lower_type(Some(ty), diagnostics),
+            None => {
+                diagnostics.push(Diagnostic::new(
+                    TextRange::empty(name_end),
+                    "missing type for `static` item",
+                ));
+                TypeRef::Error
+            }
+        };
+        let has_body = st.body().is_some();
+        let def_start = def_start(st.syntax());
+        let header_end = st.ty().map_or(name_end, |t| t.syntax().text_range().end());
+        let item_range = TextRange::new(def_start, st.syntax().text_range().end());
+        if !has_body {
+            diagnostics.push(Diagnostic::new(item_range, "free static item without body"));
+        }
+        self.items.consts.alloc(Const {
+            name: Some(Symbol::intern(name.text())),
+            ty,
+            ty_range: st
+                .ty()
+                .map_or(TextRange::empty(name_end), |t| t.syntax().text_range()),
+            loc: ItemLoc {
+                module: ctx.module,
+                file: ctx.file,
+                vis,
+            },
+            owner: None,
+            node: st.syntax().id(),
+            has_body,
+            def_range: TextRange::new(def_start, header_end),
+            item_range,
+            discriminant: None,
+            is_static: Some(st.mut_token().is_some()),
+        });
     }
 
     fn collect_struct(&mut self, ctx: Ctx, s: ast::Struct<'_>) {
@@ -2491,6 +2554,7 @@ impl Collector<'_> {
                     def_range: range,
                     item_range: range,
                     discriminant: Some((strukt, variants.len() as u32)),
+                    is_static: None,
                 });
                 discriminant = Discriminant::Const { konst, offset: 0 };
             }

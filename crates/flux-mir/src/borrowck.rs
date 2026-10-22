@@ -299,6 +299,26 @@ impl Checker<'_> {
         place_name(self.body, self.items, self.sigs, place)
     }
 
+    /// If `place` is a static or part of one, not behind another
+    /// pointer: the static's name, whether it is mutable, and whether
+    /// `place` is all of it.
+    fn static_of(&self, place: &Place) -> Option<(String, bool, bool)> {
+        let LocalKind::Static(id) = self.body.locals[place.local].kind else {
+            return None;
+        };
+        if place
+            .projection
+            .iter()
+            .rposition(|&e| e == ProjectionElem::Deref)
+            != Some(0)
+        {
+            return None;
+        }
+        let data = &self.items.consts[id];
+        let name = data.name.map_or("_".to_owned(), |n| n.to_string());
+        Some((name, data.is_static_mut(), place.projection.len() == 1))
+    }
+
     /// The loans held by the locals in `live`, except `except`.
     fn live_loans(&self, live: &[bool], except: Option<usize>) -> Vec<usize> {
         (0..self.loans.len())
@@ -461,6 +481,17 @@ impl Checker<'_> {
     }
 
     fn write(&mut self, place: &Place, live: &[usize], range: TextRange) {
+        if let Some((name, false, whole)) = self.static_of(place) {
+            let message = if whole {
+                format!("cannot assign to immutable static item `{name}`")
+            } else {
+                format!(
+                    "cannot assign to `{}`, as `{name}` is an immutable static item",
+                    self.name(place)
+                )
+            };
+            return self.error(range, message);
+        }
         if let Some(pointer) = self.last_pointer(place)
             && !matches!(
                 pointer.kind(),
@@ -498,6 +529,16 @@ impl Checker<'_> {
     /// `&mut place` needs a `mut` binding, or a mutable pointer.
     fn check_mutable_borrow(&mut self, place: &Place, range: TextRange) {
         let name = self.name(place);
+        if let Some((item, false, whole)) = self.static_of(place) {
+            let message = if whole {
+                format!("cannot borrow immutable static item `{item}` as mutable")
+            } else {
+                format!(
+                    "cannot borrow `{name}` as mutable, as `{item}` is an immutable static item"
+                )
+            };
+            return self.error(range, message);
+        }
         match self.last_pointer(place) {
             Some(pointer) => {
                 if !matches!(
@@ -534,6 +575,17 @@ impl Checker<'_> {
 
     /// Moving out of `place`, which is behind a pointer.
     fn check_move_out(&mut self, place: &Place, range: TextRange) {
+        if let Some((item, _, whole)) = self.static_of(place) {
+            let message = if whole {
+                format!("cannot move out of static item `{item}`")
+            } else {
+                format!(
+                    "cannot move out of `{}` as `{item}` is a static item",
+                    self.name(place)
+                )
+            };
+            return self.error(range, message);
+        }
         let behind = match self.last_pointer(place).map(|p| p.kind()) {
             Some(TyKind::Ref(Mutability::Not, _)) => "a shared reference",
             Some(TyKind::Ref(Mutability::Mut, _)) => "a mutable reference",

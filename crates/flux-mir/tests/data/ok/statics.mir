@@ -1,0 +1,194 @@
+fn Point::sum(_1: &Point) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+    let _3: i32;
+
+    bb0: {
+        _2 = copy (*_1).0;
+        _3 = copy (*_1).1;
+        _0 = Add(copy _2, copy _3);
+        return;
+    }
+}
+
+fn square(_1: u32) -> u32 {
+    let mut _0: u32;
+    let _2: u32;
+    let _3: u32;
+
+    bb0: {
+        _2 = copy _1;
+        _3 = copy _1;
+        _0 = Mul(copy _2, copy _3);
+        return;
+    }
+}
+
+fn read(_1: &Point) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy (*_1).0;
+        return;
+    }
+}
+
+fn bump() -> u64 {
+    let mut _0: u64;
+    let _1: ();
+    let mut _2: *mut u64;
+    let _3: u64;
+    let mut _4: *mut u64;
+
+    bb0: {
+        _2 = const &raw mut COUNT;
+        _3 = copy (*_2);
+        (*_2) = Add(copy _3, const 1_u64);
+        _1 = const ();
+        _4 = const &raw mut COUNT;
+        _0 = copy (*_4);
+        return;
+    }
+}
+
+fn reset() -> () {
+    let mut _0: ();
+    let _1: ();
+    let mut _2: *mut u64;
+    let _3: ();
+    let _4: Point;
+    let mut _5: &Point;
+    let mut _6: *mut Point;
+
+    bb0: {
+        _2 = const &raw mut COUNT;
+        (*_2) = const 0_u64;
+        _1 = const ();
+        _5 = const &ORIGIN;
+        _4 = copy (*_5);
+        _6 = const &raw mut POS;
+        (*_6) = copy _4;
+        _3 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: i32; // a
+    let _2: i32;
+    let mut _3: &Point;
+    let _4: &Point;
+    let _5: i32;
+    let _6: &Point;
+    let mut _7: &Point;
+    let _8: &u32; // r
+    let mut _9: &u32;
+    let _10: u32; // b
+    let _11: u32;
+    let _12: u32;
+    let _13: u32;
+    let mut _14: &u32;
+    let _15: u64; // c
+    let _16: Point; // p
+    let _17: ();
+    let mut _18: *mut Point;
+    let _19: i32;
+    let _20: ();
+    let _21: i32;
+    let _22: i32;
+    let mut _23: *mut Point;
+    let mut _24: *mut Point;
+    let mut _25: *mut Point;
+    let _26: (); // n
+    let mut _27: &();
+    let _28: u8; // o
+    let mut _29: &Option<u8>;
+    let _30: Option<u8>;
+    let _31: ();
+
+    bb0: {
+        _3 = const &ORIGIN;
+        _4 = &(*_3);
+        _2 = sum(copy _4) -> bb1;
+    }
+
+    bb1: {
+        _7 = const &ORIGIN;
+        _6 = &(*_7);
+        _5 = read(copy _6) -> bb2;
+    }
+
+    bb2: {
+        _1 = Add(copy _2, copy _5);
+        _9 = const &LIMIT;
+        _8 = &(*_9);
+        _12 = copy (*_8);
+        _14 = const &TWICE;
+        _13 = copy (*_14);
+        _11 = Add(copy _12, copy _13);
+        _10 = Add(copy _11, const FROM_STATIC);
+        _15 = bump() -> bb3;
+    }
+
+    bb3: {
+        _18 = const &raw mut POS;
+        _19 = copy (*_18).0;
+        (*_18).0 = Add(copy _19, const 1_i32);
+        _17 = const ();
+        _23 = const &raw mut POS;
+        _22 = copy (*_23).0;
+        _21 = Mul(copy _22, const 2_i32);
+        _24 = const &raw mut POS;
+        (*_24).1 = copy _21;
+        _20 = const ();
+        _25 = const &raw mut POS;
+        _16 = copy (*_25);
+        _27 = const &NOTHING;
+        _26 = copy (*_27);
+        _29 = const &CHOICE;
+        _30 = copy (*_29);
+        _28 = unwrap_or::<u8>(copy _30, const 0_u8) -> bb4;
+    }
+
+    bb4: {
+        _31 = reset() -> bb5;
+    }
+
+    bb5: {
+        _0 = const ();
+        StorageDead(_28);
+        StorageDead(_26);
+        StorageDead(_16);
+        StorageDead(_15);
+        StorageDead(_10);
+        StorageDead(_8);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn <Point as ::core::clone::Clone>::clone(_1: &Point) -> Point {
+    let mut _0: Point;
+    let _2: ();
+    let _3: &i32;
+    let _4: ();
+    let _5: &i32;
+
+    bb0: {
+        _3 = &(*_1).0;
+        _2 = assert_param_is_clone::<i32>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _5 = &(*_1).1;
+        _4 = assert_param_is_clone::<i32>(copy _5) -> bb2;
+    }
+
+    bb2: {
+        _0 = copy (*_1);
+        return;
+    }
+}
+

@@ -71,7 +71,8 @@ reported as "not supported yet":
   included (`struct W<T: Tr>`, `where` clauses); associated constants
   in traits, with or without a default, in their `impl` blocks and in
   generic inherent blocks (`const N: u32;`, `const N: u32 = 1;`);
-  constants (`const N: i32 = 5;`); type aliases (`type Pair<T> = (T,
+  constants (`const N: i32 = 5;`); statics (`static X: T = v;`,
+  `static mut X: T = v;`), of types without references; type aliases (`type Pair<T> = (T,
   T);`), through which a struct's or enum's associated items, variants
   and struct expressions are named (`Alias::new()`, `Alias::A`,
   `Alias { .. }`), but not a tuple or unit struct's constructor
@@ -318,6 +319,18 @@ them all. So is
 arithmetic in ordinary code that rustc can tell overflows, such as
 `let x: u8 = 255; x + 1` (its deny-by-default `arithmetic_overflow`
 lint), even with overflow checks off.
+
+A static is one place in memory, initialized with its initializer's
+value, evaluated at compile time as a constant's is (it may read other
+statics, a `static mut`'s initial value included), and never dropped.
+As in rustc, an immutable static may be read, borrowed (`&X`) and
+passed by reference but not assigned or moved out of (E0594, E0507),
+its type must be `Sync`, which rules out raw pointers (E0277), and a
+`static mut` may be used only in `unsafe` code (E0133); edition 2024's
+`static_mut_refs` lint, deny-by-default, rejects references to one,
+explicit or made by a method call, so it is read and written by value.
+A constant may read an immutable static's value, but not a `static
+mut`'s (E0080).
 
 Every program can use flux's own `core` library, which has the parts of
 Rust's that flux supports so far: the integer types' constants (`MIN`,

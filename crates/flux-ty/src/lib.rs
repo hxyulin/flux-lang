@@ -1541,9 +1541,10 @@ fn extend_signatures(
         let scope = TypeScope {
             self_ty: self_ty(&sigs, konst.owner),
             generics: &generics,
-            signature_of: Some(match konst.owner {
-                Some(_) => "associated constants",
-                None => "constants",
+            signature_of: Some(match (konst.owner, konst.is_static) {
+                (Some(_), _) => "associated constants",
+                (None, Some(_)) => "static variables",
+                (None, None) => "constants",
             }),
             bounds: &bounds,
             self_trait: konst
@@ -1566,6 +1567,23 @@ fn extend_signatures(
             d.file = konst.loc.file;
             reported.push(d);
             ty = Ty::ERROR;
+        }
+        if let Some(mutable) = konst.is_static {
+            let mut error = |message: String| {
+                reported.push(Diagnostic {
+                    file: konst.loc.file,
+                    range: konst.ty_range,
+                    message,
+                });
+            };
+            if contains_ref(ty) {
+                error("references in statics are not supported yet".to_owned());
+            } else if !mutable && let Some(pointer) = not_sync(&sigs, ty, &mut Vec::new()) {
+                // Without `Sync`, the one type flux has that is not.
+                error(format!(
+                    "`{pointer}` cannot be shared between threads safely"
+                ));
+            }
         }
         sigs.consts.insert(id, ty);
     }
@@ -1827,6 +1845,24 @@ fn check_alias(
                 format!("type parameter `{}` is never used", param.name),
             );
         }
+    }
+}
+
+/// The raw pointer type in `ty`, which makes it not `Sync`, if any:
+/// those are the types flux has that are not.
+fn not_sync(sigs: &Signatures, ty: Ty, seen: &mut Vec<StructId>) -> Option<Ty> {
+    match ty.kind() {
+        TyKind::RawPtr(..) => Some(ty),
+        TyKind::Adt(adt, _) => {
+            if seen.contains(&adt.strukt) {
+                return None;
+            }
+            seen.push(adt.strukt);
+            let fields = sigs.contents(ty)?;
+            fields.iter().find_map(|&f| not_sync(sigs, f, seen))
+        }
+        TyKind::Tuple(elements) => elements.iter().find_map(|&e| not_sync(sigs, e, seen)),
+        _ => None,
     }
 }
 

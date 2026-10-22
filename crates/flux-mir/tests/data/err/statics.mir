@@ -1,0 +1,103 @@
+fn S::set(_1: &mut S) -> () {
+    let mut _0: ();
+    let _2: ();
+
+    bb0: {
+        (*_1).0 = const 0_i32;
+        _2 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn S::take(_1: S) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: Inner; // x
+    let mut _2: &S;
+    let _3: ();
+    let mut _4: &S;
+    let _5: ();
+    let mut _6: &S;
+    let _7: ();
+    let mut _8: &i32;
+    let _9: &mut i32; // r
+    let mut _10: &S;
+    let _11: &mut i32; // q
+    let mut _12: &i32;
+    let _13: ();
+    let mut _14: &S;
+    let _15: &mut S;
+    let _16: ();
+    let mut _17: &S;
+    let _18: S;
+    let _19: Inner; // y
+    let mut _20: *mut S;
+    let _21: S; // z
+    let mut _22: *mut S;
+    let _23: ();
+    let mut _24: *mut S;
+
+    bb0: {
+        _2 = const &ST;
+        _1 = move (*_2).1;
+        _4 = const &ST;
+        (*_4).0 = const 3_i32;
+        _3 = const ();
+        _6 = const &ST;
+        (*_6).1.0 = const 4_i32;
+        _5 = const ();
+        _8 = const &N;
+        (*_8) = const 2_i32;
+        _7 = const ();
+        _10 = const &ST;
+        _9 = &mut (*_10).0;
+        _12 = const &N;
+        _11 = &mut (*_12);
+        _14 = const &ST;
+        _15 = &two_phase (*_14);
+        _13 = set(move _15) -> bb1;
+    }
+
+    bb1: {
+        _17 = const &ST;
+        _18 = move (*_17);
+        _16 = take(move _18) -> bb2;
+    }
+
+    bb2: {
+        _20 = const &raw mut MS;
+        _19 = move (*_20).1;
+        _22 = const &raw mut MS;
+        _21 = move (*_22);
+        _24 = const &raw mut MS;
+        (*_24).0 = const 5_i32;
+        _23 = const ();
+        _0 = const ();
+        StorageDead(_21);
+        StorageDead(_19);
+        StorageDead(_11);
+        StorageDead(_9);
+        StorageDead(_1);
+        return;
+    }
+}
+
+error 323..331: cannot move out of `ST.inner` as `ST` is a static item
+error 337..345: cannot assign to `ST.a`, as `ST` is an immutable static item
+error 351..365: cannot assign to `ST.inner.v`, as `ST` is an immutable static item
+error 371..376: cannot assign to immutable static item `N`
+error 390..399: cannot borrow `ST.a` as mutable, as `ST` is an immutable static item
+error 413..419: cannot borrow immutable static item `N` as mutable
+error 425..427: cannot borrow immutable static item `ST` as mutable
+error 439..441: cannot move out of static item `ST`
+error 479..487: cannot move out of `MS.inner` as `MS` is a static item
+error 505..507: cannot move out of static item `MS`

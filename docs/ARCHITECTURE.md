@@ -465,6 +465,11 @@ semantics become explicit, so code generation never sees expressions:
   them, and runs before they are moved. `if let` and `let`-`else` are
   the same tests, with the scrutinee's temporaries and the bindings
   dropped before the `else` branch runs, as in edition 2024.
+- A static is a place behind a temporary that holds its address, as in
+  rustc's MIR: `&T`, or `*mut T` for a `static mut`, so `X.a` is
+  `(*_3).a`. Borrow checking sees it behind a pointer, and names it as
+  rustc does ("cannot assign to immutable static item `X`"); constant
+  evaluation reads it as its initial value.
 - `x?` moves `x` into a temporary, as rustc's `Try::branch(x)` takes
   it, and tests its variant: the `Some` or `Ok` value is its result;
   otherwise `_0` becomes `None`, or `Err` with the error passed through
@@ -604,7 +609,9 @@ executable. No C compiler or system linker is involved.
 - keel takes shift amounts modulo the width, which is exactly Rust's
   masked shift; the amount is converted to the shifted value's type.
 - Pointers, including `&CStr`, are keel `ptr`s. Each distinct C string
-  becomes a module-local, read-only data object ending in a NUL byte.
+  becomes a module-local, read-only data object ending in a NUL byte,
+  and each static a data object holding its evaluated initial value,
+  laid out as in memory, writable only for a `static mut`.
 - Calls to C-variadic functions use a variadic keel signature, which
   gives the platform's convention (on Apple arm64, variadic arguments go
   on the stack).

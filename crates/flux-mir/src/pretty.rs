@@ -296,6 +296,14 @@ fn constant_text(hir: &Hir, constant: Constant) -> String {
         Constant::Bool(value) => value.to_string(),
         Constant::Unit => "()".to_owned(),
         Constant::CStr(index) => format!("c_str{index}"),
+        Constant::Static { id, .. } => {
+            let name = hir.items.const_name(id);
+            if hir.items.consts[id].is_static_mut() {
+                format!("&raw mut {name}")
+            } else {
+                format!("&{name}")
+            }
+        }
         Constant::Item { id, args, .. } => {
             let name = hir.items.const_name(id);
             let items = &hir.items;

@@ -245,6 +245,20 @@
   on their parameters are not enforced, as in rustc. E0091, E0107,
   E0121, E0391 (a cycle of aliases), E0423, E0532 and E0603 are
   reported as rustc does.
+- Support statics: `static X: T = v;` and `static mut X: T = v;`, whose
+  initializers are evaluated at compile time like constants' (and may
+  read other statics, a `static mut`'s initial value included), and
+  which are places in memory: read, borrowed (`&X`) and passed by
+  reference, and a `static mut` read and written in `unsafe` blocks.
+  Code generation emits each as a keel data object, read-only unless
+  `mut`. Errors are rustc's: E0133 for a `static mut` used outside
+  `unsafe`, edition 2024's deny-by-default `static_mut_refs` for
+  references to one (`&M`, `&mut M`, method calls that borrow it),
+  E0594, E0596 and E0507 for writing, mutably borrowing or moving out
+  of a static, E0277 for a static whose type holds a raw pointer, E0530
+  for bindings that shadow one, E0080 for a constant reading a `static
+  mut`, and E0015 for non-`const` calls in initializers. Statics whose
+  types hold references are not supported yet.
 
 ### Performance
 

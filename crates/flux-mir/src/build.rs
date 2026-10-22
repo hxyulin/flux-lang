@@ -711,7 +711,7 @@ struct Builder<'a> {
 /// what a pointer points to.
 fn is_place(body: &flux_hir::Body, expr: ExprId) -> bool {
     match body.exprs[expr] {
-        Expr::Path(Res::Local(_)) => true,
+        Expr::Path(Res::Local(_) | Res::Static(_)) => true,
         Expr::Field { expr, .. } | Expr::Index { base: expr, .. } => is_place(body, expr),
         Expr::Unary {
             op: UnaryOp::Deref, ..
@@ -979,6 +979,7 @@ impl Builder<'_> {
                 }
                 self.index(place, index, self.range(expr))
             }
+            Expr::Path(Res::Static(id)) => self.static_place(id, self.range(expr)),
             _ => {
                 let temp = match (std::mem::take(&mut self.extending), self.extend_at) {
                     (true, Some((scope, at))) => {
@@ -1028,6 +1029,24 @@ impl Builder<'_> {
         let msg = AssertMessage::BoundsCheck { len, index };
         self.assert(Operand::Copy(within.into()), true, msg, range);
         place.index(local)
+    }
+
+    /// Static `id`, as a place: behind a temporary holding its address,
+    /// `&T`, or `*mut T` for a `static mut`, as in rustc.
+    fn static_place(&mut self, id: flux_hir::ConstId, range: TextRange) -> Place {
+        let ty = self.typed.sigs.consts.get(id).copied().unwrap_or(Ty::ERROR);
+        let pointer = if self.items.consts[id].is_static_mut() {
+            Ty::raw_ptr(Mutability::Mut, ty)
+        } else {
+            Ty::new(TyKind::Ref(Mutability::Not, ty))
+        };
+        let temp = self.locals.alloc(LocalDecl {
+            ty: pointer,
+            kind: LocalKind::Static(id),
+        });
+        let address = Operand::Const(Constant::Static { id, ty: pointer });
+        self.assign(&temp.into(), Rvalue::Use(address), range);
+        Place::from(temp).deref()
     }
 
     fn field_index(&self, expr: ExprId) -> u32 {
@@ -1194,7 +1213,7 @@ impl Builder<'_> {
             }
             // Reads of places, including fields of values that are not
             // places: `make().x`.
-            Expr::Path(Res::Local(_))
+            Expr::Path(Res::Local(_) | Res::Static(_))
             | Expr::Field { .. }
             | Expr::Index { .. }
             | Expr::Unary {

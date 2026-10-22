@@ -1,0 +1,13 @@
+struct Point { x: i32, y: i32 }
+
+fn main() -> () {
+    let a@0 = (ORIGIN.x + ORIGIN.y);
+    let b@1 = (TWICE + FROM_STATIC);
+    let c@2 = (&LIMIT);
+    let d@3 = NAME_LEN;
+    unsafe {
+        (COUNT += 1);
+        (LEVEL = (COUNT as u8));
+    }
+}
+

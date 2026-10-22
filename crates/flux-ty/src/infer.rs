@@ -180,7 +180,11 @@ pub fn infer_const(
         self_ty: enum_ty.or_else(|| self_ty(sigs, data.owner)),
         generics: generic_names(items, data.owner, &Generics::default()),
         is_unsafe: false,
-        const_context: Some("constants"),
+        const_context: Some(if data.is_static.is_some() {
+            "statics"
+        } else {
+            "constants"
+        }),
         ret,
         param_env: elaborate(
             sigs,
@@ -1728,6 +1732,15 @@ impl Ctx<'_> {
                 }
             }
             Expr::Path(Res::Const(c)) => self.path_const(id, *c),
+            Expr::Path(Res::Static(c)) => {
+                if self.items.consts[*c].is_static_mut() && self.unsafe_depth == 0 {
+                    self.error(
+                        self.range(id),
+                        "use of mutable static is unsafe and requires unsafe function or block",
+                    );
+                }
+                self.sigs.consts.get(*c).copied().unwrap_or(Ty::ERROR)
+            }
             Expr::Path(Res::Err) => Ty::ERROR,
             Expr::Tuple(fields) => {
                 let elements: Vec<Ty> = fields.iter().map(|&f| self.infer_expr(f)).collect();
@@ -1897,6 +1910,9 @@ impl Ctx<'_> {
             } => self.infer_method_call(id, *receiver, *method, args),
             Expr::Ref { mutable, expr } => {
                 let ty = self.infer_expr(*expr);
+                if self.in_static_mut(*expr) {
+                    self.static_mut_ref(id, *mutable);
+                }
                 let m = if *mutable {
                     Mutability::Mut
                 } else {
@@ -3602,7 +3618,7 @@ impl Ctx<'_> {
                 }
                 if !matches!(
                     self.body.exprs[base],
-                    Expr::Path(Res::Local(_) | Res::Err) | Expr::Missing
+                    Expr::Path(Res::Local(_) | Res::Static(_) | Res::Err) | Expr::Missing
                 ) {
                     self.error(
                         self.range(lhs),
@@ -3628,9 +3644,29 @@ impl Ctx<'_> {
                     self.error(self.range(assignment), message);
                 }
             }
-            Expr::Path(Res::Err) | Expr::Missing => {}
+            // Checked with borrows: only a `static mut` may be assigned.
+            Expr::Path(Res::Static(_) | Res::Err) | Expr::Missing => {}
             _ => self.error(self.range(lhs), "invalid left-hand side of assignment"),
         }
+    }
+
+    /// Whether `expr` is a `static mut` or a field of one.
+    fn in_static_mut(&self, expr: ExprId) -> bool {
+        match self.body.exprs[expr] {
+            Expr::Path(Res::Static(c)) => self.items.consts[c].is_static_mut(),
+            Expr::Field { expr, .. } => self.in_static_mut(expr),
+            _ => false,
+        }
+    }
+
+    /// Reports a reference to a `static mut` made by `expr`, as edition
+    /// 2024's deny-by-default `static_mut_refs` lint does.
+    fn static_mut_ref(&mut self, expr: ExprId, mutable: bool) {
+        let what = if mutable { "mutable" } else { "shared" };
+        self.error(
+            self.range(expr),
+            format!("creating a {what} reference to mutable static"),
+        );
     }
 
     // Finishing.
@@ -3733,6 +3769,19 @@ impl Ctx<'_> {
         self.run_deferred(&mut reported);
         self.check_sized();
         self.check_references();
+        let receivers: Vec<(ExprId, Mutability)> = self
+            .methods
+            .iter()
+            .filter_map(|(e, m)| Some((e, m.autoref?)))
+            .collect();
+        for (call, m) in receivers {
+            if let Expr::MethodCall { receiver, .. } = self.body.exprs[call]
+                && self.methods[call].derefs == 0
+                && self.in_static_mut(receiver)
+            {
+                self.static_mut_ref(call, m == Mutability::Mut);
+            }
+        }
         let mut deferred_pats = false;
         if self.diagnostics.is_empty() && !self.tainted {
             // Patterns that name constants are checked once their values
