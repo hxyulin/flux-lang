@@ -303,8 +303,13 @@
   closures hold through the values they are stored in, the calls they
   are passed to and `&mut` arguments, with rustc's messages (E0499,
   E0502, E0503, E0506, E0597, E0382, E0507, E0594, E0596, E0525,
-  E0593, E0631, E0618, E0057, E0267). Closures returning references,
-  `async` closures and closures in constants are not supported yet.
+  E0593, E0631, E0618, E0057, E0267). Function items and pointers
+  implement the `Fn`-family traits (`opt.and_then(half)`,
+  `iter.map(double)`), and closures that capture nothing coerce to
+  function pointers. Calling `Fn::call` by name and implementing the
+  traits are rejected as unstable, as in rustc. Closures returning
+  references, `async` closures and closures in constants are not
+  supported yet.
 - Support ranges (`a..b`, `a..=b`, `a..`, `..b`, `..=b`, `..`) as
   `core::ops`'s `Range` structs, with `contains`, and `core::iter`:
   `Iterator` with `map`, `filter`, `filter_map`, `enumerate`, `zip`,

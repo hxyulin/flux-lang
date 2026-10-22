@@ -481,7 +481,10 @@ impl Ctx<'_> {
         {
             return None;
         }
-        if let TyKind::Closure(..) = self_ty.kind() {
+        if matches!(
+            self_ty.kind(),
+            TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_)
+        ) {
             let alias = AliasTy {
                 args: Ty::list(&[&[self_ty][..], &alias.args[1..]].concat()),
                 ..alias
@@ -832,6 +835,15 @@ impl Ctx<'_> {
         if let TyKind::Closure(..) = self_ty.kind() {
             return self.select_closure(pred);
         }
+        if let Some(found) = crate::traits::fn_goal(self.items, t, self_ty) {
+            let params = pred.trait_ref.args.first().copied().unwrap_or(Ty::ERROR);
+            return match found {
+                crate::traits::ClosureGoal::Fn(_, expected) if self.unify(params, expected) => {
+                    Selection::Met(Vec::new())
+                }
+                _ => Selection::Unmet,
+            };
+        }
         let mut env: Vec<Predicate> = self
             .param_env
             .iter()
@@ -997,6 +1009,14 @@ impl Ctx<'_> {
                     .collect::<Vec<_>>()
             });
             return self.may_hold(elem, t, args.as_deref(), depth + 1);
+        }
+        if let Some(found) = crate::traits::fn_goal(self.items, t, ty) {
+            return match found {
+                crate::traits::ClosureGoal::Fn(_, params) => args
+                    .and_then(|a| a.first())
+                    .is_none_or(|&a| self.unify(a, params)),
+                _ => false,
+            };
         }
         if let TyKind::Closure(_, closure_args) = ty.kind() {
             return match crate::traits::closure_goal(self.items, t, closure_args) {
