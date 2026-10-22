@@ -1,0 +1,54 @@
+fn main() -> () {
+    let x@0 = 1;
+    {
+        _print(<missing>);
+    };
+    {
+        _print(Arguments::new_v1_formatted((&["b ", " ", "\n"]), (&match ((&1), (&x@0), (&<error>)) {
+            args@1 => [Argument::new_debug(args@1.1), Argument::from_usize(args@1.2), Argument::new_display(args@1.0)],
+        }), (&[Placeholder::new(0usize, 1610612768u32, Count::Implied, Count::Implied), Placeholder::new(2usize, 536870944u32, Count::Implied, Count::Param(1usize))])));
+    };
+    {
+        _print(<missing>);
+    };
+    {
+        _print(<missing>);
+    };
+    {
+        _print(<missing>);
+    };
+    {
+        _print(<missing>);
+    };
+    {
+        _print(<missing>);
+    };
+    {
+        _print(<missing>);
+    };
+    {
+        _print(<missing>);
+    };
+    {
+        _print(<missing>);
+    };
+    {
+        _print(<missing>);
+    };
+    {
+        _print(<missing>);
+    };
+}
+
+error 181..182: invalid reference to positional argument 2 (there are 2 arguments)
+error 218..223: cannot find value `width` in this scope
+error 251..253: 1 positional argument in format string, but no arguments were given
+error 281..282: argument never used
+error 299..301: 2 positional arguments in format string, but there is 1 argument
+error 327..328: unknown format trait `y`
+error 352..357: invalid format string: integer `70000` does not fit into the type `u16` whose range is `0..=65535`
+error 379..384: 2 positional arguments in format string, but there is 1 argument
+error 415..416: named argument never used
+error 445..446: multiple unused formatting arguments
+error 482..483: invalid reference to positional argument 2 (there is 1 argument)
+error 521..522: invalid reference to positional argument 3 (there is 1 argument)

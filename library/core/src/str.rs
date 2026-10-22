@@ -37,11 +37,34 @@ pub const unsafe fn from_utf8_unchecked_mut(v: &mut [u8]) -> &mut str {
 /// Why bytes are not UTF-8: where the valid prefix ends, and how long
 /// the invalid sequence after it is (`None` if the input ended inside
 /// a character).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Utf8Error {
     valid_up_to: usize,
     /// 0 for `None`.
     error_len: u8,
+}
+
+/// As rustc's derived impl writes it, with `error_len` an `Option`.
+impl crate::fmt::Debug for Utf8Error {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_struct("Utf8Error")
+            .field("valid_up_to", &self.valid_up_to)
+            .field("error_len", &self.error_len())
+            .finish()
+    }
+}
+
+impl crate::fmt::Display for Utf8Error {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        match self.error_len() {
+            Some(len) => write!(
+                f,
+                "invalid utf-8 sequence of {} bytes from index {}",
+                len, self.valid_up_to
+            ),
+            None => write!(f, "incomplete utf-8 byte sequence from index {}", self.valid_up_to),
+        }
+    }
 }
 
 impl Utf8Error {
