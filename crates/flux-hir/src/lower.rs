@@ -2057,7 +2057,32 @@ impl<'a> Ctx<'a> {
         let hir = match expr {
             ast::Expr::Literal(literal) => self.lower_literal(literal),
             ast::Expr::PathExpr(path) => return self.lower_path_expr(path, None),
-            ast::Expr::ParenExpr(paren) => return self.lower_opt(paren.expr(), syntax),
+            ast::Expr::ParenExpr(paren) => {
+                // As rustc's AST lowering does, the expression takes the
+                // parentheses' span: errors and panic locations point at
+                // the `(`. Not a range, which rustc reports without them.
+                // Only parentheses written in the source, not ones a
+                // macro's expansion made, whose tokens have its call's
+                // range (rustc widens only to a span containing the
+                // expression's, in its context).
+                let written = |t: Option<flux_syntax::SyntaxToken<'_>>| {
+                    t.is_some_and(|t| t.text_range().len() == 1)
+                };
+                let in_source = written(paren.l_paren_token()) && written(paren.r_paren_token());
+                let inner = paren.expr();
+                let is_range = matches!(inner, Some(ast::Expr::RangeExpr(_)));
+                let id = self.lower_opt(inner, syntax);
+                if in_source
+                    && !is_range
+                    && let Some(&own) = self.source_map.exprs.get(id)
+                {
+                    if !self.source_map.unparenthesized.contains(id) {
+                        self.source_map.unparenthesized.insert(id, own);
+                    }
+                    self.source_map.exprs.insert(id, range);
+                }
+                return id;
+            }
             ast::Expr::TupleExpr(tuple) => {
                 let fields = tuple.fields().map(|e| self.lower_expr(e)).collect();
                 Expr::Tuple(fields)

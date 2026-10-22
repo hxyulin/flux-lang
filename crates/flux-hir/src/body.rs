@@ -64,6 +64,10 @@ pub struct BodySourceMap {
     /// The last segment of a `Path` expression with more than one: the
     /// name of an associated item.
     pub segments: ArenaMap<Expr, TextRange>,
+    /// A parenthesized expression's own range, without the parentheses,
+    /// which `exprs` includes as rustc's spans do: for what rustc reports
+    /// at the expression itself (an out-of-range literal).
+    pub unparenthesized: ArenaMap<Expr, TextRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

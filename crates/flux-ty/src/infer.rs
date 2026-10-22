@@ -6175,8 +6175,17 @@ impl Ctx<'_> {
                         max
                     };
                     if value > limit {
+                        // rustc's lint points at the literal (or its
+                        // negation) without parentheses around it.
+                        let at = negation.unwrap_or(expr);
+                        let range = self
+                            .source_map
+                            .unparenthesized
+                            .get(at)
+                            .copied()
+                            .unwrap_or_else(|| self.range(at));
                         self.error(
-                            self.range(negation.unwrap_or(expr)),
+                            range,
                             format!("literal out of range for `{int}`", int = int.name()),
                         );
                     }
