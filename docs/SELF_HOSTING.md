@@ -194,8 +194,9 @@ remaining `memchr` language/library requirements are still outstanding.
 
 Unchanged `memchr 2.8.3` sources now lower to HIR without diagnostics under the
 file command's edition-2024 boundary. The subsequent type/MIR probe still
-reports unsupported pointer `read_unaligned`, broader
-union fields, function-pointer Clone and Result `unwrap_unchecked`. Cfg pruning
+reports broader union fields, function-pointer Clone and Result
+`unwrap_unchecked`. Thin pointer comparisons and bounded unsigned unaligned
+reads now have runtime coverage. Cfg pruning
 now precedes block-tail selection, removing the earlier unit/value mismatches.
 Its original package
 also needs feature selection and broader edition-2021 macro support. Source

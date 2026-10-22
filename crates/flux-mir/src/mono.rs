@@ -255,6 +255,25 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                 }
 
                 if hir.items.functions[callee.function].intrinsic {
+                    if hir.items.functions[callee.function].name.as_str() == "read_unaligned"
+                        && !matches!(
+                            callee.args.first().map(|ty| ty.kind()),
+                            Some(TyKind::Int(
+                                flux_ty::IntTy::U8
+                                    | flux_ty::IntTy::U16
+                                    | flux_ty::IntTy::U32
+                                    | flux_ty::IntTy::U64
+                                    | flux_ty::IntTy::Usize
+                            ))
+                        )
+                    {
+                        let mut d = Diagnostic::new(
+                            data.terminator.range,
+                            "read_unaligned supports only u8, u16, u32, u64 and usize yet",
+                        );
+                        d.file = hir.items.functions[caller.function].loc.file;
+                        return Err(d);
+                    }
                     // A size that would not be rustc's.
                     let name = hir.items.functions[callee.function].name;
                     if matches!(name.as_str(), "size_of" | "align_of")
@@ -718,7 +737,9 @@ pub fn expand_intrinsics(
             Some(target) => TerminatorKind::Goto(target),
             None => TerminatorKind::Unreachable,
         };
-        if data.name.as_str() == "caller_location" || is_neon_intrinsic(data.name.as_str()) {
+        if matches!(data.name.as_str(), "caller_location" | "read_unaligned")
+            || is_neon_intrinsic(data.name.as_str())
+        {
             // Code generation's: where the call is.
             continue;
         }

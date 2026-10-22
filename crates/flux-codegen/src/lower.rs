@@ -2394,6 +2394,23 @@ impl Lower<'_, '_, '_> {
                     self.neon_intrinsic(*func, generic_args, args, dest, *target);
                     return;
                 }
+                if items.functions[*func].intrinsic
+                    && items.functions[*func].name.as_str() == "read_unaligned"
+                {
+                    // Validated after substitution by mono. No reference to the
+                    // source is formed. Keel's default load flags promise only
+                    // alignment one (and do not promise fault freedom).
+                    let ty = keel_type(generic_args[0]).expect("validated unsigned scalar");
+                    let address = self.operand(&args[0])[0];
+                    let value = self.b.ins().load(ty, address);
+                    self.write(dest, &[value]);
+                    if let Some(target) = target {
+                        self.b.ins().jump(self.blocks[target.index()], &[]);
+                    } else {
+                        self.b.ins().trap();
+                    }
+                    return;
+                }
                 // Of a trait object: through its vtable.
                 if items.functions[*func].intrinsic {
                     self.dyn_intrinsic(*func, args, dest, *target);

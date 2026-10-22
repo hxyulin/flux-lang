@@ -1023,6 +1023,11 @@ types are, and a type that is `Copy` for some lifetimes only where a
 value of it is copied. A borrowed constant expression (`&5`, `&[1, 2]`) lives
 forever, as rustc promotes it.
 
+Raw pointers and `core::ptr::read_unaligned` provide unsafe unaligned reads
+of u8/u16/u32/u64/usize. They use alignment-one loads without creating source
+references. Other type substitutions and const calls remain explicitly
+unsupported; callers must provide initialized, readable memory.
+
 Slices provide unsafe `get_unchecked` and `get_unchecked_mut` for `usize`
 indices. The caller must supply an in-bounds index; unchecked range indexing
 remains unsupported.
