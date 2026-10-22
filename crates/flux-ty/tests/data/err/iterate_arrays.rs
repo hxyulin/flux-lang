@@ -1,5 +1,5 @@
-// Arrays and slices are not iterable yet: rustc's `core` makes them
-// so with const generics and lifetimes.
+// Arrays are not iterable by value yet: rustc's `core` makes them so
+// with const generics. References to them and slices are.
 
 fn main() {
     let a = [1, 2, 3];

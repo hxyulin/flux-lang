@@ -519,6 +519,11 @@ impl Ctx<'_> {
         let found: Vec<ImplId> = impls
             .filter(|&imp| self.probe(|cx| cx.unify_impl(imp, pred).is_some()))
             .collect();
+        let found = if found.len() > 1 {
+            self.winnow(found, pred)
+        } else {
+            found
+        };
         let [imp] = found.as_slice() else {
             return None;
         };
@@ -869,25 +874,8 @@ impl Ctx<'_> {
         let found: Vec<ImplId> = impls
             .filter(|&imp| self.probe(|cx| cx.unify_impl(imp, pred).is_some()))
             .collect();
-        // Of several blocks, those whose bounds cannot hold are no
-        // candidates, as rustc's winnowing has it.
         let found = if found.len() > 1 {
-            found
-                .into_iter()
-                .filter(|&imp| {
-                    self.probe(|cx| {
-                        let Some(args) = cx.unify_impl(imp, pred) else {
-                            return false;
-                        };
-                        let nested = cx.sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
-                        nested.iter().all(|p| {
-                            let p = cx.normalize_predicate(p.subst(&args), TextRange::default());
-                            let args: Vec<Ty> = p.trait_ref.args.to_vec();
-                            cx.may_hold(p.self_ty, p.trait_ref.trait_, Some(&args), 1)
-                        })
-                    })
-                })
-                .collect()
+            self.winnow(found, pred)
         } else {
             found
         };
@@ -901,6 +889,27 @@ impl Ctx<'_> {
             }
             _ => Selection::Ambiguous,
         }
+    }
+
+    /// Of several blocks that may be for `pred`, those whose bounds may
+    /// hold: the others are no candidates, as rustc's winnowing has it.
+    fn winnow(&mut self, found: Vec<ImplId>, pred: Predicate) -> Vec<ImplId> {
+        found
+            .into_iter()
+            .filter(|&imp| {
+                self.probe(|cx| {
+                    let Some(args) = cx.unify_impl(imp, pred) else {
+                        return false;
+                    };
+                    let nested = cx.sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
+                    nested.iter().all(|p| {
+                        let p = cx.normalize_predicate(p.subst(&args), TextRange::default());
+                        let args: Vec<Ty> = p.trait_ref.args.to_vec();
+                        cx.may_hold(p.self_ty, p.trait_ref.trait_, Some(&args), 1)
+                    })
+                })
+            })
+            .collect()
     }
 
     fn unify_predicates(&mut self, a: Predicate, b: Predicate) -> bool {

@@ -4440,6 +4440,12 @@ fn lower_fn_ptr(ptr: ast::FnPtrType<'_>, diagnostics: &mut Vec<Diagnostic>) -> T
 }
 
 /// Whether `name` is a primitive type's.
+/// The [`ImplTarget::Primitive`] name of `core`'s `impl<T> [T]` blocks,
+/// which no path can name.
+pub fn slice_target() -> Symbol {
+    Symbol::intern("slice")
+}
+
 pub fn is_primitive(name: Symbol) -> bool {
     [
         sym::bool,

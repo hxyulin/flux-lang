@@ -2566,10 +2566,19 @@ impl Ctx<'_> {
                 if let Some(&param) = sig.params.get(i) {
                     self.expect(arg, param);
                 }
-                let ty = self.infer_expr(arg);
-                // A `for` loop over an array or slice, which rustc's
-                // `core` makes iterable with const generics and lifetimes.
-                if self.for_heads.contains(&id) && self.is_sequence(ty) {
+                let mut ty = self.infer_expr(arg);
+                // A `for` loop over a shared reference to an array is one
+                // over a slice of it, which `core` makes iterable; arrays
+                // themselves, and mutable references, need const
+                // generics and `IterMut`.
+                if self.for_heads.contains(&id)
+                    && let TyKind::Ref(Mutability::Not, pointee) = self.shallow(ty).kind()
+                    && let Some(elem) = self.shallow(pointee).sequence_elem()
+                {
+                    let slice = Ty::new(TyKind::Ref(Mutability::Not, Ty::slice(elem)));
+                    self.coerce(ty, slice, arg);
+                    ty = slice;
+                } else if self.for_heads.contains(&id) && self.is_sequence(ty) {
                     self.error(
                         self.range(arg),
                         "iterating over arrays and slices is not supported yet",

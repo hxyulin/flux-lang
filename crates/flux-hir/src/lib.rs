@@ -39,7 +39,7 @@ pub use item_tree::{
     ImplId, ImplTarget, ImplType, ItemCounts, ItemLoc, ItemTree, LifetimeParam, LifetimeRef,
     MISPLACED_BINDING, Module, ModuleId, OutlivesPredicate, Owner, Param, Path, PathAnchor, QSelf,
     Struct, StructId, StructKind, Trait, TraitId, TraitType, TypeAlias, TypeAliasId, TypeOutlives,
-    TypeRef, Variant, VariantData, Visibility, WherePredicate, is_primitive,
+    TypeRef, Variant, VariantData, Visibility, WherePredicate, is_primitive, slice_target,
 };
 pub use library::Core;
 pub use lower::{LoweredBody, lower_body, lower_const};

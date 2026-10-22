@@ -1158,6 +1158,7 @@ pub fn impl_target(ty: Ty) -> Option<ImplTarget> {
         TyKind::Adt(adt, _) => Some(ImplTarget::Struct(adt.strukt)),
         TyKind::Int(int) => Some(ImplTarget::Primitive(int.name())),
         TyKind::Bool => Some(ImplTarget::Primitive(sym::bool)),
+        TyKind::Slice(_) => Some(ImplTarget::Primitive(flux_hir::slice_target())),
         _ => None,
     }
 }
@@ -2071,6 +2072,14 @@ fn impl_type(
             imp.module,
             strukt,
             path,
+            scope,
+            imp.self_range,
+            &mut errors,
+        ),
+        (Some(ImplTarget::Primitive(_)), TypeRef::Slice(_)) => resolve_type(
+            items,
+            imp.module,
+            &imp.self_ty,
             scope,
             imp.self_range,
             &mut errors,
