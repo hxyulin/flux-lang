@@ -545,9 +545,12 @@ fn int_type(int: IntTy) -> Type {
     }
 }
 
-/// The width of an integer or `bool` value.
+/// The width of an integer, `char` or `bool` value.
 fn bits(ty: Ty) -> u32 {
-    ty.as_int().map_or(8, IntTy::bits)
+    match ty.kind() {
+        TyKind::Char => 32,
+        _ => ty.as_int().map_or(8, IntTy::bits),
+    }
 }
 
 /// How a value of `ty` crosses a call: narrow integers are extended by

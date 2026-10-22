@@ -14,6 +14,8 @@ use crate::{IntTy, Mutability, Signatures, Ty, TyKind};
 pub(crate) enum Head {
     Int(IntTy),
     Bool,
+    Char,
+    Str,
     Tuple(u32),
     Adt(StructId),
     Ref(Mutability),
@@ -32,6 +34,8 @@ pub(crate) fn head(ty: Ty) -> Option<Head> {
     Some(match ty.kind() {
         TyKind::Int(int) => Head::Int(int),
         TyKind::Bool => Head::Bool,
+        TyKind::Char => Head::Char,
+        TyKind::Str => Head::Str,
         TyKind::Tuple(list) => Head::Tuple(list.len() as u32),
         TyKind::Adt(adt, _) => Head::Adt(adt.strukt),
         TyKind::Ref(m, _) => Head::Ref(m),

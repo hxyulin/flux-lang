@@ -2229,6 +2229,10 @@ impl Ctx<'_> {
                 if bare_literal && to.as_int().is_some() {
                     self.unify(from, to);
                 }
+                // Only `u8` casts to `char`, so a literal is one: `65 as char`.
+                if bare_literal && to == Ty::CHAR {
+                    self.unify(from, Ty::int(IntTy::U8));
+                }
                 // A cast to a type that is not a scalar is a coercion, which
                 // may fix what is not known yet: `None as Option<i32>`.
                 if matches!(to.kind(), TyKind::Adt(..) | TyKind::Tuple(_))
@@ -3933,7 +3937,8 @@ impl Ctx<'_> {
             }
             BinaryOp::Cmp(_) => {
                 let scalar = |cx: &mut Self, ty: Ty| {
-                    integral(cx, ty) || matches!(ty.kind(), TyKind::Bool | TyKind::RawPtr(..))
+                    integral(cx, ty)
+                        || matches!(ty.kind(), TyKind::Bool | TyKind::Char | TyKind::RawPtr(..))
                 };
                 scalar(self, l) && scalar(self, r)
             }
@@ -4876,7 +4881,10 @@ impl Ctx<'_> {
                     let ty = self.resolve(ty, reported);
                     // A range reports its other types itself.
                     if !in_range
-                        && !matches!(ty.kind(), TyKind::Int(_) | TyKind::Bool | TyKind::Error)
+                        && !matches!(
+                            ty.kind(),
+                            TyKind::Int(_) | TyKind::Bool | TyKind::Char | TyKind::Error
+                        )
                     {
                         self.error(
                             range,
@@ -4886,7 +4894,7 @@ impl Ctx<'_> {
                 }
                 Deferred::RangePat { pat, ty } => {
                     let ty = self.resolve(ty, reported);
-                    if !matches!(ty.kind(), TyKind::Int(_) | TyKind::Error) {
+                    if !matches!(ty.kind(), TyKind::Int(_) | TyKind::Char | TyKind::Error) {
                         let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
                         self.error(
                             range,
@@ -4938,9 +4946,10 @@ impl Ctx<'_> {
                     let rhs = self.resolve(rhs, reported);
                     let ok = match (op, ty.kind()) {
                         (_, TyKind::Error | TyKind::Never) => true,
-                        (BinaryOp::Cmp(_), TyKind::Int(_) | TyKind::Bool | TyKind::Tuple([])) => {
-                            true
-                        }
+                        (
+                            BinaryOp::Cmp(_),
+                            TyKind::Int(_) | TyKind::Bool | TyKind::Char | TyKind::Tuple([]),
+                        ) => true,
                         (BinaryOp::Cmp(_), TyKind::Tuple(_)) => {
                             self.error(self.range(expr), "comparing tuples is not supported yet");
                             true
@@ -4981,7 +4990,8 @@ impl Ctx<'_> {
                     let to = self.resolve(to, reported);
                     let ok = match (from.kind(), to.kind()) {
                         (TyKind::Error | TyKind::Never, _) | (_, TyKind::Error) => true,
-                        (TyKind::Int(_) | TyKind::Bool, TyKind::Int(_)) => true,
+                        (TyKind::Int(_) | TyKind::Bool | TyKind::Char, TyKind::Int(_)) => true,
+                        (TyKind::Int(IntTy::U8), TyKind::Char) => true,
                         // A fieldless enum, to its discriminant.
                         (TyKind::Adt(adt, _), TyKind::Int(_)) => {
                             self.sigs.variants(from).is_some_and(|variants| {
@@ -4996,8 +5006,10 @@ impl Ctx<'_> {
                             "casts of function items and pointers are not supported yet".to_owned()
                         } else if from.is_pointer() || to.is_pointer() {
                             "casts of pointers are not supported yet".to_owned()
-                        } else if to == Ty::BOOL && from.as_int().is_some() {
+                        } else if to == Ty::BOOL && (from.as_int().is_some() || from == Ty::CHAR) {
                             format!("cannot cast `{from}` as `bool`")
+                        } else if to == Ty::CHAR && (from.as_int().is_some() || from == Ty::BOOL) {
+                            format!("only `u8` can be cast as `char`, not `{from}`")
                         } else {
                             format!("non-primitive cast: `{from}` as `{to}`")
                         };

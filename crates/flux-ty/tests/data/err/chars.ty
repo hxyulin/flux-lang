@@ -1,0 +1,33 @@
+fn casts(char, u32, bool, i8) -> ()
+    c@0: char
+    u@1: u32
+    b@2: bool
+    i@3: i8
+fn operators(char) -> ()
+    c@0: char
+fn matches(char) -> i32
+    c@0: char
+fn ranges(char) -> i32
+    c@0: char
+fn exhaustive(char) -> i32
+    c@0: char
+fn backwards(char) -> i32
+    c@0: char
+fn mismatch() -> ()
+    x@0: char
+    y@1: u8
+    s@2: &[u8; 2]
+fn main() -> ()
+error 56..65: only `u8` can be cast as `char`, not `u32`
+error 79..88: only `u8` can be cast as `char`, not `bool`
+error 102..111: only `u8` can be cast as `char`, not `i8`
+error 125..134: cannot cast `char` as `bool`
+error 201..202: cannot add `char` to `char`
+error 225..226: mismatched types: expected `char`, found `{integer}`
+error 240..242: cannot apply unary operator `-` to type `char`
+error 286..287: non-exhaustive patterns: `'\0'..='`'`, `'b'..='\u{d7ff}'` and `'\u{e000}'..='\u{10ffff}'` not covered
+error 355..356: non-exhaustive patterns: `'{'..='\u{d7ff}'` not covered
+error 600..609: lower bound for range pattern must be less than or equal to upper bound
+error 675..676: mismatched types: expected `char`, found `{integer}`
+error 694..697: mismatched types: expected `u8`, found `char`
+error 721..727: mismatched types: expected `&[u8; 2]`, found `&[u8; 3]`

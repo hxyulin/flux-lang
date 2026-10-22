@@ -1,0 +1,115 @@
+fn kind(_1: char) -> u8 {
+    let mut _0: u8;
+    let _2: bool;
+    let _3: bool;
+    let _4: bool;
+
+    bb0: {
+        _2 = Eq(copy _1, const 'a');
+        switchInt(copy _2) -> [0: bb2, otherwise: bb3];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        _3 = Ge(copy _1, const NEXT);
+        switchInt(copy _3) -> [0: bb5, otherwise: bb6];
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _0 = const 1_u8;
+        goto -> bb1;
+    }
+
+    bb5: {
+        goto -> bb10;
+    }
+
+    bb6: {
+        _4 = Le(copy _1, const 'z');
+        switchInt(copy _4) -> [0: bb5, otherwise: bb7];
+    }
+
+    bb7: {
+        goto -> bb8;
+    }
+
+    bb8: {
+        _0 = const 2_u8;
+        goto -> bb1;
+    }
+
+    bb9: {
+        unreachable;
+    }
+
+    bb10: {
+        _0 = const 3_u8;
+        goto -> bb1;
+    }
+}
+
+fn len(_1: &[u8]) -> usize {
+    let mut _0: usize;
+
+    bb0: {
+        _0 = Len(&(*_1));
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: char; // c
+    let _2: u32; // code
+    let _3: u32;
+    let _4: char;
+    let _5: u32;
+    let _6: char; // back
+    let _7: u8; // k
+    let _8: char;
+    let _9: usize; // n
+    let _10: usize;
+    let _11: &[u8];
+    let _12: &[u8; 3];
+    let _13: usize;
+
+    bb0: {
+        _1 = const 'é';
+        _4 = copy _1;
+        _3 = copy _4 as u32;
+        _5 = const 120_u8 as u32;
+        _2 = Add(copy _3, copy _5);
+        _6 = const 121_u8 as char;
+        _8 = copy _6;
+        _7 = kind(copy _8) -> bb1;
+    }
+
+    bb1: {
+        _12 = const &promoted[0];
+        _11 = copy _12 as &[u8] (unsize);
+        _10 = len(copy _11) -> bb2;
+    }
+
+    bb2: {
+        _13 = len(const BYTES) -> bb3;
+    }
+
+    bb3: {
+        _9 = Add(copy _10, copy _13);
+        _0 = const ();
+        StorageDead(_9);
+        StorageDead(_7);
+        StorageDead(_6);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+

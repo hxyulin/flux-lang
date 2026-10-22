@@ -667,13 +667,23 @@ impl Ty {
 
     /// Whether the type is a slice, which has no size of its own.
     pub fn is_unsized(self) -> bool {
-        matches!(self.kind(), TyKind::Slice(_))
+        matches!(self.kind(), TyKind::Slice(_) | TyKind::Str)
     }
 
     /// The integer type, if this is one.
     pub fn as_int(self) -> Option<IntTy> {
         match self.kind() {
             TyKind::Int(int) => Some(int),
+            _ => None,
+        }
+    }
+
+    /// The integer type a scalar is held as: an integer's own, `u32` for
+    /// a `char`.
+    pub fn scalar_int(self) -> Option<IntTy> {
+        match self.kind() {
+            TyKind::Int(int) => Some(int),
+            TyKind::Char => Some(IntTy::U32),
             _ => None,
         }
     }

@@ -1158,7 +1158,7 @@ pub fn is_copy(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -
     match ty.kind() {
         TyKind::Tuple(elements) => elements.iter().all(|&t| is_copy(items, sigs, env, t)),
         TyKind::Array(elem, _) => is_copy(items, sigs, env, elem),
-        TyKind::Slice(_) => false,
+        TyKind::Slice(_) | TyKind::Str => false,
         TyKind::Closure(_, args) => ClosureArgs::split(args)
             .upvar_types()
             .iter()

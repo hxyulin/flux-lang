@@ -423,6 +423,15 @@
   `make_ascii_lowercase`, `make_ascii_uppercase`). A constant reference
   to an array passed where a slice is wanted (`f(b"ab")`, `f(ARRAY)`)
   is unsized, which it was not.
+- Support `char`: literals (`'a'`, `'\u{1F600}'`), comparisons, `as`
+  casts to the integers and from `u8` (others are rustc's E0604, and
+  `char as bool` E0054), constants, and patterns, ranges included,
+  whose exhaustiveness is checked as rustc's is, without the
+  surrogates, with its witnesses (`'\0'..='`'`). `core` implements
+  `Copy`, `Clone`, `PartialEq`, `Eq`, `PartialOrd`, `Ord` and the
+  `From` conversions for it, and gains `core::char` with `char::MAX`,
+  `REPLACEMENT_CHARACTER`, `from_digit`, `to_digit`, `is_digit`,
+  `len_utf8`, `len_utf16`, `is_whitespace` and the ASCII methods.
 
 ### Performance
 

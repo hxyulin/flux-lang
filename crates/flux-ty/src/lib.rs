@@ -1164,6 +1164,12 @@ pub fn primitive(name: Symbol) -> Result<Ty, String> {
     if name == sym::bool {
         return Ok(Ty::BOOL);
     }
+    if name == sym::char {
+        return Ok(Ty::CHAR);
+    }
+    if name == sym::str {
+        return Ok(Ty::STR);
+    }
     match IntTy::from_name(name) {
         Some(int) => Ok(Ty::int(int)),
         None => Err(format!("`{name}` is not supported yet")),
@@ -1176,6 +1182,8 @@ pub fn impl_target(ty: Ty) -> Option<ImplTarget> {
         TyKind::Adt(adt, _) => Some(ImplTarget::Struct(adt.strukt)),
         TyKind::Int(int) => Some(ImplTarget::Primitive(int.name())),
         TyKind::Bool => Some(ImplTarget::Primitive(sym::bool)),
+        TyKind::Char => Some(ImplTarget::Primitive(sym::char)),
+        TyKind::Str => Some(ImplTarget::Primitive(sym::str)),
         TyKind::Slice(_) => Some(ImplTarget::Primitive(flux_hir::slice_target())),
         _ => None,
     }

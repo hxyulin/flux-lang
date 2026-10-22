@@ -36,6 +36,7 @@ impl Clone for u64 { fn clone(&self) -> u64 { *self } }
 impl Clone for u128 { fn clone(&self) -> u128 { *self } }
 impl Clone for usize { fn clone(&self) -> usize { *self } }
 impl Clone for bool { fn clone(&self) -> bool { *self } }
+impl Clone for char { fn clone(&self) -> char { *self } }
 impl Clone for () { fn clone(&self) -> () { () } }
 impl<T> Clone for *const T { fn clone(&self) -> Self { *self } }
 impl<T> Clone for *mut T { fn clone(&self) -> Self { *self } }
