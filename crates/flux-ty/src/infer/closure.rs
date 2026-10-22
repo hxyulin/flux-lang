@@ -102,11 +102,13 @@ pub(super) struct Hint {
 }
 
 /// A closure whose captures are not known yet.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct PendingClosure {
     expr: ExprId,
     ty: Ty,
     is_move: bool,
+    /// The bindings declared in it, which it does not capture.
+    locals: HashSet<BindingId>,
 }
 
 /// A call of a value of a closure's type, whose method (`call`,
@@ -267,12 +269,13 @@ impl Ctx<'_> {
         self.expect(body, ret_ty);
         let body_ty = self.infer_expr(body);
         self.coerce(body_ty, ret_ty, body);
-        self.closure_locals.pop();
+        let locals = self.closure_locals.pop().unwrap_or_default();
         self.ret = outer_ret;
         self.closures.push(PendingClosure {
             expr: id,
             ty,
             is_move,
+            locals,
         });
         ty
     }
@@ -587,7 +590,7 @@ impl Ctx<'_> {
         }
         let reified = std::mem::take(&mut self.reified_closures);
         for closure in pending {
-            let info = self.analyze_closure(closure);
+            let info = self.analyze_closure(&closure);
             for &(expr, closure_ty, pointer) in &reified {
                 if self.shallow_closure_expr(closure_ty) == Some(closure.expr)
                     && !info.captures.is_empty()
@@ -651,23 +654,16 @@ impl Ctx<'_> {
 
     /// The captures and kind of one closure, whose nested closures are
     /// analyzed already.
-    fn analyze_closure(&mut self, closure: PendingClosure) -> ClosureInfo {
+    fn analyze_closure(&mut self, closure: &PendingClosure) -> ClosureInfo {
         let body = self.body;
         let Expr::Closure {
-            params,
-            body: closure_body,
-            ..
+            body: closure_body, ..
         } = &body.exprs[closure.expr]
         else {
             unreachable!("pending closures are closures")
         };
-        let mut locals = HashSet::new();
-        for &pat in params.iter() {
-            pat_bindings_into(body, pat, &mut locals);
-        }
-        expr_bindings(body, *closure_body, &mut locals);
         let mut uses = Uses {
-            locals: &locals,
+            locals: &closure.locals,
             found: Vec::new(),
         };
         self.walk(*closure_body, &mut uses);
