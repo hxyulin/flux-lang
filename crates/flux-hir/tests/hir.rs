@@ -115,3 +115,53 @@ fn bytes_read(db: &flux_hir::SourceDb, root: flux_hir::FileId) -> usize {
         .map(|(_, file)| file.text().len())
         .sum()
 }
+
+/// These actual compiler modules keep their test-only code in the input.
+/// Filtering must happen before resolving its imports, expanding macros,
+/// or lowering test-only associated functions.
+#[test]
+fn conditional_compilation_of_compiler_sources() {
+    for (path, text, absent) in [
+        (
+            "syntax_kind.rs",
+            include_str!("../../flux-syntax/src/syntax_kind.rs"),
+            &["keywords", "pack_word_is_little_endian"][..],
+        ),
+        (
+            "interval.rs",
+            include_str!("../../flux-mir/src/interval.rs"),
+            &["runs", "insert"][..],
+        ),
+    ] {
+        let source = format!("mod compiler_source {{\n{text}\n}}\nfn main() {{}}\n");
+        let (_, _, hir) = flux_hir::lower_text(path, &source);
+        // The exported `T!` macro still has an independently unsupported
+        // literal `[$]` matcher. This test concerns cfg filtering only.
+        if path == "interval.rs" {
+            assert!(hir.diagnostics.is_empty(), "{path}: {:?}", hir.diagnostics);
+        } else {
+            assert!(
+                hir.diagnostics
+                    .iter()
+                    .all(|d| d.message == "expected identifier, found `$`"),
+                "{path}: {:?}",
+                hir.diagnostics
+            );
+        }
+        assert!(
+            hir.items
+                .modules
+                .iter()
+                .all(|(_, m)| m.name.as_str() != "tests")
+        );
+        for (id, function) in hir.items.functions.iter() {
+            if hir.is_program(id) {
+                assert!(
+                    !absent.contains(&function.name.as_str()),
+                    "{path}: {}",
+                    function.name
+                );
+            }
+        }
+    }
+}

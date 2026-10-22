@@ -1585,8 +1585,11 @@ impl Collector<'_> {
         let _file = TypesFile::enter(ctx.file);
         for &node in items {
             let start = self.items.diagnostics.len();
-            self.collect_item_expanding_types(ctx, node);
-            self.collect_anon_consts(ctx, node);
+            let shared = self.db.shared(ctx.file);
+            if item_enabled(shared.parse.tree().node(node), &mut self.items.diagnostics) {
+                self.collect_item_expanding_types(ctx, node);
+                self.collect_anon_consts(ctx, node);
+            }
             self.tag(start, ctx.file);
         }
     }
@@ -2179,6 +2182,9 @@ impl Collector<'_> {
         };
         check_attrs(list.attrs(), &mut self.items.diagnostics);
         for item in list.items() {
+            if !item_enabled(item.syntax(), &mut self.items.diagnostics) {
+                continue;
+            }
             let what = match item {
                 ast::Item::Fn(f) => {
                     if let Some(function) = self.collect_fn(ctx, f, false, Some(Owner::Trait(id))) {
@@ -2536,6 +2542,9 @@ impl Collector<'_> {
         };
         check_attrs(list.attrs(), &mut self.items.diagnostics);
         for item in list.items() {
+            if !item_enabled(item.syntax(), &mut self.items.diagnostics) {
+                continue;
+            }
             let what = match item {
                 ast::Item::Fn(f) => {
                     if let Some(function) = self.collect_fn(ctx, f, false, Some(Owner::Impl(id))) {
@@ -2984,7 +2993,9 @@ impl Collector<'_> {
         for child in block.children() {
             if is_item_kind(child.kind()) {
                 let start = self.items.diagnostics.len();
-                self.collect_item(ctx, child.id());
+                if item_enabled(child, &mut self.items.diagnostics) {
+                    self.collect_item_expanding_types(ctx, child.id());
+                }
                 self.tag(start, ctx.file);
                 continue;
             }
@@ -3048,6 +3059,9 @@ impl Collector<'_> {
         counts: &mut rustc_hash::FxHashMap<Symbol, u32>,
     ) {
         let kind = node.kind();
+        if is_item_kind(kind) && !item_enabled(node, &mut Vec::new()) {
+            return;
+        }
         let outer = scope.clone();
         if is_item_kind(kind) {
             if let Some(list) = node
@@ -4271,6 +4285,9 @@ impl Collector<'_> {
             return;
         };
         for item in list.items() {
+            if !item_enabled(item.syntax(), &mut self.items.diagnostics) {
+                continue;
+            }
             match item {
                 ast::Item::Fn(f) => {
                     self.collect_fn(ctx, f, true, None);
@@ -4340,9 +4357,44 @@ pub(crate) fn def_start(node: SyntaxNode<'_>) -> u32 {
         .start()
 }
 
+/// Evaluates every outer `cfg` on an item, conjunctively, before any
+/// expansion, name collection or lowering. Even a false predicate does
+/// not suppress validation of the item's other `cfg` attributes.
+fn item_enabled(node: SyntaxNode<'_>, diagnostics: &mut Vec<Diagnostic>) -> bool {
+    let mut enabled = true;
+    for attr in node.children().filter_map(ast::Attr::cast) {
+        if attr.bang_token().is_some()
+            || attr_name(attr) != Some("cfg")
+            || attr.meta().is_some_and(|m| m.unsafe_token().is_some())
+        {
+            continue;
+        }
+        let meta = attr.meta().expect("cfg has a meta path");
+        let mut tokens = Vec::new();
+        if let Some(tree) = meta.token_tree() {
+            macros::tt::tokens_of(tree.syntax(), &mut tokens);
+        }
+        let range = attr.syntax().text_range();
+        let result = match tokens.as_slice() {
+            [open, inner @ .., close] if open.kind == T!['('] && close.kind == T![')'] => {
+                crate::cfg::eval(range, inner)
+            }
+            _ => Err((range, "expected `cfg` predicate in parentheses".into())),
+        };
+        match result {
+            Ok(value) => enabled &= value,
+            Err((range, message)) => {
+                diagnostics.push(Diagnostic::new(range, message));
+                enabled = false;
+            }
+        }
+    }
+    enabled
+}
+
 /// Attributes that cannot change what a program means are allowed and
-/// ignored; any other attribute is reported, so that `#[cfg]` and friends
-/// are never silently dropped.
+/// ignored; other attributes are reported unless already handled by
+/// item collection (outer `cfg`).
 pub(crate) fn check_attrs(
     attrs: AstChildren<'_, ast::Attr<'_>>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4396,6 +4448,17 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
         "allow", "warn", "deny", "expect", "inline", "cold", "must_use", "doc",
     ];
     let name = attr_name(attr);
+    if name == Some("cfg")
+        && attr.bang_token().is_none()
+        && attr.meta().is_some_and(|m| m.unsafe_token().is_none())
+        && attr
+            .syntax()
+            .parent()
+            .is_some_and(|p| is_item_kind(p.kind()))
+    {
+        // Evaluated before item collection, including validation.
+        return;
+    }
     if name.is_some_and(|n| IGNORED.contains(&n)) {
         return;
     }
@@ -6183,20 +6246,33 @@ pub(crate) fn expand_types(
     {
         return;
     }
-    for call in node
-        .descendants()
-        .filter(|d| d.kind() == SyntaxKind::MACRO_TYPE)
-    {
-        let ty = match expand(call, diagnostics) {
-            Some(parse) => {
-                let root = parse.tree().root();
-                expand_types(root, diagnostics, expand);
-                lower_type(root.children().find_map(ast::Type::cast), diagnostics)
+    fn walk(
+        node: SyntaxNode<'_>,
+        diagnostics: &mut Vec<Diagnostic>,
+        expand: &mut dyn FnMut(SyntaxNode<'_>, &mut Vec<Diagnostic>) -> Option<flux_syntax::Parse>,
+    ) {
+        // Collection reports malformed attributes. This preliminary walk
+        // only decides which subtrees may contain macros to expand.
+        if is_item_kind(node.kind()) && !item_enabled(node, &mut Vec::new()) {
+            return;
+        }
+        if node.kind() == SyntaxKind::MACRO_TYPE {
+            let ty = match expand(node, diagnostics) {
+                Some(parse) => {
+                    let root = parse.tree().root();
+                    walk(root, diagnostics, expand);
+                    lower_type(root.children().find_map(ast::Type::cast), diagnostics)
+                }
+                None => TypeRef::Error,
+            };
+            MACRO_TYPES.with(|m| m.borrow_mut().insert(macro_type_key(node), ty));
+        } else {
+            for child in node.children() {
+                walk(child, diagnostics, expand);
             }
-            None => TypeRef::Error,
-        };
-        MACRO_TYPES.with(|m| m.borrow_mut().insert(macro_type_key(call), ty));
+        }
     }
+    walk(node, diagnostics, expand);
 }
 
 thread_local! {

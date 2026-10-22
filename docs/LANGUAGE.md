@@ -167,7 +167,18 @@ reported as "not supported yet":
   of it dropped in rustc's order; moving out of a slice is E0508.
   Constants of other types in patterns and byte string literals are
   not supported yet.
-- **Attributes:** only `allow`, `warn`, `deny`, `expect`, `inline`,
+- **Attributes:** outer `#[cfg(predicate)]` on ordinary items (including
+  modules, imports and item macros), associated items in traits and impls,
+  and declarations in extern blocks. Multiple attributes are conjunctive;
+  inactive items are removed before expansion, name resolution or lowering,
+  including loading out-of-line modules. Predicates share `cfg!`'s evaluator:
+  `all`, `any`, `not`, `debug_assertions`, `panic = "abort"`, `unix`,
+  `windows`, and the target's `target_os`, `target_family`, `target_arch`,
+  `target_pointer_width`, `target_endian` and `target_vendor`. `test`,
+  features and unknown predicates are false; there are no build flags or
+  test builds yet. `cfg_attr`, inner `cfg`, and `cfg` on fields, variants,
+  parameters, statements and expressions are not supported yet.
+  Also `allow`, `warn`, `deny`, `expect`, `inline`,
   `cold`, `must_use` and `doc`, which are ignored, `derive` on structs
   and enums,
   and

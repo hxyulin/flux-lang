@@ -236,7 +236,7 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
         }
         Builtin::ModulePath => out.push(cx.string(&(cx.module_path)(), cx.origin())),
         Builtin::Cfg => {
-            let value = cfg(cx, cx.toks)?;
+            let value = crate::cfg::eval(cx.call, cx.toks)?;
             cx.quote(if value { "true" } else { "false" }, &mut out);
         }
         Builtin::CompileError => {
@@ -1191,76 +1191,4 @@ fn literal_value(text: &str) -> String {
         .find(|&(i, c)| c == 'f' && i > 0)
         .map_or(text.len(), |(i, _)| i);
     text[..end].to_owned()
-}
-
-/// The value of `cfg!(predicate)`, for flux's target.
-fn cfg(cx: &BuiltinCx<'_>, toks: &[Tok]) -> Result<bool, Error> {
-    let mut pos = 0;
-    let value = cfg_predicate(cx, toks, &mut pos)?;
-    if toks.get(pos).is_some_and(|t| t.kind == T![,]) {
-        pos += 1;
-    }
-    if let Some(t) = toks.get(pos) {
-        return Err((t.range(), "expected one cfg-pattern".into()));
-    }
-    Ok(value)
-}
-
-fn cfg_predicate(cx: &BuiltinCx<'_>, toks: &[Tok], pos: &mut usize) -> Result<bool, Error> {
-    let Some(name) = toks
-        .get(*pos)
-        .filter(|t| t.kind == SyntaxKind::IDENT || t.kind.is_keyword())
-    else {
-        let at = toks.get(*pos).map_or(cx.call, Tok::range);
-        return Err((at, "expected identifier".into()));
-    };
-    *pos += 1;
-    let name = name.text.as_str();
-    if matches!(name, "all" | "any" | "not") && toks.get(*pos).is_some_and(|t| t.kind == T!['(']) {
-        *pos += 1;
-        let mut values = Vec::new();
-        while toks.get(*pos).is_some_and(|t| t.kind != T![')']) {
-            values.push(cfg_predicate(cx, toks, pos)?);
-            if toks.get(*pos).is_some_and(|t| t.kind == T![,]) {
-                *pos += 1;
-            }
-        }
-        *pos += 1;
-        return match name {
-            "all" => Ok(values.iter().all(|&v| v)),
-            "any" => Ok(values.iter().any(|&v| v)),
-            _ => match values.as_slice() {
-                [v] => Ok(!v),
-                _ => Err((cx.call, "expected 1 cfg-pattern".into())),
-            },
-        };
-    }
-    let mut value = None;
-    if toks.get(*pos).is_some_and(|t| t.kind == T![=]) {
-        *pos += 1;
-        match toks.get(*pos) {
-            Some(t) if t.kind == SyntaxKind::STRING => {
-                value = Some(crate::literal::unescape_str(t.text.as_str()).unwrap_or_default());
-                *pos += 1;
-            }
-            Some(t) => return Err((t.range(), "expected a string literal".into())),
-            None => return Err((cx.call, "expected a string literal".into())),
-        }
-    }
-    let os = std::env::consts::OS;
-    Ok(match (name, value.as_deref()) {
-        // flux's equivalent of rustc without `-O`: debug assertions on.
-        ("debug_assertions", None) => true,
-        ("panic", Some(v)) => v == "abort",
-        ("unix", None) => cfg!(unix),
-        ("windows", None) => cfg!(windows),
-        ("target_os", Some(v)) => v == os,
-        ("target_family", Some(v)) => v == std::env::consts::FAMILY,
-        ("target_arch", Some(v)) => v == std::env::consts::ARCH,
-        ("target_pointer_width", Some(v)) => v == "64",
-        ("target_endian", Some(v)) => v == "little",
-        ("target_vendor", Some(v)) => v == if os == "macos" { "apple" } else { "unknown" },
-        // `test`, `feature = ".."` and names rustc does not know.
-        _ => false,
-    })
 }
