@@ -7,9 +7,7 @@
 //! Rewritten for flux from `original/vm.rs`: no `Debug` derive, no const
 //! generics (the stack's capacity is a constant), no `impl Fn` argument
 //! (a type parameter instead), no `checked_div`/`checked_rem`, no `&CStr`,
-//! no iterating an array by value; the programs' table is an array of
-//! structs, not of tuples, around a flux miscompilation
-//! (`bugs/unsize_tuple_in_array.rs`).
+//! no iterating an array by value.
 
 unsafe extern "C" {
     fn printf(format: *const i8, ...) -> i32;
@@ -227,24 +225,19 @@ fn describe(e: VmError) -> *const i8 {
     }
 }
 
-struct Program<'p> {
-    name: *const i8,
-    code: &'p [Op],
-}
-
 fn main() {
-    let programs: [Program; 8] = [
-        Program { name: c"factorial".as_ptr(), code: &FACTORIAL },
-        Program { name: c"fibonacci".as_ptr(), code: &FIBONACCI },
-        Program { name: c"gcd".as_ptr(), code: &GCD },
-        Program { name: c"compare".as_ptr(), code: &COMPARE },
-        Program { name: c"divide by zero".as_ptr(), code: &DIVIDE_BY_ZERO },
-        Program { name: c"underflow".as_ptr(), code: &UNDERFLOW },
-        Program { name: c"runaway recursion".as_ptr(), code: &RUNAWAY },
-        Program { name: c"infinite loop".as_ptr(), code: &FOREVER },
+    let programs: [(*const i8, &[Op]); 8] = [
+        (c"factorial".as_ptr(), &FACTORIAL),
+        (c"fibonacci".as_ptr(), &FIBONACCI),
+        (c"gcd".as_ptr(), &GCD),
+        (c"compare".as_ptr(), &COMPARE),
+        (c"divide by zero".as_ptr(), &DIVIDE_BY_ZERO),
+        (c"underflow".as_ptr(), &UNDERFLOW),
+        (c"runaway recursion".as_ptr(), &RUNAWAY),
+        (c"infinite loop".as_ptr(), &FOREVER),
     ];
     let mut ok = 0;
-    for &Program { name, code } in &programs {
+    for &(name, code) in &programs {
         unsafe {
             printf(c"%s:\n".as_ptr(), name);
         }

@@ -243,11 +243,6 @@ fn move_in_loop_once<T>(_1: T) -> Wrap<T> {
     bb2: {
         return;
     }
-
-    bb3: {
-        _2 = const ();
-        goto -> bb1;
-    }
 }
 
 fn partial<T>(_1: Pair<T>) -> Pair<T> {

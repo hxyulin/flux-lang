@@ -324,6 +324,7 @@ impl<'a> Ctx<'a> {
             closure_infos: Default::default(),
             closure_locals: Vec::new(),
             unit_matches: HashSet::new(),
+            coerced_tuples: HashSet::new(),
             for_heads: HashSet::new(),
             reified_closures: Vec::new(),
             diagnostics: Vec::new(),
@@ -520,6 +521,9 @@ struct Ctx<'a> {
     closure_locals: Vec<HashSet<BindingId>>,
     /// The `match`es of `for` loops, whose arms must be `()`.
     unit_matches: HashSet<ExprId>,
+    /// Tuple expressions whose elements were coerced to the elements of
+    /// the tuple type their context wants, which they have.
+    coerced_tuples: HashSet<ExprId>,
     /// The calls of `IntoIterator::into_iter` of `for` loops' heads.
     for_heads: HashSet<ExprId>,
     /// Closures coerced to function pointers, with their types and the
@@ -815,8 +819,11 @@ impl Ctx<'_> {
             return;
         }
         // A tuple expression is checked element by element, as rustc
-        // does, so a mismatch is reported at the element.
+        // does, so a mismatch is reported at the element, and each
+        // element may be coerced: the tuple then has the type it is
+        // coerced to (one whose context wanted a tuple was already).
         if let Expr::Tuple(fields) = &self.body.exprs[blamed]
+            && !self.coerced_tuples.contains(&blamed)
             && let TyKind::Tuple(elements) = self.shallow(expected).kind()
         {
             if fields.len() == elements.len() {
@@ -824,6 +831,7 @@ impl Ctx<'_> {
                     let ty = self.expr_types.get(field).copied().unwrap_or(Ty::ERROR);
                     self.coerce(ty, element, field);
                 }
+                self.retype(expr, blamed, Ty::tuple(elements));
             } else {
                 let (want, got) = (elements.len(), fields.len());
                 self.error(
@@ -850,6 +858,21 @@ impl Ctx<'_> {
                 return;
             }
             self.mismatch(expected, actual, range);
+        }
+    }
+
+    /// Gives `expr`, and the blocks between it and the value it ends with,
+    /// `blamed`, type `ty`: what a tuple has once its elements are
+    /// coerced.
+    fn retype(&mut self, mut expr: ExprId, blamed: ExprId, ty: Ty) {
+        loop {
+            self.expr_types.insert(expr, ty);
+            match self.body.exprs[expr] {
+                Expr::Block {
+                    tail: Some(tail), ..
+                } if expr != blamed => expr = tail,
+                _ => return,
+            }
         }
     }
 
@@ -2023,6 +2046,22 @@ impl Ctx<'_> {
             }
             Expr::Path(Res::Err) => Ty::ERROR,
             Expr::Tuple(fields) => {
+                // Where the context wants a tuple, each element is a
+                // coercion site for its element, as in rustc's
+                // `check_expr_tuple`.
+                let expected = self.expected.get(id).copied();
+                if let Some(expected) = expected
+                    && let TyKind::Tuple(elements) = self.shallow(expected).kind()
+                    && elements.len() == fields.len()
+                {
+                    for (&field, &element) in fields.iter().zip(elements) {
+                        self.expect(field, element);
+                        let ty = self.infer_expr(field);
+                        self.coerce(ty, element, field);
+                    }
+                    self.coerced_tuples.insert(id);
+                    return Ty::tuple(elements);
+                }
                 let elements: Vec<Ty> = fields.iter().map(|&f| self.infer_expr(f)).collect();
                 Ty::tuple(&elements)
             }
@@ -2136,6 +2175,12 @@ impl Ctx<'_> {
             } => {
                 let cond = self.infer_expr(*condition);
                 self.coerce(cond, Ty::BOOL, *condition);
+                // Both branches are coercion sites for the type the
+                // context wants, if it is known (rustc's `CoerceMany`).
+                let expected = self.coercion_target(id).filter(|_| else_branch.is_some());
+                if let Some(expected) = expected {
+                    self.expect(*then_branch, expected);
+                }
                 let then_ty = self.infer_expr(*then_branch);
                 match else_branch {
                     None => {
@@ -2143,13 +2188,21 @@ impl Ctx<'_> {
                         Ty::UNIT
                     }
                     Some(else_branch) => {
+                        if let Some(expected) = expected {
+                            self.expect(*else_branch, expected);
+                        }
                         let else_ty = self.infer_expr(*else_branch);
+                        if let Some(expected) = expected {
+                            self.coerce(then_ty, expected, *then_branch);
+                            self.coerce(else_ty, expected, *else_branch);
+                            return expected;
+                        }
                         if let Some(ptr) =
                             self.fn_lub(&[(*then_branch, then_ty), (*else_branch, else_ty)])
                         {
                             return ptr;
                         }
-                        self.join(then_ty, else_ty, id)
+                        self.join(then_ty, else_ty, (*then_branch, *else_branch))
                     }
                 }
             }
@@ -2157,9 +2210,14 @@ impl Ctx<'_> {
                 body: loop_body,
                 source,
             } => {
+                // A `loop`'s `break` values are coercion sites for the
+                // type its context wants, if it is known.
                 let ty = match source {
                     LoopSource::While | LoopSource::For => Ty::UNIT,
-                    LoopSource::Loop => self.new_var(false, self.range(id)),
+                    LoopSource::Loop => match self.coercion_target(id) {
+                        Some(expected) => expected,
+                        None => self.new_var(false, self.range(id)),
+                    },
                 };
                 // A `for` loop's body must be `()`, where it is written.
                 if let Some((inner, _)) = self.body.for_loop_match(id) {
@@ -2184,8 +2242,13 @@ impl Ctx<'_> {
                 }
             }
             Expr::Break { value, target } => {
-                let value_ty = value.map(|v| self.infer_expr(v));
                 let state = target.and_then(|t| self.loops.get(t).copied());
+                if let (Some(value), Some(state)) = (*value, state)
+                    && state.source == LoopSource::Loop
+                {
+                    self.expect(value, state.ty);
+                }
+                let value_ty = value.map(|v| self.infer_expr(v));
                 if let (Some(target), Some(state)) = (*target, state) {
                     if state.source == LoopSource::While && value.is_some() {
                         self.error(self.range(id), "`break` with value from a `while` loop");
@@ -2219,6 +2282,13 @@ impl Ctx<'_> {
                 args,
             } => self.infer_method_call(id, *receiver, *method, args),
             Expr::Ref { mutable, expr } => {
+                // What the context wants a reference to is what it wants
+                // of the operand, as in rustc's `check_expr_addr_of`.
+                if let Some(expected) = self.expected.get(id).copied()
+                    && let TyKind::Ref(_, pointee) = self.shallow(expected).kind()
+                {
+                    self.expect(*expr, pointee);
+                }
                 let ty = self.infer_expr(*expr);
                 if self.in_static_mut(*expr) {
                     self.static_mut_ref(id, *mutable);
@@ -2302,6 +2372,14 @@ impl Ctx<'_> {
                     if m == Mutability::Mut {
                         self.reborrows.insert(*expr, to_m);
                     }
+                }
+                // `&a as &[i32]`, `r as &T`: a coercion, as rustc tries
+                // first.
+                if let TyKind::Ref(..) = to.kind()
+                    && self.can_coerce(from, to, *expr)
+                {
+                    self.coerce(from, to, *expr);
+                    return to;
                 }
                 // `f as fn(i32) -> i32`: a coercion.
                 if let TyKind::FnPtr(_) = to.kind() {
@@ -2416,8 +2494,14 @@ impl Ctx<'_> {
         }
         let ty = self.infer_expr(scrutinee);
         let expected = self.expected.get(id).copied();
+        // The arms are coercion sites for the type the context wants, if
+        // it is known, and otherwise for the type of the arms before them
+        // (rustc's `CoerceMany`).
+        let target = self.coercion_target(id);
         let mut result: Option<Ty> = None;
         let mut values = Vec::new();
+        // Whether an arm was coerced to the type of those before it.
+        let mut coerced = false;
         for arm in arms {
             self.check_pat(arm.pat, ty, false);
             if let Some(guard) = arm.guard {
@@ -2437,7 +2521,13 @@ impl Ctx<'_> {
                 continue;
             }
             values.push((arm.body, arm_ty));
-            if values.len() > 1
+            if let Some(target) = target {
+                if result.is_none() {
+                    self.coerce(arm_ty, target, arm.body);
+                    result = Some(target);
+                    continue;
+                }
+            } else if values.len() > 1
                 && let Some(ptr) = self.fn_lub(&values)
             {
                 result = Some(ptr);
@@ -2446,7 +2536,24 @@ impl Ctx<'_> {
             match result {
                 None => result = Some(arm_ty),
                 Some(first) => {
-                    if !self.unify(first, arm_ty) {
+                    if self.can_unify(first, arm_ty) {
+                        self.unify(first, arm_ty);
+                    } else if self.can_coerce(arm_ty, first, arm.body) {
+                        self.coerce(arm_ty, first, arm.body);
+                        coerced = true;
+                    } else if target.is_none()
+                        && !coerced
+                        && values[..values.len() - 1]
+                            .iter()
+                            .all(|&(e, t)| self.can_coerce(t, arm_ty, e))
+                    {
+                        // The arms before coerce to this one's type.
+                        for &(e, t) in &values[..values.len() - 1] {
+                            self.coerce(t, arm_ty, e);
+                        }
+                        coerced = true;
+                        result = Some(arm_ty);
+                    } else if !self.unify(first, arm_ty) {
                         let (a, b) = (self.describe(first), self.describe(arm_ty));
                         self.error(
                             self.range(arm.body),
@@ -2523,46 +2630,172 @@ impl Ctx<'_> {
         }
     }
 
-    /// Where `values` are function items of different functions, their
-    /// common function pointer type, which each coerces to (rustc's
-    /// least upper bound); `None` otherwise.
+    /// Where `values` are function items of different functions, or
+    /// closures of different expressions (or both), their common
+    /// function pointer type, which each coerces to (rustc's least upper
+    /// bound); `None` otherwise.
     fn fn_lub(&mut self, values: &[(ExprId, Ty)]) -> Option<Ty> {
-        let mut defs = Vec::new();
+        let mut found = Vec::new();
         for &(expr, ty) in values {
-            match self.shallow(ty).kind() {
-                TyKind::FnDef(def) => defs.push((expr, def)),
+            let ty = self.shallow(ty);
+            match ty.kind() {
+                TyKind::FnDef(_) | TyKind::Closure(..) => found.push((expr, ty)),
                 TyKind::Never => {}
                 _ => return None,
             }
         }
-        let (_, first) = *defs.first()?;
-        if defs.iter().all(|(_, d)| d.function == first.function) {
+        let &(_, first) = found.first()?;
+        let same = |a: Ty, b: Ty| match (a.kind(), b.kind()) {
+            (TyKind::FnDef(x), TyKind::FnDef(y)) => x.function == y.function,
+            (TyKind::Closure(x, _), TyKind::Closure(y, _)) => x == y,
+            _ => false,
+        };
+        if found.iter().all(|&(_, ty)| same(ty, first)) {
             return None;
         }
-        let is_unsafe = defs.iter().any(|(_, d)| d.sig.is_unsafe);
-        let ptr = Ty::new(TyKind::FnPtr(crate::FnSigTy {
-            is_unsafe,
-            ..first.sig
-        }));
-        for &(expr, def) in &defs {
-            let ty = Ty::new(TyKind::FnDef(def));
+        let is_unsafe = found
+            .iter()
+            .any(|(_, ty)| matches!(ty.kind(), TyKind::FnDef(def) if def.sig.is_unsafe));
+        // The signature of the first function item, or else the first
+        // closure's.
+        let sig = found.iter().find_map(|(_, ty)| match ty.kind() {
+            TyKind::FnDef(def) => Some(def.sig),
+            _ => None,
+        });
+        let sig = match sig {
+            Some(sig) => sig,
+            None => {
+                let TyKind::Closure(_, args) = first.kind() else {
+                    return None;
+                };
+                let parts = crate::ClosureArgs::split(args);
+                let TyKind::Tuple(params) = self.shallow(parts.params()).kind() else {
+                    return None;
+                };
+                crate::FnSigTy::new(params, parts.ret(), false)
+            }
+        };
+        let ptr = Ty::new(TyKind::FnPtr(crate::FnSigTy { is_unsafe, ..sig }));
+        for (expr, ty) in found {
             self.coerce(ty, ptr, expr);
         }
         Some(ptr)
     }
 
+    /// The type the context of `expr` wants, as the target of coercions
+    /// of the values it may take (an `if`'s or `match`'s branches, a
+    /// `loop`'s `break`s), if it is known.
+    fn coercion_target(&mut self, expr: ExprId) -> Option<Ty> {
+        let expected = self.expected.get(expr).copied()?;
+        match self.shallow(expected).kind() {
+            TyKind::Infer(_) | TyKind::Error => None,
+            _ => Some(expected),
+        }
+    }
+
+    /// Whether `coerce` would accept a value of type `actual` from
+    /// `expr` where `expected` is wanted, without doing anything.
+    fn can_coerce(&mut self, actual: Ty, expected: Ty, expr: ExprId) -> bool {
+        let (actual, expected) = (self.shallow(actual), self.shallow(expected));
+        if actual == Ty::NEVER {
+            return true;
+        }
+        match (actual.kind(), expected.kind()) {
+            (TyKind::Ref(from, array), TyKind::Ref(to, slice))
+                if (from == to || from == Mutability::Mut)
+                    && let (TyKind::Array(elem, _), TyKind::Slice(expected_elem)) =
+                        (self.shallow(array).kind(), self.shallow(slice).kind()) =>
+            {
+                return self.can_unify(elem, expected_elem);
+            }
+            (TyKind::Ref(from, pointee), TyKind::Ref(to, expected_pointee))
+                if (from == to || from == Mutability::Mut)
+                    && !self.can_unify(pointee, expected_pointee) =>
+            {
+                // A deref coercion, as `coerce` makes it.
+                let (mut ty, mut unique) = (pointee, from == Mutability::Mut);
+                while let TyKind::Ref(m, inner) = self.shallow(ty).kind() {
+                    ty = inner;
+                    unique &= m == Mutability::Mut;
+                    if (to == Mutability::Not || unique) && self.can_unify(ty, expected_pointee) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            (TyKind::Ref(Mutability::Mut, pointee), TyKind::Ref(_, expected_pointee)) => {
+                return self.can_unify(pointee, expected_pointee);
+            }
+            (TyKind::Closure(_, args), TyKind::FnPtr(ptr)) => {
+                let parts = crate::ClosureArgs::split(args);
+                return self.can_unify(parts.params(), Ty::tuple(ptr.params()))
+                    && self.can_unify(parts.ret(), ptr.ret());
+            }
+            (TyKind::FnDef(def), TyKind::FnPtr(ptr)) => {
+                let extern_fn = self.items.functions[def.function].is_extern;
+                let reified = Ty::new(TyKind::FnPtr(crate::FnSigTy {
+                    is_unsafe: ptr.is_unsafe,
+                    ..def.sig
+                }));
+                return !extern_fn
+                    && (ptr.is_unsafe || !def.sig.is_unsafe)
+                    && self.can_unify(reified, expected);
+            }
+            (TyKind::Ref(from, pointee), TyKind::RawPtr(to, expected_pointee)) => {
+                return (from == to || from == Mutability::Mut)
+                    && self.can_unify(pointee, expected_pointee);
+            }
+            _ => {}
+        }
+        let blamed = self.blame(expr);
+        if let Expr::Tuple(fields) = &self.body.exprs[blamed]
+            && !self.coerced_tuples.contains(&blamed)
+            && let TyKind::Tuple(elements) = expected.kind()
+        {
+            return fields.len() == elements.len()
+                && fields.iter().zip(elements).all(|(&field, &element)| {
+                    let ty = self.expr_types.get(field).copied().unwrap_or(Ty::ERROR);
+                    self.can_coerce(ty, element, field)
+                });
+        }
+        self.can_unify(actual, expected)
+    }
+
     /// The type of an `if` with both branches: the branches' common type,
-    /// where a `!` branch takes the other's type.
-    fn join(&mut self, then_ty: Ty, else_ty: Ty, expr: ExprId) -> Ty {
+    /// where a `!` branch takes the other's type, and otherwise one
+    /// branch may be coerced to the other's type (rustc's least upper
+    /// bound): the `else` branch to the `then` branch's, or if not, the
+    /// reverse.
+    fn join(
+        &mut self,
+        then_ty: Ty,
+        else_ty: Ty,
+        (then_branch, else_branch): (ExprId, ExprId),
+    ) -> Ty {
         if self.shallow(then_ty) == Ty::NEVER {
             return else_ty;
         }
-        if self.shallow(else_ty) == Ty::NEVER || self.unify(then_ty, else_ty) {
+        if self.shallow(else_ty) == Ty::NEVER {
+            return then_ty;
+        }
+        if self.can_unify(then_ty, else_ty) {
+            self.unify(then_ty, else_ty);
+            return then_ty;
+        }
+        if self.can_coerce(else_ty, then_ty, else_branch) {
+            self.coerce(else_ty, then_ty, else_branch);
+            return then_ty;
+        }
+        if self.can_coerce(then_ty, else_ty, then_branch) {
+            self.coerce(then_ty, else_ty, then_branch);
+            return else_ty;
+        }
+        if self.unify(then_ty, else_ty) {
             return then_ty;
         }
         let (a, b) = (self.describe(then_ty), self.describe(else_ty));
         self.error(
-            self.range(expr),
+            self.range(self.blame(else_branch)),
             format!("`if` and `else` have incompatible types: `{a}` and `{b}`"),
         );
         Ty::ERROR
@@ -3051,11 +3284,12 @@ impl Ctx<'_> {
     }
 
     /// The element type the context wants of an array expression, if it
-    /// wants an array.
+    /// wants an array, or a slice (behind the reference it is borrowed
+    /// as).
     fn expected_elem(&mut self, expr: ExprId) -> Option<Ty> {
         let expected = self.expected.get(expr).copied()?;
         match self.shallow(expected).kind() {
-            TyKind::Array(elem, _) => Some(elem),
+            TyKind::Array(elem, _) | TyKind::Slice(elem) => Some(elem),
             _ => None,
         }
     }
@@ -3502,10 +3736,10 @@ impl Ctx<'_> {
         args: &[ExprId],
     ) -> Ty {
         let ty = self.probe_method_call(id, receiver, method, args);
-        // Closures not inferred with the method's signature, which was
-        // not found.
+        // The arguments not inferred with the method's signature, which
+        // was not found.
         for &arg in args {
-            if self.is_closure(arg) && self.expr_types.get(arg).is_none() {
+            if self.expr_types.get(arg).is_none() {
                 self.infer_expr(arg);
             }
         }
@@ -3519,13 +3753,9 @@ impl Ctx<'_> {
         method: Symbol,
         args: &[ExprId],
     ) -> Ty {
+        // The arguments wait for the method's signature, which says
+        // what each should be.
         let receiver_ty = self.infer_expr(receiver);
-        // Closures wait for the method's signature.
-        for &arg in args {
-            if !self.is_closure(arg) {
-                self.infer_expr(arg);
-            }
-        }
         let receiver_ty = self.shallow(receiver_ty);
         if receiver_ty == Ty::ERROR {
             return Ty::ERROR;
@@ -3795,6 +4025,17 @@ impl Ctx<'_> {
         }
         let sig = &self.instance_sig(function, &generic_args);
         self.check_signature_privacy(sig, id);
+        // The arguments other than closures, each where its parameter is
+        // expected; closures follow, once the others told what they can.
+        for (i, &arg) in args.iter().enumerate() {
+            if self.is_closure(arg) {
+                continue;
+            }
+            if let Some(&param) = sig.params.get(i + 1) {
+                self.expect(arg, param);
+            }
+            self.infer_expr(arg);
+        }
         let of_trait = matches!(data.owner, Some(flux_hir::Owner::Trait(_)));
         if let Some(context) = self.const_context
             && (data.const_unstable || of_trait)
@@ -5313,6 +5554,9 @@ impl Ctx<'_> {
                             && b.is_unsized()
                         {
                             format!("cannot cast thin pointer `{from}` to wide pointer `{to}`")
+                        } else if let TyKind::Ref(..) = to.kind() {
+                            // Not a coercion, and not a cast either.
+                            format!("non-primitive cast: `{from}` as `{to}`")
                         } else if to == Ty::BOOL && from.is_pointer() {
                             format!("cannot cast `{from}` as `bool`")
                         } else if from.is_pointer() || to.is_pointer() {

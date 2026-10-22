@@ -237,11 +237,6 @@ fn both_bindings(_1: E) -> () {
         _10 = move (_1 as #1).0;
         goto -> bb10;
     }
-
-    bb12: {
-        _12 = const ();
-        unreachable;
-    }
 }
 
 fn out_of_reference(_1: &E) -> () {

@@ -47,6 +47,7 @@ mod lens;
 pub mod lint;
 pub mod mono;
 mod pretty;
+pub mod validate;
 
 use flux_arena::{Arena, Idx};
 use flux_hir::{FunctionId, StructId};
@@ -452,7 +453,8 @@ pub enum Rvalue {
     BinaryOp(BinOp, Operand, Operand),
     UnaryOp(UnOp, Operand),
     /// An integer-to-integer or `bool`-to-integer cast: truncates, or
-    /// extends by the source's signedness.
+    /// extends by the source's signedness. Also `CStr::as_ptr`, a
+    /// `&CStr` as the `*const c_char` it is.
     Cast(Operand, Ty),
     /// A tuple or struct from its fields, in declaration order.
     Aggregate(AggregateKind, Vec<Operand>),
@@ -523,6 +525,9 @@ pub enum Constant {
     /// A `char`, held as its `u32` value.
     Char(char),
     Unit,
+    /// The value of a function item's type ([`TyKind::FnDef`]), which
+    /// has no size.
+    FnItem(Ty),
     /// A `c"..."` literal: a pointer to NUL-terminated static bytes, the
     /// body's `c_strings[index]`.
     CStr(u32),
@@ -564,6 +569,7 @@ impl Constant {
             Constant::Bool(_) => Ty::BOOL,
             Constant::Char(_) => Ty::CHAR,
             Constant::Unit => Ty::UNIT,
+            Constant::FnItem(ty) => ty,
             Constant::CStr(_) => flux_ty::c_str_ref(),
             Constant::Item { ty, .. }
             | Constant::Static { ty, .. }

@@ -541,23 +541,18 @@ fn main() -> () {
         _61 = {closure}(move _62);
         _65 = &_61;
         _66 = (const 2_usize,);
-        _64 = call::<{closure}, (usize,)>(copy _65, move _66) -> bb31;
+        _64 = call::<{closure}, (usize,)>(copy _65, move _66) -> bb30;
     }
 
     bb30: {
-        _59 = const ();
-        goto -> bb28;
-    }
-
-    bb31: {
         _63 = copy (*_64);
         StorageDead(_64);
         _69 = &_31;
         _70 = &_32;
-        _68 = pick(copy _69, copy _70, const false) -> bb32;
+        _68 = pick(copy _69, copy _70, const false) -> bb31;
     }
 
-    bb32: {
+    bb31: {
         _67 = copy (*_68);
         StorageDead(_68);
         _82 = copy _5;
@@ -581,28 +576,28 @@ fn main() -> () {
         _73 = Add(copy _74, copy _91);
         _92 = copy _67;
         _72 = Add(copy _73, copy _92);
-        _94 = statik() -> bb33;
+        _94 = statik() -> bb32;
     }
 
-    bb33: {
+    bb32: {
         _93 = copy (*_94);
         _71 = Add(copy _72, copy _93);
         StorageDead(_94);
         _96 = copy _71;
         _95 = Eq(copy _96, const 0_i32);
-        switchInt(copy _95) -> [0: bb35, otherwise: bb34];
+        switchInt(copy _95) -> [0: bb34, otherwise: bb33];
     }
 
-    bb34: {
-        goto -> bb37;
-    }
-
-    bb35: {
-        _0 = const ();
+    bb33: {
         goto -> bb36;
     }
 
-    bb36: {
+    bb34: {
+        _0 = const ();
+        goto -> bb35;
+    }
+
+    bb35: {
         StorageDead(_71);
         StorageDead(_67);
         StorageDead(_63);
@@ -626,13 +621,13 @@ fn main() -> () {
         return;
     }
 
-    bb37: {
+    bb36: {
         _97 = const ();
-        goto -> bb37;
+        goto -> bb36;
     }
 
-    bb38: {
-        goto -> bb36;
+    bb37: {
+        goto -> bb35;
     }
 }
 

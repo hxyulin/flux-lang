@@ -551,11 +551,6 @@ fn borrows_in_loop(_1: i32) -> i32 {
         StorageDead(_16);
         goto -> bb6;
     }
-
-    bb11: {
-        _15 = const ();
-        goto -> bb10;
-    }
 }
 
 fn loop_then_break(_1: i32) -> i32 {
@@ -591,12 +586,6 @@ fn loop_then_break(_1: i32) -> i32 {
         _0 = copy _1;
         StorageDead(_2);
         return;
-    }
-
-    bb3: {
-        _4 = const ();
-        StorageDead(_5);
-        goto -> bb1;
     }
 }
 
@@ -657,11 +646,6 @@ fn loop_reads_ref(_1: i32) -> i32 {
 
     bb5: {
         goto -> bb1;
-    }
-
-    bb6: {
-        _5 = const ();
-        goto -> bb5;
     }
 }
 
@@ -1142,12 +1126,6 @@ fn break_value_from_ref(_1: i32) -> i32 {
         _0 = Add(copy _7, copy _8);
         StorageDead(_2);
         return;
-    }
-
-    bb3: {
-        _3 = const ();
-        StorageDead(_4);
-        goto -> bb1;
     }
 }
 

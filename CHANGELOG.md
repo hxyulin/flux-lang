@@ -508,6 +508,35 @@
   receiver's `&mut` conflicts with later shared borrows (E0502), which
   flux missed; as in rustc, an array unsized for a method's receiver is
   not borrowed two-phase (`a.swap(0, a.len() - 1)` is E0502).
+- Fix coercions inside tuples, which were miscompiled: a tuple whose
+  element was unsized (`&[i32; 5]` to `&[i32]`) was built with its
+  uncoerced type, then copied as a tuple of the coerced type, so an
+  array of such tuples (`[(10, &a)]`) or one passed to `Some` held a
+  slice with a garbage length, and one nested in a tuple crashed keel.
+  As in rustc, where the context wants a type, each tuple element, `if`
+  and `match` branch, `break` value, method argument and operand of `&`
+  (`&[x, y]` where a `&[T]` is wanted) is a coercion site for its part
+  of it, and the tuple, branch or loop has the type wanted. Branches
+  without one meet at rustc's least upper bound (`if c { &a } else {
+  slice }`, an arm coerced to the arms' type or the arms before to its
+  own; function items and closures to a function pointer). Mismatches
+  in branches and `break` values are reported where rustc reports them.
+  An `as` cast to a reference type is a coercion (`b"ab" as &[u8]`),
+  and one that is not is rustc's non-primitive cast.
+  A `&mut T` reborrowed as a `&T` (or deref-coerced) into a temporary
+  gets a temporary of the coerced type.
+- Validate MIR: every assignment's value has its place's type, every
+  call's arguments and result its callee's parameter and return types.
+  `flux_mir::validate` runs over every body built and every instance
+  compiled in debug builds, and over every corpus file that builds,
+  with `just corpus`. It found that function items' values were `()`
+  (now `Constant::FnItem`), `CStr::as_ptr` stored a `&CStr` in a
+  `*const i8` (now a cast), and the end of a block that diverged stored
+  `()` in a place of type `!` or of the function's return type.
+- Fix code generation of a call that never returns into a place kept in
+  memory (`None => panic(...)` in `Option<[T; N]>::unwrap`), which
+  crashed the compiler, and constant evaluation of a static indexing
+  another static at a computed index, which panicked.
 
 ### Performance
 

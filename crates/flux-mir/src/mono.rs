@@ -1077,6 +1077,9 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
         local.ty = subst(local.ty);
     }
     let operand = |op: &mut Operand| {
+        if let Operand::Const(Constant::FnItem(ty)) = op {
+            *ty = subst(*ty);
+        }
         if let Operand::Const(
             Constant::Item {
                 ty,

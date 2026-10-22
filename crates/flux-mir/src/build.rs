@@ -143,14 +143,24 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         }
     }
     flux_hir::Diagnostic::sort(&mut diagnostics);
-    FileMir {
+    let mir = FileMir {
         bodies,
         closures,
         consts,
         const_values,
         discriminants,
         diagnostics,
+    };
+    // Code generation trusts the types of places: check them.
+    if cfg!(debug_assertions) {
+        let errors = crate::validate::validate_file(hir, &typed.sigs, &mir);
+        assert!(
+            errors.is_empty(),
+            "ill-typed MIR:\n  {}",
+            errors.join("\n  ")
+        );
     }
+    mir
 }
 
 /// The initialization and borrow errors of the program's functions whose
@@ -1197,12 +1207,25 @@ impl Builder<'_> {
     }
 
     /// The type of the value `expr` gives its context: an array reference
-    /// unsized to a slice reference is one.
+    /// unsized to a slice reference is one, a `&mut T` reborrowed as a
+    /// `&T` is that, and a `&&T` deref-coerced to a `&T` is that.
     fn value_ty(&self, expr: ExprId) -> Ty {
-        match self.types.unsizes.get(expr) {
-            Some(&ty) => ty,
-            None => self.expr_ty(expr),
+        if let Some(&ty) = self.types.unsizes.get(expr) {
+            return ty;
         }
+        let ty = self.expr_ty(expr);
+        let Some(&m) = self.types.reborrows.get(expr) else {
+            return ty;
+        };
+        let derefs = self.types.deref_coercions.get(expr).copied().unwrap_or(1);
+        let mut pointee = ty;
+        for _ in 0..derefs {
+            match pointee.kind() {
+                TyKind::Ref(_, inner) => pointee = inner,
+                _ => return ty,
+            }
+        }
+        Ty::new(TyKind::Ref(m, pointee))
     }
 
     fn new_block(&mut self) -> BasicBlock {
@@ -1291,7 +1314,12 @@ impl Builder<'_> {
         });
     }
 
+    /// Stores `()` in `dest`, unless the code is unreachable or `dest` is
+    /// of type `!`: the end of a block that diverged.
     fn assign_unit(&mut self, dest: &Place, range: TextRange) {
+        if self.current.is_none() || self.place_ty(dest) == Ty::NEVER {
+            return;
+        }
         self.assign(dest, Rvalue::Use(Operand::Const(Constant::Unit)), range);
     }
 
@@ -2051,11 +2079,8 @@ impl Builder<'_> {
             Expr::Path(Res::Function(_) | Res::Assoc { .. })
                 if matches!(self.own_ty(expr).kind(), TyKind::FnDef(_)) =>
             {
-                self.assign(
-                    dest,
-                    Rvalue::Aggregate(AggregateKind::Tuple, Vec::new()),
-                    range,
-                );
+                let item = Constant::FnItem(self.own_ty(expr));
+                self.assign(dest, Rvalue::Use(Operand::Const(item)), range);
             }
             Expr::Missing | Expr::Path(Res::Function(_) | Res::Assoc { .. } | Res::Err) => {
                 self.bug("a missing or unresolved expression", range);
@@ -2386,7 +2411,8 @@ impl Builder<'_> {
                 for &arg in args.iter() {
                     self.lower_operand(arg);
                 }
-                self.assign(dest, Rvalue::Use(receiver), range);
+                let ty = self.place_ty(dest);
+                self.assign(dest, Rvalue::Cast(receiver, ty), range);
             }
             Expr::Unary { .. } | Expr::Binary { .. }
                 if let Some(&instance) = self.types.overloads.get(expr) =>
@@ -2438,8 +2464,9 @@ impl Builder<'_> {
             Expr::Try { expr: operand } => self.lower_try(expr, *operand, dest, range),
             Expr::Cast { expr: inner, .. } => {
                 let ty = self.expr_ty(expr);
-                // A cast to the operand's own type is the operand.
-                if self.expr_ty(*inner) == ty {
+                // A cast to the operand's own type, or to the type it is
+                // coerced to, is the operand.
+                if self.value_ty(*inner) == ty {
                     self.lower_into(*inner, dest);
                     return;
                 }

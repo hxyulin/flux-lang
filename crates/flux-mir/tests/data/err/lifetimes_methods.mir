@@ -337,11 +337,6 @@ fn break_ref() -> () {
         StorageDead(_1);
         return;
     }
-
-    bb3: {
-        _6 = const ();
-        goto -> bb1;
-    }
 }
 
 fn main() -> () {

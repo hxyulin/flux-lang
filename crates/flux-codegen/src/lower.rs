@@ -146,6 +146,13 @@ pub fn lower_module(
     };
     for instance in instances {
         let body = flux_mir::mono::body_of(hir, &typed.sigs, mir, instance);
+        flux_mir::validate::assert_valid(
+            &hir.items,
+            &typed.sigs,
+            &[],
+            &body,
+            &hir.items.functions[instance.function].name,
+        );
         let function = ctx.function(instance, &body);
         module.functions.push(function);
     }
@@ -1400,7 +1407,7 @@ impl Lower<'_, '_, '_> {
             Constant::Int { bits, ty } => Some(self.int_const(bits, ty)),
             Constant::Bool(value) => Some(self.b.ins().iconst(Type::I8, i64::from(value))),
             Constant::Char(c) => Some(self.b.ins().iconst(Type::I32, i64::from(u32::from(c)))),
-            Constant::Unit => None,
+            Constant::Unit | Constant::FnItem(_) => None,
             Constant::CStr(index) => {
                 let name = self.ctx.c_string(&self.body.c_strings[index as usize]);
                 let data = self.b.import_data(&name);
@@ -1824,12 +1831,16 @@ impl Lower<'_, '_, '_> {
             values.extend(self.operand(arg));
         }
         let call = make(&mut self.b, &values);
-        let results = match &sret {
-            Some((pointer, _)) if memory => vec![*pointer],
-            Some((pointer, layout)) => self.load_leaves(*pointer, layout),
-            None => self.b.function().inst_results(call).to_vec(),
-        };
-        self.write(dest, &results);
+        // A call that does not return stores nothing: its destination may
+        // be of any type (a `match` arm calling `panic`).
+        if target.is_some() {
+            let results = match &sret {
+                Some((pointer, _)) if memory => vec![*pointer],
+                Some((pointer, layout)) => self.load_leaves(*pointer, layout),
+                None => self.b.function().inst_results(call).to_vec(),
+            };
+            self.write(dest, &results);
+        }
         match target {
             Some(target) => {
                 self.b.ins().jump(self.blocks[target.index()], &[]);

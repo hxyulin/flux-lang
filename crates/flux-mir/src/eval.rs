@@ -578,11 +578,7 @@ impl<'a> Evaluator<'a> {
                     && place.projection.first() == Some(&ProjectionElem::Deref)
                 {
                     let value = self.static_value(*id, range)?;
-                    let rest = Place {
-                        local: crate::Local::from_raw(0),
-                        projection: place.projection[1..].into(),
-                    };
-                    return read(&[Some(value)], &rest, range);
+                    return project(locals, &value, &place.projection[1..], range);
                 }
                 read(locals, place, range)
             }
@@ -607,7 +603,7 @@ impl<'a> Evaluator<'a> {
                     bits: u128::from(c),
                     ty: IntTy::U32,
                 }),
-                Constant::Unit => Ok(Value::Aggregate(Vec::new())),
+                Constant::Unit | Constant::FnItem(_) => Ok(Value::Aggregate(Vec::new())),
                 Constant::CStr(_) => Err(error(
                     range,
                     "C strings in constants are not supported yet".to_owned(),
@@ -836,10 +832,20 @@ fn index(locals: &[Option<Value>], local: crate::Local) -> usize {
 }
 
 fn read(locals: &[Option<Value>], place: &Place, range: TextRange) -> Result<Value, EvalError> {
-    let mut value = locals[place.local.index()]
+    let value = locals[place.local.index()]
         .as_ref()
         .ok_or_else(|| error(range, "use of an uninitialized value".to_owned()))?;
-    for elem in &place.projection {
+    project(locals, value, &place.projection, range)
+}
+
+/// The part of `value` at `projection`, whose indices are in `locals`.
+fn project(
+    locals: &[Option<Value>],
+    mut value: &Value,
+    projection: &[ProjectionElem],
+    range: TextRange,
+) -> Result<Value, EvalError> {
+    for elem in projection {
         value = match (elem, value) {
             (
                 ProjectionElem::Field(i),

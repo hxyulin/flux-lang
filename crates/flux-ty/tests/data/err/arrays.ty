@@ -48,8 +48,8 @@ error 494..495: the trait bound `S: Copy` is not satisfied
 error 506..507: the trait bound `T: Copy` is not satisfied
 error 554..555: the size for values of type `[i32]` cannot be known at compilation time
 error 570..571: the size for values of type `[i32]` cannot be known at compilation time
-error 581..584: mismatched types: expected `[i32]`, found `[{integer}; 1]`
-error 610..617: mismatched types: expected `&mut [i32]`, found `&[{integer}; 2]`
+error 581..584: mismatched types: expected `[i32]`, found `[i32; 1]`
+error 610..617: mismatched types: expected `&mut [i32]`, found `&[i32; 2]`
 error 642..647: the size for values of type `[i32]` cannot be known at compilation time
 error 676..681: the size for values of type `[i32]` cannot be known at compilation time
 error 717..730: the size for values of type `[i32]` cannot be known at compilation time

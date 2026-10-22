@@ -422,8 +422,8 @@ not called is a value of the function's own item type, written by
 rustc as `fn(i32) -> i32 {double}`, which holds nothing; it coerces to
 a function pointer of its signature where one is wanted (an annotation,
 an argument, a field, a return value, an `as` cast), and `if` or
-`match` arms or array elements naming different functions coerce to
-one, as in rustc.
+`match` arms or array elements naming different functions (or
+closures that capture nothing) coerce to one, as in rustc.
 An `unsafe fn` coerces only to an `unsafe fn` pointer, and `extern`
 functions not at all. Calling either type works as calling the
 function does; through a pointer, in constants and `const fn`s, is an
