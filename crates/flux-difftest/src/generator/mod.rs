@@ -146,6 +146,9 @@ weights! {
     /// `zip` in iterator chains, percent.
     zips = 25,
 
+    /// Closure parameters left for inference, else annotated, percent.
+    unannotated_closures = 25,
+
     // Constructs flux rejects for now (see tests/difftest/bugs): 0 keeps
     // campaigns from being swamped by known bugs; raise them once fixed.
     /// Parenthesized range-to patterns, `(..=5)` (bug 002), percent.
@@ -156,8 +159,6 @@ weights! {
     rev_adapters = 0,
     /// `ref` bindings in `let ... else` (bug 005), percent.
     ref_let_else = 0,
-    /// Closure parameters left for inference, else annotated (bug 007), percent.
-    unannotated_closures = 0,
 }
 
 impl Default for Config {
