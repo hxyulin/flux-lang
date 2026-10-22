@@ -79,6 +79,7 @@ pub fn check(
         diagnostics: Vec::new(),
         reported_dead: vec![false; loans.len()],
         in_aggregate: false,
+        unique_access: false,
     };
     for (block, data) in body.blocks.iter() {
         for (i, statement) in data.statements.iter().enumerate() {
@@ -145,6 +146,10 @@ struct Loan {
     place: Place,
     mutability: Mutability,
     two_phase: bool,
+    /// A closure's mutable capture of a place behind a `&mut` in a
+    /// binding that is not `mut` (`|| *r += 1`): rustc's unique
+    /// borrow, whose conflicts it names as such (E0500, E0501, E0524).
+    unique: bool,
     /// Where it was made.
     block: BasicBlock,
     statement: usize,
@@ -170,10 +175,12 @@ fn collect_loans(body: &Body) -> Vec<(Loan, Local)> {
                     .capture_uses
                     .iter()
                     .find(|&&(b, s, _, _)| b == block && s == i);
+                let unique = capture.is_some() && is_unique(body, place, *mutability);
                 let loan = Loan {
                     place: place.clone(),
                     mutability: *mutability,
                     two_phase: *two_phase,
+                    unique,
                     block,
                     statement: i,
                     range: capture.map_or(statement.range, |c| c.2),
@@ -183,6 +190,18 @@ fn collect_loans(body: &Body) -> Vec<(Loan, Local)> {
         }
     }
     loans
+}
+
+/// Whether a closure's capture of `place` by a borrow of `mutability`
+/// is rustc's unique borrow: mutable, through a dereference, of a
+/// binding that is not `mut`.
+fn is_unique(body: &Body, place: &Place, mutability: Mutability) -> bool {
+    mutability == Mutability::Mut
+        && place.has_deref()
+        && matches!(
+            body.locals[place.local].kind,
+            LocalKind::User { mutable: false, .. }
+        )
 }
 
 /// The locals a statement reads, as values or as pointers to go through.
@@ -335,6 +354,8 @@ struct Checker<'a> {
     reported_dead: Vec<bool>,
     /// Checking the operands of an aggregate.
     in_aggregate: bool,
+    /// The access being checked is a closure's unique capture.
+    unique_access: bool,
 }
 
 /// The loans in scope at a point, except `except`.
@@ -429,6 +450,8 @@ impl Checker<'_> {
                                 }
                                 None => self.check_mutable_borrow(place, range),
                             }
+                            self.unique_access =
+                                capture.is_some() && is_unique(self.body, place, *mutability);
                         }
                         // A two-phase borrow is shared until the call.
                         let access = if *two_phase {
@@ -437,6 +460,7 @@ impl Checker<'_> {
                             Access::Borrow(*mutability)
                         };
                         self.access(place, access, live, range);
+                        self.unique_access = false;
                     }
                     // `len` borrows its receiver; a bounds check reads
                     // only the pointer a slice is behind.
@@ -941,7 +965,20 @@ impl Checker<'_> {
                     .is_some_and(|l| l.contains(live.point));
             let loan_mut = loan.mutability == Mutability::Mut && !reserved;
             let name = self.name(place);
+            let borrow = matches!(access, Access::Borrow(_) | Access::Reserve);
             let message = match access {
+                _ if borrow && self.unique_access && loan.unique => {
+                    format!("two closures require unique access to `{name}` at the same time")
+                }
+                _ if borrow && self.unique_access => {
+                    format!("closure requires unique access to `{name}` but it is already borrowed")
+                }
+                Access::Borrow(Mutability::Not) if loan.unique => format!(
+                    "cannot borrow `{name}` as immutable because previous closure requires unique access"
+                ),
+                Access::Borrow(Mutability::Mut) | Access::Reserve if loan.unique => format!(
+                    "cannot borrow `{name}` as mutable because previous closure requires unique access"
+                ),
                 Access::Read if loan_mut => {
                     format!("cannot use `{name}` because it was mutably borrowed")
                 }
