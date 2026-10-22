@@ -1051,6 +1051,8 @@ fn build_body(
 /// and see `ref mut` bindings through shared references.
 struct Guard {
     scrutinee: Option<Place>,
+    /// The arm's bindings, including Copy values bound before the guard.
+    bindings: Vec<BindingId>,
     ref_muts: Vec<BindingId>,
 }
 
@@ -1892,18 +1894,21 @@ impl Builder<'_> {
         self.capture_source(binding, &proj)
     }
 
-    /// The place of binding `binding`, then `proj`, here: in a local,
-    /// or in what a closure captures.
+    /// The place of binding `binding`, then `proj`, here: in a guard's
+    /// scrutinee alias, a local, or in what a closure captures.
     fn capture_source(&self, binding: BindingId, proj: &[flux_ty::CaptureProj]) -> Option<Place> {
-        let (mut place, rest) = match self.binding_locals.get(binding) {
-            Some(&local) => (Place::from(local), proj),
-            None => {
-                let (capture, place) = self
-                    .upvars
-                    .iter()
-                    .find(|(c, _)| c.binding == binding && proj.starts_with(&c.projection))?;
-                (place.clone(), &proj[capture.projection.len()..])
-            }
+        let (mut place, rest) = match self.guard_places.get(binding) {
+            Some(place) => (place.clone(), proj),
+            None => match self.binding_locals.get(binding) {
+                Some(&local) => (Place::from(local), proj),
+                None => {
+                    let (capture, place) = self
+                        .upvars
+                        .iter()
+                        .find(|(c, _)| c.binding == binding && proj.starts_with(&c.projection))?;
+                    (place.clone(), &proj[capture.projection.len()..])
+                }
+            },
         };
         for &p in rest {
             place = match p {
@@ -1960,9 +1965,38 @@ impl Builder<'_> {
                 self.bug("a capture of a place not found here", range);
                 return;
             };
+            // Even bindings initialized before the guard (Copy values and
+            // references) are immutable until it passes. Deferred bindings
+            // may also belong to an enclosing guard.
+            let guarded = self.guard_places.get(capture.binding).is_some()
+                || self
+                    .guard
+                    .as_ref()
+                    .is_some_and(|guard| guard.bindings.contains(&capture.binding));
             let operand = match capture.mode {
-                flux_ty::CaptureMode::ByValue => self.read(place),
+                flux_ty::CaptureMode::ByValue => {
+                    let operand = self.read(place);
+                    if guarded && let Operand::Move(place) = operand {
+                        let name = self.body.bindings[capture.binding].name;
+                        self.errors.push(flux_hir::Diagnostic::new(
+                            capture.range,
+                            format!("cannot move out of `{name}` in pattern guard"),
+                        ));
+                        // As for a direct guard read, leave the scrutinee
+                        // initialized after diagnosing the invalid move.
+                        Operand::Copy(place)
+                    } else {
+                        operand
+                    }
+                }
                 flux_ty::CaptureMode::ByRef(mutability) => {
+                    if guarded && mutability == Mutability::Mut {
+                        let name = self.body.bindings[capture.binding].name;
+                        self.errors.push(flux_hir::Diagnostic::new(
+                            capture.range,
+                            format!("cannot borrow `{name}` as mutable in pattern guard"),
+                        ));
+                    }
                     let temp = self.temp(capture.upvar_ty());
                     let rvalue = Rvalue::Ref {
                         mutability,
@@ -3750,6 +3784,7 @@ impl Builder<'_> {
                         };
                         let outer = b.guard.replace(Guard {
                             scrutinee,
+                            bindings: exit.binds.iter().map(|&(binding, _)| binding).collect(),
                             ref_muts: now
                                 .iter()
                                 .map(|&(binding, _)| binding)
