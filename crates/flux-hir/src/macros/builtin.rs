@@ -581,13 +581,17 @@ fn parse_format(literal: &Tok, cx: &BuiltinCx<'_>) -> Result<FormatString, Error
     Ok(out)
 }
 
+/// A placeholder's error: its message, and where in the placeholder's
+/// text it is if rustc points there.
+type SpecError = (String, Option<(usize, usize)>);
+
 /// `arg:spec`, a placeholder's text between its braces, as rustc's
 /// `rustc_parse_format` reads it: `[[fill]align][sign]['#']['0'][width]
 /// ['.' precision][type]`.
 ///
 /// An error is its message, and where in `inner` it is if rustc points
 /// there (then it is not an "invalid format string").
-fn placeholder(inner: &str) -> Result<Placeholder, (String, Option<(usize, usize)>)> {
+fn placeholder(inner: &str) -> Result<Placeholder, SpecError> {
     let (arg, spec) = match inner.find(':') {
         Some(i) => (&inner[..i], Some(&inner[i + 1..])),
         None => (inner, None),
@@ -664,7 +668,7 @@ fn placeholder(inner: &str) -> Result<Placeholder, (String, Option<(usize, usize
         i += 1;
     }
     // A count: a number, or `n$` or `name$` for an argument's value.
-    let mut count = |i: &mut usize| -> Result<Option<Count>, (String, Option<(usize, usize)>)> {
+    let mut count = |i: &mut usize| -> Result<Option<Count>, SpecError> {
         let start = *i;
         let mut end = start;
         if chars.get(start).is_some_and(|c| c.is_ascii_digit()) {

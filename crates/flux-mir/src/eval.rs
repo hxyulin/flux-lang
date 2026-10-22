@@ -400,50 +400,10 @@ impl<'a> Evaluator<'a> {
                     dest,
                     target,
                 } => {
-                    // `core`'s panic, with its message, a `c"..."` or a
-                    // `"..."`.
-                    if Some(*func) == self.items.panic_fn {
-                        let message = match args.first() {
-                            Some(Operand::Const(Constant::CStr(index))) => {
-                                String::from_utf8_lossy(&body.c_strings[*index as usize])
-                                    .into_owned()
-                            }
-                            Some(Operand::Const(Constant::Promoted { index, ty }))
-                                if *ty
-                                    == Ty::new(flux_ty::TyKind::Ref(
-                                        flux_ty::Mutability::Not,
-                                        Ty::STR,
-                                    )) =>
-                            {
-                                let bytes: Vec<u8> = match body.promoted.get(*index as usize) {
-                                    Some(Value::Aggregate(bytes)) => bytes
-                                        .iter()
-                                        .map(|b| match b {
-                                            Value::Int { bits, .. } => *bits as u8,
-                                            _ => b'?',
-                                        })
-                                        .collect(),
-                                    _ => Vec::new(),
-                                };
-                                String::from_utf8_lossy(&bytes).into_owned()
-                            }
-                            _ => "explicit panic".to_owned(),
-                        };
-                        return Err(error(range, format!("evaluation panicked: {message}")));
-                    }
-                    // `panic!("{}", s)` and `expect(msg)`, with a `&str`
-                    // to show.
-                    let display = self
-                        .items
-                        .lang_fns
-                        .get(&flux_intern::Symbol::intern("panic_display"));
-                    if display == Some(func)
-                        && let Some(arg) = args.first()
+                    if let Some(message) =
+                        self.panic_message(*func, args, body, &locals, generics, range)?
                     {
-                        let value = self.operand(&locals, generics, arg, range)?;
-                        if let Some(message) = str_value(&value) {
-                            return Err(error(range, format!("evaluation panicked: {message}")));
-                        }
+                        return Err(error(range, format!("evaluation panicked: {message}")));
                     }
                     // Only code generation expands them.
                     if self.items.functions[*func].intrinsic {
@@ -580,6 +540,57 @@ impl<'a> Evaluator<'a> {
                 )
             }
         })
+    }
+
+    /// The message of a call of one of `core`'s panics, if `func` is
+    /// one whose message is known: `panic`'s, a `c"..."` or a `"..."`,
+    /// or `panic_display`'s `&str` (`panic!("{}", s)`, `expect`). Out
+    /// of line, as evaluation recurses through its caller.
+    #[inline(never)]
+    fn panic_message(
+        &mut self,
+        func: FunctionId,
+        args: &[Operand],
+        body: &Body,
+        locals: &[Option<Value>],
+        generics: GenericArgs,
+        range: TextRange,
+    ) -> Result<Option<String>, EvalError> {
+        if Some(func) == self.items.panic_fn {
+            let message = match args.first() {
+                Some(Operand::Const(Constant::CStr(index))) => {
+                    String::from_utf8_lossy(&body.c_strings[*index as usize]).into_owned()
+                }
+                Some(Operand::Const(Constant::Promoted { index, ty }))
+                    if *ty == Ty::new(flux_ty::TyKind::Ref(flux_ty::Mutability::Not, Ty::STR)) =>
+                {
+                    let bytes: Vec<u8> = match body.promoted.get(*index as usize) {
+                        Some(Value::Aggregate(bytes)) => bytes
+                            .iter()
+                            .map(|b| match b {
+                                Value::Int { bits, .. } => *bits as u8,
+                                _ => b'?',
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    String::from_utf8_lossy(&bytes).into_owned()
+                }
+                _ => "explicit panic".to_owned(),
+            };
+            return Ok(Some(message));
+        }
+        let display = self
+            .items
+            .lang_fns
+            .get(&flux_intern::Symbol::intern("panic_display"));
+        if display == Some(&func)
+            && let Some(arg) = args.first()
+        {
+            let value = self.operand(locals, generics, arg, range)?;
+            return Ok(str_value(&value));
+        }
+        Ok(None)
     }
 
     fn operand(
