@@ -241,6 +241,15 @@ impl char {
     }
 }
 
+/// Why a `u32` is not a `char`: what `char::try_from` gives for a
+/// surrogate or a value past `char::MAX`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct CharTryFromError(pub(crate) ());
+
+/// Why a `char` is not a `u8` or `u16`: it is past its range.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TryFromCharError(pub(crate) ());
+
 impl From<u8> for char {
     fn from(byte: u8) -> char {
         byte as char

@@ -7,6 +7,7 @@ use crate::cmp::{Ord, PartialEq, PartialOrd};
 use crate::marker::{Copy, PhantomData, Sized};
 use crate::ops::{ControlFlow, FnMut, FnOnce, FromResidual, Range, RangeFrom, RangeInclusive, Try};
 use crate::option::Option::{self, None, Some};
+use crate::result::Result::{self, Err, Ok};
 
 /// Something that gives a sequence of items, one per call of `next`,
 /// until it gives `None`.
@@ -196,6 +197,46 @@ pub trait Iterator {
             accum = f(accum, x);
         }
         accum
+    }
+
+    /// A collection of the items: whatever implements `FromIterator`
+    /// for them.
+    fn collect<B: FromIterator<Self::Item>>(self) -> B
+    where
+        Self: Sized,
+    {
+        B::from_iter(self)
+    }
+
+    /// The items, pairs, split into two collections.
+    fn unzip<A, B, FromA, FromB>(self) -> (FromA, FromB)
+    where
+        FromA: crate::default::Default + Extend<A>,
+        FromB: crate::default::Default + Extend<B>,
+        Self: Sized + Iterator<Item = (A, B)>,
+    {
+        let mut unzipped: (FromA, FromB) = (FromA::default(), FromB::default());
+        unzipped.extend(self);
+        unzipped
+    }
+
+    /// The items `f` is `true` for, and the others, each in a collection.
+    fn partition<B, F>(mut self, mut f: F) -> (B, B)
+    where
+        Self: Sized,
+        B: crate::default::Default + Extend<Self::Item>,
+        F: FnMut(&Self::Item) -> bool,
+    {
+        let mut left: B = B::default();
+        let mut right: B = B::default();
+        while let Some(x) = self.next() {
+            if f(&x) {
+                left.extend(Some(x));
+            } else {
+                right.extend(Some(x));
+            }
+        }
+        (left, right)
     }
 
     /// `fold` with an `f` that may stop early: an `Option`, `Result` or
@@ -2169,5 +2210,186 @@ impl<T, F: FnMut() -> Option<T>> Iterator for FromFn<F> {
 impl<F: Clone> Clone for FromFn<F> {
     fn clone(&self) -> FromFn<F> {
         FromFn { f: self.f.clone() }
+    }
+}
+
+/// A type built from an iterator's items: what `collect` makes.
+#[diagnostic::on_unimplemented(
+    message = "a value of type `{Self}` cannot be built from an iterator over elements of type `{A}`"
+)]
+pub trait FromIterator<A>: Sized {
+    /// The value of the items of `iter`.
+    fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self;
+}
+
+/// A collection that takes the items of an iterator.
+pub trait Extend<A> {
+    /// Adds the items of `iter`.
+    fn extend<T: IntoIterator<Item = A>>(&mut self, iter: T);
+}
+
+impl FromIterator<()> for () {
+    fn from_iter<T: IntoIterator<Item = ()>>(iter: T) {
+        let mut iter = iter.into_iter();
+        while let Some(()) = iter.next() {}
+    }
+}
+
+impl Extend<()> for () {
+    fn extend<T: IntoIterator<Item = ()>>(&mut self, iter: T) {
+        let mut iter = iter.into_iter();
+        while let Some(()) = iter.next() {}
+    }
+}
+
+/// Each half of the pairs into each collection, one pair at a time.
+impl<A, B, ExtendA: Extend<A>, ExtendB: Extend<B>> Extend<(A, B)> for (ExtendA, ExtendB) {
+    fn extend<T: IntoIterator<Item = (A, B)>>(&mut self, into_iter: T) {
+        let mut iter = into_iter.into_iter();
+        while let Some((a, b)) = iter.next() {
+            self.0.extend(Some(a));
+            self.1.extend(Some(b));
+        }
+    }
+}
+
+impl<A, B, AE: crate::default::Default + Extend<A>, BE: crate::default::Default + Extend<B>>
+    FromIterator<(A, B)> for (AE, BE)
+{
+    fn from_iter<T: IntoIterator<Item = (A, B)>>(iter: T) -> (AE, BE) {
+        let mut res: (AE, BE) = (AE::default(), BE::default());
+        res.extend(iter);
+        res
+    }
+}
+
+/// The values of an iterator of `Option`s, up to the first `None`, which
+/// it records: rustc's `GenericShunt`.
+struct OptionShunt<'a, I> {
+    iter: I,
+    failed: &'a mut bool,
+}
+
+impl<'a, A, I: Iterator<Item = Option<A>>> Iterator for OptionShunt<'a, I> {
+    type Item = A;
+
+    fn next(&mut self) -> Option<A> {
+        if *self.failed {
+            return None;
+        }
+        match self.iter.next() {
+            Some(Some(a)) => Some(a),
+            Some(None) => {
+                *self.failed = true;
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if *self.failed {
+            (0, Some(0))
+        } else {
+            (0, self.iter.size_hint().1)
+        }
+    }
+}
+
+/// The values of an iterator of `Result`s, up to the first `Err`, whose
+/// error it keeps.
+struct ResultShunt<'a, I, E> {
+    iter: I,
+    error: &'a mut Option<E>,
+}
+
+impl<'a, A, E, I: Iterator<Item = Result<A, E>>> Iterator for ResultShunt<'a, I, E> {
+    type Item = A;
+
+    fn next(&mut self) -> Option<A> {
+        if self.error.is_some() {
+            return None;
+        }
+        match self.iter.next() {
+            Some(Ok(a)) => Some(a),
+            Some(Err(e)) => {
+                *self.error = Some(e);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.error.is_some() {
+            (0, Some(0))
+        } else {
+            (0, self.iter.size_hint().1)
+        }
+    }
+}
+
+/// `Some` of the collection of the values, or `None` if an item is
+/// (stopping there).
+impl<A, V: FromIterator<A>> FromIterator<Option<A>> for Option<V> {
+    fn from_iter<I: IntoIterator<Item = Option<A>>>(iter: I) -> Option<V> {
+        let mut failed = false;
+        let value: V = V::from_iter(OptionShunt { iter: iter.into_iter(), failed: &mut failed });
+        if failed { None } else { Some(value) }
+    }
+}
+
+/// `Ok` of the collection of the values, or the first `Err` (stopping
+/// there).
+impl<A, E, V: FromIterator<A>> FromIterator<Result<A, E>> for Result<V, E> {
+    fn from_iter<I: IntoIterator<Item = Result<A, E>>>(iter: I) -> Result<V, E> {
+        let mut error = None;
+        let value: V = V::from_iter(ResultShunt { iter: iter.into_iter(), error: &mut error });
+        match error {
+            Some(e) => Err(e),
+            None => Ok(value),
+        }
+    }
+}
+
+/// The sum of the values, or `None` if an item is (stopping there).
+impl<T, U: Sum<T>> Sum<Option<T>> for Option<U> {
+    fn sum<I: Iterator<Item = Option<T>>>(iter: I) -> Option<U> {
+        let mut failed = false;
+        let value: U = U::sum(OptionShunt { iter, failed: &mut failed });
+        if failed { None } else { Some(value) }
+    }
+}
+
+/// The product of the values, or `None` if an item is (stopping there).
+impl<T, U: Product<T>> Product<Option<T>> for Option<U> {
+    fn product<I: Iterator<Item = Option<T>>>(iter: I) -> Option<U> {
+        let mut failed = false;
+        let value: U = U::product(OptionShunt { iter, failed: &mut failed });
+        if failed { None } else { Some(value) }
+    }
+}
+
+/// The sum of the values, or the first `Err` (stopping there).
+impl<T, U: Sum<T>, E> Sum<Result<T, E>> for Result<U, E> {
+    fn sum<I: Iterator<Item = Result<T, E>>>(iter: I) -> Result<U, E> {
+        let mut error = None;
+        let value: U = U::sum(ResultShunt { iter, error: &mut error });
+        match error {
+            Some(e) => Err(e),
+            None => Ok(value),
+        }
+    }
+}
+
+/// The product of the values, or the first `Err` (stopping there).
+impl<T, U: Product<T>, E> Product<Result<T, E>> for Result<U, E> {
+    fn product<I: Iterator<Item = Result<T, E>>>(iter: I) -> Result<U, E> {
+        let mut error = None;
+        let value: U = U::product(ResultShunt { iter, error: &mut error });
+        match error {
+            Some(e) => Err(e),
+            None => Ok(value),
+        }
     }
 }
