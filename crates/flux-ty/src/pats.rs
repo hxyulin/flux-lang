@@ -58,10 +58,9 @@ pub(crate) fn check_body(
             end: Some(end),
             inclusive,
         } = *data
-            && let Some(int) = pat_types.get(pat).and_then(|t| t.as_int())
+            && let Some(domain) = pat_types.get(pat).and_then(|&t| IntDomain::of(t))
             && let (Some(lo), Some(hi)) = (cx.literal(start), cx.literal(end))
         {
-            let domain = IntDomain { int };
             let (lo, hi) = (domain.encode(lo), domain.encode(hi));
             if inclusive && lo > hi {
                 cx.error(
@@ -237,17 +236,35 @@ struct Cx<'a> {
 /// targets, so as rustc does, matching them exhaustively takes ranges
 /// open at the end (`0..`): their values have an infinity beyond the
 /// maximum, and below the minimum for `isize`.
+///
+/// A `char` is its `u32` value, up to `char::MAX`; the surrogates
+/// (`0xD800..=0xDFFF`) are no `char`'s, so no pattern need cover them.
 #[derive(Clone, Copy)]
 struct IntDomain {
     int: IntTy,
+    char: bool,
 }
 
+/// The surrogates, which are not `char`s: `0xD800..=0xDFFF`.
+const SURROGATES: (u128, u128) = (0xD800, 0xDFFF);
+
 impl IntDomain {
+    /// The domain of an integer type or `char`.
+    fn of(ty: Ty) -> Option<IntDomain> {
+        Some(IntDomain {
+            int: ty.scalar_int()?,
+            char: ty == Ty::CHAR,
+        })
+    }
+
     fn min(self) -> u128 {
         0
     }
 
     fn max(self) -> u128 {
+        if self.char {
+            return char::MAX as u128;
+        }
         match self.int {
             IntTy::Usize => 1 << 64,
             IntTy::Isize => (1 << 64) + 1,
@@ -330,6 +347,7 @@ impl Cx<'_> {
             // its bits for `IntDomain::encode`; out of range literals
             // were reported.
             Expr::Literal(Literal::Int { value, .. }) => Some(*value as i128),
+            Expr::Literal(Literal::Char(c)) => Some(u32::from(*c) as i128),
             Expr::Unary {
                 op: UnaryOp::Neg,
                 operand,
@@ -386,9 +404,9 @@ impl Cx<'_> {
                     Some(value) => DPat::Ctor(Ctor::Bool(value != 0), Vec::new()),
                     None => DPat::Wild,
                 },
-                (_, TyKind::Int(int)) => match self.literal(*expr) {
+                (_, TyKind::Int(_) | TyKind::Char) => match self.literal(*expr) {
                     Some(value) => {
-                        let at = IntDomain { int }.encode(value);
+                        let at = IntDomain::of(ty).expect("a scalar").encode(value);
                         DPat::Ctor(Ctor::Range(at, at), Vec::new())
                     }
                     None => DPat::Wild,
@@ -399,9 +417,8 @@ impl Cx<'_> {
                 start,
                 end,
                 inclusive,
-            } => match ty.kind() {
-                TyKind::Int(int) => {
-                    let domain = IntDomain { int };
+            } => match IntDomain::of(ty) {
+                Some(domain) => {
                     let value = |e: &Option<ExprId>| e.and_then(|e| self.literal(e));
                     let lo = value(start).map_or(domain.min(), |v| domain.encode(v));
                     let hi = match value(end) {
@@ -502,7 +519,9 @@ impl Cx<'_> {
                 .into_iter()
                 .map(Ctor::Bool)
                 .partition(|&c| used(c)),
-            TyKind::Int(int) => self.split_ints(IntDomain { int }, heads),
+            TyKind::Int(_) | TyKind::Char => {
+                self.split_ints(IntDomain::of(ty).expect("a scalar"), heads)
+            }
             TyKind::Tuple(_) | TyKind::Ref(..) => {
                 if heads.is_empty() {
                     (Vec::new(), vec![Ctor::Single])
@@ -555,6 +574,9 @@ impl Cx<'_> {
             .collect();
         let (min, max) = (domain.min(), domain.max());
         let mut cuts = vec![min];
+        if domain.char {
+            cuts.extend([SURROGATES.0, SURROGATES.1 + 1]);
+        }
         for &(lo, hi) in &ranges {
             cuts.push(lo);
             if hi < max {
@@ -567,6 +589,9 @@ impl Cx<'_> {
         let mut missing = Vec::new();
         for (i, &lo) in cuts.iter().enumerate() {
             let hi = cuts.get(i + 1).map_or(max, |&next| next - 1);
+            if domain.char && lo == SURROGATES.0 {
+                continue;
+            }
             let ctor = Ctor::Range(lo, hi);
             if ranges.iter().any(|&(a, b)| a <= lo && hi <= b) {
                 present.push(ctor);
@@ -664,8 +689,16 @@ impl Cx<'_> {
             |fields: &[WPat]| -> Vec<String> { fields.iter().map(|f| self.show(f)).collect() };
         match (*ctor, ty.kind()) {
             (Ctor::Bool(b), _) => b.to_string(),
-            (Ctor::Range(lo, hi), TyKind::Int(int)) if lo <= hi => {
-                show_range(IntDomain { int }, lo, hi)
+            (Ctor::Range(lo, hi), TyKind::Int(_)) if lo <= hi => {
+                show_range(IntDomain::of(*ty).expect("an integer"), lo, hi)
+            }
+            (Ctor::Range(lo, hi), TyKind::Char) if lo <= hi => {
+                let show = |c: u128| format!("{:?}", char::from_u32(c as u32).unwrap_or('\0'));
+                if lo == hi {
+                    show(lo)
+                } else {
+                    format!("{}..={}", show(lo), show(hi))
+                }
             }
             (Ctor::Range(..), _) => "_".to_owned(),
             (Ctor::Single, TyKind::Ref(Mutability::Mut, _)) => {

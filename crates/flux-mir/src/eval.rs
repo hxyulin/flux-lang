@@ -698,7 +698,7 @@ impl<'a> Evaluator<'a> {
                         unreachable!("casts are of scalars")
                     }
                 };
-                let to = to.as_int().expect("casts are to integers");
+                let to = to.scalar_int().expect("casts are to integers or `char`");
                 Ok(Value::Int {
                     bits: truncate(bits, to),
                     ty: to,

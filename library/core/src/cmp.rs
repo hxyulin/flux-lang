@@ -52,6 +52,8 @@ impl PartialEq for usize { fn eq(&self, other: &usize) -> bool { *self == *other
 impl Eq for usize {}
 impl PartialEq for bool { fn eq(&self, other: &bool) -> bool { *self == *other } fn ne(&self, other: &bool) -> bool { *self != *other } }
 impl Eq for bool {}
+impl PartialEq for char { fn eq(&self, other: &char) -> bool { *self == *other } fn ne(&self, other: &char) -> bool { *self != *other } }
+impl Eq for char {}
 impl PartialEq for () { fn eq(&self, _other: &()) -> bool { true } }
 impl Eq for () {}
 
@@ -349,6 +351,8 @@ impl PartialOrd for usize { fn partial_cmp(&self, other: &usize) -> Option<Order
 impl Ord for usize { fn cmp(&self, other: &usize) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
 impl PartialOrd for bool { fn partial_cmp(&self, other: &bool) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &bool) -> bool { *self < *other } fn le(&self, other: &bool) -> bool { *self <= *other } fn gt(&self, other: &bool) -> bool { *self > *other } fn ge(&self, other: &bool) -> bool { *self >= *other } }
 impl Ord for bool { fn cmp(&self, other: &bool) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
+impl PartialOrd for char { fn partial_cmp(&self, other: &char) -> Option<Ordering> { Some(self.cmp(other)) } fn lt(&self, other: &char) -> bool { *self < *other } fn le(&self, other: &char) -> bool { *self <= *other } fn gt(&self, other: &char) -> bool { *self > *other } fn ge(&self, other: &char) -> bool { *self >= *other } }
+impl Ord for char { fn cmp(&self, other: &char) -> Ordering { if *self < *other { Less } else if *self == *other { Equal } else { Greater } } }
 impl PartialOrd for () { fn partial_cmp(&self, _other: &()) -> Option<Ordering> { Some(Equal) } }
 impl Ord for () { fn cmp(&self, _other: &()) -> Ordering { Equal } }
 

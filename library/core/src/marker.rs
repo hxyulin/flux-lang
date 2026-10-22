@@ -27,6 +27,7 @@ impl Copy for u64 {}
 impl Copy for u128 {}
 impl Copy for usize {}
 impl Copy for bool {}
+impl Copy for char {}
 impl Copy for () {}
 impl<T> Copy for *const T {}
 impl<T> Copy for *mut T {}

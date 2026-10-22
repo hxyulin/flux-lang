@@ -296,7 +296,7 @@ fn evaluate(
                     return None;
                 }
             };
-            let to = to.as_int()?;
+            let to = to.scalar_int()?;
             Some(Value::Int {
                 bits: truncate(bits, to),
                 ty: to,

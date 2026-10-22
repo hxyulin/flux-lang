@@ -1,0 +1,18 @@
+fn classify(char) -> u8
+    c@0: char
+fn exhaustive(char) -> bool
+    c@0: char
+fn main() -> ()
+    c@0: char
+    code@1: u32
+    byte@2: char
+    raw@3: &[u8; 3]
+    slice@4: &[u8]
+    digit@5: Option<u32>
+    upper@6: char
+    same@7: bool
+    kind@8: u8
+    e@9: bool
+    n@10: usize
+const LETTER: char
+const BYTES: &[u8]
