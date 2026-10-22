@@ -229,7 +229,7 @@ fn check_patterns(
 
 /// The constants whose evaluation failed, as rustc reports them: at the
 /// constant, once each.
-fn eval_failures(
+pub(crate) fn eval_failures(
     items: &flux_hir::ItemTree,
     evaluator: &crate::eval::Evaluator<'_>,
 ) -> Vec<flux_hir::Diagnostic> {
@@ -707,12 +707,12 @@ struct Builder<'a> {
     needs_drop: std::cell::RefCell<rustc_hash::FxHashMap<Ty, bool>>,
 }
 
-/// Whether `expr` denotes a place: a local, a field of one, or what a
-/// pointer points to.
+/// Whether `expr` denotes a place: a local, a field or element of one, or
+/// what a pointer points to.
 fn is_place(body: &flux_hir::Body, expr: ExprId) -> bool {
     match body.exprs[expr] {
         Expr::Path(Res::Local(_)) => true,
-        Expr::Field { expr, .. } => is_place(body, expr),
+        Expr::Field { expr, .. } | Expr::Index { base: expr, .. } => is_place(body, expr),
         Expr::Unary {
             op: UnaryOp::Deref, ..
         } => true,
@@ -735,6 +735,15 @@ impl Builder<'_> {
             .get(expr)
             .copied()
             .unwrap_or(Ty::ERROR)
+    }
+
+    /// The type of the value `expr` gives its context: an array reference
+    /// unsized to a slice reference is one.
+    fn value_ty(&self, expr: ExprId) -> Ty {
+        match self.types.unsizes.get(expr) {
+            Some(&ty) => ty,
+            None => self.expr_ty(expr),
+        }
     }
 
     fn new_block(&mut self) -> BasicBlock {
@@ -767,7 +776,7 @@ impl Builder<'_> {
     /// temporaries made while evaluating it, as rustc schedules drops
     /// once a value exists.
     fn temp_for(&mut self, expr: ExprId) -> Local {
-        let ty = self.expr_ty(expr);
+        let ty = self.value_ty(expr);
         let temp = self.temp(ty);
         self.lower_into(expr, &temp.into());
         if self.needs_drop(ty) {
@@ -962,10 +971,18 @@ impl Builder<'_> {
                 op: UnaryOp::Deref,
                 operand,
             } => self.lower_place(operand).deref(),
+            Expr::Index { base, index } => {
+                let mut place = self.lower_place(base);
+                let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
+                for _ in 0..derefs {
+                    place = place.deref();
+                }
+                self.index(place, index, self.range(expr))
+            }
             _ => {
                 let temp = match (std::mem::take(&mut self.extending), self.extend_at) {
                     (true, Some((scope, at))) => {
-                        let ty = self.expr_ty(expr);
+                        let ty = self.value_ty(expr);
                         let temp = self.temp(ty);
                         self.lower_into(expr, &temp.into());
                         if self.needs_drop(ty) && scope != usize::MAX {
@@ -981,6 +998,36 @@ impl Builder<'_> {
                 temp.into()
             }
         }
+    }
+
+    /// The element of the array or slice at `place` at `index`, after
+    /// the check that `index` is within it, at `range`.
+    fn index(&mut self, place: Place, index: ExprId, range: TextRange) -> Place {
+        let usize = Ty::int(IntTy::Usize);
+        let local = self.temp(usize);
+        self.lower_into(index, &local.into());
+        let len = match self.place_ty(&place).kind() {
+            TyKind::Array(_, len) => Operand::Const(Constant::int(i128::from(len), IntTy::Usize)),
+            _ => {
+                let len = self.temp(usize);
+                let rvalue = Rvalue::Len {
+                    place: place.clone(),
+                    borrows: false,
+                };
+                self.assign(&len.into(), rvalue, range);
+                Operand::Copy(len.into())
+            }
+        };
+        let within = self.temp(Ty::BOOL);
+        let index = Operand::Copy(local.into());
+        self.assign(
+            &within.into(),
+            Rvalue::BinaryOp(BinOp::Lt, index.clone(), len.clone()),
+            range,
+        );
+        let msg = AssertMessage::BoundsCheck { len, index };
+        self.assert(Operand::Copy(within.into()), true, msg, range);
+        place.index(local)
     }
 
     fn field_index(&self, expr: ExprId) -> u32 {
@@ -1019,6 +1066,31 @@ impl Builder<'_> {
     /// Evaluates `expr` and stores its value in `dest`, reborrowing it if
     /// type checking said so.
     fn lower_into(&mut self, expr: ExprId, dest: &Place) {
+        // A reference to an array as one to a slice: the reference, then
+        // its unsizing.
+        if let Some(&ty) = self.types.unsizes.get(expr) {
+            let reference = match self.types.reborrows.get(expr) {
+                Some(&m) => {
+                    let pointee = match self.expr_ty(expr).kind() {
+                        TyKind::Ref(_, pointee) => pointee,
+                        _ => Ty::ERROR,
+                    };
+                    Ty::new(TyKind::Ref(m, pointee))
+                }
+                None => self.expr_ty(expr),
+            };
+            let temp = self.temp(reference);
+            self.lower_reborrowed(expr, &temp.into());
+            let operand = self.read(temp.into());
+            self.assign(dest, Rvalue::Unsize(operand, ty), self.range(expr));
+            return;
+        }
+        self.lower_reborrowed(expr, dest);
+    }
+
+    /// Evaluates `expr` and stores its value in `dest`, reborrowing it if
+    /// type checking said so.
+    fn lower_reborrowed(&mut self, expr: ExprId, dest: &Place) {
         let Some(&mutability) = self.types.reborrows.get(expr) else {
             return self.lower_value(expr, dest);
         };
@@ -1124,6 +1196,7 @@ impl Builder<'_> {
             // places: `make().x`.
             Expr::Path(Res::Local(_))
             | Expr::Field { .. }
+            | Expr::Index { .. }
             | Expr::Unary {
                 op: UnaryOp::Deref, ..
             } => {
@@ -1159,6 +1232,49 @@ impl Builder<'_> {
                 fields,
                 spread,
             } => self.lower_record(*strukt, *variant, fields, *spread, dest, range),
+            Expr::Array(elements) => {
+                let elem = match self.expr_ty(expr).kind() {
+                    TyKind::Array(elem, _) => elem,
+                    _ => Ty::ERROR,
+                };
+                let operands = elements.iter().map(|&e| self.lower_operand(e)).collect();
+                self.assign(
+                    dest,
+                    Rvalue::Aggregate(AggregateKind::Array(elem), operands),
+                    range,
+                );
+            }
+            Expr::Repeat { value, .. } => {
+                let count = match self.expr_ty(expr).kind() {
+                    TyKind::Array(_, count) => count,
+                    _ => 0,
+                };
+                let operand = self.lower_operand(*value);
+                self.assign(dest, Rvalue::Repeat(operand, count), range);
+            }
+            Expr::MethodCall { receiver, .. }
+                if let Some(&(method, derefs)) = self.types.builtin_methods.get(expr) =>
+            {
+                let receiver_range = self.range(*receiver);
+                let mut place = self.lower_place(*receiver);
+                for _ in 0..derefs {
+                    place = place.deref();
+                }
+                let rvalue = Rvalue::Len {
+                    place,
+                    borrows: true,
+                };
+                match method {
+                    flux_ty::BuiltinMethod::Len => self.assign(dest, rvalue, receiver_range),
+                    flux_ty::BuiltinMethod::IsEmpty => {
+                        let len = self.temp(Ty::int(IntTy::Usize));
+                        self.assign(&len.into(), rvalue, receiver_range);
+                        let zero = Operand::Const(Constant::int(0, IntTy::Usize));
+                        let rvalue = Rvalue::BinaryOp(BinOp::Eq, Operand::Copy(len.into()), zero);
+                        self.assign(dest, rvalue, range);
+                    }
+                }
+            }
             Expr::Block { stmts, tail, .. } => {
                 self.scoped(ScopeKind::Block, range, |b| {
                     for stmt in stmts.iter() {
@@ -1707,7 +1823,7 @@ impl Builder<'_> {
                 out.push(expr);
                 self.extended_operand(*inner, out);
             }
-            Expr::Tuple(fields) => {
+            Expr::Tuple(fields) | Expr::Array(fields) => {
                 for &field in fields.iter() {
                     self.extending_refs(field, out);
                 }
@@ -1750,7 +1866,8 @@ impl Builder<'_> {
                 op: UnaryOp::Deref,
                 operand: inner,
             }
-            | Expr::Field { expr: inner, .. } => self.extended_operand(*inner, out),
+            | Expr::Field { expr: inner, .. }
+            | Expr::Index { base: inner, .. } => self.extended_operand(*inner, out),
             Expr::Ref { expr: inner, .. } => {
                 out.push(expr);
                 self.extended_operand(*inner, out);
@@ -2552,6 +2669,7 @@ impl Builder<'_> {
             Expr::Path(Res::Local(binding)) => self.body.bindings[binding].name.to_string(),
             Expr::Field { expr: base, name } => format!("{}.{name}", self.place_text(base)),
             Expr::Unary { operand, .. } => format!("*{}", self.place_text(operand)),
+            Expr::Index { base, .. } => format!("{}[_]", self.place_text(base)),
             _ => "_".to_owned(),
         }
     }

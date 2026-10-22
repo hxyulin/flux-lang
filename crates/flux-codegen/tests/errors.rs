@@ -7,7 +7,7 @@
 fn lowering_errors(text: &str) -> Vec<String> {
     let (_db, _, hir) = flux_hir::lower_text("main.rs", text);
     assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
-    let typed = flux_ty::check_file(&hir);
+    let typed = flux_mir::check_file(&hir);
     assert!(typed.diagnostics.is_empty(), "{:#?}", typed.diagnostics);
     let mir = flux_mir::build_file(&hir, &typed);
     assert!(mir.diagnostics.is_empty(), "{:#?}", mir.diagnostics);

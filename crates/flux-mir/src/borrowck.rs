@@ -272,13 +272,17 @@ struct Checker<'a> {
 }
 
 /// Whether one place contains the other: they are the same local and
-/// one projection is a prefix of the other.
+/// one projection is a prefix of the other. Elements of an array may be
+/// the same whatever their indices, as rustc assumes.
 fn overlaps(a: &Place, b: &Place) -> bool {
     a.local == b.local
         && a.projection
             .iter()
             .zip(b.projection.iter())
-            .all(|(x, y)| x == y)
+            .all(|(x, y)| match (x, y) {
+                (ProjectionElem::Index(_), ProjectionElem::Index(_)) => true,
+                _ => x == y,
+            })
 }
 
 impl Checker<'_> {
@@ -335,6 +339,13 @@ impl Checker<'_> {
                         };
                         self.access(place, access, &live, range);
                     }
+                    // `len` borrows its receiver; a bounds check reads
+                    // only the pointer a slice is behind.
+                    Rvalue::Len {
+                        place,
+                        borrows: true,
+                    } => self.access(place, Access::Borrow(Mutability::Not), &live, range),
+                    Rvalue::Len { .. } => {}
                     _ => {
                         self.in_aggregate = matches!(rvalue, Rvalue::Aggregate(..));
                         for operand in rvalue.operands() {
@@ -415,7 +426,21 @@ impl Checker<'_> {
         match operand {
             Operand::Copy(place) => self.access(place, Access::Read, live, range),
             Operand::Move(place) => {
-                if place.has_deref() {
+                if let Some(last) = place
+                    .projection
+                    .iter()
+                    .rposition(|e| matches!(e, ProjectionElem::Index(_)))
+                {
+                    // Moving out of an element would leave a hole (E0508).
+                    let base = Place {
+                        local: place.local,
+                        projection: place.projection[..last].into(),
+                    };
+                    let ty = self.body.place_ty(&base, self.sigs);
+                    let what = if ty.is_unsized() { "slice" } else { "array" };
+                    let message = format!("cannot move out of type `{ty}`, a non-copy {what}");
+                    self.error(range, message);
+                } else if place.has_deref() {
                     self.check_move_out(place, range);
                 } else if let Some(ty) = self.drop_owner(place) {
                     let message = format!(

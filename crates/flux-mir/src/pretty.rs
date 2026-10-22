@@ -218,7 +218,21 @@ fn rvalue_text(hir: &Hir, rvalue: &Rvalue) -> String {
         Rvalue::Aggregate(AggregateKind::Variant(strukt, index), ops) => {
             aggregate(hir, hir.items.structs[*strukt].variant(*index), ops)
         }
+        Rvalue::Aggregate(AggregateKind::Array(_), ops) => {
+            let ops: Vec<String> = ops.iter().map(|o| operand(hir, o)).collect();
+            format!("[{}]", ops.join(", "))
+        }
         Rvalue::Discriminant(p) => format!("discriminant({})", place(p)),
+        Rvalue::Len {
+            place: p,
+            borrows: true,
+        } => format!("Len(&{})", place(p)),
+        Rvalue::Len {
+            place: p,
+            borrows: false,
+        } => format!("Len({})", place(p)),
+        Rvalue::Repeat(o, count) => format!("[{}; {count}]", operand(hir, o)),
+        Rvalue::Unsize(o, ty) => format!("{} as {ty} (unsize)", operand(hir, o)),
     }
 }
 
@@ -251,6 +265,7 @@ fn place(place: &Place) -> String {
             ProjectionElem::Field(field) => text.push_str(&format!(".{field}")),
             ProjectionElem::Deref => text = format!("(*{text})"),
             ProjectionElem::Downcast(variant) => text = format!("({text} as #{variant})"),
+            ProjectionElem::Index(local) => text.push_str(&format!("[_{}]", local.index())),
         }
     }
     text

@@ -41,6 +41,7 @@ mod build;
 pub mod drops;
 pub mod eval;
 pub mod init;
+mod lens;
 pub mod lint;
 pub mod mono;
 mod pretty;
@@ -84,6 +85,7 @@ pub fn discriminant_bits(
 }
 
 pub use build::{build, build_file, check_clean_bodies};
+pub use lens::check_file;
 
 pub type Local = Idx<LocalDecl>;
 pub type BasicBlock = Idx<BasicBlockData>;
@@ -166,10 +168,14 @@ pub fn place_name(
     let mut ty = PlaceTy::from(body.locals[place.local].ty);
     for (i, &elem) in place.projection.iter().enumerate() {
         match elem {
-            // A field of a reference's target is written as if the
-            // reference were the struct: `r.a`.
+            // A field or element of a reference's target is written as if
+            // the reference were the struct or array: `r.a`, `s[_]`.
             ProjectionElem::Deref
-                if matches!(place.projection.get(i + 1), Some(ProjectionElem::Field(_))) => {}
+                if matches!(
+                    place.projection.get(i + 1),
+                    Some(ProjectionElem::Field(_) | ProjectionElem::Index(_))
+                ) => {}
+            ProjectionElem::Index(_) => text = format!("{text}[_]"),
             ProjectionElem::Deref => text = format!("*{text}"),
             // rustc names a variant's field as if it were the enum's:
             // `o.0` for `(o as Some).0`.
@@ -220,6 +226,8 @@ impl PlaceTy {
                 pointee
             }
             (ProjectionElem::Deref, _) => Ty::ERROR,
+            (ProjectionElem::Index(_), TyKind::Array(elem, _) | TyKind::Slice(elem)) => elem,
+            (ProjectionElem::Index(_), _) => Ty::ERROR,
         };
         PlaceTy::from(ty)
     }
@@ -244,6 +252,9 @@ pub enum ProjectionElem {
     /// An enum as its variant with this index, which it holds: `(e as
     /// Some)`. Only its fields are places.
     Downcast(u32),
+    /// The element of an array or slice at the index in this local, a
+    /// `usize` checked against the length first: `_1[_2]`.
+    Index(Local),
 }
 
 impl Place {
@@ -257,6 +268,18 @@ impl Place {
 
     pub fn deref(&self) -> Place {
         self.project(ProjectionElem::Deref)
+    }
+
+    pub fn index(&self, local: Local) -> Place {
+        self.project(ProjectionElem::Index(local))
+    }
+
+    /// The locals the place's indices are in.
+    pub fn index_locals(&self) -> impl Iterator<Item = Local> + '_ {
+        self.projection.iter().filter_map(|elem| match elem {
+            ProjectionElem::Index(local) => Some(*local),
+            _ => None,
+        })
     }
 
     fn project(&self, elem: ProjectionElem) -> Place {
@@ -346,11 +369,26 @@ pub enum Rvalue {
         place: Place,
         two_phase: bool,
     },
+    /// The length of the array or slice at `place`, a `usize`. With
+    /// `borrows`, for a call of `len`, the place is borrowed as `&self`
+    /// is, so it conflicts with mutable borrows of it; without, for a
+    /// bounds check, only the pointer a slice is behind is read.
+    Len {
+        place: Place,
+        borrows: bool,
+    },
+    /// `[value; count]`: an array of `count` copies of `value`.
+    Repeat(Operand, u64),
+    /// A reference or raw pointer to an array, as one to a slice of its
+    /// elements, of type `ty`: rustc's unsizing coercion.
+    Unsize(Operand, Ty),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggregateKind {
     Tuple,
+    /// An array of elements of this type, from its elements.
+    Array(Ty),
     Struct(StructId),
     /// Variant `index` of an enum, from its fields.
     Variant(StructId, u32),
@@ -510,6 +548,12 @@ pub enum AssertMessage {
     RemainderByZero(Operand),
     DivisionOverflow(Operand, Operand),
     RemainderOverflow(Operand, Operand),
+    /// An index past the end of an array or slice: the length, then the
+    /// index.
+    BoundsCheck {
+        len: Operand,
+        index: Operand,
+    },
 }
 
 impl AssertMessage {
@@ -524,6 +568,7 @@ impl AssertMessage {
             AssertMessage::RemainderOverflow(..) => {
                 "attempt to calculate the remainder with overflow"
             }
+            AssertMessage::BoundsCheck { .. } => "index out of bounds",
         }
     }
 }
@@ -611,10 +656,14 @@ impl Rvalue {
     /// The operands it reads.
     pub fn operands(&self) -> Vec<&Operand> {
         match self {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast(op, _) => vec![op],
+            Rvalue::Use(op)
+            | Rvalue::UnaryOp(_, op)
+            | Rvalue::Cast(op, _)
+            | Rvalue::Repeat(op, _)
+            | Rvalue::Unsize(op, _) => vec![op],
             Rvalue::BinaryOp(_, l, r) => vec![l, r],
             Rvalue::Aggregate(_, ops) => ops.iter().collect(),
-            Rvalue::Ref { .. } | Rvalue::Discriminant(_) => Vec::new(),
+            Rvalue::Ref { .. } | Rvalue::Discriminant(_) | Rvalue::Len { .. } => Vec::new(),
         }
     }
 }

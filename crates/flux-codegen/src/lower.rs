@@ -15,6 +15,14 @@
 //! variant it holds has meaningful leaves. Where the fields of one
 //! variant could share another's would be smaller, but nothing observes
 //! the size yet.
+//!
+//! A value that contains an array (a *memory* type) is indexed at run
+//! time, so it always lives in memory: its locals are stack slots, and
+//! its value is the address of one, whose bytes are copied where it is
+//! assigned. It crosses calls as that address, which the callee copies,
+//! and is returned through `sret` memory laid out as the value is. A
+//! reference to a slice is two leaves, the address of its first element
+//! and its length.
 
 use std::collections::HashMap;
 
@@ -29,8 +37,8 @@ use keel_frontend::{FunctionBuilder, Variable};
 use keel_ir::StackSlot;
 use keel_ir::{
     AbiParam, ArgExt, Block, BlockCall, CallConv, DataInit, DataItem, DataObject, FuncDecl,
-    FuncRef, Function, FunctionAttrs, IntCC, Layout, MemoryFlags, Module, Purpose, Signature, Type,
-    Value,
+    FuncRef, Function, FunctionAttrs, IntCC, Intrinsic, Layout, MemoryFlags, Module, Purpose,
+    Signature, Type, Value,
 };
 
 /// The keel module for a type-checked program and its MIR, `core`
@@ -116,8 +124,7 @@ pub fn lower_module(
         data: Vec::new(),
     };
     for instance in instances {
-        let body = &mir.bodies[instance.function];
-        let body = flux_mir::mono::instance_body(hir, &typed.sigs, body, instance.args);
+        let body = flux_mir::mono::body_of(hir, &typed.sigs, mir, instance);
         let function = ctx.function(instance, &body);
         module.functions.push(function);
     }
@@ -212,6 +219,17 @@ fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: I
                 args.iter().for_each(|&a| encode(a, feed));
                 feed(b";");
             }
+            TyKind::Array(elem, len) => {
+                feed(b"[");
+                encode(elem, feed);
+                feed(&len.to_le_bytes());
+                feed(b"]");
+            }
+            TyKind::Slice(elem) => {
+                feed(b"[");
+                encode(elem, feed);
+                feed(b"]");
+            }
             TyKind::RawPtr(m, pointee) | TyKind::Ref(m, pointee) => {
                 let pointer: &[u8] = if matches!(ty.kind(), TyKind::Ref(..)) {
                     b"&"
@@ -254,6 +272,8 @@ fn keel_type(ty: Ty) -> Option<Type> {
         TyKind::RawPtr(..) | TyKind::Ref(..) => Some(Type::Ptr),
         TyKind::Tuple(_)
         | TyKind::Adt(..)
+        | TyKind::Array(..)
+        | TyKind::Slice(_)
         | TyKind::Param(_)
         | TyKind::Alias(_)
         | TyKind::Never
@@ -268,10 +288,41 @@ fn discriminant(sigs: &Signatures, ty: Ty) -> flux_ty::IntTy {
     sigs.discriminant_ty(ty).unwrap_or(flux_ty::IntTy::Isize)
 }
 
+/// Whether values of `ty` contain an array, so live in memory.
+fn is_memory(sigs: &Signatures, ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::Array(..) => true,
+        TyKind::Tuple(_) | TyKind::Adt(..) => sigs
+            .contents(ty)
+            .is_some_and(|fields| fields.iter().any(|&f| is_memory(sigs, f))),
+        _ => false,
+    }
+}
+
+/// A pointer to a slice: its address, then its length.
+fn is_fat(ty: Ty) -> bool {
+    matches!(ty.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_unsized())
+}
+
+/// The leaf of a value of a memory type: the address of its bytes.
+fn address_leaf() -> Ty {
+    Ty::raw_ptr(Mutability::Not, Ty::UNIT)
+}
+
 /// The scalar leaves of a value of `ty`, in field order: none for `()`
 /// and `!`, one for a scalar; an enum's discriminant, then every
-/// variant's fields.
+/// variant's fields; the address of a value of a memory type; the
+/// address and length of a pointer to a slice.
 fn leaves(sigs: &Signatures, ty: Ty, out: &mut Vec<Ty>) {
+    if is_memory(sigs, ty) {
+        out.push(address_leaf());
+        return;
+    }
+    if is_fat(ty) {
+        out.push(address_leaf());
+        out.push(Ty::int(IntTy::Usize));
+        return;
+    }
     if let Some(variants) = sigs.variants(ty) {
         out.push(Ty::int(discriminant(sigs, ty)));
         for fields in variants {
@@ -299,6 +350,12 @@ fn leaves_of(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
 }
 
 fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
+    if is_memory(sigs, ty) {
+        return 1;
+    }
+    if is_fat(ty) {
+        return 2;
+    }
     if let Some(variants) = sigs.variants(ty) {
         return 1 + variants
             .iter()
@@ -316,6 +373,12 @@ fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
 /// recursively, with `()` and `!` empty; an enum as a struct of its
 /// discriminant and a struct of each variant's fields.
 fn layout(sigs: &Signatures, ty: Ty) -> Layout {
+    if let TyKind::Array(elem, len) = ty.kind() {
+        return Layout::Array(Box::new(layout(sigs, elem)), len as u32);
+    }
+    if is_fat(ty) {
+        return Layout::Struct(vec![Layout::Scalar(Type::Ptr), Layout::Scalar(Type::I64)]);
+    }
     if let Some(variants) = sigs.variants(ty) {
         let mut members = vec![Layout::Scalar(int_type(discriminant(sigs, ty)))];
         members.extend(variants.iter().map(|fields| struct_layout(sigs, fields)));
@@ -372,9 +435,14 @@ enum Location {
 enum Return {
     Values(Vec<AbiParam>),
     Sret(Layout),
+    /// A value of a memory type, laid out as it is.
+    Memory(Layout),
 }
 
 fn return_kind(sigs: &Signatures, ret: Ty) -> Return {
+    if is_memory(sigs, ret) {
+        return Return::Memory(layout(sigs, ret));
+    }
     let leaves = leaves_of(sigs, ret);
     if leaves.len() <= 1 {
         return Return::Values(leaves.into_iter().filter_map(abi_param).collect());
@@ -419,7 +487,7 @@ fn signature(sigs: &Signatures, sig: &FnSig, variadic: bool) -> Signature {
     let mut signature = Signature::new(&[], &[]);
     match return_kind(sigs, sig.ret) {
         Return::Values(returns) => signature.returns = returns,
-        Return::Sret(layout) => signature.params.push(AbiParam {
+        Return::Sret(layout) | Return::Memory(layout) => signature.params.push(AbiParam {
             purpose: Purpose::Sret(layout),
             ..AbiParam::new(Type::Ptr)
         }),
@@ -602,7 +670,7 @@ impl Lower<'_, '_, '_> {
             }
         }
         for (local, decl) in body.locals.iter() {
-            if borrowed[local.index()] {
+            if borrowed[local.index()] || is_memory(sigs, decl.ty) {
                 let layout = layout(sigs, decl.ty);
                 let slot = self
                     .b
@@ -623,7 +691,9 @@ impl Lower<'_, '_, '_> {
         }
         let entry = self.blocks[0];
         self.b.switch_to_block(entry);
-        if let Return::Sret(layout) = return_kind(sigs, body.locals[Body::RETURN].ty) {
+        if let Return::Sret(layout) | Return::Memory(layout) =
+            return_kind(sigs, body.locals[Body::RETURN].ty)
+        {
             let pointer = self.b.append_block_param(entry, Type::Ptr);
             self.sret = Some((pointer, layout));
         }
@@ -643,6 +713,16 @@ impl Lower<'_, '_, '_> {
             for statement in &data.statements {
                 if let StatementKind::Assign(dest, rvalue) = &statement.kind {
                     let ty = body.place_ty(dest, sigs);
+                    if is_memory(sigs, ty)
+                        && let Rvalue::Aggregate(..) | Rvalue::Repeat(..) = rvalue
+                    {
+                        let (location, _) = self.locate(dest);
+                        let Location::Memory(address) = location else {
+                            unreachable!("memory types are in memory")
+                        };
+                        self.build_in_memory(address, rvalue, ty);
+                        continue;
+                    }
                     let values = self.rvalue(rvalue, ty);
                     self.write(dest, &values);
                 }
@@ -716,14 +796,49 @@ impl Lower<'_, '_, '_> {
                     let pointer = self.load(location, ty.ty)[0];
                     Location::Memory(pointer)
                 }
+                (ProjectionElem::Index(index), Location::Memory(address)) => {
+                    let size = layout(sigs, elem_ty.ty).size();
+                    let index = self.read(&index.into())[0];
+                    Location::Memory(self.element(address, index, size))
+                }
+                (ProjectionElem::Index(_), Location::Vars { .. }) => {
+                    unreachable!("arrays are in memory")
+                }
             };
             ty = elem_ty;
         }
         (location, ty.ty)
     }
 
-    /// The leaves of the `ty` at `location`.
+    /// The address of element `index` of the array or slice at
+    /// `address`, whose elements are `size` bytes apart.
+    fn element(&mut self, address: Value, index: Value, size: u64) -> Value {
+        if size == 0 {
+            return address;
+        }
+        let size = self.b.ins().iconst(Type::I64, size as i64);
+        let offset = self.b.ins().imul(index, size);
+        self.b.ins().ptradd(address, offset)
+    }
+
+    /// Copies `size` bytes of a value of a memory type from `from` to `to`.
+    fn copy(&mut self, to: Value, from: Value, size: u64) {
+        if size == 0 {
+            return;
+        }
+        let len = self.b.ins().iconst(Type::I64, size as i64);
+        self.b.ins().intrinsic(Intrinsic::Memmove, &[to, from, len]);
+    }
+
+    /// The leaves of the `ty` at `location`: for a memory type, its
+    /// address.
     fn load(&mut self, location: Location, ty: Ty) -> Vec<Value> {
+        if is_memory(self.sigs, ty) {
+            let Location::Memory(address) = location else {
+                unreachable!("memory types are in memory")
+            };
+            return vec![address];
+        }
         match location {
             Location::Vars { local, start, len } => {
                 let vars = self.vars[local.index()][start..start + len].to_vec();
@@ -747,6 +862,10 @@ impl Lower<'_, '_, '_> {
                     self.b.def_var(var, value);
                 }
             }
+            Location::Memory(address) if is_memory(self.sigs, ty) => {
+                let size = layout(self.sigs, ty).size();
+                self.copy(address, values[0], size);
+            }
             Location::Memory(address) => {
                 let leaves = layout(self.sigs, ty).leaves();
                 for ((offset, ty), &value) in leaves.into_iter().zip(values) {
@@ -755,6 +874,120 @@ impl Lower<'_, '_, '_> {
                 }
             }
         }
+    }
+
+    /// A new stack slot for a value of `ty`, and its address.
+    fn new_slot(&mut self, ty: Ty) -> Value {
+        let layout = layout(self.sigs, ty);
+        let slot = self
+            .b
+            .create_stack_slot(layout.size().max(1) as u32, layout.align() as u32);
+        self.b.ins().stack_addr(slot)
+    }
+
+    /// Stores at `address` the value of `rvalue`, an aggregate or repeat
+    /// expression of `ty`, a memory type: each part where it goes.
+    fn build_in_memory(&mut self, address: Value, rvalue: &Rvalue, ty: Ty) {
+        let sigs = self.sigs;
+        match rvalue {
+            Rvalue::Aggregate(AggregateKind::Array(elem), operands) => {
+                let size = layout(sigs, *elem).size();
+                for (i, operand) in operands.iter().enumerate() {
+                    let values = self.operand(operand);
+                    let at = self.offset(address, size * i as u64);
+                    self.store(at, *elem, &values);
+                }
+            }
+            Rvalue::Aggregate(AggregateKind::Variant(strukt, index), operands) => {
+                let Layout::Struct(members) = layout(sigs, ty) else {
+                    unreachable!("enums are laid out as structs")
+                };
+                let bits = self.ctx.discriminant(*strukt, *index);
+                let int = flux_ty::discriminant_ty(&self.ctx.hir.items, *strukt);
+                let tag = self.int_const(bits, int);
+                self.b
+                    .ins()
+                    .store_with_flags(tag, address, aligned(int_type(int)));
+                let fields = sigs.variant_fields(ty, *index).unwrap_or_default();
+                let variant = self.offset(address, member_offset(&members, 1 + *index as usize));
+                let field_layouts: Vec<Layout> = fields.iter().map(|&f| layout(sigs, f)).collect();
+                for (i, (operand, &field)) in operands.iter().zip(fields).enumerate() {
+                    let values = self.operand(operand);
+                    let at = self.offset(variant, member_offset(&field_layouts, i));
+                    self.store(at, field, &values);
+                }
+            }
+            Rvalue::Aggregate(_, operands) => {
+                let fields = sigs.fields(ty).unwrap_or_default();
+                let field_layouts: Vec<Layout> = fields.iter().map(|&f| layout(sigs, f)).collect();
+                for (i, (operand, &field)) in operands.iter().zip(fields).enumerate() {
+                    let values = self.operand(operand);
+                    let at = self.offset(address, member_offset(&field_layouts, i));
+                    self.store(at, field, &values);
+                }
+            }
+            Rvalue::Repeat(operand, count) => {
+                let TyKind::Array(elem, _) = ty.kind() else {
+                    unreachable!("repeats make arrays")
+                };
+                let values = self.operand(operand);
+                self.repeat(address, elem, &values, *count);
+            }
+            _ => unreachable!("only aggregates are built in memory"),
+        }
+    }
+
+    /// Stores `values`, the leaves of a `ty`, at `address`.
+    fn store(&mut self, address: Value, ty: Ty, values: &[Value]) {
+        self.write_location(Location::Memory(address), ty, values);
+    }
+
+    fn write_location(&mut self, location: Location, ty: Ty, values: &[Value]) {
+        let Location::Memory(address) = location else {
+            unreachable!("stores are to memory")
+        };
+        if is_memory(self.sigs, ty) {
+            let size = layout(self.sigs, ty).size();
+            self.copy(address, values[0], size);
+            return;
+        }
+        let leaves = layout(self.sigs, ty).leaves();
+        for ((offset, ty), &value) in leaves.into_iter().zip(values) {
+            let address = self.offset(address, offset);
+            self.b.ins().store_with_flags(value, address, aligned(ty));
+        }
+    }
+
+    /// Stores `count` copies of `values`, the leaves of an `elem`, from
+    /// `address` on: unrolled when there are few, else in a loop.
+    fn repeat(&mut self, address: Value, elem: Ty, values: &[Value], count: u64) {
+        let size = layout(self.sigs, elem).size();
+        if size == 0 {
+            return;
+        }
+        if count <= 8 {
+            for i in 0..count {
+                let at = self.offset(address, size * i);
+                self.store(at, elem, values);
+            }
+            return;
+        }
+        // for (p = address; p != end; p += size) *p = value
+        let head = self.b.create_block();
+        let body = self.b.create_block();
+        let exit = self.b.create_block();
+        let total = self.b.ins().iconst(Type::I64, (size * count) as i64);
+        let end = self.b.ins().ptradd(address, total);
+        self.b.ins().jump(head, &[address]);
+        self.b.switch_to_block(head);
+        let at = self.b.append_block_param(head, Type::Ptr);
+        let done = self.b.ins().icmp(IntCC::Eq, at, end);
+        self.b.ins().brif(done, exit, &[], body, &[]);
+        self.b.switch_to_block(body);
+        self.store(at, elem, values);
+        let next = self.offset(at, size);
+        self.b.ins().jump(head, &[next]);
+        self.b.switch_to_block(exit);
     }
 
     /// An operand's leaves.
@@ -775,6 +1008,11 @@ impl Lower<'_, '_, '_> {
                         Err(_) => return self.zeroes(*ty),
                     },
                 };
+                if is_memory(self.sigs, *ty) {
+                    let address = self.new_slot(*ty);
+                    self.store_value(address, &value, *ty);
+                    return vec![address];
+                }
                 let mut leaves = Vec::new();
                 self.value_leaves(&value, *ty, &mut leaves);
                 leaves
@@ -783,8 +1021,66 @@ impl Lower<'_, '_, '_> {
         }
     }
 
+    /// Stores `value`, a constant of type `ty`, at `address`.
+    fn store_value(&mut self, address: Value, value: &flux_mir::eval::Value, ty: Ty) {
+        use flux_mir::eval::Value as V;
+        let sigs = self.sigs;
+        if !is_memory(sigs, ty) {
+            let mut leaves = Vec::new();
+            self.value_leaves(value, ty, &mut leaves);
+            self.store(address, ty, &leaves);
+            return;
+        }
+        match (value, ty.kind()) {
+            (V::Aggregate(elements), TyKind::Array(elem, _)) => {
+                let size = layout(sigs, elem).size();
+                for (i, element) in elements.iter().enumerate() {
+                    let at = self.offset(address, size * i as u64);
+                    self.store_value(at, element, elem);
+                }
+            }
+            (V::Aggregate(fields), _) => {
+                let types = sigs.fields(ty).unwrap_or_default();
+                let layouts: Vec<Layout> = types.iter().map(|&f| layout(sigs, f)).collect();
+                for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
+                    let at = self.offset(address, member_offset(&layouts, i));
+                    self.store_value(at, field, field_ty);
+                }
+            }
+            (
+                V::Variant {
+                    strukt,
+                    index,
+                    fields,
+                },
+                _,
+            ) => {
+                let Layout::Struct(members) = layout(sigs, ty) else {
+                    unreachable!("enums are laid out as structs")
+                };
+                let bits = self.ctx.discriminant(*strukt, *index);
+                let int = flux_ty::discriminant_ty(&self.ctx.hir.items, *strukt);
+                let tag = self.int_const(bits, int);
+                self.b
+                    .ins()
+                    .store_with_flags(tag, address, aligned(int_type(int)));
+                let types = sigs.variant_fields(ty, *index).unwrap_or_default();
+                let variant = self.offset(address, member_offset(&members, 1 + *index as usize));
+                let layouts: Vec<Layout> = types.iter().map(|&f| layout(sigs, f)).collect();
+                for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
+                    let at = self.offset(variant, member_offset(&layouts, i));
+                    self.store_value(at, field, field_ty);
+                }
+            }
+            _ => unreachable!("memory types are aggregates"),
+        }
+    }
+
     /// Zero leaves of type `ty`: a value for code that is never output.
     fn zeroes(&mut self, ty: Ty) -> Vec<Value> {
+        if is_memory(self.sigs, ty) {
+            return vec![self.new_slot(ty)];
+        }
         leaves_of(self.sigs, ty)
             .into_iter()
             .filter_map(keel_type)
@@ -908,10 +1204,33 @@ impl Lower<'_, '_, '_> {
                 };
                 vec![tag]
             }
+            // A reference to a slice is the pointer it is behind.
+            Rvalue::Ref { place, .. } if self.body.place_ty(place, self.sigs).is_unsized() => {
+                self.read(&pointer_of(place))
+            }
             Rvalue::Ref { place, .. } => match self.locate(place).0 {
                 Location::Memory(address) => vec![address],
                 Location::Vars { .. } => unreachable!("borrowed locals are in memory"),
             },
+            Rvalue::Len { place, .. } => match self.body.place_ty(place, self.sigs).kind() {
+                TyKind::Array(_, len) => {
+                    vec![self.int_const(u128::from(len), IntTy::Usize)]
+                }
+                _ => vec![self.read(&pointer_of(place))[1]],
+            },
+            Rvalue::Unsize(operand, _) => {
+                let from = self.body.operand_ty(operand, self.sigs);
+                let len = match from.kind() {
+                    TyKind::Ref(_, array) | TyKind::RawPtr(_, array) => match array.kind() {
+                        TyKind::Array(_, len) => len,
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                let pointer = self.operand(operand)[0];
+                vec![pointer, self.int_const(u128::from(len), IntTy::Usize)]
+            }
+            Rvalue::Repeat(..) => unreachable!("arrays are built in memory"),
             _ => self.scalar_rvalue(rvalue).into_iter().collect(),
         }
     }
@@ -921,7 +1240,10 @@ impl Lower<'_, '_, '_> {
             Rvalue::Use(_)
             | Rvalue::Aggregate(..)
             | Rvalue::Ref { .. }
-            | Rvalue::Discriminant(_) => {
+            | Rvalue::Discriminant(_)
+            | Rvalue::Len { .. }
+            | Rvalue::Repeat(..)
+            | Rvalue::Unsize(..) => {
                 unreachable!("not scalar operations")
             }
             Rvalue::UnaryOp(op, operand) => {
@@ -1064,11 +1386,12 @@ impl Lower<'_, '_, '_> {
                     self.ctx.typed.sigs[*func].ret,
                     generic_args,
                 );
+                let memory = is_memory(self.sigs, ret);
                 let sret = match return_kind(self.sigs, ret) {
-                    Return::Sret(layout) => {
+                    Return::Sret(layout) | Return::Memory(layout) => {
                         let slot = self
                             .b
-                            .create_stack_slot(layout.size() as u32, layout.align() as u32);
+                            .create_stack_slot(layout.size().max(1) as u32, layout.align() as u32);
                         Some((self.b.ins().stack_addr(slot), layout))
                     }
                     Return::Values(_) => None,
@@ -1079,6 +1402,7 @@ impl Lower<'_, '_, '_> {
                 }
                 let call = self.b.ins().call(callee, &values);
                 let results = match &sret {
+                    Some((pointer, _)) if memory => vec![*pointer],
                     Some((pointer, layout)) => self.load_leaves(*pointer, layout),
                     None => self.b.function().inst_results(call).to_vec(),
                 };
@@ -1112,7 +1436,12 @@ impl Lower<'_, '_, '_> {
             }
             TerminatorKind::Return => {
                 let values = self.read(&Body::RETURN.into());
+                let ret = self.body.locals[Body::RETURN].ty;
                 match self.sret.clone() {
+                    Some((pointer, layout)) if is_memory(self.sigs, ret) => {
+                        self.copy(pointer, values[0], layout.size());
+                        self.b.ins().return_(&[]);
+                    }
                     Some((pointer, layout)) => {
                         for ((offset, ty), value) in layout.leaves().into_iter().zip(values) {
                             let address = self.offset(pointer, offset);
@@ -1189,6 +1518,17 @@ impl Lower<'_, '_, '_> {
         let block = self.b.create_block();
         self.panic_block = Some(block);
         block
+    }
+}
+
+/// The pointer `place`, a slice behind it, is behind.
+fn pointer_of(place: &Place) -> Place {
+    match &*place.projection {
+        [rest @ .., ProjectionElem::Deref] => Place {
+            local: place.local,
+            projection: rest.into(),
+        },
+        _ => unreachable!("slices are behind pointers"),
     }
 }
 

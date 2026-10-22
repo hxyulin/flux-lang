@@ -56,7 +56,14 @@ pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instan
     while let Some(&caller) = instances.get(next) {
         next += 1;
         let depth = depths[&caller];
-        let body = &mir.bodies[caller.function];
+        let shim;
+        let body = match mir.bodies.get(caller.function) {
+            Some(body) => body,
+            None => {
+                shim = clone_shim(&hir.items, sigs, caller).expect("instances have bodies");
+                &shim
+            }
+        };
         for data in body.blocks.values() {
             let callees = match &data.terminator.kind {
                 TerminatorKind::Call {
@@ -87,7 +94,7 @@ pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instan
             };
             for callee in callees {
                 let callee = flux_ty::traits::resolve_instance(&hir.items, sigs, callee);
-                if mir.bodies.get(callee.function).is_none() {
+                if mir.bodies.get(callee.function).is_none() && !is_clone_shim(&hir.items, callee) {
                     continue;
                 }
                 if depths.contains_key(&callee) {
@@ -110,6 +117,255 @@ pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instan
         }
     }
     Ok(instances)
+}
+
+/// The MIR of `instance`: its function's with its generic arguments
+/// substituted and its drops expanded, or the compiler's own for
+/// `Clone::clone` of an array.
+pub fn body_of<'b>(
+    hir: &Hir,
+    sigs: &Signatures,
+    mir: &'b FileMir,
+    instance: Instance,
+) -> Cow<'b, Body> {
+    match mir.bodies.get(instance.function) {
+        Some(body) => instance_body(hir, sigs, body, instance.args),
+        None => Cow::Owned(clone_shim(&hir.items, sigs, instance).expect("instances have bodies")),
+    }
+}
+
+/// The method of trait `lang` (a lang item's name) called `name`.
+fn lang_method(items: &ItemTree, lang: &str, name: &str) -> Option<FunctionId> {
+    let t = *items.lang_traits.get(&flux_intern::Symbol::intern(lang))?;
+    items.traits[t].function(items, flux_intern::Symbol::intern(name))
+}
+
+/// Whether `instance` is `Clone::clone` or `PartialEq::eq` for an array,
+/// which the compiler implements, as rustc's `core` does with const
+/// generics.
+fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
+    let of_array = matches!(
+        instance.args.first().map(|t| t.kind()),
+        Some(TyKind::Array(..))
+    );
+    of_array
+        && (Some(instance.function) == lang_method(items, "clone", "clone")
+            || Some(instance.function) == lang_method(items, "eq", "eq"))
+}
+
+/// `Clone::clone` for an array of `T`: a copy if `T` is `Copy`, else
+/// `T::clone` of each element in turn; or `PartialEq::eq`, which
+/// compares each element in turn, until one differs.
+fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option<Body> {
+    if !is_clone_shim(items, instance) {
+        return None;
+    }
+    if Some(instance.function) == lang_method(items, "eq", "eq") {
+        return Some(eq_shim(instance));
+    }
+    let array = instance.args[0];
+    let TyKind::Array(elem, len) = array.kind() else {
+        return None;
+    };
+    let usize = Ty::int(flux_ty::IntTy::Usize);
+    let mut locals = flux_arena::Arena::new();
+    let local =
+        |locals: &mut flux_arena::Arena<LocalDecl>, ty, kind| locals.alloc(LocalDecl { ty, kind });
+    let ret = local(&mut locals, array, LocalKind::Return);
+    let this = local(
+        &mut locals,
+        Ty::new(TyKind::Ref(Mutability::Not, array)),
+        LocalKind::Param,
+    );
+    let range = flux_syntax::TextRange::default();
+    let statement = |place: Local, rvalue| Statement {
+        kind: StatementKind::Assign(place.into(), rvalue),
+        range,
+    };
+    let terminator = |kind| Terminator { kind, range };
+    let mut blocks = flux_arena::Arena::new();
+    if flux_ty::traits::is_copy(items, sigs, &[], elem) {
+        blocks.alloc(BasicBlockData {
+            statements: vec![statement(
+                ret,
+                Rvalue::Use(Operand::Copy(Place::from(this).deref())),
+            )],
+            terminator: terminator(TerminatorKind::Return),
+        });
+    } else {
+        let counter = local(&mut locals, usize, LocalKind::Temp);
+        let within = local(&mut locals, Ty::BOOL, LocalKind::Temp);
+        let element = local(
+            &mut locals,
+            Ty::new(TyKind::Ref(Mutability::Not, elem)),
+            LocalKind::Temp,
+        );
+        let int =
+            |value: u64| Operand::Const(Constant::int(i128::from(value), flux_ty::IntTy::Usize));
+        let (head, body, step, exit) = (
+            BasicBlock::from_raw(1),
+            BasicBlock::from_raw(2),
+            BasicBlock::from_raw(3),
+            BasicBlock::from_raw(4),
+        );
+        blocks.alloc(BasicBlockData {
+            statements: vec![statement(counter, Rvalue::Use(int(0)))],
+            terminator: terminator(TerminatorKind::Goto(head)),
+        });
+        blocks.alloc(BasicBlockData {
+            statements: vec![statement(
+                within,
+                Rvalue::BinaryOp(crate::BinOp::Lt, Operand::Copy(counter.into()), int(len)),
+            )],
+            terminator: terminator(TerminatorKind::SwitchInt {
+                discr: Operand::Copy(within.into()),
+                targets: vec![(0, exit)],
+                otherwise: body,
+                variants: None,
+            }),
+        });
+        blocks.alloc(BasicBlockData {
+            statements: vec![statement(
+                element,
+                Rvalue::Ref {
+                    mutability: Mutability::Not,
+                    place: Place::from(this).deref().index(counter),
+                    two_phase: false,
+                },
+            )],
+            terminator: terminator(TerminatorKind::Call {
+                func: instance.function,
+                generic_args: Ty::list(&[elem]),
+                args: vec![Operand::Move(element.into())],
+                dest: Place::from(ret).index(counter),
+                target: Some(step),
+            }),
+        });
+        blocks.alloc(BasicBlockData {
+            statements: vec![statement(
+                counter,
+                Rvalue::BinaryOp(crate::BinOp::Add, Operand::Copy(counter.into()), int(1)),
+            )],
+            terminator: terminator(TerminatorKind::Goto(head)),
+        });
+        blocks.alloc(BasicBlockData {
+            statements: Vec::new(),
+            terminator: terminator(TerminatorKind::Return),
+        });
+    }
+    Some(Body {
+        locals,
+        blocks,
+        param_count: 1,
+        c_strings: Vec::new(),
+        in_core: true,
+        inherits_overflow_checks: false,
+        live_drops: Vec::new(),
+        init_errors: Vec::new(),
+    })
+}
+
+/// `PartialEq::eq` for arrays of `T` and `U`, with `instance`'s
+/// arguments: `T::eq` of each pair of elements until one is false.
+fn eq_shim(instance: Instance) -> Body {
+    let (TyKind::Array(elem, len), TyKind::Array(other, _)) =
+        (instance.args[0].kind(), instance.args[1].kind())
+    else {
+        unreachable!("compares arrays")
+    };
+    let usize = Ty::int(flux_ty::IntTy::Usize);
+    let mut locals = flux_arena::Arena::new();
+    let mut local = |ty, kind| locals.alloc(LocalDecl { ty, kind });
+    let reference = |ty| Ty::new(TyKind::Ref(Mutability::Not, ty));
+    let ret = local(Ty::BOOL, LocalKind::Return);
+    let lhs = local(reference(instance.args[0]), LocalKind::Param);
+    let rhs = local(reference(instance.args[1]), LocalKind::Param);
+    let counter = local(usize, LocalKind::Temp);
+    let within = local(Ty::BOOL, LocalKind::Temp);
+    let a = local(reference(elem), LocalKind::Temp);
+    let b = local(reference(other), LocalKind::Temp);
+    let range = flux_syntax::TextRange::default();
+    let statement = |place: Local, rvalue| Statement {
+        kind: StatementKind::Assign(place.into(), rvalue),
+        range,
+    };
+    let terminator = |kind| Terminator { kind, range };
+    let int = |value: u64| Operand::Const(Constant::int(i128::from(value), flux_ty::IntTy::Usize));
+    let borrow = |pointer: Local| Rvalue::Ref {
+        mutability: Mutability::Not,
+        place: Place::from(pointer).deref().index(counter),
+        two_phase: false,
+    };
+    let block = |i| BasicBlock::from_raw(i);
+    let (head, body, compared, step, equal) = (block(1), block(2), block(3), block(4), block(5));
+    let mut blocks = flux_arena::Arena::new();
+    let mut push = |statements, kind| {
+        blocks.alloc(BasicBlockData {
+            statements,
+            terminator: terminator(kind),
+        })
+    };
+    push(
+        vec![statement(counter, Rvalue::Use(int(0)))],
+        TerminatorKind::Goto(head),
+    );
+    push(
+        vec![statement(
+            within,
+            Rvalue::BinaryOp(crate::BinOp::Lt, Operand::Copy(counter.into()), int(len)),
+        )],
+        TerminatorKind::SwitchInt {
+            discr: Operand::Copy(within.into()),
+            targets: vec![(0, equal)],
+            otherwise: body,
+            variants: None,
+        },
+    );
+    push(
+        vec![statement(a, borrow(lhs)), statement(b, borrow(rhs))],
+        TerminatorKind::Call {
+            func: instance.function,
+            generic_args: Ty::list(&[elem, other]),
+            args: vec![Operand::Move(a.into()), Operand::Move(b.into())],
+            dest: ret.into(),
+            target: Some(compared),
+        },
+    );
+    // A difference is the answer, `false`, in `_0`.
+    push(
+        Vec::new(),
+        TerminatorKind::SwitchInt {
+            discr: Operand::Copy(ret.into()),
+            targets: vec![(0, block(6))],
+            otherwise: step,
+            variants: None,
+        },
+    );
+    push(
+        vec![statement(
+            counter,
+            Rvalue::BinaryOp(crate::BinOp::Add, Operand::Copy(counter.into()), int(1)),
+        )],
+        TerminatorKind::Goto(head),
+    );
+    push(
+        vec![statement(
+            ret,
+            Rvalue::Use(Operand::Const(Constant::Bool(true))),
+        )],
+        TerminatorKind::Return,
+    );
+    push(Vec::new(), TerminatorKind::Return);
+    Body {
+        locals,
+        blocks,
+        param_count: 2,
+        c_strings: Vec::new(),
+        in_core: true,
+        inherits_overflow_checks: false,
+        live_drops: Vec::new(),
+        init_errors: Vec::new(),
+    }
 }
 
 /// The MIR of `instance`, of a function whose MIR is `body`: with its
@@ -149,6 +405,19 @@ enum Glue {
     Drop(Place, Ty),
     /// For an enum at `place`, the glue of the variant it holds.
     Variants(Place, StructId, Vec<Vec<Glue>>),
+    /// For an array of `len` elements, the glue of each, in order, at
+    /// places indexed by `index`, a stand-in for the loop's counter.
+    Elements {
+        index: Local,
+        len: u64,
+        glue: Vec<Glue>,
+    },
+}
+
+/// The stand-in for the counter of the `depth`th loop over an array's
+/// elements: a local no body has.
+fn element_index(depth: usize) -> Local {
+    Local::from_raw(u32::MAX - depth as u32)
 }
 
 /// The types whose `Drop` impls `glue` runs.
@@ -161,6 +430,7 @@ fn glue_types(glue: &[Glue], out: &mut Vec<Ty>) {
                     glue_types(variant, out);
                 }
             }
+            Glue::Elements { glue, .. } => glue_types(glue, out),
         }
     }
 }
@@ -194,6 +464,16 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
             }
         }
         TyKind::Tuple(_) => {}
+        TyKind::Array(elem, len) => {
+            let depth = place.index_locals().count();
+            let index = element_index(depth);
+            let mut glue = Vec::new();
+            drop_glue(items, sigs, place.index(index), elem, &mut glue);
+            if !glue.is_empty() && len > 0 {
+                out.push(Glue::Elements { index, len, glue });
+            }
+            return;
+        }
         _ => return,
     }
     for (i, &field) in sigs.fields(ty).unwrap_or_default().iter().enumerate() {
@@ -327,6 +607,96 @@ impl Expand<'_> {
                 };
                 (vec![read], switch)
             }
+            // `i = 0; while i < len { glue(place[i]); i += 1 }`
+            Glue::Elements { index, len, glue } => {
+                let usize = Ty::int(flux_ty::IntTy::Usize);
+                let counter = self.body.locals.alloc(LocalDecl {
+                    ty: usize,
+                    kind: LocalKind::Temp,
+                });
+                let within = self.body.locals.alloc(LocalDecl {
+                    ty: Ty::BOOL,
+                    kind: LocalKind::Temp,
+                });
+                let glue: Vec<Glue> = glue.iter().map(|g| g.reindex(*index, counter)).collect();
+                let assign = |place: Local, rvalue: Rvalue, range| Statement {
+                    kind: StatementKind::Assign(place.into(), rvalue),
+                    range,
+                };
+                let int = |value: u64| {
+                    Operand::Const(Constant::int(i128::from(value), flux_ty::IntTy::Usize))
+                };
+                let head = self.push((Vec::new(), TerminatorKind::Unreachable));
+                let step = self.push((
+                    vec![assign(
+                        counter,
+                        Rvalue::BinaryOp(crate::BinOp::Add, Operand::Copy(counter.into()), int(1)),
+                        self.range,
+                    )],
+                    TerminatorKind::Goto(head),
+                ));
+                let run = self.glue(&glue, step);
+                let run = self.push(run);
+                self.body.blocks[head] = BasicBlockData {
+                    statements: vec![assign(
+                        within,
+                        Rvalue::BinaryOp(
+                            crate::BinOp::Lt,
+                            Operand::Copy(counter.into()),
+                            int(*len),
+                        ),
+                        self.range,
+                    )],
+                    terminator: Terminator {
+                        kind: TerminatorKind::SwitchInt {
+                            discr: Operand::Copy(within.into()),
+                            targets: vec![(0, target)],
+                            otherwise: run,
+                            variants: None,
+                        },
+                        range: self.range,
+                    },
+                };
+                (
+                    vec![assign(counter, Rvalue::Use(int(0)), self.range)],
+                    TerminatorKind::Goto(head),
+                )
+            }
+        }
+    }
+}
+
+impl Glue {
+    /// The glue with the places indexed by `from` indexed by `to`.
+    fn reindex(&self, from: Local, to: Local) -> Glue {
+        let place = |p: &Place| Place {
+            local: p.local,
+            projection: p
+                .projection
+                .iter()
+                .map(|&e| match e {
+                    crate::ProjectionElem::Index(l) if l == from => {
+                        crate::ProjectionElem::Index(to)
+                    }
+                    e => e,
+                })
+                .collect(),
+        };
+        match self {
+            Glue::Drop(p, ty) => Glue::Drop(place(p), *ty),
+            Glue::Variants(p, strukt, variants) => Glue::Variants(
+                place(p),
+                *strukt,
+                variants
+                    .iter()
+                    .map(|v| v.iter().map(|g| g.reindex(from, to)).collect())
+                    .collect(),
+            ),
+            Glue::Elements { index, len, glue } => Glue::Elements {
+                index: *index,
+                len: *len,
+                glue: glue.iter().map(|g| g.reindex(from, to)).collect(),
+            },
         }
     }
 }
@@ -397,8 +767,18 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
                     operand(l);
                     operand(r);
                 }
-                Rvalue::Aggregate(_, ops) => ops.iter_mut().for_each(operand),
-                Rvalue::Ref { .. } | Rvalue::Discriminant(_) => {}
+                Rvalue::Aggregate(kind, ops) => {
+                    if let crate::AggregateKind::Array(elem) = kind {
+                        *elem = subst(*elem);
+                    }
+                    ops.iter_mut().for_each(operand)
+                }
+                Rvalue::Repeat(op, _) => operand(op),
+                Rvalue::Unsize(op, ty) => {
+                    operand(op);
+                    *ty = subst(*ty);
+                }
+                Rvalue::Ref { .. } | Rvalue::Discriminant(_) | Rvalue::Len { .. } => {}
             }
         }
         match &mut data.terminator.kind {

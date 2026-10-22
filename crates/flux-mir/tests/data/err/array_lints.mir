@@ -1,0 +1,133 @@
+fn constant_index(_1: [i32; 3], _2: &[i32]) -> i32 {
+    let mut _0: i32;
+    let _3: i32; // y
+    let _4: usize;
+    let _5: bool;
+    let _6: usize; // i
+    let _7: i32; // z
+    let _8: usize;
+    let _9: bool;
+    let _10: i32; // w
+    let _11: usize;
+    let _12: usize;
+    let _13: bool;
+    let mut _14: usize; // j
+    let _15: ();
+    let _16: ();
+    let _17: bool;
+    let _18: usize;
+    let _19: ();
+    let _20: usize;
+    let _21: i32;
+    let _22: i32;
+    let _23: i32;
+    let _24: i32;
+    let _25: i32;
+    let _26: i32;
+    let _27: usize;
+    let _28: bool;
+
+    bb0: {
+        _4 = const 5_usize;
+        _5 = Lt(copy _4, const 3_usize);
+        assert(copy _5, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _3 = copy _1[_4];
+        _6 = const 7_usize;
+        _8 = copy _6;
+        _9 = Lt(copy _8, const 3_usize);
+        assert(copy _9, "index out of bounds") -> bb2;
+    }
+
+    bb2: {
+        _7 = copy _1[_8];
+        _11 = const 9_usize;
+        _12 = Len((*_2));
+        _13 = Lt(copy _11, copy _12);
+        assert(copy _13, "index out of bounds") -> bb3;
+    }
+
+    bb3: {
+        _10 = copy (*_2)[_11];
+        _14 = const 0_usize;
+        goto -> bb4;
+    }
+
+    bb4: {
+        _18 = copy _14;
+        _17 = Lt(copy _18, const 2_usize);
+        switchInt(copy _17) -> [0: bb7, otherwise: bb6];
+    }
+
+    bb5: {
+        _23 = copy _3;
+        _24 = copy _7;
+        _22 = Add(copy _23, copy _24);
+        _25 = copy _10;
+        _21 = Add(copy _22, copy _25);
+        _27 = copy _14;
+        _28 = Lt(copy _27, const 3_usize);
+        assert(copy _28, "index out of bounds") -> bb9;
+    }
+
+    bb6: {
+        _20 = copy _14;
+        _14 = Add(copy _20, const 1_usize);
+        _19 = const ();
+        _16 = const ();
+        goto -> bb8;
+    }
+
+    bb7: {
+        _15 = const ();
+        goto -> bb5;
+    }
+
+    bb8: {
+        goto -> bb4;
+    }
+
+    bb9: {
+        _26 = copy _1[_27];
+        _0 = Add(copy _21, copy _26);
+        StorageDead(_14);
+        StorageDead(_10);
+        StorageDead(_7);
+        StorageDead(_6);
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn element(_1: [i32; 2], _2: usize) -> i32 {
+    let mut _0: i32;
+    let _3: usize;
+    let _4: bool;
+
+    bb0: {
+        _3 = copy _2;
+        _4 = Lt(copy _3, const 2_usize);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _0 = copy _1[_3];
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 181..185: this operation will panic at runtime
+error 214..218: this operation will panic at runtime
+error 423..435: index out of bounds: the length is 3 but the index is 4
+error 524..542: index out of bounds: the length is 2 but the index is 2

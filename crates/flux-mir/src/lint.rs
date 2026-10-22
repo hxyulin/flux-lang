@@ -288,6 +288,11 @@ fn evaluate(
                 ty: to,
             })
         }
-        Rvalue::Aggregate(..) | Rvalue::Ref { .. } | Rvalue::Discriminant(_) => None,
+        Rvalue::Aggregate(..)
+        | Rvalue::Ref { .. }
+        | Rvalue::Discriminant(_)
+        | Rvalue::Len { .. }
+        | Rvalue::Repeat(..)
+        | Rvalue::Unsize(..) => None,
     }
 }

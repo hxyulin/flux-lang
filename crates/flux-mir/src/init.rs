@@ -186,13 +186,15 @@ pub(crate) struct MovePaths {
     forbidden: Vec<Place>,
 }
 
-/// The fields and variants of `place` before its first dereference, and
-/// whether it has one.
+/// The fields and variants of `place` before its first dereference or
+/// index, and whether it has one: the elements of an array are not
+/// tracked apart, as rustc's move paths stop at them (moving out of one
+/// is E0508).
 fn fields_before_deref(place: &Place) -> (Box<[ProjectionElem]>, bool) {
     match place
         .projection
         .iter()
-        .position(|&e| e == ProjectionElem::Deref)
+        .position(|&e| matches!(e, ProjectionElem::Deref | ProjectionElem::Index(_)))
     {
         Some(deref) => (place.projection[..deref].into(), true),
         None => (place.projection.clone(), false),
@@ -462,7 +464,26 @@ impl Report<'_> {
         if behind_deref {
             // Assigning through a pointer reads the pointer; whether it
             // may be written through is the borrow checker's question.
-            return self.check_use(place, false, state, range);
+            // An element of a local's array needs the array, and a `mut`
+            // binding.
+            let path = &self.paths.paths[path];
+            let element = place.projection.get(path.fields.len()) != Some(&ProjectionElem::Deref);
+            let before = self.diagnostics.len();
+            self.check_use(place, false, state, range);
+            if element
+                && self.diagnostics.len() == before
+                && let LocalKind::User {
+                    name,
+                    mutable: false,
+                } = self.body.locals[place.local].kind
+            {
+                let place = place_name(self.body, self.items, self.sigs, place);
+                self.error(
+                    range,
+                    format!("cannot assign to `{place}`, as `{name}` is not declared as mutable"),
+                );
+            }
+            return;
         }
         let LocalKind::User { name, mutable } = self.body.locals[place.local].kind else {
             return;

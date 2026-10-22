@@ -1316,7 +1316,22 @@ impl<'a> Ctx<'a> {
                 self.source_map.types.insert(ty, ty_range);
                 Expr::Cast { expr, ty }
             }
-            ast::Expr::ArrayExpr(_) => self.unsupported_expr(range, "arrays"),
+            ast::Expr::ArrayExpr(array) => {
+                let mut exprs = array.exprs();
+                match array.semicolon_token() {
+                    Some(semicolon) => {
+                        let value = self.lower_opt(exprs.next(), syntax);
+                        let count = crate::item_tree::lower_array_len(
+                            exprs.next(),
+                            semicolon.text_range(),
+                            &mut self.diagnostics,
+                        );
+                        self.check_repeat_count(&count);
+                        Expr::Repeat { value, count }
+                    }
+                    None => Expr::Array(exprs.map(|e| self.lower_expr(e)).collect()),
+                }
+            }
             ast::Expr::AwaitExpr(_) => self.unsupported_expr(range, "`.await` expressions"),
             ast::Expr::ClosureExpr(_) => self.unsupported_expr(range, "closures"),
             ast::Expr::FieldExpr(field) => {
@@ -1340,7 +1355,11 @@ impl<'a> Ctx<'a> {
                 }
             }
             ast::Expr::ForExpr(_) => self.unsupported_expr(range, "`for` loops"),
-            ast::Expr::IndexExpr(_) => self.unsupported_expr(range, "index expressions"),
+            ast::Expr::IndexExpr(index) => {
+                let base = self.lower_opt(index.base(), syntax);
+                let index = self.lower_opt(index.index(), syntax);
+                Expr::Index { base, index }
+            }
             ast::Expr::LetExpr(_) => {
                 self.error(range, "expected expression, found `let` statement");
                 Expr::Missing
@@ -1406,6 +1425,20 @@ impl<'a> Ctx<'a> {
             }
         };
         self.alloc_expr(hir, range)
+    }
+
+    /// A repeat expression's count may not name a local, as rustc's
+    /// anonymous constants cannot (E0435).
+    fn check_repeat_count(&mut self, count: &crate::ArrayLen) {
+        if let crate::ArrayLenKind::Path(path) = &count.kind
+            && let Some(name) = path.as_name()
+            && self.scopes.iter().any(|&(n, _)| n == name)
+        {
+            self.error(
+                count.range,
+                "attempt to use a non-constant value in a constant",
+            );
+        }
     }
 
     /// `S { a: 1, b, ..base }`

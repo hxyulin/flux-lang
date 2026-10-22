@@ -30,7 +30,7 @@ fn check_dir(name: &str, expect_errors: bool) {
         let text = fs::read_to_string(&path).unwrap();
         let (db, root, hir) = flux_hir::lower_text(&path, &text);
         let parse = &db.file(root).parse;
-        let typed = flux_ty::check_file(&hir);
+        let typed = flux_mir::check_file(&hir);
         assert!(
             parse.errors().is_empty() && hir.diagnostics.is_empty() && typed.diagnostics.is_empty(),
             "{} must parse, lower and type-check cleanly:\n{:#?}\n{:#?}\n{:#?}",
@@ -74,4 +74,64 @@ fn ok_fixtures() {
 #[test]
 fn err_fixtures() {
     check_dir("err", true);
+}
+
+/// The errors type checking reports for `text`, as `line:column:
+/// message`.
+fn type_errors(text: &str) -> Vec<String> {
+    let (_db, _, hir) = flux_hir::lower_text("main.rs", text);
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    typed
+        .diagnostics
+        .iter()
+        .map(|d| {
+            let before = &text[..d.range.start() as usize];
+            let line = before.matches('\n').count() + 1;
+            let column = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
+            format!("{line}:{column}: {}", d.message)
+        })
+        .collect()
+}
+
+/// Array lengths that name constants need their values while types are
+/// checked, so their evaluation errors stop type checking, as in rustc.
+#[test]
+fn array_length_errors() {
+    let text = "\
+const fn half(n: usize) -> usize {
+    n / 0
+}
+const N: usize = half(4);
+fn f(_: [u8; N]) {}
+fn main() {}
+";
+    assert_eq!(
+        type_errors(text),
+        ["4:18: attempt to divide `4_usize` by zero"]
+    );
+    let text = "\
+const A: usize = B;
+const B: usize = A;
+fn f(_: [u8; A]) {}
+fn main() {}
+";
+    assert_eq!(
+        type_errors(text),
+        [
+            "1:18: cycle detected when const-evaluating `A`",
+            "2:18: cycle detected when const-evaluating `A`"
+        ]
+    );
+    // A length whose constant's own value names it.
+    let text = "\
+const A: usize = [0u8; A].len();
+fn main() {
+    let _: [u8; A] = [];
+}
+";
+    assert_eq!(
+        type_errors(text),
+        ["1:1: cycle detected when evaluating type-level constant `A`"]
+    );
 }

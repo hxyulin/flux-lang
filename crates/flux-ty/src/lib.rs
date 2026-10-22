@@ -35,7 +35,9 @@ use flux_hir::{
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
 
-pub use infer::{InferenceResult, Method, c_char_ptr, c_str_ref, infer_body, infer_const};
+pub use infer::{
+    BuiltinMethod, InferenceResult, Method, c_char_ptr, c_str_ref, infer_body, infer_const,
+};
 pub use traits::{Predicate, Projection, TraitRef, TraitSig};
 pub use ty::{
     AdtId, AliasTy, GenericArgs, InferVar, IntTy, Mutability, ParamTy, Ty, TyKind, subst_list,
@@ -118,6 +120,9 @@ pub struct Signatures {
     /// A trait is its own supertrait (reported): rustc stops before
     /// type checking bodies.
     pub cyclic: bool,
+    /// The values of the constants that array lengths name, evaluated
+    /// before bodies are inferred.
+    pub array_lens: LenValues,
 }
 
 impl Index<FunctionId> for Signatures {
@@ -264,6 +269,8 @@ impl Signatures {
             }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
+            TyKind::Array(t, len) => Ty::array(go(t), len),
+            TyKind::Slice(t) => Ty::slice(go(t)),
             _ => ty,
         };
         active.pop();
@@ -280,7 +287,9 @@ fn max_param(ty: Ty) -> u32 {
             list.iter().map(|&t| max_param(t)).max().unwrap_or(0)
         }
         TyKind::Alias(alias) => alias.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
-        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => max_param(t),
+        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+            max_param(t)
+        }
         _ => 0,
     }
 }
@@ -303,6 +312,55 @@ pub struct TypeScope<'a> {
     /// The defaults of traits' parameters, for bounds that leave them
     /// out.
     pub defaults: Option<&'a traits::TraitDefaults>,
+    /// The values of the constants array lengths name, where known.
+    pub lens: Option<&'a ArrayLens<'a>>,
+}
+
+/// The values of the constants that array lengths name (`[u8; N]`), as
+/// far as they are evaluated: `None` for one whose evaluation failed,
+/// which is reported where it is evaluated. Type checking needs them,
+/// and evaluating them needs MIR, so [`check_file_with`] gets them
+/// from a function that builds it.
+#[derive(Debug)]
+pub struct ArrayLens<'a> {
+    pub values: &'a LenValues,
+    /// The constants named whose values are not in `values`, as types
+    /// were resolved: what to evaluate.
+    pub missing: std::cell::RefCell<Vec<ConstId>>,
+}
+
+/// The evaluated values of constants that array lengths name.
+pub type LenValues = rustc_hash::FxHashMap<ConstId, Option<u64>>;
+
+/// Evaluates the constants array lengths name, given the signatures
+/// so far (whose [`Signatures::array_lens`] it may extend as it needs):
+/// each constant's value, `None` if its evaluation failed, with the
+/// diagnostics that say why.
+pub type LenEvaluator<'e> =
+    &'e dyn Fn(&Hir, &Signatures, &[ConstId]) -> (Vec<(ConstId, Option<u64>)>, Vec<Diagnostic>);
+
+impl<'a> ArrayLens<'a> {
+    pub fn new(values: &'a LenValues) -> ArrayLens<'a> {
+        ArrayLens {
+            values,
+            missing: Default::default(),
+        }
+    }
+
+    /// The value of constant `konst`, if known; one not evaluated yet is
+    /// noted as missing.
+    fn value(&self, konst: ConstId) -> Option<u64> {
+        match self.values.get(&konst) {
+            Some(value) => *value,
+            None => {
+                let mut missing = self.missing.borrow_mut();
+                if !missing.contains(&konst) {
+                    missing.push(konst);
+                }
+                None
+            }
+        }
+    }
 }
 
 impl TypeScope<'_> {
@@ -496,6 +554,9 @@ pub fn resolve_type(
             if fields.contains(&Ty::ERROR) {
                 return Ty::ERROR;
             }
+            if let Some(&field) = fields.iter().find(|f| f.is_unsized()) {
+                return fail(errors, range, unsized_error(field));
+            }
             Ty::tuple(&fields)
         }
         TypeRef::Never => Ty::NEVER,
@@ -513,6 +574,25 @@ pub fn resolve_type(
             }
             Ty::new(TyKind::Ref(mutability(*mutable), pointee))
         }
+        TypeRef::Array { elem, len } => {
+            let elem = resolve_type(items, module, elem, scope, range, errors);
+            let len = array_len(items, module, len, scope, errors);
+            match (elem, len) {
+                (Ty::ERROR, _) | (_, None) => Ty::ERROR,
+                (elem, _) if elem.is_unsized() => fail(errors, range, unsized_error(elem)),
+                (elem, Some(len)) => Ty::array(elem, len),
+            }
+        }
+        TypeRef::Slice(elem) => {
+            let elem = resolve_type(items, module, elem, scope, range, errors);
+            if elem == Ty::ERROR {
+                return Ty::ERROR;
+            }
+            if elem.is_unsized() {
+                return fail(errors, range, unsized_error(elem));
+            }
+            Ty::slice(elem)
+        }
         TypeRef::Infer => match scope.signature_of {
             Some(items) => fail(
                 errors,
@@ -525,6 +605,84 @@ pub fn resolve_type(
         },
         TypeRef::Error => Ty::ERROR,
     }
+}
+
+/// The value of an array's length, `len`, written in `module`: an
+/// integer literal or a constant of type `usize`, whose value `scope`
+/// knows. `None` if it is not known (reported unless it is waiting for
+/// evaluation).
+pub fn array_len(
+    items: &ItemTree,
+    module: ModuleId,
+    len: &flux_hir::ArrayLen,
+    scope: TypeScope<'_>,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Option<u64> {
+    let range = len.range;
+    let mismatch = |errors: &mut Vec<(TextRange, String)>, found: &dyn std::fmt::Display| {
+        errors.push((
+            range,
+            format!("mismatched types: expected `usize`, found `{found}`"),
+        ));
+        None
+    };
+    let konst = match &len.kind {
+        flux_hir::ArrayLenKind::Error => return None,
+        flux_hir::ArrayLenKind::Lit { value, suffix } => {
+            return match suffix {
+                Some(suffix) if *suffix != sym::usize => mismatch(errors, suffix),
+                _ => match u64::try_from(*value) {
+                    Ok(value) => Some(value),
+                    Err(_) => {
+                        errors.push((range, "literal out of range for `usize`".to_owned()));
+                        None
+                    }
+                },
+            };
+        }
+        flux_hir::ArrayLenKind::Path(path) => match items.resolve(module, path, Ns::Values) {
+            Ok(Resolved::Def(Def::Const(konst))) => konst,
+            // A constant of an `impl` block without generic parameters.
+            Ok(Resolved::AssocConst(konst))
+                if items.consts[konst]
+                    .owner
+                    .and_then(Owner::as_impl)
+                    .is_some_and(|imp| items.impls[imp].generics.is_empty()) =>
+            {
+                konst
+            }
+            Err(ResolveError::Reported) => return None,
+            Err(ResolveError::NotFound { segment, .. }) if path.segments.len() == 1 => {
+                let name = path.segments[segment];
+                errors.push((range, format!("cannot find value `{name}` in this scope")));
+                return None;
+            }
+            _ => {
+                errors.push((
+                    range,
+                    "array lengths other than integers and constants are not supported yet"
+                        .to_owned(),
+                ));
+                return None;
+            }
+        },
+    };
+    let data = &items.consts[konst];
+    let ty = resolve_type(
+        items,
+        data.loc.module,
+        &data.ty,
+        TypeScope::default(),
+        data.ty_range,
+        &mut Vec::new(),
+    );
+    if ty != Ty::int(IntTy::Usize) {
+        if ty == Ty::ERROR {
+            return None;
+        }
+        return mismatch(errors, &ty);
+    }
+    scope.lens?.value(konst)
 }
 
 /// An associated type named by a path: `T::Out`, `Self::Out`,
@@ -712,7 +870,16 @@ pub fn struct_type(
     if args.contains(&Ty::ERROR) {
         return Ty::ERROR;
     }
+    if let Some(&arg) = args.iter().find(|a| a.is_unsized()) {
+        errors.push((range, unsized_error(arg)));
+        return Ty::ERROR;
+    }
     Ty::adt(strukt, def.name, &args)
+}
+
+/// rustc's E0277 for a value of unsized type `ty`.
+pub fn unsized_error(ty: Ty) -> String {
+    format!("the size for values of type `{ty}` cannot be known at compilation time")
 }
 
 /// The primitive type called `name`.
@@ -769,7 +936,9 @@ fn resolve_or_report(
 pub(crate) fn contains_ref(ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Ref(..) => true,
-        TyKind::RawPtr(_, pointee) => contains_ref(pointee),
+        TyKind::RawPtr(_, pointee) | TyKind::Array(pointee, _) | TyKind::Slice(pointee) => {
+            contains_ref(pointee)
+        }
         TyKind::Tuple(elements) | TyKind::Adt(_, elements) => {
             elements.iter().any(|&e| contains_ref(e))
         }
@@ -844,6 +1013,8 @@ pub(crate) fn overlap(a: Ty, b: Ty) -> bool {
         (TyKind::Ref(m, x), TyKind::Ref(n, y)) | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
             m == n && overlap(x, y)
         }
+        (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && overlap(x, y),
+        (TyKind::Slice(x), TyKind::Slice(y)) => overlap(x, y),
         _ => a == b,
     }
 }
@@ -855,7 +1026,9 @@ pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
     }
     match ty.kind() {
         TyKind::Param(param) => param.index == index,
-        TyKind::RawPtr(_, t) | TyKind::Ref(_, t) => mentions_param(t, index),
+        TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+            mentions_param(t, index)
+        }
         TyKind::Tuple(list) | TyKind::Adt(_, list) => {
             list.iter().any(|&t| mentions_param(t, index))
         }
@@ -868,7 +1041,9 @@ pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
 fn uses_param(ty: Ty, index: u32) -> bool {
     match ty.kind() {
         TyKind::Alias(alias) => alias.args.iter().any(|&t| uses_param(t, index)),
-        TyKind::RawPtr(_, t) | TyKind::Ref(_, t) => uses_param(t, index),
+        TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+            uses_param(t, index)
+        }
         TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().any(|&t| uses_param(t, index)),
         _ => mentions_param(ty, index),
     }
@@ -887,7 +1062,7 @@ pub fn params_of(generics: &Generics, first: usize) -> Vec<Ty> {
 /// The signature of every function and the field types of every struct
 /// in `items`.
 pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
-    signatures_checked(items, false)
+    signatures_checked(items, false, None)
 }
 
 /// Like [`signatures`]; `check_core` checks `core`'s `impl` blocks
@@ -895,14 +1070,28 @@ pub fn signatures(items: &ItemTree) -> (Signatures, Vec<Diagnostic>) {
 ///
 /// `core`'s signatures are resolved once per process; a program's are
 /// resolved after them, unless `check_core` resolves everything again.
-pub fn signatures_checked(items: &ItemTree, check_core: bool) -> (Signatures, Vec<Diagnostic>) {
+///
+/// The lengths of array types named by constants (`[u8; N]`) are taken
+/// from `lens`; those it does not know make the types errors, and are
+/// noted in it as missing.
+pub fn signatures_checked(
+    items: &ItemTree,
+    check_core: bool,
+    lens: Option<&ArrayLens<'_>>,
+) -> (Signatures, Vec<Diagnostic>) {
     let core = items.core;
     if check_core || core == ItemCounts::default() {
         let checked = if check_core { 0 } else { core.impls };
-        return extend_signatures(items, Signatures::default(), ItemCounts::default(), checked);
+        return extend_signatures(
+            items,
+            Signatures::default(),
+            ItemCounts::default(),
+            checked,
+            lens,
+        );
     }
     let (sigs, mut diagnostics) = core_signatures().clone();
-    let (sigs, more) = extend_signatures(items, sigs, core, core.impls);
+    let (sigs, more) = extend_signatures(items, sigs, core, core.impls, lens);
     diagnostics.extend(more);
     (sigs, diagnostics)
 }
@@ -919,6 +1108,7 @@ fn core_signatures() -> &'static (Signatures, Vec<Diagnostic>) {
             Signatures::default(),
             ItemCounts::default(),
             unchecked,
+            None,
         )
     })
 }
@@ -932,6 +1122,7 @@ fn extend_signatures(
     mut sigs: Signatures,
     from: ItemCounts,
     checked_impls: u32,
+    lens: Option<&ArrayLens<'_>>,
 ) -> (Signatures, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let mut error = |file, range, message: &str| {
@@ -956,7 +1147,7 @@ fn extend_signatures(
         ty
     }
     for (id, imp) in items.impls.iter().skip(from.impls as usize) {
-        let ty = impl_type(items, imp, &mut reported);
+        let ty = impl_type(items, imp, lens, &mut reported);
         sigs.impls.insert(id, ty);
     }
     let in_file = |errors: Vec<(TextRange, String)>, file, reported: &mut Vec<Diagnostic>| {
@@ -974,6 +1165,7 @@ fn extend_signatures(
             self_ty: Some(Ty::param(0, kw::SelfUpper)),
             generics: &generics,
             signature_of: Some("traits"),
+            lens,
             ..TypeScope::default()
         };
         let mut errors = Vec::new();
@@ -1007,6 +1199,7 @@ fn extend_signatures(
             signature_of: Some("traits"),
             bounds: &bounds,
             defaults: Some(&sigs.trait_defaults),
+            lens,
             ..TypeScope::default()
         };
         let mut errors = Vec::new();
@@ -1078,6 +1271,7 @@ fn extend_signatures(
             generics: &generics,
             signature_of: Some("structs"),
             defaults: Some(&sigs.trait_defaults),
+            lens,
             ..TypeScope::default()
         };
         let mut errors = Vec::new();
@@ -1093,11 +1287,16 @@ fn extend_signatures(
         for v in 0..s.variant_count() as u32 {
             starts.push(fields.len() as u32);
             let variant = s.variant(v).fields;
-            fields.extend(
-                variant
-                    .iter()
-                    .map(|f| resolve(items, s.loc, &f.ty, scope, f.range, &mut reported)),
-            );
+            fields.extend(variant.iter().map(|f| {
+                let ty = resolve(items, s.loc, &f.ty, scope, f.range, &mut reported);
+                if ty.is_unsized() {
+                    let mut d = Diagnostic::new(f.range, "unsized fields are not supported yet");
+                    d.file = s.loc.file;
+                    reported.push(d);
+                    return Ty::ERROR;
+                }
+                ty
+            }));
         }
         starts.push(fields.len() as u32);
         sigs.structs.insert(id, Ty::list(&fields));
@@ -1123,6 +1322,7 @@ fn extend_signatures(
             generics: &generics,
             signature_of: Some("implementations"),
             defaults: Some(&sigs.trait_defaults),
+            lens,
             ..TypeScope::default()
         };
         let mut errors = Vec::new();
@@ -1194,8 +1394,9 @@ fn extend_signatures(
                 .and_then(Owner::as_impl)
                 .and_then(|imp| sigs.impl_traits.get(imp).copied()),
             defaults: Some(&sigs.trait_defaults),
+            lens,
         };
-        let ty = resolve(
+        let mut ty = resolve(
             items,
             konst.loc,
             &konst.ty,
@@ -1203,6 +1404,12 @@ fn extend_signatures(
             konst.ty_range,
             &mut reported,
         );
+        if ty.is_unsized() {
+            let mut d = Diagnostic::new(konst.ty_range, unsized_error(ty));
+            d.file = konst.loc.file;
+            reported.push(d);
+            ty = Ty::ERROR;
+        }
         sigs.consts.insert(id, ty);
     }
     for (id, function) in items.functions.iter().skip(from.functions as usize) {
@@ -1217,6 +1424,7 @@ fn extend_signatures(
             signature_of: Some("functions"),
             self_trait,
             defaults: Some(&sigs.trait_defaults),
+            lens,
             ..TypeScope::default()
         };
         // Its bounds first, then its types, in which `T::Out` may name
@@ -1249,10 +1457,22 @@ fn extend_signatures(
             bounds: &bounds,
             ..scope
         };
+        let sized = |ty: Ty, range: TextRange, reported: &mut Vec<Diagnostic>| {
+            if ty.is_unsized() {
+                let mut d = Diagnostic::new(range, unsized_error(ty));
+                d.file = function.loc.file;
+                reported.push(d);
+                return Ty::ERROR;
+            }
+            ty
+        };
         let params = function
             .params
             .iter()
-            .map(|p| resolve(items, function.loc, &p.ty, scope, p.range, &mut reported))
+            .map(|p| {
+                let ty = resolve(items, function.loc, &p.ty, scope, p.range, &mut reported);
+                sized(ty, p.range, &mut reported)
+            })
             .collect();
         let ret = resolve(
             items,
@@ -1262,6 +1482,7 @@ fn extend_signatures(
             function.ret_range,
             &mut reported,
         );
+        let ret = sized(ret, function.ret_range, &mut reported);
         sigs.fns.insert(id, FnSig { params, ret });
         if !own.predicates.is_empty() {
             sigs.fn_predicates.insert(id, own.predicates.into());
@@ -1340,7 +1561,18 @@ fn extend_signatures(
                 .map(|(p, &ty)| (ty, p.range))
                 .chain([(sig.ret, function.ret_range)]);
             for (ty, range) in types {
-                if !matches!(ty.kind(), TyKind::Tuple([])) && sigs.contents(ty).is_some() {
+                let sequence = match ty.kind() {
+                    TyKind::Array(..) => true,
+                    TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => t.is_unsized(),
+                    _ => false,
+                };
+                if sequence {
+                    error(
+                        function.loc.file,
+                        range,
+                        "passing arrays and slices to C is not supported yet",
+                    );
+                } else if !matches!(ty.kind(), TyKind::Tuple([])) && sigs.contents(ty).is_some() {
                     error(
                         function.loc.file,
                         range,
@@ -1418,12 +1650,18 @@ pub fn all_fields(s: &flux_hir::Struct) -> impl Iterator<Item = &flux_hir::Field
 
 /// The type of `impl` block `imp` (`S<T>` in `impl<T> S<T>`), in terms of
 /// its parameters; an error if its path did not resolve (reported).
-fn impl_type(items: &ItemTree, imp: &Impl, diagnostics: &mut Vec<Diagnostic>) -> Ty {
+fn impl_type(
+    items: &ItemTree,
+    imp: &Impl,
+    lens: Option<&ArrayLens<'_>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Ty {
     let generics: Vec<Symbol> = imp.generics.params.iter().map(|p| p.name).collect();
     let scope = TypeScope {
         self_ty: None,
         generics: &generics,
         signature_of: Some("implementations"),
+        lens,
         ..TypeScope::default()
     };
     let mut errors = Vec::new();
@@ -1536,14 +1774,89 @@ fn unresolved_trait(items: &ItemTree) -> bool {
 }
 
 /// Infers every body of the program, and those of `core` it may call.
+/// Array lengths may name only constants whose values are integer
+/// literals: evaluating others needs MIR, which
+/// [`check_file_with`]'s caller provides.
 pub fn check_file(hir: &Hir) -> TypedFile {
-    check(hir, false)
+    check(hir, false, &literal_lens)
 }
 
 /// Like [`check_file`], with every body of `core` too: for tests of
 /// `core` itself.
 pub fn check_file_all(hir: &Hir) -> TypedFile {
-    check(hir, true)
+    check(hir, true, &literal_lens)
+}
+
+/// Like [`check_file`], with `eval` evaluating the constants array
+/// lengths name.
+pub fn check_file_with(hir: &Hir, eval: LenEvaluator<'_>) -> TypedFile {
+    check(hir, false, eval)
+}
+
+/// The values of constants whose values are integer literals: what
+/// array lengths can name without constant evaluation.
+fn literal_lens(
+    hir: &Hir,
+    _: &Signatures,
+    wanted: &[ConstId],
+) -> (Vec<(ConstId, Option<u64>)>, Vec<Diagnostic>) {
+    let mut diagnostics = Vec::new();
+    let values = wanted
+        .iter()
+        .map(|&konst| {
+            let value =
+                hir.const_body(konst)
+                    .and_then(|(body, source_map)| match &body.exprs[body.root] {
+                        flux_hir::Expr::Literal(flux_hir::Literal::Int { value, .. }) => {
+                            u64::try_from(*value).ok()
+                        }
+                        _ => {
+                            let mut d = Diagnostic::new(
+                                source_map.exprs.get(body.root).copied().unwrap_or_default(),
+                                "evaluating this constant needs MIR",
+                            );
+                            d.file = hir.items.consts[konst].loc.file;
+                            diagnostics.push(d);
+                            None
+                        }
+                    });
+            (konst, value)
+        })
+        .collect();
+    (values, diagnostics)
+}
+
+/// Resolves the signatures of `items`, evaluating with `eval` the
+/// constants their array lengths name, if any: then they are resolved
+/// twice, the first time to type-check the constants.
+fn lens_signatures(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> (Signatures, Vec<Diagnostic>) {
+    let items = &hir.items;
+    // Most constants lengths name are literals, known without
+    // evaluation; the others need the signatures resolved first.
+    let mut known: LenValues = hir
+        .const_bodies()
+        .filter_map(|(id, (body, _))| match &body.exprs[body.root] {
+            flux_hir::Expr::Literal(flux_hir::Literal::Int { value, .. }) => {
+                Some((id, Some(u64::try_from(*value).ok()?)))
+            }
+            _ => None,
+        })
+        .collect();
+    let lens = ArrayLens::new(&known);
+    let (mut sigs, diagnostics) = signatures_checked(items, all, Some(&lens));
+    let missing = lens.missing.into_inner();
+    if missing.is_empty() {
+        sigs.array_lens = known;
+        return (sigs, diagnostics);
+    }
+    sigs.array_lens = known.clone();
+    let (values, mut failures) = eval(hir, &sigs, &missing);
+    known.extend(values);
+    let lens = ArrayLens::new(&known);
+    let (mut sigs, mut diagnostics) = signatures_checked(items, all, Some(&lens));
+    sigs.array_lens = known;
+    diagnostics.append(&mut failures);
+    (sigs, diagnostics)
 }
 
 /// The functions a call of `function` may run: itself, and for a
@@ -1564,8 +1877,8 @@ pub fn call_targets(items: &ItemTree, function: FunctionId) -> Vec<FunctionId> {
     out
 }
 
-fn check(hir: &Hir, all: bool) -> TypedFile {
-    let (sigs, mut diagnostics) = signatures_checked(&hir.items, all);
+fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
+    let (mut sigs, mut diagnostics) = lens_signatures(hir, all, eval);
     let mut bodies = ArenaMap::new();
     if sigs.cyclic || unresolved_trait(&hir.items) {
         Diagnostic::sort(&mut diagnostics);
@@ -1590,13 +1903,6 @@ fn check(hir: &Hir, all: bool) -> TypedFile {
     let mut consts = ArenaMap::new();
     for (id, (body, source_map)) in hir.const_bodies() {
         let result = infer_const(items, &sigs, id, body, source_map);
-        let file = items.consts[id].loc.file;
-        diagnostics.extend(
-            result
-                .diagnostics
-                .iter()
-                .map(|d| Diagnostic { file, ..d.clone() }),
-        );
         reached(&result, &mut queue);
         consts.insert(id, result);
     }
@@ -1620,6 +1926,56 @@ fn check(hir: &Hir, all: bool) -> TypedFile {
             continue;
         };
         let result = infer_body(items, &sigs, id, body, source_map);
+        reached(&result, &mut queue);
+        bodies.insert(id, result);
+    }
+    // Array lengths in bodies that name constants not evaluated yet:
+    // evaluated now, and those bodies inferred again.
+    let mut missing: Vec<ConstId> = Vec::new();
+    let results = consts
+        .iter()
+        .map(|(_, r)| r)
+        .chain(bodies.iter().map(|(_, r)| r));
+    for result in results {
+        for &c in &result.missing_lens {
+            if !missing.contains(&c) {
+                missing.push(c);
+            }
+        }
+    }
+    if !missing.is_empty() {
+        let (values, failures) = eval(hir, &sigs, &missing);
+        sigs.array_lens.extend(values);
+        diagnostics.extend(failures);
+        let redo: Vec<ConstId> = consts
+            .iter()
+            .filter(|(_, r)| !r.missing_lens.is_empty())
+            .map(|(id, _)| id)
+            .collect();
+        for id in redo {
+            let (body, source_map) = hir.const_body(id).expect("inferred above");
+            consts.insert(id, infer_const(items, &sigs, id, body, source_map));
+        }
+        let redo: Vec<FunctionId> = bodies
+            .iter()
+            .filter(|(_, r)| !r.missing_lens.is_empty())
+            .map(|(id, _)| id)
+            .collect();
+        for id in redo {
+            let (body, source_map) = hir.body(id).expect("inferred above");
+            bodies.insert(id, infer_body(items, &sigs, id, body, source_map));
+        }
+    }
+    for (id, result) in consts.iter() {
+        let file = items.consts[id].loc.file;
+        diagnostics.extend(
+            result
+                .diagnostics
+                .iter()
+                .map(|d| Diagnostic { file, ..d.clone() }),
+        );
+    }
+    for (id, result) in bodies.iter() {
         let file = items.functions[id].loc.file;
         diagnostics.extend(
             result
@@ -1627,8 +1983,6 @@ fn check(hir: &Hir, all: bool) -> TypedFile {
                 .iter()
                 .map(|d| Diagnostic { file, ..d.clone() }),
         );
-        reached(&result, &mut queue);
-        bodies.insert(id, result);
     }
     Diagnostic::sort(&mut diagnostics);
     TypedFile {

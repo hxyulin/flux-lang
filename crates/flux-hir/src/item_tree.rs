@@ -791,10 +791,51 @@ pub enum TypeRef {
         mutable: bool,
         pointee: Box<TypeRef>,
     },
+    /// `[T; N]`.
+    Array { elem: Box<TypeRef>, len: ArrayLen },
+    /// `[T]`.
+    Slice(Box<TypeRef>),
     /// `_`: a type to infer, in a body.
     Infer,
     /// Unsupported or malformed; already reported.
     Error,
+}
+
+/// The length of an array type or a repeat expression (`[x; N]`): a
+/// constant expression of type `usize`, whose value type checking
+/// needs. flux supports integer literals and paths to constants.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ArrayLen {
+    pub kind: ArrayLenKind,
+    /// The expression's range.
+    pub range: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ArrayLenKind {
+    /// An integer literal, with its suffix (`4usize`) if any.
+    Lit { value: u128, suffix: Option<Symbol> },
+    /// A path to a constant, resolved where the type is.
+    Path(Path),
+    /// Unsupported or malformed; already reported.
+    Error,
+}
+
+impl std::fmt::Display for ArrayLen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.kind {
+            ArrayLenKind::Lit {
+                value,
+                suffix: Some(suffix),
+            } => write!(f, "{value}{suffix}"),
+            ArrayLenKind::Lit {
+                value,
+                suffix: None,
+            } => write!(f, "{value}"),
+            ArrayLenKind::Path(path) => write!(f, "{path}"),
+            ArrayLenKind::Error => f.write_str("<error>"),
+        }
+    }
 }
 
 impl TypeRef {
@@ -829,6 +870,8 @@ impl std::fmt::Display for TypeRef {
                 let m = if *mutable { "mut " } else { "" };
                 write!(f, "&{m}{pointee}")
             }
+            TypeRef::Array { elem, len } => write!(f, "[{elem}; {len}]"),
+            TypeRef::Slice(elem) => write!(f, "[{elem}]"),
             TypeRef::Infer => f.write_str("_"),
             TypeRef::Error => f.write_str("<error>"),
         }
@@ -3015,7 +3058,10 @@ fn param_projections(ty: &TypeRef, params: &[GenericParam], out: &mut Vec<TypeRe
                 param_projections(e, params, out);
             }
         }
-        TypeRef::Ptr { pointee, .. } | TypeRef::Ref { pointee, .. } => {
+        TypeRef::Ptr { pointee, .. }
+        | TypeRef::Ref { pointee, .. }
+        | TypeRef::Array { elem: pointee, .. }
+        | TypeRef::Slice(pointee) => {
             param_projections(pointee, params, out);
         }
         TypeRef::Never | TypeRef::Infer | TypeRef::Error => {}
@@ -3597,7 +3643,14 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
         }
         ast::Type::ParenType(paren) => return lower_type(paren.ty(), diagnostics),
         ast::Type::NeverType(_) => return TypeRef::Never,
-        ast::Type::ArrayType(_) => "array types",
+        ast::Type::ArrayType(array) => {
+            let elem = lower_type(array.ty(), diagnostics);
+            let len = lower_array_len(array.expr(), ty.syntax().text_range(), diagnostics);
+            return TypeRef::Array {
+                elem: Box::new(elem),
+                len,
+            };
+        }
         ast::Type::DynTraitType(_) => "trait objects",
         ast::Type::FnPtrType(_) => "function pointer types",
         ast::Type::ForType(_) => "higher-ranked types",
@@ -3621,10 +3674,76 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
                 pointee: Box::new(pointee),
             };
         }
-        ast::Type::SliceType(_) => "slice types",
+        ast::Type::SliceType(slice) => {
+            return TypeRef::Slice(Box::new(lower_type(slice.ty(), diagnostics)));
+        }
     };
     unsupported(diagnostics, ty.syntax().text_range(), what);
     TypeRef::Error
+}
+
+/// Lowers the length of an array type or repeat expression, `expr`,
+/// missing (and reported by the parser) within `whole`.
+pub(crate) fn lower_array_len(
+    expr: Option<ast::Expr<'_>>,
+    whole: TextRange,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ArrayLen {
+    let Some(expr) = expr else {
+        return ArrayLen {
+            kind: ArrayLenKind::Error,
+            range: whole,
+        };
+    };
+    let range = expr.syntax().text_range();
+    let kind = match expr {
+        ast::Expr::ParenExpr(paren) => return lower_array_len(paren.expr(), range, diagnostics),
+        ast::Expr::Literal(literal) => match literal.kind() {
+            Some(ast::LiteralKind::Int) => {
+                let parsed = literal.value().map(|t| crate::literal::parse_int(t.text()));
+                match parsed {
+                    Some(Ok(crate::Literal::Int { value, suffix })) => {
+                        ArrayLenKind::Lit { value, suffix }
+                    }
+                    Some(Err(message)) => {
+                        diagnostics.push(Diagnostic::new(range, message));
+                        ArrayLenKind::Error
+                    }
+                    _ => ArrayLenKind::Error,
+                }
+            }
+            Some(ast::LiteralKind::Bool(_)) => {
+                diagnostics.push(Diagnostic::new(
+                    range,
+                    "mismatched types: expected `usize`, found `bool`",
+                ));
+                ArrayLenKind::Error
+            }
+            _ => {
+                unsupported(
+                    diagnostics,
+                    range,
+                    "array lengths other than integers and constants",
+                );
+                ArrayLenKind::Error
+            }
+        },
+        ast::Expr::PathExpr(path) => {
+            match path.path().and_then(|p| lower_generic_path(p, diagnostics)) {
+                Some(path) => ArrayLenKind::Path(path),
+                None => ArrayLenKind::Error,
+            }
+        }
+        _ => {
+            unsupported(
+                diagnostics,
+                range,
+                "array lengths other than integers and constants",
+            );
+            ArrayLenKind::Error
+        }
+    };
+    ArrayLen { kind, range }
 }
 
 /// Whether `name` is a primitive type's.

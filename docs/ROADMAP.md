@@ -34,13 +34,19 @@ with `#[derive]`, `Ordering`,
 `Drop`, with rustc's drop order and drop flags, bounds on structs, and
 enums with `match`, `if let`, `let`-`else`, exhaustiveness checking,
 rustc's default binding modes and discriminants written as constant
-expressions, operators on references through `core`'s impls, and `?`
-on `Option` and `Result` with `From`.
+expressions, operators on references through `core`'s impls, `?`
+on `Option` and `Result` with `From`, and arrays and slices, with
+lengths evaluated while types are checked, bounds checks and rustc's
+borrow rules for elements.
 In order next:
 
 1. `core` defines the pointer methods, `mem::replace` and `CStr` (now
    built into the compiler) through lang items and intrinsics. `for`
    loops over `Iterator`, which needs closures for most of its methods.
+   Const generics, so that `core` can implement the arrays' traits and
+   methods that are built into the compiler for now (`len`, `Copy`,
+   `Clone`, `PartialEq`), and the slice methods that need references in
+   return values (`first`, `iter`, `split_at`).
 2. Lifetimes: references in structs and return values (`Option<&T>`),
    which needs region inference across function signatures.
 3. Items inside function bodies.
@@ -52,7 +58,9 @@ Each comes with fixtures that rustc must agree with.
 Started: functions over integers, `bool`, raw pointers, tuples and
 structs compile to arm64 macOS executables through keel, checked against
 rustc by `tests/run`. Aggregates are split into scalar variables, so they
-need no memory until references exist. Next:
+need no memory until references exist; values that contain arrays,
+which are indexed at run time, live in stack slots and are copied
+whole. Next:
 linking on x86-64 Linux, and a way to compare keel's output with
 Cranelift's and LLVM's on the same IR.
 

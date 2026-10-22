@@ -169,7 +169,10 @@ fn has_error(ty: Ty) -> bool {
         TyKind::Tuple(elements) | TyKind::Adt(_, elements) => {
             elements.iter().any(|&e| has_error(e))
         }
-        TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee) => has_error(pointee),
+        TyKind::Ref(_, pointee)
+        | TyKind::RawPtr(_, pointee)
+        | TyKind::Array(pointee, _)
+        | TyKind::Slice(pointee) => has_error(pointee),
         _ => false,
     }
 }

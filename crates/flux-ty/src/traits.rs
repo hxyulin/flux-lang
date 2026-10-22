@@ -633,6 +633,8 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
         (TyKind::Ref(m, x), TyKind::Ref(n, y)) | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
             m == n && match_ty(x, y, binds)
         }
+        (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && match_ty(x, y, binds),
+        (TyKind::Slice(x), TyKind::Slice(y)) => match_ty(x, y, binds),
         (TyKind::Alias(a), TyKind::Alias(b)) => {
             a.trait_ == b.trait_
                 && a.name == b.name
@@ -740,6 +742,8 @@ impl Normalizer<'_> {
             }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, self.go(t, depth + 1))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.go(t, depth + 1)),
+            TyKind::Array(t, len) => Ty::array(self.go(t, depth + 1), len),
+            TyKind::Slice(t) => Ty::slice(self.go(t, depth + 1)),
             _ => ty,
         }
     }
@@ -826,6 +830,12 @@ fn holds_at(
     {
         return true;
     }
+    if let Some(elem) = builtin_array_impl(items, goal) {
+        stack.push(goal);
+        let holds = holds_at(items, sigs, env, elem, stack);
+        stack.pop();
+        return holds;
+    }
     let impls = items.trait_impls.get(&goal.trait_ref.trait_);
     stack.push(goal);
     let holds = impls.into_iter().flatten().any(|&imp| {
@@ -875,11 +885,42 @@ pub fn is_builtin_copy(items: &ItemTree, t: TraitId, ty: Ty) -> bool {
         && matches!(items.traits[t].lang, Some(l) if l.as_str() == "copy" || l.as_str() == "clone")
 }
 
+/// For `ty: t` where `ty` is an array and `t` is `Copy`, `Clone` or
+/// `PartialEq<[U; N]>`, what its element type must meet: `T: Copy`,
+/// `T: Clone`, `T: PartialEq<U>`. rustc's `core` implements them for
+/// arrays with const generics, which flux does not have, so they are
+/// built in, and code generation makes their methods.
+pub fn builtin_array_impl(items: &ItemTree, goal: Predicate) -> Option<Predicate> {
+    let TyKind::Array(elem, len) = goal.self_ty.kind() else {
+        return None;
+    };
+    let lang = items.traits[goal.trait_ref.trait_].lang?;
+    match lang.as_str() {
+        "copy" | "clone" => Some(Predicate {
+            self_ty: elem,
+            ..goal
+        }),
+        "eq" => match goal.trait_ref.args.first()?.kind() {
+            TyKind::Array(other, n) if n == len => Some(Predicate {
+                self_ty: elem,
+                trait_ref: TraitRef {
+                    args: Ty::list(&[other]),
+                    ..goal.trait_ref
+                },
+            }),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Whether values of `ty` are copied rather than moved, given `env`, the
 /// elaborated bounds in scope: those of types that implement `Copy`.
 pub fn is_copy(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Tuple(elements) => elements.iter().all(|&t| is_copy(items, sigs, env, t)),
+        TyKind::Array(elem, _) => is_copy(items, sigs, env, elem),
+        TyKind::Slice(_) => false,
         TyKind::Ref(Mutability::Mut, _) => false,
         TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) => {
             let Some(&copy) = items.lang_traits.get(&flux_intern::sym::copy) else {
@@ -913,6 +954,7 @@ pub fn drop_impl(items: &ItemTree, sigs: &Signatures, strukt: StructId) -> Optio
 pub fn needs_drop(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Tuple(elements) => elements.iter().any(|&e| needs_drop(items, sigs, env, e)),
+        TyKind::Array(elem, len) => len > 0 && needs_drop(items, sigs, env, elem),
         TyKind::Adt(adt, args) => {
             drop_impl(items, sigs, adt.strukt).is_some()
                 || sigs.structs[adt.strukt]
@@ -2096,7 +2138,9 @@ fn collect_aliases(ty: Ty, out: &mut Vec<AliasTy>) {
         TyKind::Adt(_, list) | TyKind::Tuple(list) => {
             list.iter().for_each(|&t| collect_aliases(t, out));
         }
-        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => collect_aliases(t, out),
+        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+            collect_aliases(t, out)
+        }
         _ => {}
     }
 }
@@ -2166,7 +2210,12 @@ fn written_parts(written: Option<&TypeRef>) -> Vec<&TypeRef> {
             _ => Vec::new(),
         },
         Some(TypeRef::Tuple(elements)) => elements.iter().collect(),
-        Some(TypeRef::Ref { pointee, .. } | TypeRef::Ptr { pointee, .. }) => vec![&**pointee],
+        Some(
+            TypeRef::Ref { pointee, .. }
+            | TypeRef::Ptr { pointee, .. }
+            | TypeRef::Array { elem: pointee, .. }
+            | TypeRef::Slice(pointee),
+        ) => vec![&**pointee],
         _ => Vec::new(),
     }
 }
@@ -2329,7 +2378,7 @@ fn unmet_struct_bounds(
                 unmet_struct_bounds(items, sigs, scope, e, part, at, reported, out);
             }
         }
-        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => {
+        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
             let (part, at) = inner(0);
             unmet_struct_bounds(items, sigs, scope, t, part, at, reported, out);
         }
@@ -2397,7 +2446,9 @@ fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
             TyKind::Adt(_, list) | TyKind::Tuple(list) => list
                 .iter()
                 .any(|&t| occurs(bound, var, (side, t), depth + 1)),
-            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => occurs(bound, var, (side, t), depth + 1),
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+                occurs(bound, var, (side, t), depth + 1)
+            }
             _ => false,
         }
     }
@@ -2430,6 +2481,10 @@ fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
             | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
                 m == n && unify(bound, (a.0, x), (b.0, y), depth + 1)
             }
+            (TyKind::Array(x, m), TyKind::Array(y, n)) => {
+                m == n && unify(bound, (a.0, x), (b.0, y), depth + 1)
+            }
+            (TyKind::Slice(x), TyKind::Slice(y)) => unify(bound, (a.0, x), (b.0, y), depth + 1),
             _ => a.1 == b.1,
         }
     }
@@ -2447,6 +2502,8 @@ fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
             TyKind::Tuple(list) => Ty::tuple(&apply_all(list)),
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, apply(bound, (side, t), depth + 1))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, apply(bound, (side, t), depth + 1)),
+            TyKind::Array(t, len) => Ty::array(apply(bound, (side, t), depth + 1), len),
+            TyKind::Slice(t) => Ty::slice(apply(bound, (side, t), depth + 1)),
             _ => ty,
         }
     }

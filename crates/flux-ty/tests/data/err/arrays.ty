@@ -1,0 +1,56 @@
+struct S {}
+fn sizes() -> ()
+    a@0: [i32; 3]
+    b@1: [u8; 2]
+    c@2: [i32; 2]
+    d@3: {error}
+    e@4: {error}
+fn indices([i32; 3], &[i32]) -> ()
+    a@0: [i32; 3]
+    s@1: &[i32]
+    i@2: i32
+    x@3: i32
+    y@4: i32
+    n@5: i32
+    z@6: {error}
+    w@7: {error}
+fn copies<T>(T) -> [T; 2]
+    t@0: T
+    one@1: [S; 1]
+    two@2: [S; 2]
+fn unsized_values(&[i32]) -> ()
+    s@0: &[i32]
+    u@1: [i32]
+    q@2: [i32]
+    m@3: &mut [i32]
+fn unsized_param({error}) -> ()
+    x@0: {error}
+fn unsized_return() -> {error}
+fn unsized_arg({error}) -> ()
+    x@0: {error}
+fn generic<T>(&T) -> usize
+    x@0: &T
+fn unsized_generic(&[i32]) -> usize
+    s@0: &[i32]
+fn main() -> ()
+const N: usize
+const M: u8
+error 145..151: mismatched types: expected an array with a size of 3, found one with a size of 2
+error 175..179: mismatched types: expected `u8`, found `i32`
+error 201..205: mismatched types: expected `{integer}`, found `bool`
+error 224..227: mismatched types: expected `usize`, found `u8`
+error 258..259: mismatched types: expected `usize`, found `u8`
+error 345..346: the type `[i32]` cannot be indexed by `i32`
+error 363..364: the type `[i32]` cannot be indexed by `i32`
+error 395..398: cannot index into a value of type `{integer}`
+error 418..421: cannot index into a value of type `({integer}, {integer})`
+error 494..495: the trait bound `S: Copy` is not satisfied
+error 506..507: the trait bound `T: Copy` is not satisfied
+error 554..555: the size for values of type `[i32]` cannot be known at compilation time
+error 570..571: the size for values of type `[i32]` cannot be known at compilation time
+error 581..584: mismatched types: expected `[i32]`, found `[{integer}; 1]`
+error 610..617: mismatched types: expected `&mut [i32]`, found `&[{integer}; 2]`
+error 642..647: the size for values of type `[i32]` cannot be known at compilation time
+error 676..681: the size for values of type `[i32]` cannot be known at compilation time
+error 717..730: the size for values of type `[i32]` cannot be known at compilation time
+error 830..831: the size for values of type `[i32]` cannot be known at compilation time
