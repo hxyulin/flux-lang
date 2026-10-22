@@ -29,6 +29,9 @@ pub(crate) fn file(hir: &Hir) -> String {
             .collect();
         let fields = fields.join(", ");
         let (name, generics, bounds) = (s.name, &s.generics, where_clause(&s.generics));
+        if s.repr_align > 1 {
+            write!(out, "#[repr(align({}))] ", s.repr_align).unwrap();
+        }
         if let Some(variants) = &s.variants {
             let variants: Vec<String> = variants
                 .iter()

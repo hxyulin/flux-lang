@@ -1,0 +1,10 @@
+#[repr(align(64))] struct Aligned<T>(T);
+
+#[repr(align(32))] struct Maximum;
+
+#[repr(align(536870912))] struct Limit;
+
+#[repr(align(64))] #[repr(u8)] enum Tagged { A(u8) = 0, B = 1 }
+
+fn main() -> () {}
+

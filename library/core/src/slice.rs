@@ -45,6 +45,24 @@ impl<T> [T] {
         index.get(self)
     }
 
+    /// Returns the element without checking bounds.
+    ///
+    /// # Safety
+    /// `index` must be less than the slice's length. Only `usize` indices
+    /// are supported; unchecked range indexing is not supported yet.
+    pub unsafe fn get_unchecked(&self, index: usize) -> &T {
+        unsafe { &*self.as_ptr().add(index) }
+    }
+
+    /// Returns a mutable element without checking bounds.
+    ///
+    /// # Safety
+    /// `index` must be less than the slice's length. Only `usize` indices
+    /// are supported; unchecked range indexing is not supported yet.
+    pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
+        unsafe { &mut *self.as_mut_ptr().add(index) }
+    }
+
     /// An iterator over references to the elements, in order.
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
