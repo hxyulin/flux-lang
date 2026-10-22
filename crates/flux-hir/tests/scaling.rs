@@ -133,11 +133,11 @@ fn long_body() {
     });
 }
 
-/// Each statement names the function's parameter. A name is looked up
-/// through every binding in scope from the innermost, so a body naming
-/// its first bindings throughout takes time quadratic in its length.
+/// Each statement names the function's parameter. A name was once
+/// looked up through every binding in scope from the innermost, so a
+/// body naming its first bindings throughout took time quadratic in its
+/// length.
 #[test]
-#[ignore = "names are looked up through every binding in scope: quadratic"]
 fn long_body_naming_parameter() {
     let make = |n| {
         let body = repeat(n, |i| {
