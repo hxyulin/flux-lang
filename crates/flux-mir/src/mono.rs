@@ -201,6 +201,21 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                     continue;
                 }
                 if hir.items.functions[callee.function].intrinsic {
+                    // A size that would not be rustc's.
+                    let name = hir.items.functions[callee.function].name;
+                    if matches!(name.as_str(), "size_of" | "align_of")
+                        && let Some(&ty) = callee.args.first()
+                        && !crate::layout::Layouts::new(&hir.items, sigs, &mir.discriminants)
+                            .of(ty)
+                            .exact
+                    {
+                        let mut d = Diagnostic::new(
+                            data.terminator.range,
+                            format!("`{name}` of `{ty}` is not supported yet"),
+                        );
+                        d.file = hir.items.functions[caller.function].loc.file;
+                        return Err(d);
+                    }
                     continue;
                 }
                 if mir.instance_body(&hir.items, callee).is_none()
@@ -297,7 +312,7 @@ pub fn body_of<'b>(
     instance: Instance,
 ) -> Cow<'b, Body> {
     match mir.instance_body(&hir.items, instance) {
-        Some((body, args)) => instance_body(hir, sigs, body, args),
+        Some((body, args)) => instance_body(hir, sigs, &mir.discriminants, body, args),
         None => Cow::Owned(clone_shim(&hir.items, sigs, instance).expect("instances have bodies")),
     }
 }
@@ -548,6 +563,7 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
 pub fn instance_body<'b>(
     hir: &Hir,
     sigs: &Signatures,
+    discriminants: &crate::Discriminants,
     body: &'b Body,
     args: &[Ty],
 ) -> Cow<'b, Body> {
@@ -568,7 +584,7 @@ pub fn instance_body<'b>(
             if hir.items.functions[func].intrinsic)
     });
     if intrinsics {
-        expand_intrinsics(&hir.items, sigs, body.to_mut());
+        expand_intrinsics(&hir.items, sigs, discriminants, body.to_mut());
     }
     body
 }
@@ -580,12 +596,20 @@ pub fn instance_body<'b>(
 /// - `write(dst, value)`: `*dst = value`, without dropping `*dst`;
 /// - `uninit()`: nothing, its memory written before it is read;
 /// - `is_copy::<T>()`: whether `T` is `Copy`;
+/// - `size_of::<T>()`, `align_of::<T>()`: `T`'s size and alignment, as
+///   rustc lays it out;
 /// - `subslice(s, start, end)`, `subslice_mut(s, start, end)`:
 ///   `&s[start..end]`, unchecked;
 /// - `slice_from_raw_parts(data, len)`: `data` as a pointer to an empty
 ///   array, unsized, then its first `len` elements, unchecked;
 /// - `c_str_from_ptr(p)`: `p` as the `&CStr` it is.
-pub fn expand_intrinsics(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
+pub fn expand_intrinsics(
+    items: &ItemTree,
+    sigs: &Signatures,
+    discriminants: &crate::Discriminants,
+    body: &mut Body,
+) {
+    let layouts = crate::layout::Layouts::new(items, sigs, discriminants);
     let blocks: Vec<_> = body.blocks.iter().map(|(b, _)| b).collect();
     for block in blocks {
         let range = body.blocks[block].terminator.range;
@@ -634,6 +658,20 @@ pub fn expand_intrinsics(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
                 let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
                 let copy = flux_ty::traits::is_copy(items, sigs, &[], ty);
                 (dest, Rvalue::Use(Operand::Const(Constant::Bool(copy))))
+            }
+            (name @ ("size_of" | "align_of"), []) => {
+                let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
+                let layout = layouts.of(ty);
+                let value = if name == "size_of" {
+                    layout.size
+                } else {
+                    layout.align
+                };
+                let constant = Constant::Int {
+                    bits: u128::from(value),
+                    ty: flux_ty::IntTy::Usize,
+                };
+                (dest, Rvalue::Use(Operand::Const(constant)))
             }
             ("read", [src]) => {
                 let src = pointer(body, src);

@@ -954,6 +954,20 @@
   moved `self.r`), and a trait `impl` block's method may assume what
   the trait's parameters imply for the block's types (`&'s Guard<'a,
   T>` that `'a: 's`), as rustc's `compare_impl_method` does.
+- Lay values out in memory as rustc does (`flux_mir::layout`, rustc's
+  `rustc_abi::layout` for aarch64): fields reordered by alignment and
+  niche, tuples' last element last, `#[repr(C)]` (now on structs too)
+  in order, enums tagged with the smallest integer their discriminants
+  need or niche-filling (`Option<&T>` is one pointer, `Option<bool>` one
+  byte), whichever is smaller. Code generation stores an enum's active
+  variant and encodes its tag, and decodes it when loading; constants'
+  data is laid out the same way. Add `core::mem::{size_of, align_of,
+  size_of_val, align_of_val}` (in the prelude, `const`), `forget` and
+  `MaybeUninit`, `core::ptr` with raw pointers' methods (`core` may now
+  write `impl<T> *const T`), `NonNull` with its niche, and the coercion
+  of `*mut T` to `*const T`. `tests/run/layouts.rs` checks 69 types'
+  sizes against rustc, and a generator of random structs and enums
+  agreed with rustc on 400 programs.
 
 ### Performance
 

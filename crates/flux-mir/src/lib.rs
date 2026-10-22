@@ -43,6 +43,7 @@ pub mod drops;
 pub mod eval;
 pub mod init;
 mod interval;
+pub mod layout;
 mod lens;
 pub mod lint;
 pub mod mono;

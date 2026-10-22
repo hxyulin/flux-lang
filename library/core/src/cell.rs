@@ -24,7 +24,10 @@ fn as_mut<T>(value: &T) -> &mut T {
     unsafe { &mut *(value as *const T as *mut T) }
 }
 
-/// A value that may be replaced through a shared reference.
+/// A value that may be replaced through a shared reference. Its value
+/// is rustc's `UnsafeCell`, which hides its invalid values from enums
+/// around it (the `lang` name says so to layouts).
+#[lang = "cell"]
 pub struct Cell<T> {
     value: T,
 }
@@ -192,7 +195,9 @@ impl<T: Debug> Debug for RefCell<T> {
 }
 
 /// A value lent out through shared references, checked at run time:
-/// any number of `Ref`s, or one `RefMut`.
+/// any number of `Ref`s, or one `RefMut`. Like `Cell`, it hides its
+/// value's invalid values.
+#[lang = "ref_cell"]
 pub struct RefCell<T> {
     /// How many `Ref`s there are, or -1 for a `RefMut`.
     borrow: Cell<isize>,

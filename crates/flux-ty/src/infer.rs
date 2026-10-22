@@ -1085,6 +1085,18 @@ impl Ctx<'_> {
             }
             return;
         }
+        // A `*mut T` where a `*const T` is wanted becomes one, cast.
+        if let (TyKind::RawPtr(Mutability::Mut, pointee), TyKind::RawPtr(Mutability::Not, wanted)) =
+            (self.shallow(actual).kind(), self.shallow(expected).kind())
+        {
+            if self.unify(pointee, wanted) {
+                self.unsizes.insert(expr, expected);
+            } else {
+                let range = self.range(blamed);
+                self.mismatch(expected, actual, range);
+            }
+            return;
+        }
         // A reference where a raw pointer is wanted becomes one, after
         // a reborrow if it is a `&mut`: `&T` to `*const T`, `&mut T` to
         // `*mut T` or `*const T`.
@@ -3439,6 +3451,9 @@ impl Ctx<'_> {
             (TyKind::Ref(from, pointee), TyKind::RawPtr(to, expected_pointee)) => {
                 return (from == to || from == Mutability::Mut)
                     && self.can_unify(pointee, expected_pointee);
+            }
+            (TyKind::RawPtr(Mutability::Mut, pointee), TyKind::RawPtr(Mutability::Not, wanted)) => {
+                return self.can_unify(pointee, wanted);
             }
             _ => {}
         }

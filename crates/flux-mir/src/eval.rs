@@ -268,6 +268,84 @@ impl<'a> Evaluator<'a> {
         }
     }
 
+    fn is_type_intrinsic(&self, func: FunctionId) -> bool {
+        let data = &self.items.functions[func];
+        data.intrinsic && matches!(data.name.as_str(), "size_of" | "align_of" | "needs_drop")
+    }
+
+    /// `size_of::<T>()`, `align_of::<T>()` or `needs_drop::<T>()` into
+    /// `dest`, then `target`: out of line, so that the frames of
+    /// recursive evaluation stay small.
+    #[inline(never)]
+    fn type_intrinsic(
+        &mut self,
+        (func, generic_args, generics): (FunctionId, GenericArgs, GenericArgs),
+        locals: &mut [Option<Value>],
+        dest: &Place,
+        target: Option<crate::BasicBlock>,
+        range: TextRange,
+    ) -> Result<crate::BasicBlock, EvalError> {
+        let name = self.items.functions[func].name;
+        let ty = subst_list(generic_args, generics)
+            .first()
+            .copied()
+            .unwrap_or(Ty::ERROR);
+        let value = if name.as_str() == "needs_drop" {
+            Value::Bool(flux_ty::traits::needs_drop(self.items, self.sigs, &[], ty))
+        } else {
+            let layout = self.layout_of(ty, range)?;
+            if !layout.exact {
+                return Err(error(
+                    range,
+                    format!("`{name}` of `{ty}` is not supported yet"),
+                ));
+            }
+            let value = if name.as_str() == "size_of" {
+                layout.size
+            } else {
+                layout.align
+            };
+            Value::Int {
+                bits: u128::from(value),
+                ty: IntTy::Usize,
+            }
+        };
+        write(locals, dest, value, range)?;
+        target.ok_or_else(|| error(range, "entering unreachable code".to_owned()))
+    }
+
+    /// The layout of `ty`, with the discriminants of the enums it holds
+    /// evaluated.
+    fn layout_of(&mut self, ty: Ty, range: TextRange) -> Result<crate::layout::Layout, EvalError> {
+        let mut enums = Vec::new();
+        let mut stack = vec![ty];
+        let mut seen = HashSet::new();
+        while let Some(ty) = stack.pop() {
+            if !seen.insert(ty) {
+                continue;
+            }
+            match ty.kind() {
+                flux_ty::TyKind::Array(elem, _) => stack.push(elem),
+                flux_ty::TyKind::Adt(adt, _) => {
+                    if self.items.structs[adt.strukt].has_const_discriminants() {
+                        enums.push(adt.strukt);
+                    }
+                    stack.extend(self.sigs.contents(ty).unwrap_or_default());
+                }
+                _ => stack.extend(self.sigs.contents(ty).unwrap_or_default()),
+            }
+        }
+        let mut known = crate::Discriminants::new();
+        for strukt in enums {
+            self.layout(strukt, range)?;
+            if let Ok(values) = self.discriminants(strukt) {
+                known.insert(strukt, values);
+            }
+        }
+        let layouts = crate::layout::Layouts::new(self.items, self.sigs, &known);
+        Ok((*layouts.of(ty)).clone())
+    }
+
     /// Every discriminant of enum `strukt`, as bits, evaluated: what
     /// making a value of it or matching on it needs.
     pub fn discriminants(&mut self, strukt: flux_hir::StructId) -> Result<Box<[u128]>, EvalError> {
@@ -404,6 +482,13 @@ impl<'a> Evaluator<'a> {
                         self.panic_message(*func, args, body, &locals, generics, range)?
                     {
                         return Err(error(range, format!("evaluation panicked: {message}")));
+                    }
+                    // `size_of`, `align_of` and `needs_drop` are known
+                    // here too.
+                    if self.is_type_intrinsic(*func) {
+                        let call = (*func, *generic_args, generics);
+                        block = self.type_intrinsic(call, &mut locals, dest, *target, range)?;
+                        continue;
                     }
                     // Only code generation expands them.
                     if self.items.functions[*func].intrinsic {

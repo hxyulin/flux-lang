@@ -1915,6 +1915,9 @@ pub fn impl_target(items: &ItemTree, ty: Ty) -> Option<ImplTarget> {
         TyKind::Slice(_) => Some(ImplTarget::Primitive(flux_hir::slice_target())),
         TyKind::Array(..) => Some(ImplTarget::Primitive(flux_hir::array_target())),
         TyKind::Dynamic(d) => Some(ImplTarget::Object(d.trait_)),
+        TyKind::RawPtr(m, _) => Some(ImplTarget::Primitive(flux_hir::raw_ptr_target(
+            m == Mutability::Mut,
+        ))),
         _ => None,
     }
 }
@@ -3036,16 +3039,17 @@ fn impl_type(
             imp.self_range,
             &mut errors,
         ),
-        (Some(ImplTarget::Primitive(_)), TypeRef::Slice(_) | TypeRef::Array { .. }) => {
-            resolve_type(
-                items,
-                imp.module,
-                &imp.self_ty,
-                scope,
-                imp.self_range,
-                &mut errors,
-            )
-        }
+        (
+            Some(ImplTarget::Primitive(_)),
+            TypeRef::Slice(_) | TypeRef::Array { .. } | TypeRef::Ptr { .. },
+        ) => resolve_type(
+            items,
+            imp.module,
+            &imp.self_ty,
+            scope,
+            imp.self_range,
+            &mut errors,
+        ),
         (Some(ImplTarget::Primitive(name)), _) => primitive(name).unwrap_or(Ty::ERROR),
         (Some(ImplTarget::Object(_)), TypeRef::Dyn(_)) => resolve_type(
             items,

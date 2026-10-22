@@ -20,7 +20,7 @@ pub(crate) unsafe fn write<T>(dst: &mut T, value: T) {
 /// A value of type `T` that is not there: memory to write each part of
 /// before it is used (`array::from_fn`'s array).
 #[rustc_intrinsic]
-pub(crate) unsafe fn uninit<T>() -> T {
+pub(crate) const unsafe fn uninit<T>() -> T {
     loop {}
 }
 
@@ -28,6 +28,18 @@ pub(crate) unsafe fn uninit<T>() -> T {
 /// `Clone` asks.
 #[rustc_intrinsic]
 pub(crate) fn is_copy<T>() -> bool {
+    loop {}
+}
+
+/// The size of a `T` in bytes, as rustc lays it out.
+#[rustc_intrinsic]
+pub(crate) const fn size_of<T>() -> usize {
+    loop {}
+}
+
+/// The alignment of a `T` in bytes.
+#[rustc_intrinsic]
+pub(crate) const fn align_of<T>() -> usize {
     loop {}
 }
 
