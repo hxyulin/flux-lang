@@ -158,12 +158,13 @@ reported as "not supported yet":
   E0528, E0730) and values that are neither (E0529), and exhaustiveness
   checked as rustc checks it (a slice's lengths up to the longest a
   pattern names, then the longer ones together: `&[_, _, ..]`). `rest
-  @ ..` binds an array of the elements it stands for, or a reference
-  to the part of a slice; binding the rest of an array by reference, or
-  of a slice mutably, is not supported yet, and the elements of a slice
-  pattern are borrowed as the whole array or slice is, so `[first, ..,
-  last]` of a `&mut [T]` cannot bind both mutably (rustc allows it),
-  nor move them out of an array (E0508 where rustc allows it).
+  @ ..` binds the elements it stands for, an array or a slice, by
+  value or by reference. As in rustc, a slice pattern's elements and
+  rest are places of their own (constant indices from either end and
+  subslices), which the borrow checker tells apart where their indices
+  differ (`[first, .., last]` of a `&mut [T]` binds both mutably), and
+  an array's elements may be moved out of it one by one, what is left
+  of it dropped in rustc's order; moving out of a slice is E0508.
   Constants of other types in patterns and byte string literals are
   not supported yet.
 - **Attributes:** only `allow`, `warn`, `deny`, `expect`, `inline`,

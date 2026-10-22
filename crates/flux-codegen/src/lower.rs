@@ -1196,7 +1196,7 @@ impl Lower<'_, '_, '_> {
                 len: self.vars[place.local.index()].len(),
             },
         };
-        for &elem in &place.projection {
+        for (i, &elem) in place.projection.iter().enumerate() {
             let elem_ty = ty.project(elem, sigs);
             location = match (elem, location) {
                 (ProjectionElem::Field(field), Location::Vars { local, start, .. }) => {
@@ -1245,13 +1245,81 @@ impl Lower<'_, '_, '_> {
                     let index = self.read(&index.into())[0];
                     Location::Memory(self.element(address, index, size))
                 }
-                (ProjectionElem::Index(_), Location::Vars { .. }) => {
+                (
+                    ProjectionElem::ConstantIndex {
+                        offset, from_end, ..
+                    },
+                    Location::Memory(address),
+                ) => {
+                    let size = layout(sigs, elem_ty.ty).size();
+                    let index = if from_end {
+                        // `len - offset`, the length an array's or the
+                        // slice's pointer's.
+                        let len = match ty.ty.kind() {
+                            TyKind::Array(_, n) => {
+                                self.b.ins().iconst(Type::I64, array_len(n) as i64)
+                            }
+                            _ => {
+                                let base = Place {
+                                    local: place.local,
+                                    projection: place.projection[..i].into(),
+                                };
+                                self.slice_parts(&base)[1]
+                            }
+                        };
+                        let offset = self.b.ins().iconst(Type::I64, i64::from(offset));
+                        self.b.ins().isub(len, offset)
+                    } else {
+                        self.b.ins().iconst(Type::I64, i64::from(offset))
+                    };
+                    Location::Memory(self.element(address, index, size))
+                }
+                (ProjectionElem::Subslice { from, .. }, Location::Memory(address)) => {
+                    let elem = match ty.ty.kind() {
+                        TyKind::Array(elem, _) | TyKind::Slice(elem) => elem,
+                        _ => unreachable!("subslices are of arrays and slices"),
+                    };
+                    let size = layout(sigs, elem).size();
+                    Location::Memory(self.offset(address, u64::from(from) * size))
+                }
+                (
+                    ProjectionElem::Index(_)
+                    | ProjectionElem::ConstantIndex { .. }
+                    | ProjectionElem::Subslice { .. },
+                    Location::Vars { .. },
+                ) => {
                     unreachable!("arrays are in memory")
                 }
             };
             ty = elem_ty;
         }
         (location, ty.ty)
+    }
+
+    /// The pointer and length of the unsized place `place` (or the
+    /// pointer and vtable of a trait object): those of the pointer it is
+    /// behind, or for a slice's part (`rest @ ..`), moved past its first
+    /// elements and shortened by those at both ends.
+    fn slice_parts(&mut self, place: &Place) -> Vec<Value> {
+        match &*place.projection {
+            [base @ .., ProjectionElem::Subslice { from, to, .. }] => {
+                let base = Place {
+                    local: place.local,
+                    projection: base.into(),
+                };
+                let parts = self.slice_parts(&base);
+                let elem = match self.body.place_ty(&base, self.sigs).kind() {
+                    TyKind::Slice(elem) => elem,
+                    _ => unreachable!("a slice's part is of a slice"),
+                };
+                let size = layout(self.sigs, elem).size();
+                let pointer = self.offset(parts[0], u64::from(*from) * size);
+                let cut = self.b.ins().iconst(Type::I64, i64::from(from + to));
+                let len = self.b.ins().isub(parts[1], cut);
+                vec![pointer, len]
+            }
+            _ => self.read(&pointer_of(place)),
+        }
     }
 
     /// The address of element `index` of the array or slice at
@@ -1707,7 +1775,7 @@ impl Lower<'_, '_, '_> {
             }
             // A reference to a slice is the pointer it is behind.
             Rvalue::Ref { place, .. } if self.body.place_ty(place, self.sigs).is_unsized() => {
-                self.read(&pointer_of(place))
+                self.slice_parts(place)
             }
             Rvalue::Ref { place, .. } => match self.locate(place).0 {
                 Location::Memory(address) => vec![address],
@@ -1717,7 +1785,7 @@ impl Lower<'_, '_, '_> {
                 TyKind::Array(_, len) => {
                     vec![self.int_const(u128::from(array_len(len)), IntTy::Usize)]
                 }
-                _ => vec![self.read(&pointer_of(place))[1]],
+                _ => vec![self.slice_parts(place)[1]],
             },
             // To a trait object: the pointer and the type's vtable; from
             // one, upcast, the pointer and the supertrait's vtable, which

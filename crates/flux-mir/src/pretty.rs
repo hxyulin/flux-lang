@@ -308,6 +308,20 @@ fn place(place: &Place) -> String {
             ProjectionElem::Deref => text = format!("(*{text})"),
             ProjectionElem::Downcast(variant) => text = format!("({text} as #{variant})"),
             ProjectionElem::Index(local) => text.push_str(&format!("[_{}]", local.index())),
+            // As rustc's MIR writes them: `_1[0 of 3]`, `_1[-1 of 2]`,
+            // `_1[1:3]`, `_1[1:-1]`.
+            ProjectionElem::ConstantIndex {
+                offset,
+                min_length,
+                from_end,
+            } => {
+                let sign = if *from_end { "-" } else { "" };
+                text.push_str(&format!("[{sign}{offset} of {min_length}]"));
+            }
+            ProjectionElem::Subslice { from, to, from_end } => {
+                let sign = if *from_end { "-" } else { "" };
+                text.push_str(&format!("[{from}:{sign}{to}]"));
+            }
         }
     }
     text

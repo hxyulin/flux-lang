@@ -366,17 +366,74 @@ struct Live {
 }
 
 /// Whether one place contains the other: they are the same local and
-/// one projection is a prefix of the other. Elements of an array may be
-/// the same whatever their indices, as rustc assumes.
+/// one projection is a prefix of the other. Elements of an array at
+/// indices in locals may be the same whatever their indices, as rustc
+/// assumes; those at constant indices (a slice pattern's) are the same
+/// only where the indices may be, as rustc decides.
 fn overlaps(a: &Place, b: &Place) -> bool {
     a.local == b.local
         && a.projection
             .iter()
             .zip(b.projection.iter())
-            .all(|(x, y)| match (x, y) {
-                (ProjectionElem::Index(_), ProjectionElem::Index(_)) => true,
-                _ => x == y,
-            })
+            .all(|(&x, &y)| elements_may_overlap(x, y))
+}
+
+fn elements_may_overlap(x: ProjectionElem, y: ProjectionElem) -> bool {
+    use ProjectionElem::{ConstantIndex, Index, Subslice};
+    match (x, y) {
+        (Index(_), Index(_) | ConstantIndex { .. } | Subslice { .. })
+        | (ConstantIndex { .. } | Subslice { .. }, Index(_))
+        | (Subslice { .. }, Subslice { .. }) => true,
+        (
+            ConstantIndex {
+                offset: a,
+                min_length: m,
+                from_end: e,
+            },
+            ConstantIndex {
+                offset: b,
+                min_length: n,
+                from_end: f,
+            },
+        ) => {
+            if e == f {
+                a == b
+            } else {
+                // One from the start, one from the end, of at least
+                // `min` elements.
+                let (begin, end) = if e { (b, a) } else { (a, b) };
+                begin >= m.max(n).saturating_sub(end)
+            }
+        }
+        (c @ ConstantIndex { .. }, s @ Subslice { .. })
+        | (s @ Subslice { .. }, c @ ConstantIndex { .. }) => {
+            let (
+                ConstantIndex {
+                    offset,
+                    min_length,
+                    from_end,
+                },
+                Subslice {
+                    from,
+                    to,
+                    from_end: slice_from_end,
+                },
+            ) = (c, s)
+            else {
+                unreachable!()
+            };
+            match (from_end, slice_from_end) {
+                (false, false) => offset >= from && offset < to,
+                (true, false) => {
+                    let index = min_length.saturating_sub(offset);
+                    index >= from && index < to
+                }
+                (false, true) => offset >= from,
+                (true, true) => offset > to,
+            }
+        }
+        _ => x == y,
+    }
 }
 
 impl Checker<'_> {
@@ -648,11 +705,24 @@ impl Checker<'_> {
         match operand {
             Operand::Copy(place) => self.access(place, Access::Read, live, range),
             Operand::Move(place) => {
-                if let Some(last) = place
+                // An element at an index in a local, or a slice pattern's
+                // element of a slice (an array's are places of their own).
+                let hole = place
                     .projection
                     .iter()
-                    .rposition(|e| matches!(e, ProjectionElem::Index(_)))
-                {
+                    .enumerate()
+                    .rposition(|(i, e)| match e {
+                        ProjectionElem::Index(_) => true,
+                        ProjectionElem::ConstantIndex { .. } | ProjectionElem::Subslice { .. } => {
+                            let base = Place {
+                                local: place.local,
+                                projection: place.projection[..i].into(),
+                            };
+                            self.body.place_ty(&base, self.sigs).is_unsized()
+                        }
+                        _ => false,
+                    });
+                if let Some(last) = hole {
                     // Moving out of an element would leave a hole (E0508).
                     let base = Place {
                         local: place.local,

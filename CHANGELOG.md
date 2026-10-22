@@ -884,6 +884,14 @@
   `while let` and parameters, by value and through default binding
   modes, with rustc's E0527, E0528, E0529 and E0730, and exhaustiveness
   checked with rustc's slice constructors and witnesses.
+- Make slice patterns' elements and rest places of their own, as
+  rustc's MIR does (`ConstantIndex` and `Subslice` projections): the
+  borrow checker tells apart elements at different constant indices,
+  elements and the rest may be moved out of an array, which drops what
+  is left as rustc's elaborated drops do (runs of elements, the last
+  first), and `rest @ ..` binds by reference and mutably too. Moving
+  out of a slice is E0508, and a place of unsized type may be matched
+  (`match *s`).
 
 ### Performance
 

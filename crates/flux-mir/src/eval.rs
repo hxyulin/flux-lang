@@ -884,7 +884,7 @@ fn project(
     projection: &[ProjectionElem],
     range: TextRange,
 ) -> Result<Value, EvalError> {
-    for elem in projection {
+    for (k, elem) in projection.iter().enumerate() {
         value = match (elem, value) {
             (
                 ProjectionElem::Field(i),
@@ -892,6 +892,22 @@ fn project(
             ) => &fields[*i as usize],
             (ProjectionElem::Index(local), Value::Aggregate(elements)) => {
                 &elements[index(locals, *local)]
+            }
+            (
+                &ProjectionElem::ConstantIndex {
+                    offset, from_end, ..
+                },
+                Value::Aggregate(elements),
+            ) => &elements[constant_index(elements.len(), offset, from_end)],
+            // A new array of the elements, projected further.
+            (&ProjectionElem::Subslice { from, to, from_end }, Value::Aggregate(elements)) => {
+                let end = if from_end {
+                    elements.len() - to as usize
+                } else {
+                    to as usize
+                };
+                let part = Value::Aggregate(elements[from as usize..end].to_vec());
+                return project(locals, &part, &projection[k + 1..], range);
             }
             (ProjectionElem::Downcast(_), Value::Variant { .. }) => value,
             (ProjectionElem::Deref, Value::Ref(pointee)) => pointee,
@@ -924,6 +940,16 @@ fn write(
             _ => 0,
         })
         .collect();
+    if place
+        .projection
+        .iter()
+        .any(|e| matches!(e, ProjectionElem::Subslice { .. }))
+    {
+        return Err(error(
+            range,
+            "writing a slice pattern's rest in constants is not supported yet".to_owned(),
+        ));
+    }
     let slot = &mut locals[place.local.index()];
     let mut value = slot
         .as_mut()
@@ -935,6 +961,15 @@ fn write(
                 Value::Aggregate(fields) | Value::Variant { fields, .. },
             ) => &mut fields[*i as usize],
             (ProjectionElem::Index(_), Value::Aggregate(elements)) => &mut elements[i],
+            (
+                &ProjectionElem::ConstantIndex {
+                    offset, from_end, ..
+                },
+                Value::Aggregate(elements),
+            ) => {
+                let at = constant_index(elements.len(), offset, from_end);
+                &mut elements[at]
+            }
             (ProjectionElem::Downcast(_), value @ Value::Variant { .. }) => value,
             _ => {
                 return Err(error(
@@ -1167,5 +1202,14 @@ fn str_value(value: &Value) -> Option<String> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// The index a [`ProjectionElem::ConstantIndex`] names in `len` elements.
+fn constant_index(len: usize, offset: u32, from_end: bool) -> usize {
+    if from_end {
+        len - offset as usize
+    } else {
+        offset as usize
     }
 }

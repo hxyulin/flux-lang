@@ -2170,22 +2170,6 @@ impl Ctx<'_> {
                 }
                 if let Some(slice) = slice {
                     self.check_pat_in(*slice, rest_ty, mode, uninit);
-                    if let Pat::Bind { binding, .. } = body.pats[*slice] {
-                        let by_ref = self.binding_refs.get(binding).copied();
-                        let what = match (self.shallow(expected).kind(), by_ref) {
-                            (TyKind::Array(..), Some(_)) => {
-                                Some("binding the rest of an array by reference")
-                            }
-                            (TyKind::Slice(_), Some(Mutability::Mut)) => {
-                                Some("binding the rest of a slice mutably")
-                            }
-                            _ => None,
-                        };
-                        if let Some(what) = what {
-                            let at = self.source_map.pats.get(*slice).copied().unwrap_or(range);
-                            self.error(at, format!("{what} is not supported yet"));
-                        }
-                    }
                 }
             }
             Pat::Tuple { pats, rest } => {
@@ -5844,6 +5828,16 @@ impl Ctx<'_> {
                 } if self.overloads.get(id).is_some() => {
                     places.insert(lhs);
                     places.insert(rhs);
+                }
+                // A place matched, which a slice pattern sees into:
+                // `match *s { [x, ..] => .. }`.
+                Expr::Match {
+                    scrutinee: expr, ..
+                }
+                | Expr::Let { expr, .. }
+                    if is_place_expr(body, expr) =>
+                {
+                    places.insert(expr);
                 }
                 _ => {}
             }
