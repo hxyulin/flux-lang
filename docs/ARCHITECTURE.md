@@ -641,8 +641,9 @@ Each read, move, assignment and borrow of a place is checked against
 the loans in scope at its point of places that contain it or are
 contained in it, so borrows of different fields never conflict, giving
 rustc's E0499, E0502, E0503, E0505 and E0506. A method receiver's
-`&mut` is two-phase: shared until the call, so `s.set(s.get())` is
-accepted. A loan in scope where its local dies (a binding's or
+`&mut` is two-phase: shared while the temporary holding it is live,
+until the call, so `s.set(s.get())` is accepted, and mutable after;
+as in rustc, one unsized to a slice for the call is not two-phase. A loan in scope where its local dies (a binding's or
 borrowed temporary's `StorageDead`, a temporary's drop, or the
 function's return for parameters and temporaries) is E0597 or E0716,
 and E0515 when the constraint that makes it outlive the function is

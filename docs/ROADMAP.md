@@ -40,7 +40,9 @@ lengths evaluated while types are checked, bounds checks and rustc's
 borrow rules for elements, type aliases, statics, functions as values,
 with function pointers, items inside function bodies, closures with
 rustc's precise captures and the `Fn`-family traits, ranges, `Iterator`
-with its adapters, `for` loops, slices' iterators, and text: bytes and
+with its adapters, `for` loops, slices' methods, iterators and sorts,
+arrays iterated by value, ranges as indices and `Index`/`IndexMut`,
+and text: bytes and
 byte strings, `char`, `str` with UTF-8 iteration and validation, raw
 pointers made from references and casts between pointers and integers.
 In order next:
@@ -53,9 +55,9 @@ In order next:
    (`is_alphabetic`, `to_lowercase`).
    Const generics, so that `core` can implement the arrays' traits and
    methods that are built into the compiler for now (`len`, `Copy`,
-   `Clone`, `PartialEq`), slices' methods on arrays, iteration over arrays
-   by value, and ranges as indices (`split_at`). Returning closures
-   (`impl Fn`), which needs opaque types.
+   `Clone`, `PartialEq`, `Eq`, `IntoIterator`, comparisons with slices)
+   and those still missing (`PartialOrd`, `array::from_fn`, `map`).
+   Returning closures (`impl Fn`), which needs opaque types.
 2. Lifetimes, what is left: lifetime parameters on traits and in the
    generic arguments of bounds (`T: Tr<&'a U>`), higher-ranked bounds
    (`for<'a>`), named lifetimes in types inside bodies, `Fn` bounds and
