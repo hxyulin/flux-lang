@@ -918,7 +918,8 @@ parameters yet, bounds may not name lifetimes in their trait's generic
 arguments (`T: Tr<&'a U>`; `&` without one is E0637, as in rustc), nor
 those of structs and traits in what they say associated types are.
 Named lifetimes in types inside bodies (`let x: &'a i32`) and function
-pointer types are not supported yet. A trait's `impl` block may be for some lifetimes only:
+pointer types are not supported yet. A trait's `impl` block may be for
+some lifetimes only:
 naming one twice (`impl<'a> PartialEq for Token<'a>`, whose `Rhs` is
 `Token<'a>` too), naming `'static` (`impl Tr for &'static S`), or
 bounding them (`impl<'a, 'b: 'a>`); a lifetime only its associated

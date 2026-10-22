@@ -1365,7 +1365,7 @@ impl<'a> Cx<'a> {
         let mut map = |r: Region| match r {
             Region::Static => Some(STATIC),
             Region::Param(i) => lifetimes.get(i as usize).copied(),
-            Region::Erased => None,
+            Region::Erased | Region::Late(_) => None,
         };
         let range = self.call_range;
         let mut at = 0;
