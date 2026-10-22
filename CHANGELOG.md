@@ -410,6 +410,19 @@
   or slice and comparisons of `&mut` references reborrow them, so
   closures no longer move them (E0382 where rustc reports E0505).
   Code MIR building never expects to reach panics in debug builds.
+- Support byte literals (`b'a'`, a `u8`) and byte strings (`b"..."`,
+  `br#"..."#`, a `&'static [u8; N]` that coerces to `&[u8]`), in
+  patterns too for bytes (`b'a'..=b'z'`), and in constants and
+  statics. Literals' escapes are checked as rustc's lexer checks them,
+  with its messages ("unknown byte escape: `q`", "out of range hex
+  escape", "non-ASCII character in byte string literal", ...); `'ab'`
+  is one char literal, reported as rustc does. `core` gains the ASCII
+  methods of `u8` (`is_ascii_alphabetic`, `is_ascii_digit`,
+  `to_ascii_lowercase`, `eq_ignore_ascii_case`, `make_ascii_uppercase`,
+  ...) and of `[u8]` (`is_ascii`, `eq_ignore_ascii_case`,
+  `make_ascii_lowercase`, `make_ascii_uppercase`). A constant reference
+  to an array passed where a slice is wanted (`f(b"ab")`, `f(ARRAY)`)
+  is unsized, which it was not.
 
 ### Performance
 

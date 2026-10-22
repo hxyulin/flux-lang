@@ -328,6 +328,7 @@ fn constant_text(hir: &Hir, constant: Constant) -> String {
             format!("{value}_{}", Ty::int(ty))
         }
         Constant::Bool(value) => value.to_string(),
+        Constant::Char(c) => format!("{c:?}"),
         Constant::Unit => "()".to_owned(),
         Constant::CStr(index) => format!("c_str{index}"),
         Constant::Fn { function, args, .. } => {

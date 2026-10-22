@@ -1380,6 +1380,18 @@ impl Builder<'_> {
     /// Evaluates `expr` to an operand: constants directly, anything else
     /// into a new temporary.
     fn lower_operand(&mut self, expr: ExprId) -> Operand {
+        // A constant reference to an array coerced to one to a slice
+        // (`f(b"ab")`) is unsized first.
+        if self.types.unsizes.get(expr).is_some() {
+            let temp = self.temp_for(expr);
+            return self.read(temp.into());
+        }
+        self.direct_operand(expr)
+    }
+
+    /// `expr`'s value as an operand, without its coercions: a constant
+    /// itself, anything else read from a temporary.
+    fn direct_operand(&mut self, expr: ExprId) -> Operand {
         match &self.body.exprs[expr] {
             Expr::Literal(literal) => Operand::Const(self.constant(literal, expr)),
             Expr::Tuple(fields) if fields.is_empty() => Operand::Const(Constant::Unit),
@@ -1772,6 +1784,18 @@ impl Builder<'_> {
         match (literal, self.expr_ty(expr).as_int()) {
             (Literal::Int { value, .. }, Some(ty)) => Constant::int(*value as i128, ty),
             (Literal::Bool(value), _) => Constant::Bool(*value),
+            (Literal::Char(c), _) => Constant::Char(*c),
+            // A string's text and a byte string's bytes are promoted, as
+            // rustc keeps them in static memory.
+            (Literal::Str(_) | Literal::ByteStr(_), _) => {
+                let value = text_value(literal).expect("a string literal");
+                let index = self.promoted.len() as u32;
+                self.promoted.push(value);
+                Constant::Promoted {
+                    index,
+                    ty: self.expr_ty(expr),
+                }
+            }
             (Literal::CStr(bytes), _) => {
                 self.c_strings.push(bytes.clone());
                 Constant::CStr(self.c_strings.len() as u32 - 1)
@@ -1857,6 +1881,13 @@ impl Builder<'_> {
                 ty: ty.as_int()?,
             }),
             Expr::Literal(Literal::Bool(b)) => Some(Value::Bool(*b)),
+            Expr::Literal(Literal::Char(c)) => Some(Value::Int {
+                bits: u128::from(*c),
+                ty: IntTy::U32,
+            }),
+            Expr::Literal(literal @ (Literal::Str(_) | Literal::ByteStr(_))) => {
+                Some(Value::Ref(Box::new(text_value(literal)?)))
+            }
             Expr::Unary {
                 op: UnaryOp::Neg,
                 operand,
@@ -1931,11 +1962,11 @@ impl Builder<'_> {
         let body = self.body;
         match &body.exprs[expr] {
             Expr::Path(Res::Const(_)) => {
-                let operand = self.lower_operand(expr);
+                let operand = self.direct_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
             }
             Expr::Path(Res::Assoc { .. }) if self.types.consts.get(expr).is_some() => {
-                let operand = self.lower_operand(expr);
+                let operand = self.direct_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
             }
             // A function item has no value but its type.
@@ -1952,7 +1983,7 @@ impl Builder<'_> {
                 self.bug("a missing or unresolved expression", range);
             }
             Expr::Literal(_) => {
-                let operand = self.lower_operand(expr);
+                let operand = self.direct_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
             }
             Expr::Tuple(fields) => {
@@ -3640,4 +3671,21 @@ impl Builder<'_> {
         );
         self.current = Some(next);
     }
+}
+
+/// The bytes of a string or byte string literal, as the value of the
+/// `str` or array they are: an aggregate of `u8`s.
+fn text_value(literal: &Literal) -> Option<crate::eval::Value> {
+    let bytes: &[u8] = match literal {
+        Literal::Str(text) => text.as_bytes(),
+        Literal::ByteStr(bytes) => bytes,
+        _ => return None,
+    };
+    let byte = |b: &u8| crate::eval::Value::Int {
+        bits: u128::from(*b),
+        ty: IntTy::U8,
+    };
+    Some(crate::eval::Value::Aggregate(
+        bytes.iter().map(byte).collect(),
+    ))
 }

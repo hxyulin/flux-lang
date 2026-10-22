@@ -1,7 +1,7 @@
 //! Lowers a function body from the typed AST to HIR.
 
 use flux_arena::Arena;
-use flux_intern::{Symbol, kw};
+use flux_intern::{Symbol, kw, sym};
 use flux_syntax::ast::{self, AstNode, BinaryOp, CmpOp, LiteralKind, LogicOp};
 use flux_syntax::{SyntaxNode, SyntaxTree, TextRange};
 
@@ -15,7 +15,9 @@ use crate::body::{
 use crate::def_map::{Def, Ns, ResolveError, Resolved};
 use crate::item_tree::{GenericArgs, PathAnchor, lower_generic_args, lower_generic_path};
 use crate::item_tree::{check_attr, check_attrs, lower_type, unsupported};
-use crate::literal::{parse_int, unescape_c_str};
+use crate::literal::{
+    parse_int, unescape_byte, unescape_byte_str, unescape_c_str, unescape_char, unescape_str,
+};
 use crate::{
     Bound, ConstId, Derive, Diagnostic, FunctionId, ImplTarget, ItemTree, ModuleId, Owner, Path,
     StructId, StructKind, TypeRef,
@@ -3065,17 +3067,27 @@ impl<'a> Ctx<'a> {
             },
             Some(LiteralKind::Bool(value)) => Expr::Literal(Literal::Bool(value)),
             Some(LiteralKind::Float) => self.unsupported_expr(range, "floating-point numbers"),
-            Some(LiteralKind::Char) => self.unsupported_expr(range, "`char` literals"),
-            Some(LiteralKind::Byte) => self.unsupported_expr(range, "byte literals"),
-            Some(LiteralKind::CString) => match unescape_c_str(token.text()) {
-                Ok(bytes) => Expr::Literal(Literal::CStr(bytes.into())),
-                Err(message) => {
-                    self.error(range, message);
-                    Expr::Missing
+            Some(kind) => {
+                let text = token.text();
+                let value = match kind {
+                    LiteralKind::Char => unescape_char(text).map(Literal::Char),
+                    LiteralKind::Byte => unescape_byte(text).map(|b| Literal::Int {
+                        value: b.into(),
+                        suffix: Some(sym::u8),
+                    }),
+                    LiteralKind::String => unescape_str(text).map(|s| Literal::Str(s.into())),
+                    LiteralKind::ByteString => {
+                        unescape_byte_str(text).map(|b| Literal::ByteStr(b.into()))
+                    }
+                    _ => unescape_c_str(text).map(|b| Literal::CStr(b.into())),
+                };
+                match value {
+                    Ok(literal) => Expr::Literal(literal),
+                    Err(message) => {
+                        self.error(range, message);
+                        Expr::Missing
+                    }
                 }
-            },
-            Some(LiteralKind::String | LiteralKind::ByteString) => {
-                self.unsupported_expr(range, "string literals other than `c\"...\"`")
             }
             None => Expr::Missing,
         }

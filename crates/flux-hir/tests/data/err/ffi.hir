@@ -8,7 +8,7 @@ fn literals() -> () {
     let a@0 = <missing>;
     let b@1 = <missing>;
     let c@2 = <missing>;
-    let d@3 = <missing>;
+    let d@3 = b"bytes";
 }
 
 error 33..36: `...` must be the last argument of a C-variadic function
@@ -16,4 +16,3 @@ error 106..109: `...` is not supported for non-extern functions
 error 143..159: null characters in C string literals are not supported
 error 173..192: null characters in C string literals are not supported
 error 206..226: unknown character escape: `q`
-error 240..248: string literals other than `c"..."` are not supported yet

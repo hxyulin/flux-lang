@@ -1,0 +1,45 @@
+fn chars() -> () {
+    let b@0 = <missing>;
+    let c@1 = <missing>;
+    let d@2 = <missing>;
+    let e@3 = <missing>;
+    let f@4 = <missing>;
+    let g@5 = <missing>;
+    let h@6 = <missing>;
+    let i@7 = <missing>;
+}
+
+fn bytes() -> () {
+    let a@0 = <missing>;
+    let b@1 = <missing>;
+    let c@2 = <missing>;
+    let d@3 = <missing>;
+    let e@4 = <missing>;
+    let f@5 = <missing>;
+    let g@6 = <missing>;
+}
+
+fn strings() -> () {
+    let a@0 = <missing>;
+    let b@1 = <missing>;
+    let c@2 = <missing>;
+}
+
+error 25..31: out of range hex escape
+error 45..49: unknown character escape: `q`
+error 63..73: invalid unicode character escape
+error 87..99: invalid unicode character escape
+error 113..119: empty unicode escape
+error 133..146: overlong unicode escape
+error 160..166: incorrect unicode escape sequence
+error 180..183: character constant must be escaped: `\t`
+error 213..218: non-ASCII character in byte literal
+error 232..241: unicode escape in byte string
+error 255..260: unknown byte escape: `q`
+error 274..281: invalid character in numeric character escape: `g`
+error 295..300: non-ASCII character in byte string literal
+error 314..320: non-ASCII character in raw byte string literal
+error 334..343: unicode escape in byte string
+error 375..381: out of range hex escape
+error 395..399: unknown character escape: `q`
+error 413..421: invalid start of unicode escape: `_`

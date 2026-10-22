@@ -406,6 +406,11 @@ impl Printer<'_> {
                 }
             }
             Expr::Literal(Literal::Bool(value)) => write!(self.out, "{value}").unwrap(),
+            Expr::Literal(Literal::Char(c)) => write!(self.out, "{c:?}").unwrap(),
+            Expr::Literal(Literal::Str(text)) => write!(self.out, "{text:?}").unwrap(),
+            Expr::Literal(Literal::ByteStr(bytes)) => {
+                write!(self.out, "b\"{}\"", bytes.escape_ascii()).unwrap();
+            }
             Expr::Literal(Literal::CStr(bytes)) => {
                 write!(self.out, "c\"{}\"", bytes.escape_ascii()).unwrap();
             }

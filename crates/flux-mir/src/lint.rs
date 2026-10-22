@@ -209,6 +209,10 @@ fn operand(
             ty: *ty,
         }),
         Operand::Const(Constant::Bool(b)) => Some(Value::Bool(*b)),
+        Operand::Const(Constant::Char(c)) => Some(Value::Int {
+            bits: u128::from(*c),
+            ty: flux_ty::IntTy::U32,
+        }),
         Operand::Const(Constant::Item { id, args, .. }) => match consts.get(*id, args)? {
             value @ (Value::Int { .. } | Value::Bool(_)) => Some(value.clone()),
             Value::Aggregate(_) | Value::Variant { .. } | Value::Static(_) | Value::Ref(_) => None,
