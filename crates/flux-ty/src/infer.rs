@@ -168,8 +168,13 @@ pub fn infer_const(
     };
     let mut ctx = Ctx::new(items, sigs, owner, body, source_map);
     // What the constant's type needs is reported with it, not again in
-    // its value, as rustc does.
+    // its value, as rustc does; but the traits of its associated types
+    // are needed again to normalize it, at the value.
     ctx.signature_wf(ret);
+    if ret.has_aliases() {
+        let range = ctx.range(body.root);
+        ctx.require_alias_traits(ret, None, range);
+    }
     let ret = ctx.normalize(ret, data.def_range);
     ctx.expect(body.root, ret);
     let ty = ctx.infer_expr(body.root);
@@ -735,8 +740,13 @@ impl Ctx<'_> {
         );
     }
 
-    fn resolve_type_ref(&mut self, ty: TypeRefId) -> Ty {
-        let range = self.source_map.types.get(ty).copied().unwrap_or_default();
+    fn resolve_type_ref(&mut self, ty_ref: TypeRefId) -> Ty {
+        let range = self
+            .source_map
+            .types
+            .get(ty_ref)
+            .copied()
+            .unwrap_or_default();
         let scope = TypeScope {
             self_ty: self.self_ty,
             generics: &self.generics,
@@ -748,14 +758,15 @@ impl Ctx<'_> {
         let ty = resolve_or_report(
             self.items,
             self.module,
-            &self.body.types[ty],
+            &self.body.types[ty_ref],
             scope,
             range,
             &mut self.diagnostics,
         );
         let ty = self.fill_placeholders(ty, range);
         if ty.has_aliases() {
-            self.require_alias_traits(ty, range);
+            let body = self.body;
+            self.require_alias_traits(ty, Some(&body.types[ty_ref]), range);
         }
         let ty = self.normalize(ty, range);
         self.register_wf(ty, range, true);

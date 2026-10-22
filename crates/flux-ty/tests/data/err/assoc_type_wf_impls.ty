@@ -1,0 +1,7 @@
+struct S<T> { 0: T }
+struct W<T> { 0: T }
+fn main() -> ()
+error 445..454: the trait bound `T: Copy` is not satisfied
+error 485..499: the trait bound `T: Tr` is not satisfied
+error 550..564: the trait bound `T: Tr` is not satisfied
+error 575..576: the type parameter `T` is not constrained by the impl trait, self type, or predicates

@@ -1,0 +1,63 @@
+struct Pair<A, B> { 0: A, 1: B }
+struct Field<T> { x: <T as Tr>::Out }
+struct Bounded<T> { 0: T }
+struct W<T> { 0: T }
+fn same<T>(<T as Tr>::Out) -> (<T as Tr>::Out, <T as Tr>::Out)
+    x@0: <T as Tr>::Out
+fn ret<T>() -> <T as Tr>::Out
+fn two<T, U>(<T as Tr>::Out, Pair<<U as Tr>::Out, <T as Tr>::Out>) -> ()
+    x@0: <T as Tr>::Out
+    y@1: Pair<<U as Tr>::Out, <T as Tr>::Out>
+fn nested_ret<T>() -> Pair<<T as Tr>::Out, u8>
+fn concrete(<i32 as Tr>::Out) -> ()
+    x@0: {error}
+fn annotations<T>(T) -> ()
+    x@0: T
+    a@1: <T as Tr>::Out
+    b@2: Pair<u8, <T as Tr>::Out>
+    c@3: (u8, &<T as Tr>::Out)
+fn bounded<T>(u8) -> u8
+    x@0: u8
+fn method(u8) -> u8
+    x@0: u8
+fn param(Pair<T, u8>, <T as Tr>::Out) -> ()
+    self@0: Pair<T, u8>
+    x@1: <T as Tr>::Out
+fn f(<Self as Tr>::Out) -> ()
+fn g<T>(Pair<<T as Tr>::Out, u8>) -> ()
+    x@0: Pair<<T as Tr>::Out, u8>
+fn through_impl<T>(<W<T> as Tr>::Out) -> ()
+    x@0: T
+fn main() -> ()
+const C: u8
+const D: Option<<T as Tr>::Out>
+const E: <Self as Tr>::Out
+const K: <i32 as Tr>::Out
+error 446..460: the trait bound `T: Tr` is not satisfied
+error 529..543: the trait bound `T: Tr` is not satisfied
+error 577..591: the trait bound `T: Tr` is not satisfied
+error 596..632: the trait bound `U: Tr` is not satisfied
+error 601..615: the trait bound `U: Tr` is not satisfied
+error 660..684: the trait bound `T: Tr` is not satisfied
+error 665..679: the trait bound `T: Tr` is not satisfied
+error 717..733: the trait bound `i32: Tr` is not satisfied
+error 783..784: the trait bound `T: Tr` is not satisfied
+error 829..830: the trait bound `T: Tr` is not satisfied
+error 873..874: the trait bound `T: Tr` is not satisfied
+error 927..941: the trait bound `T: Tr` is not satisfied
+error 946..963: the trait bound `T: Tr` is not satisfied
+error 1012..1094: the trait bound `T: Tr` is not satisfied
+error 1106..1168: the trait bound `T: Tr` is not satisfied
+error 1175..1197: the trait bound `T: Tr` is not satisfied
+error 1220..1231: the trait bound `T: Tr` is not satisfied
+error 1284..1298: the trait bound `T: Tr` is not satisfied
+error 1323..1337: the trait bound `T: Tr` is not satisfied
+error 1341..1345: the trait bound `T: Tr` is not satisfied
+error 1380..1397: the trait bound `Self: Tr` is not satisfied
+error 1411..1428: the trait bound `Self: Tr` is not satisfied
+error 1446..1470: the trait bound `T: Tr` is not satisfied
+error 1451..1465: the trait bound `T: Tr` is not satisfied
+error 1487..1503: the trait bound `i32: Tr` is not satisfied
+error 1506..1507: the trait bound `i32: Tr` is not satisfied
+error 1604..1621: the trait bound `T: Copy` is not satisfied
+error 1605..1609: the trait bound `T: Copy` is not satisfied

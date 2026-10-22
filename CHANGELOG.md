@@ -143,6 +143,12 @@
   discriminants.
 - Report a negated literal out of range (`-129i8`) at the `-`, as rustc
   does.
+- Check that associated types' traits hold where they are named:
+  `<T as Tr>::Out` needs `T: Tr` (E0277) in signatures, fields,
+  constants' types, bounds, `impl` headers and annotations in bodies,
+  reported at rustc's positions, again where a body or a constant's value
+  normalizes its signature, as rustc does. An unmet bound of a
+  signature is reported once per item, for structs' bounds too.
 - Report the mismatched types rustc reports after E0409, where a
   binding is by reference in one alternative and by value in another.
 - Recover from malformed patterns and `else` branches with one error

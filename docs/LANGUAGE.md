@@ -166,7 +166,9 @@ the traits its bounds name, and no fields; it is moved, never copied.
 An associated type is what the `impl` block for its types says, or what
 a bound says (`T: Tr<Out = i32>`, also inside a bound on an associated
 type: `type N: Add<Output = i32>;`); otherwise, for a type parameter, it
-is a type of its own, as in rustc.
+is a type of its own, as in rustc. Its trait must hold wherever it is
+named: `<T as Tr>::Out` needs `T: Tr` (E0277) in signatures, bounds,
+`impl` headers, annotations and paths, reported where rustc reports it.
 Blocks for different instances of a struct (`impl Pair<i32>` and
 `impl Pair<u8>`) may define the same name, and the type a method is
 called on picks one.

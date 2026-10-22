@@ -832,7 +832,7 @@ fn duplicate_assoc_items(
 
 /// Whether two `impl` blocks' types, each in terms of its own
 /// parameters, may be the same type.
-fn overlap(a: Ty, b: Ty) -> bool {
+pub(crate) fn overlap(a: Ty, b: Ty) -> bool {
     match (a.kind(), b.kind()) {
         (TyKind::Param(_) | TyKind::Error, _) | (_, TyKind::Param(_) | TyKind::Error) => true,
         (TyKind::Adt(x, xs), TyKind::Adt(y, ys)) => {
@@ -849,7 +849,7 @@ fn overlap(a: Ty, b: Ty) -> bool {
 }
 
 /// Whether `ty` mentions generic parameter `index`.
-fn mentions_param(ty: Ty, index: u32) -> bool {
+pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
     if !ty.has_params() {
         return false;
     }
