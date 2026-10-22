@@ -123,16 +123,16 @@ impl<T, U: Into<T>> TryFrom<U> for T {
 }
 
 /// A cheap conversion of a reference to one to a `T`.
-pub trait AsRef<T> {
+pub trait AsRef<T: ?Sized> {
     fn as_ref(&self) -> &T;
 }
 
 /// A cheap conversion of a mutable reference to one to a `T`.
-pub trait AsMut<T> {
+pub trait AsMut<T: ?Sized> {
     fn as_mut(&mut self) -> &mut T;
 }
 
-impl<T, U> AsRef<U> for &T
+impl<T: ?Sized, U: ?Sized> AsRef<U> for &T
 where
     T: AsRef<U>,
 {
@@ -141,7 +141,7 @@ where
     }
 }
 
-impl<T, U> AsRef<U> for &mut T
+impl<T: ?Sized, U: ?Sized> AsRef<U> for &mut T
 where
     T: AsRef<U>,
 {
@@ -150,7 +150,7 @@ where
     }
 }
 
-impl<T, U> AsMut<U> for &mut T
+impl<T: ?Sized, U: ?Sized> AsMut<U> for &mut T
 where
     T: AsMut<U>,
 {

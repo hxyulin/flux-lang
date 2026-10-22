@@ -113,7 +113,7 @@ pub trait Hasher {
 }
 
 /// A mutable reference to a hasher is one.
-impl<H: Hasher> Hasher for &mut H {
+impl<H: Hasher + ?Sized> Hasher for &mut H {
     fn finish(&self) -> u64 {
         (**self).finish()
     }
@@ -550,13 +550,13 @@ impl<T: Hash, const N: usize> Hash for [T; N] {
     }
 }
 
-impl<T: Hash> Hash for &T {
+impl<T: ?Sized + Hash> Hash for &T {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (**self).hash(state);
     }
 }
 
-impl<T: Hash> Hash for &mut T {
+impl<T: ?Sized + Hash> Hash for &mut T {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (**self).hash(state);
     }

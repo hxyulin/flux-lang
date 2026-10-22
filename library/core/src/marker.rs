@@ -29,8 +29,8 @@ impl Copy for usize {}
 impl Copy for bool {}
 impl Copy for char {}
 impl Copy for () {}
-impl<T> Copy for *const T {}
-impl<T> Copy for *mut T {}
+impl<T: ?Sized> Copy for *const T {}
+impl<T: ?Sized> Copy for *mut T {}
 impl<A: Copy> Copy for (A,) {}
 impl<A: Copy, B: Copy> Copy for (A, B) {}
 impl<A: Copy, B: Copy, C: Copy> Copy for (A, B, C) {}
@@ -47,17 +47,17 @@ impl<A: Copy, B: Copy, C: Copy, D: Copy, E: Copy, F: Copy, G: Copy, H: Copy, I: 
 /// A type that acts as if it held a `T`, while holding nothing: for
 /// structs whose parameters no field names. It is covariant in `T`.
 #[lang = "phantom_data"]
-pub struct PhantomData<T>;
+pub struct PhantomData<T: ?Sized>;
 
-impl<T> Clone for PhantomData<T> {
+impl<T: ?Sized> Clone for PhantomData<T> {
     fn clone(&self) -> PhantomData<T> {
         PhantomData
     }
 }
 
-impl<T> Copy for PhantomData<T> {}
+impl<T: ?Sized> Copy for PhantomData<T> {}
 
 /// It hashes nothing.
-impl<T> crate::hash::Hash for PhantomData<T> {
+impl<T: ?Sized> crate::hash::Hash for PhantomData<T> {
     fn hash<H: crate::hash::Hasher>(&self, _state: &mut H) {}
 }

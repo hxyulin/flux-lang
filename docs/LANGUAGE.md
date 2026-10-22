@@ -458,9 +458,16 @@ Operators on other types than integers and `bool` call the methods of
 `<=`, `>`, `>=`), which `core` implements for the integers and `bool`
 too, so generic code can use them; `&a == &b` and `&a < &b` compare `a`
 and `b`. There are no trait objects (`dyn Tr`), and no generic
-associated types. `Sized` is, as a bound:
-every type flux has is sized, but a trait's provided methods must say
-`where Self: Sized` to take or hold `Self` by value, as in rustc.
+associated types. `Sized` is, as a bound and implicitly: every type
+is sized but slices, `str` and trait objects, and a type parameter is
+`Sized` unless bounded `?Sized` (`fn f<T: ?Sized>(x: &T)`, `impl<T:
+?Sized + Tr> Tr for &T`), as in rustc; a trait's `Self` is not, so its
+provided methods must say `where Self: Sized` to take or hold `Self` by
+value. A value, parameter or struct argument whose size is unknown is
+E0277, and so is a call or `impl` block that needs a parameter to be
+`Sized` with an unsized type. A struct's last field may not be of an
+unsized parameter's type yet (unsized structs are not supported), and
+`?Sized` on associated types and `impl Trait` is not supported yet.
 
 A pattern that is not a binding sees through references, and then binds
 by reference, as rustc's default binding modes do: `Some(x)` matching a

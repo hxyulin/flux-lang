@@ -689,7 +689,7 @@ pub trait ExactSizeIterator: Iterator {
 }
 
 /// A mutable reference to an iterator is one.
-impl<I: Iterator> Iterator for &mut I {
+impl<I: Iterator + ?Sized> Iterator for &mut I {
     type Item = I::Item;
 
     fn next(&mut self) -> Option<I::Item> {
@@ -705,13 +705,13 @@ impl<I: Iterator> Iterator for &mut I {
     }
 }
 
-impl<I: DoubleEndedIterator> DoubleEndedIterator for &mut I {
+impl<I: DoubleEndedIterator + ?Sized> DoubleEndedIterator for &mut I {
     fn next_back(&mut self) -> Option<I::Item> {
         (**self).next_back()
     }
 }
 
-impl<I: ExactSizeIterator> ExactSizeIterator for &mut I {
+impl<I: ExactSizeIterator + ?Sized> ExactSizeIterator for &mut I {
     fn len(&self) -> usize {
         (**self).len()
     }

@@ -333,7 +333,7 @@ impl Signatures {
             return Some(true);
         }
         if Some(p.trait_ref.trait_) == self.builtins.sized {
-            return Some(true);
+            return Some(!p.self_ty.is_unsized());
         }
         if rigid(p.self_ty) || depth > 8 {
             return Some(false);
@@ -552,6 +552,9 @@ pub struct TypeScope<'a> {
     /// In a function's signature, the function, whose opaque types its
     /// return type names.
     pub function: Option<FunctionId>,
+    /// Which of `generics` have no implicit `Sized` bound
+    /// ([`unsized_params`]); empty where all do.
+    pub unsized_params: &'a [bool],
 }
 
 /// The values of the constants that array lengths name (`[u8; N]`), as
@@ -630,6 +633,12 @@ impl<'a> ArrayLens<'a> {
 }
 
 impl TypeScope<'_> {
+    /// Whether values of `ty` may have no size known at compile time
+    /// here ([`maybe_unsized`]).
+    pub fn is_unsized(&self, items: &ItemTree, ty: Ty) -> bool {
+        maybe_unsized(items, ty, self.unsized_params, self.bounds)
+    }
+
     /// The generic parameter called `name`, if one is in scope.
     pub fn param(&self, name: Symbol) -> Option<Ty> {
         let index = self.generics.iter().rposition(|&n| n == name)?;
@@ -653,6 +662,45 @@ impl TypeScope<'_> {
             .iter()
             .rposition(|&n| n == name)
             .is_some_and(|i| matches!(self.consts.get(i), Some(None)))
+    }
+}
+
+/// Which generic parameters of an item in `owner` with its own
+/// `generics` have no implicit `Sized` bound, in the order of
+/// [`generic_names`]: a trait's `Self`, and those bounded `?Sized`.
+pub fn unsized_params(items: &ItemTree, owner: Option<Owner>, own: &Generics) -> Vec<bool> {
+    let mut out = Vec::new();
+    if let Some(Owner::Trait(_)) = owner {
+        out.push(true);
+    }
+    out.extend(
+        items
+            .owner_generics(owner)
+            .into_iter()
+            .chain([own])
+            .flat_map(|g| g.params.iter().map(|p| p.maybe_unsized)),
+    );
+    out
+}
+
+/// Whether values of `ty` may have no size known at compile time: a
+/// slice, `str`, or a generic parameter without an implicit `Sized`
+/// bound (`unsized_params`, by index) that none of `bounds` says is
+/// `Sized`.
+pub fn maybe_unsized(
+    items: &ItemTree,
+    ty: Ty,
+    unsized_params: &[bool],
+    bounds: &[Predicate],
+) -> bool {
+    match ty.kind() {
+        TyKind::Param(p) => {
+            unsized_params.get(p.index as usize) == Some(&true)
+                && !bounds.iter().any(|b| {
+                    b.self_ty == ty && items.traits[b.trait_ref.trait_].lang == Some(sym::sized)
+                })
+        }
+        _ => ty.is_unsized(),
     }
 }
 
@@ -1101,7 +1149,7 @@ pub fn resolve_type(
             if fields.contains(&Ty::ERROR) {
                 return Ty::ERROR;
             }
-            if let Some(&field) = fields.iter().find(|f| f.is_unsized()) {
+            if let Some(&field) = fields.iter().find(|&&f| scope.is_unsized(items, f)) {
                 return fail(errors, range, unsized_error(field));
             }
             Ty::tuple(&fields)
@@ -1143,7 +1191,9 @@ pub fn resolve_type(
             let len = array_len(items, module, len, scope, errors);
             match (elem, len) {
                 (Ty::ERROR, _) | (_, None) => Ty::ERROR,
-                (elem, _) if elem.is_unsized() => fail(errors, range, unsized_error(elem)),
+                (elem, _) if scope.is_unsized(items, elem) => {
+                    fail(errors, range, unsized_error(elem))
+                }
                 (elem, Some(len)) => Ty::array_of(elem, len),
             }
         }
@@ -1157,7 +1207,7 @@ pub fn resolve_type(
             if elem == Ty::ERROR {
                 return Ty::ERROR;
             }
-            if elem.is_unsized() {
+            if scope.is_unsized(items, elem) {
                 return fail(errors, range, unsized_error(elem));
             }
             Ty::slice(elem)
@@ -1636,8 +1686,20 @@ pub fn struct_type(
     if args.contains(&Ty::ERROR) {
         return Ty::ERROR;
     }
-    if let Some(&arg) = args.iter().find(|a| a.is_unsized()) {
-        errors.push((range, unsized_error(arg)));
+    let params = &def.generics.params;
+    if let Some((_, &arg)) = args
+        .iter()
+        .enumerate()
+        .find(|&(i, &a)| !params[i].maybe_unsized && scope.is_unsized(items, a))
+    {
+        // At the path and its arguments, as rustc points.
+        let at = match (path.ranges.first(), path.args(last)) {
+            (Some(first), Some(args)) if first.start() <= args.range.end() => {
+                TextRange::new(first.start(), args.range.end())
+            }
+            _ => range,
+        };
+        errors.push((at, unsized_error(arg)));
         return Ty::ERROR;
     }
     Ty::adt(strukt, def.name, &args)
@@ -2331,10 +2393,12 @@ fn extend_signatures(
     for (id, s) in items.structs.iter().skip(from.structs as usize) {
         let generics: Vec<Symbol> = s.generics.params.iter().map(|p| p.name).collect();
         let consts: Vec<Option<Ty>> = s.generics.params.iter().map(param_const_ty).collect();
+        let unsized_params = unsized_params(items, None, &s.generics);
         let scope = TypeScope {
             self_ty: Some(Ty::adt(id, s.name, &params_of(&s.generics, 0))),
             generics: &generics,
             consts: &consts,
+            unsized_params: &unsized_params,
             signature_of: Some("structs"),
             defaults: Some(&sigs.trait_defaults),
             lens,
@@ -2356,7 +2420,7 @@ fn extend_signatures(
             let variant = s.variant(v).fields;
             fields.extend(variant.iter().map(|f| {
                 let ty = resolve(items, s.loc, &f.ty, scope, f.range, &mut reported);
-                if ty.is_unsized() {
+                if scope.is_unsized(items, ty) {
                     let mut d = Diagnostic::new(f.range, "unsized fields are not supported yet");
                     d.file = s.loc.file;
                     reported.push(d);
@@ -2384,11 +2448,13 @@ fn extend_signatures(
         }
         let generics = generic_names(items, Some(Owner::Impl(id)), &Generics::default());
         let consts = generic_consts(items, Some(Owner::Impl(id)), &Generics::default());
+        let unsized_params = unsized_params(items, Some(Owner::Impl(id)), &Generics::default());
         let self_ty = sigs.impls[id];
         let scope = TypeScope {
             self_ty: Some(self_ty),
             generics: &generics,
             consts: &consts,
+            unsized_params: &unsized_params,
             signature_of: Some("implementations"),
             defaults: Some(&sigs.trait_defaults),
             lens,
@@ -2475,6 +2541,7 @@ fn extend_signatures(
             defaults: Some(&sigs.trait_defaults),
             lens,
             function: None,
+            unsized_params: &[],
         };
         let mut ty = resolve(
             items,
@@ -2516,6 +2583,7 @@ fn extend_signatures(
     for (id, function) in items.functions.iter().skip(from.functions as usize) {
         let generics = generic_names(items, function.owner, &function.generics);
         let consts = generic_consts(items, function.owner, &function.generics);
+        let unsized_params = unsized_params(items, function.owner, &function.generics);
         let mut errors = Vec::new();
         check_const_params(
             items,
@@ -2539,6 +2607,7 @@ fn extend_signatures(
             self_ty: self_ty(&sigs, function.owner),
             generics: &generics,
             consts: &consts,
+            unsized_params: &unsized_params,
             signature_of: Some("functions"),
             self_trait,
             self_types: &self_types,
@@ -2576,7 +2645,21 @@ fn extend_signatures(
             bounds: &bounds,
             ..scope
         };
+        // Parameters and return values must be sized; a declaration
+        // without a body may name a trait's `Self` or a `?Sized`
+        // parameter, as rustc checks only bodies' (and not where a bound
+        // makes the type `Sized`).
+        let has_body = function.has_body;
         let sized = |ty: Ty, range: TextRange, reported: &mut Vec<Diagnostic>| {
+            // A parameter keeps its type, which the body's bindings have.
+            if matches!(ty.kind(), TyKind::Param(_)) {
+                if has_body && scope.is_unsized(items, ty) {
+                    let mut d = Diagnostic::new(range, unsized_error(ty));
+                    d.file = function.loc.file;
+                    reported.push(d);
+                }
+                return ty;
+            }
             if ty.is_unsized() {
                 let mut d = Diagnostic::new(range, unsized_error(ty));
                 d.file = function.loc.file;

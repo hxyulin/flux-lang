@@ -871,12 +871,14 @@ impl Ctx<'_> {
             return Selection::Ambiguous;
         }
         let t = pred.trait_ref.trait_;
-        // Every type flux has is sized, except perhaps a trait's `Self`,
-        // which is only if a bound says so.
-        if self.items.traits[t].lang == Some(flux_intern::sym::sized)
-            && self_ty != Ty::param(0, flux_intern::kw::SelfUpper)
-        {
-            return Selection::Met(Vec::new());
+        // Every type is sized but slices, `str`, a trait's `Self` and
+        // `?Sized` parameters, unless a bound says they are.
+        if self.items.traits[t].lang == Some(flux_intern::sym::sized) {
+            return if self.is_unsized(self_ty) {
+                Selection::Unmet
+            } else {
+                Selection::Met(Vec::new())
+            };
         }
         if crate::traits::is_builtin_copy(self.items, t, self_ty) {
             return Selection::Met(Vec::new());
@@ -988,7 +990,17 @@ impl Ctx<'_> {
             .map(|_| self.new_var(false, TextRange::default()))
             .collect();
         let header = trait_ref.subst(&vars).with_self(self_ty.subst(&vars));
-        self.unify_predicates(header, pred).then_some(vars)
+        (self.unify_predicates(header, pred) && self.impl_args_sized(imp, &vars)).then_some(vars)
+    }
+
+    /// Whether the arguments `args` of `impl` block `imp` meet its
+    /// parameters' implicit `Sized` bounds, as far as they are known.
+    pub(super) fn impl_args_sized(&mut self, imp: ImplId, args: &[Ty]) -> bool {
+        let params = &self.items.impls[imp].generics.params;
+        params
+            .iter()
+            .zip(args)
+            .all(|(p, &a)| p.maybe_unsized || !self.is_unsized(a))
     }
 
     /// Whether `ty` may implement `t`: through a bound in scope, or an
@@ -1056,9 +1068,10 @@ impl Ctx<'_> {
         }
         // Deep enough, or (from `has_impl_header`) bounds aside.
         let check_bounds = depth < 64;
-        if self.items.traits[t].lang == Some(flux_intern::sym::sized)
-            || crate::traits::is_builtin_copy(self.items, t, ty)
-        {
+        if self.items.traits[t].lang == Some(flux_intern::sym::sized) {
+            return !self.is_unsized(ty);
+        }
+        if crate::traits::is_builtin_copy(self.items, t, ty) {
             return true;
         }
         if let Some(found) = crate::traits::fn_goal(self.items, t, ty) {
@@ -1121,7 +1134,7 @@ impl Ctx<'_> {
                 let vars: Vec<Ty> = (0..count)
                     .map(|_| cx.new_var(false, TextRange::default()))
                     .collect();
-                if !cx.unify(self_ty.subst(&vars), ty) {
+                if !cx.unify(self_ty.subst(&vars), ty) || !cx.impl_args_sized(imp, &vars) {
                     return false;
                 }
                 if let Some(args) = args {
@@ -1417,49 +1430,6 @@ impl Ctx<'_> {
             None => {}
         }
         self.select_obligations();
-    }
-
-    /// In a trait's provided method, `Self` may be unsized unless a bound
-    /// says otherwise, so no parameter or local may have it as its type.
-    pub(super) fn check_unsized_self(&mut self) {
-        let self_ty = Ty::param(0, flux_intern::kw::SelfUpper);
-        let sized = self.param_env.iter().any(|p| {
-            p.self_ty == self_ty
-                && self.items.traits[p.trait_ref.trait_].lang == Some(flux_intern::sym::sized)
-        });
-        if sized {
-            return;
-        }
-        let body = self.body;
-        let message = "the size for values of type `Self` cannot be known at compilation time";
-        // Calls that return `Self`, and the bindings that hold it.
-        let mut ranges = Vec::new();
-        for (expr, data) in body.exprs.iter() {
-            if matches!(
-                data,
-                flux_hir::Expr::Call { .. } | flux_hir::Expr::MethodCall { .. }
-            ) && let Some(&ty) = self.expr_types.get(expr)
-                && self.shallow(ty) == self_ty
-            {
-                ranges.push(self.range(expr));
-            }
-        }
-        for (pat, data) in body.pats.iter() {
-            let flux_hir::Pat::Bind { binding, .. } = *data else {
-                continue;
-            };
-            let ty = self
-                .binding_types
-                .get(binding)
-                .copied()
-                .unwrap_or(Ty::ERROR);
-            if self.shallow(ty) == self_ty {
-                ranges.push(self.source_map.pats.get(pat).copied().unwrap_or_default());
-            }
-        }
-        for range in ranges {
-            self.error(range, message);
-        }
     }
 
     /// The type a path names before an associated item: as a type, except

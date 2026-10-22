@@ -38,8 +38,8 @@ impl Clone for usize { fn clone(&self) -> usize { *self } }
 impl Clone for bool { fn clone(&self) -> bool { *self } }
 impl Clone for char { fn clone(&self) -> char { *self } }
 impl Clone for () { fn clone(&self) -> () { () } }
-impl<T> Clone for *const T { fn clone(&self) -> Self { *self } }
-impl<T> Clone for *mut T { fn clone(&self) -> Self { *self } }
+impl<T: ?Sized> Clone for *const T { fn clone(&self) -> Self { *self } }
+impl<T: ?Sized> Clone for *mut T { fn clone(&self) -> Self { *self } }
 // Function pointers, which rustc's `core` clones through a built-in
 // impl for every arity.
 impl<R> Clone for fn() -> R { fn clone(&self) -> Self { *self } }
