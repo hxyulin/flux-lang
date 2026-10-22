@@ -54,7 +54,10 @@ MIR stage; it does not establish native compilation of those crates.
 ### Compiler input and crate builds
 
 `flux build` currently compiles one root source file and its module tree
-with Flux's own `core` and `alloc`. It does not build a Cargo dependency
+with Flux's own `core`, `alloc` and bounded `std` facade. The restricted
+`flux package build/run` driver selects a standalone dependency-free binary
+using offline Cargo metadata; see [its supported subset](PACKAGE_DRIVER.md).
+It does not build a Cargo dependency
 graph or consume rustc library metadata. Full compiler builds need a
 crate/dependency strategy with per-crate identities, visibility, aliases,
 editions, features and target configuration. An initial implementation
@@ -74,7 +77,7 @@ The dependencies themselves are part of the scope: `memchr` and
 `unicode-ident` for syntax, `hashbrown` and `rustc-hash` for compiler data
 structures, `clap`'s derives for the CLI, and Keel for code generation.
 Each must either be supported or have a deliberately defined build
-boundary. Offline Cargo metadata currently finds 58 external packages in
+boundary. The initial offline Cargo audit found 58 external packages in
 the workspace's normal/build dependency closure, including target-specific
 packages; this is not the host-only compiler package count. The current
 executable subset has no external dependencies.
@@ -125,8 +128,11 @@ atomics in the interner, hash tables throughout semantic analysis, and
 filesystem, process and timing APIs in the driver and tools. The parser
 also uses `std::thread::panicking` for its marker guard.
 
-A small `std` facade can reexport facilities already present in `core`
-and `alloc`, but cannot provide these missing runtime facilities. Other
+A small `std` facade now reexports facilities already present in `core`
+and `alloc`, preserving their definition identities; see
+[its API boundary](../library/std/README.md). Its `thread::panicking` is
+always false in the supported abort-only runtime. The facade does not provide
+the missing runtime facilities above. Other
 observed API gaps include `Vec<String>::join`, Unicode case conversion,
 and `String::from_utf8_lossy`. Passing `&mut closure` as an `FnMut` argument
 also remains unsupported; the new partition-point tests pass closures by

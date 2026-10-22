@@ -1,9 +1,12 @@
 # Cargo, Flux and Keel
 
-Research/design only, 2026-10-23. Inspected Flux at
+Research/design, 2026-10-23. The bounded C0 manifest driver is now
+implemented as `flux package build/run`; see [the exact supported
+subset](PACKAGE_DRIVER.md). The compiler adapter, source dependency graph
+and rustc backend bridge remain proposals. Original experiments inspected Flux at
 `04f2298844e761d793770c92a0f5c47dbf6eb1be` and its pinned Keel dependency
 `1aa8c53686892e4e3c09aa0c512c03da02148f92`. Proposed commands and APIs below
-are **not implemented**. Recorded experiments used Cargo/rustc 1.99.0 on
+remain proposals except for that C0 subset. Recorded experiments used Cargo/rustc 1.99.0 on
 arm64 macOS; compiler protocol details must be retested for other versions.
 
 ## Recommendation
@@ -131,14 +134,16 @@ documents that extension point and Cargo's JSON build messages.
 
 ## What exists locally
 
-- [CLI](../crates/flux-cli/src/main.rs): `build FILE [-o OUTPUT] [-O]`
-  and `run FILE`; no manifest input, compiler probes or `--extern`.
+- [CLI](../crates/flux-cli/src/main.rs): `build FILE [-o OUTPUT] [-O]`,
+  `run FILE`, and restricted `package build/run --manifest-path PATH [--bin NAME]`;
+  no compiler probes or `--extern`.
   `check` currently checks syntax only, so it cannot implement `cargo check`.
 - [Build pipeline](../crates/flux-cli/src/build.rs): loads a root/module
   tree, checks HIR/types/main/MIR, lowers the program, compiles one object
-  and links one executable. Crate name comes from the input file stem.
+  and links one executable. A reusable `CompileRequest` accepts an explicit
+  crate name; direct file builds use the file stem, package builds the target name.
 - [Source database](../crates/flux-hir/src/source.rs) embeds Flux's own
-  `core` and `alloc`. [Item collection](../crates/flux-hir/src/item_tree.rs)
+  `core`, `alloc` and a bounded `std` facade. [Item collection](../crates/flux-hir/src/item_tree.rs)
   has `CrateId`, a crate list and private `add_crate`, but public lowering
   accepts one program root. An arbitrary external crate is rejected.
   This is a starting point for C, not an existing Cargo crate loader.
@@ -342,10 +347,12 @@ PY
 
 ## Staged implementation and acceptance gates
 
-### C0: first manifest-driven executable
+### C0: implemented bounded manifest-driven executable
 
-Propose `flux package build --manifest-path PATH --bin NAME` and
-`flux package run ... -- PROGRAM_ARGS`. Initially accept one package with
+`flux package build --manifest-path PATH [--bin NAME]` and
+`flux package run ... -- PROGRAM_ARGS` are implemented. The exact declaration,
+configuration and environment allowlist is in [PACKAGE_DRIVER.md](PACKAGE_DRIVER.md).
+The driver accepts one package with
 one selected binary, edition 2024, no dependency declarations, features,
 build scripts, library target or proc macros; only arm64 macOS. Reject
 other targets and custom profiles/options rather than ignoring them.
@@ -354,7 +361,11 @@ selected package's declarations and discovered targets before compilation.
 No resolve graph is needed for this milestone. Cargo does manifest
 interpretation; Flux compiles the selected source, including its modules.
 
-Concrete changes:
+The implementation extracts a minimal `CompileRequest` for the existing
+fixed edition-2024 host configuration, explicit crate name and output.
+It rejects other configurations instead of applying Cargo profiles. The
+following design checklist retains future generalized configuration/API
+work, which is not claimed by the implemented subset:
 
 - Add a manifest-plan module in `flux-cli` (or a small `flux-build` crate
   once shared). Select by package/target identity and `src_path`, not by
@@ -476,11 +487,13 @@ compiler build requires all those capabilities regardless of driver choice.
 
 ## Scope and validation of this document
 
-Only this document changes. Read AGENTS.md, CONTRIBUTING.md, SELF_HOSTING.md,
+The original research changed only this document. Read AGENTS.md, CONTRIBUTING.md, SELF_HOSTING.md,
 workspace/CLI/codegen manifests, CLI/build/HIR/codegen and the pinned local
 Keel API. Browsed primary Rust/Cargo documentation linked above. Ran the
 bounded offline Cargo protocol experiments, built the current CLI offline,
-and directly compiled/executed the tiny program with Flux/Keel. No adapter,
-crate loader, backend bridge or Cargo replacement was implemented; no
+and directly compiled/executed the tiny program with Flux/Keel. The subsequent
+C0 implementation has eight focused offline tests, including rejecting
+rustc/wrapper scripts that record zero invocations. No rustc-compatible adapter,
+dependency crate loader, backend bridge or Cargo replacement is implemented; no
 workspace self-host or general Cargo compatibility is established. Full
 `just check` is unnecessary for this documentation-only change.

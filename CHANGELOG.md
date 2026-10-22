@@ -4,6 +4,13 @@
 
 ### Syntax
 
+- Add a bounded embedded `std` facade over existing `core`/`alloc` APIs,
+  with shared type identities and abort-only `thread::panicking`.
+- Add `flux package build/run --manifest-path PATH [--bin NAME]` for
+  standalone dependency-free edition-2024 binaries. Cargo supplies offline
+  metadata; Flux/Keel compiles and links, with explicit unsupported-input
+  rejection and no rustc fallback.
+
 - Enforce `'static` local type annotations through MIR region constraints,
   including nested types, aliases, defaults, destructuring and later writes.
   Promote borrowed arrays of fieldless enum values through matches and
