@@ -93,6 +93,15 @@ pub fn lower_module(
                     (None, None) => {}
                 }
                 path.push(f.name.as_str());
+                // Source crates may share a library name, and an impl may
+                // live in a different crate from its target type. Item IDs
+                // disambiguate this whole-program compilation; they are not
+                // a stable identity for future separately compiled artifacts.
+                let identity;
+                if id.index() >= items.core.functions as usize {
+                    identity = format!("__flux_f{}", id.index());
+                    path.push(&identity);
+                }
                 mangle(&path)
             };
             (id, name)
@@ -126,6 +135,11 @@ pub fn lower_module(
             }
             path.reverse();
             path.push(c.name.map_or("_", |n| n.as_str()));
+            let identity;
+            if id.index() >= items.core.consts as usize {
+                identity = format!("__flux_s{}", id.index());
+                path.push(&identity);
+            }
             (id, mangle(&path))
         })
         .collect();

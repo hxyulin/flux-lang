@@ -2,11 +2,13 @@
 
 Research/design, 2026-10-23. The bounded C0 manifest driver is now
 implemented as `flux package build/run`; see [the exact supported
-subset](PACKAGE_DRIVER.md). The compiler adapter, source dependency graph
-and rustc backend bridge remain proposals. Original experiments inspected Flux at
+subset](PACKAGE_DRIVER.md). A bounded local path source graph is also
+implemented; general Cargo resolution, the compiler adapter and rustc backend
+bridge remain proposals. Original experiments inspected Flux at
 `04f2298844e761d793770c92a0f5c47dbf6eb1be` and its pinned Keel dependency
 `1aa8c53686892e4e3c09aa0c512c03da02148f92`. Proposed commands and APIs below
-remain proposals except for that C0 subset. Recorded experiments used Cargo/rustc 1.99.0 on
+remain proposals except for C0 and the bounded path-only C1 subset. Recorded
+experiments used Cargo/rustc 1.99.0 on
 arm64 macOS; compiler protocol details must be retested for other versions.
 
 ## Recommendation
@@ -349,6 +351,9 @@ PY
 
 ### C0: implemented bounded manifest-driven executable
 
+This was the original dependency-free boundary; C1 below now extends it
+with local source libraries. The following describes the C0 milestone.
+
 `flux package build --manifest-path PATH [--bin NAME]` and
 `flux package run ... -- PROGRAM_ARGS` are implemented. The exact declaration,
 configuration and environment allowlist is in [PACKAGE_DRIVER.md](PACKAGE_DRIVER.md).
@@ -390,6 +395,14 @@ is manifest support, not Cargo compiler compatibility.
 
 ### C1: source dependencies, whole program
 
+Implemented subset: edition-2024 local path libraries, including transitive
+edges, aliases, shared crate identities and privacy. Sources compile together
+without `.rlib` artifacts; exported dependency macros, registry/git packages,
+workspaces, features and build scripts remain unsupported. See
+[the package driver boundary](PACKAGE_DRIVER.md). The broader design below
+remains planned.
+
+
 Add an explicit graph API, for example
 `lower_graph(db, &[CrateInput], entry_crate)`, where `CrateInput` carries a
 stable internal ID, package identity, root, edition, cfg set and a map of
@@ -405,7 +418,7 @@ together.
 
 Start with an acyclic graph of local path libraries, no build/dev/proc-macro
 dependencies, optional dependencies, target predicates or differing feature
-instances. Query full metadata with an **explicit** discovery compiler;
+instances. For broader Cargo graphs, query full metadata with an **explicit** discovery compiler;
 on the measured toolchain rustc probes are sufficient and no source is
 compiled. Fail if any required unit/configuration is outside the subset.
 Later replace those probes with Flux's A discovery implementation, whose

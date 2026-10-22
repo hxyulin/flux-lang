@@ -1593,6 +1593,78 @@ pub fn resolve_const(items: &ItemTree, sigs: &Signatures, c: ConstInstance) -> C
     c
 }
 
+/// Rust's ordered orphan check: a local trait, or a local input type with
+/// no uncovered type parameters before it. References and Box are fundamental
+/// wrappers; other foreign constructors cover parameters but do not confer locality.
+fn orphan_error(items: &ItemTree, sigs: &Signatures, id: ImplId) -> Option<String> {
+    let imp = &items.impls[id];
+    let trait_id = imp.trait_?;
+    let own = items.modules[imp.module].krate;
+    if items.is_core(imp.module) || items.modules[items.traits[trait_id].loc.module].krate == own {
+        return None;
+    }
+    fn fundamental_inner(ty: Ty) -> Option<Ty> {
+        if let TyKind::Ref(_, inner) = ty.kind() {
+            Some(inner)
+        } else {
+            crate::box_pointee(ty)
+        }
+    }
+    fn local(items: &ItemTree, own: flux_hir::CrateId, ty: Ty) -> bool {
+        if let Some(inner) = fundamental_inner(ty) {
+            return local(items, own, inner);
+        }
+        match ty.kind() {
+            TyKind::Adt(adt, _) => items.modules[items.structs[adt.strukt].loc.module].krate == own,
+            TyKind::Dynamic(d) => items.modules[items.traits[d.trait_].loc.module].krate == own,
+            _ => false,
+        }
+    }
+    fn uncovered(ty: Ty) -> Option<Symbol> {
+        if let Some(inner) = fundamental_inner(ty) {
+            return uncovered(inner);
+        }
+        if let TyKind::Param(p) = ty.kind() {
+            Some(p.name)
+        } else {
+            None
+        }
+    }
+    let self_ty = *sigs.impls.get(id)?;
+    let args = sigs.impl_traits.get(id)?.args;
+    let projections = sigs.impl_projections.get(id).map_or(&[][..], |p| p);
+    let inputs: Vec<_> = std::iter::once(self_ty)
+        .chain(args.iter().copied())
+        .map(|ty| normalize(items, sigs, projections, ty))
+        .collect();
+    if inputs.contains(&Ty::ERROR) {
+        return None;
+    }
+    let Some(first) = inputs.iter().position(|&ty| local(items, own, ty)) else {
+        let kind = match self_ty.kind() {
+            TyKind::Adt(..) => "types defined outside of the crate",
+            TyKind::Int(_) | TyKind::Bool | TyKind::Char | TyKind::Str => "primitive types",
+            _ => "arbitrary types",
+        };
+        return Some(format!(
+            "only traits defined in the current crate can be implemented for {kind}"
+        ));
+    };
+    if let Some(param) = inputs[..first].iter().find_map(|&ty| {
+        uncovered(ty).filter(|name| {
+            !imp.generics
+                .params
+                .iter()
+                .any(|p| p.name == *name && p.is_const())
+        })
+    }) {
+        return Some(format!(
+            "type parameter `{param}` must be covered by another type when it appears before the first local type"
+        ));
+    }
+    None
+}
+
 /// Checks each trait's `impl` blocks against the trait: that they define
 /// its required methods and no others, with its signatures; that they
 /// are `unsafe` exactly when it is; that their types implement its
@@ -1647,6 +1719,10 @@ pub fn check_impls(
                     data.name
                 ),
             );
+            continue;
+        }
+        if let Some(message) = orphan_error(items, sigs, id) {
+            error(imp.def_range, message);
             continue;
         }
         // Only `core` implements the `Fn`-family traits on stable Rust.

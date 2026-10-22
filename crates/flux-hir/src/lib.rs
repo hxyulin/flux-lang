@@ -97,7 +97,26 @@ pub fn lower(db: &mut SourceDb, root: FileId, crate_name: Symbol) -> Hir {
 }
 
 fn lower_with(db: &mut SourceDb, root: FileId, crate_name: Symbol, with_core: bool) -> Hir {
-    let mut items = ItemTree::new(db, root, crate_name, with_core);
+    let items = ItemTree::new(db, root, crate_name, with_core);
+    lower_items(db, items, with_core)
+}
+
+/// A source crate and direct edges to earlier entries in a compilation graph.
+#[derive(Debug, Clone)]
+pub struct SourceCrate {
+    pub root: FileId,
+    pub name: Symbol,
+    pub dependencies: Vec<(Symbol, usize)>,
+}
+
+/// Lowers a nonempty source graph; the final crate is the executable.
+pub fn lower_sources(db: &mut SourceDb, sources: &[SourceCrate]) -> Hir {
+    assert!(!sources.is_empty(), "expected an executable source crate");
+    let items = ItemTree::from_sources(db, sources);
+    lower_items(db, items, true)
+}
+
+fn lower_items(db: &SourceDb, mut items: ItemTree, with_core: bool) -> Hir {
     let mut diagnostics = std::mem::take(&mut items.diagnostics);
     if with_core {
         diagnostics.extend(Core::get().diagnostics.iter().cloned());
@@ -214,9 +233,9 @@ impl Hir {
         core.into_iter().flatten().chain(self.const_bodies.iter())
     }
 
-    /// Whether `function` is the program's, rather than `core`'s.
+    /// Whether `function` belongs to an input source crate, rather than
+    /// the cached embedded libraries. This includes source dependencies.
     pub fn is_program(&self, function: FunctionId) -> bool {
-        self.items
-            .in_main_crate(self.items.functions[function].loc.module)
+        function.index() >= self.items.core.functions as usize
     }
 }

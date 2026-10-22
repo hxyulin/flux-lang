@@ -630,6 +630,13 @@ impl ItemTree {
     fn extern_crate(&self, name: Symbol, module: ModuleId) -> Option<ModuleId> {
         let own = self.modules[module].krate;
         let own_data = &self.crates[own.0 as usize];
+        if let Some((_, target)) = own_data
+            .dependencies
+            .iter()
+            .find(|(alias, _)| *alias == name)
+        {
+            return Some(self.module_of(*target));
+        }
         self.crates
             .iter()
             .enumerate()
@@ -664,11 +671,7 @@ impl ItemTree {
         let m = &self.modules[module];
         match m.parent {
             Some(parent) => format!("{}::{}", self.module_path(parent), m.name),
-            None if (self.crates[m.krate.0 as usize].is_core || m.name == sym::std)
-                && m.krate != self.main_crate() =>
-            {
-                m.name.to_string()
-            }
+            None if m.krate != self.main_crate() => m.name.to_string(),
             None => "crate".to_owned(),
         }
     }
@@ -1393,7 +1396,7 @@ fn resolve_impls(items: &mut ItemTree, from: usize) {
             // coherence says.
             TypeRef::Dyn(d) => match d.bounds.first().map(|b| items.resolve_trait(module, b)) {
                 Some((Some(t), _)) => {
-                    let krate = |m: crate::ModuleId| items.is_core(m);
+                    let krate = |m: crate::ModuleId| items.modules[m].krate;
                     if krate(items.traits[t].loc.module) != krate(module) {
                         let range = items.impls[id].def_range;
                         error(
@@ -1421,6 +1424,16 @@ fn resolve_impls(items: &mut ItemTree, from: usize) {
                 );
                 None
             }
+        };
+        let target = if let Some(ImplTarget::Struct(s)) = target
+            && items.modules[items.structs[s].loc.module].krate != items.modules[module].krate
+            && !items.is_core(module)
+        {
+            error(items, items.impls[id].def_range,
+                "cannot define inherent `impl` for a type outside of the crate where the type is defined".into());
+            None
+        } else {
+            target
         };
         items.impls[id].target = target;
     }
