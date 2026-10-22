@@ -377,6 +377,16 @@
   `&[T]`, so `for x in slice` and `for x in &array` work (the latter as
   a slice of the array). Of several `impl` blocks whose headers match,
   the one whose bounds hold is chosen, as rustc's winnowing does.
+- Support shared references in constants and statics (`const P: &[i32]
+  = &[2, 3];`, `static T: &[Entry] = &[...]`): constant evaluation
+  gives a reference to a copy of what it borrows, and code generation
+  lays it out as a data object the reference points to, with the
+  linker filling in addresses inside statics. A constant's value is
+  `'static`, so borrowing its locals is E0597, while temporaries in it
+  live forever, as in rustc. Mutable ones are not supported yet.
+- Add a scaling test of many regions and constraints in a long body,
+  and an ignored one recording a quadratic case rustc's NLL shares: a
+  `mut` reference reassigned from each new borrow through a body.
 
 ### Performance
 

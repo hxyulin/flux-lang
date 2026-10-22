@@ -552,6 +552,10 @@ impl<'a> Cx<'a> {
             }
             let vars = self.instantiate_sig(sig.ret, &r.ret, &mut map_var, &[], &[]);
             signature.push((Body::RETURN, vars));
+        } else if body.owner.is_none() && body.upvars.is_none() {
+            // A constant's or static's value lives forever.
+            let n = self.local_vars(Body::RETURN).len();
+            signature.push((Body::RETURN, Some(vec![STATIC; n])));
         } else if let Some(upvars) = &body.upvars {
             // A closure: each lifetime of what it is given is universal,
             // and how they must relate is its creator's to check.

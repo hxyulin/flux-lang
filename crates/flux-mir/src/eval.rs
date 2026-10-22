@@ -47,6 +47,10 @@ pub enum Value {
     /// The address of a static, which reading through gives its
     /// initial value.
     Static(ConstId),
+    /// A shared reference to a value: what it points to, which cannot
+    /// change while it is borrowed. A reference to a slice holds the
+    /// elements as an aggregate.
+    Ref(Box<Value>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +107,8 @@ pub struct Evaluator<'a> {
     pub names: &'a dyn Fn(ConstId) -> String,
     values: HashMap<ConstInstance, Result<Value, EvalError>>,
     in_progress: Vec<ConstInstance>,
+    /// The promoted constants of each body being run, innermost last.
+    promoted: Vec<Vec<Value>>,
     /// Every discriminant of the enums whose values were made or matched
     /// on, as bits.
     discriminants: HashMap<flux_hir::StructId, Result<Box<[u128]>, EvalError>>,
@@ -134,6 +140,7 @@ impl<'a> Evaluator<'a> {
             switched: HashSet::new(),
             failures: Vec::new(),
             steps: 0,
+            promoted: Vec::new(),
         }
     }
 
@@ -306,6 +313,20 @@ impl<'a> Evaluator<'a> {
         depth: u32,
         checked: bool,
     ) -> Result<Value, EvalError> {
+        self.promoted.push(body.promoted.clone());
+        let result = self.run_body(body, args, generics, depth, checked);
+        self.promoted.pop();
+        result
+    }
+
+    fn run_body(
+        &mut self,
+        body: &Body,
+        args: Vec<Value>,
+        generics: GenericArgs,
+        depth: u32,
+        checked: bool,
+    ) -> Result<Value, EvalError> {
         let mut locals: Vec<Option<Value>> = vec![None; body.locals.len()];
         for (param, value) in body.params().zip(args) {
             locals[param.index()] = Some(value);
@@ -346,7 +367,10 @@ impl<'a> Evaluator<'a> {
                     let value = match self.operand(&locals, generics, discr, range)? {
                         Value::Int { bits, .. } => bits,
                         Value::Bool(b) => u128::from(b),
-                        Value::Aggregate(_) | Value::Variant { .. } | Value::Static(_) => {
+                        Value::Aggregate(_)
+                        | Value::Variant { .. }
+                        | Value::Static(_)
+                        | Value::Ref(_) => {
                             unreachable!("switches on scalars")
                         }
                     };
@@ -537,10 +561,15 @@ impl<'a> Evaluator<'a> {
             }
             Operand::Const(constant) => match *constant {
                 Constant::Static { id, .. } => Ok(Value::Static(id)),
-                Constant::Promoted { .. } => Err(error(
-                    range,
-                    "references in constants are not supported yet".to_owned(),
-                )),
+                Constant::Promoted { index, .. } => {
+                    let value = self
+                        .promoted
+                        .last()
+                        .and_then(|p| p.get(index as usize))
+                        .cloned()
+                        .ok_or_else(|| error(range, "a promoted constant is missing".to_owned()))?;
+                    Ok(Value::Ref(Box::new(value)))
+                }
                 Constant::Fn { .. } => Err(error(
                     range,
                     "function pointers in constants are not supported yet".to_owned(),
@@ -612,10 +641,17 @@ impl<'a> Evaluator<'a> {
                     bits: u128::from(len),
                     ty: IntTy::Usize,
                 }),
-                _ => Err(error(
-                    range,
-                    "references in constants are not supported yet".to_owned(),
-                )),
+                // A slice's, behind a reference: its elements.
+                _ => match self.operand(locals, generics, &Operand::Copy(place.clone()), range)? {
+                    Value::Aggregate(elements) => Ok(Value::Int {
+                        bits: elements.len() as u128,
+                        ty: IntTy::Usize,
+                    }),
+                    _ => Err(error(
+                        range,
+                        "references in constants are not supported yet".to_owned(),
+                    )),
+                },
             },
             Rvalue::Discriminant(place) => match read(locals, place, range)? {
                 Value::Variant { strukt, index, .. } => {
@@ -629,16 +665,32 @@ impl<'a> Evaluator<'a> {
                 }
                 _ => unreachable!("discriminants are of enums"),
             },
-            Rvalue::Ref { .. } | Rvalue::Unsize(..) => Err(error(
+            // A shared reference is to a value that cannot change while
+            // it is borrowed: a copy of it.
+            Rvalue::Ref {
+                mutability: flux_ty::Mutability::Not,
+                place,
+                ..
+            } => {
+                let value = self.operand(locals, generics, &Operand::Copy(place.clone()), range)?;
+                Ok(Value::Ref(Box::new(value)))
+            }
+            // A reference to an array as one to a slice holds the same
+            // elements.
+            Rvalue::Unsize(op, _) => self.operand(locals, generics, op, range),
+            Rvalue::Ref { .. } => Err(error(
                 range,
-                "references in constants are not supported yet".to_owned(),
+                "mutable references in constants are not supported yet".to_owned(),
             )),
             Rvalue::Cast(op, to) => {
                 let value = self.operand(locals, generics, op, range)?;
                 let bits = match value {
                     Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                     Value::Bool(b) => u128::from(b),
-                    Value::Aggregate(_) | Value::Variant { .. } | Value::Static(_) => {
+                    Value::Aggregate(_)
+                    | Value::Variant { .. }
+                    | Value::Static(_)
+                    | Value::Ref(_) => {
                         unreachable!("casts are of scalars")
                     }
                 };
@@ -744,6 +796,7 @@ fn read(locals: &[Option<Value>], place: &Place, range: TextRange) -> Result<Val
                 &elements[index(locals, *local)]
             }
             (ProjectionElem::Downcast(_), Value::Variant { .. }) => value,
+            (ProjectionElem::Deref, Value::Ref(pointee)) => pointee,
             _ => {
                 return Err(error(
                     range,
@@ -952,6 +1005,7 @@ pub fn show(value: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Aggregate(_) | Value::Variant { .. } => "{aggregate}".to_owned(),
         Value::Static(_) => "{static}".to_owned(),
+        Value::Ref(ref pointee) => format!("&{}", show(pointee)),
     }
 }
 

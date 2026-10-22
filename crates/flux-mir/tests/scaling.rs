@@ -100,3 +100,45 @@ fn long_body() {
     };
     assert_scales("statements in a body", 300, make, build);
 }
+
+/// Many regions and constraints: each statement borrows, through a
+/// struct holding a reference and functions returning one, whose
+/// results the next statements use: a few region variables and
+/// constraints per statement.
+#[test]
+fn many_regions() {
+    let make = |n| {
+        let body = repeat(n, |i| {
+            let next = i + 1;
+            format!(
+                "    let h{i} = H {{ r: &x{i} }};\n    let x{next} = *pick(h{i}.r, &x{i}) + 1;\n    let m{next} = pick(h{i}.r, &x{next});\n    let x{next} = x{next} + *m{next};"
+            )
+        });
+        typed(format!(
+            "struct H<'a> {{ r: &'a i32 }}\n\
+             fn pick<'a>(a: &'a i32, b: &'a i32) -> &'a i32 {{ if *a > *b {{ a }} else {{ b }} }}\n\
+             fn f(x0: i32) -> i32 {{\n{body}    x{n}\n}}\nfn main() {{}}\n"
+        ))
+    };
+    assert_scales("regions in a body", 300, make, build);
+}
+
+/// A `mut` reference carried through a body, reassigned from each new
+/// borrow: each loan's region is the rest of the body, as the reference's
+/// is, so finding where loans are in scope is quadratic, as in rustc's
+/// NLL, whose regions and borrow dataflow are the same.
+#[test]
+#[ignore = "known quadratic: every loan is live for the rest of the body"]
+fn long_lived_reference() {
+    let make = |n| {
+        let body = repeat(n, |i| {
+            let next = i + 1;
+            format!("    let x{next} = *m + {i};\n    m = pick(m, &x{next});")
+        });
+        typed(format!(
+            "fn pick<'a>(a: &'a i32, b: &'a i32) -> &'a i32 {{ if *a > *b {{ a }} else {{ b }} }}\n\
+             fn f(x0: i32) -> i32 {{\n    let mut m = &x0;\n{body}    *m\n}}\nfn main() {{}}\n"
+        ))
+    };
+    assert_scales("a reference carried through a body", 300, make, build);
+}

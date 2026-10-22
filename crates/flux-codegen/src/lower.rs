@@ -183,7 +183,7 @@ pub fn lower_module(
             init: Some(DataInit {
                 constant: !items.consts[id].is_static_mut(),
                 align,
-                items: vec![DataItem::Bytes(bytes)],
+                items: bytes,
             }),
         });
     }
@@ -416,6 +416,14 @@ fn leaves_of(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
     let mut out = Vec::new();
     leaves(sigs, ty, &mut out);
     out
+}
+
+/// A scalar leaf of a constant's value: its bits, or the address of a data
+/// object (a reference's).
+#[derive(Clone)]
+enum Leaf {
+    Bits(u128),
+    Address(String),
 }
 
 fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
@@ -696,24 +704,44 @@ impl Ctx<'_> {
 
     /// `value`, of type `ty`, laid out in memory: its bytes and
     /// alignment.
-    fn value_bytes(&mut self, value: &flux_mir::eval::Value, ty: Ty) -> (Vec<u8>, u32) {
+    fn value_bytes(&mut self, value: &flux_mir::eval::Value, ty: Ty) -> (Vec<DataItem>, u32) {
         let layout = layout(&self.typed.sigs, ty);
         let mut bits = Vec::new();
         self.value_bits(value, ty, &mut bits);
         let mut bytes = vec![0u8; layout.size().max(1) as usize];
+        // The addresses, which the linker fills in, by offset.
+        let mut addresses: Vec<(usize, String)> = Vec::new();
         for ((offset, leaf), value) in layout.leaves().into_iter().zip(bits) {
             let width = leaf.bytes().unwrap_or(8) as usize;
             let offset = offset as usize;
-            bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width]);
+            match value {
+                Leaf::Bits(value) => {
+                    bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width])
+                }
+                Leaf::Address(symbol) => addresses.push((offset, symbol)),
+            }
         }
-        (bytes, layout.align() as u32)
+        let mut items = Vec::new();
+        let mut at = 0;
+        addresses.sort();
+        for (offset, symbol) in addresses {
+            if offset > at {
+                items.push(DataItem::Bytes(bytes[at..offset].to_vec()));
+            }
+            items.push(DataItem::Ptr { symbol, addend: 0 });
+            at = offset + 8;
+        }
+        if at < bytes.len() {
+            items.push(DataItem::Bytes(bytes[at..].to_vec()));
+        }
+        (items, layout.align() as u32)
     }
 
     /// The name of the read-only data object holding `value`, of type
     /// `ty`: a promoted constant, shared by identical ones.
     fn promoted(&mut self, value: &flux_mir::eval::Value, ty: Ty) -> String {
-        let (bytes, align) = self.value_bytes(value, ty);
-        let key = (bytes.clone(), align);
+        let (items, align) = self.value_bytes(value, ty);
+        let key = (format!("{items:?}").into_bytes(), align);
         if let Some(name) = self.promoted.get(&key) {
             return name.clone();
         }
@@ -728,21 +756,45 @@ impl Ctx<'_> {
             init: Some(DataInit {
                 constant: true,
                 align,
-                items: vec![DataItem::Bytes(bytes)],
+                items,
             }),
         });
         name
     }
 
-    /// The bits of each scalar leaf of `value`, of type `ty`, in the
-    /// order of its leaves; zeros for the variants an enum does not
-    /// hold.
-    fn value_bits(&mut self, value: &flux_mir::eval::Value, ty: Ty, out: &mut Vec<u128>) {
+    /// The data object a reference of type `ty` to `pointee`, in a
+    /// constant, points to, and for a slice its length.
+    fn referenced(&mut self, pointee: &flux_mir::eval::Value, ty: Ty) -> (String, Option<u64>) {
+        let target = match ty.kind() {
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => t,
+            _ => Ty::ERROR,
+        };
+        match (target.kind(), pointee) {
+            (TyKind::Slice(elem), flux_mir::eval::Value::Aggregate(elements)) => {
+                let len = elements.len() as u64;
+                let array = Ty::array(elem, len);
+                (self.promoted(pointee, array), Some(len))
+            }
+            _ => (self.promoted(pointee, target), None),
+        }
+    }
+
+    /// Each scalar leaf of `value`, of type `ty`, in the order of its
+    /// leaves; zeros for the variants an enum does not hold, and the
+    /// data objects references point to.
+    fn value_bits(&mut self, value: &flux_mir::eval::Value, ty: Ty, out: &mut Vec<Leaf>) {
         use flux_mir::eval::Value as V;
         let sigs = &self.typed.sigs;
         match value {
-            V::Int { bits, .. } => out.push(*bits),
-            V::Bool(b) => out.push(u128::from(*b)),
+            V::Ref(pointee) => {
+                let (symbol, len) = self.referenced(pointee, ty);
+                out.push(Leaf::Address(symbol));
+                if let Some(len) = len {
+                    out.push(Leaf::Bits(u128::from(len)));
+                }
+            }
+            V::Int { bits, .. } => out.push(Leaf::Bits(*bits)),
+            V::Bool(b) => out.push(Leaf::Bits(u128::from(*b))),
             V::Aggregate(fields) if matches!(ty.kind(), TyKind::Array(..)) => {
                 let elem = ty.sequence_elem().unwrap_or(Ty::ERROR);
                 for field in fields {
@@ -760,7 +812,7 @@ impl Ctx<'_> {
                 index,
                 fields,
             } => {
-                out.push(self.discriminant(*strukt, *index));
+                out.push(Leaf::Bits(self.discriminant(*strukt, *index)));
                 let variants = self.typed.sigs.variants(ty).unwrap_or_default();
                 for (v, types) in variants.into_iter().enumerate() {
                     if v as u32 == *index {
@@ -770,13 +822,12 @@ impl Ctx<'_> {
                     } else {
                         for &field_ty in types {
                             let count = leaf_count(&self.typed.sigs, field_ty);
-                            out.extend(std::iter::repeat_n(0, count));
+                            out.extend(std::iter::repeat_n(Leaf::Bits(0), count));
                         }
                     }
                 }
             }
-            // References are not in statics' types.
-            V::Static(_) => out.push(0),
+            V::Static(id) => out.push(Leaf::Address(self.statics[id].clone())),
         }
     }
 
@@ -1279,6 +1330,14 @@ impl Lower<'_, '_, '_> {
             V::Int { bits, ty } => out.push(self.int_const(*bits, *ty)),
             V::Bool(b) => out.push(self.b.ins().iconst(Type::I8, i64::from(*b))),
             V::Static(id) => out.push(self.static_addr(*id)),
+            V::Ref(pointee) => {
+                let (symbol, len) = self.ctx.referenced(pointee, ty);
+                let data = self.b.import_data(&symbol);
+                out.push(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)));
+                if let Some(len) = len {
+                    out.push(self.int_const(u128::from(len), IntTy::Usize));
+                }
+            }
             V::Aggregate(fields) => {
                 let types = self.sigs.fields(ty).unwrap_or_default();
                 for (field, &field_ty) in fields.iter().zip(types) {
