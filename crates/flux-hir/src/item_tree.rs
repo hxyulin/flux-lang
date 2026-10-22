@@ -3774,6 +3774,7 @@ impl Collector<'_> {
             Derive::Ord => ("cmp", "Ord"),
             Derive::Default => ("default", "Default"),
             Derive::Debug => ("fmt", "Debug"),
+            Derive::Hash => ("hash", "Hash"),
         };
         // rustc's `Default` for an enum bounds no parameters: its
         // default variant has no fields.
@@ -3893,8 +3894,44 @@ impl Collector<'_> {
             range,
             whole: range,
         };
+        // `hash<__H: Hasher>`'s parameter.
+        let mut method_generics = Generics::default();
         let (method, params, ret) = match derive {
             Derive::Copy => return,
+            // `hash<__H: Hasher>(&self, state: &mut __H)`
+            Derive::Hash => {
+                let h = Symbol::intern("__H");
+                method_generics = Generics {
+                    params: Box::new([GenericParam {
+                        name: h,
+                        range,
+                        default: None,
+                        synthetic: false,
+                        kind: ParamKind::Type,
+                    }]),
+                    predicates: Box::new([WherePredicate {
+                        ty: TypeRef::Path(Path::single(h)),
+                        ty_range: range,
+                        bound: Bound {
+                            path: core_path("hash", "Hasher", in_core),
+                            range,
+                        },
+                    }]),
+                    ..Generics::default()
+                };
+                let state = Param {
+                    ty: TypeRef::Ref {
+                        lifetime: None,
+                        amp: range,
+                        mutable: true,
+                        pointee: Box::new(TypeRef::Path(Path::single(h))),
+                    },
+                    name: Some(Symbol::intern("state")),
+                    range,
+                    whole: range,
+                };
+                ("hash", vec![self_ref(), state], TypeRef::unit())
+            }
             Derive::Clone => ("clone", vec![self_ref()], self_ty()),
             Derive::PartialEq => (
                 "eq",
@@ -3957,7 +3994,7 @@ impl Collector<'_> {
         let has_self = !params.is_empty();
         let function = self.items.functions.alloc(Function {
             name: Symbol::intern(method),
-            generics: Generics::default(),
+            generics: method_generics,
             params: params.into(),
             ret,
             ret_range: range,
@@ -4725,6 +4762,7 @@ pub enum Derive {
     Ord,
     Default,
     Debug,
+    Hash,
 }
 
 /// `::core::module::name`, as `#[derive]` names its traits and their
@@ -4867,10 +4905,7 @@ fn derive_attr(
             "Ord" => Derive::Ord,
             "Default" => Derive::Default,
             "Debug" => Derive::Debug,
-            "Hash" => {
-                error(range, format!("deriving `{name}` is not supported yet"));
-                continue;
-            }
+            "Hash" => Derive::Hash,
             _ => {
                 error(
                     range,

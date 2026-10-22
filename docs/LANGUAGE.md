@@ -122,8 +122,15 @@ reported as "not supported yet":
   `<T>::f`), generic arguments
   in paths and method calls
   (`id::<u8>`, `Pair::<i32>::new`, `x.m::<u8>()`), method calls,
-  borrows (`&x`, `&mut x`) and dereferences (`*r`), blocks (including
-  `unsafe`), `if`/`else`, `if let` and `let` chains (`if let Some(x) = a
+  borrows (`&x`, `&mut x`), raw pointers to places (`&raw const x`,
+  `&raw mut s.f`, which make no reference, so they may point to a
+  `static mut` outside `unsafe`, as `core::ptr::{addr_of, addr_of_mut}`
+  do), dereferences (`*r`), blocks (including `unsafe`, and inline
+  constants, `const { .. }`, checked as constants are, without the
+  locals around them, and which a repeat expression may repeat whatever
+  their type: `[const { Cell::new(0) }; 4]`; they are evaluated where
+  they are, not at compile time, so one that panics or overflows is not
+  an error, where rustc reports it), `if`/`else`, `if let` and `let` chains (`if let Some(x) = a
   && x > 1 && let Ok(y) = b`), `match` with guards (`if let` guards
   too), `loop`, `while`,
   `while let`, `for` loops, labels on loops (`'a: for`, `break 'a`,
@@ -223,15 +230,16 @@ shared references, tuples and arrays of `Copy` types, structs that
 implement `Copy` and type parameters bounded by it. Other values are moved, and
 flux reports uses after a move, including partial moves of fields, as
 rustc's borrow checker does. `#[derive(Clone, Copy, PartialEq, Eq,
-PartialOrd, Ord, Default, Debug)]` implements those traits for a struct
+PartialOrd, Ord, Default, Debug, Hash)]` implements those traits for a struct
 as rustc does (for a generic one, where its parameters implement them;
 one with lifetime parameters, for every lifetime),
 comparing fields in order for `PartialOrd` and `Ord`, and making each
-field's default for `Default`; other derives (`Hash`) are not supported
-yet. `Debug` writes what rustc's expansion writes (`Point { x: 1, y: 2
-}`, `Pair(1, "a")`, `Unit`, and `{:#?}` over several lines), and a
-field that does not implement it is "`T` doesn't implement `Debug`", at
-the field.
+field's default for `Default`, and hashing an enum's discriminant (of
+its `repr` type, `isize` by default, if it has more than one variant)
+then each field for `Hash`. `Debug` writes what rustc's expansion writes
+(`Point { x: 1, y: 2 }`, `Pair(1, "a")`, `Unit`, and `{:#?}` over several
+lines), and a field that does not implement it is "`T` doesn't implement
+`Debug`", at the field.
 
 Macro calls are expanded where they are written: in items, statements,
 expressions, patterns and types. `macro_rules!` macros work as in rustc:
@@ -587,7 +595,17 @@ DebugMap, write}` as rustc's (`Debug` for the integers, `bool`,
 the `debug_*` builders, whose `field` and `entry` take any `&T` where
 `T: Debug`, as flux has no `&dyn Debug` yet), `core::panic::Location`
 (`caller`, `file`, `line`, `column`),
-`core::hint::black_box`,
+`core::hint::black_box`, `core::hash::{Hash, Hasher, BuildHasher,
+BuildHasherDefault}` (`Hash` for the integers, `bool`, `char`, `str`,
+`()`, tuples, arrays, slices, references, raw pointers and `core`'s
+types; each value makes the same calls of its hasher's `write_*`
+methods as rustc's, a `str` its bytes then `0xff` through `write_str`,
+a slice its length through `write_length_prefix` then its elements, all
+at once for integers, so a program's hasher gives rustc's hashes),
+`core::cell::{Cell, RefCell}` (a `RefCell`'s loans are counted, and
+`borrow_mut` while it is lent panics as rustc's does; its `Ref` and
+`RefMut` cannot be dereferenced yet, as flux has no `Deref`),
+`core::ptr::{addr_of, addr_of_mut}`,
 `core::default::Default` (in the prelude) for the integers, `bool`,
 `char`, `&str`, `&[T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,
 `core::mem::{drop, swap, replace, take}` (`drop` also in the prelude;
@@ -810,8 +828,9 @@ rather than `std::fmt`.
 ## Not supported yet
 
 - Contextual keywords: `union`, `auto trait`, `default fn`, `safe` items in
-  `extern` blocks, `&raw const`. The parser sees only token kinds, so these
-  need the lexer to mark candidate identifiers first.
+  `extern` blocks. The parser sees only token kinds, so these need the
+  lexer to mark candidate identifiers first (`&raw const` needs none: only
+  there may `const` or `mut` follow an identifier).
 - Negative impls (`impl !Send for T`), `box` patterns, `yield` and `gen`
   blocks, `try` blocks.
 - Shebang lines and frontmatter.

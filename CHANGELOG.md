@@ -834,6 +834,15 @@
   yet waits for them, and a method's trait that an `impl` block meets
   but whose bounds do not hold reports the unmet bound (E0277), as
   rustc does.
+- Add `core::hash` (`Hash`, `Hasher`, `BuildHasher`,
+  `BuildHasherDefault`) and `#[derive(Hash)]`, whose values make the
+  same calls of a hasher's methods as rustc's, `core::cell::{Cell,
+  RefCell}`, inline constants (`const { .. }`, checked as constants
+  are, which a repeat expression repeats whatever their type), and raw
+  pointers to places: `&raw const` and `&raw mut` (parsed without a
+  contextual keyword, as only there may `const` or `mut` follow an
+  identifier; safe of a `static mut`) and `core::ptr::{addr_of,
+  addr_of_mut}`, with rustc's E0745 and E0596.
 
 ### Performance
 

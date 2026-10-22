@@ -1,0 +1,6 @@
+fn f() -> i32
+fn g() -> i32
+fn main() -> ()
+    a@0: i32
+    b@1: i32
+error 199..202: cannot call non-const function `f` in constants

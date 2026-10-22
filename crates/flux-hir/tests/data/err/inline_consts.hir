@@ -1,0 +1,13 @@
+fn main() -> () {
+    let x@0 = 5;
+    let a@1 = {
+        (<error> + 1)
+    };
+    let b@3 = {
+        let y@2 = 2;
+        (y@2 * 3)
+    };
+    let _ = (a@1, b@3);
+}
+
+error 150..151: attempt to use a non-constant value in a constant

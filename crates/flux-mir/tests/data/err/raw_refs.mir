@@ -1,0 +1,36 @@
+fn f() -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = const 1_i32;
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: i32; // x
+    let _2: *mut i32; // _a
+    let _3: &mut i32;
+    let _4: &i32; // r
+    let _5: *mut i32; // _c
+    let _6: &mut i32;
+
+    bb0: {
+        _1 = const 5_i32;
+        _3 = &mut _1;
+        _2 = move _3 as *mut i32;
+        _4 = &_1;
+        _6 = &mut (*_4);
+        _5 = move _6 as *mut i32;
+        _0 = const ();
+        StorageDead(_5);
+        StorageDead(_4);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+error 197..207: cannot borrow `x` as mutable, as it is not declared as mutable
+error 238..249: cannot borrow `*r` as mutable, as it is behind a `&` reference

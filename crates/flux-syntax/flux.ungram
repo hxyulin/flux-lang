@@ -470,8 +470,9 @@ RecordExprField =
 PrefixExpr =
   Attr* op:('-' | '!' | '*') Expr
 
+// `&raw const place` and `&raw mut place` have `raw`, an identifier.
 RefExpr =
-  Attr* '&' 'mut'? Expr
+  Attr* '&' 'ident'? 'const'? 'mut'? Expr
 
 BinExpr =
   Attr* lhs:Expr

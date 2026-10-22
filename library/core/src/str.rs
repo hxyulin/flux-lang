@@ -37,7 +37,7 @@ pub const unsafe fn from_utf8_unchecked_mut(v: &mut [u8]) -> &mut str {
 /// Why bytes are not UTF-8: where the valid prefix ends, and how long
 /// the invalid sequence after it is (`None` if the input ended inside
 /// a character).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Utf8Error {
     valid_up_to: usize,
     /// 0 for `None`.

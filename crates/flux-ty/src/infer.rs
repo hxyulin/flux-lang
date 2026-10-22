@@ -2374,11 +2374,12 @@ impl Ctx<'_> {
                 let Some(len) = len else {
                     return Ty::ERROR;
                 };
-                // A constant is made anew for each element.
+                // A constant is made anew for each element, an inline one
+                // (`const { .. }`) too.
                 let constant = matches!(
                     body.exprs[*value],
                     Expr::Path(Res::Const(_) | Res::Assoc { .. })
-                );
+                ) || body.const_blocks.get(*value).is_some();
                 if len.as_usize().is_none_or(|n| n > 1)
                     && !constant
                     && let Some(&copy) = self.items.lang_traits.get(&flux_intern::sym::copy)
@@ -2421,7 +2422,14 @@ impl Ctx<'_> {
                     self.module = module;
                 }
                 self.unsafe_depth += u32::from(*is_unsafe);
+                // An inline constant is checked as constants are.
+                let const_block = body.const_blocks.get(id).is_some();
+                let outer_context = self.const_context;
+                if const_block {
+                    self.const_context = Some("constants");
+                }
                 let ty = self.infer_block(stmts, *tail);
+                self.const_context = outer_context;
                 self.unsafe_depth -= u32::from(*is_unsafe);
                 self.module = outer;
                 ty
@@ -2560,6 +2568,29 @@ impl Ctx<'_> {
                     Mutability::Not
                 };
                 Ty::new(TyKind::Ref(m, ty))
+            }
+            Expr::RawRef { mutable, expr } => {
+                // A raw pointer to a static, through its fields, is made
+                // without reading it, and so is safe, as in rustc.
+                let mut place = *expr;
+                while let Expr::Field { expr, .. } = &body.exprs[place] {
+                    place = *expr;
+                }
+                let of_static = matches!(body.exprs[place], Expr::Path(Res::Static(_)));
+                self.unsafe_depth += u32::from(of_static);
+                let ty = self.infer_expr(*expr);
+                self.unsafe_depth -= u32::from(of_static);
+                if !is_place_expr(body, *expr) {
+                    self.error(self.range(*expr), "cannot take address of a temporary");
+                    return Ty::ERROR;
+                }
+                let m = if *mutable {
+                    self.mutable_place(*expr, false, self.range(id));
+                    Mutability::Mut
+                } else {
+                    Mutability::Not
+                };
+                Ty::raw_ptr(m, ty)
             }
             Expr::Unary { op, operand } => {
                 let ty = self.infer_expr(*operand);
@@ -6160,5 +6191,19 @@ fn array_eq_elems(lhs: Ty, rhs: Ty) -> Option<(Ty, Ty)> {
         (TyKind::Array(a, _), _) => Some((a, slice_behind(rhs)?)),
         (_, TyKind::Array(b, _)) => Some((slice_behind(lhs)?, b)),
         _ => None,
+    }
+}
+
+/// Whether `expr` is a place, which `&raw const` may point to: a local,
+/// a static, or a field, element or dereference of one.
+fn is_place_expr(body: &Body, expr: ExprId) -> bool {
+    match &body.exprs[expr] {
+        Expr::Path(Res::Local(_) | Res::Static(_) | Res::Err) | Expr::Missing => true,
+        Expr::Field { expr, .. } => is_place_expr(body, *expr),
+        Expr::Index { .. } => true,
+        Expr::Unary {
+            op: UnaryOp::Deref, ..
+        } => true,
+        _ => false,
     }
 }

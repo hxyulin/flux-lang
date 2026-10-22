@@ -13,7 +13,7 @@ use crate::result::Result::{self, Err, Ok};
 /// (`Continue`). `?` on a `ControlFlow` gives the `Continue` value, or
 /// returns the `Break` from a function that returns a `ControlFlow`.
 #[lang = "ControlFlow"]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ControlFlow<B, C = ()> {
     /// Go on to the next step, with this value.
     Continue(C),

@@ -1,0 +1,18 @@
+struct NoHash {}
+struct S { a: u8, b: NoHash }
+enum E { A { 0: u8 }, B { x: NoHash } }
+fn f() -> i32
+fn main() -> ()
+    _p@0: {error}
+fn hash<__H>(&S, &mut __H) -> ()
+    self@0: &S
+    state@1: &mut __H
+fn hash<__H>(&E, &mut __H) -> ()
+    self@0: &E
+    state@1: &mut __H
+    __self_discr@2: isize
+    __self_0@3: &u8
+    __self_0@4: &NoHash
+error 236..245: the trait bound `NoHash: Hash` is not satisfied
+error 294..303: the trait bound `NoHash: Hash` is not satisfied
+error 371..374: cannot take address of a temporary

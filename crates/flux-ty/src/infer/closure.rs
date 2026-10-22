@@ -1148,6 +1148,10 @@ impl Ctx<'_> {
             Expr::Ref {
                 mutable,
                 expr: inner,
+            }
+            | Expr::RawRef {
+                mutable,
+                expr: inner,
             } => {
                 let m = if *mutable {
                     Mutability::Mut
@@ -1537,7 +1541,8 @@ fn expr_bindings(body: &flux_hir::Body, expr: ExprId, out: &mut HashSet<BindingI
             Expr::Cast { expr, .. }
             | Expr::Try { expr }
             | Expr::Field { expr, .. }
-            | Expr::Ref { expr, .. } => stack.push(*expr),
+            | Expr::Ref { expr, .. }
+            | Expr::RawRef { expr, .. } => stack.push(*expr),
             Expr::Record { fields, spread, .. } => {
                 stack.extend(fields.iter().map(|&(_, f)| f));
                 stack.extend(*spread);

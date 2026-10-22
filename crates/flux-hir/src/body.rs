@@ -37,6 +37,9 @@ pub struct Body {
     /// The module of each block with items, where the names in it are
     /// resolved.
     pub block_modules: ArenaMap<Expr, crate::ModuleId>,
+    /// The blocks written `const { .. }`: inline constants, evaluated as
+    /// constants are (rustc's), which see no locals around them.
+    pub const_blocks: ArenaMap<Expr, ()>,
 }
 
 /// Where each node of a [`Body`] came from. Desugared nodes map to the
@@ -151,6 +154,12 @@ pub enum Expr {
     },
     /// `&expr` or `&mut expr`.
     Ref {
+        mutable: bool,
+        expr: ExprId,
+    },
+    /// `&raw const place` or `&raw mut place`: a raw pointer to a place,
+    /// made without a reference.
+    RawRef {
         mutable: bool,
         expr: ExprId,
     },
