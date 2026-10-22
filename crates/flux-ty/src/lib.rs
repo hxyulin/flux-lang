@@ -16,6 +16,7 @@
 //! checking: calls to `unsafe` functions need an `unsafe` block, and
 //! assignments need a `mut` binding.
 
+mod in_scope;
 mod infer;
 mod pats;
 pub mod traits;
@@ -118,6 +119,8 @@ pub struct Signatures {
     pub impl_types: ArenaMap<Impl, Box<[(Symbol, Ty)]>>,
     /// The defaults of each trait's parameters.
     pub trait_defaults: traits::TraitDefaults,
+    /// The traits in scope in each module.
+    pub traits_in_scope: in_scope::TraitsInScope,
     /// A trait is its own supertrait (reported): rustc stops before
     /// type checking bodies.
     pub cyclic: bool,
@@ -1352,6 +1355,7 @@ fn extend_signatures(
     checked_impls: u32,
     lens: Option<&ArrayLens<'_>>,
 ) -> (Signatures, Vec<Diagnostic>) {
+    sigs.traits_in_scope = in_scope::TraitsInScope::new(items);
     let mut diagnostics = Vec::new();
     let mut error = |file, range, message: &str| {
         let mut d = Diagnostic::new(range, message);
