@@ -10,14 +10,20 @@
 //! A generic item's types mention its parameters ([`TyKind::Param`]);
 //! [`Ty::subst`] replaces them with the arguments of one use of it.
 //!
-//! Interning takes a lock, but reading a type's kind does not: kinds
-//! live in an append-only table of write-once slots, as the symbol
-//! interner's strings do, since type checking reads them constantly.
+//! Reading a type's kind takes no lock: kinds live in an append-only
+//! table of write-once slots, as the symbol interner's strings do, since
+//! type checking reads them constantly. Interning looks in a per-thread
+//! cache first and then in one of many shards, each with its own lock, so
+//! threads checking bodies in parallel rarely wait for each other.
 
+use std::cell::Cell;
 use std::fmt;
+use std::hash::BuildHasher;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{LazyLock, OnceLock, RwLock};
 
-use rustc_hash::FxHashMap;
+use hashbrown::HashTable;
+use rustc_hash::FxBuildHasher;
 
 use flux_hir::{ExprId, FunctionId, StructId, TraitId};
 use flux_intern::{Symbol, sym};
@@ -280,11 +286,50 @@ impl InferVar {
     pub(crate) const PLACEHOLDER: InferVar = InferVar(u32::MAX);
 }
 
-/// The interning side: what each kind's and list's index is.
-struct Table {
-    len: u32,
-    ids: FxHashMap<TyKind, u32>,
-    lists: FxHashMap<Box<[Ty]>, &'static [Ty]>,
+/// The interning side: what each kind's and list's index is, split into
+/// shards by hash, each on its own cache line, so threads interning
+/// different types seldom touch the same lock (as the symbol interner's
+/// shards are). Indices come from one counter, so they stay dense.
+struct Interner {
+    kinds: [Shard<u32>; SHARDS],
+    lists: [Shard<&'static [Ty]>; SHARDS],
+    next: AtomicU32,
+}
+
+/// `(hash, value)`; the hash is kept to make resizing cheap. Readers share
+/// the lock; inserting takes it exclusively.
+type Shard<T> = CachePadded<RwLock<HashTable<(u64, T)>>>;
+
+const SHARDS: usize = 64;
+
+/// Keeps each shard's lock on its own cache line (128 bytes on Apple
+/// silicon), so threads locking neighboring shards do not slow each other.
+#[repr(align(128))]
+struct CachePadded<T>(T);
+
+/// Entries in each thread's caches of interned kinds and lists: 4096 × 16
+/// and 4096 × 24 bytes, 160 KiB per thread.
+const CACHE_SLOTS: usize = 4096;
+/// Marks an empty cache slot; never a real type.
+const EMPTY: Ty = Ty(u32::MAX);
+
+thread_local! {
+    /// A direct-mapped cache of recently interned kinds, `(hash, type)`:
+    /// most kinds a body interns it has interned before, and looking them
+    /// up here takes no lock at all.
+    static CACHE: [Cell<(u64, Ty)>; CACHE_SLOTS] =
+        const { [const { Cell::new((0, EMPTY)) }; CACHE_SLOTS] };
+    /// The same for lists, `(hash, list)`; an empty slot holds the empty
+    /// list, which is never interned.
+    static LIST_CACHE: [Cell<(u64, &'static [Ty])>; CACHE_SLOTS] =
+        const { [const { Cell::new((0, &[])) }; CACHE_SLOTS] };
+}
+
+/// The shard of a value whose hash is `hash`. hashbrown uses the low bits
+/// of the hash for the bucket and the top seven for its tag, so take the
+/// shard from the middle.
+fn shard(hash: u64) -> usize {
+    (hash >> 40) as usize % SHARDS
 }
 
 /// Each type's kind and flags ([`HAS_PARAM`], [`HAS_INFER`]), by index,
@@ -340,21 +385,33 @@ const PREDEFINED: [TyKind; 4] = [
     TyKind::Never,
 ];
 
-static TABLE: LazyLock<RwLock<Table>> = LazyLock::new(|| {
-    let mut table = Table {
-        len: 0,
-        ids: FxHashMap::default(),
-        lists: FxHashMap::default(),
+static INTERNER: LazyLock<Interner> = LazyLock::new(|| {
+    let interner = Interner {
+        kinds: std::array::from_fn(|_| CachePadded(RwLock::default())),
+        lists: std::array::from_fn(|_| CachePadded(RwLock::default())),
+        next: AtomicU32::new(0),
     };
     let ints = IntTy::ALL.map(TyKind::Int);
     for kind in PREDEFINED.into_iter().chain(ints) {
-        table.insert(kind);
+        interner.intern(kind, FxBuildHasher.hash_one(kind));
     }
-    RwLock::new(table)
+    interner
 });
 
-impl Table {
-    fn insert(&mut self, kind: TyKind) -> u32 {
+impl Interner {
+    /// The index of `kind`, whose hash is `hash`, interning it if it is new.
+    fn intern(&self, kind: TyKind, hash: u64) -> u32 {
+        let shard = &self.kinds[shard(hash)].0;
+        let eq = |&(h, id): &(u64, u32)| h == hash && KINDS.get(id).is_some_and(|e| e.0 == kind);
+        // Most calls find the kind, so look under a shared lock first.
+        if let Some(&(_, id)) = shard.read().unwrap().find(hash, eq) {
+            return id;
+        }
+        let mut table = shard.write().unwrap();
+        // Another thread may have interned it between the two locks.
+        if let Some(&(_, id)) = table.find(hash, eq) {
+            return id;
+        }
         let of = |ty: Ty| KINDS.get(ty.0).map_or(0, |(_, flags)| flags);
         let flags = match kind {
             TyKind::Param(_) => HAS_PARAM,
@@ -374,13 +431,29 @@ impl Table {
                 .fold(0, |f, &t| f | of(t)),
             TyKind::Int(_) | TyKind::Bool | TyKind::Never | TyKind::CStr | TyKind::Error => 0,
         };
-        let id = self.len;
-        self.len += 1;
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        assert!(id < EMPTY.0, "more than u32::MAX types interned");
         // Written before the index is published, so whoever has the
         // index finds it.
         KINDS.set(id, (kind, flags));
-        self.ids.insert(kind, id);
+        table.insert_unique(hash, (hash, id), |&(h, _)| h);
         id
+    }
+
+    /// `types`, whose hash is `hash`, interned.
+    fn list(&self, types: &[Ty], hash: u64) -> &'static [Ty] {
+        let shard = &self.lists[shard(hash)].0;
+        let eq = |&(h, list): &(u64, &'static [Ty])| h == hash && list == types;
+        if let Some(&(_, list)) = shard.read().unwrap().find(hash, eq) {
+            return list;
+        }
+        let mut table = shard.write().unwrap();
+        if let Some(&(_, list)) = table.find(hash, eq) {
+            return list;
+        }
+        let list: &'static [Ty] = Box::leak(types.into());
+        table.insert_unique(hash, (hash, list), |&(h, _)| h);
+        list
     }
 }
 
@@ -396,14 +469,17 @@ impl Ty {
 
     /// The type with this kind, interning it if it is new.
     pub fn new(kind: TyKind) -> Ty {
-        if let Some(&id) = TABLE.read().unwrap().ids.get(&kind) {
-            return Ty(id);
-        }
-        let mut table = TABLE.write().unwrap();
-        if let Some(&id) = table.ids.get(&kind) {
-            return Ty(id);
-        }
-        Ty(table.insert(kind))
+        let hash = FxBuildHasher.hash_one(kind);
+        CACHE.with(|cache| {
+            let slot = &cache[hash as usize % CACHE_SLOTS];
+            let (cached_hash, ty) = slot.get();
+            if cached_hash == hash && ty != EMPTY && ty.kind() == kind {
+                return ty;
+            }
+            let ty = Ty(INTERNER.intern(kind, hash));
+            slot.set((hash, ty));
+            ty
+        })
     }
 
     pub fn kind(self) -> TyKind {
@@ -415,7 +491,7 @@ impl Ty {
             Some(entry) => entry,
             // The predefined types exist before anything is interned.
             None => {
-                LazyLock::force(&TABLE);
+                LazyLock::force(&INTERNER);
                 KINDS.get(self.0).expect("types are interned before use")
             }
         }
@@ -434,18 +510,17 @@ impl Ty {
         if types.is_empty() {
             return &[];
         }
-        if let Some(&list) = TABLE.read().unwrap().lists.get(types) {
-            return list;
-        }
-        let mut table = TABLE.write().unwrap();
-        match table.lists.get(types) {
-            Some(&list) => list,
-            None => {
-                let list: &'static [Ty] = Box::leak(types.into());
-                table.lists.insert(types.into(), list);
-                list
+        let hash = FxBuildHasher.hash_one(types);
+        LIST_CACHE.with(|cache| {
+            let slot = &cache[hash as usize % CACHE_SLOTS];
+            let (cached_hash, list) = slot.get();
+            if cached_hash == hash && list == types {
+                return list;
             }
-        }
+            let list = INTERNER.list(types, hash);
+            slot.set((hash, list));
+            list
+        })
     }
 
     pub fn tuple(elements: &[Ty]) -> Ty {
