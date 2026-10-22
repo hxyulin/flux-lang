@@ -17,7 +17,8 @@
 //! it. Temporaries are initialized by construction, and parameters on
 //! entry. Unreachable blocks are never analyzed, as in rustc.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
+use std::hash::BuildHasher;
 
 use flux_hir::{Diagnostic, ItemTree};
 use flux_syntax::TextRange;
@@ -45,13 +46,14 @@ pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
         sigs,
         paths: &paths,
         reported: vec![false; body.locals.len()],
-        moved_uses: HashMap::new(),
+        moved_uses: FxHashMap::default(),
         diagnostics: Vec::new(),
     };
+    let mut state = State::new(paths.paths.len());
     for (block, data) in body.blocks.iter() {
-        let Some(mut state) = entry[block.index()].clone() else {
+        if !entry.load(block.index(), &mut state) {
             continue;
-        };
+        }
         for statement in &data.statements {
             for event in statement_events(&statement.kind) {
                 report.check(&event, &state, statement.range);
@@ -66,19 +68,16 @@ pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
     report.diagnostics
 }
 
-/// The state of `paths` on entry to each block, `None` for blocks never
-/// reached. With `drop_moves`, a drop moves out of its place, as it does
+/// The packed state of `paths` on entry to each block, recording which
+/// blocks were reached. With `drop_moves`, a drop moves out of its place, as it does
 /// for [`drops`](crate::drops); the check ignores drops, which run only
 /// on what is initialized.
-pub(crate) fn analyze(body: &Body, paths: &MovePaths, drop_moves: bool) -> Vec<Option<State>> {
+pub(crate) fn analyze(body: &Body, paths: &MovePaths, drop_moves: bool) -> EntryStates {
     let n = paths.paths.len();
-    let mut entry: Vec<Option<State>> = vec![None; body.blocks.len()];
-    let mut start = State {
-        maybe_uninit: BitSet::new_empty(n),
-        maybe_moved: BitSet::new_empty(n),
-        maybe_init: BitSet::new_filled(n),
-        maybe_held: BitSet::new_filled(n),
-    };
+    let mut entry = EntryStates::new(body.blocks.len(), n);
+    let mut start = State::new(n);
+    start.maybe_init = BitSet::new_filled(n);
+    start.maybe_held = BitSet::new_filled(n);
     for (id, path) in paths.paths.iter().enumerate() {
         if !body.is_param(path.local) {
             start.maybe_uninit.insert(id);
@@ -86,12 +85,17 @@ pub(crate) fn analyze(body: &Body, paths: &MovePaths, drop_moves: bool) -> Vec<O
             start.maybe_held.remove(id);
         }
     }
-    entry[0] = Some(start);
+    entry.join(0, &start);
+    let mut state = start;
+    let mut queued = BitSet::new_empty(body.blocks.len());
+    queued.insert(0);
     let mut worklist = vec![Body::entry()];
     while let Some(block) = worklist.pop() {
-        let mut state = entry[block.index()]
-            .clone()
-            .expect("queued blocks are reached");
+        queued.remove(block.index());
+        assert!(
+            entry.load(block.index(), &mut state),
+            "queued blocks are reached"
+        );
         let data = &body.blocks[block];
         for statement in &data.statements {
             for event in statement_events(&statement.kind) {
@@ -102,14 +106,7 @@ pub(crate) fn analyze(body: &Body, paths: &MovePaths, drop_moves: bool) -> Vec<O
             paths.apply(&mut state, &event, drop_moves);
         }
         for successor in data.terminator.kind.successors() {
-            let changed = match &mut entry[successor.index()] {
-                Some(existing) => existing.join(&state),
-                slot @ None => {
-                    *slot = Some(state.clone());
-                    true
-                }
-            };
-            if changed {
+            if entry.join(successor.index(), &state) && !queued.set(successor.index(), true) {
                 worklist.push(successor);
             }
         }
@@ -135,55 +132,60 @@ fn operand_event(operand: &Operand) -> Option<Event<'_>> {
     }
 }
 
-pub(crate) fn statement_events(kind: &StatementKind) -> Vec<Event<'_>> {
-    match kind {
-        StatementKind::Assign(dest, rvalue) => {
-            let mut events: Vec<Event> = match rvalue {
-                Rvalue::Ref { place, .. } => vec![Event::Borrow(place)],
-                // Which variant a value holds is a read of all of it.
-                Rvalue::Discriminant(place) => vec![Event::Read(place)],
-                _ => rvalue
-                    .operands()
-                    .into_iter()
-                    .filter_map(operand_event)
-                    .collect(),
-            };
-            events.push(Event::Assign(dest));
-            events
-        }
-        StatementKind::StorageDead(local) => vec![Event::StorageDead(*local)],
-        StatementKind::PlaceMention(_) => Vec::new(),
-    }
+pub(crate) fn statement_events(kind: &StatementKind) -> impl Iterator<Item = Event<'_>> {
+    let (rvalue, first, last) = match kind {
+        StatementKind::Assign(dest, rvalue) => (
+            Some(rvalue),
+            match rvalue {
+                Rvalue::Ref { place, .. } => Some(Event::Borrow(place)),
+                Rvalue::Discriminant(place) => Some(Event::Read(place)),
+                _ => None,
+            },
+            Some(Event::Assign(dest)),
+        ),
+        StatementKind::StorageDead(local) => (None, None, Some(Event::StorageDead(*local))),
+        StatementKind::PlaceMention(_) => (None, None, None),
+    };
+    first
+        .into_iter()
+        .chain(
+            rvalue
+                .into_iter()
+                .flat_map(Rvalue::operands)
+                .filter_map(operand_event),
+        )
+        .chain(last)
 }
 
-pub(crate) fn terminator_events(kind: &TerminatorKind) -> Vec<Event<'_>> {
-    let mut events: Vec<Event> = kind
-        .operands()
-        .into_iter()
-        .filter_map(operand_event)
-        .collect();
-    match kind {
+pub(crate) fn terminator_events(kind: &TerminatorKind) -> impl Iterator<Item = Event<'_>> {
+    let last = match kind {
         TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. } => {
-            events.push(Event::Assign(dest))
+            Some(Event::Assign(dest))
         }
-        TerminatorKind::Drop { place, .. } => events.push(Event::Drop(place)),
-        _ => {}
-    }
-    events
+        TerminatorKind::Drop { place, .. } => Some(Event::Drop(place)),
+        _ => None,
+    };
+    kind.operands().filter_map(operand_event).chain(last)
 }
 
 /// A local the analysis tracks, or a path of fields (and variants) into
 /// one.
 pub(crate) struct MovePath {
     pub(crate) local: Local,
-    pub(crate) fields: Box<[ProjectionElem]>,
+    pub(crate) fields: crate::Projection,
     pub(crate) parent: Option<usize>,
-    pub(crate) children: Vec<usize>,
+    // One-based links keep optional child/sibling indices in four bytes.
+    first_child: Option<std::num::NonZeroU32>,
+    last_child: Option<std::num::NonZeroU32>,
+    collision: Option<usize>,
+    next_sibling: Option<std::num::NonZeroU32>,
 }
 
 pub(crate) struct MovePaths {
     pub(crate) paths: Vec<MovePath>,
-    ids: HashMap<(Local, Box<[ProjectionElem]>), usize>,
+    // Hash borrowed keys, then compare against the single owned copy in
+    // `paths`. Collisions are chained through path indices.
+    ids: FxHashMap<u64, usize>,
     /// Moves out of a struct with a `Drop` impl, E0509: they move
     /// nothing, as in rustc, so later uses are not errors too.
     forbidden: Vec<Place>,
@@ -193,14 +195,14 @@ pub(crate) struct MovePaths {
 /// index, and whether it has one: the elements of an array are not
 /// tracked apart, as rustc's move paths stop at them (moving out of one
 /// is E0508).
-fn fields_before_deref(place: &Place) -> (Box<[ProjectionElem]>, bool) {
+fn fields_before_deref(place: &Place) -> (&[ProjectionElem], bool) {
     match place
         .projection
         .iter()
         .position(|&e| matches!(e, ProjectionElem::Deref | ProjectionElem::Index(_)))
     {
-        Some(deref) => (place.projection[..deref].into(), true),
-        None => (place.projection.clone(), false),
+        Some(deref) => (&place.projection[..deref], true),
+        None => (&place.projection, false),
     }
 }
 
@@ -210,7 +212,7 @@ impl MovePaths {
     pub(crate) fn new(body: &Body, tracked: impl Fn(Local) -> bool) -> MovePaths {
         let mut paths = MovePaths {
             paths: Vec::new(),
-            ids: HashMap::new(),
+            ids: FxHashMap::default(),
             forbidden: Vec::new(),
         };
         for (local, _) in body.locals.iter() {
@@ -219,8 +221,8 @@ impl MovePaths {
             }
         }
         let mut add = |place: &Place| {
-            if paths.ids.contains_key(&(place.local, Box::default())) {
-                paths.insert(place.local, &fields_before_deref(place).0);
+            if paths.lookup(place.local, &[]).is_some() {
+                paths.insert(place.local, fields_before_deref(place).0);
             }
         };
         for data in body.blocks.values() {
@@ -263,44 +265,90 @@ impl MovePaths {
 
     /// The path for `local` with `fields` and its prefixes.
     fn insert(&mut self, local: Local, fields: &[ProjectionElem]) -> usize {
-        if let Some(&id) = self.ids.get(&(local, fields.into())) {
+        if let Some(id) = self.lookup(local, fields) {
             return id;
         }
         let parent = fields
             .split_last()
             .map(|(_, prefix)| self.insert(local, prefix));
         let id = self.paths.len();
+        let hash = self.ids.hasher().hash_one((local, fields));
+        let collision = self.ids.insert(hash, id);
         self.paths.push(MovePath {
             local,
             fields: fields.into(),
             parent,
-            children: Vec::new(),
+            first_child: None,
+            last_child: None,
+            collision,
+            next_sibling: None,
         });
         if let Some(parent) = parent {
-            self.paths[parent].children.push(id);
+            let link =
+                std::num::NonZeroU32::new(u32::try_from(id + 1).expect("too many move paths"))
+                    .expect("one-based path index");
+            if let Some(last) = self.paths[parent].last_child {
+                self.paths[(last.get() - 1) as usize].next_sibling = Some(link);
+            }
+            self.paths[parent].first_child.get_or_insert(link);
+            self.paths[parent].last_child = Some(link);
         }
-        self.ids.insert((local, fields.into()), id);
         id
+    }
+
+    fn lookup(&self, local: Local, fields: &[ProjectionElem]) -> Option<usize> {
+        let hash = self.ids.hasher().hash_one((local, fields));
+        let mut next = self.ids.get(&hash).copied();
+        while let Some(id) = next {
+            let path = &self.paths[id];
+            if path.local == local && path.fields.as_ref() == fields {
+                return Some(id);
+            }
+            next = path.collision;
+        }
+        None
     }
 
     /// The path of `place`, or of the pointer it is behind, and whether
     /// it is behind one.
     pub(crate) fn find(&self, place: &Place) -> Option<(usize, bool)> {
         let (fields, behind_deref) = fields_before_deref(place);
-        let path = self.ids.get(&(place.local, fields)).copied()?;
+        let path = self.lookup(place.local, fields)?;
         Some((path, behind_deref))
     }
 
+    /// The immediate children, in the order their paths were first mentioned.
+    pub(crate) fn children(&self, path: usize) -> impl Iterator<Item = usize> + Clone + '_ {
+        std::iter::successors(self.paths[path].first_child, |&p| {
+            self.paths[(p.get() - 1) as usize].next_sibling
+        })
+        .map(|p| (p.get() - 1) as usize)
+    }
+
     /// `path` and every path below it.
-    pub(crate) fn subtree(&self, path: usize, out: &mut Vec<usize>) {
-        out.push(path);
-        for &child in &self.paths[path].children {
-            self.subtree(child, out);
-        }
+    pub(crate) fn subtree(&self, root: usize) -> impl Iterator<Item = usize> + Clone + '_ {
+        let mut next = Some(root);
+        std::iter::from_fn(move || {
+            let path = next?;
+            next = self.paths[path]
+                .first_child
+                .map(|p| (p.get() - 1) as usize)
+                .or_else(|| {
+                    let mut current = path;
+                    while current != root {
+                        if let Some(sibling) = self.paths[current].next_sibling {
+                            return Some((sibling.get() - 1) as usize);
+                        }
+                        current = self.paths[current].parent.expect("descendant has a parent");
+                    }
+                    None
+                });
+            Some(path)
+        })
     }
 
     /// The paths above `path`, nearest first.
-    fn ancestors(&self, path: usize) -> impl Iterator<Item = usize> + '_ {
+    fn ancestors(&self, path: usize) -> impl Iterator<Item = usize> + Clone + '_ {
         std::iter::successors(self.paths[path].parent, |&p| self.paths[p].parent)
     }
 
@@ -325,10 +373,8 @@ impl MovePaths {
                 state.maybe_held.insert(p);
             }),
             Event::StorageDead(local) => {
-                if let Some(&root) = self.ids.get(&(*local, Box::default())) {
-                    let mut subtree = Vec::new();
-                    self.subtree(root, &mut subtree);
-                    for p in subtree {
+                if let Some(root) = self.lookup(*local, &[]) {
+                    for p in self.subtree(root) {
                         state.maybe_uninit.insert(p);
                         state.maybe_moved.remove(p);
                         state.maybe_init.remove(p);
@@ -342,9 +388,7 @@ impl MovePaths {
         // Moving out of or assigning through a pointer leaves the pointer
         // as it was.
         if let Some((path, false)) = place.and_then(|place| self.find(place)) {
-            let mut subtree = Vec::new();
-            self.subtree(path, &mut subtree);
-            for p in subtree {
+            for p in self.subtree(path) {
                 effect(state, p);
             }
         }
@@ -363,7 +407,7 @@ struct Report<'a> {
     reported: Vec<bool>,
     /// For each set of moved paths a use found, its diagnostic and the
     /// length of the place used.
-    moved_uses: HashMap<Vec<usize>, (usize, usize)>,
+    moved_uses: FxHashMap<Vec<usize>, (usize, usize)>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -389,28 +433,22 @@ impl Report<'_> {
         if self.reported[place.local.index()] {
             return;
         }
-        let mut below = Vec::new();
         // Through a pointer only the pointer itself is used.
-        if !behind_deref {
-            self.paths.subtree(path, &mut below);
-        } else {
-            below.push(path);
-        }
-        let above: Vec<usize> = self.paths.ancestors(path).collect();
+        let below = self
+            .paths
+            .subtree(path)
+            .take(if behind_deref { 1 } else { usize::MAX });
+        let above = self.paths.ancestors(path);
         let used = if borrow { "borrow" } else { "use" };
         // The outermost moved path containing the place, if any.
         let moved = above
-            .iter()
-            .rev()
-            .chain([&path])
-            .find(|&&p| state.maybe_moved[p]);
+            .clone()
+            .filter(|&p| state.maybe_moved[p])
+            .last()
+            .or_else(|| state.maybe_moved[path].then_some(path));
         let moves: Vec<usize> = match moved {
-            Some(&moved) => vec![moved],
-            None => below
-                .iter()
-                .copied()
-                .filter(|&p| state.maybe_moved[p])
-                .collect(),
+            Some(moved) => vec![moved],
+            None => below.clone().filter(|&p| state.maybe_moved[p]).collect(),
         };
         if !moves.is_empty() {
             // rustc does not name places inside variants.
@@ -427,7 +465,7 @@ impl Report<'_> {
                 }
             };
             let message = match moved {
-                Some(&moved) => format!("{used} of moved value{}", named(moved)),
+                Some(moved) => format!("{used} of moved value{}", named(moved)),
                 None => format!("{used} of partially moved value{}", named(path)),
             };
             let specific = place.projection.len();
@@ -445,7 +483,7 @@ impl Report<'_> {
             }
             return;
         }
-        let message = if above.iter().chain(&below).any(|&p| state.maybe_uninit[p]) {
+        let message = if above.chain(below).any(|p| state.maybe_uninit[p]) {
             let root = self.local_name(place.local);
             let how = if state.maybe_init[path] {
                 "is possibly-uninitialized"
@@ -545,13 +583,214 @@ pub(crate) struct State {
     pub(crate) maybe_held: BitSet,
 }
 
+/// Four packed bitset rows per reached block, with no per-block allocations.
+pub(crate) struct EntryStates {
+    words: Vec<u64>,
+    width: usize,
+    rows: Vec<u32>,
+}
+
+impl EntryStates {
+    fn new(blocks: usize, paths: usize) -> Self {
+        let width = paths.div_ceil(64) * 4;
+        Self {
+            words: Vec::new(),
+            width,
+            rows: vec![u32::MAX; blocks],
+        }
+    }
+
+    pub(crate) fn load(&self, block: usize, state: &mut State) -> bool {
+        let row = self.rows[block];
+        if row == u32::MAX {
+            return false;
+        }
+        let start = row as usize * self.width;
+        let row = &self.words[start..start + self.width];
+        let mut offset = 0;
+        for set in [
+            &mut state.maybe_uninit,
+            &mut state.maybe_moved,
+            &mut state.maybe_init,
+            &mut state.maybe_held,
+        ] {
+            let end = offset + set.words.len();
+            set.words.copy_from_slice(&row[offset..end]);
+            offset = end;
+        }
+        true
+    }
+
+    fn join(&mut self, block: usize, state: &State) -> bool {
+        let mut changed = self.rows[block] == u32::MAX;
+        if changed {
+            self.rows[block] = u32::try_from(self.words.len().checked_div(self.width).unwrap_or(0))
+                .expect("too many dataflow rows");
+            self.words.resize(self.words.len() + self.width, 0);
+        }
+        let start = self.rows[block] as usize * self.width;
+        let row = &mut self.words[start..start + self.width];
+        let words = [
+            &state.maybe_uninit,
+            &state.maybe_moved,
+            &state.maybe_init,
+            &state.maybe_held,
+        ]
+        .into_iter()
+        .flat_map(|set| &set.words);
+        for (word, &other) in row.iter_mut().zip(words) {
+            let new = *word | other;
+            changed |= new != *word;
+            *word = new;
+        }
+        changed
+    }
+}
+
 impl State {
-    /// Unions `other` into `self`; whether anything changed.
-    fn join(&mut self, other: &State) -> bool {
-        let uninit = self.maybe_uninit.union(&other.maybe_uninit);
-        let moved = self.maybe_moved.union(&other.maybe_moved);
-        let init = self.maybe_init.union(&other.maybe_init);
-        let held = self.maybe_held.union(&other.maybe_held);
-        uninit | moved | init | held
+    pub(crate) fn new(paths: usize) -> Self {
+        Self {
+            maybe_uninit: BitSet::new_empty(paths),
+            maybe_moved: BitSet::new_empty(paths),
+            maybe_init: BitSet::new_empty(paths),
+            maybe_held: BitSet::new_empty(paths),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unreachable_blocks_do_not_reserve_bitset_rows() {
+        let mut entries = EntryStates::new(100_000, 130);
+        assert!(entries.words.is_empty());
+        let state = State::new(130);
+        entries.join(99_999, &state);
+        assert_eq!(entries.words.len(), 12);
+        let mut loaded = State::new(130);
+        assert!(!entries.load(0, &mut loaded));
+        assert!(entries.load(99_999, &mut loaded));
+        assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn packed_entries_preserve_each_analysis_and_reachability() {
+        for paths in [0, 1, 63, 64, 65, 130] {
+            let mut entries = EntryStates::new(3, paths);
+            let mut state = State::new(paths);
+            assert!(!entries.load(1, &mut state));
+            assert!(entries.join(1, &state));
+            assert!(!entries.join(1, &state));
+            for p in 0..paths {
+                state.maybe_uninit.set(p, p % 2 == 0);
+                state.maybe_moved.set(p, p % 3 == 0);
+                state.maybe_init.set(p, p % 5 == 0);
+                state.maybe_held.set(p, p % 7 == 0);
+            }
+            entries.join(1, &state);
+            let mut loaded = State::new(paths);
+            assert!(entries.load(1, &mut loaded));
+            assert_eq!(loaded, state);
+            assert!(!entries.load(0, &mut loaded));
+            assert!(entries.join(2, &State::new(paths)));
+            assert!(entries.load(2, &mut loaded));
+            assert_eq!(loaded, State::new(paths));
+        }
+    }
+
+    #[test]
+    fn borrowed_paths_and_subtrees_preserve_partial_moves() {
+        let mut paths = MovePaths {
+            paths: Vec::new(),
+            ids: FxHashMap::default(),
+            forbidden: Vec::new(),
+        };
+        let local = Local::from_raw(0);
+        let field = ProjectionElem::Field(0);
+        let nested = paths.insert(local, &[field, field]);
+        let sibling = paths.insert(local, &[ProjectionElem::Field(1)]);
+        let other = paths.insert(Local::from_raw(1), &[]);
+        assert_eq!(
+            paths.subtree(0).collect::<Vec<_>>(),
+            [0, 1, nested, sibling]
+        );
+        assert_eq!(paths.subtree(1).collect::<Vec<_>>(), [1, nested]);
+        assert_eq!(paths.children(0).collect::<Vec<_>>(), [1, sibling]);
+        assert_eq!(paths.children(1).collect::<Vec<_>>(), [nested]);
+        assert!(paths.children(other).next().is_none());
+        assert_eq!(paths.insert(local, &[field, field]), nested);
+        let place = Place {
+            local,
+            projection: vec![field, ProjectionElem::Deref, field].into(),
+        };
+        assert_eq!(paths.find(&place), Some((1, true)));
+        let mut state = State::new(paths.paths.len());
+        paths.apply(&mut state, &Event::Assign(&local.into()), false);
+        paths.apply(
+            &mut state,
+            &Event::Move(&Place {
+                local,
+                projection: vec![field].into(),
+            }),
+            false,
+        );
+        assert!(state.maybe_moved[1] && state.maybe_moved[nested]);
+        assert!(!state.maybe_moved[0] && !state.maybe_moved[sibling]);
+        assert!(state.maybe_held[0] && state.maybe_held[sibling]);
+        paths.apply(&mut state, &Event::StorageDead(local), false);
+        assert!(paths.subtree(0).all(|p| state.maybe_uninit[p]
+            && !state.maybe_init[p]
+            && !state.maybe_held[p]
+            && !state.maybe_moved[p]));
+        assert!(!state.maybe_uninit[other]);
+    }
+
+    #[test]
+    fn terminator_traversal_keeps_callee_order_and_duplicate_edges() {
+        let local = |i| Place::from(Local::from_raw(i));
+        let kind = TerminatorKind::CallIndirect {
+            callee: Operand::Copy(local(0)),
+            args: vec![Operand::Move(local(1)), Operand::Copy(local(2))],
+            dest: local(3),
+            target: None,
+        };
+        assert!(kind.successors().next().is_none());
+        let mut events = terminator_events(&kind);
+        assert!(matches!(events.next(), Some(Event::Read(p)) if p == &local(0)));
+        assert!(matches!(events.next(), Some(Event::Move(p)) if p == &local(1)));
+        assert!(matches!(events.next(), Some(Event::Read(p)) if p == &local(2)));
+        assert!(matches!(events.next(), Some(Event::Assign(p)) if p == &local(3)));
+        assert!(events.next().is_none());
+        let block = crate::BasicBlock::from_raw;
+        let switch = TerminatorKind::SwitchInt {
+            discr: Operand::Copy(local(0)),
+            targets: vec![(0, block(2)), (1, block(2)), (2, block(1))],
+            otherwise: block(3),
+            variants: None,
+        };
+        assert_eq!(
+            switch.successors().collect::<Vec<_>>(),
+            [block(2), block(2), block(1), block(3)]
+        );
+    }
+
+    #[test]
+    fn assignment_events_read_operands_before_writing_destination() {
+        let dest = Place::from(Local::from_raw(0));
+        let source = Place::from(Local::from_raw(1));
+        let kind = StatementKind::Assign(
+            dest.clone(),
+            Rvalue::Aggregate(
+                crate::AggregateKind::Tuple,
+                vec![Operand::Copy(source.clone()), Operand::Move(dest.clone())],
+            ),
+        );
+        let mut events = statement_events(&kind);
+        assert!(matches!(events.next(), Some(Event::Read(p)) if p == &source));
+        assert!(matches!(events.next(), Some(Event::Move(p)) if p == &dest));
+        assert!(matches!(events.next(), Some(Event::Assign(p)) if p == &dest));
+        assert!(events.next().is_none());
     }
 }

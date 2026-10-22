@@ -20,7 +20,9 @@
 //! What remains are drops of initialized values, which code generation
 //! expands into calls of `Drop::drop` ([`mono::expand_drops`](crate::mono::expand_drops)).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+
+use rustc_hash::FxHashSet;
 
 use flux_hir::{Diagnostic, ItemTree};
 use flux_ty::{Predicate, Signatures, Ty, TyKind};
@@ -51,7 +53,7 @@ pub(crate) fn elaborate(
     env: &[Predicate],
     precise: bool,
 ) {
-    let mut roots = HashSet::new();
+    let mut roots = FxHashSet::default();
     for data in body.blocks.values() {
         if let TerminatorKind::Drop { place, .. } = &data.terminator.kind
             && !place.has_deref()
@@ -80,6 +82,7 @@ pub(crate) fn elaborate(
     // What each drop becomes, and the flags that takes.
     let mut plans: Vec<(BasicBlock, usize, Vec<Step>)> = Vec::new();
     let mut flagged: BTreeMap<usize, Local> = BTreeMap::new();
+    let mut state = State::new(paths.paths.len());
     for (block, data) in body.blocks.iter() {
         let TerminatorKind::Drop { place, .. } = &data.terminator.kind else {
             continue;
@@ -90,15 +93,13 @@ pub(crate) fn elaborate(
             continue;
         };
         let mut steps = Vec::new();
-        if let Some(mut state) = entry[block.index()].clone() {
+        if entry.load(block.index(), &mut state) {
             for statement in &data.statements {
                 for event in statement_events(&statement.kind) {
                     paths.apply(&mut state, &event, true);
                 }
             }
-            let mut subtree = Vec::new();
-            paths.subtree(path, &mut subtree);
-            if !precise && subtree.iter().any(|&p| state.maybe_held[p]) {
+            if !precise && paths.subtree(path).any(|p| state.maybe_held[p]) {
                 body.live_drops.push(live);
             }
             let ty = body.place_ty(place, sigs);
@@ -145,11 +146,9 @@ pub(crate) fn elaborate(
             dead.push(block);
             continue;
         }
-        let mut subtree = Vec::new();
-        paths.subtree(path, &mut subtree);
-        let resets: Vec<Statement> = subtree
-            .iter()
-            .filter_map(|p| flagged.get(p))
+        let resets: Vec<Statement> = paths
+            .subtree(path)
+            .filter_map(|p| flagged.get(&p))
             .map(|&flag| set(flag, false, range))
             .collect();
         let whole = Step {
@@ -248,12 +247,14 @@ impl Open<'_> {
 
     /// Drops `place`, of type `ty`, whose move path is `path`.
     fn drop(&mut self, path: usize, place: Place, ty: Ty) {
-        let mut subtree = Vec::new();
-        self.paths.subtree(path, &mut subtree);
-        if subtree.iter().all(|&p| !self.state.maybe_held[p]) {
+        if self.paths.subtree(path).all(|p| !self.state.maybe_held[p]) {
             return;
         }
-        if subtree.iter().all(|&p| !self.state.maybe_uninit[p]) {
+        if self
+            .paths
+            .subtree(path)
+            .all(|p| !self.state.maybe_uninit[p])
+        {
             self.step(place, None);
             return;
         }
@@ -263,16 +264,16 @@ impl Open<'_> {
             }
             _ => false,
         };
-        let children = &self.paths.paths[path].children;
+        let has_children = self.paths.children(path).next().is_some();
         // A `Box` whose contents are moved out of, wholly or in part:
         // what is left of them, then its memory, through its field
         // (`Unique`, whose `Drop` frees it), but not its own `Drop`,
         // which would drop the contents, as rustc's drop elaboration
         // frees a box.
         if let Some(pointee) = flux_ty::box_pointee(ty)
-            && let Some(contents) = children
-                .iter()
-                .copied()
+            && let Some(contents) = self
+                .paths
+                .children(path)
                 .find(|&c| self.paths.paths[c].fields.last() == Some(&ProjectionElem::BoxDeref))
         {
             if (self.needs_drop)(pointee) {
@@ -289,12 +290,12 @@ impl Open<'_> {
             return;
         }
         if let (Some(variants), false, false) =
-            (self.sigs.variants(ty), children.is_empty(), has_drop_impl)
+            (self.sigs.variants(ty), !has_children, has_drop_impl)
         {
             // Each variant's fields, if it is the one the enum holds.
             for (v, fields) in variants.into_iter().enumerate() {
                 let v = v as u32;
-                let child = children.iter().copied().find(|&c| {
+                let child = self.paths.children(path).find(|&c| {
                     self.paths.paths[c].fields.last() == Some(&ProjectionElem::Downcast(v))
                 });
                 self.variants.push((place.clone(), v));
@@ -307,16 +308,14 @@ impl Open<'_> {
         // borrowed): as rustc's `open_drop_for_array`, the runs of elements
         // without paths of their own and those with, last run first, each
         // run's elements in order.
-        if let (TyKind::Array(elem, len), false) = (ty.kind(), children.is_empty()) {
+        if let (TyKind::Array(elem, len), false) = (ty.kind(), !has_children) {
             if !(self.needs_drop)(elem) {
                 return;
             }
             let n = len.as_usize().unwrap_or(0) as u32;
-            let children = children.clone();
             let child_of = |paths: &MovePaths, i: u32| {
-                children
-                    .iter()
-                    .copied()
+                paths
+                    .children(path)
                     .find(|&c| match paths.paths[c].fields.last() {
                         Some(&ProjectionElem::ConstantIndex {
                             offset,
@@ -354,15 +353,14 @@ impl Open<'_> {
                 runs.push(Run::Drop(start, n));
             }
             let element = |i: u32| {
-                let mut projection = place.projection.to_vec();
-                projection.push(ProjectionElem::ConstantIndex {
+                let projection = place.projection.appended(ProjectionElem::ConstantIndex {
                     offset: i,
                     min_length: n,
                     from_end: false,
                 });
                 Place {
                     local: place.local,
-                    projection: projection.into(),
+                    projection,
                 }
             };
             for run in runs.into_iter().rev() {
@@ -382,7 +380,7 @@ impl Open<'_> {
             return;
         }
         let fields = self.sigs.fields(ty);
-        let (Some(fields), false, false) = (fields, children.is_empty(), has_drop_impl) else {
+        let (Some(fields), false, false) = (fields, !has_children, has_drop_impl) else {
             self.step(place, Some(path));
             return;
         };
@@ -393,13 +391,12 @@ impl Open<'_> {
     /// move paths below `path` by theirs, the others by `owner`'s own
     /// state, which only it and its ancestors change.
     fn fields(&mut self, path: usize, owner: usize, place: &Place, fields: &[Ty]) {
-        let children = self.paths.paths[path].children.clone();
         for (i, &field_ty) in fields.iter().enumerate() {
             if !(self.needs_drop)(field_ty) {
                 continue;
             }
             let field = place.field(i as u32);
-            let child = children.iter().copied().find(|&c| {
+            let child = self.paths.children(path).find(|&c| {
                 self.paths.paths[c].fields.last() == Some(&ProjectionElem::Field(i as u32))
             });
             match child {
@@ -458,11 +455,9 @@ fn set_flags(body: &mut Body, paths: &MovePaths, flagged: &BTreeMap<usize, Local
             },
             Event::Read(_) | Event::Borrow(_) | Event::Drop(_) => return Vec::new(),
         };
-        let mut subtree = Vec::new();
-        paths.subtree(path, &mut subtree);
-        subtree
-            .iter()
-            .filter_map(|p| flagged.get(p))
+        paths
+            .subtree(path)
+            .filter_map(|p| flagged.get(&p))
             .map(|&flag| set(flag, value, Default::default()))
             .collect()
     };
@@ -528,7 +523,7 @@ fn merge_dead(body: &mut Body, dead: &[BasicBlock]) {
             preds[successor.index()] += 1;
         }
     }
-    let dead_set: HashSet<BasicBlock> = dead.iter().copied().collect();
+    let dead_set: FxHashSet<BasicBlock> = dead.iter().copied().collect();
     let mut removed = vec![false; body.blocks.len()];
     for &block in dead {
         if removed[block.index()] {

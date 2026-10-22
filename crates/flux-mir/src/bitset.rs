@@ -6,7 +6,7 @@ use core::ops::Index;
 /// A set of the indices below its size, as words of bits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BitSet {
-    words: Vec<u64>,
+    pub(crate) words: Vec<u64>,
 }
 
 impl BitSet {
@@ -53,6 +53,7 @@ impl BitSet {
 
     /// Adds the indices of `other`, of the same size; whether any were
     /// not in `self`.
+    #[allow(dead_code)] // Also exercised by the compiler-internals runtime driver.
     pub(crate) fn union(&mut self, other: &BitSet) -> bool {
         let mut changed = false;
         for (word, &theirs) in self.words.iter_mut().zip(&other.words) {

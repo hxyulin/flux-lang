@@ -204,6 +204,8 @@ dependencies = [
  "keel-ir",
  "keel-link",
  "keel-opt",
+ "rustc-hash",
+ "smallvec",
 ]
 
 [[package]]
@@ -250,6 +252,7 @@ dependencies = [
  "flux-syntax",
  "flux-ty",
  "rustc-hash",
+ "smallvec",
 ]
 
 [[package]]

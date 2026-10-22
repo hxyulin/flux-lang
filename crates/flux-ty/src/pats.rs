@@ -76,7 +76,7 @@ pub(crate) fn check_body(
         }
     }
     // Function parameters, then `let`s and `match`es, in order.
-    for &param in body.params.iter() {
+    for &param in body.lists[body.params].iter() {
         if let Some(witnesses) = cx.refutable(param) {
             let message = format!(
                 "refutable pattern in function argument: {}",
@@ -105,7 +105,7 @@ pub(crate) fn check_body(
         }
         match data {
             Expr::Block { stmts, .. } => {
-                for stmt in stmts.iter() {
+                for stmt in body.lists[*stmts].iter() {
                     if let Stmt::Let {
                         pat,
                         else_branch: None,
@@ -131,7 +131,7 @@ pub(crate) fn check_body(
                 if has_error(ty) {
                     continue;
                 }
-                let rows: Vec<Vec<DPat>> = arms
+                let rows: Vec<Vec<DPat>> = body.lists[*arms]
                     .iter()
                     .filter(|arm| arm.guard.is_none())
                     .map(|arm| vec![cx.lower(arm.pat)])
@@ -189,7 +189,7 @@ fn has_error(ty: Ty) -> bool {
         | TyKind::RawPtr(_, pointee)
         | TyKind::Array(pointee, _)
         | TyKind::Slice(pointee) => has_error(pointee),
-        TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().into_iter().any(has_error),
+        TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().any(has_error),
         _ => false,
     }
 }
@@ -345,6 +345,14 @@ impl Cx<'_> {
 
     /// The witnesses that `pat`, whose type is known, is refutable.
     fn refutable(&mut self, pat: PatId) -> Option<Vec<String>> {
+        // Wildcards and bindings without subpatterns cover every value,
+        // including when match ergonomics implicitly dereferences the type.
+        if matches!(
+            self.body.pats[pat],
+            Pat::Missing | Pat::Wild | Pat::Bind { sub: None, .. }
+        ) {
+            return None;
+        }
         let ty = self.pat_type(pat);
         if has_error(ty) {
             return None;
@@ -400,7 +408,10 @@ impl Cx<'_> {
                     TyKind::Tuple(elements) => elements.len(),
                     _ => pats.len(),
                 };
-                DPat::Ctor(Ctor::Single, self.lower_fields(pats, *rest, count))
+                DPat::Ctor(
+                    Ctor::Single,
+                    self.lower_fields(&self.body.lists[*pats], *rest, count),
+                )
             }
             Pat::TupleStruct {
                 strukt,
@@ -410,7 +421,10 @@ impl Cx<'_> {
             } => {
                 let count = self.items.structs[*strukt].variant(*variant).fields.len();
                 let ctor = self.adt_ctor(*strukt, *variant);
-                DPat::Ctor(ctor, self.lower_fields(pats, *rest, count))
+                DPat::Ctor(
+                    ctor,
+                    self.lower_fields(&self.body.lists[*pats], *rest, count),
+                )
             }
             Pat::Record {
                 strukt,
@@ -420,7 +434,7 @@ impl Cx<'_> {
             } => {
                 let def = self.items.structs[*strukt].variant(*variant);
                 let mut lowered = vec![DPat::Wild; def.fields.len()];
-                for &(name, field) in fields.iter() {
+                for &(name, field) in self.body.lists[*fields].iter() {
                     if let Some((i, _)) = def.field(name) {
                         lowered[i] = self.lower(field);
                     }
@@ -469,30 +483,36 @@ impl Cx<'_> {
                 }
                 _ => DPat::Wild,
             },
-            Pat::Or(alternatives) => {
-                DPat::Or(alternatives.iter().map(|&a| self.lower(a)).collect())
-            }
+            Pat::Or(alternatives) => DPat::Or(
+                self.body.lists[*alternatives]
+                    .iter()
+                    .map(|&a| self.lower(a))
+                    .collect(),
+            ),
             Pat::Ref { pat: inner, .. } => DPat::Ctor(Ctor::Single, vec![self.lower(*inner)]),
             Pat::Slice {
                 prefix,
                 slice,
                 suffix,
             } => {
-                let mut fields: Vec<DPat> = prefix.iter().map(|&p| self.lower(p)).collect();
+                let mut fields: Vec<DPat> = self.body.lists[*prefix]
+                    .iter()
+                    .map(|&p| self.lower(p))
+                    .collect();
                 let (p, s) = (prefix.len(), suffix.len());
                 match ty.kind() {
                     // As many fields as the array has, `..` wildcards.
                     TyKind::Array(_, len) => match len.as_usize() {
                         Some(n) if n as usize >= p + s => {
                             fields.extend((0..n as usize - p - s).map(|_| DPat::Wild));
-                            fields.extend(suffix.iter().map(|&q| self.lower(q)));
+                            fields.extend(self.body.lists[*suffix].iter().map(|&q| self.lower(q)));
                             DPat::Ctor(Ctor::Single, fields)
                         }
                         // Reported.
                         _ => DPat::Wild,
                     },
                     TyKind::Slice(_) => {
-                        fields.extend(suffix.iter().map(|&q| self.lower(q)));
+                        fields.extend(self.body.lists[*suffix].iter().map(|&q| self.lower(q)));
                         let kind = match slice {
                             None => SliceKind::Fixed((p + s) as u32),
                             Some(_) => SliceKind::VarLen(p as u32, s as u32),
@@ -720,6 +740,13 @@ impl Cx<'_> {
                 Vec::new()
             };
         };
+        // One all-wildcard row already covers every combination of columns.
+        if rows
+            .iter()
+            .any(|row| row.iter().all(|p| matches!(p, DPat::Wild)))
+        {
+            return Vec::new();
+        }
         // An or-pattern at the head is a row per alternative.
         let mut expanded = Vec::with_capacity(rows.len());
         let mut stack: Vec<Vec<DPat>> = rows.into_iter().rev().collect();

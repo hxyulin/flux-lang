@@ -1,6 +1,6 @@
 //! Function bodies: expressions, patterns and bindings in arenas.
 
-use flux_arena::{Arena, ArenaMap, Idx};
+use flux_arena::{Arena, ArenaMap, Idx, SliceId, SlicePool};
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
 use flux_syntax::ast::{BinaryOp, UnaryOp};
@@ -15,12 +15,13 @@ pub type TypeRefId = Idx<TypeRef>;
 /// One function's code.
 #[derive(Debug)]
 pub struct Body {
+    pub lists: BodyLists,
     pub exprs: Arena<Expr>,
     pub pats: Arena<Pat>,
     pub bindings: Arena<Binding>,
     pub types: Arena<TypeRef>,
     /// One pattern per parameter, in order.
-    pub params: Box<[PatId]>,
+    pub params: SliceId<PatId>,
     /// The generic arguments written in a `Path`, `Record` or
     /// `MethodCall` expression, for those that have any or go through
     /// `Self`.
@@ -52,10 +53,10 @@ pub struct BodySourceMap {
     /// The field names of a `Field` expression (one) or a `Record`
     /// expression (one per field, in order), and the method name of a
     /// `MethodCall`.
-    pub expr_fields: ArenaMap<Expr, Box<[TextRange]>>,
+    pub expr_fields: SourceListMap<Expr, TextRange>,
     /// Each field of a `Record` pattern: its name, and the whole field
     /// (`a: b`).
-    pub pat_fields: ArenaMap<Pat, Box<[(TextRange, TextRange)]>>,
+    pub pat_fields: SourceListMap<Pat, (TextRange, TextRange)>,
     /// The operator of a `Binary` expression, the `?` of a `Try`, and
     /// an `Index` expression from its `[` on.
     pub ops: ArenaMap<Expr, TextRange>,
@@ -78,9 +79,9 @@ pub enum Expr {
     /// A name, resolved.
     Path(Res),
     /// `()` or `(a, b)`.
-    Tuple(Box<[ExprId]>),
+    Tuple(SliceId<ExprId>),
     Block {
-        stmts: Box<[Stmt]>,
+        stmts: SliceId<Stmt>,
         tail: Option<ExprId>,
         is_unsafe: bool,
     },
@@ -101,7 +102,7 @@ pub enum Expr {
     /// `match scrutinee { arms }`
     Match {
         scrutinee: ExprId,
-        arms: Box<[MatchArm]>,
+        arms: SliceId<MatchArm>,
     },
     Loop {
         body: ExprId,
@@ -120,13 +121,13 @@ pub enum Expr {
     },
     Call {
         callee: ExprId,
-        args: Box<[ExprId]>,
+        args: SliceId<ExprId>,
     },
     /// `receiver.method(args)`; resolved during type checking.
     MethodCall {
         receiver: ExprId,
         method: Symbol,
-        args: Box<[ExprId]>,
+        args: SliceId<ExprId>,
     },
     Unary {
         op: UnaryOp,
@@ -168,7 +169,7 @@ pub enum Expr {
         expr: ExprId,
     },
     /// `[a, b, c]`.
-    Array(Box<[ExprId]>),
+    Array(SliceId<ExprId>),
     /// `[value; count]`.
     Repeat {
         value: ExprId,
@@ -184,9 +185,9 @@ pub enum Expr {
     /// the bindings in scope where it is written. `return` in its body
     /// returns from it.
     Closure {
-        params: Box<[PatId]>,
+        params: SliceId<PatId>,
         /// Each parameter's type, if written.
-        param_types: Box<[Option<TypeRefId>]>,
+        param_types: SliceId<Option<TypeRefId>>,
         ret: Option<TypeRefId>,
         body: ExprId,
         is_move: bool,
@@ -196,7 +197,7 @@ pub enum Expr {
         strukt: StructId,
         /// The variant of an enum; 0 for a struct.
         variant: u32,
-        fields: Box<[(Symbol, ExprId)]>,
+        fields: SliceId<(Symbol, ExprId)>,
         spread: Option<ExprId>,
     },
 }
@@ -328,7 +329,7 @@ pub enum Pat {
     },
     /// `(a, b)`; `rest` is the position of `..`, as in `(a, .., z)`.
     Tuple {
-        pats: Box<[PatId]>,
+        pats: SliceId<PatId>,
         rest: Option<u32>,
     },
     /// `P(a, b)` or `E::V(a, b)`, with `..` like a tuple pattern.
@@ -336,14 +337,14 @@ pub enum Pat {
         strukt: StructId,
         /// The variant of an enum; 0 for a struct.
         variant: u32,
-        pats: Box<[PatId]>,
+        pats: SliceId<PatId>,
         rest: Option<u32>,
     },
     /// `S { a, b: x, .. }` or `E::V { a, .. }`.
     Record {
         strukt: StructId,
         variant: u32,
-        fields: Box<[(Symbol, PatId)]>,
+        fields: SliceId<(Symbol, PatId)>,
         rest: bool,
     },
     /// A unit struct, `U`, or a unit variant, `E::A`.
@@ -359,45 +360,45 @@ pub enum Pat {
         inclusive: bool,
     },
     /// `a | b`, each alternative binding the same names.
-    Or(Box<[PatId]>),
+    Or(SliceId<PatId>),
     /// `&pat` or `&mut pat`.
     Ref { pat: PatId, mutable: bool },
     /// `[a, b]`, `[first, .., last]` or `[x, rest @ ..]`: the patterns
     /// before `..`, what `..` is if there is one (a wildcard, or a binding
     /// of the elements it stands for, `rest @ ..`), and those after it.
     Slice {
-        prefix: Box<[PatId]>,
+        prefix: SliceId<PatId>,
         slice: Option<PatId>,
-        suffix: Box<[PatId]>,
+        suffix: SliceId<PatId>,
     },
 }
 
 impl Pat {
-    /// The patterns directly inside this one.
-    pub fn children(&self) -> Box<dyn Iterator<Item = PatId> + '_> {
-        let (pats, fields): (&[PatId], &[(Symbol, PatId)]) = match self {
-            Pat::Tuple { pats, .. } | Pat::TupleStruct { pats, .. } | Pat::Or(pats) => (pats, &[]),
+    /// The patterns directly inside this one, in source order, without allocation.
+    pub fn children<'a>(&'a self, lists: &'a BodyLists) -> impl Iterator<Item = PatId> + 'a {
+        let empty_pats: &[PatId] = &[];
+        let empty_fields: &[(Symbol, PatId)] = &[];
+        let (pats, middle, suffix, fields) = match self {
+            Pat::Tuple { pats, .. } | Pat::TupleStruct { pats, .. } | Pat::Or(pats) => {
+                (&lists[*pats], None, empty_pats, empty_fields)
+            }
             Pat::Slice {
                 prefix,
                 slice,
                 suffix,
-            } => {
-                let all = prefix.iter().chain(slice).chain(suffix.iter()).copied();
-                return Box::new(all.collect::<Vec<_>>().into_iter())
-                    as Box<dyn Iterator<Item = PatId>>;
+            } => (&lists[*prefix], *slice, &lists[*suffix], empty_fields),
+            Pat::Record { fields, .. } => (empty_pats, None, empty_pats, &lists[*fields]),
+            Pat::Bind { sub, .. } => (empty_pats, *sub, empty_pats, empty_fields),
+            Pat::Ref { pat, .. } => (empty_pats, Some(*pat), empty_pats, empty_fields),
+            Pat::Missing | Pat::Wild | Pat::Unit(..) | Pat::Expr(_) | Pat::Range { .. } => {
+                (empty_pats, None, empty_pats, empty_fields)
             }
-            Pat::Record { fields, .. } => (&[], fields),
-            Pat::Bind { sub: Some(sub), .. } | Pat::Ref { pat: sub, .. } => {
-                (std::slice::from_ref(sub), &[])
-            }
-            Pat::Missing
-            | Pat::Wild
-            | Pat::Bind { sub: None, .. }
-            | Pat::Unit(..)
-            | Pat::Expr(_)
-            | Pat::Range { .. } => (&[], &[]),
         };
-        Box::new(pats.iter().copied().chain(fields.iter().map(|&(_, p)| p)))
+        pats.iter()
+            .copied()
+            .chain(middle)
+            .chain(suffix.iter().copied())
+            .chain(fields.iter().map(|&(_, p)| p))
     }
 }
 
@@ -415,16 +416,16 @@ impl Body {
         let Expr::Block { stmts, .. } = &self.exprs[body] else {
             return None;
         };
-        let [Stmt::Expr { expr, .. }] = &stmts[..] else {
+        let [Stmt::Expr { expr, .. }] = &self.lists[*stmts] else {
             return None;
         };
         let Expr::Match { arms, .. } = &self.exprs[*expr] else {
             return None;
         };
-        let Pat::TupleStruct { pats, .. } = &self.pats[arms.get(1)?.pat] else {
+        let Pat::TupleStruct { pats, .. } = &self.pats[self.lists[*arms].get(1)?.pat] else {
             return None;
         };
-        Some((*expr, *pats.first()?))
+        Some((*expr, *self.lists[*pats].first()?))
     }
 
     /// Every binding in `pat`, in source order, once: an or-pattern's
@@ -433,14 +434,14 @@ impl Body {
         match &self.pats[pat] {
             Pat::Bind { binding, .. } if !out.contains(binding) => out.push(*binding),
             Pat::Or(alternatives) => {
-                if let Some(&first) = alternatives.first() {
+                if let Some(&first) = self.lists[*alternatives].first() {
                     self.pat_bindings(first, out);
                 }
                 return;
             }
             _ => {}
         }
-        for child in self.pats[pat].children() {
+        for child in self.pats[pat].children(&self.lists) {
             self.pat_bindings(child, out);
         }
     }
@@ -456,4 +457,75 @@ pub struct Binding {
     /// reference with a pattern that is not one may make a plain binding
     /// one too; type checking says which ([`flux_ty`]'s binding modes).
     pub by_ref: Option<bool>,
+}
+
+/// Flat storage shared by all child lists in one body. Each handle is eight bytes;
+/// growing a pool cannot invalidate handles already stored in expressions or patterns.
+#[derive(Debug, Default)]
+pub struct BodyLists {
+    exprs: SlicePool<ExprId>,
+    pats: SlicePool<PatId>,
+    stmts: SlicePool<Stmt>,
+    arms: SlicePool<MatchArm>,
+    expr_fields: SlicePool<(Symbol, ExprId)>,
+    pat_fields: SlicePool<(Symbol, PatId)>,
+    param_types: SlicePool<Option<TypeRefId>>,
+}
+
+macro_rules! body_list {
+    ($ty:ty, $field:ident) => {
+        impl std::ops::Index<SliceId<$ty>> for BodyLists {
+            type Output = [$ty];
+            fn index(&self, id: SliceId<$ty>) -> &Self::Output {
+                &self.$field[id]
+            }
+        }
+        impl BodyList for $ty {
+            fn pool(lists: &mut BodyLists) -> &mut SlicePool<Self> {
+                &mut lists.$field
+            }
+        }
+    };
+}
+body_list!(ExprId, exprs);
+body_list!(PatId, pats);
+body_list!(Stmt, stmts);
+body_list!(MatchArm, arms);
+body_list!((Symbol, ExprId), expr_fields);
+body_list!((Symbol, PatId), pat_fields);
+body_list!(Option<TypeRefId>, param_types);
+
+/// A child-list element stored in a [`BodyLists`] pool.
+pub trait BodyList: Sized {
+    fn pool(lists: &mut BodyLists) -> &mut SlicePool<Self>;
+}
+impl BodyLists {
+    pub fn alloc<T: BodyList>(&mut self, values: impl IntoIterator<Item = T>) -> SliceId<T> {
+        T::pool(self).alloc(values)
+    }
+}
+
+/// Sparse source-map entries backed by a single flat pool rather than one
+/// allocation for every expression or pattern with fields.
+#[derive(Debug)]
+pub struct SourceListMap<K, T> {
+    ranges: ArenaMap<K, SliceId<T>>,
+    values: SlicePool<T>,
+}
+impl<K, T> Default for SourceListMap<K, T> {
+    fn default() -> Self {
+        Self {
+            ranges: ArenaMap::new(),
+            values: SlicePool::default(),
+        }
+    }
+}
+impl<K, T> SourceListMap<K, T> {
+    pub fn insert(&mut self, key: Idx<K>, values: impl IntoIterator<Item = T>) {
+        let range = self.values.alloc(values);
+        self.ranges.insert(key, range);
+    }
+    pub fn get(&self, key: Idx<K>) -> Option<&[T]> {
+        self.ranges.get(key).map(|&range| &self.values[range])
+    }
 }

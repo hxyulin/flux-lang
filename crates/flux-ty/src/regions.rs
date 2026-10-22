@@ -23,7 +23,6 @@
 //! only one in the inputs (E0106 otherwise); in a constant's or
 //! static's type it is `'static`.
 
-use flux_arena::ArenaMap;
 use flux_hir::def_map::{Def, Ns, Resolved};
 use flux_hir::{
     Const, Function, GenericArgs, Generics, Impl, ItemTree, LifetimeRef, ModuleId, Path, Struct,
@@ -206,10 +205,10 @@ pub struct AliasRegions {
 /// The lifetimes of every signature.
 #[derive(Debug, Clone, Default)]
 pub struct RegionSigs {
-    pub fns: ArenaMap<Function, FnRegions>,
-    pub structs: ArenaMap<Struct, StructRegions>,
-    pub impls: ArenaMap<Impl, ImplRegions>,
-    pub consts: ArenaMap<Const, Box<[Region]>>,
+    pub fns: flux_arena::LayeredArenaMap<Function, FnRegions>,
+    pub structs: flux_arena::LayeredArenaMap<Struct, StructRegions>,
+    pub impls: flux_arena::LayeredArenaMap<Impl, ImplRegions>,
+    pub consts: flux_arena::LayeredArenaMap<Const, Box<[Region]>>,
 }
 
 impl RegionSigs {
@@ -733,7 +732,7 @@ impl<'a> Walker<'a> {
                 }
                 out[i] = Some(instance);
             } else {
-                for (g, t) in generic.children().into_iter().zip(instance.children()) {
+                for (g, t) in generic.children().zip(instance.children()) {
                     arguments(g, t, out);
                 }
             }

@@ -15,7 +15,9 @@
 //! matches on it needs them all, so a discriminant that needs those of
 //! its own enum is a cycle (E0391).
 
-use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock};
+
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use flux_arena::ArenaMap;
 use flux_hir::{ConstId, FunctionId, ItemTree};
@@ -37,12 +39,12 @@ pub enum Value {
     },
     Bool(bool),
     /// A tuple or struct, fields in order; `()` has none.
-    Aggregate(Vec<Value>),
+    Aggregate(Arc<[Value]>),
     /// Variant `index` of enum `strukt`, its fields in order.
     Variant {
         strukt: flux_hir::StructId,
         index: u32,
-        fields: Vec<Value>,
+        fields: Arc<[Value]>,
     },
     /// The address of a static, which reading through gives its
     /// initial value.
@@ -50,7 +52,19 @@ pub enum Value {
     /// A shared reference to a value: what it points to, which cannot
     /// change while it is borrowed. A reference to a slice holds the
     /// elements as an aggregate.
-    Ref(Box<Value>),
+    Ref(Arc<Value>),
+}
+
+impl Value {
+    /// Unit and fieldless aggregates share one empty allocation.
+    pub fn unit() -> Self {
+        Self::Aggregate(Self::empty_fields())
+    }
+
+    fn empty_fields() -> Arc<[Value]> {
+        static EMPTY: LazyLock<Arc<[Value]>> = LazyLock::new(Arc::default);
+        Arc::clone(&EMPTY)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,7 +84,7 @@ pub struct EvalError {
 #[derive(Debug, Default)]
 pub struct ConstValues {
     pub items: ArenaMap<flux_hir::Const, Value>,
-    pub instances: HashMap<ConstInstance, Value>,
+    pub instances: FxHashMap<ConstInstance, Value>,
 }
 
 impl ConstValues {
@@ -105,15 +119,18 @@ pub struct Evaluator<'a> {
     pub consts: &'a ArenaMap<flux_hir::Const, Body>,
     /// Each constant's name, for messages.
     pub names: &'a dyn Fn(ConstId) -> String,
-    values: HashMap<ConstInstance, Result<Value, EvalError>>,
+    values: FxHashMap<ConstInstance, Result<Value, EvalError>>,
     in_progress: Vec<ConstInstance>,
     /// The promoted constants of each body being run, innermost last.
-    promoted: Vec<Vec<Value>>,
+    promoted: Vec<&'a [Value]>,
+    /// Cleared frame storage, reused after a call returns (including errors).
+    frames: Vec<Vec<Option<Value>>>,
+    arguments: Vec<Vec<Value>>,
     /// Every discriminant of the enums whose values were made or matched
     /// on, as bits.
-    discriminants: HashMap<flux_hir::StructId, Result<Box<[u128]>, EvalError>>,
+    discriminants: FxHashMap<flux_hir::StructId, Result<Box<[u128]>, EvalError>>,
     /// The functions whose matches' enums have their discriminants.
-    switched: HashSet<FunctionId>,
+    switched: FxHashSet<FunctionId>,
     /// The constants whose own value failed, in the order they did,
     /// with why: what [`Self::eval_instance`]'s callers report.
     pub failures: Vec<(ConstInstance, EvalError)>,
@@ -136,14 +153,16 @@ impl<'a> Evaluator<'a> {
             functions,
             consts,
             names,
-            values: HashMap::new(),
+            values: FxHashMap::default(),
             in_progress: Vec::new(),
-            discriminants: HashMap::new(),
-            switched: HashSet::new(),
+            discriminants: FxHashMap::default(),
+            switched: FxHashSet::default(),
             failures: Vec::new(),
             unbuilt: Vec::new(),
             steps: 0,
             promoted: Vec::new(),
+            frames: Vec::new(),
+            arguments: Vec::new(),
         }
     }
 
@@ -319,7 +338,7 @@ impl<'a> Evaluator<'a> {
     fn layout_of(&mut self, ty: Ty, range: TextRange) -> Result<crate::layout::Layout, EvalError> {
         let mut enums = Vec::new();
         let mut stack = vec![ty];
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         while let Some(ty) = stack.pop() {
             if !seen.insert(ty) {
                 continue;
@@ -389,30 +408,36 @@ impl<'a> Evaluator<'a> {
     /// `checked` if overflow there is an error.
     fn run(
         &mut self,
-        body: &Body,
-        args: Vec<Value>,
+        body: &'a Body,
+        mut args: Vec<Value>,
         generics: GenericArgs,
         depth: u32,
         checked: bool,
     ) -> Result<Value, EvalError> {
-        self.promoted.push(body.promoted.clone());
-        let result = self.run_body(body, args, generics, depth, checked);
+        self.promoted.push(&body.promoted);
+        let mut locals = self.frames.pop().unwrap_or_default();
+        locals.resize(body.locals.len(), None);
+        for (param, value) in body.params().zip(args.drain(..)) {
+            locals[param.index()] = Some(value);
+        }
+        self.arguments.push(args);
+        let result = self.run_body(body, &mut locals, generics, depth, checked);
         self.promoted.pop();
+        // No evaluated values survive in scratch storage: in particular, a
+        // cached constant must not acquire an extra owner from a dead frame.
+        locals.clear();
+        self.frames.push(locals);
         result
     }
 
     fn run_body(
         &mut self,
         body: &Body,
-        args: Vec<Value>,
+        locals: &mut [Option<Value>],
         generics: GenericArgs,
         depth: u32,
         checked: bool,
     ) -> Result<Value, EvalError> {
-        let mut locals: Vec<Option<Value>> = vec![None; body.locals.len()];
-        for (param, value) in body.params().zip(args) {
-            locals[param.index()] = Some(value);
-        }
         let mut block = Body::entry();
         loop {
             let data = &body.blocks[block];
@@ -431,8 +456,8 @@ impl<'a> Evaluator<'a> {
                         return Err(error(statement.range, self.static_write().to_owned()));
                     }
                     let value =
-                        self.rvalue(body, &locals, generics, rvalue, statement.range, !checked)?;
-                    write(&mut locals, dest, value, statement.range)?;
+                        self.rvalue(body, locals, generics, rvalue, statement.range, !checked)?;
+                    write(locals, dest, value, statement.range)?;
                 }
             }
             let range = data.terminator.range;
@@ -446,7 +471,7 @@ impl<'a> Evaluator<'a> {
                     otherwise,
                     variants,
                 } => {
-                    let value = match self.operand(&locals, generics, discr, range)? {
+                    let value = match self.operand(locals, generics, discr, range)? {
                         Value::Int { bits, .. } => bits,
                         Value::Bool(b) => u128::from(b),
                         Value::Aggregate(_)
@@ -479,7 +504,7 @@ impl<'a> Evaluator<'a> {
                     target,
                 } => {
                     if let Some(message) =
-                        self.panic_message(*func, args, body, &locals, generics, range)?
+                        self.panic_message(*func, args, body, locals, generics, range)?
                     {
                         return Err(error(range, format!("evaluation panicked: {message}")));
                     }
@@ -487,7 +512,7 @@ impl<'a> Evaluator<'a> {
                     // here too.
                     if self.is_type_intrinsic(*func) {
                         let call = (*func, *generic_args, generics);
-                        block = self.type_intrinsic(call, &mut locals, dest, *target, range)?;
+                        block = self.type_intrinsic(call, locals, dest, *target, range)?;
                         continue;
                     }
                     if self.items.functions[*func].intrinsic
@@ -502,16 +527,23 @@ impl<'a> Evaluator<'a> {
                             "this operation is not supported in constants yet".to_owned(),
                         ));
                     }
-                    let args = args
-                        .iter()
-                        .map(|a| self.operand(&locals, generics, a, range))
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let mut values = self.arguments.pop().unwrap_or_default();
+                    for arg in args {
+                        match self.operand(locals, generics, arg, range) {
+                            Ok(value) => values.push(value),
+                            Err(e) => {
+                                values.clear();
+                                self.arguments.push(values);
+                                return Err(e);
+                            }
+                        }
+                    }
                     let callee = flux_ty::Instance {
                         function: *func,
                         args: Ty::list(&subst_list(generic_args, generics)),
                     };
-                    let value = self.call(callee, args, depth, range, checked)?;
-                    write(&mut locals, dest, value, range)?;
+                    let value = self.call(callee, values, depth, range, checked)?;
+                    write(locals, dest, value, range)?;
                     match target {
                         Some(target) => *target,
                         None => return Err(error(range, "entering unreachable code".to_owned())),
@@ -530,18 +562,18 @@ impl<'a> Evaluator<'a> {
                     msg,
                     target,
                 } => {
-                    let Value::Bool(value) = self.operand(&locals, generics, cond, range)? else {
+                    let Value::Bool(value) = self.operand(locals, generics, cond, range)? else {
                         unreachable!("assertions test booleans")
                     };
                     if value != *expected {
-                        let message = self.assert_message(&locals, generics, msg, range)?;
+                        let message = self.assert_message(locals, generics, msg, range)?;
                         return Err(error(range, message));
                     }
                     *target
                 }
                 TerminatorKind::Return => {
                     return locals[Body::RETURN.index()]
-                        .clone()
+                        .take()
                         .ok_or_else(|| error(range, "constant has no value".to_owned()));
                 }
                 TerminatorKind::Unreachable => {
@@ -711,7 +743,7 @@ impl<'a> Evaluator<'a> {
                         .cloned()
                         .ok_or_else(|| error(range, "a promoted constant is missing".to_owned()))?;
                     self.promoted_layouts(&value, range)?;
-                    Ok(Value::Ref(Box::new(value)))
+                    Ok(Value::Ref(Arc::new(value)))
                 }
                 Constant::Fn { .. } => Err(error(
                     range,
@@ -723,7 +755,7 @@ impl<'a> Evaluator<'a> {
                     bits: u128::from(c),
                     ty: IntTy::U32,
                 }),
-                Constant::Unit | Constant::FnItem(_) => Ok(Value::Aggregate(Vec::new())),
+                Constant::Unit | Constant::FnItem(_) => Ok(Value::unit()),
                 Constant::CStr(_) => Err(error(
                     range,
                     "C strings in constants are not supported yet".to_owned(),
@@ -756,12 +788,12 @@ impl<'a> Evaluator<'a> {
         match value {
             Value::Variant { strukt, fields, .. } => {
                 self.layout(*strukt, range)?;
-                for field in fields {
+                for field in fields.iter() {
                     self.promoted_layouts(field, range)?;
                 }
             }
             Value::Aggregate(fields) => {
-                for field in fields {
+                for field in fields.iter() {
                     self.promoted_layouts(field, range)?;
                 }
             }
@@ -786,10 +818,13 @@ impl<'a> Evaluator<'a> {
                 if let AggregateKind::Variant(strukt, _) = *kind {
                     self.layout(strukt, range)?;
                 }
-                let fields = ops
-                    .iter()
-                    .map(|op| self.operand(locals, generics, op, range))
-                    .collect::<Result<_, _>>()?;
+                let fields = if ops.is_empty() {
+                    Value::empty_fields()
+                } else {
+                    ops.iter()
+                        .map(|op| self.operand(locals, generics, op, range))
+                        .collect::<Result<Arc<[_]>, _>>()?
+                };
                 Ok(match *kind {
                     AggregateKind::Variant(strukt, index) => Value::Variant {
                         strukt,
@@ -811,7 +846,7 @@ impl<'a> Evaluator<'a> {
                         "arrays this large in constants are not supported yet".to_owned(),
                     ));
                 }
-                Ok(Value::Aggregate(vec![value; count as usize]))
+                Ok(Value::Aggregate(vec![value; count as usize].into()))
             }
             // An array's length is its type's; a slice is behind a
             // reference.
@@ -852,7 +887,7 @@ impl<'a> Evaluator<'a> {
                 ..
             } => {
                 let value = self.operand(locals, generics, &Operand::Copy(place.clone()), range)?;
-                Ok(Value::Ref(Box::new(value)))
+                Ok(Value::Ref(Arc::new(value)))
             }
             // A reference to an array as one to a slice holds the same
             // elements.
@@ -1019,7 +1054,7 @@ fn project(
                 } else {
                     to as usize
                 };
-                let part = Value::Aggregate(elements[from as usize..end].to_vec());
+                let part = Value::Aggregate(elements[from as usize..end].into());
                 return project(locals, &part, &projection[k + 1..], range);
             }
             (ProjectionElem::Downcast(_), Value::Variant { .. }) => value,
@@ -1045,14 +1080,21 @@ fn write(
         locals[place.local.index()] = Some(new);
         return Ok(());
     }
-    let indices: Vec<usize> = place
-        .projection
-        .iter()
-        .map(|elem| match elem {
-            ProjectionElem::Index(local) => index(locals, *local),
-            _ => 0,
-        })
-        .collect();
+    // Most places have just a few projections; dynamic indices must be
+    // read before mutably borrowing the destination's local.
+    let mut inline = [0; 16];
+    let mut spill = Vec::new();
+    let indices = if place.projection.len() <= inline.len() {
+        &mut inline[..place.projection.len()]
+    } else {
+        spill.resize(place.projection.len(), 0);
+        &mut spill[..]
+    };
+    for (elem, i) in place.projection.iter().zip(indices.iter_mut()) {
+        if let ProjectionElem::Index(local) = elem {
+            *i = index(locals, *local);
+        }
+    }
     if place
         .projection
         .iter()
@@ -1067,13 +1109,15 @@ fn write(
     let mut value = slot
         .as_mut()
         .ok_or_else(|| error(range, "use of an uninitialized value".to_owned()))?;
-    for (elem, &i) in place.projection.iter().zip(&indices) {
+    for (elem, &i) in place.projection.iter().zip(indices.iter()) {
         value = match (elem, value) {
             (
                 ProjectionElem::Field(i),
                 Value::Aggregate(fields) | Value::Variant { fields, .. },
-            ) => &mut fields[*i as usize],
-            (ProjectionElem::Index(_), Value::Aggregate(elements)) => &mut elements[i],
+            ) => &mut Arc::make_mut(fields)[*i as usize],
+            (ProjectionElem::Index(_), Value::Aggregate(elements)) => {
+                &mut Arc::make_mut(elements)[i]
+            }
             (
                 &ProjectionElem::ConstantIndex {
                     offset, from_end, ..
@@ -1081,7 +1125,7 @@ fn write(
                 Value::Aggregate(elements),
             ) => {
                 let at = constant_index(elements.len(), offset, from_end);
-                &mut elements[at]
+                &mut Arc::make_mut(elements)[at]
             }
             (ProjectionElem::Downcast(_), value @ Value::Variant { .. }) => value,
             _ => {
@@ -1324,5 +1368,71 @@ fn constant_index(len: usize, offset: u32, from_end: bool) -> usize {
         len - offset as usize
     } else {
         offset as usize
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn int(bits: u128) -> Value {
+        Value::Int {
+            bits,
+            ty: IntTy::I32,
+        }
+    }
+
+    #[test]
+    fn aggregate_clones_share_storage_until_nested_projection_writes() {
+        let row = Value::Aggregate(vec![int(1), int(2)].into());
+        let cached = Value::Aggregate(vec![row.clone(), row].into());
+        let Value::Aggregate(original) = &cached else {
+            unreachable!()
+        };
+        let mut locals = vec![Some(cached.clone()), Some(int(1))];
+        let Some(Value::Aggregate(copy)) = &locals[0] else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(original, copy));
+        let root = Place::from(crate::Local::from_raw(0));
+        let place = root.index(crate::Local::from_raw(1)).field(0);
+        write(&mut locals, &place, int(9), TextRange::default()).unwrap();
+        assert_eq!(read(&locals, &place, TextRange::default()).unwrap(), int(9));
+        assert_eq!(
+            project(&locals, &cached, &place.projection, TextRange::default()).unwrap(),
+            int(1)
+        );
+        // Mutating one repeated row must not change its sibling.
+        assert_eq!(
+            read(&locals, &root.field(0).field(0), TextRange::default()).unwrap(),
+            int(1)
+        );
+        let Some(Value::Aggregate(copy)) = &locals[0] else {
+            unreachable!()
+        };
+        assert!(!Arc::ptr_eq(original, copy));
+        let (Value::Aggregate(left), Value::Aggregate(right)) = (&original[0], &copy[0]) else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(left, right));
+    }
+
+    #[test]
+    fn reference_clones_share_pointee_and_empty_values_share_storage() {
+        let value = Value::Ref(Arc::new(Value::Aggregate(vec![int(7)].into())));
+        let Value::Ref(original) = &value else {
+            unreachable!()
+        };
+        let Value::Ref(copy) = value.clone() else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(original, &copy));
+        let Value::Aggregate(first) = Value::unit() else {
+            unreachable!()
+        };
+        let Value::Aggregate(second) = Value::unit() else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(&first, &second));
     }
 }

@@ -9,7 +9,7 @@
 //! end, integer variables take their default and what is left is
 //! reported.
 
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 
 use flux_hir::{AssocItem, ExprId, FunctionId, ImplId, Owner, TraitId};
 use flux_intern::Symbol;
@@ -259,16 +259,11 @@ impl Ctx<'_> {
         if !pred.self_ty.has_aliases() && !pred.trait_ref.args.iter().any(|a| a.has_aliases()) {
             return pred;
         }
-        let args: Vec<Ty> = pred
-            .trait_ref
-            .args
-            .iter()
-            .map(|&a| self.normalize(a, range))
-            .collect();
+        let args = crate::ty::map_list(pred.trait_ref.args, |a| self.normalize(a, range));
         Predicate {
             self_ty: self.normalize(pred.self_ty, range),
             trait_ref: TraitRef {
-                args: Ty::list(&args),
+                args,
                 ..pred.trait_ref
             },
         }
@@ -287,10 +282,15 @@ impl Ctx<'_> {
 
     /// Whether `f` holds, leaving the variables as they were.
     pub(super) fn probe(&mut self, f: impl FnOnce(&mut Self) -> bool) -> bool {
-        let snapshot = self.vars.clone();
+        // Each nested probe owns its snapshot; buffers are reused only after
+        // rollback, and no cached answer survives a change to inference variables.
+        let mut snapshot = self.probe_snapshots.pop().unwrap_or_default();
+        snapshot.extend_from_slice(&self.vars);
         let projections = self.projections.len();
         let result = f(self);
-        self.vars = snapshot;
+        std::mem::swap(&mut self.vars, &mut snapshot);
+        snapshot.clear();
+        self.probe_snapshots.push(snapshot);
         self.projections.truncate(projections);
         result
     }
@@ -298,10 +298,11 @@ impl Ctx<'_> {
     /// Selects what can be, until nothing changes, reporting obligations
     /// that cannot be met.
     pub(super) fn select_obligations(&mut self) {
+        let mut pending = std::mem::take(&mut self.obligation_scratch);
         loop {
             let mut progress = self.select_projections();
-            let pending = std::mem::take(&mut self.obligations);
-            for ob in pending {
+            std::mem::swap(&mut pending, &mut self.obligations);
+            for ob in pending.drain(..) {
                 match self.select_predicate(ob.pred) {
                     Selection::Met(nested) => {
                         progress = true;
@@ -347,19 +348,20 @@ impl Ctx<'_> {
                 break;
             }
         }
+        if pending.capacity() > self.obligation_scratch.capacity() {
+            self.obligation_scratch = pending;
+        }
     }
 
     /// Replaces the variables of pending associated types whose `Self` is
     /// now known; whether any was.
     fn select_projections(&mut self) -> bool {
-        let pending = std::mem::take(&mut self.projections);
+        let mut pending = std::mem::take(&mut self.projection_scratch);
+        std::mem::swap(&mut pending, &mut self.projections);
         let mut progress = false;
-        for p in pending {
-            let args: Vec<Ty> = p.alias.args.iter().map(|&a| self.shallow(a)).collect();
-            let alias = AliasTy {
-                args: Ty::list(&args),
-                ..p.alias
-            };
+        for p in pending.drain(..) {
+            let args = crate::ty::map_list(p.alias.args, |a| self.shallow(a));
+            let alias = AliasTy { args, ..p.alias };
             // Known, without an `impl` block or a bound that says what
             // it is: an associated type of a generic parameter, rigid.
             let found = self.try_normalize(alias).or_else(|| {
@@ -399,6 +401,9 @@ impl Ctx<'_> {
                 None => self.projections.push(PendingProjection { alias, ..p }),
             }
         }
+        if pending.capacity() > self.projection_scratch.capacity() {
+            self.projection_scratch = pending;
+        }
         progress
     }
 
@@ -415,18 +420,11 @@ impl Ctx<'_> {
             TyKind::Alias(alias) => {
                 // Known variables replaced, so that an alias met again
                 // through an `impl` block's fresh variables is the same.
-                let args: Vec<Ty> = alias
-                    .args
-                    .iter()
-                    .map(|&a| {
-                        let a = self.normalize(a, origin);
-                        self.known(a)
-                    })
-                    .collect();
-                let alias = AliasTy {
-                    args: Ty::list(&args),
-                    ..alias
-                };
+                let args = crate::ty::map_list(alias.args, |a| {
+                    let a = self.normalize(a, origin);
+                    self.known(a)
+                });
+                let alias = AliasTy { args, ..alias };
                 if self.normalizing.contains(&alias) {
                     let message = format!(
                         "overflow evaluating the requirement `{} == _`",
@@ -465,16 +463,16 @@ impl Ctx<'_> {
                 Ty::alias(alias)
             }
             TyKind::Tuple(list) => {
-                let list: Vec<Ty> = list.iter().map(|&t| self.normalize(t, origin)).collect();
-                Ty::tuple(&list)
+                let list = crate::ty::map_list(list, |t| self.normalize(t, origin));
+                Ty::new(TyKind::Tuple(list))
             }
             TyKind::Adt(adt, list) => {
-                let list: Vec<Ty> = list.iter().map(|&t| self.normalize(t, origin)).collect();
-                Ty::adt(adt.strukt, adt.name, &list)
+                let list = crate::ty::map_list(list, |t| self.normalize(t, origin));
+                Ty::new(TyKind::Adt(adt, list))
             }
             TyKind::Closure(id, list) => {
-                let list: Vec<Ty> = list.iter().map(|&t| self.normalize(t, origin)).collect();
-                Ty::closure(id, &list)
+                let list = crate::ty::map_list(list, |t| self.normalize(t, origin));
+                Ty::new(TyKind::Closure(id, list))
             }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, self.normalize(t, origin))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.normalize(t, origin)),
@@ -679,7 +677,7 @@ impl Ctx<'_> {
     /// Once the body is inferred: integer variables in waiting
     /// obligations take their default, and what still waits is
     /// reported.
-    pub(super) fn finish_obligations(&mut self, reported: &mut HashSet<crate::ty::InferVar>) {
+    pub(super) fn finish_obligations(&mut self, reported: &mut FxHashSet<crate::ty::InferVar>) {
         self.select_obligations();
         let pending = self.obligations.clone();
         for ob in &pending {
@@ -1704,7 +1702,7 @@ pub(super) fn first_param(ty: Ty) -> Option<u32> {
         TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
             list.iter().find_map(|&t| first_param(t))
         }
-        TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().into_iter().find_map(first_param),
+        TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().find_map(first_param),
         _ => None,
     }
 }

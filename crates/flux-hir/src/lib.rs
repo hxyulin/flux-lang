@@ -31,8 +31,8 @@ mod pretty;
 mod source;
 
 pub use body::{
-    Binding, BindingId, Body, BodySourceMap, Expr, ExprId, Literal, LoopSource, MatchArm, Pat,
-    PatId, PathGenerics, Res, SegmentArgs, Stmt, TypeRefId,
+    Binding, BindingId, Body, BodyLists, BodySourceMap, Expr, ExprId, Literal, LoopSource,
+    MatchArm, Pat, PatId, PathGenerics, Res, SegmentArgs, Stmt, TypeRefId,
 };
 pub use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 pub use item_tree::{

@@ -39,6 +39,7 @@ use flux_syntax::TextRange;
 use flux_ty::regions::{Outlives, Region, Variance};
 use flux_ty::{AliasTy, Mutability, Signatures, Ty, TyKind};
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use crate::bitset::BitSet;
 use crate::interval::IntervalSet;
@@ -49,6 +50,10 @@ use crate::{
 
 /// A region variable.
 pub(crate) type Var = u32;
+
+/// Owned temporary slots, so constraint generation can mutate `Cx` while
+/// reading them. Most types have at most four regions; larger lists spill.
+type Slots = SmallVec<[Var; 4]>;
 
 /// `'static`, always the first.
 const STATIC: Var = 0;
@@ -383,19 +388,19 @@ pub(crate) fn impl_method_matches(
     cx.close_known();
     // Each region's universal regions, until nothing changes.
     let n = cx.universal.len();
-    let mut values: Vec<Vec<bool>> = vec![vec![false; n]; cx.vars as usize];
+    let words = n.div_ceil(64);
+    let mut values = vec![0u64; cx.vars as usize * words];
     for (u, &(var, _)) in cx.universal.iter().enumerate() {
-        values[var as usize][u] = true;
+        values[var as usize * words + u / 64] |= 1 << (u % 64);
     }
     loop {
         let mut changed = false;
         for c in &cx.constraints {
-            let sub = values[c.sub as usize].clone();
-            for (have, add) in values[c.sup as usize].iter_mut().zip(sub) {
-                if add && !*have {
-                    *have = true;
-                    changed = true;
-                }
+            for word in 0..words {
+                let add = values[c.sub as usize * words + word];
+                let have = &mut values[c.sup as usize * words + word];
+                changed |= add & !*have != 0;
+                *have |= add;
             }
         }
         if !changed {
@@ -403,7 +408,10 @@ pub(crate) fn impl_method_matches(
         }
     }
     cx.universal.iter().enumerate().all(|(a, &(var, _))| {
-        (0..n).all(|b| !values[var as usize][b] || cx.known(a as u32, b as u32))
+        (0..n).all(|b| {
+            values[var as usize * words + b / 64] & (1 << (b % 64)) == 0
+                || cx.known(a as u32, b as u32)
+        })
     })
 }
 
@@ -447,7 +455,7 @@ struct Cx<'a> {
     /// Each loan's region, in order.
     loan_vars: Vec<Var>,
     /// Constraints by their `sup`, built for explaining errors.
-    by_sup: Vec<Vec<u32>>,
+    by_sup: Adjacency,
     /// In a closure's body, what each universal region is to its
     /// creator.
     closure_ext: Vec<Ext>,
@@ -569,7 +577,7 @@ impl<'a> Cx<'a> {
             constraints: Vec::new(),
             type_tests: Vec::new(),
             loan_vars: Vec::new(),
-            by_sup: Vec::new(),
+            by_sup: Adjacency::default(),
             closure_ext: Vec::new(),
             requirements,
             own_requirements: Vec::new(),
@@ -628,7 +636,7 @@ impl<'a> Cx<'a> {
         self.outlives(b, a, category, range);
     }
 
-    fn local_vars(&self, local: Local) -> Vec<Var> {
+    fn local_vars(&self, local: Local) -> Slots {
         let i = local.index();
         (self.local_base[i]..self.local_base[i + 1]).collect()
     }
@@ -879,7 +887,7 @@ impl<'a> Cx<'a> {
         };
         if !sig_ty.has_opaques() {
             let mut map = map;
-            return self.inst(sig_ty, own, next, &mut map, &[], &[], out);
+            return self.inst(sig_ty, own, next, &mut map, &[], &[] as &[Vec<Var>], out);
         }
         let own_slot = |next: &mut usize, out: &mut Vec<Var>| -> bool {
             let r = own.get(*next).copied().unwrap_or(Region::Erased);
@@ -958,10 +966,7 @@ impl<'a> Cx<'a> {
         // What each variable is outlived by, through the constraints so
         // far: the universal regions above it.
         let n = self.vars as usize;
-        let mut by_sub: Vec<Vec<Var>> = vec![Vec::new(); n];
-        for c in &self.constraints {
-            by_sub[c.sub as usize].push(c.sup);
-        }
+        let by_sub = Adjacency::new(n, self.constraints.iter().map(|c| (c.sub, c.sup)));
         let hidden = std::mem::take(&mut self.hidden);
         let mut uncaptured = false;
         // Where rustc blames what the hidden type must outlive: the
@@ -1110,7 +1115,15 @@ impl<'a> Cx<'a> {
             for &a in &alias.args[1..] {
                 let mut vars = Vec::new();
                 let mut none = |_| None;
-                self.inst(a, &[], &mut 0, &mut none, &[], &[], &mut vars);
+                self.inst(
+                    a,
+                    &[],
+                    &mut 0,
+                    &mut none,
+                    &[],
+                    &[] as &[Vec<Var>],
+                    &mut vars,
+                );
                 alias_vars.push(vars);
             }
             match self.normalize_regions(alias, &alias_vars, 0) {
@@ -1212,22 +1225,22 @@ impl<'a> Cx<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn inst(
+    fn inst<A: AsRef<[Var]>, O: Extend<Var>>(
         &mut self,
         ty: Ty,
         own: &[Region],
         next: &mut usize,
         map: &mut dyn FnMut(Region) -> Option<Var>,
         args: &[Ty],
-        arg_vars: &[Vec<Var>],
-        out: &mut Vec<Var>,
+        arg_vars: &[A],
+        out: &mut O,
     ) -> bool {
-        let mut own_slot = |next: &mut usize, out: &mut Vec<Var>| -> bool {
+        let mut own_slot = |next: &mut usize, out: &mut O| -> bool {
             let r = own.get(*next).copied().unwrap_or(Region::Erased);
             *next += 1;
             match map(r) {
                 Some(v) => {
-                    out.push(v);
+                    out.extend([v]);
                     true
                 }
                 None => false,
@@ -1236,7 +1249,7 @@ impl<'a> Cx<'a> {
         match ty.kind() {
             TyKind::Param(p) => {
                 if let Some(vars) = arg_vars.get(p.index as usize) {
-                    out.extend(vars);
+                    out.extend(vars.as_ref().iter().copied());
                 }
                 true
             }
@@ -1280,7 +1293,7 @@ impl<'a> Cx<'a> {
                     && !self.env_late.iter().any(|(e, _)| *e == a)
                     && let Some((_, vars)) = self.env_regions.iter().find(|(e, _)| *e == a)
                 {
-                    out.extend(vars);
+                    out.extend(vars.iter().copied());
                     return true;
                 }
                 // Each argument's slots, which are its parameters'.
@@ -1856,7 +1869,7 @@ impl<'a> Cx<'a> {
     }
 
     /// The type and slots of `place`.
-    fn place_regions(&mut self, place: &Place) -> (Ty, Vec<Var>) {
+    fn place_regions(&mut self, place: &Place) -> (Ty, Slots) {
         let body = self.body;
         let mut ty = body.locals[place.local].ty;
         let mut vars = self.local_vars(place.local);
@@ -1887,7 +1900,7 @@ impl<'a> Cx<'a> {
                     let start: u32 = list[..i as usize].iter().map(|&t| self.slots(t)).sum();
                     let field = list[i as usize];
                     let n = self.slots(field);
-                    vars = vars[start as usize..(start + n) as usize].to_vec();
+                    vars = Slots::from_slice(&vars[start as usize..(start + n) as usize]);
                     ty = field;
                 }
                 (ProjectionElem::Field(i), TyKind::Closure(_, args)) => {
@@ -1895,7 +1908,7 @@ impl<'a> Cx<'a> {
                     let start: u32 = upvars[..i as usize].iter().map(|&t| self.slots(t)).sum();
                     let field = upvars[i as usize];
                     let n = self.slots(field);
-                    vars = vars[start as usize..(start + n) as usize].to_vec();
+                    vars = Slots::from_slice(&vars[start as usize..(start + n) as usize]);
                     ty = field;
                 }
                 (ProjectionElem::Field(i), TyKind::Adt(..)) => {
@@ -1905,7 +1918,7 @@ impl<'a> Cx<'a> {
                 }
                 _ => {
                     ty = Ty::ERROR;
-                    vars = Vec::new();
+                    vars = Slots::new();
                 }
             }
             variant = None;
@@ -1921,16 +1934,16 @@ impl<'a> Cx<'a> {
         vars: &[Var],
         variant: Option<u32>,
         field: u32,
-    ) -> (Ty, Vec<Var>) {
+    ) -> (Ty, Slots) {
         let TyKind::Adt(adt, args) = ty.kind() else {
-            return (Ty::ERROR, Vec::new());
+            return (Ty::ERROR, Slots::new());
         };
         let sigs = self.sigs;
         let Some(field_ty) = sigs
             .variant_fields(ty, variant.unwrap_or(0))
             .and_then(|f| f.get(field as usize).copied())
         else {
-            return (Ty::ERROR, Vec::new());
+            return (Ty::ERROR, Slots::new());
         };
         let field_ty = self.normalize(field_ty);
         let start = match sigs.variant_starts.get(adt.strukt) {
@@ -1948,11 +1961,11 @@ impl<'a> Cx<'a> {
         let lifetimes = self.items.structs[adt.strukt].generics.lifetimes.len();
         if let (Some(generic), Some(table)) = (generic, table) {
             // The arguments' slots, after the lifetimes.
-            let mut arg_vars = Vec::with_capacity(args.len());
+            let mut arg_vars: SmallVec<[&[Var]; 4]> = SmallVec::new();
             let mut at = lifetimes;
             for &a in args {
                 let n = self.slots(a) as usize;
-                arg_vars.push(vars.get(at..at + n).map_or_else(Vec::new, <[Var]>::to_vec));
+                arg_vars.push(vars.get(at..at + n).unwrap_or(&[]));
                 at += n;
             }
             let mut map = |r: Region| match r {
@@ -1960,15 +1973,15 @@ impl<'a> Cx<'a> {
                 Region::Param(i) => vars.get(i as usize).copied(),
                 Region::Erased | Region::Late(_) => None,
             };
-            if let Some(out) =
-                self.instantiate_sig(generic, &table.clone(), &mut map, args, &arg_vars)
+            let mut out = Slots::new();
+            if self.inst(generic, table, &mut 0, &mut map, args, &arg_vars, &mut out)
                 && out.len() == want as usize
             {
                 return (field_ty, out);
             }
         }
         // A field flux cannot match: as long as all of the value.
-        let fresh = self.fresh_list(want);
+        let fresh: Slots = (0..want).map(|_| self.fresh()).collect();
         for &f in &fresh {
             for &v in vars {
                 self.equate(f, v, Category::Boring, TextRange::default());
@@ -1977,7 +1990,7 @@ impl<'a> Cx<'a> {
         (field_ty, fresh)
     }
 
-    fn operand_regions(&mut self, operand: &Operand) -> (Ty, Vec<Var>) {
+    fn operand_regions(&mut self, operand: &Operand) -> (Ty, Slots) {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self.place_regions(place),
             // Constants hold no references flux makes, other than to
@@ -1985,7 +1998,7 @@ impl<'a> Cx<'a> {
             Operand::Const(c) => {
                 let ty = c.ty();
                 let n = self.slots(ty);
-                (ty, vec![STATIC; n as usize])
+                (ty, std::iter::repeat_n(STATIC, n as usize).collect())
             }
         }
     }
@@ -2168,7 +2181,7 @@ impl<'a> Cx<'a> {
             }
             let prefix = Place {
                 local: place.local,
-                projection: place.projection[..k].into(),
+                projection: place.projection.prefix(k),
             };
             let (ty, vars) = self.place_regions(&prefix);
             match ty.kind() {
@@ -2472,7 +2485,7 @@ impl<'a> Cx<'a> {
         }
         let (ty, vars) = self.place_regions(place);
         self.proving = Category::Boring;
-        self.prove(copy.with_self(ty), &[vars], range, 0);
+        self.prove(copy.with_self(ty), &[vars.into_vec()], range, 0);
         self.proving = Category::CallArgument;
     }
 
@@ -3308,13 +3321,16 @@ impl<'a> Cx<'a> {
     fn solve(&mut self, points: &Points, liveness: &[IntervalSet]) -> Solution {
         let n = self.vars as usize;
         // The successors of each variable: what it outlives.
-        let mut edges: Vec<Vec<u32>> = vec![Vec::new(); n];
-        let mut by_sup: Vec<Vec<u32>> = vec![Vec::new(); n];
-        for (i, c) in self.constraints.iter().enumerate() {
-            edges[c.sup as usize].push(c.sub);
-            by_sup[c.sup as usize].push(i as u32);
-        }
-        self.by_sup = by_sup;
+        let edges = Adjacency::new(n, self.constraints.iter().map(|c| (c.sup, c.sub)));
+        self.by_sup = Adjacency::new(
+            n,
+            self.constraints
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c.sup, i as u32)),
+        );
+        let mut scratch = Vec::new();
+        let everywhere = IntervalSet::full(points.total);
         let (scc, order) = tarjan(&edges);
         let count = order.len();
         let mut values = vec![Value::default(); count];
@@ -3329,21 +3345,22 @@ impl<'a> Cx<'a> {
         for v in 0..n {
             let c = scc[v] as usize;
             if let Some(&u) = self.universal_of.get(&(v as u32)) {
-                values[c].points.union(&IntervalSet::full(points.total));
+                values[c]
+                    .points
+                    .union_with_scratch(&everywhere, &mut scratch);
                 if !values[c].ends.contains(&u) {
                     values[c].ends.push(u);
                 }
             }
             let local = var_local[v];
             if local != u32::MAX {
-                values[c].points.union(&liveness[local as usize]);
+                values[c]
+                    .points
+                    .union_with_scratch(&liveness[local as usize], &mut scratch);
             }
         }
         // The members of each component, for its successors.
-        let mut members: Vec<Vec<u32>> = vec![Vec::new(); count];
-        for v in 0..n {
-            members[scc[v] as usize].push(v as u32);
-        }
+        let members = Adjacency::new(count, scc.iter().enumerate().map(|(v, &c)| (c, v as u32)));
         // Components come out of Tarjan's algorithm after those they
         // reach.
         for &c in &order {
@@ -3355,7 +3372,9 @@ impl<'a> Cx<'a> {
                     if s == c {
                         continue;
                     }
-                    value.points.union(&values[s].points);
+                    value
+                        .points
+                        .union_with_scratch(&values[s].points, &mut scratch);
                     for &e in &values[s].ends {
                         if !value.ends.contains(&e) {
                             value.ends.push(e);
@@ -3516,6 +3535,9 @@ impl<'a> Cx<'a> {
         solution: &Solution,
         loans: &[LoanInfo<'_>],
     ) -> Vec<IntervalSet> {
+        if loans.is_empty() {
+            return Vec::new();
+        }
         let body = self.body;
         // The points that write each local or a part of it, in order.
         let mut kills: Vec<Vec<(u32, &Place)>> = vec![Vec::new(); body.locals.len()];
@@ -3540,21 +3562,11 @@ impl<'a> Cx<'a> {
                 kills[dest.local.index()].push((point, dest));
             }
         }
-        let successors: Vec<Vec<usize>> = body
-            .blocks
-            .values()
-            .map(|d| {
-                d.terminator
-                    .kind
-                    .successors()
-                    .iter()
-                    .map(|b| b.index())
-                    .collect()
-            })
-            .collect();
         let mut visited = BitSet::new_empty(body.blocks.len());
         let mut touched: Vec<usize> = Vec::new();
         let mut scopes = Vec::with_capacity(loans.len());
+        let mut runs: Vec<(u32, u32)> = Vec::new();
+        let mut stack: Vec<(usize, u32)> = Vec::new();
         for (id, loan) in loans.iter().enumerate() {
             let var = self.loan_vars[id];
             let value = &solution.values[solution.scc[var as usize] as usize];
@@ -3578,11 +3590,11 @@ impl<'a> Cx<'a> {
                     .find(|(_, w)| kills_loan(w))
                     .map(|&(p, _)| p)
             };
-            let mut runs: Vec<(u32, u32)> = Vec::new();
-            let mut stack: Vec<(usize, u32)> = vec![(
+            runs.clear();
+            stack.push((
                 loan.block.index(),
                 points.point(loan.block, loan.statement + 1),
-            )];
+            ));
             while let Some((block, from)) = stack.pop() {
                 let end = points.end(block);
                 let limit = if everywhere {
@@ -3599,7 +3611,12 @@ impl<'a> Cx<'a> {
                 }
                 runs.push((from, limit + 1));
                 if limit == end {
-                    for &succ in &successors[block] {
+                    for succ in body.blocks[BasicBlock::from_raw(block as u32)]
+                        .terminator
+                        .kind
+                        .successors()
+                    {
+                        let succ = succ.index();
                         if !visited.contains(succ) {
                             visited.insert(succ);
                             touched.push(succ);
@@ -3613,7 +3630,7 @@ impl<'a> Cx<'a> {
             }
             runs.sort_unstable();
             let mut scope = IntervalSet::new();
-            for (s, e) in runs {
+            for &(s, e) in &runs {
                 scope.push(s, e);
             }
             scopes.push(scope);
@@ -3625,8 +3642,8 @@ impl<'a> Cx<'a> {
 /// Tarjan's strongly connected components of the graph `edges`,
 /// iteratively: each node's component, and the components in the order
 /// they complete, each after every one it reaches.
-fn tarjan(edges: &[Vec<u32>]) -> (Vec<u32>, Vec<u32>) {
-    let n = edges.len();
+fn tarjan(edges: &Adjacency) -> (Vec<u32>, Vec<u32>) {
+    let n = edges.offsets.len() - 1;
     const NONE: u32 = u32::MAX;
     let mut index = vec![NONE; n];
     let mut low = vec![0u32; n];
@@ -3683,4 +3700,121 @@ fn tarjan(edges: &[Vec<u32>]) -> (Vec<u32>, Vec<u32>) {
         }
     }
     (scc, order)
+}
+
+/// Compressed adjacency, preserving input order within each row.
+#[derive(Default)]
+pub(super) struct Adjacency {
+    offsets: Vec<usize>,
+    values: Vec<u32>,
+}
+
+impl Adjacency {
+    pub(super) fn new(nodes: usize, edges: impl Iterator<Item = (u32, u32)> + Clone) -> Self {
+        let mut offsets = vec![0; nodes + 1];
+        for (from, _) in edges.clone() {
+            offsets[from as usize + 1] += 1;
+        }
+        for i in 0..nodes {
+            offsets[i + 1] += offsets[i];
+        }
+        let mut values = vec![0; offsets[nodes]];
+        let mut cursor = offsets[..nodes].to_vec();
+        for (from, to) in edges {
+            values[cursor[from as usize]] = to;
+            cursor[from as usize] += 1;
+        }
+        Self { offsets, values }
+    }
+}
+
+impl std::ops::Index<usize> for Adjacency {
+    type Output = [u32];
+    fn index(&self, node: usize) -> &[u32] {
+        &self.values[self.offsets[node]..self.offsets[node + 1]]
+    }
+}
+
+#[cfg(test)]
+mod graph_tests {
+    use super::*;
+
+    #[test]
+    fn temporary_slots_keep_short_lists_inline_and_spill_without_truncation() {
+        let items = ItemTree::default();
+        let sigs = Signatures::default();
+        let requirements = Requirements::default();
+        let reference = Ty::new(TyKind::Ref(Mutability::Not, Ty::UNIT));
+        for n in [0, 1, 4, 5, 65_536] {
+            let ty = Ty::tuple(&vec![reference; n]);
+            let mut body = Body::empty(None);
+            let local = body.locals.alloc(crate::LocalDecl {
+                ty,
+                kind: crate::LocalKind::Return,
+            });
+            let mut cx = Cx::new(&body, &items, &sigs, &requirements);
+            let base = 70_000;
+            cx.local_base = vec![base, base + n as u32];
+            let vars = cx.local_vars(local);
+            assert_eq!(vars.len(), n);
+            assert_eq!(vars.spilled(), n > 4);
+            assert!(vars.iter().copied().eq(base..base + n as u32));
+            let (_, slots) = cx.place_regions(&local.into());
+            assert_eq!(slots, vars);
+            if n > 0 {
+                let (field_ty, slots) = cx.place_regions(&Place::from(local).field(n as u32 - 1));
+                assert_eq!(field_ty, reference);
+                assert_eq!(&slots[..], &[base + n as u32 - 1]);
+                assert!(!slots.spilled());
+                let (_, slots) = cx.place_regions(&Place::from(local).field(0).deref());
+                assert!(slots.is_empty());
+                assert!(!slots.spilled());
+            }
+            // Field instantiation writes directly into inline storage,
+            // including a large spill.
+            let mut instantiated = Slots::new();
+            let own = vec![Region::Static; n];
+            assert!(cx.inst(
+                ty,
+                &own,
+                &mut 0,
+                &mut |_| Some(STATIC),
+                &[],
+                &[] as &[&[Var]],
+                &mut instantiated,
+            ));
+            assert_eq!(instantiated.len(), n);
+            assert_eq!(instantiated.spilled(), n > 4);
+            assert!(instantiated.iter().all(|&v| v == STATIC));
+        }
+    }
+
+    #[test]
+    fn flat_graph_preserves_order_and_components() {
+        let graph = Adjacency::new(
+            6,
+            [(0, 1), (0, 2), (1, 3), (2, 3), (3, 1), (4, 4)].into_iter(),
+        );
+        assert_eq!(&graph[0], &[1, 2]);
+        assert!(graph[5].is_empty());
+        let (scc, order) = tarjan(&graph);
+        assert_eq!(scc[1], scc[3]);
+        assert_ne!(scc[0], scc[2]);
+        assert_ne!(scc[4], scc[5]);
+        assert_eq!(order.len(), 5);
+        for from in 0..6 {
+            for &to in &graph[from] {
+                assert!(scc[to as usize] <= scc[from]);
+            }
+        }
+    }
+
+    #[test]
+    fn flat_graph_handles_long_cycles_without_recursion() {
+        let n = 20_000;
+        let graph = Adjacency::new(n, (0..n as u32).map(|i| (i, (i + 1) % n as u32)));
+        let (scc, order) = tarjan(&graph);
+        assert_eq!(order, [0]);
+        assert!(scc.iter().all(|&c| c == 0));
+    }
 }

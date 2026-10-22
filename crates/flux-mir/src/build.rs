@@ -53,7 +53,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut bodies = ArenaMap::new();
     // The callees whose targets are queued already.
     let mut expanded = rustc_hash::FxHashSet::default();
-    let mut closures = std::collections::HashMap::new();
+    let mut closures = rustc_hash::FxHashMap::default();
     while let Some(id) = queue.pop() {
         if bodies.get(id).is_some() || hir.body(id).is_none() || typed.bodies.get(id).is_none() {
             continue;
@@ -187,7 +187,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
 fn bugs(
     hir: &Hir,
     bodies: &ArenaMap<flux_hir::Function, Body>,
-    closures: &std::collections::HashMap<(flux_ty::ClosureId, flux_ty::ClosureKind), Body>,
+    closures: &rustc_hash::FxHashMap<(flux_ty::ClosureId, flux_ty::ClosureKind), Body>,
     consts: &ArenaMap<flux_hir::Const, Body>,
 ) -> Vec<flux_hir::Diagnostic> {
     let functions = bodies
@@ -919,7 +919,7 @@ fn build_body(
             b.scopes[0].locals.push((params[0], at));
             b.scopes[0].locals.push((params[1], at));
             // The parameters, from the tuple of the arguments.
-            for (i, &pat) in pats.iter().enumerate() {
+            for (i, &pat) in body.lists[*pats].iter().enumerate() {
                 let range = b.pat_range(pat);
                 b.declare_bindings(pat);
                 let place = Place::from(params[1]).field(i as u32);
@@ -927,7 +927,7 @@ fn build_body(
             }
             (*closure_body, &[][..])
         }
-        _ => (body.root, &body.params[..]),
+        _ => (body.root, &body.lists[body.params]),
     };
     for (&pat, &local) in param_pats.iter().zip(&params) {
         let range = b.pat_range(pat);
@@ -972,7 +972,7 @@ fn build_body(
                     .collect(),
                 annotated_refs: !info.hinted
                     && match &body.exprs[expr] {
-                        Expr::Closure { param_types, .. } => param_types
+                        Expr::Closure { param_types, .. } => body.lists[*param_types]
                             .iter()
                             .flatten()
                             .any(|&t| has_ref(&body.types[t])),
@@ -1327,6 +1327,9 @@ impl Builder<'_> {
             }
             match pointee.kind() {
                 TyKind::Ref(_, inner) => pointee = inner,
+                TyKind::Adt(..) if let Some(inner) = flux_ty::box_pointee(pointee) => {
+                    pointee = inner
+                }
                 _ => return ty,
             }
         }
@@ -2250,7 +2253,7 @@ impl Builder<'_> {
                 Some(Value::Variant {
                     strukt: *strukt,
                     index: *index,
-                    fields: Vec::new(),
+                    fields: Default::default(),
                 })
             }
             Expr::Literal(Literal::Int { value, .. }) => Some(Value::Int {
@@ -2263,7 +2266,7 @@ impl Builder<'_> {
                 ty: IntTy::U32,
             }),
             Expr::Literal(literal @ (Literal::Str(_) | Literal::ByteStr(_))) => {
-                Some(Value::Ref(Box::new(text_value(literal)?)))
+                Some(Value::Ref(std::sync::Arc::new(text_value(literal)?)))
             }
             Expr::Unary {
                 op: UnaryOp::Neg,
@@ -2279,9 +2282,11 @@ impl Builder<'_> {
                 _ => None,
             },
             Expr::Tuple(fields) | Expr::Array(fields) => {
-                let values: Option<Vec<Value>> =
-                    fields.iter().map(|&f| self.promotable(f)).collect();
-                Some(Value::Aggregate(values?))
+                let values: Option<Vec<Value>> = self.body.lists[*fields]
+                    .iter()
+                    .map(|&f| self.promotable(f))
+                    .collect();
+                Some(Value::Aggregate(values?.into()))
             }
             _ => None,
         }
@@ -2376,7 +2381,10 @@ impl Builder<'_> {
                 self.assign(dest, Rvalue::Use(operand), range);
             }
             Expr::Tuple(fields) => {
-                let operands = fields.iter().map(|&f| self.lower_operand(f)).collect();
+                let operands = self.body.lists[*fields]
+                    .iter()
+                    .map(|&f| self.lower_operand(f))
+                    .collect();
                 self.assign(
                     dest,
                     Rvalue::Aggregate(AggregateKind::Tuple, operands),
@@ -2404,7 +2412,7 @@ impl Builder<'_> {
                 self.bug("`let` outside a condition", range);
             }
             Expr::Match { scrutinee, arms } => {
-                self.lower_match(*scrutinee, arms, dest, range);
+                self.lower_match(*scrutinee, &self.body.lists[*arms], dest, range);
             }
             Expr::Closure { .. } => self.lower_closure(expr, dest, range),
             Expr::Path(Res::Local(binding))
@@ -2504,13 +2512,23 @@ impl Builder<'_> {
                 variant,
                 fields,
                 spread,
-            } => self.lower_record(*strukt, *variant, fields, *spread, dest, range),
+            } => self.lower_record(
+                *strukt,
+                *variant,
+                &self.body.lists[*fields],
+                *spread,
+                dest,
+                range,
+            ),
             Expr::Array(elements) => {
                 let elem = match self.expr_ty(expr).kind() {
                     TyKind::Array(elem, _) => elem,
                     _ => Ty::ERROR,
                 };
-                let operands = elements.iter().map(|&e| self.lower_operand(e)).collect();
+                let operands = self.body.lists[*elements]
+                    .iter()
+                    .map(|&e| self.lower_operand(e))
+                    .collect();
                 self.assign(
                     dest,
                     Rvalue::Aggregate(AggregateKind::Array(elem), operands),
@@ -2548,7 +2566,7 @@ impl Builder<'_> {
             }
             Expr::Block { stmts, tail, .. } => {
                 self.scoped(ScopeKind::Block, range, |b| {
-                    for stmt in stmts.iter() {
+                    for stmt in self.body.lists[*stmts].iter() {
                         b.scoped(ScopeKind::Temps, range, |b| b.lower_stmt(stmt));
                     }
                     match tail {
@@ -2651,7 +2669,10 @@ impl Builder<'_> {
                 let instance = self.types.calls[expr];
                 let tupled = instance.args.get(1).copied().unwrap_or(Ty::UNIT);
                 let tupled = self.normalize(tupled);
-                let operands = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                let operands = self.body.lists[*args]
+                    .iter()
+                    .map(|&arg| self.lower_operand(arg))
+                    .collect();
                 let tuple = self.temp(tupled);
                 self.assign(
                     &tuple.into(),
@@ -2663,7 +2684,10 @@ impl Builder<'_> {
             }
             Expr::Call { callee, args } => match body.exprs[*callee] {
                 Expr::Path(Res::Function(_) | Res::Assoc { .. }) => {
-                    let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                    let args = self.body.lists[*args]
+                        .iter()
+                        .map(|&arg| self.lower_operand(arg))
+                        .collect();
                     let Some(&instance) = self.types.calls.get(*callee) else {
                         self.bug("a call of a function not resolved", range);
                         return;
@@ -2671,7 +2695,10 @@ impl Builder<'_> {
                     self.call(instance.function, instance.args, args, dest, range);
                 }
                 Expr::Path(Res::Struct(strukt)) => {
-                    let operands = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                    let operands = self.body.lists[*args]
+                        .iter()
+                        .map(|&arg| self.lower_operand(arg))
+                        .collect();
                     self.assign(
                         dest,
                         Rvalue::Aggregate(AggregateKind::Struct(strukt), operands),
@@ -2679,7 +2706,10 @@ impl Builder<'_> {
                     );
                 }
                 Expr::Path(Res::Variant(strukt, variant)) => {
-                    let operands = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                    let operands = self.body.lists[*args]
+                        .iter()
+                        .map(|&arg| self.lower_operand(arg))
+                        .collect();
                     self.assign(
                         dest,
                         Rvalue::Aggregate(AggregateKind::Variant(strukt, variant), operands),
@@ -2691,12 +2721,18 @@ impl Builder<'_> {
                     TyKind::FnDef(def) => {
                         // Evaluated for what it does; it holds nothing.
                         self.lower_operand(*callee);
-                        let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                        let args = self.body.lists[*args]
+                            .iter()
+                            .map(|&arg| self.lower_operand(arg))
+                            .collect();
                         self.call(def.function, def.args, args, dest, range);
                     }
                     TyKind::FnPtr(sig) => {
                         let callee = self.lower_operand(*callee);
-                        let args = args.iter().map(|&arg| self.lower_operand(arg)).collect();
+                        let args = self.body.lists[*args]
+                            .iter()
+                            .map(|&arg| self.lower_operand(arg))
+                            .collect();
                         let target = (sig.ret() != Ty::NEVER).then(|| self.new_block());
                         self.terminate(
                             TerminatorKind::CallIndirect {
@@ -2717,7 +2753,11 @@ impl Builder<'_> {
             {
                 let receiver = self.adjusted_receiver(expr, *receiver, method);
                 let mut operands = vec![receiver];
-                operands.extend(args.iter().map(|&arg| self.lower_operand(arg)));
+                operands.extend(
+                    self.body.lists[*args]
+                        .iter()
+                        .map(|&arg| self.lower_operand(arg)),
+                );
                 let instance = self.types.calls[expr];
                 if let (Some(block), Some(name)) =
                     (self.current, self.source_map.expr_fields.get(expr))
@@ -2731,7 +2771,7 @@ impl Builder<'_> {
                 // Only `CStr::as_ptr` type-checks: the reference is the
                 // pointer.
                 let receiver = self.lower_operand(*receiver);
-                for &arg in args.iter() {
+                for &arg in self.body.lists[*args].iter() {
                     self.lower_operand(arg);
                 }
                 let ty = self.place_ty(dest);
@@ -3185,7 +3225,7 @@ impl Builder<'_> {
                     .sigs
                     .fields(self.place_ty(&place))
                     .map_or(0, |f| f.len());
-                for (i, p) in positions(pats, *rest, count) {
+                for (i, p) in positions(&self.body.lists[*pats], *rest, count) {
                     self.annotated_pattern(p, place.field(i));
                 }
             }
@@ -3197,7 +3237,7 @@ impl Builder<'_> {
             } => {
                 let count = self.items.structs[*strukt].variant(*variant).fields.len();
                 let place = place.project(ProjectionElem::Downcast(*variant));
-                for (i, p) in positions(pats, *rest, count) {
+                for (i, p) in positions(&self.body.lists[*pats], *rest, count) {
                     self.annotated_pattern(p, place.field(i));
                 }
             }
@@ -3208,7 +3248,7 @@ impl Builder<'_> {
                 ..
             } => {
                 let place = place.project(ProjectionElem::Downcast(*variant));
-                for &(name, p) in fields.iter() {
+                for &(name, p) in self.body.lists[*fields].iter() {
                     self.annotated_pattern(
                         p,
                         place.field(self.struct_field(*strukt, *variant, name)),
@@ -3217,7 +3257,7 @@ impl Builder<'_> {
             }
             Pat::Ref { pat, .. } => self.annotated_pattern(*pat, place.deref()),
             Pat::Or(pats) => {
-                for &p in pats.iter() {
+                for &p in self.body.lists[*pats].iter() {
                     self.annotated_pattern(p, place.clone());
                 }
             }
@@ -3227,7 +3267,10 @@ impl Builder<'_> {
                 suffix,
             } => {
                 // All elements and subslices share the sequence's region slots.
-                for &p in prefix.iter().chain(suffix.iter()) {
+                for &p in self.body.lists[*prefix]
+                    .iter()
+                    .chain(self.body.lists[*suffix].iter())
+                {
                     self.annotated_pattern(
                         p,
                         place.project(ProjectionElem::ConstantIndex {
@@ -3255,12 +3298,12 @@ impl Builder<'_> {
                 self.extended_operand(*inner, out);
             }
             Expr::Tuple(fields) | Expr::Array(fields) => {
-                for &field in fields.iter() {
+                for &field in self.body.lists[*fields].iter() {
                     self.extending_refs(field, out);
                 }
             }
             Expr::Record { fields, .. } => {
-                for &(_, field) in fields.iter() {
+                for &(_, field) in self.body.lists[*fields].iter() {
                     self.extending_refs(field, out);
                 }
             }
@@ -3278,7 +3321,7 @@ impl Builder<'_> {
                 }
             }
             Expr::Match { arms, .. } => {
-                for arm in arms.iter() {
+                for arm in self.body.lists[*arms].iter() {
                     self.extending_refs(arm.body, out);
                 }
             }
@@ -3399,7 +3442,9 @@ impl Builder<'_> {
             {
                 true
             }
-            data => data.children().any(|child| self.tests(child)),
+            data => data
+                .children(&self.body.lists)
+                .any(|child| self.tests(child)),
         }
     }
 
@@ -3446,7 +3491,7 @@ impl Builder<'_> {
         {
             out.push((binding, self.pat_range(pat)));
         }
-        for child in self.body.pats[pat].children() {
+        for child in self.body.pats[pat].children(&self.body.lists) {
             self.binding_pats(child, out);
         }
     }
@@ -3496,7 +3541,7 @@ impl Builder<'_> {
                     .sigs
                     .fields(self.pat_place_ty(&place))
                     .map_or(0, |f| f.len());
-                let parts = positions(pats, *rest, count)
+                let parts = positions(&self.body.lists[*pats], *rest, count)
                     .map(|(i, p)| (p, place.field(i)))
                     .collect();
                 self.test_all(parts, fail, range)
@@ -3509,7 +3554,7 @@ impl Builder<'_> {
             } => {
                 let place = self.test_variant(*strukt, *variant, place, fail, range);
                 let count = self.items.structs[*strukt].variant(*variant).fields.len();
-                let parts = positions(pats, *rest, count)
+                let parts = positions(&self.body.lists[*pats], *rest, count)
                     .map(|(i, p)| (p, place.field(i)))
                     .collect();
                 self.test_all(parts, fail, range)
@@ -3521,7 +3566,7 @@ impl Builder<'_> {
                 ..
             } => {
                 let place = self.test_variant(*strukt, *variant, place, fail, range);
-                let parts = fields
+                let parts = self.body.lists[*fields]
                     .iter()
                     .map(|&(name, p)| (p, place.field(self.struct_field(*strukt, *variant, name))))
                     .collect();
@@ -3576,7 +3621,7 @@ impl Builder<'_> {
             }
             Pat::Or(alternatives) => {
                 let mut exits = Vec::new();
-                for (i, &alt) in alternatives.iter().enumerate() {
+                for (i, &alt) in self.body.lists[*alternatives].iter().enumerate() {
                     let last = i + 1 == alternatives.len();
                     let next = if last { fail } else { self.new_block() };
                     exits.extend(self.test(alt, place.clone(), next, range));
@@ -3589,7 +3634,14 @@ impl Builder<'_> {
                 prefix,
                 slice,
                 suffix,
-            } => self.test_slice(prefix, *slice, suffix, place, fail, range),
+            } => self.test_slice(
+                &self.body.lists[*prefix],
+                *slice,
+                &self.body.lists[*suffix],
+                place,
+                fail,
+                range,
+            ),
         }
     }
 
@@ -3892,7 +3944,7 @@ impl Builder<'_> {
         (0..place.projection.len()).any(|len| {
             let base = Place {
                 local: place.local,
-                projection: place.projection[..len].into(),
+                projection: place.projection.prefix(len),
             };
             matches!(
                 self.place_ty(&base).kind(),

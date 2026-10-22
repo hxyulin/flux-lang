@@ -360,9 +360,12 @@ impl<T: fmt::Debug> fmt::Debug for LayeredArena<T> {
 }
 
 /// Extra data for some values of an [`Arena<T>`], keyed by their indices.
-/// Dense: memory is proportional to the largest index stored.
+/// Dense within the covered index range; leading unused indices take no space.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ArenaMap<T, V> {
+    // The vector starts at the first inserted index, avoiding library-ID
+    // prefix holes in maps that contain only one program's local items.
+    offset: usize,
     data: Vec<Option<V>>,
     _ty: PhantomData<fn() -> T>,
 }
@@ -370,6 +373,7 @@ pub struct ArenaMap<T, V> {
 impl<T, V> Default for ArenaMap<T, V> {
     fn default() -> ArenaMap<T, V> {
         ArenaMap {
+            offset: 0,
             data: Vec::new(),
             _ty: PhantomData,
         }
@@ -383,7 +387,19 @@ impl<T, V> ArenaMap<T, V> {
 
     /// Sets the value for `idx`, returning the previous one.
     pub fn insert(&mut self, idx: Idx<T>, value: V) -> Option<V> {
-        let i = idx.index();
+        let index = idx.index();
+        if self.data.is_empty() {
+            self.offset = index;
+        } else if index < self.offset {
+            // Keep geometric spare space before the new index, so descending
+            // insertions move existing entries only amortized linearly.
+            let offset = index.saturating_sub(self.data.len());
+            let prefix = self.offset - offset;
+            self.data.resize_with(self.data.len() + prefix, || None);
+            self.data.rotate_right(prefix);
+            self.offset = offset;
+        }
+        let i = index - self.offset;
         if i >= self.data.len() {
             self.data.resize_with(i + 1, || None);
         }
@@ -391,15 +407,21 @@ impl<T, V> ArenaMap<T, V> {
     }
 
     pub fn get(&self, idx: Idx<T>) -> Option<&V> {
-        self.data.get(idx.index())?.as_ref()
+        self.data
+            .get(idx.index().checked_sub(self.offset)?)?
+            .as_ref()
     }
 
     pub fn get_mut(&mut self, idx: Idx<T>) -> Option<&mut V> {
-        self.data.get_mut(idx.index())?.as_mut()
+        self.data
+            .get_mut(idx.index().checked_sub(self.offset)?)?
+            .as_mut()
     }
 
     pub fn remove(&mut self, idx: Idx<T>) -> Option<V> {
-        self.data.get_mut(idx.index())?.take()
+        self.data
+            .get_mut(idx.index().checked_sub(self.offset)?)?
+            .take()
     }
 
     pub fn contains(&self, idx: Idx<T>) -> bool {
@@ -411,7 +433,7 @@ impl<T, V> ArenaMap<T, V> {
         self.data
             .iter()
             .enumerate()
-            .filter_map(|(i, v)| Some((Idx::from_raw(i as u32), v.as_ref()?)))
+            .filter_map(|(i, v)| Some((Idx::from_raw((i + self.offset) as u32), v.as_ref()?)))
     }
 }
 
@@ -471,6 +493,46 @@ mod tests {
     }
 
     #[test]
+    fn map_omits_prefix_holes_and_can_grow_backwards() {
+        let mut map = ArenaMap::<(), String>::new();
+        let high = Idx::from_raw(100_000);
+        map.insert(high, String::from("high"));
+        assert_eq!(map.data.len(), 1);
+        assert!(map.get(Idx::from_raw(0)).is_none());
+        assert!(map.get_mut(Idx::from_raw(0)).is_none());
+        assert!(map.remove(Idx::from_raw(0)).is_none());
+        map.insert(Idx::from_raw(99_998), String::from("low"));
+        assert_eq!(map.data.len(), 4);
+        assert_eq!(map[high], "high");
+        assert!(map.iter().map(|(i, _)| i.into_raw()).eq([99_998, 100_000]));
+        assert_eq!(map.remove(high).as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn descending_map_inserts_move_entries_amortized_linearly() {
+        const START: u32 = 100_000;
+        const COUNT: u32 = 4096;
+        let mut map = ArenaMap::<(), u32>::new();
+        let mut moved = 0;
+        for index in (START - COUNT..START).rev() {
+            let old_offset = map.offset;
+            let old_len = map.data.len();
+            map.insert(Idx::from_raw(index), index);
+            if map.offset < old_offset {
+                moved += old_len;
+            }
+        }
+        // Exact prefix growth moves COUNT * (COUNT - 1) / 2 entries.
+        // Geometric growth bounds both the shifts and retained front slack.
+        assert!(moved < 2 * COUNT as usize, "moved {moved} entries");
+        assert!(map.data.len() < 2 * COUNT as usize);
+        assert_eq!(map.iter().count(), COUNT as usize);
+        for index in START - COUNT..START {
+            assert_eq!(map[Idx::from_raw(index)], index);
+        }
+    }
+
+    #[test]
     fn layered_arena_shares_frozen_values() {
         let mut base = LayeredArena::new();
         let a = base.alloc(String::from("a"));
@@ -500,5 +562,191 @@ mod tests {
         assert_send_sync::<Idx<std::rc::Rc<u8>>>();
         assert_eq!(std::mem::size_of::<Idx<String>>(), 4);
         assert_eq!(std::mem::size_of::<Option<Idx<String>>>(), 8);
+    }
+}
+
+/// An arena map with a frozen shared base and private entry overrides.
+/// Mutating an inherited value clones only that value.
+#[derive(Clone)]
+pub struct LayeredArenaMap<T, V> {
+    base: Arc<ArenaMap<T, V>>,
+    own: ArenaMap<T, V>,
+    overrides: std::collections::BTreeMap<Idx<T>, V>,
+}
+
+impl<T, V> Default for LayeredArenaMap<T, V> {
+    fn default() -> Self {
+        Self {
+            base: Arc::new(ArenaMap::new()),
+            own: ArenaMap::new(),
+            overrides: Default::default(),
+        }
+    }
+}
+
+impl<T, V> LayeredArenaMap<T, V> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self, idx: Idx<T>) -> Option<&V> {
+        self.own
+            .get(idx)
+            .or_else(|| self.overrides.get(&idx))
+            .or_else(|| self.base.get(idx))
+    }
+
+    pub fn contains(&self, idx: Idx<T>) -> bool {
+        self.get(idx).is_some()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (Idx<T>, &V)> {
+        let mut base = self.base.iter().peekable();
+        let mut own = self
+            .overrides
+            .iter()
+            .map(|(&idx, value)| (idx, value))
+            .peekable();
+        std::iter::from_fn(move || match (base.peek(), own.peek()) {
+            (Some((a, _)), Some((b, _))) if a < b => base.next(),
+            (Some((a, _)), Some((b, _))) if a == b => {
+                base.next();
+                own.next()
+            }
+            (_, Some(_)) => own.next(),
+            _ => base.next(),
+        })
+        .chain(self.own.iter())
+    }
+}
+
+impl<T: Clone, V: Clone> LayeredArenaMap<T, V> {
+    /// Share all current entries with future copies.
+    pub fn freeze(&mut self) {
+        if self.own.data.is_empty() && self.overrides.is_empty() {
+            return;
+        }
+        if self.base.data.is_empty() {
+            self.base = Arc::new(std::mem::take(&mut self.own));
+        } else {
+            let mut merged = (*self.base).clone();
+            for (idx, value) in self.own.iter() {
+                merged.insert(idx, value.clone());
+            }
+            for (idx, value) in std::mem::take(&mut self.overrides) {
+                merged.insert(idx, value);
+            }
+            self.base = Arc::new(merged);
+            self.own = ArenaMap::new();
+        }
+    }
+
+    pub fn insert(&mut self, idx: Idx<T>, value: V) -> Option<V> {
+        if idx.index() < self.base.offset + self.base.data.len() {
+            self.overrides
+                .insert(idx, value)
+                .or_else(|| self.base.get(idx).cloned())
+        } else {
+            self.own.insert(idx, value)
+        }
+    }
+
+    pub fn get_mut(&mut self, idx: Idx<T>) -> Option<&mut V> {
+        if idx.index() < self.base.offset + self.base.data.len() {
+            if !self.overrides.contains_key(&idx) {
+                self.overrides.insert(idx, self.base.get(idx)?.clone());
+            }
+            self.overrides.get_mut(&idx)
+        } else {
+            self.own.get_mut(idx)
+        }
+    }
+}
+
+impl<T, V> Index<Idx<T>> for LayeredArenaMap<T, V> {
+    type Output = V;
+    fn index(&self, idx: Idx<T>) -> &V {
+        self.get(idx)
+            .expect("no value for this index in the LayeredArenaMap")
+    }
+}
+
+#[cfg(test)]
+mod layered_map_tests {
+    use super::*;
+    #[test]
+    fn local_tail_omits_library_prefix() {
+        let mut map = LayeredArenaMap::<(), _>::new();
+        map.insert(Idx::from_raw(0), "base");
+        map.insert(Idx::from_raw(999), "base end");
+        map.freeze();
+        let mut copy = map.clone();
+        copy.insert(Idx::from_raw(1000), "own");
+        assert_eq!(copy.own.data.len(), 1);
+        assert!(copy.iter().map(|(i, _)| i.into_raw()).eq([0, 999, 1000]));
+        copy.insert(Idx::from_raw(999), "override");
+        assert_eq!(copy.own.data.len(), 1);
+        copy.insert(Idx::from_raw(0), "override first");
+        assert_eq!(copy.own.data.len(), 1);
+        assert_eq!(copy.overrides.len(), 2);
+        assert!(
+            copy.iter()
+                .map(|(_, v)| *v)
+                .eq(["override first", "override", "own"])
+        );
+    }
+
+    #[test]
+    fn cloning_a_frozen_map_clones_only_mutated_entries() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        #[derive(Debug)]
+        struct Counted(Arc<AtomicUsize>);
+        impl Clone for Counted {
+            fn clone(&self) -> Self {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Self(self.0.clone())
+            }
+        }
+        let clones = Arc::new(AtomicUsize::new(0));
+        let mut base = LayeredArenaMap::<(), _>::new();
+        for i in 0..32 {
+            base.insert(Idx::from_raw(i), Counted(clones.clone()));
+        }
+        base.freeze();
+        let mut copy = base.clone();
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+        copy.get_mut(Idx::from_raw(17)).unwrap();
+        copy.get_mut(Idx::from_raw(17)).unwrap();
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
+        assert!(copy.iter().map(|(i, _)| i.into_raw()).eq(0..32));
+        assert!(copy.get_mut(Idx::from_raw(99)).is_none());
+    }
+
+    #[test]
+    fn overrides_are_private_and_frozen_values_are_shared() {
+        let a = Idx::<String>::from_raw(0);
+        let b = Idx::from_raw(2);
+        let mut base = LayeredArenaMap::new();
+        base.insert(a, String::from("a"));
+        base.freeze();
+        let mut copy = base.clone();
+        assert!(std::ptr::eq(&base[a], &copy[a]));
+        copy.get_mut(a).unwrap().push('!');
+        copy.insert(b, String::from("b"));
+        assert_eq!(base[a], "a");
+        assert_eq!(copy[a], "a!");
+        assert_eq!(copy.iter().count(), 2);
+        assert_eq!(copy.insert(a, String::from("c")), Some(String::from("a!")));
+        copy.freeze();
+        assert_eq!(copy[b], "b");
+        assert_eq!(base[a], "a");
+    }
+}
+
+impl<T, V: fmt::Debug> fmt::Debug for LayeredArenaMap<T, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map()
+            .entries(self.iter().map(|(i, v)| (i.raw, v)))
+            .finish()
     }
 }

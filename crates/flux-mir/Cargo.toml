@@ -15,6 +15,7 @@ flux-intern.workspace = true
 flux-syntax.workspace = true
 flux-ty.workspace = true
 rustc-hash = "2"
+smallvec = "1"
 
 [lints]
 workspace = true

@@ -10,7 +10,7 @@
 //! the block that assigned it, and one that is borrowed never has a
 //! known value.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use flux_hir::Diagnostic;
 use flux_syntax::TextRange;
@@ -40,7 +40,7 @@ pub fn check(
         return Vec::new();
     }
     let modes = modes(body);
-    let mut known: HashMap<Local, Value> = HashMap::new();
+    let mut known: FxHashMap<Local, Value> = FxHashMap::default();
     let mut diagnostics = Vec::new();
     // Blocks a known condition rules out are not checked, as in rustc:
     // `if false { 255u8 + 1 }` compiles.
@@ -179,8 +179,8 @@ fn reverse_postorder(body: &Body) -> Vec<BasicBlock> {
     let mut stack = vec![(Body::entry(), 0usize)];
     visited[0] = true;
     while let Some((block, next)) = stack.pop() {
-        let successors = body.blocks[block].terminator.kind.successors();
-        if let Some(&successor) = successors.get(next) {
+        let mut successors = body.blocks[block].terminator.kind.successors();
+        if let Some(successor) = successors.nth(next) {
             stack.push((block, next + 1));
             if !visited[successor.index()] {
                 visited[successor.index()] = true;
@@ -196,7 +196,7 @@ fn reverse_postorder(body: &Body) -> Vec<BasicBlock> {
 
 fn operand(
     op: &Operand,
-    known: &HashMap<Local, Value>,
+    known: &FxHashMap<Local, Value>,
     consts: &crate::eval::ConstValues,
 ) -> Option<Value> {
     match op {
@@ -235,7 +235,7 @@ fn evaluate(
     body: &Body,
     sigs: &flux_ty::Signatures,
     rvalue: &Rvalue,
-    known: &HashMap<Local, Value>,
+    known: &FxHashMap<Local, Value>,
     consts: &crate::eval::ConstValues,
     range: TextRange,
     diagnostics: &mut Vec<Diagnostic>,
