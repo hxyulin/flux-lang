@@ -17,7 +17,7 @@ unsafe extern "C" {
 /// How many bytes std's stdout buffers.
 const CAPACITY: usize = 1024;
 
-static mut STDOUT_BUF: [u8; 1024] = [0; 1024];
+static mut STDOUT_BUF: [u8; CAPACITY] = [0; CAPACITY];
 static mut STDOUT_LEN: usize = 0;
 
 /// Writes all of `len` bytes at `data` to `fd`.
