@@ -1,0 +1,10 @@
+struct G { cells: [i32; 4] }
+fn index(&G, usize) -> &i32
+    self@0: &G
+    i@1: usize
+fn main() -> ()
+    g@0: G
+    r@1: &mut i32
+error 374..382: cannot assign to data in an index of `G`
+error 396..405: cannot borrow data in an index of `G` as mutable
+error 411..420: cannot assign to data in an index of `G`

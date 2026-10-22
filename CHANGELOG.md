@@ -474,6 +474,18 @@
   intrinsics (`#[rustc_intrinsic]`) that monomorphization replaces with
   MIR: reading and writing through references, unsizing an array of a
   generic type, and subslicing (`Rvalue::Subslice`).
+- Support ranges as indices (`&a[1..3]`, `&mut s[lo..hi]`, `a[..=n]`,
+  `&a[..]`) and `core::ops::{Index, IndexMut}`, which the program may
+  implement (`grid[(r, c)] = 1`). Indexing other than an array's or
+  slice's by a `usize` calls `Index::index` or, where the place is
+  assigned to or borrowed mutably, `IndexMut::index_mut`, found on each
+  type the base dereferences to and then on the slice an array unsizes
+  to, as rustc's `lookup_indexing` does. `core`'s impls for `[T]` panic
+  where rustc's do. Diagnostics follow rustc's (E0277 naming
+  `std::ops::Range`, E0594 and E0596 without `IndexMut`, E0658 in
+  constants, E0502 for `&mut s[..s.len() - 1]`, as rustc borrows the
+  base first). Reading a slice's length (`len`) now keeps the reference
+  it reads live for the borrow checker, which missed conflicts with it.
 
 ### Performance
 

@@ -1,0 +1,15 @@
+struct H {}
+fn main() -> ()
+    a@0: [i32; 3]
+    b@1: &i32
+    h@2: H
+    x@3: {error}
+    s@4: &[u8]
+    t@5: &u8
+const A: [i32; 3]
+const S: &[i32]
+error 319..324: cannot call conditionally-const operator in constants
+error 319..324: `Index` is not yet stable as a const trait
+error 377..384: the type `[{integer}]` cannot be indexed by `std::ops::Range<i32>`
+error 415..418: cannot index into a value of type `H`
+error 463..468: the type `[u8]` cannot be indexed by `RangeTo<u8>`

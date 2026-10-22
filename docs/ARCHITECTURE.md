@@ -477,6 +477,11 @@ semantics become explicit, so code generation never sees expressions:
   length (an array's, or a slice's from the pointer it is behind),
   and is the place `a[_n]`; a move out of it is E0508, and borrowck
   takes any two elements of one array to overlap, as rustc does.
+  Other indexing (`&a[1..3]`, `grid[(r, c)]`) is a call of
+  `Index::index` or `IndexMut::index_mut`, which type checking chose
+  by whether the place is used mutably, on a borrow of the base
+  (unsized if type checking found the method on the slice an array
+  unsizes to), and is the place `(*_r)` the call returns.
   `[x; N]` is one rvalue, `Repeat`; `len` reads the length (`Len`), as
   a borrow of its receiver; an unsizing coercion is an `Unsize`
   rvalue. Drop glue drops an array's elements in a loop, and

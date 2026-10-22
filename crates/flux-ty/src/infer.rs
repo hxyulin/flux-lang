@@ -37,6 +37,10 @@ pub struct InferenceResult {
     /// dereferenced through first: one for `r.a` with `r: &S`, or `r[0]`
     /// with `r: &[i32]`.
     pub field_derefs: ArenaMap<Expr, u32>,
+    /// Indexing expressions whose base, an array, is borrowed and unsized
+    /// to a slice for `Index::index` (`a[1..3]`), past the dereferences
+    /// in `field_derefs`.
+    pub unsized_indices: ArenaMap<Expr, ()>,
     /// The method each `MethodCall` calls, and how its receiver is passed.
     pub methods: ArenaMap<Expr, Method>,
     /// Expressions of type `&mut T` that are reborrowed where they are
@@ -276,6 +280,7 @@ impl<'a> Ctx<'a> {
             binding_types: ArenaMap::new(),
             field_indices: ArenaMap::new(),
             field_derefs: ArenaMap::new(),
+            unsized_indices: ArenaMap::new(),
             methods: ArenaMap::new(),
             reborrows: ArenaMap::new(),
             deref_coercions: ArenaMap::new(),
@@ -436,6 +441,7 @@ struct Ctx<'a> {
     binding_types: ArenaMap<Binding, Ty>,
     field_indices: ArenaMap<Expr, u32>,
     field_derefs: ArenaMap<Expr, u32>,
+    unsized_indices: ArenaMap<Expr, ()>,
     methods: ArenaMap<Expr, Method>,
     reborrows: ArenaMap<Expr, Mutability>,
     deref_coercions: ArenaMap<Expr, u32>,
@@ -2217,6 +2223,9 @@ impl Ctx<'_> {
                 if self.in_static_mut(*expr) {
                     self.static_mut_ref(id, *mutable);
                 }
+                if *mutable {
+                    self.mutable_place(*expr, false, self.range(id));
+                }
                 let m = if *mutable {
                     Mutability::Mut
                 } else {
@@ -3053,18 +3062,75 @@ impl Ctx<'_> {
 
     /// `base[index]`: an element of an array or slice, which `base` may
     /// be behind references, at a `usize` index.
+    /// `base[index]`: built in for arrays and slices indexed by a
+    /// `usize`, otherwise `*Index::index(&base, index)`, found as rustc's
+    /// `lookup_indexing` finds it: on each type `base` dereferences to,
+    /// then on the slice an array unsizes to. Which of `index` and
+    /// `index_mut` is called is settled once it is known whether the
+    /// place is used mutably ([`Self::mutable_place`]).
     fn infer_index(&mut self, id: ExprId, base: ExprId, index: ExprId) -> Ty {
         let ty = self.infer_expr(base);
         let index_ty = self.infer_expr(index);
-        let (base_ty, derefs) = self.autoderef(ty);
         // rustc points at `[index]`.
         let brackets = TextRange::new(self.range(base).end(), self.range(id).end());
-        let elem = match base_ty.kind() {
-            TyKind::Array(elem, _) | TyKind::Slice(elem) => elem,
-            TyKind::Error => return Ty::ERROR,
-            TyKind::Infer(var) if !self.unknown(var).0 => {
-                self.annotations_needed(base, var, self.range(base));
-                return Ty::ERROR;
+        let usize = Ty::int(IntTy::Usize);
+        let index_ty = self.shallow(index_ty);
+        let integral = match index_ty.kind() {
+            TyKind::Infer(var) => self.unknown(var).0,
+            TyKind::Error | TyKind::Never => true,
+            _ => index_ty == usize,
+        };
+        let mut step = self.shallow(ty);
+        let mut derefs = 0;
+        loop {
+            match step.kind() {
+                TyKind::Array(elem, _) | TyKind::Slice(elem) if integral => {
+                    if derefs > 0 {
+                        self.field_derefs.insert(id, derefs);
+                    }
+                    self.unify(index_ty, usize);
+                    return elem;
+                }
+                TyKind::Error => return Ty::ERROR,
+                TyKind::Infer(var) if !self.unknown(var).0 => {
+                    self.annotations_needed(base, var, self.range(base));
+                    return Ty::ERROR;
+                }
+                _ => {}
+            }
+            if let Some(output) = self.index_overload(id, step, index_ty, derefs, false) {
+                return output;
+            }
+            match step.kind() {
+                TyKind::Ref(_, pointee) => {
+                    step = self.shallow(pointee);
+                    derefs += 1;
+                }
+                _ => break,
+            }
+        }
+        if let TyKind::Array(elem, _) = step.kind()
+            && let Some(output) = self.index_overload(id, Ty::slice(elem), index_ty, derefs, true)
+        {
+            return output;
+        }
+        match step.kind() {
+            TyKind::Array(elem, _) | TyKind::Slice(elem) => {
+                let (slice, mut what) = (self.describe(Ty::slice(elem)), self.describe(index_ty));
+                // rustc names by their path the ranges that `core::range`
+                // has new versions of.
+                if let TyKind::Adt(adt, _) = index_ty.kind()
+                    && self.items.lang_enums.get(&adt.name) == Some(&adt.strukt)
+                    && matches!(adt.name.as_str(), "Range" | "RangeFrom" | "RangeInclusive")
+                {
+                    what = format!("std::ops::{what}");
+                }
+                let index_ty = what;
+                self.error(
+                    self.range(index),
+                    format!("the type `{slice}` cannot be indexed by `{index_ty}`"),
+                );
+                elem
             }
             // A `str` is indexed only by ranges, as rustc's `Index`
             // impls for it say.
@@ -3077,7 +3143,7 @@ impl Ctx<'_> {
                     format!("the type `str` cannot be indexed by `{index_ty}`")
                 };
                 self.error(self.range(index), message);
-                return Ty::ERROR;
+                Ty::ERROR
             }
             _ => {
                 let ty = self.describe(ty);
@@ -3085,27 +3151,112 @@ impl Ctx<'_> {
                     brackets,
                     format!("cannot index into a value of type `{ty}`"),
                 );
-                return Ty::ERROR;
+                Ty::ERROR
             }
+        }
+    }
+
+    /// `base[index]` as `*Index::index(&base, index)` on `ty`, which
+    /// `base` dereferences to `derefs` times (then unsized, if
+    /// `unsize`), if `ty` may implement `Index<I>`: its `Output`.
+    fn index_overload(
+        &mut self,
+        id: ExprId,
+        ty: Ty,
+        index_ty: Ty,
+        derefs: u32,
+        unsize: bool,
+    ) -> Option<Ty> {
+        let items = self.items;
+        let t = *items.lang_traits.get(&Symbol::intern("index"))?;
+        let function = items.traits[t].function(items, Symbol::intern("index"))?;
+        if !self.probe(|cx| cx.may_hold(ty, t, Some(&[index_ty]), 0)) {
+            return None;
+        }
+        let trait_ref = crate::TraitRef {
+            trait_: t,
+            name: items.traits[t].name,
+            args: Ty::list(&[index_ty]),
         };
+        let range = self.range(id);
+        self.register(trait_ref.with_self(ty), range, solve::ObligationKind::Bound);
+        self.overloads.insert(id, (function, vec![ty, index_ty]));
         if derefs > 0 {
             self.field_derefs.insert(id, derefs);
         }
-        let usize = Ty::int(IntTy::Usize);
-        let index_ty = self.shallow(index_ty);
-        let fits = match index_ty.kind() {
-            TyKind::Infer(var) if self.unknown(var).0 => self.unify(index_ty, usize),
-            TyKind::Error | TyKind::Never => true,
-            _ => index_ty == usize,
-        };
-        if !fits {
-            let (slice, index_ty) = (self.describe(Ty::slice(elem)), self.describe(index_ty));
-            self.error(
-                self.range(index),
-                format!("the type `{slice}` cannot be indexed by `{index_ty}`"),
-            );
+        if unsize {
+            self.unsized_indices.insert(id, ());
         }
-        elem
+        self.select_obligations();
+        Some(self.output(trait_ref, ty, range))
+    }
+
+    /// `expr` is a place assigned to (`assign`) or borrowed mutably, by
+    /// `site`, where errors point: the
+    /// overloaded indexing it goes through, without a dereference
+    /// between, calls `IndexMut::index_mut`, as rustc's
+    /// `convert_place_derefs_to_mutable` decides once it knows.
+    fn mutable_place(&mut self, expr: ExprId, assign: bool, site: TextRange) {
+        let items = self.items;
+        let index = items.lang_traits.get(&Symbol::intern("index")).copied();
+        let index_mut = items.lang_traits.get(&Symbol::intern("index_mut")).copied();
+        let (Some(index), Some(index_mut)) = (index, index_mut) else {
+            return;
+        };
+        let index_fn = items.traits[index].function(items, Symbol::intern("index"));
+        let Some(index_mut_fn) =
+            items.traits[index_mut].function(items, Symbol::intern("index_mut"))
+        else {
+            return;
+        };
+        let mut place = expr;
+        loop {
+            match self.body.exprs[place] {
+                Expr::Field { expr: inner, .. } => {
+                    if self.field_derefs.get(place).is_some() {
+                        return;
+                    }
+                    place = inner;
+                }
+                Expr::Index { base, .. } => {
+                    if let Some((function, args)) = self.overloads.get(place).cloned()
+                        && Some(function) == index_fn
+                    {
+                        let (ty, index_ty) = (args[0], args[1]);
+                        let range = site;
+                        let known = !self.has_unknown(ty) && !self.has_unknown(index_ty);
+                        if known
+                            && !self.probe(|cx| cx.may_hold(ty, index_mut, Some(&[index_ty]), 0))
+                        {
+                            let what = self.describe(ty);
+                            let message = if assign {
+                                format!("cannot assign to data in an index of `{what}`")
+                            } else {
+                                format!("cannot borrow data in an index of `{what}` as mutable")
+                            };
+                            self.error(range, message);
+                        } else {
+                            let trait_ref = crate::TraitRef {
+                                trait_: index_mut,
+                                name: items.traits[index_mut].name,
+                                args: Ty::list(&[index_ty]),
+                            };
+                            self.register(
+                                trait_ref.with_self(ty),
+                                range,
+                                solve::ObligationKind::Bound,
+                            );
+                        }
+                        self.overloads.insert(place, (index_mut_fn, args));
+                    }
+                    if self.field_derefs.get(place).is_some() {
+                        return;
+                    }
+                    place = base;
+                }
+                _ => return,
+            }
+        }
     }
 
     /// `ty` with references removed, and how many there were.
@@ -3683,6 +3834,9 @@ impl Ctx<'_> {
         let sig = &self.instance_sig(function, &generic_args);
         self.meet_expectation(id, sig.ret);
         let autoref = self_mode(self.items, function);
+        if autoref == Some(Mutability::Mut) && derefs == 0 {
+            self.mutable_place(receiver, false, self.range(receiver));
+        }
         self.methods.insert(
             id,
             Method {
@@ -3759,6 +3913,7 @@ impl Ctx<'_> {
                     self.check_place(id, lhs, true);
                 }
                 let ty = self.infer_expr(lhs);
+                self.mutable_place(lhs, true, self.range(id));
                 match arith {
                     None => {
                         self.expect(rhs, ty);
@@ -4218,6 +4373,7 @@ impl Ctx<'_> {
     /// (`let x; x = 1;`). Assignments to fields are checked with
     /// initialization, in MIR.
     fn check_place(&mut self, assignment: ExprId, lhs: ExprId, plain: bool) {
+        self.mutable_place(lhs, true, self.range(assignment));
         match self.body.exprs[lhs] {
             Expr::Field { .. }
             | Expr::Index { .. }
@@ -4231,7 +4387,11 @@ impl Ctx<'_> {
                     match self.body.exprs[base] {
                         Expr::Field { expr, .. } => base = expr,
                         Expr::Index { base: inner, .. } => {
-                            if self.field_derefs.get(base).is_some() {
+                            // Behind a pointer, or what `index_mut`
+                            // returns a reference to.
+                            if self.field_derefs.get(base).is_some()
+                                || self.overloads.get(base).is_some()
+                            {
                                 return;
                             }
                             base = inner;
@@ -4464,6 +4624,7 @@ impl Ctx<'_> {
             binding_types: self.binding_types,
             field_indices: self.field_indices,
             field_derefs: self.field_derefs,
+            unsized_indices: self.unsized_indices,
             methods: self.methods,
             reborrows: self.reborrows,
             deref_coercions: self.deref_coercions,
@@ -4507,7 +4668,13 @@ impl Ctx<'_> {
             .collect();
         found.sort_by_key(|&(expr, _)| expr.into_raw());
         for (expr, const_trait) in found {
-            let range = self.range(expr);
+            // rustc points at an index's `[index]`.
+            let range = match self.body.exprs[expr] {
+                Expr::Index { base, .. } => {
+                    TextRange::new(self.range(base).end(), self.range(expr).end())
+                }
+                _ => self.range(expr),
+            };
             match const_trait {
                 Some(name) => {
                     self.error(
@@ -4531,7 +4698,7 @@ impl Ctx<'_> {
     fn const_operand(&self, ty: Ty) -> bool {
         match ty.kind() {
             TyKind::Int(_) | TyKind::Bool | TyKind::Tuple([]) | TyKind::Error => true,
-            TyKind::Ref(_, pointee) => self.const_operand(pointee),
+            TyKind::Ref(_, pointee) | TyKind::Slice(pointee) => self.const_operand(pointee),
             TyKind::Adt(adt, args) => {
                 let data = &self.items.structs[adt.strukt];
                 self.items.is_core(data.loc.module) && args.iter().all(|&a| self.const_operand(a))
@@ -4701,7 +4868,10 @@ impl Ctx<'_> {
                 Expr::Ref { expr, .. } | Expr::Index { base: expr, .. } => {
                     places.insert(expr);
                 }
-                Expr::MethodCall { receiver, .. } if self.builtin_methods.get(id).is_some() => {
+                Expr::MethodCall { receiver, .. }
+                    if self.builtin_methods.get(id).is_some()
+                        || self.methods.get(id).is_some_and(|m| m.autoref.is_some()) =>
+                {
                     places.insert(receiver);
                 }
                 _ => {}

@@ -107,7 +107,9 @@ reported as "not supported yet":
   constructors (`P(1, 2)`, `E::V(1)`), unit structs and variants, field
   accesses (`s.a`, `t.0`, through references), indexing of arrays and
   slices with a `usize` (`a[i]`, `s[i]`, through references, also
-  assigned to and borrowed: `a[i] = v`, `&mut a[i]`),
+  assigned to and borrowed: `a[i] = v`, `&mut a[i]`) or a range of
+  `usize` (`&a[1..3]`, `&mut s[lo..]`, `a[..=n]`, `&a[..]`), and of
+  types that implement `core::ops::Index` (`grid[(r, c)]`),
   paths to items in modules and associated items (`m::f`, `S::new`,
   `Self::X`, `i32::MAX`), trait items, functions and constants, through
   a type, a trait or both (`T::f`, `S::N`, `Tr::f`, `<T as Tr>::N`,
@@ -229,8 +231,18 @@ becomes a reference to a slice where one is expected (`let s: &[i32]
 = &a;`, `f(&mut a)`), as rustc's unsizing coercion does, and a
 reference to a reference becomes the reference expected (`f(&&x)` for
 `f(x: &T)`), as rustc's deref coercion does through references. An index must
-be a `usize` (E0277, "the type `[i32]` cannot be indexed by `i32`");
-indexing anything other than an array or slice is E0608. Indexing is
+be a `usize` or a range of them (E0277, "the type `[i32]` cannot be
+indexed by `i32`"); indexing a type that does not implement
+`core::ops::Index` is E0608. Other indexing than an array's or slice's
+by a `usize` is `*Index::index(&a, i)`, or `*IndexMut::index_mut(&mut
+a, i)` where the place is assigned to or borrowed mutably (E0594 and
+E0596 without `IndexMut`), found on each type the base dereferences to
+and then, for an array, on the slice it unsizes to, as in rustc; the
+base is borrowed before the index is evaluated, without a two-phase
+borrow, so `&mut s[..s.len() - 1]` is E0502 as in rustc. `core`
+implements both for `[T]` with each range type, which panic as rustc's
+do (a start after the end, an end past the length; rustc's messages
+are not printed yet), and the program may implement them. Indexing is
 checked at run time: an index past the end panics, which aborts, and
 one known at compile time to be past an array's end is rustc's
 deny-by-default `unconditional_panic` ("this operation will panic at
@@ -253,9 +265,9 @@ messages show as rustc's), which moves the elements out one by one and
 drops those it has not given when it is dropped. Slices' methods are found on arrays, and references to them,
 as rustc's method probe finds them: the array is borrowed and the
 reference unsized to a slice's (`arr.iter()`, `(&mut arr).last()`). Other
-methods of arrays and slices, comparisons with `<`, ranges as indices
-(`&a[1..3]`) and arrays in `const fn`s through references are not
-supported yet.
+methods of arrays and slices, comparisons with `<`, and arrays in `const
+fn`s through references are not supported yet; neither is slicing in
+constants, which rustc's `core` allows only unstably (E0658).
 
 Generic items are checked once, in terms of their parameters, and
 compiled once per set of arguments the program uses them with
