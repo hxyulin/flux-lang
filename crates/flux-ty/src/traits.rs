@@ -1622,6 +1622,20 @@ pub fn check_impls(
             });
         };
         let data = &items.traits[t];
+        // A trait object implements its trait and supertraits itself.
+        if let Some(&self_ty) = sigs.impls.get(id)
+            && let TyKind::Dynamic(d) = self_ty.kind()
+            && crate::objects::supertraits_of(items, d.trait_).contains(&t)
+        {
+            error(
+                imp.def_range,
+                format!(
+                    "the object type `({self_ty} + 'static)` automatically implements the trait `{}`",
+                    data.name
+                ),
+            );
+            continue;
+        }
         // Only `core` implements the `Fn`-family traits on stable Rust.
         if crate::fn_trait_kind(items, t).is_some() && !items.is_core(imp.module) {
             let at = imp.trait_ref.as_ref().map_or(imp.def_range, |b| b.range);
