@@ -59,6 +59,15 @@ fn main() -> () {
     }
 }
 
+fn promoted(_1: &[Promoted]) -> isize {
+    let mut _0: isize;
+
+    bb0: {
+        _0 = const 2_isize;
+        return;
+    }
+}
+
 fn <Valued as ::core::clone::Clone>::clone(_1: &Valued) -> Valued {
     let mut _0: Valued;
     let _2: ();
@@ -108,3 +117,4 @@ error 364..377: cycle detected when simplifying constant for the type system `Th
 error 455..473: cycle detected when simplifying constant for the type system `First::A::{constant#0}`
 error 563..572: cycle detected when simplifying constant for the type system `Matched::B::{constant#0}`
 error 736..752: cycle detected when simplifying constant for the type system `Valued::B::{constant#0}`
+error 935..959: cycle detected when simplifying constant for the type system `Promoted::B::{constant#0}`

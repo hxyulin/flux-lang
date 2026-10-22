@@ -46,3 +46,10 @@ const fn value(v: Valued) -> isize {
 }
 
 fn main() {}
+
+// Promoting a borrow must still require the enum's complete layout.
+enum Promoted {
+    A = 1,
+    B = promoted(&[Promoted::A]),
+}
+const fn promoted(_: &[Promoted]) -> isize { 2 }

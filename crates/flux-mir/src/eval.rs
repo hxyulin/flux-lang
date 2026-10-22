@@ -705,6 +705,7 @@ impl<'a> Evaluator<'a> {
                         .and_then(|p| p.get(index as usize))
                         .cloned()
                         .ok_or_else(|| error(range, "a promoted constant is missing".to_owned()))?;
+                    self.promoted_layouts(&value, range)?;
                     Ok(Value::Ref(Box::new(value)))
                 }
                 Constant::Fn { .. } => Err(error(
@@ -741,6 +742,28 @@ impl<'a> Evaluator<'a> {
                 }
             },
         }
+    }
+
+    /// Promotion bypasses aggregate evaluation. Constructing an enum
+    /// still needs all its discriminants, including when nested in an
+    /// array, so preserve layout errors and discriminant cycle checks.
+    fn promoted_layouts(&mut self, value: &Value, range: TextRange) -> Result<(), EvalError> {
+        match value {
+            Value::Variant { strukt, fields, .. } => {
+                self.layout(*strukt, range)?;
+                for field in fields {
+                    self.promoted_layouts(field, range)?;
+                }
+            }
+            Value::Aggregate(fields) => {
+                for field in fields {
+                    self.promoted_layouts(field, range)?;
+                }
+            }
+            Value::Ref(value) => self.promoted_layouts(value, range)?,
+            Value::Int { .. } | Value::Bool(_) | Value::Static(_) => {}
+        }
+        Ok(())
     }
 
     fn rvalue(
