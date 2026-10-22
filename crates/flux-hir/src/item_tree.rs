@@ -128,6 +128,8 @@ pub struct CrateData {
     /// The crates its `extern crate` declarations name (`alloc`), which
     /// it may name by path as it names `core`.
     pub externs: Vec<Symbol>,
+    /// Direct source dependencies, under this crate's local import names.
+    pub dependencies: Vec<(Symbol, CrateId)>,
 }
 
 /// A module: a crate's root, `mod m { ... }` or `mod m;`.
@@ -1256,6 +1258,43 @@ impl ItemTree {
         items
     }
 
+    /// Source crates in dependency order, followed by the executable crate.
+    pub fn from_sources(db: &mut SourceDb, sources: &[crate::SourceCrate]) -> ItemTree {
+        let mut items = crate::Core::get().items.clone();
+        items.core = items.counts();
+        let base = items.crates.len() as u32;
+        for (index, source) in sources.iter().enumerate() {
+            let dependencies = source
+                .dependencies
+                .iter()
+                .map(|&(name, target)| {
+                    assert!(
+                        target < index,
+                        "source dependencies must precede their consumer"
+                    );
+                    (name, CrateId(base + target as u32))
+                })
+                .collect();
+            items.add_source_crate(db, source.root, source.name, false, dependencies);
+            // Cross-crate `$crate` needs definition-crate hygiene, rather
+            // than rewriting to a spelling that can be renamed or shadowed.
+            if index + 1 < sources.len() {
+                let krate = CrateId(base + index as u32);
+                for (&(owner, _), &id) in &items.exported_macros {
+                    if owner == krate {
+                        let def = &items.macros[id];
+                        items.diagnostics.push(Diagnostic {
+                            file: def.file,
+                            range: def.name_range,
+                            message: "exported dependency macros are not supported yet".into(),
+                        });
+                    }
+                }
+            }
+        }
+        items
+    }
+
     /// Embedded library items, frozen together for [`Core`](crate::Core).
     pub(crate) fn core(db: &mut SourceDb) -> ItemTree {
         let mut items = ItemTree::default();
@@ -1282,6 +1321,17 @@ impl ItemTree {
     /// names. It may implement their traits, but cannot change their
     /// items or scopes: `core` sees no other crate.
     fn add_crate(&mut self, db: &mut SourceDb, root: FileId, name: Symbol, is_core: bool) {
+        self.add_source_crate(db, root, name, is_core, Vec::new());
+    }
+
+    fn add_source_crate(
+        &mut self,
+        db: &mut SourceDb,
+        root: FileId,
+        name: Symbol,
+        is_core: bool,
+        dependencies: Vec<(Symbol, CrateId)>,
+    ) {
         let from = self.counts();
         let mut collector = Collector {
             db,
@@ -1295,7 +1345,7 @@ impl ItemTree {
             expansion_depth: 0,
             expanding_types: false,
         };
-        collector.collect_crate(root, name, is_core);
+        collector.collect_crate(root, name, is_core, dependencies);
         collector.expand_derives();
         collector.make_ctors();
         crate::def_map::resolve(self, from);
@@ -1542,7 +1592,13 @@ impl Collector<'_> {
         }
     }
 
-    fn collect_crate(&mut self, root: FileId, name: Symbol, is_core: bool) {
+    fn collect_crate(
+        &mut self,
+        root: FileId,
+        name: Symbol,
+        is_core: bool,
+        dependencies: Vec<(Symbol, CrateId)>,
+    ) {
         let krate = CrateId(self.items.crates.len() as u32);
         let dir = self
             .db
@@ -1565,6 +1621,7 @@ impl Collector<'_> {
             root: module,
             is_core,
             externs: Vec::new(),
+            dependencies,
         });
         self.collect_file(module, root);
     }
@@ -3407,7 +3464,13 @@ impl Collector<'_> {
             unsupported(diagnostics, range, "renamed `extern crate` declarations");
         } else if name == sym::alloc {
             self.items.crates[krate.0 as usize].externs.push(name);
-        } else if name != sym::core && name != sym::std {
+        } else if name != sym::core
+            && name != sym::std
+            && !self.items.crates[krate.0 as usize]
+                .dependencies
+                .iter()
+                .any(|(alias, _)| *alias == name)
+        {
             diagnostics.push(Diagnostic::new(
                 range,
                 format!("can't find crate for `{name}`"),

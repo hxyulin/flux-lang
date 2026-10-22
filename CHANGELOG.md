@@ -4,6 +4,14 @@
 
 ### Syntax
 
+- Build local path library dependencies through `flux package build/run`,
+  including transitive graphs, renamed imports and shared dependency identity.
+  Load sources as separate crates, enforce direct dependency scope and privacy,
+  check implementation ownership/orphan rules and dependency bodies, and
+  distinguish native symbols even for identically named libraries before
+  emitting one executable through Keel.
+  Cover the compiler's unchanged choice-tape source as a path library.
+
 - Compile unchanged generator type helpers and syntax-tree navigation in
   the self-compilation subset. Add borrowed string joining, content hashing
   for String/Vec/Box, boxed slice/string cloning and boxed slice collection.

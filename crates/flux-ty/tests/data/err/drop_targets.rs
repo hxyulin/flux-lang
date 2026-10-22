@@ -1,6 +1,6 @@
 // `Drop` may only be implemented for structs (E0120): not for tuples or
-// references. rustc also reports E0117 for the tuple, which flux does
-// not check yet.
+// references. The tuple also violates the orphan rule (E0117), since
+// tuples are foreign even when their elements are local.
 
 struct Element;
 

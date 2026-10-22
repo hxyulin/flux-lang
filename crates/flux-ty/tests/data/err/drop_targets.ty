@@ -4,5 +4,6 @@ fn drop(&mut (Element, Element)) -> ()
 fn drop(&mut &Element) -> ()
     self@0: &mut &Element
 fn main() -> ()
-error 194..212: the `Drop` trait may only be implemented for local structs, enums, and unions
-error 258..266: the `Drop` trait may only be implemented for local structs, enums, and unions
+error 219..251: only traits defined in the current crate can be implemented for arbitrary types
+error 233..251: the `Drop` trait may only be implemented for local structs, enums, and unions
+error 297..305: the `Drop` trait may only be implemented for local structs, enums, and unions

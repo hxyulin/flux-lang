@@ -177,7 +177,6 @@ fn main() {
 #[test]
 fn unsupported_declarations_fail_before_compilation() {
     for (declaration, expected) in [
-        ("[dependencies]\n", "dependencies"),
         ("[dev-dependencies]\n", "dev-dependencies"),
         ("[build-dependencies]\n", "build-dependencies"),
         ("[target.'cfg(unix)'.dependencies]\n", "target"),
@@ -342,4 +341,110 @@ fn cargo_home_and_ancestor_configuration_are_checked() {
         .unwrap();
     assert!(String::from_utf8_lossy(&output.stderr).contains("cargo configuration"));
     assert!(!fixture.0.join("nested/target/flux").exists());
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn source_dependencies_preserve_crate_identity_and_rebuild() {
+    let fixture = Fixture::new();
+    fixture.write("leaf/Cargo.toml", "[package]\nname='leaf-package'\nversion='0.1.0'\nedition='2024'\n[lib]\nname='actual_leaf'\npath='code/root.rs'\n");
+    fixture.write("leaf/code/root.rs", "mod implementation; pub use implementation::{Value, make}; pub fn apply<T, F: Fn(T) -> T>(v: T, f: F) -> T { f(v) }");
+    fixture.write(
+        "leaf/code/implementation.rs",
+        "pub struct Value(pub i32); pub fn make() -> Value { Value(17) }",
+    );
+    fixture.write("middle/Cargo.toml", "[package]\nname='middle'\nversion='0.1.0'\nedition='2024'\n[dependencies]\ninside={path='../leaf',package='leaf-package'}\n");
+    fixture.write("middle/src/lib.rs", "pub use inside::Value; pub fn value() -> Value { inside::apply(inside::make(), |v| Value(v.0 + 5)) }");
+    fixture.write("Cargo.toml", "[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nrenamed-leaf={path='leaf',package='leaf-package'}\nmiddle={path='middle'}\n");
+    fixture.write("src/main.rs", "extern crate middle; fn show(v: renamed_leaf::Value) { println!(\"dependency={}\", v.0); } fn main() { show(middle::value()); }");
+    let output = fixture.run("run", &[]);
+    success(&output);
+    assert_eq!(output.stdout, b"dependency=22\n");
+    fixture.write(
+        "leaf/code/implementation.rs",
+        "pub struct Value(pub i32); pub fn make() -> Value { Value(31) }",
+    );
+    let output = fixture.run("run", &[]);
+    success(&output);
+    assert_eq!(output.stdout, b"dependency=36\n");
+    // A failed dependency rebuild must not execute the old successful binary.
+    fixture.write(
+        "leaf/code/implementation.rs",
+        "pub struct Value(pub i32); pub fn make() -> Value { let n: bool = 3; Value(0) }",
+    );
+    let output = fixture.run("run", &[]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("implementation.rs"));
+}
+
+#[test]
+fn unsupported_path_dependency_graphs_are_rejected() {
+    for spec in [
+        "'1.0'",
+        "{git='https://example.invalid/lib'}",
+        "{path='dep',features=[]}",
+        "{path='dep',optional=true}",
+        "{path='dep',version='0.1'}",
+    ] {
+        let fixture = Fixture::new();
+        fixture.write("Cargo.toml", &format!("[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[dependencies]\ndep={spec}\n"));
+        fixture.reject(if spec.starts_with("{path") || spec.starts_with("{git") {
+            "dependency option"
+        } else {
+            "local path"
+        });
+    }
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", "[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[dependencies]\ndep={path='dep'}\n");
+    fixture.write("dep/Cargo.toml", "[package]\nname='dep'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nprobe-bin={path='..'}\n");
+    fixture.write("dep/src/lib.rs", "pub fn f() {}");
+    fixture.reject("cyclic path dependencies");
+    fixture.write(
+        "dep/Cargo.toml",
+        "[package]\nname='dep'\nversion='0.1.0'\nedition='2024'\n[lib]\nproc-macro=true\n",
+    );
+    fixture.reject("library option");
+    fixture.write(
+        "dep/Cargo.toml",
+        "[package]\nname='dep'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    fixture.write("dep/build.rs", "fn main() {}");
+    fixture.reject("build.rs");
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn unchanged_compiler_source_builds_as_a_dependency() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", "[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[dependencies]\ncompiler-rng={path='rng'}\n");
+    fixture.write("rng/Cargo.toml", "[package]\nname='compiler-rng'\nversion='0.1.0'\nedition='2024'\n[lib]\nname='choice_tape'\n");
+    fixture.write(
+        "rng/src/lib.rs",
+        include_str!("../../flux-difftest/src/rng.rs"),
+    );
+    // An unrenamed dependency uses its library target name, not package name.
+    fixture.write("src/main.rs", "fn main() { let mut source = choice_tape::Source::replay(vec![3, 5]); println!(\"{} {} {}\", source.below(10), source.below(10), source.below(10)); }");
+    let output = fixture.run("run", &[]);
+    success(&output);
+    assert_eq!(output.stdout, b"3 5 0\n");
+    assert!(!fixture.0.join("rng/target").exists());
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn identical_library_names_have_distinct_native_symbols() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", "[package]\nname='same'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nfirst={path='first',package='first-package'}\nsecond={path='second',package='second-package'}\n");
+    for (directory, number) in [("first", 14), ("second", 24)] {
+        fixture.write(&format!("{directory}/Cargo.toml"), &format!("[package]\nname='{directory}-package'\nversion='0.1.0'\nedition='2024'\n[lib]\nname='same'\n"));
+        fixture.write(
+            &format!("{directory}/src/lib.rs"),
+            &format!("pub static VALUE: i32 = {number}; pub fn value() -> i32 {{ VALUE }}"),
+        );
+    }
+    fixture.write("src/main.rs", "static VALUE: i32 = 94; fn value() -> i32 { VALUE } fn main() { println!(\"{} {} {}\", first::value(), second::value(), value()); }");
+    let output = fixture.run("run", &[]);
+    success(&output);
+    assert_eq!(output.stdout, b"14 24 94\n");
 }

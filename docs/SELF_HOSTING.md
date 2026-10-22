@@ -68,15 +68,18 @@ preserving the unchanged event layout rather than replacing the production type.
 
 `flux build` currently compiles one root source file and its module tree
 with Flux's own `core`, `alloc` and bounded `std` facade. The restricted
-`flux package build/run` driver selects a standalone dependency-free binary
-using offline Cargo metadata; see [its supported subset](PACKAGE_DRIVER.md).
-It does not build a Cargo dependency
-graph or consume rustc library metadata. Full compiler builds need a
-crate/dependency strategy with per-crate identities, visibility, aliases,
-editions, features and target configuration. An initial implementation
-could load dependency sources into the existing shared item tree and
-monomorphize the whole program. Separate compilation would additionally
-need library artifacts and serialized metadata. Linking against a
+`flux package build/run` driver selects a standalone binary
+and local path library dependencies using offline Cargo metadata; see
+[its supported subset](PACKAGE_DRIVER.md).
+It loads dependency sources as distinct crates in a shared item tree,
+preserving per-crate aliases, privacy and type identity, and monomorphizes
+the reachable program together. The unchanged compiler `rng.rs` is also
+tested through this path-library route. It does not yet consume a general
+Cargo resolve graph or rustc library metadata. Full compiler builds still
+need registry/git dependencies, editions beyond 2024, features, target
+configuration, workspace support and exported dependency macro hygiene.
+Separate compilation would additionally need library artifacts and serialized
+metadata. Linking against a
 rustc-built Rust crate is not a replacement for this work.
 
 [The Cargo/Keel integration plan](CARGO_INTEGRATION.md) compares a real

@@ -57,6 +57,7 @@ pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result
         crate_name: &crate_name(file),
         output,
         options,
+        sources: &[],
     })
 }
 
@@ -67,6 +68,14 @@ pub(crate) struct CompileRequest<'a> {
     pub crate_name: &'a str,
     pub output: &'a Path,
     pub options: BuildOptions,
+    /// Dependency-ordered source crates; empty for a single source file.
+    pub sources: &'a [SourceInput],
+}
+
+pub(crate) struct SourceInput {
+    pub file: std::path::PathBuf,
+    pub name: String,
+    pub dependencies: Vec<(String, usize)>,
 }
 
 pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
@@ -75,6 +84,7 @@ pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
         crate_name,
         output,
         options,
+        sources,
     } = request;
     let mut timings = Timings::default();
     // `core`'s files are parsed with the database.
@@ -84,8 +94,24 @@ pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
         (db, root)
     });
     let root = root?;
+    let mut graph = Vec::new();
+    for source in sources {
+        graph.push(flux_hir::SourceCrate {
+            root: db.load(&source.file)?,
+            name: Symbol::intern(&source.name),
+            dependencies: source
+                .dependencies
+                .iter()
+                .map(|(alias, target)| (Symbol::intern(alias), *target))
+                .collect(),
+        });
+    }
     let hir = timings.time("hir", || {
-        flux_hir::lower(&mut db, root, Symbol::intern(crate_name))
+        if graph.is_empty() {
+            flux_hir::lower(&mut db, root, Symbol::intern(crate_name))
+        } else {
+            flux_hir::lower_sources(&mut db, &graph)
+        }
     });
     let typed = timings.time("types", || flux_mir::check_file(&hir));
     let mut errors = db.syntax_errors();
