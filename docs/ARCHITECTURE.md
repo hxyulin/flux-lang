@@ -149,8 +149,8 @@ analysis. Semantic analysis will follow rustc's and rust-analyzer's split:
 program's files:
 
 - The **item tree**: every crate's modules, and every function's,
-  struct's, trait's, constant's and `impl` block's name, generic
-  parameters, bounds and signature, with types and traits as written
+  struct's, trait's, constant's and `impl` block's name, generic and
+  lifetime parameters, bounds and signature, with types, lifetimes and traits as written
   (`TypeRef::Path(u8)`, `Pair<T>`, `T: Tr<u8>`), but no bodies.
   Everything outside a body depends only on it. A method is a function
   owned by an `impl` block or a trait whose first parameter is `self`,
@@ -428,10 +428,26 @@ type checking does not know. So the checks of a body with one wait:
 from their MIR, then runs them (`check_deferred_patterns`), and does
 not borrow-check the bodies they fail in, as rustc does not.
 
-Without lifetimes, references are checked only where each one lives in a
-single local assigned once: parameters, temporaries, and non-`mut`
-`let` bindings with a value. A reference anywhere else (in a tuple or
-struct, returned, in a `mut` binding) is reported as not supported yet.
+Types have no lifetimes: bodies are inferred as if every reference had
+the same one, as rustc's type checking erases them, and a `Ty` stays a
+handle that compares by identity. What the borrow checker needs of
+lifetimes is kept beside signatures ([`regions`](../crates/flux-ty/src/regions.rs)):
+for each type in a function's, struct's, `impl` block's or constant's
+signature, the lifetime of each of its *region slots*, in a fixed
+order (a reference's own, then its pointee's; a struct's lifetime
+arguments, then its type arguments'; a closure's captures'; a generic
+parameter and an associated type have none, an instance gets its
+arguments' at their places). A signature's lifetimes are its
+parameters (its owner's, then its own, then one per lifetime elided
+in a function's inputs or an `impl` block's header), `'static` or, in
+bodies, ones to infer. Resolving them applies rustc's elision rules
+and reports its errors (E0106, E0261, E0107, ...); then each struct's
+parameters get their variances, and what its fields imply its
+parameters outlive (`&'a T` that `T: 'a`, rustc's inferred outlives
+requirements), and each function what its bounds and parameter types
+say its lifetimes outlive. A trait's `impl` block is chosen by types
+alone, so one whose header holds for some lifetimes only (`impl Tr for
+&'static S`) is not supported yet.
 
 It also makes the checks rustc makes before borrow checking: calling an
 `unsafe` function or dereferencing a raw pointer needs an `unsafe` block,
@@ -511,6 +527,11 @@ semantics become explicit, so code generation never sees expressions:
   `(*_3).a`. Borrow checking sees it behind a pointer, and names it as
   rustc does ("cannot assign to immutable static item `X`"); constant
   evaluation reads it as its initial value.
+- `&` of a constant expression (`&5`, `&[1, 2]`) is *promoted*, as in
+  rustc: `Constant::Promoted`, a reference to a value in the body's
+  `promoted` list, which lives forever. Constant evaluation gives a
+  shared reference to a copy of what it borrows. A borrowed temporary
+  dies (`StorageDead`) where its scope ends.
 - `x?` moves `x` into a temporary, as rustc's `Try::branch(x)` takes
   it, and tests its variant: the `Some` or `Ok` value is its result;
   otherwise `_0` becomes `None`, or `Err` with the error passed through
@@ -577,33 +598,58 @@ before drops are elaborated, as rustc's does, since elaboration reads
 the discriminants of enums with fields moved out.
 
 [`borrowck`](../crates/flux-mir/src/borrowck.rs) checks borrows with
-rustc's non-lexical lifetimes, simplified by flux's rule that a
-reference is assigned to a local only once. Each borrow is a *loan*;
-the local it is stored in holds it, and so does any local a copy or a
-reborrow of that reference goes into. A loan is live wherever a local
-holding it is live (may still be read), found by backward liveness. Each
-read, move, assignment and borrow of a place is checked against the live
-loans of places that contain it or are contained in it, so borrows of
-different fields never conflict, giving rustc's E0499, E0502, E0503,
-E0505 and E0506. A method receiver's `&mut` is two-phase: shared until
-the call, so `s.set(s.get())` is accepted. A loan still live where its
-local's scope ends is E0597. The pass also reports `&mut` borrows of
-non-`mut` bindings and anything written or mutably borrowed behind a
-`&` (E0596, E0594), and moves out of a reference (E0507) or of a field
-of a struct with a `Drop` impl (E0509), which moves nothing, so the
-value is not also "moved" for `init`. A drop reads the value, so it
-keeps the references in it live, and a temporary dropped while a
-reference to it is still to be used is E0716. A closure that captures
-by reference holds the loans of its captures, and so does any value
-it is moved into: an aggregate holds its operands' loans, a call's
-result those of its arguments if its type may hold any (a `Map` of a
-closure), a reference to such a value the value's, and a value written
-through a `&mut` (by assignment, or by a call it is passed to with
-the `&mut`) gives its loans to the local the `&mut` borrows. Borrowing
-such a value uses it. In a closure's body, what it captures is a
-field of `self`, through the reference it captured unless by value,
-and is named and checked as the captured variable (E0594 and E0596 for
-an `Fn` closure's, E0507 for moves out of an `FnMut` closure's).
+rustc's non-lexical lifetimes. Each borrow is a *loan*, and
+[`regions`](../crates/flux-mir/src/borrowck/regions.rs) infers its
+region as rustc's NLL does: a region variable for every slot of every
+local's type, each borrow, and each lifetime of each call's callee
+(with fresh ones for its generic arguments' slots); outlives
+constraints from subtyping at assignments, aggregates, calls and
+returns (with each type's variance: `&mut T` invariant in `T`, a
+struct's parameters as its fields use them), from reborrows (`&*r`
+needs `r`'s region, up to the first shared reference) and from the
+callee's bounds and implied requirements; and values over the body's
+points (each statement and terminator), where each local is live (may
+be read or dropped later). The constraint graph's strongly connected
+components share values, computed bottom-up as interval sets. The
+function's lifetime parameters and `'static` are *universal*: live
+everywhere, with an end marker each; one whose value has another's
+marker must outlive it, which the signature must say ("lifetime may
+not live long enough", at the constraint rustc would blame). Callee
+signatures' associated types are normalized with their `impl` blocks'
+lifetimes; where a signature cannot be matched to the instance (an
+associated type no block decides, a function pointer), what the call
+returns is outlived by everything it is given. A loan is in scope from
+where it is made at every point its region holds that is reachable
+without leaving it or passing a write of the place it borrows (or a
+place containing it), found per loan by a walk over runs of points.
+Each read, move, assignment and borrow of a place is checked against
+the loans in scope at its point of places that contain it or are
+contained in it, so borrows of different fields never conflict, giving
+rustc's E0499, E0502, E0503, E0505 and E0506. A method receiver's
+`&mut` is two-phase: shared until the call, so `s.set(s.get())` is
+accepted. A loan in scope where its local dies (a binding's or
+borrowed temporary's `StorageDead`, a temporary's drop, or the
+function's return for parameters and temporaries) is E0597 or E0716,
+and E0515 when the constraint that makes it outlive the function is
+the return value's. The pass also reports `&mut` borrows of non-`mut`
+bindings and anything written or mutably borrowed behind a `&`
+(E0596, E0594), and moves out of a reference (E0507) or of a field of
+a struct with a `Drop` impl (E0509), which moves nothing, so the value
+is not also "moved" for `init`. A closure's body is checked before its
+creator's: each lifetime of what it captures, its parameters and its
+result is a universal region of its own, and how they must relate
+becomes its *requirements*, which its creator adds where it makes the
+closure (between what it captures) and where it calls it; a closure
+passed to a generic function may be called there, so what it returns
+is outlived by everything that call is given, and one that keeps
+references to its parameters is not supported yet. In a closure's
+body, what it captures is a field of `self`, through the reference it
+captured unless by value, and is named and checked as the captured
+variable (E0594 and E0596 for an `Fn` closure's, E0507 for moves out
+of an `FnMut` closure's). A constant's value is `'static`, while the
+temporaries in it live forever. A trait's `impl` block's methods are
+checked against the trait's signatures the same way, with the trait
+method's lifetimes universal: they may ask no more of them.
 
 [`drops`](../crates/flux-mir/src/drops.rs) then *elaborates* the drops, as
 rustc's `ElaborateDrops` does: with `init`'s analysis over the dropped
@@ -662,7 +708,10 @@ executable. No C compiler or system linker is involved.
 - Pointers, including `&CStr`, are keel `ptr`s. Each distinct C string
   becomes a module-local, read-only data object ending in a NUL byte,
   and each static a data object holding its evaluated initial value,
-  laid out as in memory, writable only for a `static mut`.
+  laid out as in memory, writable only for a `static mut`. A reference
+  in a constant's value, and a promoted constant, points to a read-only
+  data object of what it borrows, shared by identical ones; inside a
+  static's data, the linker fills in its address.
 - A function pointer is a keel `ptr`, a function's `symbol_addr`, and
   a call through one keel's `call_indirect` with C's convention. Since
   keel allows `cc(fast)` for direct calls only, monomorphization

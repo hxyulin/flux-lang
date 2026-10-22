@@ -25,8 +25,8 @@ subset. See [the supported language](LANGUAGE.md).
 Started: name resolution across modules and `use` imports with
 privacy, type inference, constants and their compile-time evaluation,
 MIR and borrow checking, for functions over integers, `bool`, raw
-pointers, tuples and structs, with methods and references that need no
-lifetimes (parameters, temporaries and locals assigned once), generic
+pointers, tuples and structs, with methods and references anywhere,
+with lifetimes and rustc's non-lexical region inference, generic
 functions, structs and `impl` blocks, monomorphized, traits with
 bounds, statically dispatched, associated types and constants,
 overloaded operators, `Copy`/`Clone`/`PartialEq`/`Eq`/`PartialOrd`/`Ord`
@@ -40,19 +40,23 @@ lengths evaluated while types are checked, bounds checks and rustc's
 borrow rules for elements, type aliases, statics, functions as values,
 with function pointers, items inside function bodies, closures with
 rustc's precise captures and the `Fn`-family traits, ranges, `Iterator`
-with its adapters, and `for` loops.
+with its adapters, `for` loops, and slices' iterators.
 In order next:
 
 1. `core` defines the pointer methods, `mem::replace` and `CStr` (now
    built into the compiler) through lang items and intrinsics.
    Const generics, so that `core` can implement the arrays' traits and
    methods that are built into the compiler for now (`len`, `Copy`,
-   `Clone`, `PartialEq`), and the slice methods that need references in
-   return values (`first`, `iter`, `split_at`). Returning closures
-   (`impl Fn`), which needs opaque types, and iterators over
-   references, which need lifetimes.
-2. Lifetimes: references in structs and return values (`Option<&T>`),
-   which needs region inference across function signatures.
+   `Clone`, `PartialEq`), slices' methods on arrays, iteration over arrays
+   by value, and ranges as indices (`split_at`). Returning closures
+   (`impl Fn`), which needs opaque types.
+2. Lifetimes, what is left: lifetime parameters on traits and in the
+   generic arguments of bounds (`T: Tr<&'a U>`), higher-ranked bounds
+   (`for<'a>`), named lifetimes in types inside bodies, `Fn` bounds and
+   function pointers returning references, closures passed to generic
+   functions keeping their parameters' references, trait `impl` blocks
+   for some lifetimes only, and mutable references in constants. Each
+   is reported as not supported yet.
 
 Each comes with fixtures that rustc must agree with.
 
@@ -84,7 +88,7 @@ names with the same meaning. So far it has the integer types' constants
 and methods, `mem::drop`, `convert::identity`, `convert::From`,
 `marker::Sized`, the operator traits (for references too),
 `PartialEq`/`Eq`, `PartialOrd`/`Ord` with `Ordering`, `Copy`, `Clone`,
-`Drop`, `Option` and `Result`. Its front end (parsing,
+`Drop`, `Option`, `Result`, and slices' iterator. Its front end (parsing,
 item tree, names, signatures, constants' values, and bodies as they are
 reached) is done once per process and shared by every compilation in
 it, and only the functions a program calls are type-checked and

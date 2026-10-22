@@ -72,7 +72,7 @@ reported as "not supported yet":
   in traits, with or without a default, in their `impl` blocks and in
   generic inherent blocks (`const N: u32;`, `const N: u32 = 1;`);
   constants (`const N: i32 = 5;`); statics (`static X: T = v;`,
-  `static mut X: T = v;`), of types without references; type aliases (`type Pair<T> = (T,
+  `static mut X: T = v;`), of types without mutable references; type aliases (`type Pair<T> = (T,
   T);`), through which a struct's or enum's associated items, variants
   and struct expressions are named (`Alias::new()`, `Alias::A`,
   `Alias { .. }`), but not a tuple or unit struct's constructor
@@ -90,8 +90,8 @@ reported as "not supported yet":
 - **Types:** paths (`i32`, `bool`, `Self`, `m::S`, `crate::m::S`,
   `Pair<i32>`, a type parameter `T`), function pointers (`fn(i32) ->
   i32`, `unsafe fn()`, but not `extern "C" fn`), associated types (`T::Out`,
-  `Self::Out`, `<T as Tr>::Out`), tuples, `!`, references without
-  lifetimes (`&T`, `&mut T`), raw pointers (`*const T`, `*mut T`),
+  `Self::Out`, `<T as Tr>::Out`), tuples, `!`, references with or
+  without lifetimes (`&T`, `&'a mut T`), raw pointers (`*const T`, `*mut T`),
   arrays (`[T; N]`, whose length is an integer literal or a path to a
   constant of type `usize`: `[u8; 4]`, `[u8; N]`, `[u8; m::N]`; other
   constant expressions are not supported yet), slices behind pointers
@@ -205,7 +205,13 @@ conflict (E0499), and elements may not be moved out of (E0508).
 `len` and `is_empty` are built into the compiler, as is the length of
 an array, `Copy`, `Clone` and `PartialEq` (`==` and `!=` on arrays of
 one length) of arrays whose elements implement them: rustc's `core`
-writes these with const generics, which flux does not have yet. Other
+writes these with const generics, which flux does not have yet. `core::slice`
+gives slices `first`, `last` and `get` (`Option<&T>`) and `iter`, an
+iterator over references from both ends (`Iter<'a, T>`), and
+`IntoIterator` for `&[T]`, so `for x in slice` works, and `for x in
+&array` iterates a slice of the array (arrays by value, `&mut` slices
+and `iter_mut` need const generics or more, and are not supported
+yet); slices' methods are not found on arrays yet. Other
 methods of arrays and slices, comparisons with `<`, ranges as indices
 (`&a[1..3]`) and arrays in `const fn`s through references are not
 supported yet.
@@ -434,18 +440,45 @@ so they may be passed where closures are, and a closure that captures
 nothing coerces to a function pointer of its signature (one that
 captures is E0308, as in rustc).
 Closures cannot be returned yet (no `impl Fn`), nor be `async`, nor
-return references, nor appear in constants or `const fn`s; calls of
+appear in constants or `const fn`s; calls of
 `Fn::call` and the other methods by name, and `impl Fn for S`, are
-unstable in rustc and not supported.
+unstable in rustc and not supported. A closure may return references
+to what it captures or is given; one passed to a generic function may
+not keep or return references to its parameters (not supported yet),
+and, as in rustc, one whose parameters' written types have references
+may not let them outlive the call ("lifetime may not live long
+enough").
 
-References may be parameters, temporaries, and `let` bindings without
-`mut` that are given a value where they are declared. That is enough to
-borrow-check them without lifetimes, with rustc's rules and messages
-(non-lexical lifetimes, two-phase borrows for method receivers, borrows
-of distinct fields). Anywhere else (in tuples, structs or other
-references, as return values, including a generic function's
-(`id(&x)`), in `mut` bindings) they are reported as not supported yet.
-A reference may be passed to a generic function that returns none.
+References may be anywhere a value may: parameters, return values
+(`fn first(&self) -> &T`, `Option<&T>`), fields of structs and enums
+(`struct Parser<'a> { src: &'a [u8] }`), tuples, other references,
+`mut` bindings, `break` values, and constants and statics (`const P:
+&[i32] = &[2, 3];`, shared ones only). Lifetimes are written as in
+Rust: parameters on functions, structs, enums and `impl` blocks with
+their bounds (`<'a, 'b: 'a, T: 'a>`, `where 'a: 'b`), `&'a T`, `&'a
+self`, `'static`, `'_` and lifetime arguments (`Parser<'a>`; not in
+expressions yet), with rustc's elision rules for function signatures
+(E0106 with rustc's help where they find nothing), `impl` headers,
+constants and statics, and its errors for undeclared, outer, reserved
+and unused lifetimes (E0261, E0401, E0262, E0637, E0392) and wrong
+numbers of lifetime arguments (E0107, E0747). Traits may not have
+lifetime parameters yet, bounds may not name lifetimes in their
+generic arguments (`T: Tr<&'a U>`; `&` without one is E0637, as in
+rustc), `Fn` bounds may not return references, and named lifetimes in
+types inside bodies (`let x: &'a i32`) and function pointer types are
+not supported yet; a trait's `impl` block must hold for every lifetime
+of its header (`impl Tr for &'static S` is not supported yet).
+
+The borrow checker infers lifetimes as rustc's (non-lexical lifetimes,
+with two-phase borrows for method receivers and borrows of distinct
+fields), with its messages: a reference returned or stored must not
+outlive what it borrows (E0597, E0515 for what a function returns,
+E0716 for temporaries), a function's lifetimes must relate as its
+signature and bounds say ("lifetime may not live long enough"), and a
+trait's `impl` block's method may not ask more of its lifetimes than
+the trait's ("`impl` item signature doesn't match `trait` item
+signature"). A borrowed constant expression (`&5`, `&[1, 2]`) lives
+forever, as rustc promotes it.
 
 At run time flux matches rustc with `-C overflow-checks=off -C
 panic=abort`: arithmetic wraps, shift amounts are masked to the type's
