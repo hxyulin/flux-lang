@@ -55,4 +55,14 @@ fn mutate_ref_mut(mut s: S) {
     }
 }
 
+fn nested_guard_binding() {
+    match 1u8 {
+        mut b if match 2u8 {
+            x if (|| { b += x; true })() => true,
+            _ => false,
+        } => {},
+        _ => {},
+    }
+}
+
 fn main() {}

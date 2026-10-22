@@ -591,6 +591,139 @@ fn mutate_ref_mut::{closure#7} as FnOnce(_1: {closure}, _2: ()) -> bool {
     }
 }
 
+fn nested_guard_binding() -> () {
+    let mut _0: ();
+    let _1: u8;
+    let mut _2: u8; // b
+    let _3: bool;
+    let _4: u8;
+    let _5: u8; // x
+    let _6: bool;
+    let _7: {closure};
+    let _8: &mut u8;
+    let _9: &u8;
+    let _10: &mut {closure};
+    let _11: ();
+
+    bb0: {
+        _1 = const 1_u8;
+        _2 = copy _1;
+        _4 = const 2_u8;
+        _5 = copy _4;
+        _8 = &mut _2;
+        _9 = &_5;
+        _7 = {closure}(move _8, move _9);
+        _10 = &two_phase _7;
+        _11 = ();
+        _6 = call_mut::<{closure}, ()>(move _10, move _11) -> bb11;
+    }
+
+    bb1: {
+        StorageDead(_1);
+        return;
+    }
+
+    bb2: {
+        goto -> bb15;
+    }
+
+    bb3: {
+        _0 = const ();
+        StorageDead(_2);
+        goto -> bb1;
+    }
+
+    bb4: {
+        goto -> bb3;
+    }
+
+    bb5: {
+        StorageDead(_2);
+        goto -> bb2;
+    }
+
+    bb6: {
+        StorageDead(_4);
+        switchInt(copy _3) -> [0: bb5, otherwise: bb4];
+    }
+
+    bb7: {
+        goto -> bb13;
+    }
+
+    bb8: {
+        _3 = const true;
+        StorageDead(_5);
+        goto -> bb6;
+    }
+
+    bb9: {
+        goto -> bb8;
+    }
+
+    bb10: {
+        StorageDead(_5);
+        goto -> bb7;
+    }
+
+    bb11: {
+        StorageDead(_7);
+        switchInt(copy _6) -> [0: bb10, otherwise: bb9];
+    }
+
+    bb12: {
+        unreachable;
+    }
+
+    bb13: {
+        _3 = const false;
+        goto -> bb6;
+    }
+
+    bb14: {
+        unreachable;
+    }
+
+    bb15: {
+        _0 = const ();
+        goto -> bb1;
+    }
+}
+
+fn nested_guard_binding::{closure#7} as FnMut(_1: &mut {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: ();
+    let _4: u8;
+    let _5: u8;
+
+    bb0: {
+        _4 = copy (*(*_1).1);
+        _5 = copy (*(*_1).0);
+        (*(*_1).0) = Add(copy _5, copy _4);
+        _3 = const ();
+        _0 = const true;
+        return;
+    }
+}
+
+fn nested_guard_binding::{closure#7} as FnOnce(_1: {closure}, _2: ()) -> bool {
+    let mut _0: bool;
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
 fn main() -> () {
     let mut _0: ();
 
@@ -607,3 +740,4 @@ error 583..584: cannot borrow `b` as mutable in pattern guard
 error 702..703: cannot borrow `b` as mutable in pattern guard
 error 831..832: cannot move out of `b` in pattern guard
 error 956..959: cannot borrow `b` as mutable in pattern guard
+error 1105..1106: cannot borrow `b` as mutable in pattern guard
