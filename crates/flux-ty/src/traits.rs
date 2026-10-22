@@ -596,9 +596,19 @@ pub fn elaborate(sigs: &Signatures, predicates: &[Predicate]) -> Vec<Predicate> 
     }
     let mut out: Vec<Predicate> = Vec::new();
     let mut seen = rustc_hash::FxHashSet::default();
-    let mut stack: Vec<Predicate> = predicates.iter().rev().copied().collect();
-    while let Some(p) = stack.pop() {
-        if !seen.insert(p) {
+    // Repeating a trait on the current path is an invalid supertrait cycle,
+    // even when substitution keeps changing its arguments. Full-predicate
+    // deduplication alone cannot stop `trait A<T>: A<(T, T)>`. Keep other
+    // paths independent: a diamond can imply the same trait with different
+    // arguments. The cycle checker reports the source diagnostic separately.
+    let mut active = rustc_hash::FxHashSet::default();
+    let mut stack: Vec<_> = predicates.iter().rev().map(|&p| (p, false)).collect();
+    while let Some((p, exiting)) = stack.pop() {
+        if exiting {
+            active.remove(&p.trait_ref.trait_);
+            continue;
+        }
+        if active.contains(&p.trait_ref.trait_) || !seen.insert(p) {
             continue;
         }
         out.push(p);
@@ -608,6 +618,8 @@ pub fn elaborate(sigs: &Signatures, predicates: &[Predicate]) -> Vec<Predicate> 
         if sig.supertraits.is_empty() {
             continue;
         }
+        active.insert(p.trait_ref.trait_);
+        stack.push((p, true));
         let count = 1 + p.trait_ref.args.len();
         let mut short = [Ty::ERROR; 16];
         let mut long = Vec::new();
@@ -622,7 +634,7 @@ pub fn elaborate(sigs: &Signatures, predicates: &[Predicate]) -> Vec<Predicate> 
             &long
         };
         for sup in sig.supertraits.iter().rev() {
-            stack.push(sup.subst(args).with_self(p.self_ty));
+            stack.push((sup.subst(args).with_self(p.self_ty), false));
         }
     }
     out

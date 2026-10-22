@@ -1,0 +1,5 @@
+struct S {}
+fn require<T>(T) -> ()
+fn main() -> ()
+error 210..211: the trait bound `S: Top` is not satisfied
+error 226..227: the trait bound `S: Top` is not satisfied

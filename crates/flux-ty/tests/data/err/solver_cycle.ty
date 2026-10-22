@@ -1,0 +1,4 @@
+struct S {}
+fn require<T>(T) -> ()
+fn main() -> ()
+error 105..106: overflow evaluating the requirement `S: Loop`

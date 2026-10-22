@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{LazyLock, OnceLock, RwLock};
 
 use hashbrown::HashTable;
-use rustc_hash::FxBuildHasher;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use flux_arena::StaticSliceArena;
 
@@ -774,29 +774,69 @@ impl Ty {
         if !self.has_params() {
             return self;
         }
+        if let TyKind::Param(param) = self.kind() {
+            return args.get(param.index as usize).copied().unwrap_or(Ty::ERROR);
+        }
+        // Common signatures such as `&T` and `Pair<T, U>` need no graph
+        // traversal or heap scratch when only their direct children vary.
+        if self
+            .children()
+            .all(|t| !t.has_params() || matches!(t.kind(), TyKind::Param(_)))
+        {
+            return self.subst_node(args, |t| match t.kind() {
+                TyKind::Param(p) => args.get(p.index as usize).copied().unwrap_or(Ty::ERROR),
+                _ => t,
+            });
+        }
+        // A type is an interned DAG, not a tree. Process every distinct
+        // parameter-containing node once, including shared function signatures
+        // and generic arguments. The explicit postorder stack also avoids using
+        // the call stack for deeply nested types.
+        self.subst_cached(args, &mut FxHashMap::default())
+    }
+
+    fn subst_cached(self, args: &[Ty], memo: &mut FxHashMap<Ty, Ty>) -> Ty {
+        let mut stack = vec![(self, false)];
+        while let Some((ty, ready)) = stack.pop() {
+            if !ty.has_params() || memo.contains_key(&ty) {
+                continue;
+            }
+            if !ready {
+                stack.push((ty, true));
+                stack.extend(ty.children().filter(|t| t.has_params()).map(|t| (t, false)));
+                continue;
+            }
+            let mapped = |t: Ty| {
+                if t.has_params() { memo[&t] } else { t }
+            };
+            let result = ty.subst_node(args, mapped);
+            memo.insert(ty, result);
+        }
+        memo.get(&self).copied().unwrap_or(self)
+    }
+
+    /// Rebuild one node after its children have been substituted. Replacement
+    /// arguments are returned directly: substituting must be simultaneous.
+    fn subst_node(self, args: &[Ty], mapped: impl Fn(Ty) -> Ty) -> Ty {
         match self.kind() {
             TyKind::Param(param) => args.get(param.index as usize).copied().unwrap_or(Ty::ERROR),
-            TyKind::Tuple(elements) => {
-                Ty::new(TyKind::Tuple(map_list(elements, |t| t.subst(args))))
-            }
-            TyKind::Adt(adt, list) => Ty::new(TyKind::Adt(adt, map_list(list, |t| t.subst(args)))),
-            TyKind::Closure(id, list) => {
-                Ty::new(TyKind::Closure(id, map_list(list, |t| t.subst(args))))
-            }
+            TyKind::Tuple(elements) => Ty::new(TyKind::Tuple(map_list(elements, &mapped))),
+            TyKind::Adt(adt, list) => Ty::new(TyKind::Adt(adt, map_list(list, &mapped))),
+            TyKind::Closure(id, list) => Ty::new(TyKind::Closure(id, map_list(list, &mapped))),
             TyKind::Alias(alias) => Ty::alias(AliasTy {
-                args: map_list(alias.args, |t| t.subst(args)),
+                args: map_list(alias.args, &mapped),
                 ..alias
             }),
             TyKind::Opaque(opaque) => Ty::opaque(OpaqueTy {
-                args: map_list(opaque.args, |t| t.subst(args)),
+                args: map_list(opaque.args, &mapped),
                 ..opaque
             }),
-            TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, pointee.subst(args)),
-            TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, pointee.subst(args))),
-            TyKind::Array(elem, len) => Ty::array_of(elem.subst(args), len.subst(args)),
-            TyKind::Slice(elem) => Ty::slice(elem.subst(args)),
-            TyKind::FnDef(_) | TyKind::FnPtr(_) => self.map_fn(|t| t.subst(args)),
-            TyKind::Dynamic(d) => Ty::new(TyKind::Dynamic(d.map(|t| t.subst(args)))),
+            TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, mapped(pointee)),
+            TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, mapped(pointee))),
+            TyKind::Array(elem, len) => Ty::array_of(mapped(elem), mapped(len)),
+            TyKind::Slice(elem) => Ty::slice(mapped(elem)),
+            TyKind::FnDef(_) | TyKind::FnPtr(_) => self.map_fn(&mapped),
+            TyKind::Dynamic(d) => Ty::new(TyKind::Dynamic(d.map(&mapped))),
             _ => self,
         }
     }
@@ -1167,6 +1207,40 @@ fn write_sig(f: &mut fmt::Formatter<'_>, sig: FnSigTy) -> fmt::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn substitution_memoizes_shared_nodes_and_is_simultaneous() {
+        let p = Ty::param(0, Symbol::intern("GraphP"));
+        let q = Ty::param(1, Symbol::intern("GraphQ"));
+        let mut input = p;
+        let mut expected = q;
+        let mut nodes = vec![(input, expected)];
+        for _ in 0..4096 {
+            input = Ty::tuple(&[input, input]);
+            expected = Ty::tuple(&[expected, expected]);
+            nodes.push((input, expected));
+        }
+        let mut memo = FxHashMap::default();
+        assert_eq!(input.subst_cached(&[q, Ty::BOOL], &mut memo), expected);
+        // Exactly one cached result per reachable parameter-containing node;
+        // the replacement q must not itself be substituted to bool.
+        assert_eq!(memo.len(), nodes.len());
+        for (before, after) in nodes {
+            assert_eq!(memo[&before], after);
+        }
+        assert_eq!(q.subst(&[]), Ty::ERROR);
+        let sig = FnSigTy::new(&[input, input], input, true);
+        let f = Ty::new(TyKind::FnPtr(sig));
+        let mapped = f.subst(&[q]);
+        assert_eq!(
+            mapped.fn_sig(),
+            Some(FnSigTy::new(&[expected, expected], expected, true))
+        );
+        assert!(std::ptr::eq(
+            mapped.fn_sig().unwrap().inputs_output,
+            Ty::list(&[expected, expected, expected])
+        ));
+    }
 
     #[test]
     fn mapped_lists_cover_inline_spill_and_recursive_cases() {

@@ -20,6 +20,8 @@ use crate::Mutability;
 use crate::traits::{Predicate, TraitRef, owner_param_count, predicates_of};
 use crate::ty::{AliasTy, IntTy, Ty, TyKind};
 
+type ProbeGoal = (Ty, TraitId, Option<&'static [Ty]>, u32);
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Obligation {
     pub pred: Predicate,
@@ -33,7 +35,7 @@ pub(super) struct Obligation {
 }
 
 /// How an unmet obligation is reported.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum ObligationKind {
     /// "the trait bound `S: Tr` is not satisfied"
     Bound,
@@ -59,7 +61,7 @@ pub(super) enum ObligationKind {
 }
 
 /// An operator, for messages.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Op {
     Binary(flux_hir::BinaryOp),
     Unary(flux_hir::UnaryOp),
@@ -298,13 +300,38 @@ impl Ctx<'_> {
     /// Selects what can be, until nothing changes, reporting obligations
     /// that cannot be met.
     pub(super) fn select_obligations(&mut self) {
+        // Share expansions only within this pass and diagnostic provenance.
+        // The first expansion keeps its nested obligations and registered
+        // impl projections in this context; sharing never crosses rollback.
+        // Keep the depth: recursive requirements must still reach the existing
+        // overflow diagnostic, and successes near the limit are not proofs.
+        let mut expanded = FxHashSet::default();
         let mut pending = std::mem::take(&mut self.obligation_scratch);
         loop {
             let mut progress = self.select_projections();
             std::mem::swap(&mut pending, &mut self.obligations);
             for ob in pending.drain(..) {
+                // Flags reject nested inference variables without traversing
+                // their potentially shared type DAG to resolve them first.
+                let pred = Predicate {
+                    self_ty: self.shallow(ob.pred.self_ty),
+                    trait_ref: TraitRef {
+                        args: crate::ty::map_list(ob.pred.trait_ref.args, |a| self.shallow(a)),
+                        ..ob.pred.trait_ref
+                    },
+                };
+                let key = (pred, ob.root, ob.range, ob.kind, ob.depth);
+                let stable = stable_goal_type(pred.self_ty)
+                    && pred.trait_ref.args.iter().all(|&a| stable_goal_type(a))
+                    && self.stable_solver_env();
+                if stable && expanded.contains(&key) {
+                    continue;
+                }
                 match self.select_predicate(ob.pred) {
                     Selection::Met(nested) => {
+                        if stable {
+                            expanded.insert(key);
+                        }
                         progress = true;
                         // A method's trait that holds through an `impl`
                         // block whose own bounds do not (`i32: Into<u8>`
@@ -864,6 +891,8 @@ impl Ctx<'_> {
     }
 
     fn select_predicate(&mut self, pred: Predicate) -> Selection {
+        #[cfg(test)]
+        tests::step();
         let self_ty = self.shallow(pred.self_ty);
         if self_ty == Ty::ERROR || pred.trait_ref.args.contains(&Ty::ERROR) {
             return Selection::Met(Vec::new());
@@ -1065,6 +1094,61 @@ impl Ctx<'_> {
     /// Whether `ty: t` (with `args`, if given) may hold, unifying as it
     /// goes; call it in a probe.
     pub(super) fn may_hold(&mut self, ty: Ty, t: TraitId, args: Option<&[Ty]>, depth: u32) -> bool {
+        self.may_hold_cached(ty, t, args, depth, &mut FxHashSet::default())
+    }
+
+    /// A closed goal can still depend on unification with an open bound.
+    /// Do not share answers while those environment variables can change or
+    /// be rolled back by a probe.
+    fn stable_solver_env(&self) -> bool {
+        self.param_env
+            .iter()
+            .all(|p| !p.self_ty.has_infer() && !p.trait_ref.args.iter().any(|a| a.has_infer()))
+            && self
+                .env_projections
+                .iter()
+                .all(|p| !p.ty.has_infer() && !p.alias.args.iter().any(|a| a.has_infer()))
+    }
+
+    fn may_hold_cached(
+        &mut self,
+        ty: Ty,
+        t: TraitId,
+        args: Option<&[Ty]>,
+        depth: u32,
+        proven: &mut FxHashSet<ProbeGoal>,
+    ) -> bool {
+        // Inspect only roots before eligibility: `known` recursively walks
+        // shared unresolved DAGs even though their flags already rule them out.
+        let known = self.shallow(ty);
+        let args = args.map(|args| crate::ty::map_list(args, |a| self.shallow(a)));
+        let stable = stable_goal_type(known)
+            && args.is_none_or(|args| args.iter().all(|&a| stable_goal_type(a)))
+            && self.stable_solver_env();
+        let key = (known, t, args, depth);
+        if stable && proven.contains(&key) {
+            return true;
+        }
+        let holds = self.may_hold_uncached(ty, t, args, depth, proven);
+        // No failures, unresolved inputs, or answers from another probe are
+        // reused. Include the budget so the depth cutoff cannot prove a
+        // shallower goal. A cached closed goal has no unification to replay.
+        if holds && stable {
+            proven.insert(key);
+        }
+        holds
+    }
+
+    fn may_hold_uncached(
+        &mut self,
+        ty: Ty,
+        t: TraitId,
+        args: Option<&[Ty]>,
+        depth: u32,
+        proven: &mut FxHashSet<ProbeGoal>,
+    ) -> bool {
+        #[cfg(test)]
+        tests::step();
         let ty = self.shallow(ty);
         if ty == Ty::ERROR || matches!(ty.kind(), TyKind::Infer(v) if !self.unknown(v).0) {
             return true;
@@ -1155,7 +1239,13 @@ impl Ctx<'_> {
                 nested.iter().all(|p| {
                     let p = cx.normalize_predicate(p.subst(&vars), TextRange::default());
                     let args: Vec<Ty> = p.trait_ref.args.to_vec();
-                    cx.may_hold(p.self_ty, p.trait_ref.trait_, Some(&args), depth + 1)
+                    cx.may_hold_cached(
+                        p.self_ty,
+                        p.trait_ref.trait_,
+                        Some(&args),
+                        depth + 1,
+                        proven,
+                    )
                 })
             })
         })
@@ -1709,4 +1799,111 @@ pub(super) fn first_param(ty: Ty) -> Option<u32> {
 
 fn mentions(ty: Ty, index: u32) -> bool {
     crate::mentions_param(ty, index)
+}
+
+/// Closed inputs cannot be changed by unification in a later branch. Rigid
+/// parameters and projections can depend on the inference state of the
+/// environment, so they deliberately do not participate in sharing.
+fn stable_goal_type(ty: Ty) -> bool {
+    !ty.has_infer() && !ty.has_params() && !ty.has_aliases() && !ty.has_opaques() && !ty.has_error()
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use std::cell::Cell;
+
+    thread_local! {
+        static WORK: Cell<Option<usize>> = const { Cell::new(None) };
+        static RESOLUTION_WORK: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn step() {
+        WORK.with(|work| {
+            if let Some(count) = work.get() {
+                assert!(
+                    count < 8_000,
+                    "diamond solver exceeded 8000 goal evaluations"
+                );
+                work.set(Some(count + 1));
+            }
+        });
+    }
+
+    pub(in crate::infer) fn resolution_step() {
+        RESOLUTION_WORK.with(|work| {
+            if let Some(count) = work.get() {
+                assert!(
+                    count < 128,
+                    "solver cache preparation recursively resolved its inputs"
+                );
+                work.set(Some(count + 1));
+            }
+        });
+    }
+
+    #[test]
+    fn solver_unresolved_dag_sized_work_bound() {
+        use super::{Ctx, ObligationKind};
+        use crate::traits::TraitRef;
+        use crate::ty::Ty;
+        use flux_syntax::TextRange;
+
+        let (_, _, hir) = flux_hir::lower_text("main.rs", "fn main() {}");
+        let (sigs, diagnostics) = crate::signatures(&hir.items);
+        assert!(diagnostics.is_empty());
+        let (function, (body, source_map)) = hir.bodies.iter().next().unwrap();
+        let owner = super::super::Owner {
+            function: Some(function),
+            module: hir.items.functions[function].loc.module,
+            self_ty: None,
+            generics: Vec::new(),
+            consts: Vec::new(),
+            is_unsafe: false,
+            const_context: None,
+            ret: Ty::UNIT,
+            param_env: Vec::new(),
+            unsized_params: Vec::new(),
+            env_projections: Vec::new(),
+            self_trait: None,
+        };
+        let mut cx = Ctx::new(&hir.items, &sigs, owner, body, source_map);
+        let range = TextRange::default();
+        let mut dag = cx.new_var(false, range);
+        for _ in 0..40 {
+            dag = Ty::tuple(&[dag, dag]);
+        }
+        let sized = hir.items.lang_traits[&flux_intern::sym::sized];
+        RESOLUTION_WORK.with(|work| work.set(Some(0)));
+        assert!(cx.may_hold(dag, sized, Some(&[]), 0));
+        cx.register(
+            TraitRef {
+                trait_: sized,
+                name: flux_intern::sym::sized,
+                args: Ty::list(&[]),
+            }
+            .with_self(dag),
+            range,
+            ObligationKind::Bound,
+        );
+        cx.select_obligations();
+        let work = RESOLUTION_WORK.with(|work| work.replace(None).unwrap());
+        assert_eq!(
+            work, 0,
+            "Sized cache preparation must not deep-resolve the DAG"
+        );
+        assert!(cx.obligations.is_empty());
+        assert!(cx.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn solver_diamond_work_bound() {
+        let text = include_str!("../../tests/data/ok/solver_diamond.rs");
+        let (_, _, hir) = flux_hir::lower_text("main.rs", text);
+        assert!(hir.diagnostics.is_empty());
+        WORK.with(|work| work.set(Some(0)));
+        let typed = crate::check_file(&hir);
+        let count = WORK.with(|work| work.replace(None).unwrap());
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        println!("diamond: {count} goal evaluations");
+    }
 }

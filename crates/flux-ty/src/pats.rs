@@ -244,6 +244,39 @@ enum DPat {
     Or(Vec<DPat>),
 }
 
+impl DPat {
+    /// Collapse alternatives that cover their whole column before the
+    /// usefulness algorithm splits it. Otherwise independent `true | false`
+    /// fields repeat the same proof once for every combination of booleans.
+    fn or(alternatives: impl Iterator<Item = DPat>) -> DPat {
+        let mut out = Vec::new();
+        let mut bools = 0;
+        for alternative in alternatives {
+            match alternative {
+                DPat::Wild => return DPat::Wild,
+                DPat::Ctor(Ctor::Bool(b), _) => {
+                    let bit = if b { 2 } else { 1 };
+                    if bools & bit != 0 {
+                        continue;
+                    }
+                    bools |= bit;
+                    if bools == 3 {
+                        return DPat::Wild;
+                    }
+                    out.push(DPat::Ctor(Ctor::Bool(b), Vec::new()));
+                }
+                DPat::Or(nested) => out.extend(nested),
+                other => out.push(other),
+            }
+        }
+        if out.len() == 1 {
+            out.pop().unwrap()
+        } else {
+            DPat::Or(out)
+        }
+    }
+}
+
 /// A witness: a pattern for values no arm matches.
 #[derive(Debug, Clone)]
 enum WPat {
@@ -483,11 +516,10 @@ impl Cx<'_> {
                 }
                 _ => DPat::Wild,
             },
-            Pat::Or(alternatives) => DPat::Or(
+            Pat::Or(alternatives) => DPat::or(
                 self.body.lists[*alternatives]
                     .iter()
-                    .map(|&a| self.lower(a))
-                    .collect(),
+                    .map(|&a| self.lower(a)),
             ),
             Pat::Ref { pat: inner, .. } => DPat::Ctor(Ctor::Single, vec![self.lower(*inner)]),
             Pat::Slice {
