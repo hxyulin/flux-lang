@@ -497,6 +497,13 @@
   for slices, which may be compared as places (`a[..2] == b[..2]`);
   `Iterator::size_hint` and `rposition`, and `ExactSizeIterator`.
   Arrays are `Eq` where their elements are.
+- Compare arrays with slices and references to them, either way round
+  (`s == [1, 2]`, `[1, 2] == *s`, `w == b"fn"`): built in, as arrays'
+  `PartialEq` is, comparing them as slices.
+- Index strings by ranges of bytes (`&s[1..4]`, panicking unless they
+  are within the string at character boundaries), and add `str`'s
+  `split_at`, `trim`, `trim_start`, `trim_end`, `split`, `lines` and
+  `split_whitespace`, and `char::encode_utf8`.
 - Fix two-phase borrows: once its call has activated it, a method
   receiver's `&mut` conflicts with later shared borrows (E0502), which
   flux missed; as in rustc, an array unsized for a method's receiver is

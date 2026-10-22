@@ -2,16 +2,18 @@
 //!
 //! A `str` is UTF-8 bytes behind a pointer with a length, as a `[u8]`
 //! is, so a `&str` and a `&[u8]` convert by casting the pointer, as
-//! Rust's `core` does. Methods that make a part of a string (`split_at`,
-//! `trim`, indexing by ranges) need slices of slices, which flux does
-//! not have yet.
+//! Rust's `core` does; a part of a string (`&s[1..3]`, `split_at`,
+//! `trim`) is a part of its bytes, checked to start and end at
+//! characters.
 
 use crate::clone::Clone;
 use crate::cmp::Ordering::{self, Equal, Greater, Less};
 use crate::cmp::{Eq, Ord, PartialEq, PartialOrd};
 use crate::iter::{DoubleEndedIterator, Iterator};
 use crate::marker::Copy;
+use crate::ops::{Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use crate::option::Option::{self, None, Some};
+use crate::panicking::panic;
 use crate::result::Result::{self, Err, Ok};
 
 /// The `str` the bytes are, if they are UTF-8.
@@ -25,6 +27,11 @@ pub const fn from_utf8(v: &[u8]) -> Result<&str, Utf8Error> {
 /// The `str` the bytes are, which must be UTF-8.
 pub const unsafe fn from_utf8_unchecked(v: &[u8]) -> &str {
     unsafe { &*(v as *const [u8] as *const str) }
+}
+
+/// The mutable `str` the bytes are, which must be UTF-8.
+pub const unsafe fn from_utf8_unchecked_mut(v: &mut [u8]) -> &mut str {
+    unsafe { &mut *(v as *mut [u8] as *mut str) }
 }
 
 /// Why bytes are not UTF-8: where the valid prefix ends, and how long
@@ -185,7 +192,7 @@ const fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// `c`'s UTF-8 bytes, in the first `c.len_utf8()` of the array.
-const fn encode_utf8(c: char) -> [u8; 4] {
+pub(crate) const fn encode_utf8(c: char) -> [u8; 4] {
     let code = c as u32;
     if code < 0x80 {
         [code as u8, 0, 0, 0]
@@ -208,12 +215,14 @@ const fn encode_utf8(c: char) -> [u8; 4] {
     }
 }
 
-/// What `starts_with`, `ends_with`, `contains` and `find` look for: a
-/// `&str` or a `char`. Rust's `Pattern` is unstable; programs only use
-/// its implementations.
+/// What `starts_with`, `ends_with`, `contains`, `find` and `split` look
+/// for: a `&str` or a `char`. Rust's `Pattern` is unstable; programs
+/// only use its implementations.
 pub trait Pattern: Sized {
     /// Where the pattern first occurs in `haystack`.
     fn find_in(self, haystack: &str) -> Option<usize>;
+    /// How many bytes a match is long.
+    fn match_len(&self) -> usize;
     /// Whether `haystack` starts with the pattern.
     fn is_prefix_of(self, haystack: &str) -> bool;
     /// Whether `haystack` ends with the pattern.
@@ -223,6 +232,10 @@ pub trait Pattern: Sized {
 impl Pattern for &str {
     fn find_in(self, haystack: &str) -> Option<usize> {
         find_bytes(haystack.as_bytes(), self.as_bytes())
+    }
+
+    fn match_len(&self) -> usize {
+        self.len()
     }
 
     fn is_prefix_of(self, haystack: &str) -> bool {
@@ -236,6 +249,10 @@ impl Pattern for &str {
 }
 
 impl Pattern for char {
+    fn match_len(&self) -> usize {
+        self.len_utf8()
+    }
+
     fn find_in(self, haystack: &str) -> Option<usize> {
         let mut iter = haystack.char_indices();
         while let Some((at, c)) = iter.next() {
@@ -357,6 +374,224 @@ impl str {
     /// The byte offset where `pat`, a `&str` or a `char`, first occurs.
     pub fn find<P: Pattern>(&self, pat: P) -> Option<usize> {
         pat.find_in(self)
+    }
+
+    /// The string split at byte `mid`, which must be a character
+    /// boundary (or this panics).
+    pub fn split_at(&self, mid: usize) -> (&str, &str) {
+        if !self.is_char_boundary(mid) {
+            panic(c"failed to slice string")
+        }
+        (substr(self, 0, mid), substr(self, mid, self.len()))
+    }
+
+    /// The string without leading whitespace.
+    pub fn trim_start(&self) -> &str {
+        let mut iter = self.char_indices();
+        while let Some((at, c)) = iter.next() {
+            if !c.is_whitespace() {
+                return substr(self, at, self.len());
+            }
+        }
+        substr(self, self.len(), self.len())
+    }
+
+    /// The string without trailing whitespace.
+    pub fn trim_end(&self) -> &str {
+        let mut iter = self.char_indices();
+        while let Some((at, c)) = iter.next_back() {
+            if !c.is_whitespace() {
+                return substr(self, 0, at + c.len_utf8());
+            }
+        }
+        substr(self, 0, 0)
+    }
+
+    /// The string without leading and trailing whitespace.
+    pub fn trim(&self) -> &str {
+        self.trim_start().trim_end()
+    }
+
+    /// The parts of the string between the matches of `pat`, a `&str` or
+    /// a `char`.
+    pub fn split<P: Pattern + Copy>(&self, pat: P) -> Split<'_, P> {
+        Split {
+            haystack: self,
+            pat,
+            start: 0,
+            at: 0,
+            finished: false,
+        }
+    }
+
+    /// The lines of the string, without their `\n` or `\r\n`; a final
+    /// line ending ends the last line rather than starting an empty one.
+    pub fn lines(&self) -> Lines<'_> {
+        Lines { rest: self }
+    }
+
+    /// The parts of the string between runs of whitespace.
+    pub fn split_whitespace(&self) -> SplitWhitespace<'_> {
+        SplitWhitespace { rest: self }
+    }
+}
+
+/// `&s[start..end]`, which panics, as rustc's does, unless both are
+/// within the string and at character boundaries.
+fn substr(s: &str, start: usize, end: usize) -> &str {
+    if start > end || !s.is_char_boundary(start) || !s.is_char_boundary(end) {
+        panic(c"byte index is out of bounds or not a char boundary")
+    }
+    unsafe { from_utf8_unchecked(&s.as_bytes()[start..end]) }
+}
+
+impl Index<Range<usize>> for str {
+    type Output = str;
+
+    fn index(&self, index: Range<usize>) -> &str {
+        substr(self, index.start, index.end)
+    }
+}
+
+impl Index<RangeTo<usize>> for str {
+    type Output = str;
+
+    fn index(&self, index: RangeTo<usize>) -> &str {
+        substr(self, 0, index.end)
+    }
+}
+
+impl Index<RangeFrom<usize>> for str {
+    type Output = str;
+
+    fn index(&self, index: RangeFrom<usize>) -> &str {
+        substr(self, index.start, self.len())
+    }
+}
+
+impl Index<RangeFull> for str {
+    type Output = str;
+
+    fn index(&self, _index: RangeFull) -> &str {
+        self
+    }
+}
+
+impl Index<RangeInclusive<usize>> for str {
+    type Output = str;
+
+    fn index(&self, index: RangeInclusive<usize>) -> &str {
+        if index.end == usize::MAX {
+            panic(c"attempted to index str up to maximum usize")
+        }
+        let start = if index.exhausted { index.end + 1 } else { index.start };
+        substr(self, start, index.end + 1)
+    }
+}
+
+impl Index<RangeToInclusive<usize>> for str {
+    type Output = str;
+
+    fn index(&self, index: RangeToInclusive<usize>) -> &str {
+        if index.end == usize::MAX {
+            panic(c"attempted to index str up to maximum usize")
+        }
+        substr(self, 0, index.end + 1)
+    }
+}
+
+/// An iterator over the parts of a string between the matches of a
+/// pattern: what [`str::split`] gives.
+pub struct Split<'a, P> {
+    haystack: &'a str,
+    pat: P,
+    /// Where the next part starts.
+    start: usize,
+    /// Where to look for the next match: past the last, and past a
+    /// character after an empty one.
+    at: usize,
+    finished: bool,
+}
+
+impl<'a, P: Pattern + Copy> Iterator for Split<'a, P> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        if self.finished {
+            return None;
+        }
+        let len = self.haystack.len();
+        if self.at <= len
+            && let Some(i) = self.pat.find_in(substr(self.haystack, self.at, len))
+        {
+            let found = self.at + i;
+            let n = self.pat.match_len();
+            let part = substr(self.haystack, self.start, found);
+            self.start = found + n;
+            self.at = if n > 0 {
+                found + n
+            } else if found < len {
+                found + decode_at(self.haystack.as_bytes(), found).1
+            } else {
+                len + 1
+            };
+            return Some(part);
+        }
+        self.finished = true;
+        Some(substr(self.haystack, self.start, len))
+    }
+}
+
+/// An iterator over a string's lines: what [`str::lines`] gives.
+pub struct Lines<'a> {
+    rest: &'a str,
+}
+
+impl<'a> Iterator for Lines<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        let len = self.rest.len();
+        if len == 0 {
+            return None;
+        }
+        let (line, rest) = match find_bytes(self.rest.as_bytes(), b"\n") {
+            Some(i) => {
+                let end = if i > 0 && self.rest.as_bytes()[i - 1] == b'\r' { i - 1 } else { i };
+                (substr(self.rest, 0, end), substr(self.rest, i + 1, len))
+            }
+            None => (self.rest, substr(self.rest, len, len)),
+        };
+        self.rest = rest;
+        Some(line)
+    }
+}
+
+/// An iterator over the parts of a string between runs of whitespace:
+/// what [`str::split_whitespace`] gives.
+pub struct SplitWhitespace<'a> {
+    rest: &'a str,
+}
+
+impl<'a> Iterator for SplitWhitespace<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        let all = self.rest;
+        let rest = all.trim_start();
+        if rest.is_empty() {
+            self.rest = rest;
+            return None;
+        }
+        let mut iter = rest.char_indices();
+        while let Some((at, c)) = iter.next() {
+            if c.is_whitespace() {
+                self.rest = substr(rest, at, rest.len());
+                return Some(substr(rest, 0, at));
+            }
+        }
+        self.rest = substr(rest, rest.len(), rest.len());
+        Some(rest)
     }
 }
 

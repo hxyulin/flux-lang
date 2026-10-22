@@ -3114,35 +3114,31 @@ impl Ctx<'_> {
         {
             return output;
         }
+        let mut what = self.describe(index_ty);
+        // rustc names by their path the ranges that `core::range` has new
+        // versions of.
+        if let TyKind::Adt(adt, _) = index_ty.kind()
+            && self.items.lang_enums.get(&adt.name) == Some(&adt.strukt)
+            && matches!(adt.name.as_str(), "Range" | "RangeFrom" | "RangeInclusive")
+        {
+            what = format!("std::ops::{what}");
+        }
         match step.kind() {
             TyKind::Array(elem, _) | TyKind::Slice(elem) => {
-                let (slice, mut what) = (self.describe(Ty::slice(elem)), self.describe(index_ty));
-                // rustc names by their path the ranges that `core::range`
-                // has new versions of.
-                if let TyKind::Adt(adt, _) = index_ty.kind()
-                    && self.items.lang_enums.get(&adt.name) == Some(&adt.strukt)
-                    && matches!(adt.name.as_str(), "Range" | "RangeFrom" | "RangeInclusive")
-                {
-                    what = format!("std::ops::{what}");
-                }
-                let index_ty = what;
+                let slice = self.describe(Ty::slice(elem));
                 self.error(
                     self.range(index),
-                    format!("the type `{slice}` cannot be indexed by `{index_ty}`"),
+                    format!("the type `{slice}` cannot be indexed by `{what}`"),
                 );
                 elem
             }
-            // A `str` is indexed only by ranges, as rustc's `Index`
-            // impls for it say.
+            // A `str` is indexed only by ranges of `usize`, as rustc's
+            // `Index` impls for it say.
             TyKind::Str => {
-                let index_ty = self.shallow(index_ty);
-                let message = if let TyKind::Adt(..) = index_ty.kind() {
-                    "indexing `str` by ranges is not supported yet".to_owned()
-                } else {
-                    let index_ty = self.describe(index_ty);
-                    format!("the type `str` cannot be indexed by `{index_ty}`")
-                };
-                self.error(self.range(index), message);
+                self.error(
+                    self.range(index),
+                    format!("the type `str` cannot be indexed by `{what}`"),
+                );
                 Ty::ERROR
             }
             _ => {
@@ -4102,6 +4098,11 @@ impl Ctx<'_> {
             return Some(result);
         }
         let r = self.new_var(false, self.range(rhs));
+        // An array with a slice, or the reverse: the right side is what
+        // it is, as the compiler's impls for them say.
+        if self.array_slice_eq(lhs, rhs_ty) {
+            self.unify(r, rhs_ty);
+        }
         let trait_ref = crate::TraitRef {
             trait_: t,
             name: self.items.traits[t].name,
@@ -4217,6 +4218,16 @@ impl Ctx<'_> {
     /// ("can't compare `&S` with `S`", or E0369 if the referent has no
     /// `PartialEq` at all), or an integer of unknown type with a
     /// reference, which rustc names by its fallback type.
+    /// Whether `lhs == rhs` is one of the compiler's comparisons of an
+    /// array with a slice or a reference to one, either way round.
+    fn array_slice_eq(&mut self, lhs: Ty, rhs: Ty) -> bool {
+        let (lhs, rhs) = (self.shallow_ref(lhs), self.shallow_ref(rhs));
+        !matches!(
+            (lhs.kind(), rhs.kind()),
+            (TyKind::Array(..), TyKind::Array(..))
+        ) && crate::traits::array_eq_elems(lhs, rhs).is_some()
+    }
+
     fn cmp_ref_error(&mut self, op: BinaryOp, lhs: Ty, rhs: Ty) -> Option<String> {
         let rhs = self.shallow(rhs);
         let unknown = |cx: &mut Self, ty: Ty| match ty.kind() {
@@ -4226,6 +4237,10 @@ impl Ctx<'_> {
         let is_ref = |ty: Ty| matches!(ty.kind(), TyKind::Ref(..));
         let eq = *self.items.lang_traits.get(&Symbol::intern("eq"))?;
         let equality = matches!(op, BinaryOp::Cmp(CmpOp::Eq | CmpOp::Ne));
+        // A reference to a slice with an array: `s == [1, 2]`.
+        if self.array_slice_eq(lhs, rhs) {
+            return None;
+        }
         match lhs.kind() {
             TyKind::Ref(_, pointee)
                 if equality && !is_ref(rhs) && unknown(self, rhs) != Some(false) =>

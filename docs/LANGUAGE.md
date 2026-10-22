@@ -183,8 +183,11 @@ that need no Unicode tables (`to_digit`, `from_digit`, `from_u32`,
 `len_utf8`, `is_whitespace`, the ASCII ones), and `str` `len`,
 `as_bytes`, `as_ptr`, `bytes`, `chars`, `char_indices`, comparisons,
 `starts_with`, `ends_with`, `contains` and `find` (with a `&str` or a
-`char`), and `str::from_utf8`. Indexing a `str` by ranges, the methods
-that make parts of a string (`split_at`, `trim`, `split`), and
+`char`), `str::from_utf8`, indexing by ranges of bytes (`&s[1..4]`,
+which panics, as rustc's does, unless they are within the string and
+at character boundaries) and the methods that give parts of it:
+`split_at`, `trim`, `trim_start`, `trim_end`, `split` (by a `&str` or
+a `char`), `lines` and `split_whitespace`, with `char::encode_utf8`.
 `char`'s Unicode-table methods (`is_alphabetic`, `to_uppercase`) are
 not supported yet. A program prints a `&str` or `&[u8]` through C, as
 `printf(c"%.*s".as_ptr(), s.len() as i32, s.as_ptr())`.
@@ -275,7 +278,10 @@ forms: one stable merge sort that allocates nothing, so equal elements
 keep their order, as rustc's unstable sort keeps them only up to 20
 elements (it may order them differently beyond). Slices are
 `PartialEq`, `Eq`, `PartialOrd` and `Ord`, comparing elements in turn
-(`a[..2] == b[..2]`, `s < t`). Iterators have `size_hint`, and
+(`a[..2] == b[..2]`, `s < t`), and arrays compare with slices and
+references to them either way round (`s == [1, 2]`, `w == b"fn"`),
+which the compiler implements, as rustc's `core` does with const
+generics. Iterators have `size_hint`, and
 `ExactSizeIterator` (`len`, in the prelude) and `rposition` exist for
 the slice and array iterators. Slices' methods are found on arrays, and references to them,
 as rustc's method probe finds them: the array is borrowed and the

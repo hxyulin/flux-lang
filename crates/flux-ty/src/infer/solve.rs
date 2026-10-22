@@ -461,7 +461,7 @@ impl Ctx<'_> {
 
     /// `ty`, shallowly resolved, with what a reference points to
     /// resolved too: enough to tell `&[T; N]`.
-    fn shallow_ref(&mut self, ty: Ty) -> Ty {
+    pub(super) fn shallow_ref(&mut self, ty: Ty) -> Ty {
         match self.shallow(ty).kind() {
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, self.shallow(pointee))),
             _ => self.shallow(ty),
@@ -853,7 +853,21 @@ impl Ctx<'_> {
                 ..pred.trait_ref
             },
         };
-        if let Some(elem) = crate::traits::builtin_array_impl(self.items, goal) {
+        let resolved = Predicate {
+            self_ty: self.shallow_ref(goal.self_ty),
+            trait_ref: TraitRef {
+                args: Ty::list(
+                    &goal
+                        .trait_ref
+                        .args
+                        .iter()
+                        .map(|&a| self.shallow_ref(a))
+                        .collect::<Vec<_>>(),
+                ),
+                ..goal.trait_ref
+            },
+        };
+        if let Some(elem) = crate::traits::builtin_array_impl(self.items, resolved) {
             return Selection::Met(vec![elem]);
         }
         if crate::traits::array_into_iter(self.items, t, self.shallow_ref(self_ty)).is_some() {
@@ -1033,6 +1047,19 @@ impl Ctx<'_> {
         }
         if crate::traits::array_into_iter(self.items, t, self.shallow_ref(ty)).is_some() {
             return true;
+        }
+        // An array compared with a slice, or a slice with an array.
+        if self.items.traits[t].lang == Some(Symbol::intern("eq"))
+            && let Some(&rhs) = args.and_then(|a| a.first())
+        {
+            let (lhs, rhs) = (self.shallow_ref(ty), self.shallow_ref(rhs));
+            if !matches!(
+                (lhs.kind(), rhs.kind()),
+                (TyKind::Array(..), TyKind::Array(..))
+            ) && let Some((a, b)) = crate::traits::array_eq_elems(lhs, rhs)
+            {
+                return self.may_hold(a, t, Some(&[b]), depth + 1);
+            }
         }
         if let TyKind::Array(elem, _) = ty.kind()
             && matches!(self.items.traits[t].lang, Some(l) if matches!(l.as_str(), "copy" | "clone" | "eq" | "total_eq"))

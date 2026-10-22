@@ -98,6 +98,22 @@ impl char {
         }
     }
 
+    /// Writes the `char`'s UTF-8 bytes at the start of `dst`, which must
+    /// be long enough (or this panics), and gives them as a `str`.
+    pub fn encode_utf8(self, dst: &mut [u8]) -> &mut str {
+        let len = self.len_utf8();
+        if dst.len() < len {
+            crate::panicking::panic(c"encode_utf8: buffer too small")
+        }
+        let bytes = crate::str::encode_utf8(self);
+        let mut i = 0;
+        while i < len {
+            dst[i] = bytes[i];
+            i += 1;
+        }
+        unsafe { crate::str::from_utf8_unchecked_mut(&mut dst[..len]) }
+    }
+
     /// How many `u16`s UTF-16 takes for the `char`: 1 or 2.
     pub const fn len_utf16(self) -> usize {
         if (self as u32) < 0x10000 { 1 } else { 2 }
