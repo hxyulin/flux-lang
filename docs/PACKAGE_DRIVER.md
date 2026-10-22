@@ -3,8 +3,8 @@
 On arm64 macOS, Flux can build a restricted Cargo package:
 
 ```sh
-flux package build --manifest-path /path/to/Cargo.toml [--bin NAME]
-flux package run --manifest-path /path/to/Cargo.toml [--bin NAME] -- PROGRAM_ARGS
+flux package build --manifest-path /path/to/Cargo.toml [--bin NAME] [-O]
+flux package run --manifest-path /path/to/Cargo.toml [--bin NAME] [-O] -- PROGRAM_ARGS
 ```
 
 This is a manifest driver. It runs real `cargo metadata --offline --no-deps
@@ -62,15 +62,26 @@ The supported manifest subset is deliberately narrow:
   and names beginning `CARGO_BUILD_`, `CARGO_TARGET_`, `CARGO_PROFILE_`
   or `CARGO_UNSTABLE_` are rejected, including empty values.
   Unknown command options (including `--target`, `--release`, `--features`,
-  `-O`, output overrides and timing options) are rejected by the CLI.
+  output overrides and timing options) are rejected by the CLI.
 
-Exported macros in source dependencies are explicitly rejected until
-definition-crate hygiene across renamed/transitive dependencies is supported.
-Internal macros remain available.
+Exported `macro_rules!` macros support dependency aliases and transitive
+reexports. `$crate` retains the defining crate's identity through nested,
+forwarded and generated macros, including item and type expansion. It does
+not bypass privacy. Item expansion is still sequential: lookup that requires
+later imports or a general expansion/resolution fixed point may be rejected.
+Predecessor lookup is checked against the completed module scopes so later
+shadowing cannot silently select the wrong macro.
+
+`#![no_std]` library roots use core's type and macro preludes, without implicit
+std/alloc types or printing macros. Explicit `extern crate alloc` or
+`extern crate std` can opt into their APIs. Freestanding executable support
+is not added: a no_std executable currently requires `extern crate std`.
 
 Package builds always use the current Flux host configuration: edition
 2024, debug assertions enabled, panic abort, no user features, no test
-configuration, no optimization and no emitted debug information. Cargo's
+configuration and no emitted debug information. Backend optimization is off
+by default; `-O` enables Keel optimization without selecting a Cargo release
+profile or changing `cfg(debug_assertions)`. Cargo's
 default dev/release profiles are not applied. There is no configurable
 compilation mode in this milestone; a per-compilation HIR configuration
 API is deferred until a second configuration is supported.
@@ -114,3 +125,9 @@ and symbol identities; rustc `.rlib` metadata is not consumed.
 The package tests also compile the unchanged compiler `rng.rs` as an ordinary
 path library, exercise a generic call through a renamed diamond graph, and
 verify dependency edits and failures cannot silently reuse an old executable.
+
+The unchanged `unicode-ident` sources are exercised through a separate
+edition-2024 wrapper manifest. Classification counts and a digest across
+all Unicode scalar values match rustc with and without Flux optimization.
+This does not yet establish support for the original edition-2021 package
+manifest or registry dependency resolution.

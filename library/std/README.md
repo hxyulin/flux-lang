@@ -16,7 +16,9 @@ subset (`new`/`get`, comparison, copying, hashing and formatting), whose
 zero niche preserves `Option<NonZeroU32>` at four bytes. Other NonZero
 types and APIs are not implied.
 There are no additional collection implementations: Vec, String and Box
-remain available at their usual module paths and through the prelude.
+remain available at their usual module paths and through the standard
+prelude. Printing macros and alloc's formatting macro also have real std
+reexports so explicit imports work in no_std libraries that opt into std.
 
 `thread` exposes only `panicking() -> bool`. Flux's existing panic runtime
 prints the panic and calls C's abort, without unwinding or executing
@@ -31,16 +33,20 @@ It is not yet implemented for every standard iterator or adapter.
 Normal compilations load core, alloc, std, then the program. The existing
 alloc prelude and macro behavior are unchanged; plain alloc paths still
 require `extern crate alloc;`. Bare HIR/item-tree entry points still omit
-all embedded crates from resolution. This is not support for `#![no_std]`
-or `#![no_core]` crate attributes. Core and alloc cannot see std or the
+all embedded crates from resolution. `#![no_std]` source library roots use
+core's prelude and omit implicit std/alloc type and printing macro imports;
+`extern crate alloc` and `extern crate std` opt into those libraries. A
+no_std executable currently requires explicit std; this does not add a
+freestanding runtime. `#![no_core]` remains unsupported for user crates. Core and alloc cannot see std or the
 program. Std has ordinary crate privacy and cannot define primitive
 implementations or compiler lang items.
 
 All embedded source files and macro expansions are cached together before
 program files are added. The shared item tree and lazy body/signature
 caches include std, so library file and item IDs stay stable across
-compilations. Std is crate 2 and the program is crate 3; core and alloc
-retain crate IDs 0 and 1. No rustc library metadata is loaded.
+compilations. Std is crate 2; source dependencies follow it in graph order,
+then the executable crate. Without dependencies the program remains crate 3;
+core and alloc retain crate IDs 0 and 1. No rustc library metadata is loaded.
 
 Filesystem, synchronization, atomics and missing core/alloc APIs remain
 outside this facade's scope. The NonZeroU32 layout support is implemented

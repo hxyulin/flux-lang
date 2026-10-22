@@ -130,6 +130,8 @@ pub struct CrateData {
     pub externs: Vec<Symbol>,
     /// Direct source dependencies, under this crate's local import names.
     pub dependencies: Vec<(Symbol, CrateId)>,
+    /// Use core's prelude and omit the implicit std extern/macro preludes.
+    pub no_std: bool,
 }
 
 /// A module: a crate's root, `mod m { ... }` or `mod m;`.
@@ -936,6 +938,8 @@ pub enum PathAnchor {
     Plain,
     /// `crate::`
     Crate,
+    /// An expansion's `$crate`, identified independently of import spelling.
+    DefinitionCrate(CrateId),
     /// `self::`
     SelfModule,
     /// `super::`, this many times.
@@ -988,6 +992,7 @@ impl std::fmt::Display for Path {
         match self.anchor {
             PathAnchor::Plain => {}
             PathAnchor::Crate => f.write_str("crate::")?,
+            PathAnchor::DefinitionCrate(id) => write!(f, "$crate{}::", id.0)?,
             PathAnchor::SelfModule => f.write_str("self::")?,
             PathAnchor::Super(n) => {
                 for _ in 0..n {
@@ -1278,21 +1283,6 @@ impl ItemTree {
                 })
                 .collect();
             items.add_source_crate(db, source.root, source.name, false, dependencies);
-            // Cross-crate `$crate` needs definition-crate hygiene, rather
-            // than rewriting to a spelling that can be renamed or shadowed.
-            if index + 1 < sources.len() {
-                let krate = CrateId(base + index as u32);
-                for (&(owner, _), &id) in &items.exported_macros {
-                    if owner == krate {
-                        let def = &items.macros[id];
-                        items.diagnostics.push(Diagnostic {
-                            file: def.file,
-                            range: def.name_range,
-                            message: "exported dependency macros are not supported yet".into(),
-                        });
-                    }
-                }
-            }
         }
         items
     }
@@ -1346,11 +1336,29 @@ impl ItemTree {
             macro_scope: None,
             expansion_depth: 0,
             expanding_types: false,
+            macro_paths: Vec::new(),
         };
         collector.collect_crate(root, name, is_core, dependencies);
         collector.expand_derives();
         collector.make_ctors();
+        let macro_paths = std::mem::take(&mut collector.macro_paths);
         crate::def_map::resolve(self, from);
+        // Early predecessor lookup must agree with completed scopes. A local
+        // item/import declared later may shadow a dependency's import name.
+        for call in macro_paths {
+            if !matches!(self.resolve(call.module, &call.path, crate::def_map::Ns::Macros),
+                Ok(crate::def_map::Resolved::Def(crate::def_map::Def::Macro(id))) if id == call.expected)
+            {
+                self.diagnostics.push(Diagnostic {
+                    file: call.file,
+                    range: call.range,
+                    message: format!(
+                        "cannot find macro `{}` in this scope",
+                        self.macros[call.expected].name
+                    ),
+                });
+            }
+        }
     }
 
     /// How many items of each kind it has.
@@ -1527,7 +1535,16 @@ impl ItemTree {
 }
 
 /// Reads crates' files and collects their items.
+struct MacroPathCheck {
+    module: ModuleId,
+    path: Path,
+    expected: MacroId,
+    file: FileId,
+    range: TextRange,
+}
+
 struct Collector<'a> {
+    macro_paths: Vec<MacroPathCheck>,
     db: &'a mut SourceDb,
     items: &'a mut ItemTree,
     /// The `#[derive]`s of a crate's structs, made into `impl` blocks
@@ -1624,8 +1641,27 @@ impl Collector<'_> {
             is_core,
             externs: Vec::new(),
             dependencies,
+            no_std: false,
         });
         self.collect_file(module, root);
+    }
+
+    fn record_macro_path(&mut self, ctx: Ctx, path: ast::Path<'_>, expected: MacroId) {
+        let def = &self.items.macros[expected];
+        if def.krate == self.items.modules[ctx.module].krate
+            || self.items.crates[def.krate.0 as usize].is_core
+        {
+            return;
+        }
+        if let Some(lowered) = lower_path(path, &mut Vec::new()) {
+            self.macro_paths.push(MacroPathCheck {
+                module: ctx.module,
+                path: lowered,
+                expected,
+                file: self.real_file(ctx.file),
+                range: path.syntax().text_range(),
+            });
+        }
     }
 
     /// The items of a whole file, the contents of `module`.
@@ -1636,7 +1672,18 @@ impl Collector<'_> {
         let tree = shared.parse.tree();
         let source = ast::SourceFile::cast(tree.root()).expect("the root is a SOURCE_FILE");
         let is_core = self.items.is_core(module);
-        check_inner_attrs(source.attrs(), is_core, &mut self.items.diagnostics);
+        let crate_root = self.items.modules[module].parent.is_none();
+        let no_std = crate_root && source.attrs().any(|a| attr_name(a) == Some("no_std"));
+        if no_std {
+            let own = self.items.modules[module].krate;
+            self.items.crates[own.0 as usize].no_std = true;
+        }
+        check_inner_attrs(
+            source.attrs(),
+            is_core,
+            crate_root,
+            &mut self.items.diagnostics,
+        );
         let items: Vec<NodeId> = source.items().map(|i| i.syntax().id()).collect();
         self.collect_items(Ctx { module, file }, &items);
         self.tag(start, file);
@@ -1686,20 +1733,22 @@ impl Collector<'_> {
 
     /// Expands `call`, a macro call in type position.
     fn expand_type_call(
-        &self,
+        &mut self,
         ctx: Ctx,
         call: SyntaxNode<'_>,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<flux_syntax::Parse> {
         let path = call.children().find_map(ast::Path::cast)?;
         let def = match macros::resolve::<()>(self.items, path, &[], self.macro_scope, ctx.module) {
-            Ok(macros::Resolved::Def(id)) => &self.items.macros[id],
+            Ok(macros::Resolved::Def(id)) => id,
             Ok(macros::Resolved::Local(_)) => unreachable!("no local macros here"),
             Err(d) => {
                 diagnostics.push(d);
                 return None;
             }
         };
+        self.record_macro_path(ctx, path, def);
+        let def = &self.items.macros[def];
         let site = macros::CallSite {
             items: self.items,
             krate: self.items.modules[ctx.module].krate,
@@ -1823,6 +1872,7 @@ impl Collector<'_> {
                 return;
             }
         };
+        self.record_macro_path(ctx, path, def);
         let def = self.items.macros[def].clone();
         if self.expansion_depth >= RECURSION_LIMIT {
             self.items.diagnostics.push(Diagnostic::new(
@@ -1916,6 +1966,7 @@ impl Collector<'_> {
         let whole = vis.path()?.syntax().text_range();
         let mut module = match path.anchor {
             PathAnchor::Crate => self.items.module_of(self.items.modules[ctx.module].krate),
+            PathAnchor::DefinitionCrate(id) => self.items.module_of(id),
             PathAnchor::SelfModule => ctx.module,
             PathAnchor::Super(n) => {
                 let mut module = ctx.module;
@@ -2356,7 +2407,7 @@ impl Collector<'_> {
         });
         match m.item_list() {
             Some(list) => {
-                check_inner_attrs(list.attrs(), false, &mut self.items.diagnostics);
+                check_inner_attrs(list.attrs(), false, false, &mut self.items.diagnostics);
                 let items: Vec<NodeId> = list.items().map(|i| i.syntax().id()).collect();
                 self.collect_items(
                     Ctx {
@@ -3464,7 +3515,7 @@ impl Collector<'_> {
         let diagnostics = &mut self.items.diagnostics;
         if e.rename().is_some() {
             unsupported(diagnostics, range, "renamed `extern crate` declarations");
-        } else if name == sym::alloc {
+        } else if name == sym::alloc || name == sym::std {
             self.items.crates[krate.0 as usize].externs.push(name);
         } else if name != sym::core
             && name != sym::std
@@ -4487,9 +4538,21 @@ pub(crate) fn check_attrs(
 fn check_inner_attrs(
     attrs: AstChildren<'_, ast::Attr<'_>>,
     is_core: bool,
+    crate_root: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for attr in attrs {
+        if crate_root && attr_name(attr) == Some("no_std") {
+            if !attr.meta().is_some_and(|m| {
+                m.token_tree().is_none() && m.eq_token().is_none() && m.unsafe_token().is_none()
+            }) {
+                diagnostics.push(Diagnostic::new(
+                    attr.syntax().text_range(),
+                    "malformed `no_std` attribute input",
+                ));
+            }
+            continue;
+        }
         if !(is_core && attr_name(attr).is_some_and(|n| ["no_core", "feature"].contains(&n))) {
             check_attr(attr, diagnostics);
         }
@@ -4525,6 +4588,24 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
         "allow", "warn", "deny", "expect", "inline", "cold", "must_use", "doc",
     ];
     let name = attr_name(attr);
+    if let Some(meta) = attr.meta()
+        && meta.unsafe_token().is_none()
+        && meta.token_tree().is_none()
+        && meta.eq_token().is_none()
+        && let Some(path) = meta.path()
+        && path
+            .segment()
+            .and_then(|s| s.name_ref())
+            .is_some_and(|n| n.text() == "skip")
+        && let Some(tool) = path.qualifier()
+        && tool.qualifier().is_none()
+        && tool
+            .segment()
+            .and_then(|s| s.name_ref())
+            .is_some_and(|n| n.text() == "rustfmt")
+    {
+        return;
+    }
     if name == Some("cfg")
         && attr.bang_token().is_none()
         && attr.meta().is_some_and(|m| m.unsafe_token().is_none())
@@ -4691,7 +4772,8 @@ fn lower_path_with(
                 misplaced("start position", diagnostics);
                 return None;
             }
-            anchor = PathAnchor::Crate;
+            anchor = macros::definition_crate(name.syntax().ctxt())
+                .map_or(PathAnchor::Crate, PathAnchor::DefinitionCrate);
             anchors += 1;
         } else if kind == Some(T![super]) {
             anchor = match anchor {
@@ -4701,7 +4783,7 @@ fn lower_path_with(
                 }
                 PathAnchor::Plain | PathAnchor::SelfModule => PathAnchor::Super(1),
                 PathAnchor::Super(n) => PathAnchor::Super(n + 1),
-                PathAnchor::Crate | PathAnchor::Global => {
+                PathAnchor::Crate | PathAnchor::DefinitionCrate(_) | PathAnchor::Global => {
                     misplaced("start position", diagnostics);
                     return None;
                 }

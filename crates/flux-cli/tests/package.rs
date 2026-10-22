@@ -448,3 +448,184 @@ fn identical_library_names_have_distinct_native_symbols() {
     success(&output);
     assert_eq!(output.stdout, b"14 24 94\n");
 }
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn dependency_macros_keep_definition_crate_across_reexports() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", "[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nbridge={path='bridge'}\n");
+    fixture.write(
+        "leaf/Cargo.toml",
+        "[package]\nname='original'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    fixture.write("leaf/src/lib.rs", r#"
+pub fn answer() -> i32 { 42 }
+pub struct Value(pub i32);
+#[macro_export] macro_rules! helper { () => { $crate::answer() } }
+#[macro_export] macro_rules! value { () => { $crate::helper!() } }
+#[macro_export] macro_rules! ty { () => { $crate::Value } }
+#[macro_export] macro_rules! make { ($name:ident) => { fn $name() -> $crate::Value { $crate::Value($crate::value!()) } } }
+#[macro_export] macro_rules! forward { ($e:expr) => { $e } }
+#[macro_export] macro_rules! forwarded { () => { $crate::forward!($crate::answer()) } }
+#[macro_export] macro_rules! install { () => { macro_rules! installed { () => { $crate::answer() }; } } }
+#[macro_export] macro_rules! classify { (crate) => { 1 }; ($t:tt) => { 2 }; }
+#[macro_export] macro_rules! classified { () => { $crate::classify!($crate) } }
+"#);
+    fixture.write("bridge/Cargo.toml", "[package]\nname='bridge'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nrenamed={path='../leaf',package='original'}\n");
+    fixture.write(
+        "bridge/src/lib.rs",
+        "pub use renamed::{value, ty, make, forwarded, install, classified};",
+    );
+    fixture.write(
+        "src/main.rs",
+        r#"
+use bridge::make;
+make!(created);
+bridge::install!();
+mod original { pub fn answer() -> i32 { 999 } }
+fn main() {
+    let value: bridge::ty!() = created();
+    println!("{} {} {} {} {} {}", value.0, bridge::value!(), bridge::forwarded!(), installed!(), bridge::classified!(), original::answer());
+}
+"#,
+    );
+    for args in [&[][..], &["-O"][..]] {
+        let output = fixture.run("run", args);
+        success(&output);
+        assert_eq!(output.stdout, b"42 42 42 42 2 999\n");
+    }
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn no_std_path_library_can_opt_in_to_alloc_or_std() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", "[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nnostd={path='nostd'}\n");
+    fixture.write(
+        "nostd/Cargo.toml",
+        "[package]\nname='nostd'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    fixture.write("nostd/src/lib.rs", "#![no_std] extern crate alloc; extern crate std; use alloc::vec::Vec; #[rustfmt::skip] pub fn values() -> Vec<i32> { let mut v = alloc::vec![3, 5]; v.push(7); std::println!(\"library {}\", v.len()); v }");
+    fixture.write(
+        "src/main.rs",
+        "fn main() { let values = nostd::values(); println!(\"app {:?}\", values); }",
+    );
+    let output = fixture.run("run", &[]);
+    success(&output);
+    assert_eq!(output.stdout, b"library 3\napp [3, 5, 7]\n");
+}
+
+fn copy_source_package(source: &std::path::Path, target: &std::path::Path) {
+    std::fs::create_dir_all(target).unwrap();
+    for entry in std::fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let destination = target.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_source_package(&entry.path(), &destination);
+        } else {
+            std::fs::copy(entry.path(), destination).unwrap();
+        }
+    }
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn unicode_ident_sources_match_rustc_on_every_unicode_scalar() {
+    // Locate the version Cargo already built for this workspace. The reference
+    // compilation below is an explicit oracle, separate from Flux invocations
+    // whose rejecting wrappers must continue to record zero compiler calls.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = Command::new("cargo")
+        .current_dir(&root)
+        .args([
+            "metadata",
+            "--offline",
+            "--locked",
+            "--format-version",
+            "1",
+            "--filter-platform",
+            "aarch64-apple-darwin",
+        ])
+        .output()
+        .unwrap();
+    success(&output);
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let package = metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "unicode-ident")
+        .unwrap();
+    let manifest = std::path::Path::new(package["manifest_path"].as_str().unwrap());
+    let fixture = Fixture::new();
+    // Preserve the original package and sources. The explicit wrapper selects
+    // edition 2024; loading the original edition-2021 manifest is a later gate.
+    copy_source_package(
+        manifest.parent().unwrap(),
+        &fixture.0.join("unicode-ident-src"),
+    );
+    fixture.write("unicode-ident/Cargo.toml", "[package]\nname='unicode-ident'\nversion='0.1.0'\nedition='2024'\n[lib]\npath='../unicode-ident-src/src/lib.rs'\n");
+    fixture.write("Cargo.toml", "[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nunicode-ident={path='unicode-ident'}\n");
+    fixture.write("src/main.rs", r#"
+fn main() {
+    let mut starts = 0u64;
+    let mut continues = 0u64;
+    let mut digest = 0u64;
+    for n in 0u32..=0x10ffff {
+        if let Some(ch) = char::from_u32(n) {
+            let start = unicode_ident::is_xid_start(ch);
+            let cont = unicode_ident::is_xid_continue(ch);
+            starts += start as u64;
+            continues += cont as u64;
+            digest = digest.rotate_left(7) ^ ((n as u64) << 2) ^ ((start as u64) << 1) ^ cont as u64;
+        }
+    }
+    println!("{} {} {} {:?}", starts, continues, digest, unicode_ident::UNICODE_VERSION);
+}
+"#);
+    let library = fixture.0.join("reference.rlib");
+    let output = Command::new("rustc")
+        .args([
+            "--crate-type",
+            "rlib",
+            "--crate-name",
+            "unicode_ident",
+            "--edition",
+            "2024",
+        ])
+        .arg(fixture.0.join("unicode-ident-src/src/lib.rs"))
+        .arg("-o")
+        .arg(&library)
+        .output()
+        .unwrap();
+    success(&output);
+    // rustc requires the conventional library filename for --extern paths.
+    let named_library = fixture.0.join("libunicode_ident.rlib");
+    std::fs::rename(library, &named_library).unwrap();
+    let reference = fixture.0.join("reference");
+    let output = Command::new("rustc")
+        .args([
+            "--edition",
+            "2024",
+            "-C",
+            "panic=abort",
+            "-C",
+            "overflow-checks=off",
+        ])
+        .arg(fixture.0.join("src/main.rs"))
+        .arg("--extern")
+        .arg(format!("unicode_ident={}", named_library.display()))
+        .arg("-o")
+        .arg(&reference)
+        .output()
+        .unwrap();
+    success(&output);
+    let expected = Command::new(reference).output().unwrap();
+    success(&expected);
+    for args in [&[][..], &["-O"][..]] {
+        let actual = fixture.run("run", args);
+        success(&actual);
+        assert_eq!(actual.stdout, expected.stdout);
+        assert_eq!(actual.stderr, expected.stderr);
+    }
+}

@@ -114,21 +114,30 @@ fn dependency_privacy_and_unused_body_checks() {
 }
 
 #[test]
-fn exported_dependency_macros_are_reported_until_hygiene_is_supported() {
+fn dependency_macro_definition_crate_and_privacy() {
     let errors = check(&[
         (
             "leaf",
-            "#[macro_export] macro_rules! answer { () => { 42 } }",
+            "pub fn answer() -> i32 { 42 } #[macro_export] macro_rules! value { () => { $crate::answer() } }",
             &[],
         ),
-        ("app", "fn main() {}", &[("dep", 0)]),
+        ("middle", "pub use local::value;", &[("local", 0)]),
+        (
+            "app",
+            "fn main() { let _: i32 = bridge::value!(); }",
+            &[("bridge", 1)],
+        ),
     ]);
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.contains("exported dependency macros are not supported")),
-        "{errors:?}"
-    );
+    assert!(errors.is_empty(), "{errors:?}");
+    let errors = check(&[
+        (
+            "leaf",
+            "fn secret() {} #[macro_export] macro_rules! access { () => { $crate::secret() } }",
+            &[],
+        ),
+        ("app", "fn main() { dep::access!(); }", &[("dep", 0)]),
+    ]);
+    assert!(errors.iter().any(|e| e.contains("private")), "{errors:?}");
 }
 
 #[test]
@@ -187,4 +196,89 @@ fn cross_crate_impl_ownership() {
         errors.iter().any(|e| e.contains("must be covered")),
         "{errors:?}"
     );
+}
+
+#[test]
+fn no_std_libraries_use_core_preludes_only() {
+    let errors = check(&[
+        (
+            "leaf",
+            "#![no_std] #[rustfmt::skip] pub fn identity<T: Copy>(value: T) -> Option<T> { Some(value) }",
+            &[],
+        ),
+        (
+            "app",
+            "fn main() { assert_eq!(dep::identity(7), Some(7)); }",
+            &[("dep", 0)],
+        ),
+    ]);
+    assert!(errors.is_empty(), "{errors:?}");
+    for source in [
+        "pub fn f() { let _ = Vec::<i32>::new(); }",
+        "pub fn f() { let _ = std::thread::panicking(); }",
+        "pub fn f() { let _ = ::std::thread::panicking(); }",
+        "pub fn f() { let _ = ::alloc::vec::Vec::<i32>::new(); }",
+        "pub fn f() { println!(\"missing macro\"); }",
+        "use core::println; pub fn f() { println!(\"not a core macro\"); }",
+        "pub fn f() { let _ = vec![1]; }",
+        "pub fn f() { let _ = format!(\"missing macro\"); }",
+        "pub fn f() { std::println!(\"missing crate\"); }",
+    ] {
+        let errors = check(&[
+            ("leaf", &format!("#![no_std] {source}"), &[]),
+            ("app", "fn main() {}", &[("dep", 0)]),
+        ]);
+        assert!(!errors.is_empty(), "std prelude leaked: {source}");
+    }
+    let errors = check(&[
+        (
+            "leaf",
+            "#![no_std] extern crate alloc; use alloc::vec::Vec; pub fn f() -> Vec<i32> { alloc::vec![1, 2] }",
+            &[],
+        ),
+        (
+            "app",
+            "fn main() { assert_eq!(dep::f().len(), 2); }",
+            &[("dep", 0)],
+        ),
+    ]);
+    assert!(errors.is_empty(), "{errors:?}");
+    let errors = check(&[
+        (
+            "leaf",
+            "#![no_std] extern crate std; use std::println; pub fn f() { println!(\"explicit std\"); }",
+            &[],
+        ),
+        ("app", "fn main() { dep::f(); }", &[("dep", 0)]),
+    ]);
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn dependency_item_macros_cannot_bypass_later_shadowing() {
+    let errors = check(&[
+        (
+            "leaf",
+            "#[macro_export] macro_rules! create { () => { fn made() {} } }",
+            &[],
+        ),
+        (
+            "app",
+            "dep::create!(); mod dep {} fn main() { made(); }",
+            &[("dep", 0)],
+        ),
+    ]);
+    assert!(
+        !errors.is_empty(),
+        "early macro lookup ignored local module shadowing"
+    );
+    let errors = check(&[
+        (
+            "leaf",
+            "#[macro_export] macro_rules! ident { ($i:ident) => { 7 }; } #[macro_export] macro_rules! invalid { () => { $crate::ident!($crate) }; }",
+            &[],
+        ),
+        ("app", "fn main() { dep::invalid!(); }", &[("dep", 0)]),
+    ]);
+    assert!(!errors.is_empty(), "`$crate` matched an ident fragment");
 }

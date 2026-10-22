@@ -1,0 +1,10 @@
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 26..61: entering unreachable code

@@ -490,6 +490,11 @@ impl<'a> Evaluator<'a> {
                         block = self.type_intrinsic(call, &mut locals, dest, *target, range)?;
                         continue;
                     }
+                    if self.items.functions[*func].intrinsic
+                        && self.items.functions[*func].name.as_str() == "unreachable_unchecked"
+                    {
+                        return Err(error(range, "entering unreachable code".into()));
+                    }
                     // Only code generation expands them.
                     if self.items.functions[*func].intrinsic {
                         return Err(error(

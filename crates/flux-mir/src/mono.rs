@@ -674,6 +674,10 @@ pub fn expand_intrinsics(
             // Code generation's: where the call is.
             continue;
         }
+        if data.name.as_str() == "unreachable_unchecked" {
+            body.blocks[block].terminator.kind = TerminatorKind::Unreachable;
+            continue;
+        }
         if data.name.as_str() == "uninit" {
             // Nothing: its memory is written before it is read.
             body.blocks[block].terminator.kind = goto;

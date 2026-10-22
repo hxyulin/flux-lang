@@ -397,8 +397,9 @@ is manifest support, not Cargo compiler compatibility.
 
 Implemented subset: edition-2024 local path libraries, including transitive
 edges, aliases, shared crate identities and privacy. Sources compile together
-without `.rlib` artifacts; exported dependency macros, registry/git packages,
-workspaces, features and build scripts remain unsupported. See
+without `.rlib` artifacts. Exported declarative dependency macros preserve
+`$crate` identity through aliases/reexports. Registry/git packages, workspaces,
+features and build scripts remain unsupported. See
 [the package driver boundary](PACKAGE_DRIVER.md). The broader design below
 remains planned.
 

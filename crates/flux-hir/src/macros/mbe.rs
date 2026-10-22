@@ -1154,6 +1154,12 @@ impl Rules {
                     &Loc::MetaVarDecl { kind, .. } => {
                         if let Some(token) = token
                             && may_begin(kind, token.kind)
+                            && !(kind == FragKind::Ident
+                                && token.kind == T![crate]
+                                && super::definition_crate(
+                                    input.toks[token.raw as usize].origin.ctxt,
+                                )
+                                .is_some())
                         {
                             bb.push(mp);
                         }

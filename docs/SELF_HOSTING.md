@@ -77,7 +77,9 @@ the reachable program together. The unchanged compiler `rng.rs` is also
 tested through this path-library route. It does not yet consume a general
 Cargo resolve graph or rustc library metadata. Full compiler builds still
 need registry/git dependencies, editions beyond 2024, features, target
-configuration, workspace support and exported dependency macro hygiene.
+configuration and workspace support. Exported dependency macros now retain
+definition-crate identity through aliases and reexports; general expansion
+fixed points remain outside the current sequential item collector.
 Separate compilation would additionally need library artifacts and serialized
 metadata. Linking against a
 rustc-built Rust crate is not a replacement for this work.
@@ -131,8 +133,9 @@ These need focused probes and Rust-compatible semantics; simply parsing
 the workspace does not establish support.
 
 Concrete later consumers include `AstNode<'t>`'s trait lifetime parameter,
-the labeled block `'alias: { ... }` in type resolution, and the arena's
-`repr(align(16))` layout. The parser's `NonZeroU32` prerequisite now has
+the labeled block `'alias: { ... }` in type resolution. `repr(align(N))`
+now supports the arena's explicit alignment prerequisite, but this alone does
+not establish arena compilation. The parser's `NonZeroU32` prerequisite now has
 checked `new`/`get`, comparison and formatting support with the correct
 zero niche. `Event` is eight bytes and `Option<NonZeroU32>` is four bytes;
 the remaining NonZero family and APIs are not implied by this subset.
@@ -181,3 +184,9 @@ with Flux ultimately includes Keel and its dependency/build-script closure.
 The final bootstrap criterion is stronger than a successful build: a
 Flux-built Flux must compile and run the regression suite and then build
 the compiler again with equivalent behavior.
+
+The unchanged `unicode-ident` sources are exercised through a separate
+edition-2024 wrapper manifest. Classification counts and a digest across
+all Unicode scalar values match rustc with and without Flux optimization.
+This does not yet establish support for the original edition-2021 package
+manifest or registry dependency resolution.
