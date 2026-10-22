@@ -191,9 +191,22 @@ fn checking_never_panics() {
 #[test]
 #[ignore = "needs FLUX_CORPUS"]
 fn corpus_checking_never_panics() {
+    for_each_corpus_file("checked", |path, text| {
+        let (_, _, hir) = flux_hir::lower_text_bare(path, text);
+        flux_ty::check_file(&hir);
+    });
+}
+
+/// Runs `f` on every `.rs` file under `FLUX_CORPUS`, on every core, and
+/// fails with the files it panicked on; prints the slowest.
+fn for_each_corpus_file(what: &str, f: impl Fn(PathBuf, &str) + Sync) {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
     let root = std::env::var_os("FLUX_CORPUS").expect("set FLUX_CORPUS");
+    let mut files = Vec::new();
     let mut stack = vec![PathBuf::from(root)];
-    let mut files = 0;
     while let Some(dir) = stack.pop() {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
@@ -202,16 +215,46 @@ fn corpus_checking_never_panics() {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs")
-                && let Ok(text) = fs::read_to_string(&path)
-            {
-                let (_, _, hir) = flux_hir::lower_text_bare(path, &text);
-                flux_ty::check_file(&hir);
-                files += 1;
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
             }
         }
     }
-    println!("checked {files} files");
+    let next = AtomicUsize::new(0);
+    let times: Mutex<Vec<(Duration, &Path)>> = Mutex::new(Vec::new());
+    let panicked: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let start = Instant::now();
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                while let Some(path) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let Ok(text) = fs::read_to_string(path) else {
+                        continue;
+                    };
+                    let file = Instant::now();
+                    let run = || f(path.clone(), &text);
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_err() {
+                        panicked.lock().unwrap().push(path.display().to_string());
+                    }
+                    times.lock().unwrap().push((file.elapsed(), path));
+                }
+            });
+        }
+    });
+    let mut times = times.into_inner().unwrap();
+    times.sort_by(|a, b| b.cmp(a));
+    let total: Duration = times.iter().map(|t| t.0).sum();
+    println!(
+        "{what} {} files in {:.2?} ({total:.2?} on {threads} threads); slowest:",
+        times.len(),
+        start.elapsed()
+    );
+    for (time, path) in times.iter().take(5) {
+        println!("{time:>12.2?}  {}", path.display());
+    }
+    let panicked = panicked.into_inner().unwrap();
+    assert!(panicked.is_empty(), "panicked on:\n{}", panicked.join("\n"));
 }
 
 /// `core`'s bodies are lowered and checked only where programs reach

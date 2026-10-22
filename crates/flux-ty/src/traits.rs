@@ -494,7 +494,9 @@ pub fn declared_projections(
 }
 
 /// `predicates` with the supertraits each implies, transitively, without
-/// repeats.
+/// repeats. The bounds of their associated types (`type Out: Bound;`) are
+/// left to [`alias_bounds`], as rustc leaves them: `type Inner: Tr;`
+/// would go on forever, and nested ones multiply.
 pub fn elaborate(sigs: &Signatures, predicates: &[Predicate]) -> Vec<Predicate> {
     let mut out: Vec<Predicate> = Vec::new();
     let mut seen = rustc_hash::FxHashSet::default();
@@ -513,16 +515,75 @@ pub fn elaborate(sigs: &Signatures, predicates: &[Predicate]) -> Vec<Predicate> 
         for sup in sig.supertraits.iter().rev() {
             stack.push(sup.subst(&args).with_self(p.self_ty));
         }
-        // `T: Tr` with `type Out: Bound` in `Tr` gives `T::Out: Bound`,
-        // to a depth: `type Inner: Tr;` would go on forever.
-        if alias_depth(p.self_ty) >= 4 {
-            continue;
-        }
-        for &(name, bound) in sig.type_bounds.iter().rev() {
-            let alias = alias_of(p.trait_ref, p.self_ty, name);
-            stack.push(bound.subst(&args).with_self(Ty::alias(alias)));
-        }
     }
+    out
+}
+
+/// The bounds associated type `ty` has by its trait, elaborated, where
+/// `env` says its `Self` implements the trait: `<T as Tr>::Out: Bound`
+/// from `type Out: Bound;` in `Tr`, given `T: Tr`. None for other types.
+pub fn alias_bounds(sigs: &Signatures, env: &[Predicate], ty: Ty) -> Vec<Predicate> {
+    let TyKind::Alias(alias) = ty.kind() else {
+        return Vec::new();
+    };
+    let Some(sig) = sigs.traits.get(alias.trait_) else {
+        return Vec::new();
+    };
+    if !sig.type_bounds.iter().any(|&(name, _)| name == alias.name)
+        || !in_env(sigs, env, alias_predicate(alias))
+    {
+        return Vec::new();
+    }
+    let bounds: Vec<Predicate> = sig
+        .type_bounds
+        .iter()
+        .filter(|&&(name, _)| name == alias.name)
+        .map(|&(_, bound)| bound.subst(alias.args).with_self(ty))
+        .collect();
+    elaborate(sigs, &bounds)
+}
+
+/// Whether `env`, elaborated bounds, has `goal`, or the bounds of its
+/// `Self`'s trait do if that is an associated type.
+pub fn in_env(sigs: &Signatures, env: &[Predicate], goal: Predicate) -> bool {
+    env.contains(&goal)
+        || (matches!(goal.self_ty.kind(), TyKind::Alias(_))
+            && alias_bounds(sigs, env, goal.self_ty).contains(&goal))
+}
+
+/// `Self: Tr` for `<Self as Tr>::Out`.
+fn alias_predicate(alias: AliasTy) -> Predicate {
+    Predicate {
+        self_ty: alias.args[0],
+        trait_ref: TraitRef {
+            trait_: alias.trait_,
+            name: alias.trait_name,
+            args: Ty::list(&alias.args[1..]),
+        },
+    }
+}
+
+/// What associated types of associated type `alias` are by its trait's
+/// declaration: `<T::N as Add>::Output == i32` for `T::N` from
+/// `type N: Add<Output = i32>;`, and what its bounds' traits say.
+pub fn alias_projections(sigs: &Signatures, alias: AliasTy) -> Vec<Projection> {
+    let Some(sig) = sigs.traits.get(alias.trait_) else {
+        return Vec::new();
+    };
+    let ty = Ty::alias(alias);
+    let mut out: Vec<Projection> = sig
+        .implied
+        .iter()
+        .map(|q| q.subst(alias.args))
+        .filter(|q| q.alias.args[0] == ty)
+        .collect();
+    let bounds: Vec<Predicate> = sig
+        .type_bounds
+        .iter()
+        .filter(|&&(name, _)| name == alias.name)
+        .map(|&(_, bound)| bound.subst(alias.args).with_self(ty))
+        .collect();
+    out.extend(implied_projections(sigs, &elaborate(sigs, &bounds)));
     out
 }
 
@@ -544,15 +605,6 @@ pub fn implied_projections(sigs: &Signatures, env: &[Predicate]) -> Vec<Projecti
         out.extend(sig.implied.iter().map(|q| q.subst(&args)));
     }
     out
-}
-
-/// How deeply associated types nest in `ty`'s outermost one:
-/// 2 for `<T::A as Tr>::B`.
-fn alias_depth(ty: Ty) -> u32 {
-    match ty.kind() {
-        TyKind::Alias(alias) => 1 + alias_depth(alias.args[0]),
-        _ => 0,
-    }
 }
 
 /// Binds the parameters in `pattern` (an `impl` block's header, in terms
@@ -660,14 +712,14 @@ impl Normalizer<'_> {
                 if let Some(p) = self.env.iter().find(|p| p.alias == alias) {
                     return self.go(p.ty, depth + 1);
                 }
-                let goal = Predicate {
-                    self_ty: args[0],
-                    trait_ref: TraitRef {
-                        trait_: alias.trait_,
-                        name: alias.trait_name,
-                        args: Ty::list(&args[1..]),
-                    },
-                };
+                if let TyKind::Alias(outer) = args[0].kind()
+                    && let Some(p) = alias_projections(sigs, outer)
+                        .into_iter()
+                        .find(|p| p.alias == alias)
+                {
+                    return self.go(p.ty, depth + 1);
+                }
+                let goal = alias_predicate(alias);
                 let impls = items.trait_impls.get(&alias.trait_).into_iter().flatten();
                 for &imp in impls {
                     if let Some(impl_args) = match_impl(items, sigs, imp, goal)
@@ -763,7 +815,7 @@ fn holds_at(
     if goal.self_ty == Ty::ERROR || goal.trait_ref.args.contains(&Ty::ERROR) {
         return true;
     }
-    if env.contains(&goal) {
+    if in_env(sigs, env, goal) {
         return true;
     }
     if stack.len() > 256 || stack.contains(&goal) {
