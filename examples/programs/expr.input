@@ -1,0 +1,12 @@
+1 + 2 * 3;
+(1 + 2) * 3 - -4;
+let x = 6; let y = 7; x * y;
+let a = 100; let b = a / 7; a % 7 + b * 7;
+10 / (5 - 5);
+2 * (3 + 4;
+let q = 1; q + z;
+3 # 4;
+let n = 12; let f = 1; f * n * (n - 1) * (n - 2) * (n - 3) % 1000003;
+-(-(-(5))) * 9 - 100 / 7 % 4;
+let lettuce = 3;
+let t = 2; t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t * t;
