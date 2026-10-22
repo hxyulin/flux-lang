@@ -536,16 +536,16 @@ semantics become explicit, so code generation never sees expressions:
   unsizes to), and is the place `(*_r)` the call returns.
   `[x; N]` is one rvalue, `Repeat`; `len` reads the length (`Len`), as
   a borrow of its receiver; an unsizing coercion is an `Unsize`
-  rvalue. Drop glue drops an array's elements in a loop, and
-  `Clone::clone` and `PartialEq::eq` of arrays, which the compiler
-  implements, get MIR made by `mono`; arrays' built-in `IntoIterator`
-  calls `core::array`'s functions (`traits::resolve_instance`), generic
-  over the array's type. `core`'s `#[rustc_intrinsic]` functions
-  (`core::intrinsics`: `read`, `write`, `array_as_slice`, `subslice`,
-  ...) are what the borrow checker sees by their signatures; `mono`
-  replaces their calls with MIR once types are known (a copy through a
-  reference, an `Unsize`, a `Subslice` rvalue), so their bodies never
-  run.
+  rvalue. Drop glue drops an array's elements in a loop. Arrays'
+  traits are `core::array`'s `impl<T, const N: usize>` blocks, like
+  any others; `core`'s `Drop` impls (`array::IntoIter`'s) are built
+  whether or not a call names them, as drop glue may call them.
+  `core`'s `#[rustc_intrinsic]` functions (`core::intrinsics`: `read`,
+  `write`, `uninit`, `is_copy`, `subslice`, ...) are what the borrow
+  checker sees by their signatures; `mono` replaces their calls with
+  MIR once types are known (a copy through a reference, nothing for
+  `uninit`'s memory to be written, a constant for `is_copy`, a
+  `Subslice` rvalue), so their bodies never run.
 - `&&` and `||` branch, and reading a local copies it into a temporary,
   so `x + { x = 10; x }` adds the old `x`.
 - A call to a function returning `!` has no successor block.

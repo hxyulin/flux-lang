@@ -65,9 +65,7 @@ pub struct ItemTree {
     /// `core`'s `#[lang = "panic"]` function, which aborts, and which
     /// constant evaluation reports as a panic with its message.
     pub panic_fn: Option<FunctionId>,
-    /// `core`'s other functions the compiler knows, by their `#[lang =
-    /// "..."]` names: those that the built-in `impl` blocks of arrays
-    /// call (`array_into_iter`).
+    /// `core`'s other functions with `#[lang = "..."]` names, by them.
     pub lang_fns: rustc_hash::FxHashMap<Symbol, FunctionId>,
     /// The variant each enum deriving `Default` marks `#[default]`.
     pub default_variants: rustc_hash::FxHashMap<StructId, u32>,
@@ -5517,6 +5515,12 @@ fn lower_fn_ptr(ptr: ast::FnPtrType<'_>, diagnostics: &mut Vec<Diagnostic>) -> T
 /// which no path can name.
 pub fn slice_target() -> Symbol {
     Symbol::intern("slice")
+}
+
+/// The [`ImplTarget::Primitive`] name of `core`'s `impl<T, const N:
+/// usize> [T; N]` blocks.
+pub fn array_target() -> Symbol {
+    Symbol::intern("array")
 }
 
 pub fn is_primitive(name: Symbol) -> bool {

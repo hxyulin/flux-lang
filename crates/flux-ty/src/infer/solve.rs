@@ -529,16 +529,6 @@ impl Ctx<'_> {
             };
             return crate::traits::closure_output(self.items, alias);
         }
-        let self_ref = self.shallow_ref(self_ty);
-        if let Some(ty) = crate::traits::array_into_iter_type(
-            self.items,
-            AliasTy {
-                args: Ty::list(&[&[self_ref][..], &alias.args[1..]].concat()),
-                ..alias
-            },
-        ) {
-            return Some(ty);
-        }
         let pred = Predicate {
             self_ty,
             trait_ref: TraitRef {
@@ -866,51 +856,6 @@ impl Ctx<'_> {
         if crate::traits::is_builtin_copy(self.items, t, self_ty) {
             return Selection::Met(Vec::new());
         }
-        // An array is compared with an array of its length.
-        if let TyKind::Array(_, len) = self_ty.kind()
-            && self.items.traits[t]
-                .lang
-                .is_some_and(|l| matches!(l.as_str(), "eq" | "partial_ord"))
-            && let Some(&rhs) = pred.trait_ref.args.first()
-            && let TyKind::Infer(var) = self.shallow(rhs).kind()
-            && !self.unknown(var).0
-        {
-            let elem = self.new_var(false, TextRange::default());
-            self.unify(rhs, Ty::array_of(elem, len));
-        }
-        let args: Vec<Ty> = pred
-            .trait_ref
-            .args
-            .iter()
-            .map(|&a| self.shallow(a))
-            .collect();
-        let goal = Predicate {
-            self_ty,
-            trait_ref: TraitRef {
-                args: Ty::list(&args),
-                ..pred.trait_ref
-            },
-        };
-        let resolved = Predicate {
-            self_ty: self.shallow_ref(goal.self_ty),
-            trait_ref: TraitRef {
-                args: Ty::list(
-                    &goal
-                        .trait_ref
-                        .args
-                        .iter()
-                        .map(|&a| self.shallow_ref(a))
-                        .collect::<Vec<_>>(),
-                ),
-                ..goal.trait_ref
-            },
-        };
-        if let Some(elem) = crate::traits::builtin_array_impl(self.items, resolved) {
-            return Selection::Met(vec![elem]);
-        }
-        if crate::traits::array_into_iter(self.items, t, self.shallow_ref(self_ty)).is_some() {
-            return Selection::Met(Vec::new());
-        }
         if let TyKind::Closure(..) = self_ty.kind() {
             return self.select_closure(pred);
         }
@@ -1082,44 +1027,6 @@ impl Ctx<'_> {
             || crate::traits::is_builtin_copy(self.items, t, ty)
         {
             return true;
-        }
-        if crate::traits::array_into_iter(self.items, t, self.shallow_ref(ty)).is_some() {
-            return true;
-        }
-        // An array compared with a slice, or a slice with an array.
-        if self.items.traits[t].lang == Some(Symbol::intern("eq"))
-            && let Some(&rhs) = args.and_then(|a| a.first())
-        {
-            let (lhs, rhs) = (self.shallow_ref(ty), self.shallow_ref(rhs));
-            if !matches!(
-                (lhs.kind(), rhs.kind()),
-                (TyKind::Array(..), TyKind::Array(..))
-            ) && let Some((a, b)) = crate::traits::array_eq_elems(lhs, rhs)
-            {
-                return self.may_hold(a, t, Some(&[b]), depth + 1);
-            }
-        }
-        // `Default` for arrays of up to 32 elements, any for none.
-        if let TyKind::Array(elem, len) = ty.kind()
-            && self.items.traits[t]
-                .lang
-                .is_some_and(|l| l.as_str() == "Default")
-        {
-            return match self.shallow(len).as_usize() {
-                Some(len) => len == 0 || (len <= 32 && self.may_hold(elem, t, None, depth + 1)),
-                // Not known yet: it may be.
-                None => matches!(self.shallow(len).kind(), TyKind::Infer(_)),
-            };
-        }
-        if let TyKind::Array(elem, _) = ty.kind()
-            && matches!(self.items.traits[t].lang, Some(l) if matches!(l.as_str(), "copy" | "clone" | "eq" | "total_eq" | "partial_ord" | "Ord" | "Debug"))
-        {
-            let args = args.map(|a| {
-                a.iter()
-                    .map(|&x| x.sequence_elem().unwrap_or(x))
-                    .collect::<Vec<_>>()
-            });
-            return self.may_hold(elem, t, args.as_deref(), depth + 1);
         }
         if let Some(found) = crate::traits::fn_goal(self.items, t, ty) {
             return match found {

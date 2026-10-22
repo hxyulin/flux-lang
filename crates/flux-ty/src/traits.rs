@@ -884,9 +884,6 @@ impl Normalizer<'_> {
                 if let Some(ret) = closure_output(items, alias) {
                     return self.go(ret, depth + 1);
                 }
-                if let Some(ty) = array_into_iter_type(items, alias) {
-                    return self.go(ty, depth + 1);
-                }
                 if let TyKind::Alias(outer) = args[0].kind()
                     && let Some(p) = alias_projections(sigs, outer)
                         .into_iter()
@@ -1053,9 +1050,6 @@ fn may_hold(items: &ItemTree, sigs: &Signatures, p: Predicate, depth: u32) -> Op
     if is_rigid(p.self_ty) || depth > 8 {
         return Some(false);
     }
-    if let Some(elem) = builtin_array_impl(items, p) {
-        return may_hold(items, sigs, elem, depth + 1).map(|_| false);
-    }
     if matches!(
         p.self_ty.kind(),
         TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_)
@@ -1199,15 +1193,6 @@ fn holds_at(
     {
         return true;
     }
-    if array_into_iter(items, goal.trait_ref.trait_, goal.self_ty).is_some() {
-        return true;
-    }
-    if let Some(elem) = builtin_array_impl(items, goal) {
-        stack.push(goal);
-        let holds = holds_at(items, sigs, env, elem, stack);
-        stack.pop();
-        return holds;
-    }
     if let Some(found) = fn_goal(items, goal.trait_ref.trait_, goal.self_ty) {
         return match found {
             ClosureGoal::Fn(_, params) => goal.trait_ref.args.first() == Some(&params),
@@ -1296,159 +1281,6 @@ pub fn is_builtin_copy(items: &ItemTree, t: TraitId, ty: Ty) -> bool {
         // `Clone` for pointers of up to three parameters.
         TyKind::FnDef(_) | TyKind::FnPtr(_) => matches!(lang, Some(l) if l.as_str() == "copy"),
         _ => false,
-    }
-}
-
-/// How an array is iterated by the built-in `IntoIterator` of `[T; N]`
-/// (by value), `&[T; N]` and `&mut [T; N]` (by reference).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArrayIntoIter {
-    Value,
-    Ref(Mutability),
-}
-
-/// For `ty: IntoIterator` where `ty` is `[T; N]`, `&[T; N]` or
-/// `&mut [T; N]`: how it iterates, `T` and the array's type. rustc's
-/// `core` implements these with const generics, which flux does not
-/// have, so they are built in: [`array_into_iter_type`] gives their
-/// associated types and [`resolve_instance`] their `into_iter`.
-pub fn array_into_iter(items: &ItemTree, t: TraitId, ty: Ty) -> Option<(ArrayIntoIter, Ty, Ty)> {
-    if items.traits[t].lang? != flux_intern::Symbol::intern("IntoIterator") {
-        return None;
-    }
-    match ty.kind() {
-        TyKind::Array(elem, _) => Some((ArrayIntoIter::Value, elem, ty)),
-        TyKind::Ref(m, array) => match array.kind() {
-            TyKind::Array(elem, _) => Some((ArrayIntoIter::Ref(m), elem, array)),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// `Item` or `IntoIter` of an array's built-in `IntoIterator`: `T` and
-/// `core::array::IntoIter<T, [T; N]>` for `[T; N]`, `&T` and
-/// `core::slice::Iter<T>` for `&[T; N]`, and `&mut T` and `IterMut<T>`
-/// for `&mut [T; N]`.
-pub fn array_into_iter_type(items: &ItemTree, alias: AliasTy) -> Option<Ty> {
-    let (how, elem, array) = array_into_iter(items, alias.trait_, alias.args[0])?;
-    match alias.name.as_str() {
-        "Item" => Some(match how {
-            ArrayIntoIter::Value => elem,
-            ArrayIntoIter::Ref(m) => Ty::new(TyKind::Ref(m, elem)),
-        }),
-        "IntoIter" => {
-            let (lang, args) = match how {
-                ArrayIntoIter::Value => ("array_into_iter", &[elem, array][..]),
-                ArrayIntoIter::Ref(Mutability::Not) => ("slice_iter", &[elem][..]),
-                ArrayIntoIter::Ref(Mutability::Mut) => ("slice_iter_mut", &[elem][..]),
-            };
-            let strukt = *items.lang_enums.get(&Symbol::intern(lang))?;
-            Some(Ty::adt(strukt, items.structs[strukt].name, args))
-        }
-        _ => None,
-    }
-}
-
-/// The function an array's built-in `IntoIterator::into_iter` calls, for
-/// `instance`, a call of it: `core::array`'s `IntoIter::new`, `iter` or
-/// `iter_mut`, generic over the element and array types.
-fn array_into_iter_instance(items: &ItemTree, instance: Instance) -> Option<Instance> {
-    let data = &items.functions[instance.function];
-    let Some(Owner::Trait(t)) = data.owner else {
-        return None;
-    };
-    if data.name.as_str() != "into_iter" {
-        return None;
-    }
-    let (how, elem, array) = array_into_iter(items, t, *instance.args.first()?)?;
-    let lang = match how {
-        ArrayIntoIter::Value => "array_into_iter_new",
-        ArrayIntoIter::Ref(Mutability::Not) => "array_iter",
-        ArrayIntoIter::Ref(Mutability::Mut) => "array_iter_mut",
-    };
-    Some(Instance {
-        function: *items.lang_fns.get(&Symbol::intern(lang))?,
-        args: Ty::list(&[elem, array]),
-    })
-}
-
-/// For `ty: t` where `ty` is an array and `t` is `Copy`, `Clone`, `Debug`, `Eq`,
-/// `Default` or `PartialEq<[U; N]>`, what its element type must meet:
-/// `T: Copy`, `T: Clone`, `T: Eq`, `T: Default`, `T: PartialEq<U>`. rustc's `core` implements them for
-/// arrays with const generics, which flux does not have, so they are
-/// built in, and code generation makes their methods.
-pub fn builtin_array_impl(items: &ItemTree, goal: Predicate) -> Option<Predicate> {
-    let lang = items.traits[goal.trait_ref.trait_].lang?;
-    match lang.as_str() {
-        "copy" | "clone" | "total_eq" | "Ord" | "Debug" => match goal.self_ty.kind() {
-            TyKind::Array(elem, _) => Some(Predicate {
-                self_ty: elem,
-                ..goal
-            }),
-            _ => None,
-        },
-        // rustc's `core` has `Default` for arrays of up to 32 elements,
-        // those of none for any element type (`()`'s holds).
-        "Default" => match goal.self_ty.kind() {
-            TyKind::Array(_, len) if len.as_usize() == Some(0) => Some(Predicate {
-                self_ty: Ty::UNIT,
-                ..goal
-            }),
-            TyKind::Array(elem, len) if len.as_usize().is_some_and(|n| n <= 32) => {
-                Some(Predicate {
-                    self_ty: elem,
-                    ..goal
-                })
-            }
-            _ => None,
-        },
-        // Arrays of one length, element by element.
-        "partial_ord" => match (goal.self_ty.kind(), goal.trait_ref.args.first()?.kind()) {
-            (TyKind::Array(elem, len), TyKind::Array(other, n)) if n == len => Some(Predicate {
-                self_ty: elem,
-                trait_ref: TraitRef {
-                    args: Ty::list(&[other]),
-                    ..goal.trait_ref
-                },
-            }),
-            _ => None,
-        },
-        "eq" => {
-            let (elem, other) = array_eq_elems(goal.self_ty, *goal.trait_ref.args.first()?)?;
-            Some(Predicate {
-                self_ty: elem,
-                trait_ref: TraitRef {
-                    args: Ty::list(&[other]),
-                    ..goal.trait_ref
-                },
-            })
-        }
-        _ => None,
-    }
-}
-
-/// For `lhs == rhs` between arrays of one length, or an array and a
-/// slice or a reference to one, either way round (`[A; N] == [B]`,
-/// `&[A] == [B; N]`): the element types `A` and `B`, which must be
-/// `A: PartialEq<B>`. rustc's `core` has these impls with const
-/// generics, so they are built in; slices with slices are `core`'s.
-pub fn array_eq_elems(lhs: Ty, rhs: Ty) -> Option<(Ty, Ty)> {
-    let slice_behind = |t: Ty| match t.kind() {
-        TyKind::Ref(_, s) => match s.kind() {
-            TyKind::Slice(e) => Some(e),
-            _ => None,
-        },
-        _ => None,
-    };
-    match (lhs.kind(), rhs.kind()) {
-        (TyKind::Array(a, n), TyKind::Array(b, m)) if n == m => Some((a, b)),
-        (TyKind::Array(a, _), TyKind::Slice(b)) | (TyKind::Slice(a), TyKind::Array(b, _)) => {
-            Some((a, b))
-        }
-        (TyKind::Array(a, _), _) => Some((a, slice_behind(rhs)?)),
-        (_, TyKind::Array(b, _)) => Some((slice_behind(lhs)?, b)),
-        _ => None,
     }
 }
 
@@ -1602,9 +1434,6 @@ pub fn resolve_instance(items: &ItemTree, sigs: &Signatures, instance: Instance)
         ),
         ..instance
     };
-    if let Some(builtin) = array_into_iter_instance(items, instance) {
-        return builtin;
-    }
     let data = &items.functions[instance.function];
     let Some(Owner::Trait(t)) = data.owner else {
         return instance;

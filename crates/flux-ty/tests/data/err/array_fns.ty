@@ -1,0 +1,16 @@
+struct S {}
+fn need_clone<T>(T) -> ()
+    _t@0: T
+fn need_default<T>() -> ()
+fn uninferred() -> ()
+    i@0: usize
+    a@1: [usize; {error}]
+fn main() -> ()
+    c@0: bool
+    x@1: u8
+    d@2: [u8; 3]
+error 289..290: type annotations needed for `[usize; _]`
+error 346..349: the trait bound `[S; 1]: Clone` is not satisfied
+error 371..380: the trait bound `[i32; 33]: Default` is not satisfied
+error 404..406: binary operation `==` cannot be applied to type `[S; 2]`
+error 436..457: mismatched types: expected an array with a size of 3, found one with a size of 2

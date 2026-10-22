@@ -275,20 +275,23 @@ runtime"), or E0080 in a constant. As in rustc, borrowing an element
 borrows the array, whatever the index: `&mut a[0]` and `&mut a[1]`
 conflict (E0499), and elements may not be moved out of (E0508).
 `len` and `is_empty` are built into the compiler, as is the length of
-an array, `Copy`, `Clone`, `PartialEq` (`==` and `!=` on arrays of one
-length), `Eq`, `PartialOrd`, `Ord` (`<` and the others, as slices
-compare) and `Debug` of arrays whose elements implement them, `Default`
-of arrays of up to 32 elements (any element type for none), and
-`IntoIterator` for `[T; N]`, `&[T; N]` and `&mut [T; N]`: rustc's
-`core` writes these with const generics, which flux does not have yet.
-`core::slice` gives slices `first`, `last` and `get` (`Option<&T>`),
+an array. `core::array` implements, with const generics as rustc's
+`core` does, `Copy`, `Clone` (a copy for `Copy` elements, as rustc's
+specialization makes it, else each element's `clone` in turn),
+`PartialEq` (`==` and `!=` on arrays of one length, and with slices
+and references to them either way round: `s == [1, 2]`, `w == b"fn"`),
+`Eq`, `PartialOrd`, `Ord` (`<` and the others, as slices compare) and
+`Debug` of arrays whose elements implement them, `Default` of arrays
+of up to 32 elements (any element type for none), and `IntoIterator`
+for `[T; N]`, `&[T; N]` and `&mut [T; N]`; and `array::from_fn` and
+arrays' `map`, `as_slice`, `as_mut_slice` and `each_ref` (`each_mut`
+is not supported yet). `core::slice` gives slices `first`, `last` and `get` (`Option<&T>`),
 `iter` and `iter_mut`, iterators over references from both ends
 (`Iter<'a, T>`, `IterMut<'a, T>`), and `IntoIterator` for `&[T]` and
 `&mut [T]`, so `for x in slice` works, and `for x in &array` and `for
 x in &mut array` iterate a slice of the array. `for x in array` and
-`array.into_iter()` iterate it by value, with `core::array::IntoIter`
-(rustc's `IntoIter<T, N>`; flux's is `IntoIter<T, [T; N]>`, which
-messages show as rustc's), which moves the elements out one by one and
+`array.into_iter()` iterate it by value, with `core::array::IntoIter<T,
+N>` (with `as_slice`), which moves the elements out one by one and
 drops those it has not given when it is dropped. `core::slice` also
 has `first_mut`, `last_mut`, `get_mut`, `split_first`, `split_last`,
 `swap`, `reverse`, `rotate_left`, `rotate_right`, `split_at`,
@@ -302,10 +305,7 @@ forms: one stable merge sort that allocates nothing, so equal elements
 keep their order, as rustc's unstable sort keeps them only up to 20
 elements (it may order them differently beyond). Slices are
 `PartialEq`, `Eq`, `PartialOrd` and `Ord`, comparing elements in turn
-(`a[..2] == b[..2]`, `s < t`), and arrays compare with slices and
-references to them either way round (`s == [1, 2]`, `w == b"fn"`),
-which the compiler implements, as rustc's `core` does with const
-generics. The slice and array iterators are `ExactSizeIterator`s (see
+(`a[..2] == b[..2]`, `s < t`). The slice and array iterators are `ExactSizeIterator`s (see
 `core::iter` below). Slices'' methods are found on arrays, and references to them,
 as rustc's method probe finds them: the array is borrowed and the
 reference unsized to a slice's (`arr.iter()`, `(&mut arr).last()`). Other

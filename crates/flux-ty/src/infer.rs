@@ -1137,11 +1137,7 @@ impl Ctx<'_> {
                 }
             }
             TyKind::Adt(adt, args) if !args.is_empty() => {
-                let len = crate::ty::array_iter_len(adt.name, args);
-                let mut args: Vec<String> = args.iter().map(|&a| self.describe(a)).collect();
-                if let Some(len) = len {
-                    args[1] = len.to_string();
-                }
+                let args: Vec<String> = args.iter().map(|&a| self.describe(a)).collect();
                 format!("{}<{}>", adt.name, args.join(", "))
             }
             TyKind::FnPtr(sig) => self.describe_sig(sig),
@@ -4714,7 +4710,7 @@ impl Ctx<'_> {
         !matches!(
             (lhs.kind(), rhs.kind()),
             (TyKind::Array(..), TyKind::Array(..))
-        ) && crate::traits::array_eq_elems(lhs, rhs).is_some()
+        ) && array_eq_elems(lhs, rhs).is_some()
     }
 
     fn cmp_ref_error(&mut self, op: BinaryOp, lhs: Ty, rhs: Ty) -> Option<String> {
@@ -6046,5 +6042,28 @@ fn op_text(op: BinaryOp) -> &'static str {
             CmpOp::Gt => ">",
             CmpOp::Ge => ">=",
         },
+    }
+}
+
+/// For `lhs == rhs` between arrays of one length, or an array and a
+/// slice or a reference to one, either way round (`[A; N] == [B]`,
+/// `&[A] == [B; N]`): the element types `A` and `B`, as `core`'s impls
+/// for them have them.
+fn array_eq_elems(lhs: Ty, rhs: Ty) -> Option<(Ty, Ty)> {
+    let slice_behind = |t: Ty| match t.kind() {
+        TyKind::Ref(_, s) => match s.kind() {
+            TyKind::Slice(e) => Some(e),
+            _ => None,
+        },
+        _ => None,
+    };
+    match (lhs.kind(), rhs.kind()) {
+        (TyKind::Array(a, n), TyKind::Array(b, m)) if n == m => Some((a, b)),
+        (TyKind::Array(a, _), TyKind::Slice(b)) | (TyKind::Slice(a), TyKind::Array(b, _)) => {
+            Some((a, b))
+        }
+        (TyKind::Array(a, _), _) => Some((a, slice_behind(rhs)?)),
+        (_, TyKind::Array(b, _)) => Some((slice_behind(lhs)?, b)),
+        _ => None,
     }
 }

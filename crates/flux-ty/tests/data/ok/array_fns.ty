@@ -1,0 +1,36 @@
+struct Noisy { 0: i32 }
+struct Loud { 0: i32 }
+fn printf(*const i8) -> i32
+fn clone(&Noisy) -> Noisy
+    self@0: &Noisy
+fn drop(&mut Noisy) -> ()
+    self@0: &mut Noisy
+fn total(&[usize]) -> usize
+    values@0: &[usize]
+    sum@1: usize
+    iter@2: Iter<usize>
+    v@3: &usize
+fn squares<const N: usize>() -> [u64; N]
+    i@0: usize
+fn main() -> ()
+    i@0: usize
+    doubled@1: [usize; 5]
+    s@2: &str
+    lens@3: [usize; 3]
+    sq@4: [u64; 4]
+    m@5: [i32; 3]
+    ms@6: &mut [i32]
+    refs@7: [&i32; 3]
+    noisy@8: [Noisy; 2]
+    copies@9: [Noisy; 2]
+    loud@10: [Loud; 3]
+    loud2@11: [Loud; 3]
+    n@12: Noisy
+    names@13: [i32; 3]
+    d@14: [i32; 32]
+    e@15: [Noisy; 0]
+    s@16: &[i32]
+    it@17: IntoIter<Noisy, 3>
+    first@18: Option<Noisy>
+fn clone(&Loud) -> Loud
+    self@0: &Loud

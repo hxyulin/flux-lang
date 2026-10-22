@@ -43,6 +43,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         queue.extend(body.callees());
         consts.insert(id, body);
     }
+    queue.extend(flux_ty::core_drop_fns(&hir.items));
     queue.extend(
         hir.bodies
             .iter()
