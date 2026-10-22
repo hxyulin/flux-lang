@@ -1,0 +1,695 @@
+fn apply<T, F>(_1: T, _2: F) -> &u8 {
+    let mut _0: &u8;
+    let _3: &F;
+    let _4: T;
+    let _5: &u8;
+    let _6: (T, &u8);
+
+    bb0: {
+        _3 = &_2;
+        _4 = move _1;
+        _5 = const &promoted[0];
+        _6 = (move _4, copy _5);
+        _0 = call::<F, (T, &u8)>(copy _3, move _6) -> bb1;
+    }
+
+    bb1: {
+        drop(_2) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn captured<'a>(_1: &u8) -> {closure} {
+    let mut _0: {closure};
+
+    bb0: {
+        _0 = {closure}(copy _1);
+        return;
+    }
+}
+
+fn captured<'a>::{closure#1} as Fn(_1: &{closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+
+    bb0: {
+        _0 = copy (*_1).0;
+        return;
+    }
+}
+
+fn captured<'a>::{closure#1} as FnMut(_1: &mut {closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn captured<'a>::{closure#1} as FnOnce(_1: {closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn <Reader<F> as Read>::read(_1: Reader<F>) -> u8 {
+    let mut _0: u8;
+    let _2: &u8;
+    let _3: &F;
+    let _4: &u8;
+    let _5: (&u8,);
+
+    bb0: {
+        _3 = &_1.0;
+        _4 = const &promoted[0];
+        _5 = (copy _4,);
+        _2 = call::<F, (&u8,)>(copy _3, move _5) -> bb1;
+    }
+
+    bb1: {
+        _0 = copy (*_2);
+        StorageDead(_2);
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn read<R>(_1: R) -> u8 {
+    let mut _0: u8;
+    let _2: R;
+
+    bb0: {
+        _2 = move _1;
+        _0 = read::<R>(move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn dyn_call<F>(_1: F) -> u8 {
+    let mut _0: u8;
+    let _2: &u8;
+    let _3: &F;
+    let _4: &dyn Value;
+    let _5: &u8;
+    let _6: (&dyn Value,);
+
+    bb0: {
+        _3 = &_1;
+        _5 = const &promoted[0];
+        _4 = copy _5 as &dyn Value (unsize);
+        _6 = (copy _4,);
+        _2 = call::<F, (&dyn Value,)>(copy _3, move _6) -> bb1;
+    }
+
+    bb1: {
+        _0 = copy (*_2);
+        StorageDead(_2);
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn apply_item<I, F>(_1: I, _2: F) -> &u8 {
+    let mut _0: &u8;
+    let _3: &F;
+    let _4: <I as Iterator>::Item;
+    let _5: Option<<I as Iterator>::Item>;
+    let _6: &mut I;
+    let _7: Option<<I as Iterator>::Item>;
+    let _8: &u8;
+    let _9: (<I as Iterator>::Item, &u8);
+
+    bb0: {
+        _3 = &_2;
+        _6 = &two_phase _1;
+        _5 = next::<I>(move _6) -> bb1;
+    }
+
+    bb1: {
+        _7 = move _5;
+        _4 = unwrap::<<I as Iterator>::Item>(move _7) -> bb2;
+    }
+
+    bb2: {
+        _8 = const &promoted[0];
+        _9 = (move _4, copy _8);
+        _0 = call::<F, (<I as Iterator>::Item, &u8)>(copy _3, move _9) -> bb3;
+    }
+
+    bb3: {
+        StorageDead(_5);
+        drop(_2) -> bb4;
+    }
+
+    bb4: {
+        drop(_1) -> bb5;
+    }
+
+    bb5: {
+        return;
+    }
+}
+
+fn select<'a, T, F>(_1: &T, _2: F) -> &u8 {
+    let mut _0: &u8;
+    let _3: &F;
+    let _4: &T;
+    let _5: (&T,);
+
+    bb0: {
+        _3 = &_2;
+        _4 = copy _1;
+        _5 = (copy _4,);
+        _0 = call::<F, (&T,)>(copy _3, move _5) -> bb1;
+    }
+
+    bb1: {
+        drop(_2) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn unrelated<'a, 'b>(_1: &&u8, _2: &u8) -> &u8 {
+    let mut _0: &u8;
+    let _3: &&u8;
+    let _4: {closure};
+    let _5: &&u8;
+
+    bb0: {
+        _3 = copy _1;
+        _5 = &_2;
+        _4 = {closure}(move _5);
+        _0 = select::<&u8, {closure}>(copy _3, copy _4) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn unrelated<'a, 'b>::{closure#3} as Fn(_1: &{closure}, _2: (&&u8,)) -> &u8 {
+    let mut _0: &u8;
+
+    bb0: {
+        _0 = copy (*(*_1).0);
+        return;
+    }
+}
+
+fn unrelated<'a, 'b>::{closure#3} as FnMut(_1: &mut {closure}, _2: (&&u8,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&&u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn unrelated<'a, 'b>::{closure#3} as FnOnce(_1: {closure}, _2: (&&u8,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&&u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: u8; // local
+    let _2: &u8; // escaped
+    let _3: &u8;
+    let _4: {closure};
+    let _5: ();
+    let _6: ();
+    let _7: Arguments;
+    let _8: &[&str];
+    let _9: &[&str; 2];
+    let _10: &[Argument; 1];
+    let _11: [Argument; 1];
+    let _12: (&&u8,);
+    let _13: &&u8;
+    let _14: (&&u8,); // args
+    let _15: Argument;
+    let _16: &&u8;
+    let _17: Reader<{closure}>; // reader
+    let _18: {closure};
+    let _19: &u8;
+    let _20: ();
+    let _21: ();
+    let _22: Arguments;
+    let _23: &[&str];
+    let _24: &[&str; 2];
+    let _25: &[Argument; 1];
+    let _26: [Argument; 1];
+    let _27: (&u8,);
+    let _28: &u8;
+    let _29: u8;
+    let _30: Reader<{closure}>;
+    let _31: (&u8,); // args
+    let _32: Argument;
+    let _33: &u8;
+    let _34: ();
+    let _35: ();
+    let _36: Arguments;
+    let _37: &[&str];
+    let _38: &[&str; 2];
+    let _39: &[Argument; 1];
+    let _40: [Argument; 1];
+    let _41: (&u8,);
+    let _42: &u8;
+    let _43: u8;
+    let _44: {closure};
+    let _45: &u8;
+    let _46: (&u8,); // args
+    let _47: Argument;
+    let _48: &u8;
+    let _49: ();
+    let _50: ();
+    let _51: Arguments;
+    let _52: &[&str];
+    let _53: &[&str; 2];
+    let _54: &[Argument; 1];
+    let _55: [Argument; 1];
+    let _56: (&&u8,);
+    let _57: &&u8;
+    let _58: &u8;
+    let _59: IntoIter<&u8, 1>;
+    let _60: [&u8; 1];
+    let _61: &u8;
+    let _62: [&u8; 1];
+    let _63: {closure};
+    let _64: (&&u8,); // args
+    let _65: Argument;
+    let _66: &&u8;
+
+    bb0: {
+        _1 = const 7_u8;
+        _3 = &_1;
+        _4 = {closure}();
+        _2 = apply::<&u8, {closure}>(copy _3, copy _4) -> bb1;
+    }
+
+    bb1: {
+        _9 = const &promoted[0];
+        _8 = copy _9 as &[&str] (unsize);
+        _13 = &_2;
+        _12 = (copy _13,);
+        _14 = copy _12;
+        goto -> bb4;
+    }
+
+    bb2: {
+        _10 = &_11;
+        _7 = new_v1::<1>(copy _8, copy _10) -> bb6;
+    }
+
+    bb3: {
+        unreachable;
+    }
+
+    bb4: {
+        _16 = copy _14.0;
+        _15 = new_display::<&u8>(copy _16) -> bb5;
+    }
+
+    bb5: {
+        _11 = [copy _15];
+        StorageDead(_14);
+        goto -> bb2;
+    }
+
+    bb6: {
+        _6 = _print(copy _7) -> bb7;
+    }
+
+    bb7: {
+        StorageDead(_11);
+        StorageDead(_12);
+        _5 = const ();
+        _19 = &_1;
+        _18 = {closure}(move _19);
+        _17 = Reader { f: copy _18 };
+        _24 = const &promoted[1];
+        _23 = copy _24 as &[&str] (unsize);
+        _30 = move _17;
+        _29 = read::<Reader<{closure}>>(move _30) -> bb8;
+    }
+
+    bb8: {
+        _28 = &_29;
+        _27 = (copy _28,);
+        _31 = copy _27;
+        goto -> bb11;
+    }
+
+    bb9: {
+        _25 = &_26;
+        _22 = new_v1::<1>(copy _23, copy _25) -> bb13;
+    }
+
+    bb10: {
+        unreachable;
+    }
+
+    bb11: {
+        _33 = copy _31.0;
+        _32 = new_display::<u8>(copy _33) -> bb12;
+    }
+
+    bb12: {
+        _26 = [copy _32];
+        StorageDead(_31);
+        goto -> bb9;
+    }
+
+    bb13: {
+        _21 = _print(copy _22) -> bb14;
+    }
+
+    bb14: {
+        StorageDead(_26);
+        StorageDead(_27);
+        StorageDead(_29);
+        _20 = const ();
+        _38 = const &promoted[2];
+        _37 = copy _38 as &[&str] (unsize);
+        _45 = &_1;
+        _44 = {closure}(move _45);
+        _43 = dyn_call::<{closure}>(copy _44) -> bb15;
+    }
+
+    bb15: {
+        _42 = &_43;
+        _41 = (copy _42,);
+        _46 = copy _41;
+        goto -> bb18;
+    }
+
+    bb16: {
+        _39 = &_40;
+        _36 = new_v1::<1>(copy _37, copy _39) -> bb20;
+    }
+
+    bb17: {
+        unreachable;
+    }
+
+    bb18: {
+        _48 = copy _46.0;
+        _47 = new_display::<u8>(copy _48) -> bb19;
+    }
+
+    bb19: {
+        _40 = [copy _47];
+        StorageDead(_46);
+        goto -> bb16;
+    }
+
+    bb20: {
+        _35 = _print(copy _36) -> bb21;
+    }
+
+    bb21: {
+        StorageDead(_40);
+        StorageDead(_41);
+        StorageDead(_43);
+        _34 = const ();
+        _53 = const &promoted[3];
+        _52 = copy _53 as &[&str] (unsize);
+        _61 = &_1;
+        _60 = [copy _61];
+        _62 = copy _60;
+        _59 = into_iter::<[&u8; 1]>(copy _62) -> bb22;
+    }
+
+    bb22: {
+        _63 = {closure}();
+        _58 = apply_item::<IntoIter<&u8, 1>, {closure}>(move _59, copy _63) -> bb23;
+    }
+
+    bb23: {
+        _57 = &_58;
+        _56 = (copy _57,);
+        _64 = copy _56;
+        goto -> bb26;
+    }
+
+    bb24: {
+        _54 = &_55;
+        _51 = new_v1::<1>(copy _52, copy _54) -> bb28;
+    }
+
+    bb25: {
+        unreachable;
+    }
+
+    bb26: {
+        _66 = copy _64.0;
+        _65 = new_display::<&u8>(copy _66) -> bb27;
+    }
+
+    bb27: {
+        _55 = [copy _65];
+        StorageDead(_64);
+        goto -> bb24;
+    }
+
+    bb28: {
+        _50 = _print(copy _51) -> bb29;
+    }
+
+    bb29: {
+        StorageDead(_55);
+        StorageDead(_56);
+        StorageDead(_58);
+        StorageDead(_60);
+        _49 = const ();
+        _0 = const ();
+        StorageDead(_17);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main::{closure#5} as Fn(_1: &{closure}, _2: (&u8, &u8)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &u8; // value
+
+    bb0: {
+        _3 = copy _2.0;
+        _0 = copy _3;
+        return;
+    }
+}
+
+fn main::{closure#5} as FnMut(_1: &mut {closure}, _2: (&u8, &u8)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&u8, &u8)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#5} as FnOnce(_1: {closure}, _2: (&u8, &u8)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&u8, &u8)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#28} as Fn(_1: &{closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+
+    bb0: {
+        _0 = &(*(*_1).0);
+        return;
+    }
+}
+
+fn main::{closure#28} as FnMut(_1: &mut {closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#28} as FnOnce(_1: {closure}, _2: (&u8,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#60} as Fn(_1: &{closure}, _2: (&dyn Value,)) -> &u8 {
+    let mut _0: &u8;
+
+    bb0: {
+        _0 = &(*(*_1).0);
+        return;
+    }
+}
+
+fn main::{closure#60} as FnMut(_1: &mut {closure}, _2: (&dyn Value,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&dyn Value,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#60} as FnOnce(_1: {closure}, _2: (&dyn Value,)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&dyn Value,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#86} as Fn(_1: &{closure}, _2: (&u8, &u8)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &u8; // value
+
+    bb0: {
+        _3 = copy _2.0;
+        _0 = copy _3;
+        return;
+    }
+}
+
+fn main::{closure#86} as FnMut(_1: &mut {closure}, _2: (&u8, &u8)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&u8, &u8)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#86} as FnOnce(_1: {closure}, _2: (&u8, &u8)) -> &u8 {
+    let mut _0: &u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&u8, &u8)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+error 282..296: lifetime may not live long enough
+error 911..935: lifetime may not live long enough
+error 994..1000: `local` does not live long enough
+error 1089..1094: `local` does not live long enough
+error 1165..1170: `local` does not live long enough
+error 1205..1211: `local` does not live long enough

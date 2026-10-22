@@ -927,7 +927,10 @@ types name is E0207, as in rustc.
 
 `Fn`, `FnMut` and `FnOnce` bounds may return references whose lifetime
 is elided from a single input reference (`F: Fn(&T) -> &U`). Each
-call's result borrows from its argument. A single-lifetime binder
+call's result borrows from its argument. This also applies to returned
+opaque closures (`-> impl Fn(&u8) -> &u8`): the hidden closure must work
+for every input lifetime, so a captured reference returned in this
+example must be `'static`. A single-lifetime binder
 expressing the same relationship (`for<'a> Fn(&'a T) -> &'a U`, also
 in a `where for<'a>` clause) is supported. Other named lifetimes in
 `Fn` bounds, binders with several lifetimes, and general higher-ranked

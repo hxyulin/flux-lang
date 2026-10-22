@@ -463,6 +463,9 @@ struct Cx<'a> {
     /// The variables made for lifetimes elided in bounds: in the
     /// parameters of a `Fn`-family bound, its own (higher-ranked).
     holes: rustc_hash::FxHashSet<Var>,
+    /// Relations implied by well-formed higher-ranked input types,
+    /// such as the object bound outliving the reference in `&dyn Tr`.
+    hole_pairs: rustc_hash::FxHashSet<(Var, Var)>,
     /// The slots of the inputs of the call whose bounds are being
     /// proven: what the callee may give a closure where its parameters'
     /// slots cannot be told.
@@ -573,6 +576,7 @@ impl<'a> Cx<'a> {
             errors: Vec::new(),
             hidden: Vec::new(),
             holes: Default::default(),
+            hole_pairs: Default::default(),
             call_inputs: Vec::new(),
             proven_closures: Default::default(),
             output_closures: Default::default(),
@@ -1030,6 +1034,38 @@ impl<'a> Cx<'a> {
             Region::Param(i) => Some(1 + i),
             Region::Erased | Region::Late(_) => None,
         };
+        if decl
+            .projections
+            .iter()
+            .flatten()
+            .any(|r| matches!(r, Region::Late(_)))
+        {
+            let lifetimes: Vec<_> =
+                (1..=self.sigs.regions.fns[o.function].names.len() as u32).collect();
+            let mut arg_vars: Vec<_> = o
+                .args
+                .iter()
+                .map(|&t| self.bound_slots(t, &[], &[]).unwrap_or_default())
+                .collect();
+            arg_vars.push(h.vars.clone());
+            let previous = std::mem::replace(
+                &mut self.call_projections,
+                sig.projections
+                    .iter()
+                    .copied()
+                    .zip(decl.projections.iter().cloned())
+                    .collect(),
+            );
+            for &p in &sig.predicates {
+                self.prove_bound(p, &[], &lifetimes, &args, &arg_vars, h.range, 0);
+            }
+            self.call_projections = previous;
+            for (p, table) in sig.projections.iter().zip(decl.projections.iter()) {
+                if table.iter().any(|r| matches!(r, Region::Late(_))) {
+                    self.prove_projection(*p, table, &lifetimes, &args, &arg_vars, h.range);
+                }
+            }
+        }
         for (p, table) in sig.projections.iter().zip(decl.projections.iter()) {
             if table.is_empty() {
                 continue;
@@ -1272,7 +1308,12 @@ impl<'a> Cx<'a> {
         // What an opaque type's bounds say, or else what an `impl`
         // block for it does (`impl<I: Iterator> IntoIterator for I`).
         if let TyKind::Opaque(opaque) = alias.args[0].kind()
-            && let Some(vars) = self.opaque_projection(opaque, alias, arg_vars.first()?)
+            && let Some(vars) = self.opaque_projection(
+                opaque,
+                alias,
+                arg_vars.first()?,
+                arg_vars.get(1).map_or(&[][..], Vec::as_slice),
+            )
         {
             return Some(vars);
         }
@@ -1423,6 +1464,7 @@ impl<'a> Cx<'a> {
         opaque: flux_ty::OpaqueTy,
         alias: AliasTy,
         vars: &[Var],
+        inputs: &[Var],
     ) -> Option<Vec<Var>> {
         let sigs = self.sigs;
         let sig = sigs
@@ -1438,14 +1480,6 @@ impl<'a> Cx<'a> {
             .position(|p| p.subst(&args).alias == alias)?;
         let table = decl.projections.get(j)?;
         let captures = &decl.captures;
-        let mut map = |r: Region| match r {
-            Region::Static => Some(STATIC),
-            r @ Region::Param(_) => {
-                let at = captures.iter().position(|&c| c == r)?;
-                vars.get(at).copied()
-            }
-            Region::Erased | Region::Late(_) => None,
-        };
         // Its arguments' slots follow its own.
         let mut next = captures.len();
         let mut type_vars = Vec::with_capacity(opaque.args.len());
@@ -1454,6 +1488,22 @@ impl<'a> Cx<'a> {
             type_vars.push(vars.get(next..next + n)?.to_vec());
             next += n;
         }
+        let late = sig.projections[j]
+            .alias
+            .args
+            .get(1)
+            .map_or(Vec::new(), |&ty| {
+                self.late_slots(ty, inputs, opaque.args, &type_vars)
+            });
+        let mut map = |r: Region| match r {
+            Region::Static => Some(STATIC),
+            r @ Region::Param(_) => {
+                let at = captures.iter().position(|&c| c == r)?;
+                vars.get(at).copied()
+            }
+            Region::Late(i) => late.get(i as usize).copied().filter(|&v| v != Var::MAX),
+            Region::Erased => None,
+        };
         let ty = sig.projections[j].ty;
         self.instantiate_sig(ty, table, &mut map, opaque.args, &type_vars)
     }
@@ -2431,6 +2481,76 @@ impl<'a> Cx<'a> {
         Some(vars)
     }
 
+    /// Maps the bound's own input slots through type substitution. Slots
+    /// contributed by `T` are not higher-ranked slots: substituting `T =
+    /// &u8` in `Fn(T, &u8) -> &u8` must still select the second input.
+    fn late_slots(
+        &mut self,
+        ty: Ty,
+        inputs: &[Var],
+        args: &[Ty],
+        arg_vars: &[Vec<Var>],
+    ) -> Vec<Var> {
+        fn positions(
+            cx: &mut Cx<'_>,
+            ty: Ty,
+            args: &[Ty],
+            arg_vars: &[Vec<Var>],
+            offset: &mut usize,
+            out: &mut Vec<usize>,
+        ) {
+            let own = match ty.kind() {
+                TyKind::Param(p) => {
+                    *offset += arg_vars.get(p.index as usize).map_or(0, Vec::len);
+                    return;
+                }
+                TyKind::Alias(_) => {
+                    let normalized = cx.normalize(ty.subst(args));
+                    *offset += cx.slots(normalized) as usize;
+                    return;
+                }
+                TyKind::Ref(..) | TyKind::Dynamic(_) => 1,
+                TyKind::Adt(adt, _) => cx.items.structs[adt.strukt].generics.lifetimes.len(),
+                TyKind::Opaque(o) => o.lifetimes as usize,
+                _ => 0,
+            };
+            for _ in 0..own {
+                out.push(*offset);
+                *offset += 1;
+            }
+            match ty.kind() {
+                TyKind::Ref(_, t)
+                | TyKind::RawPtr(_, t)
+                | TyKind::Array(t, _)
+                | TyKind::Slice(t) => positions(cx, t, args, arg_vars, offset, out),
+                TyKind::Tuple(ts) | TyKind::Adt(_, ts) => {
+                    for &t in ts {
+                        positions(cx, t, args, arg_vars, offset, out);
+                    }
+                }
+                TyKind::Closure(_, list) => positions(
+                    cx,
+                    flux_ty::ClosureArgs::split(list).upvars,
+                    args,
+                    arg_vars,
+                    offset,
+                    out,
+                ),
+                TyKind::Opaque(o) => {
+                    for &t in o.args {
+                        positions(cx, t, args, arg_vars, offset, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut own = Vec::new();
+        positions(self, ty, args, arg_vars, &mut 0, &mut own);
+        own.into_iter()
+            .map(|i| inputs.get(i).copied().unwrap_or(Var::MAX))
+            .collect()
+    }
+
     /// Proves bound `p`, in the terms of an item whose lifetimes are
     /// `lifetimes` and generic arguments `args`, with slots `arg_vars`;
     /// the type it is on has slots `self_table`.
@@ -2459,6 +2579,18 @@ impl<'a> Cx<'a> {
                 self.bound_slots_in(t, &[], lifetimes, args, arg_vars)
                     .filter(|v| v.len() == n)
             });
+            if let (Some(&ty), Some(inputs)) = (p.trait_ref.args.first(), &inputs) {
+                let ty = self.normalize(ty.subst(args));
+                let mut implied = Vec::new();
+                flux_ty::regions::implied_outlives(self.items, self.sigs, ty, inputs, &mut implied);
+                for relation in implied {
+                    if let Outlives::Region(a, b) = relation
+                        && self.holes.contains(&b)
+                    {
+                        self.hole_pairs.insert((a, b));
+                    }
+                }
+            }
             // What the bound says the closure returns, if it has the
             // bound's own lifetimes: those of its parameters.
             let output = self.call_projections.iter().find(|(q, table)| {
@@ -2470,7 +2602,7 @@ impl<'a> Cx<'a> {
             let ret = match (output, &inputs) {
                 (Some((q, table)), Some(inputs)) => {
                     let (q, table) = (*q, table.clone());
-                    self.late_inputs = inputs.clone();
+                    self.late_inputs = self.late_slots(p.trait_ref.args[0], inputs, args, arg_vars);
                     let ret = self.bound_slots_in(q.ty, &table, lifetimes, args, arg_vars);
                     self.late_inputs.clear();
                     ret
@@ -2591,6 +2723,15 @@ impl<'a> Cx<'a> {
                 }
             }
         }
+        let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+        let previous = std::mem::replace(
+            &mut self.call_projections,
+            projections
+                .iter()
+                .copied()
+                .zip(regions.projections.iter().cloned())
+                .collect(),
+        );
         let predicates = sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
         for (k, &p) in predicates.iter().enumerate() {
             let table = regions.bound_selfs.get(k).map_or(&[][..], |t| t);
@@ -2603,6 +2744,10 @@ impl<'a> Cx<'a> {
                 range,
                 depth + 1,
             );
+        }
+        self.call_projections = previous;
+        for (p, table) in projections.iter().zip(regions.projections.iter()) {
+            self.prove_projection(*p, table, &lifetimes, &impl_args, &type_vars, range);
         }
     }
 
@@ -2637,7 +2782,14 @@ impl<'a> Cx<'a> {
         let Some(actual) = self.normalize_regions(alias, &alias_vars, 0) else {
             return;
         };
-        self.late_inputs = alias_vars.get(1).cloned().unwrap_or_default();
+        self.late_inputs = p.alias.args.get(1).map_or(Vec::new(), |&ty| {
+            self.late_slots(
+                ty,
+                alias_vars.get(1).map_or(&[][..], Vec::as_slice),
+                args,
+                arg_vars,
+            )
+        });
         let expected = self.bound_slots_in(p.ty, table, lifetimes, args, arg_vars);
         self.late_inputs.clear();
         let Some(expected) = expected else {
@@ -2767,13 +2919,29 @@ impl<'a> Cx<'a> {
         };
         for &(a, b, at) in &required.outlives {
             match (slot(self, a), slot(self, b)) {
-                (ClosureSlot::HigherRanked(x), ClosureSlot::HigherRanked(y)) if x == y => {}
+                (ClosureSlot::HigherRanked(x), ClosureSlot::HigherRanked(y))
+                    if x == y || self.hole_pairs.contains(&(x, y)) => {}
                 (ClosureSlot::Var(STATIC), ClosureSlot::HigherRanked(_)) => {}
-                // What must outlive a lifetime the bound's own, any at
-                // each call, must live forever, as rustc's placeholders
-                // make it (`|_| &local` for `Fn(&T) -> &U`: E0597).
-                (ClosureSlot::Var(x), ClosureSlot::HigherRanked(_)) if matches!(b, Ext::Ret(_)) => {
-                    self.outlives(x, STATIC, Category::ClosureBounds, range);
+                // What must outlive a bound's own lifetime must outlive
+                // every lifetime allowed by its input type: forever
+                // unless the input's well-formedness bounds it.
+                (ClosureSlot::Var(x), ClosureSlot::HigherRanked(y)) if matches!(b, Ext::Ret(_)) => {
+                    // `&T` bounds the placeholder by the lifetimes in T:
+                    // `Fn(&&'short U) -> &U` may return that inner
+                    // reference without requiring it to be static.
+                    let upper: Vec<_> = self
+                        .hole_pairs
+                        .iter()
+                        .filter(|&&(a, b)| b == y && !self.holes.contains(&a))
+                        .map(|&(a, _)| a)
+                        .collect();
+                    if upper.is_empty() {
+                        self.outlives(x, STATIC, Category::ClosureBounds, range);
+                    } else {
+                        for u in upper {
+                            self.outlives(x, u, Category::ClosureBounds, range);
+                        }
+                    }
                 }
                 (ClosureSlot::HigherRanked(_), _) | (_, ClosureSlot::HigherRanked(_)) => {
                     let message = match b {
