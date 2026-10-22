@@ -11,8 +11,8 @@ use flux_ty::{GenericArgs, InferenceResult, IntTy, Mutability, Ty, TyKind, Typed
 
 use crate::{
     AggregateKind, AssertMessage, BasicBlock, BasicBlockData, BinOp, Body, Constant, FileMir,
-    Local, LocalDecl, LocalKind, Operand, Place, PlaceTy, Rvalue, Statement, StatementKind,
-    Terminator, TerminatorKind, UnOp,
+    Local, LocalDecl, LocalKind, Operand, Place, PlaceTy, ProjectionElem, Rvalue, Statement,
+    StatementKind, Terminator, TerminatorKind, UnOp,
 };
 
 /// Builds every body of a file and checks initialization. The file must
@@ -848,7 +848,8 @@ fn build_body(
             for (i, &pat) in pats.iter().enumerate() {
                 let range = b.pat_range(pat);
                 b.declare_bindings(pat);
-                b.match_irrefutable(pat, Place::from(params[1]).field(i as u32), range);
+                let place = Place::from(params[1]).field(i as u32);
+                b.match_irrefutable(pat, place.into(), range);
             }
             (*closure_body, &[][..])
         }
@@ -868,7 +869,7 @@ fn build_body(
             }
             _ => {
                 b.declare_bindings(pat);
-                b.match_irrefutable(pat, local.into(), range);
+                b.match_irrefutable(pat, Place::from(local).into(), range);
             }
         }
     }
@@ -964,8 +965,48 @@ fn build_body(
 /// What a guard may not change: as rustc's guards borrow the place matched
 /// and see `ref mut` bindings through shared references.
 struct Guard {
-    scrutinee: Place,
+    scrutinee: Option<Place>,
     ref_muts: Vec<BindingId>,
+}
+
+/// A place a pattern is matched against. In a closure it may be one the
+/// closure captures only parts of: `|| match r { S { v } => .. }`
+/// captures `(*r).v`, not `r`. Such a place is resolved to what the
+/// closure captures as the pattern goes into it, where it is read.
+#[derive(Clone)]
+enum PatPlace {
+    Place(Place),
+    Upvar(BindingId, Vec<flux_ty::CaptureProj>),
+}
+
+impl PatPlace {
+    fn deref(&self) -> PatPlace {
+        match self {
+            PatPlace::Place(place) => PatPlace::Place(place.deref()),
+            PatPlace::Upvar(binding, proj) => {
+                let mut proj = proj.clone();
+                proj.push(flux_ty::CaptureProj::Deref);
+                PatPlace::Upvar(*binding, proj)
+            }
+        }
+    }
+
+    fn field(&self, index: u32) -> PatPlace {
+        match self {
+            PatPlace::Place(place) => PatPlace::Place(place.field(index)),
+            PatPlace::Upvar(binding, proj) => {
+                let mut proj = proj.clone();
+                proj.push(flux_ty::CaptureProj::Field(index));
+                PatPlace::Upvar(*binding, proj)
+            }
+        }
+    }
+}
+
+impl From<Place> for PatPlace {
+    fn from(place: Place) -> Self {
+        PatPlace::Place(place)
+    }
 }
 
 /// Where control goes once a pattern matched: the block, the place each
@@ -1390,40 +1431,27 @@ impl Builder<'_> {
                 self.binding_locals[binding].into()
             }
             Expr::Field { expr: base, .. } => {
-                let mut place = self.lower_place(base);
                 let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
-                for _ in 0..derefs {
-                    place = place.deref();
-                }
-                place.field(self.field_index(expr))
+                self.lower_place_deref(base, derefs)
+                    .field(self.field_index(expr))
             }
             Expr::Unary {
                 op: UnaryOp::Deref,
                 operand,
-            } => self.lower_place(operand).deref(),
+            } => self.lower_place_deref(operand, 1),
             Expr::Index { base, index } => {
                 let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
-                // In a closure, the array or slice may be what it captures.
-                let captured = self.hir_place(base).and_then(|(binding, mut proj)| {
-                    if self.upvars.is_empty() || self.binding_locals.get(binding).is_some() {
-                        return None;
-                    }
-                    proj.extend((0..derefs).map(|_| flux_ty::CaptureProj::Deref));
-                    self.capture_source(binding, &proj)
-                });
-                let place = match captured {
-                    Some(place) => place,
-                    None => {
-                        let mut place = self.lower_place(base);
-                        for _ in 0..derefs {
-                            place = place.deref();
-                        }
-                        place
-                    }
-                };
+                let place = self.lower_place_deref(base, derefs);
                 self.index(place, index, self.range(expr))
             }
             Expr::Path(Res::Static(id)) => self.static_place(id, self.range(expr)),
+            // Neither declared here nor captured: evaluating it for a
+            // temporary would come back here.
+            Expr::Path(Res::Local(_)) => {
+                let range = self.range(expr);
+                self.bug("a local neither declared nor captured", range);
+                self.temp(self.value_ty(expr)).into()
+            }
             _ => {
                 // A temporary that may be borrowed dies where its scope
                 // ends (`StorageDead`), whether it needs dropping or not.
@@ -1484,6 +1512,89 @@ impl Builder<'_> {
         let msg = AssertMessage::BoundsCheck { len, index };
         self.assert(Operand::Copy(within.into()), true, msg, range);
         place.index(local)
+    }
+
+    /// The place `expr` denotes, dereferenced `derefs` times, as an
+    /// autoderef (`r.get()`, `r.v`, `r[i]`) or a reborrow (`&*r`) does.
+    /// In a closure, that place may be in what the closure captures when
+    /// `expr`'s own place is not: `|| r.get()` captures `*r`, not `r`.
+    fn lower_place_deref(&mut self, expr: ExprId, derefs: u32) -> Place {
+        if derefs > 0
+            && !self.upvars.is_empty()
+            && let Some((binding, mut proj)) = self.hir_place(expr)
+            && self.binding_locals.get(binding).is_none()
+        {
+            proj.extend((0..derefs).map(|_| flux_ty::CaptureProj::Deref));
+            if let Some(place) = self.capture_source(binding, &proj) {
+                return place;
+            }
+        }
+        let mut place = self.lower_place(expr);
+        for _ in 0..derefs {
+            place = place.deref();
+        }
+        place
+    }
+
+    /// The place `expr` denotes, for a pattern to match: in a closure,
+    /// perhaps one that is not captured itself but whose parts are.
+    fn pat_place(&mut self, expr: ExprId) -> PatPlace {
+        if let Some((binding, proj)) = self.hir_place(expr)
+            && self.binding_locals.get(binding).is_none()
+            && self.guard_places.get(binding).is_none()
+            && self.capture_source(binding, &proj).is_none()
+        {
+            return PatPlace::Upvar(binding, proj);
+        }
+        PatPlace::Place(self.lower_place(expr))
+    }
+
+    /// `place` as a place here, which a pattern reads or binds.
+    fn resolve(&mut self, place: PatPlace, range: TextRange) -> Place {
+        match place {
+            PatPlace::Place(place) => place,
+            PatPlace::Upvar(binding, proj) => match self.capture_source(binding, &proj) {
+                Some(place) => place,
+                None => {
+                    let ty = self.pat_place_ty(&PatPlace::Upvar(binding, proj));
+                    self.bug(
+                        "a pattern reads a place its closure does not capture",
+                        range,
+                    );
+                    self.temp(ty).into()
+                }
+            },
+        }
+    }
+
+    fn pat_place_ty(&self, place: &PatPlace) -> Ty {
+        match place {
+            PatPlace::Place(place) => self.place_ty(place),
+            PatPlace::Upvar(binding, proj) => {
+                let ty = self.types.binding_types.get(*binding).copied();
+                let ty = PlaceTy::from(ty.unwrap_or(Ty::ERROR));
+                let ty = proj.iter().fold(ty, |ty, &p| {
+                    let elem = match p {
+                        flux_ty::CaptureProj::Deref => ProjectionElem::Deref,
+                        flux_ty::CaptureProj::Field(i) => ProjectionElem::Field(i),
+                    };
+                    let ty = ty.project(elem, &self.typed.sigs);
+                    PlaceTy {
+                        ty: self.normalize(ty.ty),
+                        ..ty
+                    }
+                });
+                ty.ty
+            }
+        }
+    }
+
+    /// Code that type checking rules out, which MIR building never
+    /// expects to reach: a bug in flux, which debug builds report and
+    /// release builds lower to `unreachable`.
+    fn bug(&mut self, what: &str, range: TextRange) {
+        debug_assert!(false, "MIR building: {what} at {range:?}");
+        self.terminate(TerminatorKind::Unreachable, range);
     }
 
     /// Static `id`, as a place: behind a temporary holding its address,
@@ -1567,13 +1678,13 @@ impl Builder<'_> {
     /// borrowed here.
     fn lower_closure(&mut self, expr: ExprId, dest: &Place, range: TextRange) {
         let Some(info) = self.types.closures.get(expr) else {
-            self.terminate(TerminatorKind::Unreachable, range);
+            self.bug("a closure without capture analysis", range);
             return;
         };
         let mut operands = Vec::new();
         for capture in info.captures.iter() {
             let Some(place) = self.capture_source(capture.binding, &capture.projection) else {
-                self.terminate(TerminatorKind::Unreachable, range);
+                self.bug("a capture of a place not found here", range);
                 return;
             };
             let operand = match capture.mode {
@@ -1607,10 +1718,7 @@ impl Builder<'_> {
     /// temporary, so that errors about it point at it.
     fn adjusted_receiver(&mut self, receiver: ExprId, method: flux_ty::Method) -> Operand {
         let receiver_range = self.range(receiver);
-        let mut place = self.lower_place(receiver);
-        for _ in 0..method.derefs {
-            place = place.deref();
-        }
+        let place = self.lower_place_deref(receiver, method.derefs);
         let ty = match method.autoref {
             Some(m) => Ty::new(TyKind::Ref(m, self.place_ty(&place))),
             None => self.place_ty(&place),
@@ -1781,15 +1889,15 @@ impl Builder<'_> {
             return self.lower_value(expr, dest);
         };
         let place = if is_place(self.body, expr) {
-            self.lower_place(expr)
+            self.lower_place_deref(expr, 1)
         } else {
             let temp = self.temp(self.expr_ty(expr));
             self.lower_value(expr, &temp.into());
-            temp.into()
+            Place::from(temp).deref()
         };
         let rvalue = Rvalue::Ref {
             mutability,
-            place: place.deref(),
+            place,
             two_phase: false,
         };
         self.assign(dest, rvalue, self.range(expr));
@@ -1831,7 +1939,7 @@ impl Builder<'_> {
                 );
             }
             Expr::Missing | Expr::Path(Res::Function(_) | Res::Assoc { .. } | Res::Err) => {
-                self.terminate(TerminatorKind::Unreachable, range);
+                self.bug("a missing or unresolved expression", range);
             }
             Expr::Literal(_) => {
                 let operand = self.lower_operand(expr);
@@ -1863,7 +1971,7 @@ impl Builder<'_> {
             }
             Expr::Let { .. } => {
                 // Only in conditions, which lower them as branches.
-                self.terminate(TerminatorKind::Unreachable, range);
+                self.bug("`let` outside a condition", range);
             }
             Expr::Match { scrutinee, arms } => {
                 self.lower_match(*scrutinee, arms, dest, range);
@@ -1874,7 +1982,7 @@ impl Builder<'_> {
                     && self.guard_places.get(*binding).is_none()
                     && self.upvar_place(expr).is_none() =>
             {
-                self.terminate(TerminatorKind::Unreachable, range);
+                self.bug("a local neither declared nor captured", range);
             }
             Expr::Path(Res::Local(binding))
                 if let Some(place) = self.guard_places.get(*binding).cloned()
@@ -1964,10 +2072,7 @@ impl Builder<'_> {
                 if let Some(&(method, derefs)) = self.types.builtin_methods.get(expr) =>
             {
                 let receiver_range = self.range(*receiver);
-                let mut place = self.lower_place(*receiver);
-                for _ in 0..derefs {
-                    place = place.deref();
-                }
+                let place = self.lower_place_deref(*receiver, derefs);
                 let rvalue = Rvalue::Len {
                     place,
                     borrows: true,
@@ -2056,7 +2161,7 @@ impl Builder<'_> {
             Expr::Break { value, target } => {
                 let scope = target.and_then(|t| self.loops.get(t).cloned());
                 let Some(scope) = scope else {
-                    self.terminate(TerminatorKind::Unreachable, range);
+                    self.bug("`break` outside a loop", range);
                     return;
                 };
                 match value {
@@ -2071,7 +2176,7 @@ impl Builder<'_> {
                     self.leave_scopes(scope.scope_depth, true, range);
                     self.goto(scope.continue_block, range);
                 }
-                None => self.terminate(TerminatorKind::Unreachable, range),
+                None => self.bug("`continue` outside a loop", range),
             },
             Expr::Return { value } => {
                 let ret = Body::RETURN.into();
@@ -2143,7 +2248,7 @@ impl Builder<'_> {
                         );
                         self.current = target;
                     }
-                    _ => self.terminate(TerminatorKind::Unreachable, range),
+                    _ => self.bug("a call of a value that is not callable", range),
                 },
             },
             Expr::MethodCall { receiver, args, .. }
@@ -2304,7 +2409,7 @@ impl Builder<'_> {
             return self.lower_operand(expr);
         };
         let range = self.range(expr);
-        let place = self.lower_place(expr).deref();
+        let place = self.lower_place_deref(expr, 1);
         let temp = self.temp(Ty::new(TyKind::Ref(Mutability::Not, pointee)));
         let rvalue = Rvalue::Ref {
             mutability: Mutability::Not,
@@ -2330,7 +2435,7 @@ impl Builder<'_> {
             two_phase: false,
         };
         self.assign(&l.into(), rvalue, self.range(lhs));
-        let place = self.lower_place(rhs).deref();
+        let place = self.lower_place_deref(rhs, 1);
         let ty = Ty::new(TyKind::Ref(Mutability::Mut, self.place_ty(&place)));
         let r = self.temp(ty);
         let rvalue = Rvalue::Ref {
@@ -2368,7 +2473,7 @@ impl Builder<'_> {
     fn lower_try(&mut self, expr: ExprId, operand: ExprId, dest: &Place, range: TextRange) {
         let ty = self.expr_ty(operand);
         let TyKind::Adt(adt, _) = ty.kind() else {
-            self.terminate(TerminatorKind::Unreachable, range);
+            self.bug("`?` on neither `Option` nor `Result`", range);
             return;
         };
         let strukt = adt.strukt;
@@ -2383,13 +2488,15 @@ impl Builder<'_> {
             data.variant_named(Symbol::intern(value)),
             data.variant_named(Symbol::intern(residual)),
         ) else {
-            self.terminate(TerminatorKind::Unreachable, range);
+            self.bug("`?` without its variants", range);
             return;
         };
         let temp = self.temp(ty);
         self.lower_into(operand, &temp.into());
         let fail = self.new_block();
-        let place = self.test_variant(strukt, value, temp.into(), fail, range);
+        let place = Place::from(temp).into();
+        let place = self.test_variant(strukt, value, place, fail, range);
+        let place = self.resolve(place, range);
         let output = self.read(place.field(0));
         self.assign(dest, Rvalue::Use(output), range);
         let next = self.current;
@@ -2604,9 +2711,12 @@ impl Builder<'_> {
                 let local = self.binding_locals[binding];
                 self.lower_into(init, &local.into());
             }
-            // `let _ = place;` does not read the place.
+            // `let _ = place;` does not read the place, nor does a
+            // closure capture it for that.
             Pat::Wild if is_place(self.body, init) => {
-                let place = self.lower_place(init);
+                let PatPlace::Place(place) = self.pat_place(init) else {
+                    return;
+                };
                 let range = self.range(init);
                 let block = self.block();
                 self.blocks[block.index()].0.push(Statement {
@@ -2615,7 +2725,7 @@ impl Builder<'_> {
                 });
             }
             _ => {
-                let place = self.lower_place(init);
+                let place = self.pat_place(init);
                 self.match_irrefutable(pat, place, self.range(init));
             }
         }
@@ -2625,7 +2735,7 @@ impl Builder<'_> {
     /// else the block, which diverges.
     fn lower_let_else(&mut self, pat: PatId, init: ExprId, else_branch: ExprId) {
         let range = self.range(init);
-        let place = self.lower_place(init);
+        let place = self.pat_place(init);
         let otherwise = self.new_block();
         let matched = self.new_block();
         for exit in self.test(pat, place, otherwise, range) {
@@ -2647,7 +2757,7 @@ impl Builder<'_> {
 
     /// Binds the bindings of `pat`, which matches the value in `place`
     /// whatever it is.
-    fn match_irrefutable(&mut self, pat: PatId, place: Place, range: TextRange) {
+    fn match_irrefutable(&mut self, pat: PatId, place: PatPlace, range: TextRange) {
         if !self.tests(pat) {
             // Nothing to test, so nowhere to fail to.
             let here = self.block();
@@ -2735,7 +2845,13 @@ impl Builder<'_> {
     /// per way of matching, more than one for an or-pattern, each with
     /// the places its bindings bind. Tests read only the parts of the
     /// place they look at, at `range`, the scrutinee.
-    fn test(&mut self, pat: PatId, place: Place, fail: BasicBlock, range: TextRange) -> Vec<Exit> {
+    fn test(
+        &mut self,
+        pat: PatId,
+        place: PatPlace,
+        fail: BasicBlock,
+        range: TextRange,
+    ) -> Vec<Exit> {
         let mut place = place;
         for _ in 0..self.types.pat_derefs.get(pat).copied().unwrap_or(0) {
             place = place.deref();
@@ -2757,6 +2873,7 @@ impl Builder<'_> {
                 };
                 // As rustc, after the subpattern's: `x @ Some(y)` moves
                 // `y` out before `x` would take the whole.
+                let place = self.resolve(place, range);
                 for exit in &mut exits {
                     exit.binds.push((*binding, place.clone()));
                 }
@@ -2766,7 +2883,7 @@ impl Builder<'_> {
                 let count = self
                     .typed
                     .sigs
-                    .fields(self.place_ty(&place))
+                    .fields(self.pat_place_ty(&place))
                     .map_or(0, |f| f.len());
                 let parts = positions(pats, *rest, count)
                     .map(|(i, p)| (p, place.field(i)))
@@ -2804,6 +2921,7 @@ impl Builder<'_> {
                 here(self)
             }
             Pat::Expr(expr) => {
+                let place = self.resolve(place, range);
                 if let Expr::Literal(Literal::Bool(value)) = body.exprs[*expr] {
                     let ok = self.new_block();
                     let (on_false, otherwise) = if value { (fail, ok) } else { (ok, fail) };
@@ -2828,6 +2946,7 @@ impl Builder<'_> {
                 end,
                 inclusive,
             } => {
+                let place = self.resolve(place, range);
                 if let Some(start) = start {
                     let value = self.lower_operand(*start);
                     self.compare(BinOp::Ge, place.clone(), value, fail, range);
@@ -2858,7 +2977,7 @@ impl Builder<'_> {
     /// every way of matching is tried, in order.
     fn test_all(
         &mut self,
-        parts: Vec<(PatId, Place)>,
+        parts: Vec<(PatId, PatPlace)>,
         fail: BasicBlock,
         range: TextRange,
     ) -> Vec<Exit> {
@@ -2892,14 +3011,16 @@ impl Builder<'_> {
         &mut self,
         strukt: StructId,
         variant: u32,
-        place: Place,
+        place: PatPlace,
         fail: BasicBlock,
         range: TextRange,
-    ) -> Place {
+    ) -> PatPlace {
         let data = &self.items.structs[strukt];
         if !data.is_enum() {
             return place;
         }
+        // The fields of an enum's variant are captured with the enum.
+        let place = self.resolve(place, range);
         if data.variant_count() > 1 {
             let int = flux_ty::discriminant_ty(self.items, strukt);
             let discriminant = self.temp(Ty::int(int));
@@ -2920,7 +3041,7 @@ impl Builder<'_> {
             );
             self.current = Some(ok);
         }
-        place.downcast(variant)
+        PatPlace::Place(place.downcast(variant))
     }
 
     /// The discriminant of variant `variant` of enum `strukt`: a literal's
@@ -3057,7 +3178,7 @@ impl Builder<'_> {
         range: TextRange,
     ) {
         let at = self.range(scrutinee);
-        let place = self.lower_place(scrutinee);
+        let place = self.pat_place(scrutinee);
         let join = self.new_block();
         for arm in arms {
             let next = self.new_block();
@@ -3080,8 +3201,12 @@ impl Builder<'_> {
                         let guard_range = b.range(guard);
                         let pass = b.new_block();
                         let failed = b.new_block();
+                        let scrutinee = match &place {
+                            PatPlace::Place(place) => Some(place.clone()),
+                            PatPlace::Upvar(..) => None,
+                        };
                         let outer = b.guard.replace(Guard {
-                            scrutinee: place.clone(),
+                            scrutinee,
                             ref_muts: now
                                 .iter()
                                 .map(|&(binding, _)| binding)
@@ -3217,7 +3342,7 @@ impl Builder<'_> {
         match self.body.exprs[cond] {
             Expr::Let { pat, expr } => {
                 let at = self.range(expr);
-                let place = self.lower_place(expr);
+                let place = self.pat_place(expr);
                 self.declare_bindings(pat);
                 for exit in self.test(pat, place, otherwise, at) {
                     self.current = Some(exit.block);
@@ -3295,7 +3420,7 @@ impl Builder<'_> {
     /// range, where rustc reports assignment errors.
     fn lower_assign(&mut self, op: Option<ArithOp>, lhs: ExprId, rhs: ExprId, range: TextRange) {
         if !is_place(self.body, lhs) {
-            self.terminate(TerminatorKind::Unreachable, range);
+            self.bug("an assignment to a value", range);
             return;
         }
         self.check_guard_write(lhs, false, range);
@@ -3360,7 +3485,9 @@ impl Builder<'_> {
         let Some(written) = self.place_of(expr) else {
             return;
         };
-        let scrutinee = &guard.scrutinee;
+        let Some(scrutinee) = &guard.scrutinee else {
+            return;
+        };
         let contains = written.local == scrutinee.local
             && scrutinee.projection.starts_with(&written.projection);
         if contains {

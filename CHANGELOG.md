@@ -387,6 +387,19 @@
 - Add a scaling test of many regions and constraints in a long body,
   and an ignored one recording a quadratic case rustc's NLL shares: a
   `mut` reference reassigned from each new borrow through a body.
+- Fix closures that use what a captured reference points to. A
+  non-`move` closure calling a method through a captured reference
+  (`let r = &s; || r.get()`, `|| slice.len()`) captures `*r`, and its
+  body looked for `r` instead: it began with `unreachable` and trapped.
+  Reborrowing a captured `&mut` for a call (`|| f(m)`) and comparing
+  captured `&mut` references overflowed the compiler's stack, and
+  patterns matching through a captured reference (`|| match r { S { v }
+  => *v }`) and `let _ = r` trapped. The body now finds such places in
+  what the closure captures, with the dereferences autoderef,
+  reborrows and patterns add. `len` and `is_empty` borrow their array
+  or slice and comparisons of `&mut` references reborrow them, so
+  closures no longer move them (E0382 where rustc reports E0505).
+  Code MIR building never expects to reach panics in debug builds.
 
 ### Performance
 

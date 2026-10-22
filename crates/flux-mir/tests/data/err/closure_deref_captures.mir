@@ -1,0 +1,153 @@
+fn S::get(_1: &S) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy (*_1).0;
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let mut _1: S; // s
+    let _2: &mut S; // m
+    let _3: {closure}; // f
+    let _4: &S;
+    let _5: ();
+    let _6: i32;
+    let _7: &{closure};
+    let _8: ();
+    let _9: [S; 1]; // a
+    let _10: S;
+    let _11: {closure}; // g
+    let _12: &[S; 1];
+    let _13: [S; 1]; // b
+    let _14: usize;
+    let _15: &{closure};
+    let _16: ();
+
+    bb0: {
+        _1 = S { v: const 1_i32 };
+        _2 = &mut _1;
+        _4 = &(*_2);
+        _3 = {closure}(move _4);
+        (*_2).0 = const 2_i32;
+        _5 = const ();
+        _7 = &_3;
+        _8 = ();
+        _6 = call::<{closure}, ()>(copy _7, move _8) -> bb1;
+    }
+
+    bb1: {
+        _10 = S { v: const 1_i32 };
+        _9 = [move _10];
+        _12 = &_9;
+        _11 = {closure}(move _12);
+        _13 = move _9;
+        _15 = &_11;
+        _16 = ();
+        _14 = call::<{closure}, ()>(copy _15, move _16) -> bb2;
+    }
+
+    bb2: {
+        PlaceMention(_13);
+        _0 = const ();
+        StorageDead(_13);
+        StorageDead(_11);
+        StorageDead(_9);
+        StorageDead(_3);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main::{closure#6} as Fn(_1: &{closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &S;
+
+    bb0: {
+        _3 = &(*(*_1).0);
+        _0 = get(copy _3) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#6} as FnMut(_1: &mut {closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#6} as FnOnce(_1: {closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#18} as Fn(_1: &{closure}, _2: ()) -> usize {
+    let mut _0: usize;
+
+    bb0: {
+        _0 = Len(&(*(*_1).0));
+        return;
+    }
+}
+
+fn main::{closure#18} as FnMut(_1: &mut {closure}, _2: ()) -> usize {
+    let mut _0: usize;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#18} as FnOnce(_1: {closure}, _2: ()) -> usize {
+    let mut _0: usize;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+error 366..373: cannot assign to `m.v` because it is borrowed
+error 446..447: cannot move out of `a` because it is borrowed

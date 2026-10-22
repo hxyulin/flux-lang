@@ -748,9 +748,16 @@ with the arguments as one tuple, generic in its owner's parameters,
 with *shims* for the traits beyond its kind (`call_once` of an `Fn`
 closure borrows it, calls `call`, and drops it); a call of
 `Fn::call::<C, A>` for a closure type `C` is its body, substituted with
-the arguments `C` holds (`FileMir::instance_body`). A closure is an
-aggregate of what it captures, so code generation needs nothing new
-for it. Function items and pointers get shims that call them, and a
+the arguments `C` holds (`FileMir::instance_body`). In its body, a
+place outside it is found in what it captures with the dereferences
+that use it adds: `|| r.get()` captures `*r`, so its receiver is the
+capture itself, never `r`, and the same holds for autoderef in
+fields, indices and `len`, reborrows, and patterns, which resolve a
+scrutinee the closure captures only parts of as they go into it. A
+closure is an aggregate of what it captures, so code generation needs
+nothing new for it. MIR building reaches no code type checking rules
+out (a local neither declared nor captured, `break` outside a loop):
+debug builds panic there, release builds lower it to `unreachable`. Function items and pointers get shims that call them, and a
 closure that captures nothing becomes a pointer to its `call_once`,
 whose arguments are those of the pointer's signature, leaf for
 leaf.
