@@ -190,7 +190,9 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
             "internal compiler error: an instance of `{}` with generic arguments that are not concrete types",
             items.function_path(f)
         );
-        assert!(!cfg!(debug_assertions), "{message}");
+        if cfg!(debug_assertions) {
+            panic!("{message}");
+        }
         let mut d = Diagnostic::new(f.def_range, message);
         d.file = f.loc.file;
         return Err(d);
