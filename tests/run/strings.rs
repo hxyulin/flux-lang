@@ -2,8 +2,8 @@
 //! constants, statics, structs and arrays, `len`, `as_bytes`, `bytes`,
 //! `chars` and `char_indices` (from both ends) over UTF-8,
 //! comparisons, `starts_with`, `ends_with`, `contains` and `find` with
-//! `&str` and `char` patterns, `str::from_utf8` and its errors, and
-//! printing with `printf`'s `%.*s`.
+//! `&str` and `char` patterns, string literal patterns,
+//! `str::from_utf8` and its errors, and printing with `printf`'s `%.*s`.
 
 unsafe extern "C" {
     fn printf(format: *const i8, ...) -> i32;
@@ -25,6 +25,23 @@ fn print(s: &str) {
 
 fn number(label: &str, n: i64) {
     unsafe { printf(c"%.*s=%lld\n".as_ptr(), label.len() as i32, label.as_ptr(), n) };
+}
+
+fn op(name: &str) -> i64 {
+    match name {
+        "add" | "plus" => 1,
+        "sub" => 2,
+        "" => 3,
+        _ => 0,
+    }
+}
+
+fn nested(pair: (&str, i64)) -> i64 {
+    match pair {
+        ("x", n) if n > 0 => n,
+        ("x", _) => -1,
+        (_, n) => n * 10,
+    }
 }
 
 fn position(found: Option<usize>) -> i64 {
@@ -115,6 +132,13 @@ fn main() {
     let entries = [Named { name: "one", value: 1 }, Named { name: "two", value: 2 }];
     for e in &entries {
         number(e.name, e.value as i64);
+    }
+    for &name in &["add", "plus", "sub", "", "mul", "ad", "addd"] {
+        number(name, op(name));
+    }
+    number("nested", nested(("x", 3)) + nested(("x", -3)) + nested(("y", 2)));
+    if let "hello, world" = hello {
+        number("if let", 1);
     }
     let bytes = hello.as_bytes();
     number("as_bytes", bytes[7] as i64);

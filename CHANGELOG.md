@@ -458,7 +458,10 @@
   rustc's does and reports a `Utf8Error` with `valid_up_to` and
   `error_len`. Indexing a `str` by an integer is rustc's E0277; by
   ranges, and the methods that need parts of a string, are not
-  supported yet.
+  supported yet. String literals in patterns (`match s { "add" => ..
+  }`) compare with `<str as PartialEq>::eq`, as in rustc, and, like
+  byte strings, match a reference without seeing through it; for
+  exhaustiveness they cover nothing (`&_` not covered).
 
 ### Performance
 

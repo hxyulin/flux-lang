@@ -1526,15 +1526,23 @@ impl Ctx<'_> {
     fn check_pat_in(&mut self, pat: PatId, expected: Ty, mode: BindingMode, uninit: bool) {
         let (body, items) = (self.body, self.items);
         let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
-        let sees_through = matches!(
-            body.pats[pat],
+        // As in rustc, a literal of a reference type (`"a"`, `b"a"`)
+        // matches a reference, so does not see through one.
+        let reference_literal = |e: ExprId| {
+            matches!(
+                body.exprs[e],
+                Expr::Literal(Literal::Str(_) | Literal::ByteStr(_) | Literal::CStr(_))
+            )
+        };
+        let sees_through = match body.pats[pat] {
+            Pat::Expr(e) => !reference_literal(e),
             Pat::Tuple { .. }
-                | Pat::TupleStruct { .. }
-                | Pat::Record { .. }
-                | Pat::Unit(..)
-                | Pat::Expr(_)
-                | Pat::Range { .. }
-        );
+            | Pat::TupleStruct { .. }
+            | Pat::Record { .. }
+            | Pat::Unit(..)
+            | Pat::Range { .. } => true,
+            _ => false,
+        };
         let (expected, mode) = if sees_through {
             self.peel_refs(pat, expected, mode)
         } else {
@@ -1635,10 +1643,18 @@ impl Ctx<'_> {
                 if let Expr::Unary { .. } = body.exprs[*expr] {
                     self.negated_pats.insert(*expr);
                 }
-                if let Expr::Literal(Literal::Str(_) | Literal::ByteStr(_) | Literal::CStr(_)) =
-                    body.exprs[*expr]
+                if let Expr::Literal(Literal::ByteStr(_) | Literal::CStr(_)) = body.exprs[*expr] {
+                    self.error(
+                        range,
+                        "byte string literals in patterns are not supported yet",
+                    );
+                }
+                // A string is compared with `<str as PartialEq>::eq`, a
+                // call like an operator's.
+                if let Expr::Literal(Literal::Str(_)) = body.exprs[*expr]
+                    && let Some((_, eq)) = self.lang_fn(BinaryOp::Cmp(CmpOp::Eq))
                 {
-                    self.error(range, "string literals in patterns are not supported yet");
+                    self.overloads.insert(*expr, (eq, vec![Ty::STR, Ty::STR]));
                 }
                 if let Expr::Path(_) = body.exprs[*expr] {
                     self.const_pats.insert(*expr);

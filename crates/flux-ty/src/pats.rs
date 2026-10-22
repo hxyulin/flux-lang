@@ -400,6 +400,11 @@ impl Cx<'_> {
             Pat::Unit(strukt, variant) => DPat::Ctor(self.adt_ctor(*strukt, *variant), Vec::new()),
             Pat::Expr(expr) => match (&self.body.exprs[*expr], ty.kind()) {
                 (Expr::Literal(Literal::Bool(b)), _) => DPat::Ctor(Ctor::Bool(*b), Vec::new()),
+                // A string: a reference to one `str` of infinitely many,
+                // so it covers nothing for exhaustiveness.
+                (Expr::Literal(Literal::Str(_)), _) => {
+                    DPat::Ctor(Ctor::Single, vec![DPat::Or(Vec::new())])
+                }
                 (_, TyKind::Bool) => match self.literal(*expr) {
                     Some(value) => DPat::Ctor(Ctor::Bool(value != 0), Vec::new()),
                     None => DPat::Wild,
