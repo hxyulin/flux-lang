@@ -184,7 +184,9 @@ reported as "not supported yet":
   flags used to build Flux do not change this configuration. `test`,
   features and unknown predicates are false; there are no build flags or
   test builds yet. Nested `cfg_attr` applies its selected attributes before
-  semantic consumers inspect them. Inner file/module `cfg` and conditional
+  semantic consumers inspect them. Block tails are selected after cfg pruning;
+  explicit semicolons and remaining item statements still prevent a tail value.
+  Inner file/module `cfg` and conditional
   statements, list elements and match arms are pruned before lowering.
   Conditional fields, variants and parameters, and expressions whose removal
   would leave a required operand missing, remain unsupported.

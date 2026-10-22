@@ -1,0 +1,94 @@
+struct Trace(u32);
+
+impl Drop for Trace;
+
+fn choose() -> u32 {
+    {
+        7
+    }
+}
+
+fn forms(x@0: u32) -> u32 {
+    if (x@0 == 0) {
+        10
+    } else {
+        11
+    }
+}
+
+fn nested(x@0: u32) -> u32 {
+    {
+        match x@0 {
+            0 => 12,
+            _ => return 13,
+        }
+    }
+}
+
+fn explicit_semicolon() -> () {
+    {
+        {
+            _print(Arguments::new_const((&["semicolon\n"])));
+        };
+    };
+}
+
+fn empty() -> () {}
+
+fn item_barrier() -> () {
+    {
+        {
+            _print(Arguments::new_const((&["item\n"])));
+        };
+    }
+}
+
+fn expanded(value@0: u32) -> Option<u32> {
+    {
+        let value@1 = value@0;
+        Option::Some(value@1)
+    }
+}
+
+fn macro_predecessor() -> u32 {
+    14
+}
+
+fn <Trace as Drop>::drop(self@0: &mut Self) -> () {
+    {
+        _print(Arguments::new_v1((&["drop ", "\n"]), (&match ((&self@0.0),) {
+            args@1 => [Argument::new_display(args@1.0)],
+        })));
+    };
+}
+
+fn drops() -> Trace {
+    let _outer@0 = Trace(1);
+    {
+        let _inner@1 = Trace(2);
+        Trace(3)
+    }
+}
+
+fn main() -> () {
+    {
+        _print(Arguments::new_v1((&["", " ", " ", " ", " ", "\n"]), (&match ((&choose()), (&forms(0)), (&forms(1)), (&nested(0)), (&nested(1))) {
+            args@0 => [Argument::new_display(args@0.0), Argument::new_display(args@0.1), Argument::new_display(args@0.2), Argument::new_display(args@0.3), Argument::new_display(args@0.4)],
+        })));
+    };
+    explicit_semicolon();
+    empty();
+    item_barrier();
+    {
+        _print(Arguments::new_v1((&["", " ", "\n"]), (&match ((&expanded(15)), (&macro_predecessor())) {
+            args@1 => [Argument::new_debug(args@1.0), Argument::new_display(args@1.1)],
+        })));
+    };
+    let value@2 = drops();
+    {
+        _print(Arguments::new_v1((&["value ", "\n"]), (&match ((&value@2.0),) {
+            args@3 => [Argument::new_display(args@3.0)],
+        })));
+    };
+}
+

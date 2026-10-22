@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Select block tail values after cfg pruning, preserving semicolons, item
+  barriers and macro import scopes.
+
 - Enforce struct/enum `non_exhaustive` restrictions across source crates,
   preserving constructor visibility through aliases and reexports.
 

@@ -1,0 +1,25 @@
+struct Trace { 0: u32 }
+fn choose() -> u32
+fn forms(u32) -> u32
+    x@0: u32
+fn nested(u32) -> u32
+    x@0: u32
+fn explicit_semicolon() -> ()
+fn empty() -> ()
+fn item_barrier() -> ()
+fn expanded(u32) -> Option<u32>
+    value@0: u32
+    value@1: u32
+fn macro_predecessor() -> u32
+fn drop(&mut Trace) -> ()
+    self@0: &mut Trace
+    args@1: (&u32,)
+fn drops() -> Trace
+    _outer@0: Trace
+    _inner@1: Trace
+fn main() -> ()
+    args@0: (&u32, &u32, &u32, &u32, &u32)
+    args@1: (&Option<u32>, &u32)
+    value@2: Trace
+    args@3: (&u32,)
+const VALUE: u32
