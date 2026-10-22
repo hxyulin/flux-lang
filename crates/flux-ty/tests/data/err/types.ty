@@ -60,6 +60,6 @@ error 702..706: mismatched types: expected `u8`, found `bool`
 error 762..768: mismatched types: expected `u8`, found `()`
 error 787..790: literal out of range for `u8`
 error 807..810: the size for values of type `str` cannot be known at compilation time
-error 830..833: cannot find type `Vec` in this scope
+error 830..833: missing generics for struct `Vec`
 error 848..857: cannot cast `i32` as `bool`
 error 871..880: non-primitive cast: `()` as `i32`

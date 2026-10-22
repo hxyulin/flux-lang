@@ -16,6 +16,17 @@ use crate::result::Result::{self, Err, Ok};
 
 mod sort;
 
+/// The `len` values from `data` on, as a slice, which must be valid for
+/// as long as the slice is used.
+pub unsafe fn from_raw_parts<'a, T>(data: *const T, len: usize) -> &'a [T] {
+    unsafe { crate::intrinsics::slice_from_raw_parts(data, len) }
+}
+
+/// The `len` values from `data` on, as a mutable slice.
+pub unsafe fn from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T] {
+    unsafe { crate::intrinsics::slice_from_raw_parts_mut(data, len) }
+}
+
 impl<T> [T] {
     /// The first element, or `None` if the slice is empty.
     pub fn first(&self) -> Option<&T> {

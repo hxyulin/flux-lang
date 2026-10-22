@@ -9,6 +9,11 @@ pub const fn forget<T>(t: T) {
     let _ = ManuallyDrop::new(t);
 }
 
+/// Whether dropping a `T` runs code: a `Drop` impl of it or of a part.
+pub const fn needs_drop<T>() -> bool {
+    crate::intrinsics::needs_drop::<T>()
+}
+
 /// The size of a `T` in bytes, as rustc lays it out: its fields
 /// reordered to leave little padding, an enum's discriminant in the
 /// smallest integer that holds them or in an invalid value of a field

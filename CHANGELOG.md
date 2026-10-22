@@ -968,6 +968,14 @@
   of `*mut T` to `*const T`. `tests/run/layouts.rs` checks 69 types'
   sizes against rustc, and a generator of random structs and enums
   agreed with rustc on 400 programs.
+- Add flux's `alloc` library, built into the compiler after `core`:
+  `alloc::alloc` over C's `malloc`, `realloc` and `free`, `Box`, `Vec`
+  (growing as rustc's `RawVec` does, so `capacity()` agrees, dropping
+  its elements in order) and `String`, with `vec!`, `ToString` and
+  `ToOwned`, in the program's prelude as rustc's `std` prelude has
+  them; `extern crate alloc;` names it. A failed import's name now
+  shadows the prelude's, as rustc's dummy binding does, and `let v:
+  Vec` is "missing generics for struct `Vec`", as in rustc.
 
 ### Performance
 

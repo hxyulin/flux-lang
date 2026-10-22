@@ -398,6 +398,15 @@ impl<'a> Layouts<'a> {
                     end: u64::MAX as u128,
                 });
             }
+            if lang("alignment") {
+                // rustc's `AlignmentEnum`: the powers of two.
+                layout.niche = Some(Niche {
+                    offset: 0,
+                    bytes: 8,
+                    start: 1,
+                    end: 1 << 63,
+                });
+            }
             // rustc's `UnsafeCell`, which `Cell` and `RefCell`'s value
             // are, hides its value's niche.
             if lang("cell") || lang("ref_cell") {

@@ -122,8 +122,12 @@ pub struct ItemCounts {
 pub struct CrateData {
     pub name: Symbol,
     pub root: ModuleId,
-    /// flux's own `core`, which may define methods on primitive types.
+    /// flux's own `core` or `alloc`, which may define methods on
+    /// primitive types.
     pub is_core: bool,
+    /// The crates its `extern crate` declarations name (`alloc`), which
+    /// it may name by path as it names `core`.
+    pub externs: Vec<Symbol>,
 }
 
 /// A module: a crate's root, `mod m { ... }` or `mod m;`.
@@ -1256,6 +1260,9 @@ impl ItemTree {
     pub(crate) fn core(db: &mut SourceDb) -> ItemTree {
         let mut items = ItemTree::default();
         items.add_crate(db, FileId::CORE_ROOT, sym::core, true);
+        // `alloc`, which only `core` comes before, and which may write
+        // what `core` may: methods of primitive types, `lang` items.
+        items.add_crate(db, FileId::alloc_root(), sym::alloc, true);
         items.modules.freeze();
         items.functions.freeze();
         items.structs.freeze();
@@ -1554,6 +1561,7 @@ impl Collector<'_> {
             name,
             root: module,
             is_core,
+            externs: Vec::new(),
         });
         self.collect_file(module, root);
     }
@@ -1647,62 +1655,47 @@ impl Collector<'_> {
         let shared = self.db.shared(ctx.file);
         let tree = shared.parse.tree();
         let item = ast::Item::cast(tree.node(node)).expect("items are ITEM nodes");
-        let what = match item {
+        match item {
             ast::Item::Fn(f) => {
                 self.collect_fn(ctx, f, false, None);
-                return;
             }
             ast::Item::Impl(imp) => {
                 self.collect_impl(ctx, imp);
-                return;
             }
             ast::Item::ExternBlock(block) => {
                 self.collect_extern_block(ctx, block);
-                return;
             }
             ast::Item::Struct(s) => {
                 self.collect_struct(ctx, s);
-                return;
             }
             ast::Item::Module(m) => {
                 self.collect_module(ctx, m);
-                return;
             }
             ast::Item::Use(u) => {
                 self.collect_use(ctx, u);
-                return;
             }
             ast::Item::Const(c) => {
                 self.collect_const(ctx, c, None);
-                return;
             }
             ast::Item::Enum(e) => {
                 self.collect_enum(ctx, e);
-                return;
             }
-            ast::Item::ExternCrate(_) => "`extern crate` declarations",
+            ast::Item::ExternCrate(e) => {
+                self.collect_extern_crate(ctx, e);
+            }
             ast::Item::MacroCall(mc) => {
                 self.collect_macro_call(ctx, mc);
-                return;
             }
             ast::Item::Static(st) => {
                 self.collect_static(ctx, st);
-                return;
             }
             ast::Item::Trait(t) => {
                 self.collect_trait(ctx, t);
-                return;
             }
             ast::Item::TypeAlias(t) => {
                 self.collect_type_alias(ctx, t);
-                return;
             }
-        };
-        unsupported(
-            &mut self.items.diagnostics,
-            item.syntax().text_range(),
-            what,
-        );
+        }
     }
 
     /// The file `file` is part of: itself, or the file of the call a
@@ -3380,6 +3373,33 @@ impl Collector<'_> {
         });
         if let Some(body) = st.body() {
             self.collect_body_items(ctx, body.syntax().id(), None);
+        }
+    }
+
+    /// `extern crate alloc;`: `alloc` may be named by path, as rustc's
+    /// `alloc` may once declared. `core` always may.
+    fn collect_extern_crate(&mut self, ctx: Ctx, e: ast::ExternCrate<'_>) {
+        let range = e.syntax().text_range();
+        let Some(name) = e.name_ref() else {
+            return;
+        };
+        let name = Symbol::intern(name.text());
+        let krate = self.items.modules[ctx.module].krate;
+        let diagnostics = &mut self.items.diagnostics;
+        if e.rename().is_some() {
+            unsupported(diagnostics, range, "renamed `extern crate` declarations");
+        } else if name == sym::std {
+            diagnostics.push(Diagnostic::new(
+                range,
+                "the `std` crate is not supported yet; flux has only `core` and `alloc`",
+            ));
+        } else if name == sym::alloc {
+            self.items.crates[krate.0 as usize].externs.push(name);
+        } else if name != sym::core {
+            diagnostics.push(Diagnostic::new(
+                range,
+                format!("can't find crate for `{name}`"),
+            ));
         }
     }
 

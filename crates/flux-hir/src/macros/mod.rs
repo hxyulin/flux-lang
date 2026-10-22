@@ -291,7 +291,14 @@ pub(crate) fn resolve<'a, L>(
             _ => None,
         }
     };
-    let std_macro = CORE_STD_MACROS.contains(&name.as_str());
+    // `std::vec!` and `std::format!` are `alloc`'s.
+    let std_macro =
+        CORE_STD_MACROS.contains(&name.as_str()) || matches!(name.as_str(), "vec" | "format");
+    let alloc_crate = items
+        .crates
+        .iter()
+        .position(|c| c.is_core && c.name == sym::alloc)
+        .map(|i| CrateId(i as u32));
     if segments.len() > 1
         && !std_macro
         && let Some(id) = by_path()
@@ -343,11 +350,16 @@ pub(crate) fn resolve<'a, L>(
             .ok_or_else(not_found),
         (_, [first, _]) if *first == sym::std && std_macro => core_crate
             .and_then(exported)
+            .or_else(|| items.macro_prelude.get(&name).copied())
             .map(Resolved::Def)
             .ok_or_else(not_found),
-        (_, [first, _]) if *first == sym::std || *first == sym::alloc => Err(Diagnostic::new(
+        (_, [first, _]) if *first == sym::alloc => alloc_crate
+            .and_then(exported)
+            .map(Resolved::Def)
+            .ok_or_else(not_found),
+        (_, [first, _]) if *first == sym::std => Err(Diagnostic::new(
             range,
-            format!("the `{first}` crate is not supported yet; flux has only `core`"),
+            format!("the `{first}` crate is not supported yet; flux has only `core` and `alloc`"),
         )),
         _ => Err(not_found()),
     }
@@ -516,7 +528,10 @@ pub(crate) fn expand(
         &MacroKind::Builtin(builtin) => {
             let ctxt = fresh_ctxt();
             ctxts.push((ctxt, 0));
-            let in_core = site.items.crates[site.krate.0 as usize].is_core;
+            // `core` itself names itself `crate`; `alloc` and the program
+            // name it `::core`.
+            let in_core = site.items.crates[site.krate.0 as usize].name == sym::core
+                && site.items.crates[site.krate.0 as usize].is_core;
             let location = || {
                 let file = site.items.files.get(&site.real_file);
                 let Some(file) = file else {

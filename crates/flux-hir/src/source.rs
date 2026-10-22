@@ -17,6 +17,11 @@ impl FileId {
 
     /// `core`'s root file, `lib.rs`, the first file of every [`SourceDb`].
     pub const CORE_ROOT: FileId = FileId(0);
+
+    /// `alloc`'s root file, its `lib.rs`, after `core`'s files.
+    pub fn alloc_root() -> FileId {
+        FileId(CORE_FILES.len() as u32)
+    }
 }
 
 #[derive(Debug)]
@@ -48,6 +53,48 @@ pub struct SourceDb {
 
 /// Where `core`'s files appear to be, in paths and messages.
 pub const CORE_ROOT: &str = "<core>";
+/// Where `alloc`'s files appear to be.
+pub const ALLOC_ROOT: &str = "<alloc>";
+
+/// `library/alloc/src`, relative to [`ALLOC_ROOT`]: built into the
+/// compiler, after `core`, as rustc's `alloc` is after its `core`.
+const ALLOC_FILES: &[(&str, &str)] = &[
+    ("lib.rs", include_str!("../../../library/alloc/src/lib.rs")),
+    (
+        "macros.rs",
+        include_str!("../../../library/alloc/src/macros.rs"),
+    ),
+    (
+        "alloc.rs",
+        include_str!("../../../library/alloc/src/alloc.rs"),
+    ),
+    (
+        "borrow.rs",
+        include_str!("../../../library/alloc/src/borrow.rs"),
+    ),
+    (
+        "boxed.rs",
+        include_str!("../../../library/alloc/src/boxed.rs"),
+    ),
+    (
+        "prelude.rs",
+        include_str!("../../../library/alloc/src/prelude.rs"),
+    ),
+    (
+        "raw_vec.rs",
+        include_str!("../../../library/alloc/src/raw_vec.rs"),
+    ),
+    (
+        "slice.rs",
+        include_str!("../../../library/alloc/src/slice.rs"),
+    ),
+    ("str.rs", include_str!("../../../library/alloc/src/str.rs")),
+    (
+        "string.rs",
+        include_str!("../../../library/alloc/src/string.rs"),
+    ),
+    ("vec.rs", include_str!("../../../library/alloc/src/vec.rs")),
+];
 
 /// `library/core/src`, relative to [`CORE_ROOT`].
 const CORE_FILES: &[(&str, &str)] = &[
@@ -61,6 +108,10 @@ const CORE_FILES: &[(&str, &str)] = &[
     ("cell.rs", include_str!("../../../library/core/src/cell.rs")),
     ("hash.rs", include_str!("../../../library/core/src/hash.rs")),
     ("bool.rs", include_str!("../../../library/core/src/bool.rs")),
+    (
+        "alloc.rs",
+        include_str!("../../../library/core/src/alloc.rs"),
+    ),
     (
         "ascii.rs",
         include_str!("../../../library/core/src/ascii.rs"),
@@ -165,18 +216,23 @@ const CORE_FILES: &[(&str, &str)] = &[
     ),
 ];
 
-/// `core`'s files, in [`CORE_FILES`] order, parsed in parallel the first
-/// time they are needed.
+/// `core`'s files, in [`CORE_FILES`] order, then `alloc`'s, parsed in
+/// parallel the first time they are needed.
 pub(crate) fn core_files() -> &'static [Arc<SourceFile>] {
     static FILES: OnceLock<Box<[Arc<SourceFile>]>> = OnceLock::new();
     FILES.get_or_init(|| {
-        let root = Path::new(CORE_ROOT);
+        let core = CORE_FILES
+            .iter()
+            .map(|&(name, text)| (CORE_ROOT, name, text));
+        let alloc = ALLOC_FILES
+            .iter()
+            .map(|&(name, text)| (ALLOC_ROOT, name, text));
         std::thread::scope(|scope| {
-            let threads: Vec<_> = CORE_FILES
-                .iter()
-                .map(|&(name, text)| {
+            let threads: Vec<_> = core
+                .chain(alloc)
+                .map(|(root, name, text)| {
                     scope.spawn(move || SourceFile {
-                        path: root.join(name),
+                        path: Path::new(root).join(name),
                         parse: flux_syntax::parse_source_file(text),
                         expansion_of: None,
                     })
@@ -260,8 +316,8 @@ impl SourceDb {
         if let Some(&id) = self.by_path.get(path) {
             return Ok(id);
         }
-        // `core`'s files are all here already.
-        if path.starts_with(CORE_ROOT) {
+        // `core`'s and `alloc`'s files are all here already.
+        if path.starts_with(CORE_ROOT) || path.starts_with(ALLOC_ROOT) {
             return Err(format!("{} is not part of core", path.display()));
         }
         let text = std::fs::read_to_string(path)
@@ -269,14 +325,16 @@ impl SourceDb {
         Ok(self.add(path, text))
     }
 
-    /// Whether `path` exists, on disk or in `core`.
+    /// Whether `path` exists, on disk or in `core` or `alloc`.
     pub fn exists(&self, path: &Path) -> bool {
-        match path.strip_prefix(CORE_ROOT) {
-            Ok(relative) => CORE_FILES
-                .iter()
-                .any(|(name, _)| Path::new(name) == relative),
-            Err(_) => path.is_file(),
-        }
+        let built_in = |root: &str, files: &[(&str, &str)]| {
+            path.strip_prefix(root)
+                .ok()
+                .map(|relative| files.iter().any(|(name, _)| Path::new(name) == relative))
+        };
+        built_in(CORE_ROOT, CORE_FILES)
+            .or_else(|| built_in(ALLOC_ROOT, ALLOC_FILES))
+            .unwrap_or_else(|| path.is_file())
     }
 
     pub fn file(&self, id: FileId) -> &SourceFile {
