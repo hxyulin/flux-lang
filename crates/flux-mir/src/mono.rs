@@ -202,9 +202,10 @@ fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
         instance.args.first().map(|t| t.kind()),
         Some(TyKind::Array(..))
     );
-    of_array
-        && (Some(instance.function) == lang_method(items, "clone", "clone")
-            || Some(instance.function) == lang_method(items, "eq", "eq"))
+    if Some(instance.function) == lang_method(items, "eq", "eq") {
+        return matches!(instance.args, [lhs, rhs] if flux_ty::traits::array_eq_elems(*lhs, *rhs).is_some());
+    }
+    of_array && Some(instance.function) == lang_method(items, "clone", "clone")
 }
 
 /// `Clone::clone` for an array of `T`: a copy if `T` is `Copy`, else
@@ -218,7 +219,12 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
         return Some(fn_shim(items, sigs, instance));
     }
     if Some(instance.function) == lang_method(items, "eq", "eq") {
-        return Some(eq_shim(instance));
+        if let (TyKind::Array(..), TyKind::Array(..)) =
+            (instance.args[0].kind(), instance.args[1].kind())
+        {
+            return Some(eq_shim(instance));
+        }
+        return Some(slice_eq_shim(instance));
     }
     let array = instance.args[0];
     let (elem, len) = match array.kind() {
@@ -414,6 +420,89 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
         param_count: 2,
         c_strings: Vec::new(),
         in_core: false,
+        inherits_overflow_checks: false,
+        live_drops: Vec::new(),
+        init_errors: Vec::new(),
+        upvars: None,
+        capture_uses: Vec::new(),
+        owner: None,
+        promoted: Vec::new(),
+    }
+}
+
+/// `PartialEq::eq` of an array and a slice (or a reference to one),
+/// either way round: each side as a `&[T]`, compared by `core`'s
+/// `PartialEq` for slices.
+fn slice_eq_shim(instance: Instance) -> Body {
+    let (lhs, rhs) = (instance.args[0], instance.args[1]);
+    let mut locals = flux_arena::Arena::new();
+    let mut local = |ty, kind| locals.alloc(LocalDecl { ty, kind });
+    let reference = |ty| Ty::new(TyKind::Ref(Mutability::Not, ty));
+    let ret = local(Ty::BOOL, LocalKind::Return);
+    let params = [
+        local(reference(lhs), LocalKind::Param),
+        local(reference(rhs), LocalKind::Param),
+    ];
+    let range = flux_syntax::TextRange::default();
+    let mut statements = Vec::new();
+    let mut slices = Vec::new();
+    let mut operands = Vec::new();
+    for (param, ty) in params.into_iter().zip([lhs, rhs]) {
+        let (slice, rvalue) = match ty.kind() {
+            TyKind::Array(elem, _) => {
+                let slice = reference(Ty::slice(elem));
+                (slice, Rvalue::Unsize(Operand::Copy(param.into()), slice))
+            }
+            // `&&[T]` or `&&mut [T]`: the reference it points to.
+            TyKind::Ref(_, s) => (
+                reference(s),
+                Rvalue::Ref {
+                    mutability: Mutability::Not,
+                    place: Place::from(param).deref().deref(),
+                    two_phase: false,
+                },
+            ),
+            _ => (reference(ty), Rvalue::Use(Operand::Copy(param.into()))),
+        };
+        let temp = local(slice, LocalKind::Temp);
+        statements.push(Statement {
+            kind: StatementKind::Assign(temp.into(), rvalue),
+            range,
+        });
+        slices.push(slice);
+        operands.push(Operand::Move(temp.into()));
+    }
+    let pointee = |t: Ty| match t.kind() {
+        TyKind::Ref(_, p) => p,
+        _ => t,
+    };
+    let mut blocks = flux_arena::Arena::new();
+    blocks.alloc(BasicBlockData {
+        statements,
+        terminator: Terminator {
+            kind: TerminatorKind::Call {
+                func: instance.function,
+                generic_args: Ty::list(&[pointee(slices[0]), pointee(slices[1])]),
+                args: operands,
+                dest: ret.into(),
+                target: Some(BasicBlock::from_raw(1)),
+            },
+            range,
+        },
+    });
+    blocks.alloc(BasicBlockData {
+        statements: Vec::new(),
+        terminator: Terminator {
+            kind: TerminatorKind::Return,
+            range,
+        },
+    });
+    Body {
+        locals,
+        blocks,
+        param_count: 2,
+        c_strings: Vec::new(),
+        in_core: true,
         inherits_overflow_checks: false,
         live_drops: Vec::new(),
         init_errors: Vec::new(),

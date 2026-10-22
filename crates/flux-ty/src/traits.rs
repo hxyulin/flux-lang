@@ -1209,25 +1209,49 @@ fn array_into_iter_instance(items: &ItemTree, instance: Instance) -> Option<Inst
 /// arrays with const generics, which flux does not have, so they are
 /// built in, and code generation makes their methods.
 pub fn builtin_array_impl(items: &ItemTree, goal: Predicate) -> Option<Predicate> {
-    let TyKind::Array(elem, len) = goal.self_ty.kind() else {
-        return None;
-    };
     let lang = items.traits[goal.trait_ref.trait_].lang?;
     match lang.as_str() {
-        "copy" | "clone" | "total_eq" => Some(Predicate {
-            self_ty: elem,
-            ..goal
-        }),
-        "eq" => match goal.trait_ref.args.first()?.kind() {
-            TyKind::Array(other, n) if n == len => Some(Predicate {
+        "copy" | "clone" | "total_eq" => match goal.self_ty.kind() {
+            TyKind::Array(elem, _) => Some(Predicate {
+                self_ty: elem,
+                ..goal
+            }),
+            _ => None,
+        },
+        "eq" => {
+            let (elem, other) = array_eq_elems(goal.self_ty, *goal.trait_ref.args.first()?)?;
+            Some(Predicate {
                 self_ty: elem,
                 trait_ref: TraitRef {
                     args: Ty::list(&[other]),
                     ..goal.trait_ref
                 },
-            }),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// For `lhs == rhs` between arrays of one length, or an array and a
+/// slice or a reference to one, either way round (`[A; N] == [B]`,
+/// `&[A] == [B; N]`): the element types `A` and `B`, which must be
+/// `A: PartialEq<B>`. rustc's `core` has these impls with const
+/// generics, so they are built in; slices with slices are `core`'s.
+pub fn array_eq_elems(lhs: Ty, rhs: Ty) -> Option<(Ty, Ty)> {
+    let slice_behind = |t: Ty| match t.kind() {
+        TyKind::Ref(_, s) => match s.kind() {
+            TyKind::Slice(e) => Some(e),
             _ => None,
         },
+        _ => None,
+    };
+    match (lhs.kind(), rhs.kind()) {
+        (TyKind::Array(a, n), TyKind::Array(b, m)) if n == m => Some((a, b)),
+        (TyKind::Array(a, _), TyKind::Slice(b)) | (TyKind::Slice(a), TyKind::Array(b, _)) => {
+            Some((a, b))
+        }
+        (TyKind::Array(a, _), _) => Some((a, slice_behind(rhs)?)),
+        (_, TyKind::Array(b, _)) => Some((slice_behind(lhs)?, b)),
         _ => None,
     }
 }

@@ -1,0 +1,14 @@
+fn main() -> ()
+    a@0: [i32; 3]
+    s@1: &[i32]
+    m@2: &mut [i32]
+    w@3: &[u8]
+    x@4: bool
+    y@5: bool
+    z@6: bool
+    p@7: bool
+    q@8: bool
+    r@9: bool
+    t@10: bool
+    u@11: bool
+    v@12: bool

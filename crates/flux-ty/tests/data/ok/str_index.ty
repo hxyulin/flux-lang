@@ -1,0 +1,15 @@
+fn main() -> ()
+    s@0: &str
+    a@1: &str
+    b@2: &str
+    c@3: &str
+    d@4: &str
+    left@5: &str
+    right@6: &str
+    trimmed@7: &str
+    parts@8: usize
+    by_char@9: Split<char>
+    lines@10: Lines
+    words@11: SplitWhitespace
+    buf@12: [u8; 4]
+    e@13: &mut str
