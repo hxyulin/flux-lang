@@ -37,8 +37,8 @@ rustc's default binding modes and discriminants written as constant
 expressions, operators on references through `core`'s impls, `?`
 on `Option` and `Result` with `From`, arrays and slices, with
 lengths evaluated while types are checked, bounds checks and rustc's
-borrow rules for elements, type aliases, statics, and functions as values, with
-function pointers.
+borrow rules for elements, type aliases, statics, functions as values,
+with function pointers, and items inside function bodies.
 In order next:
 
 1. `core` defines the pointer methods, `mem::replace` and `CStr` (now
@@ -50,7 +50,6 @@ In order next:
    return values (`first`, `iter`, `split_at`).
 2. Lifetimes: references in structs and return values (`Option<&T>`),
    which needs region inference across function signatures.
-3. Items inside function bodies.
 
 Each comes with fixtures that rustc must agree with.
 

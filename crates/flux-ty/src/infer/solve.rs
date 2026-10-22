@@ -1006,11 +1006,24 @@ impl Ctx<'_> {
     /// The traits whose methods may be called here: those named in the
     /// module's scope, and the prelude's.
     pub(super) fn traits_in_scope(&mut self) -> &[TraitId] {
-        if self.traits_in_scope.is_none() {
+        if self
+            .traits_in_scope
+            .as_ref()
+            .is_none_or(|(m, _)| *m != self.module)
+        {
             let items = self.items;
             let mut found = Vec::new();
-            let scopes = [Some(self.module), items.def_map.prelude];
-            for module in scopes.into_iter().flatten() {
+            // A block's scope, those of the blocks around it, its module's.
+            let mut scopes = Vec::new();
+            let mut module = Some(self.module);
+            while let Some(m) = module {
+                scopes.push(m);
+                module = items.modules[m]
+                    .parent
+                    .filter(|_| items.modules[m].block.is_some());
+            }
+            scopes.extend(items.def_map.prelude);
+            for module in scopes {
                 for binding in items.def_map.scopes[module.index()].types.values() {
                     if let flux_hir::def_map::Def::Trait(t) = binding.def
                         && !found.contains(&t)
@@ -1020,9 +1033,11 @@ impl Ctx<'_> {
                 }
             }
             found.sort_by_key(|t| t.index());
-            self.traits_in_scope = Some(found);
+            self.traits_in_scope = Some((self.module, found));
         }
-        self.traits_in_scope.as_deref().unwrap_or_default()
+        self.traits_in_scope
+            .as_ref()
+            .map_or(&[][..], |(_, found)| found)
     }
 
     /// The methods called `name` of the traits in scope that `ty` may

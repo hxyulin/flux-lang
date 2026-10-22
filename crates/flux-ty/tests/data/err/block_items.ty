@@ -1,0 +1,13 @@
+struct Counter {}
+struct Holder { value: {error} }
+fn count(&Counter) -> ()
+    self@0: &Counter
+fn make() -> {error}
+fn generic<T>(T) -> ()
+    t@0: T
+fn inner({error}) -> ()
+    v@0: {error}
+fn main() -> ()
+error 75..79: can't use `Self` from outer item
+error 159..160: can't use generic parameters from outer item
+error 200..201: can't use generic parameters from outer item

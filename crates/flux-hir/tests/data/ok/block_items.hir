@@ -1,0 +1,49 @@
+struct Square { side: i32 }
+
+enum Kind { A = 0, B(i32) = 1 }
+
+type Count = u32;
+
+impl Square;
+
+fn helper() -> i32 {
+    1
+}
+
+fn far() -> i32 {
+    2
+}
+
+fn main() -> () {
+    let s@0 = Square { side: early() };
+    let k@1 = Kind::B(far());
+    let inner@2 = {
+        (helper() + deep())
+    };
+    let outer@3 = helper();
+    let a@4 = s@0.area();
+    let c@5: Count = unsafe {
+        CALLS
+    };
+}
+
+fn early() -> i32 {
+    3
+}
+
+fn Square::area(self@0: &Self) -> i32 {
+    ((self@0.side * self@0.side) * SCALE)
+}
+
+fn helper() -> i32 {
+    10
+}
+
+fn deep() -> i32 {
+    super_fn()
+}
+
+fn super_fn() -> i32 {
+    4
+}
+

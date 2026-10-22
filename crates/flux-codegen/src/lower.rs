@@ -1521,7 +1521,9 @@ impl Lower<'_, '_, '_> {
                     self.ctx.typed.sigs[*func].ret,
                     generic_args,
                 );
-                self.call(ret, args, dest, *target, |b, values| b.ins().call(callee, values));
+                self.call(ret, args, dest, *target, |b, values| {
+                    b.ins().call(callee, values)
+                });
             }
             TerminatorKind::CallIndirect {
                 callee,

@@ -490,6 +490,9 @@ pub fn resolve_type(
                     no_args(errors, "self type".to_owned());
                     match scope.self_ty {
                         Some(ty) => ty,
+                        None if outer_generic(items, module, kw::SelfUpper) => {
+                            fail(errors, range, "can't use `Self` from outer item".to_owned())
+                        }
                         None => fail(
                             errors,
                             range,
@@ -528,10 +531,18 @@ pub fn resolve_type(
                 ),
                 Ok(_) => fail(errors, last_range, format!("expected type, found `{path}`")),
                 Err(e @ ResolveError::NotFound { .. }) => {
+                    let module_of_use = module;
                     let ResolveError::NotFound { segment, module } = e else {
                         unreachable!()
                     };
                     let name = path.segments[segment];
+                    if module.is_none() && outer_generic(items, module_of_use, name) {
+                        return fail(
+                            errors,
+                            e.range(path, range),
+                            "can't use generic parameters from outer item".to_owned(),
+                        );
+                    }
                     let place = match module {
                         Some(module) => items.in_module(module),
                         None => "this scope".to_owned(),
@@ -706,6 +717,30 @@ pub fn array_len(
         return mismatch(errors, &ty);
     }
     scope.lens?.value(konst)
+}
+
+/// Whether `name` is a generic parameter, or `Self`, of a function whose
+/// body has the block `module` is, or is in: which an item declared
+/// there cannot use (E0401).
+fn outer_generic(items: &ItemTree, module: ModuleId, name: Symbol) -> bool {
+    let mut module = Some(module);
+    while let Some(m) = module {
+        let data = &items.modules[m];
+        module = data.parent;
+        let Some(f) = data.block.and_then(|b| b.function) else {
+            continue;
+        };
+        let f = &items.functions[f];
+        let found = if name == kw::SelfUpper {
+            f.owner.is_some()
+        } else {
+            generic_names(items, f.owner, &f.generics).contains(&name)
+        };
+        if found {
+            return true;
+        }
+    }
+    false
 }
 
 /// An associated type named by a path: `T::Out`, `Self::Out`,

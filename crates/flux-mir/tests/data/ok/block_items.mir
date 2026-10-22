@@ -1,0 +1,139 @@
+fn shapes(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: Square; // s
+    let _3: i32;
+    let _4: i32;
+    let _5: &Square;
+    let _6: i32;
+    let _7: &Square;
+
+    bb0: {
+        _3 = copy _1;
+        _2 = Square { side: copy _3 };
+        _5 = &_2;
+        _4 = area::<Square>(copy _5) -> bb1;
+    }
+
+    bb1: {
+        _7 = &_2;
+        _6 = perimeter::<Square>(copy _7) -> bb2;
+    }
+
+    bb2: {
+        _0 = Add(copy _4, copy _6);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn <Square as Area>::area(_1: &Square) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+    let _3: i32;
+
+    bb0: {
+        _2 = copy (*_1).0;
+        _3 = copy (*_1).0;
+        _0 = Mul(copy _2, copy _3);
+        return;
+    }
+}
+
+fn <Square as Perimeter>::perimeter(_1: &Square) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+
+    bb0: {
+        _2 = copy (*_1).0;
+        _0 = Mul(const 4_i32, copy _2);
+        return;
+    }
+}
+
+fn generic<T>(_1: T) -> (T, u8) {
+    let mut _0: (T, u8);
+    let _2: u8; // b
+    let _3: T;
+    let _4: T;
+    let _5: u8;
+
+    bb0: {
+        _2 = plain::<u8>(const 7_u8) -> bb1;
+    }
+
+    bb1: {
+        _4 = copy _1;
+        _3 = plain::<T>(copy _4) -> bb2;
+    }
+
+    bb2: {
+        _5 = copy _2;
+        _0 = (copy _3, copy _5);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn plain<U>(_1: U) -> U {
+    let mut _0: U;
+
+    bb0: {
+        _0 = move _1;
+        return;
+    }
+}
+
+fn Counter::count(_1: &Counter) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+
+    bb0: {
+        _2 = base() -> bb1;
+    }
+
+    bb1: {
+        _0 = Add(copy _2, const 1_i32);
+        return;
+    }
+}
+
+fn base() -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = const 3_i32;
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: i32; // a
+    let _2: (bool, u8); // g
+    let _3: i32; // c
+    let _4: Counter;
+    let _5: &Counter;
+
+    bb0: {
+        _1 = shapes(const 2_i32) -> bb1;
+    }
+
+    bb1: {
+        _2 = generic::<bool>(const true) -> bb2;
+    }
+
+    bb2: {
+        _4 = Counter;
+        _5 = &_4;
+        _3 = count(copy _5) -> bb3;
+    }
+
+    bb3: {
+        _0 = const ();
+        StorageDead(_3);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+

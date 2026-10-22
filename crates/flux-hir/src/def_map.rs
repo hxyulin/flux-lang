@@ -219,9 +219,9 @@ impl ItemTree {
         let segments = &path.segments;
         let (mut module, start) = match path.anchor {
             PathAnchor::Crate => (self.module_of(self.modules[from].krate), 0),
-            PathAnchor::SelfModule => (from, 0),
+            PathAnchor::SelfModule => (self.named_module(from), 0),
             PathAnchor::Super(n) => {
-                let mut module = from;
+                let mut module = self.named_module(from);
                 for k in 0..n {
                     match self.modules[module].parent {
                         Some(parent) => module = parent,
@@ -255,16 +255,13 @@ impl ItemTree {
                 let Some(&first) = segments.first() else {
                     return Err(fail(At::Segment(0), "expected a path".into()));
                 };
-                if let Some(binding) = self.def_map.scopes[from.index()]
-                    .ns(if segments.len() == 1 { ns } else { Ns::Types })
-                    .get(&first)
+                let first_ns = if segments.len() == 1 { ns } else { Ns::Types };
+                if let Some(binding) = self.scope_binding(from, first, first_ns)
                     && binding.kind == BindingKind::AmbiguousGlob
                 {
                     return Err(fail(At::Segment(0), format!("`{first}` is ambiguous")));
                 }
-                if self.def_map.failed_imports.contains(&(from, first))
-                    && self.lookup(from, first, ns).is_none()
-                {
+                if self.failed_import(from, first) && self.lookup(from, first, ns).is_none() {
                     return Err(ResolveError::Reported);
                 }
                 if segments.len() == 1 {
@@ -541,13 +538,45 @@ impl ItemTree {
         }
     }
 
-    /// A single name, in scope in `module`.
+    /// The binding of `name` in the scope of `module`, or for a block, of
+    /// the innermost module around it with one.
+    fn scope_binding(&self, module: ModuleId, name: Symbol, ns: Ns) -> Option<Binding> {
+        let mut module = module;
+        loop {
+            if let Some(&binding) = self.def_map.scopes[module.index()].ns(ns).get(&name) {
+                return Some(binding);
+            }
+            let data = &self.modules[module];
+            match (data.block, data.parent) {
+                (Some(_), Some(parent)) => module = parent,
+                _ => return None,
+            }
+        }
+    }
+
+    /// Whether importing `name` failed in `module` or a module around
+    /// it that `module`'s names are looked up in.
+    fn failed_import(&self, module: ModuleId, name: Symbol) -> bool {
+        let mut module = module;
+        loop {
+            if self.def_map.failed_imports.contains(&(module, name)) {
+                return true;
+            }
+            let data = &self.modules[module];
+            match (data.block, data.parent) {
+                (Some(_), Some(parent)) => module = parent,
+                _ => return false,
+            }
+        }
+    }
+
+    /// A single name, in scope in `module`: a block's items, then those
+    /// of the blocks and module around it.
     pub fn lookup(&self, module: ModuleId, name: Symbol, ns: Ns) -> Option<Resolved> {
         if name == kw::SelfUpper && ns == Ns::Types {
             return Some(Resolved::SelfType);
         }
-        let scope = &self.def_map.scopes[module.index()];
-        if let Some(binding) = scope.ns(ns).get(&name)
+        if let Some(binding) = self.scope_binding(module, name, ns)
             && binding.kind != BindingKind::AmbiguousGlob
         {
             return Some(Resolved::Def(binding.def));
@@ -581,6 +610,7 @@ impl ItemTree {
 
     /// `crate::a::b`, as rustc names modules.
     pub fn module_path(&self, module: ModuleId) -> String {
+        let module = self.named_module(module);
         let m = &self.modules[module];
         match m.parent {
             Some(parent) => format!("{}::{}", self.module_path(parent), m.name),
@@ -704,7 +734,8 @@ fn define_items(items: &mut ItemTree, from: ItemCounts) {
         range,
     };
     for (id, m) in items.modules.iter().skip(from.modules as usize) {
-        if let Some(parent) = m.parent {
+        // A block's module has no name.
+        if let Some(parent) = m.parent.filter(|_| m.block.is_none()) {
             let file = items.modules[parent].file;
             let file = if m.def_range.is_empty() { m.file } else { file };
             let binding = item(Def::Module(id), m.vis, file, m.def_range);

@@ -452,7 +452,8 @@ struct Ctx<'a> {
     normalizing: Vec<crate::ty::AliasTy>,
     /// Trait obligations not yet met.
     obligations: Vec<Obligation>,
-    traits_in_scope: Option<Vec<flux_hir::TraitId>>,
+    /// The traits in scope, and the module they are in scope in.
+    traits_in_scope: Option<(flux_hir::ModuleId, Vec<flux_hir::TraitId>)>,
     /// Unmet obligations reported, by range and message.
     reported_unmet: HashSet<(TextRange, String)>,
     /// The struct types written in the body, and in a constant, those its
@@ -1915,9 +1916,15 @@ impl Ctx<'_> {
                 tail,
                 is_unsafe,
             } => {
+                // A block with items resolves names in its own module.
+                let outer = self.module;
+                if let Some(&module) = body.block_modules.get(id) {
+                    self.module = module;
+                }
                 self.unsafe_depth += u32::from(*is_unsafe);
                 let ty = self.infer_block(stmts, *tail);
                 self.unsafe_depth -= u32::from(*is_unsafe);
+                self.module = outer;
                 ty
             }
             Expr::If {

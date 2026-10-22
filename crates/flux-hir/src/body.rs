@@ -34,6 +34,9 @@ pub struct Body {
     pub alt_by_ref: ArenaMap<Pat, Option<bool>>,
     /// The function's block.
     pub root: ExprId,
+    /// The module of each block with items, where the names in it are
+    /// resolved.
+    pub block_modules: ArenaMap<Expr, crate::ModuleId>,
 }
 
 /// Where each node of a [`Body`] came from. Desugared nodes map to the

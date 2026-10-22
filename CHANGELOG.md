@@ -277,6 +277,16 @@
   `unsafe` function outside `unsafe` is now rustc's. Constructors of
   tuple structs and variants as values, `extern` function pointer types
   and casts of functions to integers are not supported yet.
+- Support items inside function bodies and constants' values:
+  functions, structs, enums, `impl` blocks, traits, constants, statics,
+  type aliases, `use` declarations and inline modules declared in a
+  block. As in rustc, a block with items is an anonymous module: its
+  names are visible throughout it, before their declaration too, and
+  in the blocks inside it, shadowing outer ones; `self` and `super`
+  name the module around it, and its private items are private to that
+  module. An inner function cannot use its outer function's locals
+  (E0434), generic parameters or `Self` (E0401), nor a constant a local
+  (E0435); a file module may not be declared in a block.
 
 ### Performance
 
