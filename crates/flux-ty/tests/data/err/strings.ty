@@ -1,0 +1,23 @@
+fn by_value({error}) -> ()
+    s@0: {error}
+fn mismatches(&str) -> ()
+    s@0: &str
+    a@1: &str
+    b@2: &[u8]
+    c@3: char
+    d@4: {error}
+    e@5: {error}
+    f@6: bool
+    g@7: bool
+fn index(&str) -> u8
+    s@0: &str
+fn main() -> ()
+error 15..18: the size for values of type `str` cannot be known at compilation time
+error 67..75: mismatched types: expected `&str`, found `&[u8; 5]`
+error 96..102: mismatched types: expected `&[u8]`, found `&str`
+error 122..125: mismatched types: expected `char`, found `&str`
+error 141..142: cannot add `&str` to `&str`
+error 171..172: cannot add `char` to `usize`
+error 192..194: can't compare `&str` with `char`
+error 226..227: the trait bound `{integer}: Pattern` is not satisfied
+error 265..266: the type `str` cannot be indexed by `{integer}`

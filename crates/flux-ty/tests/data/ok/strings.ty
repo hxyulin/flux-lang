@@ -1,0 +1,19 @@
+struct Entry<'a> { key: &str, value: u32 }
+fn first_char(&str) -> Option<char>
+    s@0: &str
+fn bytes(&str) -> &[u8]
+    s@0: &str
+fn main() -> ()
+    s@0: &str
+    n@1: usize
+    empty@2: bool
+    c@3: Option<char>
+    b@4: &[u8]
+    same@5: bool
+    starts@6: bool
+    entry@7: Entry
+    parsed@8: Result<&str, Utf8Error>
+    count@9: usize
+    p@10: *const u8
+const NAME: &str
+const RAW: &str

@@ -55,6 +55,7 @@ const CORE_FILES: &[(&str, &str)] = &[
     ),
     ("char.rs", include_str!("../../../library/core/src/char.rs")),
     ("ffi.rs", include_str!("../../../library/core/src/ffi.rs")),
+    ("str.rs", include_str!("../../../library/core/src/str.rs")),
     (
         "clone.rs",
         include_str!("../../../library/core/src/clone.rs"),

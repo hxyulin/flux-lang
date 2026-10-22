@@ -3049,6 +3049,19 @@ impl Ctx<'_> {
                 self.annotations_needed(base, var, self.range(base));
                 return Ty::ERROR;
             }
+            // A `str` is indexed only by ranges, as rustc's `Index`
+            // impls for it say.
+            TyKind::Str => {
+                let index_ty = self.shallow(index_ty);
+                let message = if let TyKind::Adt(..) = index_ty.kind() {
+                    "indexing `str` by ranges is not supported yet".to_owned()
+                } else {
+                    let index_ty = self.describe(index_ty);
+                    format!("the type `str` cannot be indexed by `{index_ty}`")
+                };
+                self.error(self.range(index), message);
+                return Ty::ERROR;
+            }
             _ => {
                 let ty = self.describe(ty);
                 self.error(
@@ -3777,10 +3790,11 @@ impl Ctx<'_> {
         if !overloadable && !reference_rhs {
             // An integer or `bool` on the left and another type on the
             // right: no `impl` block of `core`'s takes it.
-            let other = matches!(
-                self.shallow(rhs_ty).kind(),
-                TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_)
-            );
+            let other = match self.shallow(rhs_ty).kind() {
+                TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) => true,
+                TyKind::Char => operand != Ty::CHAR,
+                _ => false,
+            };
             let primitive = self.is_primitive_operand(operand) && operand != Ty::ERROR;
             // Unless the program implements it: `impl Add<S> for i32`.
             if other
