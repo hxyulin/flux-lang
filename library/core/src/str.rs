@@ -1584,6 +1584,9 @@ pub struct Bytes<'a> {
 
 impl<'a> Iterator for Bytes<'a> {
     type Item = u8;
+    const __TRUSTED_LEN: bool = true;
+    const __RANDOM_ACCESS: bool = true;
+    const __MAY_HAVE_SIDE_EFFECT: bool = false;
 
     fn next(&mut self) -> Option<u8> {
         if self.front < self.back {
@@ -1597,6 +1600,10 @@ impl<'a> Iterator for Bytes<'a> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         let n = self.back - self.front;
         (n, Some(n))
+    }
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> u8 {
+        self.bytes[self.front + idx]
     }
 }
 

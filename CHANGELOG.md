@@ -914,6 +914,24 @@
   where its elements are in memory, so code read them at other offsets.
   A constant's bytes are now written field by field at the offsets of
   the layout code reads and writes them with.
+- Make `Zip` behave as rustc's specialized one, whose closures ran
+  differently: `a.iter().map(f).zip(0..2).fold(..)` called `f` for a
+  third item. `core` marks the iterators rustc's specializations trust
+  (`TrustedLen`, `TrustedRandomAccess`) with hidden constants of
+  `Iterator`: pairs of slice, range, `str::bytes` and chunk iterators
+  and adapters of them are got by index in `next`, `nth`, `next_back`
+  and `fold`, and `fold` of iterators that know their lengths takes as
+  many pairs as the shorter has. `Zip` is a `DoubleEndedIterator` of
+  exact-size iterators; `count`, `last`, `for_each`, `sum`, `product`,
+  `max`, `min` and their forms, `partition`, `unzip` and collecting
+  `()` fold, and adapters fold (and `rfold`) their inner iterators, as
+  rustc's do; `eq` of iterators that know their lengths compares none
+  of their items when the lengths differ; and flattening arrays has
+  rustc's `size_hint`. The constants, `#[rustc_specialization]` in
+  `core`, leave `Iterator` dyn compatible, as rustc's specializations
+  do. An impl method's bound naming a type its block gives an
+  associated type (`G: FnMut(Acc, B)` where `Item = B`) is no longer
+  E0276 against the trait's (`F: FnMut(B, Self::Item)`).
 
 ### Performance
 

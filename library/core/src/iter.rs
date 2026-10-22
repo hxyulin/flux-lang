@@ -26,28 +26,53 @@ pub trait Iterator {
         (0, None)
     }
 
-    /// How many items are left, going through them.
-    fn count(mut self) -> usize
+    // What rustc's `core` learns by specializing on its unstable marker
+    // traits, which `Zip` (and `Iterator::eq`) behave differently for,
+    // as constants: flux has no specialization.
+
+    /// rustc's `TrustedLen`: `size_hint` is exact when its upper bound is
+    /// `Some`, and a `None` one means more items than `usize` holds.
+    #[doc(hidden)]
+    #[rustc_specialization]
+    const __TRUSTED_LEN: bool = false;
+    /// rustc's `TrustedRandomAccess`: `size_hint` is exact, and
+    /// `__iterator_get_unchecked` gives the item at an index from the
+    /// front without advancing.
+    #[doc(hidden)]
+    #[rustc_specialization]
+    const __RANDOM_ACCESS: bool = false;
+    /// rustc's `TrustedRandomAccessNoCoerce::MAY_HAVE_SIDE_EFFECT`:
+    /// whether getting an item may run code with effects, as a closure.
+    #[doc(hidden)]
+    #[rustc_specialization]
+    const __MAY_HAVE_SIDE_EFFECT: bool = true;
+
+    /// The item `idx` places from the front, of an iterator with
+    /// `__RANDOM_ACCESS`, leaving it where it is; as rustc's, each index
+    /// is asked for once at most.
+    #[doc(hidden)]
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> Self::Item
     where
         Self: Sized,
     {
-        let mut n = 0;
-        while let Some(_) = self.next() {
-            n += 1;
-        }
-        n
+        let _ = idx;
+        crate::panicking::panic("internal error: entered unreachable code")
+    }
+
+    /// How many items are left, going through them.
+    fn count(self) -> usize
+    where
+        Self: Sized,
+    {
+        self.fold(0, |count, _| count + 1)
     }
 
     /// The last item.
-    fn last(mut self) -> Option<Self::Item>
+    fn last(self) -> Option<Self::Item>
     where
         Self: Sized,
     {
-        let mut last = None;
-        while let Some(x) = self.next() {
-            last = Some(x);
-        }
-        last
+        self.fold(None, |_, x| Some(x))
     }
 
     /// The `n`th item from here, counting from 0.
@@ -93,10 +118,7 @@ pub trait Iterator {
     where
         Self: Sized,
     {
-        Zip {
-            a: self,
-            b: other.into_iter(),
-        }
+        Zip::new(self, other.into_iter())
     }
 
     /// `f` of each item.
@@ -108,13 +130,11 @@ pub trait Iterator {
     }
 
     /// Calls `f` with each item.
-    fn for_each<F: FnMut(Self::Item)>(mut self, mut f: F)
+    fn for_each<F: FnMut(Self::Item)>(self, mut f: F)
     where
         Self: Sized,
     {
-        while let Some(x) = self.next() {
-            f(x);
-        }
+        self.fold((), |(), x| f(x));
     }
 
     /// The items `predicate` is `true` for.
@@ -221,7 +241,7 @@ pub trait Iterator {
     }
 
     /// The items `f` is `true` for, and the others, each in a collection.
-    fn partition<B, F>(mut self, mut f: F) -> (B, B)
+    fn partition<B, F>(self, mut f: F) -> (B, B)
     where
         Self: Sized,
         B: crate::default::Default + Extend<Self::Item>,
@@ -229,13 +249,13 @@ pub trait Iterator {
     {
         let mut left: B = B::default();
         let mut right: B = B::default();
-        while let Some(x) = self.next() {
+        self.fold((), |(), x| {
             if f(&x) {
                 left.extend(Some(x));
             } else {
                 right.extend(Some(x));
             }
-        }
+        });
         (left, right)
     }
 
@@ -363,13 +383,8 @@ pub trait Iterator {
         Self: Sized,
         Self::Item: Ord,
     {
-        let mut best = self.next()?;
-        while let Some(x) = self.next() {
-            if x >= best {
-                best = x;
-            }
-        }
-        Some(best)
+        let first = self.next()?;
+        Some(self.fold(first, |best, x| if best.cmp(&x).is_gt() { best } else { x }))
     }
 
     /// The smallest item, the first of equal ones.
@@ -378,13 +393,8 @@ pub trait Iterator {
         Self: Sized,
         Self::Item: Ord,
     {
-        let mut best = self.next()?;
-        while let Some(x) = self.next() {
-            if x < best {
-                best = x;
-            }
-        }
-        Some(best)
+        let first = self.next()?;
+        Some(self.fold(first, |best, x| if best.cmp(&x).is_gt() { x } else { best }))
     }
 
     /// The largest item by `compare`, the last of equal ones.
@@ -395,13 +405,10 @@ pub trait Iterator {
     where
         Self: Sized,
     {
-        let mut best = self.next()?;
-        while let Some(x) = self.next() {
-            if !compare(&best, &x).is_gt() {
-                best = x;
-            }
-        }
-        Some(best)
+        let first = self.next()?;
+        Some(self.fold(first, |best, x| {
+            if !compare(&best, &x).is_gt() { x } else { best }
+        }))
     }
 
     /// The smallest item by `compare`, the first of equal ones.
@@ -412,13 +419,10 @@ pub trait Iterator {
     where
         Self: Sized,
     {
-        let mut best = self.next()?;
-        while let Some(x) = self.next() {
-            if compare(&best, &x).is_gt() {
-                best = x;
-            }
-        }
-        Some(best)
+        let first = self.next()?;
+        Some(self.fold(first, |best, x| {
+            if compare(&best, &x).is_gt() { x } else { best }
+        }))
     }
 
     /// The item for which `f` is largest, the last of equal ones.
@@ -426,15 +430,12 @@ pub trait Iterator {
     where
         Self: Sized,
     {
-        let mut best = self.next()?;
-        let mut best_key = f(&best);
-        while let Some(x) = self.next() {
+        let first = self.next()?;
+        let first_key = f(&first);
+        let (_, best) = self.fold((first_key, first), |(best_key, best), x| {
             let key = f(&x);
-            if key >= best_key {
-                best = x;
-                best_key = key;
-            }
-        }
+            if best_key.cmp(&key).is_gt() { (best_key, best) } else { (key, x) }
+        });
         Some(best)
     }
 
@@ -443,15 +444,12 @@ pub trait Iterator {
     where
         Self: Sized,
     {
-        let mut best = self.next()?;
-        let mut best_key = f(&best);
-        while let Some(x) = self.next() {
+        let first = self.next()?;
+        let first_key = f(&first);
+        let (_, best) = self.fold((first_key, first), |(best_key, best), x| {
             let key = f(&x);
-            if key < best_key {
-                best = x;
-                best_key = key;
-            }
-        }
+            if best_key.cmp(&key).is_gt() { (key, x) } else { (best_key, best) }
+        });
         Some(best)
     }
 
@@ -612,6 +610,15 @@ pub trait Iterator {
         Self::Item: crate::cmp::PartialEq<I::Item>,
     {
         let mut other = other.into_iter();
+        // As rustc's, iterators that know their lengths differ are not
+        // compared.
+        if Self::__TRUSTED_LEN && trusted_len(&other) {
+            match (self.size_hint().1, other.size_hint().1) {
+                (Some(a), Some(b)) if a == b => {}
+                (None, None) => {}
+                _ => return false,
+            }
+        }
         loop {
             match self.next() {
                 None => return other.next().is_none(),
@@ -628,10 +635,27 @@ pub trait Iterator {
     }
 }
 
+/// Whether `I` is rustc's `TrustedLen`.
+fn trusted_len<I: Iterator>(_: &I) -> bool {
+    I::__TRUSTED_LEN
+}
+
 /// An iterator that can give its items from the back too.
 pub trait DoubleEndedIterator: Iterator {
     /// The last item, taken off the back.
     fn next_back(&mut self) -> Option<Self::Item>;
+
+    /// `f(f(f(init, c), b), a)` for the items `a`, `b` and `c`.
+    fn rfold<B, F: FnMut(B, Self::Item) -> B>(mut self, init: B, mut f: F) -> B
+    where
+        Self: Sized,
+    {
+        let mut accum = init;
+        while let Some(x) = self.next_back() {
+            accum = f(accum, x);
+        }
+        accum
+    }
 
     /// The `n`th item from the back.
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
@@ -691,6 +715,7 @@ pub trait ExactSizeIterator: Iterator {
 /// A mutable reference to an iterator is one.
 impl<I: Iterator + ?Sized> Iterator for &mut I {
     type Item = I::Item;
+    const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
 
     fn next(&mut self) -> Option<I::Item> {
         (**self).next()
@@ -727,6 +752,40 @@ pub trait IntoIterator {
     type IntoIter: Iterator<Item = Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter;
+
+    /// rustc's `ConstSizeIntoIterator`: how many items every value's
+    /// iterator gives, for arrays and references to them.
+    #[doc(hidden)]
+    #[rustc_specialization]
+    const __CONST_SIZE: Option<usize> = None;
+}
+
+/// `size_hint` of flattening iterators of `iter`, with items `U`, whose
+/// front and back inner iterators have `front` and `back` left.
+fn flatten_size_hint<I: Iterator, U: IntoIterator>(
+    iter: &I,
+    front: (usize, Option<usize>),
+    back: (usize, Option<usize>),
+) -> (usize, Option<usize>) {
+    let (flo, fhi) = front;
+    let (blo, bhi) = back;
+    let lo = flo.saturating_add(blo);
+    if let Some(fixed_size) = U::__CONST_SIZE {
+        let (lower, upper) = iter.size_hint();
+        let lower = lower.saturating_mul(fixed_size).saturating_add(lo);
+        let upper = match (fhi, bhi, upper) {
+            (Some(f), Some(b), Some(upper)) => match (f.checked_add(b), fixed_size.checked_mul(upper)) {
+                (Some(fb), Some(inner)) => fb.checked_add(inner),
+                _ => None,
+            },
+            _ => None,
+        };
+        return (lower, upper);
+    }
+    match (iter.size_hint(), fhi, bhi) {
+        ((0, Some(0)), Some(a), Some(b)) => (lo, a.checked_add(b)),
+        _ => (lo, None),
+    }
 }
 
 /// An iterator is its own.
@@ -765,10 +824,34 @@ pub trait Step: Copy + PartialOrd<Self> {
     fn forward_one(self) -> Self;
     /// The value before.
     fn backward_one(self) -> Self;
+
+    /// rustc's `TrustedRandomAccess` for `Range<Self>`: the integers
+    /// whose ranges' lengths fit in `usize`.
+    #[doc(hidden)]
+    const __RANDOM_ACCESS: bool = false;
+
+    /// The value `n` steps on, which the caller knows is in range.
+    #[doc(hidden)]
+    fn __forward_unchecked(self, n: usize) -> Self {
+        let mut x = self;
+        let mut n = n;
+        while n > 0 {
+            x = x.forward_one();
+            n -= 1;
+        }
+        x
+    }
 }
 
 impl<A: Step> Iterator for Range<A> {
     type Item = A;
+    const __TRUSTED_LEN: bool = true;
+    const __RANDOM_ACCESS: bool = A::__RANDOM_ACCESS;
+    const __MAY_HAVE_SIDE_EFFECT: bool = false;
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> A {
+        self.start.__forward_unchecked(idx)
+    }
 
     fn next(&mut self) -> Option<A> {
         if self.start < self.end {
@@ -802,6 +885,7 @@ impl<A: Step> DoubleEndedIterator for Range<A> {
 
 impl<A: Step> Iterator for RangeFrom<A> {
     type Item = A;
+    const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<A> {
         let n = self.start;
@@ -816,6 +900,7 @@ impl<A: Step> Iterator for RangeFrom<A> {
 
 impl<A: Step> Iterator for RangeInclusive<A> {
     type Item = A;
+    const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<A> {
         if self.exhausted || !(self.start <= self.end) {
@@ -867,6 +952,8 @@ pub struct Map<I, F> {
 
 impl<B, I: Iterator, F: FnMut(I::Item) -> B> Iterator for Map<I, F> {
     type Item = B;
+    const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
+    const __RANDOM_ACCESS: bool = I::__RANDOM_ACCESS;
 
     fn next(&mut self) -> Option<B> {
         match self.iter.next() {
@@ -878,6 +965,15 @@ impl<B, I: Iterator, F: FnMut(I::Item) -> B> Iterator for Map<I, F> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
     }
+
+    fn fold<Acc, G: FnMut(Acc, B) -> Acc>(self, init: Acc, mut g: G) -> Acc {
+        let mut f = self.f;
+        self.iter.fold(init, move |acc, x| g(acc, f(x)))
+    }
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> B {
+        (self.f)(self.iter.__iterator_get_unchecked(idx))
+    }
 }
 
 impl<B, I: DoubleEndedIterator, F: FnMut(I::Item) -> B> DoubleEndedIterator for Map<I, F> {
@@ -886,6 +982,11 @@ impl<B, I: DoubleEndedIterator, F: FnMut(I::Item) -> B> DoubleEndedIterator for 
             Some(x) => Some((self.f)(x)),
             None => None,
         }
+    }
+
+    fn rfold<Acc, G: FnMut(Acc, B) -> Acc>(self, init: Acc, mut g: G) -> Acc {
+        let mut f = self.f;
+        self.iter.rfold(init, move |acc, x| g(acc, f(x)))
     }
 }
 
@@ -912,6 +1013,11 @@ impl<I: Iterator, P: FnMut(&I::Item) -> bool> Iterator for Filter<I, P> {
         let (_, upper) = self.iter.size_hint();
         (0, upper)
     }
+
+    fn fold<Acc, G: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, mut g: G) -> Acc {
+        let mut predicate = self.predicate;
+        self.iter.fold(init, move |acc, x| if predicate(&x) { g(acc, x) } else { acc })
+    }
 }
 
 impl<I: DoubleEndedIterator, P: FnMut(&I::Item) -> bool> DoubleEndedIterator for Filter<I, P> {
@@ -922,6 +1028,11 @@ impl<I: DoubleEndedIterator, P: FnMut(&I::Item) -> bool> DoubleEndedIterator for
             }
         }
         None
+    }
+
+    fn rfold<Acc, G: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, mut g: G) -> Acc {
+        let mut predicate = self.predicate;
+        self.iter.rfold(init, move |acc, x| if predicate(&x) { g(acc, x) } else { acc })
     }
 }
 
@@ -948,6 +1059,14 @@ impl<B, I: Iterator, F: FnMut(I::Item) -> Option<B>> Iterator for FilterMap<I, F
         let (_, upper) = self.iter.size_hint();
         (0, upper)
     }
+
+    fn fold<Acc, G: FnMut(Acc, B) -> Acc>(self, init: Acc, mut g: G) -> Acc {
+        let mut f = self.f;
+        self.iter.fold(init, move |acc, x| match f(x) {
+            Some(y) => g(acc, y),
+            None => acc,
+        })
+    }
 }
 
 impl<B, I: DoubleEndedIterator, F: FnMut(I::Item) -> Option<B>> DoubleEndedIterator
@@ -961,6 +1080,14 @@ impl<B, I: DoubleEndedIterator, F: FnMut(I::Item) -> Option<B>> DoubleEndedItera
         }
         None
     }
+
+    fn rfold<Acc, G: FnMut(Acc, B) -> Acc>(self, init: Acc, mut g: G) -> Acc {
+        let mut f = self.f;
+        self.iter.rfold(init, move |acc, x| match f(x) {
+            Some(y) => g(acc, y),
+            None => acc,
+        })
+    }
 }
 
 /// [`Iterator::enumerate`]'s.
@@ -972,6 +1099,9 @@ pub struct Enumerate<I> {
 
 impl<I: Iterator> Iterator for Enumerate<I> {
     type Item = (usize, I::Item);
+    const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
+    const __RANDOM_ACCESS: bool = I::__RANDOM_ACCESS;
+    const __MAY_HAVE_SIDE_EFFECT: bool = I::__MAY_HAVE_SIDE_EFFECT;
 
     fn next(&mut self) -> Option<(usize, I::Item)> {
         let a = self.iter.next()?;
@@ -983,6 +1113,20 @@ impl<I: Iterator> Iterator for Enumerate<I> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
     }
+
+    fn fold<Acc, G: FnMut(Acc, (usize, I::Item)) -> Acc>(self, init: Acc, mut g: G) -> Acc {
+        let mut count = self.count;
+        self.iter.fold(init, move |acc, x| {
+            let acc = g(acc, (count, x));
+            count += 1;
+            acc
+        })
+    }
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> (usize, I::Item) {
+        let value = self.iter.__iterator_get_unchecked(idx);
+        (self.count + idx, value)
+    }
 }
 
 impl<I: ExactSizeIterator + DoubleEndedIterator> DoubleEndedIterator for Enumerate<I> {
@@ -990,6 +1134,14 @@ impl<I: ExactSizeIterator + DoubleEndedIterator> DoubleEndedIterator for Enumera
         let a = self.iter.next_back()?;
         let len = self.iter.len();
         Some((self.count + len, a))
+    }
+
+    fn rfold<Acc, G: FnMut(Acc, (usize, I::Item)) -> Acc>(self, init: Acc, mut g: G) -> Acc {
+        let mut count = self.count + self.iter.len();
+        self.iter.rfold(init, move |acc, x| {
+            count -= 1;
+            g(acc, (count, x))
+        })
     }
 }
 
@@ -1000,22 +1152,75 @@ impl<I: ExactSizeIterator> ExactSizeIterator for Enumerate<I> {
 }
 
 /// [`Iterator::zip`]'s.
+///
+/// As rustc's, it is specialized for iterators it can trust: pairs of
+/// iterators with random access (`__RANDOM_ACCESS`: slices', ranges'
+/// and adapters' of them that keep positions) are got by index, so
+/// neither iterator gives an item the other cannot pair, and `fold` of
+/// iterators that know their lengths (`__TRUSTED_LEN`) takes as many
+/// pairs as the shorter has. Otherwise `next` takes an item from the
+/// first iterator before finding the second empty.
 #[derive(Clone)]
 pub struct Zip<A, B> {
     a: A,
     b: B,
+    // With random access only: the index of the next pair, and the
+    // number of pairs.
+    index: usize,
+    len: usize,
+}
+
+impl<A: Iterator, B: Iterator> Zip<A, B> {
+    fn new(a: A, b: B) -> Zip<A, B> {
+        let len = if A::__RANDOM_ACCESS && B::__RANDOM_ACCESS {
+            crate::cmp::min(a.size_hint().0, b.size_hint().0)
+        } else {
+            0
+        };
+        Zip { a, b, index: 0, len }
+    }
+
+    /// The `n`th pair from here, taking pairs one at a time.
+    fn super_nth(&mut self, mut n: usize) -> Option<(A::Item, B::Item)> {
+        while let Some(x) = self.next() {
+            if n == 0 {
+                return Some(x);
+            }
+            n -= 1;
+        }
+        None
+    }
 }
 
 impl<A: Iterator, B: Iterator> Iterator for Zip<A, B> {
     type Item = (A::Item, B::Item);
+    const __TRUSTED_LEN: bool = A::__TRUSTED_LEN && B::__TRUSTED_LEN;
+    const __RANDOM_ACCESS: bool = A::__RANDOM_ACCESS && B::__RANDOM_ACCESS;
+    const __MAY_HAVE_SIDE_EFFECT: bool = A::__MAY_HAVE_SIDE_EFFECT || B::__MAY_HAVE_SIDE_EFFECT;
 
     fn next(&mut self) -> Option<(A::Item, B::Item)> {
-        let x = self.a.next()?;
-        let y = self.b.next()?;
-        Some((x, y))
+        if A::__RANDOM_ACCESS && B::__RANDOM_ACCESS {
+            if self.index < self.len {
+                let i = self.index;
+                self.index += 1;
+                let x = self.a.__iterator_get_unchecked(i);
+                let y = self.b.__iterator_get_unchecked(i);
+                Some((x, y))
+            } else {
+                None
+            }
+        } else {
+            let x = self.a.next()?;
+            let y = self.b.next()?;
+            Some((x, y))
+        }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
+        if A::__RANDOM_ACCESS && B::__RANDOM_ACCESS {
+            let len = self.len - self.index;
+            return (len, Some(len));
+        }
         let (a_lower, a_upper) = self.a.size_hint();
         let (b_lower, b_upper) = self.b.size_hint();
         let lower = crate::cmp::min(a_lower, b_lower);
@@ -1026,6 +1231,131 @@ impl<A: Iterator, B: Iterator> Iterator for Zip<A, B> {
             (None, None) => None,
         };
         (lower, upper)
+    }
+
+    fn nth(&mut self, n: usize) -> Option<(A::Item, B::Item)> {
+        if A::__RANDOM_ACCESS && B::__RANDOM_ACCESS {
+            // The pairs skipped are got only for their effects.
+            let delta = crate::cmp::min(n, self.len - self.index);
+            let end = self.index + delta;
+            while self.index < end {
+                let i = self.index;
+                self.index += 1;
+                if A::__MAY_HAVE_SIDE_EFFECT {
+                    let _ = self.a.__iterator_get_unchecked(i);
+                }
+                if B::__MAY_HAVE_SIDE_EFFECT {
+                    let _ = self.b.__iterator_get_unchecked(i);
+                }
+            }
+            self.super_nth(n - delta)
+        } else {
+            self.super_nth(n)
+        }
+    }
+
+    fn fold<Acc, F: FnMut(Acc, (A::Item, B::Item)) -> Acc>(mut self, init: Acc, mut f: F) -> Acc {
+        let mut accum = init;
+        if A::__RANDOM_ACCESS && B::__RANDOM_ACCESS {
+            let mut i = self.index;
+            while i < self.len {
+                let x = self.a.__iterator_get_unchecked(i);
+                let y = self.b.__iterator_get_unchecked(i);
+                accum = f(accum, (x, y));
+                i += 1;
+            }
+            return accum;
+        }
+        if A::__TRUSTED_LEN && B::__TRUSTED_LEN {
+            // As many pairs as the shorter has; an upper bound of `None`
+            // means both are longer than `usize` counts.
+            if let Some(upper) = self.size_hint().1 {
+                let mut n = 0;
+                while n < upper {
+                    let x = self.a.next();
+                    let y = self.b.next();
+                    match (x, y) {
+                        (Some(x), Some(y)) => accum = f(accum, (x, y)),
+                        _ => return accum,
+                    }
+                    n += 1;
+                }
+                return accum;
+            }
+        }
+        while let Some(x) = self.next() {
+            accum = f(accum, x);
+        }
+        accum
+    }
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> (A::Item, B::Item) {
+        let i = self.index + idx;
+        let x = self.a.__iterator_get_unchecked(i);
+        let y = self.b.__iterator_get_unchecked(i);
+        (x, y)
+    }
+}
+
+impl<A, B> DoubleEndedIterator for Zip<A, B>
+where
+    A: DoubleEndedIterator + ExactSizeIterator,
+    B: DoubleEndedIterator + ExactSizeIterator,
+{
+    fn next_back(&mut self) -> Option<(A::Item, B::Item)> {
+        if A::__RANDOM_ACCESS && B::__RANDOM_ACCESS {
+            if self.index >= self.len {
+                return None;
+            }
+            let old_len = self.len;
+            self.len -= 1;
+            // The first time, the longer iterator gives up the items it
+            // has past the shorter, for their effects.
+            if A::__MAY_HAVE_SIDE_EFFECT || B::__MAY_HAVE_SIDE_EFFECT {
+                let sz_a = self.a.size_hint().0;
+                let sz_b = self.b.size_hint().0;
+                if sz_a != sz_b && (old_len == sz_a || old_len == sz_b) {
+                    if A::__MAY_HAVE_SIDE_EFFECT && sz_a > old_len {
+                        let mut n = sz_a - old_len;
+                        while n > 0 {
+                            self.a.next_back();
+                            n -= 1;
+                        }
+                    }
+                    if B::__MAY_HAVE_SIDE_EFFECT && sz_b > old_len {
+                        let mut n = sz_b - old_len;
+                        while n > 0 {
+                            self.b.next_back();
+                            n -= 1;
+                        }
+                    }
+                }
+            }
+            let i = self.len;
+            let x = self.a.__iterator_get_unchecked(i);
+            let y = self.b.__iterator_get_unchecked(i);
+            return Some((x, y));
+        }
+        let a_sz = self.a.len();
+        let b_sz = self.b.len();
+        if a_sz > b_sz {
+            let mut n = a_sz - b_sz;
+            while n > 0 {
+                self.a.next_back();
+                n -= 1;
+            }
+        } else if b_sz > a_sz {
+            let mut n = b_sz - a_sz;
+            while n > 0 {
+                self.b.next_back();
+                n -= 1;
+            }
+        }
+        match (self.a.next_back(), self.b.next_back()) {
+            (Some(x), Some(y)) => Some((x, y)),
+            (None, None) => None,
+            _ => crate::panicking::panic("internal error: entered unreachable code"),
+        }
     }
 }
 
@@ -1040,6 +1370,18 @@ pub struct Chain<A, B> {
 
 impl<A: Iterator, B: Iterator<Item = A::Item>> Iterator for Chain<A, B> {
     type Item = A::Item;
+    const __TRUSTED_LEN: bool = A::__TRUSTED_LEN && B::__TRUSTED_LEN;
+
+    fn fold<Acc, F: FnMut(Acc, A::Item) -> Acc>(self, init: Acc, mut f: F) -> Acc {
+        let mut acc = init;
+        if let Some(a) = self.a {
+            acc = a.fold(acc, |acc, x| f(acc, x));
+        }
+        if let Some(b) = self.b {
+            acc = b.fold(acc, |acc, x| f(acc, x));
+        }
+        acc
+    }
 
     fn next(&mut self) -> Option<A::Item> {
         if let Some(a) = &mut self.a {
@@ -1088,6 +1430,17 @@ impl<A: DoubleEndedIterator, B: DoubleEndedIterator<Item = A::Item>> DoubleEnded
             None => None,
         }
     }
+
+    fn rfold<Acc, F: FnMut(Acc, A::Item) -> Acc>(self, init: Acc, mut f: F) -> Acc {
+        let mut acc = init;
+        if let Some(b) = self.b {
+            acc = b.rfold(acc, |acc, x| f(acc, x));
+        }
+        if let Some(a) = self.a {
+            acc = a.rfold(acc, |acc, x| f(acc, x));
+        }
+        acc
+    }
 }
 
 /// [`Iterator::take`]'s.
@@ -1099,6 +1452,7 @@ pub struct Take<I> {
 
 impl<I: Iterator> Iterator for Take<I> {
     type Item = I::Item;
+    const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
 
     fn next(&mut self) -> Option<I::Item> {
         if self.n != 0 {
@@ -1147,6 +1501,28 @@ pub struct Skip<I> {
 
 impl<I: Iterator> Iterator for Skip<I> {
     type Item = I::Item;
+    const __TRUSTED_LEN: bool = I::__RANDOM_ACCESS;
+    const __RANDOM_ACCESS: bool = I::__RANDOM_ACCESS;
+    const __MAY_HAVE_SIDE_EFFECT: bool = I::__MAY_HAVE_SIDE_EFFECT;
+
+    fn fold<Acc, F: FnMut(Acc, I::Item) -> Acc>(mut self, init: Acc, f: F) -> Acc {
+        if self.n > 0 && self.iter.nth(self.n - 1).is_none() {
+            return init;
+        }
+        self.iter.fold(init, f)
+    }
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> I::Item {
+        // As rustc's: the items skipped are got with the first.
+        if I::__MAY_HAVE_SIDE_EFFECT && idx == 0 {
+            let mut skipped = 0;
+            while skipped < self.n {
+                let _ = self.iter.__iterator_get_unchecked(skipped);
+                skipped += 1;
+            }
+        }
+        self.iter.__iterator_get_unchecked(idx + self.n)
+    }
 
     fn next(&mut self) -> Option<I::Item> {
         while self.n > 0 {
@@ -1220,6 +1596,17 @@ pub struct SkipWhile<I, P> {
 impl<I: Iterator, P: FnMut(&I::Item) -> bool> Iterator for SkipWhile<I, P> {
     type Item = I::Item;
 
+    fn fold<Acc, F: FnMut(Acc, I::Item) -> Acc>(mut self, init: Acc, mut f: F) -> Acc {
+        let mut init = init;
+        if !self.flag {
+            match self.next() {
+                Some(v) => init = f(init, v),
+                None => return init,
+            }
+        }
+        self.iter.fold(init, f)
+    }
+
     fn next(&mut self) -> Option<I::Item> {
         loop {
             let x = self.iter.next()?;
@@ -1246,6 +1633,7 @@ pub struct StepBy<I> {
 
 impl<I: Iterator> Iterator for StepBy<I> {
     type Item = I::Item;
+    const __TRUSTED_LEN: bool = I::__RANDOM_ACCESS;
 
     fn next(&mut self) -> Option<I::Item> {
         if self.first_take {
@@ -1279,6 +1667,7 @@ pub struct Rev<I> {
 
 impl<I: DoubleEndedIterator> Iterator for Rev<I> {
     type Item = I::Item;
+    const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
 
     fn next(&mut self) -> Option<I::Item> {
         self.iter.next_back()
@@ -1287,11 +1676,19 @@ impl<I: DoubleEndedIterator> Iterator for Rev<I> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
     }
+
+    fn fold<Acc, F: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, f: F) -> Acc {
+        self.iter.rfold(init, f)
+    }
 }
 
 impl<I: DoubleEndedIterator> DoubleEndedIterator for Rev<I> {
     fn next_back(&mut self) -> Option<I::Item> {
         self.iter.next()
+    }
+
+    fn rfold<Acc, F: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, f: F) -> Acc {
+        self.iter.fold(init, f)
     }
 }
 
@@ -1307,6 +1704,17 @@ pub struct Copied<I> {
 
 impl<'a, T: Copy, I: Iterator<Item = &'a T>> Iterator for Copied<I> {
     type Item = T;
+    const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
+    const __RANDOM_ACCESS: bool = I::__RANDOM_ACCESS;
+    const __MAY_HAVE_SIDE_EFFECT: bool = I::__MAY_HAVE_SIDE_EFFECT;
+
+    fn fold<Acc, F: FnMut(Acc, T) -> Acc>(self, init: Acc, mut f: F) -> Acc {
+        self.it.fold(init, move |acc, &x| f(acc, x))
+    }
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> T {
+        *self.it.__iterator_get_unchecked(idx)
+    }
 
     fn next(&mut self) -> Option<T> {
         match self.it.next() {
@@ -1321,6 +1729,10 @@ impl<'a, T: Copy, I: Iterator<Item = &'a T>> Iterator for Copied<I> {
 }
 
 impl<'a, T: Copy, I: DoubleEndedIterator<Item = &'a T>> DoubleEndedIterator for Copied<I> {
+    fn rfold<Acc, F: FnMut(Acc, T) -> Acc>(self, init: Acc, mut f: F) -> Acc {
+        self.it.rfold(init, move |acc, &x| f(acc, x))
+    }
+
     fn next_back(&mut self) -> Option<T> {
         match self.it.next_back() {
             Some(&x) => Some(x),
@@ -1339,6 +1751,16 @@ pub struct Cloned<I> {
 
 impl<'a, T: Clone, I: Iterator<Item = &'a T>> Iterator for Cloned<I> {
     type Item = T;
+    const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
+    const __RANDOM_ACCESS: bool = I::__RANDOM_ACCESS;
+
+    fn fold<Acc, F: FnMut(Acc, T) -> Acc>(self, init: Acc, mut f: F) -> Acc {
+        self.it.fold(init, move |acc, x| f(acc, x.clone()))
+    }
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> T {
+        self.it.__iterator_get_unchecked(idx).clone()
+    }
 
     fn next(&mut self) -> Option<T> {
         match self.it.next() {
@@ -1353,6 +1775,10 @@ impl<'a, T: Clone, I: Iterator<Item = &'a T>> Iterator for Cloned<I> {
 }
 
 impl<'a, T: Clone, I: DoubleEndedIterator<Item = &'a T>> DoubleEndedIterator for Cloned<I> {
+    fn rfold<Acc, F: FnMut(Acc, T) -> Acc>(self, init: Acc, mut f: F) -> Acc {
+        self.it.rfold(init, move |acc, x| f(acc, x.clone()))
+    }
+
     fn next_back(&mut self) -> Option<T> {
         match self.it.next_back() {
             Some(x) => Some(x.clone()),
@@ -1371,6 +1797,23 @@ pub struct Fuse<I> {
 
 impl<I: Iterator> Iterator for Fuse<I> {
     type Item = I::Item;
+    const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
+    const __RANDOM_ACCESS: bool = I::__RANDOM_ACCESS;
+    const __MAY_HAVE_SIDE_EFFECT: bool = I::__MAY_HAVE_SIDE_EFFECT;
+
+    fn fold<Acc, F: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, f: F) -> Acc {
+        match self.iter {
+            Some(iter) => iter.fold(init, f),
+            None => init,
+        }
+    }
+
+    fn __iterator_get_unchecked(&mut self, idx: usize) -> I::Item {
+        match &mut self.iter {
+            Some(iter) => iter.__iterator_get_unchecked(idx),
+            None => crate::panicking::panic("internal error: entered unreachable code"),
+        }
+    }
 
     fn next(&mut self) -> Option<I::Item> {
         match &mut self.iter {
@@ -1394,6 +1837,13 @@ impl<I: Iterator> Iterator for Fuse<I> {
 }
 
 impl<I: DoubleEndedIterator> DoubleEndedIterator for Fuse<I> {
+    fn rfold<Acc, F: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, f: F) -> Acc {
+        match self.iter {
+            Some(iter) => iter.rfold(init, f),
+            None => init,
+        }
+    }
+
     fn next_back(&mut self) -> Option<I::Item> {
         match &mut self.iter {
             Some(iter) => {
@@ -1420,6 +1870,14 @@ pub struct Inspect<I, F> {
 impl<I: Iterator, F: FnMut(&I::Item)> Iterator for Inspect<I, F> {
     type Item = I::Item;
 
+    fn fold<Acc, G: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, mut g: G) -> Acc {
+        let mut f = self.f;
+        self.iter.fold(init, move |acc, x| {
+            f(&x);
+            g(acc, x)
+        })
+    }
+
     fn next(&mut self) -> Option<I::Item> {
         let next = self.iter.next();
         if let Some(a) = &next {
@@ -1434,6 +1892,14 @@ impl<I: Iterator, F: FnMut(&I::Item)> Iterator for Inspect<I, F> {
 }
 
 impl<I: DoubleEndedIterator, F: FnMut(&I::Item)> DoubleEndedIterator for Inspect<I, F> {
+    fn rfold<Acc, G: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, mut g: G) -> Acc {
+        let mut f = self.f;
+        self.iter.rfold(init, move |acc, x| {
+            f(&x);
+            g(acc, x)
+        })
+    }
+
     fn next_back(&mut self) -> Option<I::Item> {
         let next = self.iter.next_back();
         if let Some(a) = &next {
@@ -1538,6 +2004,16 @@ where
 
 impl<I: Iterator> Iterator for Peekable<I> {
     type Item = I::Item;
+    const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
+
+    fn fold<Acc, F: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, mut f: F) -> Acc {
+        let acc = match self.peeked {
+            Some(None) => return init,
+            Some(Some(v)) => f(init, v),
+            None => init,
+        };
+        self.iter.fold(acc, f)
+    }
 
     fn next(&mut self) -> Option<I::Item> {
         match self.peeked.take() {
@@ -1563,6 +2039,17 @@ impl<I: Iterator> Iterator for Peekable<I> {
 }
 
 impl<I: DoubleEndedIterator> DoubleEndedIterator for Peekable<I> {
+    fn rfold<Acc, F: FnMut(Acc, I::Item) -> Acc>(self, init: Acc, mut f: F) -> Acc {
+        match self.peeked {
+            Some(None) => init,
+            Some(Some(v)) => {
+                let acc = self.iter.rfold(init, |acc, x| f(acc, x));
+                f(acc, v)
+            }
+            None => self.iter.rfold(init, f),
+        }
+    }
+
     fn next_back(&mut self) -> Option<I::Item> {
         match &self.peeked {
             Some(None) => None,
@@ -1646,6 +2133,22 @@ where
 
 impl<I: Iterator, U: IntoIterator, F: FnMut(I::Item) -> U> Iterator for FlatMap<I, U, F> {
     type Item = U::Item;
+    const __TRUSTED_LEN: bool = match U::__CONST_SIZE {
+        Some(_) => I::__TRUSTED_LEN,
+        None => false,
+    };
+
+    fn fold<Acc, G: FnMut(Acc, U::Item) -> Acc>(self, init: Acc, mut g: G) -> Acc {
+        let mut acc = init;
+        if let Some(front) = self.frontiter {
+            acc = front.fold(acc, |acc, x| g(acc, x));
+        }
+        acc = self.iter.fold(acc, |acc, inner| inner.into_iter().fold(acc, |acc, x| g(acc, x)));
+        if let Some(back) = self.backiter {
+            acc = back.fold(acc, |acc, x| g(acc, x));
+        }
+        acc
+    }
 
     fn next(&mut self) -> Option<U::Item> {
         loop {
@@ -1674,19 +2177,15 @@ impl<I: Iterator, U: IntoIterator, F: FnMut(I::Item) -> U> Iterator for FlatMap<
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let (flo, fhi) = match &self.frontiter {
+        let front = match &self.frontiter {
             Some(it) => it.size_hint(),
             None => (0, Some(0)),
         };
-        let (blo, bhi) = match &self.backiter {
+        let back = match &self.backiter {
             Some(it) => it.size_hint(),
             None => (0, Some(0)),
         };
-        let lo = flo.saturating_add(blo);
-        match (self.iter.size_hint(), fhi, bhi) {
-            ((0, Some(0)), Some(a), Some(b)) => (lo, a.checked_add(b)),
-            _ => (lo, None),
-        }
+        flatten_size_hint::<Fuse<Map<I, F>>, U>(&self.iter, front, back)
     }
 }
 
@@ -1752,6 +2251,26 @@ where
     I::Item: IntoIterator,
 {
     type Item = <I::Item as IntoIterator>::Item;
+    const __TRUSTED_LEN: bool = match <I::Item as IntoIterator>::__CONST_SIZE {
+        Some(_) => I::__TRUSTED_LEN,
+        None => false,
+    };
+
+    fn fold<Acc, G: FnMut(Acc, <I::Item as IntoIterator>::Item) -> Acc>(
+        self,
+        init: Acc,
+        mut g: G,
+    ) -> Acc {
+        let mut acc = init;
+        if let Some(front) = self.frontiter {
+            acc = front.fold(acc, |acc, x| g(acc, x));
+        }
+        acc = self.iter.fold(acc, |acc, inner| inner.into_iter().fold(acc, |acc, x| g(acc, x)));
+        if let Some(back) = self.backiter {
+            acc = back.fold(acc, |acc, x| g(acc, x));
+        }
+        acc
+    }
 
     fn next(&mut self) -> Option<<I::Item as IntoIterator>::Item> {
         loop {
@@ -1780,19 +2299,15 @@ where
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let (flo, fhi) = match &self.frontiter {
+        let front = match &self.frontiter {
             Some(it) => it.size_hint(),
             None => (0, Some(0)),
         };
-        let (blo, bhi) = match &self.backiter {
+        let back = match &self.backiter {
             Some(it) => it.size_hint(),
             None => (0, Some(0)),
         };
-        let lo = flo.saturating_add(blo);
-        match (self.iter.size_hint(), fhi, bhi) {
-            ((0, Some(0)), Some(a), Some(b)) => (lo, a.checked_add(b)),
-            _ => (lo, None),
-        }
+        flatten_size_hint::<Fuse<I>, I::Item>(&self.iter, front, back)
     }
 }
 
@@ -1832,77 +2347,77 @@ where
 // since flux has no macros. As in rustc, the ranges of the integers
 // up to 32 bits (and of `usize` and `isize`) know their length, and the
 // inclusive ones up to 16 bits.
-impl Step for i8 { fn forward_one(self) -> i8 { self.wrapping_add(1) } fn backward_one(self) -> i8 { self.wrapping_sub(1) } fn steps_between(start: &i8, end: &i8) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } }
-impl Sum for i8 { fn sum<I: Iterator<Item = i8>>(mut iter: I) -> i8 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a i8> for i8 { fn sum<I: Iterator<Item = &'a i8>>(mut iter: I) -> i8 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for i8 { fn product<I: Iterator<Item = i8>>(mut iter: I) -> i8 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a i8> for i8 { fn product<I: Iterator<Item = &'a i8>>(mut iter: I) -> i8 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for i8 { fn forward_one(self) -> i8 { self.wrapping_add(1) } fn backward_one(self) -> i8 { self.wrapping_sub(1) } fn steps_between(start: &i8, end: &i8) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } const __RANDOM_ACCESS: bool = true; fn __forward_unchecked(self, n: usize) -> i8 { self.wrapping_add(n as i8) } }
+impl Sum for i8 { fn sum<I: Iterator<Item = i8>>(iter: I) -> i8 { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a i8> for i8 { fn sum<I: Iterator<Item = &'a i8>>(iter: I) -> i8 { iter.fold(0, |total, x| total + *x) } }
+impl Product for i8 { fn product<I: Iterator<Item = i8>>(iter: I) -> i8 { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a i8> for i8 { fn product<I: Iterator<Item = &'a i8>>(iter: I) -> i8 { iter.fold(1, |total, x| total * *x) } }
 impl ExactSizeIterator for Range<i8> {}
 impl ExactSizeIterator for RangeInclusive<i8> {}
-impl Step for i16 { fn forward_one(self) -> i16 { self.wrapping_add(1) } fn backward_one(self) -> i16 { self.wrapping_sub(1) } fn steps_between(start: &i16, end: &i16) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } }
-impl Sum for i16 { fn sum<I: Iterator<Item = i16>>(mut iter: I) -> i16 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a i16> for i16 { fn sum<I: Iterator<Item = &'a i16>>(mut iter: I) -> i16 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for i16 { fn product<I: Iterator<Item = i16>>(mut iter: I) -> i16 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a i16> for i16 { fn product<I: Iterator<Item = &'a i16>>(mut iter: I) -> i16 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for i16 { fn forward_one(self) -> i16 { self.wrapping_add(1) } fn backward_one(self) -> i16 { self.wrapping_sub(1) } fn steps_between(start: &i16, end: &i16) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } const __RANDOM_ACCESS: bool = true; fn __forward_unchecked(self, n: usize) -> i16 { self.wrapping_add(n as i16) } }
+impl Sum for i16 { fn sum<I: Iterator<Item = i16>>(iter: I) -> i16 { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a i16> for i16 { fn sum<I: Iterator<Item = &'a i16>>(iter: I) -> i16 { iter.fold(0, |total, x| total + *x) } }
+impl Product for i16 { fn product<I: Iterator<Item = i16>>(iter: I) -> i16 { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a i16> for i16 { fn product<I: Iterator<Item = &'a i16>>(iter: I) -> i16 { iter.fold(1, |total, x| total * *x) } }
 impl ExactSizeIterator for Range<i16> {}
 impl ExactSizeIterator for RangeInclusive<i16> {}
-impl Step for i32 { fn forward_one(self) -> i32 { self.wrapping_add(1) } fn backward_one(self) -> i32 { self.wrapping_sub(1) } fn steps_between(start: &i32, end: &i32) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } }
-impl Sum for i32 { fn sum<I: Iterator<Item = i32>>(mut iter: I) -> i32 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a i32> for i32 { fn sum<I: Iterator<Item = &'a i32>>(mut iter: I) -> i32 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for i32 { fn product<I: Iterator<Item = i32>>(mut iter: I) -> i32 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a i32> for i32 { fn product<I: Iterator<Item = &'a i32>>(mut iter: I) -> i32 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for i32 { fn forward_one(self) -> i32 { self.wrapping_add(1) } fn backward_one(self) -> i32 { self.wrapping_sub(1) } fn steps_between(start: &i32, end: &i32) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } const __RANDOM_ACCESS: bool = true; fn __forward_unchecked(self, n: usize) -> i32 { self.wrapping_add(n as i32) } }
+impl Sum for i32 { fn sum<I: Iterator<Item = i32>>(iter: I) -> i32 { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a i32> for i32 { fn sum<I: Iterator<Item = &'a i32>>(iter: I) -> i32 { iter.fold(0, |total, x| total + *x) } }
+impl Product for i32 { fn product<I: Iterator<Item = i32>>(iter: I) -> i32 { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a i32> for i32 { fn product<I: Iterator<Item = &'a i32>>(iter: I) -> i32 { iter.fold(1, |total, x| total * *x) } }
 impl ExactSizeIterator for Range<i32> {}
-impl Step for i64 { fn forward_one(self) -> i64 { self.wrapping_add(1) } fn backward_one(self) -> i64 { self.wrapping_sub(1) } fn steps_between(start: &i64, end: &i64) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } }
-impl Sum for i64 { fn sum<I: Iterator<Item = i64>>(mut iter: I) -> i64 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a i64> for i64 { fn sum<I: Iterator<Item = &'a i64>>(mut iter: I) -> i64 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for i64 { fn product<I: Iterator<Item = i64>>(mut iter: I) -> i64 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a i64> for i64 { fn product<I: Iterator<Item = &'a i64>>(mut iter: I) -> i64 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for i64 { fn forward_one(self) -> i64 { self.wrapping_add(1) } fn backward_one(self) -> i64 { self.wrapping_sub(1) } fn steps_between(start: &i64, end: &i64) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } const __RANDOM_ACCESS: bool = true; fn __forward_unchecked(self, n: usize) -> i64 { self.wrapping_add(n as i64) } }
+impl Sum for i64 { fn sum<I: Iterator<Item = i64>>(iter: I) -> i64 { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a i64> for i64 { fn sum<I: Iterator<Item = &'a i64>>(iter: I) -> i64 { iter.fold(0, |total, x| total + *x) } }
+impl Product for i64 { fn product<I: Iterator<Item = i64>>(iter: I) -> i64 { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a i64> for i64 { fn product<I: Iterator<Item = &'a i64>>(iter: I) -> i64 { iter.fold(1, |total, x| total * *x) } }
 impl Step for i128 { fn forward_one(self) -> i128 { self.wrapping_add(1) } fn backward_one(self) -> i128 { self.wrapping_sub(1) } fn steps_between(start: &i128, end: &i128) -> (usize, Option<usize>) { if *start <= *end { let n = end.wrapping_sub(*start) as u128; if n <= usize::MAX as u128 { (n as usize, Some(n as usize)) } else { (usize::MAX, None) } } else { (0, None) } } }
-impl Sum for i128 { fn sum<I: Iterator<Item = i128>>(mut iter: I) -> i128 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a i128> for i128 { fn sum<I: Iterator<Item = &'a i128>>(mut iter: I) -> i128 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for i128 { fn product<I: Iterator<Item = i128>>(mut iter: I) -> i128 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a i128> for i128 { fn product<I: Iterator<Item = &'a i128>>(mut iter: I) -> i128 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
-impl Step for isize { fn forward_one(self) -> isize { self.wrapping_add(1) } fn backward_one(self) -> isize { self.wrapping_sub(1) } fn steps_between(start: &isize, end: &isize) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } }
-impl Sum for isize { fn sum<I: Iterator<Item = isize>>(mut iter: I) -> isize { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a isize> for isize { fn sum<I: Iterator<Item = &'a isize>>(mut iter: I) -> isize { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for isize { fn product<I: Iterator<Item = isize>>(mut iter: I) -> isize { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a isize> for isize { fn product<I: Iterator<Item = &'a isize>>(mut iter: I) -> isize { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Sum for i128 { fn sum<I: Iterator<Item = i128>>(iter: I) -> i128 { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a i128> for i128 { fn sum<I: Iterator<Item = &'a i128>>(iter: I) -> i128 { iter.fold(0, |total, x| total + *x) } }
+impl Product for i128 { fn product<I: Iterator<Item = i128>>(iter: I) -> i128 { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a i128> for i128 { fn product<I: Iterator<Item = &'a i128>>(iter: I) -> i128 { iter.fold(1, |total, x| total * *x) } }
+impl Step for isize { fn forward_one(self) -> isize { self.wrapping_add(1) } fn backward_one(self) -> isize { self.wrapping_sub(1) } fn steps_between(start: &isize, end: &isize) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } const __RANDOM_ACCESS: bool = true; fn __forward_unchecked(self, n: usize) -> isize { self.wrapping_add(n as isize) } }
+impl Sum for isize { fn sum<I: Iterator<Item = isize>>(iter: I) -> isize { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a isize> for isize { fn sum<I: Iterator<Item = &'a isize>>(iter: I) -> isize { iter.fold(0, |total, x| total + *x) } }
+impl Product for isize { fn product<I: Iterator<Item = isize>>(iter: I) -> isize { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a isize> for isize { fn product<I: Iterator<Item = &'a isize>>(iter: I) -> isize { iter.fold(1, |total, x| total * *x) } }
 impl ExactSizeIterator for Range<isize> {}
-impl Step for u8 { fn forward_one(self) -> u8 { self.wrapping_add(1) } fn backward_one(self) -> u8 { self.wrapping_sub(1) } fn steps_between(start: &u8, end: &u8) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } }
-impl Sum for u8 { fn sum<I: Iterator<Item = u8>>(mut iter: I) -> u8 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a u8> for u8 { fn sum<I: Iterator<Item = &'a u8>>(mut iter: I) -> u8 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for u8 { fn product<I: Iterator<Item = u8>>(mut iter: I) -> u8 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a u8> for u8 { fn product<I: Iterator<Item = &'a u8>>(mut iter: I) -> u8 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for u8 { fn forward_one(self) -> u8 { self.wrapping_add(1) } fn backward_one(self) -> u8 { self.wrapping_sub(1) } fn steps_between(start: &u8, end: &u8) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } const __RANDOM_ACCESS: bool = true; fn __forward_unchecked(self, n: usize) -> u8 { self.wrapping_add(n as u8) } }
+impl Sum for u8 { fn sum<I: Iterator<Item = u8>>(iter: I) -> u8 { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a u8> for u8 { fn sum<I: Iterator<Item = &'a u8>>(iter: I) -> u8 { iter.fold(0, |total, x| total + *x) } }
+impl Product for u8 { fn product<I: Iterator<Item = u8>>(iter: I) -> u8 { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a u8> for u8 { fn product<I: Iterator<Item = &'a u8>>(iter: I) -> u8 { iter.fold(1, |total, x| total * *x) } }
 impl ExactSizeIterator for Range<u8> {}
 impl ExactSizeIterator for RangeInclusive<u8> {}
-impl Step for u16 { fn forward_one(self) -> u16 { self.wrapping_add(1) } fn backward_one(self) -> u16 { self.wrapping_sub(1) } fn steps_between(start: &u16, end: &u16) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } }
-impl Sum for u16 { fn sum<I: Iterator<Item = u16>>(mut iter: I) -> u16 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a u16> for u16 { fn sum<I: Iterator<Item = &'a u16>>(mut iter: I) -> u16 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for u16 { fn product<I: Iterator<Item = u16>>(mut iter: I) -> u16 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a u16> for u16 { fn product<I: Iterator<Item = &'a u16>>(mut iter: I) -> u16 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for u16 { fn forward_one(self) -> u16 { self.wrapping_add(1) } fn backward_one(self) -> u16 { self.wrapping_sub(1) } fn steps_between(start: &u16, end: &u16) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } const __RANDOM_ACCESS: bool = true; fn __forward_unchecked(self, n: usize) -> u16 { self.wrapping_add(n as u16) } }
+impl Sum for u16 { fn sum<I: Iterator<Item = u16>>(iter: I) -> u16 { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a u16> for u16 { fn sum<I: Iterator<Item = &'a u16>>(iter: I) -> u16 { iter.fold(0, |total, x| total + *x) } }
+impl Product for u16 { fn product<I: Iterator<Item = u16>>(iter: I) -> u16 { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a u16> for u16 { fn product<I: Iterator<Item = &'a u16>>(iter: I) -> u16 { iter.fold(1, |total, x| total * *x) } }
 impl ExactSizeIterator for Range<u16> {}
 impl ExactSizeIterator for RangeInclusive<u16> {}
-impl Step for u32 { fn forward_one(self) -> u32 { self.wrapping_add(1) } fn backward_one(self) -> u32 { self.wrapping_sub(1) } fn steps_between(start: &u32, end: &u32) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } }
-impl Sum for u32 { fn sum<I: Iterator<Item = u32>>(mut iter: I) -> u32 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a u32> for u32 { fn sum<I: Iterator<Item = &'a u32>>(mut iter: I) -> u32 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for u32 { fn product<I: Iterator<Item = u32>>(mut iter: I) -> u32 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a u32> for u32 { fn product<I: Iterator<Item = &'a u32>>(mut iter: I) -> u32 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for u32 { fn forward_one(self) -> u32 { self.wrapping_add(1) } fn backward_one(self) -> u32 { self.wrapping_sub(1) } fn steps_between(start: &u32, end: &u32) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } const __RANDOM_ACCESS: bool = true; fn __forward_unchecked(self, n: usize) -> u32 { self.wrapping_add(n as u32) } }
+impl Sum for u32 { fn sum<I: Iterator<Item = u32>>(iter: I) -> u32 { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a u32> for u32 { fn sum<I: Iterator<Item = &'a u32>>(iter: I) -> u32 { iter.fold(0, |total, x| total + *x) } }
+impl Product for u32 { fn product<I: Iterator<Item = u32>>(iter: I) -> u32 { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a u32> for u32 { fn product<I: Iterator<Item = &'a u32>>(iter: I) -> u32 { iter.fold(1, |total, x| total * *x) } }
 impl ExactSizeIterator for Range<u32> {}
-impl Step for u64 { fn forward_one(self) -> u64 { self.wrapping_add(1) } fn backward_one(self) -> u64 { self.wrapping_sub(1) } fn steps_between(start: &u64, end: &u64) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } }
-impl Sum for u64 { fn sum<I: Iterator<Item = u64>>(mut iter: I) -> u64 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a u64> for u64 { fn sum<I: Iterator<Item = &'a u64>>(mut iter: I) -> u64 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for u64 { fn product<I: Iterator<Item = u64>>(mut iter: I) -> u64 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a u64> for u64 { fn product<I: Iterator<Item = &'a u64>>(mut iter: I) -> u64 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for u64 { fn forward_one(self) -> u64 { self.wrapping_add(1) } fn backward_one(self) -> u64 { self.wrapping_sub(1) } fn steps_between(start: &u64, end: &u64) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } const __RANDOM_ACCESS: bool = true; fn __forward_unchecked(self, n: usize) -> u64 { self.wrapping_add(n as u64) } }
+impl Sum for u64 { fn sum<I: Iterator<Item = u64>>(iter: I) -> u64 { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a u64> for u64 { fn sum<I: Iterator<Item = &'a u64>>(iter: I) -> u64 { iter.fold(0, |total, x| total + *x) } }
+impl Product for u64 { fn product<I: Iterator<Item = u64>>(iter: I) -> u64 { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a u64> for u64 { fn product<I: Iterator<Item = &'a u64>>(iter: I) -> u64 { iter.fold(1, |total, x| total * *x) } }
 impl Step for u128 { fn forward_one(self) -> u128 { self.wrapping_add(1) } fn backward_one(self) -> u128 { self.wrapping_sub(1) } fn steps_between(start: &u128, end: &u128) -> (usize, Option<usize>) { if *start <= *end { let n = *end - *start; if n <= usize::MAX as u128 { (n as usize, Some(n as usize)) } else { (usize::MAX, None) } } else { (0, None) } } }
-impl Sum for u128 { fn sum<I: Iterator<Item = u128>>(mut iter: I) -> u128 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a u128> for u128 { fn sum<I: Iterator<Item = &'a u128>>(mut iter: I) -> u128 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for u128 { fn product<I: Iterator<Item = u128>>(mut iter: I) -> u128 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a u128> for u128 { fn product<I: Iterator<Item = &'a u128>>(mut iter: I) -> u128 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
-impl Step for usize { fn forward_one(self) -> usize { self.wrapping_add(1) } fn backward_one(self) -> usize { self.wrapping_sub(1) } fn steps_between(start: &usize, end: &usize) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } }
-impl Sum for usize { fn sum<I: Iterator<Item = usize>>(mut iter: I) -> usize { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
-impl<'a> Sum<&'a usize> for usize { fn sum<I: Iterator<Item = &'a usize>>(mut iter: I) -> usize { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
-impl Product for usize { fn product<I: Iterator<Item = usize>>(mut iter: I) -> usize { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl<'a> Product<&'a usize> for usize { fn product<I: Iterator<Item = &'a usize>>(mut iter: I) -> usize { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Sum for u128 { fn sum<I: Iterator<Item = u128>>(iter: I) -> u128 { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a u128> for u128 { fn sum<I: Iterator<Item = &'a u128>>(iter: I) -> u128 { iter.fold(0, |total, x| total + *x) } }
+impl Product for u128 { fn product<I: Iterator<Item = u128>>(iter: I) -> u128 { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a u128> for u128 { fn product<I: Iterator<Item = &'a u128>>(iter: I) -> u128 { iter.fold(1, |total, x| total * *x) } }
+impl Step for usize { fn forward_one(self) -> usize { self.wrapping_add(1) } fn backward_one(self) -> usize { self.wrapping_sub(1) } fn steps_between(start: &usize, end: &usize) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } const __RANDOM_ACCESS: bool = true; fn __forward_unchecked(self, n: usize) -> usize { self.wrapping_add(n as usize) } }
+impl Sum for usize { fn sum<I: Iterator<Item = usize>>(iter: I) -> usize { iter.fold(0, |total, x| total + x) } }
+impl<'a> Sum<&'a usize> for usize { fn sum<I: Iterator<Item = &'a usize>>(iter: I) -> usize { iter.fold(0, |total, x| total + *x) } }
+impl Product for usize { fn product<I: Iterator<Item = usize>>(iter: I) -> usize { iter.fold(1, |total, x| total * x) } }
+impl<'a> Product<&'a usize> for usize { fn product<I: Iterator<Item = &'a usize>>(iter: I) -> usize { iter.fold(1, |total, x| total * *x) } }
 impl ExactSizeIterator for Range<usize> {}
 
 /// An iterator with no items: what [`empty`] gives.
@@ -1917,6 +2432,7 @@ pub const fn empty<T>() -> Empty<T> {
 
 impl<T> Iterator for Empty<T> {
     type Item = T;
+    const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<T> {
         None
@@ -1969,6 +2485,7 @@ pub fn once<T>(value: T) -> Once<T> {
 
 impl<T> Iterator for Once<T> {
     type Item = T;
+    const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<T> {
         self.inner.take()
@@ -2006,6 +2523,7 @@ pub fn once_with<A, F: FnOnce() -> A>(make: F) -> OnceWith<F> {
 
 impl<A, F: FnOnce() -> A> Iterator for OnceWith<F> {
     type Item = A;
+    const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<A> {
         match self.make.take() {
@@ -2041,6 +2559,7 @@ pub fn repeat<T: Clone>(elt: T) -> Repeat<T> {
 
 impl<A: Clone> Iterator for Repeat<A> {
     type Item = A;
+    const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<A> {
         Some(self.element.clone())
@@ -2091,6 +2610,7 @@ pub fn repeat_with<A, F: FnMut() -> A>(repeater: F) -> RepeatWith<F> {
 
 impl<A, F: FnMut() -> A> Iterator for RepeatWith<F> {
     type Item = A;
+    const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<A> {
         Some((self.repeater)())
@@ -2128,6 +2648,7 @@ pub fn repeat_n<T: Clone>(element: T, count: usize) -> RepeatN<T> {
 
 impl<A: Clone> Iterator for RepeatN<A> {
     type Item = A;
+    const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<A> {
         if self.count == 0 {
@@ -2242,26 +2763,23 @@ pub trait Extend<A> {
 
 impl FromIterator<()> for () {
     fn from_iter<T: IntoIterator<Item = ()>>(iter: T) {
-        let mut iter = iter.into_iter();
-        while let Some(()) = iter.next() {}
+        iter.into_iter().for_each(|()| {})
     }
 }
 
 impl Extend<()> for () {
     fn extend<T: IntoIterator<Item = ()>>(&mut self, iter: T) {
-        let mut iter = iter.into_iter();
-        while let Some(()) = iter.next() {}
+        iter.into_iter().for_each(|()| {})
     }
 }
 
 /// Each half of the pairs into each collection, one pair at a time.
 impl<A, B, ExtendA: Extend<A>, ExtendB: Extend<B>> Extend<(A, B)> for (ExtendA, ExtendB) {
     fn extend<T: IntoIterator<Item = (A, B)>>(&mut self, into_iter: T) {
-        let mut iter = into_iter.into_iter();
-        while let Some((a, b)) = iter.next() {
+        into_iter.into_iter().for_each(|(a, b)| {
             self.0.extend(Some(a));
             self.1.extend(Some(b));
-        }
+        })
     }
 }
 
