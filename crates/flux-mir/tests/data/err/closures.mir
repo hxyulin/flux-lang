@@ -959,6 +959,141 @@ fn out_of_scope::{closure#3} as FnOnce(_1: {closure}, _2: ()) -> i32 {
     }
 }
 
+fn triple(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = Mul(copy _2, const 3_i32);
+        return;
+    }
+}
+
+fn called_pointer() -> () {
+    let mut _0: ();
+    let mut _1: fn(i32) -> i32; // h
+    let _2: fn(i32) -> i32 {triple};
+    let _3: {closure}; // c
+    let _4: &fn(i32) -> i32;
+    let _5: ();
+    let _6: fn(i32) -> i32;
+    let _7: {closure};
+    let _8: i32;
+    let _9: &{closure};
+    let _10: ();
+
+    bb0: {
+        _2 = const triple;
+        _1 = const triple as fn;
+        _4 = &_1;
+        _3 = {closure}(move _4);
+        _7 = {closure}();
+        _6 = const FnOnce::call_once::<{closure}, (i32,)> as fn;
+        _1 = copy _6;
+        _5 = const ();
+        _9 = &_3;
+        _10 = ();
+        _8 = call::<{closure}, ()>(copy _9, move _10) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        StorageDead(_3);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn called_pointer::{closure#4} as Fn(_1: &{closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: fn(i32) -> i32;
+
+    bb0: {
+        _3 = copy (*(*_1).0);
+        _0 = (copy _3)(const 1_i32) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn called_pointer::{closure#4} as FnMut(_1: &mut {closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn called_pointer::{closure#4} as FnOnce(_1: {closure}, _2: ()) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn called_pointer::{closure#7} as Fn(_1: &{closure}, _2: (i32,)) -> i32 {
+    let mut _0: i32;
+    let _3: i32; // x
+
+    bb0: {
+        _3 = copy _2.0;
+        _0 = copy _3;
+        return;
+    }
+}
+
+fn called_pointer::{closure#7} as FnMut(_1: &mut {closure}, _2: (i32,)) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (i32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn called_pointer::{closure#7} as FnOnce(_1: {closure}, _2: (i32,)) -> i32 {
+    let mut _0: i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (i32,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
 fn main() -> () {
     let mut _0: ();
 
@@ -981,3 +1116,4 @@ error 1303..1304: cannot assign to `x`, as it is not declared as mutable
 error 1387..1388: cannot move out of `n`, a captured variable in an `FnMut` closure
 error 1492..1496: cannot borrow `s.a` as immutable because it is also borrowed as mutable
 error 1596..1597: `x` does not live long enough
+error 1812..1821: cannot assign to `h` because it is borrowed
