@@ -1399,9 +1399,14 @@ pub fn primitive(name: Symbol) -> Result<Ty, String> {
 }
 
 /// The `impl` blocks' type for methods on `ty`, if it has any.
-pub fn impl_target(ty: Ty) -> Option<ImplTarget> {
+pub fn impl_target(items: &ItemTree, ty: Ty) -> Option<ImplTarget> {
     match ty.kind() {
         TyKind::Adt(adt, _) => Some(ImplTarget::Struct(adt.strukt)),
+        // `core`'s `impl CStr` block.
+        TyKind::CStr => items
+            .lang_enums
+            .get(&Symbol::intern("CStr"))
+            .map(|&s| ImplTarget::Struct(s)),
         TyKind::Int(int) => Some(ImplTarget::Primitive(int.name())),
         TyKind::Bool => Some(ImplTarget::Primitive(sym::bool)),
         TyKind::Char => Some(ImplTarget::Primitive(sym::char)),
