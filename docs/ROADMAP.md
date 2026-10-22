@@ -37,7 +37,8 @@ rustc's default binding modes and discriminants written as constant
 expressions, operators on references through `core`'s impls, `?`
 on `Option` and `Result` with `From`, arrays and slices, with
 lengths evaluated while types are checked, bounds checks and rustc's
-borrow rules for elements, type aliases, statics, functions as values,
+borrow rules for elements, const generics (with arrays' traits,
+`array::from_fn` and `map` in `core`), type aliases, statics, functions as values,
 with function pointers, items inside function bodies, closures with
 rustc's precise captures and the `Fn`-family traits, ranges, `Iterator`
 with its adapters, `for` loops, slices' methods, iterators and sorts,
@@ -53,10 +54,9 @@ In order next:
    make parts of it (`split_at`, `trim`, `split`, `lines`), byte string
    patterns, and `char`'s methods that need Unicode tables
    (`is_alphabetic`, `to_lowercase`).
-   Const generics, so that `core` can implement the arrays' traits and
-   methods that are built into the compiler for now (`len`, `Copy`,
-   `Clone`, `PartialEq`, `Eq`, `IntoIterator`, comparisons with slices)
-   and those still missing (`PartialOrd`, `array::from_fn`, `map`).
+   What const generics leave: defaults for const parameters, arrays'
+   `len` and `is_empty` (built into the compiler), `each_mut`, and the
+   other array methods of rustc's `core`.
    Returning closures (`impl Fn`), which needs opaque types.
 2. Lifetimes, what is left: lifetime parameters on traits and in the
    trait arguments of bounds (`T: Tr<&'a U>`), lifetimes in the bounds
