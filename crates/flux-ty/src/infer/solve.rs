@@ -1176,7 +1176,7 @@ impl Ctx<'_> {
         let items = self.items;
         let in_scope = self.traits_in_scope();
         let with = items.trait_fns.get(&name).map_or(&[][..], |v| v);
-        if with.len() < in_scope.len() {
+        let mut found = if with.len() < in_scope.len() {
             let mut found: Vec<TraitId> = with
                 .iter()
                 .copied()
@@ -1195,7 +1195,16 @@ impl Ctx<'_> {
                 .copied()
                 .filter(|&t| items.traits[t].value(items, name).is_some())
                 .collect()
+        };
+        // A trait named by the enclosing impl is in scope throughout
+        // its methods, even when its path was qualified in the header.
+        if let Some(t) = self.self_trait.map(|t| t.trait_)
+            && items.traits[t].value(items, name).is_some()
+            && let Err(index) = found.binary_search_by_key(&t.index(), |u| u.index())
+        {
+            found.insert(index, t);
         }
+        found
     }
 
     /// The methods called `name` of the traits in scope that `ty` may

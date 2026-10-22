@@ -20,8 +20,12 @@ pub trait Clone: Sized {
 pub fn assert_param_is_clone<T: Clone>(_param: &T) {}
 
 // The primitive types and raw pointers are `Copy`: cloning them copies
-// them. Shared references are too, built into the compiler until
-// functions may return references.
+// them. Shared references duplicate the reference, regardless of
+// whether the pointee itself can be cloned.
+
+impl<T: ?Sized> Clone for &T {
+    fn clone(&self) -> Self { *self }
+}
 
 impl Clone for i8 { fn clone(&self) -> i8 { *self } }
 impl Clone for i16 { fn clone(&self) -> i16 { *self } }

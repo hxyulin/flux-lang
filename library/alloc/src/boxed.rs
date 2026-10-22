@@ -102,6 +102,33 @@ impl<T: Clone> Clone for Box<T> {
     }
 }
 
+impl<T: Clone> Clone for Box<[T]> {
+    fn clone(&self) -> Box<[T]> {
+        self.to_vec().into_boxed_slice()
+    }
+}
+
+impl Clone for Box<str> {
+    fn clone(&self) -> Box<str> {
+        Box::from(&**self)
+    }
+}
+
+impl From<&str> for Box<str> {
+    fn from(s: &str) -> Box<str> {
+        let bytes = s.as_bytes().to_vec().into_boxed_slice();
+        // SAFETY: the bytes came from a string, so remain valid UTF-8. A boxed
+        // byte slice and a boxed string have the same allocation layout.
+        unsafe { Box::from_raw(Box::into_raw(bytes) as *mut str) }
+    }
+}
+
+impl<T> FromIterator<T> for Box<[T]> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Box<[T]> {
+        crate::vec::Vec::from_iter(iter).into_boxed_slice()
+    }
+}
+
 impl<T: Default> Default for Box<T> {
     fn default() -> Box<T> {
         Box::new(T::default())
