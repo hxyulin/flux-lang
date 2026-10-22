@@ -35,9 +35,9 @@ with `#[derive]`, `Ordering`,
 enums with `match`, `if let`, `let`-`else`, exhaustiveness checking,
 rustc's default binding modes and discriminants written as constant
 expressions, operators on references through `core`'s impls, `?`
-on `Option` and `Result` with `From`, and arrays and slices, with
+on `Option` and `Result` with `From`, arrays and slices, with
 lengths evaluated while types are checked, bounds checks and rustc's
-borrow rules for elements.
+borrow rules for elements, and type aliases.
 In order next:
 
 1. `core` defines the pointer methods, `mem::replace` and `CStr` (now

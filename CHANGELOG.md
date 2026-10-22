@@ -237,6 +237,14 @@
   in memory, passed by address and returned through `sret`, references
   to slices as an address and a length, and drops arrays element by
   element.
+- Support type aliases (`type Pair<T> = (T, T);`), generic or not, in
+  modules and imports, in signatures, bodies and `impl` headers
+  (`impl Ints { .. }` for `type Ints = Pair<i32>;`), and naming structs
+  and enums in paths (`Ints::new()`, `Alias::Variant`), struct
+  expressions and patterns, with the alias's generic arguments. Bounds
+  on their parameters are not enforced, as in rustc. E0091, E0107,
+  E0121, E0391 (a cycle of aliases), E0423, E0532 and E0603 are
+  reported as rustc does.
 
 ### Performance
 

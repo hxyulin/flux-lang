@@ -71,7 +71,12 @@ reported as "not supported yet":
   included (`struct W<T: Tr>`, `where` clauses); associated constants
   in traits, with or without a default, in their `impl` blocks and in
   generic inherent blocks (`const N: u32;`, `const N: u32 = 1;`);
-  constants (`const N: i32 = 5;`); modules, inline (`mod m { }`) and in
+  constants (`const N: i32 = 5;`); type aliases (`type Pair<T> = (T,
+  T);`), through which a struct's or enum's associated items, variants
+  and struct expressions are named (`Alias::new()`, `Alias::A`,
+  `Alias { .. }`), but not a tuple or unit struct's constructor
+  (`Alias(1)`), and whose bounds are not enforced, as in rustc;
+  modules, inline (`mod m { }`) and in
   files (`mod m;` as `m.rs` or `m/mod.rs`); `use` declarations, with
   groups, renames, globs, `self`, `super` and `crate`; and
   `unsafe extern "C"` blocks of function declarations, including

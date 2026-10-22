@@ -23,7 +23,7 @@ use flux_syntax::TextRange;
 
 use crate::item_tree::{
     AssocItem, ConstId, ImplTarget, ItemCounts, ItemTree, ModuleId, Path, PathAnchor, StructKind,
-    TraitId, TypeRef, UseKind, Visibility, is_primitive,
+    TraitId, TypeAliasId, TypeRef, UseKind, Visibility, is_primitive,
 };
 use crate::{Diagnostic, FileId, FunctionId, StructId};
 
@@ -44,6 +44,8 @@ pub enum Def {
     Const(ConstId),
     /// Variant `index` of an enum.
     Variant(StructId, u32),
+    /// `type A = T;`, in the types namespace.
+    TypeAlias(TypeAliasId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +282,9 @@ impl ItemTree {
                     Some(Resolved::Def(Def::Trait(t))) => {
                         return self.resolve_trait_item(t, path, 1, ns);
                     }
+                    Some(Resolved::Def(Def::TypeAlias(a))) => {
+                        return self.resolve_alias_item(a, path, 1, ns);
+                    }
                     Some(Resolved::SelfType) => return Ok(Resolved::SelfType),
                     _ => {
                         let message = if first == sym::std || first == sym::alloc {
@@ -337,6 +342,7 @@ impl ItemTree {
                     return self.resolve_assoc(from, ImplTarget::Struct(strukt), path, i + 1, ns);
                 }
                 Def::Trait(t) if !last => return self.resolve_trait_item(t, path, i + 1, ns),
+                Def::TypeAlias(a) if !last => return self.resolve_alias_item(a, path, i + 1, ns),
                 def if last => return Ok(Resolved::Def(def)),
                 _ => {
                     let message = format!("expected module, found `{name}`");
@@ -360,6 +366,7 @@ impl ItemTree {
             Def::Function(_) => "function",
             Def::Const(_) => "constant",
             Def::Variant(..) => "variant",
+            Def::TypeAlias(_) => "type alias",
         };
         let import = if binding.kind == BindingKind::Item {
             ""
@@ -434,6 +441,73 @@ impl ItemTree {
             });
         }
         Ok(resolved)
+    }
+
+    /// `A::name`, where segment `index` is `name` and `A` is a type
+    /// alias: a variant of the enum it names, or an item type checking
+    /// finds on the type it names (`TypeRelative`), with its arguments.
+    fn resolve_alias_item(
+        &self,
+        alias: TypeAliasId,
+        path: &Path,
+        index: usize,
+        ns: Ns,
+    ) -> Result<Resolved, ResolveError> {
+        if index + 1 != path.segments.len() {
+            return Err(ResolveError::Failed {
+                at: At::Segment(0),
+                message: "ambiguous associated type".into(),
+            });
+        }
+        let name = path.segments[index];
+        if let Some(ImplTarget::Struct(strukt)) = self.alias_target(alias)
+            && let Some(variant) = self.structs[strukt].variant_named(name)
+        {
+            if ns == Ns::Values && self.structs[strukt].variant(variant).kind == StructKind::Record
+            {
+                return Err(ResolveError::NotFound {
+                    segment: index,
+                    module: None,
+                });
+            }
+            return Ok(Resolved::Def(Def::Variant(strukt, variant)));
+        }
+        if ns != Ns::Values {
+            return Err(ResolveError::Failed {
+                at: At::Whole,
+                message: "ambiguous associated type".into(),
+            });
+        }
+        Ok(Resolved::TypeRelative(index))
+    }
+
+    /// The struct, enum or primitive type alias `alias` names, through
+    /// other aliases, if it names one by a path: what `impl` blocks for
+    /// it, its variants and struct expressions through it are of.
+    pub fn alias_target(&self, alias: TypeAliasId) -> Option<ImplTarget> {
+        let mut alias = alias;
+        // A cycle of aliases is reported where they are checked.
+        for _ in 0..64 {
+            let data = &self.type_aliases[alias];
+            let TypeRef::Path(path) = &data.ty else {
+                return None;
+            };
+            match self.resolve(data.loc.module, path, Ns::Types) {
+                Ok(Resolved::Def(Def::Struct(s)))
+                | Err(ResolveError::Private {
+                    resolved: Resolved::Def(Def::Struct(s)),
+                    ..
+                }) => return Some(ImplTarget::Struct(s)),
+                Ok(Resolved::Primitive(p)) => return Some(ImplTarget::Primitive(p)),
+                Ok(Resolved::Def(Def::TypeAlias(next)))
+                | Err(ResolveError::Private {
+                    resolved: Resolved::Def(Def::TypeAlias(next)),
+                    ..
+                }) => alias = next,
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// `Tr::name`, where segment `index` is `name`.
@@ -550,6 +624,7 @@ impl ItemTree {
             Def::Function(f) => self.functions[f].loc.vis,
             Def::Const(c) => self.consts[c].loc.vis,
             Def::Variant(s, _) => self.structs[s].loc.vis,
+            Def::TypeAlias(a) => self.type_aliases[a].loc.vis,
         }
     }
 
@@ -562,6 +637,7 @@ impl ItemTree {
             Def::Trait(_) => "trait",
             Def::Function(_) => "function",
             Def::Const(_) => "constant",
+            Def::TypeAlias(_) => "type alias",
             Def::Variant(s, v) => match self.structs[s].variant(v).kind {
                 StructKind::Record => "struct variant",
                 StructKind::Tuple => "tuple variant",
@@ -643,6 +719,10 @@ fn define_items(items: &mut ItemTree, from: ItemCounts) {
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let binding = item(Def::Trait(id), t.loc.vis, t.loc.file, t.def_range);
         defined.push((t.loc.module, t.name, &[Ns::Types], binding));
+    }
+    for (id, a) in items.type_aliases.iter().skip(from.type_aliases as usize) {
+        let binding = item(Def::TypeAlias(id), a.loc.vis, a.loc.file, a.def_range);
+        defined.push((a.loc.module, a.name, &[Ns::Types], binding));
     }
     for (id, c) in items.consts.iter().skip(from.consts as usize) {
         if let (None, Some(name)) = (c.owner, c.name) {
@@ -1109,6 +1189,22 @@ fn resolve_impls(items: &mut ItemTree, from: usize) {
                     let range = path.range(segment, items.impls[id].self_range);
                     error(items, range, message);
                     Some(ImplTarget::Struct(strukt))
+                }
+                Ok(Resolved::Def(Def::TypeAlias(a)))
+                    if let Some(target @ ImplTarget::Struct(_)) = items.alias_target(a) =>
+                {
+                    Some(target)
+                }
+                Ok(Resolved::Def(Def::TypeAlias(a)))
+                    if matches!(items.alias_target(a), Some(ImplTarget::Primitive(_))) =>
+                {
+                    let range = items.impls[id].def_range;
+                    error(
+                        items,
+                        range,
+                        "cannot define inherent `impl` for primitive types".into(),
+                    );
+                    None
                 }
                 Ok(Resolved::Primitive(name)) if items.is_core(module) => {
                     Some(ImplTarget::Primitive(name))

@@ -38,7 +38,8 @@ pub use item_tree::{
     Derive, Discriminant, Field, Function, FunctionId, GenericArgs, GenericParam, Generics, Impl,
     ImplId, ImplTarget, ImplType, ItemCounts, ItemLoc, ItemTree, MISPLACED_BINDING, Module,
     ModuleId, Owner, Param, Path, PathAnchor, QSelf, Struct, StructId, StructKind, Trait, TraitId,
-    TraitType, TypeRef, Variant, VariantData, Visibility, WherePredicate, is_primitive,
+    TraitType, TypeAlias, TypeAliasId, TypeRef, Variant, VariantData, Visibility, WherePredicate,
+    is_primitive,
 };
 pub use library::Core;
 pub use lower::{LoweredBody, lower_body, lower_const};

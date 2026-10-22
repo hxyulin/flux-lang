@@ -1,0 +1,21 @@
+struct Pair<T> { a: T, b: T }
+enum E { A }
+fn new(T, T) -> Pair<T>
+    a@0: T
+    b@1: T
+fn main() -> ()
+    p@0: Pair<i32>
+    q@1: Pair<i32>
+    t@2: (u8, u8)
+    e@3: {error}
+    b@4: u8
+type Ints = Pair<i32>
+type Twice<T> = (T, T)
+type EA = E
+type Bits = u8
+error 252..255: mismatched types: expected `i32`, found `u8`
+error 283..287: mismatched types: expected `i32`, found `bool`
+error 324..328: mismatched types: expected `u8`, found `i32`
+error 347..348: no variant, associated function, or constant named `B` found for enum `E` in the current scope
+error 378..379: cannot add `i32` to `u8`
+error 380..384: mismatched types: expected `u8`, found `i32`
