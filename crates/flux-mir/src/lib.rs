@@ -132,6 +132,11 @@ pub struct Body {
     pub owner: Option<FunctionId>,
     /// The values [`Constant::Promoted`] refers to.
     pub promoted: Vec<eval::Value>,
+    /// Code that type checking should have ruled out, which building
+    /// lowered to `unreachable`: what and where. Expected only where the
+    /// program has errors; anywhere else, a bug in flux, which
+    /// [`build_file`] reports.
+    pub bugs: Vec<(TextRange, &'static str)>,
 }
 
 /// What a closure's body captures, for messages and for what it may
@@ -198,6 +203,7 @@ impl Body {
             capture_uses: Vec::new(),
             owner,
             promoted: Vec::new(),
+            bugs: Vec::new(),
         }
     }
 
@@ -772,6 +778,10 @@ pub struct FileMir {
     /// literals, once evaluated.
     pub discriminants: Discriminants,
     pub diagnostics: Vec<flux_hir::Diagnostic>,
+    /// [`Body::bugs`] of every body, also among `diagnostics`: code
+    /// type checking should have ruled out, a bug in flux. Debug builds
+    /// panic on them instead.
+    pub bugs: Vec<flux_hir::Diagnostic>,
 }
 
 impl FileMir {

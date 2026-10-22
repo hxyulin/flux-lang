@@ -349,6 +349,7 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
         capture_uses: Vec::new(),
         owner: None,
         promoted: Vec::new(),
+        bugs: Vec::new(),
     })
 }
 
@@ -444,6 +445,7 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
         capture_uses: Vec::new(),
         owner: None,
         promoted: Vec::new(),
+        bugs: Vec::new(),
     }
 }
 
@@ -527,6 +529,7 @@ fn slice_eq_shim(instance: Instance) -> Body {
         capture_uses: Vec::new(),
         owner: None,
         promoted: Vec::new(),
+        bugs: Vec::new(),
     }
 }
 
@@ -811,6 +814,7 @@ fn eq_shim(instance: Instance) -> Body {
         capture_uses: Vec::new(),
         owner: None,
         promoted: Vec::new(),
+        bugs: Vec::new(),
     }
 }
 

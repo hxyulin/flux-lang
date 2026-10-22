@@ -44,6 +44,13 @@ fn eval_lens(
                 bodies.insert(id, crate::build::build(hir, &typed, id));
             }
         }
+        // Code type checking should have ruled out is there for errors
+        // elsewhere (a name whose import failed), which evaluation would
+        // report as reaching `unreachable`, where rustc reports nothing.
+        let clean = clean
+            && (consts.iter().map(|(_, b)| b))
+                .chain(bodies.iter().map(|(_, b)| b))
+                .all(|b| b.bugs.is_empty());
         let names = |id: ConstId| items.const_name(id);
         let mut evaluator =
             crate::eval::Evaluator::new(items, &typed.sigs, &bodies, &consts, &names);

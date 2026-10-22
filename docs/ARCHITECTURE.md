@@ -790,9 +790,14 @@ capture itself, never `r`, and the same holds for autoderef in
 fields, indices and `len`, reborrows, and patterns, which resolve a
 scrutinee the closure captures only parts of as they go into it. A
 closure is an aggregate of what it captures, so code generation needs
-nothing new for it. MIR building reaches no code type checking rules
-out (a local neither declared nor captured, `break` outside a loop):
-debug builds panic there, release builds lower it to `unreachable`. Function items and pointers get shims that call them, and a
+nothing new for it. Code type checking rules out (a local neither
+declared nor captured, a call of a value that is not callable) is
+lowered to `unreachable` and recorded in `Body::bugs`. Bodies without
+errors of their own reach it where others have some, such as a call
+of what a failed import should have brought, and those programs are
+never compiled; in a program without errors it is a bug in flux, on
+which `build_file` panics in debug builds and reports an error in
+release builds, and the corpus test fails. Function items and pointers get shims that call them, and a
 closure that captures nothing becomes a pointer to its `call_once`,
 whose arguments are those of the pointer's signature, leaf for
 leaf.
