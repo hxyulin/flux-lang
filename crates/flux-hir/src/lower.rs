@@ -191,6 +191,9 @@ fn derived_body(
     if derive == Derive::Default {
         return derived_default_body(items, function, strukt);
     }
+    if derive == Derive::Debug {
+        return derived_debug_body(items, function, strukt);
+    }
     if s.is_enum() {
         return derived_enum_body(items, function, strukt, derive);
     }
@@ -323,6 +326,7 @@ fn derived_body(
         }
         Derive::PartialOrd | Derive::Ord => unreachable!("made by `derived_ord_body`"),
         Derive::Default => unreachable!("made by `derived_default_body`"),
+        Derive::Debug => unreachable!("made by `derived_debug_body`"),
         Derive::Copy => {
             // `{ assert_param_is_clone(&self.a); ..; *self }`
             let path = Path {
@@ -450,6 +454,156 @@ fn derived_default_body(items: &ItemTree, function: FunctionId, strukt: StructId
         whole,
     );
     ctx.finish(Vec::new(), root)
+}
+
+/// The body of `fmt` that `#[derive(Debug)]` makes for `strukt`:
+/// `Debug::fmt` of each field in turn (`Debug::fmt(&self.a, f);`, each
+/// at its field, where rustc reports one that does not implement
+/// `Debug`), of the variant `self` holds for an enum, then `Ok(())`.
+/// Nothing writes through a `Formatter` yet, so what it writes is not
+/// rustc's.
+fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) -> LoweredBody {
+    let data = &items.functions[function];
+    let s = &items.structs[strukt];
+    let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
+    let whole = s.name_range;
+    let mut params = Vec::new();
+    let mut bindings = Vec::new();
+    for name in [kw::SelfLower, Symbol::intern("f")] {
+        let binding = ctx.bindings.alloc(Binding {
+            name,
+            mutable: false,
+            by_ref: None,
+        });
+        params.push(ctx.alloc_pat(Pat::Bind { binding, sub: None }, data.def_range));
+        bindings.push(binding);
+    }
+    let fmt = match items.lang_traits.get(&Symbol::intern("Debug")) {
+        Some(&t) => Res::Assoc {
+            ty: None,
+            trait_: Some(t),
+            name: Symbol::intern("fmt"),
+        },
+        None => Res::Err,
+    };
+    let formatter = bindings[1];
+    // `Debug::fmt(value, f);`
+    let call = |ctx: &mut Ctx<'_>, value: ExprId, at: TextRange| {
+        let callee = ctx.alloc_expr(Expr::Path(fmt), at);
+        ctx.source_map.segments.insert(callee, at);
+        let f = ctx.alloc_expr(Expr::Path(Res::Local(formatter)), at);
+        let expr = ctx.alloc_expr(
+            Expr::Call {
+                callee,
+                args: Box::new([value, f]),
+            },
+            at,
+        );
+        Stmt::Expr {
+            expr,
+            has_semicolon: true,
+        }
+    };
+    let mut stmts = Vec::new();
+    match s.variants.as_deref() {
+        None => {
+            for field in s.fields.iter() {
+                let at = field.def_range;
+                let base = ctx.alloc_expr(Expr::Path(Res::Local(bindings[0])), at);
+                let place = ctx.alloc_expr(
+                    Expr::Field {
+                        expr: base,
+                        name: field.name,
+                    },
+                    at,
+                );
+                ctx.source_map
+                    .expr_fields
+                    .insert(place, Box::new([field.name_range]));
+                let value = ctx.alloc_expr(
+                    Expr::Ref {
+                        mutable: false,
+                        expr: place,
+                    },
+                    at,
+                );
+                stmts.push(call(&mut ctx, value, at));
+            }
+        }
+        Some(variants) => {
+            let mut arms = Vec::new();
+            for (v, variant) in variants.iter().enumerate() {
+                let (pat, mine) = variant_pat(&mut ctx, strukt, v as u32, "__self_");
+                let calls: Box<[Stmt]> = variant
+                    .fields
+                    .iter()
+                    .zip(&mine)
+                    .map(|(field, &b)| {
+                        let at = field.def_range;
+                        let value = ctx.alloc_expr(Expr::Path(Res::Local(b)), at);
+                        call(&mut ctx, value, at)
+                    })
+                    .collect();
+                let body = ctx.alloc_expr(
+                    Expr::Block {
+                        stmts: calls,
+                        tail: None,
+                        is_unsafe: false,
+                    },
+                    variant.def_range,
+                );
+                arms.push(MatchArm {
+                    pat,
+                    guard: None,
+                    body,
+                });
+            }
+            let mut scrutinee = ctx.alloc_expr(Expr::Path(Res::Local(bindings[0])), whole);
+            if variants.is_empty() {
+                // `match *self {}`, as a reference is never empty.
+                let operand = scrutinee;
+                scrutinee = ctx.alloc_expr(
+                    Expr::Unary {
+                        op: ast::UnaryOp::Deref,
+                        operand,
+                    },
+                    whole,
+                );
+            }
+            let matched = ctx.alloc_expr(
+                Expr::Match {
+                    scrutinee,
+                    arms: arms.into(),
+                },
+                whole,
+            );
+            stmts.push(Stmt::Expr {
+                expr: matched,
+                has_semicolon: true,
+            });
+        }
+    }
+    // `Ok(())`
+    let ok = items
+        .lang_enums
+        .get(&Symbol::intern("Result"))
+        .and_then(|&r| Some((r, items.structs[r].variant_named(Symbol::intern("Ok"))?)));
+    let tail = match ok {
+        Some((result, v)) => {
+            let unit = ctx.alloc_expr(Expr::Tuple(Box::default()), whole);
+            build_variant(&mut ctx, result, v, vec![unit], whole)
+        }
+        None => ctx.alloc_expr(Expr::Missing, whole),
+    };
+    let root = ctx.alloc_expr(
+        Expr::Block {
+            stmts: stmts.into(),
+            tail: Some(tail),
+            is_unsafe: false,
+        },
+        whole,
+    );
+    ctx.finish(params, root)
 }
 
 /// The body of the method `#[derive]` makes for enum `strukt`: a `match`
@@ -613,6 +767,7 @@ fn derived_enum_body(
             }
             Derive::PartialOrd | Derive::Ord => unreachable!("made by `derived_ord_body`"),
             Derive::Default => unreachable!("made by `derived_default_body`"),
+            Derive::Debug => unreachable!("made by `derived_debug_body`"),
             Derive::Eq | Derive::Copy => {
                 let check = if copies {
                     assert_clone

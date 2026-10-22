@@ -582,6 +582,14 @@
   `get_or_insert_default`, `Result::unwrap_or_default` and
   `core::mem::take`. Fix functions returning values without size (`[T;
   0]`), which produced invalid keel IR.
+- Add `core::fmt` with the `Debug` trait, an opaque `Formatter`,
+  `Result` and `Error`, implemented for the primitive types, references,
+  slices, arrays (built in, as the slice's), tuples, `Option`, `Result`,
+  `Ordering` and the ranges, and `#[derive(Debug)]` on structs and
+  enums, whose unmet bounds read "`T` doesn't implement `Debug`" at the
+  field, as in rustc. Nothing formats yet. Fix `#[derive(PartialOrd)]`
+  inside `core` outside its root module, which named `Option` without
+  its arguments.
 
 ### Performance
 

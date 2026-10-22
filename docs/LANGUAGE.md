@@ -197,10 +197,14 @@ shared references, tuples and arrays of `Copy` types, structs that
 implement `Copy` and type parameters bounded by it. Other values are moved, and
 flux reports uses after a move, including partial moves of fields, as
 rustc's borrow checker does. `#[derive(Clone, Copy, PartialEq, Eq,
-PartialOrd, Ord, Default)]` implements those traits for a struct as
-rustc does (for a generic one, where its parameters implement them),
+PartialOrd, Ord, Default, Debug)]` implements those traits for a struct
+as rustc does (for a generic one, where its parameters implement them),
 comparing fields in order for `PartialOrd` and `Ord`, and making each
-field's default for `Default`; other derives are not supported yet.
+field's default for `Default`; other derives (`Hash`) are not supported
+yet. `Debug` type-checks as rustc's (a field that does not implement it
+is "`T` doesn't implement `Debug`", at the field), but nothing can format
+a value yet: `core::fmt::Formatter` is opaque, and there are no
+`format!` or `{:?}` without macros.
 
 Values are dropped as in rustc: a binding at the end of its block, in
 reverse order of declaration, then the function's parameters; a
@@ -457,6 +461,9 @@ and the others of bits and signs, the `checked_`, `wrapping_`,
 `next_power_of_two`, `div_ceil`, `next_multiple_of`, `swap_bytes`,
 `reverse_bits` and the byte-order conversions (`to_le_bytes`, ...), all
 `const` and panicking or overflowing in constants as rustc's do,
+`core::fmt::{Debug, Formatter, Result, Error}` (`Debug` for the
+integers, `bool`, `()`, raw pointers, references, slices, arrays,
+tuples, `Option`, `Result`, `Ordering` and the ranges),
 `core::default::Default` (in the prelude) for the integers, `bool`,
 `()`, `Option`, tuples of up to twelve elements and `Range`,
 `core::mem::{drop, swap, replace, take}` (`drop` also in the prelude;

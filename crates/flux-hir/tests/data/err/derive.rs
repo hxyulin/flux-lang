@@ -37,7 +37,8 @@ struct Bare;
 #[derive = "Clone"]
 struct Value;
 
-// Traits flux does not derive yet, alone and among supported ones.
+// `Debug` and `Default` are derived; `Hash` not yet, alone or among
+// supported ones.
 #[derive(Debug)]
 struct Debugged;
 

@@ -27,7 +27,7 @@ fn hint(label: i32, h: (usize, Option<usize>)) {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 struct Big {
     v: i32,
 }

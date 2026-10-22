@@ -12,6 +12,7 @@ pub mod cmp;
 pub mod convert;
 pub mod default;
 pub mod ffi;
+pub mod fmt;
 mod intrinsics;
 pub mod iter;
 pub mod marker;

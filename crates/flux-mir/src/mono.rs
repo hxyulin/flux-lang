@@ -207,7 +207,8 @@ fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
     }
     of_array
         && (Some(instance.function) == lang_method(items, "clone", "clone")
-            || Some(instance.function) == lang_method(items, "Default", "default"))
+            || Some(instance.function) == lang_method(items, "Default", "default")
+            || Some(instance.function) == lang_method(items, "Debug", "fmt"))
 }
 
 /// `Clone::clone` for an array of `T`: a copy if `T` is `Copy`, else
@@ -222,6 +223,9 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
     }
     if Some(instance.function) == lang_method(items, "Default", "default") {
         return Some(default_shim(instance));
+    }
+    if Some(instance.function) == lang_method(items, "Debug", "fmt") {
+        return Some(debug_shim(items, sigs, instance));
     }
     if Some(instance.function) == lang_method(items, "eq", "eq") {
         if let (TyKind::Array(..), TyKind::Array(..)) =
@@ -592,6 +596,63 @@ fn default_shim(instance: Instance) -> Body {
         locals,
         blocks,
         param_count: 0,
+        c_strings: Vec::new(),
+        in_core: true,
+        inherits_overflow_checks: false,
+        live_drops: Vec::new(),
+        init_errors: Vec::new(),
+        upvars: None,
+        capture_uses: Vec::new(),
+        owner: None,
+        promoted: Vec::new(),
+    }
+}
+
+/// `Debug::fmt` for an array: the slice's, as rustc's `core` has it.
+fn debug_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
+    let TyKind::Array(elem, _) = instance.args[0].kind() else {
+        unreachable!("formats arrays")
+    };
+    let sig = flux_ty::traits::instance_sig(items, sigs, instance.function, instance.args);
+    let slice_ref = Ty::new(TyKind::Ref(Mutability::Not, Ty::slice(elem)));
+    let mut locals = flux_arena::Arena::new();
+    let mut local = |ty, kind| locals.alloc(LocalDecl { ty, kind });
+    let ret = local(sig.ret, LocalKind::Return);
+    let this = local(sig.params[0], LocalKind::Param);
+    let formatter = local(sig.params[1], LocalKind::Param);
+    let slice = local(slice_ref, LocalKind::Temp);
+    let range = flux_syntax::TextRange::default();
+    let mut blocks = flux_arena::Arena::new();
+    blocks.alloc(BasicBlockData {
+        statements: vec![Statement {
+            kind: StatementKind::Assign(
+                slice.into(),
+                Rvalue::Unsize(Operand::Copy(this.into()), slice_ref),
+            ),
+            range,
+        }],
+        terminator: Terminator {
+            kind: TerminatorKind::Call {
+                func: instance.function,
+                generic_args: Ty::list(&[Ty::slice(elem)]),
+                args: vec![Operand::Move(slice.into()), Operand::Move(formatter.into())],
+                dest: ret.into(),
+                target: Some(BasicBlock::from_raw(1)),
+            },
+            range,
+        },
+    });
+    blocks.alloc(BasicBlockData {
+        statements: Vec::new(),
+        terminator: Terminator {
+            kind: TerminatorKind::Return,
+            range,
+        },
+    });
+    Body {
+        locals,
+        blocks,
+        param_count: 2,
         c_strings: Vec::new(),
         in_core: true,
         inherits_overflow_checks: false,
