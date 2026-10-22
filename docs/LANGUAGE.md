@@ -83,13 +83,20 @@ reported as "not supported yet":
 - **Types:** paths (`i32`, `bool`, `Self`, `m::S`, `crate::m::S`,
   `Pair<i32>`, a type parameter `T`), associated types (`T::Out`,
   `Self::Out`, `<T as Tr>::Out`), tuples, `!`, references without
-  lifetimes (`&T`, `&mut T`), raw pointers (`*const T`, `*mut T`), and
-  `_` inside bodies (`let p: Pair<_> = ...`).
+  lifetimes (`&T`, `&mut T`), raw pointers (`*const T`, `*mut T`),
+  arrays (`[T; N]`, whose length is an integer literal or a path to a
+  constant of type `usize`: `[u8; 4]`, `[u8; N]`, `[u8; m::N]`; other
+  constant expressions are not supported yet), slices behind pointers
+  (`&[T]`, `&mut [T]`), and `_` inside bodies (`let p: Pair<_> =
+  ...`).
 - **Expressions:** integer, boolean and C string (`c"..."`, `cr"..."`)
-  literals, local and function names, tuples, struct expressions
+  literals, local and function names, tuples, arrays (`[a, b, c]`,
+  `[x; N]` with `N` as in array types), struct expressions
   (`S { a: 1, b, ..base }`, `E::V { a: 1 }`), tuple struct and variant
   constructors (`P(1, 2)`, `E::V(1)`), unit structs and variants, field
-  accesses (`s.a`, `t.0`, through references),
+  accesses (`s.a`, `t.0`, through references), indexing of arrays and
+  slices with a `usize` (`a[i]`, `s[i]`, through references, also
+  assigned to and borrowed: `a[i] = v`, `&mut a[i]`),
   paths to items in modules and associated items (`m::f`, `S::new`,
   `Self::X`, `i32::MAX`), trait items, functions and constants, through
   a type, a trait or both (`T::f`, `S::N`, `Tr::f`, `<T as Tr>::N`,
@@ -101,9 +108,10 @@ reported as "not supported yet":
   && x > 1 && let Ok(y) = b`), `match` with guards (`if let` guards
   too), `loop`, `while`,
   `while let`, unlabeled `break` (with a value) and `continue`,
-  `return`, calls, unary and binary operators, assignments (to locals
-  and their fields), `as` casts between integers and from enums without
-  fields, `?` on `Option` and `Result`, and one method: `CStr::as_ptr`.
+  `return`, calls, unary and binary operators, assignments (to locals,
+  their fields and elements), `as` casts between integers and from
+  enums without fields, `?` on `Option` and `Result`, and the methods
+  `CStr::as_ptr` and, of arrays and slices, `len` and `is_empty`.
 - **Statements:** `let`, with a type, a value and `else` (`let Some(x) =
   o else { return };`).
 - **Patterns:** `x`, `mut x`, `ref x`, `ref mut x`, `x @ pat`, `_`,
@@ -112,8 +120,8 @@ reported as "not supported yet":
   (`-1`, `true`), constants of integer types and `bool` (`N`,
   `i32::MAX`, `Self::N`), ranges whose ends are either (`1..=9`,
   `0..N`, `5..`, `..=i8::MIN`), or-patterns (`1 | 2`) and reference
-  patterns (`&x`). Constants of other types in patterns are not
-  supported yet.
+  patterns (`&x`). Constants of other types in patterns, and array and
+  slice patterns (`[a, b, ..]`), are not supported yet.
 - **Attributes:** only `allow`, `warn`, `deny`, `expect`, `inline`,
   `cold`, `must_use` and `doc`, which are ignored, `derive` on structs
   and enums,
@@ -122,7 +130,7 @@ reported as "not supported yet":
   message reports their unmet bounds, as in rustc.
 
 Type checking follows rustc for this subset: the integer types, `bool`,
-tuples, structs, enums and `!`; integer literals default to `i32`; no implicit
+tuples, arrays, slices, structs, enums and `!`; integer literals default to `i32`; no implicit
 conversions; operators need operands of the same type, except shifts,
 and work on integers and `bool` only (comparing tuples or pointers is not
 supported yet), and on references to them, as below; `as` converts between integers and from `bool`. `isize` and `usize` are
@@ -133,8 +141,8 @@ in rustc, arguments after a variadic function's `...` must be at least
 `c_int`/`c_uint` first.
 
 Values of `Copy` types are copied: integers, `bool`, raw pointers,
-shared references, tuples of `Copy` types, structs that implement
-`Copy` and type parameters bounded by it. Other values are moved, and
+shared references, tuples and arrays of `Copy` types, structs that
+implement `Copy` and type parameters bounded by it. Other values are moved, and
 flux reports uses after a move, including partial moves of fields, as
 rustc's borrow checker does. `#[derive(Clone, Copy, PartialEq, Eq,
 PartialOrd, Ord)]` implements those traits for a struct as rustc does
@@ -158,7 +166,35 @@ E0366), and only the bounds the struct has or implies (E0367),
 `Copy` is not for types with destructors (E0184), constants and
 `const fn`s may not drop values whose `drop` runs code (E0493), and a
 temporary may not be dropped while borrowed (E0716).
-Structs, enums and tuples cannot be passed to C yet.
+Structs, enums, tuples, arrays and slices cannot be passed to C yet.
+
+An array's length is part of its type: `[i32; 3]` and `[i32; 2]` differ
+("expected an array with a size of 3, found one with a size of 2").
+A length written as a constant is evaluated while types are checked,
+by the same evaluator as other constants, so its errors (E0080, a
+cycle) stop type checking, as in rustc. A repeat expression's value
+must be `Copy` unless the length is 0 or 1 or the value is a constant
+(E0277), and its length may not name a local (E0435). A slice (`[T]`)
+has no size of its own, so it exists only behind a pointer: a value,
+binding, parameter or field of a slice type is E0277, as in rustc
+(unsized struct fields are not supported yet). A reference to an array
+becomes a reference to a slice where one is expected (`let s: &[i32]
+= &a;`, `f(&mut a)`), as rustc's unsizing coercion does. An index must
+be a `usize` (E0277, "the type `[i32]` cannot be indexed by `i32`");
+indexing anything other than an array or slice is E0608. Indexing is
+checked at run time: an index past the end panics, which aborts, and
+one known at compile time to be past an array's end is rustc's
+deny-by-default `unconditional_panic` ("this operation will panic at
+runtime"), or E0080 in a constant. As in rustc, borrowing an element
+borrows the array, whatever the index: `&mut a[0]` and `&mut a[1]`
+conflict (E0499), and elements may not be moved out of (E0508).
+`len` and `is_empty` are built into the compiler, as is the length of
+an array, `Copy`, `Clone` and `PartialEq` (`==` and `!=` on arrays of
+one length) of arrays whose elements implement them: rustc's `core`
+writes these with const generics, which flux does not have yet. Other
+methods of arrays and slices, comparisons with `<`, ranges as indices
+(`&a[1..3]`) and arrays in `const fn`s through references are not
+supported yet.
 
 Generic items are checked once, in terms of their parameters, and
 compiled once per set of arguments the program uses them with

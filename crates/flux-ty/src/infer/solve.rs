@@ -159,7 +159,9 @@ impl Ctx<'_> {
                     self.register_wf(e, range, written);
                 }
             }
-            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => self.register_wf(t, range, written),
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+                self.register_wf(t, range, written)
+            }
             _ => {}
         }
     }
@@ -176,7 +178,9 @@ impl Ctx<'_> {
                 self.signature_wf.insert(ty);
             }
             TyKind::Tuple(elements) => elements.iter().for_each(|&e| self.signature_wf(e)),
-            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => self.signature_wf(t),
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+                self.signature_wf(t)
+            }
             _ => {}
         }
     }
@@ -438,6 +442,8 @@ impl Ctx<'_> {
             }
             TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, self.normalize(t, origin))),
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, self.normalize(t, origin)),
+            TyKind::Array(t, len) => Ty::array(self.normalize(t, origin), len),
+            TyKind::Slice(t) => Ty::slice(self.normalize(t, origin)),
             _ => ty,
         }
     }
@@ -543,11 +549,14 @@ impl Ctx<'_> {
                     self.require_alias_traits(t, parts.get(i), range);
                 }
             }
-            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => {
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
                 let pointee = match written {
-                    Some(TypeRef::Ref { pointee, .. } | TypeRef::Ptr { pointee, .. }) => {
-                        Some(&**pointee)
-                    }
+                    Some(
+                        TypeRef::Ref { pointee, .. }
+                        | TypeRef::Ptr { pointee, .. }
+                        | TypeRef::Array { elem: pointee, .. }
+                        | TypeRef::Slice(pointee),
+                    ) => Some(&**pointee),
                     _ => None,
                 };
                 self.require_alias_traits(t, pointee, range);
@@ -573,8 +582,9 @@ impl Ctx<'_> {
         // As in rustc, a body with errors, or with values of types that
         // are (from its signature or a struct's), reports no ambiguity:
         // what is unknown is likely so because of them.
-        let tainted =
-            !self.diagnostics.is_empty() || self.expr_types.iter().any(|(_, &t)| t == Ty::ERROR);
+        let tainted = !self.diagnostics.is_empty()
+            || self.expr_types.iter().any(|(_, &t)| t == Ty::ERROR)
+            || self.pat_types.iter().any(|(_, &t)| t == Ty::ERROR);
         self.tainted = tainted;
         for ob in std::mem::take(&mut self.obligations) {
             if tainted {
@@ -617,7 +627,9 @@ impl Ctx<'_> {
                     self.int_vars(t, out);
                 }
             }
-            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => self.int_vars(t, out),
+            TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+                self.int_vars(t, out)
+            }
             _ => {}
         }
     }
@@ -702,6 +714,8 @@ impl Ctx<'_> {
             TyKind::Tuple(_) => "tuple",
             TyKind::Param(_) => "type parameter",
             TyKind::RawPtr(..) => "raw pointer",
+            TyKind::Array(..) => "array",
+            TyKind::Slice(_) => "slice",
             _ => "type",
         };
         format!("{kind} `{}`", self.describe(ty))
@@ -734,6 +748,34 @@ impl Ctx<'_> {
         }
         if crate::traits::is_builtin_copy(self.items, t, self_ty) {
             return Selection::Met(Vec::new());
+        }
+        // An array is compared with an array of its length.
+        if let TyKind::Array(_, len) = self_ty.kind()
+            && self.items.traits[t]
+                .lang
+                .is_some_and(|l| l.as_str() == "eq")
+            && let Some(&rhs) = pred.trait_ref.args.first()
+            && let TyKind::Infer(var) = self.shallow(rhs).kind()
+            && !self.unknown(var).0
+        {
+            let elem = self.new_var(false, TextRange::default());
+            self.unify(rhs, Ty::array(elem, len));
+        }
+        let args: Vec<Ty> = pred
+            .trait_ref
+            .args
+            .iter()
+            .map(|&a| self.shallow(a))
+            .collect();
+        let goal = Predicate {
+            self_ty,
+            trait_ref: TraitRef {
+                args: Ty::list(&args),
+                ..pred.trait_ref
+            },
+        };
+        if let Some(elem) = crate::traits::builtin_array_impl(self.items, goal) {
+            return Selection::Met(vec![elem]);
         }
         let mut env: Vec<Predicate> = self
             .param_env
@@ -890,6 +932,16 @@ impl Ctx<'_> {
             || crate::traits::is_builtin_copy(self.items, t, ty)
         {
             return true;
+        }
+        if let TyKind::Array(elem, _) = ty.kind()
+            && matches!(self.items.traits[t].lang, Some(l) if matches!(l.as_str(), "copy" | "clone" | "eq"))
+        {
+            let args = args.map(|a| {
+                a.iter()
+                    .map(|&x| x.sequence_elem().unwrap_or(x))
+                    .collect::<Vec<_>>()
+            });
+            return self.may_hold(elem, t, args.as_deref(), depth + 1);
         }
         let alias_bounds = self.alias_bounds(ty);
         let in_env = self.param_env.iter().chain(&alias_bounds).any(|p| {
@@ -1438,7 +1490,9 @@ impl Ctx<'_> {
 pub(super) fn first_param(ty: Ty) -> Option<u32> {
     match ty.kind() {
         TyKind::Param(p) => Some(p.index),
-        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => first_param(t),
+        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+            first_param(t)
+        }
         TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().find_map(|&t| first_param(t)),
         _ => None,
     }

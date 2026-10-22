@@ -87,7 +87,7 @@ fn shared_core_signatures() {
         let text = fs::read_to_string(&path).unwrap();
         let (_, _, hir) = flux_hir::lower_text(&path, &text);
         let (shared, mut shared_diagnostics) = flux_ty::signatures(&hir.items);
-        let (all, mut all_diagnostics) = flux_ty::signatures_checked(&hir.items, true);
+        let (all, mut all_diagnostics) = flux_ty::signatures_checked(&hir.items, true, None);
         let name = path.display();
         assert_eq!(format!("{shared:?}"), format!("{all:?}"), "{name}");
         flux_hir::Diagnostic::sort(&mut shared_diagnostics);

@@ -219,6 +219,24 @@
   is not `Ord`), is E0599's "exists but its trait bounds were not
   satisfied"; and a derived `PartialEq` on an enum without variants
   matches on `*self`, as rustc's does, rather than failing E0004.
+- Support arrays and slices: `[T; N]` types, whose length is an integer
+  or a constant (evaluated by flux's constant evaluator while types are
+  checked, so its errors stop type checking, as in rustc), `[a, b]` and
+  `[x; N]` (whose value must be `Copy` or a constant, E0277), indexing
+  with `usize` as a value and a place (`a[i] = v`, `&mut a[i]`), with a
+  run-time bounds check that aborts as rustc's panic does, `&[T]` and
+  `&mut [T]` from references to arrays by rustc's unsizing coercion,
+  and the built-in `len` and `is_empty`. Arrays are `Copy`, `Clone` and
+  `PartialEq` when their elements are, built in until `core` has const
+  generics. Type errors (E0308 with array sizes, E0277 for indices that
+  are not `usize` and unsized values, E0608), borrow errors (indexing
+  borrows the whole array: E0499, E0502, E0503, E0506; E0508 for moves
+  out of elements; E0594 and E0596) and rustc's `unconditional_panic`
+  lint and E0080 for indices known to be out of bounds are reported as
+  rustc reports them. Code generation keeps values that contain arrays
+  in memory, passed by address and returned through `sret`, references
+  to slices as an address and a length, and drops arrays element by
+  element.
 
 ### Performance
 

@@ -607,6 +607,22 @@ impl Printer<'_> {
                 self.expr(*rhs);
                 self.out.push(')');
             }
+            Expr::Array(elements) => {
+                self.out.push('[');
+                self.exprs(elements);
+                self.out.push(']');
+            }
+            Expr::Repeat { value, count } => {
+                self.out.push('[');
+                self.expr(*value);
+                write!(self.out, "; {count}]").unwrap();
+            }
+            Expr::Index { base, index } => {
+                self.expr(*base);
+                self.out.push('[');
+                self.expr(*index);
+                self.out.push(']');
+            }
             Expr::Cast { expr, ty } => {
                 self.out.push('(');
                 self.expr(*expr);

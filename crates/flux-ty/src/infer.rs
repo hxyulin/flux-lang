@@ -30,8 +30,9 @@ pub struct InferenceResult {
     pub binding_types: ArenaMap<Binding, Ty>,
     /// The field each `Field` expression reads, by index.
     pub field_indices: ArenaMap<Expr, u32>,
-    /// How many references a `Field` expression's base is dereferenced
-    /// through first: one for `r.a` with `r: &S`.
+    /// How many references a `Field` or `Index` expression's base is
+    /// dereferenced through first: one for `r.a` with `r: &S`, or `r[0]`
+    /// with `r: &[i32]`.
     pub field_derefs: ArenaMap<Expr, u32>,
     /// The method each `MethodCall` calls, and how its receiver is passed.
     pub methods: ArenaMap<Expr, Method>,
@@ -75,7 +76,28 @@ pub struct InferenceResult {
     /// The checks of the body's patterns wait for the values of the
     /// constants its patterns name: [`crate::check_deferred_patterns`].
     pub deferred_pats: bool,
+    /// Expressions of type `&[T; N]` or `&mut [T; N]` used where a slice
+    /// is expected, with the type they become (`&[T]`), after the
+    /// reborrow in `reborrows` if there is one: rustc's unsizing
+    /// coercion.
+    pub unsizes: ArenaMap<Expr, Ty>,
+    /// The built-in methods of arrays and slices called, with how many
+    /// references the receiver is dereferenced through first.
+    pub builtin_methods: ArenaMap<Expr, (BuiltinMethod, u32)>,
+    /// The constants array lengths in the body name whose values were
+    /// not known: the body is inferred again once they are.
+    pub missing_lens: Vec<ConstId>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// A method of arrays and slices built into the compiler, until `core`
+/// can define it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinMethod {
+    /// `len`
+    Len,
+    /// `is_empty`
+    IsEmpty,
 }
 
 /// How a binding binds what it matches, unless it says otherwise: by
@@ -258,6 +280,9 @@ impl<'a> Ctx<'a> {
             written_wf: HashSet::new(),
             signature_wf: HashSet::new(),
             deferred: Vec::new(),
+            unsizes: ArenaMap::new(),
+            builtin_methods: ArenaMap::new(),
+            lens: crate::ArrayLens::new(&sigs.array_lens),
             diagnostics: Vec::new(),
         }
     }
@@ -427,6 +452,10 @@ struct Ctx<'a> {
     /// In a constant, the struct types its type names.
     signature_wf: HashSet<Ty>,
     deferred: Vec<Deferred>,
+    unsizes: ArenaMap<Expr, Ty>,
+    builtin_methods: ArenaMap<Expr, (BuiltinMethod, u32)>,
+    /// The values of the constants array lengths name.
+    lens: crate::ArrayLens<'a>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -496,6 +525,8 @@ impl Ctx<'_> {
         match ty.kind() {
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, self.known(pointee)),
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, self.known(pointee))),
+            TyKind::Array(elem, len) => Ty::array(self.known(elem), len),
+            TyKind::Slice(elem) => Ty::slice(self.known(elem)),
             TyKind::Tuple(elements) => {
                 let elements: Vec<Ty> = elements.iter().map(|&e| self.known(e)).collect();
                 Ty::tuple(&elements)
@@ -528,6 +559,9 @@ impl Ctx<'_> {
             (_, TyKind::Infer(var)) => self.bind_var(var, a),
             (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y))
             | (TyKind::Ref(m, x), TyKind::Ref(n, y)) => m == n && self.unify(x, y),
+            // The elements learn their type even if the lengths differ.
+            (TyKind::Array(x, m), TyKind::Array(y, n)) => self.unify(x, y) && m == n,
+            (TyKind::Slice(x), TyKind::Slice(y)) => self.unify(x, y),
             (TyKind::Tuple(xs), TyKind::Tuple(ys)) => {
                 // Every element is unified, even after a mismatch, so that
                 // each learns what it can.
@@ -578,6 +612,25 @@ impl Ctx<'_> {
             return;
         }
         let blamed = self.blame(expr);
+        // A reference to an array where one to a slice is expected is
+        // unsized, after a reborrow if it is a `&mut` (which may become a
+        // `&`): rustc's unsizing coercion.
+        if let (TyKind::Ref(from, array), TyKind::Ref(to, slice)) =
+            (self.shallow(actual).kind(), self.shallow(expected).kind())
+            && let (TyKind::Array(elem, _), TyKind::Slice(expected_elem)) =
+                (self.shallow(array).kind(), self.shallow(slice).kind())
+            && (from == to || from == Mutability::Mut)
+        {
+            if from == Mutability::Mut {
+                self.reborrows.insert(expr, to);
+            }
+            self.unsizes.insert(expr, expected);
+            if !self.unify(elem, expected_elem) {
+                let range = self.range(blamed);
+                self.mismatch(expected, actual, range);
+            }
+            return;
+        }
         // A `&mut T` where a reference is expected is reborrowed, and may
         // become a `&T`.
         if let (TyKind::Ref(Mutability::Mut, pointee), TyKind::Ref(m, expected_pointee)) =
@@ -678,6 +731,8 @@ impl Ctx<'_> {
             (_, TyKind::Infer(var)) => !self.unknown(var).0 || a.as_int().is_some(),
             (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y))
             | (TyKind::Ref(m, x), TyKind::Ref(n, y)) => m == n && self.can_unify(x, y),
+            (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && self.can_unify(x, y),
+            (TyKind::Slice(x), TyKind::Slice(y)) => self.can_unify(x, y),
             (TyKind::Tuple(xs), TyKind::Tuple(ys)) => {
                 xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, &y)| self.can_unify(x, y))
             }
@@ -713,6 +768,8 @@ impl Ctx<'_> {
                 let m = if m == Mutability::Mut { "mut " } else { "" };
                 format!("&{m}{}", self.describe(pointee))
             }
+            TyKind::Array(elem, len) => format!("[{}; {len}]", self.describe(elem)),
+            TyKind::Slice(elem) => format!("[{}]", self.describe(elem)),
             TyKind::Tuple(elements) if !elements.is_empty() => {
                 let elements: Vec<String> = elements.iter().map(|&e| self.describe(e)).collect();
                 if elements.len() == 1 {
@@ -742,6 +799,19 @@ impl Ctx<'_> {
     }
 
     fn mismatch(&mut self, expected: Ty, actual: Ty, range: TextRange) {
+        if let (TyKind::Array(x, want), TyKind::Array(y, got)) =
+            (self.shallow(expected).kind(), self.shallow(actual).kind())
+            && want != got
+            && self.can_unify(x, y)
+        {
+            self.error(
+                range,
+                format!(
+                    "mismatched types: expected an array with a size of {want}, found one with a size of {got}"
+                ),
+            );
+            return;
+        }
         // The unknown parts are not reported again.
         let mut unknown = Vec::new();
         self.unknown_vars(expected, &mut unknown);
@@ -771,6 +841,7 @@ impl Ctx<'_> {
             bounds: &self.param_env,
             self_trait: self.self_trait,
             defaults: Some(&self.sigs.trait_defaults),
+            lens: Some(&self.lens),
         };
         let ty = resolve_or_report(
             self.items,
@@ -815,6 +886,8 @@ impl Ctx<'_> {
             TyKind::Ref(m, pointee) => {
                 Ty::new(TyKind::Ref(m, self.fill_placeholders(pointee, origin)))
             }
+            TyKind::Array(elem, len) => Ty::array(self.fill_placeholders(elem, origin), len),
+            TyKind::Slice(elem) => Ty::slice(self.fill_placeholders(elem, origin)),
             _ => ty,
         }
     }
@@ -1127,6 +1200,8 @@ impl Ctx<'_> {
             }
             (TyKind::Ref(m, x), TyKind::Ref(n, y))
             | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => m == n && self.impl_applies(x, y),
+            (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && self.impl_applies(x, y),
+            (TyKind::Slice(x), TyKind::Slice(y)) => self.impl_applies(x, y),
             _ => pattern == ty,
         }
     }
@@ -1651,6 +1726,67 @@ impl Ctx<'_> {
                 Ty::tuple(&elements)
             }
             Expr::Field { expr, name } => self.infer_field(id, *expr, *name),
+            Expr::Array(elements) => {
+                let elem = match self.expected_elem(id) {
+                    Some(elem) => elem,
+                    None => self.new_var(false, self.range(id)),
+                };
+                for &element in elements.iter() {
+                    self.expect(element, elem);
+                    let ty = self.infer_expr(element);
+                    self.coerce(ty, elem, element);
+                }
+                Ty::array(elem, elements.len() as u64)
+            }
+            Expr::Repeat { value, count } => {
+                let elem = self.expected_elem(id);
+                if let Some(elem) = elem {
+                    self.expect(*value, elem);
+                }
+                let ty = self.infer_expr(*value);
+                let elem = match elem {
+                    Some(elem) => {
+                        self.coerce(ty, elem, *value);
+                        elem
+                    }
+                    None => ty,
+                };
+                let mut errors = Vec::new();
+                let scope = TypeScope {
+                    lens: Some(&self.lens),
+                    ..TypeScope::default()
+                };
+                let len = crate::array_len(self.items, self.module, count, scope, &mut errors);
+                for (range, message) in errors {
+                    self.error(range, message);
+                }
+                let Some(len) = len else {
+                    return Ty::ERROR;
+                };
+                // A constant is made anew for each element.
+                let constant = matches!(
+                    body.exprs[*value],
+                    Expr::Path(Res::Const(_) | Res::Assoc { .. })
+                );
+                if len > 1
+                    && !constant
+                    && let Some(&copy) = self.items.lang_traits.get(&flux_intern::sym::copy)
+                {
+                    let trait_ref = crate::TraitRef {
+                        trait_: copy,
+                        name: self.items.traits[copy].name,
+                        args: Ty::list(&[]),
+                    };
+                    let range = self.range(*value);
+                    self.register(
+                        trait_ref.with_self(elem),
+                        range,
+                        solve::ObligationKind::Bound,
+                    );
+                }
+                Ty::array(elem, len)
+            }
+            Expr::Index { base, index } => self.infer_index(id, *base, *index),
             Expr::Record {
                 strukt,
                 variant,
@@ -2223,7 +2359,10 @@ impl Ctx<'_> {
                     args.iter().for_each(|&a| structs(a, out));
                 }
                 TyKind::Tuple(elements) => elements.iter().for_each(|&e| structs(e, out)),
-                TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => structs(t, out),
+                TyKind::Ref(_, t)
+                | TyKind::RawPtr(_, t)
+                | TyKind::Array(t, _)
+                | TyKind::Slice(t) => structs(t, out),
                 _ => {}
             }
         }
@@ -2332,6 +2471,60 @@ impl Ctx<'_> {
                 Ty::ERROR
             }
         }
+    }
+
+    /// The element type the context wants of an array expression, if it
+    /// wants an array.
+    fn expected_elem(&mut self, expr: ExprId) -> Option<Ty> {
+        let expected = self.expected.get(expr).copied()?;
+        match self.shallow(expected).kind() {
+            TyKind::Array(elem, _) => Some(elem),
+            _ => None,
+        }
+    }
+
+    /// `base[index]`: an element of an array or slice, which `base` may
+    /// be behind references, at a `usize` index.
+    fn infer_index(&mut self, id: ExprId, base: ExprId, index: ExprId) -> Ty {
+        let ty = self.infer_expr(base);
+        let index_ty = self.infer_expr(index);
+        let (base_ty, derefs) = self.autoderef(ty);
+        // rustc points at `[index]`.
+        let brackets = TextRange::new(self.range(base).end(), self.range(id).end());
+        let elem = match base_ty.kind() {
+            TyKind::Array(elem, _) | TyKind::Slice(elem) => elem,
+            TyKind::Error => return Ty::ERROR,
+            TyKind::Infer(var) if !self.unknown(var).0 => {
+                self.annotations_needed(base, var, self.range(base));
+                return Ty::ERROR;
+            }
+            _ => {
+                let ty = self.describe(ty);
+                self.error(
+                    brackets,
+                    format!("cannot index into a value of type `{ty}`"),
+                );
+                return Ty::ERROR;
+            }
+        };
+        if derefs > 0 {
+            self.field_derefs.insert(id, derefs);
+        }
+        let usize = Ty::int(IntTy::Usize);
+        let index_ty = self.shallow(index_ty);
+        let fits = match index_ty.kind() {
+            TyKind::Infer(var) if self.unknown(var).0 => self.unify(index_ty, usize),
+            TyKind::Error | TyKind::Never => true,
+            _ => index_ty == usize,
+        };
+        if !fits {
+            let (slice, index_ty) = (self.describe(Ty::slice(elem)), self.describe(index_ty));
+            self.error(
+                self.range(index),
+                format!("the type `{slice}` cannot be indexed by `{index_ty}`"),
+            );
+        }
+        elem
     }
 
     /// `ty` with references removed, and how many there were.
@@ -2655,6 +2848,28 @@ impl Ctx<'_> {
                 _ => break,
             }
         }
+        if let TyKind::Array(..) | TyKind::Slice(_) = base.kind() {
+            let builtin = match method.as_str() {
+                "len" => Some((BuiltinMethod::Len, Ty::int(IntTy::Usize))),
+                "is_empty" => Some((BuiltinMethod::IsEmpty, Ty::BOOL)),
+                _ => None,
+            };
+            if let Some((builtin, ret)) = builtin {
+                if !args.is_empty() {
+                    let got = args.len();
+                    let verb = if got == 1 { "was" } else { "were" };
+                    self.error(
+                        name_range,
+                        format!(
+                            "this method takes 0 arguments but {got} argument{} {verb} supplied",
+                            plural(got)
+                        ),
+                    );
+                }
+                self.builtin_methods.insert(id, (builtin, derefs));
+                return ret;
+            }
+        }
         if let Some(ty) = unmet {
             let what = self.describe_kind(ty);
             self.error(
@@ -2937,7 +3152,11 @@ impl Ctx<'_> {
         let operand = self.shallow(lhs);
         let overloadable = matches!(
             operand.kind(),
-            TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) | TyKind::Ref(..)
+            TyKind::Adt(..)
+                | TyKind::Param(_)
+                | TyKind::Alias(_)
+                | TyKind::Ref(..)
+                | TyKind::Array(..)
         );
         let op_range = self.source_map.ops.get(id).copied().unwrap_or_default();
         if let BinaryOp::Cmp(_) = op
@@ -3351,14 +3570,22 @@ impl Ctx<'_> {
     fn check_place(&mut self, assignment: ExprId, lhs: ExprId, plain: bool) {
         match self.body.exprs[lhs] {
             Expr::Field { .. }
+            | Expr::Index { .. }
             | Expr::Unary {
                 op: UnaryOp::Deref, ..
             } => {
-                // A field of a local, or anything behind a pointer.
+                // A field or element of a local, or anything behind a
+                // pointer.
                 let mut base = lhs;
                 loop {
                     match self.body.exprs[base] {
                         Expr::Field { expr, .. } => base = expr,
+                        Expr::Index { base: inner, .. } => {
+                            if self.field_derefs.get(base).is_some() {
+                                return;
+                            }
+                            base = inner;
+                        }
                         Expr::Unary {
                             op: UnaryOp::Deref, ..
                         } => return,
@@ -3435,6 +3662,7 @@ impl Ctx<'_> {
                     "calls returning references are not supported yet",
                 );
             }
+            self.check_sized_args(expr, function, args);
             calls.insert(expr, Instance { function, args });
         }
         let overloaded: Vec<(ExprId, (FunctionId, Vec<Ty>))> = self
@@ -3484,12 +3712,18 @@ impl Ctx<'_> {
                 },
             );
         }
+        let coerced: Vec<(ExprId, Ty)> = self.unsizes.iter().map(|(e, t)| (e, *t)).collect();
+        let mut unsizes = ArenaMap::new();
+        for (expr, ty) in coerced {
+            unsizes.insert(expr, self.resolve(ty, &mut reported));
+        }
         let matched: Vec<(PatId, Ty)> = self.pat_types.iter().map(|(p, t)| (p, *t)).collect();
         let mut pat_types = ArenaMap::new();
         for (pat, ty) in matched {
             pat_types.insert(pat, self.resolve(ty, &mut reported));
         }
         self.run_deferred(&mut reported);
+        self.check_sized();
         self.check_references();
         let mut deferred_pats = false;
         if self.diagnostics.is_empty() && !self.tainted {
@@ -3531,6 +3765,9 @@ impl Ctx<'_> {
             pat_derefs: self.pat_derefs,
             binding_refs: self.binding_refs,
             deferred_pats,
+            unsizes,
+            builtin_methods: self.builtin_methods,
+            missing_lens: self.lens.missing.into_inner(),
             diagnostics: self.diagnostics,
         }
     }
@@ -3678,8 +3915,106 @@ impl Ctx<'_> {
                     self.unknown_vars(t, out);
                 }
             }
-            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) => self.unknown_vars(t, out),
+            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+                self.unknown_vars(t, out)
+            }
             _ => {}
+        }
+    }
+
+    /// A generic parameter is `Sized` unless it is a trait's `Self`: a
+    /// call of `function` at `expr` with an unsized argument for one is
+    /// E0277, reported at the argument whose type names it, as rustc
+    /// does.
+    fn check_sized_args(&mut self, expr: ExprId, function: FunctionId, args: &[Ty]) {
+        let trait_method = matches!(
+            self.items.functions[function].owner,
+            Some(flux_hir::Owner::Trait(_))
+        );
+        let Some((index, &arg)) = args
+            .iter()
+            .enumerate()
+            .find(|&(i, a)| a.is_unsized() && !(trait_method && i == 0))
+        else {
+            return;
+        };
+        let body = self.body;
+        let values: Vec<ExprId> = match &body.exprs[expr] {
+            Expr::MethodCall { receiver, args, .. } => std::iter::once(*receiver)
+                .chain(args.iter().copied())
+                .collect(),
+            _ => body
+                .exprs
+                .values()
+                .find_map(|e| match e {
+                    Expr::Call { callee, args } if *callee == expr => Some(args.to_vec()),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+        };
+        let params = &self.sigs[function].params;
+        let at = params
+            .iter()
+            .position(|&p| crate::mentions_param(p, index as u32))
+            .and_then(|i| values.get(i))
+            .map_or(self.range(expr), |&v| self.range(v));
+        self.error(at, crate::unsized_error(arg));
+    }
+
+    /// Values must have a size known at compile time (E0277): a slice is
+    /// only a place, behind a pointer, that may be borrowed, indexed or
+    /// asked its length; a binding of one is reported at its pattern, as
+    /// rustc does.
+    fn check_sized(&mut self) {
+        let body = self.body;
+        let mut places = HashSet::new();
+        for (id, expr) in body.exprs.iter() {
+            match *expr {
+                Expr::Ref { expr, .. } | Expr::Index { base: expr, .. } => {
+                    places.insert(expr);
+                }
+                Expr::MethodCall { receiver, .. } if self.builtin_methods.get(id).is_some() => {
+                    places.insert(receiver);
+                }
+                _ => {}
+            }
+        }
+        for (pat, data) in body.pats.iter() {
+            let Pat::Bind { binding, .. } = data else {
+                continue;
+            };
+            let ty = self.binding_types.get(*binding).copied();
+            if let Some(ty) = ty.filter(|t| t.is_unsized())
+                && self.binding_refs.get(*binding).is_none()
+            {
+                let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
+                self.error(range, crate::unsized_error(ty));
+            }
+        }
+        // A `let`'s value is reported with its binding.
+        for expr in body.exprs.values() {
+            if let Expr::Block { stmts, .. } = expr {
+                for stmt in stmts.iter() {
+                    if let Stmt::Let {
+                        pat,
+                        init: Some(init),
+                        ..
+                    } = *stmt
+                        && matches!(body.pats[pat], Pat::Bind { .. })
+                    {
+                        places.insert(init);
+                    }
+                }
+            }
+        }
+        let unsized_values: Vec<(ExprId, Ty)> = self
+            .expr_types
+            .iter()
+            .filter(|&(id, ty)| ty.is_unsized() && !places.contains(&id))
+            .map(|(id, ty)| (id, *ty))
+            .collect();
+        for (expr, ty) in unsized_values {
+            self.error(self.range(expr), crate::unsized_error(ty));
         }
     }
 
@@ -3774,6 +4109,8 @@ impl Ctx<'_> {
             }
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, self.resolve(pointee, reported)),
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, self.resolve(pointee, reported))),
+            TyKind::Array(elem, len) => Ty::array(self.resolve(elem, reported), len),
+            TyKind::Slice(elem) => Ty::slice(self.resolve(elem, reported)),
             TyKind::Tuple(elements) => {
                 let elements: Vec<Ty> = elements
                     .iter()

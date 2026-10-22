@@ -150,6 +150,18 @@ pub enum Expr {
         mutable: bool,
         expr: ExprId,
     },
+    /// `[a, b, c]`.
+    Array(Box<[ExprId]>),
+    /// `[value; count]`.
+    Repeat {
+        value: ExprId,
+        count: crate::ArrayLen,
+    },
+    /// `base[index]`, of an array or slice.
+    Index {
+        base: ExprId,
+        index: ExprId,
+    },
     /// `S { a: 1, b, ..base }` or `E::V { a: 1 }`, in source order.
     Record {
         strukt: StructId,

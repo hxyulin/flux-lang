@@ -1,0 +1,17 @@
+struct Buffer { bytes: [u8; sizes::WIDE], rows: [[i32; N]; 3usize] }
+
+fn total(values@0: &[i32], counts@1: &mut [u8]) -> i32 {
+    (counts@1[0] += 1);
+    (values@0[0] + values@0[(values@0.len() - 1)])
+}
+
+fn main() -> () {
+    let a@0 = [1, 2, 3];
+    let b@1 = [0u8; N];
+    let mut buffer@2 = Buffer { bytes: [0; sizes::WIDE], rows: [[1, 2], [3, 4], [5, 6]] };
+    (buffer@2.rows[1][0] = a@0[2]);
+    let mut counts@3 = b@1;
+    let _ = total((&a@0), (&mut counts@3));
+    let _ = (buffer@2.bytes[N], [(); 0]);
+}
+

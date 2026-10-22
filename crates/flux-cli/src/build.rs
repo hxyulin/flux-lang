@@ -63,7 +63,7 @@ pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result
     let hir = timings.time("hir", || {
         flux_hir::lower(&mut db, root, Symbol::intern(&crate_name(file)))
     });
-    let typed = timings.time("types", || flux_ty::check_file(&hir));
+    let typed = timings.time("types", || flux_mir::check_file(&hir));
     let mut errors = db.syntax_errors();
     errors.extend(hir.diagnostics.iter().cloned());
     errors.extend(typed.diagnostics.iter().cloned());

@@ -334,6 +334,17 @@ block's; a path to either (`T::N`, `<S as Tr>::N`, `Self::N`) records
 its generic arguments, as a call does, with `Self: Tr` or the block's
 bounds as obligations.
 
+An array's length is part of its type (`TyKind::Array(T, 3)`), so
+the constant a length names (`[u8; N]`) is evaluated while types are
+resolved, as rustc's queries do: type checking takes a function that
+evaluates constants (`check_file_with`; [`flux_mir::check_file`](../crates/flux-mir/src/lens.rs)
+gives it one that infers them, builds their MIR and runs it), resolves
+signatures once with the lengths it knows (those written as literals,
+or named by constants whose values are literals, need no evaluation),
+evaluates the constants that were missing and resolves them again,
+and infers a body again if it named one only it does. A constant whose
+value needs its own length is a cycle.
+
 Where the type an expression must have is known before it is inferred
 (a `let` with a type, an argument, a field, a return value), it is
 noted, and a call or struct expression unifies its result with it first,
@@ -406,6 +417,15 @@ semantics become explicit, so code generation never sees expressions:
 - `/` and `%` are preceded by assertions that the divisor is not zero
   and, for signed types, that the operation is not `MIN / -1`. rustc
   checks these even in release builds; a failed assertion aborts.
+- `a[i]` copies `i` into a temporary, asserts that it is less than the
+  length (an array's, or a slice's from the pointer it is behind),
+  and is the place `a[_n]`; a move out of it is E0508, and borrowck
+  takes any two elements of one array to overlap, as rustc does.
+  `[x; N]` is one rvalue, `Repeat`; `len` reads the length (`Len`), as
+  a borrow of its receiver; an unsizing coercion is an `Unsize`
+  rvalue. Drop glue drops an array's elements in a loop, and
+  `Clone::clone` and `PartialEq::eq` of arrays, which the compiler
+  implements, get MIR made by `mono`.
 - `&&` and `||` branch, and reading a local copies it into a temporary,
   so `x + { x = 10; x }` adds the old `x`.
 - A call to a function returning `!` has no successor block.
@@ -560,6 +580,15 @@ executable. No C compiler or system linker is involved.
   C struct of its fields, and so does whatever a pointer points to:
   reading or writing a place there loads or stores each leaf at its
   offset.
+- A value that contains an array is indexed at run time, so it lives
+  in memory whatever happens to it: its locals are stack slots, its
+  value is the address of one, copied with `memmove` where it is
+  assigned, it is passed to a function as that address (the callee
+  copies it) and returned through `sret` memory laid out as the value
+  is. An element is at its index times its size. A reference to a
+  slice is two leaves, the address of the first element and the
+  length, which an unsizing coercion adds to a reference to an array
+  and `len` and bounds checks read.
 - An enum is its discriminant, an `isize`, then every variant's fields
   in turn, as if a struct of them all; in memory, a struct of the
   discriminant and a struct per variant. Only the variant it holds has

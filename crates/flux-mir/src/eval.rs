@@ -87,6 +87,8 @@ const STEP_LIMIT: u64 = 50_000_000;
 /// How deep calls may nest: rustc allows 128 frames, the constant's own
 /// included.
 const DEPTH_LIMIT: u32 = 127;
+/// The most elements a repeat expression may make, each a value.
+const MAX_ELEMENTS: u64 = 1 << 24;
 
 /// Evaluates constants on demand, each instance once.
 pub struct Evaluator<'a> {
@@ -287,7 +289,7 @@ impl<'a> Evaluator<'a> {
                 }
                 if let StatementKind::Assign(dest, rvalue) = &statement.kind {
                     let value =
-                        self.rvalue(&locals, generics, rvalue, statement.range, !checked)?;
+                        self.rvalue(body, &locals, generics, rvalue, statement.range, !checked)?;
                     write(&mut locals, dest, value, statement.range)?;
                 }
             }
@@ -449,6 +451,19 @@ impl<'a> Evaluator<'a> {
                     show(r)?
                 )
             }
+            AssertMessage::BoundsCheck { len, index } => {
+                let mut number = |op: &Operand| -> Result<u128, EvalError> {
+                    match self.operand(locals, generics, op, range)? {
+                        Value::Int { bits, .. } => Ok(bits),
+                        _ => unreachable!("lengths and indices are integers"),
+                    }
+                };
+                format!(
+                    "index out of bounds: the length is {} but the index is {}",
+                    number(len)?,
+                    number(index)?
+                )
+            }
         })
     }
 
@@ -483,6 +498,7 @@ impl<'a> Evaluator<'a> {
 
     fn rvalue(
         &mut self,
+        body: &Body,
         locals: &[Option<Value>],
         generics: GenericArgs,
         rvalue: &Rvalue,
@@ -505,9 +521,33 @@ impl<'a> Evaluator<'a> {
                         index,
                         fields,
                     },
-                    AggregateKind::Tuple | AggregateKind::Struct(_) => Value::Aggregate(fields),
+                    AggregateKind::Tuple | AggregateKind::Struct(_) | AggregateKind::Array(_) => {
+                        Value::Aggregate(fields)
+                    }
                 })
             }
+            Rvalue::Repeat(op, count) => {
+                let value = self.operand(locals, generics, op, range)?;
+                if *count > MAX_ELEMENTS {
+                    return Err(error(
+                        range,
+                        "arrays this large in constants are not supported yet".to_owned(),
+                    ));
+                }
+                Ok(Value::Aggregate(vec![value; *count as usize]))
+            }
+            // An array's length is its type's; a slice is behind a
+            // reference.
+            Rvalue::Len { place, .. } => match body.place_ty(place, self.sigs).kind() {
+                flux_ty::TyKind::Array(_, len) => Ok(Value::Int {
+                    bits: u128::from(len),
+                    ty: IntTy::Usize,
+                }),
+                _ => Err(error(
+                    range,
+                    "references in constants are not supported yet".to_owned(),
+                )),
+            },
             Rvalue::Discriminant(place) => match read(locals, place, range)? {
                 Value::Variant { strukt, index, .. } => {
                     let bits = self
@@ -520,7 +560,7 @@ impl<'a> Evaluator<'a> {
                 }
                 _ => unreachable!("discriminants are of enums"),
             },
-            Rvalue::Ref { .. } => Err(error(
+            Rvalue::Ref { .. } | Rvalue::Unsize(..) => Err(error(
                 range,
                 "references in constants are not supported yet".to_owned(),
             )),
@@ -613,6 +653,14 @@ fn at_call(e: EvalError, range: TextRange) -> EvalError {
     }
 }
 
+/// The value of the index in `local`, checked against the length before.
+fn index(locals: &[Option<Value>], local: crate::Local) -> usize {
+    match locals[local.index()] {
+        Some(Value::Int { bits, .. }) => bits as usize,
+        _ => unreachable!("indices are integers"),
+    }
+}
+
 fn read(locals: &[Option<Value>], place: &Place, range: TextRange) -> Result<Value, EvalError> {
     let mut value = locals[place.local.index()]
         .as_ref()
@@ -623,6 +671,9 @@ fn read(locals: &[Option<Value>], place: &Place, range: TextRange) -> Result<Val
                 ProjectionElem::Field(i),
                 Value::Aggregate(fields) | Value::Variant { fields, .. },
             ) => &fields[*i as usize],
+            (ProjectionElem::Index(local), Value::Aggregate(elements)) => {
+                &elements[index(locals, *local)]
+            }
             (ProjectionElem::Downcast(_), Value::Variant { .. }) => value,
             _ => {
                 return Err(error(
@@ -641,20 +692,29 @@ fn write(
     new: Value,
     range: TextRange,
 ) -> Result<(), EvalError> {
-    let slot = &mut locals[place.local.index()];
     if place.projection.is_empty() {
-        *slot = Some(new);
+        locals[place.local.index()] = Some(new);
         return Ok(());
     }
+    let indices: Vec<usize> = place
+        .projection
+        .iter()
+        .map(|elem| match elem {
+            ProjectionElem::Index(local) => index(locals, *local),
+            _ => 0,
+        })
+        .collect();
+    let slot = &mut locals[place.local.index()];
     let mut value = slot
         .as_mut()
         .ok_or_else(|| error(range, "use of an uninitialized value".to_owned()))?;
-    for elem in &place.projection {
+    for (elem, &i) in place.projection.iter().zip(&indices) {
         value = match (elem, value) {
             (
                 ProjectionElem::Field(i),
                 Value::Aggregate(fields) | Value::Variant { fields, .. },
             ) => &mut fields[*i as usize],
+            (ProjectionElem::Index(_), Value::Aggregate(elements)) => &mut elements[i],
             (ProjectionElem::Downcast(_), value @ Value::Variant { .. }) => value,
             _ => {
                 return Err(error(

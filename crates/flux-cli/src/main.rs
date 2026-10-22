@@ -124,7 +124,7 @@ fn run(command: Command) -> Result<bool, String> {
         }
         Command::Mir { file } => {
             let (db, hir) = load(&file)?;
-            let typed = flux_ty::check_file(&hir);
+            let typed = flux_mir::check_file(&hir);
             let mut errors = db.syntax_errors();
             errors.extend(hir.diagnostics.iter().cloned());
             errors.extend(typed.diagnostics.iter().cloned());

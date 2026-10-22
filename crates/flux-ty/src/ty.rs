@@ -44,8 +44,12 @@ pub enum TyKind {
     Never,
     /// `*const T` and `*mut T`.
     RawPtr(Mutability, Ty),
-    /// `&T` and `&mut T`. Only `&CStr` exists so far, from `c"..."`.
+    /// `&T` and `&mut T`.
     Ref(Mutability, Ty),
+    /// `[T; N]`, with its length evaluated.
+    Array(Ty, u64),
+    /// `[T]`: unsized, so only behind a pointer.
+    Slice(Ty),
     /// `core::ffi::CStr`: a NUL-terminated string, only behind a reference.
     CStr,
     /// An inference variable; never present after inference.
@@ -204,7 +208,9 @@ impl Table {
             TyKind::Infer(_) => HAS_INFER,
             TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().fold(0, |f, &t| f | of(t)),
             TyKind::Alias(alias) => alias.args.iter().fold(HAS_ALIAS, |f, &t| f | of(t)),
-            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) => of(t),
+            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+                of(t)
+            }
             TyKind::Int(_) | TyKind::Bool | TyKind::Never | TyKind::CStr | TyKind::Error => 0,
         };
         let id = self.len;
@@ -332,8 +338,31 @@ impl Ty {
             }),
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, pointee.subst(args)),
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, pointee.subst(args))),
+            TyKind::Array(elem, len) => Ty::array(elem.subst(args), len),
+            TyKind::Slice(elem) => Ty::slice(elem.subst(args)),
             _ => self,
         }
+    }
+
+    pub fn array(elem: Ty, len: u64) -> Ty {
+        Ty::new(TyKind::Array(elem, len))
+    }
+
+    pub fn slice(elem: Ty) -> Ty {
+        Ty::new(TyKind::Slice(elem))
+    }
+
+    /// The element type of an array or slice.
+    pub fn sequence_elem(self) -> Option<Ty> {
+        match self.kind() {
+            TyKind::Array(elem, _) | TyKind::Slice(elem) => Some(elem),
+            _ => None,
+        }
+    }
+
+    /// Whether the type is a slice, which has no size of its own.
+    pub fn is_unsized(self) -> bool {
+        matches!(self.kind(), TyKind::Slice(_))
     }
 
     /// The integer type, if this is one.
@@ -473,6 +502,8 @@ impl fmt::Display for Ty {
             TyKind::RawPtr(Mutability::Mut, pointee) => write!(f, "*mut {pointee}"),
             TyKind::Ref(Mutability::Not, pointee) => write!(f, "&{pointee}"),
             TyKind::Ref(Mutability::Mut, pointee) => write!(f, "&mut {pointee}"),
+            TyKind::Array(elem, len) => write!(f, "[{elem}; {len}]"),
+            TyKind::Slice(elem) => write!(f, "[{elem}]"),
             TyKind::CStr => f.write_str("CStr"),
             TyKind::Infer(_) => f.write_str("_"),
             TyKind::Error => f.write_str("{error}"),

@@ -1,0 +1,33 @@
+struct Grid { cells: [[u8; 2]; 3], count: usize }
+struct Point { coords: [i32; 2] }
+fn sum(&[i32]) -> i32
+    values@0: &[i32]
+    total@1: i32
+    i@2: usize
+fn first<T>([T; 3]) -> T
+    values@0: [T; 3]
+fn fill(&mut [u8], u8) -> ()
+    values@0: &mut [u8]
+    value@1: u8
+    i@2: usize
+fn make() -> [i64; 4]
+fn main() -> ()
+    a@0: [i32; 3]
+    b@1: [u8; 3]
+    c@2: [bool; 2]
+    empty@3: [i32; 0]
+    index@4: usize
+    x@5: i32
+    total@6: i32
+    buffer@7: [u8; 8]
+    grid@8: Grid
+    point@9: Point
+    copy@10: Point
+    y@11: i32
+    f@12: bool
+    slice@13: &[i64]
+    r@14: &mut [u8; 8]
+    n@15: usize
+fn clone(&Point) -> Point
+    self@0: &Point
+const N: usize

@@ -1,0 +1,305 @@
+fn move_out(_1: [S; 2]) -> S {
+    let mut _0: S;
+    let _2: usize;
+    let _3: bool;
+
+    bb0: {
+        _2 = const 0_usize;
+        _3 = Lt(copy _2, const 2_usize);
+        assert(copy _3, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _0 = move _1[_2];
+        return;
+    }
+}
+
+fn move_out_of_slice(_1: &[S]) -> S {
+    let mut _0: S;
+    let _2: usize;
+    let _3: usize;
+    let _4: bool;
+
+    bb0: {
+        _2 = const 0_usize;
+        _3 = Len((*_1));
+        _4 = Lt(copy _2, copy _3);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _0 = move (*_1)[_2];
+        return;
+    }
+}
+
+fn two_mutable(_1: [i32; 3]) -> () {
+    let mut _0: ();
+    let _2: &mut i32; // r
+    let _3: usize;
+    let _4: bool;
+    let _5: &mut i32; // q
+    let _6: usize;
+    let _7: bool;
+    let _8: ();
+    let _9: ();
+
+    bb0: {
+        _3 = const 0_usize;
+        _4 = Lt(copy _3, const 3_usize);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _2 = &mut _1[_3];
+        _6 = const 1_usize;
+        _7 = Lt(copy _6, const 3_usize);
+        assert(copy _7, "index out of bounds") -> bb2;
+    }
+
+    bb2: {
+        _5 = &mut _1[_6];
+        (*_2) = const 1_i32;
+        _8 = const ();
+        (*_5) = const 2_i32;
+        _9 = const ();
+        _0 = const ();
+        StorageDead(_5);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn assign_borrowed(_1: [i32; 3]) -> () {
+    let mut _0: ();
+    let _2: &i32; // r
+    let _3: usize;
+    let _4: bool;
+    let _5: ();
+    let _6: usize;
+    let _7: bool;
+
+    bb0: {
+        _3 = const 0_usize;
+        _4 = Lt(copy _3, const 3_usize);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _2 = &_1[_3];
+        _6 = const 1_usize;
+        _7 = Lt(copy _6, const 3_usize);
+        assert(copy _7, "index out of bounds") -> bb2;
+    }
+
+    bb2: {
+        _1[_6] = const 5_i32;
+        _5 = const ();
+        PlaceMention((*_2));
+        _0 = const ();
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn len_while_borrowed(_1: [i32; 3]) -> () {
+    let mut _0: ();
+    let _2: &mut [i32; 3]; // m
+    let _3: usize; // n
+    let _4: ();
+    let _5: i32;
+    let _6: usize;
+    let _7: usize;
+    let _8: bool;
+
+    bb0: {
+        _2 = &mut _1;
+        _3 = Len(&_1);
+        _6 = copy _3;
+        _5 = copy _6 as i32;
+        _7 = const 0_usize;
+        _8 = Lt(copy _7, const 3_usize);
+        assert(copy _8, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        (*_2)[_7] = copy _5;
+        _4 = const ();
+        _0 = const ();
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn use_while_borrowed(_1: &mut [i32]) -> () {
+    let mut _0: ();
+    let _2: &mut i32; // r
+    let _3: usize;
+    let _4: usize;
+    let _5: bool;
+    let _6: i32; // x
+    let _7: usize;
+    let _8: usize;
+    let _9: bool;
+    let _10: ();
+    let _11: i32;
+
+    bb0: {
+        _3 = const 0_usize;
+        _4 = Len((*_1));
+        _5 = Lt(copy _3, copy _4);
+        assert(copy _5, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _2 = &mut (*_1)[_3];
+        _7 = const 1_usize;
+        _8 = Len((*_1));
+        _9 = Lt(copy _7, copy _8);
+        assert(copy _9, "index out of bounds") -> bb2;
+    }
+
+    bb2: {
+        _6 = copy (*_1)[_7];
+        _11 = copy _6;
+        (*_2) = copy _11;
+        _10 = const ();
+        _0 = const ();
+        StorageDead(_6);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn slice_len_while_borrowed(_1: &mut [i32]) -> () {
+    let mut _0: ();
+    let _2: &mut i32; // r
+    let _3: usize;
+    let _4: usize;
+    let _5: bool;
+    let _6: usize; // n
+    let _7: ();
+    let _8: i32;
+    let _9: usize;
+
+    bb0: {
+        _3 = const 0_usize;
+        _4 = Len((*_1));
+        _5 = Lt(copy _3, copy _4);
+        assert(copy _5, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _2 = &mut (*_1)[_3];
+        _6 = Len(&(*_1));
+        _9 = copy _6;
+        _8 = copy _9 as i32;
+        (*_2) = copy _8;
+        _7 = const ();
+        _0 = const ();
+        StorageDead(_6);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn not_mutable(_1: [i32; 3]) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: usize;
+    let _4: bool;
+    let _5: &mut i32; // r
+    let _6: usize;
+    let _7: bool;
+    let _8: ();
+
+    bb0: {
+        _3 = const 0_usize;
+        _4 = Lt(copy _3, const 3_usize);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _1[_3] = const 1_i32;
+        _2 = const ();
+        _6 = const 1_usize;
+        _7 = Lt(copy _6, const 3_usize);
+        assert(copy _7, "index out of bounds") -> bb2;
+    }
+
+    bb2: {
+        _5 = &mut _1[_6];
+        (*_5) = const 2_i32;
+        _8 = const ();
+        _0 = const ();
+        StorageDead(_5);
+        return;
+    }
+}
+
+fn behind_shared(_1: &[i32]) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: usize;
+    let _4: usize;
+    let _5: bool;
+
+    bb0: {
+        _3 = const 0_usize;
+        _4 = Len((*_1));
+        _5 = Lt(copy _3, copy _4);
+        assert(copy _5, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        (*_1)[_3] = const 1_i32;
+        _2 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn uninit() -> () {
+    let mut _0: ();
+    let _1: [i32; 3]; // a
+    let _2: ();
+    let _3: usize;
+    let _4: bool;
+
+    bb0: {
+        _3 = const 0_usize;
+        _4 = Lt(copy _3, const 3_usize);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _1[_3] = const 1_i32;
+        _2 = const ();
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 115..119: cannot move out of type `[S; 2]`, a non-copy array
+error 164..168: cannot move out of type `[S]`, a non-copy slice
+error 241..250: cannot borrow `a[_]` as mutable more than once at a time
+error 340..348: cannot assign to `a[_]` because it is borrowed
+error 442..443: cannot borrow `a` as immutable because it is also borrowed as mutable
+error 549..553: cannot use `s[_]` because it was mutably borrowed
+error 650..651: cannot borrow `*s` as immutable because it is also borrowed as mutable
+error 715..723: cannot assign to `a[_]`, as `a` is not declared as mutable
+error 737..746: cannot borrow `a[_]` as mutable, as `a` is not declared as mutable
+error 797..805: cannot assign to `s[_]`, which is behind a `&` reference
+error 849..857: used binding `a` isn't initialized
