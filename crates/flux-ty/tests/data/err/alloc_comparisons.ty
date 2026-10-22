@@ -1,0 +1,19 @@
+fn strs(&str, &str) -> bool
+    a@0: &str
+    b@1: &str
+fn slices(&[i32], &[i32]) -> bool
+    a@0: &[i32]
+    b@1: &[i32]
+fn arrays(Vec<i32>) -> bool
+    v@0: Vec<i32>
+fn mut_arrays(Vec<i32>, &mut [i32; 2]) -> bool
+    v@0: Vec<i32>
+    a@1: &mut [i32; 2]
+fn main() -> ()
+    s@0: String
+    v@1: Vec<i32>
+    m@2: [i32; 2]
+error 247..249: can't compare `str` with `&str`
+error 305..307: can't compare `[i32]` with `&[i32]`
+error 356..358: can't compare `[{integer}; 2]` with `Vec<i32>`
+error 425..427: can't compare `Vec<i32>` with `&mut [i32; 2]`

@@ -996,6 +996,14 @@
   vtable, whose drop slot holds `drop_in_place`'s instance).
   `format_args!` writes literals a plain `{}` shows into its string, as
   rustc does.
+- Add `alloc`'s comparisons as rustc's has them: `String` with `str`
+  and `&str` either way round, and `Vec<T>` with `Vec<U>`, `[U]`,
+  `&[U]`, `&mut [U]`, `[U; N]` and `&[U; N]` (and slices and references
+  to them with `Vec`). `str` and `[T]` now have several `PartialEq`
+  impls, so `a.eq(&b)` of two `&str`s is rejected as in rustc ("can't
+  compare `str` with `&str`", E0277 at the argument: a method's trait
+  bound unmet for arguments its arguments gave is reported there), and
+  `&str == String` uses the impl for the reference.
 
 ### Performance
 

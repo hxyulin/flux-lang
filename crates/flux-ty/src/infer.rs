@@ -5545,6 +5545,14 @@ impl Ctx<'_> {
         if self.array_slice_eq(lhs, rhs) {
             return None;
         }
+        // An impl for the reference itself: `alloc`'s `&str == String`.
+        if equality
+            && is_ref(lhs)
+            && unknown(self, rhs).is_none()
+            && self.probe(|cx| cx.may_hold(lhs, eq, Some(&[rhs]), 0))
+        {
+            return None;
+        }
         match lhs.kind() {
             TyKind::Ref(_, pointee)
                 if equality && !is_ref(rhs) && unknown(self, rhs) != Some(false) =>

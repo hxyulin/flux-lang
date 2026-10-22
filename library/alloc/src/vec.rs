@@ -596,6 +596,12 @@ impl<'a, T: PartialEq<U>, U> PartialEq<Vec<U>> for &'a [T] {
     }
 }
 
+impl<'a, T: PartialEq<U>, U> PartialEq<Vec<U>> for &'a mut [T] {
+    fn eq(&self, other: &Vec<U>) -> bool {
+        **self == *other.as_slice()
+    }
+}
+
 impl<T: PartialEq<U>, U> PartialEq<Vec<U>> for [T] {
     fn eq(&self, other: &Vec<U>) -> bool {
         self == other.as_slice()
