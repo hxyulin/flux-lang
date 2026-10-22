@@ -84,6 +84,33 @@ pub mod aarch64 {
         __neon_vget_lane_u64::<LANE>(a)
     }
 
+    /// Shifts each halfword right by N bits, keeping its low byte.
+    /// N must be a compile-time constant in 1..=8.
+    ///
+    /// # Safety
+    /// The caller must run on an AArch64 target with NEON.
+    pub unsafe fn vshrn_n_u16<const N: i32>(a: uint16x8_t) -> uint8x8_t {
+        __neon_vshrn_n_u16::<N>(a)
+    }
+
+    #[rustc_intrinsic]
+    fn __neon_vshrn_n_u16<const N: i32>(a: uint16x8_t) -> uint8x8_t {
+        loop {}
+    }
+
+    /// Pairwise unsigned maxima of a, followed by those of b.
+    ///
+    /// # Safety
+    /// The caller must run on an AArch64 target with NEON.
+    pub unsafe fn vpmaxq_u8(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
+        __neon_vpmaxq_u8(a, b)
+    }
+
+    #[rustc_intrinsic]
+    fn __neon_vpmaxq_u8(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
+        loop {}
+    }
+
     impl crate::fmt::Debug for uint8x16_t {
         fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
             let mut tuple = f.debug_tuple("uint8x16_t");

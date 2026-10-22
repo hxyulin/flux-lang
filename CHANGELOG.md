@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Add checked NEON narrowing shifts and unsigned pairwise maximum, including
+  indirect-call regressions and byte-width checks. Narrowing uses scalar
+  lowering; pairwise maximum combines scalar shuffles and packed compare/select.
+
 - Add a bounded AArch64 NEON API using packed Keel operations, with distinct
   vector types, unaligned loads, splat, equality, bitwise operations,
   reinterpretation and checked constant lanes. Callable wrappers support

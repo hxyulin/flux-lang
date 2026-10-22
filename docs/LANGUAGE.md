@@ -1006,13 +1006,17 @@ On AArch64, `core::arch::aarch64` provides distinct `uint8x16_t`,
 Rust sizes/alignments and Copy/Clone/Debug. The bounded API includes
 `vld1q_u8`, `vdupq_n_u8`, `vceqq_u8`, `vandq_u8`, `vorrq_u8`,
 `vreinterpretq_u16_u8`, `vreinterpretq_u64_u8`, `vreinterpret_u64_u8`,
-`vgetq_lane_u64::<LANE>` and `vget_lane_u64::<LANE>`. Calls require an
-unsafe context; const lane indices are checked after substitution. Ordinary
+`vgetq_lane_u64::<LANE>`, `vget_lane_u64::<LANE>`,
+`vshrn_n_u16::<N>` and `vpmaxq_u8`. Calls require an unsafe context;
+const lane indices and narrowing shifts (`1..=8`) are checked after substitution. Ordinary
 wrappers support unsafe function pointers; closures calling them inside an
 unsafe block can satisfy Fn bounds. Safe pointer conversions and direct
 Fn-bound use of the target-feature items are rejected. Caller
-`target_feature` attributes, legacy trailing lane arguments, narrowing shifts,
-pairwise maximum and vector C ABI support remain unsupported.
+`target_feature` attributes, legacy trailing const arguments and vector C ABI
+support remain unsupported. Narrowing currently lowers to scalar loads/shifts
+and exactly eight byte stores. Pairwise maximum uses scalarized shuffles and
+packed unsigned comparison/selection; native `shrn`/`umaxp` selection is not
+implemented in the pinned Keel IR.
 
 Unions support signed/unsigned integer scalar fields, default/`repr(C)`
 layout, Copy/Clone and whole-value moves. Fields share storage at offset
