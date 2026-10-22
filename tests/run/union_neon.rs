@@ -17,7 +17,11 @@ mod neon {
 
     #[inline(never)]
     fn bounce(kind: Kind) -> Kind {
-        kind
+        require_markers(kind)
+    }
+
+    fn require_markers<T: Send + Sync>(value: T) -> T {
+        value
     }
 
     #[inline(never)]

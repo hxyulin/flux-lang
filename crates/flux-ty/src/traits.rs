@@ -1373,7 +1373,98 @@ fn holds_at(
         })
     });
     stack.pop();
+    if holds {
+        return true;
+    }
+    let Some(nested) = auto_trait_requirements(items, sigs, goal) else {
+        return false;
+    };
+    stack.push(goal);
+    let holds = nested
+        .into_iter()
+        .all(|p| holds_at(items, sigs, env, normalize_predicate(items, sigs, p), stack));
+    stack.pop();
     holds
+}
+
+/// Built-in auto traits, identified by core's lang items, never by name.
+pub(crate) fn is_auto_trait(items: &ItemTree, t: TraitId) -> bool {
+    items.traits[t]
+        .lang
+        .is_some_and(|l| matches!(l.as_str(), "send" | "sync"))
+}
+
+/// Structural auto-trait obligations. Explicit impls replace structural
+/// propagation for the entire ADT, including instantiations whose impl
+/// bounds fail. Unknown parameters and raw pointers have no candidate.
+/// Recursive types are conservatively limited by the solver's depth bound.
+pub(crate) fn auto_trait_requirements(
+    items: &ItemTree,
+    sigs: &Signatures,
+    goal: Predicate,
+) -> Option<Vec<Predicate>> {
+    let t = goal.trait_ref.trait_;
+    if !is_auto_trait(items, t) {
+        return None;
+    }
+    let mut trait_ref = goal.trait_ref;
+    let types = match goal.self_ty.kind() {
+        TyKind::Int(_)
+        | TyKind::Bool
+        | TyKind::Char
+        | TyKind::Str
+        | TyKind::Never
+        | TyKind::CStr
+        | TyKind::FnDef(_)
+        | TyKind::FnPtr(_) => Vec::new(),
+        TyKind::Tuple(types) => types.to_vec(),
+        TyKind::Array(ty, _) | TyKind::Slice(ty) => vec![ty],
+        TyKind::Ref(m, ty) => {
+            // &T: Send requires T: Sync; &mut T: Send requires T: Send.
+            // Both reference kinds are Sync exactly when T is Sync.
+            if m == Mutability::Not {
+                let sync = *items.lang_traits.get(&Symbol::intern("sync"))?;
+                trait_ref = TraitRef {
+                    trait_: sync,
+                    name: items.traits[sync].name,
+                    args: Ty::list(&[]),
+                };
+            }
+            vec![ty]
+        }
+        // Keep the tuple itself as an obligation: during inference it may
+        // still be a variable, and must not look like an empty capture list.
+        TyKind::Closure(_, args) => vec![ClosureArgs::split(args).upvars],
+        TyKind::Adt(adt, args) => {
+            if items.trait_impls.get(&t).into_iter().flatten().any(|&imp| {
+                matches!(sigs.impls.get(imp).map(|ty| ty.kind()), Some(TyKind::Adt(a, _)) if a.strukt == adt.strukt)
+            }) {
+                return None;
+            }
+            // Cell is core's interior-mutability primitive (its field is
+            // represented directly, without an UnsafeCell wrapper).
+            if crate::is_lang_struct(items, adt.strukt, "cell")
+                && items.traits[t].lang.is_some_and(|l| l.as_str() == "sync")
+            {
+                return None;
+            }
+            if crate::is_lang_struct(items, adt.strukt, "phantom_data") {
+                args.to_vec()
+            } else {
+                sigs.structs[adt.strukt]
+                    .iter()
+                    .map(|f| f.subst(args))
+                    .collect()
+            }
+        }
+        _ => return None,
+    };
+    Some(
+        types
+            .into_iter()
+            .map(|self_ty| Predicate { self_ty, trait_ref })
+            .collect(),
+    )
 }
 
 /// `p` with the associated types of known types in it normalized.
@@ -1772,6 +1863,38 @@ pub fn check_impls(
                 format!("manual implementations of `{}` are experimental", data.name),
             );
             continue;
+        }
+        if is_auto_trait(items, t) && !items.is_core(imp.module) {
+            // Selection erases lifetimes outside bodies. Restrict these
+            // impls to uniformly quantified lifetimes until both solvers
+            // can enforce their region-dependent applicability.
+            match sigs.impls.get(id).map(|ty| ty.kind()) {
+                Some(TyKind::Adt(adt, _)) => {
+                    let lifetimes = items.structs[adt.strukt].generics.lifetimes.len();
+                    let regular_lifetimes = sigs.regions.impls.get(id).is_some_and(|r| {
+                        imp.generics.lifetimes.len() == lifetimes
+                            && r.self_ty.len() == lifetimes
+                            && r.self_ty
+                                .iter()
+                                .take(lifetimes)
+                                .enumerate()
+                                .all(|(i, r)| *r == Region::Param(i as u32))
+                    });
+                    if !regular_lifetimes
+                        || !imp.generics.outlives.is_empty()
+                        || !imp.generics.type_outlives.is_empty()
+                    {
+                        error(
+                            imp.self_range,
+                            "lifetime specialization and bounds in auto trait impls are not supported yet".into(),
+                        );
+                    }
+                }
+                _ => error(
+                    imp.self_range,
+                    "auto traits can only be implemented for structs and enums".into(),
+                ),
+            }
         }
         match (imp.is_unsafe, data.is_unsafe) {
             (true, false) => error(

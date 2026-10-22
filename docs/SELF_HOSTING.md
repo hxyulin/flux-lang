@@ -192,12 +192,16 @@ Classification counts and a digest across every Unicode scalar match rustc
 with and without Flux optimization. Registry dependency resolution and the
 remaining `memchr` language/library requirements are still outstanding.
 
-Unchanged `memchr 2.8.3` sources still need `Send`/`Sync`,
-`non_exhaustive`, aggregate
-union fields and some remaining NEON APIs. Its original package
+Unchanged `memchr 2.8.3` sources still need `non_exhaustive`
+and remaining language/library requirements exposed after HIR. Its original package
 also needs feature selection and broader edition-2021 macro support. Source
 probes use the file command's explicit edition-2024 boundary and do not
 establish package compilation.
+
+Bounded Send/Sync checking now supports structural obligations, generic bounds,
+reference rules and explicit unsafe implementations, including memchr's Iter
+declaration. Shared statics use those same Sync rules. Lifetime-specialized
+marker implementations and general custom auto traits remain unsupported.
 
 Macro-generated block imports now share ordinary import scopes, hygiene and
 privacy checks. Other generated local items remain unsupported, as do body

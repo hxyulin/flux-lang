@@ -903,6 +903,10 @@ impl Ctx<'_> {
             return Selection::Ambiguous;
         }
         let t = pred.trait_ref.trait_;
+        if crate::traits::is_auto_trait(self.items, t) && matches!(self_ty.kind(), TyKind::Infer(_))
+        {
+            return Selection::Ambiguous;
+        }
         // Every type is sized but slices, `str`, a trait's `Self` and
         // `?Sized` parameters, unless a bound says they are.
         if self.items.traits[t].lang == Some(flux_intern::sym::sized) {
@@ -966,7 +970,12 @@ impl Ctx<'_> {
             found
         };
         match found.as_slice() {
-            [] => Selection::Unmet,
+            [] => crate::traits::auto_trait_requirements(
+                self.items,
+                self.sigs,
+                Predicate { self_ty, ..pred },
+            )
+            .map_or(Selection::Unmet, Selection::Met),
             &[imp] => {
                 let args = self.unify_impl(imp, pred).expect("probed");
                 self.register_impl_projections(imp, &args);
@@ -1153,6 +1162,9 @@ impl Ctx<'_> {
         if ty == Ty::ERROR || matches!(ty.kind(), TyKind::Infer(v) if !self.unknown(v).0) {
             return true;
         }
+        if crate::traits::is_auto_trait(self.items, t) && matches!(ty.kind(), TyKind::Infer(_)) {
+            return true;
+        }
         // Deep enough, or (from `has_impl_header`) bounds aside.
         let check_bounds = depth < 64;
         if self.items.traits[t].lang == Some(flux_intern::sym::sized) {
@@ -1210,6 +1222,25 @@ impl Ctx<'_> {
             return true;
         }
         let (items, sigs) = (self.items, self.sigs);
+        let goal = Predicate {
+            self_ty: ty,
+            trait_ref: TraitRef {
+                trait_: t,
+                name: items.traits[t].name,
+                args: Ty::list(args.unwrap_or(&[])),
+            },
+        };
+        if let Some(nested) = crate::traits::auto_trait_requirements(items, sigs, goal) {
+            return !check_bounds
+                || nested.into_iter().all(|p| {
+                    self.may_hold(
+                        p.self_ty,
+                        p.trait_ref.trait_,
+                        Some(p.trait_ref.args),
+                        depth + 1,
+                    )
+                });
+        }
         sigs.impl_index.impls_for(items, t, ty).any(|imp| {
             self.probe(|cx| {
                 let (Some(&self_ty), Some(&trait_ref)) =

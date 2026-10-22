@@ -2696,10 +2696,9 @@ fn extend_signatures(
             }
             if mutable_ref(ty) {
                 error("mutable references in statics are not supported yet".to_owned());
-            } else if !mutable && let Some(pointer) = not_sync(&sigs, ty, &mut Vec::new()) {
-                // Without `Sync`, the types flux has that are not: raw
-                // pointers and trait objects, which rustc names with their
-                // lifetime bound here.
+            } else if !mutable && let Some(pointer) = not_sync(items, &sigs, ty, &mut Vec::new()) {
+                // Name the innermost failing type, including a trait
+                // object's lifetime bound as rustc does.
                 let name = if pointer.is_dyn() {
                     format!("({pointer} + 'static)")
                 } else {
@@ -3052,23 +3051,35 @@ fn check_alias(
     }
 }
 
-/// The raw pointer type in `ty`, which makes it not `Sync`, if any:
-/// those are the types flux has that are not.
-fn not_sync(sigs: &Signatures, ty: Ty, seen: &mut Vec<StructId>) -> Option<Ty> {
-    match ty.kind() {
-        TyKind::RawPtr(..) | TyKind::Dynamic(_) => Some(ty),
-        TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => not_sync(sigs, t, seen),
-        TyKind::Adt(adt, _) => {
-            if seen.contains(&adt.strukt) {
-                return None;
-            }
-            seen.push(adt.strukt);
-            let fields = sigs.contents(ty)?;
-            fields.iter().find_map(|&f| not_sync(sigs, f, seen))
-        }
-        TyKind::Tuple(elements) => elements.iter().find_map(|&e| not_sync(sigs, e, seen)),
-        _ => None,
+/// The innermost type preventing a shared static from being `Sync`.
+/// Use the same rules as bounds, including explicit unsafe impls.
+fn not_sync(items: &ItemTree, sigs: &Signatures, ty: Ty, seen: &mut Vec<StructId>) -> Option<Ty> {
+    let sync = *items.lang_traits.get(&Symbol::intern("sync"))?;
+    let goal = traits::Predicate {
+        self_ty: ty,
+        trait_ref: traits::TraitRef {
+            trait_: sync,
+            name: items.traits[sync].name,
+            args: Ty::list(&[]),
+        },
+    };
+    if traits::holds(items, sigs, &[], goal) {
+        return None;
     }
+    if let TyKind::Adt(adt, _) = ty.kind() {
+        if seen.contains(&adt.strukt) {
+            return Some(ty);
+        }
+        seen.push(adt.strukt);
+    }
+    if let Some(nested) = traits::auto_trait_requirements(items, sigs, goal) {
+        for p in nested {
+            if let Some(cause) = not_sync(items, sigs, p.self_ty, seen) {
+                return Some(cause);
+            }
+        }
+    }
+    Some(ty)
 }
 
 /// Whether a value of `ty`, which is `strukt` itself at the top, contains

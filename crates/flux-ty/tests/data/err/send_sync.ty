@@ -1,0 +1,21 @@
+struct Wrapper<T> { 0: T }
+struct Guarded<T> { 0: *const T }
+struct Safe { 0: *const u8 }
+struct Reference {}
+fn send<T>() -> ()
+fn sync<T>() -> ()
+fn missing<T>() -> ()
+fn wrong_reference_bound<T>() -> ()
+fn main() -> ()
+error 172..190: the trait `Send` requires an `unsafe impl` declaration
+error 233..243: auto traits can only be implemented for structs and enums
+error 320..330: the trait bound `Wrapper<T>: Send` is not satisfied
+error 386..388: the trait bound `&T: Send` is not satisfied
+error 418..427: the trait bound `*const u8: Send` is not satisfied
+error 443..450: the trait bound `*mut u8: Sync` is not satisfied
+error 466..484: the trait bound `Wrapper<*const u8>: Send` is not satisfied
+error 500..508: the trait bound `Cell<u8>: Sync` is not satisfied
+error 524..533: the trait bound `&Cell<u8>: Send` is not satisfied
+error 549..562: the trait bound `&mut Cell<u8>: Sync` is not satisfied
+error 578..600: the trait bound `PhantomData<*const u8>: Send` is not satisfied
+error 616..633: the trait bound `Guarded<Cell<u8>>: Send` is not satisfied

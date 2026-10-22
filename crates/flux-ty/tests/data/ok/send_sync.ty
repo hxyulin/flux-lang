@@ -1,0 +1,14 @@
+struct Wrapper<T> { 0: T }
+struct Searcher<'h> { start: *const u8, haystack: PhantomData<&[u8]> }
+struct Guarded<T> { ptr: *const T }
+fn send<T>(&T) -> usize
+fn sync<T>(&T) -> usize
+fn generic<T>(T) -> usize
+    value@0: T
+    wrapped@1: Wrapper<T>
+fn main() -> ()
+    bytes@0: [u8; 3]
+    searcher@1: Searcher
+    guarded@2: Guarded<u8>
+    args@3: (&usize, &usize, &usize, &usize, &usize)
+    args@4: (&u8, &u8)

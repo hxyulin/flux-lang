@@ -14,6 +14,16 @@ pub trait Sized {}
 #[lang = "copy"]
 pub trait Copy: Clone {}
 
+/// Types whose ownership may be transferred between threads.
+/// The compiler propagates this auto trait through fields unless an
+/// explicit unsafe implementation supplies its own requirements.
+#[lang = "send"]
+pub unsafe trait Send {}
+
+/// Types whose shared references may be transferred between threads.
+#[lang = "sync"]
+pub unsafe trait Sync {}
+
 impl Copy for i8 {}
 impl Copy for i16 {}
 impl Copy for i32 {}

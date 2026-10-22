@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Add bounded Send/Sync obligations, explicit unsafe implementations and shared
+  static Sync checks, with reference, raw-pointer and interior-mutability rules.
+
 - Support concrete Copy struct/array union fields and reject overlapping
   nested borrows through different fields; cover actual NEON wrapper storage.
 
