@@ -23,6 +23,7 @@ use flux_hir::{Diagnostic, ItemTree};
 use flux_syntax::TextRange;
 use flux_ty::Signatures;
 
+use crate::bitset::BitSet;
 use crate::{
     Body, Local, LocalKind, Operand, Place, ProjectionElem, Rvalue, StatementKind, TerminatorKind,
     place_name,
@@ -73,16 +74,16 @@ pub(crate) fn analyze(body: &Body, paths: &MovePaths, drop_moves: bool) -> Vec<O
     let n = paths.paths.len();
     let mut entry: Vec<Option<State>> = vec![None; body.blocks.len()];
     let mut start = State {
-        maybe_uninit: vec![false; n],
-        maybe_moved: vec![false; n],
-        maybe_init: vec![true; n],
-        maybe_held: vec![true; n],
+        maybe_uninit: BitSet::new_empty(n),
+        maybe_moved: BitSet::new_empty(n),
+        maybe_init: BitSet::new_filled(n),
+        maybe_held: BitSet::new_filled(n),
     };
     for (id, path) in paths.paths.iter().enumerate() {
         if !body.is_param(path.local) {
-            start.maybe_uninit[id] = true;
-            start.maybe_init[id] = false;
-            start.maybe_held[id] = false;
+            start.maybe_uninit.insert(id);
+            start.maybe_init.remove(id);
+            start.maybe_held.remove(id);
         }
     }
     entry[0] = Some(start);
@@ -310,28 +311,28 @@ impl MovePaths {
                 if drop_moves || matches!(event, Event::Move(_)) =>
             {
                 (Some(place), |state, p| {
-                    state.maybe_uninit[p] = true;
-                    state.maybe_moved[p] = true;
-                    state.maybe_held[p] = false;
+                    state.maybe_uninit.insert(p);
+                    state.maybe_moved.insert(p);
+                    state.maybe_held.remove(p);
                 })
             }
             Event::Drop(_) => return,
             Event::Move(_) => unreachable!("matched above"),
             Event::Assign(place) => (Some(place), |state, p| {
-                state.maybe_uninit[p] = false;
-                state.maybe_moved[p] = false;
-                state.maybe_init[p] = true;
-                state.maybe_held[p] = true;
+                state.maybe_uninit.remove(p);
+                state.maybe_moved.remove(p);
+                state.maybe_init.insert(p);
+                state.maybe_held.insert(p);
             }),
             Event::StorageDead(local) => {
                 if let Some(&root) = self.ids.get(&(*local, Box::default())) {
                     let mut subtree = Vec::new();
                     self.subtree(root, &mut subtree);
                     for p in subtree {
-                        state.maybe_uninit[p] = true;
-                        state.maybe_moved[p] = false;
-                        state.maybe_init[p] = false;
-                        state.maybe_held[p] = false;
+                        state.maybe_uninit.insert(p);
+                        state.maybe_moved.remove(p);
+                        state.maybe_init.remove(p);
+                        state.maybe_held.remove(p);
                     }
                 }
                 return;
@@ -533,38 +534,24 @@ impl Report<'_> {
     }
 }
 
+/// A set of move paths each: `state.maybe_moved[path]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct State {
-    pub(crate) maybe_uninit: Vec<bool>,
-    pub(crate) maybe_moved: Vec<bool>,
+    pub(crate) maybe_uninit: BitSet,
+    pub(crate) maybe_moved: BitSet,
     /// Ever assigned: what assigning an immutable local again needs.
-    pub(crate) maybe_init: Vec<bool>,
+    pub(crate) maybe_init: BitSet,
     /// Holding a value now: assigned, and not moved out of since.
-    pub(crate) maybe_held: Vec<bool>,
+    pub(crate) maybe_held: BitSet,
 }
 
 impl State {
     /// Unions `other` into `self`; whether anything changed.
     fn join(&mut self, other: &State) -> bool {
-        let mut changed = false;
-        let mine = self
-            .maybe_uninit
-            .iter_mut()
-            .chain(self.maybe_moved.iter_mut())
-            .chain(self.maybe_init.iter_mut())
-            .chain(self.maybe_held.iter_mut());
-        let theirs = other
-            .maybe_uninit
-            .iter()
-            .chain(&other.maybe_moved)
-            .chain(&other.maybe_init)
-            .chain(&other.maybe_held);
-        for (a, &b) in mine.zip(theirs) {
-            if b && !*a {
-                *a = true;
-                changed = true;
-            }
-        }
-        changed
+        let uninit = self.maybe_uninit.union(&other.maybe_uninit);
+        let moved = self.maybe_moved.union(&other.maybe_moved);
+        let init = self.maybe_init.union(&other.maybe_init);
+        let held = self.maybe_held.union(&other.maybe_held);
+        uninit | moved | init | held
     }
 }
