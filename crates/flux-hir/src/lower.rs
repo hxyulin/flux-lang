@@ -2284,10 +2284,7 @@ impl<'a> Ctx<'a> {
                     }
                     callee => self.lower_opt(callee, syntax),
                 };
-                let args = match call.arg_list() {
-                    Some(list) => self.lower_expr_list(list.args()),
-                    None => SliceId::default(),
-                };
+                let args = self.lower_call_args(call, callee);
                 Expr::Call { callee, args }
             }
             ast::Expr::PrefixExpr(prefix) => {
@@ -2484,6 +2481,132 @@ impl<'a> Ctx<'a> {
             }
             _ => {}
         }
+    }
+
+    fn lower_call_args(&mut self, call: ast::CallExpr<'_>, callee: ExprId) -> SliceId<ExprId> {
+        // rustc rewrites direct path calls only, before inference. An explicit
+        // turbofish selects the modern signature. Function values and pointers
+        // never use the legacy convention.
+        if matches!(call.expr(), Some(ast::Expr::PathExpr(_)))
+            && let Expr::Path(Res::Function(function)) = self.exprs[callee]
+            && let Some(position) = self.items.functions[function].legacy_const_generic
+            && self
+                .generic_args
+                .get(callee)
+                .and_then(|g| g.item.as_ref())
+                .is_none()
+        {
+            let mut source_args: Vec<_> = call
+                .arg_list()
+                .into_iter()
+                .flat_map(|list| list.args())
+                .filter(|expr| crate::item_tree::item_enabled(expr.syntax(), &mut self.diagnostics))
+                .collect();
+            if source_args.len() == self.items.functions[function].params.len() + 1 {
+                let constant = source_args.remove(position as usize);
+                let value = self.lower_legacy_const_arg(constant);
+                let at = constant.syntax().text_range();
+                let ty = self.types.alloc(TypeRef::Const(value));
+                self.source_map.types.insert(ty, at);
+                let segment = self.source_map.exprs[callee];
+                self.generic_args.insert(
+                    callee,
+                    PathGenerics {
+                        item: Some(SegmentArgs {
+                            segment,
+                            range: at,
+                            types: Box::new([ty]),
+                        }),
+                        ..PathGenerics::default()
+                    },
+                );
+            }
+            let start = self.expr_scratch.len();
+            for arg in source_args {
+                let arg = self.lower_expr(arg);
+                self.expr_scratch.push(arg);
+            }
+            return self.lists.alloc(self.expr_scratch.drain(start..));
+        }
+        match call.arg_list() {
+            Some(list) => self.lower_expr_list(list.args()),
+            None => SliceId::default(),
+        }
+    }
+
+    /// The bounded constants accepted by the legacy NEON convention. Do not
+    /// lower these as runtime expressions: even a rejected side effect must
+    /// never become an argument evaluated by MIR.
+    fn lower_legacy_const_arg(&mut self, expr: ast::Expr<'_>) -> crate::ArrayLen {
+        use crate::ArrayLenKind;
+        let range = expr.syntax().text_range();
+        let root = crate::item_tree::const_expr_root(expr);
+        // These nodes bypass normal expression lowering, so retain its
+        // diagnostics for attributes, including inside parentheses.
+        for node in expr.syntax().descendants() {
+            if ast::Expr::cast(node).is_some() {
+                self.check_attrs(node);
+            }
+        }
+        let kind = match root {
+            ast::Expr::Literal(literal)
+                if matches!(
+                    literal.kind(),
+                    Some(LiteralKind::Int | LiteralKind::Bool(_) | LiteralKind::Char)
+                ) =>
+            {
+                return crate::item_tree::lower_const_arg(Some(root), range, &mut self.diagnostics);
+            }
+            ast::Expr::PathExpr(path) => match self.resolve_path(path.path(), range, None).0 {
+                Res::Const(konst) => ArrayLenKind::Const(konst),
+                Res::ConstParam(name) => ArrayLenKind::Path(Path::single(name)),
+                Res::Local(_) | Res::Static(_) => {
+                    self.error(range, "attempt to use a non-constant value in a constant");
+                    ArrayLenKind::Error
+                }
+                Res::Err => ArrayLenKind::Error,
+                _ => {
+                    self.unsupported(
+                        range,
+                        "legacy const arguments other than literals and constants",
+                    );
+                    ArrayLenKind::Error
+                }
+            },
+            ast::Expr::PrefixExpr(prefix) if prefix.op_kind() == Some(ast::UnaryOp::Neg) => {
+                match prefix.expr().map(crate::item_tree::const_expr_root) {
+                    Some(ast::Expr::Literal(literal))
+                        if literal.kind() == Some(LiteralKind::Int) =>
+                    {
+                        match literal.value().map(|t| parse_int(t.text())) {
+                            Some(Ok(Literal::Int { value, suffix })) => {
+                                ArrayLenKind::NegLit { value, suffix }
+                            }
+                            Some(Err(message)) => {
+                                self.error(range, message);
+                                ArrayLenKind::Error
+                            }
+                            _ => ArrayLenKind::Error,
+                        }
+                    }
+                    _ => {
+                        self.unsupported(
+                            range,
+                            "legacy const unary expressions other than negative integer literals",
+                        );
+                        ArrayLenKind::Error
+                    }
+                }
+            }
+            _ => {
+                self.unsupported(
+                    range,
+                    "legacy const expressions other than literals and constant paths",
+                );
+                ArrayLenKind::Error
+            }
+        };
+        crate::ArrayLen { kind, range }
     }
 
     /// An inline constant (`const { .. }`, its expressions from

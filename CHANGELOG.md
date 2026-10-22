@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Accept bounded legacy trailing const arguments on NEON lane extraction and
+  narrowing, preserving unsafe calls, modern signatures and const validation.
+
 - Support macro-generated block imports with ordinary scope, hygiene and
   privacy rules. Reject calls whose macro definition changes after collection,
   preventing reuse of an expansion from a different definition.

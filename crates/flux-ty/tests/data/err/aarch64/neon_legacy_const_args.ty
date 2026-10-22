@@ -1,0 +1,14 @@
+fn invoke<F>(F) -> ()
+    f@0: F
+fn bad(uint64x2_t) -> ()
+    a@0: uint64x2_t
+    item@1: unsafe fn(uint64x2_t) -> u64 {vgetq_lane_u64::<0>}
+    pointer@2: unsafe fn(uint64x2_t) -> u64
+fn main() -> ()
+error 118..137: this function takes 1 argument but 2 arguments were supplied
+error 168..189: this function takes 1 argument but 2 arguments were supplied
+error 256..260: this function takes 1 argument but 2 arguments were supplied
+error 360..367: this function takes 1 argument but 2 arguments were supplied
+error 389..409: call to unsafe function `vgetq_lane_u64` is unsafe and requires unsafe function or block
+error 446..465: mismatched types: expected `fn(uint64x2_t) -> u64`, found `unsafe fn(uint64x2_t) -> u64 {vgetq_lane_u64::<0>}`
+error 478..497: the trait bound `unsafe fn(uint64x2_t) -> u64 {vgetq_lane_u64::<0>}: Fn<(uint64x2_t,)>` is not satisfied

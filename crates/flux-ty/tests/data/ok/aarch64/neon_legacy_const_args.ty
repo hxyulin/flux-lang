@@ -1,0 +1,9 @@
+fn extract<const N: i32>(uint64x2_t) -> u64
+    a@0: uint64x2_t
+fn narrow(uint16x8_t) -> uint8x8_t
+    a@0: uint16x8_t
+fn lanes(uint64x2_t) -> u64
+    a@0: uint64x2_t
+fn main() -> ()
+const ZERO: i32
+const SHIFT: i32

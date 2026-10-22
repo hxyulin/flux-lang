@@ -1016,11 +1016,18 @@ const lane indices and narrowing shifts (`1..=8`) are checked after substitution
 wrappers support unsafe function pointers; closures calling them inside an
 unsafe block can satisfy Fn bounds. Safe pointer conversions and direct
 Fn-bound use of the target-feature items are rejected. Caller
-`target_feature` attributes, legacy trailing const arguments and vector C ABI
+`target_feature` attributes and vector C ABI
 support remain unsupported. Narrowing currently lowers to scalar loads/shifts
 and exactly eight byte stores. Pairwise maximum uses scalarized shuffles and
 packed unsigned comparison/selection; native `shrn`/`umaxp` selection is not
 implemented in the pinned Keel IR.
+
+The two lane-extraction wrappers and narrowing shift also accept rustc's
+legacy trailing const argument in direct path calls, including aliases and
+macro expansions. Literals and resolved constant paths are supported; compound
+legacy const expressions are explicitly rejected. The trailing argument is
+never evaluated at runtime. Explicit turbofish calls, parenthesized callees
+and function values retain the modern signature and its safety rules.
 
 Unions support signed/unsigned integer scalar fields, default/`repr(C)`
 layout, Copy/Clone and whole-value moves. Fields share storage at offset
