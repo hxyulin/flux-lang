@@ -1519,6 +1519,15 @@ impl Lower<'_, '_, '_> {
                 vec![pointer, self.int_const(u128::from(len), IntTy::Usize)]
             }
             Rvalue::Repeat(..) => unreachable!("arrays are built in memory"),
+            // A pointer to a slice or `str` as one to a slice or `str`
+            // keeps its length; as a thin pointer, drops it.
+            Rvalue::Cast(operand, to) if is_fat(self.body.operand_ty(operand, self.sigs)) => {
+                let mut leaves = self.operand(operand);
+                if !is_fat(*to) {
+                    leaves.truncate(1);
+                }
+                leaves
+            }
             _ => self.scalar_rvalue(rvalue).into_iter().collect(),
         }
     }
@@ -1551,6 +1560,37 @@ impl Lower<'_, '_, '_> {
                 let from = self.body.operand_ty(operand, self.sigs);
                 let value = self.scalar(operand)?;
                 let to_ty = keel_type(*to)?;
+                // Pointers are 64-bit addresses: a pointer as another is
+                // itself, as an integer its address truncated, and an
+                // integer as a pointer is extended to 64 bits first.
+                let (from_ptr, to_ptr) = (from.is_pointer(), to.is_pointer());
+                if from_ptr && to_ptr {
+                    return Some(value);
+                }
+                if from_ptr {
+                    let address =
+                        self.b
+                            .ins()
+                            .convert(keel_ir::ConvertOp::PtrToInt, Type::I64, value);
+                    return Some(match bits(*to) {
+                        64 => address,
+                        128 => self.b.ins().uext(to_ty, address),
+                        _ => self.b.ins().trunc(to_ty, address),
+                    });
+                }
+                if to_ptr {
+                    let address = match bits(from) {
+                        64 => value,
+                        128 => self.b.ins().trunc(Type::I64, value),
+                        _ if from.is_signed_int() => self.b.ins().sext(Type::I64, value),
+                        _ => self.b.ins().uext(Type::I64, value),
+                    };
+                    return Some(self.b.ins().convert(
+                        keel_ir::ConvertOp::IntToPtr,
+                        Type::Ptr,
+                        address,
+                    ));
+                }
                 let (from_bits, to_bits) = (bits(from), bits(*to));
                 Some(if from_bits == to_bits {
                     value

@@ -688,6 +688,23 @@ impl<'a> Evaluator<'a> {
             )),
             Rvalue::Cast(op, to) => {
                 let value = self.operand(locals, generics, op, range)?;
+                // A pointer as another points to the same value.
+                if to.is_pointer() {
+                    return match value {
+                        Value::Ref(_) | Value::Static(_) => Ok(value),
+                        _ => Err(error(
+                            range,
+                            "integers cast to pointers in constants are not supported yet"
+                                .to_owned(),
+                        )),
+                    };
+                }
+                if let Value::Ref(_) | Value::Static(_) = value {
+                    return Err(error(
+                        range,
+                        "pointers cannot be cast to integers during const eval".to_owned(),
+                    ));
+                }
                 let bits = match value {
                     Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                     Value::Bool(b) => u128::from(b),

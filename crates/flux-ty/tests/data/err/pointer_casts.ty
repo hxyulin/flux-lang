@@ -1,0 +1,28 @@
+fn casts(&i32, &[u8], *const [u8], *const i32, bool, char, &mut i32) -> ()
+    x@0: &i32
+    s@1: &[u8]
+    fp@2: *const [u8]
+    p@3: *const i32
+    b@4: bool
+    c@5: char
+    m@6: &mut i32
+fn coercions(&i32, &mut i32) -> ()
+    x@0: &i32
+    m@1: &mut i32
+    a@2: *const i32
+    b@3: *mut i32
+    c@4: *const u8
+    d@5: *const i32
+    e@6: *mut i32
+fn main() -> ()
+error 105..115: casting `&i32` as `usize` is invalid
+error 129..143: casting `&[u8]` as `*const u8` is invalid
+error 157..168: casting `*const [u8]` as `usize` is invalid
+error 182..196: casting `char` as `*const u8` is invalid
+error 210..224: casting `bool` as `*const u8` is invalid
+error 238..251: casting `&i32` as `*mut i32` is invalid
+error 265..281: cannot cast thin pointer `*const i32` to wide pointer `*const [u8]`
+error 295..304: cannot cast `*const i32` as `bool`
+error 318..332: casting `&i32` as `*const u8` is invalid
+error 531..532: mismatched types: expected `*mut i32`, found `&i32`
+error 557..558: mismatched types: expected `*const u8`, found `&i32`

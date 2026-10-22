@@ -959,6 +959,11 @@ pub fn struct_type(
     errors: &mut Vec<(TextRange, String)>,
 ) -> Ty {
     let def = &items.structs[strukt];
+    // `core::ffi::CStr` is the type of `c"..."`, which the compiler
+    // knows.
+    if items.lang_enums.get(&Symbol::intern("CStr")) == Some(&strukt) {
+        return Ty::new(TyKind::CStr);
+    }
     let last = path.segments.len().saturating_sub(1);
     let at = path.range(last, range);
     let want = def.generics.len();

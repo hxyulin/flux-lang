@@ -432,6 +432,20 @@
   `From` conversions for it, and gains `core::char` with `char::MAX`,
   `REPLACEMENT_CHARACTER`, `from_digit`, `to_digit`, `is_digit`,
   `len_utf8`, `len_utf16`, `is_whitespace` and the ASCII methods.
+- Support raw pointers made from references: a `&T` where a `*const
+  T` is wanted, and a `&mut T` where a `*mut T` or `*const T` is, is
+  coerced (a `&mut` reborrowed), and `as` casts references to
+  pointers (`r as *const T`, `&array as *const T`), pointers to
+  pointers (a pointer to a slice keeps its length, or drops it as a
+  thin pointer), pointers to integers and integers to pointers, with
+  rustc's errors for the others (E0606, E0607, E0054). `core` gains
+  `as_ptr` and `as_mut_ptr` on slices, `char::from_u32` (and
+  `from_u32_unchecked`, and `core::char`'s functions), ranges of
+  `char`s that iterate (skipping the surrogates), and `core::ffi`,
+  whose `CStr` names the type of `c"..."` and whose `c_int`, `c_char`
+  and the others name C's integer types, so a program can print a
+  byte string with `printf(c"%.*s".as_ptr(), s.len() as i32,
+  s.as_ptr())`. `char` may be passed to C-variadic functions.
 
 ### Performance
 

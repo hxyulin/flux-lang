@@ -1186,6 +1186,25 @@ impl<'a> Cx<'a> {
         let category = Cx::into(dest);
         let (dest_ty, dest_vars) = self.place_regions(dest);
         match rvalue {
+            // A raw pointer holds no loan: a reference cast to one relates
+            // only what they both point to, and other pointer casts
+            // nothing.
+            Rvalue::Cast(op, _) if dest_ty.is_pointer() => {
+                let (op_ty, vars) = self.operand_regions(op);
+                if let (TyKind::Ref(_, a), TyKind::RawPtr(_, b)) = (op_ty.kind(), dest_ty.kind())
+                    && a == b
+                    && vars.len() == dest_vars.len() + 1
+                {
+                    self.relate(
+                        b,
+                        &vars[1..],
+                        &dest_vars,
+                        Variance::Covariant,
+                        category,
+                        range,
+                    );
+                }
+            }
             Rvalue::Use(op) | Rvalue::Cast(op, _) => {
                 let (_, vars) = self.operand_regions(op);
                 self.relate(

@@ -11,6 +11,18 @@ const NEWLINE: char = '\n';
 const SMILE: char = '\u{1F600}';
 const SHOUT: char = 'q'.to_ascii_uppercase();
 const SEVEN: Option<u32> = '7'.to_digit(10);
+const EURO: Option<char> = char::from_u32(0x20AC);
+
+fn label(name: &core::ffi::CStr, value: u32) {
+    unsafe { printf(c"%s=%u\n".as_ptr(), name.as_ptr(), value) };
+}
+
+fn from(code: u32) -> u32 {
+    match char::from_u32(code) {
+        Some(c) => c as u32,
+        None => 0xFFFF_FFFF,
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
 struct Tagged {
@@ -133,6 +145,22 @@ fn main() {
             )
         };
     }
+    for &code in &[0x41, 0xD7FF, 0xD800, 0xDFFF, 0xE000, 0x10FFFF, 0x110000] {
+        label(c"from_u32", from(code));
+    }
+    label(c"euro", EURO.unwrap_or('?') as u32);
+    let mut alphabet = 0;
+    for c in 'a'..='z' {
+        alphabet += c as u32 - 'a' as u32;
+    }
+    let mut across = 0;
+    for _ in '\u{D7FE}'..'\u{E002}' {
+        across += 1;
+    }
+    let last = ('a'..'e').rev().next().unwrap_or('?');
+    label(c"alphabet", alphabet);
+    label(c"across", across);
+    label(c"last", last as u32);
     let mut m = 'x';
     m.make_ascii_uppercase();
     let x = Tagged { tag: 'x', value: 1 };

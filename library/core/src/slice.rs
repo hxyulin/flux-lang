@@ -71,3 +71,15 @@ impl<'a, T> IntoIterator for &'a [T] {
         self.iter()
     }
 }
+
+impl<T> [T] {
+    /// A pointer to the first element, for C: valid while the slice is.
+    pub const fn as_ptr(&self) -> *const T {
+        self as *const [T] as *const T
+    }
+
+    /// A mutable pointer to the first element.
+    pub const fn as_mut_ptr(&mut self) -> *mut T {
+        self as *mut [T] as *mut T
+    }
+}
