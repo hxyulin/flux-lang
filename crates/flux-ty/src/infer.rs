@@ -4096,6 +4096,13 @@ impl Ctx<'_> {
         let mut steps: Vec<OverloadedDeref> = Vec::new();
         let base_range = self.range(base);
         loop {
+            if derefs == 128 {
+                self.error(
+                    base_range,
+                    format!("reached the recursion limit while auto-dereferencing `{step}`"),
+                );
+                return Ty::ERROR;
+            }
             match step.kind() {
                 TyKind::Array(elem, _) | TyKind::Slice(elem) if integral => {
                     if derefs > 0 {
@@ -4454,6 +4461,13 @@ impl Ctx<'_> {
         let mut steps: Vec<OverloadedDeref> = Vec::new();
         let mut private = None;
         loop {
+            if derefs == 128 {
+                self.error(
+                    range,
+                    format!("reached the recursion limit while auto-dereferencing `{base_ty}`"),
+                );
+                return Ty::ERROR;
+            }
             let field = match base_ty.kind() {
                 TyKind::Tuple(elements) => name
                     .as_str()
