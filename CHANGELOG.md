@@ -557,8 +557,9 @@
   `Product`'s). `Option` gains `copied`, `cloned`, `as_ref`, `as_mut`,
   `take`, `take_if`, `replace`, `insert`, `get_or_insert`,
   `get_or_insert_with`, `iter` and `IntoIterator`; `core::mem` gains
-  `swap`, whose body the compiler makes, and `replace`; slices'
-  iterator is `Clone`. `core` may name lifetimes in its bounds'
+  `swap`, made of `core`'s `read` and `write` intrinsics, and `replace`;
+  slices' iterator is `Clone`. `ExactSizeIterator::len` checks the
+  bounds of `size_hint` agree, as rustc's does. `core` may name lifetimes in its bounds'
   associated types (`I: Iterator<Item = &'a T>`) where they never reach
   what it returns.
 - Fix associated types of type parameters that a blanket `impl` block
@@ -603,9 +604,20 @@
   pair's `partial_cmp` and the last pair's operator), so `==`, `<` and
   the others work on tuples, by reference too, and derives of structs
   with tuple fields; other operators on tuples are E0369 as in rustc.
-  Arrays are `Eq`, `PartialOrd` and `Ord` where their elements are,
-  built into the compiler, comparing elements in order through
-  `core`'s functions on slices.
+  Arrays are `PartialOrd` and `Ord` where their elements are, built
+  into the compiler as calls of the slices' impls, as rustc's `core`
+  has them.
+- Fix normalizing an associated type through an `impl` block whose
+  bounds do not hold: field types picked any block whose header
+  matched, so `FlatMap`'s iterator of an array was the array itself
+  (`Option<[i64; 2]>` rather than `Option<IntoIter<i64, 2>>`), and
+  signatures fell back to such a block. A block is now chosen only if
+  it is the one whose header matches and whose bounds can hold, and
+  for a type parameter only if they surely hold, since a bound in scope
+  on it decides otherwise; else the associated type stays as it is,
+  as in rustc. Field types know arrays' built-in `IntoIterator` too.
+  `tests/run/into_iterator_args.rs` passes arrays, slices, `Option`,
+  ranges and iterators to `U: IntoIterator` parameters.
 
 ### Performance
 
