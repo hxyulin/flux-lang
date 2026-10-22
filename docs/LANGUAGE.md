@@ -339,8 +339,9 @@ binding, parameter or field of a slice type is E0277, as in rustc
 (unsized struct fields are not supported yet). A reference to an array
 becomes a reference to a slice where one is expected (`let s: &[i32]
 = &a;`, `f(&mut a)`), as rustc's unsizing coercion does, and a
-reference to a reference becomes the reference expected (`f(&&x)` for
-`f(x: &T)`), as rustc's deref coercion does through references. An index must
+reference to a reference, or to a type that implements
+`core::ops::Deref`, becomes the reference expected (`f(&&x)` for `f(x:
+&T)`, `f(&w)` for a `w: Wrapper<T>`), as rustc's deref coercion does. An index must
 be a `usize` or a range of them (E0277, "the type `[i32]` cannot be
 indexed by `i32`"); indexing a type that does not implement
 `core::ops::Index` is E0608. Other indexing than an array's or slice's
@@ -453,6 +454,17 @@ overflow) reported, whether that code is used or not; one that generic
 code names is evaluated for the instances `main` reaches, so its errors
 are reported only by `flux build`, as rustc reports them only in a full
 build.
+
+`core::ops::Deref` and `DerefMut` make a type dereference as a
+reference does: `*w` is `*Deref::deref(&w)`, or `*DerefMut::deref_mut(&mut
+w)` where it is assigned to, borrowed mutably, or the receiver of a
+`&mut self` method, as rustc decides, and fields, methods and indexing
+look through it (`w.x`, `w.len()`, `w[0]` for a `Deref<Target = [T]>`),
+also several levels deep and mixed with references. As in rustc,
+writing through a type without `DerefMut` is E0594 or E0596 ("cannot
+assign to data in dereference of `W`"), moving out of one is E0507
+("cannot move out of dereference of `W`", or "of index of `I`" for
+`Index`), and a type that does not dereference is E0614.
 
 Methods are found as rustc finds them: on the receiver's type, then on
 each type it dereferences to, the type's own methods before those of
@@ -674,7 +686,8 @@ Infallible}`,
 tuples of up to twelve elements, comparing them element by element as
 rustc's do: `==`, `<` and the others work on tuples, by reference too),
 the operator
-traits of `core::ops` with `Drop`, `core::cmp::{PartialEq, Eq,
+traits of `core::ops` with `Drop`, `Deref` and `DerefMut` (implemented
+for references), `core::cmp::{PartialEq, Eq,
 PartialOrd, Ord, Ordering, max, min}`, `core::option::Option` and
 `core::result::Result`, `core::char` (`from_u32`, `from_digit`),
 `core::str` (`from_utf8`, `Utf8Error`, `Chars`, `CharIndices`,

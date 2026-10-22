@@ -51,6 +51,15 @@ pub struct InferenceResult {
     /// with how many: `&**r` (2) for a `&&T` where a `&T` is expected,
     /// rustc's deref coercion.
     pub deref_coercions: ArenaMap<Expr, u32>,
+    /// The dereferences among an expression's that call
+    /// `Deref::deref` or `DerefMut::deref_mut` rather than going through
+    /// a reference: of a `Field` or `Index` expression's base (counted in
+    /// `field_derefs`), a `MethodCall`'s receiver (in its [`Method`] or
+    /// `builtin_methods`), or the operand of `*`, itself one.
+    pub overloaded_derefs: ArenaMap<Expr, Vec<OverloadedDeref>>,
+    /// The same for the dereferences of a deref coercion
+    /// (`deref_coercions`): `&w` where a `&W::Target` is expected.
+    pub coercion_derefs: ArenaMap<Expr, Vec<OverloadedDeref>>,
     /// Expressions of a function item's type that coerce to a function
     /// pointer where they are used: `let f: fn(i32) -> i32 = double;`.
     pub reified: ArenaMap<Expr, ()>,
@@ -118,6 +127,18 @@ pub struct InferenceResult {
     /// Trait`s of its return type), by index: what its body returns.
     pub opaques: Vec<Ty>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// A dereference through `Deref::deref`, or `DerefMut::deref_mut` if
+/// `mutability` is `Mut`: the `step`th of an expression's dereferences
+/// (from 0, outermost first), of a value of type `ty` to its `target`,
+/// as rustc's overloaded deref adjustment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverloadedDeref {
+    pub step: u32,
+    pub mutability: Mutability,
+    pub ty: Ty,
+    pub target: Ty,
 }
 
 /// A method of arrays and slices built into the compiler, until `core`
@@ -302,6 +323,8 @@ impl<'a> Ctx<'a> {
             methods: ArenaMap::new(),
             reborrows: ArenaMap::new(),
             deref_coercions: ArenaMap::new(),
+            overloaded_derefs: ArenaMap::new(),
+            coercion_derefs: ArenaMap::new(),
             reified: ArenaMap::new(),
             calls: ArenaMap::new(),
             overloads: ArenaMap::new(),
@@ -472,6 +495,8 @@ struct Ctx<'a> {
     methods: ArenaMap<Expr, Method>,
     reborrows: ArenaMap<Expr, Mutability>,
     deref_coercions: ArenaMap<Expr, u32>,
+    overloaded_derefs: ArenaMap<Expr, Vec<OverloadedDeref>>,
+    coercion_derefs: ArenaMap<Expr, Vec<OverloadedDeref>>,
     reified: ArenaMap<Expr, ()>,
     calls: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     overloads: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
@@ -894,6 +919,35 @@ impl Ctx<'_> {
             return;
         }
         let blamed = self.blame(expr);
+        // A block ending with a reference: its tail is reborrowed or
+        // unsized where it is, inside the block (`{ self.value }` of a
+        // `&mut T` field where a `&T` is wanted), and the block has the
+        // type it is coerced to.
+        if blamed != expr
+            && let TyKind::Ref(..) = self.shallow(actual).kind()
+            && let TyKind::Ref(..) | TyKind::RawPtr(..) = self.shallow(expected).kind()
+            && let Some(&tail_ty) = self.expr_types.get(blamed)
+        {
+            self.coerce(tail_ty, expected, blamed);
+            let coerced = match (
+                self.reborrows.get(blamed).is_some(),
+                self.unsizes.get(blamed).is_some(),
+            ) {
+                (false, false) => return,
+                _ => expected,
+            };
+            let mut at = expr;
+            while at != blamed {
+                self.expr_types.insert(at, coerced);
+                match self.body.exprs[at] {
+                    Expr::Block {
+                        tail: Some(tail), ..
+                    } => at = tail,
+                    _ => break,
+                }
+            }
+            return;
+        }
         // A reference to an array where one to a slice is expected is
         // unsized, after a reborrow if it is a `&mut` (which may become a
         // `&`): rustc's unsizing coercion.
@@ -955,16 +1009,20 @@ impl Ctx<'_> {
             && (from == to || from == Mutability::Mut)
             && !self.can_unify(pointee, expected_pointee)
         {
-            let (mut ty, mut derefs, mut unique) = (pointee, 1, from == Mutability::Mut);
-            while let TyKind::Ref(m, inner) = self.shallow(ty).kind() {
-                (ty, derefs) = (inner, derefs + 1);
-                unique &= m == Mutability::Mut;
-                if (to == Mutability::Not || unique) && self.can_unify(ty, expected_pointee) {
-                    self.unify(ty, expected_pointee);
-                    self.reborrows.insert(expr, to);
-                    self.deref_coercions.insert(expr, derefs);
-                    return;
+            let range = self.range(blamed);
+            if let Some((ty, derefs, steps)) =
+                self.deref_coercion(from, pointee, to, expected_pointee, range)
+            {
+                self.unify(ty, expected_pointee);
+                self.reborrows.insert(expr, to);
+                self.deref_coercions.insert(expr, derefs);
+                if !steps.is_empty() {
+                    for step in &steps {
+                        self.register_deref(step.ty, step.mutability, range);
+                    }
+                    self.coercion_derefs.insert(expr, steps);
                 }
+                return;
             }
         }
         // A `&mut T` where a reference is expected is reborrowed, and may
@@ -1170,6 +1228,55 @@ impl Ctx<'_> {
             self.register(p, range, solve::ObligationKind::Bound);
         }
         true
+    }
+
+    /// rustc's deref coercion of a `&pointee` (or `&mut`, `from`) to a
+    /// `&expected` (`to`): the type `pointee` dereferences to that may
+    /// be `expected`, through references and `Deref` (`DerefMut` for a
+    /// `&mut`), with how many dereferences that is, the reference
+    /// included, and the overloaded ones among them. A `&mut` comes
+    /// only through `&mut` references.
+    fn deref_coercion(
+        &mut self,
+        from: Mutability,
+        pointee: Ty,
+        to: Mutability,
+        expected: Ty,
+        range: TextRange,
+    ) -> Option<(Ty, u32, Vec<OverloadedDeref>)> {
+        let (mut ty, mut derefs, mut unique) = (pointee, 1, from == Mutability::Mut);
+        let mut steps = Vec::new();
+        while derefs < 128 {
+            let current = self.shallow(ty);
+            let (next, overloaded) = self.deref_step(current, range)?;
+            if overloaded {
+                // `DerefMut` for a `&mut`, where the type has it; else
+                // `Deref`, which the borrow checker finds borrowed
+                // mutably (E0596), as in rustc.
+                let deref_mut = self.deref_trait(true);
+                let mutability = if to == Mutability::Mut
+                    && deref_mut
+                        .is_some_and(|t| self.probe(|cx| cx.may_hold(current, t, Some(&[]), 0)))
+                {
+                    Mutability::Mut
+                } else {
+                    Mutability::Not
+                };
+                steps.push(OverloadedDeref {
+                    step: derefs,
+                    mutability,
+                    ty: current,
+                    target: next,
+                });
+            } else if let TyKind::Ref(m, _) = current.kind() {
+                unique &= m == Mutability::Mut;
+            }
+            (ty, derefs) = (next, derefs + 1);
+            if (to == Mutability::Not || unique) && self.can_unify(ty, expected) {
+                return Some((ty, derefs, steps));
+            }
+        }
+        None
     }
 
     /// Gives `expr`, and the blocks between it and the value it ends with,
@@ -3306,15 +3413,10 @@ impl Ctx<'_> {
                     && !self.can_unify(pointee, expected_pointee) =>
             {
                 // A deref coercion, as `coerce` makes it.
-                let (mut ty, mut unique) = (pointee, from == Mutability::Mut);
-                while let TyKind::Ref(m, inner) = self.shallow(ty).kind() {
-                    ty = inner;
-                    unique &= m == Mutability::Mut;
-                    if (to == Mutability::Not || unique) && self.can_unify(ty, expected_pointee) {
-                        return true;
-                    }
-                }
-                return false;
+                let range = self.range(expr);
+                return self
+                    .deref_coercion(from, pointee, to, expected_pointee, range)
+                    .is_some();
             }
             (TyKind::Ref(Mutability::Mut, pointee), TyKind::Ref(_, expected_pointee)) => {
                 return self.can_unify(pointee, expected_pointee);
@@ -3870,11 +3972,21 @@ impl Ctx<'_> {
                 Ty::ERROR
             }
             _ => {
+                // `*Deref::deref(&v)`.
+                let range = self.range(id);
+                let shallow = self.shallow(ty);
+                if let Some((target, true)) = self.deref_step(shallow, range) {
+                    let step = OverloadedDeref {
+                        step: 0,
+                        mutability: Mutability::Not,
+                        ty: shallow,
+                        target,
+                    };
+                    self.record_overloaded_derefs(id, &[step]);
+                    return target;
+                }
                 let ty = self.describe(ty);
-                self.error(
-                    self.range(id),
-                    format!("type `{ty}` cannot be dereferenced"),
-                );
+                self.error(range, format!("type `{ty}` cannot be dereferenced"));
                 Ty::ERROR
             }
         }
@@ -3913,12 +4025,15 @@ impl Ctx<'_> {
         };
         let mut step = self.shallow(ty);
         let mut derefs = 0;
+        let mut steps: Vec<OverloadedDeref> = Vec::new();
+        let base_range = self.range(base);
         loop {
             match step.kind() {
                 TyKind::Array(elem, _) | TyKind::Slice(elem) if integral => {
                     if derefs > 0 {
                         self.field_derefs.insert(id, derefs);
                     }
+                    self.record_overloaded_derefs(id, &steps);
                     self.unify(index_ty, usize);
                     return elem;
                 }
@@ -3930,19 +4045,29 @@ impl Ctx<'_> {
                 _ => {}
             }
             if let Some(output) = self.index_overload(id, step, index_ty, derefs, false) {
+                self.record_overloaded_derefs(id, &steps);
                 return output;
             }
-            match step.kind() {
-                TyKind::Ref(_, pointee) => {
-                    step = self.shallow(pointee);
+            match self.deref_step(step, base_range) {
+                Some((next, overloaded)) => {
+                    if overloaded {
+                        steps.push(OverloadedDeref {
+                            step: derefs,
+                            mutability: Mutability::Not,
+                            ty: step,
+                            target: next,
+                        });
+                    }
+                    step = next;
                     derefs += 1;
                 }
-                _ => break,
+                None => break,
             }
         }
         if let TyKind::Array(elem, _) = step.kind()
             && let Some(output) = self.index_overload(id, Ty::slice(elem), index_ty, derefs, true)
         {
+            self.record_overloaded_derefs(id, &steps);
             return output;
         }
         let mut what = self.describe(index_ty);
@@ -4024,29 +4149,50 @@ impl Ctx<'_> {
     /// between, calls `IndexMut::index_mut`, as rustc's
     /// `convert_place_derefs_to_mutable` decides once it knows.
     fn mutable_place(&mut self, expr: ExprId, assign: bool, site: TextRange) {
+        self.mutable_place_in(expr, assign, site, false);
+    }
+
+    /// [`Self::mutable_place`], where `past_deref` says the place is
+    /// already behind a reference: its overloaded dereferences become
+    /// `DerefMut`'s, all of them, as rustc's do, but its indexing stays
+    /// `Index::index` past a reference, which the borrow checker checks.
+    fn mutable_place_in(&mut self, expr: ExprId, assign: bool, site: TextRange, past_deref: bool) {
         let items = self.items;
         let index = items.lang_traits.get(&Symbol::intern("index")).copied();
         let index_mut = items.lang_traits.get(&Symbol::intern("index_mut")).copied();
-        let (Some(index), Some(index_mut)) = (index, index_mut) else {
-            return;
-        };
-        let index_fn = items.traits[index].function(items, Symbol::intern("index"));
-        let Some(index_mut_fn) =
-            items.traits[index_mut].function(items, Symbol::intern("index_mut"))
-        else {
-            return;
-        };
+        let index_fn = index.and_then(|t| items.traits[t].function(items, Symbol::intern("index")));
+        let index_mut_fn =
+            index_mut.and_then(|t| items.traits[t].function(items, Symbol::intern("index_mut")));
         let mut place = expr;
+        let mut past_deref = past_deref;
         loop {
+            self.make_derefs_mutable(place, site);
+            // Past a dereference of a reference, rather than of a
+            // `Deref` type's, what is behind it is the borrow checker's.
+            let overloaded = self
+                .overloaded_derefs
+                .get(place)
+                .map_or(0, |s| s.len() as u32);
+            let through_ref = self
+                .field_derefs
+                .get(place)
+                .is_some_and(|&d| d > overloaded);
             match self.body.exprs[place] {
                 Expr::Field { expr: inner, .. } => {
-                    if self.field_derefs.get(place).is_some() {
-                        return;
-                    }
+                    past_deref |= through_ref;
                     place = inner;
                 }
+                Expr::Unary {
+                    op: UnaryOp::Deref,
+                    operand,
+                } => {
+                    past_deref |= overloaded == 0;
+                    place = operand;
+                }
                 Expr::Index { base, .. } => {
-                    if let Some((function, args)) = self.overloads.get(place).cloned()
+                    if !past_deref
+                        && let (Some(index_mut), Some(index_mut_fn)) = (index_mut, index_mut_fn)
+                        && let Some((function, args)) = self.overloads.get(place).cloned()
                         && Some(function) == index_fn
                     {
                         let (ty, index_ty) = (args[0], args[1]);
@@ -4076,14 +4222,105 @@ impl Ctx<'_> {
                         }
                         self.overloads.insert(place, (index_mut_fn, args));
                     }
-                    if self.field_derefs.get(place).is_some() {
-                        return;
-                    }
+                    past_deref |= through_ref;
                     place = base;
                 }
                 _ => return,
             }
         }
+    }
+
+    /// `core::ops::Deref`, or `DerefMut` if `mutable`.
+    fn deref_trait(&self, mutable: bool) -> Option<flux_hir::TraitId> {
+        let name = if mutable { "deref_mut" } else { "deref" };
+        self.items.lang_traits.get(&Symbol::intern(name)).copied()
+    }
+
+    /// One step of rustc's autoderef from `ty`: through a reference,
+    /// or, for a type that may implement `Deref`, to its `Target`
+    /// (`true`). Raw pointers are not dereferenced implicitly, and an
+    /// unknown type stops it.
+    fn deref_step(&mut self, ty: Ty, range: TextRange) -> Option<(Ty, bool)> {
+        let ty = self.shallow(ty);
+        match ty.kind() {
+            TyKind::Ref(_, pointee) => Some((self.shallow(pointee), false)),
+            TyKind::Adt(..) | TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => {
+                let t = self.deref_trait(false)?;
+                if !self.probe(|cx| cx.may_hold(ty, t, Some(&[]), 0)) {
+                    return None;
+                }
+                let target = self.deref_target(ty, range);
+                let target = self.shallow(target);
+                // A `Target` of itself would dereference without end.
+                (target != ty).then_some((target, true))
+            }
+            _ => None,
+        }
+    }
+
+    /// `<ty as Deref>::Target`, normalized.
+    fn deref_target(&mut self, ty: Ty, range: TextRange) -> Ty {
+        let Some(t) = self.deref_trait(false) else {
+            return Ty::ERROR;
+        };
+        let trait_ref = crate::TraitRef {
+            trait_: t,
+            name: self.items.traits[t].name,
+            args: Ty::list(&[]),
+        };
+        let alias = crate::traits::alias_of(trait_ref, ty, Symbol::intern("Target"));
+        self.normalize(Ty::alias(alias), range)
+    }
+
+    /// Records the overloaded dereferences `steps` of `expr`, and the
+    /// obligations they need: `Deref` (or `DerefMut`) of each type.
+    fn record_overloaded_derefs(&mut self, expr: ExprId, steps: &[OverloadedDeref]) {
+        if steps.is_empty() {
+            return;
+        }
+        let range = self.range(expr);
+        for step in steps {
+            self.register_deref(step.ty, step.mutability, range);
+        }
+        self.overloaded_derefs.insert(expr, steps.to_vec());
+    }
+
+    fn register_deref(&mut self, ty: Ty, mutability: Mutability, range: TextRange) {
+        let Some(t) = self.deref_trait(mutability == Mutability::Mut) else {
+            return;
+        };
+        let trait_ref = crate::TraitRef {
+            trait_: t,
+            name: self.items.traits[t].name,
+            args: Ty::list(&[]),
+        };
+        self.register(trait_ref.with_self(ty), range, solve::ObligationKind::Bound);
+    }
+
+    /// The overloaded dereferences of `expr` made
+    /// `DerefMut::deref_mut`, as rustc's
+    /// `convert_place_derefs_to_mutable` does for a place used mutably,
+    /// where its type implements `DerefMut`.
+    fn make_derefs_mutable(&mut self, expr: ExprId, site: TextRange) {
+        let Some(mut steps) = self.overloaded_derefs.get(expr).cloned() else {
+            return;
+        };
+        let Some(deref_mut) = self.deref_trait(true) else {
+            return;
+        };
+        for step in steps.iter_mut() {
+            // Without `DerefMut`, it stays `Deref::deref`, which the
+            // borrow checker finds written through (E0594, E0596).
+            let known = !self.has_unknown(step.ty);
+            if step.mutability == Mutability::Mut
+                || known && !self.probe(|cx| cx.may_hold(step.ty, deref_mut, Some(&[]), 0))
+            {
+                continue;
+            }
+            self.register_deref(step.ty, Mutability::Mut, site);
+            step.mutability = Mutability::Mut;
+        }
+        self.overloaded_derefs.insert(expr, steps);
     }
 
     /// `ty` with references removed, and how many there were.
@@ -4099,10 +4336,6 @@ impl Ctx<'_> {
 
     fn infer_field(&mut self, id: ExprId, base: ExprId, name: Symbol) -> Ty {
         let ty = self.infer_expr(base);
-        let (base_ty, derefs) = self.autoderef(ty);
-        if derefs > 0 {
-            self.field_derefs.insert(id, derefs);
-        }
         let (items, sigs) = (self.items, self.sigs);
         let range = self
             .source_map
@@ -4111,6 +4344,62 @@ impl Ctx<'_> {
             .and_then(|names| names.first())
             .copied()
             .unwrap_or_else(|| self.range(id));
+        // Each type the base dereferences to, as rustc's `check_field`
+        // goes: the first with an accessible field of this name, else
+        // the first with a private one.
+        let mut base_ty = self.shallow(ty);
+        let mut derefs = 0;
+        let mut steps: Vec<OverloadedDeref> = Vec::new();
+        let mut private = None;
+        loop {
+            let field = match base_ty.kind() {
+                TyKind::Tuple(elements) => name
+                    .as_str()
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|i| i.to_string() == name.as_str() && *i < elements.len())
+                    .map(|_| true),
+                TyKind::Adt(adt, _) => {
+                    let def = &items.structs[adt.strukt];
+                    def.field(name)
+                        .map(|(i, _)| items.is_visible(def.fields[i].vis, self.module))
+                }
+                _ => None,
+            };
+            match field {
+                Some(true) => {
+                    private = None;
+                    break;
+                }
+                Some(false) if private.is_none() => {
+                    private = Some((base_ty, derefs, steps.len()));
+                }
+                _ => {}
+            }
+            match self.deref_step(base_ty, range) {
+                Some((next, overloaded)) => {
+                    if overloaded {
+                        steps.push(OverloadedDeref {
+                            step: derefs,
+                            mutability: Mutability::Not,
+                            ty: base_ty,
+                            target: next,
+                        });
+                    }
+                    base_ty = next;
+                    derefs += 1;
+                }
+                None => break,
+            }
+        }
+        if let Some((ty, d, len)) = private {
+            (base_ty, derefs) = (ty, d);
+            steps.truncate(len);
+        }
+        if derefs > 0 {
+            self.field_derefs.insert(id, derefs);
+        }
+        self.record_overloaded_derefs(id, &steps);
         let found = match base_ty.kind() {
             TyKind::Tuple(elements) => name
                 .as_str()
@@ -4370,6 +4659,8 @@ impl Ctx<'_> {
         // traits.
         let mut base = receiver_ty;
         let mut derefs = 0;
+        let mut steps: Vec<OverloadedDeref> = Vec::new();
+        let receiver_range = self.range(receiver);
         // The first type the method exists for, if only through blocks
         // whose bounds do not hold.
         let mut unmet = None;
@@ -4395,6 +4686,7 @@ impl Ctx<'_> {
             for (ty, d, mode) in tries.into_iter().flatten() {
                 match self.probe_method(ty, mode, method, inherent(ty), traits) {
                     Ok(Some((function, trait_args))) => {
+                        self.record_overloaded_derefs(id, &steps);
                         return self.check_method(
                             id,
                             receiver,
@@ -4418,12 +4710,24 @@ impl Ctx<'_> {
             {
                 unmet = Some(base);
             }
-            match self.shallow(base).kind() {
-                TyKind::Ref(_, pointee) => {
-                    base = self.shallow(pointee);
+            // Not past the recursion limit, as rustc's autoderef stops.
+            match self
+                .deref_step(base, receiver_range)
+                .filter(|_| derefs < 128)
+            {
+                Some((next, overloaded)) => {
+                    if overloaded {
+                        steps.push(OverloadedDeref {
+                            step: derefs,
+                            mutability: Mutability::Not,
+                            ty: base,
+                            target: next,
+                        });
+                    }
+                    base = next;
                     derefs += 1;
                 }
-                _ => break,
+                None => break,
             }
         }
         // Past the last dereference, an array unsizes to a slice, which
@@ -4433,6 +4737,7 @@ impl Ctx<'_> {
             for mode in [Mutability::Not, Mutability::Mut] {
                 match self.probe_method(slice, Some(mode), method, inherent(slice), traits) {
                     Ok(Some((function, trait_args))) => {
+                        self.record_overloaded_derefs(id, &steps);
                         return self.check_method(
                             id,
                             receiver,
@@ -4476,6 +4781,7 @@ impl Ctx<'_> {
                     );
                 }
                 self.builtin_methods.insert(id, (builtin, derefs));
+                self.record_overloaded_derefs(id, &steps);
                 return ret;
             }
         }
@@ -4715,8 +5021,14 @@ impl Ctx<'_> {
         let sig = &self.instance_sig(function, &generic_args);
         self.meet_expectation(id, sig.ret);
         let autoref = self_mode(self.items, function);
-        if autoref == Some(Mutability::Mut) && derefs == 0 {
-            self.mutable_place(receiver, false, self.range(receiver));
+        if autoref == Some(Mutability::Mut) {
+            // As rustc's `convert_place_derefs_to_mutable` of the
+            // receiver: its overloaded dereferences, and if it is used
+            // as it is, the overloaded indexing in it.
+            let range = self.range(receiver);
+            self.make_derefs_mutable(id, range);
+            let overloaded = self.overloaded_derefs.get(id).map_or(0, |s| s.len() as u32);
+            self.mutable_place_in(receiver, false, range, derefs > overloaded);
         }
         self.methods.insert(
             id,
@@ -5473,6 +5785,27 @@ impl Ctx<'_> {
         for (expr, ty) in coerced {
             unsizes.insert(expr, self.resolve(ty, &mut reported));
         }
+        let mut resolve_steps = |cx: &mut Self, map: &ArenaMap<Expr, Vec<OverloadedDeref>>| {
+            let mut out = ArenaMap::new();
+            let all: Vec<(ExprId, Vec<OverloadedDeref>)> =
+                map.iter().map(|(e, s)| (e, s.clone())).collect();
+            for (expr, steps) in all {
+                let steps = steps
+                    .into_iter()
+                    .map(|step| OverloadedDeref {
+                        ty: cx.resolve(step.ty, &mut reported),
+                        target: cx.resolve(step.target, &mut reported),
+                        ..step
+                    })
+                    .collect();
+                out.insert(expr, steps);
+            }
+            out
+        };
+        let overloaded = std::mem::take(&mut self.overloaded_derefs);
+        let overloaded_derefs = resolve_steps(&mut self, &overloaded);
+        let coerced = std::mem::take(&mut self.coercion_derefs);
+        let coercion_derefs = resolve_steps(&mut self, &coerced);
         let matched: Vec<(PatId, Ty)> = self.pat_types.iter().map(|(p, t)| (p, *t)).collect();
         let mut pat_types = ArenaMap::new();
         for (pat, ty) in matched {
@@ -5549,6 +5882,8 @@ impl Ctx<'_> {
             methods: self.methods,
             reborrows: self.reborrows,
             deref_coercions: self.deref_coercions,
+            overloaded_derefs,
+            coercion_derefs,
             reified: self.reified,
             calls,
             overloads,

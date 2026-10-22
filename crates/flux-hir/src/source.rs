@@ -116,6 +116,10 @@ const CORE_FILES: &[(&str, &str)] = &[
     ("num.rs", include_str!("../../../library/core/src/num.rs")),
     ("ops.rs", include_str!("../../../library/core/src/ops.rs")),
     (
+        "ops/deref.rs",
+        include_str!("../../../library/core/src/ops/deref.rs"),
+    ),
+    (
         "ops/function.rs",
         include_str!("../../../library/core/src/ops/function.rs"),
     ),

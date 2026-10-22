@@ -59,7 +59,9 @@ fn body_text(
             continue;
         }
         let mutability = match decl.kind {
-            LocalKind::User { mutable: false, .. } | LocalKind::Temp => "",
+            LocalKind::User { mutable: false, .. }
+            | LocalKind::Temp
+            | LocalKind::Overloaded { .. } => "",
             _ => "mut ",
         };
         write!(out, "    let {mutability}_{}: {};", local.index(), decl.ty).unwrap();

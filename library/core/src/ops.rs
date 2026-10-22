@@ -12,11 +12,13 @@
 //! out of scope, and so are the `Fn`-family traits, which closures
 //! implement.
 
+mod deref;
 mod function;
 mod index;
 mod range;
 mod try_trait;
 
+pub use deref::{Deref, DerefMut};
 pub use function::{Fn, FnMut, FnOnce};
 pub use index::{Index, IndexMut};
 pub use range::{

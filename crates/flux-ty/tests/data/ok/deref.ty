@@ -1,0 +1,36 @@
+struct Point { x: i32, y: i32 }
+struct Wrapper<T> { inner: T }
+struct Guard<'a, T> { value: &mut T }
+struct Arr { data: [i32; 2] }
+fn sum(&Point) -> i32
+    self@0: &Point
+fn deref(&Wrapper<T>) -> &T
+    self@0: &Wrapper<T>
+fn deref_mut(&mut Wrapper<T>) -> &mut T
+    self@0: &mut Wrapper<T>
+fn deref(&Guard<T>) -> &T
+    self@0: &Guard<T>
+fn deref(&Arr) -> &[i32]
+    self@0: &Arr
+fn takes_point(&Point) -> i32
+    p@0: &Point
+fn takes_slice(&mut [u8]) -> usize
+    s@0: &mut [u8]
+fn total<D>(&D) -> i32
+    d@0: &D
+fn main() -> ()
+    w@0: Wrapper<Point>
+    a@1: i32
+    b@2: i32
+    c@3: i32
+    p@4: &Point
+    d@5: i32
+    bytes@6: Wrapper<[u8; 3]>
+    e@7: usize
+    ww@8: Wrapper<Wrapper<u8>>
+    f@9: &u8
+    g@10: u8
+    n@11: i32
+    guard@12: Guard<i32>
+    h@13: i32
+    i@14: i32

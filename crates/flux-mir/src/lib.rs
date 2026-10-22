@@ -468,6 +468,21 @@ pub enum LocalKind {
     /// A temporary holding the address of a static, which its uses go
     /// through: `(*_3).a` is the static's field `a`.
     Static(flux_hir::ConstId),
+    /// A temporary holding the reference an overloaded index
+    /// (`Index::index`) or dereference (`Deref::deref`) of a `ty`
+    /// returns, which the place it denotes is behind.
+    Overloaded {
+        index: bool,
+        ty: Ty,
+    },
+}
+
+impl LocalKind {
+    /// A temporary, of the builder's own or holding an overloaded
+    /// place's reference.
+    pub fn is_temp(self) -> bool {
+        matches!(self, LocalKind::Temp | LocalKind::Overloaded { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

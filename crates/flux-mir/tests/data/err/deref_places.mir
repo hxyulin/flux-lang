@@ -1,0 +1,223 @@
+fn P::bump(_1: &mut P) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: i32;
+
+    bb0: {
+        _3 = copy (*_1).1;
+        (*_1).1 = Add(copy _3, const 1_i32);
+        _2 = const ();
+        _0 = const ();
+        return;
+    }
+}
+
+fn <W as Deref>::deref(_1: &W) -> &P {
+    let mut _0: &P;
+
+    bb0: {
+        _0 = &(*_1).0;
+        return;
+    }
+}
+
+fn <M as Deref>::deref(_1: &M) -> &P {
+    let mut _0: &P;
+
+    bb0: {
+        _0 = &(*_1).0;
+        return;
+    }
+}
+
+fn <M as DerefMut>::deref_mut(_1: &mut M) -> &mut P {
+    let mut _0: &mut P;
+    let _2: &mut P;
+
+    bb0: {
+        _2 = &mut (*_1).0;
+        _0 = &mut (*_2);
+        return;
+    }
+}
+
+fn <I as Index<usize>>::index(_1: &I, _2: usize) -> &S {
+    let mut _0: &S;
+    let _3: usize;
+    let _4: bool;
+
+    bb0: {
+        _3 = copy _2;
+        _4 = Lt(copy _3, const 2_usize);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _0 = &(*_1).0[_3];
+        return;
+    }
+}
+
+fn takes_mut(_1: &mut P) -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let mut _1: W; // w
+    let _2: P;
+    let _3: S;
+    let _4: ();
+    let _5: &W;
+    let _6: &P;
+    let _7: &mut i32; // _r
+    let _8: &W;
+    let _9: &P;
+    let _10: ();
+    let _11: &W;
+    let _12: &P;
+    let _13: &mut P;
+    let _14: ();
+    let _15: &mut P;
+    let _16: &mut W;
+    let _17: &W;
+    let _18: &P;
+    let _19: S; // _s
+    let _20: &W;
+    let _21: &P;
+    let _22: P; // _p
+    let _23: &W;
+    let _24: &P;
+    let mut _25: M; // m
+    let _26: P;
+    let _27: S;
+    let _28: ();
+    let _29: &mut M;
+    let _30: &mut P;
+    let _31: ();
+    let _32: &mut M;
+    let _33: &mut P;
+    let _34: &mut P;
+    let _35: S; // _t
+    let _36: &M;
+    let _37: &P;
+    let _38: I; // i
+    let _39: [S; 2];
+    let _40: S;
+    let _41: S;
+    let _42: S; // _x
+    let _43: &I;
+    let _44: &S;
+
+    bb0: {
+        _3 = S;
+        _2 = P { s: move _3, n: const 1_i32 };
+        _1 = W { p: move _2 };
+        _5 = &_1;
+        _6 = deref::<W>(move _5) -> bb1;
+    }
+
+    bb1: {
+        (*_6).1 = const 2_i32;
+        _4 = const ();
+        _8 = &_1;
+        _9 = deref::<W>(move _8) -> bb2;
+    }
+
+    bb2: {
+        _7 = &mut (*_9).1;
+        _11 = &_1;
+        _12 = deref::<W>(move _11) -> bb3;
+    }
+
+    bb3: {
+        _13 = &two_phase (*_12);
+        _10 = bump(move _13) -> bb4;
+    }
+
+    bb4: {
+        _16 = &mut _1;
+        _17 = &(*_16);
+        _18 = deref::<W>(move _17) -> bb5;
+    }
+
+    bb5: {
+        _15 = &mut (*_18);
+        _14 = takes_mut(move _15) -> bb6;
+    }
+
+    bb6: {
+        _20 = &_1;
+        _21 = deref::<W>(move _20) -> bb7;
+    }
+
+    bb7: {
+        _19 = move (*_21).0;
+        _23 = &_1;
+        _24 = deref::<W>(move _23) -> bb8;
+    }
+
+    bb8: {
+        _22 = move (*_24);
+        _27 = S;
+        _26 = P { s: move _27, n: const 1_i32 };
+        _25 = M { p: move _26 };
+        _29 = &mut _25;
+        _30 = deref_mut::<M>(move _29) -> bb9;
+    }
+
+    bb9: {
+        (*_30).1 = const 3_i32;
+        _28 = const ();
+        _32 = &mut _25;
+        _33 = deref_mut::<M>(move _32) -> bb10;
+    }
+
+    bb10: {
+        _34 = &two_phase (*_33);
+        _31 = bump(move _34) -> bb11;
+    }
+
+    bb11: {
+        _36 = &_25;
+        _37 = deref::<M>(move _36) -> bb12;
+    }
+
+    bb12: {
+        _35 = move (*_37).0;
+        _40 = S;
+        _41 = S;
+        _39 = [move _40, move _41];
+        _38 = I { a: move _39 };
+        _43 = &_38;
+        _44 = index::<I, usize>(move _43, const 0_usize) -> bb13;
+    }
+
+    bb13: {
+        _42 = move (*_44);
+        _0 = const ();
+        StorageDead(_42);
+        StorageDead(_38);
+        StorageDead(_35);
+        StorageDead(_25);
+        StorageDead(_22);
+        StorageDead(_19);
+        StorageDead(_7);
+        StorageDead(_1);
+        return;
+    }
+}
+
+error 707..714: cannot assign to data in dereference of `W`
+error 729..737: cannot borrow data in dereference of `W` as mutable
+error 743..744: cannot borrow data in dereference of `W` as mutable
+error 767..773: cannot borrow data in dereference of `W` as mutable
+error 789..792: cannot move out of dereference of `W`
+error 807..809: cannot move out of dereference of `W`
+error 894..897: cannot move out of dereference of `M`
+error 941..945: cannot move out of index of `I`

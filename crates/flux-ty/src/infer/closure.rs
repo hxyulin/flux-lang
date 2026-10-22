@@ -28,7 +28,7 @@ use flux_hir::{
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
 
-use super::{Ctx, Method};
+use super::{Ctx, Method, OverloadedDeref};
 use crate::traits::{Predicate, TraitRef};
 use crate::ty::{ClosureArgs, ClosureId, ClosureKind, Mutability, Ty, TyKind};
 
@@ -856,39 +856,67 @@ impl Ctx<'_> {
         self.capture_place_in(expr).map(|(place, _)| place)
     }
 
-    /// [`Self::capture_place`], and whether it went through an index, after
-    /// which the place stops.
-    fn capture_place_in(&self, expr: ExprId) -> Option<(Place, bool)> {
-        let derefs = |proj: &mut Vec<CaptureProj>| {
+    /// Where the place of `expr` stops, if it does before `expr`: the
+    /// overloaded dereference whose base it is, which borrows that base
+    /// (`Deref::deref(&w)`) with its mutability, as rustc's
+    /// `ExprUseVisitor` sees an overloaded deref.
+    fn place_overload(&self, expr: ExprId) -> Option<Mutability> {
+        self.capture_place_stop(expr).and_then(|stop| match stop {
+            Stop::Overloaded(m) => Some(m),
+            Stop::Indexed => None,
+        })
+    }
+
+    fn capture_place_stop(&self, expr: ExprId) -> Option<Stop> {
+        self.capture_place_in(expr).and_then(|(_, stop)| stop)
+    }
+
+    /// [`Self::capture_place`], and whether it stops before `expr`: at an
+    /// index, whose array or slice it is, or at an overloaded
+    /// dereference, whose base it is.
+    fn capture_place_in(&self, expr: ExprId) -> Option<(Place, Option<Stop>)> {
+        // The base's dereferences, up to the first overloaded one.
+        let derefs = |proj: &mut Vec<CaptureProj>| -> Option<Stop> {
             let n = self.field_derefs.get(expr).copied().unwrap_or(0);
-            proj.extend((0..n).map(|_| CaptureProj::Deref));
+            let overloaded = self.overloaded_derefs.get(expr).and_then(|s| s.first());
+            let builtin = overloaded.map_or(n, |o| o.step);
+            proj.extend((0..builtin).map(|_| CaptureProj::Deref));
+            overloaded.map(|o| Stop::Overloaded(o.mutability))
         };
         match self.body.exprs[expr] {
-            Expr::Path(Res::Local(binding)) => Some(((binding, Vec::new()), false)),
+            Expr::Path(Res::Local(binding)) => Some(((binding, Vec::new()), None)),
             Expr::Field { expr: base, .. } => {
-                let ((binding, mut proj), indexed) = self.capture_place_in(base)?;
-                if !indexed {
-                    derefs(&mut proj);
+                let ((binding, mut proj), stop) = self.capture_place_in(base)?;
+                if stop.is_some() {
+                    return Some(((binding, proj), stop));
+                }
+                let stop = derefs(&mut proj);
+                if stop.is_none() {
                     proj.push(CaptureProj::Field(self.field_indices.get(expr).copied()?));
                 }
-                Some(((binding, proj), indexed))
+                Some(((binding, proj), stop))
             }
             Expr::Index { base, .. } => {
-                let ((binding, mut proj), indexed) = self.capture_place_in(base)?;
-                if !indexed {
-                    derefs(&mut proj);
+                let ((binding, mut proj), stop) = self.capture_place_in(base)?;
+                if stop.is_some() {
+                    return Some(((binding, proj), stop));
                 }
-                Some(((binding, proj), true))
+                let stop = derefs(&mut proj);
+                Some(((binding, proj), stop.or(Some(Stop::Indexed))))
             }
             Expr::Unary {
                 op: flux_hir::UnaryOp::Deref,
                 operand,
             } => {
-                let ((binding, mut proj), indexed) = self.capture_place_in(operand)?;
-                if !indexed {
-                    proj.push(CaptureProj::Deref);
+                let ((binding, mut proj), stop) = self.capture_place_in(operand)?;
+                if stop.is_some() {
+                    return Some(((binding, proj), stop));
                 }
-                Some(((binding, proj), indexed))
+                if let Some(o) = self.overloaded_derefs.get(expr).and_then(|s| s.first()) {
+                    return Some(((binding, proj), Some(Stop::Overloaded(o.mutability))));
+                }
+                proj.push(CaptureProj::Deref);
+                Some(((binding, proj), None))
             }
             _ => None,
         }
@@ -922,10 +950,21 @@ impl Ctx<'_> {
     /// `expr` used by value: a place is copied or moved.
     fn consume(&mut self, expr: ExprId, uses: &mut Uses<'_>) {
         self.walk_indices(expr, uses);
+        if let Some(m) = self.place_overload(expr)
+            && let Some(place) = self.capture_place(expr)
+        {
+            uses.add(place, UseKind::Borrow(m), self.range(expr));
+            return;
+        }
         if let Some(&m) = self.reborrows.get(expr)
             && let Some((binding, mut proj)) = self.capture_place(expr)
         {
             let derefs = self.deref_coercions.get(expr).copied().unwrap_or(1);
+            // Up to the first overloaded dereference, which borrows.
+            let (derefs, m) = match self.coercion_derefs.get(expr).and_then(|s| s.first()) {
+                Some(o) => (o.step, o.mutability),
+                None => (derefs, m),
+            };
             proj.extend((0..derefs).map(|_| CaptureProj::Deref));
             uses.add((binding, proj), UseKind::Borrow(m), self.range(expr));
             return;
@@ -947,11 +986,12 @@ impl Ctx<'_> {
     /// `expr` borrowed, or written (`Borrow(Mut)`).
     fn borrow(&mut self, expr: ExprId, m: Option<Mutability>, uses: &mut Uses<'_>) {
         self.walk_indices(expr, uses);
+        let overload = self.place_overload(expr);
         match self.capture_place(expr) {
             Some(place) => {
-                let kind = match m {
-                    Some(m) => UseKind::Borrow(m),
-                    None => UseKind::Assign,
+                let kind = match (overload, m) {
+                    (Some(m), _) | (None, Some(m)) => UseKind::Borrow(m),
+                    (None, None) => UseKind::Assign,
                 };
                 uses.add(place, kind, self.range(expr));
             }
@@ -964,7 +1004,7 @@ impl Ctx<'_> {
     fn adjusted(
         &mut self,
         expr: ExprId,
-        derefs: u32,
+        (derefs, overloaded): (u32, Option<&OverloadedDeref>),
         autoref: Option<Mutability>,
         uses: &mut Uses<'_>,
     ) {
@@ -972,6 +1012,15 @@ impl Ctx<'_> {
         let Some((binding, mut proj)) = self.capture_place(expr) else {
             self.walk(expr, uses);
             return;
+        };
+        if let Some(m) = self.place_overload(expr) {
+            uses.add((binding, proj), UseKind::Borrow(m), self.range(expr));
+            return;
+        }
+        // Up to the first overloaded dereference, which borrows.
+        let (derefs, autoref) = match overloaded {
+            Some(o) => (o.step, Some(o.mutability)),
+            None => (derefs, autoref),
         };
         proj.extend((0..derefs).map(|_| CaptureProj::Deref));
         let kind = match autoref {
@@ -998,7 +1047,7 @@ impl Ctx<'_> {
     /// reborrowed (`&*r`) if it is a `&mut`.
     fn shared_ref(&mut self, expr: ExprId, uses: &mut Uses<'_>) {
         if self.is_mut_ref(expr) {
-            self.adjusted(expr, 1, Some(Mutability::Not), uses);
+            self.adjusted(expr, (1, None), Some(Mutability::Not), uses);
         } else {
             self.consume(expr, uses);
         }
@@ -1091,7 +1140,10 @@ impl Ctx<'_> {
             Expr::Let { pat, expr: init } => self.walk_let(*pat, *init, uses),
             Expr::Match { scrutinee, arms } => {
                 match self.capture_place(*scrutinee) {
-                    Some(place) if self.reborrows.get(*scrutinee).is_none() => {
+                    Some(place)
+                        if self.reborrows.get(*scrutinee).is_none()
+                            && self.capture_place_stop(*scrutinee).is_none() =>
+                    {
                         for arm in arms.iter() {
                             self.walk_pat(arm.pat, place.clone(), uses);
                         }
@@ -1113,7 +1165,14 @@ impl Ctx<'_> {
             }
             Expr::Call { callee, args } => {
                 match self.methods.get(expr).copied() {
-                    Some(m) => self.adjusted(*callee, m.derefs, m.autoref, uses),
+                    Some(m) => {
+                        let first = self
+                            .overloaded_derefs
+                            .get(expr)
+                            .and_then(|s| s.first())
+                            .copied();
+                        self.adjusted(*callee, (m.derefs, first.as_ref()), m.autoref, uses)
+                    }
                     // A function item or pointer, called by value: a
                     // local holding one is copied.
                     None => self.consume(*callee, uses),
@@ -1123,11 +1182,17 @@ impl Ctx<'_> {
                 }
             }
             Expr::MethodCall { receiver, args, .. } => {
+                let first = self
+                    .overloaded_derefs
+                    .get(expr)
+                    .and_then(|s| s.first())
+                    .copied();
                 if let Some(m) = self.methods.get(expr).copied() {
-                    self.adjusted(*receiver, m.derefs, m.autoref, uses);
+                    self.adjusted(*receiver, (m.derefs, first.as_ref()), m.autoref, uses);
                 } else if let Some(&(_, derefs)) = self.builtin_methods.get(expr) {
                     // `len` and `is_empty` of arrays and slices take `&self`.
-                    self.adjusted(*receiver, derefs, Some(Mutability::Not), uses);
+                    let adjust = (derefs, first.as_ref());
+                    self.adjusted(*receiver, adjust, Some(Mutability::Not), uses);
                 } else {
                     self.consume(*receiver, uses);
                 }
@@ -1154,7 +1219,7 @@ impl Ctx<'_> {
                         let ordered = !matches!(cmp, flux_hir::CmpOp::Eq | flux_hir::CmpOp::Ne);
                         if ordered && self.is_mut_ref(*lhs) {
                             self.borrow(*lhs, Some(Mutability::Not), uses);
-                            self.adjusted(*rhs, 1, Some(Mutability::Mut), uses);
+                            self.adjusted(*rhs, (1, None), Some(Mutability::Mut), uses);
                         } else {
                             self.shared_ref(*lhs, uses);
                             self.shared_ref(*rhs, uses);
@@ -1206,7 +1271,12 @@ impl Ctx<'_> {
     fn walk_let(&mut self, pat: PatId, init: ExprId, uses: &mut Uses<'_>) {
         self.walk_indices(init, uses);
         match self.capture_place(init) {
-            Some(place) if self.reborrows.get(init).is_none() => self.walk_pat(pat, place, uses),
+            Some(place)
+                if self.reborrows.get(init).is_none()
+                    && self.capture_place_stop(init).is_none() =>
+            {
+                self.walk_pat(pat, place, uses)
+            }
             _ => self.consume(init, uses),
         }
     }
@@ -1593,4 +1663,13 @@ fn expr_bindings(body: &flux_hir::Body, expr: ExprId, out: &mut HashSet<BindingI
             }
         }
     }
+}
+
+/// Where a captured place stops short of its expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// At an index: the place is the array or slice.
+    Indexed,
+    /// At an overloaded dereference, which borrows its base so.
+    Overloaded(Mutability),
 }

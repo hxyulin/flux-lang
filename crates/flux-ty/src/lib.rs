@@ -41,7 +41,7 @@ use flux_syntax::TextRange;
 
 pub use infer::{
     BuiltinMethod, Capture, CaptureMode, CaptureProj, ClosureInfo, InferenceResult, Method,
-    c_char_ptr, c_str_ref, infer_body, infer_const,
+    OverloadedDeref, c_char_ptr, c_str_ref, infer_body, infer_const,
 };
 pub use traits::{Predicate, Projection, TraitRef, TraitSig};
 pub use ty::{
@@ -3287,6 +3287,17 @@ pub fn core_roots(items: &ItemTree) -> Vec<FunctionId> {
     roots
 }
 
+/// `Deref::deref`, or `DerefMut::deref_mut` for `Mut`: what an
+/// overloaded dereference calls.
+pub fn deref_fn(items: &ItemTree, mutability: Mutability) -> Option<FunctionId> {
+    let (lang, name) = match mutability {
+        Mutability::Not => ("deref", "deref"),
+        Mutability::Mut => ("deref_mut", "deref_mut"),
+    };
+    let t = *items.lang_traits.get(&Symbol::intern(lang))?;
+    items.traits[t].function(items, Symbol::intern(name))
+}
+
 /// The functions a call of `function` may run: itself, and for a
 /// trait's method, its definition in each `impl` block of the trait.
 pub fn call_targets(items: &ItemTree, function: FunctionId) -> Vec<FunctionId> {
@@ -3359,12 +3370,21 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
             .flat_map(|t| items.traits[t].functions.iter().copied())
             .chain(drop)
             .collect();
+        // `Deref::deref` and `DerefMut::deref_mut`, of overloaded
+        // dereferences.
+        let derefs = result
+            .overloaded_derefs
+            .iter()
+            .chain(result.coercion_derefs.iter())
+            .flat_map(|(_, steps)| steps.iter())
+            .filter_map(|step| deref_fn(items, step.mutability));
         for f in called
             .chain(methods)
             .chain(operators)
             .chain(conversions)
             .chain(values)
             .chain(objects)
+            .chain(derefs)
         {
             if expanded.insert(f) {
                 queue.extend(call_targets(items, f));

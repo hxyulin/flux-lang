@@ -188,11 +188,9 @@ fn shorter<'a>(_1: &dyn Tr) -> &dyn Tr {
 
 fn reborrowed<'a>(_1: &mut dyn Tr) -> &mut dyn Tr {
     let mut _0: &mut dyn Tr;
-    let _2: &mut dyn Tr;
 
     bb0: {
-        _2 = move _1;
-        _0 = &mut (*_2);
+        _0 = &mut (*_1);
         return;
     }
 }

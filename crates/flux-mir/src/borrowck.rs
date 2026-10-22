@@ -561,7 +561,7 @@ impl Checker<'_> {
         // used (E0716); a binding's scope ending is E0597, at its
         // `StorageDead`.
         if let TerminatorKind::Drop { place, .. } = kind
-            && self.body.locals[place.local].kind == LocalKind::Temp
+            && self.body.locals[place.local].kind.is_temp()
             && !place.has_deref()
         {
             let borrowed = self.borrowed;
@@ -669,7 +669,7 @@ impl Checker<'_> {
             self.error(at, message);
             return;
         }
-        if kind == LocalKind::Temp {
+        if kind.is_temp() {
             self.error(range, "temporary value dropped while borrowed".into());
             return;
         }
@@ -767,6 +767,9 @@ impl Checker<'_> {
         if let Some(message) = self.captured_write(place, "assign to") {
             return self.error(range, message);
         }
+        if let Some(what) = self.immutable_overload(place) {
+            return self.error(range, format!("cannot assign to data in {what}"));
+        }
         if let Some(pointer) = self.immutable_pointer(place)
             && !matches!(
                 pointer.kind(),
@@ -843,6 +846,26 @@ impl Checker<'_> {
         None
     }
 
+    /// If the first pointer `place` goes through that does not allow
+    /// changing what is behind it is the shared reference an overloaded
+    /// dereference or index returned (its type has no `DerefMut` or
+    /// `IndexMut`), what rustc calls that: "dereference of `W`".
+    fn immutable_overload(&self, place: &Place) -> Option<String> {
+        let crate::LocalKind::Overloaded { index, ty } = self.body.locals[place.local].kind else {
+            return None;
+        };
+        let pointer = self.immutable_pointer(place)?;
+        let own = self.body.locals[place.local].ty;
+        if pointer != own || place.projection.first() != Some(&ProjectionElem::Deref) {
+            return None;
+        }
+        Some(if index {
+            format!("an index of `{ty}`")
+        } else {
+            format!("dereference of `{ty}`")
+        })
+    }
+
     /// The type of the pointer the last dereference in `place` goes
     /// through, if any.
     fn last_pointer(&self, place: &Place) -> Option<Ty> {
@@ -887,6 +910,9 @@ impl Checker<'_> {
         if let Some(message) = self.captured_write(place, "borrow") {
             return self.error(range, message);
         }
+        if let Some(what) = self.immutable_overload(place) {
+            return self.error(range, format!("cannot borrow data in {what} as mutable"));
+        }
         match self.last_pointer(place) {
             Some(_) => {
                 if let Some(pointer) = self.immutable_pointer(place) {
@@ -930,6 +956,18 @@ impl Checker<'_> {
                 )
             };
             return self.error(range, message);
+        }
+        // Behind the reference an overloaded index or dereference
+        // returned: rustc names what was indexed or dereferenced.
+        if let crate::LocalKind::Overloaded { index, ty } = self.body.locals[place.local].kind
+            && place
+                .projection
+                .iter()
+                .rposition(|&e| e == ProjectionElem::Deref)
+                == Some(0)
+        {
+            let what = if index { "index" } else { "dereference" };
+            return self.error(range, format!("cannot move out of {what} of `{ty}`"));
         }
         if let Some(upvars) = &self.body.upvars
             && let Some((_, len)) = upvars.of(place)
