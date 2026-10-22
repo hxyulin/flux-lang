@@ -90,7 +90,8 @@ reported as "not supported yet":
 - **Types:** paths (`i32`, `bool`, `char`, `Self`, `m::S`, `crate::m::S`,
   `Pair<i32>`, a type parameter `T`), function pointers (`fn(i32) ->
   i32`, `unsafe fn()`, but not `extern "C" fn`), associated types (`T::Out`,
-  `Self::Out`, `<T as Tr>::Out`), tuples, `!`, references with or
+  `Self::Out`, `<T as Tr>::Out`), `impl Trait` in functions'
+  parameters and return types (below), tuples, `!`, references with or
   without lifetimes (`&T`, `&'a mut T`), raw pointers (`*const T`, `*mut T`),
   arrays (`[T; N]`, whose length is an integer literal or a path to a
   constant of type `usize`: `[u8; 4]`, `[u8; N]`, `[u8; m::N]`; other
@@ -352,8 +353,8 @@ Operators on other types than integers and `bool` call the methods of
 `core::cmp::PartialEq` (`==`, `!=`) and `core::cmp::PartialOrd` (`<`,
 `<=`, `>`, `>=`), which `core` implements for the integers and `bool`
 too, so generic code can use them; `&a == &b` and `&a < &b` compare `a`
-and `b`. There are no trait objects (`dyn Tr`) or
-`impl Trait` types, and no generic associated types. `Sized` is, as a bound:
+and `b`. There are no trait objects (`dyn Tr`), and no generic
+associated types. `Sized` is, as a bound:
 every type flux has is sized, but a trait's provided methods must say
 `where Self: Sized` to take or hold `Self` by value, as in rustc.
 
@@ -564,8 +565,8 @@ Safe function items and pointers implement the `Fn`-family traits too,
 so they may be passed where closures are, and a closure that captures
 nothing coerces to a function pointer of its signature (one that
 captures is E0308, as in rustc).
-Closures cannot be returned yet (no `impl Fn`), nor be `async`, nor
-appear in constants or `const fn`s; calls of
+Closures are returned as `impl Fn` (below); they cannot be `async`,
+nor appear in constants or `const fn`s; calls of
 `Fn::call` and the other methods by name, and `impl Fn for S`, are
 unstable in rustc and not supported. A closure may return references
 to what it captures or is given; one passed to a generic function may
@@ -573,6 +574,32 @@ not keep or return references to its parameters (not supported yet),
 and, as in rustc, one whose parameters' written types have references
 may not let them outlive the call ("lifetime may not live long
 enough").
+
+`impl Trait` in a function's parameter type (`f: impl Fn(i32) ->
+i32`, `it: impl Iterator<Item = impl Copy>`) is an anonymous type
+parameter with those bounds, after the function's others, as in rustc:
+generic arguments give only the others (E0107), and `use<..>` is not
+allowed there. In the return type of a free function or an inherent
+method (`-> impl Iterator<Item = u64>`, `-> impl Fn(i32) -> i32 + '_`,
+`-> Option<impl Fn()>`), it is an opaque type: callers see only its
+bounds (its methods, calls of it, `for` loops over it, and `Copy` or
+`Clone` only if a bound says so), while its body decides the type it
+hides, which must meet them (E0277, E0271), be the same for every
+return (E0308), and not contain itself (E0720); a body that only calls
+itself hides `!`. A closure returned so gets its signature from the
+`Fn` bound. As in edition 2024, an opaque type captures every generic
+parameter and lifetime in scope (elided ones included), or those
+`use<'a, T>` lists (which must name every type parameter): where it is
+used, what they borrow stays borrowed, and its hidden type may borrow
+only them (E0700, E0597, E0373, as in rustc), and only for as long as
+its `+ 'a` bounds and what its bounds say associated types are
+(`Item = &'a T`, elided lifetimes as in the return type) say. Auto
+traits do not leak through it (flux has none besides `Sized`).
+`impl Trait` in trait methods' return types, nested in an opaque
+type's bounds or in bounds' generic arguments (`T: Iterator<Item = impl
+Copy>`) is not supported yet; elsewhere it is rustc's E0562 ("`impl
+Trait` is not allowed in field types", ...), or E0658 in type aliases
+and associated types.
 
 References may be anywhere a value may: parameters, return values
 (`fn first(&self) -> &T`, `Option<&T>`), fields of structs and enums
