@@ -468,8 +468,7 @@ tuples, `Option`, `Result`, `Ordering` and the ranges),
 `core::default::Default` (in the prelude) for the integers, `bool`,
 `char`, `&str`, `()`, `Option`, tuples of up to twelve elements and `Range`,
 `core::mem::{drop, swap, replace, take}` (`drop` also in the prelude;
-`swap`'s body is the compiler's, and it is not `const` yet, as rustc's
-is), `core::convert::{identity, From}`,
+`swap` and `replace` are not `const` yet, as rustc's are), `core::convert::{identity, From}`,
 `core::marker::{Sized, Copy}`, `core::clone::Clone` (as `Copy`,
 `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Debug` and `Default`, for
 tuples of up to twelve elements, comparing them element by element as
@@ -522,7 +521,7 @@ the range structs `Range`, `RangeInclusive`, `RangeFrom`, `RangeTo`,
 `peek_mut`, `next_if` and `next_if_eq`), `scan`, `map_while`,
 `inspect`, `cycle` and `fuse`; `DoubleEndedIterator` (`next_back`,
 `nth_back`, `rfind`), which the adapters implement where rustc's do;
-`ExactSizeIterator` (`len`, in the prelude), for the slice and `Option`
+`ExactSizeIterator` (`len`, in the prelude), for the slice, array and `Option`
 iterators, the ranges of rustc's types and the adapters that keep it;
 `IntoIterator`, which every iterator implements; and `Sum` and
 `Product` for the integers and references to them. Every adapter's

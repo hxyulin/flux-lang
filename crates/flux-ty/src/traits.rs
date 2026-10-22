@@ -822,7 +822,6 @@ impl Normalizer<'_> {
                 let goal = alias_predicate(alias);
                 if let Some((imp, impl_args)) = select_impl(items, sigs, goal)
                     && let Some(t) = impl_type(sigs, imp, alias.name)
-                    && !unproven_blanket(items, sigs, imp, goal, &impl_args)
                 {
                     return self.go(t.subst(&impl_args), depth + 1);
                 }
@@ -850,28 +849,6 @@ impl Normalizer<'_> {
     }
 }
 
-/// Whether `imp` is a blanket block (`impl<I: Iterator> IntoIterator for
-/// I`) chosen for a generic parameter or associated type, whose bounds
-/// do not hold without the bounds in scope, which normalization does not
-/// have: `<U as IntoIterator>::Item` for `U: IntoIterator` stays, rather
-/// than becoming `<U as Iterator>::Item`.
-fn unproven_blanket(
-    items: &ItemTree,
-    sigs: &Signatures,
-    imp: ImplId,
-    goal: Predicate,
-    args: &[Ty],
-) -> bool {
-    if !matches!(sigs.impls[imp].kind(), TyKind::Param(_))
-        || !(goal.self_ty.has_params() || goal.self_ty.has_aliases())
-    {
-        return false;
-    }
-    sigs.impl_predicates
-        .get(imp)
-        .is_some_and(|preds| !preds.iter().all(|p| holds(items, sigs, &[], p.subst(args))))
-}
-
 /// The signature of `function` with generic arguments `args`, its
 /// associated types normalized: an instance's, for code generation.
 pub fn instance_sig(
@@ -897,10 +874,20 @@ pub fn instance_ty(items: &ItemTree, sigs: &Signatures, ty: Ty, args: &[Ty]) -> 
     normalize(items, sigs, &[], ty.subst(args))
 }
 
-/// The `impl` block for `goal`, whose types are known, and its generic
-/// arguments: of several whose headers match, the one whose bounds
-/// hold, as rustc's winnowing picks it (`impl<'a, T> IntoIterator for
-/// &'a [T]` rather than the blanket one for iterators).
+/// The `impl` block for `goal` and its generic arguments: the only one
+/// whose header matches and whose bounds can hold, as rustc's selection
+/// and winnowing find it (`impl<'a, T> IntoIterator for &'a [T]` rather
+/// than the blanket one for iterators); `None` where none or several
+/// can, which leaves an associated type of it unnormalized.
+///
+/// Bounds on generic parameters (and associated types) may hold where
+/// the bounds in scope say so, which this does not know, so a block
+/// whose failing bounds are all on them can still be the one, for a type
+/// whose own shape picks it (`impl<'a, T: Copy> IntoIterator for &'a
+/// Bag<T>` for `&Bag<T>`). Not for a parameter itself, though: a bound
+/// in scope on it decides rather than a blanket block (`<U as
+/// IntoIterator>::IntoIter` for `U: IntoIterator` is not `U`), so there
+/// a block's bounds must hold whatever the bounds in scope.
 pub fn select_impl(
     items: &ItemTree,
     sigs: &Signatures,
@@ -912,29 +899,105 @@ pub fn select_impl(
     let found: Vec<(ImplId, Vec<Ty>)> = impls
         .filter_map(|imp| Some((imp, match_impl(items, sigs, imp, goal)?)))
         .collect();
-    if found.len() <= 1 {
-        return found.into_iter().next();
+    let rigid_self = is_rigid(goal.self_ty);
+    // Judging bounds normalizes their associated types, which selects
+    // blocks again: past a depth, as rustc's recursion limit, none.
+    thread_local! {
+        static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     }
-    // Bounds on generic parameters may hold where the bounds in scope
-    // say so, which this does not know: of the blocks whose bounds do
-    // not all hold, one whose failing bounds are all on parameters
-    // (`impl<'a, T: Copy> IntoIterator for &'a Bag<T>`, for `T`) is
-    // still the one, where another's fail for known types (the blanket
-    // `impl<I: Iterator> IntoIterator for I`, as `&Bag<T>` is not an
-    // iterator).
-    let bounds_hold = |(imp, args): &(ImplId, Vec<Ty>), may: bool| {
-        sigs.impl_predicates.get(*imp).is_none_or(|preds| {
-            preds.iter().all(|p| {
-                let p = p.subst(args);
-                (may && matches!(p.self_ty.kind(), TyKind::Param(_) | TyKind::Alias(_)))
-                    || holds(items, sigs, &[], p)
-            })
-        })
-    };
-    let pick = |may| found.iter().find(|c| bounds_hold(c, may)).cloned();
-    pick(false)
-        .or_else(|| pick(true))
-        .or_else(|| found.first().cloned())
+    if DEPTH.get() > 32 {
+        return None;
+    }
+    DEPTH.set(DEPTH.get() + 1);
+    let judged: Vec<(&(ImplId, Vec<Ty>), bool)> = found
+        .iter()
+        .filter_map(|c| Some((c, impl_bounds(items, sigs, c.0, &c.1, 0)?)))
+        .collect();
+    DEPTH.set(DEPTH.get() - 1);
+    let definite: Vec<_> = judged.iter().filter(|(_, d)| *d).collect();
+    if let [(only, _)] = definite.as_slice() {
+        return Some((*only).clone());
+    }
+    if rigid_self || !definite.is_empty() {
+        return None;
+    }
+    match judged.as_slice() {
+        [(only, _)] => Some((*only).clone()),
+        _ => None,
+    }
+}
+
+/// A type that only the bounds in scope say anything about: a generic
+/// parameter, an associated type of one, or one not inferred yet.
+fn is_rigid(ty: Ty) -> bool {
+    matches!(
+        ty.kind(),
+        TyKind::Param(_) | TyKind::Alias(_) | TyKind::Infer(_)
+    )
+}
+
+/// Whether the bounds of `imp`, with generic arguments `args`, hold:
+/// `Some(true)` if they surely do, `Some(false)` if they may (where
+/// bounds in scope would say), `None` if one cannot.
+fn impl_bounds(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: ImplId,
+    args: &[Ty],
+    depth: u32,
+) -> Option<bool> {
+    let preds = sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
+    let mut definite = true;
+    for p in preds {
+        definite &= may_hold(items, sigs, p.subst(args), depth + 1)?;
+    }
+    Some(definite)
+}
+
+/// Whether `p` holds without the bounds in scope, as [`impl_bounds`]
+/// says: surely, if [`holds`] says so; perhaps, if it is about a type
+/// only bounds in scope know (`T: Copy`), or about a type with generic
+/// parameters in it that an `impl` block whose bounds may hold is for
+/// (`&'a Bag<T>: IntoIterator` where `impl<'a, T: Copy> IntoIterator for
+/// &'a Bag<T>`); not at all otherwise (`&Bag<T>: Iterator`).
+fn may_hold(items: &ItemTree, sigs: &Signatures, p: Predicate, depth: u32) -> Option<bool> {
+    if holds(items, sigs, &[], p) {
+        return Some(true);
+    }
+    let open = |t: Ty| t.has_params() || t.has_aliases() || t.has_infer();
+    if !open(p.self_ty) && !p.trait_ref.args.iter().any(|&a| open(a)) {
+        return None;
+    }
+    if is_rigid(p.self_ty) || depth > 8 {
+        return Some(false);
+    }
+    if let Some(elem) = builtin_array_impl(items, p) {
+        return may_hold(items, sigs, elem, depth + 1).map(|_| false);
+    }
+    if matches!(
+        p.self_ty.kind(),
+        TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_)
+    ) {
+        return Some(false);
+    }
+    let impls = sigs
+        .impl_index
+        .impls_for(items, p.trait_ref.trait_, p.self_ty);
+    let mut found = None;
+    for imp in impls {
+        let Some(args) = match_impl(items, sigs, imp, p) else {
+            continue;
+        };
+        if impl_bounds(items, sigs, imp, &args, depth).is_some() {
+            found = Some(false);
+        }
+    }
+    // A trait's bound on a parameter in the other arguments
+    // (`i32: PartialEq<T>`) may hold where the bounds in scope say.
+    if found.is_none() && p.trait_ref.args.iter().any(|&a| is_rigid(a)) {
+        return Some(false);
+    }
+    found
 }
 
 /// The generic arguments for which `impl` block `imp`'s header is

@@ -155,6 +155,39 @@ pub struct Signatures {
     pub array_lens: LenValues,
     /// The lifetimes in the signatures, for the borrow checker.
     pub regions: regions::RegionSigs,
+    /// What field types need of the items to normalize without them.
+    pub builtins: Builtins,
+}
+
+/// The traits and structs of `core` that [`Signatures::field_types`]
+/// needs to know, recorded from the items: `Sized`, which every type
+/// implements, and arrays' built-in `IntoIterator`, with its iterators.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Builtins {
+    pub sized: Option<flux_hir::TraitId>,
+    pub into_iterator: Option<flux_hir::TraitId>,
+    pub array_into_iter: Option<(StructId, Symbol)>,
+    pub slice_iter: Option<(StructId, Symbol)>,
+    pub slice_iter_mut: Option<(StructId, Symbol)>,
+}
+
+impl Builtins {
+    fn of(items: &ItemTree) -> Builtins {
+        let strukt = |lang: &str| {
+            let s = *items.lang_enums.get(&Symbol::intern(lang))?;
+            Some((s, items.structs[s].name))
+        };
+        Builtins {
+            sized: items.lang_traits.get(&flux_intern::sym::sized).copied(),
+            into_iterator: items
+                .lang_traits
+                .get(&Symbol::intern("IntoIterator"))
+                .copied(),
+            array_into_iter: strukt("array_into_iter"),
+            slice_iter: strukt("slice_iter"),
+            slice_iter_mut: strukt("slice_iter_mut"),
+        }
+    }
 }
 
 impl Index<FunctionId> for Signatures {
@@ -250,6 +283,121 @@ impl Signatures {
         Ty::list(&fields)
     }
 
+    /// The generic arguments of `imp` for which its header is `args`
+    /// (the trait's `Self` and arguments), as far as the header has them.
+    fn match_header(&self, imp: ImplId, args: &[Ty]) -> Option<Vec<Option<Ty>>> {
+        let trait_ref = self.impl_traits.get(imp)?;
+        // Every parameter of a trait's block is in its header, but those
+        // only its bounds' associated types decide.
+        let header = std::iter::once(self.impls[imp]).chain(trait_ref.args.iter().copied());
+        let count = header.clone().map(max_param).max().unwrap_or(0);
+        let mut binds = vec![None; count as usize];
+        header
+            .zip(args)
+            .all(|(x, &y)| traits::match_ty(x, y, &mut binds))
+            .then_some(binds)
+    }
+
+    /// Whether the bounds of `imp`, with generic arguments `binds`, hold:
+    /// `Some(true)` if they surely do, `Some(false)` if they may (on
+    /// parameters, or on types with the compiler's own impls, which only
+    /// the items know), `None` if one does not.
+    fn bounds_hold(&self, imp: ImplId, binds: &[Option<Ty>], depth: u32) -> Option<bool> {
+        let preds = self.impl_predicates.get(imp).map_or(&[][..], |p| p);
+        let known: Vec<Ty> = binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
+        let mut definite = true;
+        for p in preds {
+            let p = p.subst(&known);
+            definite &= self.may_hold(p, depth + 1)?;
+        }
+        Some(definite)
+    }
+
+    /// Whether `p` holds, as [`Self::bounds_hold`] says: surely only if
+    /// an `impl` block whose bounds surely hold is for its types; perhaps
+    /// for parameters, which bounds in scope may say implement it, and
+    /// types with the compiler's own impls (arrays, closures, functions,
+    /// references' `Copy`), which only the items know; not at all if no
+    /// block may be for its types.
+    fn may_hold(&self, p: Predicate, depth: u32) -> Option<bool> {
+        let rigid = |t: Ty| {
+            matches!(
+                t.kind(),
+                TyKind::Param(_) | TyKind::Alias(_) | TyKind::Infer(_)
+            )
+        };
+        if p.self_ty == Ty::ERROR || p.trait_ref.args.contains(&Ty::ERROR) {
+            return Some(true);
+        }
+        if Some(p.trait_ref.trait_) == self.builtins.sized {
+            return Some(true);
+        }
+        if rigid(p.self_ty) || depth > 8 {
+            return Some(false);
+        }
+        if matches!(
+            p.self_ty.kind(),
+            TyKind::Array(..)
+                | TyKind::Closure(..)
+                | TyKind::FnDef(_)
+                | TyKind::FnPtr(_)
+                | TyKind::Ref(Mutability::Not, _)
+                | TyKind::Never
+        ) {
+            return Some(false);
+        }
+        let mut args = vec![p.self_ty];
+        args.extend_from_slice(p.trait_ref.args);
+        let mut found = None;
+        for (imp, trait_ref) in self.impl_traits.iter() {
+            if trait_ref.trait_ != p.trait_ref.trait_ {
+                continue;
+            }
+            let Some(binds) = self.match_header(imp, &args) else {
+                continue;
+            };
+            match self.bounds_hold(imp, &binds, depth) {
+                Some(true) => return Some(true),
+                Some(false) => found = Some(false),
+                None => {}
+            }
+        }
+        if found.is_none() && p.trait_ref.args.iter().any(|&a| rigid(a)) {
+            return Some(false);
+        }
+        found
+    }
+
+    /// `Item` or `IntoIter` of an array's built-in `IntoIterator`.
+    fn array_into_iter_type(&self, alias: ty::AliasTy) -> Option<Ty> {
+        if Some(alias.trait_) != self.builtins.into_iterator {
+            return None;
+        }
+        let (by, elem, array) = match alias.args[0].kind() {
+            TyKind::Array(elem, _) => (None, elem, alias.args[0]),
+            TyKind::Ref(m, array) => match array.kind() {
+                TyKind::Array(elem, _) => (Some(m), elem, array),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        match alias.name.as_str() {
+            "Item" => Some(match by {
+                None => elem,
+                Some(m) => Ty::new(TyKind::Ref(m, elem)),
+            }),
+            "IntoIter" => {
+                let ((strukt, name), args) = match by {
+                    None => (self.builtins.array_into_iter?, vec![elem, array]),
+                    Some(Mutability::Not) => (self.builtins.slice_iter?, vec![elem]),
+                    Some(Mutability::Mut) => (self.builtins.slice_iter_mut?, vec![elem]),
+                };
+                Some(Ty::adt(strukt, name, &args))
+            }
+            _ => None,
+        }
+    }
+
     /// `ty` with each associated type of known types replaced by what
     /// their trait's `impl` block for them says it is. `done` has what
     /// the types met so far normalize to, and `active` the aliases being
@@ -288,81 +436,80 @@ impl Signatures {
                         break 'alias go(ClosureArgs::split(closure).ret());
                     }
                 }
-                // Blanket blocks (`impl<I: Iterator> IntoIterator for I`)
-                // last: where another block's header matches, coherence
-                // says the blanket one's bounds do not hold.
-                let candidates =
-                    self.impl_traits
-                        .iter()
-                        .filter(|(imp, _)| !matches!(self.impls[*imp].kind(), TyKind::Param(_)))
-                        .chain(self.impl_traits.iter().filter(|(imp, _)| {
-                            matches!(self.impls[*imp].kind(), TyKind::Param(_))
-                        }));
-                for (imp, trait_ref) in candidates {
+                // Arrays' built-in `IntoIterator`, as
+                // [`traits::array_into_iter_type`] has it.
+                if let Some(ty) = self.array_into_iter_type(alias) {
+                    break 'alias go(ty);
+                }
+                // The one block whose header matches and whose bounds can
+                // hold, as [`traits::select_impl`] picks it: one whose
+                // bounds surely hold, else, for a type whose shape picks
+                // it, the only one whose bounds may (on parameters).
+                let mut judged = Vec::new();
+                for (imp, trait_ref) in self.impl_traits.iter() {
                     if trait_ref.trait_ != alias.trait_ {
                         continue;
                     }
-                    // Every parameter of a trait's block is in its header.
-                    let header =
-                        std::iter::once(self.impls[imp]).chain(trait_ref.args.iter().copied());
-                    let count = header.clone().map(max_param).max().unwrap_or(0);
-                    let mut binds = vec![None; count as usize];
-                    let matches = header
-                        .zip(&args)
-                        .all(|(x, &y)| traits::match_ty(x, y, &mut binds));
-                    // A block with bounds is not known to hold for
-                    // parameters, associated types and types not inferred
-                    // yet, whose bounds are not at hand: `<U as
-                    // IntoIterator>::IntoIter` stays, for inference to
-                    // normalize, rather than being the blanket block's for
-                    // iterators.
-                    let rigid = binds
-                        .iter()
-                        .flatten()
-                        .any(|b| b.has_params() || b.has_aliases() || b.has_infer());
-                    if rigid && self.impl_predicates.get(imp).is_some_and(|p| !p.is_empty()) {
+                    let Some(binds) = self.match_header(imp, &args) else {
                         continue;
+                    };
+                    let Some(definite) = self.bounds_hold(imp, &binds, 0) else {
+                        continue;
+                    };
+                    judged.push((imp, binds, definite));
+                }
+                let rigid = matches!(
+                    args[0].kind(),
+                    TyKind::Param(_) | TyKind::Alias(_) | TyKind::Infer(_)
+                );
+                let definite = judged.iter().filter(|j| j.2).count();
+                let chosen = match (definite, judged.len()) {
+                    (1, _) => judged.into_iter().find(|j| j.2),
+                    (0, 1) if !rigid => judged.into_iter().next(),
+                    _ => None,
+                };
+                if let Some((imp, binds, _)) = chosen
+                    && let Some(t) = traits::impl_type(self, imp, alias.name)
+                {
+                    let mut binds = binds;
+                    // Parameters only the block's bounds' associated
+                    // types decide (`T` in `impl<'a, T, I: Iterator<Item
+                    // = &'a T>> Iterator for Copied<I>`), from what
+                    // those are for the known ones.
+                    let projections = self.impl_projections.get(imp).map_or(&[][..], |p| p);
+                    let needed = projections
+                        .iter()
+                        .map(|p| max_param(p.ty))
+                        .chain([max_param(t)])
+                        .max()
+                        .unwrap_or(0) as usize;
+                    if binds.len() < needed {
+                        binds.resize(needed, None);
                     }
-                    if matches && let Some(t) = traits::impl_type(self, imp, alias.name) {
-                        // Parameters only the block's bounds' associated
-                        // types decide (`T` in `impl<'a, T, I: Iterator<Item
-                        // = &'a T>> Iterator for Copied<I>`), from what
-                        // those are for the known ones.
-                        let projections = self.impl_projections.get(imp).map_or(&[][..], |p| p);
-                        let needed = projections
-                            .iter()
-                            .map(|p| max_param(p.ty))
-                            .chain([max_param(t)])
-                            .max()
-                            .unwrap_or(0) as usize;
-                        if binds.len() < needed {
-                            binds.resize(needed, None);
-                        }
-                        let mut progress = true;
-                        while progress && binds.iter().any(Option::is_none) {
-                            progress = false;
-                            for p in projections {
-                                let known: Vec<Ty> =
-                                    binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
-                                let projected = Ty::alias(p.alias).subst(&known);
-                                if projected.has_params() || projected.has_infer() {
-                                    continue;
-                                }
-                                let ty = go(projected);
-                                if matches!(ty.kind(), TyKind::Alias(_) | TyKind::Error) {
-                                    continue;
-                                }
-                                let mut found = binds.clone();
-                                if traits::match_ty(p.ty, ty, &mut found) && found != binds {
-                                    binds = found;
-                                    progress = true;
-                                }
+                    let mut progress = true;
+                    while progress && binds.iter().any(Option::is_none) {
+                        progress = false;
+                        for p in projections {
+                            let known: Vec<Ty> =
+                                binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
+                            let projected = Ty::alias(p.alias).subst(&known);
+                            if projected.has_params() || projected.has_infer() {
+                                continue;
+                            }
+                            let ty = go(projected);
+                            if matches!(ty.kind(), TyKind::Alias(_) | TyKind::Error) {
+                                continue;
+                            }
+                            let mut found = binds.clone();
+                            if traits::match_ty(p.ty, ty, &mut found) && found != binds {
+                                binds = found;
+                                progress = true;
                             }
                         }
-                        let binds: Vec<Ty> =
-                            binds.into_iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
-                        break 'alias go(t.subst(&binds));
                     }
+                    let binds: Vec<Ty> =
+                        binds.into_iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
+                    break 'alias go(t.subst(&binds));
                 }
                 Ty::alias(alias)
             }
@@ -1505,6 +1652,7 @@ fn extend_signatures(
     lens: Option<&ArrayLens<'_>>,
 ) -> (Signatures, Vec<Diagnostic>) {
     sigs.traits_in_scope = in_scope::TraitsInScope::new(items);
+    sigs.builtins = Builtins::of(items);
     let mut diagnostics = Vec::new();
     let mut error = |file, range, message: &str| {
         let mut d = Diagnostic::new(range, message);
