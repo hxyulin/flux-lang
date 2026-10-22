@@ -4265,16 +4265,21 @@ impl Ctx<'_> {
         }
         let sig = &self.instance_sig(function, &generic_args);
         self.check_signature_privacy(sig, id);
-        // The arguments other than closures, each where its parameter is
-        // expected; closures follow, once the others told what they can.
+        // The arguments other than closures, each coerced to its
+        // parameter, as rustc checks them; closures follow, once the
+        // others told what they can (`fold(0i32, |acc, x| ..)`'s `acc`).
         for (i, &arg) in args.iter().enumerate() {
             if self.is_closure(arg) {
                 continue;
             }
-            if let Some(&param) = sig.params.get(i + 1) {
+            let param = sig.params.get(i + 1).copied();
+            if let Some(param) = param {
                 self.expect(arg, param);
             }
-            self.infer_expr(arg);
+            let ty = self.infer_expr(arg);
+            if let Some(param) = param {
+                self.coerce(ty, param, arg);
+            }
         }
         let of_trait = matches!(data.owner, Some(flux_hir::Owner::Trait(_)));
         if let Some(context) = self.const_context
@@ -4350,8 +4355,10 @@ impl Ctx<'_> {
             );
         }
         for (&arg, &param) in args.iter().zip(params) {
-            let ty = self.expr_types.get(arg).copied().unwrap_or(Ty::ERROR);
-            self.coerce(ty, param, arg);
+            if self.is_closure(arg) {
+                let ty = self.expr_types.get(arg).copied().unwrap_or(Ty::ERROR);
+                self.coerce(ty, param, arg);
+            }
         }
         self.select_obligations();
         if self.items.functions[function].is_unsafe && self.unsafe_depth == 0 {
