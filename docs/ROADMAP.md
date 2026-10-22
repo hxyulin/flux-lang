@@ -40,11 +40,17 @@ lengths evaluated while types are checked, bounds checks and rustc's
 borrow rules for elements, type aliases, statics, functions as values,
 with function pointers, items inside function bodies, closures with
 rustc's precise captures and the `Fn`-family traits, ranges, `Iterator`
-with its adapters, `for` loops, and slices' iterators.
+with its adapters, `for` loops, slices' iterators, and text: bytes and
+byte strings, `char`, `str` with UTF-8 iteration and validation, raw
+pointers made from references and casts between pointers and integers.
 In order next:
 
-1. `core` defines the pointer methods, `mem::replace` and `CStr` (now
-   built into the compiler) through lang items and intrinsics.
+1. `core` defines the pointer methods, `mem::replace` and `CStr`'s
+   contents (now built into the compiler) through lang items and
+   intrinsics, and with ranges as indices, the methods of `str` that
+   make parts of it (`split_at`, `trim`, `split`, `lines`), byte string
+   patterns, and `char`'s methods that need Unicode tables
+   (`is_alphabetic`, `to_lowercase`).
    Const generics, so that `core` can implement the arrays' traits and
    methods that are built into the compiler for now (`len`, `Copy`,
    `Clone`, `PartialEq`), slices' methods on arrays, iteration over arrays
@@ -88,7 +94,9 @@ names with the same meaning. So far it has the integer types' constants
 and methods, `mem::drop`, `convert::identity`, `convert::From`,
 `marker::Sized`, the operator traits (for references too),
 `PartialEq`/`Eq`, `PartialOrd`/`Ord` with `Ordering`, `Copy`, `Clone`,
-`Drop`, `Option`, `Result`, and slices' iterator. Its front end (parsing,
+`Drop`, `Option`, `Result`, slices' iterator, `char`'s and `str`'s
+methods that need no Unicode tables, the ASCII methods, and
+`core::ffi`. Its front end (parsing,
 item tree, names, signatures, constants' values, and bodies as they are
 reached) is done once per process and shared by every compilation in
 it, and only the functions a program calls are type-checked and

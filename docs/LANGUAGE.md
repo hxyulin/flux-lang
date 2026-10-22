@@ -87,18 +87,21 @@ reported as "not supported yet":
   `pub(in path)`, and flux checks privacy as rustc does. An enum's
   variants are named through it (`E::A`, `Self::A`) or imported
   (`use E::*;`, `use E::{A, B};`).
-- **Types:** paths (`i32`, `bool`, `Self`, `m::S`, `crate::m::S`,
+- **Types:** paths (`i32`, `bool`, `char`, `Self`, `m::S`, `crate::m::S`,
   `Pair<i32>`, a type parameter `T`), function pointers (`fn(i32) ->
   i32`, `unsafe fn()`, but not `extern "C" fn`), associated types (`T::Out`,
   `Self::Out`, `<T as Tr>::Out`), tuples, `!`, references with or
   without lifetimes (`&T`, `&'a mut T`), raw pointers (`*const T`, `*mut T`),
   arrays (`[T; N]`, whose length is an integer literal or a path to a
   constant of type `usize`: `[u8; 4]`, `[u8; N]`, `[u8; m::N]`; other
-  constant expressions are not supported yet), slices behind pointers
-  (`&[T]`, `&mut [T]`), and `_` inside bodies (`let p: Pair<_> =
-  ...`).
-- **Expressions:** integer, boolean and C string (`c"..."`, `cr"..."`)
-  literals, local and function names, tuples, arrays (`[a, b, c]`,
+  constant expressions are not supported yet), slices and `str` behind
+  pointers (`&[T]`, `&mut [T]`, `&str`, `*const [u8]`),
+  `core::ffi::CStr` behind a reference, and `_` inside bodies (`let p:
+  Pair<_> = ...`).
+- **Expressions:** literals: integer, boolean, byte (`b'a'`), `char`
+  (`'a'`, `'\u{1F600}'`), string (`"..."`, `r#"..."#`), byte string
+  (`b"..."`, `br"..."`) and C string (`c"..."`, `cr"..."`), with their
+  escapes checked as rustc's lexer checks them; local and function names, tuples, arrays (`[a, b, c]`,
   `[x; N]` with `N` as in array types), struct expressions
   (`S { a: 1, b, ..base }`, `E::V { a: 1 }`), tuple struct and variant
   constructors (`P(1, 2)`, `E::V(1)`), unit structs and variants, field
@@ -123,19 +126,20 @@ reported as "not supported yet":
   operators, ranges (`a..b`, `a..=b`, `a..`, `..b`, `..=b`, `..`),
   closures (`|x| x + 1`, `move |x: i32| -> i32 { .. }`; not `async`
   ones, nor ones returning references), assignments (to locals,
-  their fields and elements), `as` casts between integers and from
-  enums without fields, `?` on `Option` and `Result`, and the methods
-  `CStr::as_ptr` and, of arrays and slices, `len` and `is_empty`.
+  their fields and elements), `as` casts (below), `?` on `Option` and
+  `Result`, and the methods `CStr::as_ptr` and, of arrays and slices,
+  `len` and `is_empty`.
 - **Statements:** `let`, with a type, a value and `else` (`let Some(x) =
   o else { return };`), and items.
 - **Patterns:** `x`, `mut x`, `ref x`, `ref mut x`, `x @ pat`, `_`,
   tuples, structs and variants (`S { a, b: x, .. }`, `E::V(x, ..)`,
-  `None`), with `..` rest patterns, integer and `bool` literals
-  (`-1`, `true`), constants of integer types and `bool` (`N`,
-  `i32::MAX`, `Self::N`), ranges whose ends are either (`1..=9`,
-  `0..N`, `5..`, `..=i8::MIN`), or-patterns (`1 | 2`) and reference
-  patterns (`&x`). Constants of other types in patterns, and array and
-  slice patterns (`[a, b, ..]`), are not supported yet.
+  `None`), with `..` rest patterns, integer, byte, `char`, `bool` and
+  string literals (`-1`, `b'a'`, `'x'`, `true`, `"add"`), constants of
+  integer types, `char` and `bool` (`N`, `i32::MAX`, `Self::N`), ranges
+  whose ends are either (`1..=9`, `0..N`, `5..`, `..=i8::MIN`,
+  `'a'..='z'`), or-patterns (`1 | 2`) and reference patterns (`&x`).
+  Constants of other types in patterns, byte string literals, and array
+  and slice patterns (`[a, b, ..]`), are not supported yet.
 - **Attributes:** only `allow`, `warn`, `deny`, `expect`, `inline`,
   `cold`, `must_use` and `doc`, which are ignored, `derive` on structs
   and enums,
@@ -144,17 +148,44 @@ reported as "not supported yet":
   message reports their unmet bounds, as in rustc.
 
 Type checking follows rustc for this subset: the integer types, `bool`,
-tuples, arrays, slices, structs, enums and `!`; integer literals default to `i32`; no implicit
-conversions; operators need operands of the same type, except shifts,
-and work on integers and `bool` only (comparing tuples or pointers is not
-supported yet), and on references to them, as below; `as` converts between integers and from `bool`. `isize` and `usize` are
-64 bits. `c"..."` is a `&'static CStr`, and `.as_ptr()` gives the
-`*const c_char` (`*const i8` on both targets) that C functions take. As
-in rustc, arguments after a variadic function's `...` must be at least
-32 bits wide or pointers (raw pointers, or references to sized values):
-`u8`, `i16` and `bool` need a cast to `c_int`/`c_uint` first, and a
-function item one to a function pointer. Other types, which rustc
-passes as they are, are not supported yet.
+`char`, `str`, tuples, arrays, slices, structs, enums and `!`; integer
+literals default to `i32`; no implicit conversions; operators need
+operands of the same type, except shifts, and work on integers and
+`bool` only, `char`s comparing too (comparing tuples or pointers is not
+supported yet), and on references to them, as below. `isize` and
+`usize` are 64 bits. `c"..."` is a `&'static CStr` (`core::ffi::CStr`),
+and `.as_ptr()` gives the `*const c_char` (`*const i8` on both targets)
+that C functions take. As in rustc, arguments after a variadic
+function's `...` must be at least 32 bits wide or pointers (raw
+pointers, or references to sized values): `u8`, `i16` and `bool` need a
+cast to `c_int`/`c_uint` first, and a function item one to a function
+pointer; `char`s pass as they are. Other types, which rustc passes as
+they are (`&str`), are not supported yet.
+
+`as` converts as rustc does: between integers, from `bool`, `char` and
+fieldless enums to integers, and from `u8` (only, E0604) to `char`; a
+reference to a raw pointer to what it points to (`&mut` to `*mut` or
+`*const`, `&` to `*const` only) or, for an array, to its first element;
+raw pointers to each other (a pointer to a slice or `str` keeps its
+length, or drops it as a thin pointer; a thin one cannot become wide,
+E0607); and raw pointers to sized types to and from integers. The others
+are rustc's E0606 or E0054. A reference also coerces to a raw pointer
+where one is wanted (`let p: *const i32 = &x;`).
+
+A byte literal (`b'a'`) is a `u8`, a byte string (`b"ab"`) a `&'static
+[u8; 2]`, which coerces to `&[u8]`, and a `char` a Unicode scalar value,
+which exhaustiveness checking knows excludes the surrogates. A string
+literal is a `&'static str`; `str` is unsized like `[u8]`, its UTF-8
+bytes. `core` gives `u8` and `[u8]` their ASCII methods, `char` those
+that need no Unicode tables (`to_digit`, `from_digit`, `from_u32`,
+`len_utf8`, `is_whitespace`, the ASCII ones), and `str` `len`,
+`as_bytes`, `as_ptr`, `bytes`, `chars`, `char_indices`, comparisons,
+`starts_with`, `ends_with`, `contains` and `find` (with a `&str` or a
+`char`), and `str::from_utf8`. Indexing a `str` by ranges, the methods
+that make parts of a string (`split_at`, `trim`, `split`), and
+`char`'s Unicode-table methods (`is_alphabetic`, `to_uppercase`) are
+not supported yet. A program prints a `&str` or `&[u8]` through C, as
+`printf(c"%.*s".as_ptr(), s.len() as i32, s.as_ptr())`.
 
 Values of `Copy` types are copied: integers, `bool`, raw pointers,
 shared references, tuples and arrays of `Copy` types, structs that
@@ -381,7 +412,10 @@ prelude, as `drop`), `core::convert::{identity, From}`,
 `core::marker::{Sized, Copy}`, `core::clone::Clone`, the operator
 traits of `core::ops` with `Drop`, `core::cmp::{PartialEq, Eq,
 PartialOrd, Ord, Ordering, max, min}`, `core::option::Option` and
-`core::result::Result` (`Sized`, `Copy`, `Clone`, `Drop`, `PartialEq`,
+`core::result::Result`, `core::char` (`from_u32`, `from_digit`),
+`core::str` (`from_utf8`, `Utf8Error`, `Chars`, `CharIndices`,
+`Bytes`), `core::ffi` (`CStr`, `c_char`, `c_int` and C's other integer
+types) (`Sized`, `Copy`, `Clone`, `Drop`, `PartialEq`,
 `Eq`, `PartialOrd`, `Ord`, `From`, `Option`, `Some`, `None`, `Result`,
 `Ok` and `Err` in the prelude). `Ord` gives every type that implements
 it, the integers included, `cmp`, `max`, `min` and `clamp`, and
@@ -508,5 +542,6 @@ width, and division by zero or `MIN / -1` aborts. Programs call C through
 - Negative impls (`impl !Send for T`), `box` patterns, `yield` and `gen`
   blocks, `try` blocks.
 - Shebang lines and frontmatter.
-- Validation that rustc does after parsing: escape sequences in literals,
+- Validation that rustc does after parsing: escape sequences in literals
+  outside bodies (lowering checks those in bodies and constants),
   suffixes, attribute placement, `let` outside conditions.
