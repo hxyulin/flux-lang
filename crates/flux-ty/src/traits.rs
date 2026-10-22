@@ -817,13 +817,10 @@ impl Normalizer<'_> {
                     return self.go(p.ty, depth + 1);
                 }
                 let goal = alias_predicate(alias);
-                let impls = sigs.impl_index.impls_for(items, alias.trait_, goal.self_ty);
-                for imp in impls {
-                    if let Some(impl_args) = match_impl(items, sigs, imp, goal)
-                        && let Some(t) = impl_type(sigs, imp, alias.name)
-                    {
-                        return self.go(t.subst(&impl_args), depth + 1);
-                    }
+                if let Some((imp, impl_args)) = select_impl(items, sigs, goal)
+                    && let Some(t) = impl_type(sigs, imp, alias.name)
+                {
+                    return self.go(t.subst(&impl_args), depth + 1);
                 }
                 Ty::alias(alias)
             }
@@ -872,6 +869,35 @@ pub fn instance_sig(
 /// types normalized: a type of an instance, for code generation.
 pub fn instance_ty(items: &ItemTree, sigs: &Signatures, ty: Ty, args: &[Ty]) -> Ty {
     normalize(items, sigs, &[], ty.subst(args))
+}
+
+/// The `impl` block for `goal`, whose types are known, and its generic
+/// arguments: of several whose headers match, the one whose bounds
+/// hold, as rustc's winnowing picks it (`impl<'a, T> IntoIterator for
+/// &'a [T]` rather than the blanket one for iterators).
+pub fn select_impl(
+    items: &ItemTree,
+    sigs: &Signatures,
+    goal: Predicate,
+) -> Option<(ImplId, Vec<Ty>)> {
+    let impls = sigs
+        .impl_index
+        .impls_for(items, goal.trait_ref.trait_, goal.self_ty);
+    let found: Vec<(ImplId, Vec<Ty>)> = impls
+        .filter_map(|imp| Some((imp, match_impl(items, sigs, imp, goal)?)))
+        .collect();
+    if found.len() <= 1 {
+        return found.into_iter().next();
+    }
+    let all = found.clone();
+    found
+        .into_iter()
+        .find(|(imp, args)| {
+            sigs.impl_predicates
+                .get(*imp)
+                .is_none_or(|preds| preds.iter().all(|p| holds(items, sigs, &[], p.subst(args))))
+        })
+        .or_else(|| all.into_iter().next())
 }
 
 /// The generic arguments for which `impl` block `imp`'s header is
@@ -1277,10 +1303,7 @@ pub fn resolve_instance(items: &ItemTree, sigs: &Signatures, instance: Instance)
             args: Ty::list(&header[1..]),
         },
     };
-    for imp in sigs.impl_index.impls_for(items, t, goal.self_ty) {
-        let Some(mut args) = match_impl(items, sigs, imp, goal) else {
-            continue;
-        };
+    if let Some((imp, mut args)) = select_impl(items, sigs, goal) {
         let found = items.impls[imp]
             .functions
             .iter()
@@ -1324,10 +1347,7 @@ pub fn resolve_const(items: &ItemTree, sigs: &Signatures, c: ConstInstance) -> C
             args: Ty::list(&args[1..]),
         },
     };
-    for imp in sigs.impl_index.impls_for(items, t, goal.self_ty) {
-        let Some(impl_args) = match_impl(items, sigs, imp, goal) else {
-            continue;
-        };
+    if let Some((imp, impl_args)) = select_impl(items, sigs, goal) {
         let found = items.impls[imp]
             .consts
             .iter()

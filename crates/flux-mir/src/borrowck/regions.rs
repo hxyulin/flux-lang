@@ -765,10 +765,7 @@ impl<'a> Cx<'a> {
                 args: &alias.args[1..],
             },
         };
-        for imp in sigs.impl_index.impls_for(items, alias.trait_, self_ty) {
-            let Some(impl_args) = flux_ty::traits::match_impl(items, sigs, imp, goal) else {
-                continue;
-            };
+        if let Some((imp, impl_args)) = flux_ty::traits::select_impl(items, sigs, goal) {
             let value = flux_ty::traits::impl_type(sigs, imp, alias.name)?;
             let regions = sigs.regions.impls.get(imp)?;
             let mut lifetimes: Vec<Option<Var>> = vec![None; regions.names.len()];

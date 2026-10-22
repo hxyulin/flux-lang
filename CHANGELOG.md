@@ -372,6 +372,11 @@
   match `trait` item signature"), and their headers must hold for
   every lifetime (others are not supported yet). Borrowed temporaries
   die at the end of their scope, so one still borrowed there is E0716.
+- Add `core::slice`: slices' `first`, `last`, `get` and `iter`, with
+  the iterator `Iter<'a, T>` (from both ends), and `IntoIterator` for
+  `&[T]`, so `for x in slice` and `for x in &array` work (the latter as
+  a slice of the array). Of several `impl` blocks whose headers match,
+  the one whose bounds hold is chosen, as rustc's winnowing does.
 
 ### Performance
 
