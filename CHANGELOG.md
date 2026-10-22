@@ -8,7 +8,10 @@
   the result borrowing from the input (`F: Fn(&T) -> &U`), including
   equivalent single-lifetime `for<'a>` binders. Check each call's
   result lifetime and reject closures whose captured borrows cannot
-  satisfy the bound.
+  satisfy the bound, including returned opaque closures and recursive
+  impl obligations. Preserve the input lifetime through type and
+  associated-type substitution and trait-object lifetime defaults;
+  validate binders before eliding them.
 
 - Add a lexer for Rust edition 2024 tokens: nested comments, raw
   identifiers, lifetimes, char, byte, string, raw string, byte string and C

@@ -503,32 +503,56 @@ fn bound_regions(
         if b.name != p.alias.name {
             return (selfs, Box::default());
         }
-        let mut table = walker.regions(&b.ty, p.ty).to_vec();
-        // A `Fn`-family bound's result: its elided lifetime is the one
-        // its parameters elide, its own at each call.
-        if let Some(args) = args.filter(|a| a.parenthesized)
-            && let (Some(input), Some(&input_ty)) = (args.types.first(), p.alias.args.get(1))
-        {
-            let inputs = walker.regions(input, input_ty);
-            let elided: Vec<usize> = (inputs.iter().enumerate())
-                .filter(|(_, r)| **r == Region::Erased)
-                .map(|(i, _)| i)
-                .collect();
-            if let [only] = elided[..] {
-                for r in table.iter_mut() {
-                    if *r == Region::Erased {
-                        *r = Region::Late(only as u32);
-                    }
-                }
-            }
-        }
-        tables.push(table.into());
+        tables.push(projection_regions(&mut walker, b, args, p));
     }
     if tables.len() != projections.len() {
         return (selfs, Box::default());
     }
     // Errors are the bounds' own, reported with them.
     (selfs, tables.into())
+}
+
+/// A parenthesized `Fn` bound has its own elision scope, including when
+/// it occurs in an opaque return type rather than a generic predicate.
+fn projection_regions(
+    walker: &mut Walker<'_>,
+    binding: &flux_hir::AssocBinding,
+    args: Option<&flux_hir::GenericArgs>,
+    projection: &crate::traits::Projection,
+) -> Box<[Region]> {
+    let Some(args) = args.filter(|a| a.parenthesized) else {
+        return walker.regions(&binding.ty, projection.ty);
+    };
+    let outer = std::mem::replace(&mut walker.elided, Elided::Is(Region::Erased));
+    let mut table = walker.regions(&binding.ty, projection.ty).to_vec();
+    if let (Some(input), Some(&input_ty)) = (args.types.first(), projection.alias.args.get(1)) {
+        // Count distinct input lifetimes, not slots: `&dyn Trait`
+        // stores its one lifetime both on the reference and as the
+        // object's default bound.
+        let fresh = walker.fresh.len();
+        walker.elided = Elided::Fresh;
+        let inputs = walker.regions(input, input_ty);
+        walker.fresh.truncate(fresh);
+        let mut elided = Vec::new();
+        let mut seen = Vec::new();
+        for (i, &r) in inputs.iter().enumerate() {
+            if matches!(r, Region::Param(j) if j as usize >= walker.names.len() + fresh)
+                && !seen.contains(&r)
+            {
+                seen.push(r);
+                elided.push(i);
+            }
+        }
+        if let [only] = elided[..] {
+            for r in &mut table {
+                if *r == Region::Erased {
+                    *r = Region::Late(only as u32);
+                }
+            }
+        }
+    }
+    walker.elided = outer;
+    table.into()
 }
 
 /// The lifetimes of `function`'s opaque types, with `walker` past its
@@ -588,13 +612,16 @@ fn opaque_regions(
         if let Some(sig) = sigs.get(i) {
             let bindings = decl.bounds.iter().flat_map(|b| {
                 let last = b.path.segments.len().saturating_sub(1);
-                b.path.args(last).map_or(&[][..], |a| &a.bindings)
+                let args = b.path.args(last);
+                args.map_or(&[][..], |a| &a.bindings)
+                    .iter()
+                    .map(move |b| (b, args))
             });
-            for (b, p) in bindings.zip(sig.projections.iter()) {
+            for ((b, args), p) in bindings.zip(sig.projections.iter()) {
                 if b.name != p.alias.name {
                     break;
                 }
-                projections.push(walker.regions(&b.ty, p.ty));
+                projections.push(projection_regions(walker, b, args, p));
             }
             if projections.len() != sig.projections.len() {
                 projections.clear();

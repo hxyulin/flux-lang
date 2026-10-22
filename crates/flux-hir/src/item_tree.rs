@@ -6491,6 +6491,19 @@ fn binder_names(
                 } else if lifetime.is_anonymous() {
                     diagnostics.push(Diagnostic::new(lifetime.range, "`'_` cannot be used here"));
                 }
+                if lifetime
+                    .name
+                    .as_str()
+                    .get(1..)
+                    .and_then(SyntaxKind::from_keyword)
+                    .is_some()
+                    && !lifetime.is_static()
+                {
+                    diagnostics.push(Diagnostic::new(
+                        lifetime.range,
+                        "lifetimes cannot use keyword names",
+                    ));
+                }
                 if let Some(bounds) = l.type_bound_list() {
                     diagnostics.push(Diagnostic::new(
                         bounds.syntax().text_range(),

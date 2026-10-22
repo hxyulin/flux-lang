@@ -17,4 +17,11 @@ impl<'a> S<'a> {
 
 fn output_only<F: for<'a> Fn(&i32) -> &'a i32>(f: F) {}
 
+fn keyword_self<F: for<'self> Fn(&'self i32) -> &'self i32>(f: F) {}
+fn keyword_async<F: for<'async> Fn(&'async i32) -> &'async i32>(f: F) {}
+fn keyword_where<F>(f: F)
+where
+    for<'type> F: Fn(&'type i32) -> &'type i32,
+{}
+
 fn main() {}
