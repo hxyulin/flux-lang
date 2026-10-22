@@ -200,6 +200,25 @@
   rustc's lossless integer conversions), with rustc's errors for the
   `Try` and `FromResidual` bounds (E0277), mismatched values (E0308)
   and `?` in constants and `const fn`s (E0572, E0658).
+- Add `core::cmp::{Ordering, PartialOrd, Ord, max, min}` (`PartialOrd`
+  and `Ord` in the prelude): `Ordering` with `is_lt` and the other
+  tests, `reverse` and `then`; `PartialOrd`'s `partial_cmp` with `lt`,
+  `le`, `gt` and `ge`; and `Ord`'s `cmp` with `max`, `min` and `clamp`,
+  implemented for the integers, `bool`, `()`, references, `Option`,
+  `Result` and `Ordering` as rustc's are. `<`, `<=`, `>` and `>=` on
+  other types than the integers and `bool` call `PartialOrd`'s
+  methods, references included, which replaces flux's built-in `<` on
+  references; mismatched and unordered operands are reported as rustc
+  does (E0308, E0369, E0277). The integers' `min` and `max` are now
+  `Ord`'s, as in rustc. `#[derive(PartialOrd, Ord)]` on structs and
+  enums compares fields in order and variants by discriminant, as
+  rustc's does. Calls of trait methods in constants and `const fn`s
+  are reported as rustc does: E0658 for `core`'s impls for its own
+  types (`<i32 as Ord>::max`), E0015 for others; a method a reference's
+  `impl` block has, under bounds that fail (`a.clamp(b, c)` where `a`
+  is not `Ord`), is E0599's "exists but its trait bounds were not
+  satisfied"; and a derived `PartialEq` on an enum without variants
+  matches on `*self`, as rustc's does, rather than failing E0004.
 
 ### Performance
 

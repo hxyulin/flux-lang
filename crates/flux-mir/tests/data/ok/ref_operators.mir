@@ -86,8 +86,12 @@ fn compare(_1: &i32, _2: &mut i32, _3: &mut i32) -> bool {
     let _8: i32;
     let _9: bool;
     let _10: bool;
-    let _11: &&mut i32;
-    let _12: &mut i32;
+    let _11: &i32;
+    let _12: &i32;
+    let _13: &&mut i32;
+    let _14: &mut i32;
+    let _15: &i32;
+    let _16: &i32;
 
     bb0: {
         _5 = copy _1;
@@ -104,8 +108,9 @@ fn compare(_1: &i32, _2: &mut i32, _3: &mut i32) -> bool {
     }
 
     bb2: {
-        _9 = Lt(copy (*_1), copy (*_2));
-        goto -> bb4;
+        _11 = copy _1;
+        _12 = &(*_2);
+        _9 = lt::<i32, i32>(copy _11, copy _12) -> bb5;
     }
 
     bb3: {
@@ -114,24 +119,33 @@ fn compare(_1: &i32, _2: &mut i32, _3: &mut i32) -> bool {
     }
 
     bb4: {
-        switchInt(copy _9) -> [0: bb5, otherwise: bb6];
+        switchInt(copy _9) -> [0: bb6, otherwise: bb7];
     }
 
     bb5: {
-        _11 = &_2;
-        _12 = &mut (*_3);
-        _0 = Le(copy (*(*_11)), copy (*_12));
-        goto -> bb7;
+        goto -> bb4;
     }
 
     bb6: {
-        _0 = const true;
-        goto -> bb7;
+        _13 = &_2;
+        _14 = &mut (*_3);
+        _15 = &(*(*_13));
+        _16 = &(*_14);
+        _0 = le::<i32, i32>(copy _15, copy _16) -> bb9;
     }
 
     bb7: {
+        _0 = const true;
+        goto -> bb8;
+    }
+
+    bb8: {
         StorageDead(_4);
         return;
+    }
+
+    bb9: {
+        goto -> bb8;
     }
 }
 

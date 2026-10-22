@@ -38,6 +38,10 @@ impl ::core::clone::Clone for Mixed;
 
 impl ::core::marker::Copy for Mixed;
 
+impl ::core::cmp::PartialOrd for Ordered;
+
+impl ::core::cmp::Ord for Ordered;
+
 impl ::core::cmp::PartialEq for Ordered;
 
 impl ::core::cmp::Eq for Ordered;
@@ -58,6 +62,14 @@ fn main() -> () {}
 
 fn <Mixed as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
     (*self@0)
+}
+
+fn <Ordered as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
+    Option::Some(Ordering::Equal)
+}
+
+fn <Ordered as ::core::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> ::core::cmp::Ordering {
+    Ordering::Equal
 }
 
 fn <Ordered as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
@@ -90,8 +102,6 @@ error 691..710: malformed `derive` attribute input
 error 803..808: deriving `Debug` is not supported yet
 error 845..852: deriving `Default` is not supported yet
 error 860..864: deriving `Hash` is not supported yet
-error 891..901: deriving `PartialOrd` is not supported yet
-error 903..906: deriving `Ord` is not supported yet
 error 1003..1021: paths in `derive` are not supported yet
 error 1023..1045: paths in `derive` are not supported yet
 error 1117..1118: expected identifier, found `,`

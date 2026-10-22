@@ -46,23 +46,18 @@ pub struct InferenceResult {
     pub calls: ArenaMap<Expr, Instance>,
     /// The trait method each operator on a type other than the integers
     /// and `bool` calls: `Add::add` for `a + b`, `PartialEq::eq` for
-    /// `a == b`, `AddAssign::add_assign` for `a += b`, `Neg::neg` for
-    /// `-a`.
+    /// `a == b`, `PartialOrd::lt` for `a < b`, `AddAssign::add_assign`
+    /// for `a += b`, `Neg::neg` for `-a`.
     pub overloads: ArenaMap<Expr, Instance>,
     /// The associated constant each path to one of a trait or a generic
     /// `impl` block names (`T::N`, `<S as Tr>::N`, `Self::N`), with its
     /// owner's generic arguments. Paths to other constants name them
     /// alone.
     pub consts: ArenaMap<Expr, ConstInstance>,
-    /// Comparisons of references, `&a == &b`, whose operands are passed
-    /// as they are: `PartialEq::eq::<A, B>(a, b)`, as `core`'s impl for
-    /// references would.
+    /// Comparisons of references, `&a == &b` or `&a < &b`, whose operands
+    /// are passed as they are: `PartialEq::eq::<A, B>(a, b)`, as `core`'s
+    /// impls for references would.
     pub compared_refs: ArenaMap<Expr, ()>,
-    /// Comparisons with `<`, `<=`, `>` or `>=` of references, `&a < &b`,
-    /// with the number of references both operands are dereferenced
-    /// through first: built in for the integers and `bool`, which `core`'s
-    /// `PartialOrd` impls for references would forward to.
-    pub ordered_refs: ArenaMap<Expr, u32>,
     /// The conversion of the error each `?` on a `Result` returns,
     /// `From::from::<F, E>`, where the function's error type `F` is not
     /// `E` itself.
@@ -238,7 +233,6 @@ impl<'a> Ctx<'a> {
             overloads: ArenaMap::new(),
             consts: ArenaMap::new(),
             compared_refs: ArenaMap::new(),
-            ordered_refs: ArenaMap::new(),
             try_conversions: ArenaMap::new(),
             pat_types: ArenaMap::new(),
             pat_derefs: ArenaMap::new(),
@@ -325,8 +319,9 @@ enum Deferred {
         ty: Ty,
     },
     /// A call of a `core` function that rustc's `core` makes
-    /// conditionally const, in a constant context: reported once its
-    /// generic arguments are known.
+    /// conditionally const, or of a trait's method, in a constant
+    /// context: reported once its generic arguments are known, which say
+    /// whether the `impl` block is one of `core`'s, `const` in rustc's.
     ConstUnstable {
         function: FunctionId,
         args: &'static [Ty],
@@ -382,7 +377,6 @@ struct Ctx<'a> {
     overloads: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     consts: ArenaMap<Expr, (ConstId, Vec<Ty>)>,
     compared_refs: ArenaMap<Expr, ()>,
-    ordered_refs: ArenaMap<Expr, u32>,
     try_conversions: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     pat_types: ArenaMap<Pat, Ty>,
     pat_derefs: ArenaMap<Pat, u32>,
@@ -2136,8 +2130,9 @@ impl Ctx<'_> {
             );
         }
         self.check_signature_privacy(sig, id);
+        let of_trait = matches!(data.owner, Some(flux_hir::Owner::Trait(_)));
         if let Some(context) = self.const_context
-            && data.const_unstable
+            && (data.const_unstable || of_trait)
         {
             self.deferred.push(Deferred::ConstUnstable {
                 function,
@@ -2646,7 +2641,10 @@ impl Ctx<'_> {
                     }
                 }
             }
-            if unmet.is_none() && self.exists_unmet(base, method, true) {
+            if unmet.is_none()
+                && (self.exists_unmet(base, method, true)
+                    || self.exists_unmet_for_ref(base, method))
+            {
                 unmet = Some(base);
             }
             match self.shallow(base).kind() {
@@ -2799,8 +2797,9 @@ impl Ctx<'_> {
         }
         let sig = &self.instance_sig(function, &generic_args);
         self.check_signature_privacy(sig, id);
+        let of_trait = matches!(data.owner, Some(flux_hir::Owner::Trait(_)));
         if let Some(context) = self.const_context
-            && data.const_unstable
+            && (data.const_unstable || of_trait)
         {
             self.deferred.push(Deferred::ConstUnstable {
                 function,
@@ -2878,14 +2877,9 @@ impl Ctx<'_> {
                 }
                 Ty::BOOL
             }
-            BinaryOp::Cmp(cmp) => {
+            BinaryOp::Cmp(_) => {
                 let ty = self.infer_expr(lhs);
                 let rhs_ty = self.infer_expr(rhs);
-                if !matches!(cmp, CmpOp::Eq | CmpOp::Ne)
-                    && let TyKind::Ref(..) = self.shallow(ty).kind()
-                {
-                    return self.compare_refs(id, op, ty, (rhs, rhs_ty));
-                }
                 if let Some(ty) = self.overload(id, op, ty, (rhs, rhs_ty)) {
                     return ty;
                 }
@@ -2951,6 +2945,26 @@ impl Ctx<'_> {
         {
             self.error(op_range, message);
             return Some(Ty::BOOL);
+        }
+        // `core` does not compare tuples or pointers yet, by reference
+        // either.
+        if let (BinaryOp::Cmp(_), TyKind::Ref(..)) = (op, operand.kind()) {
+            let mut leaf = operand;
+            while let TyKind::Ref(_, pointee) = leaf.kind() {
+                leaf = self.shallow(pointee);
+            }
+            let what = match leaf.kind() {
+                TyKind::Tuple([_, ..]) => "tuples",
+                TyKind::RawPtr(..) => "pointers",
+                _ => "",
+            };
+            if !what.is_empty() {
+                self.error(
+                    self.range(id),
+                    format!("comparing {what} is not supported yet"),
+                );
+                return Some(Ty::BOOL);
+            }
         }
         // `1 + &2` and `x += &1`, through `core`'s `impl Add<&i32> for
         // i32`. A comparison wants the same type on both sides.
@@ -3023,9 +3037,11 @@ impl Ctx<'_> {
             BinaryOp::Assign(_) => Ty::UNIT,
             _ => Ty::ERROR,
         };
-        // `&a == &b` compares `a` with `b`.
+        // `&a == &b` compares `a` with `b`. `&a < &b` does too, but
+        // `core`'s one `impl PartialOrd<&B> for &A` says first what `b`
+        // must be, as in rustc.
         let (mut lhs_cmp, mut rhs_cmp) = (lhs, rhs_ty);
-        if let (BinaryOp::Cmp(_), TyKind::Ref(_, a), TyKind::Ref(_, b)) =
+        if let (BinaryOp::Cmp(CmpOp::Eq | CmpOp::Ne), TyKind::Ref(_, a), TyKind::Ref(_, b)) =
             (op, operand.kind(), self.shallow(rhs_ty).kind())
         {
             (lhs_cmp, rhs_cmp) = (a, b);
@@ -3093,9 +3109,17 @@ impl Ctx<'_> {
             let range = self.range(rhs);
             self.mismatch(Ty::new(TyKind::Ref(Mutability::Not, r)), rhs_ty, range);
         }
-        self.overloads.insert(id, (function, vec![lhs_cmp, r]));
+        let mut args = vec![lhs_cmp, r];
+        if let (BinaryOp::Cmp(_), TyKind::Ref(_, a), TyKind::Ref(_, b)) =
+            (op, self.shallow(lhs).kind(), self.shallow(r).kind())
+        {
+            args = vec![a, b];
+            self.compared_refs.insert(id, ());
+        }
+        self.overloads.insert(id, (function, args));
         self.select_obligations();
-        let builtin = self.builtin_operands(op, lhs, (rhs, rhs_ty));
+        // With the right operand's type the trait wants, as rustc does.
+        let builtin = self.builtin_operands(op, lhs, (rhs, r));
         // An unmet bound (reported) has no `Output`.
         let met = holds && {
             let (lhs_cmp, r) = (self.known(lhs_cmp), self.known(r));
@@ -3159,52 +3183,6 @@ impl Ctx<'_> {
         Some(l)
     }
 
-    /// `a < b` (or `<=`, `>`, `>=`) where `a` is a reference: rustc's
-    /// `impl PartialOrd<&B> for &A` (and the one for `&mut`) compare what
-    /// they point to, so `b` must be a reference of the same kind, to
-    /// what `a`'s referent compares with, which for the integers and
-    /// `bool` is their own type. Built in until `core` has `PartialOrd`.
-    fn compare_refs(
-        &mut self,
-        id: ExprId,
-        op: BinaryOp,
-        lhs: Ty,
-        (rhs, rhs_ty): (ExprId, Ty),
-    ) -> Ty {
-        let mut layers = Vec::new();
-        let mut leaf = self.shallow(lhs);
-        while let TyKind::Ref(m, pointee) = leaf.kind() {
-            layers.push(m);
-            leaf = self.shallow(pointee);
-        }
-        let op_range = self.source_map.ops.get(id).copied().unwrap_or_default();
-        match leaf.kind() {
-            TyKind::Int(_) | TyKind::Bool | TyKind::Tuple([]) => {}
-            TyKind::Infer(var) if self.unknown(var).0 => {}
-            TyKind::Error => return Ty::BOOL,
-            TyKind::Tuple(_) => {
-                self.error(self.range(id), "comparing tuples is not supported yet");
-                return Ty::BOOL;
-            }
-            TyKind::RawPtr(..) => {
-                self.error(self.range(id), "comparing pointers is not supported yet");
-                return Ty::BOOL;
-            }
-            _ => {
-                let lhs = self.describe(lhs);
-                self.error(op_range, binary_error(op, &lhs, &""));
-                return Ty::BOOL;
-            }
-        }
-        let expected = layers
-            .iter()
-            .rev()
-            .fold(leaf, |ty, &m| Ty::new(TyKind::Ref(m, ty)));
-        self.coerce(rhs_ty, expected, rhs);
-        self.ordered_refs.insert(id, layers.len() as u32);
-        Ty::BOOL
-    }
-
     /// The trait of operator `op` and its method: `Add` and `Add::add`.
     fn lang_fn(&self, op: BinaryOp) -> Option<(flux_hir::TraitId, FunctionId)> {
         let (lang, method) = lang_method(op)?;
@@ -3226,8 +3204,11 @@ impl Ctx<'_> {
         };
         let is_ref = |ty: Ty| matches!(ty.kind(), TyKind::Ref(..));
         let eq = *self.items.lang_traits.get(&Symbol::intern("eq"))?;
+        let equality = matches!(op, BinaryOp::Cmp(CmpOp::Eq | CmpOp::Ne));
         match lhs.kind() {
-            TyKind::Ref(_, pointee) if !is_ref(rhs) && unknown(self, rhs) != Some(false) => {
+            TyKind::Ref(_, pointee)
+                if equality && !is_ref(rhs) && unknown(self, rhs) != Some(false) =>
+            {
                 if rhs == Ty::ERROR || pointee == Ty::ERROR {
                     return None;
                 }
@@ -3545,7 +3526,6 @@ impl Ctx<'_> {
             overloads,
             consts,
             compared_refs: self.compared_refs,
-            ordered_refs: self.ordered_refs,
             try_conversions,
             pat_types,
             pat_derefs: self.pat_derefs,
@@ -3576,8 +3556,6 @@ impl Ctx<'_> {
                 (expr, core.then_some(trait_name))
             })
             .collect();
-        let ordered = self.ordered_refs.iter().map(|(expr, _)| expr);
-        found.extend(ordered.map(|expr| (expr, Some(Symbol::intern("PartialOrd")))));
         found.sort_by_key(|&(expr, _)| expr.into_raw());
         for (expr, const_trait) in found {
             let range = self.range(expr);
@@ -3823,9 +3801,9 @@ impl Ctx<'_> {
     }
 
     /// How rustc names `function`, of an inherent `impl` block of a
-    /// generic struct, with generic arguments `args`
-    /// (`Option::<i32>::ok_or::<u8>`), and with its block's parameters
-    /// (`Option::<T>::ok_or`).
+    /// generic struct or a module of `core`, with generic arguments
+    /// `args` (`Option::<i32>::ok_or::<u8>`, `std::cmp::max::<i32>`), and
+    /// with its block's parameters (`Option::<T>::ok_or`).
     fn unstable_paths(&self, function: FunctionId, args: &[Ty]) -> (String, String) {
         let items = self.items;
         let data = &items.functions[function];
@@ -3845,7 +3823,13 @@ impl Ctx<'_> {
                     .collect();
                 (name, params)
             }
-            None => (String::new(), Vec::new()),
+            // A free function, by its module, which rustc names from
+            // `std`, as the program links it: `std::cmp::max`.
+            None => {
+                let module = items.module_path(data.loc.module);
+                let module = module.strip_prefix("core").unwrap_or(&module);
+                (format!("std{module}"), Vec::new())
+            }
         };
         let turbofish = |list: &[String]| {
             if list.is_empty() {
@@ -3864,6 +3848,62 @@ impl Ctx<'_> {
         );
         let generic_path = format!("{name}{}::{}", turbofish(&params), data.name);
         (path, generic_path)
+    }
+
+    /// A call of trait `t`'s `function` with generic arguments `args`
+    /// (`Self` first) in a constant context: as rustc's `core` makes its
+    /// traits' impls for its own types conditionally const, unstably,
+    /// E0658 for those, and E0015 for other impls.
+    fn const_trait_call(
+        &mut self,
+        t: flux_hir::TraitId,
+        function: FunctionId,
+        args: &[Ty],
+        (call, whole): (TextRange, TextRange),
+        context: &str,
+    ) {
+        let items = self.items;
+        let data = &items.functions[function];
+        let tr = &items.traits[t];
+        // `<i32 as PartialEq>::eq`: without trailing arguments that are
+        // `Self` by default.
+        let params = &tr.generics.params;
+        let self_ty = args.first().copied().unwrap_or(Ty::ERROR);
+        let mut shown = &args[1.min(args.len())..(1 + params.len()).min(args.len())];
+        while let [rest @ .., last] = shown
+            && *last == self_ty
+            && params[rest.len()].default.is_some()
+        {
+            shown = rest;
+        }
+        let trait_args = if shown.is_empty() {
+            String::new()
+        } else {
+            let list: Vec<String> = shown.iter().map(|a| a.to_string()).collect();
+            format!("<{}>", list.join(", "))
+        };
+        let path = format!("<{self_ty} as {}{trait_args}>::{}", tr.name, data.name);
+        let what = if data.has_self {
+            "method"
+        } else {
+            "associated function"
+        };
+        let core = items.is_core(tr.loc.module);
+        if core && args.iter().all(|&a| self.const_operand(a)) {
+            self.error(
+                call,
+                format!("cannot call conditionally-const {what} `{path}` in {context}"),
+            );
+            self.error(
+                whole,
+                format!("`{}` is not yet stable as a const trait", tr.name),
+            );
+        } else {
+            self.error(
+                call,
+                format!("cannot call non-const {what} `{path}` in {context}"),
+            );
+        }
     }
 
     fn run_deferred(&mut self, reported: &mut HashSet<InferVar>) {
@@ -3891,10 +3931,20 @@ impl Ctx<'_> {
                     context,
                 } => {
                     let args: Vec<Ty> = args.iter().map(|&a| self.resolve(a, reported)).collect();
+                    let data = &self.items.functions[function];
+                    if let Some(flux_hir::Owner::Trait(t)) = data.owner {
+                        self.const_trait_call(t, function, &args, (call, whole), context);
+                        continue;
+                    }
+                    let what = match data.owner {
+                        Some(_) if data.has_self => "method",
+                        Some(_) => "associated function",
+                        None => "function",
+                    };
                     let (path, generic_path) = self.unstable_paths(function, &args);
                     self.error(
                         call,
-                        format!("cannot call conditionally-const method `{path}` in {context}"),
+                        format!("cannot call conditionally-const {what} `{path}` in {context}"),
                     );
                     self.error(
                         whole,
@@ -4160,7 +4210,11 @@ fn lang_method(op: BinaryOp) -> Option<(&'static str, &'static str)> {
         }
         BinaryOp::Cmp(CmpOp::Eq) => ("eq", "eq"),
         BinaryOp::Cmp(CmpOp::Ne) => ("eq", "ne"),
-        _ => return None,
+        BinaryOp::Cmp(CmpOp::Lt) => ("partial_ord", "lt"),
+        BinaryOp::Cmp(CmpOp::Le) => ("partial_ord", "le"),
+        BinaryOp::Cmp(CmpOp::Gt) => ("partial_ord", "gt"),
+        BinaryOp::Cmp(CmpOp::Ge) => ("partial_ord", "ge"),
+        BinaryOp::Logic(_) | BinaryOp::Assign(None) => return None,
     })
 }
 

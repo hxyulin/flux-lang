@@ -105,7 +105,7 @@ fn main() -> () {
     let d@5 = (exposed() + get());
     let _t@6 = Token;
     let e@7 = (Counter::new().bump().value + STEP);
-    let f@8 = ((MAX.wrapping_add(1).min(0) + i32::max(3, 4)) + MIN.max(0));
+    let f@8 = ((MAX.wrapping_add(1).min(0) + <i32>::max(3, 4)) + MIN.max(0));
     let g@9 = ((((((WIDE as i32) + (BITS as i32)) + (SMALLEST as i32)) + ABS) + (POWER as i32)) + (ONES as i32));
     let _sum@10 = ((((((a@0 + b@3) + c@4) + d@5) + e@7) + f@8) + g@9);
 }

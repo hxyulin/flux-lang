@@ -114,3 +114,34 @@ impl<T: crate::cmp::PartialEq> crate::cmp::PartialEq for Option<T> {
 }
 
 impl<T: crate::cmp::Eq> crate::cmp::Eq for Option<T> {}
+
+// `None` is less than any `Some`, as rustc's derived impls order them.
+impl<T: crate::cmp::PartialOrd> crate::cmp::PartialOrd for Option<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<crate::cmp::Ordering> {
+        match self {
+            Some(a) => match other {
+                Some(b) => crate::cmp::PartialOrd::partial_cmp(a, b),
+                None => Some(crate::cmp::Ordering::Greater),
+            },
+            None => match other {
+                Some(_) => Some(crate::cmp::Ordering::Less),
+                None => Some(crate::cmp::Ordering::Equal),
+            },
+        }
+    }
+}
+
+impl<T: crate::cmp::Ord> crate::cmp::Ord for Option<T> {
+    fn cmp(&self, other: &Self) -> crate::cmp::Ordering {
+        match self {
+            Some(a) => match other {
+                Some(b) => crate::cmp::Ord::cmp(a, b),
+                None => crate::cmp::Ordering::Greater,
+            },
+            None => match other {
+                Some(_) => crate::cmp::Ordering::Less,
+                None => crate::cmp::Ordering::Equal,
+            },
+        }
+    }
+}

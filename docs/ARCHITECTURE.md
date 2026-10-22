@@ -160,7 +160,9 @@ program's files:
   crate's other items as in rustc, each with a method marked as derived
   (`Function::derived`), whose body is built from the struct's fields
   rather than lowered from syntax (for an enum, a `match` on its
-  variants). Structs and enums share one arena (`Struct`, with an
+  variants; for `PartialOrd` and `Ord` on one, a `match` that gives
+  each variant's discriminant first, which values of different
+  variants compare by, as rustc's expansion reads them). Structs and enums share one arena (`Struct`, with an
   enum's `variants`), since their generics, bounds, derives and `impl`
   blocks work alike; what a constructor, struct expression or pattern
   names is a struct or one variant of an enum, by index, and
@@ -293,8 +295,15 @@ monomorphized like any other trait call. As rustc's
 `enforce_builtin_binop_types` does, where the operands are integers
 past one shared reference each, they must have the same type (except
 for shifts), and the result has it, before the trait's `impl` block is
-known. `<` on references compares their referents, built in, until
-`core` has `PartialOrd`.
+known. `<` on references, through `core`'s one `impl PartialOrd<&B>
+for &A`, is selected before its right operand is checked, which must
+then be a `&B` (E0308), as in rustc; `==` has two such impls, so a
+mismatch there is the unmet `A: PartialEq<B>` (E0277). Comparisons of
+references call the referents' method with the references as they are
+(`compared_refs`). In constants and `const fn`s, a call of a trait's
+method is E0658 where the `impl` block is one of `core`'s for its own
+types, which rustc's `core` makes conditionally `const`, and E0015
+otherwise.
 
 `x?` stays an expression in HIR (`Expr::Try`), since what it does
 depends on `x`'s type: `core`'s `#[lang = "Option"]` and `#[lang =
