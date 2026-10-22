@@ -4,8 +4,8 @@
 
 use crate::clone::Clone;
 use crate::cmp::{Ord, PartialEq, PartialOrd};
-use crate::marker::{Copy, Sized};
-use crate::ops::{ControlFlow, FnMut, FromResidual, Range, RangeFrom, RangeInclusive, Try};
+use crate::marker::{Copy, PhantomData, Sized};
+use crate::ops::{ControlFlow, FnMut, FnOnce, FromResidual, Range, RangeFrom, RangeInclusive, Try};
 use crate::option::Option::{self, None, Some};
 
 /// Something that gives a sequence of items, one per call of `next`,
@@ -1863,3 +1863,311 @@ impl<'a> Sum<&'a usize> for usize { fn sum<I: Iterator<Item = &'a usize>>(mut it
 impl Product for usize { fn product<I: Iterator<Item = usize>>(mut iter: I) -> usize { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
 impl<'a> Product<&'a usize> for usize { fn product<I: Iterator<Item = &'a usize>>(mut iter: I) -> usize { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
 impl ExactSizeIterator for Range<usize> {}
+
+/// An iterator with no items: what [`empty`] gives.
+pub struct Empty<T> {
+    marker: PhantomData<T>,
+}
+
+/// An iterator with no items.
+pub const fn empty<T>() -> Empty<T> {
+    Empty { marker: PhantomData }
+}
+
+impl<T> Iterator for Empty<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(0))
+    }
+}
+
+impl<T> DoubleEndedIterator for Empty<T> {
+    fn next_back(&mut self) -> Option<T> {
+        None
+    }
+}
+
+impl<T> ExactSizeIterator for Empty<T> {
+    fn len(&self) -> usize {
+        0
+    }
+}
+
+impl<T> Clone for Empty<T> {
+    fn clone(&self) -> Empty<T> {
+        Empty { marker: PhantomData }
+    }
+}
+
+impl<T> crate::default::Default for Empty<T> {
+    fn default() -> Empty<T> {
+        Empty { marker: PhantomData }
+    }
+}
+
+/// An iterator with one item: what [`once`] gives.
+pub struct Once<T> {
+    inner: Option<T>,
+}
+
+/// An iterator that gives `value` once.
+pub fn once<T>(value: T) -> Once<T> {
+    Once { inner: Some(value) }
+}
+
+impl<T> Iterator for Once<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.inner.take()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = if self.inner.is_some() { 1 } else { 0 };
+        (n, Some(n))
+    }
+}
+
+impl<T> DoubleEndedIterator for Once<T> {
+    fn next_back(&mut self) -> Option<T> {
+        self.inner.take()
+    }
+}
+
+impl<T> ExactSizeIterator for Once<T> {}
+
+impl<T: Clone> Clone for Once<T> {
+    fn clone(&self) -> Once<T> {
+        Once { inner: self.inner.clone() }
+    }
+}
+
+/// An iterator that gives `f()` once: what [`once_with`] gives.
+pub struct OnceWith<F> {
+    make: Option<F>,
+}
+
+/// An iterator that gives `f()` once, calling it when asked.
+pub fn once_with<A, F: FnOnce() -> A>(make: F) -> OnceWith<F> {
+    OnceWith { make: Some(make) }
+}
+
+impl<A, F: FnOnce() -> A> Iterator for OnceWith<F> {
+    type Item = A;
+
+    fn next(&mut self) -> Option<A> {
+        match self.make.take() {
+            Some(f) => Some(f()),
+            None => None,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = if self.make.is_some() { 1 } else { 0 };
+        (n, Some(n))
+    }
+}
+
+impl<A, F: FnOnce() -> A> DoubleEndedIterator for OnceWith<F> {
+    fn next_back(&mut self) -> Option<A> {
+        self.next()
+    }
+}
+
+impl<A, F: FnOnce() -> A> ExactSizeIterator for OnceWith<F> {}
+
+/// An iterator that gives clones of one value forever: what [`repeat`]
+/// gives.
+pub struct Repeat<A> {
+    element: A,
+}
+
+/// An iterator that gives clones of `elt` forever.
+pub fn repeat<T: Clone>(elt: T) -> Repeat<T> {
+    Repeat { element: elt }
+}
+
+impl<A: Clone> Iterator for Repeat<A> {
+    type Item = A;
+
+    fn next(&mut self) -> Option<A> {
+        Some(self.element.clone())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (usize::MAX, None)
+    }
+
+    fn nth(&mut self, n: usize) -> Option<A> {
+        let _ = n;
+        Some(self.element.clone())
+    }
+}
+
+impl<A: Clone> DoubleEndedIterator for Repeat<A> {
+    fn next_back(&mut self) -> Option<A> {
+        Some(self.element.clone())
+    }
+
+    fn nth_back(&mut self, n: usize) -> Option<A> {
+        let _ = n;
+        Some(self.element.clone())
+    }
+}
+
+impl<A: Clone> Clone for Repeat<A> {
+    fn clone(&self) -> Repeat<A> {
+        Repeat { element: self.element.clone() }
+    }
+}
+
+/// An iterator that gives `f()` forever: what [`repeat_with`] gives.
+pub struct RepeatWith<F> {
+    repeater: F,
+}
+
+/// An iterator that calls `repeater` for each item, forever.
+pub fn repeat_with<A, F: FnMut() -> A>(repeater: F) -> RepeatWith<F> {
+    RepeatWith { repeater }
+}
+
+impl<A, F: FnMut() -> A> Iterator for RepeatWith<F> {
+    type Item = A;
+
+    fn next(&mut self) -> Option<A> {
+        Some((self.repeater)())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (usize::MAX, None)
+    }
+}
+
+impl<F: Clone> Clone for RepeatWith<F> {
+    fn clone(&self) -> RepeatWith<F> {
+        RepeatWith { repeater: self.repeater.clone() }
+    }
+}
+
+/// An iterator that gives a value `count` times: clones of it, then the
+/// value itself. What [`repeat_n`] gives.
+pub struct RepeatN<A> {
+    /// `None` once the count is 0.
+    element: Option<A>,
+    count: usize,
+}
+
+/// An iterator that gives `element` `count` times: clones of it, then
+/// the value itself last. With `count` 0, `element` is dropped at once.
+pub fn repeat_n<T: Clone>(element: T, count: usize) -> RepeatN<T> {
+    if count == 0 {
+        crate::mem::drop(element);
+        RepeatN { element: None, count: 0 }
+    } else {
+        RepeatN { element: Some(element), count }
+    }
+}
+
+impl<A: Clone> Iterator for RepeatN<A> {
+    type Item = A;
+
+    fn next(&mut self) -> Option<A> {
+        if self.count == 0 {
+            return None;
+        }
+        self.count -= 1;
+        if self.count == 0 {
+            self.element.take()
+        } else {
+            match &self.element {
+                Some(e) => Some(e.clone()),
+                None => None,
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.count, Some(self.count))
+    }
+}
+
+impl<A: Clone> DoubleEndedIterator for RepeatN<A> {
+    fn next_back(&mut self) -> Option<A> {
+        self.next()
+    }
+}
+
+impl<A: Clone> ExactSizeIterator for RepeatN<A> {
+    fn len(&self) -> usize {
+        self.count
+    }
+}
+
+impl<A: Clone> Clone for RepeatN<A> {
+    fn clone(&self) -> RepeatN<A> {
+        RepeatN { element: self.element.clone(), count: self.count }
+    }
+}
+
+/// An iterator whose items `succ` makes, each from the one before:
+/// what [`successors`] gives.
+pub struct Successors<T, F> {
+    next: Option<T>,
+    succ: F,
+}
+
+/// An iterator that gives `first`, then `succ` of each item, until
+/// either is `None`.
+pub fn successors<T, F: FnMut(&T) -> Option<T>>(first: Option<T>, succ: F) -> Successors<T, F> {
+    Successors { next: first, succ }
+}
+
+impl<T, F: FnMut(&T) -> Option<T>> Iterator for Successors<T, F> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        let item = self.next.take()?;
+        self.next = (self.succ)(&item);
+        Some(item)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.next.is_some() { (1, None) } else { (0, Some(0)) }
+    }
+}
+
+impl<T: Clone, F: Clone> Clone for Successors<T, F> {
+    fn clone(&self) -> Successors<T, F> {
+        Successors { next: self.next.clone(), succ: self.succ.clone() }
+    }
+}
+
+/// An iterator whose items are `f()`'s, until it gives `None`: what
+/// [`from_fn`] gives.
+pub struct FromFn<F> {
+    f: F,
+}
+
+/// An iterator that calls `f` for each item, giving what it returns.
+pub fn from_fn<T, F: FnMut() -> Option<T>>(f: F) -> FromFn<F> {
+    FromFn { f }
+}
+
+impl<T, F: FnMut() -> Option<T>> Iterator for FromFn<F> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        (self.f)()
+    }
+}
+
+impl<F: Clone> Clone for FromFn<F> {
+    fn clone(&self) -> FromFn<F> {
+        FromFn { f: self.f.clone() }
+    }
+}

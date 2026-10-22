@@ -807,6 +807,21 @@
   them out get (`ControlFlow<i32>`, `W<'a>`), with rustc's E0107 for
   too many or too few arguments; an `impl` block's supertraits are
   checked with its own associated types normalized.
+- Add `bool::then_some` and `bool::then`, `core::cmp::Reverse`,
+  `core::iter::{empty, once, once_with, repeat, repeat_with, repeat_n,
+  successors, from_fn}`, `core::ops::{Bound, RangeBounds}`, and slices'
+  `get` and `get_mut` with ranges (rustc's `SliceIndex`),
+  `chunks_exact_mut`, `rchunks`, `rchunks_exact` and `copy_within`.
+  `str`'s searching methods take rustc's patterns: `&str`, `char`,
+  arrays and slices of `char`s and closures, with `rfind`,
+  `strip_prefix`, `strip_suffix`, `split_once`, `rsplit_once`,
+  `trim_matches` and its one-sided forms, `rsplit`, `split_terminator`,
+  `split_inclusive`, `splitn`, `rsplitn`, `matches`, `match_indices`
+  and their reverse forms, matching as rustc's searchers do; `str::get`
+  takes ranges, and `Bytes` is an `ExactSizeIterator`, with rustc's
+  `size_hint`s for `Bytes`, `Chars` and `CharIndices`. Closures meet
+  traits through blanket `impl` blocks, and a bound that is not met
+  leaves its associated types errors rather than types to annotate.
 
 ### Performance
 

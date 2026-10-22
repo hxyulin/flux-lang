@@ -152,3 +152,136 @@ impl<Idx: Debug> Debug for RangeToInclusive<Idx> {
         self.end.fmt(f)
     }
 }
+
+/// One end of a range: a value in it, a value just past it, or none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bound<T> {
+    /// The range includes this value.
+    Included(T),
+    /// The range ends just short of this value.
+    Excluded(T),
+    /// The range has no end here.
+    Unbounded,
+}
+
+use Bound::{Excluded, Included, Unbounded};
+
+impl<T> Bound<T> {
+    /// A bound of a reference to the value.
+    pub fn as_ref(&self) -> Bound<&T> {
+        match self {
+            Included(x) => Included(x),
+            Excluded(x) => Excluded(x),
+            Unbounded => Unbounded,
+        }
+    }
+
+    /// `f` of the value.
+    pub fn map<U, F: crate::ops::FnOnce(T) -> U>(self, f: F) -> Bound<U> {
+        match self {
+            Unbounded => Unbounded,
+            Included(x) => Included(f(x)),
+            Excluded(x) => Excluded(f(x)),
+        }
+    }
+}
+
+impl<T: crate::clone::Clone> Bound<&T> {
+    /// A bound of a clone of the value.
+    pub fn cloned(self) -> Bound<T> {
+        match self {
+            Unbounded => Unbounded,
+            Included(x) => Included(x.clone()),
+            Excluded(x) => Excluded(x.clone()),
+        }
+    }
+}
+
+/// What every range is: a start and an end bound, each a value or none.
+pub trait RangeBounds<T> {
+    /// Where the range starts.
+    fn start_bound(&self) -> Bound<&T>;
+    /// Where the range ends.
+    fn end_bound(&self) -> Bound<&T>;
+
+    /// Whether `item` is in the range.
+    fn contains<U>(&self, item: &U) -> bool
+    where
+        T: PartialOrd<U>,
+        U: PartialOrd<T>,
+    {
+        (match self.start_bound() {
+            Included(start) => start <= item,
+            Excluded(start) => start < item,
+            Unbounded => true,
+        }) && (match self.end_bound() {
+            Included(end) => item <= end,
+            Excluded(end) => item < end,
+            Unbounded => true,
+        })
+    }
+}
+
+impl<T> RangeBounds<T> for RangeFull {
+    fn start_bound(&self) -> Bound<&T> {
+        Unbounded
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        Unbounded
+    }
+}
+
+impl<T> RangeBounds<T> for Range<T> {
+    fn start_bound(&self) -> Bound<&T> {
+        Included(&self.start)
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        Excluded(&self.end)
+    }
+}
+
+impl<T> RangeBounds<T> for RangeFrom<T> {
+    fn start_bound(&self) -> Bound<&T> {
+        Included(&self.start)
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        Unbounded
+    }
+}
+
+impl<T> RangeBounds<T> for RangeTo<T> {
+    fn start_bound(&self) -> Bound<&T> {
+        Unbounded
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        Excluded(&self.end)
+    }
+}
+
+impl<T> RangeBounds<T> for RangeInclusive<T> {
+    fn start_bound(&self) -> Bound<&T> {
+        Included(&self.start)
+    }
+    /// Once iterated to its end, it ends before it.
+    fn end_bound(&self) -> Bound<&T> {
+        if self.exhausted { Excluded(&self.end) } else { Included(&self.end) }
+    }
+}
+
+impl<T> RangeBounds<T> for RangeToInclusive<T> {
+    fn start_bound(&self) -> Bound<&T> {
+        Unbounded
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        Included(&self.end)
+    }
+}
+
+impl<T> RangeBounds<T> for (Bound<T>, Bound<T>) {
+    fn start_bound(&self) -> Bound<&T> {
+        self.0.as_ref()
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        self.1.as_ref()
+    }
+}

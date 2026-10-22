@@ -407,7 +407,7 @@ fn main() -> () {
         StorageDead(_34);
         StorageDead(_35);
         _42 = &(*_2);
-        _41 = get::<i32>(copy _42, const 9_usize) -> bb16;
+        _41 = get::<i32, usize>(copy _42, const 9_usize) -> bb16;
     }
 
     bb16: {

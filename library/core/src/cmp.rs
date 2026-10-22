@@ -3,6 +3,7 @@
 //! `a < b` is `PartialOrd::lt(&a, &b)` (`le`, `gt` and `ge` for `<=`, `>`
 //! and `>=`).
 
+use crate::clone::Clone;
 use crate::marker::Sized;
 use crate::option::Option::{self, None, Some};
 use crate::panicking::panic;
@@ -323,6 +324,46 @@ pub fn max_by_key<T, F: crate::ops::FnMut(&T) -> K, K: Ord>(v1: T, v2: T, mut f:
 pub fn min_by_key<T, F: crate::ops::FnMut(&T) -> K, K: Ord>(v1: T, v2: T, mut f: F) -> T {
     let (k1, k2) = (f(&v1), f(&v2));
     if k2 < k1 { v2 } else { v1 }
+}
+
+/// A value that orders the other way round: `Reverse(a) < Reverse(b)`
+/// where `b < a`, to sort descending by a key or make a max-heap a
+/// min-heap.
+#[derive(PartialEq, Eq, Debug, Copy, Default)]
+pub struct Reverse<T>(pub T);
+
+impl<T: PartialOrd> PartialOrd for Reverse<T> {
+    fn partial_cmp(&self, other: &Reverse<T>) -> Option<Ordering> {
+        other.0.partial_cmp(&self.0)
+    }
+
+    fn lt(&self, other: &Self) -> bool {
+        other.0 < self.0
+    }
+
+    fn le(&self, other: &Self) -> bool {
+        other.0 <= self.0
+    }
+
+    fn gt(&self, other: &Self) -> bool {
+        other.0 > self.0
+    }
+
+    fn ge(&self, other: &Self) -> bool {
+        other.0 >= self.0
+    }
+}
+
+impl<T: Ord> Ord for Reverse<T> {
+    fn cmp(&self, other: &Reverse<T>) -> Ordering {
+        other.0.cmp(&self.0)
+    }
+}
+
+impl<T: Clone> Clone for Reverse<T> {
+    fn clone(&self) -> Reverse<T> {
+        Reverse(self.0.clone())
+    }
 }
 
 // The integers and `bool` compare with the built-in operators.

@@ -782,6 +782,21 @@ impl Ctx<'_> {
         if self.reported_unmet.insert((ob.range, message.clone())) {
             self.error(ob.range, message);
         }
+        // The associated types of the bound that failed are errors, as
+        // rustc's normalization makes them, not types to ask for.
+        let self_ty = self.shallow(ob.pred.self_ty);
+        let pending = std::mem::take(&mut self.projections);
+        for p in pending {
+            if p.alias.trait_ == ob.pred.trait_ref.trait_
+                && self.shallow(p.alias.self_ty()) == self_ty
+            {
+                if let TyKind::Infer(var) = self.shallow(p.var).kind() {
+                    self.bind_var(var, Ty::ERROR);
+                }
+            } else {
+                self.projections.push(p);
+            }
+        }
     }
 
     /// `S: Tr<A>`, as rustc shows a bound in messages.
@@ -856,7 +871,15 @@ impl Ctx<'_> {
         if crate::traits::is_builtin_copy(self.items, t, self_ty) {
             return Selection::Met(Vec::new());
         }
-        if let TyKind::Closure(..) = self_ty.kind() {
+        // Other traits than the `Fn` family, `Copy` and `Clone` hold of
+        // a closure through blanket `impl` blocks (`impl<F: FnMut(char)
+        // -> bool> Pattern for F`), as for any type.
+        if let TyKind::Closure(_, args) = self_ty.kind()
+            && !matches!(
+                crate::traits::closure_goal(self.items, t, args),
+                crate::traits::ClosureGoal::No
+            )
+        {
             return self.select_closure(pred);
         }
         if let Some(found) = crate::traits::fn_goal(self.items, t, self_ty) {
@@ -1037,19 +1060,20 @@ impl Ctx<'_> {
             };
         }
         if let TyKind::Closure(_, closure_args) = ty.kind() {
-            return match crate::traits::closure_goal(self.items, t, closure_args) {
+            match crate::traits::closure_goal(self.items, t, closure_args) {
                 crate::traits::ClosureGoal::Fn(kind, params) => {
                     let parts = crate::ClosureArgs::split(closure_args);
                     let kind_ok = crate::ClosureKind::from_ty(self.shallow(parts.kind))
                         .is_none_or(|k| k <= kind);
-                    kind_ok
+                    return kind_ok
                         && args
                             .and_then(|a| a.first())
-                            .is_none_or(|&a| self.unify(a, params))
+                            .is_none_or(|&a| self.unify(a, params));
                 }
-                crate::traits::ClosureGoal::Upvars(_) => true,
-                crate::traits::ClosureGoal::No => false,
-            };
+                crate::traits::ClosureGoal::Upvars(_) => return true,
+                // Through blanket `impl` blocks, below.
+                crate::traits::ClosureGoal::No => {}
+            }
         }
         let alias_bounds = self.alias_bounds(ty);
         let known = self.known(ty);

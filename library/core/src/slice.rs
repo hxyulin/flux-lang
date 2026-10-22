@@ -7,8 +7,8 @@ use crate::intrinsics::{read, subslice, subslice_mut, write};
 use crate::iter::{DoubleEndedIterator, ExactSizeIterator, IntoIterator, Iterator};
 use crate::marker::Copy;
 use crate::ops::{
-    FnMut, Index, IndexMut, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo,
-    RangeToInclusive,
+    Bound, FnMut, Index, IndexMut, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive,
+    RangeTo, RangeToInclusive,
 };
 use crate::option::Option::{self, None, Some};
 use crate::panicking::panic;
@@ -28,9 +28,10 @@ impl<T> [T] {
         if len == 0 { None } else { Some(&self[len - 1]) }
     }
 
-    /// The element at `index`, or `None` if it is out of bounds.
-    pub fn get(&self, index: usize) -> Option<&T> {
-        if index < self.len() { Some(&self[index]) } else { None }
+    /// The element at `index`, or the part a range of indices gives, or
+    /// `None` if it is out of bounds.
+    pub fn get<I: SliceIndex<T>>(&self, index: I) -> Option<&I::Output> {
+        index.get(self)
     }
 
     /// An iterator over references to the elements, in order.
@@ -63,10 +64,10 @@ impl<T> [T] {
         if len == 0 { None } else { Some(&mut self[len - 1]) }
     }
 
-    /// The element at `index`, or `None` if it is out of bounds,
-    /// mutably.
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        if index < self.len() { Some(&mut self[index]) } else { None }
+    /// The element at `index`, or the part a range of indices gives, or
+    /// `None` if it is out of bounds, mutably.
+    pub fn get_mut<I: SliceIndex<T>>(&mut self, index: I) -> Option<&mut I::Output> {
+        index.get_mut(self)
     }
 
     /// The first element and the rest, or `None` if the slice is empty.
@@ -282,6 +283,81 @@ impl<T> [T] {
             start: 0,
             end: len,
             chunk_size,
+        }
+    }
+
+    /// An iterator over mutable chunks of exactly `chunk_size` elements,
+    /// in order, without the remainder; panics if `chunk_size` is 0.
+    pub fn chunks_exact_mut(&mut self, chunk_size: usize) -> ChunksExactMut<'_, T> {
+        if chunk_size == 0 {
+            panic(c"chunk size must be non-zero")
+        }
+        let len = self.len();
+        let fst_len = len - len % chunk_size;
+        let (fst, snd) = self.split_at_mut(fst_len);
+        ChunksExactMut {
+            v: fst,
+            start: 0,
+            end: fst_len,
+            rem: snd,
+            chunk_size,
+        }
+    }
+
+    /// An iterator over chunks of `chunk_size` elements from the end, the
+    /// last one (the slice's start) shorter if the length is not a
+    /// multiple; panics if `chunk_size` is 0.
+    pub fn rchunks(&self, chunk_size: usize) -> RChunks<'_, T> {
+        if chunk_size == 0 {
+            panic(c"chunk size must be non-zero")
+        }
+        RChunks {
+            v: self,
+            chunk_size,
+        }
+    }
+
+    /// An iterator over chunks of exactly `chunk_size` elements from the
+    /// end, without the remainder at the start; panics if `chunk_size` is
+    /// 0.
+    pub fn rchunks_exact(&self, chunk_size: usize) -> RChunksExact<'_, T> {
+        if chunk_size == 0 {
+            panic(c"chunk size must be non-zero")
+        }
+        let rem = self.len() % chunk_size;
+        let (fst, snd) = self.split_at(rem);
+        RChunksExact {
+            v: snd,
+            rem: fst,
+            chunk_size,
+        }
+    }
+
+    /// Copies the elements of `src`, a range of indices, to the ones from
+    /// `dest` on, which may overlap them; panics if either is out of
+    /// bounds.
+    pub fn copy_within<R: RangeBounds<usize>>(&mut self, src: R, dest: usize)
+    where
+        T: Copy,
+    {
+        let len = self.len();
+        let r = bounds_range(src, len);
+        let count = r.end - r.start;
+        if dest > len - count {
+            panic(c"dest is out of bounds")
+        }
+        if dest <= r.start {
+            let mut i = 0;
+            while i < count {
+                self[dest + i] = self[r.start + i];
+                i += 1;
+            }
+        } else {
+            let mut i = count;
+            while i > 0 {
+                i -= 1;
+                self[dest + i] = self[r.start + i];
+            }
         }
     }
 
@@ -640,6 +716,309 @@ impl<T> IndexMut<RangeToInclusive<usize>> for [T] {
     fn index_mut(&mut self, index: RangeToInclusive<usize>) -> &mut [T] {
         let r = checked_range(0, inclusive_end(index.end), self.len());
         unsafe { subslice_mut(self, r.start, r.end) }
+    }
+}
+
+/// What `get` and `get_mut` of a slice of `E`s take: a `usize`, for an
+/// element, or a range of them, for a part. rustc's `SliceIndex<[E]>`.
+#[diagnostic::on_unimplemented(message = "the type `[{E}]` cannot be indexed by `{Self}`")]
+pub trait SliceIndex<E> {
+    /// An element, or a slice.
+    type Output;
+    /// What it indexes, if it is within the slice.
+    fn get(self, slice: &[E]) -> Option<&Self::Output>;
+    /// What it indexes, mutably, if it is within the slice.
+    fn get_mut(self, slice: &mut [E]) -> Option<&mut Self::Output>;
+}
+
+impl<E> SliceIndex<E> for usize {
+    type Output = E;
+
+    fn get(self, slice: &[E]) -> Option<&E> {
+        if self < slice.len() { Some(&slice[self]) } else { None }
+    }
+
+    fn get_mut(self, slice: &mut [E]) -> Option<&mut E> {
+        if self < slice.len() { Some(&mut slice[self]) } else { None }
+    }
+}
+
+/// `slice[start..end]`, if it is within it.
+fn get_range<E>(slice: &[E], start: usize, end: usize) -> Option<&[E]> {
+    if start > end || end > slice.len() {
+        None
+    } else {
+        Some(unsafe { subslice(slice, start, end) })
+    }
+}
+
+/// `slice[start..end]`, mutably, if it is within it.
+fn get_range_mut<E>(slice: &mut [E], start: usize, end: usize) -> Option<&mut [E]> {
+    if start > end || end > slice.len() {
+        None
+    } else {
+        Some(unsafe { subslice_mut(slice, start, end) })
+    }
+}
+
+impl<E> SliceIndex<E> for Range<usize> {
+    type Output = [E];
+
+    fn get(self, slice: &[E]) -> Option<&[E]> {
+        get_range(slice, self.start, self.end)
+    }
+
+    fn get_mut(self, slice: &mut [E]) -> Option<&mut [E]> {
+        get_range_mut(slice, self.start, self.end)
+    }
+}
+
+impl<E> SliceIndex<E> for RangeTo<usize> {
+    type Output = [E];
+
+    fn get(self, slice: &[E]) -> Option<&[E]> {
+        get_range(slice, 0, self.end)
+    }
+
+    fn get_mut(self, slice: &mut [E]) -> Option<&mut [E]> {
+        get_range_mut(slice, 0, self.end)
+    }
+}
+
+impl<E> SliceIndex<E> for RangeFrom<usize> {
+    type Output = [E];
+
+    fn get(self, slice: &[E]) -> Option<&[E]> {
+        let len = slice.len();
+        get_range(slice, self.start, len)
+    }
+
+    fn get_mut(self, slice: &mut [E]) -> Option<&mut [E]> {
+        let len = slice.len();
+        get_range_mut(slice, self.start, len)
+    }
+}
+
+impl<E> SliceIndex<E> for RangeFull {
+    type Output = [E];
+
+    fn get(self, slice: &[E]) -> Option<&[E]> {
+        Some(slice)
+    }
+
+    fn get_mut(self, slice: &mut [E]) -> Option<&mut [E]> {
+        Some(slice)
+    }
+}
+
+impl<E> SliceIndex<E> for RangeInclusive<usize> {
+    type Output = [E];
+
+    fn get(self, slice: &[E]) -> Option<&[E]> {
+        if self.end == usize::MAX {
+            return None;
+        }
+        let end = self.end + 1;
+        let start = if self.exhausted { end } else { self.start };
+        get_range(slice, start, end)
+    }
+
+    fn get_mut(self, slice: &mut [E]) -> Option<&mut [E]> {
+        if self.end == usize::MAX {
+            return None;
+        }
+        let end = self.end + 1;
+        let start = if self.exhausted { end } else { self.start };
+        get_range_mut(slice, start, end)
+    }
+}
+
+impl<E> SliceIndex<E> for RangeToInclusive<usize> {
+    type Output = [E];
+
+    fn get(self, slice: &[E]) -> Option<&[E]> {
+        if self.end == usize::MAX { None } else { get_range(slice, 0, self.end + 1) }
+    }
+
+    fn get_mut(self, slice: &mut [E]) -> Option<&mut [E]> {
+        if self.end == usize::MAX { None } else { get_range_mut(slice, 0, self.end + 1) }
+    }
+}
+
+/// The bounds `range` gives for a slice of length `len`, which panics
+/// as rustc's `slice::range` does where they are not within it.
+fn bounds_range<R: RangeBounds<usize>>(range: R, len: usize) -> Range<usize> {
+    let start = match range.start_bound() {
+        Bound::Included(&start) => start,
+        Bound::Excluded(&start) => {
+            if start == usize::MAX {
+                panic(c"attempted to index slice from after maximum usize")
+            }
+            start + 1
+        }
+        Bound::Unbounded => 0,
+    };
+    let end = match range.end_bound() {
+        Bound::Included(&end) => inclusive_end(end),
+        Bound::Excluded(&end) => end,
+        Bound::Unbounded => len,
+    };
+    checked_range(start, end, len)
+}
+
+/// [`[T]::chunks_exact_mut`]'s iterator.
+pub struct ChunksExactMut<'a, T> {
+    v: &'a mut [T],
+    start: usize,
+    end: usize,
+    rem: &'a mut [T],
+    chunk_size: usize,
+}
+
+impl<'a, T> ChunksExactMut<'a, T> {
+    /// The elements left over, fewer than a chunk.
+    pub fn into_remainder(self) -> &'a mut [T] {
+        self.rem
+    }
+}
+
+impl<'a, T> Iterator for ChunksExactMut<'a, T> {
+    type Item = &'a mut [T];
+
+    fn next(&mut self) -> Option<&'a mut [T]> {
+        if self.end - self.start < self.chunk_size {
+            None
+        } else {
+            let start = self.start;
+            self.start += self.chunk_size;
+            // Chunks given are not given again.
+            Some(unsafe { subslice_mut(self.v, start, start + self.chunk_size) })
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = (self.end - self.start) / self.chunk_size;
+        (n, Some(n))
+    }
+}
+
+impl<'a, T> DoubleEndedIterator for ChunksExactMut<'a, T> {
+    fn next_back(&mut self) -> Option<&'a mut [T]> {
+        if self.end - self.start < self.chunk_size {
+            None
+        } else {
+            let end = self.end;
+            self.end -= self.chunk_size;
+            Some(unsafe { subslice_mut(self.v, end - self.chunk_size, end) })
+        }
+    }
+}
+
+impl<'a, T> ExactSizeIterator for ChunksExactMut<'a, T> {}
+
+/// [`[T]::rchunks`]'s iterator.
+pub struct RChunks<'a, T> {
+    v: &'a [T],
+    chunk_size: usize,
+}
+
+impl<'a, T> Iterator for RChunks<'a, T> {
+    type Item = &'a [T];
+
+    fn next(&mut self) -> Option<&'a [T]> {
+        let len = self.v.len();
+        if len == 0 {
+            None
+        } else {
+            let n = if len < self.chunk_size { len } else { self.chunk_size };
+            let chunk = unsafe { subslice(self.v, len - n, len) };
+            self.v = unsafe { subslice(self.v, 0, len - n) };
+            Some(chunk)
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.v.len();
+        let n = len / self.chunk_size + if len % self.chunk_size != 0 { 1 } else { 0 };
+        (n, Some(n))
+    }
+}
+
+impl<'a, T> DoubleEndedIterator for RChunks<'a, T> {
+    fn next_back(&mut self) -> Option<&'a [T]> {
+        let len = self.v.len();
+        if len == 0 {
+            None
+        } else {
+            let remainder = len % self.chunk_size;
+            let size = if remainder != 0 { remainder } else { self.chunk_size };
+            let chunk = unsafe { subslice(self.v, 0, size) };
+            self.v = unsafe { subslice(self.v, size, len) };
+            Some(chunk)
+        }
+    }
+}
+
+impl<'a, T> ExactSizeIterator for RChunks<'a, T> {}
+
+impl<'a, T> Clone for RChunks<'a, T> {
+    fn clone(&self) -> RChunks<'a, T> {
+        RChunks { v: self.v, chunk_size: self.chunk_size }
+    }
+}
+
+/// [`[T]::rchunks_exact`]'s iterator.
+pub struct RChunksExact<'a, T> {
+    v: &'a [T],
+    rem: &'a [T],
+    chunk_size: usize,
+}
+
+impl<'a, T> RChunksExact<'a, T> {
+    /// The elements left over at the start, fewer than a chunk.
+    pub fn remainder(&self) -> &'a [T] {
+        self.rem
+    }
+}
+
+impl<'a, T> Iterator for RChunksExact<'a, T> {
+    type Item = &'a [T];
+
+    fn next(&mut self) -> Option<&'a [T]> {
+        let len = self.v.len();
+        if len < self.chunk_size {
+            None
+        } else {
+            let chunk = unsafe { subslice(self.v, len - self.chunk_size, len) };
+            self.v = unsafe { subslice(self.v, 0, len - self.chunk_size) };
+            Some(chunk)
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.v.len() / self.chunk_size;
+        (n, Some(n))
+    }
+}
+
+impl<'a, T> DoubleEndedIterator for RChunksExact<'a, T> {
+    fn next_back(&mut self) -> Option<&'a [T]> {
+        let len = self.v.len();
+        if len < self.chunk_size {
+            None
+        } else {
+            let chunk = unsafe { subslice(self.v, 0, self.chunk_size) };
+            self.v = unsafe { subslice(self.v, self.chunk_size, len) };
+            Some(chunk)
+        }
+    }
+}
+
+impl<'a, T> ExactSizeIterator for RChunksExact<'a, T> {}
+
+impl<'a, T> Clone for RChunksExact<'a, T> {
+    fn clone(&self) -> RChunksExact<'a, T> {
+        RChunksExact { v: self.v, rem: self.rem, chunk_size: self.chunk_size }
     }
 }
 
