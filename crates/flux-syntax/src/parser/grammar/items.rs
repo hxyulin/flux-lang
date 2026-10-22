@@ -34,6 +34,12 @@ pub(super) fn item_or_macro(p: &mut Parser<'_>, in_braces: bool) {
         Ok(()) => return,
         Err(m) => m,
     };
+    if let Some(message) = missing_keyword(p, 0, false) {
+        p.error(message);
+        missing_keyword_item(p);
+        m.complete(p, ERROR);
+        return;
+    }
     if paths::is_path_start(p) {
         macro_call_item(p, m);
         return;
@@ -65,6 +71,16 @@ pub(super) fn item_or_macro(p: &mut Parser<'_>, in_braces: bool) {
 /// Parses an item into `m` if one starts here, after its attributes. On
 /// `Err`, nothing was consumed.
 pub(super) fn opt_item(p: &mut Parser<'_>, m: Marker) -> Result<(), Marker> {
+    // rustc reports a missing keyword after `pub` at `pub`.
+    if p.at(T![pub])
+        && let Some(message) = missing_keyword(p, 1, true)
+    {
+        p.error(message);
+        opt_visibility(p);
+        missing_keyword_item(p);
+        m.complete(p, ERROR);
+        return Ok(());
+    }
     let has_visibility = opt_visibility(p);
     if p.at(T![extern]) && p.nth(1) == T![crate] {
         extern_crate(p, m);
@@ -111,12 +127,114 @@ pub(super) fn opt_item(p: &mut Parser<'_>, m: Marker) -> Result<(), Marker> {
         T![const] if p.nth(1) != T!['{'] => const_or_static(p, m, T![const], CONST),
         T![static] => const_or_static(p, m, T![static], STATIC),
         _ if has_visibility => {
-            p.error("expected an item after the visibility");
+            if let Some(message) = missing_keyword(p, 0, false) {
+                p.error(message);
+                missing_keyword_item(p);
+            } else {
+                p.error("expected an item after the visibility");
+            }
             m.complete(p, ERROR);
         }
         _ => return Err(m),
     }
     Ok(())
+}
+
+/// A name `at` tokens ahead where an item should start, followed by
+/// what a function, struct or enum definition has after its name
+/// (`name(..) { .. }`, `name { .. }`, `name<..>`): an item whose keyword
+/// is missing, which rustc reports (`recover_missing_kw_before_item`)
+/// with the message returned, telling what was meant from what follows.
+/// `is_pub`: after `pub`.
+fn missing_keyword(p: &mut Parser<'_>, at: usize, is_pub: bool) -> Option<&'static str> {
+    if p.nth(at) != IDENT || !matches!(p.nth(at + 1), T!['('] | T!['{'] | T![<]) {
+        return None;
+    }
+    // Look past the generic parameters (to the first `>`, as rustc
+    // does) and the parentheses.
+    let mut next = at + 1;
+    let generics = p.nth(next) == T![<];
+    if generics {
+        while !matches!(p.nth(next), T![>] | T!['{'] | T![;] | EOF) {
+            next += 1;
+        }
+        if p.nth(next) == T![>] {
+            next += 1;
+        }
+    }
+    let field = |p: &mut Parser<'_>, n: usize| p.nth_at(n, T![:]) && !p.nth_at(n, T![::]);
+    let message = match p.nth(next) {
+        T!['{'] if p.nth(next + 1) == T!['}'] => {
+            "missing `enum` or `struct` for enum or struct definition"
+        }
+        T!['{'] if field(p, next + 2) || field(p, next + 3) => {
+            "missing `struct` for struct definition"
+        }
+        T!['{'] => "missing `enum` for enum definition",
+        T!['('] => {
+            let method = matches!(
+                (p.nth(next + 1), p.nth(next + 2), p.nth(next + 3)),
+                (T![self], _, _)
+                    | (T![&] | T![mut], T![self], _)
+                    | (T![&], T![mut] | LIFETIME_IDENT, T![self])
+            );
+            let mut close = next;
+            let mut depth = 0u32;
+            loop {
+                match p.nth(close) {
+                    T!['('] => depth += 1,
+                    T![')'] if depth == 1 => break,
+                    T![')'] => depth -= 1,
+                    EOF => break,
+                    _ => {}
+                }
+                close += 1;
+            }
+            if p.nth_at(close + 1, T![->]) || p.nth(close + 1) == T!['{'] {
+                if method {
+                    "missing `fn` for method definition"
+                } else {
+                    "missing `fn` for function definition"
+                }
+            } else if is_pub && p.nth(close + 1) == T![;] {
+                "missing `struct` for struct definition"
+            } else {
+                "missing `fn` or `struct` for function or struct definition"
+            }
+        }
+        _ if generics => "missing `fn` or `struct` for function or struct definition",
+        _ => return None,
+    };
+    Some(message)
+}
+
+/// The item [`missing_keyword`] found, from its name: what it would have
+/// defined, or the call it is, as rustc skips it.
+fn missing_keyword_item(p: &mut Parser<'_>) {
+    p.bump(IDENT);
+    if p.eat(T![<]) {
+        while !p.at_end() && !matches!(p.current(), T![>] | T!['{'] | T![;]) {
+            p.bump_any();
+        }
+        p.eat(T![>]);
+    }
+    match p.current() {
+        T!['{'] => attributes::token_tree(p),
+        T!['('] => {
+            attributes::token_tree(p);
+            if p.at(T![->]) || p.at(T!['{']) {
+                while !p.at_end() && !matches!(p.current(), T!['{'] | T![;] | T!['}']) {
+                    p.bump_any();
+                }
+                if p.at(T!['{']) {
+                    attributes::token_tree(p);
+                }
+            } else {
+                p.eat(T![;]);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `fn name<T>(params) -> Ret where ... { body }`, or `;` for a
