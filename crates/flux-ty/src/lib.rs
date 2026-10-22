@@ -38,6 +38,7 @@ use flux_hir::{
 };
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
+use rustc_hash::FxHashMap;
 
 pub use infer::{
     BuiltinMethod, Capture, CaptureMode, CaptureProj, ClosureInfo, InferenceResult, Method,
@@ -2544,12 +2545,6 @@ fn extend_signatures(
             let variant = s.variant(v).fields;
             fields.extend(variant.iter().map(|f| {
                 let ty = resolve(items, s.loc, &f.ty, scope, f.range, &mut reported);
-                if s.is_union && !matches!(ty.kind(), TyKind::Int(_)) {
-                    let mut d =
-                        Diagnostic::new(f.range, "non-integer union fields are not supported yet");
-                    d.file = s.loc.file;
-                    reported.push(d);
-                }
                 if scope.is_unsized(items, ty) {
                     let mut d = Diagnostic::new(f.range, "unsized fields are not supported yet");
                     d.file = s.loc.file;
@@ -2874,6 +2869,34 @@ fn extend_signatures(
     traits::check_well_formed(items, &sigs, from, &mut reported);
     duplicate_assoc_items(items, &sigs, &mut reported, from.impls as usize);
     traits::check_impls(items, &sigs, &mut reported, checked_impls);
+    // Union fields are checked after all signatures and impl predicates exist:
+    // a concrete generic struct's Copy impl may depend on its arguments.
+    for (id, data) in items.structs.iter().skip(from.structs as usize) {
+        if !data.is_union {
+            continue;
+        }
+        for (field, &ty) in data.fields.iter().zip(sigs.structs[id]) {
+            if ty.has_error() {
+                continue;
+            }
+            let ty = traits::normalize(items, &sigs, &[], ty);
+            let message = if !supported_union_field(items, &sigs, ty, &mut FxHashMap::default(), 0)
+            {
+                Some("only concrete integer, array and struct union fields are supported yet")
+            } else if !traits::is_copy(items, &sigs, &[], ty)
+                || traits::needs_drop(items, &sigs, &[], ty)
+            {
+                Some("union fields must implement Copy")
+            } else {
+                None
+            };
+            if let Some(message) = message {
+                let mut d = Diagnostic::new(field.range, message);
+                d.file = data.loc.file;
+                reported.push(d);
+            }
+        }
+    }
     sigs.cyclic |= traits::check_supertrait_cycles(items, &sigs, &mut reported, from);
     traits::check_trivial_bounds(items, &sigs, &mut reported, from);
     for (id, imp) in items.impls.iter().skip(from.impls as usize) {
@@ -3804,4 +3827,47 @@ impl TypedFile {
 /// `f` as written in messages.
 fn function_name(items: &ItemTree, f: FunctionId) -> Symbol {
     items.functions[f].name
+}
+
+/// A deliberately region-free, sized subset. Check every substituted field,
+/// including nested structs, rather than treating an ADT's Copy impl as proof
+/// that its representation is supported. Cycles cannot have a finite layout.
+fn supported_union_field(
+    items: &ItemTree,
+    sigs: &Signatures,
+    ty: Ty,
+    checked: &mut FxHashMap<Ty, bool>,
+    depth: u32,
+) -> bool {
+    let ty = traits::normalize(items, sigs, &[], ty);
+    if ty.has_params() || ty.has_infer() || depth >= 128 {
+        return false;
+    }
+    if let Some(&supported) = checked.get(&ty) {
+        return supported;
+    }
+    // A repeated in-progress type is a cycle. Memoize finished types too,
+    // so repeated fields do not expand the same representation exponentially.
+    // The depth bound also stops expanding generic cycles such as S<S<T>>.
+    checked.insert(ty, false);
+    let supported = match ty.kind() {
+        TyKind::Int(_) => true,
+        TyKind::Array(elem, len) => {
+            len.as_usize().is_some() && supported_union_field(items, sigs, elem, checked, depth + 1)
+        }
+        TyKind::Adt(adt, _)
+            if !items.structs[adt.strukt].is_enum()
+                && !items.structs[adt.strukt].is_union
+                && !is_lang_struct(items, adt.strukt, "manually_drop") =>
+        {
+            sigs.fields(ty).is_some_and(|fields| {
+                fields
+                    .iter()
+                    .all(|&field| supported_union_field(items, sigs, field, checked, depth + 1))
+            })
+        }
+        _ => false,
+    };
+    checked.insert(ty, supported);
+    supported
 }

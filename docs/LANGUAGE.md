@@ -1032,13 +1032,16 @@ legacy const expressions are explicitly rejected. The trailing argument is
 never evaluated at runtime. Explicit turbofish calls, parenthesized callees
 and function values retain the modern signature and its safety rules.
 
-Unions support signed/unsigned integer scalar fields, default/`repr(C)`
+Unions support signed/unsigned integers, fixed arrays and concrete Copy structs
+whose fields recursively contain only those types, with default/`repr(C)`
 layout, Copy/Clone and whole-value moves. Fields share storage at offset
 zero; size is the largest field size rounded to maximum alignment, and no
 field niche is reused. Field reads/references require unsafe code, writes
 require an initialized mutable union, and borrows of different fields overlap.
-Copy/Clone copy storage without reading inactive fields; scalar fields have
-no implicit destructors. Aggregate/generic fields, patterns, constant union
+Copy/Clone copy storage without reading inactive fields or calling field Clone
+implementations; fields have no implicit destructors. Struct type/const
+arguments must be fully resolved, and Copy is checked through the trait solver.
+Generic union declarations, enum/tuple/reference/pointer fields, patterns, constant union
 storage, other derives/representation hints and field reinitialization after
 a move remain explicitly unsupported. Whole-value assignment can initialize
 or reinitialize a union; type-only size/alignment queries are supported.

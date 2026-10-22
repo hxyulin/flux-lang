@@ -83,11 +83,11 @@ fn union_rejections() {
         ),
         (
             "union U { a: bool } fn main() {}",
-            "non-integer union fields are not supported yet",
+            "only concrete integer, array and struct union fields are supported yet",
         ),
         (
-            "union U { a: [u8; 4] } fn main() {}",
-            "non-integer union fields are not supported yet",
+            "struct S(u32); union U { a: S } fn main() {}",
+            "union fields must implement Copy",
         ),
         (
             "union U<T: Copy> { a: T } fn main() {}",
@@ -130,6 +130,103 @@ fn union_rejections() {
         assert!(
             found.iter().any(|e| e.contains(expected)),
             "{text}\nexpected {expected:?}, found {found:?}"
+        );
+    }
+}
+
+#[test]
+fn supported_aggregate_unions() {
+    for text in [
+        "#[derive(Copy, Clone)] struct S<const N: usize>([u8; N]); union U { a: S<4> } fn main() { let _ = U { a: S([1; 4]) }; }",
+        "trait Tr { type Out; } struct Marker; impl Tr for Marker { type Out = [u8; 4]; } union U { a: <Marker as Tr>::Out } fn main() { let _ = U { a: [1; 4] }; }",
+        "union U { a: [u8; 4], b: u32 } fn main() { let u = U { a: [1; 4] }; let _ = unsafe { u.b }; }",
+        "#[derive(Copy, Clone)] struct S(u32); #[derive(Copy, Clone)] union U { a: S, b: u32 } fn main() { let u = U { a: S(1) }; let _ = u.clone(); let _ = unsafe { u.a.0 }; }",
+        "#[derive(Copy, Clone)] struct S<T> { a: T } type A = S<[u8; 16]>; union U { a: A } fn main() { let u = U { a: S { a: [2; 16] } }; let _ = unsafe { u.a.a[3] }; }",
+        "#[derive(Copy, Clone)] struct S(u32, u32); union U { a: S, b: S } fn main() { let mut u = U { a: S(1, 2) }; unsafe { let a = &mut u.a.0; let b = &mut u.a.1; *a = 3; *b = 4; } }",
+        "#[derive(Copy, Clone)] struct S(u32); union U { a: S, #[cfg(any())] absent: Missing } fn main() { let _ = U { a: S(1) }; }",
+    ] {
+        let found = errors(text);
+        assert!(found.is_empty(), "{text}: {found:?}");
+    }
+}
+
+#[test]
+fn aggregate_union_rejections() {
+    for (text, expected) in [
+        (
+            "struct S(u32); impl Drop for S { fn drop(&mut self) {} } union U { a: S } fn main() {}",
+            "union fields must implement Copy",
+        ),
+        (
+            "struct S(u32); union U { a: [S; 2] } fn main() {}",
+            "union fields must implement Copy",
+        ),
+        (
+            "#[derive(Clone)] struct S(u32); union U { a: S } fn main() {}",
+            "union fields must implement Copy",
+        ),
+        (
+            "struct S(u32); #[derive(Copy, Clone)] struct W<T>(T); union U { a: W<S> } fn main() {}",
+            "union fields must implement Copy",
+        ),
+        (
+            "#[derive(Copy, Clone)] struct S(u32); impl Drop for S { fn drop(&mut self) {} } union U { a: S } fn main() {}",
+            "destructor",
+        ),
+        (
+            "#[derive(Copy, Clone)] enum E { A, B } union U { a: E } fn main() {}",
+            "only concrete integer",
+        ),
+        (
+            "#[derive(Copy, Clone)] union A { a: u32 } union U { a: A } fn main() {}",
+            "only concrete integer",
+        ),
+        ("union U { a: [u8] } fn main() {}", "unsized fields"),
+        (
+            "struct S([u8]); union U { a: S } fn main() {}",
+            "unsized fields",
+        ),
+        (
+            "#[derive(Copy, Clone)] struct S(&'static u32); union U { a: S } fn main() {}",
+            "only concrete integer",
+        ),
+        (
+            "union U { a: (u32, u32) } fn main() {}",
+            "only concrete integer",
+        ),
+        (
+            "union U { a: core::mem::ManuallyDrop<u32> } fn main() {}",
+            "only concrete integer",
+        ),
+        (
+            "#[derive(Copy, Clone)] struct S(u32); union U { a: S } fn main() { let u = U { a: S(1) }; let _ = u.a.0; }",
+            "access to union field is unsafe",
+        ),
+        (
+            "union U { a: [u8; 4] } fn main() { let u = U { a: [1; 4] }; let _ = &u.a[0]; }",
+            "access to union field is unsafe",
+        ),
+        (
+            "#[derive(Copy, Clone)] struct S(u32, u32); union U { a: S, b: S } fn main() { let mut u = U { a: S(1, 2) }; unsafe { let a = &mut u.a.0; let b = &mut u.b.1; *a = 3; *b = 4; } }",
+            "more than once",
+        ),
+        (
+            "#[derive(Copy, Clone)] struct S(u32, u32); union U { a: S, b: S } fn main() { let mut u = U { a: S(1, 2) }; unsafe { let r = &mut u; let a = &mut r.a.0; let b = &mut r.b.1; *a = 3; *b = 4; } }",
+            "more than once",
+        ),
+        (
+            "#[derive(Copy, Clone)] struct S(u32, u32); union U { a: S, b: S } fn main() { let mut u = U { a: S(1, 2) }; unsafe { let a = &u.a.0; let mut f = || { u.b.1 = 4; }; f(); let _ = *a; } }",
+            "borrow",
+        ),
+        (
+            "#[derive(Copy, Clone)] struct S([u8; 4]); union U { a: S, b: [u8; 4] } fn main() { let mut u = U { b: [1; 4] }; unsafe { let a = &u.a.0[0]; let b = &mut u.b[1]; *b = 2; let _ = *a; } }",
+            "borrow",
+        ),
+    ] {
+        let found = errors(text);
+        assert!(
+            found.iter().any(|e| e.contains(expected)),
+            "{text}: expected {expected:?}, found {found:?}"
         );
     }
 }

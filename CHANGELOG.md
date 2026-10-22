@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Support concrete Copy struct/array union fields and reject overlapping
+  nested borrows through different fields; cover actual NEON wrapper storage.
+
 - Accept baseline AArch64 NEON attributes on unsafe functions with bodies,
   validating feature lists, placement, inline conflicts and trait safety.
 
