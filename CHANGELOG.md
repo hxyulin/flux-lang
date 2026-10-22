@@ -264,7 +264,7 @@
   type (`fn(i32) -> i32 {double}`), which has no size and coerces to a
   function pointer type (`fn(i32) -> i32`, `unsafe fn()`) where one is
   wanted: in `let`s, arguments, fields, return values, `as` casts, and
-  `if` and `match` arms naming different functions. Values of either
+  `if` and `match` arms and array elements naming different functions. Values of either
   type may be called, and pointers stored and passed anywhere. Calls of
   function items are direct; calls through pointers are keel's indirect
   calls, and a function whose address is taken uses C's calling

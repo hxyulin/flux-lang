@@ -1841,7 +1841,20 @@ impl Ctx<'_> {
             Expr::Array(elements) => {
                 let elem = match self.expected_elem(id) {
                     Some(elem) => elem,
-                    None => self.new_var(false, self.range(id)),
+                    None => {
+                        // Function items of different functions coerce to
+                        // their pointer type, as in rustc.
+                        let types: Vec<(ExprId, Ty)> =
+                            elements.iter().map(|&e| (e, self.infer_expr(e))).collect();
+                        if let Some(ptr) = self.fn_lub(&types) {
+                            return Ty::array(ptr, elements.len() as u64);
+                        }
+                        let elem = self.new_var(false, self.range(id));
+                        for (element, ty) in types {
+                            self.coerce(ty, elem, element);
+                        }
+                        return Ty::array(elem, elements.len() as u64);
+                    }
                 };
                 for &element in elements.iter() {
                     self.expect(element, elem);
