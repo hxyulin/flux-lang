@@ -5,8 +5,13 @@
 //! the expected output. Run with `UPDATE_EXPECT=1` to write missing or
 //! changed snapshots, then review the diff.
 
+#[path = "../../flux-syntax/tests/support/corpus.rs"]
+mod corpus;
+
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use corpus::Budget;
 
 fn fixtures(dir: &str) -> Vec<PathBuf> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -90,71 +95,23 @@ fn lowering_never_panics() {
     }
 }
 
-/// The same over every file under `FLUX_CORPUS`.
+/// The same over every file under `FLUX_CORPUS` (with the files of its
+/// modules), and none takes too long for its size.
 #[test]
 #[ignore = "needs FLUX_CORPUS"]
 fn corpus_lowering_never_panics() {
-    for_each_corpus_file("lowered", |path, text| {
-        flux_hir::lower_text_bare(path, text);
+    // Lowering a large file alone takes at most 50 ns/B (October 2026).
+    const BUDGET: Budget = Budget::new(200, 1000.0);
+    corpus::for_each_corpus_file("lowered", BUDGET, |path, text| {
+        let (db, root, _) = flux_hir::lower_text_bare(path, text);
+        (bytes_read(&db, root), ())
     });
 }
 
-/// Runs `f` on every `.rs` file under `FLUX_CORPUS`, on every core, and
-/// fails with the files it panicked on; prints the slowest.
-fn for_each_corpus_file(what: &str, f: impl Fn(PathBuf, &str) + Sync) {
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::{Duration, Instant};
-
-    let root = std::env::var_os("FLUX_CORPUS").expect("set FLUX_CORPUS");
-    let mut files = Vec::new();
-    let mut stack = vec![PathBuf::from(root)];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                files.push(path);
-            }
-        }
-    }
-    let next = AtomicUsize::new(0);
-    let times: Mutex<Vec<(Duration, &Path)>> = Mutex::new(Vec::new());
-    let panicked: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    let start = Instant::now();
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-    std::thread::scope(|s| {
-        for _ in 0..threads {
-            s.spawn(|| {
-                while let Some(path) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let Ok(text) = fs::read_to_string(path) else {
-                        continue;
-                    };
-                    let file = Instant::now();
-                    let run = || f(path.clone(), &text);
-                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_err() {
-                        panicked.lock().unwrap().push(path.display().to_string());
-                    }
-                    times.lock().unwrap().push((file.elapsed(), path));
-                }
-            });
-        }
-    });
-    let mut times = times.into_inner().unwrap();
-    times.sort_by(|a, b| b.cmp(a));
-    let total: Duration = times.iter().map(|t| t.0).sum();
-    println!(
-        "{what} {} files in {:.2?} ({total:.2?} on {threads} threads); slowest:",
-        times.len(),
-        start.elapsed()
-    );
-    for (time, path) in times.iter().take(5) {
-        println!("{time:>12.2?}  {}", path.display());
-    }
-    let panicked = panicked.into_inner().unwrap();
-    assert!(panicked.is_empty(), "panicked on:\n{}", panicked.join("\n"));
+/// The bytes of the files lowering `root` read: it and its modules' files.
+fn bytes_read(db: &flux_hir::SourceDb, root: flux_hir::FileId) -> usize {
+    (db.files())
+        .filter(|&(id, _)| id >= root)
+        .map(|(_, file)| file.text().len())
+        .sum()
 }

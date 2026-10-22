@@ -222,6 +222,21 @@
 
 ### Performance
 
+- Guard against slowdowns worse than linear. The corpus tests fail on a
+  file a stage spends too long on for the bytes it read (200 ms, or 100
+  ns/B to parse, 500 to check trees against the grammar and 1000 to
+  lower or type-check; the largest files take 6, 80, 50 and 50 alone),
+  timed again alone before failing; `FLUX_CORPUS_FLOOR_MS` and
+  `FLUX_CORPUS_NS_PER_BYTE` change the budget. New `scaling` tests in
+  `flux-syntax`, `flux-hir`, `flux-ty` and `flux-mir` generate programs
+  of size n and 4n (items, derives, `impl` blocks, supertraits, bounded
+  associated types, modules, module files, long bodies, errors) and
+  fail if the larger takes six times as long; with the derive, file
+  lookup, `impl` type and elaboration fixes undone, they do. Ignored
+  ones record what is still quadratic: names looked up through every
+  binding in scope, `impl` blocks of one trait compared and searched
+  pairwise, the traits in scope listed pairwise for each body, and the
+  MIR checks' state per block and per statement.
 - Speed up the front end on one thread: about 245 MiB/s for whole-file
   parsing instead of 200 (`just bench`: lexing 6.3 to 5.4 ns/token,
   parsing 5.2 to 3.9, building 6.0 to 4.9). The parser's lookahead is
