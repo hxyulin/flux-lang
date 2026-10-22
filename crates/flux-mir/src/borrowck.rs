@@ -633,7 +633,7 @@ impl Checker<'_> {
         let is_param = self.body.is_param(local);
         // A closure's borrow of what it captures, which must outlive the
         // function: rustc's E0373, at the closure.
-        if self.regions.escapes[id].is_some()
+        if self.regions.escapes[id].is_some_and(|(c, _)| c != regions::Category::ClosureBounds)
             && self.body.upvars.is_none()
             && let Some(closure) = self.capturing_closure(id)
         {

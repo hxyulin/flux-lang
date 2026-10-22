@@ -916,14 +916,21 @@ and `impl` blocks may name lifetimes in what they say associated types
 are (`I: Iterator<Item = &'a T>`). Traits may not have lifetime
 parameters yet, bounds may not name lifetimes in their trait's generic
 arguments (`T: Tr<&'a U>`; `&` without one is E0637, as in rustc), nor
-those of structs and traits in what they say associated types are,
-`Fn` bounds may not return references, and named lifetimes in types
-inside bodies (`let x: &'a i32`) and function pointer types are not
-supported yet. A trait's `impl` block may be for some lifetimes only:
+those of structs and traits in what they say associated types are.
+Named lifetimes in types inside bodies (`let x: &'a i32`) and function
+pointer types are not supported yet. A trait's `impl` block may be for some lifetimes only:
 naming one twice (`impl<'a> PartialEq for Token<'a>`, whose `Rhs` is
 `Token<'a>` too), naming `'static` (`impl Tr for &'static S`), or
 bounding them (`impl<'a, 'b: 'a>`); a lifetime only its associated
 types name is E0207, as in rustc.
+
+`Fn`, `FnMut` and `FnOnce` bounds may return references whose lifetime
+is elided from a single input reference (`F: Fn(&T) -> &U`). Each
+call's result borrows from its argument. A single-lifetime binder
+expressing the same relationship (`for<'a> Fn(&'a T) -> &'a U`, also
+in a `where for<'a>` clause) is supported. Other named lifetimes in
+`Fn` bounds, binders with several lifetimes, and general higher-ranked
+bounds are not supported yet.
 
 The borrow checker infers lifetimes as rustc's (non-lexical lifetimes,
 with two-phase borrows for method receivers and borrows of distinct

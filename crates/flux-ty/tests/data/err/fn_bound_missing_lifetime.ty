@@ -1,0 +1,7 @@
+fn none<F>(F) -> ()
+    f@0: F
+fn two<F>(F) -> ()
+    f@0: F
+fn main() -> ()
+error 125..126: missing lifetime specifier
+error 166..167: missing lifetime specifier

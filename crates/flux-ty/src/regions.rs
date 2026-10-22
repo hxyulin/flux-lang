@@ -48,6 +48,11 @@ pub enum Region {
     /// Elided in a body, or erroneous (reported): the borrow checker
     /// infers it.
     Erased,
+    /// In what a `Fn`-family bound says its `Output` is (`F: Fn(&T) ->
+    /// &U`), the bound's own (higher-ranked) lifetime elided in its
+    /// parameters, the one at this slot of their tuple: a different one
+    /// at each call, which the result has as the argument does.
+    Late(u32),
 }
 
 /// How a type's subtyping depends on one of its parameters.

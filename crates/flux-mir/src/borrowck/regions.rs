@@ -60,6 +60,10 @@ pub(crate) enum Category {
     Return,
     /// What an opaque type's hidden type must outlive.
     OpaqueType,
+    /// What a closure's body requires, as a bound it is passed for says
+    /// it is called: rustc's `from_closure`, whose escaping borrows are
+    /// E0597 rather than E0373. Blamed before the call that passes it.
+    ClosureBounds,
     CallArgument,
     Assignment,
     Boring,
@@ -240,12 +244,12 @@ pub(crate) fn impl_method_matches(
         Region::Static => Some(STATIC),
         Region::Param(i) if (i as usize) < owner => block_vars.get(i as usize).copied(),
         Region::Param(i) => own_vars.get(i as usize - owner).copied(),
-        Region::Erased => None,
+        Region::Erased | Region::Late(_) => None,
     };
     let map_trait = |r: Region| match r {
         Region::Static => Some(STATIC),
         Region::Param(i) => trait_vars.get(i as usize).copied(),
-        Region::Erased => None,
+        Region::Erased | Region::Late(_) => None,
     };
     // What the block's bounds and the method's say associated types are.
     let declared = sigs
@@ -471,6 +475,16 @@ struct Cx<'a> {
     output_closures: rustc_hash::FxHashSet<flux_ty::ClosureId>,
     /// Where the call being checked is.
     call_range: TextRange,
+    /// What the function's own `Fn`-family bounds say their results are,
+    /// where those have the bounds' own lifetimes (`F: Fn(&T) -> &U`):
+    /// at each call, the argument's (`Region::Late`).
+    env_late: Vec<(AliasTy, Box<[Region]>)>,
+    /// The slots of the parameters of the `Fn`-family bound being
+    /// proven, which its result's `Region::Late` lifetimes are.
+    late_inputs: Vec<Var>,
+    /// What the bounds of the call being checked say associated types
+    /// are, with the tables of their slots.
+    call_projections: Vec<(flux_ty::traits::Projection, Box<[Region]>)>,
 }
 
 /// What a lifetime a closure is given is, where a bound says what it is
@@ -563,6 +577,9 @@ impl<'a> Cx<'a> {
             proven_closures: Default::default(),
             output_closures: Default::default(),
             call_range: TextRange::default(),
+            env_late: Vec::new(),
+            late_inputs: Vec::new(),
+            call_projections: Vec::new(),
         }
     }
 
@@ -651,6 +668,8 @@ impl<'a> Cx<'a> {
             let map = |region: Region| match region {
                 Region::Static => Some(STATIC),
                 Region::Param(i) => Some(1 + i),
+                // The argument's at each call (`Cx::late_output`).
+                Region::Late(_) => Some(STATIC),
                 Region::Erased => None,
             };
             for p in r.outlives.iter() {
@@ -698,6 +717,9 @@ impl<'a> Cx<'a> {
                 if table.is_empty() {
                     continue;
                 }
+                if table.iter().any(|r| matches!(r, Region::Late(_))) {
+                    self.env_late.push((p.alias, table.into()));
+                }
                 let mut map_var = map;
                 if let Some(vars) = self.instantiate_sig(p.ty, table, &mut map_var, &[], &[]) {
                     self.env_regions.push((p.alias, vars));
@@ -726,6 +748,28 @@ impl<'a> Cx<'a> {
             // A closure: each lifetime of what it is given is universal,
             // and how they must relate is its creator's to check.
             let by_ref = upvars.kind != flux_ty::ClosureKind::FnOnce;
+            // What its creator's `Fn`-family bounds say their results are,
+            // where those are the arguments' lifetimes (`F: Fn(&T) ->
+            // &U`): its calls of them see the same.
+            if let Some(f) = body.owner
+                && let Some(r) = sigs.regions.fns.get(f)
+            {
+                let list = sigs.fn_projections.get(f).map_or(&[][..], |p| p);
+                for (p, table) in list.iter().zip(r.projections.iter()) {
+                    let late = table.iter().any(|r| matches!(r, Region::Late(_)));
+                    let only = table
+                        .iter()
+                        .all(|r| matches!(r, Region::Late(_) | Region::Static));
+                    if !late || !only {
+                        continue;
+                    }
+                    let mut map = |_| Some(STATIC);
+                    if let Some(vars) = self.instantiate_sig(p.ty, table, &mut map, &[], &[]) {
+                        self.env_regions.push((p.alias, vars));
+                        self.env_late.push((p.alias, table.clone()));
+                    }
+                }
+            }
             self.closure_ext.push(Ext::Static);
             for i in 0..=body.param_count as u32 {
                 let local = Local::from_raw(i);
@@ -796,7 +840,7 @@ impl<'a> Cx<'a> {
         let map = |r: Region| match r {
             Region::Static => Some(STATIC),
             Region::Param(i) => Some(1 + i),
-            Region::Erased => None,
+            Region::Erased | Region::Late(_) => None,
         };
         if !sig_ty.has_opaques() {
             let mut map = map;
@@ -984,7 +1028,7 @@ impl<'a> Cx<'a> {
         let map = |r: Region| match r {
             Region::Static => Some(STATIC),
             Region::Param(i) => Some(1 + i),
-            Region::Erased => None,
+            Region::Erased | Region::Late(_) => None,
         };
         for (p, table) in sig.projections.iter().zip(decl.projections.iter()) {
             if table.is_empty() {
@@ -1163,7 +1207,10 @@ impl<'a> Cx<'a> {
                 if self.slots(normalized) == 0 {
                     return true;
                 }
+                // A bound's result with its own lifetimes is the call's
+                // arguments', below.
                 if let TyKind::Alias(a) = instance.kind()
+                    && !self.env_late.iter().any(|(e, _)| *e == a)
                     && let Some((_, vars)) = self.env_regions.iter().find(|(e, _)| *e == a)
                 {
                     out.extend(vars);
@@ -1206,7 +1253,21 @@ impl<'a> Cx<'a> {
             return None;
         }
         if let Some((_, vars)) = self.env_regions.iter().find(|(e, _)| *e == alias) {
-            return Some(vars.clone());
+            let mut vars = vars.clone();
+            // A bound's result with its own lifetimes: the argument's.
+            if let Some((_, table)) = self.env_late.iter().find(|(e, _)| *e == alias)
+                && table.len() == vars.len()
+            {
+                let inputs = arg_vars.get(1).map_or(&[][..], Vec::as_slice);
+                for (v, r) in vars.iter_mut().zip(table.iter()) {
+                    if let Region::Late(j) = *r
+                        && let Some(&input) = inputs.get(j as usize)
+                    {
+                        *v = input;
+                    }
+                }
+            }
+            return Some(vars);
         }
         // What an opaque type's bounds say, or else what an `impl`
         // block for it does (`impl<I: Iterator> IntoIterator for I`).
@@ -1278,7 +1339,7 @@ impl<'a> Cx<'a> {
             let mut map = |r: Region| match r {
                 Region::Static => Some(STATIC),
                 Region::Param(i) => lifetimes.get(i as usize).copied().flatten(),
-                Region::Erased => None,
+                Region::Erased | Region::Late(_) => None,
             };
             return self.instantiate_sig(value, &table, &mut map, &impl_args, &type_vars);
         }
@@ -1383,7 +1444,7 @@ impl<'a> Cx<'a> {
                 let at = captures.iter().position(|&c| c == r)?;
                 vars.get(at).copied()
             }
-            Region::Erased => None,
+            Region::Erased | Region::Late(_) => None,
         };
         // Its arguments' slots follow its own.
         let mut next = captures.len();
@@ -1816,7 +1877,7 @@ impl<'a> Cx<'a> {
             let mut map = |r: Region| match r {
                 Region::Static => Some(STATIC),
                 Region::Param(i) => vars.get(i as usize).copied(),
-                Region::Erased => None,
+                Region::Erased | Region::Late(_) => None,
             };
             if let Some(out) =
                 self.instantiate_sig(generic, &table.clone(), &mut map, args, &arg_vars)
@@ -2184,7 +2245,7 @@ impl<'a> Cx<'a> {
         let mut map = |r: Region| match r {
             Region::Static => Some(STATIC),
             Region::Param(i) => lifetimes.get(i as usize).copied(),
-            Region::Erased => None,
+            Region::Erased | Region::Late(_) => None,
         };
         let mut inputs: Vec<Var> = Vec::new();
         let mut unmatched_inputs: Vec<Var> = Vec::new();
@@ -2282,9 +2343,6 @@ impl<'a> Cx<'a> {
         for (k, &p) in own.iter().enumerate() {
             bounds.push((p, regions.bound_selfs.get(k).map_or(&[][..], |t| t)));
         }
-        for (p, table) in bounds {
-            self.prove_bound(p, table, &lifetimes, generic_args, &type_vars, range, 0);
-        }
         let mut declared: Vec<(flux_ty::traits::Projection, &[Region])> = Vec::new();
         if let Some((imp, r)) = block {
             let list = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
@@ -2300,6 +2358,11 @@ impl<'a> Cx<'a> {
                 .copied()
                 .zip(regions.projections.iter().map(|t| &t[..])),
         );
+        self.call_projections = declared.iter().map(|&(p, t)| (p, t.into())).collect();
+        for (p, table) in bounds {
+            self.prove_bound(p, table, &lifetimes, generic_args, &type_vars, range, 0);
+        }
+        self.call_projections.clear();
         for (p, table) in declared {
             self.prove_projection(p, table, &lifetimes, generic_args, &type_vars, range);
         }
@@ -2351,9 +2414,11 @@ impl<'a> Cx<'a> {
         arg_vars: &[Vec<Var>],
     ) -> Option<Vec<Var>> {
         const HOLE: Var = Var::MAX;
+        let late = self.late_inputs.clone();
         let mut map = |r: Region| match r {
             Region::Static => Some(STATIC),
             Region::Param(i) => Some(lifetimes.get(i as usize).copied().unwrap_or(HOLE)),
+            Region::Late(j) => Some(late.get(j as usize).copied().unwrap_or(HOLE)),
             Region::Erased => Some(HOLE),
         };
         let mut vars = self.instantiate_sig(ty, table, &mut map, args, arg_vars)?;
@@ -2394,7 +2459,31 @@ impl<'a> Cx<'a> {
                 self.bound_slots_in(t, &[], lifetimes, args, arg_vars)
                     .filter(|v| v.len() == n)
             });
-            self.closure_goal(id, upvars.as_deref(), inputs.as_deref(), range);
+            // What the bound says the closure returns, if it has the
+            // bound's own lifetimes: those of its parameters.
+            let output = self.call_projections.iter().find(|(q, table)| {
+                q.alias.name.as_str() == "Output"
+                    && q.alias.args.first() == Some(&p.self_ty)
+                    && q.alias.args.get(1) == p.trait_ref.args.first()
+                    && table.iter().any(|r| matches!(r, Region::Late(_)))
+            });
+            let ret = match (output, &inputs) {
+                (Some((q, table)), Some(inputs)) => {
+                    let (q, table) = (*q, table.clone());
+                    self.late_inputs = inputs.clone();
+                    let ret = self.bound_slots_in(q.ty, &table, lifetimes, args, arg_vars);
+                    self.late_inputs.clear();
+                    ret
+                }
+                _ => None,
+            };
+            self.closure_goal(
+                id,
+                upvars.as_deref(),
+                inputs.as_deref(),
+                ret.as_deref(),
+                range,
+            );
             return;
         }
         let mut header = Vec::with_capacity(1 + p.trait_ref.args.len());
@@ -2479,7 +2568,7 @@ impl<'a> Cx<'a> {
         let map = |r: Region| match r {
             Region::Static => Some(STATIC),
             Region::Param(i) => lifetimes.get(i as usize).copied(),
-            Region::Erased => None,
+            Region::Erased | Region::Late(_) => None,
         };
         for p in regions.bounds.iter() {
             match *p {
@@ -2548,7 +2637,10 @@ impl<'a> Cx<'a> {
         let Some(actual) = self.normalize_regions(alias, &alias_vars, 0) else {
             return;
         };
-        let Some(expected) = self.bound_slots_in(p.ty, table, lifetimes, args, arg_vars) else {
+        self.late_inputs = alias_vars.get(1).cloned().unwrap_or_default();
+        let expected = self.bound_slots_in(p.ty, table, lifetimes, args, arg_vars);
+        self.late_inputs.clear();
+        let Some(expected) = expected else {
             return;
         };
         if actual.len() == expected.len() {
@@ -2643,6 +2735,7 @@ impl<'a> Cx<'a> {
         id: flux_ty::ClosureId,
         upvars: Option<&[Var]>,
         inputs: Option<&[Var]>,
+        ret: Option<&[Var]>,
         range: TextRange,
     ) {
         let requirements = self.requirements;
@@ -2662,13 +2755,26 @@ impl<'a> Cx<'a> {
                 Some(Some(&v)) => ClosureSlot::Var(v),
                 Some(None) => ClosureSlot::None,
             },
-            Ext::Ret(_) => ClosureSlot::Ret,
+            // What the bound says it returns, where its result has the
+            // bound's own lifetimes; else related where its `Output` is
+            // normalized.
+            Ext::Ret(k) => match ret.and_then(|r| r.get(k as usize)) {
+                Some(&v) if cx.holes.contains(&v) => ClosureSlot::HigherRanked(v),
+                Some(&v) => ClosureSlot::Var(v),
+                None => ClosureSlot::Ret,
+            },
             Ext::SelfRef => ClosureSlot::None,
         };
         for &(a, b, at) in &required.outlives {
             match (slot(self, a), slot(self, b)) {
                 (ClosureSlot::HigherRanked(x), ClosureSlot::HigherRanked(y)) if x == y => {}
                 (ClosureSlot::Var(STATIC), ClosureSlot::HigherRanked(_)) => {}
+                // What must outlive a lifetime the bound's own, any at
+                // each call, must live forever, as rustc's placeholders
+                // make it (`|_| &local` for `Fn(&T) -> &U`: E0597).
+                (ClosureSlot::Var(x), ClosureSlot::HigherRanked(_)) if matches!(b, Ext::Ret(_)) => {
+                    self.outlives(x, STATIC, Category::ClosureBounds, range);
+                }
                 (ClosureSlot::HigherRanked(_), _) | (_, ClosureSlot::HigherRanked(_)) => {
                     let message = match b {
                         Ext::Upvar(_) => "borrowed data escapes outside of closure",
