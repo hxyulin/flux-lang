@@ -1,0 +1,5 @@
+fn finalize(Self) -> <Self as Digest>::Output
+fn digest(&[u8]) -> <Self as Digest>::Output
+fn check<D>(&[u8]) -> usize
+fn main() -> ()
+error 205..212: cannot find trait `Missing` in this scope

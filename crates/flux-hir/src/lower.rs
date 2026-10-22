@@ -2433,6 +2433,8 @@ impl<'a> Ctx<'a> {
                 self.error(path.range(last, range), message);
                 None
             }
+            // A name whose import failed, which was reported there.
+            Err(ResolveError::Reported) => None,
             result => {
                 let segment = match &result {
                     Err(e) => e.segment(),
@@ -3827,6 +3829,7 @@ impl<'a> Ctx<'a> {
                     _ => "macros",
                 };
                 self.unsupported(range, what);
+                self.bind_unsupported(pat, site);
                 Pat::Missing
             }
         };
@@ -4227,6 +4230,26 @@ impl<'a> Ctx<'a> {
     }
 
     /// The fields of a tuple or tuple struct pattern, and where `..` is.
+    /// The names an unsupported pattern `pat` binds, as bindings without
+    /// a pattern, so that uses of them are not reported too: their types
+    /// are errors, which type checking reports nothing of. `x @ ..` binds
+    /// `x`.
+    fn bind_unsupported(&mut self, pat: ast::Pat<'_>, site: PatSite) {
+        for child in pat.syntax().children().filter_map(ast::Pat::cast) {
+            match child {
+                ast::Pat::RestPat(_) => {}
+                ast::Pat::IdentPat(ident) if matches!(ident.pat(), Some(ast::Pat::RestPat(_))) => {
+                    if let Some(name) = ident.name() {
+                        self.lower_ident_pat(name, ident, None, site);
+                    }
+                }
+                _ => {
+                    self.lower_pat(Some(child), pat.syntax(), site);
+                }
+            }
+        }
+    }
+
     fn lower_tuple_fields(
         &mut self,
         fields: ast::AstChildren<'_, ast::Pat<'_>>,

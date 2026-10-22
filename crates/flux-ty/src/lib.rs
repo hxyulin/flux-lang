@@ -2936,6 +2936,7 @@ fn unresolved_trait(items: &ItemTree) -> bool {
     }) || items.traits.values().any(|t| {
         in_generics(t.loc.module, &t.generics)
             || t.supertraits.iter().any(|b| unresolved(t.loc.module, b))
+            || (t.types.iter()).any(|ty| ty.bounds.iter().any(|b| unresolved(t.loc.module, b)))
     }) || items
         .functions
         .values()

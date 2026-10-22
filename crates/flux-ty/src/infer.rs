@@ -570,6 +570,18 @@ impl Ctx<'_> {
         self.source_map.exprs.get(expr).copied().unwrap_or_default()
     }
 
+    /// Whether the body has errors: reported, or types that are errors
+    /// (reported elsewhere, such as a field's type that did not
+    /// resolve). rustc reports what needs annotations only without
+    /// them, as `tainted_by_errors` says.
+    fn tainted(&mut self) -> bool {
+        if !self.diagnostics.is_empty() {
+            return true;
+        }
+        let types: Vec<Ty> = self.expr_types.iter().map(|(_, &t)| t).collect();
+        types.into_iter().any(|t| self.shallow(t).has_error())
+    }
+
     fn error(&mut self, range: TextRange, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic {
             file: flux_hir::FileId::UNKNOWN,
@@ -2001,10 +2013,16 @@ impl Ctx<'_> {
             } => {
                 let generics = body.pat_generic_args.get(pat);
                 let ty = self.instantiate_adt(*strukt, generics, range);
+                let of_error = self.shallow(expected) == Ty::ERROR;
                 if !self.unify(ty, expected) {
                     self.mismatch(expected, ty, range);
                 }
-                let fields = self.variant_fields_of(ty, *variant, range);
+                let mut fields = self.variant_fields_of(ty, *variant, range);
+                // What matches a value whose type is an error has errors
+                // for types, as in rustc.
+                if of_error {
+                    fields = Ty::list(&vec![Ty::ERROR; fields.len()]);
+                }
                 self.register_struct_bounds(ty, &[], range);
                 let fits = match rest {
                     Some(_) => pats.len() <= fields.len(),
@@ -2042,10 +2060,14 @@ impl Ctx<'_> {
                 let generics = body.pat_generic_args.get(pat);
                 let ty = self.instantiate_adt(*strukt, generics, range);
                 self.register_struct_bounds(ty, &[], range);
+                let of_error = self.shallow(expected) == Ty::ERROR;
                 if !self.unify(ty, expected) {
                     self.mismatch(expected, ty, range);
                 }
-                let field_types = self.variant_fields_of(ty, *variant, range);
+                let mut field_types = self.variant_fields_of(ty, *variant, range);
+                if of_error {
+                    field_types = Ty::list(&vec![Ty::ERROR; field_types.len()]);
+                }
                 let def = items.structs[*strukt].variant(*variant);
                 let names = self.source_map.pat_fields.get(pat);
                 let mut private = Vec::new();
@@ -2738,6 +2760,9 @@ impl Ctx<'_> {
         let mut values = Vec::new();
         // Whether an arm was coerced to the type of those before it.
         let mut coerced = false;
+        // As rustc's `CoerceMany`, once an arm does not fit, the match's
+        // type is an error, which the arms after it are not reported for.
+        let mut failed = false;
         for arm in arms {
             self.check_pat(arm.pat, ty, false);
             if let Some(guard) = arm.guard {
@@ -2753,14 +2778,16 @@ impl Ctx<'_> {
                 result = Some(Ty::UNIT);
                 continue;
             }
-            if self.shallow(arm_ty) == Ty::NEVER {
+            if self.shallow(arm_ty) == Ty::NEVER || failed {
                 continue;
             }
             values.push((arm.body, arm_ty));
             if let Some(target) = target {
                 if result.is_none() {
+                    let before = self.diagnostics.len();
                     self.coerce(arm_ty, target, arm.body);
-                    result = Some(target);
+                    failed = self.diagnostics.len() > before;
+                    result = Some(if failed { Ty::ERROR } else { target });
                     continue;
                 }
             } else if values.len() > 1
@@ -2797,6 +2824,8 @@ impl Ctx<'_> {
                                 "`match` arms have incompatible types: expected `{a}`, found `{b}`"
                             ),
                         );
+                        failed = true;
+                        result = Some(Ty::ERROR);
                     }
                 }
             }
@@ -4138,6 +4167,10 @@ impl Ctx<'_> {
             }
             return c_char_ptr();
         }
+        // A type made of an error was reported where the error is.
+        if receiver_ty.has_error() {
+            return Ty::ERROR;
+        }
         if let Some(ty) = unmet {
             let what = self.describe_kind(ty);
             self.error(
@@ -4189,6 +4222,12 @@ impl Ctx<'_> {
                 name_range,
                 format!("no method named `{method}` found for {what} in the current scope"),
             );
+            return Ty::ERROR;
+        }
+        // A receiver whose type is not known, after other errors (whose
+        // types are errors), is not reported, as rustc reports what needs
+        // annotations only in bodies without errors.
+        if matches!(self.shallow(base).kind(), TyKind::Infer(_)) && self.tainted() {
             return Ty::ERROR;
         }
         let ty = self.describe(receiver_ty);
