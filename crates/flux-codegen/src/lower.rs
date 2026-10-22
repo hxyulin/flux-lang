@@ -486,14 +486,6 @@ fn leaves_of(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
     out
 }
 
-/// A scalar leaf of a constant's value: its bits, or the address of a data
-/// object (a reference's).
-#[derive(Clone)]
-enum Leaf {
-    Bits(u128),
-    Address(String),
-}
-
 fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
     if is_memory(sigs, ty) {
         return 1;
@@ -866,21 +858,10 @@ impl Ctx<'_> {
     /// alignment.
     fn value_bytes(&mut self, value: &flux_mir::eval::Value, ty: Ty) -> (Vec<DataItem>, u32) {
         let layout = layout(&self.typed.sigs, ty);
-        let mut bits = Vec::new();
-        self.value_bits(value, ty, &mut bits);
         let mut bytes = vec![0u8; layout.size().max(1) as usize];
         // The addresses, which the linker fills in, by offset.
         let mut addresses: Vec<(usize, String)> = Vec::new();
-        for ((offset, leaf), value) in layout.leaves().into_iter().zip(bits) {
-            let width = leaf.bytes().unwrap_or(8) as usize;
-            let offset = offset as usize;
-            match value {
-                Leaf::Bits(value) => {
-                    bytes[offset..offset + width].copy_from_slice(&value.to_le_bytes()[..width])
-                }
-                Leaf::Address(symbol) => addresses.push((offset, symbol)),
-            }
-        }
+        self.write_value(value, ty, 0, &mut bytes, &mut addresses);
         let mut items = Vec::new();
         let mut at = 0;
         addresses.sort();
@@ -945,32 +926,51 @@ impl Ctx<'_> {
         }
     }
 
-    /// Each scalar leaf of `value`, of type `ty`, in the order of its
-    /// leaves; zeros for the variants an enum does not hold, and the
-    /// data objects references point to.
-    fn value_bits(&mut self, value: &flux_mir::eval::Value, ty: Ty, out: &mut Vec<Leaf>) {
+    /// Writes `value`, of type `ty`, into `bytes` at offset `at`, placing
+    /// every field where `layout` puts it, as code storing the value does;
+    /// the variants an enum does not hold stay zero. The addresses of the
+    /// data objects references point to go in `addresses`.
+    fn write_value(
+        &mut self,
+        value: &flux_mir::eval::Value,
+        ty: Ty,
+        at: u64,
+        bytes: &mut [u8],
+        addresses: &mut Vec<(usize, String)>,
+    ) {
         use flux_mir::eval::Value as V;
+        fn put(bytes: &mut [u8], at: u64, bits: u128, scalar: &Layout) {
+            let Layout::Scalar(scalar) = scalar else {
+                unreachable!("scalar constants are laid out as scalars")
+            };
+            let (at, width) = (at as usize, scalar.bytes().unwrap_or(8) as usize);
+            bytes[at..at + width].copy_from_slice(&bits.to_le_bytes()[..width]);
+        }
         let sigs = &self.typed.sigs;
         match value {
             V::Ref(pointee) => {
                 let (symbol, len) = self.referenced(pointee, ty);
-                out.push(Leaf::Address(symbol));
+                addresses.push((at as usize, symbol));
                 if let Some(len) = len {
-                    out.push(Leaf::Bits(u128::from(len)));
+                    put(bytes, at + 8, u128::from(len), &Layout::Scalar(Type::I64));
                 }
             }
-            V::Int { bits, .. } => out.push(Leaf::Bits(*bits)),
-            V::Bool(b) => out.push(Leaf::Bits(u128::from(*b))),
-            V::Aggregate(fields) if matches!(ty.kind(), TyKind::Array(..)) => {
+            V::Static(id) => addresses.push((at as usize, self.statics[id].clone())),
+            V::Int { bits, .. } => put(bytes, at, *bits, &layout(sigs, ty)),
+            V::Bool(b) => put(bytes, at, u128::from(*b), &layout(sigs, ty)),
+            V::Aggregate(elements) if matches!(ty.kind(), TyKind::Array(..)) => {
                 let elem = ty.sequence_elem().unwrap_or(Ty::ERROR);
-                for field in fields {
-                    self.value_bits(field, elem, out);
+                let size = layout(sigs, elem).size();
+                for (i, element) in elements.iter().enumerate() {
+                    self.write_value(element, elem, at + size * i as u64, bytes, addresses);
                 }
             }
             V::Aggregate(fields) => {
                 let types = sigs.fields(ty).unwrap_or_default();
-                for (field, &field_ty) in fields.iter().zip(types) {
-                    self.value_bits(field, field_ty, out);
+                let layouts: Vec<Layout> = types.iter().map(|&f| layout(sigs, f)).collect();
+                for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
+                    let field_at = at + member_offset(&layouts, i);
+                    self.write_value(field, field_ty, field_at, bytes, addresses);
                 }
             }
             V::Variant {
@@ -978,22 +978,19 @@ impl Ctx<'_> {
                 index,
                 fields,
             } => {
-                out.push(Leaf::Bits(self.discriminant(*strukt, *index)));
-                let variants = self.typed.sigs.variants(ty).unwrap_or_default();
-                for (v, types) in variants.into_iter().enumerate() {
-                    if v as u32 == *index {
-                        for (field, &field_ty) in fields.iter().zip(types) {
-                            self.value_bits(field, field_ty, out);
-                        }
-                    } else {
-                        for &field_ty in types {
-                            let count = leaf_count(&self.typed.sigs, field_ty);
-                            out.extend(std::iter::repeat_n(Leaf::Bits(0), count));
-                        }
-                    }
+                let Layout::Struct(members) = layout(sigs, ty) else {
+                    unreachable!("enums are laid out as structs")
+                };
+                let types = sigs.variant_fields(ty, *index).unwrap_or_default();
+                let bits = self.discriminant(*strukt, *index);
+                put(bytes, at, bits, &members[0]);
+                let variant = at + member_offset(&members, 1 + *index as usize);
+                let layouts: Vec<Layout> = types.iter().map(|&f| layout(sigs, f)).collect();
+                for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
+                    let field_at = variant + member_offset(&layouts, i);
+                    self.write_value(field, field_ty, field_at, bytes, addresses);
                 }
             }
-            V::Static(id) => out.push(Leaf::Address(self.statics[id].clone())),
         }
     }
 
