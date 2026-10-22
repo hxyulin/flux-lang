@@ -369,16 +369,26 @@ struct Live {
 /// assumes; those at constant indices (a slice pattern's) are the same
 /// only where the indices may be, as rustc decides.
 fn overlaps(body: &Body, sigs: &Signatures, a: &Place, b: &Place) -> bool {
-    a.local == b.local
-        && a.projection
-            .iter()
-            .zip(b.projection.iter())
-            .enumerate()
-            .all(|(i, (&x, &y))| {
-                let prefix = Place { local: a.local, projection: a.projection[..i].into() };
-                matches!(body.place_ty(&prefix, sigs).kind(), TyKind::Adt(adt, _) if sigs.unions.contains(&adt.strukt))
-                    || elements_may_overlap(x, y)
-            })
+    if a.local != b.local {
+        return false;
+    }
+    for (i, (&x, &y)) in a.projection.iter().zip(b.projection.iter()).enumerate() {
+        let prefix = Place {
+            local: a.local,
+            projection: a.projection[..i].into(),
+        };
+        if matches!(body.place_ty(&prefix, sigs).kind(), TyKind::Adt(adt, _) if sigs.unions.contains(&adt.strukt))
+            && x != y
+        {
+            // Once different union fields are selected, all subsequent
+            // projections may alias, even if their field numbers differ.
+            return true;
+        }
+        if !elements_may_overlap(x, y) {
+            return false;
+        }
+    }
+    true
 }
 
 fn elements_may_overlap(x: ProjectionElem, y: ProjectionElem) -> bool {

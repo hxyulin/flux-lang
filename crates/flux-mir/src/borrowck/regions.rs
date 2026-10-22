@@ -2208,7 +2208,8 @@ impl<'a> Cx<'a> {
         range: TextRange,
     ) {
         match kind {
-            // The supported union fields are integers and contain no regions.
+            // The supported union fields contain only integers, including
+            // through arrays and concrete Copy structs, so have no regions.
             AggregateKind::Union(..) => {}
             AggregateKind::Tuple => {
                 let TyKind::Tuple(list) = dest_ty.kind() else {

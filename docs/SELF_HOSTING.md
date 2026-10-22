@@ -223,8 +223,11 @@ SSE/SSE2/FXSR on x86-64 independently of the compiler's own build flags.
 The union front end parses contextual declarations and macro item fragments;
 disabled declarations are pruned before semantic processing. All 45 unchanged
 `memchr` Rust files parse and match the syntax grammar. A bounded executable
-integer-field union subset supports overlapping storage, default/`repr(C)`
+integer/array/concrete-Copy-struct union subset supports overlapping storage, default/`repr(C)`
 layout, Copy/Clone, safe field writes, unsafe reads/references, moves and
-overlap checks. Union constant evaluation, generic and aggregate fields and
-patterns remain unsupported. Actual `PrefilterKind` aggregate fields need
-the next extension; parsing success alone does not establish their execution.
+overlap checks, including nested projections through different union fields.
+The accepted aggregates recursively contain only integer leaves; this includes
+the array-backed NEON wrappers. Union constant evaluation, generic union
+declarations, enum/reference/pointer fields and patterns remain unsupported.
+The `PrefilterKind` representation prerequisite is covered by scalar and actual
+NEON wrapper regressions; whole `memchr` compilation is still unverified.
