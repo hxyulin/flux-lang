@@ -1,0 +1,154 @@
+fn call_it<F, R>(_1: F) -> R {
+    let mut _0: R;
+    let _2: &F;
+    let _3: ();
+
+    bb0: {
+        _2 = &_1;
+        _3 = ();
+        _0 = call::<F, ()>(copy _2, move _3) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn through_generic() -> () {
+    let mut _0: ();
+    let _1: &i32; // r
+    let _2: ();
+    let _3: i32; // x
+    let _4: ();
+    let _5: &i32;
+    let _6: {closure};
+    let _7: &i32;
+
+    bb0: {
+        _3 = const 1_i32;
+        _7 = &_3;
+        _6 = {closure}(move _7);
+        _5 = call_it::<{closure}, &i32>(copy _6) -> bb1;
+    }
+
+    bb1: {
+        _1 = copy _5;
+        _4 = const ();
+        _2 = const ();
+        StorageDead(_3);
+        PlaceMention((*_1));
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn through_generic::{closure#5} as Fn(_1: &{closure}, _2: ()) -> &i32 {
+    let mut _0: &i32;
+
+    bb0: {
+        _0 = &(*(*_1).0);
+        return;
+    }
+}
+
+fn through_generic::{closure#5} as FnMut(_1: &mut {closure}, _2: ()) -> &i32 {
+    let mut _0: &i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn through_generic::{closure#5} as FnOnce(_1: {closure}, _2: ()) -> &i32 {
+    let mut _0: &i32;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn option_map() -> () {
+    let mut _0: ();
+    let _1: Option<&i32>; // r
+    let _2: ();
+    let _3: [i32; 2]; // v
+    let _4: Option<usize>; // o
+    let _5: ();
+    let _6: Option<&i32>;
+    let _7: Option<usize>;
+    let _8: {closure};
+    let _9: &[i32; 2];
+
+    bb0: {
+        _3 = [const 1_i32, const 2_i32];
+        _4 = Option::Some(const 0_usize);
+        _7 = copy _4;
+        _9 = &_3;
+        _8 = {closure}(move _9);
+        _6 = map::<usize, &i32, {closure}>(copy _7, copy _8) -> bb1;
+    }
+
+    bb1: {
+        _1 = copy _6;
+        _5 = const ();
+        _2 = const ();
+        StorageDead(_4);
+        StorageDead(_3);
+        PlaceMention(_1);
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn option_map::{closure#12} as FnOnce(_1: {closure}, _2: (usize,)) -> &i32 {
+    let mut _0: &i32;
+    let _3: usize; // i
+    let _4: usize;
+    let _5: bool;
+
+    bb0: {
+        _3 = copy _2.0;
+        _4 = copy _3;
+        _5 = Lt(copy _4, const 2_usize);
+        assert(copy _5, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _0 = &(*_1.0)[_4];
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 135..136: `x` does not live long enough
+error 276..280: `v` does not live long enough
