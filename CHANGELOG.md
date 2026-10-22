@@ -1013,6 +1013,13 @@
   reserves the known element count. Exercise partial boxed-array
   patterns, nested boxes, boxed slices and trait objects, drains and
   partially consumed iterators with repeated ownership transfers.
+- Fix an internal compiler error for a closure matching an element of a
+  captured array with only wildcards (`match p[0] { _ => .. }`, `let _ =
+  p[i]`): as in rustc, indexing borrows the array whatever the patterns
+  read (mutably for `ref mut`), the index evaluated after it, while
+  wildcards alone (`[_, _]` of an array, `[..]` of a slice) read nothing
+  and capture nothing. A match's arms are walked in order, pattern,
+  guard and body.
 
 ### Performance
 
