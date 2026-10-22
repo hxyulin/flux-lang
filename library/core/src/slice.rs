@@ -364,6 +364,16 @@ pub struct Iter<'a, T> {
     end: usize,
 }
 
+impl<'a, T> crate::clone::Clone for Iter<'a, T> {
+    fn clone(&self) -> Self {
+        Iter {
+            slice: self.slice,
+            start: self.start,
+            end: self.end,
+        }
+    }
+}
+
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
 

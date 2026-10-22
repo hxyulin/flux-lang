@@ -2,7 +2,8 @@
 //! loops go through, and the adapters and consumers closures make
 //! useful. The ranges of integers are iterators.
 
-use crate::cmp::{Ord, PartialOrd};
+use crate::clone::Clone;
+use crate::cmp::{Ord, PartialEq, PartialOrd};
 use crate::marker::{Copy, Sized};
 use crate::ops::{FnMut, Range, RangeFrom, RangeInclusive};
 use crate::option::Option::{self, None, Some};
@@ -378,6 +379,132 @@ pub trait Iterator {
         Some(best)
     }
 
+    /// The items folded with `f`, the first as the start: `None` if
+    /// there are none.
+    fn reduce<F: FnMut(Self::Item, Self::Item) -> Self::Item>(mut self, f: F) -> Option<Self::Item>
+    where
+        Self: Sized,
+    {
+        let first = self.next()?;
+        Some(self.fold(first, f))
+    }
+
+    /// Borrows the iterator: adapters of the borrow leave it usable.
+    fn by_ref(&mut self) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self
+    }
+
+    /// Copies of the values its items refer to.
+    fn copied<'a, T: Copy>(self) -> Copied<Self>
+    where
+        Self: Sized + Iterator<Item = &'a T>,
+    {
+        Copied { it: self }
+    }
+
+    /// Clones of the values its items refer to.
+    fn cloned<'a, T: Clone>(self) -> Cloned<Self>
+    where
+        Self: Sized + Iterator<Item = &'a T>,
+    {
+        Cloned { it: self }
+    }
+
+    /// The items of the iterators `f` makes of its items, in turn.
+    fn flat_map<U: IntoIterator, F: FnMut(Self::Item) -> U>(self, f: F) -> FlatMap<Self, U, F>
+    where
+        Self: Sized,
+    {
+        FlatMap {
+            iter: self.map(f).fuse(),
+            frontiter: None,
+            backiter: None,
+        }
+    }
+
+    /// The items of its items, which are iterators or make them, in turn.
+    fn flatten(self) -> Flatten<Self>
+    where
+        Self: Sized,
+        Self::Item: IntoIterator,
+    {
+        Flatten {
+            iter: self.fuse(),
+            frontiter: None,
+            backiter: None,
+        }
+    }
+
+    /// An iterator that can look at its next item without taking it.
+    fn peekable(self) -> Peekable<Self>
+    where
+        Self: Sized,
+    {
+        Peekable {
+            iter: self,
+            peeked: None,
+        }
+    }
+
+    /// The values in the `Some`s `f` gives, with a state it may change,
+    /// until it gives `None`.
+    fn scan<St, B, F: FnMut(&mut St, Self::Item) -> Option<B>>(
+        self,
+        initial_state: St,
+        f: F,
+    ) -> Scan<Self, St, F>
+    where
+        Self: Sized,
+    {
+        Scan {
+            iter: self,
+            f,
+            state: initial_state,
+        }
+    }
+
+    /// The values in the `Some`s `predicate` gives, until it gives `None`.
+    fn map_while<B, P: FnMut(Self::Item) -> Option<B>>(self, predicate: P) -> MapWhile<Self, P>
+    where
+        Self: Sized,
+    {
+        MapWhile {
+            iter: self,
+            predicate,
+        }
+    }
+
+    /// Its items, calling `f` with a reference to each first.
+    fn inspect<F: FnMut(&Self::Item)>(self, f: F) -> Inspect<Self, F>
+    where
+        Self: Sized,
+    {
+        Inspect { iter: self, f }
+    }
+
+    /// Its items, over and over: a clone of it, from the start, each time
+    /// it runs out.
+    fn cycle(self) -> Cycle<Self>
+    where
+        Self: Sized + Clone,
+    {
+        Cycle {
+            orig: self.clone(),
+            iter: self,
+        }
+    }
+
+    /// Its items, then `None` forever once it gives one.
+    fn fuse(self) -> Fuse<Self>
+    where
+        Self: Sized,
+    {
+        Fuse { iter: Some(self) }
+    }
+
     /// The items from the back.
     fn rev(self) -> Rev<Self>
     where
@@ -425,15 +552,6 @@ pub trait Iterator {
     }
 }
 
-/// An iterator that knows how many items it has left.
-pub trait ExactSizeIterator: Iterator {
-    /// How many items are left.
-    fn len(&self) -> usize {
-        let (lower, _) = self.size_hint();
-        lower
-    }
-}
-
 /// An iterator that can give its items from the back too.
 pub trait DoubleEndedIterator: Iterator {
     /// The last item, taken off the back.
@@ -465,6 +583,47 @@ pub trait DoubleEndedIterator: Iterator {
     }
 }
 
+/// An iterator that knows how many items it has left.
+pub trait ExactSizeIterator: Iterator {
+    /// How many items are left.
+    fn len(&self) -> usize {
+        let (lower, upper) = self.size_hint();
+        if upper != Some(lower) {
+            crate::panicking::panic(c"assertion `left == right` failed");
+        }
+        lower
+    }
+}
+
+/// A mutable reference to an iterator is one.
+impl<I: Iterator> Iterator for &mut I {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        (**self).next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (**self).size_hint()
+    }
+
+    fn nth(&mut self, n: usize) -> Option<I::Item> {
+        (**self).nth(n)
+    }
+}
+
+impl<I: DoubleEndedIterator> DoubleEndedIterator for &mut I {
+    fn next_back(&mut self) -> Option<I::Item> {
+        (**self).next_back()
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for &mut I {
+    fn len(&self) -> usize {
+        (**self).len()
+    }
+}
+
 /// What `for` loops go through: an iterator, or what makes one.
 #[lang = "IntoIterator"]
 #[diagnostic::on_unimplemented(message = "`{Self}` is not an iterator")]
@@ -488,17 +647,27 @@ impl<I: Iterator> IntoIterator for I {
 }
 
 /// What `Iterator::sum` adds up into.
+#[diagnostic::on_unimplemented(
+    message = "a value of type `{Self}` cannot be made by summing an iterator over elements of type `{A}`"
+)]
 pub trait Sum<A = Self>: Sized {
     fn sum<I: Iterator<Item = A>>(iter: I) -> Self;
 }
 
 /// What `Iterator::product` multiplies into.
+#[diagnostic::on_unimplemented(
+    message = "a value of type `{Self}` cannot be made by multiplying all elements of type `{A}` from an iterator"
+)]
 pub trait Product<A = Self>: Sized {
     fn product<I: Iterator<Item = A>>(iter: I) -> Self;
 }
 
 /// What ranges step through: the integer types.
 pub trait Step: Copy + PartialOrd<Self> {
+    /// How many steps from `start` to `end`, as `size_hint` gives
+    /// them: `(0, None)` if `end` is before `start`, `(usize::MAX,
+    /// None)` if there are more than `usize` holds.
+    fn steps_between(start: &Self, end: &Self) -> (usize, Option<usize>);
     /// The next value, wrapping.
     fn forward_one(self) -> Self;
     /// The value before.
@@ -515,6 +684,14 @@ impl<A: Step> Iterator for Range<A> {
             Some(n)
         } else {
             None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.start < self.end {
+            Step::steps_between(&self.start, &self.end)
+        } else {
+            (0, Some(0))
         }
     }
 }
@@ -538,6 +715,10 @@ impl<A: Step> Iterator for RangeFrom<A> {
         self.start = n.forward_one();
         Some(n)
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (usize::MAX, None)
+    }
 }
 
 impl<A: Step> Iterator for RangeInclusive<A> {
@@ -554,6 +735,18 @@ impl<A: Step> Iterator for RangeInclusive<A> {
             self.exhausted = true;
         }
         Some(n)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.exhausted || !(self.start <= self.end) {
+            return (0, Some(0));
+        }
+        let (lower, upper) = Step::steps_between(&self.start, &self.end);
+        let upper = match upper {
+            Some(steps) => steps.checked_add(1),
+            None => None,
+        };
+        (lower.saturating_add(1), upper)
     }
 }
 
@@ -588,6 +781,10 @@ impl<B, I: Iterator, F: FnMut(I::Item) -> B> Iterator for Map<I, F> {
             None => None,
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
 }
 
 impl<B, I: DoubleEndedIterator, F: FnMut(I::Item) -> B> DoubleEndedIterator for Map<I, F> {
@@ -616,6 +813,11 @@ impl<I: Iterator, P: FnMut(&I::Item) -> bool> Iterator for Filter<I, P> {
             }
         }
         None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (_, upper) = self.iter.size_hint();
+        (0, upper)
     }
 }
 
@@ -648,6 +850,24 @@ impl<B, I: Iterator, F: FnMut(I::Item) -> Option<B>> Iterator for FilterMap<I, F
         }
         None
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (_, upper) = self.iter.size_hint();
+        (0, upper)
+    }
+}
+
+impl<B, I: DoubleEndedIterator, F: FnMut(I::Item) -> Option<B>> DoubleEndedIterator
+    for FilterMap<I, F>
+{
+    fn next_back(&mut self) -> Option<B> {
+        while let Some(x) = self.iter.next_back() {
+            if let Some(y) = (self.f)(x) {
+                return Some(y);
+            }
+        }
+        None
+    }
 }
 
 /// [`Iterator::enumerate`]'s.
@@ -666,6 +886,24 @@ impl<I: Iterator> Iterator for Enumerate<I> {
         self.count += 1;
         Some((i, a))
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+impl<I: ExactSizeIterator + DoubleEndedIterator> DoubleEndedIterator for Enumerate<I> {
+    fn next_back(&mut self) -> Option<(usize, I::Item)> {
+        let a = self.iter.next_back()?;
+        let len = self.iter.len();
+        Some((self.count + len, a))
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for Enumerate<I> {
+    fn len(&self) -> usize {
+        self.iter.len()
+    }
 }
 
 /// [`Iterator::zip`]'s.
@@ -683,7 +921,22 @@ impl<A: Iterator, B: Iterator> Iterator for Zip<A, B> {
         let y = self.b.next()?;
         Some((x, y))
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (a_lower, a_upper) = self.a.size_hint();
+        let (b_lower, b_upper) = self.b.size_hint();
+        let lower = crate::cmp::min(a_lower, b_lower);
+        let upper = match (a_upper, b_upper) {
+            (Some(x), Some(y)) => Some(crate::cmp::min(x, y)),
+            (Some(x), None) => Some(x),
+            (None, Some(y)) => Some(y),
+            (None, None) => None,
+        };
+        (lower, upper)
+    }
 }
+
+impl<A: ExactSizeIterator, B: ExactSizeIterator> ExactSizeIterator for Zip<A, B> {}
 
 /// [`Iterator::chain`]'s.
 #[derive(Clone)]
@@ -707,6 +960,41 @@ impl<A: Iterator, B: Iterator<Item = A::Item>> Iterator for Chain<A, B> {
             None => None,
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match (&self.a, &self.b) {
+            (Some(a), Some(b)) => {
+                let (a_lower, a_upper) = a.size_hint();
+                let (b_lower, b_upper) = b.size_hint();
+                let lower = a_lower.saturating_add(b_lower);
+                let upper = match (a_upper, b_upper) {
+                    (Some(x), Some(y)) => x.checked_add(y),
+                    _ => None,
+                };
+                (lower, upper)
+            }
+            (Some(a), None) => a.size_hint(),
+            (None, Some(b)) => b.size_hint(),
+            (None, None) => (0, Some(0)),
+        }
+    }
+}
+
+impl<A: DoubleEndedIterator, B: DoubleEndedIterator<Item = A::Item>> DoubleEndedIterator
+    for Chain<A, B>
+{
+    fn next_back(&mut self) -> Option<A::Item> {
+        if let Some(b) = &mut self.b {
+            match b.next_back() {
+                Some(x) => return Some(x),
+                None => self.b = None,
+            }
+        }
+        match &mut self.a {
+            Some(a) => a.next_back(),
+            None => None,
+        }
+    }
 }
 
 /// [`Iterator::take`]'s.
@@ -727,7 +1015,35 @@ impl<I: Iterator> Iterator for Take<I> {
             None
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.n == 0 {
+            return (0, Some(0));
+        }
+        let (lower, upper) = self.iter.size_hint();
+        let lower = crate::cmp::min(lower, self.n);
+        let upper = match upper {
+            Some(x) if x < self.n => Some(x),
+            _ => Some(self.n),
+        };
+        (lower, upper)
+    }
 }
+
+impl<I: DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for Take<I> {
+    fn next_back(&mut self) -> Option<I::Item> {
+        if self.n == 0 {
+            None
+        } else {
+            let n = self.n;
+            self.n -= 1;
+            let skip = self.iter.len().saturating_sub(n);
+            self.iter.nth_back(skip)
+        }
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for Take<I> {}
 
 /// [`Iterator::skip`]'s.
 #[derive(Clone)]
@@ -746,7 +1062,25 @@ impl<I: Iterator> Iterator for Skip<I> {
         }
         self.iter.next()
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (lower, upper) = self.iter.size_hint();
+        let lower = lower.saturating_sub(self.n);
+        let upper = match upper {
+            Some(x) => Some(x.saturating_sub(self.n)),
+            None => None,
+        };
+        (lower, upper)
+    }
 }
+
+impl<I: DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for Skip<I> {
+    fn next_back(&mut self) -> Option<I::Item> {
+        if self.len() > 0 { self.iter.next_back() } else { None }
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for Skip<I> {}
 
 /// [`Iterator::take_while`]'s.
 #[derive(Clone)]
@@ -771,6 +1105,15 @@ impl<I: Iterator, P: FnMut(&I::Item) -> bool> Iterator for TakeWhile<I, P> {
             None
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.flag {
+            (0, Some(0))
+        } else {
+            let (_, upper) = self.iter.size_hint();
+            (0, upper)
+        }
+    }
 }
 
 /// [`Iterator::skip_while`]'s.
@@ -793,6 +1136,11 @@ impl<I: Iterator, P: FnMut(&I::Item) -> bool> Iterator for SkipWhile<I, P> {
             }
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (_, upper) = self.iter.size_hint();
+        (0, upper)
+    }
 }
 
 /// [`Iterator::step_by`]'s.
@@ -814,7 +1162,21 @@ impl<I: Iterator> Iterator for StepBy<I> {
             self.iter.nth(self.step)
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (low, high) = self.iter.size_hint();
+        let step = self.step + 1;
+        if self.first_take {
+            let f = move |n: usize| if n == 0 { 0 } else { 1 + (n - 1) / step };
+            (f(low), high.map(f))
+        } else {
+            let f = move |n: usize| n / step;
+            (f(low), high.map(f))
+        }
+    }
 }
+
+impl<I: ExactSizeIterator> ExactSizeIterator for StepBy<I> {}
 
 /// [`Iterator::rev`]'s.
 #[derive(Clone)]
@@ -828,6 +1190,10 @@ impl<I: DoubleEndedIterator> Iterator for Rev<I> {
     fn next(&mut self) -> Option<I::Item> {
         self.iter.next_back()
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
 }
 
 impl<I: DoubleEndedIterator> DoubleEndedIterator for Rev<I> {
@@ -836,41 +1202,612 @@ impl<I: DoubleEndedIterator> DoubleEndedIterator for Rev<I> {
     }
 }
 
+impl<I: DoubleEndedIterator + ExactSizeIterator> ExactSizeIterator for Rev<I> {}
+
+impl<B, I: ExactSizeIterator, F: FnMut(I::Item) -> B> ExactSizeIterator for Map<I, F> {}
+
+/// [`Iterator::copied`]'s.
+#[derive(Clone)]
+pub struct Copied<I> {
+    it: I,
+}
+
+impl<'a, T: Copy, I: Iterator<Item = &'a T>> Iterator for Copied<I> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        match self.it.next() {
+            Some(&x) => Some(x),
+            None => None,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.it.size_hint()
+    }
+}
+
+impl<'a, T: Copy, I: DoubleEndedIterator<Item = &'a T>> DoubleEndedIterator for Copied<I> {
+    fn next_back(&mut self) -> Option<T> {
+        match self.it.next_back() {
+            Some(&x) => Some(x),
+            None => None,
+        }
+    }
+}
+
+impl<'a, T: Copy, I: ExactSizeIterator<Item = &'a T>> ExactSizeIterator for Copied<I> {}
+
+/// [`Iterator::cloned`]'s.
+#[derive(Clone)]
+pub struct Cloned<I> {
+    it: I,
+}
+
+impl<'a, T: Clone, I: Iterator<Item = &'a T>> Iterator for Cloned<I> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        match self.it.next() {
+            Some(x) => Some(x.clone()),
+            None => None,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.it.size_hint()
+    }
+}
+
+impl<'a, T: Clone, I: DoubleEndedIterator<Item = &'a T>> DoubleEndedIterator for Cloned<I> {
+    fn next_back(&mut self) -> Option<T> {
+        match self.it.next_back() {
+            Some(x) => Some(x.clone()),
+            None => None,
+        }
+    }
+}
+
+impl<'a, T: Clone, I: ExactSizeIterator<Item = &'a T>> ExactSizeIterator for Cloned<I> {}
+
+/// [`Iterator::fuse`]'s.
+#[derive(Clone)]
+pub struct Fuse<I> {
+    iter: Option<I>,
+}
+
+impl<I: Iterator> Iterator for Fuse<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        match &mut self.iter {
+            Some(iter) => {
+                let x = iter.next();
+                if x.is_none() {
+                    self.iter = None;
+                }
+                x
+            }
+            None => None,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match &self.iter {
+            Some(iter) => iter.size_hint(),
+            None => (0, Some(0)),
+        }
+    }
+}
+
+impl<I: DoubleEndedIterator> DoubleEndedIterator for Fuse<I> {
+    fn next_back(&mut self) -> Option<I::Item> {
+        match &mut self.iter {
+            Some(iter) => {
+                let x = iter.next_back();
+                if x.is_none() {
+                    self.iter = None;
+                }
+                x
+            }
+            None => None,
+        }
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for Fuse<I> {}
+
+/// [`Iterator::inspect`]'s.
+#[derive(Clone)]
+pub struct Inspect<I, F> {
+    iter: I,
+    f: F,
+}
+
+impl<I: Iterator, F: FnMut(&I::Item)> Iterator for Inspect<I, F> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        let next = self.iter.next();
+        if let Some(a) = &next {
+            (self.f)(a);
+        }
+        next
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+impl<I: DoubleEndedIterator, F: FnMut(&I::Item)> DoubleEndedIterator for Inspect<I, F> {
+    fn next_back(&mut self) -> Option<I::Item> {
+        let next = self.iter.next_back();
+        if let Some(a) = &next {
+            (self.f)(a);
+        }
+        next
+    }
+}
+
+impl<I: ExactSizeIterator, F: FnMut(&I::Item)> ExactSizeIterator for Inspect<I, F> {}
+
+/// [`Iterator::scan`]'s.
+#[derive(Clone)]
+pub struct Scan<I, St, F> {
+    iter: I,
+    f: F,
+    state: St,
+}
+
+impl<B, I: Iterator, St, F: FnMut(&mut St, I::Item) -> Option<B>> Iterator for Scan<I, St, F> {
+    type Item = B;
+
+    fn next(&mut self) -> Option<B> {
+        let a = self.iter.next()?;
+        (self.f)(&mut self.state, a)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (_, upper) = self.iter.size_hint();
+        (0, upper)
+    }
+}
+
+/// [`Iterator::map_while`]'s.
+#[derive(Clone)]
+pub struct MapWhile<I, P> {
+    iter: I,
+    predicate: P,
+}
+
+impl<B, I: Iterator, P: FnMut(I::Item) -> Option<B>> Iterator for MapWhile<I, P> {
+    type Item = B;
+
+    fn next(&mut self) -> Option<B> {
+        let x = self.iter.next()?;
+        (self.predicate)(x)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (_, upper) = self.iter.size_hint();
+        (0, upper)
+    }
+}
+
+/// [`Iterator::cycle`]'s.
+#[derive(Clone)]
+pub struct Cycle<I> {
+    orig: I,
+    iter: I,
+}
+
+impl<I: Clone + Iterator> Iterator for Cycle<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        match self.iter.next() {
+            None => {
+                self.iter = self.orig.clone();
+                self.iter.next()
+            }
+            y => y,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self.orig.size_hint() {
+            (0, Some(0)) => (0, Some(0)),
+            (0, _) => (0, None),
+            _ => (usize::MAX, None),
+        }
+    }
+}
+
+/// [`Iterator::peekable`]'s.
+pub struct Peekable<I: Iterator> {
+    iter: I,
+    /// The item `peek` took from `iter`, or `None` if it took none.
+    peeked: Option<Option<I::Item>>,
+}
+
+impl<I: Iterator + Clone> Clone for Peekable<I>
+where
+    I::Item: Clone,
+{
+    fn clone(&self) -> Self {
+        Peekable {
+            iter: self.iter.clone(),
+            peeked: self.peeked.clone(),
+        }
+    }
+}
+
+impl<I: Iterator> Iterator for Peekable<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        match self.peeked.take() {
+            Some(v) => v,
+            None => self.iter.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let peek_len = match &self.peeked {
+            Some(None) => return (0, Some(0)),
+            Some(Some(_)) => 1,
+            None => 0,
+        };
+        let (lower, upper) = self.iter.size_hint();
+        let lower = lower.saturating_add(peek_len);
+        let upper = match upper {
+            Some(x) => x.checked_add(peek_len),
+            None => None,
+        };
+        (lower, upper)
+    }
+}
+
+impl<I: DoubleEndedIterator> DoubleEndedIterator for Peekable<I> {
+    fn next_back(&mut self) -> Option<I::Item> {
+        match &self.peeked {
+            Some(None) => None,
+            None => self.iter.next_back(),
+            Some(Some(_)) => match self.iter.next_back() {
+                Some(x) => Some(x),
+                None => match self.peeked.take() {
+                    Some(v) => v,
+                    None => None,
+                },
+            },
+        }
+    }
+}
+
+impl<I: ExactSizeIterator> ExactSizeIterator for Peekable<I> {}
+
+impl<I: Iterator> Peekable<I> {
+    /// A reference to the next item, without taking it.
+    pub fn peek(&mut self) -> Option<&I::Item> {
+        if let None = self.peeked {
+            self.peeked = Some(self.iter.next());
+        }
+        match &self.peeked {
+            Some(Some(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// A mutable reference to the next item, without taking it.
+    pub fn peek_mut(&mut self) -> Option<&mut I::Item> {
+        if let None = self.peeked {
+            self.peeked = Some(self.iter.next());
+        }
+        match &mut self.peeked {
+            Some(Some(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// The next item, if `func` is `true` for it; otherwise it stays.
+    pub fn next_if<F: FnOnce(&I::Item) -> bool>(&mut self, func: F) -> Option<I::Item> {
+        let next = self.next();
+        if let Some(matched) = &next
+            && func(matched)
+        {
+            return next;
+        }
+        self.peeked = Some(next);
+        None
+    }
+
+    /// The next item, if it equals `expected`; otherwise it stays.
+    pub fn next_if_eq<T>(&mut self, expected: &T) -> Option<I::Item>
+    where
+        I::Item: PartialEq<T>,
+    {
+        self.next_if(|next| next == expected)
+    }
+}
+
+/// [`Iterator::flat_map`]'s.
+pub struct FlatMap<I, U: IntoIterator, F> {
+    iter: Fuse<Map<I, F>>,
+    frontiter: Option<U::IntoIter>,
+    backiter: Option<U::IntoIter>,
+}
+
+impl<I: Clone, U: IntoIterator, F: Clone> Clone for FlatMap<I, U, F>
+where
+    U::IntoIter: Clone,
+{
+    fn clone(&self) -> Self {
+        FlatMap {
+            iter: self.iter.clone(),
+            frontiter: self.frontiter.clone(),
+            backiter: self.backiter.clone(),
+        }
+    }
+}
+
+impl<I: Iterator, U: IntoIterator, F: FnMut(I::Item) -> U> Iterator for FlatMap<I, U, F> {
+    type Item = U::Item;
+
+    fn next(&mut self) -> Option<U::Item> {
+        loop {
+            if let Some(inner) = &mut self.frontiter {
+                match inner.next() {
+                    Some(x) => return Some(x),
+                    None => self.frontiter = None,
+                }
+            }
+            match self.iter.next() {
+                Some(inner) => self.frontiter = Some(inner.into_iter()),
+                None => {
+                    return match &mut self.backiter {
+                        Some(back) => {
+                            let x = back.next();
+                            if x.is_none() {
+                                self.backiter = None;
+                            }
+                            x
+                        }
+                        None => None,
+                    };
+                }
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (flo, fhi) = match &self.frontiter {
+            Some(it) => it.size_hint(),
+            None => (0, Some(0)),
+        };
+        let (blo, bhi) = match &self.backiter {
+            Some(it) => it.size_hint(),
+            None => (0, Some(0)),
+        };
+        let lo = flo.saturating_add(blo);
+        match (self.iter.size_hint(), fhi, bhi) {
+            ((0, Some(0)), Some(a), Some(b)) => (lo, a.checked_add(b)),
+            _ => (lo, None),
+        }
+    }
+}
+
+impl<I: DoubleEndedIterator, U: IntoIterator, F: FnMut(I::Item) -> U> DoubleEndedIterator
+    for FlatMap<I, U, F>
+where
+    U::IntoIter: DoubleEndedIterator,
+{
+    fn next_back(&mut self) -> Option<U::Item> {
+        loop {
+            if let Some(inner) = &mut self.backiter {
+                match inner.next_back() {
+                    Some(x) => return Some(x),
+                    None => self.backiter = None,
+                }
+            }
+            match self.iter.next_back() {
+                Some(inner) => self.backiter = Some(inner.into_iter()),
+                None => {
+                    return match &mut self.frontiter {
+                        Some(front) => {
+                            let x = front.next_back();
+                            if x.is_none() {
+                                self.frontiter = None;
+                            }
+                            x
+                        }
+                        None => None,
+                    };
+                }
+            }
+        }
+    }
+}
+
+/// [`Iterator::flatten`]'s.
+pub struct Flatten<I>
+where
+    I: Iterator,
+    I::Item: IntoIterator,
+{
+    iter: Fuse<I>,
+    frontiter: Option<<I::Item as IntoIterator>::IntoIter>,
+    backiter: Option<<I::Item as IntoIterator>::IntoIter>,
+}
+
+impl<I: Iterator + Clone> Clone for Flatten<I>
+where
+    I::Item: IntoIterator,
+    <I::Item as IntoIterator>::IntoIter: Clone,
+{
+    fn clone(&self) -> Self {
+        Flatten {
+            iter: self.iter.clone(),
+            frontiter: self.frontiter.clone(),
+            backiter: self.backiter.clone(),
+        }
+    }
+}
+
+impl<I: Iterator> Iterator for Flatten<I>
+where
+    I::Item: IntoIterator,
+{
+    type Item = <I::Item as IntoIterator>::Item;
+
+    fn next(&mut self) -> Option<<I::Item as IntoIterator>::Item> {
+        loop {
+            if let Some(inner) = &mut self.frontiter {
+                match inner.next() {
+                    Some(x) => return Some(x),
+                    None => self.frontiter = None,
+                }
+            }
+            match self.iter.next() {
+                Some(inner) => self.frontiter = Some(inner.into_iter()),
+                None => {
+                    return match &mut self.backiter {
+                        Some(back) => {
+                            let x = back.next();
+                            if x.is_none() {
+                                self.backiter = None;
+                            }
+                            x
+                        }
+                        None => None,
+                    };
+                }
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (flo, fhi) = match &self.frontiter {
+            Some(it) => it.size_hint(),
+            None => (0, Some(0)),
+        };
+        let (blo, bhi) = match &self.backiter {
+            Some(it) => it.size_hint(),
+            None => (0, Some(0)),
+        };
+        let lo = flo.saturating_add(blo);
+        match (self.iter.size_hint(), fhi, bhi) {
+            ((0, Some(0)), Some(a), Some(b)) => (lo, a.checked_add(b)),
+            _ => (lo, None),
+        }
+    }
+}
+
+impl<I: DoubleEndedIterator> DoubleEndedIterator for Flatten<I>
+where
+    I::Item: IntoIterator,
+    <I::Item as IntoIterator>::IntoIter: DoubleEndedIterator,
+{
+    fn next_back(&mut self) -> Option<<I::Item as IntoIterator>::Item> {
+        loop {
+            if let Some(inner) = &mut self.backiter {
+                match inner.next_back() {
+                    Some(x) => return Some(x),
+                    None => self.backiter = None,
+                }
+            }
+            match self.iter.next_back() {
+                Some(inner) => self.backiter = Some(inner.into_iter()),
+                None => {
+                    return match &mut self.frontiter {
+                        Some(front) => {
+                            let x = front.next_back();
+                            if x.is_none() {
+                                self.frontiter = None;
+                            }
+                            x
+                        }
+                        None => None,
+                    };
+                }
+            }
+        }
+    }
+}
+
 // The integer types step, add up and multiply, written out for each
-// since flux has no macros.
-impl Step for i8 { fn forward_one(self) -> i8 { self.wrapping_add(1) } fn backward_one(self) -> i8 { self.wrapping_sub(1) } }
+// since flux has no macros. As in rustc, the ranges of the integers
+// up to 32 bits (and of `usize` and `isize`) know their length, and the
+// inclusive ones up to 16 bits.
+impl Step for i8 { fn forward_one(self) -> i8 { self.wrapping_add(1) } fn backward_one(self) -> i8 { self.wrapping_sub(1) } fn steps_between(start: &i8, end: &i8) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } }
 impl Sum for i8 { fn sum<I: Iterator<Item = i8>>(mut iter: I) -> i8 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a i8> for i8 { fn sum<I: Iterator<Item = &'a i8>>(mut iter: I) -> i8 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for i8 { fn product<I: Iterator<Item = i8>>(mut iter: I) -> i8 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl Step for i16 { fn forward_one(self) -> i16 { self.wrapping_add(1) } fn backward_one(self) -> i16 { self.wrapping_sub(1) } }
+impl<'a> Product<&'a i8> for i8 { fn product<I: Iterator<Item = &'a i8>>(mut iter: I) -> i8 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl ExactSizeIterator for Range<i8> {}
+impl ExactSizeIterator for RangeInclusive<i8> {}
+impl Step for i16 { fn forward_one(self) -> i16 { self.wrapping_add(1) } fn backward_one(self) -> i16 { self.wrapping_sub(1) } fn steps_between(start: &i16, end: &i16) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } }
 impl Sum for i16 { fn sum<I: Iterator<Item = i16>>(mut iter: I) -> i16 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a i16> for i16 { fn sum<I: Iterator<Item = &'a i16>>(mut iter: I) -> i16 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for i16 { fn product<I: Iterator<Item = i16>>(mut iter: I) -> i16 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl Step for i32 { fn forward_one(self) -> i32 { self.wrapping_add(1) } fn backward_one(self) -> i32 { self.wrapping_sub(1) } }
+impl<'a> Product<&'a i16> for i16 { fn product<I: Iterator<Item = &'a i16>>(mut iter: I) -> i16 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl ExactSizeIterator for Range<i16> {}
+impl ExactSizeIterator for RangeInclusive<i16> {}
+impl Step for i32 { fn forward_one(self) -> i32 { self.wrapping_add(1) } fn backward_one(self) -> i32 { self.wrapping_sub(1) } fn steps_between(start: &i32, end: &i32) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } }
 impl Sum for i32 { fn sum<I: Iterator<Item = i32>>(mut iter: I) -> i32 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a i32> for i32 { fn sum<I: Iterator<Item = &'a i32>>(mut iter: I) -> i32 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for i32 { fn product<I: Iterator<Item = i32>>(mut iter: I) -> i32 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl Step for i64 { fn forward_one(self) -> i64 { self.wrapping_add(1) } fn backward_one(self) -> i64 { self.wrapping_sub(1) } }
+impl<'a> Product<&'a i32> for i32 { fn product<I: Iterator<Item = &'a i32>>(mut iter: I) -> i32 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl ExactSizeIterator for Range<i32> {}
+impl Step for i64 { fn forward_one(self) -> i64 { self.wrapping_add(1) } fn backward_one(self) -> i64 { self.wrapping_sub(1) } fn steps_between(start: &i64, end: &i64) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } }
 impl Sum for i64 { fn sum<I: Iterator<Item = i64>>(mut iter: I) -> i64 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a i64> for i64 { fn sum<I: Iterator<Item = &'a i64>>(mut iter: I) -> i64 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for i64 { fn product<I: Iterator<Item = i64>>(mut iter: I) -> i64 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl Step for i128 { fn forward_one(self) -> i128 { self.wrapping_add(1) } fn backward_one(self) -> i128 { self.wrapping_sub(1) } }
+impl<'a> Product<&'a i64> for i64 { fn product<I: Iterator<Item = &'a i64>>(mut iter: I) -> i64 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for i128 { fn forward_one(self) -> i128 { self.wrapping_add(1) } fn backward_one(self) -> i128 { self.wrapping_sub(1) } fn steps_between(start: &i128, end: &i128) -> (usize, Option<usize>) { if *start <= *end { let n = end.wrapping_sub(*start) as u128; if n <= usize::MAX as u128 { (n as usize, Some(n as usize)) } else { (usize::MAX, None) } } else { (0, None) } } }
 impl Sum for i128 { fn sum<I: Iterator<Item = i128>>(mut iter: I) -> i128 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a i128> for i128 { fn sum<I: Iterator<Item = &'a i128>>(mut iter: I) -> i128 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for i128 { fn product<I: Iterator<Item = i128>>(mut iter: I) -> i128 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl Step for isize { fn forward_one(self) -> isize { self.wrapping_add(1) } fn backward_one(self) -> isize { self.wrapping_sub(1) } }
+impl<'a> Product<&'a i128> for i128 { fn product<I: Iterator<Item = &'a i128>>(mut iter: I) -> i128 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for isize { fn forward_one(self) -> isize { self.wrapping_add(1) } fn backward_one(self) -> isize { self.wrapping_sub(1) } fn steps_between(start: &isize, end: &isize) -> (usize, Option<usize>) { if *start <= *end { let n = (*end as isize).wrapping_sub(*start as isize) as usize; (n, Some(n)) } else { (0, None) } } }
 impl Sum for isize { fn sum<I: Iterator<Item = isize>>(mut iter: I) -> isize { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a isize> for isize { fn sum<I: Iterator<Item = &'a isize>>(mut iter: I) -> isize { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for isize { fn product<I: Iterator<Item = isize>>(mut iter: I) -> isize { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl Step for u8 { fn forward_one(self) -> u8 { self.wrapping_add(1) } fn backward_one(self) -> u8 { self.wrapping_sub(1) } }
+impl<'a> Product<&'a isize> for isize { fn product<I: Iterator<Item = &'a isize>>(mut iter: I) -> isize { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl ExactSizeIterator for Range<isize> {}
+impl Step for u8 { fn forward_one(self) -> u8 { self.wrapping_add(1) } fn backward_one(self) -> u8 { self.wrapping_sub(1) } fn steps_between(start: &u8, end: &u8) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } }
 impl Sum for u8 { fn sum<I: Iterator<Item = u8>>(mut iter: I) -> u8 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a u8> for u8 { fn sum<I: Iterator<Item = &'a u8>>(mut iter: I) -> u8 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for u8 { fn product<I: Iterator<Item = u8>>(mut iter: I) -> u8 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl Step for u16 { fn forward_one(self) -> u16 { self.wrapping_add(1) } fn backward_one(self) -> u16 { self.wrapping_sub(1) } }
+impl<'a> Product<&'a u8> for u8 { fn product<I: Iterator<Item = &'a u8>>(mut iter: I) -> u8 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl ExactSizeIterator for Range<u8> {}
+impl ExactSizeIterator for RangeInclusive<u8> {}
+impl Step for u16 { fn forward_one(self) -> u16 { self.wrapping_add(1) } fn backward_one(self) -> u16 { self.wrapping_sub(1) } fn steps_between(start: &u16, end: &u16) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } }
 impl Sum for u16 { fn sum<I: Iterator<Item = u16>>(mut iter: I) -> u16 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a u16> for u16 { fn sum<I: Iterator<Item = &'a u16>>(mut iter: I) -> u16 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for u16 { fn product<I: Iterator<Item = u16>>(mut iter: I) -> u16 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl Step for u32 { fn forward_one(self) -> u32 { self.wrapping_add(1) } fn backward_one(self) -> u32 { self.wrapping_sub(1) } }
+impl<'a> Product<&'a u16> for u16 { fn product<I: Iterator<Item = &'a u16>>(mut iter: I) -> u16 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl ExactSizeIterator for Range<u16> {}
+impl ExactSizeIterator for RangeInclusive<u16> {}
+impl Step for u32 { fn forward_one(self) -> u32 { self.wrapping_add(1) } fn backward_one(self) -> u32 { self.wrapping_sub(1) } fn steps_between(start: &u32, end: &u32) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } }
 impl Sum for u32 { fn sum<I: Iterator<Item = u32>>(mut iter: I) -> u32 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a u32> for u32 { fn sum<I: Iterator<Item = &'a u32>>(mut iter: I) -> u32 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for u32 { fn product<I: Iterator<Item = u32>>(mut iter: I) -> u32 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl Step for u64 { fn forward_one(self) -> u64 { self.wrapping_add(1) } fn backward_one(self) -> u64 { self.wrapping_sub(1) } }
+impl<'a> Product<&'a u32> for u32 { fn product<I: Iterator<Item = &'a u32>>(mut iter: I) -> u32 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl ExactSizeIterator for Range<u32> {}
+impl Step for u64 { fn forward_one(self) -> u64 { self.wrapping_add(1) } fn backward_one(self) -> u64 { self.wrapping_sub(1) } fn steps_between(start: &u64, end: &u64) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } }
 impl Sum for u64 { fn sum<I: Iterator<Item = u64>>(mut iter: I) -> u64 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a u64> for u64 { fn sum<I: Iterator<Item = &'a u64>>(mut iter: I) -> u64 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for u64 { fn product<I: Iterator<Item = u64>>(mut iter: I) -> u64 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl Step for u128 { fn forward_one(self) -> u128 { self.wrapping_add(1) } fn backward_one(self) -> u128 { self.wrapping_sub(1) } }
+impl<'a> Product<&'a u64> for u64 { fn product<I: Iterator<Item = &'a u64>>(mut iter: I) -> u64 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for u128 { fn forward_one(self) -> u128 { self.wrapping_add(1) } fn backward_one(self) -> u128 { self.wrapping_sub(1) } fn steps_between(start: &u128, end: &u128) -> (usize, Option<usize>) { if *start <= *end { let n = *end - *start; if n <= usize::MAX as u128 { (n as usize, Some(n as usize)) } else { (usize::MAX, None) } } else { (0, None) } } }
 impl Sum for u128 { fn sum<I: Iterator<Item = u128>>(mut iter: I) -> u128 { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a u128> for u128 { fn sum<I: Iterator<Item = &'a u128>>(mut iter: I) -> u128 { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for u128 { fn product<I: Iterator<Item = u128>>(mut iter: I) -> u128 { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
-impl Step for usize { fn forward_one(self) -> usize { self.wrapping_add(1) } fn backward_one(self) -> usize { self.wrapping_sub(1) } }
+impl<'a> Product<&'a u128> for u128 { fn product<I: Iterator<Item = &'a u128>>(mut iter: I) -> u128 { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl Step for usize { fn forward_one(self) -> usize { self.wrapping_add(1) } fn backward_one(self) -> usize { self.wrapping_sub(1) } fn steps_between(start: &usize, end: &usize) -> (usize, Option<usize>) { if *start <= *end { let n = (*end - *start) as usize; (n, Some(n)) } else { (0, None) } } }
 impl Sum for usize { fn sum<I: Iterator<Item = usize>>(mut iter: I) -> usize { let mut total = 0; while let Some(x) = iter.next() { total += x; } total } }
+impl<'a> Sum<&'a usize> for usize { fn sum<I: Iterator<Item = &'a usize>>(mut iter: I) -> usize { let mut total = 0; while let Some(x) = iter.next() { total += *x; } total } }
 impl Product for usize { fn product<I: Iterator<Item = usize>>(mut iter: I) -> usize { let mut total = 1; while let Some(x) = iter.next() { total *= x; } total } }
+impl<'a> Product<&'a usize> for usize { fn product<I: Iterator<Item = &'a usize>>(mut iter: I) -> usize { let mut total = 1; while let Some(x) = iter.next() { total *= *x; } total } }
+impl ExactSizeIterator for Range<usize> {}

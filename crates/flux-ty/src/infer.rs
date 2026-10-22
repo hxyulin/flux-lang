@@ -2897,6 +2897,10 @@ impl Ctx<'_> {
         // Closures last, as rustc checks them, so that the other
         // arguments may tell their parameters' types.
         for closures in [false, true] {
+            // What can be selected first, as for method calls.
+            if closures && args.iter().any(|&arg| self.is_closure(arg)) {
+                self.select_obligations();
+            }
             for (i, &arg) in args.iter().enumerate() {
                 if self.is_closure(arg) != closures {
                     continue;
@@ -4085,6 +4089,12 @@ impl Ctx<'_> {
         );
         let params = &sig.params[1..];
         self.hint_closure_args(function, &generic_args, params, args, name_range);
+        // What can be selected first, as rustc does before checking
+        // closures: their parameters may be associated types that an
+        // `impl` block's bounds decide (`Copied<I>`'s `Item`).
+        if args.iter().any(|&arg| self.is_closure(arg)) {
+            self.select_obligations();
+        }
         for (&arg, &param) in args.iter().zip(params) {
             if self.is_closure(arg) {
                 self.expect(arg, param);

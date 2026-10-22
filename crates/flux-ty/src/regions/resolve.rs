@@ -26,9 +26,19 @@ pub(crate) fn resolve_regions(
                 "lifetime parameters on traits are not supported yet".to_owned(),
             ));
         }
-        check_bounds(&t.generics, t.supertraits.iter(), &mut list);
+        check_bounds(
+            &t.generics,
+            t.supertraits.iter(),
+            items.is_core(t.loc.module),
+            &mut list,
+        );
         for ty in &t.types {
-            check_bounds(&Generics::default(), ty.bounds.iter(), &mut list);
+            check_bounds(
+                &Generics::default(),
+                ty.bounds.iter(),
+                items.is_core(t.loc.module),
+                &mut list,
+            );
         }
         push(&mut errors, t.loc.file, list);
     }
@@ -102,7 +112,12 @@ fn structs(
             .map(|(f, &ty)| walker.regions(&f.ty, ty))
             .collect();
         let mut list = std::mem::take(&mut walker.errors);
-        check_bounds(&s.generics, std::iter::empty(), &mut list);
+        check_bounds(
+            &s.generics,
+            std::iter::empty(),
+            items.is_core(s.loc.module),
+            &mut list,
+        );
         errors.extend(list.into_iter().map(|(r, m)| (s.loc.file, r, m)));
         let count = s.generics.lifetimes.len() + s.generics.params.len();
         sigs.regions.structs.insert(
@@ -202,7 +217,12 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
             .collect();
         let mut list = std::mem::take(&mut walker.errors);
         let names = walker.names.clone();
-        check_bounds(&imp.generics, std::iter::empty(), &mut list);
+        check_bounds(
+            &imp.generics,
+            std::iter::empty(),
+            items.is_core(imp.module),
+            &mut list,
+        );
         let mut outlives = Vec::new();
         bounds_outlives(
             items,
@@ -337,7 +357,12 @@ fn functions(
         );
         let names: Vec<Option<Symbol>> = all_names.iter().map(|n| n.name).collect();
         let mut list = std::mem::take(&mut walker.errors);
-        check_bounds(&function.generics, std::iter::empty(), &mut list);
+        check_bounds(
+            &function.generics,
+            std::iter::empty(),
+            items.is_core(function.loc.module),
+            &mut list,
+        );
         let mut outlives = owner_outlives;
         bounds_outlives(
             items,
@@ -441,10 +466,14 @@ fn bounds_outlives(
 /// lifetime is an error there (E0637), as in rustc, and a lifetime
 /// argument is one too, since traits have no lifetime parameters. In a
 /// `Fn`-family bound, elided lifetimes among the parameters are its own
-/// (higher-ranked), and supported.
+/// (higher-ranked), and supported. `core` may name lifetimes in its
+/// bounds' associated type bindings (`I: Iterator<Item = &'a T>`)
+/// where nothing it returns has them, so that what is erased is never
+/// needed: `Iterator::copied`, `Sum<&'a i32>`.
 fn check_bounds<'b>(
     generics: &'b Generics,
     more: impl Iterator<Item = &'b flux_hir::Bound>,
+    in_core: bool,
     errors: &mut Vec<(TextRange, String)>,
 ) {
     for bound in generics.predicates.iter().map(|p| &p.bound).chain(more) {
@@ -495,7 +524,9 @@ fn check_bounds<'b>(
                     "`&` without an explicit lifetime name cannot be used here".to_owned(),
                 ));
             }
-            if let Some(l) = named.iter().find(|l| !l.is_anonymous()) {
+            if let Some(l) = named.iter().find(|l| !l.is_anonymous())
+                && !in_core
+            {
                 errors.push((
                     l.range,
                     "lifetimes in the generic arguments of bounds are not supported yet".to_owned(),

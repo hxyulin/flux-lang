@@ -362,11 +362,24 @@ impl Ctx<'_> {
                     progress = true;
                     let ty = self.normalize(ty, p.range);
                     if !self.unify(p.var, ty) {
-                        let message = format!(
-                            "type mismatch resolving `{} == {}`",
-                            self.describe(Ty::alias(alias)),
-                            self.describe(p.var)
-                        );
+                        let iterator_item = self.items.traits[alias.trait_]
+                            .lang
+                            .is_some_and(|l| l.as_str() == "iterator")
+                            && alias.name.as_str() == "Item";
+                        let message = if iterator_item {
+                            format!(
+                                "expected `{}` to be an iterator that yields `{}`, but it yields `{}`",
+                                self.describe(alias.args[0]),
+                                self.describe(p.var),
+                                self.describe(ty)
+                            )
+                        } else {
+                            format!(
+                                "type mismatch resolving `{} == {}`",
+                                self.describe(Ty::alias(alias)),
+                                self.describe(p.var)
+                            )
+                        };
                         if p.expected {
                             self.error(p.range, message);
                         } else {
@@ -1589,6 +1602,15 @@ impl Ctx<'_> {
         // `T: Tr<Out = u8>`: what the arguments' associated types must be.
         let projections = crate::traits::declared_projections(items, sigs, function);
         for p in projections {
+            // On a method's `Self` (`Self: Iterator<Item = &'a T>`), at
+            // the receiver, as rustc reports it.
+            let on_self = first_param(p.alias.args[0]) == Some(0)
+                && matches!(items.functions[function].owner, Some(Owner::Trait(_)));
+            if on_self && let Some(receiver) = site.receiver {
+                let range = self.range(receiver);
+                self.register_projection(p.subst(args), range);
+                continue;
+            }
             let range = self.bound_range(
                 function,
                 Predicate {
@@ -1653,6 +1675,8 @@ impl Ctx<'_> {
             .map(|(i, _)| i)
             .collect();
         match mentions.as_slice() {
+            // A method call's is at the method's name, as rustc has it.
+            [] if site.receiver.is_some() => site.callee,
             [] => site.whole,
             &[i] => {
                 let expr = match site.receiver {

@@ -822,6 +822,7 @@ impl Normalizer<'_> {
                 let goal = alias_predicate(alias);
                 if let Some((imp, impl_args)) = select_impl(items, sigs, goal)
                     && let Some(t) = impl_type(sigs, imp, alias.name)
+                    && !unproven_blanket(items, sigs, imp, goal, &impl_args)
                 {
                     return self.go(t.subst(&impl_args), depth + 1);
                 }
@@ -847,6 +848,28 @@ impl Normalizer<'_> {
             _ => ty,
         }
     }
+}
+
+/// Whether `imp` is a blanket block (`impl<I: Iterator> IntoIterator for
+/// I`) chosen for a generic parameter or associated type, whose bounds
+/// do not hold without the bounds in scope, which normalization does not
+/// have: `<U as IntoIterator>::Item` for `U: IntoIterator` stays, rather
+/// than becoming `<U as Iterator>::Item`.
+fn unproven_blanket(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: ImplId,
+    goal: Predicate,
+    args: &[Ty],
+) -> bool {
+    if !matches!(sigs.impls[imp].kind(), TyKind::Param(_))
+        || !(goal.self_ty.has_params() || goal.self_ty.has_aliases())
+    {
+        return false;
+    }
+    sigs.impl_predicates
+        .get(imp)
+        .is_some_and(|preds| !preds.iter().all(|p| holds(items, sigs, &[], p.subst(args))))
 }
 
 /// The signature of `function` with generic arguments `args`, its
@@ -1861,7 +1884,19 @@ fn check_method(
     let mut args = vec![self_ty];
     args.extend_from_slice(trait_ref.args);
     args.extend(crate::params_of(&function.generics, first));
-    let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+    // The block's bounds' associated types, and its own: `Self::IntoIter`
+    // in `impl<I: Iterator> IntoIterator for I` is `I`.
+    let mut projections = sigs
+        .impl_projections
+        .get(imp)
+        .map_or(Vec::new(), |p| p.to_vec());
+    for &(name, ty) in sigs.impl_types.get(imp).map_or(&[][..], |t| t) {
+        projections.push(Projection {
+            alias: alias_of(*trait_ref, self_ty, name),
+            ty,
+        });
+    }
+    let projections = &projections[..];
     let norm = |sig: &crate::FnSig| crate::FnSig {
         params: sig
             .params
