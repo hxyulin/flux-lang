@@ -4,6 +4,12 @@
 
 ### Syntax
 
+- Compile unchanged generator type helpers and syntax-tree navigation in
+  the self-compilation subset. Add borrowed string joining, content hashing
+  for String/Vec/Box, boxed slice/string cloning and boxed slice collection.
+  Support thin-pointer hashing and enclosing-impl trait method lookup; fix
+  mutable iterator temporaries incorrectly requiring a mutable receiver.
+
 - Add checked `NonZeroU32` construction/access and preserve its zero niche.
   The self-compilation subset now runs unchanged parser events while
   retaining their eight-byte representation.

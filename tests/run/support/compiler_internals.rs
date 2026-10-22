@@ -10,6 +10,8 @@ use rng::Source;
 fn main() {
     syntax_kind::run_selfhost_checks();
     event::run_selfhost_checks();
+    generator_types::run_selfhost_checks();
+    tree::exercise_tree();
     let mut source = Source::random(core::hint::black_box(108198));
     for _ in 0..16 {
         println!("{} {} {} {} {}", source.below(17), source.range(4, 20),
