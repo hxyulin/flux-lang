@@ -901,7 +901,7 @@ impl Ctx<'_> {
         if !items.trait_fns.contains_key(&name) {
             return false;
         }
-        let in_scope = self.traits_in_scope().to_vec();
+        let in_scope = self.traits_in_scope_with(name);
         in_scope.into_iter().any(|t| {
             let has = match items.traits[t].value(items, name) {
                 Some(AssocItem::Function(f)) => !methods || items.functions[f].has_self,
@@ -921,7 +921,7 @@ impl Ctx<'_> {
         if !items.trait_fns.contains_key(&name) {
             return false;
         }
-        let in_scope = self.traits_in_scope().to_vec();
+        let in_scope = self.traits_in_scope_with(name);
         in_scope.into_iter().any(|t| {
             let by_value = match items.traits[t].value(items, name) {
                 Some(AssocItem::Function(f)) => {
@@ -1005,39 +1005,37 @@ impl Ctx<'_> {
 
     /// The traits whose methods may be called here: those named in the
     /// module's scope, and the prelude's.
-    pub(super) fn traits_in_scope(&mut self) -> &[TraitId] {
-        if self
-            .traits_in_scope
-            .as_ref()
-            .is_none_or(|(m, _)| *m != self.module)
-        {
-            let items = self.items;
-            let mut found = Vec::new();
-            // A block's scope, those of the blocks around it, its module's.
-            let mut scopes = Vec::new();
-            let mut module = Some(self.module);
-            while let Some(m) = module {
-                scopes.push(m);
-                module = items.modules[m]
-                    .parent
-                    .filter(|_| items.modules[m].block.is_some());
-            }
-            scopes.extend(items.def_map.prelude);
-            for module in scopes {
-                for binding in items.def_map.scopes[module.index()].types.values() {
-                    if let flux_hir::def_map::Def::Trait(t) = binding.def
-                        && !found.contains(&t)
-                    {
-                        found.push(t);
-                    }
-                }
-            }
-            found.sort_by_key(|t| t.index());
-            self.traits_in_scope = Some((self.module, found));
+    pub(super) fn traits_in_scope(&self) -> &[TraitId] {
+        self.sigs.traits_in_scope.get(self.module)
+    }
+
+    /// The traits in scope with a function or constant called `name`,
+    /// by index: those of the traits in scope or those with the name,
+    /// whichever are fewer, that are also the others.
+    fn traits_in_scope_with(&self, name: Symbol) -> Vec<TraitId> {
+        let items = self.items;
+        let in_scope = self.traits_in_scope();
+        let with = items.trait_fns.get(&name).map_or(&[][..], |v| v);
+        if with.len() < in_scope.len() {
+            let mut found: Vec<TraitId> = with
+                .iter()
+                .copied()
+                .filter(|t| {
+                    in_scope
+                        .binary_search_by_key(&t.index(), |u| u.index())
+                        .is_ok()
+                })
+                .collect();
+            found.sort_unstable_by_key(|t| t.index());
+            found.dedup();
+            found
+        } else {
+            in_scope
+                .iter()
+                .copied()
+                .filter(|&t| items.traits[t].value(items, name).is_some())
+                .collect()
         }
-        self.traits_in_scope
-            .as_ref()
-            .map_or(&[][..], |(_, found)| found)
     }
 
     /// The methods called `name` of the traits in scope that `ty` may
@@ -1096,7 +1094,7 @@ impl Ctx<'_> {
         {
             return found;
         }
-        let in_scope = self.traits_in_scope().to_vec();
+        let in_scope = self.traits_in_scope_with(name);
         for t in in_scope {
             let Some(f) = wanted(t) else {
                 continue;

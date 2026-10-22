@@ -283,7 +283,6 @@ impl<'a> Ctx<'a> {
             projections: Vec::new(),
             normalizing: Vec::new(),
             obligations: Vec::new(),
-            traits_in_scope: None,
             reported_unmet: HashSet::new(),
             written_wf: HashSet::new(),
             signature_wf: HashSet::new(),
@@ -452,8 +451,6 @@ struct Ctx<'a> {
     normalizing: Vec<crate::ty::AliasTy>,
     /// Trait obligations not yet met.
     obligations: Vec<Obligation>,
-    /// The traits in scope, and the module they are in scope in.
-    traits_in_scope: Option<(flux_hir::ModuleId, Vec<flux_hir::TraitId>)>,
     /// Unmet obligations reported, by range and message.
     reported_unmet: HashSet<(TextRange, String)>,
     /// The struct types written in the body, and in a constant, those its

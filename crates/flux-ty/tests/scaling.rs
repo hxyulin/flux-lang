@@ -46,12 +46,11 @@ fn many_impls() {
 }
 
 /// Traits in one module, each with a method called in a body of its
-/// own. Each body lists the traits in scope, comparing each with those
-/// found before it, and each call looks through them all for the
-/// method's name, where rustc lists a module's traits once and looks
-/// methods up by name.
+/// own. Each body once listed the traits in scope, comparing each with
+/// those found before it, and each call looked through them all for the
+/// method's name; a module's traits are now listed once, and a call
+/// looks through those with the name if they are fewer.
 #[test]
-#[ignore = "each body lists the traits in scope pairwise: cubic"]
 fn many_traits_in_scope() {
     let make = |n| {
         let items = repeat(n, |i| {
