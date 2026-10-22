@@ -2024,7 +2024,25 @@ fn check_method(
         .map_or(&[][..], |p| p)
         .to_vec();
     let declared = sigs.fn_predicates.get(required).map_or(&[][..], |p| p);
-    env.extend(declared.iter().map(|p| p.subst(&args)));
+    // With the block's associated types normalized, as its signature's
+    // are: `F: FnMut(B, Self::Item)` of `Iterator::fold` is `F: FnMut(B,
+    // T)` in a block whose `Item` is `T`.
+    env.extend(declared.iter().map(|p| {
+        let p = p.subst(&args);
+        let args: Vec<Ty> = p
+            .trait_ref
+            .args
+            .iter()
+            .map(|&a| normalize(items, sigs, projections, a))
+            .collect();
+        Predicate {
+            self_ty: normalize(items, sigs, projections, p.self_ty),
+            trait_ref: TraitRef {
+                args: Ty::list(&args),
+                ..p.trait_ref
+            },
+        }
+    }));
     let env = elaborate(sigs, &env);
     for (written, &p) in function.generics.predicates.iter().zip(own) {
         if !holds(items, sigs, &env, p) {
