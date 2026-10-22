@@ -463,6 +463,7 @@ fn tag_int(bytes: u8) -> IntTy {
 fn is_memory(sigs: &Signatures, ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Array(..) => true,
+        TyKind::Adt(adt, _) if sigs.unions.contains(&adt.strukt) => true,
         TyKind::Tuple(_) | TyKind::Adt(..) | TyKind::Closure(..) => sigs
             .contents(ty)
             .is_some_and(|fields| fields.iter().any(|&f| is_memory(sigs, f))),
@@ -1492,6 +1493,11 @@ impl Lower<'_, '_, '_> {
     fn build_in_memory(&mut self, address: Value, rvalue: &Rvalue, ty: Ty) {
         let sigs = self.sigs;
         match rvalue {
+            Rvalue::Aggregate(AggregateKind::Union(_, field), operands) => {
+                let field_ty = sigs.fields(ty).unwrap()[*field as usize];
+                let values = self.operand(&operands[0]);
+                self.store(address, field_ty, &values);
+            }
             Rvalue::Aggregate(AggregateKind::Array(elem), operands) => {
                 let size = self.ctx.layouts.of(*elem).size;
                 for (i, operand) in operands.iter().enumerate() {
@@ -2382,6 +2388,12 @@ impl Lower<'_, '_, '_> {
                     }
                     return;
                 }
+                if items.functions[*func].intrinsic
+                    && flux_mir::mono::is_neon_intrinsic(items.functions[*func].name.as_str())
+                {
+                    self.neon_intrinsic(*func, generic_args, args, dest, *target);
+                    return;
+                }
                 // Of a trait object: through its vtable.
                 if items.functions[*func].intrinsic {
                     self.dyn_intrinsic(*func, args, dest, *target);
@@ -2716,6 +2728,70 @@ impl Lower<'_, '_, '_> {
         self.call_values(sig.ret, data, leaves, dest, target, |b, values| {
             b.ins().call_indirect(sig_ref, pointer, values)
         });
+    }
+
+    /// NEON values use the ordinary indirect array aggregate convention at
+    /// Rust calls; only the operation itself introduces packed Keel values.
+    fn neon_intrinsic(
+        &mut self,
+        func: FunctionId,
+        generic_args: &[Ty],
+        args: &[Operand],
+        dest: &Place,
+        target: Option<flux_mir::BasicBlock>,
+    ) {
+        use keel_ir::{VectorBinaryOp, VectorType};
+        let symbol = self.ctx.hir.items.functions[func].name;
+        let name = symbol
+            .as_str()
+            .strip_prefix("__neon_")
+            .expect("NEON intrinsic");
+        let first = self.operand(&args[0])[0];
+        let bytes = Type::Vector(VectorType::I8x16);
+        let value = match name {
+            "vdupq_n_u8" => self.b.ins().vsplat(bytes, first),
+            "vget_lane_u64" => self.b.ins().load(Type::I64, first),
+            "vgetq_lane_u64" => {
+                let TyKind::Value(lane) = generic_args[0].kind() else {
+                    unreachable!("validated constant lane")
+                };
+                let vector = self.b.ins().load(Type::Vector(VectorType::I64x2), first);
+                self.b.ins().vextract(vector, lane.bits() as u8)
+            }
+            _ => {
+                // The load intrinsic explicitly promises no alignment. Using
+                // the same conservative flags for aggregate inputs is valid.
+                let a = self.b.ins().load(bytes, first);
+                if name == "vld1q_u8" {
+                    a
+                } else {
+                    let second = self.operand(&args[1])[0];
+                    let b = self.b.ins().load(bytes, second);
+                    match name {
+                        "vceqq_u8" => self.b.ins().vicmp(IntCC::Eq, a, b),
+                        "vandq_u8" => self.b.ins().vector_binary(VectorBinaryOp::And, a, b),
+                        "vorrq_u8" => self.b.ins().vector_binary(VectorBinaryOp::Or, a, b),
+                        _ => unreachable!("bounded NEON intrinsic"),
+                    }
+                }
+            }
+        };
+        if matches!(name, "vgetq_lane_u64" | "vget_lane_u64") {
+            self.write(dest, &[value]);
+        } else {
+            let (Location::Memory(address), _) = self.locate(dest) else {
+                unreachable!("NEON aggregates live in memory")
+            };
+            self.b.ins().store(value, address);
+        }
+        match target {
+            Some(target) => {
+                self.b.ins().jump(self.blocks[target.index()], &[]);
+            }
+            None => {
+                self.b.ins().trap();
+            }
+        }
     }
 
     /// `size_of_val`, `align_of_val` or `drop_in_place` of a trait

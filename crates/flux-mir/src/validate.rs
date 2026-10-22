@@ -169,6 +169,12 @@ impl Validator<'_> {
             }
             Rvalue::Aggregate(kind, ops) => {
                 let (fields, ok) = match (kind, ty.kind()) {
+                    (AggregateKind::Union(s, field), TyKind::Adt(adt, _)) => (
+                        self.sigs
+                            .fields(ty)
+                            .and_then(|fs| fs.get(*field as usize..*field as usize + 1)),
+                        adt.strukt == *s && self.sigs.unions.contains(s),
+                    ),
                     (AggregateKind::Struct(s), TyKind::Adt(adt, _)) => {
                         (self.sigs.variant_fields(ty, 0), adt.strukt == *s)
                     }

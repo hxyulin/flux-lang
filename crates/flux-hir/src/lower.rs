@@ -376,7 +376,8 @@ fn derived_body(
             // `{ assert_param_is_clone(&self.a); ..; *self }`
             let res = assert_param_is_clone(items, data.loc.module);
             let mut stmts = Vec::new();
-            for f in s.fields.iter() {
+            // Integer union fields are validated separately. Never borrow inactive fields.
+            for f in s.fields.iter().filter(|_| !s.is_union) {
                 let at = f.def_range;
                 let place = field_of(&mut ctx, bindings[0], f);
                 let arg = ctx.alloc_expr(
@@ -4808,6 +4809,12 @@ impl<'a> Ctx<'a> {
             self.pat_field_range_scratch.truncate(ranges_start);
             return self.alloc_pat(Pat::Missing, range);
         };
+        if self.items.structs[strukt].is_union {
+            self.pat_field_scratch.truncate(fields_start);
+            self.pat_field_range_scratch.truncate(ranges_start);
+            self.error(range, "union patterns are not supported yet");
+            return self.alloc_pat(Pat::Missing, range);
+        }
         let id = alloc_pat!(
             self,
             Pat::Record {

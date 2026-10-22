@@ -368,12 +368,17 @@ struct Live {
 /// indices in locals may be the same whatever their indices, as rustc
 /// assumes; those at constant indices (a slice pattern's) are the same
 /// only where the indices may be, as rustc decides.
-fn overlaps(a: &Place, b: &Place) -> bool {
+fn overlaps(body: &Body, sigs: &Signatures, a: &Place, b: &Place) -> bool {
     a.local == b.local
         && a.projection
             .iter()
             .zip(b.projection.iter())
-            .all(|(&x, &y)| elements_may_overlap(x, y))
+            .enumerate()
+            .all(|(i, (&x, &y))| {
+                let prefix = Place { local: a.local, projection: a.projection[..i].into() };
+                matches!(body.place_ty(&prefix, sigs).kind(), TyKind::Adt(adt, _) if sigs.unions.contains(&adt.strukt))
+                    || elements_may_overlap(x, y)
+            })
 }
 
 fn elements_may_overlap(x: ProjectionElem, y: ProjectionElem) -> bool {
@@ -564,7 +569,13 @@ impl Checker<'_> {
         {
             let borrowed = self.borrowed;
             let dead = borrowed[place.local.index()].iter().find(|&&id| {
-                self.is_live(id as usize, live) && overlaps(place, &self.loans[id as usize].0.place)
+                self.is_live(id as usize, live)
+                    && overlaps(
+                        self.body,
+                        self.sigs,
+                        place,
+                        &self.loans[id as usize].0.place,
+                    )
             });
             if let Some(&id) = dead {
                 self.dead(id as usize, range);
@@ -1048,7 +1059,7 @@ impl Checker<'_> {
         for &id in &borrowed[place.local.index()] {
             let id = id as usize;
             let loan = &self.loans[id].0;
-            if !self.is_live(id, live) || !overlaps(place, &loan.place) {
+            if !self.is_live(id, live) || !overlaps(self.body, self.sigs, place, &loan.place) {
                 continue;
             }
             // Overwriting a pointer leaves what it points to, and the

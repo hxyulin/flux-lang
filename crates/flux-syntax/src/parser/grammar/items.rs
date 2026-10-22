@@ -119,6 +119,7 @@ pub(super) fn opt_item(p: &mut Parser<'_>, m: Marker) -> Result<(), Marker> {
             p.error("expected `fn`, `impl` or `trait`");
             m.complete(p, ERROR);
         }
+        IDENT if p.at_union() && p.nth(1) == IDENT => union_(p, m),
         T![struct] => struct_(p, m),
         T![enum] => enum_(p, m),
         T![type] => type_alias(p, m),
@@ -280,6 +281,21 @@ fn struct_(p: &mut Parser<'_>, m: Marker) {
         }
     }
     m.complete(p, STRUCT);
+}
+
+/// `union` is contextual: `union! {}`, `fn union()` and paths named
+/// `union` remain identifiers. A declaration has a following name.
+fn union_(p: &mut Parser<'_>, m: Marker) {
+    p.bump_union();
+    name_r(p, ITEM_RECOVERY_SET);
+    generics::opt_generic_param_list(p);
+    generics::opt_where_clause(p);
+    if p.at(T!['{']) {
+        record_field_list(p);
+    } else {
+        p.error("expected `{`");
+    }
+    m.complete(p, UNION);
 }
 
 fn enum_(p: &mut Parser<'_>, m: Marker) {

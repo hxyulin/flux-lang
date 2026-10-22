@@ -4253,6 +4253,51 @@ impl<'t> AstNode<'t> for UnderscoreExpr<'t> {
 }
 
 /// ```text
+/// Union =
+///   Attr* Visibility? 'union' Name GenericParamList? WhereClause? RecordFieldList
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Union<'t> {
+    pub(crate) syntax: SyntaxNode<'t>,
+}
+
+impl<'t> Union<'t> {
+    pub fn attrs(self) -> AstChildren<'t, Attr<'t>> {
+        support::children(self.syntax)
+    }
+    pub fn visibility(self) -> Option<Visibility<'t>> {
+        support::child(self.syntax)
+    }
+    pub fn union_token(self) -> Option<SyntaxToken<'t>> {
+        support::token(self.syntax, UNION_KW)
+    }
+    pub fn name(self) -> Option<Name<'t>> {
+        support::child(self.syntax)
+    }
+    pub fn generic_param_list(self) -> Option<GenericParamList<'t>> {
+        support::child(self.syntax)
+    }
+    pub fn where_clause(self) -> Option<WhereClause<'t>> {
+        support::child(self.syntax)
+    }
+    pub fn record_field_list(self) -> Option<RecordFieldList<'t>> {
+        support::child(self.syntax)
+    }
+}
+
+impl<'t> AstNode<'t> for Union<'t> {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == UNION
+    }
+    fn cast(syntax: SyntaxNode<'t>) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Union { syntax })
+    }
+    fn syntax(self) -> SyntaxNode<'t> {
+        self.syntax
+    }
+}
+
+/// ```text
 /// Use =
 ///   Attr* Visibility? 'use' UseTree ';'
 /// ```
@@ -5149,6 +5194,7 @@ impl<'t> From<ConstParam<'t>> for GenericParam<'t> {
 /// | Struct
 /// | Trait
 /// | TypeAlias
+/// | Union
 /// | Use
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -5165,6 +5211,7 @@ pub enum Item<'t> {
     Struct(Struct<'t>),
     Trait(Trait<'t>),
     TypeAlias(TypeAlias<'t>),
+    Union(Union<'t>),
     Use(Use<'t>),
 }
 
@@ -5184,6 +5231,7 @@ impl<'t> AstNode<'t> for Item<'t> {
                 | STRUCT
                 | TRAIT
                 | TYPE_ALIAS
+                | UNION
                 | USE
         )
     }
@@ -5201,6 +5249,7 @@ impl<'t> AstNode<'t> for Item<'t> {
             STRUCT => Item::Struct(Struct { syntax }),
             TRAIT => Item::Trait(Trait { syntax }),
             TYPE_ALIAS => Item::TypeAlias(TypeAlias { syntax }),
+            UNION => Item::Union(Union { syntax }),
             USE => Item::Use(Use { syntax }),
             _ => return None,
         };
@@ -5220,6 +5269,7 @@ impl<'t> AstNode<'t> for Item<'t> {
             Item::Struct(it) => it.syntax(),
             Item::Trait(it) => it.syntax(),
             Item::TypeAlias(it) => it.syntax(),
+            Item::Union(it) => it.syntax(),
             Item::Use(it) => it.syntax(),
         }
     }
@@ -5294,6 +5344,12 @@ impl<'t> From<Trait<'t>> for Item<'t> {
 impl<'t> From<TypeAlias<'t>> for Item<'t> {
     fn from(node: TypeAlias<'t>) -> Self {
         Item::TypeAlias(node)
+    }
+}
+
+impl<'t> From<Union<'t>> for Item<'t> {
+    fn from(node: Union<'t>) -> Self {
+        Item::Union(node)
     }
 }
 

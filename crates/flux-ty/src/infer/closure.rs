@@ -834,6 +834,13 @@ impl Ctx<'_> {
         if let Some(i) = raw {
             proj.truncate(i);
         }
+        // Capturing an integer field separately would eagerly read bytes
+        // that a union has not necessarily initialized. Capture its storage.
+        if let Some(i) = (0..proj.len()).find(|&i| {
+            matches!(tys[i].kind(), TyKind::Adt(adt, _) if self.items.structs[adt.strukt].is_union)
+        }) {
+            proj.truncate(i);
+        }
         if let Some(i) = proj.iter().rposition(|&p| p == CaptureProj::Deref)
             && let TyKind::Ref(Mutability::Not, _) = tys[i].kind()
         {

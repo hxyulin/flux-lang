@@ -153,3 +153,30 @@ fn conditional_compilation_of_compiler_sources() {
         }
     }
 }
+
+/// Recognized union declarations have an explicit overlapping-storage identity.
+/// Inactive declarations are removed before collection, including inside
+/// blocks and macro expansions (also exercised by the runtime regression).
+#[test]
+fn union_semantic_boundary() {
+    for source in [
+        "union U { byte: u8, word: u64 } fn main() {}",
+        "fn main() { union U { byte: u8, word: u64 } }",
+        "macro_rules! item { ($i:item) => { $i }; } item! { union U { x: u8 } } fn main() {}",
+    ] {
+        let (db, root, hir) = flux_hir::lower_text("union.rs", source);
+        assert!(db.file(root).parse.errors().is_empty());
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        assert!(
+            hir.items
+                .structs
+                .iter()
+                .any(|(_, s)| s.name.as_str() == "U" && s.is_union)
+        );
+    }
+    let (_, _, hir) = flux_hir::lower_text(
+        "union.rs",
+        "#[cfg(any())] union U { x: Missing } fn main() { #[cfg(any())] union U { y: Missing } }",
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+}

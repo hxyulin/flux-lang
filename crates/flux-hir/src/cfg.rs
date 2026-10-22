@@ -80,6 +80,14 @@ fn cfg_predicate(call: TextRange, toks: &[Tok], pos: &mut usize) -> Result<bool,
         ("target_pointer_width", Some(v)) => v == "64",
         ("target_endian", Some(v)) => v == "little",
         ("target_vendor", Some(v)) => v == if os == "macos" { "apple" } else { "unknown" },
+        // Flux emits a fixed baseline target, independently of the flags used
+        // to compile Flux itself. Only baseline features are advertised here;
+        // optional CPU extensions require an explicit codegen configuration.
+        ("target_feature", Some(v)) => match std::env::consts::ARCH {
+            "aarch64" => v == "neon",
+            "x86_64" => matches!(v, "fxsr" | "sse" | "sse2"),
+            _ => false,
+        },
         // `test`, `feature = ".."` and names rustc does not know.
         _ => false,
     })

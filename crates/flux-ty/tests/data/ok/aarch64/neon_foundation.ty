@@ -1,0 +1,12 @@
+fn copy_debug<T>(T) -> T
+    x@0: T
+fn vector(*const u8) -> uint64x2_t
+    p@0: *const u8
+    a@1: uint8x16_t
+    b@2: uint8x16_t
+    c@3: uint8x16_t
+fn register_ops(uint8x16_t, uint8x16_t) -> u64
+    a@0: uint8x16_t
+    b@1: uint8x16_t
+    c@2: uint8x16_t
+fn main() -> ()

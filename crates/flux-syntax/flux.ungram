@@ -95,6 +95,7 @@ Item =
 | Struct
 | Trait
 | TypeAlias
+| Union
 | Use
 
 MacroCall =
@@ -130,6 +131,9 @@ Struct =
   Attr* Visibility? 'struct' Name GenericParamList?
   ( WhereClause? (RecordFieldList | ';')
   | TupleFieldList WhereClause? ';')
+
+Union =
+  Attr* Visibility? 'union' Name GenericParamList? WhereClause? RecordFieldList
 
 RecordFieldList =
   '{' fields:(RecordField (',' RecordField)* ','?)? '}'

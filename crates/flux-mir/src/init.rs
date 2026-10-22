@@ -22,7 +22,7 @@ use std::hash::BuildHasher;
 
 use flux_hir::{Diagnostic, ItemTree};
 use flux_syntax::TextRange;
-use flux_ty::Signatures;
+use flux_ty::{Signatures, TyKind};
 
 use crate::bitset::BitSet;
 use crate::{
@@ -33,7 +33,7 @@ use crate::{
 /// The diagnostics for `body`'s uses of uninitialized or moved places
 /// and its invalid assignments.
 pub fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
-    let mut paths = MovePaths::new(body, |local| {
+    let mut paths = MovePaths::new(body, sigs, |local| {
         body.is_param(local) || matches!(body.locals[local].kind, LocalKind::User { .. })
     });
     paths.forbid_moves(body, items, sigs);
@@ -186,6 +186,9 @@ pub(crate) struct MovePaths {
     // Hash borrowed keys, then compare against the single owned copy in
     // `paths`. Collisions are chained through path indices.
     ids: FxHashMap<u64, usize>,
+    // Union field projections alias shared storage without changing the
+    // borrowed-key hash table used by ordinary move paths.
+    aliases: Vec<(Local, crate::Projection, usize)>,
     /// Moves out of a struct with a `Drop` impl, E0509: they move
     /// nothing, as in rustc, so later uses are not errors too.
     forbidden: Vec<Place>,
@@ -209,10 +212,15 @@ fn fields_before_deref(place: &Place) -> (&[ProjectionElem], bool) {
 impl MovePaths {
     /// The paths of `body`'s locals that `tracked` says, and of every
     /// place into them that it mentions.
-    pub(crate) fn new(body: &Body, tracked: impl Fn(Local) -> bool) -> MovePaths {
+    pub(crate) fn new(
+        body: &Body,
+        sigs: &Signatures,
+        tracked: impl Fn(Local) -> bool,
+    ) -> MovePaths {
         let mut paths = MovePaths {
             paths: Vec::new(),
             ids: FxHashMap::default(),
+            aliases: Vec::new(),
             forbidden: Vec::new(),
         };
         for (local, _) in body.locals.iter() {
@@ -222,7 +230,19 @@ impl MovePaths {
         }
         let mut add = |place: &Place| {
             if paths.lookup(place.local, &[]).is_some() {
-                paths.insert(place.local, fields_before_deref(place).0);
+                let fields = fields_before_deref(place).0;
+                // A union field write initializes its shared storage. Its fields
+                // are aliases of one move path, rather than independent children.
+                let union_prefix = (0..fields.len()).find(|&i| {
+                    let prefix = Place { local: place.local, projection: fields[..i].into() };
+                    matches!(body.place_ty(&prefix, sigs).kind(), TyKind::Adt(adt, _) if sigs.unions.contains(&adt.strukt))
+                });
+                if let Some(i) = union_prefix {
+                    let path = paths.insert(place.local, &fields[..i]);
+                    paths.aliases.push((place.local, fields.into(), path));
+                } else {
+                    paths.insert(place.local, &fields);
+                }
             }
         };
         for data in body.blocks.values() {
@@ -306,7 +326,9 @@ impl MovePaths {
             }
             next = path.collision;
         }
-        None
+        self.aliases.iter().find_map(|(owner, projection, path)| {
+            (*owner == local && projection.as_ref() == fields).then_some(*path)
+        })
     }
 
     /// The path of `place`, or of the pointer it is behind, and whether
@@ -538,6 +560,21 @@ impl Report<'_> {
             }
             return;
         }
+        if self.paths.paths[path].fields.len() < place.projection.len() {
+            // Writing a field requires an already initialized union, as in Rust.
+            if state.maybe_moved[path] {
+                self.error(
+                    range,
+                    "reinitializing moved unions through fields is not supported yet".to_owned(),
+                );
+                return;
+            }
+            let before = self.diagnostics.len();
+            self.check_use(place, false, state, range);
+            if self.diagnostics.len() != before {
+                return;
+            }
+        }
         let above: Vec<usize> = self.paths.ancestors(path).collect();
         let message = if let Some(&moved) = above.iter().rev().find(|&&p| state.maybe_moved[p]) {
             format!("assign to part of moved value: `{}`", self.path_name(moved))
@@ -705,6 +742,7 @@ mod tests {
         let mut paths = MovePaths {
             paths: Vec::new(),
             ids: FxHashMap::default(),
+            aliases: Vec::new(),
             forbidden: Vec::new(),
         };
         let local = Local::from_raw(0);

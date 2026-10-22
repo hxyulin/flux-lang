@@ -113,6 +113,7 @@ impl FnSig {
 /// generic parameters.
 #[derive(Debug, Clone, Default)]
 pub struct Signatures {
+    pub unions: rustc_hash::FxHashSet<StructId>,
     pub fns: LayeredArenaMap<Function, FnSig>,
     /// The types of each struct's fields, and of each enum's, every
     /// variant's in turn: all that a value of it may contain.
@@ -2491,6 +2492,9 @@ fn extend_signatures(
     // Structs' bounds, then their fields, in which `T::Out` may name
     // the associated type of a bound on `T`.
     for (id, s) in items.structs.iter().skip(from.structs as usize) {
+        if s.is_union {
+            sigs.unions.insert(id);
+        }
         let generics: Vec<Symbol> = s.generics.params.iter().map(|p| p.name).collect();
         let consts: Vec<Option<Ty>> = s.generics.params.iter().map(param_const_ty).collect();
         let unsized_params = unsized_params(items, None, &s.generics);
@@ -2520,6 +2524,12 @@ fn extend_signatures(
             let variant = s.variant(v).fields;
             fields.extend(variant.iter().map(|f| {
                 let ty = resolve(items, s.loc, &f.ty, scope, f.range, &mut reported);
+                if s.is_union && !matches!(ty.kind(), TyKind::Int(_)) {
+                    let mut d =
+                        Diagnostic::new(f.range, "non-integer union fields are not supported yet");
+                    d.file = s.loc.file;
+                    reported.push(d);
+                }
                 if scope.is_unsized(items, ty) {
                     let mut d = Diagnostic::new(f.range, "unsized fields are not supported yet");
                     d.file = s.loc.file;

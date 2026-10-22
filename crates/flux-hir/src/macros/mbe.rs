@@ -797,7 +797,7 @@ impl<'a> CallInput<'a> {
         let closes = match_delimiters(&glued);
         let mut parser_input = parser::Input::default();
         for t in toks {
-            parser_input.push(t.kind);
+            parser_input.push(t.kind, t.is_union_keyword());
             if t.joint {
                 parser_input.set_last_joint();
             }

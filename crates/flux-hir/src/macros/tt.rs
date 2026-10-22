@@ -20,6 +20,10 @@ pub(crate) struct Tok {
 pub(crate) const SOURCE_GROUP: u32 = 1;
 
 impl Tok {
+    pub(crate) fn is_union_keyword(&self) -> bool {
+        self.kind == SyntaxKind::IDENT && self.text.as_str() == "union"
+    }
+
     pub(crate) fn range(&self) -> TextRange {
         self.origin.range
     }
@@ -43,7 +47,11 @@ pub(crate) fn tokens_of(node: SyntaxNode<'_>, out: &mut Vec<Tok>) {
             .peek()
             .is_some_and(|next| next.raw_range().start() == raw.end());
         let _ = last_end.replace(raw.end());
-        let kind = token.kind();
+        // Contextual keywords become identifiers again in token trees.
+        let kind = match token.kind() {
+            T![union] => SyntaxKind::IDENT,
+            kind => kind,
+        };
         match kind.composite_parts() {
             // The parser glued it: split it again, joint.
             Some(parts) => {

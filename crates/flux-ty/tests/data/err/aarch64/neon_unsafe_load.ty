@@ -1,0 +1,3 @@
+fn main() -> ()
+    bytes@0: [u8; 16]
+error 79..103: call to unsafe function `vld1q_u8` is unsafe and requires unsafe function or block

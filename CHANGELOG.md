@@ -4,6 +4,15 @@
 
 ### Syntax
 
+- Add a bounded AArch64 NEON API using packed Keel operations, with distinct
+  vector types, unaligned loads, splat, equality, bitwise operations,
+  reinterpretation and checked constant lanes. Callable wrappers support
+  unsafe function pointers; unsafe call and coercion rules have regressions.
+- Parse contextual unions and execute a bounded integer-field subset with
+  shared storage, Copy/Clone, overlap checking and conditional field pruning.
+- Recognize baseline NEON/SSE feature predicates without inheriting the
+  flags used to build the compiler.
+
 - Resolve associated-type value paths such as `V::Mask::first` through trait
   bounds. Add primitive `core::u8`/`core::u32` compatibility constants and
   the `unreachable_unchecked` intrinsic, including const-evaluation errors.

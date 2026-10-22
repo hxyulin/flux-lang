@@ -128,6 +128,9 @@ pub enum SyntaxKind {
     VIRTUAL_KW,
     YIELD_KW,
 
+    // Contextual keywords, remapped from identifiers only where expected.
+    UNION_KW,
+
     // Literals and names.
     INT_NUMBER,
     FLOAT_NUMBER,
@@ -160,6 +163,7 @@ pub enum SyntaxKind {
     LIFETIME,
     FN,
     STRUCT,
+    UNION,
     ENUM,
     IMPL,
     TRAIT,
@@ -412,6 +416,7 @@ impl SyntaxKind {
         matches!(
             self,
             FN | STRUCT
+                | UNION
                 | ENUM
                 | IMPL
                 | TRAIT
@@ -622,6 +627,7 @@ macro_rules! T {
     [self] => { $crate::SyntaxKind::SELF_KW };
     [Self] => { $crate::SyntaxKind::SELF_TYPE_KW };
     [static] => { $crate::SyntaxKind::STATIC_KW };
+    [union] => { $crate::SyntaxKind::UNION_KW };
     [struct] => { $crate::SyntaxKind::STRUCT_KW };
     [super] => { $crate::SyntaxKind::SUPER_KW };
     [trait] => { $crate::SyntaxKind::TRAIT_KW };

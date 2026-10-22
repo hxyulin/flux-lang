@@ -440,6 +440,8 @@ pub enum ImplTarget {
 /// arena, since their generics, bounds and `impl` blocks work alike.
 #[derive(Debug, Clone)]
 pub struct Struct {
+    /// Fields overlap in shared storage; never use struct field semantics.
+    pub is_union: bool,
     pub name: Symbol,
     pub generics: Generics,
     /// A struct's kind; `Record` for an enum.
@@ -1809,6 +1811,7 @@ impl Collector<'_> {
             ast::Item::ExternBlock(block) => {
                 self.collect_extern_block(ctx, block);
             }
+            ast::Item::Union(u) => self.collect_union(ctx, u),
             ast::Item::Struct(s) => {
                 self.collect_struct(ctx, s);
             }
@@ -3639,11 +3642,121 @@ impl Collector<'_> {
             Defaults::Struct,
             diagnostics,
         );
-        let (kind, fields) =
-            self.collect_fields(ctx, s.record_field_list(), s.tuple_field_list(), false);
+        let (kind, fields) = self.collect_fields(
+            ctx,
+            s.record_field_list(),
+            s.tuple_field_list(),
+            false,
+            false,
+        );
         let repr_c = struct_repr(&hints, &mut self.items.diagnostics);
         let name_range = name.syntax().text_range();
         let id = self.items.structs.alloc(Struct {
+            is_union: false,
+            name: Symbol::intern(name.text()),
+            generics,
+            kind,
+            fields: fields.into(),
+            variants: None,
+            repr: None,
+            repr_c,
+            repr_align,
+            loc: ItemLoc {
+                module: ctx.module,
+                file: ctx.file,
+                vis,
+            },
+            name_range,
+            def_range: TextRange::new(def_start(s.syntax()), name_range.end()),
+        });
+        if let Some(lang) = lang {
+            self.items.lang_enums.insert(lang, id);
+        }
+        for (derive, range) in derives {
+            self.derives.push((ctx, id, derive, range, s.syntax().id()));
+        }
+        self.ctors.push((ctx, id, s.syntax().id()));
+    }
+
+    fn collect_union(&mut self, ctx: Ctx, s: ast::Union<'_>) {
+        let mut derives = Vec::new();
+        let is_core = self.items.is_core(ctx.module);
+        let mut lang = None;
+        let mut hints = Vec::new();
+        let mut repr_align = 1;
+        let attrs = crate::cfg::Attrs::new(s.attrs());
+        for attr in attrs.iter() {
+            if attr_name(attr) == Some("derive") {
+                derive_attr(attr, &mut derives, &mut self.items.diagnostics);
+            } else if attr_name(attr) == Some("repr") {
+                repr_attr(
+                    attr,
+                    &mut hints,
+                    &mut repr_align,
+                    &mut self.items.diagnostics,
+                );
+            } else if is_core && let Some(name) = lang_attr(attr) {
+                lang = Some(name);
+            } else {
+                check_attr(attr, &mut self.items.diagnostics);
+            }
+        }
+        let vis = self.visibility(ctx, s.visibility());
+        let Some(name) = s.name() else {
+            return;
+        };
+        if s.generic_param_list().is_some() || s.where_clause().is_some() {
+            unsupported(
+                &mut self.items.diagnostics,
+                s.syntax().text_range(),
+                "generic unions",
+            );
+        }
+        for (derive, range) in &derives {
+            if !matches!(derive, Derive::Copy | Derive::Clone) {
+                unsupported(&mut self.items.diagnostics, *range, "this union derive");
+            }
+        }
+        if derives.iter().any(|(d, _)| *d == Derive::Clone)
+            && !derives.iter().any(|(d, _)| *d == Derive::Copy)
+        {
+            unsupported(
+                &mut self.items.diagnostics,
+                s.syntax().text_range(),
+                "union Clone without Copy",
+            );
+        }
+        let diagnostics = &mut self.items.diagnostics;
+        let generics = collect_generics(
+            s.generic_param_list(),
+            s.where_clause(),
+            Defaults::Struct,
+            diagnostics,
+        );
+        let (kind, fields) = self.collect_fields(ctx, s.record_field_list(), None, false, true);
+        let repr_c = struct_repr(&hints, &mut self.items.diagnostics);
+        if repr_c && hints.iter().any(|(h, _)| h.as_str() == "Rust") {
+            self.items.diagnostics.push(Diagnostic::new(
+                s.syntax().text_range(),
+                "conflicting representation hints",
+            ));
+        }
+        if fields.is_empty() {
+            self.items.diagnostics.push(Diagnostic::new(
+                s.syntax().text_range(),
+                "unions cannot have zero fields",
+            ));
+        }
+        if repr_align != 1 {
+            unsupported(
+                &mut self.items.diagnostics,
+                s.syntax().text_range(),
+                "union alignment hints",
+            );
+        }
+        let name_range = name.syntax().text_range();
+        let id = self.items.structs.alloc(Struct {
+            is_union: true,
             name: Symbol::intern(name.text()),
             generics,
             kind,
@@ -3677,6 +3790,7 @@ impl Collector<'_> {
         record: Option<ast::RecordFieldList<'_>>,
         tuple: Option<ast::TupleFieldList<'_>>,
         in_variant: bool,
+        in_union: bool,
     ) -> (StructKind, Vec<Field>) {
         let mut fields = Vec::new();
         let field_vis = |this: &mut Self, vis: Option<ast::Visibility<'_>>| {
@@ -3693,7 +3807,17 @@ impl Collector<'_> {
         };
         let kind = if let Some(list) = record {
             for field in list.fields() {
-                check_inert_attrs(field.attrs(), &mut self.items.diagnostics);
+                if in_union {
+                    if !item_enabled(field.syntax(), &mut self.items.diagnostics) {
+                        continue;
+                    }
+                    let attrs = crate::cfg::Attrs::new(field.attrs());
+                    for attr in attrs.iter().filter(|a| attr_name(*a) != Some("cfg")) {
+                        check_attr(attr, &mut self.items.diagnostics);
+                    }
+                } else {
+                    check_inert_attrs(field.attrs(), &mut self.items.diagnostics);
+                }
                 let vis = field_vis(self, field.visibility());
                 let diagnostics = &mut self.items.diagnostics;
                 let Some(field_name) = field.name() else {
@@ -3853,8 +3977,13 @@ impl Collector<'_> {
             let Some(v_name) = v.name() else {
                 continue;
             };
-            let (kind, fields) =
-                self.collect_fields(ctx, v.record_field_list(), v.tuple_field_list(), true);
+            let (kind, fields) = self.collect_fields(
+                ctx,
+                v.record_field_list(),
+                v.tuple_field_list(),
+                true,
+                false,
+            );
             let name_range = v_name.syntax().text_range();
             let v_name = Symbol::intern(v_name.text());
             let v_range = TextRange::new(def_start(v.syntax()), v.syntax().text_range().end());
@@ -3992,6 +4121,7 @@ impl Collector<'_> {
         }
         let name_range = name.syntax().text_range();
         let id = self.items.structs.alloc(Struct {
+            is_union: false,
             name: Symbol::intern(name.text()),
             generics,
             kind: StructKind::Record,
@@ -4531,6 +4661,7 @@ fn is_item_kind(kind: SyntaxKind) -> bool {
         kind,
         K::FN
             | K::STRUCT
+            | K::UNION
             | K::ENUM
             | K::TRAIT
             | K::IMPL
