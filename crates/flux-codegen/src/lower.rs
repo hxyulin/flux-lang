@@ -1518,6 +1518,20 @@ impl Lower<'_, '_, '_> {
                 let pointer = self.operand(operand)[0];
                 vec![pointer, self.int_const(u128::from(len), IntTy::Usize)]
             }
+            // The address of element `start`, and `end - start` elements.
+            Rvalue::Subslice { slice, start, end } => {
+                let elem = match self.body.operand_ty(slice, self.sigs).kind() {
+                    TyKind::Ref(_, s) => s.sequence_elem().unwrap_or(Ty::UNIT),
+                    _ => Ty::UNIT,
+                };
+                let size = layout(self.sigs, elem).size();
+                let pointer = self.operand(slice)[0];
+                let start = self.operand(start)[0];
+                let end = self.operand(end)[0];
+                let address = self.element(pointer, start, size);
+                let len = self.b.ins().isub(end, start);
+                vec![address, len]
+            }
             Rvalue::Repeat(..) => unreachable!("arrays are built in memory"),
             // A pointer to a slice or `str` as one to a slice or `str`
             // keeps its length; as a thin pointer, drops it.
@@ -1540,7 +1554,8 @@ impl Lower<'_, '_, '_> {
             | Rvalue::Discriminant(_)
             | Rvalue::Len { .. }
             | Rvalue::Repeat(..)
-            | Rvalue::Unsize(..) => {
+            | Rvalue::Unsize(..)
+            | Rvalue::Subslice { .. } => {
                 unreachable!("not scalar operations")
             }
             Rvalue::UnaryOp(op, operand) => {

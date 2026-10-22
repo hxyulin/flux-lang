@@ -951,7 +951,11 @@ impl Ctx<'_> {
                 }
             }
             TyKind::Adt(adt, args) if !args.is_empty() => {
-                let args: Vec<String> = args.iter().map(|&a| self.describe(a)).collect();
+                let len = crate::ty::array_iter_len(adt.name, args);
+                let mut args: Vec<String> = args.iter().map(|&a| self.describe(a)).collect();
+                if let Some(len) = len {
+                    args[1] = len.to_string();
+                }
                 format!("{}<{}>", adt.name, args.join(", "))
             }
             TyKind::FnPtr(sig) => self.describe_sig(sig),
@@ -2659,23 +2663,17 @@ impl Ctx<'_> {
                     self.expect(arg, param);
                 }
                 let mut ty = self.infer_expr(arg);
-                // A `for` loop over a shared reference to an array is one
-                // over a slice of it, which `core` makes iterable; arrays
-                // themselves, and mutable references, need const
-                // generics and `IterMut`.
+                // A `for` loop over a reference to an array is one over a
+                // slice of it, which `core` makes iterable, as rustc's
+                // `impl IntoIterator for &[T; N]` gives the slice's
+                // iterator; arrays themselves are by the compiler's.
                 if self.for_heads.contains(&id)
-                    && let TyKind::Ref(Mutability::Not, pointee) = self.shallow(ty).kind()
-                    && let Some(elem) = self.shallow(pointee).sequence_elem()
+                    && let TyKind::Ref(m, pointee) = self.shallow(ty).kind()
+                    && let TyKind::Array(elem, _) = self.shallow(pointee).kind()
                 {
-                    let slice = Ty::new(TyKind::Ref(Mutability::Not, Ty::slice(elem)));
+                    let slice = Ty::new(TyKind::Ref(m, Ty::slice(elem)));
                     self.coerce(ty, slice, arg);
                     ty = slice;
-                } else if self.for_heads.contains(&id) && self.is_sequence(ty) {
-                    self.error(
-                        self.range(arg),
-                        "iterating over arrays and slices is not supported yet",
-                    );
-                    return Ty::ERROR;
                 }
                 match sig.params.get(i) {
                     Some(&param) => self.coerce(ty, param, arg),

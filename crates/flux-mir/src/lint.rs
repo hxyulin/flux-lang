@@ -307,6 +307,7 @@ fn evaluate(
         | Rvalue::Discriminant(_)
         | Rvalue::Len { .. }
         | Rvalue::Repeat(..)
-        | Rvalue::Unsize(..) => None,
+        | Rvalue::Unsize(..)
+        | Rvalue::Subslice { .. } => None,
     }
 }

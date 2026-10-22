@@ -61,6 +61,10 @@ pub struct ItemTree {
     /// `core`'s `#[lang = "panic"]` function, which aborts, and which
     /// constant evaluation reports as a panic with its message.
     pub panic_fn: Option<FunctionId>,
+    /// `core`'s other functions the compiler knows, by their `#[lang =
+    /// "..."]` names: those that the built-in `impl` blocks of arrays
+    /// call (`array_into_iter`).
+    pub lang_fns: rustc_hash::FxHashMap<Symbol, FunctionId>,
     /// Problems found collecting the items and resolving their names;
     /// [`lower`](crate::lower) moves them into the [`Hir`](crate::Hir)'s.
     pub diagnostics: Vec<Diagnostic>,
@@ -541,6 +545,10 @@ pub struct Function {
     /// values that need no dropping by then, which drop elaboration
     /// finds, rather than values that may need it at all.
     pub precise_live_drops: bool,
+    /// `#[rustc_intrinsic]`, which only `core` may write: the compiler
+    /// replaces its calls with what it does once their types are known
+    /// (`mono::expand_intrinsics`), so its body never runs.
+    pub intrinsic: bool,
     /// Takes more arguments after `params`, like C's `printf(fmt, ...)`.
     pub is_variadic: bool,
     /// The `impl` block or trait it is in, if any.
@@ -2092,6 +2100,7 @@ impl Collector<'_> {
         let mut inherits_overflow_checks = false;
         let mut const_unstable = false;
         let mut precise_live_drops = false;
+        let mut intrinsic = false;
         let mut lang = None;
         for attr in f.attrs() {
             if is_core && attr_name(attr) == Some("rustc_inherit_overflow_checks") {
@@ -2100,6 +2109,8 @@ impl Collector<'_> {
                 const_unstable = true;
             } else if is_core && attr_name(attr) == Some("rustc_allow_const_fn_unstable") {
                 precise_live_drops = true;
+            } else if is_core && attr_name(attr) == Some("rustc_intrinsic") {
+                intrinsic = true;
             } else if is_core && let Some(name) = lang_attr(attr) {
                 lang = Some(name);
             } else {
@@ -2311,6 +2322,7 @@ impl Collector<'_> {
             inherits_overflow_checks,
             const_unstable,
             precise_live_drops,
+            intrinsic,
             is_variadic,
             owner,
             has_self,
@@ -2321,6 +2333,8 @@ impl Collector<'_> {
         });
         if lang.is_some_and(|l| l.as_str() == "panic") {
             self.items.panic_fn = Some(id);
+        } else if let Some(lang) = lang {
+            self.items.lang_fns.insert(lang, id);
         }
         if let Some(body) = f.body() {
             self.collect_body_items(ctx, body.syntax().id(), Some(id));
@@ -3055,6 +3069,7 @@ impl Collector<'_> {
             inherits_overflow_checks: false,
             const_unstable: false,
             precise_live_drops: false,
+            intrinsic: false,
             is_variadic: false,
             owner: Some(Owner::Impl(id)),
             has_self: true,

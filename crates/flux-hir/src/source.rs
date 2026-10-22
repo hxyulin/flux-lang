@@ -57,6 +57,10 @@ const CORE_FILES: &[(&str, &str)] = &[
     ("ffi.rs", include_str!("../../../library/core/src/ffi.rs")),
     ("str.rs", include_str!("../../../library/core/src/str.rs")),
     (
+        "array.rs",
+        include_str!("../../../library/core/src/array.rs"),
+    ),
+    (
         "clone.rs",
         include_str!("../../../library/core/src/clone.rs"),
     ),
@@ -68,6 +72,10 @@ const CORE_FILES: &[(&str, &str)] = &[
     (
         "marker.rs",
         include_str!("../../../library/core/src/marker.rs"),
+    ),
+    (
+        "intrinsics.rs",
+        include_str!("../../../library/core/src/intrinsics.rs"),
     ),
     ("iter.rs", include_str!("../../../library/core/src/iter.rs")),
     ("mem.rs", include_str!("../../../library/core/src/mem.rs")),

@@ -465,6 +465,15 @@
 - Find slices' methods on arrays (`arr.iter()`, `arr.first()`,
   `(&mut arr).last()`): past the receiver's last dereference, an array
   is borrowed and unsized to a slice, as rustc's method probe does.
+- Iterate arrays by value (`for x in [1, 2, 3]`, `array.into_iter()`)
+  and by mutable reference (`for x in &mut array`, `iter_mut`):
+  `IntoIterator` for `[T; N]`, `&[T; N]` and `&mut [T; N]` is built into
+  the compiler, as arrays' `Clone` is, with `core::array::IntoIter`,
+  which drops the elements it has not given. `core` gains
+  `slice::IterMut`, `mem::ManuallyDrop`, `marker::PhantomData` and
+  intrinsics (`#[rustc_intrinsic]`) that monomorphization replaces with
+  MIR: reading and writing through references, unsizing an array of a
+  generic type, and subslicing (`Rvalue::Subslice`).
 
 ### Performance
 

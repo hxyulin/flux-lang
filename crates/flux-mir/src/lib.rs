@@ -480,6 +480,15 @@ pub enum Rvalue {
     /// A reference or raw pointer to an array, as one to a slice of its
     /// elements, of type `ty`: rustc's unsizing coercion.
     Unsize(Operand, Ty),
+    /// The elements `start..end` of the slice a reference points to, as
+    /// a reference of the same kind, unchecked: what `core`'s
+    /// `subslice` intrinsics become once monomorphized, so only code
+    /// generation sees it.
+    Subslice {
+        slice: Operand,
+        start: Operand,
+        end: Operand,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -842,6 +851,7 @@ impl Rvalue {
             | Rvalue::Repeat(op, _)
             | Rvalue::Unsize(op, _) => vec![op],
             Rvalue::BinaryOp(_, l, r) => vec![l, r],
+            Rvalue::Subslice { slice, start, end } => vec![slice, start, end],
             Rvalue::Aggregate(_, ops) => ops.iter().collect(),
             Rvalue::Ref { .. } | Rvalue::Discriminant(_) | Rvalue::Len { .. } => Vec::new(),
         }

@@ -459,6 +459,15 @@ impl Ctx<'_> {
         }
     }
 
+    /// `ty`, shallowly resolved, with what a reference points to
+    /// resolved too: enough to tell `&[T; N]`.
+    fn shallow_ref(&mut self, ty: Ty) -> Ty {
+        match self.shallow(ty).kind() {
+            TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, self.shallow(pointee))),
+            _ => self.shallow(ty),
+        }
+    }
+
     /// What `alias` is, if a bound in scope or one `impl` block says.
     fn try_normalize(&mut self, alias: AliasTy) -> Option<Ty> {
         let target = Ty::alias(alias);
@@ -490,6 +499,16 @@ impl Ctx<'_> {
                 ..alias
             };
             return crate::traits::closure_output(self.items, alias);
+        }
+        let self_ref = self.shallow_ref(self_ty);
+        if let Some(ty) = crate::traits::array_into_iter_type(
+            self.items,
+            AliasTy {
+                args: Ty::list(&[&[self_ref][..], &alias.args[1..]].concat()),
+                ..alias
+            },
+        ) {
+            return Some(ty);
         }
         let pred = Predicate {
             self_ty,
@@ -837,6 +856,9 @@ impl Ctx<'_> {
         if let Some(elem) = crate::traits::builtin_array_impl(self.items, goal) {
             return Selection::Met(vec![elem]);
         }
+        if crate::traits::array_into_iter(self.items, t, self.shallow_ref(self_ty)).is_some() {
+            return Selection::Met(Vec::new());
+        }
         if let TyKind::Closure(..) = self_ty.kind() {
             return self.select_closure(pred);
         }
@@ -1007,6 +1029,9 @@ impl Ctx<'_> {
         if self.items.traits[t].lang == Some(flux_intern::sym::sized)
             || crate::traits::is_builtin_copy(self.items, t, ty)
         {
+            return true;
+        }
+        if crate::traits::array_into_iter(self.items, t, self.shallow_ref(ty)).is_some() {
             return true;
         }
         if let TyKind::Array(elem, _) = ty.kind()

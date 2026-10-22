@@ -427,6 +427,13 @@ impl<'a> Evaluator<'a> {
                         };
                         return Err(error(range, format!("evaluation panicked: {message}")));
                     }
+                    // Only code generation expands them.
+                    if self.items.functions[*func].intrinsic {
+                        return Err(error(
+                            range,
+                            "this operation is not supported in constants yet".to_owned(),
+                        ));
+                    }
                     let args = args
                         .iter()
                         .map(|a| self.operand(&locals, generics, a, range))
@@ -702,6 +709,11 @@ impl<'a> Evaluator<'a> {
             // A reference to an array as one to a slice holds the same
             // elements.
             Rvalue::Unsize(op, _) => self.operand(locals, generics, op, range),
+            // Made only once code is monomorphized.
+            Rvalue::Subslice { .. } => Err(error(
+                range,
+                "slicing in constants is not supported yet".to_owned(),
+            )),
             Rvalue::Ref { .. } => Err(error(
                 range,
                 "mutable references in constants are not supported yet".to_owned(),

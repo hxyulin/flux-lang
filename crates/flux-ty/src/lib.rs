@@ -1194,6 +1194,11 @@ pub fn impl_target(ty: Ty) -> Option<ImplTarget> {
     }
 }
 
+/// Whether `strukt` is `core`'s struct with `#[lang = "{lang}"]`.
+pub fn is_lang_struct(items: &ItemTree, strukt: StructId, lang: &str) -> bool {
+    items.lang_enums.get(&Symbol::intern(lang)) == Some(&strukt)
+}
+
 /// What `Self` means in an item in `owner`, if any: an `impl` block's
 /// type, or a trait's first parameter.
 pub fn self_ty(sigs: &Signatures, owner: Option<Owner>) -> Option<Ty> {
@@ -1829,8 +1834,11 @@ fn extend_signatures(
         }
     }
     for (id, s) in items.structs.iter().skip(from.structs as usize) {
-        // Without `PhantomData`, a parameter must be a field's type, of
-        // some variant for an enum.
+        // A parameter must be a field's type, of some variant for an
+        // enum, except `PhantomData`'s, which acts as if it were one.
+        if is_lang_struct(items, id, "phantom_data") {
+            continue;
+        }
         for (i, param) in s.generics.params.iter().enumerate() {
             let fields = sigs.structs[id];
             if !fields.iter().any(|&f| uses_param(f, i as u32)) && !fields.contains(&Ty::ERROR) {
@@ -2300,6 +2308,17 @@ pub fn call_targets(items: &ItemTree, function: FunctionId) -> Vec<FunctionId> {
     let mut out = vec![function];
     if let Some(Owner::Trait(t)) = items.functions[function].owner {
         let name = items.functions[function].name;
+        // Arrays' built-in `IntoIterator`, and their iterator's `Drop`.
+        if items.traits[t].lang == Some(Symbol::intern("IntoIterator")) {
+            for lang in [
+                "array_into_iter_new",
+                "array_iter",
+                "array_iter_mut",
+                "array_into_iter_drop",
+            ] {
+                out.extend(items.lang_fns.get(&Symbol::intern(lang)));
+            }
+        }
         let impls = items.trait_impls.get(&t).into_iter().flatten();
         out.extend(impls.flat_map(|&imp| {
             items.impls[imp]

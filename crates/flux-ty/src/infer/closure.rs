@@ -387,16 +387,6 @@ impl Ctx<'_> {
         }
     }
 
-    /// Whether `ty` is an array or slice, or a reference to one.
-    pub(super) fn is_sequence(&mut self, ty: Ty) -> bool {
-        let ty = self.shallow(ty);
-        let ty = match ty.kind() {
-            TyKind::Ref(_, t) => self.shallow(t),
-            _ => ty,
-        };
-        matches!(ty.kind(), TyKind::Array(..) | TyKind::Slice(_))
-    }
-
     /// Whether `expr` is a closure, which arguments infer after the
     /// others, as rustc does, so that it may know their types.
     pub(super) fn is_closure(&self, expr: ExprId) -> bool {

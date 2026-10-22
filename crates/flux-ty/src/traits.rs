@@ -809,6 +809,9 @@ impl Normalizer<'_> {
                 if let Some(ret) = closure_output(items, alias) {
                     return self.go(ret, depth + 1);
                 }
+                if let Some(ty) = array_into_iter_type(items, alias) {
+                    return self.go(ty, depth + 1);
+                }
                 if let TyKind::Alias(outer) = args[0].kind()
                     && let Some(p) = alias_projections(sigs, outer)
                         .into_iter()
@@ -1028,6 +1031,9 @@ fn holds_at(
     {
         return true;
     }
+    if array_into_iter(items, goal.trait_ref.trait_, goal.self_ty).is_some() {
+        return true;
+    }
     if let Some(elem) = builtin_array_impl(items, goal) {
         stack.push(goal);
         let holds = holds_at(items, sigs, env, elem, stack);
@@ -1121,6 +1127,80 @@ pub fn is_builtin_copy(items: &ItemTree, t: TraitId, ty: Ty) -> bool {
         TyKind::FnDef(_) | TyKind::FnPtr(_) => matches!(lang, Some(l) if l.as_str() == "copy"),
         _ => false,
     }
+}
+
+/// How an array is iterated by the built-in `IntoIterator` of `[T; N]`
+/// (by value), `&[T; N]` and `&mut [T; N]` (by reference).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrayIntoIter {
+    Value,
+    Ref(Mutability),
+}
+
+/// For `ty: IntoIterator` where `ty` is `[T; N]`, `&[T; N]` or
+/// `&mut [T; N]`: how it iterates, `T` and the array's type. rustc's
+/// `core` implements these with const generics, which flux does not
+/// have, so they are built in: [`array_into_iter_type`] gives their
+/// associated types and [`resolve_instance`] their `into_iter`.
+pub fn array_into_iter(items: &ItemTree, t: TraitId, ty: Ty) -> Option<(ArrayIntoIter, Ty, Ty)> {
+    if items.traits[t].lang? != flux_intern::Symbol::intern("IntoIterator") {
+        return None;
+    }
+    match ty.kind() {
+        TyKind::Array(elem, _) => Some((ArrayIntoIter::Value, elem, ty)),
+        TyKind::Ref(m, array) => match array.kind() {
+            TyKind::Array(elem, _) => Some((ArrayIntoIter::Ref(m), elem, array)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `Item` or `IntoIter` of an array's built-in `IntoIterator`: `T` and
+/// `core::array::IntoIter<T, [T; N]>` for `[T; N]`, `&T` and
+/// `core::slice::Iter<T>` for `&[T; N]`, and `&mut T` and `IterMut<T>`
+/// for `&mut [T; N]`.
+pub fn array_into_iter_type(items: &ItemTree, alias: AliasTy) -> Option<Ty> {
+    let (how, elem, array) = array_into_iter(items, alias.trait_, alias.args[0])?;
+    match alias.name.as_str() {
+        "Item" => Some(match how {
+            ArrayIntoIter::Value => elem,
+            ArrayIntoIter::Ref(m) => Ty::new(TyKind::Ref(m, elem)),
+        }),
+        "IntoIter" => {
+            let (lang, args) = match how {
+                ArrayIntoIter::Value => ("array_into_iter", &[elem, array][..]),
+                ArrayIntoIter::Ref(Mutability::Not) => ("slice_iter", &[elem][..]),
+                ArrayIntoIter::Ref(Mutability::Mut) => ("slice_iter_mut", &[elem][..]),
+            };
+            let strukt = *items.lang_enums.get(&Symbol::intern(lang))?;
+            Some(Ty::adt(strukt, items.structs[strukt].name, args))
+        }
+        _ => None,
+    }
+}
+
+/// The function an array's built-in `IntoIterator::into_iter` calls, for
+/// `instance`, a call of it: `core::array`'s `IntoIter::new`, `iter` or
+/// `iter_mut`, generic over the element and array types.
+fn array_into_iter_instance(items: &ItemTree, instance: Instance) -> Option<Instance> {
+    let data = &items.functions[instance.function];
+    let Some(Owner::Trait(t)) = data.owner else {
+        return None;
+    };
+    if data.name.as_str() != "into_iter" {
+        return None;
+    }
+    let (how, elem, array) = array_into_iter(items, t, *instance.args.first()?)?;
+    let lang = match how {
+        ArrayIntoIter::Value => "array_into_iter_new",
+        ArrayIntoIter::Ref(Mutability::Not) => "array_iter",
+        ArrayIntoIter::Ref(Mutability::Mut) => "array_iter_mut",
+    };
+    Some(Instance {
+        function: *items.lang_fns.get(&Symbol::intern(lang))?,
+        args: Ty::list(&[elem, array]),
+    })
 }
 
 /// For `ty: t` where `ty` is an array and `t` is `Copy`, `Clone` or
@@ -1262,6 +1342,8 @@ pub fn needs_drop(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty
             .upvar_types()
             .iter()
             .any(|&e| needs_drop(items, sigs, env, e)),
+        // Holds a value it never drops.
+        TyKind::Adt(adt, _) if crate::is_lang_struct(items, adt.strukt, "manually_drop") => false,
         TyKind::Adt(adt, args) => {
             drop_impl(items, sigs, adt.strukt).is_some()
                 || sigs.structs[adt.strukt]
@@ -1300,6 +1382,9 @@ pub fn resolve_instance(items: &ItemTree, sigs: &Signatures, instance: Instance)
         ),
         ..instance
     };
+    if let Some(builtin) = array_into_iter_instance(items, instance) {
+        return builtin;
+    }
     let data = &items.functions[instance.function];
     let Some(Owner::Trait(t)) = data.owner else {
         return instance;

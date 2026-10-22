@@ -1216,7 +1216,7 @@ impl<'a> Cx<'a> {
                     range,
                 );
             }
-            Rvalue::Unsize(op, _) => {
+            Rvalue::Unsize(op, _) | Rvalue::Subslice { slice: op, .. } => {
                 let (_, vars) = self.operand_regions(op);
                 self.relate(
                     dest_ty,
