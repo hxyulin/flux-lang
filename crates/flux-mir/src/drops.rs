@@ -397,10 +397,17 @@ fn set_flags(body: &mut Body, paths: &MovePaths, flagged: &BTreeMap<usize, Local
         if let TerminatorKind::Call {
             target: Some(target),
             ..
+        }
+        | TerminatorKind::CallIndirect {
+            target: Some(target),
+            ..
         } = body.blocks[block].terminator.kind
         {
             let returned = push(body, on_return, TerminatorKind::Goto(target), range);
-            if let TerminatorKind::Call { target, .. } = &mut body.blocks[block].terminator.kind {
+            if let TerminatorKind::Call { target, .. }
+            | TerminatorKind::CallIndirect { target, .. } =
+                &mut body.blocks[block].terminator.kind
+            {
                 *target = Some(returned);
             }
         }
@@ -476,7 +483,9 @@ fn retarget(kind: &mut TerminatorKind, map: &[BasicBlock]) {
             targets.iter_mut().for_each(|(_, b)| new(b));
             new(otherwise);
         }
-        TerminatorKind::Call { target, .. } => target.iter_mut().for_each(new),
+        TerminatorKind::Call { target, .. } | TerminatorKind::CallIndirect { target, .. } => {
+            target.iter_mut().for_each(new)
+        }
         TerminatorKind::Return | TerminatorKind::Unreachable => {}
     }
 }

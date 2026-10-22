@@ -40,7 +40,8 @@ pub use infer::{
 };
 pub use traits::{Predicate, Projection, TraitRef, TraitSig};
 pub use ty::{
-    AdtId, AliasTy, GenericArgs, InferVar, IntTy, Mutability, ParamTy, Ty, TyKind, subst_list,
+    AdtId, AliasTy, FnDefTy, FnSigTy, GenericArgs, InferVar, IntTy, Mutability, ParamTy, Ty,
+    TyKind, subst_list,
 };
 
 /// A function's resolved signature. A generic function's mentions its
@@ -271,6 +272,7 @@ impl Signatures {
             TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
             TyKind::Array(t, len) => Ty::array(go(t), len),
             TyKind::Slice(t) => Ty::slice(go(t)),
+            TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(go),
             _ => ty,
         };
         active.pop();
@@ -289,6 +291,9 @@ fn max_param(ty: Ty) -> u32 {
         TyKind::Alias(alias) => alias.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
             max_param(t)
+        }
+        TyKind::FnDef(_) | TyKind::FnPtr(_) => {
+            ty.children().into_iter().map(max_param).max().unwrap_or(0)
         }
         _ => 0,
     }
@@ -563,6 +568,21 @@ pub fn resolve_type(
             Ty::tuple(&fields)
         }
         TypeRef::Never => Ty::NEVER,
+        TypeRef::FnPtr {
+            params,
+            ret,
+            is_unsafe,
+        } => {
+            let params: Vec<Ty> = params
+                .iter()
+                .map(|p| resolve_type(items, module, p, scope, range, errors))
+                .collect();
+            let ret = resolve_type(items, module, ret, scope, range, errors);
+            if params.contains(&Ty::ERROR) || ret == Ty::ERROR {
+                return Ty::ERROR;
+            }
+            Ty::new(TyKind::FnPtr(FnSigTy::new(&params, ret, *is_unsafe)))
+        }
         TypeRef::Ptr { mutable, pointee } => {
             let pointee = resolve_type(items, module, pointee, scope, range, errors);
             if pointee == Ty::ERROR {
@@ -1035,6 +1055,10 @@ fn visit_paths(ty: &TypeRef, f: &mut impl FnMut(&Path)) {
         | TypeRef::Ref { pointee, .. }
         | TypeRef::Array { elem: pointee, .. }
         | TypeRef::Slice(pointee) => visit_paths(pointee, f),
+        TypeRef::FnPtr { params, ret, .. } => params
+            .iter()
+            .chain([&**ret])
+            .for_each(|t| visit_paths(t, f)),
         TypeRef::Never | TypeRef::Infer | TypeRef::Error => {}
     }
 }
@@ -1172,6 +1196,14 @@ pub(crate) fn overlap(a: Ty, b: Ty) -> bool {
         }
         (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && overlap(x, y),
         (TyKind::Slice(x), TyKind::Slice(y)) => overlap(x, y),
+        (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
+            x.is_unsafe == y.is_unsafe
+                && x.inputs_output.len() == y.inputs_output.len()
+                && (x.inputs_output.iter().zip(y.inputs_output)).all(|(&a, &b)| overlap(a, b))
+        }
+        (TyKind::FnDef(x), TyKind::FnDef(y)) => {
+            x.function == y.function && x.args.iter().zip(y.args).all(|(&a, &b)| overlap(a, b))
+        }
         _ => a == b,
     }
 }
@@ -1189,6 +1221,9 @@ pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
         TyKind::Tuple(list) | TyKind::Adt(_, list) => {
             list.iter().any(|&t| mentions_param(t, index))
         }
+        TyKind::FnDef(_) | TyKind::FnPtr(_) => {
+            ty.children().into_iter().any(|t| mentions_param(t, index))
+        }
         _ => false,
     }
 }
@@ -1202,6 +1237,7 @@ fn uses_param(ty: Ty, index: u32) -> bool {
             uses_param(t, index)
         }
         TyKind::Tuple(list) | TyKind::Adt(_, list) => list.iter().any(|&t| uses_param(t, index)),
+        TyKind::FnPtr(_) => ty.children().into_iter().any(|t| uses_param(t, index)),
         _ => mentions_param(ty, index),
     }
 }

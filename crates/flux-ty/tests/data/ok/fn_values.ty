@@ -1,0 +1,47 @@
+struct Pair { a: i64, b: i64 }
+struct Op { f: fn(i32) -> i32 }
+struct Square { 0: i32 }
+fn run(&Op, i32) -> i32
+    self@0: &Op
+    x@1: i32
+fn make(i32) -> i32
+    x@0: i32
+fn area(&Self) -> i32
+fn area(&Square) -> i32
+    self@0: &Square
+fn double(i32) -> i32
+    x@0: i32
+fn negate(i32) -> i32
+    x@0: i32
+fn id<T>(T) -> T
+    x@0: T
+fn swap(Pair) -> Pair
+    p@0: Pair
+fn danger(i32) -> i32
+    x@0: i32
+fn apply(fn(i32) -> i32, i32) -> i32
+    f@0: fn(i32) -> i32
+    x@1: i32
+fn twice<T>(fn(T) -> T, T) -> T
+    f@0: fn(T) -> T
+    x@1: T
+fn pick(bool) -> fn(i32) -> i32
+    flag@0: bool
+fn main() -> ()
+    d@0: fn(i32) -> i32 {double}
+    a@1: i32
+    p@2: fn(i32) -> i32
+    b@3: i32
+    c@4: u8
+    e@5: i32
+    op@6: Op
+    r@7: i32
+    s@8: Pair
+    area@9: fn(&Square) -> i32
+    t@10: i32
+    u@11: unsafe fn(i32) -> i32
+    v@12: i32
+    w@13: fn(i32) -> i32
+    x@14: i32
+fn clone(&Pair) -> Pair
+    self@0: &Pair

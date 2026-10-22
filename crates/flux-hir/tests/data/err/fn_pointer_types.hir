@@ -1,0 +1,8 @@
+fn c_abi(p@0: <error>) -> () {}
+
+fn unsafe_c_abi(p@0: <error>) -> () {}
+
+fn main() -> () {}
+
+error 58..68: `extern` function pointer types are not supported yet
+error 107..117: `extern` function pointer types are not supported yet

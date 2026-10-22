@@ -36,6 +36,20 @@ const RECURSION_LIMIT: u32 = 128;
 /// they are found from `main`: other functions nothing calls are not
 /// built, nor are the instances only they need.
 pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instance>, Diagnostic> {
+    collect_all(hir, sigs, mir).map(|c| c.instances)
+}
+
+/// The instances a program needs, and those of them whose address it
+/// takes ([`Constant::Fn`]), which must be callable through a pointer.
+#[derive(Debug, Default)]
+pub struct Collected {
+    pub instances: Vec<Instance>,
+    pub reified: std::collections::HashSet<Instance>,
+}
+
+/// [`collect`], with the instances whose address is taken.
+pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collected, Diagnostic> {
+    let mut reified = std::collections::HashSet::new();
     let mut instances = Vec::new();
     let mut depths: HashMap<Instance, u32> = HashMap::new();
     let items = &hir.items;
@@ -65,6 +79,30 @@ pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instan
             }
         };
         for data in body.blocks.values() {
+            // Functions whose address is taken.
+            let mut pointers = Vec::new();
+            for statement in &data.statements {
+                if let StatementKind::Assign(_, rvalue) = &statement.kind {
+                    pointers.extend(rvalue.operands().into_iter().cloned());
+                }
+            }
+            pointers.extend(data.terminator.kind.operands().into_iter().cloned());
+            for op in pointers {
+                if let Operand::Const(Constant::Fn { function, args, .. }) = op {
+                    let instance = Instance {
+                        function,
+                        args: Ty::list(&subst_list(args, caller.args)),
+                    };
+                    let instance = flux_ty::traits::resolve_instance(&hir.items, sigs, instance);
+                    reified.insert(instance);
+                    if mir.bodies.get(instance.function).is_some()
+                        && !depths.contains_key(&instance)
+                    {
+                        depths.insert(instance, depth + 1);
+                        instances.push(instance);
+                    }
+                }
+            }
             let callees = match &data.terminator.kind {
                 TerminatorKind::Call {
                     func, generic_args, ..
@@ -116,7 +154,7 @@ pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instan
             }
         }
     }
-    Ok(instances)
+    Ok(Collected { instances, reified })
 }
 
 /// The MIR of `instance`: its function's with its generic arguments
@@ -742,11 +780,18 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
         local.ty = subst(local.ty);
     }
     let operand = |op: &mut Operand| {
-        if let Operand::Const(Constant::Item {
-            ty,
-            args: item_args,
-            ..
-        }) = op
+        if let Operand::Const(
+            Constant::Item {
+                ty,
+                args: item_args,
+                ..
+            }
+            | Constant::Fn {
+                ty,
+                args: item_args,
+                ..
+            },
+        ) = op
         {
             *ty = subst(*ty);
             *item_args = Ty::list(&item_args.iter().map(|&a| subst(a)).collect::<Vec<_>>());
@@ -789,6 +834,14 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
             } => {
                 let list: Vec<Ty> = generic_args.iter().map(|&a| subst(a)).collect();
                 *generic_args = Ty::list(&list);
+                call_args.iter_mut().for_each(operand);
+            }
+            TerminatorKind::CallIndirect {
+                callee,
+                args: call_args,
+                ..
+            } => {
+                operand(callee);
                 call_args.iter_mut().for_each(operand);
             }
             TerminatorKind::SwitchInt { discr, .. } => operand(discr),

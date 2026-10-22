@@ -1,0 +1,24 @@
+struct Op { f: fn(i32) -> i32, check: fn(&i32, u8) -> bool, log: unsafe fn() }
+
+fn double(x@0: i32) -> i32 {
+    (x@0 * 2)
+}
+
+fn positive(x@0: &i32, _: u8) -> bool {
+    ((*x@0) > 0)
+}
+
+unsafe fn nothing() -> () {}
+
+fn apply(f@0: fn(i32) -> i32, x@1: i32) -> i32 {
+    f@0(x@1)
+}
+
+fn main() -> () {
+    let op@0 = Op { f: double, check: positive, log: nothing };
+    let g@1 = double;
+    let h@2: fn(i32) -> i32 = g@1;
+    let a@3 = apply(double, op@0.f(g@1(1)));
+    let b@4 = op@0.check((&a@3), 0);
+}
+

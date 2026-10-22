@@ -37,7 +37,8 @@ rustc's default binding modes and discriminants written as constant
 expressions, operators on references through `core`'s impls, `?`
 on `Option` and `Result` with `From`, arrays and slices, with
 lengths evaluated while types are checked, bounds checks and rustc's
-borrow rules for elements, type aliases, and statics.
+borrow rules for elements, type aliases, statics, and functions as values, with
+function pointers.
 In order next:
 
 1. `core` defines the pointer methods, `mem::replace` and `CStr` (now

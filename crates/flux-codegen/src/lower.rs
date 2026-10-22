@@ -49,7 +49,8 @@ pub fn lower_module(
     typed: &TypedFile,
     mir: &FileMir,
 ) -> Result<Module, Vec<Diagnostic>> {
-    let instances = flux_mir::mono::collect(hir, &typed.sigs, mir).map_err(|d| vec![d])?;
+    let collected = flux_mir::mono::collect_all(hir, &typed.sigs, mir).map_err(|d| vec![d])?;
+    let instances = collected.instances;
     let mut module = Module::default();
     let items = &hir.items;
     let symbols: HashMap<FunctionId, String> = items
@@ -137,6 +138,7 @@ pub fn lower_module(
         instance_values: HashMap::new(),
         symbols: &symbols,
         statics: &statics,
+        reified: collected.reified,
         uses_abort: false,
         strings: HashMap::new(),
         data: Vec::new(),
@@ -214,9 +216,14 @@ pub fn lower_module(
             && mir.bodies.get(*id).is_some()
     });
     if let Some((id, _)) = main {
-        module
-            .functions
-            .push(entry_point(&symbols[&id], &typed.sigs, &typed.sigs[id]));
+        let instance = Instance {
+            function: id,
+            args: &[],
+        };
+        let sig = &typed.sigs[id];
+        let main_sig = ctx_signature(&typed.sigs, sig, ctx.reified.contains(&instance));
+        let entry = entry_point(&symbols[&id], &main_sig, sig.ret == Ty::NEVER);
+        module.functions.push(entry);
     }
     module.sync_function_attrs();
     Ok(module)
@@ -288,6 +295,17 @@ fn instance_symbol(hir: &Hir, symbols: &HashMap<FunctionId, String>, instance: I
                 feed(if m == Mutability::Mut { b"m" } else { b"c" });
                 encode(pointee, feed);
             }
+            TyKind::FnPtr(sig) => {
+                feed(if sig.is_unsafe { b"uF(" } else { b"F(" });
+                sig.inputs_output.iter().for_each(|&t| encode(t, feed));
+                feed(b")");
+            }
+            TyKind::FnDef(def) => {
+                feed(b"D");
+                feed(&(def.function.index() as u32).to_le_bytes());
+                def.args.iter().for_each(|&a| encode(a, feed));
+                feed(b";");
+            }
             TyKind::Param(_) | TyKind::Alias(_) | TyKind::Infer(_) | TyKind::Error => {
                 unreachable!("instances are of concrete types")
             }
@@ -317,7 +335,9 @@ fn keel_type(ty: Ty) -> Option<Type> {
         TyKind::Int(int) => Some(int_type(int)),
         TyKind::Bool => Some(Type::I8),
         // `&CStr` is a thin pointer here: flux needs only `as_ptr`.
-        TyKind::RawPtr(..) | TyKind::Ref(..) => Some(Type::Ptr),
+        TyKind::RawPtr(..) | TyKind::Ref(..) | TyKind::FnPtr(_) => Some(Type::Ptr),
+        // A function item has no value: it is its type.
+        TyKind::FnDef(_) => None,
         TyKind::Tuple(_)
         | TyKind::Adt(..)
         | TyKind::Array(..)
@@ -572,8 +592,19 @@ fn attrs(sig: &FnSig) -> FunctionAttrs {
     }
 }
 
+/// The signature of a function flux defines: keel's private convention
+/// unless its address is taken (`reified`), when it must be called
+/// through a pointer, which `cc(fast)` does not allow: C's then.
+fn ctx_signature(sigs: &Signatures, sig: &FnSig, reified: bool) -> Signature {
+    if reified {
+        signature(sigs, sig, false)
+    } else {
+        flux_signature(sigs, sig)
+    }
+}
+
 /// `int main(int argc, char **argv)`: calls the Rust `main` and returns 0.
-fn entry_point(rust_main: &str, sigs: &Signatures, sig: &FnSig) -> Function {
+fn entry_point(rust_main: &str, main_sig: &Signature, never: bool) -> Function {
     let mut function = Function::new(
         "main",
         Signature::new(&[Type::I32, Type::Ptr], &[Type::I32]),
@@ -583,9 +614,9 @@ fn entry_point(rust_main: &str, sigs: &Signatures, sig: &FnSig) -> Function {
     b.switch_to_block(entry);
     b.append_block_param(entry, Type::I32);
     b.append_block_param(entry, Type::Ptr);
-    let callee = b.import_function(rust_main, flux_signature(sigs, sig));
+    let callee = b.import_function(rust_main, main_sig.clone());
     b.ins().call(callee, &[]);
-    if sig.ret == Ty::NEVER {
+    if never {
         b.ins().trap();
     } else {
         let zero = b.ins().iconst(Type::I32, 0);
@@ -610,6 +641,8 @@ struct Ctx<'a> {
     symbols: &'a HashMap<FunctionId, String>,
     /// The data object of each static.
     statics: &'a HashMap<flux_hir::ConstId, String>,
+    /// The instances whose address the program takes.
+    reified: std::collections::HashSet<Instance>,
     uses_abort: bool,
     /// The data object holding each distinct C string, by its bytes.
     strings: HashMap<Box<[u8]>, String>,
@@ -636,7 +669,7 @@ impl Ctx<'_> {
         );
         let mut function = Function::new(
             instance_symbol(self.hir, self.symbols, instance),
-            flux_signature(&self.typed.sigs, sig),
+            ctx_signature(&self.typed.sigs, sig, self.reified.contains(&instance)),
         );
         function.local = true;
         function.attrs = attrs(sig);
@@ -1232,6 +1265,10 @@ impl Lower<'_, '_, '_> {
             }
             Constant::Item { .. } => unreachable!("handled by `operand`"),
             Constant::Static { id, .. } => Some(self.static_addr(id)),
+            Constant::Fn { function, args, .. } => {
+                let callee = self.callee(function, args);
+                Some(self.b.ins().symbol_addr(keel_ir::Symbol::Func(callee)))
+            }
         }
     }
 
@@ -1484,35 +1521,27 @@ impl Lower<'_, '_, '_> {
                     self.ctx.typed.sigs[*func].ret,
                     generic_args,
                 );
-                let memory = is_memory(self.sigs, ret);
-                let sret = match return_kind(self.sigs, ret) {
-                    Return::Sret(layout) | Return::Memory(layout) => {
-                        let slot = self
-                            .b
-                            .create_stack_slot(layout.size().max(1) as u32, layout.align() as u32);
-                        Some((self.b.ins().stack_addr(slot), layout))
-                    }
-                    Return::Values(_) => None,
+                self.call(ret, args, dest, *target, |b, values| b.ins().call(callee, values));
+            }
+            TerminatorKind::CallIndirect {
+                callee,
+                args,
+                dest,
+                target,
+            } => {
+                let ty = self.body.operand_ty(callee, self.sigs);
+                let sig = ty
+                    .fn_sig()
+                    .expect("indirect calls are of function pointers");
+                let sig = FnSig {
+                    params: sig.params().into(),
+                    ret: sig.ret(),
                 };
-                let mut values: Vec<Value> = sret.iter().map(|(pointer, _)| *pointer).collect();
-                for arg in args {
-                    values.extend(self.operand(arg));
-                }
-                let call = self.b.ins().call(callee, &values);
-                let results = match &sret {
-                    Some((pointer, _)) if memory => vec![*pointer],
-                    Some((pointer, layout)) => self.load_leaves(*pointer, layout),
-                    None => self.b.function().inst_results(call).to_vec(),
-                };
-                self.write(dest, &results);
-                match target {
-                    Some(target) => {
-                        self.b.ins().jump(self.blocks[target.index()], &[]);
-                    }
-                    None => {
-                        self.b.ins().trap();
-                    }
-                }
+                let sig_ref = self.b.import_signature(signature(self.sigs, &sig, false));
+                let pointer = self.scalar(callee).expect("function pointers are scalars");
+                self.call(sig.ret, args, dest, *target, |b, values| {
+                    b.ins().call_indirect(sig_ref, pointer, values)
+                });
             }
             TerminatorKind::Assert {
                 cond,
@@ -1559,6 +1588,48 @@ impl Lower<'_, '_, '_> {
         }
     }
 
+    /// A call returning a `ret`, with arguments `args`, its result
+    /// stored in `dest`, continuing at `target`: `make` makes the call
+    /// instruction from the argument values, an `sret` pointer first.
+    fn call(
+        &mut self,
+        ret: Ty,
+        args: &[flux_mir::Operand],
+        dest: &flux_mir::Place,
+        target: Option<flux_mir::BasicBlock>,
+        make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
+    ) {
+        let memory = is_memory(self.sigs, ret);
+        let sret = match return_kind(self.sigs, ret) {
+            Return::Sret(layout) | Return::Memory(layout) => {
+                let slot = self
+                    .b
+                    .create_stack_slot(layout.size().max(1) as u32, layout.align() as u32);
+                Some((self.b.ins().stack_addr(slot), layout))
+            }
+            Return::Values(_) => None,
+        };
+        let mut values: Vec<Value> = sret.iter().map(|(pointer, _)| *pointer).collect();
+        for arg in args {
+            values.extend(self.operand(arg));
+        }
+        let call = make(&mut self.b, &values);
+        let results = match &sret {
+            Some((pointer, _)) if memory => vec![*pointer],
+            Some((pointer, layout)) => self.load_leaves(*pointer, layout),
+            None => self.b.function().inst_results(call).to_vec(),
+        };
+        self.write(dest, &results);
+        match target {
+            Some(target) => {
+                self.b.ins().jump(self.blocks[target.index()], &[]);
+            }
+            None => {
+                self.b.ins().trap();
+            }
+        }
+    }
+
     /// The leaves of a value laid out as `layout` at `pointer`.
     fn load_leaves(&mut self, pointer: Value, layout: &Layout) -> Vec<Value> {
         layout
@@ -1600,7 +1671,7 @@ impl Lower<'_, '_, '_> {
         let sig = if function.is_extern {
             signature(self.sigs, &sig, function.is_variadic)
         } else {
-            flux_signature(self.sigs, &sig)
+            ctx_signature(self.sigs, &sig, self.ctx.reified.contains(&instance))
         };
         let symbol = instance_symbol(self.ctx.hir, self.ctx.symbols, instance);
         let callee = self.b.import_function(&symbol, sig);

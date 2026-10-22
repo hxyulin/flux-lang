@@ -197,7 +197,7 @@ fn statement_transfer(kind: &StatementKind, live: &mut [bool]) {
 }
 
 fn terminator_transfer(kind: &TerminatorKind, live: &mut [bool]) {
-    if let TerminatorKind::Call { dest, .. } = kind
+    if let TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. } = kind
         && dest.projection.is_empty()
     {
         live[dest.local.index()] = false;
@@ -207,7 +207,9 @@ fn terminator_transfer(kind: &TerminatorKind, live: &mut [bool]) {
         operand_uses(operand, &mut uses);
     }
     match kind {
-        TerminatorKind::Call { dest, .. } => place_uses(dest, &mut uses),
+        TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. } => {
+            place_uses(dest, &mut uses)
+        }
         // Dropping a value may use the references in it.
         TerminatorKind::Drop { place, .. } => uses.push(place.local),
         _ => {}
@@ -412,7 +414,9 @@ impl Checker<'_> {
         {
             self.error(range, "temporary value dropped while borrowed".into());
         }
-        let TerminatorKind::Call { args, dest, .. } = kind else {
+        let (TerminatorKind::Call { args, dest, .. }
+        | TerminatorKind::CallIndirect { args, dest, .. }) = kind
+        else {
             return;
         };
         // The loans passed to the call are in use during it, together

@@ -162,7 +162,9 @@ pub(crate) fn terminator_events(kind: &TerminatorKind) -> Vec<Event<'_>> {
         .filter_map(operand_event)
         .collect();
     match kind {
-        TerminatorKind::Call { dest, .. } => events.push(Event::Assign(dest)),
+        TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. } => {
+            events.push(Event::Assign(dest))
+        }
         TerminatorKind::Drop { place, .. } => events.push(Event::Drop(place)),
         _ => {}
     }

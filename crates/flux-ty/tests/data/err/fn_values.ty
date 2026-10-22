@@ -1,0 +1,22 @@
+fn double(i32) -> i32
+    x@0: i32
+fn byte(u8) -> u8
+    x@0: u8
+fn danger() -> i32
+fn calls_pointer(fn(i32) -> i32) -> i32
+    f@0: fn(i32) -> i32
+fn main() -> ()
+    a@0: fn(i32) -> i32
+    b@1: i32
+    c@2: fn() -> i32
+    d@3: i32
+    e@4: fn(i32) -> i32 {double}
+    f@5: fn(i32) -> i32
+    g@6: u8
+error 164..168: function pointer calls are not allowed in constant functions
+error 212..216: mismatched types: expected `fn(i32) -> i32`, found `fn(u8) -> u8 {byte}`
+error 235..241: mismatched types: expected `i32`, found `fn(i32) -> i32 {double}`
+error 268..274: mismatched types: expected `fn() -> i32`, found `unsafe fn() -> i32 {danger}`
+error 295..296: expected function, found `{integer}`
+error 325..326: this function takes 1 argument but 2 arguments were supplied
+error 386..390: mismatched types: expected `u8`, found `i32`

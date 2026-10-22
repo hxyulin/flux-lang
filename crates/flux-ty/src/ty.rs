@@ -19,7 +19,7 @@ use std::sync::{LazyLock, OnceLock, RwLock};
 
 use rustc_hash::FxHashMap;
 
-use flux_hir::{StructId, TraitId};
+use flux_hir::{FunctionId, StructId, TraitId};
 use flux_intern::{Symbol, sym};
 
 /// A type: a handle to its [`TyKind`].
@@ -52,6 +52,12 @@ pub enum TyKind {
     Slice(Ty),
     /// `core::ffi::CStr`: a NUL-terminated string, only behind a reference.
     CStr,
+    /// The type of a function item, `fn(i32) -> i32 {double}`: one per
+    /// function and generic arguments, with no value to hold, which
+    /// coerces to a function pointer of its signature.
+    FnDef(FnDefTy),
+    /// A function pointer, `fn(i32) -> i32`.
+    FnPtr(FnSigTy),
     /// An inference variable; never present after inference.
     Infer(InferVar),
     /// The type of an erroneous expression, already reported. It unifies
@@ -103,6 +109,52 @@ impl AliasTy {
     pub fn self_ty(self) -> Ty {
         self.args[0]
     }
+}
+
+/// A function's signature as a type: its parameters' types then its
+/// return type, and whether calling it is `unsafe`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FnSigTy {
+    pub inputs_output: &'static [Ty],
+    pub is_unsafe: bool,
+}
+
+impl FnSigTy {
+    pub fn new(params: &[Ty], ret: Ty, is_unsafe: bool) -> FnSigTy {
+        let mut all = params.to_vec();
+        all.push(ret);
+        FnSigTy {
+            inputs_output: Ty::list(&all),
+            is_unsafe,
+        }
+    }
+
+    pub fn params(self) -> &'static [Ty] {
+        &self.inputs_output[..self.inputs_output.len() - 1]
+    }
+
+    pub fn ret(self) -> Ty {
+        self.inputs_output[self.inputs_output.len() - 1]
+    }
+
+    /// The signature with each type replaced by `f`'s.
+    pub fn map(self, f: impl FnMut(Ty) -> Ty) -> FnSigTy {
+        let list: Vec<Ty> = self.inputs_output.iter().copied().map(f).collect();
+        FnSigTy {
+            inputs_output: Ty::list(&list),
+            ..self
+        }
+    }
+}
+
+/// A function item's type: the function, its name for messages, its
+/// generic arguments, and its signature with them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FnDefTy {
+    pub function: FunctionId,
+    pub name: Symbol,
+    pub args: GenericArgs,
+    pub sig: FnSigTy,
 }
 
 /// The generic arguments of a use of a generic item: one type per
@@ -211,6 +263,12 @@ impl Table {
             TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
                 of(t)
             }
+            TyKind::FnPtr(sig) => sig.inputs_output.iter().fold(0, |f, &t| f | of(t)),
+            TyKind::FnDef(def) => def
+                .args
+                .iter()
+                .chain(def.sig.inputs_output)
+                .fold(0, |f, &t| f | of(t)),
             TyKind::Int(_) | TyKind::Bool | TyKind::Never | TyKind::CStr | TyKind::Error => 0,
         };
         let id = self.len;
@@ -340,6 +398,7 @@ impl Ty {
             TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, pointee.subst(args))),
             TyKind::Array(elem, len) => Ty::array(elem.subst(args), len),
             TyKind::Slice(elem) => Ty::slice(elem.subst(args)),
+            TyKind::FnDef(_) | TyKind::FnPtr(_) => self.map_fn(|t| t.subst(args)),
             _ => self,
         }
     }
@@ -356,6 +415,52 @@ impl Ty {
     pub fn sequence_elem(self) -> Option<Ty> {
         match self.kind() {
             TyKind::Array(elem, _) | TyKind::Slice(elem) => Some(elem),
+            _ => None,
+        }
+    }
+
+    /// For a function item or pointer type, the type with each type in
+    /// it (generic arguments and signature) replaced by `f`'s; any other
+    /// type unchanged.
+    pub fn map_fn(self, mut f: impl FnMut(Ty) -> Ty) -> Ty {
+        match self.kind() {
+            TyKind::FnPtr(sig) => Ty::new(TyKind::FnPtr(sig.map(f))),
+            TyKind::FnDef(def) => {
+                let args: Vec<Ty> = def.args.iter().map(|&a| f(a)).collect();
+                Ty::new(TyKind::FnDef(FnDefTy {
+                    args: Ty::list(&args),
+                    sig: def.sig.map(f),
+                    ..def
+                }))
+            }
+            _ => self,
+        }
+    }
+
+    /// The types directly inside this one.
+    pub fn children(self) -> Vec<Ty> {
+        match self.kind() {
+            TyKind::Tuple(list) | TyKind::Adt(_, list) => list.to_vec(),
+            TyKind::Alias(alias) => alias.args.to_vec(),
+            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+                vec![t]
+            }
+            TyKind::FnPtr(sig) => sig.inputs_output.to_vec(),
+            TyKind::FnDef(def) => def
+                .args
+                .iter()
+                .chain(def.sig.inputs_output)
+                .copied()
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The signature of a function item or pointer type.
+    pub fn fn_sig(self) -> Option<FnSigTy> {
+        match self.kind() {
+            TyKind::FnPtr(sig) => Some(sig),
+            TyKind::FnDef(def) => Some(def.sig),
             _ => None,
         }
     }
@@ -505,10 +610,34 @@ impl fmt::Display for Ty {
             TyKind::Array(elem, len) => write!(f, "[{elem}; {len}]"),
             TyKind::Slice(elem) => write!(f, "[{elem}]"),
             TyKind::CStr => f.write_str("CStr"),
+            TyKind::FnPtr(sig) => write_sig(f, sig),
+            TyKind::FnDef(def) => {
+                write_sig(f, def.sig)?;
+                write!(f, " {{{}", def.name)?;
+                if !def.args.is_empty() {
+                    let args: Vec<String> = def.args.iter().map(Ty::to_string).collect();
+                    write!(f, "::<{}>", args.join(", "))?;
+                }
+                f.write_str("}")
+            }
             TyKind::Infer(_) => f.write_str("_"),
             TyKind::Error => f.write_str("{error}"),
         }
     }
+}
+
+/// `fn(A, B) -> R`, with `unsafe` before it if it is, and without the
+/// return type if it is `()`.
+fn write_sig(f: &mut fmt::Formatter<'_>, sig: FnSigTy) -> fmt::Result {
+    if sig.is_unsafe {
+        f.write_str("unsafe ")?;
+    }
+    let params: Vec<String> = sig.params().iter().map(Ty::to_string).collect();
+    write!(f, "fn({})", params.join(", "))?;
+    if sig.ret() != Ty::UNIT {
+        write!(f, " -> {}", sig.ret())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

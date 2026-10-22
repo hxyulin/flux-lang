@@ -136,6 +136,24 @@ fn body_text(
                 };
                 format!("{} = {name}({}) -> {target}", place(dest), args.join(", "))
             }
+            TerminatorKind::CallIndirect {
+                callee,
+                args,
+                dest,
+                target,
+            } => {
+                let args: Vec<String> = args.iter().map(|o| operand(hir, o)).collect();
+                let target = match target {
+                    Some(bb) => format!("bb{}", bb.index()),
+                    None => "!".to_owned(),
+                };
+                format!(
+                    "{} = ({})({}) -> {target}",
+                    place(dest),
+                    operand(hir, callee),
+                    args.join(", ")
+                )
+            }
             TerminatorKind::Assert {
                 cond,
                 expected,
@@ -296,6 +314,15 @@ fn constant_text(hir: &Hir, constant: Constant) -> String {
         Constant::Bool(value) => value.to_string(),
         Constant::Unit => "()".to_owned(),
         Constant::CStr(index) => format!("c_str{index}"),
+        Constant::Fn { function, args, .. } => {
+            let name = hir.items.function_path(&hir.items.functions[function]);
+            if args.is_empty() {
+                format!("{name} as fn")
+            } else {
+                let types: Vec<String> = args.iter().map(Ty::to_string).collect();
+                format!("{name}::<{}> as fn", types.join(", "))
+            }
+        }
         Constant::Static { id, .. } => {
             let name = hir.items.const_name(id);
             if hir.items.consts[id].is_static_mut() {

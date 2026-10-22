@@ -829,6 +829,12 @@ pub enum TypeRef {
     Slice(Box<TypeRef>),
     /// `_`: a type to infer, in a body.
     Infer,
+    /// `fn(A, B) -> R`, or `unsafe fn(A) -> R`.
+    FnPtr {
+        params: Box<[TypeRef]>,
+        ret: Box<TypeRef>,
+        is_unsafe: bool,
+    },
     /// Unsupported or malformed; already reported.
     Error,
 }
@@ -894,6 +900,21 @@ impl std::fmt::Display for TypeRef {
                 f.write_str(")")
             }
             TypeRef::Never => f.write_str("!"),
+            TypeRef::FnPtr {
+                params,
+                ret,
+                is_unsafe,
+            } => {
+                if *is_unsafe {
+                    f.write_str("unsafe ")?;
+                }
+                let params: Vec<String> = params.iter().map(|p| p.to_string()).collect();
+                write!(f, "fn({})", params.join(", "))?;
+                if **ret != TypeRef::unit() {
+                    write!(f, " -> {ret}")?;
+                }
+                Ok(())
+            }
             TypeRef::Ptr { mutable, pointee } => {
                 let m = if *mutable { "mut" } else { "const" };
                 write!(f, "*{m} {pointee}")
@@ -3205,6 +3226,15 @@ fn param_projections(ty: &TypeRef, params: &[GenericParam], out: &mut Vec<TypeRe
         | TypeRef::Slice(pointee) => {
             param_projections(pointee, params, out);
         }
+        TypeRef::FnPtr {
+            params: inputs,
+            ret,
+            ..
+        } => {
+            for p in inputs.iter().chain([&**ret]) {
+                param_projections(p, params, out);
+            }
+        }
         TypeRef::Never | TypeRef::Infer | TypeRef::Error => {}
     }
 }
@@ -3798,7 +3828,7 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
             };
         }
         ast::Type::DynTraitType(_) => "trait objects",
-        ast::Type::FnPtrType(_) => "function pointer types",
+        ast::Type::FnPtrType(ptr) => return lower_fn_ptr(ptr, diagnostics),
         ast::Type::ForType(_) => "higher-ranked types",
         ast::Type::ImplTraitType(_) => "`impl Trait` types",
         ast::Type::InferType(_) => return TypeRef::Infer,
@@ -3890,6 +3920,43 @@ pub(crate) fn lower_array_len(
         }
     };
     ArrayLen { kind, range }
+}
+
+/// `fn(A, B) -> R`, `unsafe fn(A)`; `extern "C" fn` and C-variadic ones
+/// are reported.
+fn lower_fn_ptr(ptr: ast::FnPtrType<'_>, diagnostics: &mut Vec<Diagnostic>) -> TypeRef {
+    if let Some(abi) = ptr.abi() {
+        unsupported(
+            diagnostics,
+            abi.syntax().text_range(),
+            "`extern` function pointer types",
+        );
+        return TypeRef::Error;
+    }
+    let mut params = Vec::new();
+    if let Some(list) = ptr.param_list() {
+        for param in list.params() {
+            check_inert_attrs(param.attrs(), diagnostics);
+            if let Some(dots) = param.dot3_token() {
+                unsupported(
+                    diagnostics,
+                    dots.text_range(),
+                    "C-variadic function pointer types",
+                );
+                return TypeRef::Error;
+            }
+            params.push(lower_type(param.ty(), diagnostics));
+        }
+    }
+    let ret = match ptr.ret_type() {
+        Some(ret) => lower_type(ret.ty(), diagnostics),
+        None => TypeRef::unit(),
+    };
+    TypeRef::FnPtr {
+        params: params.into(),
+        ret: Box::new(ret),
+        is_unsafe: ptr.unsafe_token().is_some(),
+    }
 }
 
 /// Whether `name` is a primitive type's.
