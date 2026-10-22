@@ -1,0 +1,1194 @@
+fn mixed<'x, 'y>(_1: Token, _2: Token) -> bool {
+    let mut _0: bool;
+    let _3: bool;
+    let _4: bool;
+    let _5: &Token;
+    let _6: &Token;
+    let _7: &Token;
+    let _8: &Token;
+    let _9: Option<Token>;
+    let _10: Token;
+    let _11: &Option<Token>;
+    let _12: Option<Token>;
+    let _13: Token;
+    let _14: &Option<Token>;
+
+    bb0: {
+        _5 = &_1;
+        _6 = &_2;
+        _4 = eq::<Token, Token>(copy _5, copy _6) -> bb1;
+    }
+
+    bb1: {
+        switchInt(copy _4) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb2: {
+        _7 = &_1;
+        _8 = &_2;
+        _3 = le::<Token, Token>(copy _7, copy _8) -> bb5;
+    }
+
+    bb3: {
+        _3 = const false;
+        goto -> bb4;
+    }
+
+    bb4: {
+        switchInt(copy _3) -> [0: bb7, otherwise: bb6];
+    }
+
+    bb5: {
+        goto -> bb4;
+    }
+
+    bb6: {
+        _10 = copy _1;
+        _9 = Option::Some(copy _10);
+        _11 = &_9;
+        _13 = copy _2;
+        _12 = Option::Some(copy _13);
+        _14 = &_12;
+        _0 = eq::<Option<Token>, Option<Token>>(copy _11, copy _14) -> bb9;
+    }
+
+    bb7: {
+        _0 = const false;
+        goto -> bb8;
+    }
+
+    bb8: {
+        return;
+    }
+
+    bb9: {
+        StorageDead(_12);
+        StorageDead(_9);
+        goto -> bb8;
+    }
+}
+
+fn <&'a V as Add>::add(_1: &V, _2: &V) -> i32 {
+    let mut _0: i32;
+    let _3: i32;
+    let _4: i32;
+
+    bb0: {
+        _3 = copy (*_1).0;
+        _4 = copy (*_2).0;
+        _0 = Add(copy _3, copy _4);
+        return;
+    }
+}
+
+fn add_locals() -> i32 {
+    let mut _0: i32;
+    let _1: V; // a
+    let _2: V; // b
+    let _3: (V, V);
+    let _4: V;
+    let _5: V;
+    let _6: &V;
+    let _7: &V;
+
+    bb0: {
+        _4 = V(const 1_i32);
+        _5 = V(const 2_i32);
+        _3 = (move _4, move _5);
+        _1 = move _3.0;
+        _2 = move _3.1;
+        StorageDead(_3);
+        _6 = &_1;
+        _7 = &_2;
+        _0 = add::<&V, &V>(copy _6, copy _7) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn <&'static S as Get>::get(_1: &S) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy (*_1).0;
+        return;
+    }
+}
+
+fn from_static() -> i32 {
+    let mut _0: i32;
+    let _1: &S;
+    let mut _2: &S;
+    let _3: &S;
+
+    bb0: {
+        _2 = const &GLOBAL;
+        _1 = &(*_2);
+        _3 = copy _1;
+        _0 = get::<&S>(copy _3) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn <(&'a i32, &'b i32) as Sum2>::sum(_1: &(&i32, &i32)) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+    let _3: i32;
+
+    bb0: {
+        _2 = copy (*(*_1).0);
+        _3 = copy (*(*_1).1);
+        _0 = Add(copy _2, copy _3);
+        return;
+    }
+}
+
+fn longer<'a, 'b>(_1: &i32, _2: &i32) -> i32 {
+    let mut _0: i32;
+    let _3: (&i32, &i32);
+    let _4: &i32;
+    let _5: &i32;
+    let _6: &(&i32, &i32);
+
+    bb0: {
+        _4 = copy _1;
+        _5 = copy _2;
+        _3 = (copy _4, copy _5);
+        _6 = &_3;
+        _0 = sum::<(&i32, &i32)>(copy _6) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn first<'a, I>(_1: I) -> Option<&i32> {
+    let mut _0: Option<&i32>;
+    let _2: &mut I;
+
+    bb0: {
+        _2 = &two_phase _1;
+        _0 = next::<I>(move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn two<'a, I>(_1: I) -> (&i32, &i32) {
+    let mut _0: (&i32, &i32);
+    let _2: &i32; // a
+    let _3: Option<&i32>;
+    let _4: &mut I;
+    let _5: Option<&i32>;
+    let _6: &i32; // b
+    let _7: Option<&i32>;
+    let _8: &mut I;
+    let _9: Option<&i32>;
+    let _10: &i32;
+    let _11: &i32;
+
+    bb0: {
+        _4 = &two_phase _1;
+        _3 = next::<I>(move _4) -> bb1;
+    }
+
+    bb1: {
+        _5 = copy _3;
+        _2 = unwrap::<&i32>(copy _5) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_3);
+        _8 = &two_phase _1;
+        _7 = next::<I>(move _8) -> bb3;
+    }
+
+    bb3: {
+        _9 = copy _7;
+        _6 = unwrap::<&i32>(copy _9) -> bb4;
+    }
+
+    bb4: {
+        StorageDead(_7);
+        _10 = copy _2;
+        _11 = copy _6;
+        _0 = (copy _10, copy _11);
+        StorageDead(_6);
+        StorageDead(_2);
+        drop(_1) -> bb5;
+    }
+
+    bb5: {
+        return;
+    }
+}
+
+fn <Wrap<I> as Iterator>::next(_1: &mut Wrap<I>) -> Option<&u8> {
+    let mut _0: Option<&u8>;
+    let _2: &mut I;
+
+    bb0: {
+        _2 = &two_phase (*_1).0;
+        _0 = next::<I>(move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn last<'a>(_1: Wrap<Iter<u8>>) -> Option<&u8> {
+    let mut _0: Option<&u8>;
+    let mut _2: Option<&u8>; // found
+    let _3: ();
+    let _4: Wrap<Iter<u8>>;
+    let _5: Wrap<Iter<u8>>;
+    let mut _6: Wrap<Iter<u8>>; // iter
+    let _7: ();
+    let _8: ();
+    let _9: Option<&u8>;
+    let _10: &mut Wrap<Iter<u8>>;
+    let _11: &mut Wrap<Iter<u8>>;
+    let _12: isize;
+    let _13: &u8; // x
+    let _14: isize;
+    let _15: ();
+    let _16: Option<&u8>;
+    let _17: &u8;
+
+    bb0: {
+        _2 = Option::None;
+        _5 = move _1;
+        _4 = into_iter::<Wrap<Iter<u8>>>(move _5) -> bb1;
+    }
+
+    bb1: {
+        _6 = move _4;
+        goto -> bb4;
+    }
+
+    bb2: {
+        StorageDead(_4);
+        _0 = copy _2;
+        StorageDead(_2);
+        return;
+    }
+
+    bb3: {
+        unreachable;
+    }
+
+    bb4: {
+        goto -> bb5;
+    }
+
+    bb5: {
+        _11 = &mut _6;
+        _10 = &mut (*_11);
+        _9 = next::<Wrap<Iter<u8>>>(move _10) -> bb7;
+    }
+
+    bb6: {
+        StorageDead(_6);
+        goto -> bb2;
+    }
+
+    bb7: {
+        _12 = discriminant(_9);
+        switchInt(copy _12) -> [0: bb10, otherwise: bb9];
+    }
+
+    bb8: {
+        StorageDead(_9);
+        _7 = const ();
+        goto -> bb5;
+    }
+
+    bb9: {
+        _14 = discriminant(_9);
+        switchInt(copy _14) -> [1: bb13, otherwise: bb12];
+    }
+
+    bb10: {
+        goto -> bb11;
+    }
+
+    bb11: {
+        _3 = const ();
+        StorageDead(_9);
+        goto -> bb6;
+    }
+
+    bb12: {
+        unreachable;
+    }
+
+    bb13: {
+        _13 = copy (_9 as #1).0;
+        goto -> bb14;
+    }
+
+    bb14: {
+        _17 = copy _13;
+        _16 = Option::Some(copy _17);
+        _2 = copy _16;
+        _15 = const ();
+        _8 = const ();
+        StorageDead(_13);
+        goto -> bb8;
+    }
+}
+
+fn lex(_1: &[u8]) -> [Token; 2] {
+    let mut _0: [Token; 2];
+    let mut _2: [Token; 2]; // out
+    let _3: Token;
+    let mut _4: usize; // n
+    let _5: ();
+    let _6: ();
+    let _7: bool;
+    let _8: usize;
+    let _9: ();
+    let _10: Token;
+    let _11: &[u8];
+    let _12: &[u8];
+    let _13: Range<usize>;
+    let _14: usize;
+    let _15: usize;
+    let _16: usize;
+    let _17: &[u8];
+    let _18: usize;
+    let _19: bool;
+    let _20: ();
+    let _21: usize;
+
+    bb0: {
+        _3 = Token::End;
+        _2 = [copy _3; 2];
+        _4 = const 0_usize;
+        goto -> bb1;
+    }
+
+    bb1: {
+        _8 = copy _4;
+        _7 = Lt(copy _8, const 2_usize);
+        switchInt(copy _7) -> [0: bb4, otherwise: bb3];
+    }
+
+    bb2: {
+        _0 = copy _2;
+        StorageDead(_4);
+        StorageDead(_2);
+        return;
+    }
+
+    bb3: {
+        _12 = &(*_1);
+        _14 = copy _4;
+        _16 = copy _4;
+        _15 = Add(copy _16, const 1_usize);
+        _13 = Range { start: copy _14, end: copy _15 };
+        _17 = index::<[u8], Range<usize>>(move _12, move _13) -> bb6;
+    }
+
+    bb4: {
+        _5 = const ();
+        goto -> bb2;
+    }
+
+    bb5: {
+        goto -> bb1;
+    }
+
+    bb6: {
+        _11 = &(*_17);
+        _10 = Token::Ident(copy _11);
+        _18 = copy _4;
+        _19 = Lt(copy _18, const 2_usize);
+        assert(copy _19, "index out of bounds") -> bb7;
+    }
+
+    bb7: {
+        _2[_18] = copy _10;
+        _9 = const ();
+        _21 = copy _4;
+        _4 = Add(copy _21, const 1_usize);
+        _20 = const ();
+        _6 = const ();
+        goto -> bb5;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: [i32; 2]; // v
+    let _2: [u8; 2]; // bytes
+    let _3: &i32; // a
+    let _4: &i32; // b
+    let _5: (&i32, &i32);
+    let _6: Iter<i32>;
+    let _7: &[i32; 2];
+    let _8: &[i32];
+    let _9: [Token; 2]; // t
+    let _10: &[u8];
+    let _11: &[u8; 2];
+    let _12: i32;
+    let _13: i32;
+    let _14: i32;
+    let _15: i32;
+    let _16: i32;
+    let _17: i32;
+    let _18: bool;
+    let _19: Token;
+    let _20: usize;
+    let _21: bool;
+    let _22: Token;
+    let _23: &[u8];
+    let _24: &[u8; 2];
+    let _25: i32;
+    let _26: i32;
+    let _27: i32;
+    let _28: &i32;
+    let _29: &i32;
+    let _30: i32;
+    let _31: &i32;
+    let _32: Option<&i32>;
+    let _33: Iter<i32>;
+    let _34: &[i32; 2];
+    let _35: &[i32];
+    let _36: Option<&i32>;
+    let _37: i32;
+    let _38: u8;
+    let _39: &u8;
+    let _40: Option<&u8>;
+    let _41: Wrap<Iter<u8>>;
+    let _42: Iter<u8>;
+    let _43: &[u8; 2];
+    let _44: &[u8];
+    let _45: Option<&u8>;
+
+    bb0: {
+        _1 = [const 1_i32, const 2_i32];
+        _2 = [const 7_u8, const 8_u8];
+        _7 = &_1;
+        _8 = copy _7 as &[i32] (unsize);
+        _6 = iter::<i32>(copy _8) -> bb1;
+    }
+
+    bb1: {
+        _5 = two::<Iter<i32>>(move _6) -> bb2;
+    }
+
+    bb2: {
+        _3 = copy _5.0;
+        _4 = copy _5.1;
+        StorageDead(_5);
+        _11 = &_2;
+        _10 = copy _11 as &[u8] (unsize);
+        _9 = lex(copy _10) -> bb3;
+    }
+
+    bb3: {
+        _20 = const 0_usize;
+        _21 = Lt(copy _20, const 2_usize);
+        assert(copy _21, "index out of bounds") -> bb4;
+    }
+
+    bb4: {
+        _19 = copy _9[_20];
+        _24 = &_2;
+        _23 = copy _24 as &[u8] (unsize);
+        _22 = Token::Ident(copy _23);
+        _18 = mixed(copy _19, copy _22) -> bb5;
+    }
+
+    bb5: {
+        _17 = copy _18 as i32;
+        _25 = add_locals() -> bb6;
+    }
+
+    bb6: {
+        _16 = Add(copy _17, copy _25);
+        _26 = from_static() -> bb7;
+    }
+
+    bb7: {
+        _15 = Add(copy _16, copy _26);
+        _28 = copy _3;
+        _29 = copy _4;
+        _27 = longer(copy _28, copy _29) -> bb8;
+    }
+
+    bb8: {
+        _14 = Add(copy _15, copy _27);
+        _34 = &_1;
+        _35 = copy _34 as &[i32] (unsize);
+        _33 = iter::<i32>(copy _35) -> bb9;
+    }
+
+    bb9: {
+        _32 = first::<Iter<i32>>(move _33) -> bb10;
+    }
+
+    bb10: {
+        _36 = copy _32;
+        _31 = unwrap::<&i32>(copy _36) -> bb11;
+    }
+
+    bb11: {
+        _30 = copy (*_31);
+        _13 = Add(copy _14, copy _30);
+        _43 = &_2;
+        _44 = copy _43 as &[u8] (unsize);
+        _42 = iter::<u8>(copy _44) -> bb12;
+    }
+
+    bb12: {
+        _41 = Wrap(move _42);
+        _40 = last(move _41) -> bb13;
+    }
+
+    bb13: {
+        _45 = copy _40;
+        _39 = unwrap::<&u8>(copy _45) -> bb14;
+    }
+
+    bb14: {
+        _38 = copy (*_39);
+        _37 = copy _38 as i32;
+        _12 = Add(copy _13, copy _37);
+        StorageDead(_12);
+        StorageDead(_39);
+        StorageDead(_40);
+        StorageDead(_31);
+        StorageDead(_32);
+        _0 = const ();
+        StorageDead(_9);
+        StorageDead(_4);
+        StorageDead(_3);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn <Token<'a> as ::core::clone::Clone>::clone(_1: &Token) -> Token {
+    let mut _0: Token;
+    let _2: ();
+    let _3: isize;
+    let _4: &&[u8]; // __self_0
+    let _5: isize;
+    let _6: ();
+    let _7: &&[u8];
+
+    bb0: {
+        _3 = discriminant((*_1));
+        switchInt(copy _3) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        _0 = copy (*_1);
+        return;
+    }
+
+    bb2: {
+        _5 = discriminant((*_1));
+        switchInt(copy _5) -> [1: bb6, otherwise: bb5];
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _2 = const ();
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        _4 = &((*_1) as #1).0;
+        goto -> bb7;
+    }
+
+    bb7: {
+        _7 = copy _4;
+        _6 = assert_param_is_clone::<&[u8]>(copy _7) -> bb8;
+    }
+
+    bb8: {
+        _2 = const ();
+        StorageDead(_4);
+        goto -> bb1;
+    }
+}
+
+fn <Token<'a> as ::core::cmp::PartialEq>::eq(_1: &Token, _2: &Token) -> bool {
+    let mut _0: bool;
+    let _3: isize;
+    let _4: isize;
+    let _5: &&[u8]; // __self_0
+    let _6: isize;
+    let _7: &&[u8]; // __other_0
+    let _8: isize;
+    let _9: &[u8];
+    let _10: &[u8];
+
+    bb0: {
+        _3 = discriminant((*_1));
+        switchInt(copy _3) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        _6 = discriminant((*_1));
+        switchInt(copy _6) -> [1: bb12, otherwise: bb11];
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _4 = discriminant((*_2));
+        switchInt(copy _4) -> [0: bb7, otherwise: bb6];
+    }
+
+    bb5: {
+        goto -> bb1;
+    }
+
+    bb6: {
+        goto -> bb10;
+    }
+
+    bb7: {
+        goto -> bb8;
+    }
+
+    bb8: {
+        _0 = const true;
+        goto -> bb5;
+    }
+
+    bb9: {
+        unreachable;
+    }
+
+    bb10: {
+        _0 = const false;
+        goto -> bb5;
+    }
+
+    bb11: {
+        unreachable;
+    }
+
+    bb12: {
+        _5 = &((*_1) as #1).0;
+        goto -> bb13;
+    }
+
+    bb13: {
+        _8 = discriminant((*_2));
+        switchInt(copy _8) -> [1: bb16, otherwise: bb15];
+    }
+
+    bb14: {
+        StorageDead(_5);
+        goto -> bb1;
+    }
+
+    bb15: {
+        goto -> bb20;
+    }
+
+    bb16: {
+        _7 = &((*_2) as #1).0;
+        goto -> bb17;
+    }
+
+    bb17: {
+        _9 = copy (*_5);
+        _10 = copy (*_7);
+        _0 = eq::<[u8], [u8]>(copy _9, copy _10) -> bb18;
+    }
+
+    bb18: {
+        StorageDead(_7);
+        goto -> bb14;
+    }
+
+    bb19: {
+        unreachable;
+    }
+
+    bb20: {
+        _0 = const false;
+        goto -> bb14;
+    }
+}
+
+fn <Token<'a> as ::core::cmp::Eq>::assert_receiver_is_total_eq(_1: &Token) -> () {
+    let mut _0: ();
+    let _2: isize;
+    let _3: &&[u8]; // __self_0
+    let _4: isize;
+    let _5: ();
+    let _6: &&[u8];
+
+    bb0: {
+        _2 = discriminant((*_1));
+        switchInt(copy _2) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2: {
+        _4 = discriminant((*_1));
+        switchInt(copy _4) -> [1: bb6, otherwise: bb5];
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _0 = const ();
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        _3 = &((*_1) as #1).0;
+        goto -> bb7;
+    }
+
+    bb7: {
+        _6 = copy _3;
+        _5 = assert_receiver_is_total_eq::<&[u8]>(copy _6) -> bb8;
+    }
+
+    bb8: {
+        _0 = const ();
+        StorageDead(_3);
+        goto -> bb1;
+    }
+}
+
+fn <Token<'a> as ::core::cmp::PartialOrd>::partial_cmp(_1: &Token, _2: &Token) -> Option<Ordering> {
+    let mut _0: Option<Ordering>;
+    let _3: isize; // __self_discr
+    let _4: isize;
+    let _5: isize;
+    let _6: isize; // __arg1_discr
+    let _7: isize;
+    let _8: isize;
+    let _9: &&[u8]; // __self_0
+    let _10: isize;
+    let _11: &&[u8]; // __arg1_0
+    let _12: isize;
+    let _13: &&[u8];
+    let _14: &&[u8];
+    let _15: &isize;
+    let _16: &isize;
+    let _17: &isize;
+    let _18: &isize;
+
+    bb0: {
+        _4 = discriminant((*_1));
+        switchInt(copy _4) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        _7 = discriminant((*_2));
+        switchInt(copy _7) -> [0: bb10, otherwise: bb9];
+    }
+
+    bb2: {
+        _5 = discriminant((*_1));
+        switchInt(copy _5) -> [1: bb6, otherwise: bb5];
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _3 = const 0_isize;
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        goto -> bb7;
+    }
+
+    bb7: {
+        _3 = const 1_isize;
+        goto -> bb1;
+    }
+
+    bb8: {
+        _10 = discriminant((*_1));
+        switchInt(copy _10) -> [1: bb17, otherwise: bb16];
+    }
+
+    bb9: {
+        _8 = discriminant((*_2));
+        switchInt(copy _8) -> [1: bb13, otherwise: bb12];
+    }
+
+    bb10: {
+        goto -> bb11;
+    }
+
+    bb11: {
+        _6 = const 0_isize;
+        goto -> bb8;
+    }
+
+    bb12: {
+        unreachable;
+    }
+
+    bb13: {
+        goto -> bb14;
+    }
+
+    bb14: {
+        _6 = const 1_isize;
+        goto -> bb8;
+    }
+
+    bb15: {
+        StorageDead(_6);
+        StorageDead(_3);
+        return;
+    }
+
+    bb16: {
+        goto -> bb28;
+    }
+
+    bb17: {
+        _9 = &((*_1) as #1).0;
+        goto -> bb18;
+    }
+
+    bb18: {
+        _12 = discriminant((*_2));
+        switchInt(copy _12) -> [1: bb21, otherwise: bb20];
+    }
+
+    bb19: {
+        StorageDead(_9);
+        goto -> bb15;
+    }
+
+    bb20: {
+        goto -> bb25;
+    }
+
+    bb21: {
+        _11 = &((*_2) as #1).0;
+        goto -> bb22;
+    }
+
+    bb22: {
+        _13 = copy _9;
+        _14 = copy _11;
+        _0 = partial_cmp::<&[u8], &[u8]>(copy _13, copy _14) -> bb23;
+    }
+
+    bb23: {
+        StorageDead(_11);
+        goto -> bb19;
+    }
+
+    bb24: {
+        unreachable;
+    }
+
+    bb25: {
+        _15 = &_3;
+        _16 = &_6;
+        _0 = partial_cmp::<isize, isize>(copy _15, copy _16) -> bb26;
+    }
+
+    bb26: {
+        goto -> bb19;
+    }
+
+    bb27: {
+        unreachable;
+    }
+
+    bb28: {
+        _17 = &_3;
+        _18 = &_6;
+        _0 = partial_cmp::<isize, isize>(copy _17, copy _18) -> bb29;
+    }
+
+    bb29: {
+        goto -> bb15;
+    }
+}
+
+fn <Token<'a> as ::core::cmp::Ord>::cmp(_1: &Token, _2: &Token) -> Ordering {
+    let mut _0: Ordering;
+    let _3: isize; // __self_discr
+    let _4: isize;
+    let _5: isize;
+    let _6: isize; // __arg1_discr
+    let _7: isize;
+    let _8: isize;
+    let _9: &&[u8]; // __self_0
+    let _10: isize;
+    let _11: &&[u8]; // __arg1_0
+    let _12: isize;
+    let _13: &&[u8];
+    let _14: &&[u8];
+    let _15: &isize;
+    let _16: &isize;
+    let _17: &isize;
+    let _18: &isize;
+
+    bb0: {
+        _4 = discriminant((*_1));
+        switchInt(copy _4) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        _7 = discriminant((*_2));
+        switchInt(copy _7) -> [0: bb10, otherwise: bb9];
+    }
+
+    bb2: {
+        _5 = discriminant((*_1));
+        switchInt(copy _5) -> [1: bb6, otherwise: bb5];
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _3 = const 0_isize;
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        goto -> bb7;
+    }
+
+    bb7: {
+        _3 = const 1_isize;
+        goto -> bb1;
+    }
+
+    bb8: {
+        _10 = discriminant((*_1));
+        switchInt(copy _10) -> [1: bb17, otherwise: bb16];
+    }
+
+    bb9: {
+        _8 = discriminant((*_2));
+        switchInt(copy _8) -> [1: bb13, otherwise: bb12];
+    }
+
+    bb10: {
+        goto -> bb11;
+    }
+
+    bb11: {
+        _6 = const 0_isize;
+        goto -> bb8;
+    }
+
+    bb12: {
+        unreachable;
+    }
+
+    bb13: {
+        goto -> bb14;
+    }
+
+    bb14: {
+        _6 = const 1_isize;
+        goto -> bb8;
+    }
+
+    bb15: {
+        StorageDead(_6);
+        StorageDead(_3);
+        return;
+    }
+
+    bb16: {
+        goto -> bb28;
+    }
+
+    bb17: {
+        _9 = &((*_1) as #1).0;
+        goto -> bb18;
+    }
+
+    bb18: {
+        _12 = discriminant((*_2));
+        switchInt(copy _12) -> [1: bb21, otherwise: bb20];
+    }
+
+    bb19: {
+        StorageDead(_9);
+        goto -> bb15;
+    }
+
+    bb20: {
+        goto -> bb25;
+    }
+
+    bb21: {
+        _11 = &((*_2) as #1).0;
+        goto -> bb22;
+    }
+
+    bb22: {
+        _13 = copy _9;
+        _14 = copy _11;
+        _0 = cmp::<&[u8]>(copy _13, copy _14) -> bb23;
+    }
+
+    bb23: {
+        StorageDead(_11);
+        goto -> bb19;
+    }
+
+    bb24: {
+        unreachable;
+    }
+
+    bb25: {
+        _15 = &_3;
+        _16 = &_6;
+        _0 = cmp::<isize>(copy _15, copy _16) -> bb26;
+    }
+
+    bb26: {
+        goto -> bb19;
+    }
+
+    bb27: {
+        unreachable;
+    }
+
+    bb28: {
+        _17 = &_3;
+        _18 = &_6;
+        _0 = cmp::<isize>(copy _17, copy _18) -> bb29;
+    }
+
+    bb29: {
+        goto -> bb15;
+    }
+}
+
+fn <Token<'a> as ::core::fmt::Debug>::fmt(_1: &Token, _2: &mut Formatter) -> Result<(), Error> {
+    let mut _0: Result<(), Error>;
+    let _3: ();
+    let _4: isize;
+    let _5: &&[u8]; // __self_0
+    let _6: isize;
+    let _7: Result<(), Error>;
+    let _8: &&[u8];
+    let _9: &mut Formatter;
+
+    bb0: {
+        _4 = discriminant((*_1));
+        switchInt(copy _4) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        _0 = Result::Ok(const ());
+        return;
+    }
+
+    bb2: {
+        _6 = discriminant((*_1));
+        switchInt(copy _6) -> [1: bb6, otherwise: bb5];
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _3 = const ();
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        _5 = &((*_1) as #1).0;
+        goto -> bb7;
+    }
+
+    bb7: {
+        _8 = copy _5;
+        _9 = &mut (*_2);
+        _7 = fmt::<&[u8]>(copy _8, move _9) -> bb8;
+    }
+
+    bb8: {
+        _3 = const ();
+        StorageDead(_5);
+        goto -> bb1;
+    }
+}
+
+fn <Token<'a> as ::core::default::Default>::default() -> Token {
+    let mut _0: Token;
+
+    bb0: {
+        _0 = Token::End;
+        return;
+    }
+}
+

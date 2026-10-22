@@ -1,0 +1,29 @@
+struct Fixed<'a> { 0: &i32 }
+struct Twice<'a, 'b> { 0: &i32, 1: &i32 }
+struct Listed<'a, 'b> { 0: &i32, 1: &i32 }
+struct Where<'a, 'b> { 0: &i32, 1: &i32 }
+struct OnType<'a, T> { 0: &i32, 1: T }
+struct Nested<'a, 'b> { 0: &&i32 }
+struct Held<'a, T> { 0: &T }
+struct S {}
+fn drop(&mut Fixed) -> ()
+    self@0: &mut Fixed
+fn drop(&mut Twice) -> ()
+    self@0: &mut Twice
+fn drop(&mut Listed) -> ()
+    self@0: &mut Listed
+fn drop(&mut Where) -> ()
+    self@0: &mut Where
+fn drop(&mut OnType<T>) -> ()
+    self@0: &mut OnType<T>
+fn drop(&mut Nested) -> ()
+    self@0: &mut Nested
+fn drop(&mut Held<T>) -> ()
+    self@0: &mut Held<T>
+fn main() -> ()
+error 459..487: `Drop` impls cannot be specialized
+error 560..591: `Drop` impls cannot be specialized
+error 665..705: `Drop` impl requires `'b: 'a` but the struct it is implemented for does not
+error 778..831: `Drop` impl requires `'y: 'x` but the struct it is implemented for does not
+error 910..912: `Drop` impl requires `T: 'a` but the struct it is implemented for does not
+error 1217..1219: the lifetime parameter `'a` is not constrained by the impl trait, self type, or predicates

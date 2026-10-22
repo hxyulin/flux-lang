@@ -101,8 +101,11 @@ pub fn check(
         seen.push(key);
         new
     });
+    // Region errors where no other error is; several lifetimes may fail
+    // at one place (`x == y` of an invariant type), each reported.
+    let others = diagnostics.len();
     for d in std::mem::take(&mut regions.errors) {
-        if !diagnostics.iter().any(|e| e.range == d.range) {
+        if !diagnostics[..others].iter().any(|e| e.range == d.range) {
             diagnostics.push(d);
         }
     }
@@ -882,6 +885,13 @@ impl Checker<'_> {
             let id = id as usize;
             let loan = &self.loans[id].0;
             if !self.is_live(id, live) || !overlaps(place, &loan.place) {
+                continue;
+            }
+            // Overwriting a pointer leaves what it points to, and the
+            // loans of that, alone (rustc's shallow write).
+            if access == Access::Write
+                && loan.place.projection.get(place.projection.len()) == Some(&ProjectionElem::Deref)
+            {
                 continue;
             }
             // A two-phase loan is shared until its call, while what

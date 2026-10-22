@@ -27,6 +27,7 @@ impl Default for bool { fn default() -> bool { false } }
 impl Default for () { fn default() -> () { () } }
 impl Default for char { fn default() -> char { '\x00' } }
 impl Default for &str { fn default() -> Self { "" } }
+impl<T> Default for &[T] { fn default() -> Self { &[] } }
 
 impl<T> Default for crate::option::Option<T> {
     fn default() -> Self {

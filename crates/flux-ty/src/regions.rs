@@ -121,6 +121,13 @@ pub struct FnRegions {
     pub outlives: Box<[Outlives<Region>]>,
     /// Has bounds on lifetimes of its own: `where 'a: 'b`.
     pub has_bounds: bool,
+    /// The slots of the types its own bounds are on (`&'a T` in `where
+    /// &'a T: Tr`), as [`Signatures::fn_predicates`] lists them.
+    pub bound_selfs: Box<[Box<[Region]>]>,
+    /// The slots of what its own bounds say associated types are
+    /// (`I: Iterator<Item = &'a T>`), as [`Signatures::fn_projections`]
+    /// lists them.
+    pub projections: Box<[Box<[Region]>]>,
 }
 
 /// The lifetimes of a struct's or enum's fields.
@@ -148,8 +155,18 @@ pub struct ImplRegions {
     pub trait_args: Box<[Box<[Region]>]>,
     /// Each associated type's.
     pub types: Box<[(Symbol, Box<[Region]>)]>,
-    /// Its bounds, and what its header's types imply.
+    /// Its bounds, and what its header's types imply: what its items
+    /// may assume.
     pub outlives: Box<[Outlives<Region>]>,
+    /// Its bounds alone (`'b: 'a`, `T: 'a`): what a use of it must
+    /// meet.
+    pub bounds: Box<[Outlives<Region>]>,
+    /// The slots of the types its bounds are on, as
+    /// [`Signatures::impl_predicates`] lists them.
+    pub bound_selfs: Box<[Box<[Region]>]>,
+    /// The slots of what its bounds say associated types are, as
+    /// [`Signatures::impl_projections`] lists them.
+    pub projections: Box<[Box<[Region]>]>,
 }
 
 /// A type alias as a type and its slots, in terms of its parameters.
