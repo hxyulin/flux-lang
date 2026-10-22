@@ -257,11 +257,6 @@ fn let_else(_1: Option<i32>) -> i32 {
         _2 = copy (_1 as #1).0;
         goto -> bb2;
     }
-
-    bb4: {
-        _4 = const ();
-        unreachable;
-    }
 }
 
 fn build() -> E {

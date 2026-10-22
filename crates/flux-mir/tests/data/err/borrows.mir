@@ -1260,11 +1260,6 @@ fn loop_use_ref_and_mutate() -> i32 {
         StorageDead(_5);
         goto -> bb1;
     }
-
-    bb6: {
-        _4 = const ();
-        goto -> bb5;
-    }
 }
 
 fn while_use_ref_and_mutate() -> i32 {
@@ -1518,11 +1513,6 @@ fn loop_mutate_ref_used_after() -> i32 {
 
     bb5: {
         goto -> bb1;
-    }
-
-    bb6: {
-        _4 = const ();
-        goto -> bb5;
     }
 }
 

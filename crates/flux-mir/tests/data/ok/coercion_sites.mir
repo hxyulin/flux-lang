@@ -1,0 +1,195 @@
+fn double(_1: i32) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = Mul(copy _2, const 2_i32);
+        return;
+    }
+}
+
+fn read(_1: &i32) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = copy (*_1);
+        return;
+    }
+}
+
+fn tuples(_1: &[i32; 3]) -> usize {
+    let mut _0: usize;
+    let _2: [(i32, &[i32]); 1]; // table
+    let _3: (i32, &[i32]);
+    let _4: &[i32];
+    let _5: &[i32; 3];
+    let _6: Option<(i32, &[i32])>; // opt
+    let _7: (i32, &[i32]);
+    let _8: &[i32];
+    let _9: &[i32; 3];
+    let _10: ((i32, &[i32]), i32); // nested
+    let _11: (i32, &[i32]);
+    let _12: &[i32];
+    let _13: &[i32; 3];
+    let _14: usize;
+    let _15: usize;
+    let _16: usize;
+    let _17: bool;
+    let _18: usize;
+    let _19: usize;
+    let _20: (i32, &[i32]);
+    let _21: Option<(i32, &[i32])>;
+
+    bb0: {
+        _5 = copy _1;
+        _4 = copy _5 as &[i32] (unsize);
+        _3 = (const 10_i32, copy _4);
+        _2 = [copy _3];
+        _9 = copy _1;
+        _8 = copy _9 as &[i32] (unsize);
+        _7 = (const 1_i32, copy _8);
+        _6 = Option::Some(copy _7);
+        _13 = copy _1;
+        _12 = copy _13 as &[i32] (unsize);
+        _11 = (const 1_i32, copy _12);
+        _10 = (copy _11, const 2_i32);
+        _16 = const 0_usize;
+        _17 = Lt(copy _16, const 1_usize);
+        assert(copy _17, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _15 = Len(&(*_2[_16].1));
+        _18 = Len(&(*_10.0.1));
+        _14 = Add(copy _15, copy _18);
+        _21 = copy _6;
+        _20 = unwrap::<(i32, &[i32])>(copy _21) -> bb2;
+    }
+
+    bb2: {
+        _19 = Len(&(*_20.1));
+        _0 = Add(copy _14, copy _19);
+        StorageDead(_20);
+        StorageDead(_10);
+        StorageDead(_6);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn reborrows(_1: &mut i32) -> i32 {
+    let mut _0: i32;
+    let _2: i32;
+    let _3: &i32;
+    let _4: i32;
+    let _5: &i32;
+    let _6: &&mut i32;
+
+    bb0: {
+        _3 = &(*_1);
+        _2 = read(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _6 = &_1;
+        _5 = &(*(*_6));
+        _4 = read(copy _5) -> bb2;
+    }
+
+    bb2: {
+        _0 = Add(copy _2, copy _4);
+        return;
+    }
+}
+
+fn least_upper_bound(_1: bool, _2: &[i32; 3], _3: &[i32]) -> usize {
+    let mut _0: usize;
+    let _4: &[i32]; // x
+    let _5: bool;
+    let _6: &[i32; 3];
+
+    bb0: {
+        _5 = copy _1;
+        switchInt(copy _5) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _6 = copy _2;
+        _4 = copy _6 as &[i32] (unsize);
+        goto -> bb3;
+    }
+
+    bb2: {
+        _4 = copy _3;
+        goto -> bb3;
+    }
+
+    bb3: {
+        _0 = Len(&(*_4));
+        StorageDead(_4);
+        return;
+    }
+}
+
+fn items() -> i32 {
+    let mut _0: i32;
+    let _1: fn(i32) -> i32 {double}; // f
+    let _2: fn(i32) -> i32 {double};
+
+    bb0: {
+        _1 = const double;
+        _2 = copy _1;
+        _0 = double(const 2_i32) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let mut _1: i32; // n
+    let _2: usize;
+    let _3: &[i32; 3];
+    let _4: i32;
+    let _5: &mut i32;
+    let _6: &mut i32;
+    let _7: usize;
+    let _8: &[i32; 3];
+    let _9: &[i32];
+    let _10: &[i32; 1];
+    let _11: i32;
+
+    bb0: {
+        _1 = const 1_i32;
+        _3 = const &promoted[0];
+        _2 = tuples(copy _3) -> bb1;
+    }
+
+    bb1: {
+        _6 = &mut _1;
+        _5 = &mut (*_6);
+        _4 = reborrows(move _5) -> bb2;
+    }
+
+    bb2: {
+        _8 = const &promoted[1];
+        _10 = const &promoted[2];
+        _9 = copy _10 as &[i32] (unsize);
+        _7 = least_upper_bound(const true, copy _8, copy _9) -> bb3;
+    }
+
+    bb3: {
+        _11 = items() -> bb4;
+    }
+
+    bb4: {
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+

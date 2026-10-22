@@ -123,11 +123,6 @@ fn after_loop() -> i32 {
         StorageDead(_1);
         return;
     }
-
-    bb3: {
-        _3 = const ();
-        goto -> bb1;
-    }
 }
 
 error 45..46: used binding `x` isn't initialized

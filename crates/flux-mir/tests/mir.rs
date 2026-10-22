@@ -135,3 +135,48 @@ fn main() {
         ["1:1: cycle detected when evaluating type-level constant `A`"]
     );
 }
+
+#[path = "../../flux-syntax/tests/support/corpus.rs"]
+mod corpus;
+
+/// Every file under `FLUX_CORPUS` that lowers and type-checks cleanly as
+/// a program builds MIR in which every value has the type of the place
+/// it is stored in ([`flux_mir::validate`]), checked here in release
+/// builds too.
+#[test]
+#[ignore = "needs FLUX_CORPUS"]
+fn corpus_mir_is_well_typed() {
+    const BUDGET: corpus::Budget = corpus::Budget::new(500, 2000.0);
+    let results = corpus::for_each_corpus_file("built", BUDGET, |path, text| {
+        let (db, root, hir) = flux_hir::lower_text(path, text);
+        // The bytes of it and its modules' files.
+        let bytes = (db.files())
+            .filter(|&(id, _)| id >= root)
+            .map(|(_, file)| file.text().len())
+            .sum();
+        if !hir.diagnostics.is_empty() {
+            return (bytes, None);
+        }
+        let typed = flux_mir::check_file(&hir);
+        if !typed.diagnostics.is_empty() {
+            return (bytes, None);
+        }
+        let mir = flux_mir::build_file(&hir, &typed);
+        let errors = flux_mir::validate::validate_file(&hir, &typed.sigs, &mir);
+        (bytes, Some(errors))
+    });
+    let built = results.iter().filter(|(_, r)| r.is_some()).count();
+    let failures: Vec<String> = results
+        .iter()
+        .filter_map(|(path, r)| {
+            let errors = r.as_ref().filter(|e| !e.is_empty())?;
+            Some(format!("{}:\n  {}", path.display(), errors.join("\n  ")))
+        })
+        .collect();
+    println!("{built} files built MIR");
+    assert!(
+        failures.is_empty(),
+        "ill-typed MIR:\n{}",
+        failures.join("\n")
+    );
+}

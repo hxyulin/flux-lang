@@ -57,13 +57,13 @@ fn pick(_1: bool) -> fn(i32) -> i32 {
     }
 
     bb1: {
-        _3 = ();
+        _3 = const double;
         _0 = const double as fn;
         goto -> bb3;
     }
 
     bb2: {
-        _4 = ();
+        _4 = const negate;
         _0 = const negate as fn;
         goto -> bb3;
     }
@@ -87,13 +87,13 @@ fn main() -> () {
     let _10: i32;
 
     bb0: {
-        _1 = ();
+        _1 = const double;
         _3 = copy _1;
         _2 = double(const 1_i32) -> bb1;
     }
 
     bb1: {
-        _6 = ();
+        _6 = const id::<i32>;
         _5 = const id::<i32> as fn;
         _7 = copy _2;
         _4 = apply(copy _5, copy _7) -> bb2;

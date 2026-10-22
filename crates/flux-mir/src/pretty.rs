@@ -336,6 +336,18 @@ fn constant_text(hir: &Hir, constant: Constant) -> String {
         Constant::Bool(value) => value.to_string(),
         Constant::Char(c) => format!("{c:?}"),
         Constant::Unit => "()".to_owned(),
+        Constant::FnItem(ty) => match ty.kind() {
+            flux_ty::TyKind::FnDef(def) => {
+                let name = hir.items.function_path(&hir.items.functions[def.function]);
+                if def.args.is_empty() {
+                    name
+                } else {
+                    let types: Vec<String> = def.args.iter().map(Ty::to_string).collect();
+                    format!("{name}::<{}>", types.join(", "))
+                }
+            }
+            _ => ty.to_string(),
+        },
         Constant::CStr(index) => format!("c_str{index}"),
         Constant::Fn { function, args, .. } => {
             let name = hir.items.function_path(&hir.items.functions[function]);

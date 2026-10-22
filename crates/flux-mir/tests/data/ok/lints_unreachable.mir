@@ -93,7 +93,7 @@ fn known_condition() -> i32 {
     bb3: {
         _12 = const false;
         _14 = copy _12;
-        switchInt(copy _14) -> [0: bb8, otherwise: bb7];
+        switchInt(copy _14) -> [0: bb7, otherwise: bb6];
     }
 
     bb4: {
@@ -109,23 +109,18 @@ fn known_condition() -> i32 {
     }
 
     bb6: {
-        _2 = const ();
-        goto -> bb3;
-    }
-
-    bb7: {
         _15 = Add(const MAX, const 1_i32);
         StorageDead(_15);
         _13 = const ();
-        goto -> bb9;
+        goto -> bb8;
+    }
+
+    bb7: {
+        _13 = const ();
+        goto -> bb8;
     }
 
     bb8: {
-        _13 = const ();
-        goto -> bb9;
-    }
-
-    bb9: {
         _0 = const 0_i32;
         StorageDead(_12);
         StorageDead(_1);

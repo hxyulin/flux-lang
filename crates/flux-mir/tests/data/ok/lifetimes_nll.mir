@@ -308,11 +308,6 @@ fn find(_1: &[i32], _2: i32) -> Option<&i32> {
         _0 = Option::Some(copy _17);
         return;
     }
-
-    bb11: {
-        _9 = const ();
-        goto -> bb9;
-    }
 }
 
 fn first_or<'a>(_1: &[i32], _2: &i32) -> &i32 {

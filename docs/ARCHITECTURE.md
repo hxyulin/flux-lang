@@ -385,7 +385,14 @@ value needs its own length is a cycle.
 Where the type an expression must have is known before it is inferred
 (a `let` with a type, an argument, a field, a return value), it is
 noted, and a call or struct expression unifies its result with it first,
-as rustc does: `let x: u8 = id(1i32)` is a mismatch at `1i32`.
+as rustc does: `let x: u8 = id(1i32)` is a mismatch at `1i32`. The
+expectation flows into the parts that are themselves coercion sites, as
+in rustc: a tuple's elements, an array's, the operand of `&`, an `if`'s
+or `match`'s branches and a `loop`'s `break` values, each coerced to its
+part of the type wanted, which the tuple, branch or loop then has (so
+`[(1, &a)]` with `&a` unsized is an array of tuples of slices, built as
+one). Branches without a type wanted meet at rustc's least upper bound:
+each is coerced to the type of those before, or those before to its.
 
 Inference is unification over type variables, structural for types that
 contain types:
@@ -534,9 +541,15 @@ semantics become explicit, so code generation never sees expressions:
   the same tests, with the scrutinee's temporaries and the bindings
   dropped before the `else` branch runs, as in edition 2024.
 - A function item's value has no data: its type says which function
-  it is, so a call of one is a direct call. Coerced to a pointer, it is
-  a constant (`Constant::Fn`), and a call through a pointer is a
-  `CallIndirect` terminator.
+  it is (`Constant::FnItem`), so a call of one is a direct call. Coerced
+  to a pointer, it is a constant (`Constant::Fn`), and a call through a
+  pointer is a `CallIndirect` terminator.
+- MIR is well-typed: every assignment's value has its place's type, and
+  every call's arguments and result its callee's types, coercions being
+  explicit rvalues or reborrows. Code generation trusts the types of
+  places, so [`validate`](../crates/flux-mir/src/validate.rs) checks this
+  of every body in debug builds, and of every corpus file that builds
+  in `just corpus`.
 - A static is a place behind a temporary that holds its address, as in
   rustc's MIR: `&T`, or `*mut T` for a `static mut`, so `X.a` is
   `(*_3).a`. Borrow checking sees it behind a pointer, and names it as

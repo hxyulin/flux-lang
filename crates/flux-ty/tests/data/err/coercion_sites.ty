@@ -1,0 +1,46 @@
+fn takes((i32, &[i32])) -> ()
+fn in_array() -> ()
+    _t@0: [(i32, &[i32]); 1]
+fn through_ref() -> ()
+    _t@0: (i32, &[u8])
+fn arity() -> ()
+    a@0: [i32; 2]
+fn lengths(bool) -> ()
+    c@0: bool
+    a@1: [i32; 3]
+    b@2: [i32; 2]
+    _x@3: {error}
+fn closure_return() -> ()
+    x@0: i32
+    _f@1: fn(i32) -> i32
+fn shared_to_mut() -> ()
+    a@0: [i32; 2]
+    _r@1: &mut [i32]
+fn later_arm(i32) -> ()
+    c@0: i32
+    _x@1: (i32, &[i32])
+fn first_branch(bool) -> ()
+    c@0: bool
+    _x@1: i32
+    _y@2: i32
+fn shared_to_mut_ptr() -> ()
+    x@0: i32
+    _t@1: (i32, *mut i32)
+fn bytes_in_tuple() -> ()
+    _t@0: [(u8, &[i32]); 1]
+fn cast_mismatch() -> ()
+    a@0: [u8; 2]
+    _s@1: &[i32]
+fn main() -> ()
+error 221..226: mismatched types: expected `&[i32]`, found `&bool`
+error 285..289: mismatched types: expected `u8`, found `i32`
+error 342..352: mismatched types: expected a tuple with 2 elements, found one with 3 elements
+error 455..457: `if` and `else` have incompatible types: `&[{integer}; 3]` and `&[{integer}; 2]`
+error 524..530: mismatched types: expected `i32`, found `bool`
+error 601..603: mismatched types: expected `&mut [i32]`, found `&[{integer}; 2]`
+error 707..711: mismatched types: expected `i32`, found `bool`
+error 782..787: mismatched types: expected `i32`, found `bool`
+error 866..871: `match` arms have incompatible types: expected `i32`, found `bool`
+error 957..959: mismatched types: expected `*mut i32`, found `&{integer}`
+error 1024..1029: mismatched types: expected `&[i32]`, found `&[u8; 2]`
+error 1092..1104: non-primitive cast: `&[u8; 2]` as `&[i32]`
