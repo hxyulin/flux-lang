@@ -1,5 +1,4 @@
-//! The source files of a compilation, parsed, and flux's own `core`
-//! library, which is built into the compiler.
+//! Parsed compilation sources and the embedded core, alloc and std libraries.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -17,6 +16,11 @@ impl FileId {
 
     /// `core`'s root file, `lib.rs`, the first file of every [`SourceDb`].
     pub const CORE_ROOT: FileId = FileId(0);
+
+    /// `std`'s root file, after `core` and `alloc`'s embedded files.
+    pub fn std_root() -> FileId {
+        FileId((CORE_FILES.len() + ALLOC_FILES.len()) as u32)
+    }
 
     /// `alloc`'s root file, its `lib.rs`, after `core`'s files.
     pub fn alloc_root() -> FileId {
@@ -55,6 +59,16 @@ pub struct SourceDb {
 pub const CORE_ROOT: &str = "<core>";
 /// Where `alloc`'s files appear to be.
 pub const ALLOC_ROOT: &str = "<alloc>";
+/// Where the bounded `std` facade's files appear to be.
+pub const STD_ROOT: &str = "<std>";
+
+const STD_FILES: &[(&str, &str)] = &[
+    ("lib.rs", include_str!("../../../library/std/src/lib.rs")),
+    (
+        "thread.rs",
+        include_str!("../../../library/std/src/thread.rs"),
+    ),
+];
 
 /// `library/alloc/src`, relative to [`ALLOC_ROOT`]: built into the
 /// compiler, after `core`, as rustc's `alloc` is after its `core`.
@@ -217,7 +231,7 @@ const CORE_FILES: &[(&str, &str)] = &[
     ),
 ];
 
-/// `core`'s files, in [`CORE_FILES`] order, then `alloc`'s, parsed in
+/// Embedded files in core, alloc, std order, parsed in
 /// parallel the first time they are needed.
 pub(crate) fn core_files() -> &'static [Arc<SourceFile>] {
     static FILES: OnceLock<Box<[Arc<SourceFile>]>> = OnceLock::new();
@@ -228,9 +242,11 @@ pub(crate) fn core_files() -> &'static [Arc<SourceFile>] {
         let alloc = ALLOC_FILES
             .iter()
             .map(|&(name, text)| (ALLOC_ROOT, name, text));
+        let std = STD_FILES.iter().map(|&(name, text)| (STD_ROOT, name, text));
         std::thread::scope(|scope| {
             let threads: Vec<_> = core
                 .chain(alloc)
+                .chain(std)
                 .map(|(root, name, text)| {
                     scope.spawn(move || SourceFile {
                         path: Path::new(root).join(name),
@@ -254,13 +270,13 @@ impl Default for SourceDb {
 }
 
 impl SourceDb {
-    /// A database of `core`'s files only, with the expansions of its
-    /// macro calls in item position.
+    /// A database of all embedded library files and their item macro
+    /// expansions, sharing the process-wide library cache.
     pub fn new() -> SourceDb {
         SourceDb::with_files(crate::Core::get().files.clone())
     }
 
-    /// `core`'s files as they are read, before its item tree is built.
+    /// All embedded library sources before building the shared item tree.
     pub(crate) fn core_only() -> SourceDb {
         SourceDb::with_files(core_files().to_vec())
     }
@@ -317,16 +333,20 @@ impl SourceDb {
         if let Some(&id) = self.by_path.get(path) {
             return Ok(id);
         }
-        // `core`'s and `alloc`'s files are all here already.
-        if path.starts_with(CORE_ROOT) || path.starts_with(ALLOC_ROOT) {
-            return Err(format!("{} is not part of core", path.display()));
+        // All embedded library files are here already.
+        if path.starts_with(CORE_ROOT) || path.starts_with(ALLOC_ROOT) || path.starts_with(STD_ROOT)
+        {
+            return Err(format!(
+                "{} is not part of the embedded libraries",
+                path.display()
+            ));
         }
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         Ok(self.add(path, text))
     }
 
-    /// Whether `path` exists, on disk or in `core` or `alloc`.
+    /// Whether `path` exists on disk or in an embedded library.
     pub fn exists(&self, path: &Path) -> bool {
         let built_in = |root: &str, files: &[(&str, &str)]| {
             path.strip_prefix(root)
@@ -335,6 +355,7 @@ impl SourceDb {
         };
         built_in(CORE_ROOT, CORE_FILES)
             .or_else(|| built_in(ALLOC_ROOT, ALLOC_FILES))
+            .or_else(|| built_in(STD_ROOT, STD_FILES))
             .unwrap_or_else(|| path.is_file())
     }
 

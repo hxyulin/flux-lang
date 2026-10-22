@@ -1,0 +1,43 @@
+# Flux's bounded std facade
+
+This embedded crate reexports facilities implemented by Flux's core and
+alloc. It is not a complete Rust standard library. Imports such as
+`use std::fmt`, `use std::iter::FusedIterator`, `use std::ops::Index`,
+`use std::mem`, and `use std::vec::Vec` name the original definitions;
+types and trait implementations retain their core/alloc identity.
+
+The root exposes core's `array`, `ascii`, `cell`, `char`, `clone`, `cmp`,
+`convert`, `default`, `ffi`, `hash`, `hint`, `iter`, `marker`, `mem`, `num`,
+`ops`, `option`, `panic`, `ptr`, `result`, `slice` and `str`, and alloc's
+`alloc`, `borrow`, `boxed`, `fmt`, `prelude`, `string` and `vec`. Only the
+APIs actually implemented in those modules exist. For example, `cell`
+does not acquire `RefCell`, and `num` does not acquire NonZero types.
+There are no additional collection implementations: Vec, String and Box
+remain available at their usual module paths and through the prelude.
+
+`thread` exposes only `panicking() -> bool`. Flux's existing panic runtime
+prints the panic and calls C's abort, without unwinding or executing
+unwind destructors. Ordinary executing code therefore observes false.
+This query does not add thread creation, panic hooks, catch_unwind or an
+unwinding runtime, and must be reconsidered if those semantics change.
+
+The new FusedIterator marker in core is implemented for Fuse, mutable
+references to fused iterators, slice Iter/IterMut, and Vec IntoIter/Drain.
+It is not yet implemented for every standard iterator or adapter.
+
+Normal compilations load core, alloc, std, then the program. The existing
+alloc prelude and macro behavior are unchanged; plain alloc paths still
+require `extern crate alloc;`. Bare HIR/item-tree entry points still omit
+all embedded crates from resolution. This is not support for `#![no_std]`
+or `#![no_core]` crate attributes. Core and alloc cannot see std or the
+program. Std has ordinary crate privacy and cannot define primitive
+implementations or compiler lang items.
+
+All embedded source files and macro expansions are cached together before
+program files are added. The shared item tree and lazy body/signature
+caches include std, so library file and item IDs stay stable across
+compilations. Std is crate 2 and the program is crate 3; core and alloc
+retain crate IDs 0 and 1. No rustc library metadata is loaded.
+
+Filesystem, synchronization, atomics, NonZero representation/layout work,
+and missing core/alloc APIs are outside this facade's scope.

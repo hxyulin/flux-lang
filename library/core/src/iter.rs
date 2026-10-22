@@ -714,6 +714,11 @@ pub trait ExactSizeIterator: Iterator {
     }
 }
 
+/// An iterator that continues to return `None` after its first `None`.
+pub trait FusedIterator: Iterator {}
+
+impl<I: FusedIterator + ?Sized> FusedIterator for &mut I {}
+
 /// A mutable reference to an iterator is one.
 impl<I: Iterator + ?Sized> Iterator for &mut I {
     type Item = I::Item;
@@ -1921,6 +1926,7 @@ impl<I: DoubleEndedIterator> DoubleEndedIterator for Fuse<I> {
 }
 
 impl<I: ExactSizeIterator> ExactSizeIterator for Fuse<I> {}
+impl<I: Iterator> FusedIterator for Fuse<I> {}
 
 /// [`Iterator::inspect`]'s.
 #[derive(Clone)]

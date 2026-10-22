@@ -307,11 +307,7 @@ impl ItemTree {
                     }
                     Some(Resolved::SelfType) => return Ok(Resolved::SelfType),
                     _ => {
-                        let message = if first == sym::std {
-                            format!(
-                                "the `{first}` crate is not supported yet; flux has only `core` and `alloc`"
-                            )
-                        } else if first == sym::alloc {
+                        let message = if first == sym::alloc {
                             "use of unresolved module or unlinked crate `alloc`".to_owned()
                         } else {
                             format!("cannot find module or crate `{first}` in this scope")
@@ -628,7 +624,7 @@ impl ItemTree {
     }
 
     /// The root of the crate called `name`, as seen from `module`: `core`,
-    /// and `alloc` from `alloc`'s later crates once `extern crate alloc;`
+    /// `std`, and `alloc` from later crates once `extern crate alloc;`
     /// declares it (or from `core`-like ones). A crate sees only those
     /// before it.
     fn extern_crate(&self, name: Symbol, module: ModuleId) -> Option<ModuleId> {
@@ -637,19 +633,28 @@ impl ItemTree {
         self.crates
             .iter()
             .enumerate()
-            .find(|(i, c)| c.name == name && c.is_core && (*i as u32) < own.0)
-            .filter(|_| name == sym::core || own_data.is_core || own_data.externs.contains(&name))
+            .find(|(i, c)| {
+                c.name == name && (c.is_core || c.name == sym::std) && (*i as u32) < own.0
+            })
+            .filter(|_| {
+                name == sym::core
+                    || name == sym::std
+                    || own_data.is_core
+                    || own_data.externs.contains(&name)
+            })
             .map(|(_, c)| c.root)
     }
 
-    /// The root of the `core`-like crate `name` before `module`'s,
+    /// The root of the embedded crate `name` before `module`'s,
     /// declared or not.
     fn any_crate(&self, name: Symbol, module: ModuleId) -> Option<ModuleId> {
         let own = self.modules[module].krate;
         self.crates
             .iter()
             .enumerate()
-            .find(|(i, c)| c.name == name && c.is_core && (*i as u32) < own.0)
+            .find(|(i, c)| {
+                c.name == name && (c.is_core || c.name == sym::std) && (*i as u32) < own.0
+            })
             .map(|(_, c)| c.root)
     }
 
@@ -659,7 +664,9 @@ impl ItemTree {
         let m = &self.modules[module];
         match m.parent {
             Some(parent) => format!("{}::{}", self.module_path(parent), m.name),
-            None if self.crates[m.krate.0 as usize].is_core && m.krate != self.main_crate() => {
+            None if (self.crates[m.krate.0 as usize].is_core || m.name == sym::std)
+                && m.krate != self.main_crate() =>
+            {
                 m.name.to_string()
             }
             None => "crate".to_owned(),

@@ -3,8 +3,8 @@
 //! - The [`ItemTree`] holds every crate's modules and items with their
 //!   signatures, but not their bodies, and what each module's names mean
 //!   ([`def_map`]). Everything outside a body depends only on it. A
-//!   compilation has two crates: flux's own `core`, built into the
-//!   compiler and lowered once per process ([`Core`]), and the program.
+//!   compilation has embedded `core`, `alloc` and the bounded `std`
+//!   facade, lowered once per process ([`Core`]), then the program.
 //! - A [`Body`] is one function's code, lowered from the typed AST into
 //!   arenas of expressions, patterns and bindings. Names are resolved
 //!   during lowering ([`Res`]), `while` becomes `loop`, and parentheses

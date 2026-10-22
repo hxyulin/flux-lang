@@ -1256,13 +1256,16 @@ impl ItemTree {
         items
     }
 
-    /// `core`'s items alone, frozen, for [`Core`](crate::Core).
+    /// Embedded library items, frozen together for [`Core`](crate::Core).
     pub(crate) fn core(db: &mut SourceDb) -> ItemTree {
         let mut items = ItemTree::default();
         items.add_crate(db, FileId::CORE_ROOT, sym::core, true);
         // `alloc`, which only `core` comes before, and which may write
         // what `core` may: methods of primitive types, `lang` items.
         items.add_crate(db, FileId::alloc_root(), sym::alloc, true);
+        // The facade shares definitions through reexports, but has no
+        // permission to define primitive impls or compiler lang items.
+        items.add_crate(db, FileId::std_root(), sym::std, false);
         items.modules.freeze();
         items.functions.freeze();
         items.structs.freeze();
@@ -3402,14 +3405,9 @@ impl Collector<'_> {
         let diagnostics = &mut self.items.diagnostics;
         if e.rename().is_some() {
             unsupported(diagnostics, range, "renamed `extern crate` declarations");
-        } else if name == sym::std {
-            diagnostics.push(Diagnostic::new(
-                range,
-                "the `std` crate is not supported yet; flux has only `core` and `alloc`",
-            ));
         } else if name == sym::alloc {
             self.items.crates[krate.0 as usize].externs.push(name);
-        } else if name != sym::core {
+        } else if name != sym::core && name != sym::std {
             diagnostics.push(Diagnostic::new(
                 range,
                 format!("can't find crate for `{name}`"),

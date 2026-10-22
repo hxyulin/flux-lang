@@ -745,7 +745,9 @@ also has `as_ref`, `as_mut`, `take`, `take_if`, `replace`, `insert`,
 of an `Option<&T>` (`const` where rustc's are, except `take` and
 `replace`, which flux's constant evaluation cannot run yet), and is
 `IntoIterator`, by value and by reference. Anything else in
-`core` is reported as not supported yet, and so is `std`.
+`core` is reported as not supported yet. A bounded `std` facade
+reexports implemented `core` and `alloc` APIs; see
+[library/std/README.md](../library/std/README.md) for its scope.
 
 flux's `alloc` library has heap memory, through C's `malloc`, `realloc`
 and `free` (`alloc::alloc::{alloc, alloc_zeroed, dealloc, realloc,
@@ -995,8 +997,11 @@ At run time flux matches rustc with `-C overflow-checks=off -C
 panic=abort`: arithmetic wraps, shift amounts are masked to the type's
 width, and division by zero or `MIN / -1` panics. Programs print with
 `println!` and its relatives and call C through `unsafe extern "C"`
-blocks; there is no standard library beyond `core` and `alloc` yet, so
-programs name `core::fmt` rather than `std::fmt`.
+blocks. The embedded `std` facade allows paths such as `std::fmt`,
+`std::mem`, `std::ops::Index` and `std::vec::Vec` to name the original
+`core`/`alloc` definitions. Its only thread API is `thread::panicking()`,
+which returns false because Flux aborts without unwinding. It provides no
+thread creation, filesystem, atomics or synchronization.
 
 ## Deliberately rejected
 
