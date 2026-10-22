@@ -1,0 +1,16 @@
+fn f<const N: usize>([u8; N]) -> ()
+    a@0: [u8; N]
+    x@1: u8
+fn main() -> ()
+    a@0: i32
+    b@1: i32
+    c@2: i32
+    d@3: i32
+    e@4: i32
+    f@5: i32
+    g@6: {error}
+    h@7: i32
+error 241..248: cannot pattern-match on an array without a fixed length
+error 292..298: pattern requires 2 elements but array has 3
+error 320..336: pattern requires at least 4 elements but array has 3
+error 358..361: expected an array or slice, found `{integer}`

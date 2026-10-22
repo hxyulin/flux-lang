@@ -4126,15 +4126,7 @@ impl<'a> Ctx<'a> {
                 crate::item_tree::body_expansion(-1);
                 return id;
             }
-            _ => {
-                let what = match pat {
-                    ast::Pat::SlicePat(_) => "slice patterns",
-                    _ => "macros",
-                };
-                self.unsupported(range, what);
-                self.bind_unsupported(pat, site);
-                Pat::Missing
-            }
+            ast::Pat::SlicePat(slice) => self.lower_slice_pat(slice, site),
         };
         let id = self.alloc_pat(hir, range);
         if let Some(by_ref) = self.alt_mode.take() {
@@ -4532,27 +4524,52 @@ impl<'a> Ctx<'a> {
         Pat::Bind { binding, sub }
     }
 
-    /// The fields of a tuple or tuple struct pattern, and where `..` is.
-    /// The names an unsupported pattern `pat` binds, as bindings without
-    /// a pattern, so that uses of them are not reported too: their types
-    /// are errors, which type checking reports nothing of. `x @ ..` binds
-    /// `x`.
-    fn bind_unsupported(&mut self, pat: ast::Pat<'_>, site: PatSite) {
-        for child in pat.syntax().children().filter_map(ast::Pat::cast) {
-            match child {
-                ast::Pat::RestPat(_) => {}
+    /// `[a, .., z]`, `[x, rest @ ..]`: the patterns before and after the
+    /// `..` (one at most), and what it is.
+    fn lower_slice_pat(&mut self, slice: ast::SlicePat<'_>, site: PatSite) -> Pat {
+        let mut prefix = Vec::new();
+        let mut suffix = Vec::new();
+        let mut middle: Option<PatId> = None;
+        for field in slice.pats() {
+            let range = field.syntax().text_range();
+            let rest = match field {
+                ast::Pat::RestPat(_) => Some(self.alloc_pat(Pat::Wild, range)),
+                // `rest @ ..` binds whatever the name, as rustc's does.
                 ast::Pat::IdentPat(ident) if matches!(ident.pat(), Some(ast::Pat::RestPat(_))) => {
-                    if let Some(name) = ident.name() {
-                        self.lower_ident_pat(name, ident, None, site);
-                    }
+                    let dots = ident.pat().map_or(range, |p| p.syntax().text_range());
+                    let wild = self.alloc_pat(Pat::Wild, dots);
+                    let bound = match ident.name() {
+                        Some(name) => self.lower_ident_pat(name, ident, Some(wild), site),
+                        None => Pat::Missing,
+                    };
+                    Some(self.alloc_pat(bound, range))
                 }
-                _ => {
-                    self.lower_pat(Some(child), pat.syntax(), site);
+                _ => None,
+            };
+            match rest {
+                Some(_) if middle.is_some() => {
+                    self.error(range, "`..` can only be used once per slice pattern");
+                }
+                Some(rest) => middle = Some(rest),
+                None => {
+                    let parent = field.syntax();
+                    let lowered = self.lower_pat(Some(field), parent, site);
+                    if middle.is_some() {
+                        suffix.push(lowered);
+                    } else {
+                        prefix.push(lowered);
+                    }
                 }
             }
         }
+        Pat::Slice {
+            prefix: prefix.into(),
+            slice: middle,
+            suffix: suffix.into(),
+        }
     }
 
+    /// The fields of a tuple or tuple struct pattern, and where `..` is.
     fn lower_tuple_fields(
         &mut self,
         fields: ast::AstChildren<'_, ast::Pat<'_>>,

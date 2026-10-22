@@ -204,6 +204,36 @@ enum Ctor {
     Bool(bool),
     /// The integers in an inclusive range, encoded by [`IntDomain`].
     Range(u128, u128),
+    /// A slice of a length, or of at least one (as rustc's).
+    Slice(SliceKind),
+}
+
+/// The lengths of slices a slice constructor stands for: exactly `n`
+/// elements, whose fields they all are, or at least `prefix + suffix`,
+/// whose fields are the first `prefix` elements and the last `suffix`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SliceKind {
+    Fixed(u32),
+    VarLen(u32, u32),
+}
+
+impl SliceKind {
+    fn arity(self) -> u32 {
+        match self {
+            SliceKind::Fixed(n) => n,
+            SliceKind::VarLen(p, s) => p + s,
+        }
+    }
+
+    /// Whether every slice `self` stands for has a length `other` does.
+    fn covered_by(self, other: SliceKind) -> bool {
+        match (self, other) {
+            (SliceKind::Fixed(n), SliceKind::Fixed(m)) => n == m,
+            (SliceKind::Fixed(n), SliceKind::VarLen(p, s)) => p + s <= n,
+            (SliceKind::VarLen(..), SliceKind::Fixed(_)) => false,
+            (SliceKind::VarLen(p, s), SliceKind::VarLen(q, t)) => q + t <= p + s,
+        }
+    }
 }
 
 /// A pattern as constructors and fields.
@@ -443,6 +473,35 @@ impl Cx<'_> {
                 DPat::Or(alternatives.iter().map(|&a| self.lower(a)).collect())
             }
             Pat::Ref { pat: inner, .. } => DPat::Ctor(Ctor::Single, vec![self.lower(*inner)]),
+            Pat::Slice {
+                prefix,
+                slice,
+                suffix,
+            } => {
+                let mut fields: Vec<DPat> = prefix.iter().map(|&p| self.lower(p)).collect();
+                let (p, s) = (prefix.len(), suffix.len());
+                match ty.kind() {
+                    // As many fields as the array has, `..` wildcards.
+                    TyKind::Array(_, len) => match len.as_usize() {
+                        Some(n) if n as usize >= p + s => {
+                            fields.extend((0..n as usize - p - s).map(|_| DPat::Wild));
+                            fields.extend(suffix.iter().map(|&q| self.lower(q)));
+                            DPat::Ctor(Ctor::Single, fields)
+                        }
+                        // Reported.
+                        _ => DPat::Wild,
+                    },
+                    TyKind::Slice(_) => {
+                        fields.extend(suffix.iter().map(|&q| self.lower(q)));
+                        let kind = match slice {
+                            None => SliceKind::Fixed((p + s) as u32),
+                            Some(_) => SliceKind::VarLen(p as u32, s as u32),
+                        };
+                        DPat::Ctor(Ctor::Slice(kind), fields)
+                    }
+                    _ => DPat::Wild,
+                }
+            }
         };
         let derefs = self.pat_derefs.get(pat).copied().unwrap_or(0);
         (0..derefs).fold(inner, |p, _| DPat::Ctor(Ctor::Single, vec![p]))
@@ -499,6 +558,11 @@ impl Cx<'_> {
     fn ctor_fields(&self, ty: Ty, ctor: Ctor) -> Vec<Ty> {
         match (ctor, ty.kind()) {
             (Ctor::Single, TyKind::Ref(_, pointee)) => vec![pointee],
+            (Ctor::Single, TyKind::Array(elem, len)) => {
+                vec![elem; len.as_usize().unwrap_or(0) as usize]
+            }
+            (Ctor::Slice(kind), TyKind::Slice(elem)) => vec![elem; kind.arity() as usize],
+            (Ctor::Slice(_), _) => Vec::new(),
             (Ctor::Single, _) => self.sigs.fields(ty).map_or(Vec::new(), |f| f.to_vec()),
             (Ctor::Variant(v), _) => self
                 .sigs
@@ -527,7 +591,8 @@ impl Cx<'_> {
             TyKind::Int(_) | TyKind::Char => {
                 self.split_ints(IntDomain::of(ty).expect("a scalar"), heads)
             }
-            TyKind::Tuple(_) | TyKind::Ref(..) => {
+            TyKind::Slice(_) => self.split_slices(heads),
+            TyKind::Tuple(_) | TyKind::Ref(..) | TyKind::Array(..) => {
                 if heads.is_empty() {
                     (Vec::new(), vec![Ctor::Single])
                 } else {
@@ -566,6 +631,44 @@ impl Cx<'_> {
             // pattern can name.
             _ => (Vec::new(), vec![Ctor::Range(1, 0)]),
         }
+    }
+
+    /// The lengths of slices, split as rustc splits them: each length
+    /// shorter than the longest a pattern names exactly (or than the
+    /// patterns with `..` need), and every longer one together.
+    fn split_slices(&self, heads: &[&DPat]) -> (Vec<Ctor>, Vec<Ctor>) {
+        let kinds: Vec<SliceKind> = heads
+            .iter()
+            .filter_map(|h| match h {
+                DPat::Ctor(Ctor::Slice(kind), _) => Some(*kind),
+                _ => None,
+            })
+            .collect();
+        let mut max_fixed: Option<u32> = None;
+        let (mut max_prefix, mut max_suffix) = (0, 0);
+        for &kind in &kinds {
+            match kind {
+                SliceKind::Fixed(n) => max_fixed = Some(max_fixed.map_or(n, |m| m.max(n))),
+                SliceKind::VarLen(p, s) => {
+                    max_prefix = max_prefix.max(p);
+                    max_suffix = max_suffix.max(s);
+                }
+            }
+        }
+        let longest = max_fixed.map_or(0, |n| n + 1).max(max_prefix + max_suffix);
+        let ctors = (0..longest)
+            .map(SliceKind::Fixed)
+            .chain([SliceKind::VarLen(longest - max_suffix, max_suffix)]);
+        let mut present = Vec::new();
+        let mut missing = Vec::new();
+        for ctor in ctors {
+            if kinds.iter().any(|&k| ctor.covered_by(k)) {
+                present.push(Ctor::Slice(ctor));
+            } else {
+                missing.push(Ctor::Slice(ctor));
+            }
+        }
+        (present, missing)
     }
 
     /// The integers split at the bounds the patterns use.
@@ -710,6 +813,14 @@ impl Cx<'_> {
                 format!("&mut {}", self.show(&fields[0]))
             }
             (Ctor::Single, TyKind::Ref(..)) => format!("&{}", self.show(&fields[0])),
+            (Ctor::Single, TyKind::Array(..)) | (Ctor::Slice(SliceKind::Fixed(_)), _) => {
+                format!("[{}]", show_all(fields).join(", "))
+            }
+            (Ctor::Slice(SliceKind::VarLen(p, _)), _) => {
+                let mut shown = show_all(fields);
+                shown.insert(p as usize, "..".to_owned());
+                format!("[{}]", shown.join(", "))
+            }
             (Ctor::Single, TyKind::Tuple(_)) => {
                 let shown = show_all(fields);
                 if shown.len() == 1 {
@@ -777,6 +888,24 @@ impl Cx<'_> {
 fn specialize(row: &[DPat], ctor: Ctor, arity: usize) -> Option<Vec<DPat>> {
     let mut out = match &row[0] {
         DPat::Wild => vec![DPat::Wild; arity],
+        DPat::Ctor(Ctor::Slice(head), fields) => {
+            let Ctor::Slice(ctor) = ctor else {
+                return None;
+            };
+            if !ctor.covered_by(*head) {
+                return None;
+            }
+            // The head's prefix and suffix, with wildcards between them for
+            // the elements it does not name.
+            let p = match *head {
+                SliceKind::Fixed(n) => n,
+                SliceKind::VarLen(p, _) => p,
+            } as usize;
+            let mut out = fields[..p].to_vec();
+            out.extend((0..arity - fields.len()).map(|_| DPat::Wild));
+            out.extend_from_slice(&fields[p..]);
+            out
+        }
         DPat::Ctor(head, fields) => {
             let matches = match (*head, ctor) {
                 (Ctor::Range(a, b), Ctor::Range(lo, hi)) => a <= lo && hi <= b,

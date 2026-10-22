@@ -1,5 +1,5 @@
-// Array lengths that name locals or generic parameters, and slice
-// patterns.
+// Array lengths that name locals or generic parameters, and a slice
+// pattern with two `..`.
 
 const N: usize = 2;
 
@@ -22,7 +22,7 @@ fn lengths(n: usize) {
     let b: [u8; N + 1] = [0; 3];
     let c = [0; { 3 }];
     let d: [bool; true] = [];
-    let [first, ..] = [1, 2];
+    let [first, .., last, ..] = [1, 2, 3];
     let e = [0; n + 1];
     let f: [u8; n] = [0; 2];
     let g: [u8; { n }] = [0; 2];

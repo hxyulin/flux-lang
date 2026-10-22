@@ -321,6 +321,45 @@ impl Printer<'_> {
                 self.out.push_str(if *mutable { "&mut " } else { "&" });
                 self.pat(*pat);
             }
+            Pat::Slice {
+                prefix,
+                slice,
+                suffix,
+            } => {
+                self.out.push('[');
+                let mut first = true;
+                for &p in prefix.iter() {
+                    if !first {
+                        self.out.push_str(", ");
+                    }
+                    self.pat(p);
+                    first = false;
+                }
+                if let Some(slice) = slice {
+                    if !first {
+                        self.out.push_str(", ");
+                    }
+                    if let Pat::Bind { .. } = self.body.pats[*slice] {
+                        // `rest @ ..`, whose `..` is a wildcard.
+                        self.pat(*slice);
+                        if self.out.ends_with(" @ _") {
+                            self.out.truncate(self.out.len() - " @ _".len());
+                        }
+                        self.out.push_str(" @ ..");
+                    } else {
+                        self.out.push_str("..");
+                    }
+                    first = false;
+                }
+                for &p in suffix.iter() {
+                    if !first {
+                        self.out.push_str(", ");
+                    }
+                    self.pat(p);
+                    first = false;
+                }
+                self.out.push(']');
+            }
             Pat::Tuple { pats, rest } => {
                 self.out.push('(');
                 self.tuple_pats(pats, *rest);

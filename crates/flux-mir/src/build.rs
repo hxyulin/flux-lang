@@ -3274,7 +3274,165 @@ impl Builder<'_> {
                 exits
             }
             Pat::Ref { pat: inner, .. } => self.test(*inner, place.deref(), fail, range),
+            Pat::Slice {
+                prefix,
+                slice,
+                suffix,
+            } => self.test_slice(prefix, *slice, suffix, place, fail, range),
         }
+    }
+
+    /// `[a, b, .., z]` on an array or slice in `place`: a slice's length
+    /// is tested first (`== 3`, or `>= 3` with `..`), then the elements,
+    /// each at a constant index from the start or, after `..`, from the
+    /// end. `rest @ ..` binds an array of the elements it stands for, or
+    /// a reference to the part of a slice.
+    fn test_slice(
+        &mut self,
+        prefix: &[PatId],
+        slice: Option<PatId>,
+        suffix: &[PatId],
+        place: PatPlace,
+        fail: BasicBlock,
+        range: TextRange,
+    ) -> Vec<Exit> {
+        let place = self.resolve(place, range);
+        let usize = IntTy::Usize;
+        let (p, s) = (prefix.len() as i128, suffix.len() as i128);
+        // The length: a constant for an array, read for a slice.
+        let (elem, len) = match self.place_ty(&place).kind() {
+            TyKind::Array(elem, n) => (
+                elem,
+                Operand::Const(Constant::int(n.as_usize().unwrap_or(0) as i128, usize)),
+            ),
+            TyKind::Slice(elem) => {
+                let len = self.temp(Ty::int(usize));
+                self.assign(
+                    &len.into(),
+                    Rvalue::Len {
+                        place: place.clone(),
+                        borrows: false,
+                    },
+                    range,
+                );
+                let op = if slice.is_some() {
+                    BinOp::Ge
+                } else {
+                    BinOp::Eq
+                };
+                self.compare(
+                    op,
+                    len.into(),
+                    Operand::Const(Constant::int(p + s, usize)),
+                    fail,
+                    range,
+                );
+                (elem, Operand::Copy(len.into()))
+            }
+            _ => (Ty::ERROR, Operand::Const(Constant::int(0, usize))),
+        };
+        // `place[i]`, `i` in a temporary.
+        let index = |b: &mut Self, value: Rvalue| {
+            let at = b.temp(Ty::int(usize));
+            b.assign(&at.into(), value, range);
+            PatPlace::Place(place.project(ProjectionElem::Index(at)))
+        };
+        let mut parts = Vec::new();
+        for (i, &pat) in prefix.iter().enumerate() {
+            let at = index(
+                self,
+                Rvalue::Use(Operand::Const(Constant::int(i as i128, usize))),
+            );
+            parts.push((pat, at));
+        }
+        for (j, &pat) in suffix.iter().enumerate() {
+            let back = Operand::Const(Constant::int(s - j as i128, usize));
+            let at = index(self, Rvalue::BinaryOp(BinOp::Sub, len.clone(), back));
+            parts.push((pat, at));
+        }
+        let mut exits = self.test_all(parts, fail, range);
+        let Some(rest) = slice else {
+            return exits;
+        };
+        let Pat::Bind { binding, .. } = self.body.pats[rest] else {
+            return exits;
+        };
+        // The rest, once the elements matched: its own place.
+        let mut bound = Vec::new();
+        for mut exit in exits.drain(..) {
+            self.current = Some(exit.block);
+            let rest_place = match self.place_ty(&place).kind() {
+                TyKind::Array(_, n) => {
+                    let n = n.as_usize().unwrap_or(0) as i128;
+                    let count = n.saturating_sub(p + s);
+                    let ty = Ty::array_of(elem, Ty::usize_value(count as u64));
+                    let elements = (0..count)
+                        .map(|i| {
+                            let at = index(
+                                self,
+                                Rvalue::Use(Operand::Const(Constant::int(p + i, usize))),
+                            );
+                            let PatPlace::Place(at) = at else {
+                                unreachable!()
+                            };
+                            self.read(at)
+                        })
+                        .collect();
+                    let temp = self.temp(ty);
+                    self.assign(
+                        &temp.into(),
+                        Rvalue::Aggregate(AggregateKind::Array(elem), elements),
+                        range,
+                    );
+                    Place::from(temp)
+                }
+                _ => {
+                    // `&*subslice(&place, p, len - s)`.
+                    let whole = self.temp(Ty::new(TyKind::Ref(Mutability::Not, Ty::slice(elem))));
+                    self.assign(
+                        &whole.into(),
+                        Rvalue::Ref {
+                            mutability: Mutability::Not,
+                            place: place.clone(),
+                            two_phase: false,
+                        },
+                        range,
+                    );
+                    let end = self.temp(Ty::int(usize));
+                    self.assign(
+                        &end.into(),
+                        Rvalue::BinaryOp(
+                            BinOp::Sub,
+                            len.clone(),
+                            Operand::Const(Constant::int(s, usize)),
+                        ),
+                        range,
+                    );
+                    let part = self.temp(Ty::new(TyKind::Ref(Mutability::Not, Ty::slice(elem))));
+                    match self
+                        .items
+                        .lang_fns
+                        .get(&Symbol::intern("subslice"))
+                        .copied()
+                    {
+                        Some(subslice) => {
+                            let args = vec![
+                                Operand::Move(whole.into()),
+                                Operand::Const(Constant::int(p, usize)),
+                                Operand::Copy(end.into()),
+                            ];
+                            self.call(subslice, Ty::list(&[elem]), args, &part.into(), range);
+                        }
+                        None => self.bug("no `subslice` intrinsic", range),
+                    }
+                    Place::from(part).deref()
+                }
+            };
+            exit.block = self.block();
+            exit.binds.push((binding, rest_place));
+            bound.push(exit);
+        }
+        bound
     }
 
     /// Tests the patterns of the parts of a value in turn. A part that

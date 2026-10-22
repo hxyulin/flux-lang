@@ -31,8 +31,10 @@ pub(crate) fn is_copy<T>() -> bool {
     loop {}
 }
 
-/// `&slice[start..end]`, unchecked: `start <= end <= slice.len()`.
+/// `&slice[start..end]`, unchecked: `start <= end <= slice.len()`. A
+/// slice pattern's `rest @ ..` binds one.
 #[rustc_intrinsic]
+#[lang = "subslice"]
 pub(crate) unsafe fn subslice<T>(slice: &[T], start: usize, end: usize) -> &[T] {
     loop {}
 }

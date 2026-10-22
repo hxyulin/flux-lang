@@ -152,9 +152,20 @@ reported as "not supported yet":
   string literals (`-1`, `b'a'`, `'x'`, `true`, `"add"`), constants of
   integer types, `char` and `bool` (`N`, `i32::MAX`, `Self::N`), ranges
   whose ends are either (`1..=9`, `0..N`, `5..`, `..=i8::MIN`,
-  `'a'..='z'`), or-patterns (`1 | 2`) and reference patterns (`&x`).
-  Constants of other types in patterns, byte string literals, and array
-  and slice patterns (`[a, b, ..]`), are not supported yet.
+  `'a'..='z'`), or-patterns (`1 | 2`), reference patterns (`&x`), and
+  array and slice patterns (`[a, b]`, `[first, .., last]`, `[x, rest @
+  ..]`), with rustc's errors for lengths an array cannot have (E0527,
+  E0528, E0730) and values that are neither (E0529), and exhaustiveness
+  checked as rustc checks it (a slice's lengths up to the longest a
+  pattern names, then the longer ones together: `&[_, _, ..]`). `rest
+  @ ..` binds an array of the elements it stands for, or a reference
+  to the part of a slice; binding the rest of an array by reference, or
+  of a slice mutably, is not supported yet, and the elements of a slice
+  pattern are borrowed as the whole array or slice is, so `[first, ..,
+  last]` of a `&mut [T]` cannot bind both mutably (rustc allows it),
+  nor move them out of an array (E0508 where rustc allows it).
+  Constants of other types in patterns and byte string literals are
+  not supported yet.
 - **Attributes:** only `allow`, `warn`, `deny`, `expect`, `inline`,
   `cold`, `must_use` and `doc`, which are ignored, `derive` on structs
   and enums,

@@ -879,6 +879,11 @@
   value made a trait object holds to outlive the object's lifetime
   bound, its reference's. `core`'s `Iterator for &mut I` takes `I:
   ?Sized`, so `&mut dyn Iterator` iterates in `for` loops and adapters.
+- Support array and slice patterns: fixed lengths, `..` with elements
+  before and after it, and `rest @ ..`, in `match`, `let`, `if let`,
+  `while let` and parameters, by value and through default binding
+  modes, with rustc's E0527, E0528, E0529 and E0730, and exhaustiveness
+  checked with rustc's slice constructors and witnesses.
 
 ### Performance
 
