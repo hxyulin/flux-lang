@@ -616,6 +616,7 @@ fn default_shim(instance: Instance) -> Body {
         capture_uses: Vec::new(),
         owner: None,
         promoted: Vec::new(),
+        bugs: Vec::new(),
     }
 }
 
@@ -709,6 +710,7 @@ fn slice_shim(items: &ItemTree, sigs: &Signatures, instance: Instance, slices: u
         capture_uses: Vec::new(),
         owner: None,
         promoted: Vec::new(),
+        bugs: Vec::new(),
     }
 }
 
