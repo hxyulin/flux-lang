@@ -92,8 +92,8 @@ pub fn lower(db: &mut SourceDb, root: FileId, crate_name: Symbol) -> Hir {
 }
 
 fn lower_with(db: &mut SourceDb, root: FileId, crate_name: Symbol, with_core: bool) -> Hir {
-    let items = ItemTree::new(db, root, crate_name, with_core);
-    let mut diagnostics = items.diagnostics.clone();
+    let mut items = ItemTree::new(db, root, crate_name, with_core);
+    let mut diagnostics = std::mem::take(&mut items.diagnostics);
     if with_core {
         diagnostics.extend(Core::get().diagnostics.iter().cloned());
     }

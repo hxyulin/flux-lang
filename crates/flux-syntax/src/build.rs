@@ -17,6 +17,28 @@ use std::mem;
 
 /// Builds the tree for `output`, which the parser produced from `lexed`.
 pub fn build_tree(lexed: LexedStr<'_>, output: Output) -> (SyntaxTree, Vec<SyntaxError>) {
+    let text = lexed.text();
+    let (parts, errors) = build(lexed, output);
+    (parts.into_tree(text.into()), errors)
+}
+
+/// A tree without its text, so that the text can be moved into it rather
+/// than copied.
+pub(crate) struct TreeParts {
+    kinds: Vec<SyntaxKind>,
+    starts: Vec<u32>,
+    nodes: Vec<NodeData>,
+}
+
+impl TreeParts {
+    /// The tree, given the text it was built from.
+    pub(crate) fn into_tree(self, text: Box<str>) -> SyntaxTree {
+        SyntaxTree::new(text, self.kinds, self.starts, self.nodes)
+    }
+}
+
+/// [`build_tree`], without the text.
+pub(crate) fn build(lexed: LexedStr<'_>, output: Output) -> (TreeParts, Vec<SyntaxError>) {
     let Output {
         mut events,
         errors: mut messages,
@@ -39,25 +61,34 @@ pub fn build_tree(lexed: LexedStr<'_>, output: Output) -> (SyntaxTree, Vec<Synta
         starts,
         read: 0,
         write: 0,
-        // Nodes average about one per two tokens; events are about two
-        // per token.
-        nodes: Vec::with_capacity(events.len() / 4 + 1),
+        // Each node has a `Start` and a `Finish` event, so this never
+        // grows; `finish` frees what is left over.
+        nodes: Vec::with_capacity(events.len() / 2 + 1),
         open: Vec::new(),
         errors: &mut errors,
     };
 
     let mut forward_parents = Vec::new();
     for i in 0..events.len() {
-        match mem::replace(&mut events[i], Event::tombstone()) {
+        match events[i] {
             Event::Start {
                 kind,
-                forward_parent,
+                forward_parent: None,
+            } => {
+                if kind != TOMBSTONE {
+                    builder.start_node(kind);
+                }
+            }
+            Event::Start {
+                kind,
+                forward_parent: Some(offset),
             } => {
                 // A node wrapped by `precede` starts with a chain of
-                // forward parents: open the outermost first.
+                // forward parents: open the outermost first. Each becomes
+                // a tombstone, skipped when the loop reaches it.
                 forward_parents.push(kind);
                 let mut idx = i;
-                let mut next = forward_parent;
+                let mut next = Some(offset);
                 while let Some(offset) = next {
                     idx += offset.get() as usize;
                     next = match mem::replace(&mut events[idx], Event::tombstone()) {
@@ -84,9 +115,9 @@ pub fn build_tree(lexed: LexedStr<'_>, output: Output) -> (SyntaxTree, Vec<Synta
             }
         }
     }
-    let tree = builder.finish();
+    let parts = builder.finish();
     errors.sort_by_key(|e| (e.range.start(), e.range.end()));
-    (tree, errors)
+    (parts, errors)
 }
 
 struct Builder<'a, 'e> {
@@ -109,16 +140,11 @@ impl Builder<'_, '_> {
     fn start_node(&mut self, kind: SyntaxKind) {
         // The root starts before any leading trivia.
         if !self.nodes.is_empty() {
-            let n_trivia = self.kinds[self.read..self.len]
-                .iter()
-                .take_while(|kind| kind.is_trivia())
-                .count();
-            let n_attached = if kind.takes_leading_comments() {
-                self.n_attached_trivia(n_trivia)
+            if kind.takes_leading_comments() {
+                self.eat_unattached_trivia();
             } else {
-                0
-            };
-            self.eat_n_trivia(n_trivia - n_attached);
+                self.eat_trivia();
+            }
         }
         self.open.push(self.nodes.len() as u32);
         self.nodes.push(NodeData {
@@ -158,7 +184,7 @@ impl Builder<'_, '_> {
         });
     }
 
-    fn finish(mut self) -> SyntaxTree {
+    fn finish(mut self) -> TreeParts {
         assert!(self.open.is_empty(), "unbalanced events");
         assert_eq!(self.read, self.len, "not every token was placed");
         self.starts[self.write] = self.text.len() as u32;
@@ -169,17 +195,15 @@ impl Builder<'_, '_> {
         self.kinds.shrink_to_fit();
         self.starts.shrink_to_fit();
         self.nodes.shrink_to_fit();
-        SyntaxTree::new(self.text.into(), self.kinds, self.starts, self.nodes)
+        TreeParts {
+            kinds: self.kinds,
+            starts: self.starts,
+            nodes: self.nodes,
+        }
     }
 
     fn eat_trivia(&mut self) {
         while self.read < self.len && self.kinds[self.read].is_trivia() {
-            self.bump_raw();
-        }
-    }
-
-    fn eat_n_trivia(&mut self, n: usize) {
-        for _ in 0..n {
             self.bump_raw();
         }
     }
@@ -191,10 +215,31 @@ impl Builder<'_, '_> {
         self.read += 1;
     }
 
+    /// Places the trivia before an item, except the comments that belong
+    /// to it.
+    fn eat_unattached_trivia(&mut self) {
+        let n_trivia = self.kinds[self.read..self.len]
+            .iter()
+            .take_while(|kind| kind.is_trivia())
+            .count();
+        let n_attached = self.n_attached_trivia(n_trivia);
+        self.eat_n_trivia(n_trivia - n_attached);
+    }
+
+    fn eat_n_trivia(&mut self, n: usize) {
+        for _ in 0..n {
+            self.bump_raw();
+        }
+    }
+
     /// How many of the `n_trivia` tokens ahead belong to the item that
     /// starts after them: its comments, unless a blank line or an inner
     /// doc comment (`//!`) separates them.
     fn n_attached_trivia(&self, n_trivia: usize) -> usize {
+        // Usually only whitespace: no need to look for blank lines.
+        if !self.kinds[self.read..self.read + n_trivia].contains(&COMMENT) {
+            return 0;
+        }
         let mut attached = 0;
         for back in 0..n_trivia {
             let i = self.read + n_trivia - 1 - back;

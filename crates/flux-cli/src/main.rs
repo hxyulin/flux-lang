@@ -178,7 +178,7 @@ pub(crate) fn report_all(db: &SourceDb, diagnostics: &mut [Diagnostic]) -> bool 
     Diagnostic::sort(diagnostics);
     for d in diagnostics.iter() {
         let f = db.file(d.file);
-        report(&f.path, &f.text, d.range, &d.message);
+        report(&f.path, f.text(), d.range, &d.message);
     }
     diagnostics.is_empty()
 }
