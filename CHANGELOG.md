@@ -1020,6 +1020,17 @@
   wildcards alone (`[_, _]` of an array, `[..]` of a slice) read nothing
   and capture nothing. A match's arms are walked in order, pattern,
   guard and body.
+- Capture what rustc's closure capture analysis does: a by-value use of
+  a `Copy` part of an array's element (`p.1[1].0.is_positive()`, `let x
+  = p[0].0`) borrows the array instead of moving it into the closure;
+  with `move`, a value of a type with a `Drop` impl is moved whole for a
+  part of it that is not `Copy`; a place is cut after its last
+  dereference only if that is of a shared reference; what a raw pointer
+  points to is borrowed shared even to change it (an `Fn` closure, the
+  pointer needing no `mut`), and writing through a `*mut` needs nothing
+  of the path to it. Captures are ordered by binding, in the order each
+  is first used, and by field within one, so a closure drops them in
+  rustc's order.
 
 ### Performance
 
