@@ -703,7 +703,8 @@ executable. No C compiler or system linker is involved.
   at most one value, so a function returning two or more leaves returns
   them through an `sret` pointer to a C struct of the leaves in the
   caller's frame; keel returns small ones in registers.
-- `bool` is an `i8` holding 0 or 1; `()` and `!` have no value and
+- `bool` is an `i8` holding 0 or 1, a `char` an `i32` holding its code
+  point, compared and extended as unsigned; `()` and `!` have no value and
   disappear from signatures. Narrow integers are extended by signedness
   at calls, as Apple's arm64 ABI requires of C callers.
 - keel takes shift amounts modulo the width, which is exactly Rust's
@@ -714,7 +715,12 @@ executable. No C compiler or system linker is involved.
   laid out as in memory, writable only for a `static mut`. A reference
   in a constant's value, and a promoted constant, points to a read-only
   data object of what it borrows, shared by identical ones; inside a
-  static's data, the linker fills in its address.
+  static's data, the linker fills in its address. A string or byte
+  string literal is such a promoted constant, its bytes, and a `&str`
+  two leaves as a reference to a slice is. A cast between pointers is
+  no instruction (one to a thin pointer drops the length), and one
+  between a pointer and an integer `PtrToInt` or `IntToPtr` with the
+  integer extended or truncated to 64 bits.
 - A function pointer is a keel `ptr`, a function's `symbol_addr`, and
   a call through one keel's `call_indirect` with C's convention. Since
   keel allows `cc(fast)` for direct calls only, monomorphization
