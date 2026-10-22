@@ -180,30 +180,35 @@ fn wrapping() -> u64 {
     }
 
     bb1: {
+        StorageDead(_2);
         _5 = const 0_u16;
         _6 = copy _5;
         _4 = wrapping_sub(copy _6, const 1_u16) -> bb2;
     }
 
     bb2: {
+        StorageDead(_5);
         _8 = const MIN;
         _9 = copy _8;
         _7 = wrapping_neg(copy _9) -> bb3;
     }
 
     bb3: {
+        StorageDead(_8);
         _11 = const MAX;
         _12 = copy _11;
         _10 = wrapping_mul(copy _12, const 2_i64) -> bb4;
     }
 
     bb4: {
+        StorageDead(_11);
         _14 = const 1_u32;
         _15 = copy _14;
         _13 = rotate_left(copy _15, const 33_u32) -> bb5;
     }
 
     bb5: {
+        StorageDead(_14);
         _20 = copy _1;
         _19 = copy _20 as u64;
         _22 = copy _4;
@@ -324,6 +329,7 @@ fn main() -> () {
 
     bb3: {
         _1 = Add(copy _2, copy _7);
+        StorageDead(_1);
         _0 = const ();
         return;
     }

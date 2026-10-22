@@ -1859,13 +1859,6 @@ fn extend_signatures(
                 &format!("recursive type `{}` has infinite size", s.name),
             );
         }
-        if let Some(l) = s.generics.lifetimes.first() {
-            error(
-                s.loc.file,
-                l.range,
-                "structs with lifetime parameters are not supported yet",
-            );
-        }
     }
     for (id, function) in items.functions.iter().skip(from.functions as usize) {
         let sig = &sigs.fns[id];
@@ -1903,31 +1896,6 @@ fn extend_signatures(
                     );
                 }
             }
-        } else if !items.is_core(function.loc.module) {
-            // `core`'s `impl PartialEq<&B> for &A` takes `&&B`; it is
-            // trusted, and checked by its tests.
-            for (param, &ty) in params {
-                if !matches!(ty.kind(), TyKind::Ref(..)) && contains_ref(ty) {
-                    error(
-                        function.loc.file,
-                        param.range,
-                        "references inside other types are not supported yet",
-                    );
-                }
-            }
-        }
-        // A return type whose lifetimes are missing is reported.
-        let elided = sigs
-            .regions
-            .fns
-            .get(id)
-            .is_some_and(|r| r.ret.iter().all(|&r| r != regions::Region::Erased));
-        if regions::slots(items, sig.ret) > 0 && elided {
-            error(
-                function.loc.file,
-                function.ret_range,
-                "returning references is not supported yet",
-            );
         }
     }
     diagnostics.extend(reported);

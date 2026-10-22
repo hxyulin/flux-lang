@@ -394,12 +394,14 @@ fn main() -> () {
     }
 
     bb1: {
+        StorageDead(_1);
         _6 = Inner { x: const 1_i32 };
         _5 = S { inner: move _6, n: const 2_i32 };
         _4 = partial_move_by_pattern(move _5) -> bb2;
     }
 
     bb2: {
+        StorageDead(_4);
         _9 = Inner { x: const 1_i32 };
         _8 = S { inner: move _9, n: const 2_i32 };
         _7 = reassign_moved_field(move _8) -> bb3;
@@ -418,40 +420,47 @@ fn main() -> () {
     }
 
     bb5: {
+        StorageDead(_13);
         _18 = Inner { x: const 1_i32 };
         _17 = S { inner: move _18, n: const 2_i32 };
         _16 = move_then_reassign_whole(move _17) -> bb6;
     }
 
     bb6: {
+        StorageDead(_16);
         _21 = (const true, const 2_u8);
         _20 = (const 1_i32, copy _21);
         _19 = copy_tuples(copy _20) -> bb7;
     }
 
     bb7: {
+        StorageDead(_19);
         _24 = Inner { x: const 1_i32 };
         _23 = S { inner: move _24, n: const 2_i32 };
         _22 = functional_update_copy_only(move _23) -> bb8;
     }
 
     bb8: {
+        StorageDead(_22);
         _27 = Inner { x: const 1_i32 };
         _26 = S { inner: move _27, n: const 2_i32 };
         _25 = functional_update_moves_inner(move _26) -> bb9;
     }
 
     bb9: {
+        StorageDead(_25);
         _28 = deferred_init(const false) -> bb10;
     }
 
     bb10: {
+        StorageDead(_28);
         _31 = Inner { x: const 1_i32 };
         _30 = S { inner: move _31, n: const 2_i32 };
         _29 = moved_into_tuple_field(move _30) -> bb11;
     }
 
     bb11: {
+        StorageDead(_29);
         _0 = const ();
         return;
     }

@@ -410,6 +410,8 @@ fn methods(_1: i32) -> i32 {
     }
 
     bb8: {
+        StorageDead(_19);
+        StorageDead(_20);
         _23 = move _2;
         _22 = rebuild::<i32>(move _23) -> bb9;
     }
@@ -420,6 +422,7 @@ fn methods(_1: i32) -> i32 {
     }
 
     bb10: {
+        StorageDead(_22);
         StorageDead(_10);
         StorageDead(_2);
         return;
@@ -491,6 +494,7 @@ fn main() -> () {
     }
 
     bb1: {
+        StorageDead(_1);
         _2 = new::<u8>(const 1_u8, const 2_u8) -> bb2;
     }
 
@@ -510,6 +514,9 @@ fn main() -> () {
     }
 
     bb5: {
+        StorageDead(_3);
+        StorageDead(_4);
+        StorageDead(_5);
         _0 = const ();
         StorageDead(_2);
         return;

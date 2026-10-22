@@ -376,6 +376,7 @@ fn borrowed_then_moved(_1: E) -> () {
     }
 
     bb1: {
+        StorageDead(_3);
         _6 = move _1;
         PlaceMention(_2);
         _0 = const ();

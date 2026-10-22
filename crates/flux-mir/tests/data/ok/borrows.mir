@@ -439,6 +439,7 @@ fn copy_out(_1: &S) -> i32 {
         _2 = copy (*_1).0;
         _4 = &(*_1).1;
         _3 = copy (*_4);
+        StorageDead(_4);
         _5 = copy _2;
         _6 = copy _3;
         _0 = Add(copy _5, copy _6);
@@ -897,8 +898,11 @@ fn temporaries(_1: i32) -> i32 {
         _15 = copy (*_7);
         _0 = Add(copy _11, copy _15);
         StorageDead(_7);
+        StorageDead(_8);
         StorageDead(_5);
+        StorageDead(_6);
         StorageDead(_2);
+        StorageDead(_3);
         return;
     }
 }
@@ -932,6 +936,7 @@ fn method_result_then_mutate(_1: S) -> i32 {
     }
 
     bb2: {
+        StorageDead(_8);
         _10 = &two_phase _1;
         _11 = copy _7;
         _0 = add(move _10, copy _11) -> bb3;
@@ -1425,6 +1430,7 @@ fn temporary_receivers() -> i32 {
     }
 
     bb2: {
+        StorageDead(_2);
         _5 = make_w() -> bb3;
     }
 
@@ -1451,8 +1457,11 @@ fn temporary_receivers() -> i32 {
         _16 = copy (*_11).0;
         _0 = Add(copy _13, copy _16);
         StorageDead(_11);
+        StorageDead(_12);
         StorageDead(_7);
+        StorageDead(_8);
         StorageDead(_4);
+        StorageDead(_5);
         return;
     }
 }
@@ -1473,14 +1482,19 @@ fn nested_derefs(_1: i32) -> i32 {
         _4 = &mut _1;
         _3 = &mut (*_4);
         _2 = copy (*_3);
+        StorageDead(_3);
+        StorageDead(_4);
         _6 = &mut _1;
         (*_6) = const 3_i32;
         _5 = const ();
+        StorageDead(_6);
         _9 = &_1;
         _8 = &(*_9);
         _7 = copy (*_8);
         _10 = copy _2;
         _0 = Add(copy _7, copy _10);
+        StorageDead(_8);
+        StorageDead(_9);
         StorageDead(_2);
         return;
     }

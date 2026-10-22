@@ -129,6 +129,7 @@ fn main() -> () {
     }
 
     bb3: {
+        StorageDead(_4);
         _0 = const ();
         StorageDead(_3);
         StorageDead(_2);

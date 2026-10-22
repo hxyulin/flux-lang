@@ -288,6 +288,7 @@ fn generic<T>(_1: T) -> i32 {
 
     bb5: {
         _0 = Add(copy _9, copy _10);
+        StorageDead(_11);
         StorageDead(_4);
         return;
     }
@@ -393,6 +394,7 @@ fn copy_receiver() -> i32 {
 
     bb3: {
         _0 = Add(copy _4, copy _8);
+        StorageDead(_9);
         StorageDead(_2);
         StorageDead(_1);
         return;
@@ -473,6 +475,7 @@ fn blanket(_1: &S) -> i32 {
 
     bb2: {
         _0 = Add(copy _2, copy _4);
+        StorageDead(_5);
         return;
     }
 }
@@ -520,6 +523,7 @@ fn main() -> () {
 
     bb3: {
         _1 = Add(copy _2, copy _8);
+        StorageDead(_1);
         _12 = copy_receiver() -> bb4;
     }
 
@@ -541,6 +545,9 @@ fn main() -> () {
 
     bb6: {
         _10 = Add(copy _11, copy _19);
+        StorageDead(_10);
+        StorageDead(_21);
+        StorageDead(_16);
         _0 = const ();
         return;
     }

@@ -388,6 +388,7 @@ fn through_iterator() -> () {
     }
 
     bb1: {
+        StorageDead(_3);
         _1 = const 5_i32;
         _7 = const ();
         _9 = move _2;
@@ -400,6 +401,7 @@ fn through_iterator() -> () {
     }
 
     bb3: {
+        StorageDead(_8);
         StorageDead(_2);
         StorageDead(_1);
         return;
@@ -430,6 +432,7 @@ fn through_iterator() -> () {
     }
 
     bb9: {
+        StorageDead(_13);
         _11 = const ();
         goto -> bb6;
     }
@@ -445,6 +448,7 @@ fn through_iterator() -> () {
 
     bb12: {
         _0 = const ();
+        StorageDead(_13);
         goto -> bb7;
     }
 

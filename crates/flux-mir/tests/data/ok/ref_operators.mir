@@ -172,6 +172,7 @@ fn main() -> () {
         _3 = (const 2_i32, const 3_i32);
         _1 = copy _3.0;
         _2 = copy _3.1;
+        StorageDead(_3);
         _5 = const &promoted[0];
         _4 = arithmetic(copy _5, const 2_i32) -> bb1;
     }

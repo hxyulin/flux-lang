@@ -1257,7 +1257,18 @@ impl Lower<'_, '_, '_> {
         leaves_of(self.sigs, ty)
             .into_iter()
             .filter_map(keel_type)
-            .map(|t| self.b.ins().iconst(t, 0))
+            .map(|t| {
+                // keel has no pointer constants: a null pointer is an
+                // integer converted.
+                if t == Type::Ptr {
+                    let zero = self.b.ins().iconst(Type::I64, 0);
+                    self.b
+                        .ins()
+                        .convert(keel_ir::ConvertOp::IntToPtr, Type::Ptr, zero)
+                } else {
+                    self.b.ins().iconst(t, 0)
+                }
+            })
             .collect()
     }
 

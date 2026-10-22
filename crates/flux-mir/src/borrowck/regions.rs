@@ -111,7 +111,33 @@ pub(crate) struct Regions {
     pub escapes: Vec<Option<(Category, TextRange)>>,
     /// Lifetimes that do not outlive what they must.
     pub errors: Vec<Diagnostic>,
+    /// A closure's body's requirements of its creator.
+    pub requirements: ClosureRequirements,
 }
+
+/// A lifetime a closure is given, by where it is: in the reference to
+/// itself its method takes (`&self` of `Fn::call`), in what it captures,
+/// in its parameters or in its return type, each numbered among those
+/// slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Ext {
+    Static,
+    SelfRef,
+    Upvar(u32),
+    Arg(u32),
+    Ret(u32),
+}
+
+/// How the lifetimes a closure is given must relate, as its body
+/// requires: `a: b` for each `(a, b)`, which its creator checks where
+/// it makes the closure (for what it captures) and where it calls it.
+#[derive(Debug, Clone, Default)]
+pub struct ClosureRequirements {
+    pub outlives: Vec<(Ext, Ext, TextRange)>,
+}
+
+/// Each closure's requirements, found from its body.
+pub type Requirements = FxHashMap<flux_ty::ClosureId, ClosureRequirements>;
 
 /// A loan as region inference needs it.
 pub(crate) struct LoanInfo<'a> {
@@ -127,8 +153,9 @@ pub(crate) fn infer(
     items: &ItemTree,
     sigs: &Signatures,
     loans: &[LoanInfo<'_>],
+    requirements: &Requirements,
 ) -> Regions {
-    let mut cx = Cx::new(body, items, sigs);
+    let mut cx = Cx::new(body, items, sigs, requirements);
     cx.universal_regions();
     cx.generate();
     let points = Points::new(body);
@@ -136,6 +163,7 @@ pub(crate) fn infer(
     let solution = cx.solve(&points, &liveness);
     let mut errors = cx.check_universal(&solution);
     errors.extend(cx.check_type_tests(&solution));
+    errors.append(&mut cx.errors);
     let loan_scopes = cx.loan_scopes(&points, &solution, loans);
     let escapes = (0..loans.len())
         .map(|i| {
@@ -150,7 +178,177 @@ pub(crate) fn infer(
         loan_scopes,
         escapes,
         errors,
+        requirements: ClosureRequirements {
+            outlives: std::mem::take(&mut cx.own_requirements),
+        },
     }
+}
+
+/// Whether method `method` of `impl` block `imp`, which implements
+/// `trait_fn`, asks no more of its lifetimes than the trait's method
+/// does, as rustc's `compare_impl_method` checks: calls through the
+/// trait assume only the trait's signature. Its parameters must accept
+/// what the trait's are given, and what it returns must be what the
+/// trait's says, for every choice of the trait method's lifetimes,
+/// given what the trait's signature and the block say of them.
+pub(crate) fn impl_method_matches(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: flux_hir::ImplId,
+    method: flux_hir::FunctionId,
+    trait_fn: flux_hir::FunctionId,
+) -> bool {
+    let (Some(ir), Some(tr), Some(block)) = (
+        sigs.regions.fns.get(method),
+        sigs.regions.fns.get(trait_fn),
+        sigs.regions.impls.get(imp),
+    ) else {
+        return true;
+    };
+    let Some(trait_ref) = sigs.impl_traits.get(imp) else {
+        return true;
+    };
+    let body = Body::empty(Some(method));
+    let none = Requirements::default();
+    let mut cx = Cx::new(&body, items, sigs, &none);
+    // The universal regions: `'static`, the block's lifetimes, and the
+    // trait method's; the method's own are to be found.
+    cx.new_universal("'static".to_owned());
+    let owner = ir.owner as usize;
+    let block_vars: Vec<Var> = (0..owner)
+        .map(|i| cx.new_universal(format!("'{i}")))
+        .collect();
+    let trait_vars: Vec<Var> = (0..tr.names.len())
+        .map(|i| cx.new_universal(format!("'t{i}")))
+        .collect();
+    let own_vars: Vec<Var> = (owner..ir.names.len()).map(|_| cx.fresh()).collect();
+    let map_impl = |r: Region| match r {
+        Region::Static => Some(STATIC),
+        Region::Param(i) if (i as usize) < owner => block_vars.get(i as usize).copied(),
+        Region::Param(i) => own_vars.get(i as usize - owner).copied(),
+        Region::Erased => None,
+    };
+    let map_trait = |r: Region| match r {
+        Region::Static => Some(STATIC),
+        Region::Param(i) => trait_vars.get(i as usize).copied(),
+        Region::Erased => None,
+    };
+    // The trait's signature for the block's types: `Self` and the
+    // trait's parameters are the block's, the method's own parameters
+    // the impl method's.
+    let impl_params = items.impls[imp].generics.params.len() as u32;
+    let mut args: Vec<Ty> = vec![sigs.impls[imp]];
+    args.extend(trait_ref.args.iter().copied());
+    let own_types = items.functions[method].generics.params.iter();
+    args.extend(
+        own_types
+            .enumerate()
+            .map(|(j, p)| Ty::param(impl_params + j as u32, p.name)),
+    );
+    let mut arg_vars: Vec<Vec<Var>> = Vec::new();
+    let header = block
+        .self_ty
+        .iter()
+        .map(|&r| map_impl(r).unwrap_or(STATIC))
+        .collect();
+    arg_vars.push(header);
+    for table in block.trait_args.iter() {
+        arg_vars.push(
+            table
+                .iter()
+                .map(|&r| map_impl(r).unwrap_or(STATIC))
+                .collect(),
+        );
+    }
+    let (impl_sig, trait_sig) = (&sigs.fns[method], &sigs.fns[trait_fn]);
+    let range = TextRange::default();
+    let mut map_i = map_impl;
+    let mut map_t = map_trait;
+    let count = impl_sig.params.len().min(trait_sig.params.len());
+    for i in 0..count {
+        let ty = cx.normalize(impl_sig.params[i]);
+        let mine = cx.instantiate_sig(impl_sig.params[i], &ir.params[i], &mut map_i, &[], &[]);
+        let theirs = cx.instantiate_sig(
+            trait_sig.params[i],
+            &tr.params[i],
+            &mut map_t,
+            &args,
+            &arg_vars,
+        );
+        match (mine, theirs) {
+            (Some(mine), Some(theirs)) if mine.len() == theirs.len() => cx.relate(
+                ty,
+                &theirs,
+                &mine,
+                Variance::Covariant,
+                Category::Boring,
+                range,
+            ),
+            _ => return false,
+        }
+    }
+    let ty = cx.normalize(impl_sig.ret);
+    let mine = cx.instantiate_sig(impl_sig.ret, &ir.ret, &mut map_i, &[], &[]);
+    let theirs = cx.instantiate_sig(trait_sig.ret, &tr.ret, &mut map_t, &args, &arg_vars);
+    match (mine, theirs) {
+        (Some(mine), Some(theirs)) if mine.len() == theirs.len() => cx.relate(
+            ty,
+            &mine,
+            &theirs,
+            Variance::Covariant,
+            Category::Boring,
+            range,
+        ),
+        _ => return false,
+    }
+    // What the method assumes must follow.
+    for p in ir.outlives.iter() {
+        if let Outlives::Region(a, b) = *p
+            && let (Some(a), Some(b)) = (map_impl(a), map_impl(b))
+        {
+            cx.outlives(a, b, Category::Boring, range);
+        }
+    }
+    // What is known: the trait method's bounds and the block's.
+    for p in tr.outlives.iter() {
+        if let Outlives::Region(a, b) = *p
+            && let (Some(a), Some(b)) = (map_trait(a), map_trait(b))
+        {
+            cx.known_pairs.push((a, b));
+        }
+    }
+    for p in block.outlives.iter() {
+        if let Outlives::Region(a, b) = *p
+            && let (Some(a), Some(b)) = (map_impl(a), map_impl(b))
+        {
+            cx.known_pairs.push((a, b));
+        }
+    }
+    cx.close_known();
+    // Each region's universal regions, until nothing changes.
+    let n = cx.universal.len();
+    let mut values: Vec<Vec<bool>> = vec![vec![false; n]; cx.vars as usize];
+    for (u, &(var, _)) in cx.universal.iter().enumerate() {
+        values[var as usize][u] = true;
+    }
+    loop {
+        let mut changed = false;
+        for c in &cx.constraints {
+            let sub = values[c.sub as usize].clone();
+            for (have, add) in values[c.sup as usize].iter_mut().zip(sub) {
+                if add && !*have {
+                    *have = true;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    cx.universal.iter().enumerate().all(|(a, &(var, _))| {
+        (0..n).all(|b| !values[var as usize][b] || cx.known(a as u32, b as u32))
+    })
 }
 
 struct Cx<'a> {
@@ -185,6 +383,15 @@ struct Cx<'a> {
     loan_vars: Vec<Var>,
     /// Constraints by their `sup`, built for explaining errors.
     by_sup: Vec<Vec<u32>>,
+    /// In a closure's body, what each universal region is to its
+    /// creator.
+    closure_ext: Vec<Ext>,
+    /// The requirements of the closures the body makes and calls.
+    requirements: &'a Requirements,
+    /// In a closure's body, what it requires of its creator.
+    own_requirements: Vec<(Ext, Ext, TextRange)>,
+    /// Errors found while making constraints.
+    errors: Vec<Diagnostic>,
 }
 
 /// A region's value: points, and the universal regions it must
@@ -202,7 +409,12 @@ struct Solution {
 }
 
 impl<'a> Cx<'a> {
-    fn new(body: &'a Body, items: &'a ItemTree, sigs: &'a Signatures) -> Cx<'a> {
+    fn new(
+        body: &'a Body,
+        items: &'a ItemTree,
+        sigs: &'a Signatures,
+        requirements: &'a Requirements,
+    ) -> Cx<'a> {
         let env = match body.owner {
             Some(f) => flux_ty::traits::projections_of(items, sigs, f),
             None => Vec::new(),
@@ -224,6 +436,10 @@ impl<'a> Cx<'a> {
             type_tests: Vec::new(),
             loan_vars: Vec::new(),
             by_sup: Vec::new(),
+            closure_ext: Vec::new(),
+            requirements,
+            own_requirements: Vec::new(),
+            errors: Vec::new(),
         }
     }
 
@@ -296,8 +512,6 @@ impl<'a> Cx<'a> {
                 };
                 self.new_universal(name);
             }
-        } else if body.upvars.is_some() {
-            self.new_universal("'1".to_owned());
         }
         // Locals.
         let mut base = Vec::with_capacity(body.locals.len() + 1);
@@ -338,12 +552,37 @@ impl<'a> Cx<'a> {
             }
             let vars = self.instantiate_sig(sig.ret, &r.ret, &mut map_var, &[], &[]);
             signature.push((Body::RETURN, vars));
-        } else if body.upvars.is_some() {
-            // A closure: everything it is given has its one region.
+        } else if let Some(upvars) = &body.upvars {
+            // A closure: each lifetime of what it is given is universal,
+            // and how they must relate is its creator's to check.
+            let by_ref = upvars.kind != flux_ty::ClosureKind::FnOnce;
+            self.closure_ext.push(Ext::Static);
             for i in 0..=body.param_count as u32 {
                 let local = Local::from_raw(i);
-                let n = self.local_vars(local).len();
-                signature.push((local, Some(vec![1; n])));
+                for (k, v) in self.local_vars(local).into_iter().enumerate() {
+                    let k = k as u32;
+                    let ext = match i {
+                        0 => Ext::Ret(k),
+                        1 if by_ref && k == 0 => Ext::SelfRef,
+                        1 if by_ref => Ext::Upvar(k - 1),
+                        1 => Ext::Upvar(k),
+                        _ => Ext::Arg(k),
+                    };
+                    self.universal_of.insert(v, self.universal.len() as u32);
+                    self.universal
+                        .push((v, format!("'{}", self.universal.len())));
+                    self.closure_ext.push(ext);
+                }
+                // What their types imply is known.
+                let ty = body.locals[local].ty;
+                let vars = self.local_vars(local);
+                let mut implied = Vec::new();
+                flux_ty::regions::implied_outlives(self.items, sigs, ty, &vars, &mut implied);
+                for p in implied {
+                    if let Outlives::Region(a, b) = p {
+                        self.known_pairs.push((a, b));
+                    }
+                }
             }
         }
         for (local, sig_vars) in signature {
@@ -366,7 +605,12 @@ impl<'a> Cx<'a> {
                 }
             }
         }
-        // What is known, closed transitively.
+        self.close_known();
+    }
+
+    /// `known` from `known_pairs`: reflexive, with `'static` outliving
+    /// everything, and transitive.
+    fn close_known(&mut self) {
         let n = self.universal.len();
         self.known = vec![false; n * n];
         for a in 0..n {
@@ -397,15 +641,6 @@ impl<'a> Cx<'a> {
             }
             if !changed {
                 break;
-            }
-        }
-        if body.upvars.is_some() {
-            // How a closure's lifetimes relate is its creator's to check,
-            // except that none of them is `'static`.
-            for a in 1..n {
-                for b in 1..n {
-                    self.known[a * n + b] = true;
-                }
             }
         }
     }
@@ -1086,7 +1321,7 @@ impl<'a> Cx<'a> {
                 }
             }
             AggregateKind::Closure => {
-                let TyKind::Closure(_, args) = dest_ty.kind() else {
+                let TyKind::Closure(id, args) = dest_ty.kind() else {
                     return;
                 };
                 let upvars = flux_ty::ClosureArgs::split(args).upvar_types();
@@ -1098,10 +1333,27 @@ impl<'a> Cx<'a> {
                     self.relate(t, &vars, &field, Variance::Covariant, category, range);
                     at += n;
                 }
-                // Its body may move anything it captures into anything
-                // else it captures.
-                for pair in dest_vars.windows(2) {
-                    self.equate(pair[0], pair[1], Category::Boring, range);
+                // What its body requires of what it captures.
+                match self.requirements.get(&id) {
+                    Some(required) => {
+                        for &(a, b, _) in &required.outlives {
+                            let map = |e: Ext| match e {
+                                Ext::Static => Some(STATIC),
+                                Ext::Upvar(k) => dest_vars.get(k as usize).copied(),
+                                _ => None,
+                            };
+                            if let (Some(a), Some(b)) = (map(a), map(b)) {
+                                self.outlives(a, b, Category::Assignment, range);
+                            }
+                        }
+                    }
+                    None => {
+                        // A body not checked: anything it captures may go
+                        // into anything else.
+                        for pair in dest_vars.windows(2) {
+                            self.equate(pair[0], pair[1], Category::Boring, range);
+                        }
+                    }
                 }
             }
         }
@@ -1117,7 +1369,8 @@ impl<'a> Cx<'a> {
     ) {
         let (items, sigs) = (self.items, self.sigs);
         // The `Fn`-family methods of closures, function items and
-        // pointers, whose signatures flux does not track lifetimes in.
+        // pointers, whose signatures flux does not track lifetimes in:
+        // a closure's body says what it requires.
         if crate::fn_method_kind(items, func).is_some()
             && let Some(&self_ty) = generic_args.first()
             && matches!(
@@ -1125,7 +1378,21 @@ impl<'a> Cx<'a> {
                 TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_)
             )
         {
+            if let TyKind::Closure(id, _) = self_ty.kind()
+                && let Some(required) = self.requirements.get(&id)
+            {
+                return self.closure_call(required, args, dest, range);
+            }
             return self.opaque_call(args, dest, range);
+        }
+        // Closures passed on, which the callee may call.
+        for op in args {
+            let (ty, vars) = self.operand_regions(op);
+            let mut found = Vec::new();
+            self.closures_in(ty, &vars, &mut 0, &mut found);
+            for (id, upvars) in found {
+                self.passed_closure(id, &upvars, args, dest, range);
+            }
         }
         let Some(regions) = sigs.regions.fns.get(func) else {
             return self.opaque_call(args, dest, range);
@@ -1225,6 +1492,143 @@ impl<'a> Cx<'a> {
                         self.type_outlives(t, b, range);
                     }
                 }
+            }
+        }
+    }
+
+    /// A call of a closure (`Fn::call(&c, (x,))`, `FnMut::call_mut` or
+    /// `FnOnce::call_once`) whose body requires `required`: its
+    /// lifetimes, mapped to the call's.
+    fn closure_call(
+        &mut self,
+        required: &ClosureRequirements,
+        args: &[Operand],
+        dest: &Place,
+        range: TextRange,
+    ) {
+        let (Some(closure), Some(params)) = (args.first(), args.get(1)) else {
+            return self.opaque_call(args, dest, range);
+        };
+        let (self_ty, self_vars) = self.operand_regions(closure);
+        let (self_ref, upvars) = match self_ty.kind() {
+            TyKind::Ref(..) => (
+                self_vars.first().copied(),
+                self_vars.get(1..).unwrap_or(&[]),
+            ),
+            _ => (None, &self_vars[..]),
+        };
+        let upvars = upvars.to_vec();
+        let (_, arg_vars) = self.operand_regions(params);
+        let (_, dest_vars) = self.place_regions(dest);
+        let map = |e: Ext| match e {
+            Ext::Static => Some(STATIC),
+            Ext::SelfRef => self_ref,
+            Ext::Upvar(k) => upvars.get(k as usize).copied(),
+            Ext::Arg(k) => arg_vars.get(k as usize).copied(),
+            Ext::Ret(k) => dest_vars.get(k as usize).copied(),
+        };
+        let category = Cx::into(dest);
+        for &(a, b, _) in &required.outlives {
+            let category = match b {
+                Ext::Ret(_) => category,
+                _ => Category::CallArgument,
+            };
+            if let (Some(a), Some(b)) = (map(a), map(b)) {
+                self.outlives(a, b, category, range);
+            }
+        }
+    }
+
+    /// The closures in a value of type `ty` with slots `vars`: each one's
+    /// id and its captures' slots, into `out`.
+    fn closures_in(
+        &mut self,
+        ty: Ty,
+        vars: &[Var],
+        next: &mut usize,
+        out: &mut Vec<(flux_ty::ClosureId, Vec<Var>)>,
+    ) {
+        match ty.kind() {
+            TyKind::Ref(_, t) => {
+                *next += 1;
+                self.closures_in(t, vars, next, out);
+            }
+            TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
+                self.closures_in(t, vars, next, out)
+            }
+            TyKind::Tuple(list) => {
+                for &t in list {
+                    self.closures_in(t, vars, next, out);
+                }
+            }
+            TyKind::Adt(adt, list) => {
+                *next += self.items.structs[adt.strukt].generics.lifetimes.len();
+                for &t in list {
+                    self.closures_in(t, vars, next, out);
+                }
+            }
+            TyKind::Closure(id, list) => {
+                let n = self.slots(ty) as usize;
+                let own = vars.get(*next..*next + n).unwrap_or(&[]).to_vec();
+                out.push((id, own));
+                let upvars = flux_ty::ClosureArgs::split(list).upvars;
+                self.closures_in(upvars, vars, next, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// A closure, whose captures have slots `upvars`, passed to a call
+    /// that may call it: what its body requires, as far as the call's
+    /// lifetimes can say. What it returns may hold anything the call is
+    /// given; what it keeps of its parameters, the callee may have
+    /// given it from its own locals, which flux cannot tell, so it is
+    /// not supported.
+    fn passed_closure(
+        &mut self,
+        id: flux_ty::ClosureId,
+        upvars: &[Var],
+        args: &[Operand],
+        dest: &Place,
+        range: TextRange,
+    ) {
+        let Some(required) = self.requirements.get(&id) else {
+            return;
+        };
+        let mut inputs = Vec::new();
+        for op in args {
+            inputs.extend(self.operand_regions(op).1);
+        }
+        let (_, dest_vars) = self.place_regions(dest);
+        let category = Cx::into(dest);
+        for &(a, b, at) in &required.outlives {
+            match (a, b) {
+                (Ext::Arg(_), _) => {
+                    let message =
+                        "closures that keep references to their parameters are not supported yet";
+                    let d = Diagnostic::new(at, message);
+                    if !self.errors.contains(&d) {
+                        self.errors.push(d);
+                    }
+                }
+                (_, Ext::Ret(_)) => {
+                    for &d in &dest_vars {
+                        for &i in &inputs {
+                            self.outlives(i, d, category, range);
+                        }
+                    }
+                }
+                (Ext::Upvar(x), Ext::Upvar(y)) => {
+                    if let (Some(&x), Some(&y)) = (upvars.get(x as usize), upvars.get(y as usize)) {
+                        self.outlives(x, y, Category::CallArgument, range);
+                    }
+                }
+                (Ext::Upvar(x), Ext::Static) => {
+                    if let Some(&x) = upvars.get(x as usize) {
+                        self.outlives(x, STATIC, Category::CallArgument, range);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -1453,6 +1857,30 @@ impl<'a> Cx<'a> {
                 if self.known(a, b) {
                     continue;
                 }
+                // A closure's lifetimes are its creator's to relate,
+                // except its reference to itself, which nothing it is
+                // given may outlive.
+                if let Some(upvars) = &self.body.upvars {
+                    let (ext_a, ext_b) =
+                        (self.closure_ext[a as usize], self.closure_ext[b as usize]);
+                    let target = self.universal[b as usize].0;
+                    let (_, range) = self.blame(var, target);
+                    // A parameter whose written type has a reference has
+                    // a lifetime of the closure's own, which what it
+                    // returns or keeps may not have.
+                    let own_arg = matches!(ext_a, Ext::Arg(_)) && upvars.annotated_refs;
+                    if ext_a != Ext::SelfRef && !own_arg {
+                        self.own_requirements.push((ext_a, ext_b, range));
+                        continue;
+                    }
+                    let message = if !own_arg && upvars.kind == flux_ty::ClosureKind::FnMut {
+                        "captured variable cannot escape `FnMut` closure body"
+                    } else {
+                        "lifetime may not live long enough"
+                    };
+                    errors.push(Diagnostic::new(range, message));
+                    continue;
+                }
                 let target = self.universal[b as usize].0;
                 let (_, range) = self.blame(var, target);
                 errors.push(Diagnostic::new(range, "lifetime may not live long enough"));
@@ -1529,6 +1957,7 @@ impl<'a> Cx<'a> {
         }
         path.reverse();
         path.iter()
+            .rev()
             .map(|&c| &self.constraints[c as usize])
             .filter(|c| c.range != TextRange::default())
             .min_by_key(|c| c.category)

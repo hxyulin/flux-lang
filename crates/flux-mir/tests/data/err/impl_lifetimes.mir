@@ -1,0 +1,72 @@
+fn <S as Tr>::f<'a>(_1: &S, _2: &i32) -> &i32 {
+    let mut _0: &i32;
+
+    bb0: {
+        _0 = copy _2;
+        return;
+    }
+}
+
+fn <S as Tr>::g<'b>(_1: &S, _2: &i32, _3: &i32) -> &i32 {
+    let mut _0: &i32;
+
+    bb0: {
+        _0 = copy _2;
+        return;
+    }
+}
+
+fn <S as Tr>::h<'c>(_1: &S, _2: &i32, _3: &i32) -> i32 {
+    let mut _0: i32;
+    let _4: i32;
+    let _5: i32;
+    let _6: i32;
+    let _7: i32;
+
+    bb0: {
+        _5 = copy (*_2);
+        _6 = copy (*_3);
+        _4 = Add(copy _5, copy _6);
+        _7 = copy (*_1).0;
+        _0 = Add(copy _4, copy _7);
+        return;
+    }
+}
+
+fn <T as Tr>::f(_1: &T, _2: &i32) -> &i32 {
+    let mut _0: &i32;
+
+    bb0: {
+        _0 = &(*_1).0;
+        return;
+    }
+}
+
+fn <T as Tr>::g<'a>(_1: &T, _2: &i32, _3: &i32) -> &i32 {
+    let mut _0: &i32;
+
+    bb0: {
+        _0 = copy _2;
+        return;
+    }
+}
+
+fn <T as Tr>::h(_1: &T, _2: &i32, _3: &i32) -> i32 {
+    let mut _0: i32;
+
+    bb0: {
+        _0 = const 0_i32;
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 182..220: `impl` item signature doesn't match `trait` item signature

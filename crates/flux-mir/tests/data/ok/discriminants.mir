@@ -139,6 +139,7 @@ fn main() -> () {
     bb3: {
         _7 = copy _8 as i64;
         _1 = Add(copy _2, copy _7);
+        StorageDead(_1);
         _0 = const ();
         return;
     }

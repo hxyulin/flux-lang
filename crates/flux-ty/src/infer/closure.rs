@@ -612,13 +612,6 @@ impl Ctx<'_> {
                     info.kind
                 }
             };
-            let ret = self.known(parts.ret());
-            if crate::contains_ref(ret) {
-                self.error(
-                    self.range(closure.expr),
-                    "closures returning references are not supported yet",
-                );
-            }
             self.closure_infos
                 .insert(closure.expr, ClosureInfo { kind, ..info });
             // Calls of it, now that its kind is known.
