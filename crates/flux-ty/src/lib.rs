@@ -1355,6 +1355,26 @@ pub fn const_value(
     let value = |bits: u128| Some(Ty::value(want, bits));
     let konst = match &len.kind {
         flux_hir::ArrayLenKind::Error => return None,
+        flux_hir::ArrayLenKind::Const(konst) => *konst,
+        flux_hir::ArrayLenKind::NegLit {
+            value: magnitude,
+            suffix,
+        } => {
+            let Some(int) = want.as_int() else {
+                return mismatch(errors, &"integer");
+            };
+            if let Some(suffix) = suffix
+                && *suffix != int.name()
+            {
+                return mismatch(errors, &format!("`{suffix}`"));
+            }
+            if !int.is_signed() || *magnitude > int.max() + 1 {
+                errors.push((range, format!("literal out of range for `{want}`")));
+                return None;
+            }
+            let mask = u128::MAX >> (128 - int.bits());
+            return value(magnitude.wrapping_neg() & mask);
+        }
         flux_hir::ArrayLenKind::Anon(file, node) => {
             // One that uses generic parameters is reported, and has none.
             let konst = *items.anon_consts.get(&(*file, *node))?;

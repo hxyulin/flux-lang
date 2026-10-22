@@ -75,11 +75,13 @@ pub mod aarch64 {
     }
 
     /// Extracts lane 0 or 1. The compiler checks the constant lane.
+    #[rustc_legacy_const_generics(1)]
     pub unsafe fn vgetq_lane_u64<const LANE: i32>(a: uint64x2_t) -> u64 {
         __neon_vgetq_lane_u64::<LANE>(a)
     }
 
     /// Extracts lane 0. The compiler checks the constant lane.
+    #[rustc_legacy_const_generics(1)]
     pub unsafe fn vget_lane_u64<const LANE: i32>(a: uint64x1_t) -> u64 {
         __neon_vget_lane_u64::<LANE>(a)
     }
@@ -89,6 +91,7 @@ pub mod aarch64 {
     ///
     /// # Safety
     /// The caller must run on an AArch64 target with NEON.
+    #[rustc_legacy_const_generics(1)]
     pub unsafe fn vshrn_n_u16<const N: i32>(a: uint16x8_t) -> uint8x8_t {
         __neon_vshrn_n_u16::<N>(a)
     }

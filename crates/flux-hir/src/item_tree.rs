@@ -651,6 +651,9 @@ pub struct Function {
     /// replaces its calls with what it does once their types are known
     /// (`mono::expand_intrinsics`), so its body never runs.
     pub intrinsic: bool,
+    /// Core-only legacy calling convention: one const argument at this
+    /// zero-based position in a direct call, omitted from runtime arguments.
+    pub legacy_const_generic: Option<u32>,
     /// `#[track_caller]`: code generation passes it where it is called
     /// from, which `Location::caller` and its panics report.
     pub track_caller: bool,
@@ -1150,6 +1153,10 @@ pub struct ArrayLen {
 pub enum ArrayLenKind {
     /// An integer literal, with its suffix (`4usize`) if any.
     Lit { value: u128, suffix: Option<Symbol> },
+    /// A negative integer literal in a legacy const argument.
+    NegLit { value: u128, suffix: Option<Symbol> },
+    /// A constant resolved in a legacy call's lexical scope.
+    Const(ConstId),
     /// A path to a constant, resolved where the type is.
     Path(Path),
     /// `true` or `false`, a const generic argument.
@@ -1176,6 +1183,14 @@ impl std::fmt::Display for ArrayLen {
                 value,
                 suffix: None,
             } => write!(f, "{value}"),
+            ArrayLenKind::NegLit { value, suffix } => {
+                write!(f, "-{value}")?;
+                if let Some(suffix) = suffix {
+                    write!(f, "{suffix}")?;
+                }
+                Ok(())
+            }
+            ArrayLenKind::Const(id) => write!(f, "{{const {}}}", id.into_raw()),
             ArrayLenKind::Path(path) => write!(f, "{path}"),
             ArrayLenKind::Bool(b) => write!(f, "{b}"),
             ArrayLenKind::Char(c) => write!(f, "{c:?}"),
@@ -2820,6 +2835,7 @@ impl Collector<'_> {
         let mut const_unstable = false;
         let mut precise_live_drops = false;
         let mut intrinsic = false;
+        let mut legacy_const_generic = None;
         let mut track_caller = false;
         let mut do_not_const_check = false;
         let mut lang = None;
@@ -2839,6 +2855,27 @@ impl Collector<'_> {
                 precise_live_drops = true;
             } else if is_core && attr_name(attr) == Some("rustc_intrinsic") {
                 intrinsic = true;
+            } else if is_core && attr_name(attr) == Some("rustc_legacy_const_generics") {
+                // The bounded convention used by our NEON wrappers. Keep the
+                // position explicit rather than recognizing names at call sites.
+                let tree = attr.meta().and_then(|m| m.token_tree());
+                let tokens: Vec<_> = tree
+                    .into_iter()
+                    .flat_map(|t| t.syntax().tokens())
+                    .filter(|t| !t.kind().is_trivia())
+                    .collect();
+                if matches!(tokens.as_slice(), [l, n, r]
+                    if l.kind() == SyntaxKind::L_PAREN && n.text() == "1"
+                        && r.kind() == SyntaxKind::R_PAREN)
+                {
+                    legacy_const_generic = Some(1);
+                } else {
+                    unsupported(
+                        &mut self.items.diagnostics,
+                        attr.syntax().text_range(),
+                        "legacy const generic positions other than `(1)`",
+                    );
+                }
             } else if is_core && attr_name(attr) == Some("rustc_do_not_const_check") {
                 do_not_const_check = true;
             } else if is_core && let Some(name) = lang_attr(attr) {
@@ -3079,6 +3116,19 @@ impl Collector<'_> {
         } else {
             f.syntax().text_range().end()
         };
+        if legacy_const_generic.is_some()
+            && (params.len() != 1
+                || generics.params.len() != 1
+                || !generics.params[0].is_const()
+                || owner.is_some())
+        {
+            unsupported(
+                &mut self.items.diagnostics,
+                f.syntax().text_range(),
+                "legacy const generics on signatures other than one const and one runtime parameter",
+            );
+            legacy_const_generic = None;
+        }
         let id = self.items.functions.alloc(Function {
             def_range: TextRange::new(def_start(f.syntax()), signature_end),
             sig_range: TextRange::new(def_start(f.syntax()), sig_end),
@@ -3103,6 +3153,7 @@ impl Collector<'_> {
             const_unstable,
             precise_live_drops,
             intrinsic,
+            legacy_const_generic,
             track_caller,
             do_not_const_check,
             is_variadic,
@@ -4390,6 +4441,7 @@ impl Collector<'_> {
                     const_unstable: false,
                     precise_live_drops: false,
                     intrinsic: false,
+                    legacy_const_generic: None,
                     is_variadic: false,
                     track_caller: false,
                     do_not_const_check: false,
@@ -4687,6 +4739,7 @@ impl Collector<'_> {
             const_unstable: false,
             precise_live_drops: false,
             intrinsic: false,
+            legacy_const_generic: None,
             track_caller: false,
             do_not_const_check: false,
             is_variadic: false,
