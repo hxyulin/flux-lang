@@ -899,6 +899,14 @@
   elsewhere), and reach every method of a trait object's traits, so
   that `core`'s provided ones (`Write::write_char`, `Iterator::nth`)
   are built for vtables.
+- Select a method's trait bounds before coercing its arguments, as
+  rustc's confirmation does, so a trait's generic arguments that its
+  only `impl` block for the receiver decides are known first:
+  `a.partial_cmp(&b)` of `&str`s and `x.cmp(&y)` of `&[T]`s coerce the
+  argument to `&str` and `&[T]`. (Where rustc's `alloc` adds `impl`
+  blocks `core` lacks, such as `str: PartialEq<String>`, rustc finds
+  several and coerces nothing, so `a.eq(&b)` of `&str`s is rejected by
+  rustc and accepted by flux.)
 
 ### Performance
 

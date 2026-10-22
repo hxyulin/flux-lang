@@ -1,0 +1,5 @@
+fn main() -> ()
+    a@0: &str
+    x@1: &[i32]
+error 255..257: mismatched types: expected `&str`, found `&{integer}`
+error 286..289: mismatched types: expected `&[i32]`, found `&str`

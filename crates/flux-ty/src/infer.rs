@@ -4660,6 +4660,21 @@ impl Ctx<'_> {
         }
         let sig = &self.instance_sig(function, &generic_args);
         self.check_signature_privacy(sig, id);
+        // The bounds first: an `impl` block they select may tell the
+        // trait's generic arguments, and so the parameters' and return
+        // types (`str: PartialOrd<?R>` is `str: PartialOrd<str>`, so
+        // `a.partial_cmp(&b)` coerces `&&str` to `&str`).
+        let site = CallSite {
+            callee: name_range,
+            whole: self.range(id),
+            receiver: Some(receiver),
+            args,
+            qself: None,
+            expr: id,
+        };
+        self.register_call_bounds(function, &generic_args, site, Some(base));
+        self.select_obligations();
+        let sig = &self.instance_sig(function, &generic_args);
         // The arguments other than closures, each coerced to its
         // parameter, as rustc checks them; closures follow, once the
         // others told what they can (`fold(0i32, |acc, x| ..)`'s `acc`).
@@ -4697,17 +4712,6 @@ impl Ctx<'_> {
                 format!("cannot call non-const method `{name}` in {context}"),
             );
         }
-        // The bounds first: an `impl` block they select may tell the
-        // trait's generic arguments, and so the return type.
-        let site = CallSite {
-            callee: name_range,
-            whole: self.range(id),
-            receiver: Some(receiver),
-            args,
-            qself: None,
-            expr: id,
-        };
-        self.register_call_bounds(function, &generic_args, site, Some(base));
         let sig = &self.instance_sig(function, &generic_args);
         self.meet_expectation(id, sig.ret);
         let autoref = self_mode(self.items, function);
