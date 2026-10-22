@@ -3,9 +3,11 @@
 pub mod rust_2024 {
     pub use crate::clone::Clone;
     pub use crate::cmp::{Eq, Ord, PartialEq, PartialOrd};
-    pub use crate::convert::From;
+    pub use crate::convert::{AsMut, AsRef, From, Into, TryFrom, TryInto};
     pub use crate::default::Default;
-    pub use crate::iter::{DoubleEndedIterator, ExactSizeIterator, IntoIterator, Iterator};
+    pub use crate::iter::{
+        DoubleEndedIterator, ExactSizeIterator, Extend, FromIterator, IntoIterator, Iterator,
+    };
     pub use crate::marker::{Copy, Sized};
     pub use crate::mem::drop;
     pub use crate::ops::{Drop, Fn, FnMut, FnOnce};

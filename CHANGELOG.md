@@ -822,6 +822,18 @@
   `size_hint`s for `Bytes`, `Chars` and `CharIndices`. Closures meet
   traits through blanket `impl` blocks, and a bound that is not met
   leaves its associated types errors rather than types to annotate.
+- Add the traits of rustc's prelude that `core` lacked: `FromIterator`
+  (with `Iterator::collect`, and impls for `()`, pairs of collections,
+  and `Option` and `Result` of collections, stopping at the first `None`
+  or `Err` as rustc's `GenericShunt` does), `Extend` (with `unzip` and
+  `partition`), `Into`, `TryFrom` and `TryInto` (every integer
+  conversion `From` lacks, with `TryFromIntError`, and `char`'s, with
+  `CharTryFromError` and `TryFromCharError`), and `AsRef` and `AsMut`;
+  `Sum` and `Product` of `Option`s and `Result`s, and `From<T> for
+  Option<T>`. An associated type whose trait's arguments are not known
+  yet waits for them, and a method's trait that an `impl` block meets
+  but whose bounds do not hold reports the unmet bound (E0277), as
+  rustc does.
 
 ### Performance
 

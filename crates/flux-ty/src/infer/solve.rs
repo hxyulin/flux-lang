@@ -305,8 +305,14 @@ impl Ctx<'_> {
                 match self.select_predicate(ob.pred) {
                     Selection::Met(nested) => {
                         progress = true;
+                        // A method's trait that holds through an `impl`
+                        // block whose own bounds do not (`i32: Into<u8>`
+                        // for `.into()` once its type is known) is the
+                        // unmet bound of the block, as rustc reports it.
+                        let item_bounds = matches!(ob.kind, ObligationKind::ItemBounds { .. });
                         let kind = match ob.kind {
-                            ObligationKind::TraitCall { .. } => ObligationKind::Bound,
+                            ObligationKind::TraitCall { .. }
+                            | ObligationKind::ItemBounds { .. } => ObligationKind::Bound,
                             kind => kind,
                         };
                         // A bound that needs itself, or ever larger types,
@@ -323,6 +329,7 @@ impl Ctx<'_> {
                             let pred = self.normalize_predicate(pred, ob.range);
                             self.obligations.push(Obligation {
                                 pred,
+                                root: if item_bounds { pred } else { ob.root },
                                 kind,
                                 depth: ob.depth + 1,
                                 ..ob
@@ -437,12 +444,15 @@ impl Ctx<'_> {
                     return normalized;
                 }
                 let self_ty = self.shallow(args[0]);
+                // The trait's arguments may pick the block too
+                // (`<u8 as TryFrom<?T>>::Error`).
+                let unknown = args.iter().any(|&a| self.has_unknown(a));
                 // A known type that does not implement the trait
                 // (reported where it is written).
-                if !self_ty.has_params() && !self_ty.has_aliases() && !self.has_unknown(self_ty) {
+                if !self_ty.has_params() && !self_ty.has_aliases() && !unknown {
                     return Ty::ERROR;
                 }
-                if self.has_unknown(self_ty) {
+                if unknown {
                     let var = self.new_var(false, origin);
                     self.projections.push(PendingProjection {
                         alias,

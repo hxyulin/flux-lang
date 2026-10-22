@@ -5434,14 +5434,24 @@ impl Ctx<'_> {
     /// E0277, reported at the argument whose type names it, as rustc
     /// does.
     fn check_sized_args(&mut self, expr: ExprId, function: FunctionId, args: &[Ty]) {
-        let trait_method = matches!(
-            self.items.functions[function].owner,
-            Some(flux_hir::Owner::Trait(_))
-        );
+        // A trait's `Self` may be unsized, and so may `core`'s traits'
+        // own parameters where rustc's are `?Sized` (`AsRef<T: ?Sized>`),
+        // which `core` cannot write yet.
+        let unsized_ok = match self.items.functions[function].owner {
+            Some(flux_hir::Owner::Trait(t)) => {
+                let data = &self.items.traits[t];
+                if self.items.is_core(data.loc.module) {
+                    1 + data.generics.len()
+                } else {
+                    1
+                }
+            }
+            _ => 0,
+        };
         let Some((index, &arg)) = args
             .iter()
             .enumerate()
-            .find(|&(i, a)| a.is_unsized() && !(trait_method && i == 0))
+            .find(|&(i, a)| a.is_unsized() && i >= unsized_ok)
         else {
             return;
         };

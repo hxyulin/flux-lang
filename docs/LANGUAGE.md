@@ -591,7 +591,9 @@ the `debug_*` builders, whose `field` and `entry` take any `&T` where
 `core::default::Default` (in the prelude) for the integers, `bool`,
 `char`, `&str`, `&[T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,
 `core::mem::{drop, swap, replace, take}` (`drop` also in the prelude;
-`swap` and `replace` are not `const` yet, as rustc's are), `core::convert::{identity, From}`,
+`swap` and `replace` are not `const` yet, as rustc's are),
+`core::convert::{identity, From, Into, TryFrom, TryInto, AsRef, AsMut,
+Infallible}`,
 `core::marker::{Sized, Copy}`, `core::clone::Clone` (as `Copy`,
 `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Debug` and `Default`, for
 tuples of up to twelve elements, comparing them element by element as
@@ -604,8 +606,9 @@ PartialOrd, Ord, Ordering, max, min}`, `core::option::Option` and
 `Bytes`), `core::ffi` (`CStr`, `FromBytesWithNulError`,
 `FromBytesUntilNulError`, `c_char`, `c_int` and C's other integer
 types) (`Sized`, `Copy`, `Clone`, `Drop`, `PartialEq`,
-`Eq`, `PartialOrd`, `Ord`, `From`, `Option`, `Some`, `None`, `Result`,
-`Ok` and `Err` in the prelude). `Ord` gives every type that implements
+`Eq`, `PartialOrd`, `Ord`, `From`, `Into`, `TryFrom`, `TryInto`,
+`AsRef`, `AsMut`, `FromIterator`, `Extend`, `Option`, `Some`, `None`,
+`Result`, `Ok` and `Err` in the prelude, as in rustc's 2024 prelude). `Ord` gives every type that implements
 it, the integers included, `cmp`, `max`, `min` and `clamp`, and
 `Ordering` has `is_eq`, `is_ne`, `is_lt`, `is_gt`, `is_le`, `is_ge`,
 `reverse`, `then` (`const`, as in rustc) and `then_with`, with
@@ -613,7 +616,15 @@ it, the integers included, `cmp`, `max`, `min` and `clamp`, and
 which orders the other way round (`sort_by_key(|x| Reverse(x.n))`).
 `bool` has `then_some` and `then`. `From` converts each type
 from itself, `bool` to the integers, and integers to the wider ones
-that hold all their values, as in rustc; `Into` comes later. `Option` has `is_some`,
+that hold all their values, `u8` to `char` and `char` to `u32` and
+wider, and `T` to `Option<T>`, as in rustc, and every type converts
+`Into` those that convert from it. `TryFrom` (and `TryInto`, from it)
+converts between every other two integer types, giving
+`core::num::TryFromIntError` where the value does not fit, `u32` to
+`char` (`core::char::CharTryFromError`) and `char` to `u8` and `u16`
+(`TryFromCharError`), and, with `Infallible`, wherever `From` does.
+`AsRef` and `AsMut` give slices of arrays and slices, `str` and its
+bytes of a `str`, and see through references. `Option` has `is_some`,
 `is_none`, `unwrap`, `expect`, `unwrap_or`, `ok_or`, `and`, `or` and
 `xor`; `Result` has `is_ok`, `is_err`, `ok`, `err`, `unwrap`, `expect`,
 `unwrap_err`, `expect_err`, `unwrap_or`, `and` and `or`; both implement `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`
@@ -650,8 +661,12 @@ the range structs `Range`, `RangeInclusive`, `RangeFrom`, `RangeTo`,
 `nth_back`, `rfind`), which the adapters implement where rustc's do;
 `ExactSizeIterator` (`len`, in the prelude), for the slice, array and `Option`
 iterators, the ranges of rustc's types and the adapters that keep it;
-`IntoIterator`, which every iterator implements; `Sum` and
-`Product` for the integers and references to them; and the iterators
+`IntoIterator`, which every iterator implements; `FromIterator`,
+which `collect` builds through (for the program's types, `()`, pairs
+of `Default + Extend` collections, and `Option` and `Result` of a
+collection, which stop at the first `None` or `Err`), and `Extend`
+(`unzip` and `partition` build with it); `Sum` and `Product` for the
+integers, references to them, and `Option`s and `Result`s of them; and the iterators
 `empty`, `once`, `once_with`, `repeat`, `repeat_with`, `repeat_n` (the
 value's clones, then the value itself), `successors` and `from_fn`. Every adapter's
 `size_hint` is rustc's. `&mut I` is an iterator where `I` is. The ranges of

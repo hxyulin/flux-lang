@@ -6,6 +6,11 @@
 //! caller does (in constants), as Rust's `core` does. `min` and `max`
 //! are `Ord`'s, as in Rust.
 
+/// Why an integer is not of another integer type: what `TryFrom`
+/// gives where the value is out of its range.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct TryFromIntError(pub(crate) ());
+
 impl i8 {
     pub const MIN: i8 = -128;
     pub const MAX: i8 = 127;
