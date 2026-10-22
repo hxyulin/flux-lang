@@ -192,8 +192,8 @@ Classification counts and a digest across every Unicode scalar match rustc
 with and without Flux optimization. Registry dependency resolution and the
 remaining `memchr` language/library requirements are still outstanding.
 
-Unchanged `memchr 2.8.3` sources still need `Send`/`Sync`, per-function
-`target_feature`, `non_exhaustive`, aggregate
+Unchanged `memchr 2.8.3` sources still need `Send`/`Sync`,
+`non_exhaustive`, aggregate
 union fields and some remaining NEON APIs. Its original package
 also needs feature selection and broader edition-2021 macro support. Source
 probes use the file command's explicit edition-2024 boundary and do not
@@ -213,8 +213,10 @@ narrowing checks `1..=8` and writes eight bytes through scalar operations;
 pairwise maximum combines scalarized shuffles with packed comparison/selection.
 Native `shrn`/`umaxp` selection is not implemented. Legacy trailing const
 arguments now work for the two lane APIs and narrowing shifts in direct calls;
-compound const expressions remain unsupported. Caller feature attributes remain
-a next step. External C vector ABI is not
+compound const expressions remain unsupported. Explicit unsafe functions with
+bodies now accept baseline `target_feature(enable = "neon")` on AArch64,
+including methods and const functions. Safe functions and other features remain
+unsupported. External C vector ABI is not
 supported. Baseline `target_feature` predicates select NEON on AArch64 and
 SSE/SSE2/FXSR on x86-64 independently of the compiler's own build flags.
 

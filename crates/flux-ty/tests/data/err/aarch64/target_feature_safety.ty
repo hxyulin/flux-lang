@@ -1,0 +1,23 @@
+struct S {}
+fn annotated(u8) -> u8
+    x@0: u8
+fn apply<F>(F) -> u8
+    f@0: F
+fn main() -> ()
+    f@0: unsafe fn(u8) -> u8
+    safe@1: fn(u8) -> u8
+    splat@2: fn(u8) -> uint8x16_t
+fn run(&Self) -> ()
+fn run(&S) -> ()
+    self@0: &S
+fn run(&Self) -> ()
+fn run(&S) -> ()
+    self@0: &S
+error 168..180: call to unsafe function `annotated` is unsafe and requires unsafe function or block
+error 230..234: call to unsafe function is unsafe and requires unsafe function or block
+error 265..274: mismatched types: expected `fn(u8) -> u8`, found `unsafe fn(u8) -> u8 {annotated}`
+error 286..295: the trait bound `unsafe fn(u8) -> u8 {annotated}: Fn<(u8,)>` is not satisfied
+error 302..315: call to unsafe function `vdupq_n_u8` is unsafe and requires unsafe function or block
+error 355..365: mismatched types: expected `fn(u8) -> uint8x16_t`, found `unsafe fn(u8) -> uint8x16_t {vdupq_n_u8}`
+error 471..491: method `run` has an incompatible type for trait
+error 561..574: method `run` has an incompatible type for trait

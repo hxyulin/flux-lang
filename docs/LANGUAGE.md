@@ -1015,9 +1015,12 @@ Rust sizes/alignments and Copy/Clone/Debug. The bounded API includes
 const lane indices and narrowing shifts (`1..=8`) are checked after substitution. Ordinary
 wrappers support unsafe function pointers; closures calling them inside an
 unsafe block can satisfy Fn bounds. Safe pointer conversions and direct
-Fn-bound use of the target-feature items are rejected. Caller
-`target_feature` attributes and vector C ABI
-support remain unsupported. Narrowing currently lowers to scalar loads/shifts
+Fn-bound use of the target-feature items are rejected. On AArch64, explicit
+unsafe functions with bodies, including const functions and methods, may carry
+`#[target_feature(enable = "neon")]`. Safe annotated functions, other features,
+foreign declarations, required trait methods and `inline(always)` combinations
+remain rejected. The attribute does not relax ordinary unsafe call rules.
+Vector C ABI support remains unsupported. Narrowing currently lowers to scalar loads/shifts
 and exactly eight byte stores. Pairwise maximum uses scalarized shuffles and
 packed unsigned comparison/selection; native `shrn`/`umaxp` selection is not
 implemented in the pinned Keel IR.
