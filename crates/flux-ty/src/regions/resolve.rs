@@ -267,12 +267,14 @@ fn functions(
         let mut owner_names: Vec<LifetimeName> = Vec::new();
         let mut owner_outlives: Vec<Outlives<Region>> = Vec::new();
         let mut self_regions: Option<Box<[Region]>> = None;
+        let mut self_types: Box<[(Symbol, Box<[Region]>)]> = Box::default();
         if let Some(flux_hir::Owner::Impl(imp)) = function.owner
             && let Some(r) = sigs.regions.impls.get(imp)
         {
             owner_names = r.names.to_vec();
             owner_outlives = r.outlives.to_vec();
             self_regions = Some(r.self_ty.clone());
+            self_types = r.types.clone();
         }
         let owner_count = owner_names.len() as u32;
         let mut names: Vec<Option<Symbol>> = owner_names.iter().map(|n| n.name).collect();
@@ -281,6 +283,7 @@ fn functions(
         let self_ty = crate::self_ty(sigs, function.owner);
         let mut walker = Walker::new(items, function.loc.module, names);
         walker.self_regions = self_regions.as_deref();
+        walker.self_types = &self_types;
         walker.scope = TypeScope {
             self_ty,
             generics: &generics,

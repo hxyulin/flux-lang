@@ -406,7 +406,10 @@ a method `m`, and records how the receiver is passed: dereferenced so
 many times, then borrowed for `&self` and `&mut self` or passed by
 value. A field access dereferences the same way. Where a `&mut T` is
 used as a reference (an argument, or a `let` with a type), it is
-reborrowed rather than moved, and may become a `&T`, as in rustc.
+reborrowed rather than moved, and may become a `&T`, as in rustc. A
+reference to a reference there (`&&T`, `&mut &T`, `&&mut T`) is
+dereferenced until it is the reference expected, then reborrowed
+(`&**r`): rustc's deref coercion, through references only.
 
 A pattern is checked against the type of the value it matches. One that
 is not a binding, a wildcard or a reference pattern sees through the

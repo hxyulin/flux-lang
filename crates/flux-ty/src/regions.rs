@@ -27,7 +27,7 @@ use flux_hir::{
     Const, Function, GenericArgs, Generics, Impl, ItemTree, LifetimeRef, ModuleId, Path, Struct,
     TypeAlias, TypeAliasId, TypeRef,
 };
-use flux_intern::Symbol;
+use flux_intern::{Symbol, kw};
 use flux_syntax::TextRange;
 
 use crate::{ClosureArgs, Signatures, Ty, TyKind, TypeScope};
@@ -274,6 +274,9 @@ pub(crate) struct Walker<'a> {
     pub names: Vec<Option<Symbol>>,
     /// What `Self` is, if it has slots.
     pub self_regions: Option<&'a [Region]>,
+    /// In a trait's `impl` block's methods, the slots of its associated
+    /// types, which `Self::Out` resolves to.
+    pub self_types: &'a [(Symbol, Box<[Region]>)],
     /// For resolving the types an alias is given.
     pub scope: TypeScope<'a>,
     pub elided: Elided,
@@ -289,6 +292,7 @@ impl<'a> Walker<'a> {
             module,
             names,
             self_regions: None,
+            self_types: &[],
             scope: TypeScope::default(),
             elided: Elided::Is(Region::Erased),
             fresh: Vec::new(),
@@ -415,6 +419,21 @@ impl<'a> Walker<'a> {
     fn path(&mut self, path: &Path, ty: Ty, out: &mut Vec<Region>) {
         if matches!(ty.kind(), TyKind::Param(_) | TyKind::Alias(_)) {
             self.check_args(path);
+            return;
+        }
+        // `Self::Out` or `<Self as Tr>::Out`, which the type resolved to
+        // the block's own (otherwise it is an associated type).
+        let is_self = |p: &Path| p.as_name() == Some(kw::SelfUpper);
+        let own = match (&path.qself, &*path.segments) {
+            (None, [first, name]) if *first == kw::SelfUpper => Some(*name),
+            (Some(q), [name]) if matches!(&q.ty, TypeRef::Path(p) if is_self(p)) => Some(*name),
+            _ => None,
+        };
+        if let Some(name) = own
+            && let Some((_, regions)) = self.self_types.iter().find(|(n, _)| *n == name)
+        {
+            self.check_args(path);
+            out.extend_from_slice(regions);
             return;
         }
         let resolved = match self.items.resolve(self.module, path, Ns::Types) {

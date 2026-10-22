@@ -151,8 +151,10 @@ supported yet), and on references to them, as below; `as` converts between integ
 64 bits. `c"..."` is a `&'static CStr`, and `.as_ptr()` gives the
 `*const c_char` (`*const i8` on both targets) that C functions take. As
 in rustc, arguments after a variadic function's `...` must be at least
-32 bits wide or pointers: `u8`, `i16` and `bool` need a cast to
-`c_int`/`c_uint` first.
+32 bits wide or pointers (raw pointers, or references to sized values):
+`u8`, `i16` and `bool` need a cast to `c_int`/`c_uint` first, and a
+function item one to a function pointer. Other types, which rustc
+passes as they are, are not supported yet.
 
 Values of `Copy` types are copied: integers, `bool`, raw pointers,
 shared references, tuples and arrays of `Copy` types, structs that
@@ -193,7 +195,9 @@ has no size of its own, so it exists only behind a pointer: a value,
 binding, parameter or field of a slice type is E0277, as in rustc
 (unsized struct fields are not supported yet). A reference to an array
 becomes a reference to a slice where one is expected (`let s: &[i32]
-= &a;`, `f(&mut a)`), as rustc's unsizing coercion does. An index must
+= &a;`, `f(&mut a)`), as rustc's unsizing coercion does, and a
+reference to a reference becomes the reference expected (`f(&&x)` for
+`f(x: &T)`), as rustc's deref coercion does through references. An index must
 be a `usize` (E0277, "the type `[i32]` cannot be indexed by `i32`");
 indexing anything other than an array or slice is E0608. Indexing is
 checked at run time: an index past the end panics, which aborts, and

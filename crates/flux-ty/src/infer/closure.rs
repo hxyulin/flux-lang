@@ -849,7 +849,8 @@ impl Ctx<'_> {
         if let Some(&m) = self.reborrows.get(expr)
             && let Some((binding, mut proj)) = self.capture_place(expr)
         {
-            proj.push(CaptureProj::Deref);
+            let derefs = self.deref_coercions.get(expr).copied().unwrap_or(1);
+            proj.extend((0..derefs).map(|_| CaptureProj::Deref));
             uses.add((binding, proj), UseKind::Borrow(m), self.range(expr));
             return;
         }

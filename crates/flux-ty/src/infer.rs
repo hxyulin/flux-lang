@@ -43,6 +43,10 @@ pub struct InferenceResult {
     /// used, rather than moved: `&*r` or `&mut *r` with this mutability.
     /// rustc does this where a reference is expected.
     pub reborrows: ArenaMap<Expr, Mutability>,
+    /// Of `reborrows`, those that go through more than one reference,
+    /// with how many: `&**r` (2) for a `&&T` where a `&T` is expected,
+    /// rustc's deref coercion.
+    pub deref_coercions: ArenaMap<Expr, u32>,
     /// Expressions of a function item's type that coerce to a function
     /// pointer where they are used: `let f: fn(i32) -> i32 = double;`.
     pub reified: ArenaMap<Expr, ()>,
@@ -271,6 +275,7 @@ impl<'a> Ctx<'a> {
             field_derefs: ArenaMap::new(),
             methods: ArenaMap::new(),
             reborrows: ArenaMap::new(),
+            deref_coercions: ArenaMap::new(),
             reified: ArenaMap::new(),
             calls: ArenaMap::new(),
             overloads: ArenaMap::new(),
@@ -430,6 +435,7 @@ struct Ctx<'a> {
     field_derefs: ArenaMap<Expr, u32>,
     methods: ArenaMap<Expr, Method>,
     reborrows: ArenaMap<Expr, Mutability>,
+    deref_coercions: ArenaMap<Expr, u32>,
     reified: ArenaMap<Expr, ()>,
     calls: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     overloads: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
@@ -715,6 +721,26 @@ impl Ctx<'_> {
             }
             return;
         }
+        // A `&&T`, `&mut &T` or `&&mut T` where a `&T` is expected is
+        // dereferenced until it is one, then reborrowed: rustc's deref
+        // coercion, through references.
+        if let (TyKind::Ref(from, pointee), TyKind::Ref(to, expected_pointee)) =
+            (self.shallow(actual).kind(), self.shallow(expected).kind())
+            && (from == to || from == Mutability::Mut)
+            && !self.can_unify(pointee, expected_pointee)
+        {
+            let (mut ty, mut derefs, mut unique) = (pointee, 1, from == Mutability::Mut);
+            while let TyKind::Ref(m, inner) = self.shallow(ty).kind() {
+                (ty, derefs) = (inner, derefs + 1);
+                unique &= m == Mutability::Mut;
+                if (to == Mutability::Not || unique) && self.can_unify(ty, expected_pointee) {
+                    self.unify(ty, expected_pointee);
+                    self.reborrows.insert(expr, to);
+                    self.deref_coercions.insert(expr, derefs);
+                    return;
+                }
+            }
+        }
         // A `&mut T` where a reference is expected is reborrowed, and may
         // become a `&T`.
         if let (TyKind::Ref(Mutability::Mut, pointee), TyKind::Ref(m, expected_pointee)) =
@@ -997,6 +1023,7 @@ impl Ctx<'_> {
             signature_of: None,
             bounds: &self.param_env,
             self_trait: self.self_trait,
+            self_types: &[],
             defaults: Some(&self.sigs.trait_defaults),
             lens: Some(&self.lens),
         };
@@ -4329,6 +4356,7 @@ impl Ctx<'_> {
             field_derefs: self.field_derefs,
             methods: self.methods,
             reborrows: self.reborrows,
+            deref_coercions: self.deref_coercions,
             reified: self.reified,
             calls,
             overloads,
@@ -4983,26 +5011,32 @@ impl Ctx<'_> {
                         }
                         _ => None,
                     };
-                    let ok = matches!(
-                        ty.kind(),
-                        TyKind::Int(_) | TyKind::RawPtr(..) | TyKind::Error | TyKind::Never
-                    );
-                    if matches!(ty.kind(), TyKind::Adt(..) | TyKind::Tuple([_, ..])) {
-                        self.error(
-                            self.range(expr),
-                            format!("passing `{ty}` to a variadic function is not supported yet"),
-                        );
-                    } else if let Some(cast_to) = cast_to {
+                    // A reference to a sized value is a pointer, as a raw
+                    // pointer is.
+                    let ok = match ty.kind() {
+                        TyKind::Ref(_, pointee) => {
+                            !matches!(pointee.kind(), TyKind::Slice(_) | TyKind::CStr)
+                        }
+                        TyKind::Int(_) | TyKind::RawPtr(..) | TyKind::Error | TyKind::Never => true,
+                        _ => false,
+                    };
+                    if let Some(cast_to) = cast_to {
                         self.error(
                             self.range(expr),
                             format!(
                                 "can't pass `{ty}` to variadic function; cast it to `{cast_to}`"
                             ),
                         );
-                    } else if !ok {
+                    } else if let TyKind::FnDef(_) = ty.kind() {
                         self.error(
                             self.range(expr),
-                            format!("can't pass `{ty}` to variadic function"),
+                            "can't pass a function item to a variadic function",
+                        );
+                    } else if !ok {
+                        // rustc passes anything else as it is.
+                        self.error(
+                            self.range(expr),
+                            format!("passing `{ty}` to a variadic function is not supported yet"),
                         );
                     }
                 }

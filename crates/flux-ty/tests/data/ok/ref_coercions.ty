@@ -1,0 +1,37 @@
+struct Figure { sides: i32 }
+struct Holder<'a> { f: &Figure }
+fn printf(*const i8) -> i32
+fn sides(&Figure) -> i32
+    f@0: &Figure
+fn bump(&mut Figure) -> ()
+    f@0: &mut Figure
+fn id<T>(&T) -> &T
+    t@0: &T
+fn pick<'a>(&&Figure) -> &Figure
+    r@0: &&Figure
+fn first(&Figure) -> &i32
+    f@0: &Figure
+fn main() -> ()
+    a@0: Figure
+    b@1: Figure
+    figures@2: [&Figure; 2]
+    t@3: i32
+    iter@4: Iter<&Figure>
+    f@5: &&Figure
+    r@6: &Figure
+    rr@7: &&Figure
+    x@8: &Figure
+    c@9: Figure
+    m@10: &mut Figure
+    mm@11: &mut &mut Figure
+    s@12: &Figure
+    d@13: Figure
+    dm@14: &mut Figure
+    h@15: Holder
+    q@16: &&mut Figure
+    f@17: &Figure
+    by_closure@18: {closure}
+    captured@19: {closure}
+    y@20: &Figure
+    bytes@21: [u8; 3]
+    more@22: [u8; 2]

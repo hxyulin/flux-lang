@@ -1888,19 +1888,29 @@ impl Builder<'_> {
         let Some(&mutability) = self.types.reborrows.get(expr) else {
             return self.lower_value(expr, dest);
         };
+        // `&**r` for a deref coercion.
+        let derefs = self.types.deref_coercions.get(expr).copied().unwrap_or(1);
         let place = if is_place(self.body, expr) {
-            self.lower_place_deref(expr, 1)
+            self.lower_place_deref(expr, derefs)
         } else {
             let temp = self.temp(self.expr_ty(expr));
             self.lower_value(expr, &temp.into());
-            Place::from(temp).deref()
+            (0..derefs).fold(Place::from(temp), |place, _| place.deref())
         };
         let rvalue = Rvalue::Ref {
             mutability,
             place,
             two_phase: false,
         };
-        self.assign(dest, rvalue, self.range(expr));
+        // A block's is its value's, where rustc reports it.
+        let mut at = expr;
+        while let Expr::Block {
+            tail: Some(tail), ..
+        } = self.body.exprs[at]
+        {
+            at = tail;
+        }
+        self.assign(dest, rvalue, self.range(at));
     }
 
     /// The constant path `expr`, resolved as `res`, names: with its

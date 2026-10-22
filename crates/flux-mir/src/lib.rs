@@ -261,10 +261,13 @@ pub fn place_name(
         }
         match elem {
             // A field or element of a reference's target is written as if
-            // the reference were the struct or array: `r.a`, `s[_]`.
+            // the reference were the struct or array: `r.a`, `s[_]`, and
+            // through a reference to it: `r.a` for `(**r).a`.
             ProjectionElem::Deref
                 if matches!(
-                    place.projection.get(i + 1),
+                    place.projection[i + 1..]
+                        .iter()
+                        .find(|e| !matches!(e, ProjectionElem::Deref)),
                     Some(ProjectionElem::Field(_) | ProjectionElem::Index(_))
                 ) => {}
             ProjectionElem::Index(_) => text = format!("{text}[_]"),

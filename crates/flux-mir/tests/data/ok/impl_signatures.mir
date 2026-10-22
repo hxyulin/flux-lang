@@ -1,0 +1,437 @@
+fn <It<'a> as Iterator>::next(_1: &mut It) -> Option<&i32> {
+    let mut _0: Option<&i32>;
+    let _2: bool;
+    let _3: usize;
+    let _4: ();
+    let _5: usize;
+    let _6: &i32;
+    let _7: usize;
+    let _8: usize;
+    let _9: bool;
+
+    bb0: {
+        _3 = copy (*_1).1;
+        _2 = Lt(copy _3, const 2_usize);
+        switchInt(copy _2) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _5 = copy (*_1).1;
+        (*_1).1 = Add(copy _5, const 1_usize);
+        _4 = const ();
+        _8 = copy (*_1).1;
+        _7 = Sub(copy _8, const 1_usize);
+        _9 = Lt(copy _7, const 2_usize);
+        assert(copy _9, "index out of bounds") -> bb4;
+    }
+
+    bb2: {
+        _0 = Option::None;
+        goto -> bb3;
+    }
+
+    bb3: {
+        return;
+    }
+
+    bb4: {
+        _6 = &(*(*_1).0).0[_7];
+        _0 = Option::Some(copy _6);
+        goto -> bb3;
+    }
+}
+
+fn <&'a Bag as IntoIterator>::into_iter(_1: &Bag) -> It {
+    let mut _0: It;
+    let _2: &Bag;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = It { bag: copy _2, i: const 0_usize };
+        return;
+    }
+}
+
+fn <Cells<'a, T> as Iterator>::next(_1: &mut Cells<T>) -> Option<&T> {
+    let mut _0: Option<&T>;
+    let _2: bool;
+    let _3: usize;
+    let _4: ();
+    let _5: usize;
+    let _6: &T;
+    let _7: usize;
+    let _8: usize;
+    let _9: bool;
+
+    bb0: {
+        _3 = copy (*_1).1;
+        _2 = Lt(copy _3, const 2_usize);
+        switchInt(copy _2) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _5 = copy (*_1).1;
+        (*_1).1 = Add(copy _5, const 1_usize);
+        _4 = const ();
+        _8 = copy (*_1).1;
+        _7 = Sub(copy _8, const 1_usize);
+        _9 = Lt(copy _7, const 2_usize);
+        assert(copy _9, "index out of bounds") -> bb4;
+    }
+
+    bb2: {
+        _0 = Option::None;
+        goto -> bb3;
+    }
+
+    bb3: {
+        return;
+    }
+
+    bb4: {
+        _6 = &(*(*_1).0).0[_7];
+        _0 = Option::Some(copy _6);
+        goto -> bb3;
+    }
+}
+
+fn <&'a Grid<T> as IntoIterator>::into_iter(_1: &Grid<T>) -> Cells<T> {
+    let mut _0: Cells<T>;
+    let _2: &Grid<T>;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = Cells { grid: copy _2, i: const 0_usize };
+        return;
+    }
+}
+
+fn largest<'a>(_1: &Bag) -> &i32 {
+    let mut _0: &i32;
+    let mut _2: &i32; // best
+    let _3: usize;
+    let _4: bool;
+    let _5: ();
+    let _6: It;
+    let _7: &Bag;
+    let mut _8: It; // iter
+    let _9: ();
+    let _10: ();
+    let _11: Option<&i32>;
+    let _12: &mut It;
+    let _13: &mut It;
+    let _14: isize;
+    let _15: &i32; // x
+    let _16: isize;
+    let _17: bool;
+    let _18: i32;
+    let _19: i32;
+    let _20: ();
+    let _21: &i32;
+
+    bb0: {
+        _3 = const 0_usize;
+        _4 = Lt(copy _3, const 2_usize);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _2 = &(*_1).0[_3];
+        _7 = copy _1;
+        _6 = into_iter::<&Bag>(copy _7) -> bb2;
+    }
+
+    bb2: {
+        _8 = move _6;
+        goto -> bb5;
+    }
+
+    bb3: {
+        StorageDead(_6);
+        _0 = copy _2;
+        StorageDead(_2);
+        return;
+    }
+
+    bb4: {
+        unreachable;
+    }
+
+    bb5: {
+        goto -> bb6;
+    }
+
+    bb6: {
+        _13 = &mut _8;
+        _12 = &mut (*_13);
+        _11 = next::<It>(move _12) -> bb8;
+    }
+
+    bb7: {
+        StorageDead(_8);
+        goto -> bb3;
+    }
+
+    bb8: {
+        _14 = discriminant(_11);
+        switchInt(copy _14) -> [0: bb11, otherwise: bb10];
+    }
+
+    bb9: {
+        StorageDead(_11);
+        _9 = const ();
+        goto -> bb6;
+    }
+
+    bb10: {
+        _16 = discriminant(_11);
+        switchInt(copy _16) -> [1: bb14, otherwise: bb13];
+    }
+
+    bb11: {
+        goto -> bb12;
+    }
+
+    bb12: {
+        _5 = const ();
+        StorageDead(_11);
+        goto -> bb7;
+    }
+
+    bb13: {
+        unreachable;
+    }
+
+    bb14: {
+        _15 = copy (_11 as #1).0;
+        goto -> bb15;
+    }
+
+    bb15: {
+        _18 = copy (*_15);
+        _19 = copy (*_2);
+        _17 = Gt(copy _18, copy _19);
+        switchInt(copy _17) -> [0: bb17, otherwise: bb16];
+    }
+
+    bb16: {
+        _21 = copy _15;
+        _2 = copy _21;
+        _20 = const ();
+        _10 = const ();
+        goto -> bb18;
+    }
+
+    bb17: {
+        _10 = const ();
+        goto -> bb18;
+    }
+
+    bb18: {
+        StorageDead(_15);
+        goto -> bb9;
+    }
+}
+
+fn iter_of<'x>(_1: &Bag) -> It {
+    let mut _0: It;
+    let _2: &Bag;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = into_iter::<&Bag>(copy _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn pick<'a>(_1: &&Bag) -> &Bag {
+    let mut _0: &Bag;
+    let _2: &&Bag;
+
+    bb0: {
+        _2 = copy _1;
+        _0 = &(*(*_2));
+        return;
+    }
+}
+
+fn through<'a, 'b>(_1: &mut &mut Bag) -> &Bag {
+    let mut _0: &Bag;
+    let _2: &mut &mut Bag;
+
+    bb0: {
+        _2 = move _1;
+        _0 = &(*(*_2));
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: Bag; // b
+    let _2: [i32; 2];
+    let _3: Grid<u8>; // g
+    let _4: [u8; 2];
+    let mut _5: i32; // t
+    let _6: ();
+    let _7: Cells<u8>;
+    let _8: &Grid<u8>;
+    let mut _9: Cells<u8>; // iter
+    let _10: ();
+    let _11: ();
+    let _12: Option<&u8>;
+    let _13: &mut Cells<u8>;
+    let _14: &mut Cells<u8>;
+    let _15: isize;
+    let _16: &u8; // c
+    let _17: isize;
+    let _18: ();
+    let _19: i32;
+    let _20: u8;
+    let _21: i32;
+    let mut _22: Bag; // c
+    let _23: [i32; 2];
+    let mut _24: &mut Bag; // m
+    let _25: &Bag; // r
+    let _26: &mut &mut Bag;
+    let _27: &mut &mut Bag;
+    let _28: (i32, &i32, usize, &Bag, &Bag);
+    let _29: i32;
+    let _30: &i32;
+    let _31: &Bag;
+    let _32: usize;
+    let _33: It;
+    let _34: &Bag;
+    let _35: &Bag;
+    let _36: &&Bag;
+    let _37: &Bag;
+    let _38: &Bag;
+
+    bb0: {
+        _2 = [const 3_i32, const 4_i32];
+        _1 = Bag { items: copy _2 };
+        _4 = [const 5_u8, const 6_u8];
+        _3 = Grid { cells: copy _4 };
+        _5 = const 0_i32;
+        _8 = &_3;
+        _7 = into_iter::<&Grid<u8>>(copy _8) -> bb1;
+    }
+
+    bb1: {
+        _9 = move _7;
+        goto -> bb4;
+    }
+
+    bb2: {
+        StorageDead(_7);
+        _23 = [const 1_i32, const 2_i32];
+        _22 = Bag { items: copy _23 };
+        _24 = &mut _22;
+        _27 = &mut _24;
+        _26 = &mut (*_27);
+        _25 = through(move _26) -> bb15;
+    }
+
+    bb3: {
+        unreachable;
+    }
+
+    bb4: {
+        goto -> bb5;
+    }
+
+    bb5: {
+        _14 = &mut _9;
+        _13 = &mut (*_14);
+        _12 = next::<Cells<u8>>(move _13) -> bb7;
+    }
+
+    bb6: {
+        StorageDead(_9);
+        goto -> bb2;
+    }
+
+    bb7: {
+        _15 = discriminant(_12);
+        switchInt(copy _15) -> [0: bb10, otherwise: bb9];
+    }
+
+    bb8: {
+        StorageDead(_12);
+        _10 = const ();
+        goto -> bb5;
+    }
+
+    bb9: {
+        _17 = discriminant(_12);
+        switchInt(copy _17) -> [1: bb13, otherwise: bb12];
+    }
+
+    bb10: {
+        goto -> bb11;
+    }
+
+    bb11: {
+        _6 = const ();
+        StorageDead(_12);
+        goto -> bb6;
+    }
+
+    bb12: {
+        unreachable;
+    }
+
+    bb13: {
+        _16 = copy (_12 as #1).0;
+        goto -> bb14;
+    }
+
+    bb14: {
+        _20 = copy (*_16);
+        _19 = copy _20 as i32;
+        _21 = copy _5;
+        _5 = Add(copy _21, copy _19);
+        _18 = const ();
+        _11 = const ();
+        StorageDead(_16);
+        goto -> bb8;
+    }
+
+    bb15: {
+        _29 = copy _5;
+        _31 = &_1;
+        _30 = largest(copy _31) -> bb16;
+    }
+
+    bb16: {
+        _34 = &_1;
+        _33 = iter_of(copy _34) -> bb17;
+    }
+
+    bb17: {
+        _32 = copy _33.1;
+        _37 = &_1;
+        _36 = &_37;
+        _35 = pick(copy _36) -> bb18;
+    }
+
+    bb18: {
+        _38 = copy _25;
+        _28 = (copy _29, copy _30, copy _32, copy _35, copy _38);
+        StorageDead(_28);
+        StorageDead(_37);
+        StorageDead(_33);
+        _0 = const ();
+        StorageDead(_25);
+        StorageDead(_24);
+        StorageDead(_22);
+        StorageDead(_5);
+        StorageDead(_3);
+        StorageDead(_1);
+        return;
+    }
+}
+
