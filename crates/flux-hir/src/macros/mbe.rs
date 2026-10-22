@@ -389,6 +389,12 @@ impl DefReader<'_> {
                                 out.push(M::Sequence { inner, sep, op });
                             }
                         }
+                        // At the end of a matcher group `$` is a literal,
+                        // as in the compiler's `T![$]` rule.
+                        None => {
+                            out.push(M::Token(dollar));
+                            i += 1;
+                        }
                         _ => {
                             self.error(self.range(dollar), "expected identifier, found `$`");
                             i += 1;

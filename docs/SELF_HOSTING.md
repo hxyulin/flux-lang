@@ -1,0 +1,139 @@
+# Compiling Flux with Flux
+
+The first milestone is to compile and execute small, current compiler
+modules with Flux, and compare them with rustc. This is not yet a build of
+the whole compiler or a bootstrap test.
+
+## Executable subset
+
+On arm64 macOS, run:
+
+```sh
+just selfhost-subset
+```
+
+The runtime harness compiles these production sources, without rewriting
+their algorithms:
+
+- `crates/flux-difftest/src/rng.rs`: seeded random choices, weighted draws,
+  recorded tapes and replay past the end of a tape.
+- `crates/flux-mir/src/bitset.rs`: dataflow sets, mutation, cloning and
+  union across partial and complete machine words.
+- `crates/flux-mir/src/interval.rs`: region intervals, insertion in sorted
+  order, coalescing, union and point lookup using `partition_point`.
+
+The test embeds the source files as modules beside
+`tests/run/support/compiler_internals.rs`. It compares output and exit
+status against rustc with Flux optimization both disabled and enabled.
+The interval checks also compare membership with a point-wise oracle.
+Test-only items are excluded by Flux's conditional item support, rather
+than stripped from the test input. Only ordinary builds are covered;
+this does not run the modules' `#[test]` functions under Flux.
+
+Bundling avoids two separate build-system gaps: `#[path]` module loading
+and loading separately compiled dependency crates. The normal workspace
+suite includes this test; the dedicated recipe makes it quick to repeat
+while expanding the subset.
+
+On 2026-10-23 the three-module test passed against rustc in both Flux
+modes. With item configuration filtering, the robustness corpus built MIR
+for 2,417 of 60,594 registry source files, compared with 1,467 before the
+change on the same corpus. This measures individual files reaching the
+MIR stage; it does not establish native compilation of those crates.
+
+## Main gaps to the complete compiler
+
+### Compiler input and crate builds
+
+`flux build` currently compiles one root source file and its module tree
+with Flux's own `core` and `alloc`. It does not build a Cargo dependency
+graph or consume rustc library metadata. Full compiler builds need a
+crate/dependency strategy with per-crate identities, visibility, aliases,
+editions, features and target configuration. An initial implementation
+could load dependency sources into the existing shared item tree and
+monomorphize the whole program. Separate compilation would additionally
+need library artifacts and serialized metadata. Linking against a
+rustc-built Rust crate is not a replacement for this work.
+
+The dependencies themselves are part of the scope: `memchr` and
+`unicode-ident` for syntax, `hashbrown` and `rustc-hash` for compiler data
+structures, `clap`'s derives for the CLI, and Keel for code generation.
+Each must either be supported or have a deliberately defined build
+boundary. Offline Cargo metadata currently finds 58 external packages in
+the workspace's normal/build dependency closure, including target-specific
+packages; this is not the host-only compiler package count. The current
+executable subset has no external dependencies.
+
+Keel generates selector tables in a build script and loads them through
+`include!(concat!(env!("OUT_DIR"), ...))`. Supporting its build therefore
+also requires build-script outputs and generated source. Sourcegen and
+difftest are additional workspace targets, rather than prerequisites for
+the first compiler executable.
+
+### Language and semantic support
+
+The syntax-kind module is a useful next target. Direct probes of its
+current source found:
+
+- A matcher ending with a literal `$`, used by `T![$]`. This is now
+  accepted and has runtime regression coverage.
+- An explicit `'static` in a local type annotation in `composite_parts`;
+  named lifetimes in body types are currently rejected.
+- After eliding that annotation in a diagnostic-only probe, returning
+  the match-selected promoted slice through `Some(parts)` is rejected
+  as referencing a temporary. A minimized reproducer is preserved as
+  [bug 017](../tests/difftest/bugs/017_enum_array_promotion_through_match.rs).
+  The production source is not rewritten to bypass either lifetime issue.
+
+Other required constructs include conditional compilation beyond the
+supported item positions, `cfg_attr`, generated/ included source,
+procedural macros and the unsafe implementations in the arena/interner.
+These need focused probes and Rust-compatible semantics; simply parsing
+the workspace does not establish support.
+
+Concrete later consumers include `AstNode<'t>`'s trait lifetime parameter,
+the labeled block `'alias: { ... }` in type resolution, and the arena's
+`repr(align(16))` layout. The parser uses `NonZeroU32` and asserts that
+its `Event` representation occupies eight bytes, so a substitute must
+preserve the layout and niche rather than merely provide the same methods.
+
+### Library and runtime
+
+The compiler uses much more than its current `core`/`alloc` subset.
+Examples include `Cell`/`RefCell` in the arena, synchronization and
+atomics in the interner, hash tables throughout semantic analysis, and
+filesystem, process and timing APIs in the driver and tools. The parser
+also uses `std::thread::panicking` for its marker guard.
+
+A small `std` facade can reexport facilities already present in `core`
+and `alloc`, but cannot provide these missing runtime facilities. Other
+observed API gaps include `Vec<String>::join`, Unicode case conversion,
+and `String::from_utf8_lossy`. Passing `&mut closure` as an `FnMut` argument
+also remains unsupported; the new partition-point tests pass closures by
+value, including closures that borrow mutable state.
+
+A deliberate standard-library/runtime plan is needed before the whole
+workspace is executable. Small dependency-free modules expose core and
+alloc gaps first, without requiring an operating-system API all at once.
+
+## Next milestones
+
+1. Keep the three-module executable subset passing as its source evolves.
+2. Compile syntax-kind classification, including its constant keyword
+   table and promoted token slices.
+3. Compile the lexer and token input after defining how their two external
+   dependencies are built. Compare token streams on real compiler sources.
+4. Compile the parser and syntax-tree pipeline, then require its output on
+   the workspace to agree with the rustc-built compiler.
+5. Expand into arena/interner and semantic analysis, while adding crate
+   builds and the required library/runtime facilities.
+
+The backend already emits arm64 macOS and x86-64 Linux objects, but the
+current executable link path is implemented only for arm64 macOS. A
+rustc-built Keel boundary may be useful during bootstrapping; it still
+leaves part of the compiler built by rustc. Compiling the whole compiler
+with Flux ultimately includes Keel and its dependency/build-script closure.
+
+The final bootstrap criterion is stronger than a successful build: a
+Flux-built Flux must compile and run the regression suite and then build
+the compiler again with equivalent behavior.

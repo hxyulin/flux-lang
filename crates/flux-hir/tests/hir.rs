@@ -135,19 +135,7 @@ fn conditional_compilation_of_compiler_sources() {
     ] {
         let source = format!("mod compiler_source {{\n{text}\n}}\nfn main() {{}}\n");
         let (_, _, hir) = flux_hir::lower_text(path, &source);
-        // The exported `T!` macro still has an independently unsupported
-        // literal `[$]` matcher. This test concerns cfg filtering only.
-        if path == "interval.rs" {
-            assert!(hir.diagnostics.is_empty(), "{path}: {:?}", hir.diagnostics);
-        } else {
-            assert!(
-                hir.diagnostics
-                    .iter()
-                    .all(|d| d.message == "expected identifier, found `$`"),
-                "{path}: {:?}",
-                hir.diagnostics
-            );
-        }
+        assert!(hir.diagnostics.is_empty(), "{path}: {:?}", hir.diagnostics);
         assert!(
             hir.items
                 .modules

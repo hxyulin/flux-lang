@@ -4,6 +4,14 @@
 
 ### Syntax
 
+- Accept a literal `$` at the end of a macro matcher group, including
+  the compiler's own `T![$]` rule. Add a dedicated `just selfhost-subset`
+  check that compiles real compiler modules and compares their execution
+  with rustc; extend it to MIR interval sets.
+- Filter ordinary and associated items with `#[cfg(...)]` before
+  expansion and lowering, using the same validated predicate evaluator
+  as `cfg!`. Add slice `partition_point`, used by compiler interval sets.
+
 - Parse parenthesized range-to patterns as patterns rather than tuples,
   and preserve attributed tail expressions in blocks and macro expansions.
   Reenable their differential generator coverage. Compile the compiler's

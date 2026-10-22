@@ -4,6 +4,7 @@
 // not yet support the `path` attribute used to import them directly.
 
 use bitset::BitSet;
+use interval::IntervalSet;
 use rng::Source;
 
 fn main() {
@@ -40,4 +41,29 @@ fn main() {
         assert_eq!(cloned, full);
         println!("bits {:?}", bits);
     }
+
+    // Compare interval operations against a simple point-wise oracle,
+    // as well as against rustc's execution of the same implementation.
+    let mut regions = IntervalSet::new();
+    for (start, end) in [(0, 2), (2, 4), (6, 8), (12, 12), (15, 20)] {
+        regions.push(start, end);
+    }
+    let mut other = IntervalSet::new();
+    other.push(3, 7);
+    other.push(10, 11);
+    assert!(regions.union(&other));
+    assert!(!regions.union(&other));
+    for point in 0..=22 {
+        assert_eq!(regions.contains(point), point < 8 || point == 10 || (15..20).contains(&point));
+        println!("{point}: {:?}", regions.run_of(point));
+    }
+    let mut empty = IntervalSet::new();
+    assert!(!empty.union(&IntervalSet::full(0)));
+    assert!(empty.union(&regions));
+    assert_eq!(empty, regions);
+    assert!(regions.union(&IntervalSet::full(23)));
+    assert_eq!(regions.run_of(0), Some((0, 23)));
+    assert_eq!(regions.run_of(22), Some((0, 23)));
+    assert_eq!(regions.run_of(23), None);
+    println!("full {:?}", regions);
 }

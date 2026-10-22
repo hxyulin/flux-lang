@@ -148,30 +148,50 @@ fn programs_match_rustc() {
     let dir = std::env::temp_dir().join(format!("flux-run-tests-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
+    compare_programs(&root, &dir, &programs);
+}
+
+/// A small executable milestone toward compiling flux with itself.
+#[test]
+fn compiler_modules_match_rustc() {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        eprintln!("skipped: flux links executables only on arm64 macOS so far");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let dir = std::env::temp_dir().join(format!("flux-compiler-tests-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
     // Compile unchanged compiler implementations, rather than copies of
     // their algorithms. Bundle modules until flux supports `#[path]`.
     let internals = dir.join("compiler_internals.rs");
     std::fs::write(
         &internals,
         format!(
-            "mod rng {{\n{}\n}}\nmod bitset {{\n{}\n}}\n{}",
+            "mod rng {{\n{}\n}}\nmod bitset {{\n{}\n}}\nmod interval {{\n{}\n}}\n{}",
             include_str!("../../flux-difftest/src/rng.rs"),
             include_str!("../../flux-mir/src/bitset.rs"),
+            include_str!("../../flux-mir/src/interval.rs"),
             include_str!("../../../tests/run/support/compiler_internals.rs"),
         ),
     )
     .unwrap();
-    programs.push(internals);
+    compare_programs(&root, &dir, &[internals]);
+}
 
+fn compare_programs(root: &Path, dir: &Path, programs: &[PathBuf]) {
     let mut failures = Vec::new();
-    for program in &programs {
+    for program in programs {
         let name = program.file_stem().unwrap().to_string_lossy().into_owned();
         // As given on the command line, which panic messages show.
-        let program = program.strip_prefix(&root).unwrap_or(program);
+        let program = program.strip_prefix(root).unwrap_or(program);
         let reference = dir.join(format!("{name}-rustc"));
         let result = compile(
             Command::new("rustc")
-                .current_dir(&root)
+                .current_dir(root)
                 .args([
                     "--edition",
                     "2024",
@@ -194,7 +214,7 @@ fn programs_match_rustc() {
             let suffix = if optimize { "-O" } else { "" };
             let executable = dir.join(format!("{name}-flux{suffix}"));
             let mut flux = Command::new(env!("CARGO_BIN_EXE_flux"));
-            flux.current_dir(&root)
+            flux.current_dir(root)
                 .arg("build")
                 .arg(program)
                 .arg("-o")
@@ -216,6 +236,6 @@ fn programs_match_rustc() {
             }
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(dir);
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
