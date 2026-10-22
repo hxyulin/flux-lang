@@ -18,12 +18,15 @@ pub mod ffi;
 pub mod fmt;
 pub mod hint;
 mod intrinsics;
+#[doc(hidden)]
+pub mod io;
 pub mod iter;
 pub mod marker;
 pub mod mem;
 pub mod num;
 pub mod ops;
 pub mod option;
+pub mod panic;
 #[doc(hidden)]
 pub mod panicking;
 pub mod prelude;

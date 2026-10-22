@@ -2,11 +2,11 @@
 //! `#[rustc_builtin_macro]`: `assert!`, `panic!`, `format_args!` and
 //! friends, as rustc's expand them for edition 2024.
 //!
-//! flux has no formatting machinery yet: a panic aborts without its
-//! message, so `format_args!` checks its format string and that each
-//! argument implements the trait its placeholder names, evaluates the
-//! arguments once each, and makes an `Arguments` that holds only the
-//! string's literal pieces.
+//! `format_args!` makes a `core::fmt::Arguments` as rustc's lowering
+//! does: the format string's literal pieces, each argument evaluated
+//! once, by reference, as an `rt::Argument` of the trait its
+//! placeholders name, and the placeholders' options where some are not
+//! `{}`'s.
 
 use flux_intern::Symbol;
 use flux_syntax::parser::{self, Fragment};
@@ -370,20 +370,88 @@ fn panic(cx: &BuiltinCx<'_>, prefix: &str, out: &mut Vec<Tok>) -> Result<(), Err
 }
 
 /// What a format string says: its text with `{{` and `}}` unescaped, for
-/// one without placeholders, and its placeholders.
+/// one without placeholders, the literal text before each placeholder
+/// and after the last, and its placeholders.
 struct FormatString {
     literal: String,
     pieces: Vec<String>,
     placeholders: Vec<Placeholder>,
 }
 
+/// A placeholder: the argument it shows, how (`trait_`, the `rt`
+/// constructor's suffix), and its options.
 #[derive(Debug, Clone)]
 struct Placeholder {
     arg: ArgRef,
-    /// `Display` for `{}`, `Debug` for `{:?}`, ...
+    /// `display` for `{}`, `debug` for `{:?}`, ...
     trait_: &'static str,
-    /// Width and precision given by arguments, which must be `usize`s.
-    counts: Vec<ArgRef>,
+    fill: Option<char>,
+    align: Option<Align>,
+    /// `+` or `-`.
+    sign: Option<char>,
+    alternate: bool,
+    zero: bool,
+    /// `{:x?}` or `{:X?}`.
+    debug_hex: Option<bool>,
+    width: Option<Count>,
+    precision: Option<Count>,
+}
+
+impl Placeholder {
+    /// Whether it is `{}` or `{name}` with another trait and no options,
+    /// as `new_v1` can show.
+    fn is_plain(&self) -> bool {
+        self.fill.is_none()
+            && self.align.is_none()
+            && self.sign.is_none()
+            && !self.alternate
+            && !self.zero
+            && self.debug_hex.is_none()
+            && self.width.is_none()
+            && self.precision.is_none()
+    }
+
+    /// The options' bits, as `core::fmt::flags` lays them out.
+    fn flags(&self) -> u32 {
+        let mut flags = self.fill.unwrap_or(' ') as u32;
+        match self.sign {
+            Some('+') => flags |= 1 << 21,
+            Some('-') => flags |= 1 << 22,
+            _ => {}
+        }
+        if self.alternate {
+            flags |= 1 << 23;
+        }
+        if self.zero {
+            flags |= 1 << 24;
+        }
+        match self.debug_hex {
+            Some(false) => flags |= 1 << 25,
+            Some(true) => flags |= 1 << 26,
+            None => {}
+        }
+        flags
+            | match self.align {
+                Some(Align::Left) => 0,
+                Some(Align::Right) => 1 << 29,
+                Some(Align::Center) => 2 << 29,
+                None => 3 << 29,
+            }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Align {
+    Left,
+    Right,
+    Center,
+}
+
+/// A width or precision: a number, or an argument's value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Count {
+    Is(u16),
+    Arg(ArgRef),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -442,7 +510,9 @@ fn parse_format(literal: &Tok, cx: &BuiltinCx<'_>) -> Result<FormatString, Error
     Ok(out)
 }
 
-/// `arg:spec`, a placeholder's text between its braces.
+/// `arg:spec`, a placeholder's text between its braces, as rustc's
+/// `rustc_parse_format` reads it: `[[fill]align][sign]['#']['0'][width]
+/// ['.' precision][type]`.
 fn placeholder(inner: &str) -> Result<Placeholder, String> {
     let (arg, spec) = match inner.find(':') {
         Some(i) => (&inner[..i], Some(&inner[i + 1..])),
@@ -465,95 +535,120 @@ fn placeholder(inner: &str) -> Result<Placeholder, String> {
             Err(format!("invalid argument name `{s}`"))
         }
     };
-    let arg = arg_ref(arg)?;
-    let mut counts = Vec::new();
-    let mut trait_ = "display";
-    if let Some(spec) = spec {
-        let chars: Vec<char> = spec.chars().collect();
-        let mut i = 0;
-        // fill and alignment
-        if chars.len() >= 2 && matches!(chars[1], '<' | '^' | '>') {
-            i = 2;
-        } else if chars.first().is_some_and(|c| matches!(c, '<' | '^' | '>')) {
-            i = 1;
-        }
-        if chars.get(i).is_some_and(|&c| c == '+' || c == '-') {
-            i += 1;
-        }
-        if chars.get(i) == Some(&'#') {
-            i += 1;
-        }
-        if chars.get(i) == Some(&'0') && chars.get(i + 1).is_some_and(|c| *c != '$') {
-            i += 1;
-        }
-        // width: a number, `name$` or `n$`
-        let start = i;
-        while chars
-            .get(i)
-            .is_some_and(|c| c.is_alphanumeric() || *c == '_')
-        {
-            i += 1;
-        }
-        if chars.get(i) == Some(&'$') {
-            let s: String = chars[start..i].iter().collect();
-            counts.push(arg_ref(&s)?);
-            i += 1;
-        } else if !chars[start..i].iter().all(|c| c.is_ascii_digit()) {
-            // Not a width: the type follows.
-            i = start;
-        }
-        if chars.get(i) == Some(&'.') {
-            i += 1;
-            if chars.get(i) == Some(&'*') {
-                counts.push(ArgRef::Next);
-                i += 1;
-            } else {
-                let start = i;
-                while chars
-                    .get(i)
-                    .is_some_and(|c| c.is_alphanumeric() || *c == '_')
-                {
-                    i += 1;
-                }
-                if chars.get(i) == Some(&'$') {
-                    let s: String = chars[start..i].iter().collect();
-                    counts.push(arg_ref(&s)?);
-                    i += 1;
-                } else if !chars[start..i].iter().all(|c| c.is_ascii_digit()) {
-                    return Err("expected `}`, found a precision".into());
-                }
+    let mut p = Placeholder {
+        arg: arg_ref(arg)?,
+        trait_: "display",
+        fill: None,
+        align: None,
+        sign: None,
+        alternate: false,
+        zero: false,
+        debug_hex: None,
+        width: None,
+        precision: None,
+    };
+    let Some(spec) = spec else {
+        return Ok(p);
+    };
+    let chars: Vec<char> = spec.chars().collect();
+    let align_of = |c: char| match c {
+        '<' => Some(Align::Left),
+        '>' => Some(Align::Right),
+        '^' => Some(Align::Center),
+        _ => None,
+    };
+    let mut i = 0;
+    if let Some(align) = chars.get(1).and_then(|&c| align_of(c)) {
+        p.fill = Some(chars[0]);
+        p.align = Some(align);
+        i = 2;
+    } else if let Some(align) = chars.first().and_then(|&c| align_of(c)) {
+        p.align = Some(align);
+        i = 1;
+    }
+    if let Some(&c @ ('+' | '-')) = chars.get(i) {
+        p.sign = Some(c);
+        i += 1;
+    }
+    if chars.get(i) == Some(&'#') {
+        p.alternate = true;
+        i += 1;
+    }
+    if chars.get(i) == Some(&'0') && chars.get(i + 1) != Some(&'$') {
+        p.zero = true;
+        i += 1;
+    }
+    // A count: a number, or `n$` or `name$` for an argument's value.
+    let count = |i: &mut usize| -> Result<Option<Count>, String> {
+        let start = *i;
+        let mut end = start;
+        if chars.get(start).is_some_and(|c| c.is_ascii_digit()) {
+            while chars.get(end).is_some_and(|c| c.is_ascii_digit()) {
+                end += 1;
+            }
+        } else {
+            while chars
+                .get(end)
+                .is_some_and(|c| c.is_alphanumeric() || *c == '_')
+            {
+                end += 1;
             }
         }
-        let ty: String = chars[i..].iter().collect();
-        trait_ = match ty.trim() {
-            "" => "display",
-            "?" | "x?" | "X?" | "#?" => "debug",
-            "x" => "lower_hex",
-            "X" => "upper_hex",
-            "o" => "octal",
-            "b" => "binary",
-            "e" => "lower_exp",
-            "E" => "upper_exp",
-            "p" => "pointer",
-            other => return Err(format!("unknown format trait `{other}`")),
-        };
-    }
-    // `{:.*}` takes the precision before the value.
-    let arg = if counts.first() == Some(&ArgRef::Next) && arg == ArgRef::Next {
-        ArgRef::Next
-    } else {
-        arg
+        let s: String = chars[start..end].iter().collect();
+        if chars.get(end) == Some(&'$') {
+            *i = end + 1;
+            return Ok(Some(Count::Arg(arg_ref(&s)?)));
+        }
+        if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+            *i = end;
+            let n: u16 = s.parse().map_err(|_| {
+                format!("integer `{s}` does not fit into the type `u16` whose range is `0..=65535`")
+            })?;
+            return Ok(Some(Count::Is(n)));
+        }
+        Ok(None)
     };
-    Ok(Placeholder {
-        arg,
-        trait_,
-        counts,
-    })
+    p.width = count(&mut i)?;
+    if chars.get(i) == Some(&'.') {
+        i += 1;
+        if chars.get(i) == Some(&'*') {
+            p.precision = Some(Count::Arg(ArgRef::Next));
+            i += 1;
+        } else {
+            match count(&mut i)? {
+                Some(c) => p.precision = Some(c),
+                None => return Err("expected `}`, found a precision".into()),
+            }
+        }
+    }
+    let ty: String = chars[i..].iter().collect();
+    p.trait_ = match ty.trim() {
+        "" => "display",
+        "?" => "debug",
+        "x?" => {
+            p.debug_hex = Some(false);
+            "debug"
+        }
+        "X?" => {
+            p.debug_hex = Some(true);
+            "debug"
+        }
+        "x" => "lower_hex",
+        "X" => "upper_hex",
+        "o" => "octal",
+        "b" => "binary",
+        "e" => "lower_exp",
+        "E" => "upper_exp",
+        "p" => "pointer",
+        other => return Err(format!("unknown format trait `{other}`")),
+    };
+    Ok(p)
 }
 
-/// `format_args!(fmt, args..)`: checks `fmt` against the arguments and
-/// evaluates them once each, by reference, checking each implements the
-/// trait its placeholders name.
+/// `format_args!(fmt, args..)`: checks `fmt` against the arguments,
+/// evaluates them once each, by reference, and makes the `Arguments`
+/// that shows them, each with the formatting trait its placeholders
+/// name (which it must implement, reported at it).
 fn format_args(
     cx: &BuiltinCx<'_>,
     toks: &[Tok],
@@ -605,8 +700,6 @@ fn format_args(
     let mut next = 0;
     let mut wanted_positional = 0;
     let mut bad_index = None;
-    // Which argument each placeholder's value and counts are.
-    let mut uses: Vec<(usize, &'static str)> = Vec::new();
     let mut resolve =
         |r: &ArgRef, exprs: &mut Vec<Vec<Tok>>, used: &mut Vec<bool>| -> Option<usize> {
             match r {
@@ -653,17 +746,41 @@ fn format_args(
                 }
             }
         };
-    for p in &format.placeholders {
-        for count in &p.counts {
-            if let Some(i) = resolve(count, &mut exprs, &mut used) {
-                used[i] = true;
-                uses.push((i, "count"));
+    // The `rt::Argument`s: each argument with how it is shown, once per
+    // way, in the order placeholders first need them; and for each
+    // placeholder, its value's, width's and precision's.
+    let mut entries: Vec<(usize, &'static str)> = Vec::new();
+    let mut entry = |arg: usize, how: &'static str| -> usize {
+        match entries.iter().position(|&e| e == (arg, how)) {
+            Some(i) => i,
+            None => {
+                entries.push((arg, how));
+                entries.len() - 1
             }
         }
-        if let Some(i) = resolve(&p.arg, &mut exprs, &mut used) {
+    };
+    let mut resolved: Vec<(Option<usize>, Option<usize>, Option<usize>)> = Vec::new();
+    for p in &format.placeholders {
+        // rustc reads the width, then the precision (`.*` takes the next
+        // argument), then the value.
+        let mut count =
+            |c: &Option<Count>, exprs: &mut Vec<Vec<Tok>>, used: &mut Vec<bool>| -> Option<usize> {
+                match c {
+                    Some(Count::Arg(r)) => {
+                        let i = resolve(r, exprs, used)?;
+                        used[i] = true;
+                        Some(entry(i, "count"))
+                    }
+                    _ => None,
+                }
+            };
+        let width = count(&p.width, &mut exprs, &mut used);
+        let precision = count(&p.precision, &mut exprs, &mut used);
+        let value = resolve(&p.arg, &mut exprs, &mut used).map(|i| {
             used[i] = true;
-            uses.push((i, p.trait_));
-        }
+            entry(i, p.trait_)
+        });
+        resolved.push((value, width, precision));
     }
     if wanted_positional > positional.len() {
         let plural = |n: usize, s: &str| format!("{n} {s}{}", if n == 1 { "" } else { "s" });
@@ -705,6 +822,11 @@ fn format_args(
             ));
         }
     }
+    // The pieces: the text before each placeholder, and after the last
+    // if there is any.
+    if format.pieces.last().is_some_and(|p| p.is_empty()) {
+        format.pieces.pop();
+    }
     let mut pieces = Vec::new();
     cx.quote("& [", &mut pieces);
     for (i, piece) in format.pieces.iter().enumerate() {
@@ -720,24 +842,63 @@ fn format_args(
         cx.quote(")", out);
         return Ok(());
     }
-    cx.quote("match (", out);
+    // `new_v1` where each placeholder is `{}`-like and shows the entry
+    // of its position, as rustc's lowering decides.
+    let plain = format.placeholders.len() == entries.len()
+        && format
+            .placeholders
+            .iter()
+            .zip(&resolved)
+            .enumerate()
+            .all(|(i, (p, r))| p.is_plain() && r.0 == Some(i));
+    if plain {
+        cx.quote("{core}::fmt::Arguments::new_v1(", out);
+    } else {
+        cx.quote("{core}::fmt::Arguments::new_v1_formatted(", out);
+    }
+    out.extend(pieces);
+    cx.quote(", & match (", out);
     for e in &exprs {
         cx.quote("& (", out);
         out.extend_from_slice(e);
         cx.quote("),", out);
     }
-    cx.quote(") { args => {", out);
-    for (i, trait_) in uses {
+    cx.quote(") { args => [", out);
+    for &(i, how) in &entries {
         let origin = cx.origin_of(&exprs[i]);
+        let constructor = match how {
+            "count" => "from_usize".to_owned(),
+            how => format!("new_{how}"),
+        };
         cx.quote_at(
-            &format!("{{core}}::fmt::rt::{trait_}(args.{i});"),
+            &format!("{{core}}::fmt::rt::Argument::{constructor}(args.{i}),"),
             origin,
             out,
         );
     }
-    cx.quote("{core}::fmt::Arguments::new_const(", out);
-    out.extend(pieces);
-    cx.quote(") } }", out);
+    cx.quote("] }", out);
+    if !plain {
+        cx.quote(", & [", out);
+        let count = |c: &Option<Count>, arg: Option<usize>| match (c, arg) {
+            (Some(Count::Is(n)), _) => format!("{{core}}::fmt::rt::Count::Is({n}u16)"),
+            (Some(Count::Arg(_)), Some(i)) => format!("{{core}}::fmt::rt::Count::Param({i}usize)"),
+            _ => "{core}::fmt::rt::Count::Implied".to_owned(),
+        };
+        for (p, &(value, width, precision)) in format.placeholders.iter().zip(&resolved) {
+            cx.quote(
+                &format!(
+                    "{{core}}::fmt::rt::Placeholder::new({}usize, {}u32, {}, {}),",
+                    value.unwrap_or(0),
+                    p.flags(),
+                    count(&p.precision, precision),
+                    count(&p.width, width),
+                ),
+                out,
+            );
+        }
+        cx.quote("]", out);
+    }
+    cx.quote(")", out);
     Ok(())
 }
 

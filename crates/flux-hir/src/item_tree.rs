@@ -612,6 +612,13 @@ pub struct Function {
     /// replaces its calls with what it does once their types are known
     /// (`mono::expand_intrinsics`), so its body never runs.
     pub intrinsic: bool,
+    /// `#[track_caller]`: code generation passes it where it is called
+    /// from, which `Location::caller` and its panics report.
+    pub track_caller: bool,
+    /// `#[rustc_do_not_const_check]`, which only `core` may write: a
+    /// `const fn` whose body is not checked as one, as constant
+    /// evaluation never runs it (`core`'s panics, which it reports).
+    pub do_not_const_check: bool,
     /// Takes more arguments after `params`, like C's `printf(fmt, ...)`.
     pub is_variadic: bool,
     /// The `impl` block or trait it is in, if any.
@@ -2541,8 +2548,16 @@ impl Collector<'_> {
         let mut const_unstable = false;
         let mut precise_live_drops = false;
         let mut intrinsic = false;
+        let mut track_caller = false;
+        let mut do_not_const_check = false;
         let mut lang = None;
         for attr in f.attrs() {
+            if attr_name(attr) == Some("track_caller")
+                && attr.meta().is_some_and(|m| m.path().is_some())
+            {
+                track_caller = true;
+                continue;
+            }
             if is_core && attr_name(attr) == Some("rustc_inherit_overflow_checks") {
                 inherits_overflow_checks = true;
             } else if is_core && attr_name(attr) == Some("rustc_const_unstable") {
@@ -2551,6 +2566,8 @@ impl Collector<'_> {
                 precise_live_drops = true;
             } else if is_core && attr_name(attr) == Some("rustc_intrinsic") {
                 intrinsic = true;
+            } else if is_core && attr_name(attr) == Some("rustc_do_not_const_check") {
+                do_not_const_check = true;
             } else if is_core && let Some(name) = lang_attr(attr) {
                 lang = Some(name);
             } else {
@@ -2813,6 +2830,8 @@ impl Collector<'_> {
             const_unstable,
             precise_live_drops,
             intrinsic,
+            track_caller,
+            do_not_const_check,
             is_variadic,
             owner,
             has_self,
@@ -3948,6 +3967,8 @@ impl Collector<'_> {
             const_unstable: false,
             precise_live_drops: false,
             intrinsic: false,
+            track_caller: false,
+            do_not_const_check: false,
             is_variadic: false,
             owner: Some(Owner::Impl(id)),
             has_self,

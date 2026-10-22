@@ -103,51 +103,56 @@ impl<T> [T] {
 
     /// Rotates the slice so that the element at `mid` comes first;
     /// panics if `mid > len`.
+    #[track_caller]
     pub fn rotate_left(&mut self, mid: usize) {
         if mid > self.len() {
-            panic(c"assertion failed: mid <= self.len()")
+            panic("assertion failed: mid <= self.len()")
         }
         sort::rotate(self, mid);
     }
 
     /// Rotates the slice so that the last `k` elements come first;
     /// panics if `k > len`.
+    #[track_caller]
     pub fn rotate_right(&mut self, k: usize) {
         let len = self.len();
         if k > len {
-            panic(c"assertion failed: k <= self.len()")
+            panic("assertion failed: k <= self.len()")
         }
         sort::rotate(self, len - k);
     }
 
     /// The slice split at `mid`: `[0, mid)` and `[mid, len)`; panics if
     /// `mid > len`.
+    #[track_caller]
     pub fn split_at(&self, mid: usize) -> (&[T], &[T]) {
         let len = self.len();
         if mid > len {
-            panic(c"mid > len")
+            panic("mid > len")
         }
         unsafe { (subslice(self, 0, mid), subslice(self, mid, len)) }
     }
 
     /// The slice split at `mid`, mutably: `[0, mid)` and `[mid, len)`;
     /// panics if `mid > len`.
+    #[track_caller]
     pub fn split_at_mut(&mut self, mid: usize) -> (&mut [T], &mut [T]) {
         let len = self.len();
         if mid > len {
-            panic(c"mid > len")
+            panic("mid > len")
         }
         unsafe { (subslice_mut(self, 0, mid), subslice_mut(self, mid, len)) }
     }
 
     /// Copies the elements of `src`, which must be as long (or this
     /// panics), into the slice.
+    #[track_caller]
     pub fn copy_from_slice(&mut self, src: &[T])
     where
         T: Copy,
     {
         if self.len() != src.len() {
-            panic(c"copy_from_slice: source slice length does not match destination slice length")
+            panic("copy_from_slice: source slice length does not match destination slice length")
         }
         let mut i = 0;
         while i < src.len() {
@@ -158,12 +163,13 @@ impl<T> [T] {
 
     /// Clones the elements of `src`, which must be as long (or this
     /// panics), into the slice.
+    #[track_caller]
     pub fn clone_from_slice(&mut self, src: &[T])
     where
         T: Clone,
     {
         if self.len() != src.len() {
-            panic(c"destination and source slices have different lengths")
+            panic("destination and source slices have different lengths")
         }
         let mut i = 0;
         while i < src.len() {
@@ -223,9 +229,10 @@ impl<T> [T] {
 
     /// An iterator over the overlapping windows of `size` elements, in
     /// order; panics if `size` is 0.
+    #[track_caller]
     pub fn windows(&self, size: usize) -> Windows<'_, T> {
         if size == 0 {
-            panic(c"window size must be non-zero")
+            panic("window size must be non-zero")
         }
         Windows { v: self, size }
     }
@@ -233,9 +240,10 @@ impl<T> [T] {
     /// An iterator over chunks of `chunk_size` elements, in order, the
     /// last one shorter if the length is not a multiple; panics if
     /// `chunk_size` is 0.
+    #[track_caller]
     pub fn chunks(&self, chunk_size: usize) -> Chunks<'_, T> {
         if chunk_size == 0 {
-            panic(c"chunk size must be non-zero")
+            panic("chunk size must be non-zero")
         }
         Chunks {
             v: self,
@@ -245,9 +253,10 @@ impl<T> [T] {
 
     /// An iterator over chunks of exactly `chunk_size` elements, in order,
     /// without the remainder; panics if `chunk_size` is 0.
+    #[track_caller]
     pub fn chunks_exact(&self, chunk_size: usize) -> ChunksExact<'_, T> {
         if chunk_size == 0 {
-            panic(c"chunk size must be non-zero")
+            panic("chunk size must be non-zero")
         }
         let len = self.len();
         let fst_len = len - len % chunk_size;
@@ -262,9 +271,10 @@ impl<T> [T] {
     /// An iterator over mutable chunks of `chunk_size` elements, in
     /// order, the last one shorter if the length is not a multiple;
     /// panics if `chunk_size` is 0.
+    #[track_caller]
     pub fn chunks_mut(&mut self, chunk_size: usize) -> ChunksMut<'_, T> {
         if chunk_size == 0 {
-            panic(c"chunk size must be non-zero")
+            panic("chunk size must be non-zero")
         }
         let len = self.len();
         ChunksMut {
@@ -484,20 +494,35 @@ impl<'a, T> IntoIterator for &'a mut [T] {
 
 /// The bounds of `slice[start..end]` for a slice of length `len`, which
 /// panics as rustc's does where they are not within it.
+#[track_caller]
 fn checked_range(start: usize, end: usize, len: usize) -> Range<usize> {
-    if start > end {
-        panic(c"slice index starts after it ends")
-    }
-    if end > len {
-        panic(c"range end index out of range for slice")
+    if start > end || end > len {
+        slice_index_fail(start, end, len)
     }
     Range { start, end }
 }
 
+/// rustc's messages for a range not within a slice.
+#[track_caller]
+fn slice_index_fail(start: usize, end: usize, len: usize) -> ! {
+    if start > len {
+        crate::panicking::panic_fmt(format_args!(
+            "range start index {start} out of range for slice of length {len}"
+        ))
+    }
+    if end > len {
+        crate::panicking::panic_fmt(format_args!(
+            "range end index {end} out of range for slice of length {len}"
+        ))
+    }
+    crate::panicking::panic_fmt(format_args!("slice index starts at {start} but ends at {end}"))
+}
+
 /// `..=end` as `..end + 1`, which panics where `end` is `usize::MAX`.
+#[track_caller]
 fn inclusive_end(end: usize) -> usize {
     if end == usize::MAX {
-        panic(c"attempted to index slice up to maximum usize")
+        panic("attempted to index slice up to maximum usize")
     }
     end + 1
 }
@@ -505,6 +530,7 @@ fn inclusive_end(end: usize) -> usize {
 impl<T> Index<Range<usize>> for [T] {
     type Output = [T];
 
+    #[track_caller]
     fn index(&self, index: Range<usize>) -> &[T] {
         let r = checked_range(index.start, index.end, self.len());
         unsafe { subslice(self, r.start, r.end) }
@@ -512,6 +538,7 @@ impl<T> Index<Range<usize>> for [T] {
 }
 
 impl<T> IndexMut<Range<usize>> for [T] {
+    #[track_caller]
     fn index_mut(&mut self, index: Range<usize>) -> &mut [T] {
         let r = checked_range(index.start, index.end, self.len());
         unsafe { subslice_mut(self, r.start, r.end) }
@@ -521,6 +548,7 @@ impl<T> IndexMut<Range<usize>> for [T] {
 impl<T> Index<RangeTo<usize>> for [T] {
     type Output = [T];
 
+    #[track_caller]
     fn index(&self, index: RangeTo<usize>) -> &[T] {
         let r = checked_range(0, index.end, self.len());
         unsafe { subslice(self, r.start, r.end) }
@@ -528,6 +556,7 @@ impl<T> Index<RangeTo<usize>> for [T] {
 }
 
 impl<T> IndexMut<RangeTo<usize>> for [T] {
+    #[track_caller]
     fn index_mut(&mut self, index: RangeTo<usize>) -> &mut [T] {
         let r = checked_range(0, index.end, self.len());
         unsafe { subslice_mut(self, r.start, r.end) }
@@ -537,20 +566,22 @@ impl<T> IndexMut<RangeTo<usize>> for [T] {
 impl<T> Index<RangeFrom<usize>> for [T] {
     type Output = [T];
 
+    #[track_caller]
     fn index(&self, index: RangeFrom<usize>) -> &[T] {
         let len = self.len();
         if index.start > len {
-            panic(c"range start index out of range for slice")
+            slice_index_fail(index.start, len, len)
         }
         unsafe { subslice(self, index.start, len) }
     }
 }
 
 impl<T> IndexMut<RangeFrom<usize>> for [T] {
+    #[track_caller]
     fn index_mut(&mut self, index: RangeFrom<usize>) -> &mut [T] {
         let len = self.len();
         if index.start > len {
-            panic(c"range start index out of range for slice")
+            slice_index_fail(index.start, len, len)
         }
         unsafe { subslice_mut(self, index.start, len) }
     }
@@ -559,12 +590,14 @@ impl<T> IndexMut<RangeFrom<usize>> for [T] {
 impl<T> Index<RangeFull> for [T] {
     type Output = [T];
 
+    #[track_caller]
     fn index(&self, _index: RangeFull) -> &[T] {
         self
     }
 }
 
 impl<T> IndexMut<RangeFull> for [T] {
+    #[track_caller]
     fn index_mut(&mut self, _index: RangeFull) -> &mut [T] {
         self
     }
@@ -573,6 +606,7 @@ impl<T> IndexMut<RangeFull> for [T] {
 impl<T> Index<RangeInclusive<usize>> for [T] {
     type Output = [T];
 
+    #[track_caller]
     fn index(&self, index: RangeInclusive<usize>) -> &[T] {
         let end = inclusive_end(index.end);
         let start = if index.exhausted { end } else { index.start };
@@ -582,6 +616,7 @@ impl<T> Index<RangeInclusive<usize>> for [T] {
 }
 
 impl<T> IndexMut<RangeInclusive<usize>> for [T] {
+    #[track_caller]
     fn index_mut(&mut self, index: RangeInclusive<usize>) -> &mut [T] {
         let end = inclusive_end(index.end);
         let start = if index.exhausted { end } else { index.start };
@@ -593,6 +628,7 @@ impl<T> IndexMut<RangeInclusive<usize>> for [T] {
 impl<T> Index<RangeToInclusive<usize>> for [T] {
     type Output = [T];
 
+    #[track_caller]
     fn index(&self, index: RangeToInclusive<usize>) -> &[T] {
         let r = checked_range(0, inclusive_end(index.end), self.len());
         unsafe { subslice(self, r.start, r.end) }
@@ -600,6 +636,7 @@ impl<T> Index<RangeToInclusive<usize>> for [T] {
 }
 
 impl<T> IndexMut<RangeToInclusive<usize>> for [T] {
+    #[track_caller]
     fn index_mut(&mut self, index: RangeToInclusive<usize>) -> &mut [T] {
         let r = checked_range(0, inclusive_end(index.end), self.len());
         unsafe { subslice_mut(self, r.start, r.end) }

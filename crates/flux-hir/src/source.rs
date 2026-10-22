@@ -90,6 +90,19 @@ const CORE_FILES: &[(&str, &str)] = &[
         include_str!("../../../library/core/src/default.rs"),
     ),
     ("fmt.rs", include_str!("../../../library/core/src/fmt.rs")),
+    (
+        "fmt/builders.rs",
+        include_str!("../../../library/core/src/fmt/builders.rs"),
+    ),
+    (
+        "fmt/num.rs",
+        include_str!("../../../library/core/src/fmt/num.rs"),
+    ),
+    (
+        "fmt/rt.rs",
+        include_str!("../../../library/core/src/fmt/rt.rs"),
+    ),
+    ("io.rs", include_str!("../../../library/core/src/io.rs")),
     ("iter.rs", include_str!("../../../library/core/src/iter.rs")),
     ("mem.rs", include_str!("../../../library/core/src/mem.rs")),
     ("num.rs", include_str!("../../../library/core/src/num.rs")),
@@ -109,6 +122,10 @@ const CORE_FILES: &[(&str, &str)] = &[
     (
         "option.rs",
         include_str!("../../../library/core/src/option.rs"),
+    ),
+    (
+        "panic.rs",
+        include_str!("../../../library/core/src/panic.rs"),
     ),
     (
         "panicking.rs",

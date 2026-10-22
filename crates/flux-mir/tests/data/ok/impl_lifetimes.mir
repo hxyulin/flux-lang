@@ -1129,27 +1129,29 @@ fn <Token<'a> as ::core::cmp::Ord>::cmp(_1: &Token, _2: &Token) -> Ordering {
 
 fn <Token<'a> as ::core::fmt::Debug>::fmt(_1: &Token, _2: &mut Formatter) -> Result<(), Error> {
     let mut _0: Result<(), Error>;
-    let _3: ();
-    let _4: isize;
+    let _3: isize;
+    let _4: &mut Formatter;
     let _5: &&[u8]; // __self_0
     let _6: isize;
-    let _7: Result<(), Error>;
-    let _8: &&[u8];
+    let _7: &mut DebugTuple;
+    let _8: DebugTuple;
     let _9: &mut Formatter;
+    let _10: &mut DebugTuple;
+    let _11: &&[u8];
+    let _12: &mut DebugTuple;
 
     bb0: {
-        _4 = discriminant((*_1));
-        switchInt(copy _4) -> [0: bb3, otherwise: bb2];
+        _3 = discriminant((*_1));
+        switchInt(copy _3) -> [0: bb3, otherwise: bb2];
     }
 
     bb1: {
-        _0 = Result::Ok(const ());
         return;
     }
 
     bb2: {
         _6 = discriminant((*_1));
-        switchInt(copy _6) -> [1: bb6, otherwise: bb5];
+        switchInt(copy _6) -> [1: bb7, otherwise: bb6];
     }
 
     bb3: {
@@ -1157,27 +1159,42 @@ fn <Token<'a> as ::core::fmt::Debug>::fmt(_1: &Token, _2: &mut Formatter) -> Res
     }
 
     bb4: {
-        _3 = const ();
-        goto -> bb1;
+        _4 = &two_phase (*_2);
+        _0 = write_str(move _4, const &promoted[0]) -> bb5;
     }
 
     bb5: {
-        unreachable;
+        goto -> bb1;
     }
 
     bb6: {
-        _5 = &((*_1) as #1).0;
-        goto -> bb7;
+        unreachable;
     }
 
     bb7: {
-        _8 = copy _5;
-        _9 = &mut (*_2);
-        _7 = fmt::<&[u8]>(copy _8, move _9) -> bb8;
+        _5 = &((*_1) as #1).0;
+        goto -> bb8;
     }
 
     bb8: {
-        _3 = const ();
+        _9 = &two_phase (*_2);
+        _8 = debug_tuple(move _9, const &promoted[1]) -> bb9;
+    }
+
+    bb9: {
+        _10 = &two_phase _8;
+        _11 = copy _5;
+        _7 = field::<&[u8]>(move _10, copy _11) -> bb10;
+    }
+
+    bb10: {
+        _12 = &two_phase (*_7);
+        _0 = finish(move _12) -> bb11;
+    }
+
+    bb11: {
+        StorageDead(_7);
+        StorageDead(_8);
         StorageDead(_5);
         goto -> bb1;
     }

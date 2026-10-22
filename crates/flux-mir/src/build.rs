@@ -43,7 +43,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         queue.extend(body.callees());
         consts.insert(id, body);
     }
-    queue.extend(flux_ty::core_drop_fns(&hir.items));
+    queue.extend(flux_ty::core_roots(&hir.items));
     queue.extend(
         hir.bodies
             .iter()
@@ -796,6 +796,7 @@ pub fn closure_shims(
                 owner: None,
                 promoted: Vec::new(),
                 bugs: Vec::new(),
+                fn_spans: Default::default(),
             },
         ));
     }
@@ -860,6 +861,7 @@ fn build_body(
         promoted: Vec::new(),
         storage_temps: Default::default(),
         bugs: Vec::new(),
+        fn_spans: Default::default(),
     };
     b.locals.alloc(LocalDecl {
         ty: sig.ret,
@@ -1013,6 +1015,7 @@ fn build_body(
         },
         promoted: b.promoted,
         bugs: b.bugs,
+        fn_spans: b.fn_spans,
     };
     built.init_errors = crate::init::check(&built, &hir.items, &typed.sigs);
     built.init_errors.extend(b.errors);
@@ -1185,6 +1188,8 @@ struct Builder<'a> {
     promoted: Vec<crate::eval::Value>,
     /// [`Body::bugs`].
     bugs: Vec<(TextRange, &'static str)>,
+    /// [`Body::fn_spans`].
+    fn_spans: rustc_hash::FxHashMap<BasicBlock, u32>,
 }
 
 /// Whether `expr` denotes a place: a local, a field or element of one, or
@@ -1635,6 +1640,9 @@ impl Builder<'_> {
         let output = Ty::new(TyKind::Ref(mutability, self.expr_ty(expr)));
         let result = self.temp(output);
         let args = vec![Operand::Move(receiver.into()), index];
+        if let (Some(block), Some(bracket)) = (self.current, self.source_map.ops.get(expr)) {
+            self.fn_spans.insert(block, bracket.start());
+        }
         self.call(
             instance.function,
             instance.args,
@@ -2470,6 +2478,12 @@ impl Builder<'_> {
                 let mut operands = vec![receiver];
                 operands.extend(args.iter().map(|&arg| self.lower_operand(arg)));
                 let instance = self.types.calls[expr];
+                if let (Some(block), Some(name)) =
+                    (self.current, self.source_map.expr_fields.get(expr))
+                    && let Some(name) = name.first()
+                {
+                    self.fn_spans.insert(block, name.start());
+                }
                 self.call(instance.function, instance.args, operands, dest, range);
             }
             Expr::MethodCall { receiver, args, .. } => {

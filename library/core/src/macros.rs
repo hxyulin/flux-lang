@@ -247,7 +247,8 @@ macro_rules! todo {
     };
 }
 
-/// Writes formatted text to a `Formatter`, which flux's never shows.
+/// Writes formatted text to a `fmt::Write`, or anything with a
+/// `write_fmt` method.
 #[macro_export]
 macro_rules! write {
     ($dst:expr, $($arg:tt)*) => {
@@ -262,5 +263,83 @@ macro_rules! writeln {
     };
     ($dst:expr, $($arg:tt)*) => {
         $dst.write_fmt($crate::format_args_nl!($($arg)*))
+    };
+}
+
+// `std`'s printing macros, which rustc's programs get from `std`'s
+// prelude: every program sees them by name, and as `std::println!`,
+// but not as `core::println!` (see `flux_hir::macros`), so they do not
+// name each other through `$crate`.
+
+/// Prints to stdout.
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        $crate::io::_print($crate::format_args!($($arg)*));
+    }};
+}
+
+/// Prints to stdout, with a newline.
+#[macro_export]
+macro_rules! println {
+    () => {{
+        $crate::io::_print($crate::format_args!("\n"));
+    }};
+    ($($arg:tt)*) => {{
+        $crate::io::_print($crate::format_args_nl!($($arg)*));
+    }};
+}
+
+/// Prints to stderr.
+#[macro_export]
+macro_rules! eprint {
+    ($($arg:tt)*) => {{
+        $crate::io::_eprint($crate::format_args!($($arg)*));
+    }};
+}
+
+/// Prints to stderr, with a newline.
+#[macro_export]
+macro_rules! eprintln {
+    () => {{
+        $crate::io::_eprint($crate::format_args!("\n"));
+    }};
+    ($($arg:tt)*) => {{
+        $crate::io::_eprint($crate::format_args_nl!($($arg)*));
+    }};
+}
+
+/// Prints each expression and its value (`{:#?}`) to stderr, with
+/// where it is, and gives the value (a tuple of them for several).
+#[macro_export]
+macro_rules! dbg {
+    () => {
+        $crate::io::_eprint($crate::format_args_nl!(
+            "[{}:{}:{}]", $crate::file!(), $crate::line!(), $crate::column!()
+        ))
+    };
+    ($val:expr $(,)?) => {
+        match $val {
+            tmp => {
+                $crate::io::_eprint($crate::format_args_nl!(
+                    "[{}:{}:{}] {} = {:#?}",
+                    $crate::file!(), $crate::line!(), $crate::column!(), $crate::stringify!($val), &tmp
+                ));
+                tmp
+            }
+        }
+    };
+    ($($val:expr),+ $(,)?) => {
+        ($(
+            match $val {
+                tmp => {
+                    $crate::io::_eprint($crate::format_args_nl!(
+                        "[{}:{}:{}] {} = {:#?}",
+                        $crate::file!(), $crate::line!(), $crate::column!(), $crate::stringify!($val), &tmp
+                    ));
+                    tmp
+                }
+            }
+        ),+,)
     };
 }

@@ -361,9 +361,10 @@ impl str {
 
     /// The string split at byte `mid`, which must be a character
     /// boundary (or this panics).
+    #[track_caller]
     pub fn split_at(&self, mid: usize) -> (&str, &str) {
         if !self.is_char_boundary(mid) {
-            panic(c"failed to slice string")
+            panic("failed to slice string")
         }
         (substr(self, 0, mid), substr(self, mid, self.len()))
     }
@@ -421,16 +422,52 @@ impl str {
 
 /// `&s[start..end]`, which panics, as rustc's does, unless both are
 /// within the string and at character boundaries.
+#[track_caller]
 fn substr(s: &str, start: usize, end: usize) -> &str {
     if start > end || !s.is_char_boundary(start) || !s.is_char_boundary(end) {
-        panic(c"byte index is out of bounds or not a char boundary")
+        slice_error_fail(s, start, end)
     }
-    unsafe { from_utf8_unchecked(&s.as_bytes()[start..end]) }
+    unsafe { from_utf8_unchecked(crate::intrinsics::subslice(s.as_bytes(), start, end)) }
+}
+
+/// rustc's messages for a range not within a string, or not at its
+/// characters' boundaries.
+#[track_caller]
+fn slice_error_fail(s: &str, begin: usize, end: usize) -> ! {
+    let len = s.len();
+    if begin > len {
+        crate::panicking::panic_fmt(format_args!(
+            "start byte index {begin} is out of bounds for string of length {len}"
+        ))
+    }
+    if end > len {
+        crate::panicking::panic_fmt(format_args!(
+            "end byte index {end} is out of bounds for string of length {len}"
+        ))
+    }
+    if begin > end {
+        crate::panicking::panic_fmt(format_args!("byte range starts at {begin} but ends at {end}"))
+    }
+    let (which, index) = if !s.is_char_boundary(begin) { ("start", begin) } else { ("end", end) };
+    let mut floor = index;
+    while !s.is_char_boundary(floor) {
+        floor -= 1;
+    }
+    let mut ceil = index;
+    while !s.is_char_boundary(ceil) {
+        ceil += 1;
+    }
+    let ch = crate::fmt::decode_char(s.as_bytes(), floor);
+    let range = floor..ceil;
+    crate::panicking::panic_fmt(format_args!(
+        "{which} byte index {index} is not a char boundary; it is inside {ch:?} (bytes {range:?} of string)"
+    ))
 }
 
 impl Index<Range<usize>> for str {
     type Output = str;
 
+    #[track_caller]
     fn index(&self, index: Range<usize>) -> &str {
         substr(self, index.start, index.end)
     }
@@ -439,6 +476,7 @@ impl Index<Range<usize>> for str {
 impl Index<RangeTo<usize>> for str {
     type Output = str;
 
+    #[track_caller]
     fn index(&self, index: RangeTo<usize>) -> &str {
         substr(self, 0, index.end)
     }
@@ -447,6 +485,7 @@ impl Index<RangeTo<usize>> for str {
 impl Index<RangeFrom<usize>> for str {
     type Output = str;
 
+    #[track_caller]
     fn index(&self, index: RangeFrom<usize>) -> &str {
         substr(self, index.start, self.len())
     }
@@ -455,6 +494,7 @@ impl Index<RangeFrom<usize>> for str {
 impl Index<RangeFull> for str {
     type Output = str;
 
+    #[track_caller]
     fn index(&self, _index: RangeFull) -> &str {
         self
     }
@@ -463,9 +503,10 @@ impl Index<RangeFull> for str {
 impl Index<RangeInclusive<usize>> for str {
     type Output = str;
 
+    #[track_caller]
     fn index(&self, index: RangeInclusive<usize>) -> &str {
         if index.end == usize::MAX {
-            panic(c"attempted to index str up to maximum usize")
+            panic("attempted to index str up to maximum usize")
         }
         let start = if index.exhausted { index.end + 1 } else { index.start };
         substr(self, start, index.end + 1)
@@ -475,9 +516,10 @@ impl Index<RangeInclusive<usize>> for str {
 impl Index<RangeToInclusive<usize>> for str {
     type Output = str;
 
+    #[track_caller]
     fn index(&self, index: RangeToInclusive<usize>) -> &str {
         if index.end == usize::MAX {
-            panic(c"attempted to index str up to maximum usize")
+            panic("attempted to index str up to maximum usize")
         }
         substr(self, 0, index.end + 1)
     }

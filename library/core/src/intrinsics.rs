@@ -63,3 +63,11 @@ pub(crate) unsafe fn slice_from_raw_parts<'a, T>(data: *const T, len: usize) -> 
 pub(crate) unsafe fn c_str_from_ptr<'a>(ptr: *const u8) -> &'a crate::ffi::CStr {
     loop {}
 }
+
+/// Where the `#[track_caller]` function calling this was called, or
+/// where this is called in another function. Code generation passes
+/// each `#[track_caller]` function its caller's location.
+#[rustc_intrinsic]
+pub(crate) fn caller_location() -> &'static crate::panic::Location<'static> {
+    loop {}
+}

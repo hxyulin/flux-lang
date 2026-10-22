@@ -192,6 +192,7 @@ version = "0.1.0"
 dependencies = [
  "flux-arena",
  "flux-hir",
+ "flux-intern",
  "flux-mir",
  "flux-ty",
  "keel-asm",

@@ -49,6 +49,7 @@ impl char {
     /// The `char` for a digit `num` in `radix`, lowercase past 9, if
     /// `num` is less than `radix`. Panics if `radix` is not between 2
     /// and 36.
+    #[track_caller]
     pub const fn from_digit(num: u32, radix: u32) -> Option<char> {
         if radix < 2 || radix > 36 {
             crate::panicking::panic("from_digit: radix is too high (maximum 36)");
@@ -100,10 +101,11 @@ impl char {
 
     /// Writes the `char`'s UTF-8 bytes at the start of `dst`, which must
     /// be long enough (or this panics), and gives them as a `str`.
+    #[track_caller]
     pub fn encode_utf8(self, dst: &mut [u8]) -> &mut str {
         let len = self.len_utf8();
         if dst.len() < len {
-            crate::panicking::panic(c"encode_utf8: buffer too small")
+            crate::panicking::panic("encode_utf8: buffer too small")
         }
         let bytes = crate::str::encode_utf8(self);
         let mut i = 0;

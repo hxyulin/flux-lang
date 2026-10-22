@@ -1,7 +1,9 @@
 //! Compiles every program in `tests/run` with rustc and with flux
-//! (unoptimized and with `-O`), runs each, and compares their output and
-//! exit status. rustc gets `-C overflow-checks=off -C panic=abort`, the
-//! semantics flux implements.
+//! (unoptimized and with `-O`), runs each, and compares their output,
+//! panic messages and exit status. rustc gets `-C overflow-checks=off
+//! -C panic=abort`, the semantics flux implements. Both compilers are
+//! given the program's path relative to the repository, which panic
+//! messages show; the thread id they show differs between runs.
 //!
 //! Executables can only be linked for arm64 macOS so far; elsewhere the
 //! test reports that it was skipped.
@@ -14,6 +16,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, PartialEq, Eq)]
 struct Outcome {
     stdout: String,
+    /// With the thread id in panic messages replaced by `N`.
+    stderr: String,
     /// The exit code, 128 plus the signal that killed the program, or -1
     /// if it ran past the time limit.
     status: i32,
@@ -22,28 +26,63 @@ struct Outcome {
 impl Outcome {
     /// For failure messages: the status and the start of the output.
     fn brief(&self) -> String {
-        let mut stdout: String = self.stdout.chars().take(200).collect();
-        if stdout.len() < self.stdout.len() {
-            stdout.push_str("...");
-        }
-        format!("status {} with output {stdout:?}", self.status)
+        let cut = |s: &str| {
+            let mut out: String = s.chars().take(300).collect();
+            if out.len() < s.len() {
+                out.push_str("...");
+            }
+            out
+        };
+        format!(
+            "status {} with output {:?} and stderr {:?}",
+            self.status,
+            cut(&self.stdout),
+            cut(&self.stderr)
+        )
     }
 }
 
 /// How long a program may run before it counts as hung.
 const TIME_LIMIT: Duration = Duration::from_secs(10);
 
+/// `stderr` with the thread id of `thread 'main' (123) panicked`
+/// replaced by `N`.
+fn normalize(stderr: &str) -> String {
+    let marker = "thread 'main' (";
+    let mut out = String::new();
+    let mut rest = stderr;
+    while let Some(i) = rest.find(marker) {
+        let after = &rest[i + marker.len()..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        out.push_str(&rest[..i + marker.len()]);
+        if digits > 0 && after[digits..].starts_with(')') {
+            out.push('N');
+            rest = &after[digits..];
+        } else {
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn run(executable: &Path) -> Outcome {
-    // Panic messages go to stderr, which is not compared.
     let mut child = Command::new(executable)
+        .env_remove("RUST_BACKTRACE")
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| panic!("cannot run {}: {e}", executable.display()));
     let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
         let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
         bytes
     });
     let start = Instant::now();
@@ -59,6 +98,7 @@ fn run(executable: &Path) -> Outcome {
         std::thread::sleep(Duration::from_millis(5));
     };
     let stdout = String::from_utf8_lossy(&reader.join().unwrap()).into_owned();
+    let stderr = normalize(&String::from_utf8_lossy(&err_reader.join().unwrap()));
     let status = match status {
         None => -1,
         Some(status) => status.code().unwrap_or_else(|| {
@@ -66,7 +106,11 @@ fn run(executable: &Path) -> Outcome {
             128 + status.signal().unwrap_or(0)
         }),
     };
-    Outcome { stdout, status }
+    Outcome {
+        stdout,
+        stderr,
+        status,
+    }
 }
 
 fn compile(command: &mut Command, what: &str) -> Result<(), String> {
@@ -90,7 +134,10 @@ fn programs_match_rustc() {
         eprintln!("skipped: flux links executables only on arm64 macOS so far");
         return;
     }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
     let mut programs: Vec<PathBuf> = std::fs::read_dir(root.join("tests/run"))
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -104,9 +151,12 @@ fn programs_match_rustc() {
     let mut failures = Vec::new();
     for program in &programs {
         let name = program.file_stem().unwrap().to_string_lossy().into_owned();
+        // As given on the command line, which panic messages show.
+        let program = program.strip_prefix(&root).unwrap();
         let reference = dir.join(format!("{name}-rustc"));
         let result = compile(
             Command::new("rustc")
+                .current_dir(&root)
                 .args([
                     "--edition",
                     "2024",
@@ -129,7 +179,11 @@ fn programs_match_rustc() {
             let suffix = if optimize { "-O" } else { "" };
             let executable = dir.join(format!("{name}-flux{suffix}"));
             let mut flux = Command::new(env!("CARGO_BIN_EXE_flux"));
-            flux.arg("build").arg(program).arg("-o").arg(&executable);
+            flux.current_dir(&root)
+                .arg("build")
+                .arg(program)
+                .arg("-o")
+                .arg(&executable);
             if optimize {
                 flux.arg("-O");
             }

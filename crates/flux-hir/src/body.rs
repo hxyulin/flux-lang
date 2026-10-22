@@ -53,7 +53,8 @@ pub struct BodySourceMap {
     /// Each field of a `Record` pattern: its name, and the whole field
     /// (`a: b`).
     pub pat_fields: ArenaMap<Pat, Box<[(TextRange, TextRange)]>>,
-    /// The operator of a `Binary` expression, and the `?` of a `Try`.
+    /// The operator of a `Binary` expression, the `?` of a `Try`, and
+    /// an `Index` expression from its `[` on.
     pub ops: ArenaMap<Expr, TextRange>,
     /// The path of a `Record` expression.
     pub paths: ArenaMap<Expr, TextRange>,

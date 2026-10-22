@@ -137,6 +137,9 @@ pub struct Body {
     /// program has errors; anywhere else, a bug in flux, which
     /// [`build_file`] reports.
     pub bugs: Vec<(TextRange, &'static str)>,
+    /// Where the method's name starts in each method call, by the block
+    /// the call ends: where rustc's `#[track_caller]` locations point.
+    pub fn_spans: rustc_hash::FxHashMap<BasicBlock, u32>,
 }
 
 /// What a closure's body captures, for messages and for what it may
@@ -204,6 +207,7 @@ impl Body {
             owner,
             promoted: Vec::new(),
             bugs: Vec::new(),
+            fn_spans: Default::default(),
         }
     }
 
@@ -749,6 +753,18 @@ pub enum AssertMessage {
 }
 
 impl AssertMessage {
+    /// The `#[lang]` name of `core`'s function that panics with the
+    /// message, which code generation calls where the check fails.
+    pub fn lang_fn(&self) -> &'static str {
+        match self {
+            AssertMessage::DivisionByZero(_) => "panic_const_div_by_zero",
+            AssertMessage::RemainderByZero(_) => "panic_const_rem_by_zero",
+            AssertMessage::DivisionOverflow(..) => "panic_const_div_overflow",
+            AssertMessage::RemainderOverflow(..) => "panic_const_rem_overflow",
+            AssertMessage::BoundsCheck { .. } => "panic_bounds_check",
+        }
+    }
+
     /// rustc's panic message.
     pub fn text(&self) -> &'static str {
         match self {
@@ -850,15 +866,35 @@ pub fn fn_method_kind(items: &flux_hir::ItemTree, function: FunctionId) -> Optio
 }
 
 impl Body {
-    /// The functions the body calls.
+    /// The functions the body calls or takes the address of.
     pub fn callees(&self) -> Vec<FunctionId> {
-        self.blocks
-            .values()
-            .filter_map(|data| match &data.terminator.kind {
-                TerminatorKind::Call { func, .. } => Some(*func),
-                _ => None,
-            })
-            .collect()
+        let mut found = Vec::new();
+        let mut operand = |op: &Operand| {
+            if let Operand::Const(Constant::Fn { function, .. }) = op {
+                found.push(*function);
+            }
+        };
+        for data in self.blocks.values() {
+            for statement in &data.statements {
+                if let StatementKind::Assign(_, rvalue) = &statement.kind {
+                    rvalue.operands().into_iter().for_each(&mut operand);
+                }
+            }
+            data.terminator
+                .kind
+                .operands()
+                .into_iter()
+                .for_each(&mut operand);
+        }
+        found.extend(
+            self.blocks
+                .values()
+                .filter_map(|data| match &data.terminator.kind {
+                    TerminatorKind::Call { func, .. } => Some(*func),
+                    _ => None,
+                }),
+        );
+        found
     }
 
     /// The constant items the body uses, with their generic arguments.

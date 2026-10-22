@@ -29,8 +29,8 @@ use std::collections::HashMap;
 use flux_hir::{Diagnostic, FunctionId, Hir, ImplTarget, Owner};
 use flux_mir::mono::Instance;
 use flux_mir::{
-    AggregateKind, BinOp, Body, Constant, FileMir, Local, Operand, Place, PlaceTy, ProjectionElem,
-    Rvalue, StatementKind, TerminatorKind, UnOp,
+    AggregateKind, AssertMessage, BinOp, Body, Constant, FileMir, Local, Operand, Place, PlaceTy,
+    ProjectionElem, Rvalue, StatementKind, TerminatorKind, UnOp,
 };
 use flux_ty::{FnSig, GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind, TypedFile};
 use keel_frontend::{FunctionBuilder, Variable};
@@ -140,6 +140,7 @@ pub fn lower_module(
         statics: &statics,
         reified: collected.reified,
         uses_abort: false,
+        locations: HashMap::new(),
         strings: HashMap::new(),
         promoted: HashMap::new(),
         data: Vec::new(),
@@ -222,7 +223,19 @@ pub fn lower_module(
         };
         let sig = &typed.sigs[id];
         let main_sig = ctx_signature(&typed.sigs, sig, ctx.reified.contains(&instance));
-        let entry = entry_point(&symbols[&id], &main_sig, sig.ret == Ty::NEVER);
+        let flush = items
+            .lang_fns
+            .get(&flux_intern::Symbol::intern("flush_stdout"))
+            .filter(|&&f| mir.bodies.get(f).is_some())
+            .map(|&f| {
+                let instance = Instance {
+                    function: f,
+                    args: &[],
+                };
+                let flush_sig = ctx_signature(&typed.sigs, &typed.sigs[f], false);
+                (instance_symbol(hir, &symbols, instance), flush_sig)
+            });
+        let entry = entry_point(&symbols[&id], &main_sig, sig.ret == Ty::NEVER, flush);
         module.functions.push(entry);
     }
     module.sync_function_attrs();
@@ -648,8 +661,15 @@ fn ctx_signature(sigs: &Signatures, sig: &FnSig, reified: bool) -> Signature {
     }
 }
 
-/// `int main(int argc, char **argv)`: calls the Rust `main` and returns 0.
-fn entry_point(rust_main: &str, main_sig: &Signature, never: bool) -> Function {
+/// `int main(int argc, char **argv)`: calls the Rust `main`, then
+/// `flush`, which writes out what stdout holds, as std's runtime does,
+/// and returns 0.
+fn entry_point(
+    rust_main: &str,
+    main_sig: &Signature,
+    never: bool,
+    flush: Option<(String, Signature)>,
+) -> Function {
     let mut function = Function::new(
         "main",
         Signature::new(&[Type::I32, Type::Ptr], &[Type::I32]),
@@ -661,6 +681,10 @@ fn entry_point(rust_main: &str, main_sig: &Signature, never: bool) -> Function {
     b.append_block_param(entry, Type::Ptr);
     let callee = b.import_function(rust_main, main_sig.clone());
     b.ins().call(callee, &[]);
+    if let Some((flush, flush_sig)) = flush.filter(|_| !never) {
+        let flush = b.import_function(&flush, flush_sig);
+        b.ins().call(flush, &[]);
+    }
     if never {
         b.ins().trap();
     } else {
@@ -689,6 +713,9 @@ struct Ctx<'a> {
     /// The instances whose address the program takes.
     reified: std::collections::HashSet<Instance>,
     uses_abort: bool,
+    /// The data object of each `Location` a `#[track_caller]` function
+    /// is passed, by file and offset.
+    locations: HashMap<(flux_hir::FileId, u32), String>,
     /// The data object holding each distinct C string, by its bytes.
     strings: HashMap<Box<[u8]>, String>,
     /// The data objects of promoted constants, by their bytes and
@@ -715,17 +742,25 @@ impl Ctx<'_> {
             instance.function,
             instance.args,
         );
-        let mut function = Function::new(
-            instance_symbol(self.hir, self.symbols, instance),
-            ctx_signature(&self.typed.sigs, sig, self.reified.contains(&instance)),
-        );
+        let takes_location = self.takes_location(instance);
+        let mut signature = ctx_signature(&self.typed.sigs, sig, self.reified.contains(&instance));
+        if takes_location {
+            signature.params.push(AbiParam::new(Type::Ptr));
+        }
+        let mut function =
+            Function::new(instance_symbol(self.hir, self.symbols, instance), signature);
         function.local = true;
         function.attrs = attrs(sig);
         let typed = self.typed;
+        let owner = body.owner.unwrap_or(instance.function);
+        let file = self.hir.items.functions[owner].loc.file;
         let lower = Lower {
             ctx: self,
             sigs: &typed.sigs,
             body,
+            file,
+            takes_location,
+            caller_location: None,
             b: FunctionBuilder::new(&mut function),
             blocks: Vec::new(),
             vars: Vec::new(),
@@ -736,6 +771,65 @@ impl Ctx<'_> {
         };
         lower.body();
         function
+    }
+
+    /// Whether `instance` takes where it is called from, as a pointer
+    /// to a `Location` after its parameters: a `#[track_caller]`
+    /// function's, unless its address is taken, as a pointer's
+    /// signature has no room for it.
+    fn takes_location(&self, instance: Instance) -> bool {
+        self.hir.items.functions[instance.function].track_caller
+            && !self.reified.contains(&instance)
+    }
+
+    /// The data object of the `Location` of `offset` in `file`: its
+    /// path as the compiler was given it, and its one-based line and
+    /// column, in characters, as rustc counts them.
+    fn location(&mut self, file: flux_hir::FileId, offset: u32) -> String {
+        let items = &self.hir.items;
+        let file = items.expansion_files.get(&file).copied().unwrap_or(file);
+        if let Some(name) = self.locations.get(&(file, offset)) {
+            return name.clone();
+        }
+        let (path, line, column) = match items.files.get(&file) {
+            Some(source) => {
+                let text = source.text();
+                let mut at = (offset as usize).min(text.len());
+                while !text.is_char_boundary(at) {
+                    at -= 1;
+                }
+                let before = &text[..at];
+                let line = before.matches('\n').count() + 1;
+                let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+                let column = before[line_start..].chars().count() + 1;
+                (source.path.display().to_string(), line, column)
+            }
+            None => (String::new(), 1, 1),
+        };
+        use flux_mir::eval::Value as V;
+        let bytes = path
+            .bytes()
+            .map(|b| V::Int {
+                bits: u128::from(b),
+                ty: IntTy::U8,
+            })
+            .collect();
+        let value = V::Aggregate(vec![
+            V::Ref(Box::new(V::Aggregate(bytes))),
+            V::Int {
+                bits: line as u128,
+                ty: IntTy::U32,
+            },
+            V::Int {
+                bits: column as u128,
+                ty: IntTy::U32,
+            },
+        ]);
+        let strukt = items.lang_enums[&flux_intern::Symbol::intern("Location")];
+        let ty = Ty::adt(strukt, items.structs[strukt].name, &[]);
+        let name = self.promoted(&value, ty);
+        self.locations.insert((file, offset), name.clone());
+        name
     }
 
     /// `value`, of type `ty`, laid out in memory: its bytes and
@@ -903,6 +997,12 @@ struct Lower<'a, 'c, 'f> {
     ctx: &'c mut Ctx<'a>,
     sigs: &'a Signatures,
     body: &'c Body,
+    /// The file the body's ranges are in.
+    file: flux_hir::FileId,
+    /// Whether the function takes where it was called from.
+    takes_location: bool,
+    /// That parameter, a pointer to a `Location`.
+    caller_location: Option<Value>,
     b: FunctionBuilder<'f>,
     /// The keel block for each MIR block.
     blocks: Vec<Block>,
@@ -974,6 +1074,9 @@ impl Lower<'_, '_, '_> {
                 .collect();
             self.write(&param.into(), &values);
         }
+        if self.takes_location {
+            self.caller_location = Some(self.b.append_block_param(entry, Type::Ptr));
+        }
         for (block, data) in body.blocks.iter() {
             self.b.switch_to_block(self.blocks[block.index()]);
             for statement in &data.statements {
@@ -993,7 +1096,7 @@ impl Lower<'_, '_, '_> {
                     self.write(dest, &values);
                 }
             }
-            self.terminator(&data.terminator.kind);
+            self.terminator(&data.terminator.kind, data.terminator.range.start(), block);
         }
         if let Some(panic) = self.panic_block {
             self.b.switch_to_block(panic);
@@ -1703,7 +1806,7 @@ impl Lower<'_, '_, '_> {
         })
     }
 
-    fn terminator(&mut self, kind: &TerminatorKind) {
+    fn terminator(&mut self, kind: &TerminatorKind, offset: u32, block: flux_mir::BasicBlock) {
         match kind {
             TerminatorKind::Goto(target) => {
                 self.b.ins().jump(self.blocks[target.index()], &[]);
@@ -1757,15 +1860,44 @@ impl Lower<'_, '_, '_> {
                 dest,
                 target,
             } => {
+                let items = &self.ctx.hir.items;
+                let offset = self.body.fn_spans.get(&block).copied().unwrap_or(offset);
+                if items.functions[*func].intrinsic
+                    && items.functions[*func].name.as_str() == "caller_location"
+                {
+                    let location = self.location_here(offset);
+                    self.write(dest, &[location]);
+                    if let Some(target) = target {
+                        self.b.ins().jump(self.blocks[target.index()], &[]);
+                    }
+                    return;
+                }
                 let callee = self.callee(*func, generic_args);
+                let resolved = flux_ty::traits::resolve_instance(
+                    items,
+                    &self.ctx.typed.sigs,
+                    Instance {
+                        function: *func,
+                        args: generic_args,
+                    },
+                );
+                let location = self
+                    .ctx
+                    .takes_location(resolved)
+                    .then(|| self.location_here(offset));
                 let ret = flux_ty::traits::instance_ty(
                     &self.ctx.hir.items,
                     &self.ctx.typed.sigs,
                     self.ctx.typed.sigs[*func].ret,
                     generic_args,
                 );
-                self.call(ret, args, dest, *target, |b, values| {
-                    b.ins().call(callee, values)
+                self.call(ret, args, dest, *target, |b, values| match location {
+                    Some(location) => {
+                        let mut values = values.to_vec();
+                        values.push(location);
+                        b.ins().call(callee, &values)
+                    }
+                    None => b.ins().call(callee, values),
                 });
             }
             TerminatorKind::CallIndirect {
@@ -1791,19 +1923,50 @@ impl Lower<'_, '_, '_> {
             TerminatorKind::Assert {
                 cond,
                 expected,
+                msg,
                 target,
-                ..
             } => {
                 let target = self.blocks[target.index()];
-                let panic = self.panic_block();
                 let Some(cond) = self.scalar(cond) else {
                     self.b.ins().jump(target, &[]);
                     return;
+                };
+                // `core`'s function for the check, as rustc's.
+                let (lang, operands): (&str, Vec<&Operand>) = match msg {
+                    AssertMessage::BoundsCheck { len, index } => {
+                        ("panic_bounds_check", vec![index, len])
+                    }
+                    AssertMessage::DivisionByZero(_) => ("panic_const_div_by_zero", vec![]),
+                    AssertMessage::RemainderByZero(_) => ("panic_const_rem_by_zero", vec![]),
+                    AssertMessage::DivisionOverflow(..) => ("panic_const_div_overflow", vec![]),
+                    AssertMessage::RemainderOverflow(..) => ("panic_const_rem_overflow", vec![]),
+                };
+                let lang_fn = self
+                    .ctx
+                    .hir
+                    .items
+                    .lang_fns
+                    .get(&flux_intern::Symbol::intern(lang))
+                    .copied();
+                let panic = match lang_fn {
+                    Some(_) => self.b.create_block(),
+                    None => self.panic_block(),
                 };
                 if *expected {
                     self.b.ins().brif(cond, target, &[], panic, &[]);
                 } else {
                     self.b.ins().brif(cond, panic, &[], target, &[]);
+                }
+                if let Some(function) = lang_fn {
+                    self.b.switch_to_block(panic);
+                    let mut values = Vec::new();
+                    for operand in operands {
+                        values.extend(self.operand(operand));
+                    }
+                    values.push(self.location_here(offset));
+                    let callee = self.callee(function, Ty::list(&[]));
+                    self.b.ins().call(callee, &values);
+                    self.b.ins().trap();
                 }
             }
             TerminatorKind::Return => {
@@ -1903,6 +2066,18 @@ impl Lower<'_, '_, '_> {
         self.b.ins().ptradd(pointer, offset)
     }
 
+    /// Where code at `offset` in the body's file is, for a
+    /// `#[track_caller]` callee: where the function was called from if
+    /// it takes that, as rustc passes it on.
+    fn location_here(&mut self, offset: u32) -> Value {
+        if let Some(location) = self.caller_location {
+            return location;
+        }
+        let name = self.ctx.location(self.file, offset);
+        let data = self.b.import_data(&name);
+        self.b.ins().symbol_addr(keel_ir::Symbol::Data(data))
+    }
+
     fn callee(&mut self, func: FunctionId, generic_args: GenericArgs) -> FuncRef {
         let instance = Instance {
             function: func,
@@ -1921,11 +2096,14 @@ impl Lower<'_, '_, '_> {
             func,
             generic_args,
         );
-        let sig = if function.is_extern {
+        let mut sig = if function.is_extern {
             signature(self.sigs, &sig, function.is_variadic)
         } else {
             ctx_signature(self.sigs, &sig, self.ctx.reified.contains(&instance))
         };
+        if self.ctx.takes_location(instance) {
+            sig.params.push(AbiParam::new(Type::Ptr));
+        }
         let symbol = instance_symbol(self.ctx.hir, self.ctx.symbols, instance);
         let callee = self.b.import_function(&symbol, sig);
         self.callees.insert(instance, callee);
