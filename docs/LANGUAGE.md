@@ -246,7 +246,9 @@ iterator over references from both ends (`Iter<'a, T>`), and
 `IntoIterator` for `&[T]`, so `for x in slice` works, and `for x in
 &array` iterates a slice of the array (arrays by value, `&mut` slices
 and `iter_mut` need const generics or more, and are not supported
-yet); slices' methods are not found on arrays yet. Other
+yet). Slices' methods are found on arrays, and references to them,
+as rustc's method probe finds them: the array is borrowed and the
+reference unsized to a slice's (`arr.iter()`, `(&mut arr).last()`). Other
 methods of arrays and slices, comparisons with `<`, ranges as indices
 (`&a[1..3]`) and arrays in `const fn`s through references are not
 supported yet.

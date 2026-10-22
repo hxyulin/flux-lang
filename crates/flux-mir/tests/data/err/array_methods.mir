@@ -1,0 +1,55 @@
+fn main() -> () {
+    let mut _0: ();
+    let mut _1: [i32; 3]; // a
+    let _2: Option<&i32>; // first
+    let _3: &[i32; 3];
+    let _4: &[i32];
+    let _5: ();
+    let _6: usize;
+    let _7: bool;
+    let mut _8: [i32; 2]; // b
+    let _9: Iter<i32>; // iter
+    let _10: &[i32; 2];
+    let _11: &[i32];
+    let _12: ();
+    let _13: [i32; 2];
+
+    bb0: {
+        _1 = [const 1_i32, const 2_i32, const 3_i32];
+        _3 = &_1;
+        _4 = copy _3 as &[i32] (unsize);
+        _2 = first::<i32>(copy _4) -> bb1;
+    }
+
+    bb1: {
+        _6 = const 0_usize;
+        _7 = Lt(copy _6, const 3_usize);
+        assert(copy _7, "index out of bounds") -> bb2;
+    }
+
+    bb2: {
+        _1[_6] = const 5_i32;
+        _5 = const ();
+        PlaceMention(_2);
+        _8 = [const 1_i32, const 2_i32];
+        _10 = &_8;
+        _11 = copy _10 as &[i32] (unsize);
+        _9 = iter::<i32>(copy _11) -> bb3;
+    }
+
+    bb3: {
+        _13 = [const 3_i32, const 4_i32];
+        _8 = copy _13;
+        _12 = const ();
+        PlaceMention(_9);
+        _0 = const ();
+        StorageDead(_9);
+        StorageDead(_8);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+error 129..137: cannot assign to `a[_]` because it is borrowed
+error 211..221: cannot assign to `b` because it is borrowed
