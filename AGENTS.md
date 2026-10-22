@@ -27,6 +27,9 @@ flux is an experimental compiler for a subset of Rust (edition 2024). Use
   types, which no other crate may.
 - `tests/run/`: programs compiled with both rustc and flux, whose output and
   exit status must match (`cargo test -p flux-cli --test run`, arm64 macOS).
+- `crates/flux-difftest/`: differential testing (`just difftest`): random
+  valid programs compiled by rustc and flux and compared, with a reducer.
+  `tests/difftest/bugs/` holds minimized reproducers of what it found.
 - `crates/flux-intern/`: global `Symbol` interner and predefined symbols.
 - `crates/flux-arena/`: `DroplessArena` and typed `Arena<T>`/`Idx<T>`.
 - `crates/flux-cli/`: the `flux` binary (`lex`, `parse`, `hir`, `mir`,

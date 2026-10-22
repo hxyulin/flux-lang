@@ -40,6 +40,7 @@ just check
 | `crates/flux-mir/` | MIR: control-flow graphs with explicit runtime checks; initialization check |
 | `crates/flux-codegen/` | MIR to keel IR, native objects and executables |
 | `crates/flux-cli/tests/run.rs`, `tests/run/` | Programs built with rustc and flux; output and exit status must match |
+| `crates/flux-difftest/`, `tests/difftest/bugs/` | Random programs compared against rustc; minimized reproducers of what it found |
 | `crates/flux-intern/` | `Symbol` interning, predefined keywords and names |
 | `crates/flux-arena/` | `DroplessArena`, `Arena<T>`, `Idx<T>`, `ArenaMap` |
 
@@ -97,6 +98,51 @@ repository, which panic messages show.
 This needs arm64 macOS, where flux can link executables so far. Write
 programs so rustc cannot fold them at compile time (pass values through
 function parameters), or its overflow lints reject them.
+
+## Differential testing
+
+`crates/flux-difftest` generates random programs inside flux's subset,
+compiles each with rustc and flux (with and without `-O`), runs them and
+compares their output and exit status, as `tests/run` does for written
+programs. The generator is type-directed, so its programs are valid
+Rust (no undefined behavior, deterministic, terminating); each prints a
+tag and a hash for every value it observes, so the first differing line
+locates a miscompilation. It is too slow for `just check`; `cargo test
+-p flux-difftest` only checks that rustc accepts a few seeds' programs.
+
+```sh
+just difftest 2000                 # a campaign over seeds 0..2000, all cores
+just difftest 2000 --start 50000   # other seeds
+just difftest 500 --reduce         # also minimize the first case of each failure
+just difftest-reduce 1234          # minimize one seed's failure
+just difftest-reduce --file bug.rs # minimize a program by deleting lines
+```
+
+A campaign writes `out/difftest/summary.txt` (outcomes by class, and
+failures grouped by signature) and `out/difftest/cases/<seed>/`
+(`program.rs`, `info.txt` with what happened and how to reproduce it,
+and `reduced.rs` once reduced). The classes are `miscompile` (output or
+exit status differs, with the modes it happens in), `rejected` (flux
+reports an error in a program rustc accepts), `crash` (flux panics),
+`backend` (keel or the linker fails), `run-timeout` and
+`compile-timeout`; `invalid-program` is a generator bug.
+`target/release/difftest` also has `gen SEED` (print a program), `test
+SEED` (run one), `validate -n N` (rustc only, for generator work), `ir
+FILE` (flux's keel IR) and `bisect-opt FILE`, which, for a failure seen
+only with `-O`, finds the first pass of keel's pipeline after which the
+program differs from rustc's, or reports that it differs with no passes
+at all (a flux bug).
+
+The reducer first shrinks the choices the generator made (so the
+program stays valid by construction), then deletes lines while rustc
+still accepts the program and it still fails with the same signature,
+and formats the result. Put a minimized reproducer of each distinct bug
+in `tests/difftest/bugs/NNN_short_name.rs`, with a doc comment saying
+what rustc and flux do, in which modes, the seed, and a diagnosis.
+`difftest weights` lists the generator's feature weights, set with
+`--weight name=N` (0 turns a feature off); the last group of them keeps
+constructs flux rejects for now out of programs, so that campaigns find
+other bugs. Raise them once those bugs are fixed.
 
 ## Working on keel at the same time
 
