@@ -3,6 +3,7 @@
 
 use crate::clone::Clone;
 use crate::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
+use crate::convert::TryFrom;
 use crate::default::Default;
 use crate::fmt::{Debug, Formatter, Result};
 use crate::intrinsics::{is_copy, read, uninit, write};
@@ -12,6 +13,28 @@ use crate::mem::{ManuallyDrop, drop};
 use crate::ops::{Drop, FnMut};
 use crate::option::Option::{self, None, Some};
 use crate::slice::{Iter, IterMut};
+
+/// The slice's length did not match the array's length.
+#[derive(Clone, Copy, Debug)]
+pub struct TryFromSliceError(());
+
+impl crate::fmt::Display for TryFromSliceError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        f.write_str("could not convert slice to array")
+    }
+}
+
+impl<T: Copy, const N: usize> TryFrom<&[T]> for [T; N] {
+    type Error = TryFromSliceError;
+
+    fn try_from(slice: &[T]) -> crate::result::Result<[T; N], TryFromSliceError> {
+        if slice.len() == N {
+            crate::result::Result::Ok(from_fn(|i| slice[i]))
+        } else {
+            crate::result::Result::Err(TryFromSliceError(()))
+        }
+    }
+}
 
 /// An array of `N` elements, each `cb(i)` for its index `i`, made in
 /// order.
