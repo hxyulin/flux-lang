@@ -36,7 +36,7 @@
 
 use flux_hir::{Diagnostic, ItemTree};
 use flux_syntax::TextRange;
-use flux_ty::regions::{Outlives, Region, Variance};
+use flux_ty::regions::{Outlives, Region, TraitRefRegions, Variance};
 use flux_ty::{AliasTy, Mutability, Signatures, Ty, TyKind};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
@@ -1105,7 +1105,16 @@ impl<'a> Cx<'a> {
                     .collect(),
             );
             for &p in &sig.predicates {
-                self.prove_bound(p, &[], &lifetimes, &args, &arg_vars, h.range, 0);
+                self.prove_bound(
+                    p,
+                    &[],
+                    &TraitRefRegions::default(),
+                    &lifetimes,
+                    &args,
+                    &arg_vars,
+                    h.range,
+                    0,
+                );
             }
             self.call_projections = previous;
             for (p, table) in sig.projections.iter().zip(decl.projections.iter()) {
@@ -1416,6 +1425,7 @@ impl<'a> Cx<'a> {
                 &impl_args,
                 alias.args,
                 arg_vars,
+                &[],
                 TextRange::default(),
                 depth,
             )?;
@@ -1572,12 +1582,16 @@ impl<'a> Cx<'a> {
     /// it names twice must be the same each time (`impl<'a> PartialEq for
     /// Token<'a>`, whose `Rhs` is `Token<'a>` too), and one it names as
     /// `'static` must be `'static`, as rustc's matching equates them.
+    /// The trait's explicit lifetime arguments are invariant too, and bind
+    /// the same impl parameters as its self type and type arguments.
+    #[allow(clippy::too_many_arguments)]
     fn bind_impl(
         &mut self,
         imp: flux_hir::ImplId,
         impl_args: &[Ty],
         header: &[Ty],
         header_vars: &[Vec<Var>],
+        trait_lifetimes: &[Var],
         range: TextRange,
         depth: u32,
     ) -> Option<ImplBinding> {
@@ -1588,6 +1602,23 @@ impl<'a> Cx<'a> {
             types: vec![None; impl_args.len()],
         };
         let mut eqs = Vec::new();
+        if regions.trait_lifetimes.len() != trait_lifetimes.len() {
+            return None;
+        }
+        for (&region, &actual) in regions.trait_lifetimes.iter().zip(trait_lifetimes) {
+            match region {
+                Region::Param(i) => {
+                    let slot = binding.lifetimes.get_mut(i as usize)?;
+                    match *slot {
+                        Some(previous) => eqs.push((previous, actual)),
+                        None => *slot = Some(actual),
+                    }
+                }
+                Region::Static => eqs.push((STATIC, actual)),
+                Region::Erased => {}
+                Region::Late(_) => return None,
+            }
+        }
         let trait_args = sigs.impl_traits.get(imp).map_or(&[][..], |t| t.args);
         let patterns = std::iter::once(sigs.impls[imp]).chain(trait_args.iter().copied());
         let tables = std::iter::once(&regions.self_ty).chain(regions.trait_args.iter());
@@ -2476,23 +2507,31 @@ impl<'a> Cx<'a> {
             Some(flux_hir::Owner::Impl(imp)) => sigs.regions.impls.get(imp).map(|r| (imp, r)),
             _ => None,
         };
-        let mut bounds: Vec<(flux_ty::Predicate, &[Region])> = Vec::new();
+        let mut bounds: Vec<(flux_ty::Predicate, &[Region], TraitRefRegions)> = Vec::new();
         match (owner, block) {
             (Some(flux_hir::Owner::Impl(_)), Some((imp, r))) => {
                 let list = sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
                 for (k, &p) in list.iter().enumerate() {
-                    bounds.push((p, r.bound_selfs.get(k).map_or(&[][..], |t| t)));
+                    bounds.push((
+                        p,
+                        r.bound_selfs.get(k).map_or(&[][..], |t| t),
+                        r.bound_traits.get(k).cloned().unwrap_or_default(),
+                    ));
                 }
             }
             _ => {
                 for p in flux_ty::traits::owner_predicates(items, sigs, owner) {
-                    bounds.push((p, &[]));
+                    bounds.push((p, &[], TraitRefRegions::default()));
                 }
             }
         }
         let own = sigs.fn_predicates.get(func).map_or(&[][..], |p| p);
         for (k, &p) in own.iter().enumerate() {
-            bounds.push((p, regions.bound_selfs.get(k).map_or(&[][..], |t| t)));
+            bounds.push((
+                p,
+                regions.bound_selfs.get(k).map_or(&[][..], |t| t),
+                regions.bound_traits.get(k).cloned().unwrap_or_default(),
+            ));
         }
         let mut declared: Vec<(flux_ty::traits::Projection, &[Region])> = Vec::new();
         if let Some((imp, r)) = block {
@@ -2510,8 +2549,17 @@ impl<'a> Cx<'a> {
                 .zip(regions.projections.iter().map(|t| &t[..])),
         );
         self.call_projections = declared.iter().map(|&(p, t)| (p, t.into())).collect();
-        for (p, table) in bounds {
-            self.prove_bound(p, table, &lifetimes, generic_args, &type_vars, range, 0);
+        for (p, table, trait_regions) in bounds {
+            self.prove_bound(
+                p,
+                table,
+                &trait_regions,
+                &lifetimes,
+                generic_args,
+                &type_vars,
+                range,
+                0,
+            );
         }
         self.call_projections.clear();
         for (p, table) in declared {
@@ -2542,7 +2590,7 @@ impl<'a> Cx<'a> {
         }
         let (ty, vars) = self.place_regions(place);
         self.proving = Category::Boring;
-        self.prove(copy.with_self(ty), &[vars.into_vec()], range, 0);
+        self.prove(copy.with_self(ty), &[vars.into_vec()], &[], range, 0);
         self.proving = Category::CallArgument;
     }
 
@@ -2660,6 +2708,7 @@ impl<'a> Cx<'a> {
         &mut self,
         p: flux_ty::Predicate,
         self_table: &[Region],
+        trait_regions: &TraitRefRegions,
         lifetimes: &[Var],
         args: &[Ty],
         arg_vars: &[Vec<Var>],
@@ -2726,7 +2775,11 @@ impl<'a> Cx<'a> {
             .enumerate()
         {
             let instance = self.normalize(t.subst(args));
-            let table = if k == 0 { self_table } else { &[] };
+            let table = if k == 0 {
+                self_table
+            } else {
+                trait_regions.args.get(k - 1).map_or(&[][..], |t| t)
+            };
             let Some(v) = self.bound_slots_in(t, table, lifetimes, args, arg_vars) else {
                 return;
             };
@@ -2743,7 +2796,19 @@ impl<'a> Cx<'a> {
                 ..p.trait_ref
             },
         };
-        self.prove(goal, &vars, range, depth);
+        let trait_lifetimes: Vec<Var> = trait_regions
+            .lifetimes
+            .iter()
+            .map(|&r| match r {
+                Region::Static => STATIC,
+                Region::Param(i) => lifetimes
+                    .get(i as usize)
+                    .copied()
+                    .unwrap_or_else(|| self.fresh()),
+                Region::Erased | Region::Late(_) => self.fresh(),
+            })
+            .collect();
+        self.prove(goal, &vars, &trait_lifetimes, range, depth);
     }
 
     /// Proves `goal`, whose self type and trait arguments have slots
@@ -2753,9 +2818,16 @@ impl<'a> Cx<'a> {
     /// those of the blocks its own bounds choose, constrain the goal's.
     /// A bound in scope proves a goal on a generic parameter, and says
     /// nothing of lifetimes.
-    fn prove(&mut self, goal: flux_ty::Predicate, vars: &[Vec<Var>], range: TextRange, depth: u32) {
+    fn prove(
+        &mut self,
+        goal: flux_ty::Predicate,
+        vars: &[Vec<Var>],
+        trait_lifetimes: &[Var],
+        range: TextRange,
+        depth: u32,
+    ) {
         let (items, sigs) = (self.items, self.sigs);
-        if depth > 8 || vars.iter().all(|v| v.is_empty()) {
+        if depth > 8 || (trait_lifetimes.is_empty() && vars.iter().all(|v| v.is_empty())) {
             return;
         }
         if matches!(
@@ -2778,7 +2850,15 @@ impl<'a> Cx<'a> {
         let header: Vec<Ty> = std::iter::once(goal.self_ty)
             .chain(goal.trait_ref.args.iter().copied())
             .collect();
-        let Some(binding) = self.bind_impl(imp, &impl_args, &header, vars, range, depth) else {
+        let Some(binding) = self.bind_impl(
+            imp,
+            &impl_args,
+            &header,
+            vars,
+            trait_lifetimes,
+            range,
+            depth,
+        ) else {
             return;
         };
         // Lifetimes and types the header does not name are free.
@@ -2839,6 +2919,10 @@ impl<'a> Cx<'a> {
             self.prove_bound(
                 p,
                 table,
+                regions
+                    .bound_traits
+                    .get(k)
+                    .unwrap_or(&TraitRefRegions::default()),
                 &lifetimes,
                 &impl_args,
                 &type_vars,
