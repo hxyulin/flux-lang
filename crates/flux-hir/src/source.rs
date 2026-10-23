@@ -76,6 +76,14 @@ const STD_FILES: &[(&str, &str)] = &[
 const ALLOC_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/alloc/src/lib.rs")),
     (
+        "collections.rs",
+        include_str!("../../../library/alloc/src/collections.rs"),
+    ),
+    (
+        "collections/btree_map.rs",
+        include_str!("../../../library/alloc/src/collections/btree_map.rs"),
+    ),
+    (
         "macros.rs",
         include_str!("../../../library/alloc/src/macros.rs"),
     ),
