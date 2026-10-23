@@ -1,0 +1,5 @@
+fn main() -> ()
+    ok@0: Result<u32, ()>
+    err@1: Result<(), u32>
+error 54..75: call to unsafe function `Result::unwrap_unchecked` is unsafe and requires unsafe function or block
+error 121..147: call to unsafe function `Result::unwrap_err_unchecked` is unsafe and requires unsafe function or block

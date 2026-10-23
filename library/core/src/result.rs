@@ -72,6 +72,19 @@ impl<T, E> Result<T, E> {
         }
     }
 
+    /// The value, without checking that it is `Ok`.
+    ///
+    /// # Safety
+    /// `self` must be `Ok`. Calling this on `Err` is undefined behavior.
+    #[rustc_const_unstable]
+    pub unsafe fn unwrap_unchecked(self) -> T {
+        match self {
+            Ok(value) => value,
+            // SAFETY: the caller guarantees that `self` is `Ok`.
+            Err(_) => unsafe { crate::hint::unreachable_unchecked() },
+        }
+    }
+
     /// The value; panics with `msg` on `Err`.
     #[track_caller]
     pub fn expect(self, msg: &str) -> T
@@ -93,6 +106,19 @@ impl<T, E> Result<T, E> {
         match self {
             Ok(t) => crate::panicking::unwrap_failed("called `Result::unwrap_err()` on an `Ok` value", &t),
             Err(e) => e,
+        }
+    }
+
+    /// The error, without checking that it is `Err`.
+    ///
+    /// # Safety
+    /// `self` must be `Err`. Calling this on `Ok` is undefined behavior.
+    #[rustc_const_unstable]
+    pub unsafe fn unwrap_err_unchecked(self) -> E {
+        match self {
+            // SAFETY: the caller guarantees that `self` is `Err`.
+            Ok(_) => unsafe { crate::hint::unreachable_unchecked() },
+            Err(err) => err,
         }
     }
 
