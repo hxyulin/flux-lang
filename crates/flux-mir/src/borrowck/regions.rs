@@ -3531,6 +3531,32 @@ impl<'a> Cx<'a> {
             );
             return;
         }
+        let abstract_goal = matches!(
+            self.normalize(p.self_ty.subst(args)).kind(),
+            TyKind::Param(_) | TyKind::Alias(_)
+        ) && flux_ty::fn_trait_kind(self.items, p.trait_ref.trait_).is_none();
+        let mut strict_map = |r| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => lifetimes.get(i as usize).copied(),
+            Region::Erased | Region::Late(_) => None,
+        };
+        if abstract_goal
+            && (trait_regions.lifetimes.len()
+                != self.items.traits[p.trait_ref.trait_]
+                    .generics
+                    .lifetimes
+                    .len()
+                || trait_regions
+                    .lifetimes
+                    .iter()
+                    .any(|&r| strict_map(r).is_none()))
+        {
+            self.errors.push(Diagnostic::new(
+                range,
+                "caller bound lifetime metadata is unavailable",
+            ));
+            return;
+        }
         let mut header = Vec::with_capacity(1 + p.trait_ref.args.len());
         let mut vars = Vec::with_capacity(header.capacity());
         for (k, &t) in std::iter::once(&p.self_ty)
@@ -3543,12 +3569,20 @@ impl<'a> Cx<'a> {
             } else {
                 trait_regions.args.get(k - 1).map_or(&[][..], |t| t)
             };
-            let Some(v) = self.bound_slots_in(t, table, lifetimes, args, arg_vars) else {
+            let slots = if abstract_goal {
+                self.instantiate_sig(t, table, &mut strict_map, args, arg_vars)
+            } else {
+                self.bound_slots_in(t, table, lifetimes, args, arg_vars)
+            };
+            let Some(v) = slots.filter(|v| v.len() == self.slots(instance) as usize) else {
+                if abstract_goal {
+                    self.errors.push(Diagnostic::new(
+                        range,
+                        "caller bound lifetime metadata is unavailable",
+                    ));
+                }
                 return;
             };
-            if v.len() != self.slots(instance) as usize {
-                return;
-            }
             header.push(instance);
             vars.push(v);
         }
@@ -3574,13 +3608,171 @@ impl<'a> Cx<'a> {
         self.prove(goal, &vars, &trait_lifetimes, range, depth);
     }
 
+    /// Try original caller predicates with their own region tables. Do not
+    /// borrow metadata from an erased-equal predicate or from the callee.
+    /// Closures and trait-owner predicates need separate owner mappings.
+    fn caller_bound(
+        &mut self,
+        goal: flux_ty::Predicate,
+        vars: &[Vec<Var>],
+        trait_lifetimes: &[Var],
+        range: TextRange,
+    ) -> bool {
+        let Some(f) = self.body.owner.filter(|_| self.body.upvars.is_none()) else {
+            return false;
+        };
+        let Some(r) = self.sigs.regions.fns.get(f) else {
+            return false;
+        };
+        let mut candidates = Vec::new();
+        if let Some(flux_hir::Owner::Impl(imp)) = self.items.functions[f].owner
+            && let Some(block) = self.sigs.regions.impls.get(imp)
+        {
+            for (i, &p) in self
+                .sigs
+                .impl_predicates
+                .get(imp)
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                if let (Some(s), Some(t)) = (block.bound_selfs.get(i), block.bound_traits.get(i)) {
+                    candidates.push((p, s.clone(), t.clone()));
+                }
+            }
+        }
+        for (i, &p) in self
+            .sigs
+            .fn_predicates
+            .get(f)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            if let (Some(s), Some(t)) = (r.bound_selfs.get(i), r.bound_traits.get(i)) {
+                candidates.push((p, s.clone(), t.clone()));
+            }
+        }
+        for (p, self_table, tables) in candidates {
+            let predicate = flux_ty::Predicate {
+                self_ty: self.normalize(p.self_ty),
+                trait_ref: flux_ty::TraitRef {
+                    args: Ty::list(
+                        &p.trait_ref
+                            .args
+                            .iter()
+                            .map(|&t| self.normalize(t))
+                            .collect::<Vec<_>>(),
+                    ),
+                    ..p.trait_ref
+                },
+            };
+            if predicate != goal
+                || tables.lifetimes.len() != trait_lifetimes.len()
+                || tables.lifetimes.len()
+                    != self.items.traits[p.trait_ref.trait_]
+                        .generics
+                        .lifetimes
+                        .len()
+                || vars.len() != 1 + p.trait_ref.args.len()
+            {
+                continue;
+            }
+            let mut map = |region| match region {
+                Region::Static => Some(STATIC),
+                Region::Param(i) if (i as usize) < r.names.len() => Some(1 + i),
+                _ => None,
+            };
+            let Some(lifetimes) = tables
+                .lifetimes
+                .iter()
+                .map(|&r| map(r))
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            let mut equalities: Vec<_> = lifetimes
+                .into_iter()
+                .zip(trait_lifetimes.iter().copied())
+                .collect();
+            let mut complete = true;
+            for (i, &ty) in std::iter::once(&p.self_ty)
+                .chain(p.trait_ref.args)
+                .enumerate()
+            {
+                let table = if i == 0 {
+                    Some(&self_table)
+                } else {
+                    tables.args.get(i - 1)
+                };
+                let Some(known) =
+                    table.and_then(|t| self.instantiate_sig(ty, t, &mut map, &[], &[]))
+                else {
+                    complete = false;
+                    break;
+                };
+                if known.len() != vars[i].len() {
+                    complete = false;
+                    break;
+                }
+                equalities.extend(known.into_iter().zip(vars[i].iter().copied()));
+            }
+            if !complete || !self.caller_equalities_fit(&equalities) {
+                continue;
+            }
+            // These are requirements, never new header assumptions. The final
+            // solver still checks constraints generated after this call.
+            for (a, b) in equalities {
+                self.equate(a, b, self.proving, range);
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Avoid choosing the first erased-equal candidate when its equality
+    /// already contradicts the original header. Fresh call variables can be
+    /// connected to universals through argument and earlier call constraints.
+    fn caller_equalities_fit(&self, equalities: &[(Var, Var)]) -> bool {
+        let mut edges = vec![Vec::new(); self.vars as usize];
+        for c in &self.constraints {
+            edges[c.sup as usize].push(c.sub);
+        }
+        for &(a, b) in equalities {
+            edges[a as usize].push(b);
+            edges[b as usize].push(a);
+        }
+        for (i, &(a, _)) in self.universal.iter().enumerate() {
+            for (j, &(b, _)) in self.universal.iter().enumerate() {
+                if self.known(i as u32, j as u32) {
+                    edges[a as usize].push(b);
+                }
+            }
+        }
+        for (i, &(start, _)) in self.universal.iter().enumerate() {
+            let mut seen = vec![false; self.vars as usize];
+            let mut pending = vec![start];
+            while let Some(v) = pending.pop() {
+                if std::mem::replace(&mut seen[v as usize], true) {
+                    continue;
+                }
+                if let Some(&j) = self.universal_of.get(&v)
+                    && !self.known(i as u32, j)
+                {
+                    return false;
+                }
+                pending.extend(&edges[v as usize]);
+            }
+        }
+        true
+    }
+
     /// Proves `goal`, whose self type and trait arguments have slots
     /// `vars`, by the `impl` block for its types, as rustc's trait
     /// selection does in the borrow checker: the block is chosen by
     /// types alone, then its header's lifetimes and its bounds, and
     /// those of the blocks its own bounds choose, constrain the goal's.
-    /// A bound in scope proves a goal on a generic parameter, and says
-    /// nothing of lifetimes.
+    /// Caller bounds on abstract types must prove the region contract too.
     fn prove(
         &mut self,
         goal: flux_ty::Predicate,
@@ -3590,17 +3782,35 @@ impl<'a> Cx<'a> {
         depth: u32,
     ) {
         let (items, sigs) = (self.items, self.sigs);
-        if depth > 8 || (trait_lifetimes.is_empty() && vars.iter().all(|v| v.is_empty())) {
+        if trait_lifetimes.is_empty() && vars.iter().all(|v| v.is_empty()) {
+            return;
+        }
+        if depth > 8 {
+            self.errors.push(Diagnostic::new(
+                range,
+                "trait lifetime obligation recursion limit reached",
+            ));
+            return;
+        }
+        // Callable input/output contracts use the existing higher-ranked
+        // callback path; matching those binders is outside caller trait proof.
+        if flux_ty::fn_trait_kind(items, goal.trait_ref.trait_).is_some()
+            && matches!(goal.self_ty.kind(), TyKind::Param(_) | TyKind::Alias(_))
+        {
+            return;
+        }
+        if matches!(goal.self_ty.kind(), TyKind::Param(_) | TyKind::Alias(_)) {
+            if !self.caller_bound(goal, vars, trait_lifetimes, range) {
+                self.errors.push(Diagnostic::new(
+                    range,
+                    "caller bound lifetime obligation cannot be proved",
+                ));
+            }
             return;
         }
         if matches!(
             goal.self_ty.kind(),
-            TyKind::Param(_)
-                | TyKind::Alias(_)
-                | TyKind::Infer(_)
-                | TyKind::Closure(..)
-                | TyKind::FnDef(_)
-                | TyKind::FnPtr(_)
+            TyKind::Infer(_) | TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_)
         ) {
             return;
         }
