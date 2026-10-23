@@ -322,7 +322,9 @@ The runtime suite loads its unchanged production file directly, comparing
 initialized values, chunk boundaries, retained references and alignment against
 rustc in both Flux modes. Its intentional process-lifetime leaks remain part
 of the source contract. Repeat-array promotion remains unsupported;
-`DroplessArena` still needs pointer APIs. Dropless slice elements now skip
+`DroplessArena` now has metadata-preserving NonNull reference conversions and
+slice lengths; its current source probe still rejects pointer `align_offset`.
+Dropless slice elements now skip
 destructor traversal, removing the demonstrated huge-ZST timeout while retaining
 owner destruction, deallocation and Drop-bearing element behavior. This is a bounded source
 consumer milestone, not complete flux-arena compilation.

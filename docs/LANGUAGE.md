@@ -1169,7 +1169,10 @@ discriminants allow, and niches (`Option<&T>`, `Option<bool>`,
 has `null`, `null_mut`, `eq`, `read`, `write`, `copy`,
 `copy_nonoverlapping`, `write_bytes`, `swap`, `replace`,
 `drop_in_place` and `NonNull` (`new`, `new_unchecked`, `dangling`,
-`as_ptr`, `as_ref`, `as_mut`, `cast`, `add`, `read`, `write`), and raw
+`as_ptr`, `as_ref`, `as_mut`, `cast`, `add`, `read`, `write`), including
+metadata-preserving conversions from shared and mutable references to sized
+or supported unsized targets. `NonNull<[T]>::len` reads only slice metadata;
+constant pointer-value evaluation remains limited. Raw
 pointers have `is_null`, `cast`, `cast_mut`/`cast_const`, `addr`,
 `add`, `sub`, `offset`, `wrapping_add`, `wrapping_sub`, `offset_from`,
 `read`, `write`, `replace`, `swap`, `drop_in_place`, `write_bytes`,
