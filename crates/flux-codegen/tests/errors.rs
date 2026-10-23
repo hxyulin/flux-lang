@@ -256,42 +256,122 @@ fn main() {{ let a = unsafe {{ vreinterpretq_u16_u8(vdupq_n_u8(0)) }}; let _ = u
 #[test]
 #[cfg(target_arch = "aarch64")]
 fn neon_memchr_next_lowering_preserves_store_width_and_unsigned_max() {
-    let text = "
+    for shift in 1..=8 {
+        let text = "
 use core::arch::aarch64::*;
 fn main() {
     let a = unsafe { vdupq_n_u8(255) };
     let b = unsafe { vpmaxq_u8(a, vdupq_n_u8(128)) };
     let _ = unsafe { vshrn_n_u16::<3>(vreinterpretq_u16_u8(b)) };
-}";
-    let (_, _, hir) = flux_hir::lower_text("main.rs", text);
-    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
-    let typed = flux_mir::check_file(&hir);
-    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
-    let mir = flux_mir::build_file(&hir, &typed);
-    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
-    let module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
-    keel_ir::verify_module(&module).unwrap();
-    let narrow = module
-        .functions
-        .iter()
-        .find(|f| f.name.contains("vshrn_n_u16"))
-        .unwrap();
-    let stores: Vec<_> = narrow
-        .layout_insts()
-        .filter_map(|(_, i)| {
-            if let keel_ir::InstData::Store { value, .. } = narrow.inst_data(i) {
-                Some(narrow.value_type(*value))
-            } else {
-                None
+}"
+        .replace("::<3>", &format!("::<{shift}>"));
+        let (_, _, hir) = flux_hir::lower_text("main.rs", &text);
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        let typed = flux_mir::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let mir = flux_mir::build_file(&hir, &typed);
+        assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+        let mut module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
+        keel_ir::verify_module(&module).unwrap();
+        let narrow = module
+            .functions
+            .iter()
+            .find(|f| f.name.contains("vshrn_n_u16"))
+            .unwrap();
+        use keel_ir::{InstData, MemoryFlags, NeonIntrinsic, Type, VectorBinaryOp, VectorType};
+        let mut loads = Vec::new();
+        let mut stores = Vec::new();
+        let mut shifts = Vec::new();
+        for (_, inst) in narrow.layout_insts() {
+            match narrow.inst_data(inst) {
+                InstData::Load { ty, flags, .. } => {
+                    assert_eq!(*flags, MemoryFlags::default());
+                    loads.push(*ty);
+                }
+                InstData::Store { value, flags, .. } => {
+                    assert_eq!(*flags, MemoryFlags::default());
+                    stores.push(narrow.value_type(*value));
+                }
+                InstData::Neon { op, ty, args } => {
+                    assert_eq!(*op, NeonIntrinsic::Shrn);
+                    assert_eq!(*ty, Type::Vector(VectorType::I8x8));
+                    assert_eq!(narrow.value_type(args[0]), Type::Vector(VectorType::I16x8));
+                    assert_eq!(narrow.value_type(args[1]), Type::I32);
+                    shifts.push(*op);
+                }
+                _ => {}
             }
-        })
-        .collect();
-    assert_eq!(stores, [keel_ir::Type::I8; 8]);
-    let asm = keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
-    // Shuffles legalize to scalar byte moves on the pinned Keel. The
-    // unsigned comparison and selection themselves remain packed.
-    for instruction in ["ldrh\tw", "strb\tw", "lsr\tw", "cmhi\tv", "bsl\tv"] {
-        assert!(asm.contains(instruction), "missing {instruction}:\n{asm}");
+        }
+        assert_eq!(loads, [Type::Vector(VectorType::I16x8)]);
+        assert_eq!(stores, [Type::Vector(VectorType::I8x8)]);
+        assert_eq!(shifts, [NeonIntrinsic::Shrn]);
+        let pair = module
+            .functions
+            .iter()
+            .find(|f| f.name.contains("vpmaxq_u8"))
+            .unwrap();
+        let ops: Vec<_> = pair
+            .layout_insts()
+            .filter_map(|(_, inst)| {
+                if let InstData::VectorBinary { op, .. } = pair.inst_data(inst) {
+                    Some(*op)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(ops, [VectorBinaryOp::Pumax]);
+        for function in [narrow, pair] {
+            assert!(function.sig.params.iter().all(|p| p.ty == Type::Ptr));
+            assert!(function.sig.returns.is_empty());
+        }
+        let mut pair_loads = Vec::new();
+        let mut pair_stores = Vec::new();
+        for (_, inst) in pair.layout_insts() {
+            match pair.inst_data(inst) {
+                InstData::Load { ty, flags, .. } => {
+                    assert_eq!(*flags, MemoryFlags::default());
+                    pair_loads.push(*ty);
+                }
+                InstData::Store { value, flags, .. } => {
+                    assert_eq!(*flags, MemoryFlags::default());
+                    pair_stores.push(pair.value_type(*value));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(pair_loads, [Type::Vector(VectorType::I8x16); 2]);
+        assert_eq!(pair_stores, [Type::Vector(VectorType::I8x16)]);
+        for tier in [
+            keel_opt::OptimizationTier::None,
+            keel_opt::OptimizationTier::Full,
+        ] {
+            keel_opt::optimize_with_tier(&mut module, tier).unwrap();
+            keel_ir::verify_module(&module).unwrap();
+            let asm =
+                keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
+            for instruction in ["shrn\tv", "umaxp\tv", "ldr\tq", "str\td"] {
+                assert!(asm.contains(instruction), "missing {instruction}:\n{asm}");
+            }
+            for instruction in ["ldrh\tw", "strb\tw", "cmhi\tv", "bsl\tv", "mrs\t", "msr\t"] {
+                assert!(
+                    !asm.contains(instruction),
+                    "unexpected {instruction}:\n{asm}"
+                );
+            }
+            assert!(
+                asm.lines().any(|line| line.contains("shrn\tv")
+                    && line.contains(".8b")
+                    && line.contains(".8h")
+                    && line.ends_with(&format!("#{shift}"))),
+                "{asm}"
+            );
+            assert!(
+                asm.lines()
+                    .any(|line| line.contains("umaxp\tv") && line.matches(".16b").count() == 3),
+                "{asm}"
+            );
+        }
     }
 }
 

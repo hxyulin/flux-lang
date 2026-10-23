@@ -2769,7 +2769,7 @@ impl Lower<'_, '_, '_> {
         dest: &Place,
         target: Option<flux_mir::BasicBlock>,
     ) {
-        use keel_ir::{VectorBinaryOp, VectorType};
+        use keel_ir::{NeonIntrinsic, VectorBinaryOp, VectorType};
         let symbol = self.ctx.hir.items.functions[func].name;
         let name = symbol
             .as_str()
@@ -2782,37 +2782,20 @@ impl Lower<'_, '_, '_> {
                 let TyKind::Value(shift) = generic_args[0].kind() else {
                     unreachable!("validated constant shift")
                 };
-                let (Location::Memory(address), _) = self.locate(dest) else {
-                    unreachable!("NEON aggregates live in memory")
-                };
-                // This scalar implementation stores exactly eight bytes,
-                // never a full Q vector to this result.
-                let shift = self.b.ins().iconst(Type::I16, shift.bits() as i64);
-                for lane in 0..8 {
-                    let input = self.offset(first, lane * 2);
-                    let halfword = self.b.ins().load(Type::I16, input);
-                    let shifted = self.b.ins().ushr(halfword, shift);
-                    let byte = self.b.ins().trunc(Type::I8, shifted);
-                    let output = self.offset(address, lane);
-                    self.b.ins().store(byte, output);
-                }
-                // The result has already been written at its actual width.
-                if let Some(target) = target {
-                    self.b.ins().jump(self.blocks[target.index()], &[]);
-                } else {
-                    self.b.ins().trap();
-                }
-                return;
+                let input = self.b.ins().load(Type::Vector(VectorType::I16x8), first);
+                let shift = self.b.ins().iconst(Type::I32, shift.bits() as i64);
+                // A D-vector result keeps the store at exactly eight bytes.
+                self.b.ins().neon(
+                    NeonIntrinsic::Shrn,
+                    Type::Vector(VectorType::I8x8),
+                    &[input, shift],
+                )
             }
             "vpmaxq_u8" => {
                 let second = self.operand(&args[1])[0];
                 let a = self.b.ins().load(bytes, first);
                 let b = self.b.ins().load(bytes, second);
-                // Shuffle indices 0..16 name a; 16..32 name b.
-                let even = self.b.ins().vshuffle(a, b, (0..32).step_by(2).collect());
-                let odd = self.b.ins().vshuffle(a, b, (1..32).step_by(2).collect());
-                let greater = self.b.ins().vicmp(IntCC::Ugt, even, odd);
-                self.b.ins().vselect(greater, even, odd)
+                self.b.ins().vector_binary(VectorBinaryOp::Pumax, a, b)
             }
             "vdupq_n_u8" => self.b.ins().vsplat(bytes, first),
             "vget_lane_u64" => self.b.ins().load(Type::I64, first),
