@@ -96,6 +96,13 @@ pub(crate) unsafe fn slice_from_raw_parts<'a, T>(data: *const T, len: usize) -> 
     loop {}
 }
 
+/// Reads only a raw slice pointer's length metadata, without making a
+/// reference or accessing the pointed-to elements.
+#[rustc_intrinsic]
+pub(crate) const fn raw_slice_len<T>(ptr: *const [T]) -> usize {
+    loop {}
+}
+
 /// The `len` elements from `data` on, as a mutable slice, unchecked.
 #[rustc_intrinsic]
 pub(crate) unsafe fn slice_from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T] {
