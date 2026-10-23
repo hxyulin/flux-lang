@@ -122,6 +122,24 @@ pub struct LifetimeName {
     pub range: TextRange,
 }
 
+/// Supported provenance boundary for function-item callback inputs.
+/// This is a signature-level classification, not Rust's complete early/late
+/// parameter partition or a proof of higher-ranked universality.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CallbackBinder {
+    /// Missing or unrepresented source/table mappings must fail closed.
+    #[default]
+    Unclassified,
+    /// No own lifetime occurs in a predicate, and no explicit outlives bound.
+    /// Owner lifetimes still have their separate conservative boundary.
+    Independent,
+    /// Explicit outlives bounds (even unrelated ones), or an own lifetime
+    /// anywhere in a trait predicate, including syntactically present alias
+    /// arguments erased by normalization. Newly bound inputs are unsupported;
+    /// original Param/Alias/IteratorItem inputs remain fixed.
+    SignatureBound,
+}
+
 /// The lifetimes of a function's signature.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FnRegions {
@@ -135,8 +153,11 @@ pub struct FnRegions {
     /// its parameter and return types imply (`&'a T` that `T: 'a`).
     /// The body may assume them, and a call must meet them.
     pub outlives: Box<[Outlives<Region>]>,
-    /// Has bounds on lifetimes of its own: `where 'a: 'b`.
+    /// Explicit lifetime/type-outlives predicates on this signature.
+    /// This does not include trait predicates; use `callback_binder` for the
+    /// supported callback provenance boundary.
     pub has_bounds: bool,
+    pub callback_binder: CallbackBinder,
     /// The slots of the types its own bounds are on (`&'a T` in `where
     /// &'a T: Tr`), as [`Signatures::fn_predicates`] lists them.
     pub bound_selfs: Box<[Box<[Region]>]>,

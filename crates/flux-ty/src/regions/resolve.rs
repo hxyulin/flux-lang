@@ -550,22 +550,207 @@ fn functions(
         );
         dedup(&mut list);
         errors.extend(list.into_iter().map(|(r, m)| (function.loc.file, r, m)));
-        sigs.regions.fns.insert(
-            id,
-            FnRegions {
-                names: all_names.into(),
-                owner: owner_count,
-                params,
-                ret,
-                outlives: outlives.into(),
-                has_bounds: !function.generics.outlives.is_empty()
-                    || !function.generics.type_outlives.is_empty(),
-                bound_selfs,
-                bound_traits,
-                projections,
-                opaques: opaques.into(),
-            },
-        );
+        let mut regions = FnRegions {
+            names: all_names.into(),
+            owner: owner_count,
+            params,
+            ret,
+            outlives: outlives.into(),
+            has_bounds: !function.generics.outlives.is_empty()
+                || !function.generics.type_outlives.is_empty(),
+            callback_binder: CallbackBinder::Unclassified,
+            bound_selfs,
+            bound_traits,
+            projections,
+            opaques: opaques.into(),
+        };
+        regions.callback_binder = callback_binder(items, sigs, id, &regions);
+        sigs.regions.fns.insert(id, regions);
+    }
+}
+
+/// Classify the supported callback boundary from both source and resolved
+/// tables. Source traversal is essential: aliases/projections can erase a
+/// lifetime argument without making its occurrence in a predicate late-bound.
+/// HIR has already elided its supported single Fn binder; unsupported named or
+/// multiple binders are diagnosed by lowering and are not admitted here.
+fn callback_binder(
+    items: &ItemTree,
+    sigs: &Signatures,
+    id: flux_hir::FunctionId,
+    regions: &FnRegions,
+) -> CallbackBinder {
+    let function = &items.functions[id];
+    let owner_names = match function.owner {
+        Some(flux_hir::Owner::Impl(owner)) => sigs.regions.impls.get(owner).map(|r| &*r.names),
+        Some(flux_hir::Owner::Trait(owner)) => sigs.regions.traits.get(owner).map(|r| &*r.names),
+        None => Some(&[][..]),
+    };
+    let Some(owner_names) = owner_names else {
+        return CallbackBinder::Unclassified;
+    };
+    if regions.owner as usize != owner_names.len()
+        || regions.names.get(..owner_names.len()) != Some(owner_names)
+    {
+        return CallbackBinder::Unclassified;
+    }
+    let predicates = sigs.fn_predicates.get(id).map_or(&[][..], |p| p);
+    let projections = sigs.fn_projections.get(id).map_or(&[][..], |p| p);
+    if regions.owner as usize > regions.names.len()
+        || predicates.len() != function.generics.predicates.len()
+        || regions.bound_selfs.len() != predicates.len()
+        || regions.bound_traits.len() != predicates.len()
+        || regions.projections.len() != projections.len()
+    {
+        return CallbackBinder::Unclassified;
+    }
+    let mut bound = regions.has_bounds;
+    let own = |r: Region| match r {
+        Region::Param(i) if (i as usize) < regions.names.len() => Some(i >= regions.owner),
+        Region::Param(_) => None,
+        // Fn input slots are elided/Erased here, and Output can use Late.
+        Region::Static | Region::Erased | Region::Late(_) => Some(false),
+    };
+    for ((p, self_table), trait_table) in predicates
+        .iter()
+        .zip(regions.bound_selfs.iter())
+        .zip(regions.bound_traits.iter())
+    {
+        if self_table.len() != slots(items, p.self_ty)
+            || trait_table.lifetimes.len()
+                != items.traits[p.trait_ref.trait_].generics.lifetimes.len()
+            || trait_table.args.len() != p.trait_ref.args.len()
+            || trait_table
+                .args
+                .iter()
+                .zip(p.trait_ref.args.iter())
+                .any(|(table, &ty)| table.len() != slots(items, ty))
+        {
+            return CallbackBinder::Unclassified;
+        }
+    }
+    if projections
+        .iter()
+        .zip(regions.projections.iter())
+        .any(|(p, table)| table.len() != slots(items, p.ty))
+    {
+        return CallbackBinder::Unclassified;
+    }
+    for &r in regions
+        .bound_selfs
+        .iter()
+        .flatten()
+        .chain(
+            regions
+                .bound_traits
+                .iter()
+                .flat_map(|t| t.lifetimes.iter().chain(t.args.iter().flatten())),
+        )
+        .chain(regions.projections.iter().flatten())
+    {
+        let Some(is_own) = own(r) else {
+            return CallbackBinder::Unclassified;
+        };
+        bound |= is_own;
+    }
+    let mut written = Vec::new();
+    for p in &function.generics.predicates {
+        if !callback_type_lifetimes(&p.ty, &mut written)
+            || !callback_path_lifetimes(&p.bound.path, &mut written)
+        {
+            return CallbackBinder::Unclassified;
+        }
+    }
+    for lifetime in written {
+        if lifetime.is_static() || lifetime.is_anonymous() {
+            continue;
+        }
+        // Match Walker::named: nearest declaration wins, owner prefix first.
+        // Supported Fn binder names have been removed by HIR, not confused
+        // with this function's own names.
+        let Some(i) = regions
+            .names
+            .iter()
+            .rposition(|n| n.name == Some(lifetime.name))
+        else {
+            return CallbackBinder::Unclassified;
+        };
+        bound |= i >= regions.owner as usize;
+    }
+    if bound {
+        CallbackBinder::SignatureBound
+    } else {
+        CallbackBinder::Independent
+    }
+}
+
+fn callback_path_lifetimes(path: &Path, out: &mut Vec<LifetimeRef>) -> bool {
+    if let Some(q) = &path.qself
+        && (!callback_type_lifetimes(&q.ty, out)
+            || q.trait_
+                .as_ref()
+                .is_some_and(|t| !callback_path_lifetimes(t, out)))
+    {
+        return false;
+    }
+    for args in path.args.iter().flatten() {
+        out.extend(args.lifetimes.iter().copied());
+        if !args.types.iter().all(|t| callback_type_lifetimes(t, out))
+            || !args
+                .bindings
+                .iter()
+                .all(|b| callback_type_lifetimes(&b.ty, out))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn callback_type_lifetimes(ty: &TypeRef, out: &mut Vec<LifetimeRef>) -> bool {
+    match ty {
+        TypeRef::Ref {
+            lifetime, pointee, ..
+        } => {
+            out.extend(lifetime.iter().copied());
+            callback_type_lifetimes(pointee, out)
+        }
+        TypeRef::Path(p) => callback_path_lifetimes(p, out),
+        TypeRef::Tuple(ts) => ts.iter().all(|t| callback_type_lifetimes(t, out)),
+        TypeRef::Ptr { pointee, .. } | TypeRef::Slice(pointee) => {
+            callback_type_lifetimes(pointee, out)
+        }
+        TypeRef::Array { elem, len } => {
+            callback_type_lifetimes(elem, out) && callback_const_lifetimes(len, out)
+        }
+        TypeRef::Const(c) => callback_const_lifetimes(c, out),
+        TypeRef::FnPtr { params, ret, .. } => {
+            params.iter().all(|t| callback_type_lifetimes(t, out))
+                && callback_type_lifetimes(ret, out)
+        }
+        TypeRef::Dyn(d) => {
+            out.extend(d.lifetime);
+            d.bounds
+                .iter()
+                .all(|b| callback_path_lifetimes(&b.path, out))
+        }
+        TypeRef::Never | TypeRef::ImplParam(_) => true,
+        // These have no complete predicate mapping at this boundary.
+        TypeRef::Infer | TypeRef::Error | TypeRef::ImplTrait(_) | TypeRef::Opaque(_) => false,
+    }
+}
+
+/// Anonymous constant bodies have no signature lifetime occurrence table.
+/// Do not silently certify predicates containing one as independent.
+fn callback_const_lifetimes(c: &flux_hir::ArrayLen, out: &mut Vec<LifetimeRef>) -> bool {
+    match &c.kind {
+        flux_hir::ArrayLenKind::Path(p) => callback_path_lifetimes(p, out),
+        flux_hir::ArrayLenKind::Lit { .. }
+        | flux_hir::ArrayLenKind::NegLit { .. }
+        | flux_hir::ArrayLenKind::Const(_)
+        | flux_hir::ArrayLenKind::Bool(_)
+        | flux_hir::ArrayLenKind::Char(_) => true,
+        flux_hir::ArrayLenKind::Anon(..) | flux_hir::ArrayLenKind::Error => false,
     }
 }
 
@@ -1295,6 +1480,50 @@ fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors:
         }
         if !changed {
             break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod callback_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_predicate_classification_fails_closed() {
+        let source = "trait Tr<T>{type Out;} impl<T> Tr<T> for (){type Out=T;} fn get<'a>(_:&'a i32) where ():Tr<&'a i32,Out=&'a i32>{} fn main(){}";
+        let (_, _, hir) = flux_hir::lower_text("metadata.rs", source);
+        let (sigs, errors) = crate::signatures(&hir.items);
+        assert!(
+            errors.iter().all(|d| d.message
+                == "lifetimes in the generic arguments of bounds are not supported yet"),
+            "{errors:?}"
+        );
+        let id = hir
+            .items
+            .functions
+            .iter()
+            .find(|(_, f)| f.name.as_str() == "get" && f.owner.is_none())
+            .unwrap()
+            .0;
+        let original = &sigs.regions.fns[id];
+        assert_eq!(original.callback_binder, CallbackBinder::SignatureBound);
+        for corruption in 0..8 {
+            let mut r = original.clone();
+            match corruption {
+                0 => r.bound_selfs = Box::default(),
+                1 => r.bound_traits = Box::default(),
+                2 => r.bound_traits[0].args = Box::default(),
+                3 => r.bound_traits[0].args[0] = Box::default(),
+                4 => r.bound_traits[0].args[0][0] = Region::Param(999),
+                5 => r.projections = Box::default(),
+                6 => r.projections[0] = Box::default(),
+                _ => r.owner = 1,
+            }
+            assert_eq!(
+                callback_binder(&hir.items, &sigs, id, &r),
+                CallbackBinder::Unclassified,
+                "{corruption}: {r:?}"
+            );
         }
     }
 }
