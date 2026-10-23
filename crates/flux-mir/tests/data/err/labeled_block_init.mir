@@ -1,0 +1,44 @@
+fn main() -> () {
+    let mut _0: ();
+    let _1: i32; // x
+    let _2: ();
+    let _3: ();
+    let _4: !;
+    let _5: ();
+    let _6: i32; // _y
+
+    bb0: {
+        goto -> bb1;
+    }
+
+    bb1: {
+        switchInt(const true) -> [0: bb4, otherwise: bb3];
+    }
+
+    bb2: {
+        _6 = copy _1;
+        _0 = const ();
+        StorageDead(_6);
+        StorageDead(_1);
+        return;
+    }
+
+    bb3: {
+        _2 = const ();
+        goto -> bb2;
+    }
+
+    bb4: {
+        _3 = const ();
+        goto -> bb5;
+    }
+
+    bb5: {
+        _1 = const 3_i32;
+        _5 = const ();
+        _2 = const ();
+        goto -> bb2;
+    }
+}
+
+error 103..104: used binding `x` is possibly-uninitialized

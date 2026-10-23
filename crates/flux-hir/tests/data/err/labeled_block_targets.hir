@@ -1,0 +1,43 @@
+fn main() -> () {
+    block#0 {
+        break#0;
+    }
+    block#3 {
+        break#3;
+    }
+    block#6 {
+        continue;
+    }
+    block#9 {
+        break;
+    }
+    loop#12 {
+        block#13 {
+            continue;
+        }
+    }
+    block#17 {
+        break;
+    }
+    block#20 {
+        let f@0 = || {
+            break;
+        };
+    }
+    loop#25 {
+        block#26 {
+            continue;
+        }
+    }
+}
+
+error 16..23: labels cannot use keyword names
+error 33..40: labels cannot use keyword names
+error 48..50: labels cannot use keyword names
+error 60..62: labels cannot use keyword names
+error 80..95: `continue` pointing to a labeled block
+error 113..118: unlabeled `break` inside of a labeled block
+error 143..151: unlabeled `continue` inside of a labeled block
+error 177..185: use of undeclared label `'missing`
+error 222..228: use of undeclared label `'block`
+error 262..276: `continue` pointing to a labeled block

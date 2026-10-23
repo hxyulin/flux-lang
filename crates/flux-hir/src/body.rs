@@ -104,13 +104,14 @@ pub enum Expr {
         scrutinee: ExprId,
         arms: SliceId<MatchArm>,
     },
+    /// A loop or labeled block; `source` determines whether the body repeats.
     Loop {
         body: ExprId,
         source: LoopSource,
     },
     Break {
         value: Option<ExprId>,
-        /// The `Loop` it leaves; `None` outside any loop (reported).
+        /// The loop or labeled block it leaves; `None` for invalid targets (reported).
         target: Option<ExprId>,
     },
     Continue {
@@ -240,6 +241,8 @@ pub struct SegmentArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopSource {
     Loop,
+    /// A labeled block: a break target whose body runs once and may fall through.
+    Block,
     /// `while cond { body }`, lowered as
     /// `loop { if cond { body } else { break } }`.
     While,
