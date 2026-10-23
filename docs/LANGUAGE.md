@@ -544,6 +544,10 @@ references returned by an iterator can therefore outlive its receiver borrow.
 Trait lifetime arguments, region-bearing trait type arguments, nested inherited
 projections, region-bearing inherited types outside function signatures, and
 selected impls requiring additional slot substitutions remain unsupported.
+Reference-bearing inherited projections in function-pointer binders and trait
+bounds also reject, including through aliases, generic wrappers and defaults.
+Carrier detection is conservative when fields or projections can hide a binder;
+scalar inherited callback signatures remain available.
 These lookup candidates do not become assumptions when checking the impl.
 
 Calls of trait methods are static: each calls the method of the

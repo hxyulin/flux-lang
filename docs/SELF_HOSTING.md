@@ -393,7 +393,10 @@ its dual slice iterators, `nth`, forward/backward calls and exact lengths.
 The complete arena-root probe no longer reports that iterator's associated-type
 or lifetime error. This is an excerpt consumer, not complete typed-arena or
 whole-arena compilation; shared ownership and the other APIs above remain
-missing.
+missing. Reference-bearing inherited projections in function-pointer binders
+or callable/trait bounds remain explicitly excluded, including forwarding
+through aliases and wrapper declarations. Their binder metadata is not yet
+represented; the ordinary iterator consumer does not need these forms.
 
 ## Next milestones
 
