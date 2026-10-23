@@ -94,6 +94,23 @@ The comparison checks events, errors, complete input consumption and replay of
 covered. These counts describe the current fixtures; the test reads production
 sources and parser fixtures as they evolve. No compiler repair was required.
 
+## Lossless tree pipeline
+
+`mbx test --release -p flux-cli --test tree_pipeline_selfhost` extends the
+source graph through the unchanged `build.rs` and `tree.rs`, including both
+`build_tree` and the owned-text build path. The library wrapper retains the
+production parse entry points and declarations, excluding the typed AST and
+its `source_file` accessor. All other production modules remain unchanged.
+
+Flux and rustc agree without and with optimization on complete tree dumps,
+diagnostics, token ranges, trivia attachment and navigation. Coverage includes
+the parser fixtures and their UTF-8 prefixes, six workspace sources and 35
+expansion-origin cases covering span merging, hygiene and missing origins.
+At its initial checkpoint this produced identical 2,031,458-byte outputs.
+No compiler repair was needed. This establishes native execution of the
+untyped syntax pipeline, while the complete syntax crate still needs proper
+trait and body lifetime support for its typed AST.
+
 ## Main gaps to the complete compiler
 
 ### Compiler input and crate builds
@@ -129,8 +146,9 @@ structures, `clap`'s derives for the CLI, and Keel for code generation.
 Each must either be supported or have a deliberately defined build
 boundary. The initial offline Cargo audit found 58 external packages in
 the workspace's normal/build dependency closure, including target-specific
-packages; this is not the host-only compiler package count. The current
-executable subset has no external dependencies.
+packages; this is not the host-only compiler package count. The seven-module
+bundled subset has no external dependencies; the additional lexer/parser/tree
+source graphs compile actual memchr and unicode-ident implementations.
 
 Keel generates selector tables in a build script and loads them through
 `include!(concat!(env!("OUT_DIR"), ...))`. Supporting its build therefore
@@ -206,9 +224,9 @@ alloc gaps first, without requiring an operating-system API all at once.
 
 1. Keep the executable source subset passing as its source evolves.
 2. Keep the lexer source-dependency comparison passing on real compiler inputs.
-3. Extend the lexer/parser source graph to actual tree construction and require
-   its output on the workspace to agree with the rustc-built compiler. Add
-   trait/body lifetime support before including the complete typed AST.
+3. Keep the complete untyped lexer/parser/tree source graph passing on compiler
+   inputs. Add trait/body lifetime support to include the complete typed AST
+   and compile the whole syntax crate through source dependencies.
 4. Expand into arena/interner and semantic analysis, while adding crate
    builds and the required library/runtime facilities.
 
