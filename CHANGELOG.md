@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Add `Box<[T]>::new_uninit_slice` using checked vector storage, preserving
+  alignment, zero-sized slice metadata and uninitialized element semantics.
+
 - Implement `Deref` for sized RefCell borrow guards and `DerefMut` for mutable
   guards, preserving runtime borrow conflicts and guard-bound references.
 

@@ -309,6 +309,12 @@ mutable dereferencing while retaining borrow counters and Drop guards. This
 removes the guard-based Vec access errors in unchanged `dropless.rs`; allocation
 and pointer API prerequisites remain. It does not establish full arena support.
 
+`Box<[T]>::new_uninit_slice` now supplies checked uninitialized storage for
+both arena implementations. `StaticSliceArena` still requires valid empty
+mutable-slice promotion and mutable-slice `Default`; `DroplessArena` also needs
+pointer APIs. The existing huge-ZST drop traversal limitation remains separate
+from allocation support.
+
 A small `std` facade now reexports facilities already present in `core`
 and `alloc`, preserving their definition identities; see
 [its API boundary](../library/std/README.md). Its `thread::panicking` is
