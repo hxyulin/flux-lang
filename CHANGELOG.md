@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Support direct literal `include_str!` from physical source files, preserving
+  UTF-8 contents and source-relative paths with explicit unsupported diagnostics
+  for macro-expanded calls and virtual sources.
+
 - Add `Box<[T]>::new_uninit_slice` using checked vector storage, preserving
   alignment, zero-sized slice metadata and uninitialized element semantics.
 
