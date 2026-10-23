@@ -665,9 +665,13 @@ closures that capture nothing) coerce to one, as in rustc.
 An `unsafe fn` coerces only to an `unsafe fn` pointer, and `extern`
 functions not at all. Calling either type works as calling the
 function does; through a pointer, in constants and `const fn`s, is an
-error, as in rustc. Function items and pointers are `Copy`, and `core`
-implements `Clone` for pointers of up to three parameters (rustc's for
-any). A tuple struct's or tuple variant's constructor is a function
+error, as in rustc. Function items and safe or unsafe pointers implement
+`Copy` and `Clone` for every supported signature, without bounds on argument
+or result types. Reification rejects fixed, owner-bound, bounded or repeated
+input lifetimes rather than discarding their constraints; this also rejects
+some valid Rust signatures. Named pointer lifetimes and extern pointer ABIs
+remain unsupported, and elided reference outputs retain conservative checks.
+A tuple struct's or tuple variant's constructor is a function
 too, as in rustc: its path not called (`Token::Num`, `Some`, `Wrapper`)
 is a value of its own function item type (`fn(i64) -> Token
 {Token::Num}`), which `.map(Some)` passes and which coerces to a
@@ -773,7 +777,11 @@ on it need not have a wildcard arm, which rustc requires), `u32` to
 bytes of a `str`, and see through references. `Option` has `is_some`,
 `is_none`, `unwrap`, `expect`, `unwrap_or`, `ok_or`, `and`, `or` and
 `xor`; `Result` has `is_ok`, `is_err`, `ok`, `err`, `unwrap`, `expect`,
-`unwrap_err`, `expect_err`, `unwrap_or`, `and` and `or`; both implement `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`
+`unwrap_err`, `expect_err`, `unwrap_or`, `and` and `or`, plus unsafe
+`unwrap_unchecked` and `unwrap_err_unchecked`. These unchecked methods require
+the corresponding variant and move its payload; using the wrong variant is
+undefined behavior. They are not supported in constants. Both enums implement
+`Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`
 and `Ord` as rustc's do. As in rustc, constants may call `is_some`, `is_none`, `unwrap`,
 `is_ok` and `is_err`, and the others are reported as unstable there.
 Of the methods that take closures, `Option` has `map`, `map_or`,
