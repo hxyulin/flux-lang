@@ -1497,27 +1497,7 @@ impl<'a> Cx<'a> {
             );
         }
         let output = self.instantiate_sig(sig.ret, &regions.ret, &mut map, def.args, &type_vars)?;
-        for p in regions.outlives.iter() {
-            match *p {
-                Outlives::Region(a, b) => {
-                    if let (Some(a), Some(b)) = (map(a), map(b)) {
-                        self.outlives(a, b, Category::CallArgument, range);
-                    }
-                }
-                Outlives::Type(t, b) => {
-                    let Some(b) = map(b) else { continue };
-                    if let TyKind::Param(p) = t.kind()
-                        && let Some(vars) = type_vars.get(p.index as usize)
-                    {
-                        for &v in vars {
-                            self.outlives(v, b, Category::CallArgument, range);
-                        }
-                    }
-                    let instance = self.normalize(t.subst(def.args));
-                    self.type_outlives(instance, b, range);
-                }
-            }
-        }
+        self.signature_obligations(def.function, &lifetimes, def.args, &type_vars, range);
         Some(output)
     }
 
@@ -2477,6 +2457,33 @@ impl<'a> Cx<'a> {
                 self.equate(a, b, Category::Boring, range);
             }
         }
+        self.signature_obligations(func, &lifetimes, generic_args, &type_vars, range);
+        for (id, upvars) in passed {
+            self.passed_closure(id, &upvars, args, dest, range, true);
+        }
+    }
+
+    /// Enforces the complete signature contract for both direct calls and
+    /// function items used through callable bounds. Type selection erases
+    /// regions, so owner and function predicates must also constrain the
+    /// instantiated argument slots before their output can escape.
+    fn signature_obligations(
+        &mut self,
+        func: flux_hir::FunctionId,
+        lifetimes: &[Var],
+        generic_args: &[Ty],
+        type_vars: &[Vec<Var>],
+        range: TextRange,
+    ) {
+        let (items, sigs) = (self.items, self.sigs);
+        let Some(regions) = sigs.regions.fns.get(func) else {
+            return;
+        };
+        let map = |r: Region| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => lifetimes.get(i as usize).copied(),
+            Region::Erased | Region::Late(_) => None,
+        };
         // The callee's bounds, and what its types imply.
         for p in regions.outlives.iter() {
             match *p {
@@ -2548,25 +2555,25 @@ impl<'a> Cx<'a> {
                 .copied()
                 .zip(regions.projections.iter().map(|t| &t[..])),
         );
-        self.call_projections = declared.iter().map(|&(p, t)| (p, t.into())).collect();
+        let previous = std::mem::replace(
+            &mut self.call_projections,
+            declared.iter().map(|&(p, t)| (p, t.into())).collect(),
+        );
         for (p, table, trait_regions) in bounds {
             self.prove_bound(
                 p,
                 table,
                 &trait_regions,
-                &lifetimes,
+                lifetimes,
                 generic_args,
-                &type_vars,
+                type_vars,
                 range,
                 0,
             );
         }
-        self.call_projections.clear();
+        self.call_projections = previous;
         for (p, table) in declared {
-            self.prove_projection(p, table, &lifetimes, generic_args, &type_vars, range);
-        }
-        for (id, upvars) in passed {
-            self.passed_closure(id, &upvars, args, dest, range, true);
+            self.prove_projection(p, table, lifetimes, generic_args, type_vars, range);
         }
     }
 
