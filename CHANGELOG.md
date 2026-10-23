@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Validate impl supertrait lifetimes at declarations, including unused and empty
+  impls, rejecting static-reference escapes through invalid implementations.
+
 - Enforce function/owner trait predicates, projections and outlives constraints
   for function-item callbacks, closing static-reference escape cases.
 

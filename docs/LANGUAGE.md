@@ -1008,6 +1008,13 @@ naming one twice (`impl<'a> PartialEq for Token<'a>`, whose `Rhs` is
 bounding them (`impl<'a, 'b: 'a>`); a lifetime only its associated
 types name is E0207, as in rustc.
 
+Supertrait obligations are also checked at impl declarations, even for empty
+or unused impls, under the lifetimes and bounds its header permits. A selected
+supertrait impl may require only outlives relations that follow from that header.
+Unrepresented supertrait argument regions and higher-ranked callback obligations
+needed by a selected supertrait impl are explicitly unsupported; unrelated
+callback bounds remain allowed.
+
 `Fn`, `FnMut` and `FnOnce` bounds may return references whose lifetime
 is elided from a single input reference (`F: Fn(&T) -> &U`). Each
 call's result borrows from its argument. This also applies to returned
