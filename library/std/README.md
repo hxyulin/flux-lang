@@ -10,8 +10,10 @@ The root exposes core's `array`, `ascii`, `cell`, `char`, `clone`, `cmp`,
 `convert`, `default`, `ffi`, `hash`, `hint`, `iter`, `marker`, `mem`, `num`,
 `ops`, `option`, `panic`, `ptr`, `result`, `slice` and `str`, and alloc's
 `alloc`, `borrow`, `boxed`, `fmt`, `prelude`, `string` and `vec`. Only the
-APIs actually implemented in those modules exist. For example, `cell`
-does not acquire `RefCell`. `num` now provides the checked `NonZeroU32`
+APIs actually implemented in those modules exist. `cell` includes the existing
+`Cell` and `RefCell` implementations, including sized borrow-guard dereferencing;
+reexporting them does not add further standard-library APIs.
+`num` now provides the checked `NonZeroU32`
 subset (`new`/`get`, comparison, copying, hashing and formatting), whose
 zero niche preserves `Option<NonZeroU32>` at four bytes. Other NonZero
 types and APIs are not implied.

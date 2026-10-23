@@ -299,10 +299,15 @@ the remaining NonZero family and APIs are not implied by this subset.
 ### Library and runtime
 
 The compiler uses much more than its current `core`/`alloc` subset.
-Examples include `Cell`/`RefCell` in the arena, synchronization and
+Examples include arena allocation APIs, synchronization and
 atomics in the interner, hash tables throughout semantic analysis, and
 filesystem, process and timing APIs in the driver and tools. The parser
 also uses `std::thread::panicking` for its marker guard.
+
+Existing `RefCell` guards now support shared dereferencing and, for `RefMut`,
+mutable dereferencing while retaining borrow counters and Drop guards. This
+removes the guard-based Vec access errors in unchanged `dropless.rs`; allocation
+and pointer API prerequisites remain. It does not establish full arena support.
 
 A small `std` facade now reexports facilities already present in `core`
 and `alloc`, preserving their definition identities; see

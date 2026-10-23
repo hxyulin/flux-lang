@@ -736,8 +736,9 @@ a slice its length through `write_length_prefix` then its elements, all
 at once for integers, so a program's hasher gives rustc's hashes),
 `core::cell::{Cell, RefCell}` (a `RefCell`'s loans are counted, and
 a conflicting `borrow` or `borrow_mut` panics with rustc's message, at
-its caller; its `Ref` and `RefMut` cannot be dereferenced yet, as flux
-has no `Deref`; all of them, and `BorrowError` and `BorrowMutError`,
+its caller; `Ref<T>` and `RefMut<T>` implement `Deref`, and `RefMut<T>`
+also implements `DerefMut`, with references tied to the borrowed guard;
+unsized guard targets remain unsupported; all of them, and `BorrowError` and `BorrowMutError`,
 are `Debug` as rustc writes them),
 `core::ptr::{addr_of, addr_of_mut}`,
 `core::default::Default` (in the prelude) for the integers, `bool`,
