@@ -761,7 +761,7 @@ pub fn expand_intrinsics(
             continue;
         }
         if name == "drop_in_place" {
-            expand_drop_in_place(sigs, body, block, &args[0], arg_ty, (target, range));
+            expand_drop_in_place(items, sigs, body, block, &args[0], arg_ty, (target, range));
             continue;
         }
         // A reference argument, in a temporary to dereference.
@@ -925,6 +925,7 @@ pub fn expand_intrinsics(
 /// `drop_in_place::<ty>(ptr)`, which continues at `target`: a drop of
 /// `*ptr`, or for a slice, of each element in turn, in a loop.
 fn expand_drop_in_place(
+    items: &ItemTree,
     sigs: &Signatures,
     body: &mut Body,
     block: BasicBlock,
@@ -936,6 +937,15 @@ fn expand_drop_in_place(
         body.blocks[block].terminator.kind = TerminatorKind::Unreachable;
         return;
     };
+    // Types have been substituted: only traverse elements whose drop may run
+    // code. Size alone is insufficient, since even a ZST can have a destructor.
+    // This elides only the pointee's drops, not its owner's destructor/free.
+    if let TyKind::Slice(elem) = ty.kind()
+        && !flux_ty::traits::needs_drop(items, sigs, &[], elem)
+    {
+        body.blocks[block].terminator.kind = TerminatorKind::Goto(target);
+        return;
+    }
     let temp = |body: &mut Body, ty: Ty| {
         body.locals.alloc(LocalDecl {
             ty,
