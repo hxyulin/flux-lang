@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Add bound-free equality and ordering for `PhantomData`, removing a typed-arena
+  library prerequisite while preserving the marked type's existing semantics.
+
 - Fix borrowed generic method dispatch by grouping equivalent receiver
   candidates before applying inherent and type-parameter bound priority.
 

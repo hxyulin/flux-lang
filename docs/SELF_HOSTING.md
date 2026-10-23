@@ -367,6 +367,20 @@ A deliberate standard-library/runtime plan is needed before the whole
 workspace is executable. Small dependency-free modules expose core and
 alloc gaps first, without requiring an operating-system API all at once.
 
+## Active self-hosting goal
+
+The goal is an executable built from unchanged Flux compiler and dependency
+sources by Flux, followed by compiling the regression suite and rebuilding
+Flux with that executable. Component comparisons are intermediate milestones;
+they do not establish a working compiler bootstrap.
+
+The next arena-root probe still encounters missing `Arc`/`Weak`, `UnsafeCell`,
+`type_name`, const `Vec::new`, `Vec::resize_with`, associated-type handling,
+and collections. Some reported errors cascade from missing imports. The
+`PhantomData` equality barrier is removed: its equality and ordering traits
+have no bounds on the marked type, with runtime coverage for unsized and
+non-comparable marked types. Whole-arena compilation remains incomplete.
+
 ## Next milestones
 
 1. Keep the executable source subset passing as its source evolves.
