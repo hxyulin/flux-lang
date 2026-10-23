@@ -482,6 +482,22 @@ impl<'a> Walker<'a> {
             // A trait object's lifetime bound, as written, or rustc's
             // default: the reference it is behind, `'static` elsewhere.
             (TypeRef::Dyn(d), TyKind::Dynamic(_)) => {
+                for bound in &d.bounds {
+                    let (trait_, _) = self.items.resolve_trait(self.module, bound);
+                    if trait_.is_some_and(|id| !self.items.traits[id].generics.lifetimes.is_empty())
+                        || bound
+                            .path
+                            .args
+                            .iter()
+                            .flatten()
+                            .any(|a| !a.lifetimes.is_empty())
+                    {
+                        self.errors.push((
+                            bound.range,
+                            "lifetime arguments on trait objects are not supported yet".to_owned(),
+                        ));
+                    }
+                }
                 let r = match d.lifetime {
                     Some(l) if l.is_anonymous() => self.elide(l.range),
                     Some(l) => self.named(l),
@@ -697,6 +713,42 @@ impl<'a> Walker<'a> {
             let r = self.named(l);
             out.push(r);
         }
+    }
+
+    /// Resolve a trait path against its declaration rather than erased types.
+    /// Omission is forbidden in impl headers; bounds require named arguments.
+    fn trait_lifetimes(
+        &mut self,
+        path: &Path,
+        trait_: flux_hir::TraitId,
+        header: bool,
+        out: &mut Vec<Region>,
+    ) {
+        let want = self.items.traits[trait_].generics.lifetimes.len();
+        let last = path.segments.len().saturating_sub(1);
+        let written = path.args(last).map_or(&[][..], |a| &a.lifetimes);
+        if want != 0 && written.is_empty() {
+            let at = path.ranges.get(last).copied().unwrap_or_default();
+            self.errors.push((
+                at,
+                if header {
+                    "implicit elided lifetime not allowed here"
+                } else {
+                    "missing lifetime specifier"
+                }
+                .to_owned(),
+            ));
+            out.extend(std::iter::repeat_n(Region::Erased, want));
+            return;
+        }
+        // Resolve names even when arity is wrong, so undeclared names are
+        // never hidden behind an argument-count diagnostic.
+        if written.len() != want {
+            for &l in written {
+                self.named(l);
+            }
+        }
+        self.lifetime_args(path, "trait", want, out);
     }
 
     /// Lifetime arguments where there are no lifetime parameters
@@ -1033,6 +1085,70 @@ pub(crate) fn own_names(generics: &Generics) -> impl Iterator<Item = LifetimeNam
     })
 }
 
+/// Requirements for a well-formed trait reference, in its caller's regions.
+/// This instantiates the declaration's bounds (including `Self` at type slot
+/// zero) and checks the types supplied as arguments. These are obligations,
+/// never assumptions: a bound `N: Tr<'a, &'b T>` cannot imply `'b: 'a`.
+/// Malformed region tables return `None`, rather than dropping constraints.
+pub fn trait_requirements(
+    items: &ItemTree,
+    sigs: &Signatures,
+    predicate: &crate::Predicate,
+    self_regions: &[Region],
+    regions: &TraitRefRegions,
+) -> Option<Vec<Outlives<Region>>> {
+    let trait_ref = predicate.trait_ref;
+    let declaration = sigs.regions.traits.get(trait_ref.trait_)?;
+    let types: Vec<Ty> = std::iter::once(predicate.self_ty)
+        .chain(trait_ref.args.iter().copied())
+        .collect();
+    let tables: Vec<&[Region]> = std::iter::once(self_regions)
+        .chain(regions.args.iter().map(|a| &**a))
+        .collect();
+    if regions.lifetimes.len() != declaration.names.len()
+        || tables.len() != types.len()
+        || types
+            .iter()
+            .zip(&tables)
+            .any(|(&t, r)| slots(items, t) != r.len())
+    {
+        return None;
+    }
+    let map = |r| match r {
+        Region::Param(i) => regions
+            .lifetimes
+            .get(i as usize)
+            .copied()
+            .unwrap_or(Region::Erased),
+        r => r,
+    };
+    let mut out = Vec::new();
+    for (&ty, table) in types.iter().zip(&tables) {
+        implied_outlives_with_static(items, sigs, ty, table, Some(Region::Static), &mut out);
+    }
+    for bound in &declaration.outlives {
+        match *bound {
+            Outlives::Region(a, b) => out.push(Outlives::Region(map(a), map(b))),
+            Outlives::Type(ty, b) => {
+                let b = map(b);
+                let mut table = Vec::new();
+                instantiate(
+                    items,
+                    ty,
+                    &[],
+                    &mut |r| map(r),
+                    &|i| tables.get(i as usize).map_or(Vec::new(), |r| r.to_vec()),
+                    &mut table,
+                );
+                out.extend(table.into_iter().map(|a| Outlives::Region(a, b)));
+                outlives_params(ty.subst(&types), b, &mut out);
+            }
+        }
+    }
+    out.retain(|p| !matches!(p, Outlives::Region(a, b) if a == b));
+    Some(out)
+}
+
 /// What a well-formed `ty`, with slots `regions`, implies its lifetimes
 /// outlive: `&'a T` that `T: 'a`, and a struct's inferred requirements.
 pub fn implied_outlives<R: Copy + PartialEq>(
@@ -1159,6 +1275,8 @@ fn outlives_params<R: Copy>(ty: Ty, r: R, out: &mut Vec<Outlives<R>>) {
     match ty.kind() {
         TyKind::Param(_) | TyKind::Alias(_) => out.push(Outlives::Type(ty, r)),
         TyKind::FnDef(_) | TyKind::FnPtr(_) => {}
+        // A const array length is a generic argument, not borrowed data.
+        TyKind::Array(elem, _) => outlives_params(elem, r, out),
         _ => {
             if ty.has_params() || ty.has_aliases() {
                 for t in ty.children() {
