@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Implement `Deref` for sized RefCell borrow guards and `DerefMut` for mutable
+  guards, preserving runtime borrow conflicts and guard-bound references.
+
 - Support literal `#[path]` on out-of-line modules declared in source files,
   preserving directory rules, editions, provenance and conditional loading.
   Add executable coverage of the unchanged compiler SlicePool implementation.
