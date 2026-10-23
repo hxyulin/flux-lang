@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Add the bounded BTreeMap API needed by layered arenas, using safe AVL storage,
+  heterogeneous queries, ordered iteration and ownership-correct consumption.
+
 - Reject escaping constant borrows of temporary interior-mutable values while
   retaining owned constants and transient borrows. Preserve static field/index/subslice
   addresses, slice metadata and writable interior-mutable static storage.
