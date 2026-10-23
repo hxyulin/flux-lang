@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Reject unrepresented inherited reference projections in function-pointer
+  binders and trait bounds, preserving scalar callback and iterator support.
+
 - Resolve inherited `Self::Item` through substituted supertraits, preserving
   selected-impl lifetimes for represented function signatures. Execute the
   unchanged arena `Values` iterator excerpt against rustc.

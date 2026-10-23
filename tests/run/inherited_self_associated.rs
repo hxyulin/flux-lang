@@ -39,7 +39,15 @@ impl Left for Concrete {}
 impl Right for Concrete {}
 impl Diamond for Concrete { fn value(&self) -> Self::Item { 19 } }
 
+trait ScalarBase { type Out; }
+trait ScalarChild: ScalarBase { fn apply(f: fn(Self::Out)); }
+struct Scalar;
+impl ScalarBase for Scalar { type Out = u8; }
+impl ScalarChild for Scalar { fn apply(f: fn(Self::Out)) { f(31); } }
+fn show_scalar(x: u8) { println!("scalar {}", x); }
+
 fn main() {
+    Scalar::apply(show_scalar);
     println!("{} {}", Concrete.item(), Concrete.value());
     let input = [3, 5, 7, 11];
     let mut values = Values { data: &input };

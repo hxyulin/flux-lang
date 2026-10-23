@@ -605,6 +605,9 @@ pub struct TypeScope<'a> {
     /// calls such items ("functions"); `None` in a body, where `_` is a
     /// type to infer.
     pub signature_of: Option<&'static str>,
+    /// Function-pointer binders do not yet retain inherited projection regions.
+    pub in_fn_pointer: bool,
+    pub in_trait_bound: bool,
     /// The bounds in scope, with what they imply: where `T::Out` finds
     /// its trait.
     pub bounds: &'a [Predicate],
@@ -1235,6 +1238,10 @@ pub fn resolve_type(
             ret,
             is_unsafe,
         } => {
+            let scope = TypeScope {
+                in_fn_pointer: true,
+                ..scope
+            };
             let params: Vec<Ty> = params
                 .iter()
                 .map(|p| resolve_type(items, module, p, scope, range, errors))
@@ -1653,6 +1660,16 @@ fn assoc_type(
                         .iter()
                         .find(|(tr, n, _)| tr == inherited && *n == name)
                     {
+                        fn has_regions(items: &ItemTree, ty: Ty) -> bool {
+                            regions::slots(items, ty) != 0
+                                || ty.children().any(|t| has_regions(items, t))
+                        }
+                        if has_regions(items, ty)
+                            && (scope.in_fn_pointer || type_has_pointer_binder(items, ty))
+                        {
+                            errors.push((at, "inherited associated type regions in function pointers are not supported yet".into()));
+                            return Ty::ERROR;
+                        }
                         if ty.has_aliases() {
                             errors.push((
                                 at,
@@ -1660,7 +1677,8 @@ fn assoc_type(
                             ));
                             return Ty::ERROR;
                         }
-                        if scope.signature_of != Some("functions") && regions::slots(items, ty) != 0
+                        if (scope.signature_of != Some("functions") || scope.in_trait_bound)
+                            && regions::slots(items, ty) != 0
                         {
                             errors.push((at, "region-bearing inherited associated types outside function signatures are not supported yet".into()));
                             return Ty::ERROR;
@@ -1738,6 +1756,96 @@ fn resolve_predicates(
     traits::resolve_predicates(items, module, generics, scope, errors)
 }
 
+/// Detect a pointer binder in a carrier declaration before its arguments
+/// erase the provenance of an inherited projection. Cycles are visited once;
+/// excessive declaration depth is a conservative binder boundary.
+fn declaration_has_pointer_binder(items: &ItemTree, def: Def, seen: &mut Vec<Def>) -> bool {
+    if seen.contains(&def) {
+        return false;
+    }
+    if seen.len() >= 128 {
+        return true;
+    }
+    seen.push(def);
+    match def {
+        Def::Struct(id) => {
+            let data = &items.structs[id];
+            if data
+                .generics
+                .params
+                .iter()
+                .filter_map(|p| p.default.as_ref())
+                .any(|(ty, _)| written_has_pointer_binder(items, data.loc.module, ty, seen))
+            {
+                return true;
+            }
+            (0..data.variant_count() as u32).any(|v| {
+                data.variant(v)
+                    .fields
+                    .iter()
+                    .any(|f| written_has_pointer_binder(items, data.loc.module, &f.ty, seen))
+            })
+        }
+        Def::TypeAlias(id) => {
+            let data = &items.type_aliases[id];
+            written_has_pointer_binder(items, data.loc.module, &data.ty, seen)
+        }
+        _ => false,
+    }
+}
+
+fn written_has_pointer_binder(
+    items: &ItemTree,
+    module: ModuleId,
+    ty: &TypeRef,
+    seen: &mut Vec<Def>,
+) -> bool {
+    match ty {
+        TypeRef::FnPtr { .. } => true,
+        TypeRef::Ref { pointee, .. }
+        | TypeRef::Ptr { pointee, .. }
+        | TypeRef::Slice(pointee)
+        | TypeRef::Array { elem: pointee, .. } => {
+            written_has_pointer_binder(items, module, pointee, seen)
+        }
+        TypeRef::Tuple(ts) => ts
+            .iter()
+            .any(|t| written_has_pointer_binder(items, module, t, seen)),
+        TypeRef::Path(path) => {
+            if path.qself.is_some() {
+                return true;
+            }
+            if path
+                .args
+                .iter()
+                .flatten()
+                .flat_map(|a| a.types.iter())
+                .any(|t| written_has_pointer_binder(items, module, t, seen))
+            {
+                return true;
+            }
+            let resolved = match items.resolve(module, path, Ns::Types) {
+                Ok(r) | Err(ResolveError::Private { resolved: r, .. }) => Some(r),
+                _ => None,
+            };
+            matches!(resolved, Some(Resolved::Def(def)) if declaration_has_pointer_binder(items, def, seen))
+        }
+        _ => false,
+    }
+}
+
+fn type_has_pointer_binder(items: &ItemTree, ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::FnPtr(_) => true,
+        TyKind::Adt(adt, _)
+            if declaration_has_pointer_binder(items, Def::Struct(adt.strukt), &mut Vec::new()) =>
+        {
+            true
+        }
+        _ => ty.children().any(|t| type_has_pointer_binder(items, t)),
+    }
+}
+
 /// Struct `strukt`, named by `path`, with the generic arguments written
 /// after its last segment, which must be one for each of its
 /// parameters.
@@ -1751,6 +1859,12 @@ pub fn struct_type(
     errors: &mut Vec<(TextRange, String)>,
 ) -> Ty {
     let def = &items.structs[strukt];
+    let scope = TypeScope {
+        in_fn_pointer: scope.in_fn_pointer
+            || (!scope.self_inherited_types.is_empty()
+                && declaration_has_pointer_binder(items, Def::Struct(strukt), &mut Vec::new())),
+        ..scope
+    };
     // `core::ffi::CStr` is the type of `c"..."`, which the compiler
     // knows.
     if items.lang_enums.get(&Symbol::intern("CStr")) == Some(&strukt) {
@@ -1886,6 +2000,12 @@ pub fn alias_type(
     errors: &mut Vec<(TextRange, String)>,
 ) -> Ty {
     let def = &items.type_aliases[alias];
+    let scope = TypeScope {
+        in_fn_pointer: scope.in_fn_pointer
+            || (!scope.self_inherited_types.is_empty()
+                && declaration_has_pointer_binder(items, Def::TypeAlias(alias), &mut Vec::new())),
+        ..scope
+    };
     let last = path.segments.len().saturating_sub(1);
     let at = path.range(last, range);
     let want = def.generics.len();
@@ -2737,6 +2857,8 @@ fn extend_signatures(
                 (None, None) => "constants",
             }),
             bounds: &bounds,
+            in_fn_pointer: false,
+            in_trait_bound: false,
             self_trait: konst
                 .owner
                 .and_then(Owner::as_impl)

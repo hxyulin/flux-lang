@@ -232,6 +232,10 @@ pub fn trait_ref(
     scope: TypeScope<'_>,
     errors: &mut Vec<(TextRange, String)>,
 ) -> Option<(TraitRef, Vec<Projection>)> {
+    let scope = TypeScope {
+        in_trait_bound: true,
+        ..scope
+    };
     let data = &items.traits[t];
     let path = &bound.path;
     let last = path.segments.len().saturating_sub(1);
