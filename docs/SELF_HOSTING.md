@@ -45,10 +45,16 @@ Test-only items are excluded by Flux's conditional item support, rather
 than stripped from the test input. Only ordinary builds are covered;
 this does not run the modules' `#[test]` functions under Flux.
 
-Bundling avoids two separate build-system gaps: `#[path]` module loading
-and loading separately compiled dependency crates. The normal workspace
-suite includes this test; the dedicated recipe makes it quick to repeat
-while expanding the subset.
+This test retains its bundled arrangement. Literal `#[path]` loading now works
+on out-of-line modules declared directly in source files, including conditional
+paths and inherited editions. Inline/block overrides and paths from item macro
+expansions remain unsupported. A separate `path_slice_pool` integration test
+loads the unchanged `flux-arena/src/slice.rs` directly and compares ownership,
+drops, retained ranges after growth, scratch draining and bounds checks against
+rustc in both Flux modes. This proves the focused SlicePool consumer, not all
+of flux-arena. Separately compiled dependency artifacts remain unsupported.
+The normal workspace suite includes these tests; the dedicated recipe repeats
+the bundled subset while expanding coverage.
 
 On 2026-10-23 the seven-module test matched rustc in both Flux modes,
 using the unchanged syntax-kind and event sources, including the explicit
