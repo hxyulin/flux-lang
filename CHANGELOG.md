@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Support literal `#[path]` on out-of-line modules declared in source files,
+  preserving directory rules, editions, provenance and conditional loading.
+  Add executable coverage of the unchanged compiler SlicePool implementation.
+
 - Enforce predicate-bound callback provenance during function-pointer
   reification, including casts, argument coercions and cloned function items.
 

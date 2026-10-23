@@ -95,6 +95,12 @@ reported as "not supported yet":
   `pub(in path)`, and flux checks privacy as rustc does. An enum's
   variants are named through it (`E::A`, `Self::A`) or imported
   (`use E::*;`, `use E::{A, B};`).
+  Out-of-line modules declared directly in source files accept literal
+  `#[path = "file.rs"]`, including selected `cfg_attr` paths. Paths resolve
+  relative to the declaring source file, and the loaded file owns its
+  containing directory for child module lookup. Inline/block overrides,
+  paths in item macro expansions, duplicate path attributes and nonmodule
+  placement remain explicitly unsupported. Recursive loading is bounded.
 - **Types:** paths (`i32`, `bool`, `char`, `Self`, `m::S`, `crate::m::S`,
   `Pair<i32>`, a type parameter `T`), function pointers (`fn(i32) ->
   i32`, `unsafe fn()`, but not `extern "C" fn`), associated types (`T::Out`,

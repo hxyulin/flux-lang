@@ -106,7 +106,8 @@ navigation with the drivers in `tests/run/support/`. Both compilers compile
 those sources and compare their behavior. Run `just selfhost-subset` for
 this test alone. This covers compiler implementations as they change; it
 does not yet build the entire compiler with flux. The modules are bundled
-because flux does not support `#[path]` yet. See the
+using the original bundled test arrangement. Literal `#[path]` on supported
+file modules is also covered by the separate SlicePool source test. See the
 [self-compilation milestones and gaps](docs/SELF_HOSTING.md).
 
 ## Differential testing
