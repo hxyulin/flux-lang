@@ -1,0 +1,57 @@
+// Compile-only readiness consumer, never a native/self-hosting acceptance oracle.
+use syntax_complete::{
+    SyntaxNode,
+    ast::{self, AstNode},
+};
+fn round<'t, N: AstNode<'t>>(n: N, node: SyntaxNode<'t>) {
+    let _ = N::can_cast(node.kind());
+    let _ = N::cast(node);
+    let _ = n.syntax();
+    let _ = n.syntax(); // inherited Copy
+}
+fn find<'t, N: AstNode<'t>>(node: SyntaxNode<'t>) -> Option<N> {
+    node.children().find_map(N::cast)
+}
+fn all<'t>(root: SyntaxNode<'t>) {
+    // GENERATED_INTERFACES
+    let _ = find::<ast::Expr<'t>>(root);
+    let _ = find::<ast::Type<'t>>(root);
+    if let Some(x) = ast::IfExpr::cast(root) {
+        let _ = x.condition();
+        let _ = x.then_branch();
+        let _ = x.else_branch();
+    }
+    if let Some(x) = ast::WhileExpr::cast(root) {
+        let _ = x.condition();
+        let _ = x.loop_body();
+    }
+    if let Some(x) = ast::ForExpr::cast(root) {
+        let _ = x.iterable();
+        let _ = x.loop_body();
+    }
+    if let Some(x) = ast::Impl::cast(root) {
+        let _ = x.trait_ty();
+        let _ = x.self_ty();
+    }
+    if let Some(x) = ast::PathSegment::cast(root) {
+        let _ = x.self_ty();
+        let _ = x.trait_ty();
+    }
+}
+fn main() {
+    for text in [
+        "fn f(){if true {} else {};while false{}for x in 0..1{} }",
+        "struct S; impl Trait for S {fn f(){}} fn g(){<S as Trait>::f();}",
+        "fn broken( { if true {",
+        "impl { fn x( ; while { for in } < as >::",
+        "",
+    ] {
+        let p = syntax_complete::parse_source_file(text);
+        let _ = p.errors();
+        let _ = p.source_file().items().count();
+        all(p.root());
+        for node in p.root().descendants() {
+            all(node);
+        }
+    }
+}

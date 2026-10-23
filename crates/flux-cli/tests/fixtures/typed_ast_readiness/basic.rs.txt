@@ -1,0 +1,21 @@
+// Compile-only source consumer. Even malformed parsed inputs are never executed here.
+use syntax_complete::{
+    SyntaxNode,
+    ast::{self, AstNode},
+};
+fn count<'t, N: AstNode<'t>>(root: SyntaxNode<'t>) -> usize {
+    root.descendants().filter_map(N::cast).count()
+}
+fn main() {
+    for text in [
+        "fn f() {}",
+        "fn broken( { if true {",
+        "fn café<'a>(x: &'a str) -> &'a str { x }",
+    ] {
+        let parsed = syntax_complete::parse_source_file(text);
+        let _ = parsed.errors();
+        let _ = parsed.source_file().items().count();
+        let _ = count::<ast::Fn<'_>>(parsed.root());
+        let _ = count::<ast::Expr<'_>>(parsed.root());
+    }
+}
