@@ -1,0 +1,10 @@
+fn mismatch(bool) -> i32
+    early@0: bool
+fn missing(bool) -> i32
+    early@0: bool
+fn unit(bool) -> i32
+    early@0: bool
+fn main() -> ()
+error 72..76: mismatched types: expected `i32`, found `bool`
+error 133..161: mismatched types: expected `i32`, found `()`
+error 221..233: mismatched types: expected `i32`, found `()`

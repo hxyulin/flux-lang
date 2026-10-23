@@ -1,0 +1,28 @@
+fn main() -> () {
+    let mut _0: ();
+    let _1: Owned; // value
+    let _2: Owned; // moved
+    let _3: !;
+    let _4: i32; // _x
+
+    bb0: {
+        _1 = Owned(const 7_i32);
+        goto -> bb1;
+    }
+
+    bb1: {
+        _2 = move _1;
+        goto -> bb2;
+    }
+
+    bb2: {
+        _4 = copy _1.0;
+        _0 = const ();
+        StorageDead(_4);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+error 117..124: use of moved value: `value`

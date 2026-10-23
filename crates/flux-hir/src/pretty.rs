@@ -612,11 +612,21 @@ impl Printer<'_> {
                 self.out.push('}');
             }
             Expr::Loop { body, source } => {
-                write!(self.out, "loop#{} ", id.index()).unwrap();
+                write!(
+                    self.out,
+                    "{}#{} ",
+                    if *source == LoopSource::Block {
+                        "block"
+                    } else {
+                        "loop"
+                    },
+                    id.index()
+                )
+                .unwrap();
                 match source {
                     LoopSource::While => self.out.push_str("/* while */ "),
                     LoopSource::For => self.out.push_str("/* for */ "),
-                    LoopSource::Loop => {}
+                    LoopSource::Loop | LoopSource::Block => {}
                 }
                 self.expr(*body);
             }

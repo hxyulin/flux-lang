@@ -1,0 +1,49 @@
+fn choose(early@0: bool, n@1: i32) -> i32 {
+    block#0 {
+        if early@0 {
+            break#0 (n@1 + 10);
+        }
+        (n@1 + 20)
+    }
+}
+
+fn nested(n@0: i32) -> i32 {
+    block#0 {
+        let mut i@1 = 0;
+        loop#2 {
+            (i@1 += 1);
+            block#6 {
+                if (i@1 < n@0) {
+                    continue#2;
+                }
+                if (i@1 == n@0) {
+                    break#0 (i@1 * 3);
+                }
+                break#6;
+            }
+            break#2;
+        }
+        99
+    }
+}
+
+fn shadow() -> i32 {
+    block#0 {
+        let x@0 = block#1 {
+            break#1 7;
+        };
+        break#0 (x@0 + 1);
+    }
+}
+
+fn slice<'a>(early@0: bool, a@1: &'a [i32; 2], b@2: &'a [i32; 3]) -> &'a [i32] {
+    block#0 {
+        if early@0 {
+            break#0 a@1;
+        }
+        b@2
+    }
+}
+
+fn main() -> () {}
+

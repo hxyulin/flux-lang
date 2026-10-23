@@ -2961,7 +2961,7 @@ impl Ctx<'_> {
                 // type its context wants, if it is known.
                 let ty = match source {
                     LoopSource::While | LoopSource::For => Ty::UNIT,
-                    LoopSource::Loop => match self.coercion_target(id) {
+                    LoopSource::Loop | LoopSource::Block => match self.coercion_target(id) {
                         Some(expected) => expected,
                         None => self.new_var(false, self.range(id)),
                     },
@@ -2978,12 +2978,25 @@ impl Ctx<'_> {
                         source: *source,
                     },
                 );
+                if *source == LoopSource::Block {
+                    self.expect(*loop_body, ty);
+                }
                 let body_ty = self.infer_expr(*loop_body);
-                self.coerce(body_ty, Ty::UNIT, *loop_body);
+                self.coerce(
+                    body_ty,
+                    if *source == LoopSource::Block {
+                        ty
+                    } else {
+                        Ty::UNIT
+                    },
+                    *loop_body,
+                );
                 let state = self.loops.remove(id).expect("inserted above");
                 match source {
                     LoopSource::While | LoopSource::For => Ty::UNIT,
                     // A `loop` that nothing breaks out of never finishes.
+                    LoopSource::Block if state.broken || self.shallow(body_ty) != Ty::NEVER => ty,
+                    LoopSource::Block => Ty::NEVER,
                     LoopSource::Loop if state.broken => ty,
                     LoopSource::Loop => Ty::NEVER,
                 }
@@ -2991,7 +3004,7 @@ impl Ctx<'_> {
             Expr::Break { value, target } => {
                 let state = target.and_then(|t| self.loops.get(t).copied());
                 if let (Some(value), Some(state)) = (*value, state)
-                    && state.source == LoopSource::Loop
+                    && matches!(state.source, LoopSource::Loop | LoopSource::Block)
                 {
                     self.expect(value, state.ty);
                 }

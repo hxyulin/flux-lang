@@ -1153,7 +1153,7 @@ struct LoopScope {
     continue_block: BasicBlock,
     /// Where `break value` stores the value.
     dest: Place,
-    /// How many scopes were open outside the loop; leaving it ends the
+    /// How many scopes were open outside the loop or block; leaving it ends the
     /// others.
     scope_depth: usize,
 }
@@ -2614,7 +2614,8 @@ impl Builder<'_> {
                 self.current = Some(join);
             }
             Expr::Loop {
-                body: loop_body, ..
+                body: loop_body,
+                source,
             } => {
                 let head = self.new_block();
                 let exit = self.new_block();
@@ -2629,9 +2630,20 @@ impl Builder<'_> {
                         scope_depth: self.scopes.len(),
                     },
                 );
-                self.lower_operand(*loop_body);
+                if *source == flux_hir::LoopSource::Block {
+                    self.lower_into(*loop_body, dest);
+                } else {
+                    self.lower_operand(*loop_body);
+                }
                 self.loops.remove(expr);
-                self.goto(head, range);
+                self.goto(
+                    if *source == flux_hir::LoopSource::Block {
+                        exit
+                    } else {
+                        head
+                    },
+                    range,
+                );
                 self.current = Some(exit);
             }
             Expr::Break { value, target } => {

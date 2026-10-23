@@ -1748,9 +1748,9 @@ struct Ctx<'a> {
     /// lowered.
     alt_by_ref: ArenaMap<Pat, Option<bool>>,
     alt_mode: Option<Option<bool>>,
-    /// The enclosing loops and their labels, innermost last; a
+    /// The enclosing break targets, their labels and whether they are blocks; a
     /// closure's body starts without any.
-    loops: Vec<(Option<Ident>, ExprId)>,
+    loops: Vec<(Option<Ident>, ExprId, bool)>,
     /// Lowering a closure's body, where `break` cannot leave a loop
     /// outside it.
     in_closure: bool,
@@ -1924,18 +1924,18 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The loop labeled `label`, found as [`Ctx::lookup_local`] finds
+    /// The break target labeled `label`, found as [`Ctx::lookup_local`] finds
     /// locals.
-    fn find_label(&self, label: Ident) -> Option<ExprId> {
+    fn find_label(&self, label: Ident) -> Option<(ExprId, bool)> {
         let mut label = label;
         let mut limit = self.loops.len();
         loop {
             let found = self.loops[..limit]
                 .iter()
                 .rev()
-                .find(|(l, _)| *l == Some(label));
-            if let Some(&(_, id)) = found {
-                return Some(id);
+                .find(|(l, _, _)| *l == Some(label));
+            if let Some(&(_, id, block)) = found {
+                return Some((id, block));
             }
             match self.ctxt_parents.get(&label.ctxt) {
                 Some(&(parent, Some((_, loops)))) => {
@@ -2251,7 +2251,7 @@ impl<'a> Ctx<'a> {
             ast::Expr::LoopExpr(loop_expr) => {
                 let label = self.loop_label(loop_expr.label());
                 let id = self.alloc_expr(Expr::Missing, range);
-                self.loops.push((label, id));
+                self.loops.push((label, id, false));
                 let body = self.lower_opt_block(loop_expr.loop_body(), syntax);
                 self.loops.pop();
                 self.exprs[id] = Expr::Loop {
@@ -3135,9 +3135,12 @@ impl<'a> Ctx<'a> {
             }
         }
         self.check_attrs(syntax);
-        if let Some(label) = block.label() {
-            self.unsupported(label.syntax().text_range(), "labeled blocks");
-        }
+        // Reserve the target before lowering its body, just as for loops.
+        let target = self.loop_label(block.label()).map(|label| {
+            let id = self.alloc_expr(Expr::Missing, syntax.text_range());
+            self.loops.push((Some(label), id, true));
+            id
+        });
         for token in [block.async_token(), block.move_token()]
             .into_iter()
             .flatten()
@@ -3185,6 +3188,14 @@ impl<'a> Ctx<'a> {
         }
         if module != outer_module {
             self.block_modules.insert(id, module);
+        }
+        if let Some(target) = target {
+            self.loops.pop();
+            self.exprs[target] = Expr::Loop {
+                body: id,
+                source: LoopSource::Block,
+            };
+            return target;
         }
         id
     }
@@ -3343,7 +3354,7 @@ impl<'a> Ctx<'a> {
         let range = syntax.text_range();
         let label = self.loop_label(while_expr.label());
         let id = self.alloc_expr(Expr::Missing, range);
-        self.loops.push((label, id));
+        self.loops.push((label, id, false));
         let scope = self.scopes.len();
         let condition = self.lower_condition(while_expr.condition(), syntax);
         let then_branch = self.lower_opt_block(while_expr.loop_body(), syntax);
@@ -3499,15 +3510,29 @@ impl<'a> Ctx<'a> {
 
     /// A loop's label, `'a` in `'a: loop {}`.
     fn loop_label(&mut self, label: Option<ast::Label<'_>>) -> Option<Ident> {
-        let lifetime = label?.lifetime()?;
-        Some(Ident::new(
-            Symbol::intern(lifetime.text()),
-            lifetime.syntax().ctxt(),
-        ))
+        Some(self.label_name(label?.lifetime()?))
     }
 
-    /// The loop `break` or `continue` (`keyword`) at `range` leaves: the
-    /// innermost, or the one with `label`.
+    fn label_name(&mut self, lifetime: ast::Lifetime<'_>) -> Ident {
+        let text = lifetime.text();
+        if text == "'_"
+            || text.strip_prefix('\'').is_some_and(|name| {
+                SyntaxKind::from_keyword(name).is_some()
+                    && (name != "gen"
+                        || self.items.edition(self.module) == flux_syntax::Edition::E2024)
+            })
+        {
+            self.error(
+                lifetime.syntax().text_range(),
+                "labels cannot use keyword names",
+            );
+        }
+        Ident::new(Symbol::intern(text), lifetime.syntax().ctxt())
+    }
+
+    /// The target of `break` or `continue` (`keyword`) at `range`: the
+    /// innermost loop, or the loop/block with `label`. An unlabeled exit
+    /// cannot cross a labeled block.
     fn loop_target(
         &mut self,
         range: TextRange,
@@ -3515,7 +3540,7 @@ impl<'a> Ctx<'a> {
         label: Option<ast::Lifetime<'_>>,
     ) -> Option<ExprId> {
         if let Some(label) = label {
-            let name = Ident::new(Symbol::intern(label.text()), label.syntax().ctxt());
+            let name = self.label_name(label);
             let found = self.find_label(name);
             if found.is_none() {
                 self.error(
@@ -3523,9 +3548,22 @@ impl<'a> Ctx<'a> {
                     format!("use of undeclared label `{name}`"),
                 );
             }
-            return found;
+            if let Some((_, true)) = found
+                && keyword == "continue"
+            {
+                self.error(range, "`continue` pointing to a labeled block");
+                return None;
+            }
+            return found.map(|(id, _)| id);
         }
-        let target = self.loops.last().map(|&(_, id)| id);
+        if self.loops.last().is_some_and(|&(_, _, block)| block) {
+            self.error(
+                range,
+                format!("unlabeled `{keyword}` inside of a labeled block"),
+            );
+            return None;
+        }
+        let target = self.loops.last().map(|&(_, id, _)| id);
         if target.is_none() {
             let place = if self.in_closure {
                 "inside of a closure"
@@ -3660,7 +3698,7 @@ impl<'a> Ctx<'a> {
             },
             pat_range,
         );
-        self.loops.push((label, loop_id));
+        self.loops.push((label, loop_id, false));
         let body = self.lower_opt_block(for_expr.loop_body(), syntax);
         self.loops.pop();
         self.scopes.truncate(scope);
