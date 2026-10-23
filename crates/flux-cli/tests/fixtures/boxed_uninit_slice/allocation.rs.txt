@@ -1,0 +1,10 @@
+#[repr(align(64))]
+struct Aligned(u8);
+
+fn main() {
+    let mut slots = Box::<[ELEMENT]>::new_uninit_slice(LENGTH);
+    // If allocation unexpectedly succeeds, make the storage observable.
+    std::hint::black_box(slots.as_mut_ptr());
+    slots[0].write(VALUE);
+    println!("unexpected allocation success {}", slots.len());
+}
