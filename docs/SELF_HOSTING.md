@@ -375,11 +375,14 @@ Flux with that executable. Component comparisons are intermediate milestones;
 they do not establish a working compiler bootstrap.
 
 The next arena-root probe still encounters missing `Arc`/`Weak`, `UnsafeCell`,
-`type_name`, const `Vec::new`, `Vec::resize_with`, associated-type handling,
+`type_name`, const `Vec::new`, associated-type handling,
 and collections. Some reported errors cascade from missing imports. The
 `PhantomData` equality barrier is removed: its equality and ordering traits
 have no bounds on the marked type, with runtime coverage for unsized and
-non-comparable marked types. Whole-arena compilation remains incomplete.
+non-comparable marked types. `Vec::resize_with` now also supports the side-table
+growth operations, calling a stateful factory only for new elements and dropping truncated elements.
+Runtime coverage includes non-Clone owners, aligned zero-sized elements and
+sparse optional slots. Whole-arena compilation remains incomplete.
 
 ## Next milestones
 
