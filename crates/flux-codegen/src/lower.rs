@@ -218,6 +218,9 @@ pub fn lower_module(
             thread_local: false,
             local: true,
             weak_odr: false,
+            weak: false,
+            section: None,
+            retain: false,
             hidden: false,
             init: Some(DataInit {
                 constant: !items.consts[id].is_static_mut(),
@@ -1027,6 +1030,9 @@ impl Ctx<'_> {
             thread_local: false,
             local: true,
             weak_odr: false,
+            weak: false,
+            section: None,
+            retain: false,
             hidden: false,
             init: Some(DataInit {
                 constant: true,
@@ -1104,6 +1110,9 @@ impl Ctx<'_> {
             thread_local: false,
             local: true,
             weak_odr: false,
+            weak: false,
+            section: None,
+            retain: false,
             hidden: false,
             init: Some(DataInit {
                 constant: true,
@@ -1128,6 +1137,9 @@ impl Ctx<'_> {
             thread_local: false,
             local: true,
             weak_odr: false,
+            weak: false,
+            section: None,
+            retain: false,
             hidden: false,
             init: Some(DataInit {
                 constant: true,
@@ -2773,8 +2785,8 @@ impl Lower<'_, '_, '_> {
                 let (Location::Memory(address), _) = self.locate(dest) else {
                     unreachable!("NEON aggregates live in memory")
                 };
-                // Keel has only 128-bit vectors and no narrowing instruction.
-                // Store exactly eight bytes, never a full vector to this result.
+                // This scalar implementation stores exactly eight bytes,
+                // never a full Q vector to this result.
                 let shift = self.b.ins().iconst(Type::I16, shift.bits() as i64);
                 for lane in 0..8 {
                     let input = self.offset(first, lane * 2);
