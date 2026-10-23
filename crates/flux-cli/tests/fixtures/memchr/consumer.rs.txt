@@ -1,0 +1,60 @@
+fn record(hash: &mut u64, value: Option<usize>) {
+    *hash = hash.rotate_left(7) ^ value.map_or(0, |n| n as u64 + 1);
+}
+
+fn main() {
+    let mut bytes = [0u8; 384];
+    let mut hash = 0u64;
+    let mut cases = 0usize;
+    for mode in 0..3 {
+        for i in 0..bytes.len() {
+            bytes[i] = if mode == 0 {
+                (i % 7) as u8
+            } else if mode == 1 {
+                ((i * 37 + 11) % 256) as u8
+            } else {
+                b'a'
+            };
+        }
+        for offset in 0..32 {
+            for len in [
+                0usize, 1, 2, 3, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256,
+            ] {
+                let hay = core::hint::black_box(&bytes[offset..offset + len]);
+                for needle in [0u8, 1, 6, 97, 128, 255] {
+                    record(&mut hash, memchr::memchr(needle, hay));
+                    record(&mut hash, memchr::memrchr(needle, hay));
+                    record(&mut hash, memchr::memchr2(needle, 6, hay));
+                    record(&mut hash, memchr::memrchr2(needle, 6, hay));
+                    record(&mut hash, memchr::memchr3(needle, 1, 255, hay));
+                    record(&mut hash, memchr::memrchr3(needle, 1, 255, hay));
+                    record(&mut hash, Some(memchr::memchr_iter(needle, hay).count()));
+                    for pos in memchr::memchr_iter(needle, hay) {
+                        record(&mut hash, Some(pos));
+                    }
+                    for pos in memchr::memrchr3_iter(needle, 1, 255, hay) {
+                        record(&mut hash, Some(pos));
+                    }
+                    cases += 1;
+                }
+                for n in [0usize, 1, 2, 3, 7, 16, 31, 32, 33, 64, 129] {
+                    let needle = core::hint::black_box(&bytes[17..17 + n]);
+                    record(&mut hash, memchr::memmem::find(hay, needle));
+                    record(&mut hash, memchr::memmem::rfind(hay, needle));
+                    let finder = memchr::memmem::Finder::new(needle);
+                    let reverse = memchr::memmem::FinderRev::new(needle);
+                    record(&mut hash, finder.clone().find(hay));
+                    record(&mut hash, reverse.clone().rfind(hay));
+                    for pos in memchr::memmem::find_iter(hay, needle) {
+                        record(&mut hash, Some(pos));
+                    }
+                    for pos in memchr::memmem::rfind_iter(hay, needle) {
+                        record(&mut hash, Some(pos));
+                    }
+                    cases += 1;
+                }
+            }
+        }
+    }
+    println!("{} {}", cases, hash);
+}

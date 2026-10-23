@@ -15,8 +15,8 @@ qualifiers and bodiless declarations), structs (unit, tuple, record), enums
 traits, type aliases (including generic associated types), `const` and
 `static` items, inline and out-of-line modules, `use` trees, `extern crate`,
 `extern` blocks (including C-variadic declarations), `macro_rules!`
-definitions, macro calls in item position, and nongeneric unions with integer
-scalar fields (bounded as described below). `union` remains a contextual
+definitions, macro calls in item position, and nongeneric unions with concrete
+Copy fields (bounded as described below). `union` remains a contextual
 keyword, so identifiers and macros named `union` still work. Visibilities: `pub`,
 `pub(crate)`, `pub(self)`, `pub(super)`, `pub(in path)`.
 
@@ -1067,8 +1067,9 @@ legacy const expressions are explicitly rejected. The trailing argument is
 never evaluated at runtime. Explicit turbofish calls, parenthesized callees
 and function values retain the modern signature and its safety rules.
 
-Unions support signed/unsigned integers, fixed arrays and concrete Copy structs
-whose fields recursively contain only those types, with default/`repr(C)`
+Unions support signed/unsigned integers, bool, unit, function pointers, fixed
+arrays, concrete Copy structs, enums and nested unions whose stored fields
+recursively contain only those types, with default/`repr(C)`
 layout, Copy/Clone and whole-value moves. Fields share storage at offset
 zero; size is the largest field size rounded to maximum alignment, and no
 field niche is reused. Field reads/references require unsafe code, writes
@@ -1076,8 +1077,8 @@ require an initialized mutable union, and borrows of different fields overlap.
 Copy/Clone copy storage without reading inactive fields or calling field Clone
 implementations; fields have no implicit destructors. Struct type/const
 arguments must be fully resolved, and Copy is checked through the trait solver.
-Generic union declarations, enum/tuple/reference/pointer fields, patterns, constant union
-storage, other derives/representation hints and field reinitialization after
+Generic union declarations, nonempty tuples, stored references/raw pointers,
+patterns, constant union storage, other derives/representation hints and field reinitialization after
 a move remain explicitly unsupported. Whole-value assignment can initialize
 or reinitialize a union; type-only size/alignment queries are supported.
 
