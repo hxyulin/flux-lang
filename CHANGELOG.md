@@ -4,6 +4,11 @@
 
 ### Syntax
 
+- Reject unrepresented higher-ranked free-function callbacks with explicit
+  signature lifetime bounds, preserving unbounded and fixed-item controls.
+- Add full unchanged typed-AST source readiness checks with exact gate
+  diagnostics and comprehensive generated-accessor coverage.
+
 - Prove generic caller trait regions from their original bound metadata and
   carry trait method owner lifetimes through direct calls and callbacks.
 - Reject unrepresented higher-ranked callbacks with fixed owner lifetimes,

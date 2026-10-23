@@ -1031,6 +1031,10 @@ contracts introducing higher-ranked reference inputs remain explicitly
 unsupported; this conservative boundary can reject valid methods with
 independent late input lifetimes. Fixed type-parameter or iterator-item inputs
 do not introduce such binders.
+The same boundary applies to free function items with explicit signature
+lifetime or type-outlives bounds. This includes tautological lifetime bounds;
+unrelated bounds can also conservatively reject an otherwise valid late input.
+Unbounded named and elided free-function lifetimes remain supported.
 
 Callable reference output lifetimes can be elided from a single input reference
 (`F: Fn(&T) -> &U`). Each call's result borrows from its argument. This also applies to returned
