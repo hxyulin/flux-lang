@@ -1032,8 +1032,11 @@ unsupported; this conservative boundary can reject valid methods with
 independent late input lifetimes. Fixed type-parameter or iterator-item inputs
 do not introduce such binders.
 The same boundary applies to free function items with explicit signature
-lifetime or type-outlives bounds. This includes tautological lifetime bounds;
-unrelated bounds can also conservatively reject an otherwise valid late input.
+lifetime/type-outlives bounds or an own lifetime mentioned in a trait predicate.
+Occurrences in associated equalities and alias arguments count even when type
+normalization erases them. This includes tautological bounds; unrelated bounds
+can also conservatively reject an otherwise valid late input. Missing callback
+provenance is explicitly unsupported.
 Unbounded named and elided free-function lifetimes remain supported.
 
 Callable reference output lifetimes can be elided from a single input reference

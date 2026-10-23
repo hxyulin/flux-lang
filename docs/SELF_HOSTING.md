@@ -216,8 +216,11 @@ inputs using fresh owner variables. Unrepresented cases reject explicitly,
 including unused scalar and unit outputs. Fixed type-parameter and iterator-item
 inputs remain supported. Some valid owner methods with independent late input
 lifetimes also hit this conservative boundary.
-Free-function items with explicit signature lifetime/type-outlives bounds use
-the same conservative boundary; fresh variables do not prove higher-ranked
+Free-function items with explicit signature lifetime/type-outlives bounds or
+own lifetimes in trait predicates use the same conservative boundary. Metadata
+classifies independent, signature-bound and unrepresented callback signatures
+using both HIR occurrences and resolved tables, including normalized-away alias
+arguments; fresh variables do not prove higher-ranked
 generality. Ordinary unbounded named/elided identity functions and fixed-item
 callbacks remain covered by runtime controls.
 
@@ -228,6 +231,13 @@ It retains exactly the declaration-gate diagnostic and requires zero unrelated
 type errors and zero independent MIR errors. Rustc checks the same source graph
 separately. This is readiness evidence below the gate, not a native Flux build
 of the typed AST.
+
+A pure structural profile query describes the one-owner-lifetime,
+required-safe-method declaration subset needed by the AST. It reconstructs
+signature tables and callback provenance, checks transitive region-free
+supertrait edges, and rejects missing metadata. The query does not admit traits
+or replace any declaration, impl or use-site checks; the public gate remains
+unconditional.
 
 Function-item callbacks now share direct calls' complete signature obligations,
 including function/owner predicates, projections and outlives constraints.

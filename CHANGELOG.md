@@ -4,6 +4,11 @@
 
 ### Syntax
 
+- Track callback lifetime provenance across trait predicates and normalized-away
+  arguments, rejecting unrepresented early-binding signatures explicitly.
+- Add a structural required-method trait profile without changing the public
+  trait-lifetime declaration gate.
+
 - Reject unrepresented higher-ranked free-function callbacks with explicit
   signature lifetime bounds, preserving unbounded and fixed-item controls.
 - Add full unchanged typed-AST source readiness checks with exact gate
