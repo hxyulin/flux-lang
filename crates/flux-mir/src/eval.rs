@@ -281,9 +281,13 @@ impl<'a> Evaluator<'a> {
     }
 
     fn inline_interior(&self, value: &Value, ty: Ty) -> bool {
+        self.inline_lang(value, ty, &["cell", "ref_cell", "unsafe_cell"])
+    }
+
+    fn inline_lang(&self, value: &Value, ty: Ty, langs: &[&str]) -> bool {
         let ty = flux_ty::traits::normalize(self.items, self.sigs, &[], ty);
         if let TyKind::Adt(adt, _) = ty.kind()
-            && ["cell", "ref_cell", "unsafe_cell"]
+            && langs
                 .iter()
                 .any(|lang| flux_ty::is_lang_struct(self.items, adt.strukt, lang))
         {
@@ -292,13 +296,13 @@ impl<'a> Evaluator<'a> {
         match value {
             Value::Aggregate(fields) => {
                 if let TyKind::Array(elem, _) | TyKind::Slice(elem) = ty.kind() {
-                    fields.iter().any(|v| self.inline_interior(v, elem))
+                    fields.iter().any(|v| self.inline_lang(v, elem, langs))
                 } else {
                     self.sigs.fields(ty).is_some_and(|types| {
                         fields
                             .iter()
                             .zip(types)
-                            .any(|(v, &t)| self.inline_interior(v, t))
+                            .any(|(v, &t)| self.inline_lang(v, t, langs))
                     })
                 }
             }
@@ -307,7 +311,7 @@ impl<'a> Evaluator<'a> {
                     fields
                         .iter()
                         .zip(types)
-                        .any(|(v, &t)| self.inline_interior(v, t))
+                        .any(|(v, &t)| self.inline_lang(v, t, langs))
                 })
             }
             _ => false,
@@ -1217,6 +1221,15 @@ impl<'a> Evaluator<'a> {
                 let mut inherited = false;
                 let value = read_with_origin(locals, place, range, &mut inherited)?;
                 let ty = body.place_ty(place, self.sigs).subst(generics);
+                // The structural evaluator cannot reinterpret this storage as
+                // bytes. Keep the new primitive out of borrowed constant memory
+                // until those reads can validate the source and target layouts.
+                if self.inline_lang(&value, ty, &["unsafe_cell"]) {
+                    return Err(error(
+                        range,
+                        "borrowing UnsafeCell in constants is not supported yet".into(),
+                    ));
+                }
                 Ok(if inherited || self.inline_interior(&value, ty) {
                     Value::InteriorRef(Arc::new(value))
                 } else {
