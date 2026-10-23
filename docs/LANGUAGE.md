@@ -778,6 +778,14 @@ suppresses niches, is invariant in `T`, and is Send when `T: Send`. Owned
 UnsafeCell borrowing during const evaluation and const accessors remain
 unsupported; represented genuine static addresses retain the earlier static
 borrow support. Unsizing is not provided.
+`core::sync::atomic::{AtomicUsize, Ordering, fence}`, reexported through
+`std::sync::atomic`, provide const construction and runtime load/store,
+fetch_add/fetch_sub, compare_exchange/compare_exchange_weak, exclusive
+get_mut/into_inner and fences. These use native 64-bit atomic operations,
+not ordinary shared loads/stores. All fifteen supported CAS ordering pairs
+are accepted; invalid orders panic at the caller. Weak CAS currently uses
+Keel's strong CAS, which is permitted. Other widths, const accessors,
+compiler_fence and a threading runtime remain unsupported.
 `core::ptr::{addr_of, addr_of_mut}`,
 `core::default::Default` (in the prelude) for the integers, `bool`,
 `char`, `&str`, `&[T]`, `&mut [T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,
