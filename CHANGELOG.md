@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Constrain concrete trait obligations with invariant impl lifetime headers and
+  recursive bounds; public trait lifetime support remains gated.
+
 - Preserve trait-owner and predicate region metadata and substitute impl-header
   lifetimes during method comparison; trait lifetime support remains gated.
 

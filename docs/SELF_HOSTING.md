@@ -194,6 +194,14 @@ well-formedness, obligation selection, call-site substitution and inherited
 trait/projection regions enforce their constraints. These prerequisites do not
 yet compile the typed AST.
 
+Concrete obligations now consume the preserved trait region tables, bind impl
+header lifetimes invariantly, and propagate recursive impl bounds. Ten rustc
+oracle cases exercise static-only impls, repeated lifetimes, bounded impls,
+unused results, escapes and trait type-argument regions independently of the
+declaration gate. Generic caller-bound proof, trait-method owner mapping and
+`N::cast` passed through `find_map` still need their region constraints before
+the typed AST can be enabled.
+
 Nested `cfg_attr` and item/body conditional pruning are supported; conditional
 fields, variants and parameters remain unsupported. Other required constructs
 include generated/included source,
