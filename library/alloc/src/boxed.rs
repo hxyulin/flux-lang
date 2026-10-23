@@ -168,6 +168,17 @@ impl<T: ?Sized + fmt::Display> fmt::Display for Box<T> {
 }
 
 impl<T> Box<[T]> {
+    /// Room for `len` elements, without initializing or dropping any `T`.
+    /// Zero-sized elements require no allocation, but retain their length.
+    pub fn new_uninit_slice(len: usize) -> Box<[core::mem::MaybeUninit<T>]> {
+        let mut values = crate::vec::Vec::<core::mem::MaybeUninit<T>>::with_capacity(len);
+        // SAFETY: the vector has room for `len` elements (including ZSTs), and
+        // uninitialized storage is valid for MaybeUninit<T>. Its elements do
+        // not drop T. The boxed slice retains the exact allocation layout.
+        unsafe { values.set_len(len) };
+        values.into_boxed_slice()
+    }
+
     /// The elements, as a vector with room for them alone.
     pub fn into_vec(self) -> crate::vec::Vec<T> {
         let len = self.len();
