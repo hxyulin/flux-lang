@@ -1,0 +1,201 @@
+use tree_subset::{
+    Edition, LexedStr, SyntaxElement, SyntaxTree, TextRange, TokenOrigin, build_tree,
+    parse_expansion_with_edition, parse_source_text_with_edition,
+    parser::{self, Fragment, Input},
+};
+mod corpus;
+
+fn mix(hash: &mut u64, value: u64) {
+    *hash = hash.rotate_left(9) ^ value;
+    *hash = hash.wrapping_mul(0x9e3779b185ebca87);
+}
+
+fn bytes(hash: &mut u64, value: &str) {
+    mix(hash, value.len() as u64);
+    for byte in value.bytes() {
+        mix(hash, byte as u64);
+    }
+}
+
+fn inspect(hash: &mut u64, tree: &SyntaxTree, text: &str) {
+    tree.validate().unwrap();
+    assert_eq!(tree.text(), text);
+    assert_eq!(tree.root().text(), text);
+    assert_eq!(tree.root().parent(), None);
+    assert_eq!(tree.root().descendants().len(), tree.node_count());
+    assert_eq!(tree.root().tokens().len(), tree.token_count());
+    bytes(hash, &format!("{:#?}", tree));
+    let mut restored = String::new();
+    for token in tree.root().tokens() {
+        assert_eq!(token.text(), &text[token.raw_range()]);
+        assert_eq!(token.tree().text(), text);
+        restored.push_str(token.text());
+        bytes(
+            hash,
+            &format!(
+                "{} {:?} {:?} {} {:?}",
+                token.index(),
+                token.kind(),
+                token.text_range(),
+                token.ctxt(),
+                tree.token_origin(token.index())
+            ),
+        );
+    }
+    assert_eq!(restored, text);
+    for node in tree.root().descendants() {
+        assert_eq!(tree.node(node.id()), node);
+        assert_eq!(node.text(), &text[node.raw_range()]);
+        assert_eq!(node.first_child(), node.children().next());
+        let mut tiled = String::new();
+        for element in node.children_with_tokens() {
+            mix(hash, element.kind() as u64);
+            bytes(
+                hash,
+                &format!("{:?} {:?}", element.raw_range(), element.text_range()),
+            );
+            match element {
+                SyntaxElement::Node(child) => {
+                    assert_eq!(child.parent(), Some(node));
+                    assert_eq!(element.into_node(), Some(child));
+                    assert!(element.into_token().is_none());
+                    tiled.push_str(child.text());
+                }
+                SyntaxElement::Token(token) => {
+                    assert_eq!(element.into_token(), Some(token));
+                    assert!(element.into_node().is_none());
+                    tiled.push_str(token.text());
+                }
+            }
+        }
+        assert_eq!(tiled, node.text());
+        bytes(
+            hash,
+            &format!(
+                "{:?} {:?} {} {:?}",
+                node.id(),
+                node.raw_range(),
+                node.ctxt(),
+                node.parent().map(|parent| parent.id())
+            ),
+        );
+    }
+}
+
+fn source(hash: &mut u64, text: &str, edition: Edition, trace: bool) -> usize {
+    let parsed = parse_source_text_with_edition(text.into(), edition);
+    // Both public build_tree and the owned-text build entry point must agree.
+    let lexed = LexedStr::with_edition(text, edition);
+    let input = Input::from_lexed(&lexed);
+    let (tree, errors) = build_tree(lexed, parser::parse_source_file(&input));
+    assert_eq!(&tree, parsed.tree());
+    assert_eq!(errors, parsed.errors());
+    inspect(hash, &tree, text);
+    let dump = parsed.debug_dump();
+    bytes(hash, &dump);
+    if trace {
+        print!("{}", dump);
+    }
+    for error in parsed.errors() {
+        assert!(error.range.end() as usize <= text.len());
+        assert!(text.is_char_boundary(error.range.start() as usize));
+    }
+    parsed.errors().len()
+}
+
+fn main() {
+    let mut hash = 0;
+    let mut prefixes = 0;
+    for &(name, text, expect_errors) in corpus::FILES {
+        for edition in [Edition::E2021, Edition::E2024] {
+            let errors = source(&mut hash, text, edition, true);
+            assert_eq!(errors > 0, expect_errors);
+            for (end, _) in text.char_indices() {
+                source(&mut hash, &text[..end], edition, false);
+                prefixes += 1;
+            }
+        }
+        println!("file={} hash={}", name, hash);
+    }
+    for &(name, text) in corpus::WORKSPACE {
+        source(&mut hash, text, Edition::E2024, true);
+        println!("workspace={} hash={}", name, hash);
+    }
+    // Exact attachment expectations independent of the reference executable.
+    for (text, expected) in [
+        ("// attached\nfn f() {}\n", "// attached\nfn f() {}"),
+        ("// detached\n\nfn f() {}\n", "fn f() {}"),
+        ("//! inner\nfn f() {}\n", "fn f() {}"),
+        ("/* attached */\nfn f() {}", "/* attached */\nfn f() {}"),
+        ("// detached\n\r\nfn f() {}", "fn f() {}"),
+    ] {
+        let parsed = parse_source_text_with_edition(text.into(), Edition::E2024);
+        assert_eq!(parsed.root().first_child().unwrap().text(), expected);
+        source(&mut hash, text, Edition::E2024, true);
+    }
+    // Build expansions from raw lexer-token origins: composite punctuation must
+    // merge their spans. Exercise mixed groups, reversed spans, missing origins,
+    // hygiene, trivia and mapping errors at EOF as well as on tokens.
+    for (fragment, text) in [
+        (Fragment::Expr, "a::b::<T>() >> 2"),
+        (Fragment::Expr, "a + /* gap */ b"),
+        (Fragment::Expr, "a +"),
+        (Fragment::Items, "// doc\nfn f() {} struct S;"),
+        (Fragment::Stmts, "let x = 1; x + 2"),
+        (Fragment::Type, "Vec<Vec<u8>>"),
+        (Fragment::Expr, "  "),
+    ] {
+        for scenario in 0..5 {
+            let lexed = LexedStr::new(text);
+            let mut origins = Vec::new();
+            for i in 0..lexed.len() {
+                if lexed.kind(i).is_trivia() || (scenario == 3 && i % 2 == 0) {
+                    continue;
+                }
+                let range = lexed.token_range(i);
+                let start = if scenario == 2 {
+                    1000 - range.end()
+                } else {
+                    100 + range.start()
+                };
+                let group = if scenario == 1 { i as u32 % 2 } else { 0 };
+                origins.push((
+                    range.start(),
+                    TokenOrigin {
+                        range: TextRange::new(start, start + range.len()),
+                        group,
+                        ctxt: 7 + i as u32,
+                    },
+                ));
+            }
+            if scenario == 4 {
+                origins.clear();
+            }
+            let call_site = TextRange::new(2000, 2010);
+            let parsed = parse_expansion_with_edition(
+                text.into(),
+                &origins,
+                call_site,
+                fragment,
+                Edition::E2024,
+            );
+            assert!(parsed.tree().is_expansion());
+            inspect(&mut hash, parsed.tree(), text);
+            print!(
+                "expansion={:?}/{} {}",
+                fragment,
+                scenario,
+                parsed.debug_dump()
+            );
+            for end in 0..=text.len() {
+                let mapped = parsed.tree().map_text_range(TextRange::empty(end as u32));
+                bytes(&mut hash, &format!("{:?}", mapped));
+            }
+            if scenario == 4 && parsed.tree().root().tokens().any(|t| !t.kind().is_trivia()) {
+                assert_eq!(parsed.root().text_range(), call_site);
+            }
+        }
+    }
+    assert!(prefixes > 0);
+    println!("prefixes={} hash={}", prefixes, hash);
+}
