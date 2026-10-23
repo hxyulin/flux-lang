@@ -854,6 +854,11 @@ and `repeat`. `Box<T>` may hold an unsized value: `Box<[T]>` and
 `From<Vec<T>>`, dropped through the vtable's drop function and freed
 with the size it records; `core::mem::{size_of_val, align_of_val}`,
 `Layout::for_value` and `ptr::drop_in_place` take unsized values too.
+`Box::<[T]>::new_uninit_slice(len)` allocates checked, aligned storage as
+`Box<[MaybeUninit<T>]>` without initializing or dropping `T`. Empty and
+zero-sized slices retain their requested length; slots must be initialized
+before reading their contents. Existing generic slice drop can still traverse
+huge zero-sized slices even when their elements need no drop.
 Boxed slices support `Clone` and `FromIterator`; boxed strings support
 `From<&str>` and `Clone`. `core::borrow::{Borrow, BorrowMut}` are also
 reexported through `alloc::borrow` and `std::borrow`; String borrows as
