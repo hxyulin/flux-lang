@@ -858,6 +858,16 @@ pub fn expand_intrinsics(
                 let src = pointer(body, src);
                 (dest, Rvalue::Use(Operand::Copy(src.deref())))
             }
+            ("raw_slice_len", [ptr]) => {
+                let ptr = pointer(body, ptr);
+                (
+                    dest,
+                    Rvalue::Len {
+                        place: ptr.deref(),
+                        borrows: false,
+                    },
+                )
+            }
             ("write", [dst, value]) => {
                 let dst = pointer(body, dst);
                 (dst.deref(), Rvalue::Use(value.clone()))

@@ -425,6 +425,29 @@ impl<T: ?Sized> Clone for NonNull<T> {
 
 impl<T: ?Sized> Copy for NonNull<T> {}
 
+impl<T: ?Sized> crate::convert::From<&T> for NonNull<T> {
+    fn from(value: &T) -> NonNull<T> {
+        NonNull {
+            pointer: value as *const T,
+        }
+    }
+}
+
+impl<T: ?Sized> crate::convert::From<&mut T> for NonNull<T> {
+    fn from(value: &mut T) -> NonNull<T> {
+        NonNull {
+            pointer: value as *mut T as *const T,
+        }
+    }
+}
+
+impl<T> NonNull<[T]> {
+    /// The number of elements in the slice, without accessing its contents.
+    pub const fn len(self) -> usize {
+        crate::intrinsics::raw_slice_len(self.pointer)
+    }
+}
+
 impl<T: ?Sized> PartialEq for NonNull<T> {
     fn eq(&self, other: &NonNull<T>) -> bool {
         self.pointer as *const u8 as usize == other.pointer as *const u8 as usize
