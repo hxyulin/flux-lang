@@ -1016,6 +1016,11 @@ original header assumptions, comparing both types and represented lifetime
 slots. Selected impl bounds also require matching projection types when no
 lifetime slots are present. Nested selected projections that cannot be proved
 from the header remain explicitly unsupported.
+Associated-type definitions also check their declared bounds, including
+associated-type equalities, under the impl header's universal lifetimes.
+Projection selection on a definition's right-hand side must satisfy those
+lifetimes even when its normalized result has no reference slots. Missing
+projection input mappings remain explicitly unsupported.
 Unrepresented supertrait argument regions and higher-ranked callback obligations
 needed by a selected supertrait impl are explicitly unsupported; unrelated
 callback bounds remain allowed.
