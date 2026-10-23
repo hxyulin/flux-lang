@@ -1202,8 +1202,8 @@ cases, and panics for non-power-of-two alignments. It is runtime-only and
 does not establish allocation bounds or memory validity. `core::mem` has
 `forget`, `ManuallyDrop` (with `Deref`) and `MaybeUninit` (`new`,
 `uninit`, `zeroed`, `write`, `as_ptr`, `as_mut_ptr`, `assume_init` and
-its `_read`, `_ref`, `_mut` and `_drop` forms). Pointer arithmetic and
-integer-to-pointer casts now preserve thin raw addresses in constants. These
+its `_read`, `_ref`, `_mut` and `_drop` forms). Pointer arithmetic in constants remains unsupported. Thin
+integer-to-pointer casts preserve thin raw addresses in constants. These
 addresses grant no reference validity: dereferencing these unbacked addresses,
 constant pointer comparisons,
 pointer-to-integer casts, and wide-address casts remain rejected. Empty
