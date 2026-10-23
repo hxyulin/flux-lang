@@ -375,7 +375,7 @@ Flux with that executable. Component comparisons are intermediate milestones;
 they do not establish a working compiler bootstrap.
 
 The next arena-root probe still encounters missing `Arc`/`Weak`, `UnsafeCell`,
-`type_name`, const `Vec::new`, and collections. Some reported errors cascade
+`type_name`, and collections. Some reported errors cascade
 from missing imports. The
 `PhantomData` equality barrier is removed: its equality and ordering traits
 have no bounds on the marked type, with runtime coverage for unsized and
@@ -384,6 +384,13 @@ growth operations, calling a stateful factory only for new elements and
 dropping truncated elements.
 Runtime coverage includes non-Clone owners, aligned zero-sized elements and
 sparse optional slots.
+Empty-vector construction is now const through the raw buffer and aligned
+`NonNull::dangling` constructor. The evaluator distinguishes a thin raw address
+from an integer or valid reference, preserving rejection of constant pointer
+round trips, comparisons, unbacked-address dereferences and null `NonNull` values. Runtime
+comparisons cover aligned and zero-sized vectors, growth after moving a const
+value, raw address statics, and repeated independent uses of a const owner.
+The unchanged arena-root probe no longer rejects its const constructor.
 
 Inherited `Self::Item` now resolves through substituted supertrait edges in
 trait impls. Selected implementation lifetime tables preserve references into

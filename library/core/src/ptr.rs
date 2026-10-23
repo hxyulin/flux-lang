@@ -445,7 +445,7 @@ impl<T: ?Sized> NonNull<T> {
 impl<T> NonNull<T> {
     /// A pointer aligned for a `T` that points to nothing: what an empty
     /// collection holds.
-    pub fn dangling() -> NonNull<T> {
+    pub const fn dangling() -> NonNull<T> {
         NonNull {
             pointer: align_of::<T>() as *const T,
         }

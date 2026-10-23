@@ -30,7 +30,7 @@ pub(crate) fn capacity_overflow() -> ! {
 }
 
 impl<T> RawVec<T> {
-    pub(crate) fn new() -> RawVec<T> {
+    pub(crate) const fn new() -> RawVec<T> {
         RawVec {
             ptr: NonNull::dangling(),
             cap: 0,
