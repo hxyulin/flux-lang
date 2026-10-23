@@ -1262,6 +1262,9 @@
 
 ### Performance
 
+- Skip slice element traversal when elements need no drop, fixing the huge-ZST
+  boxed-slice timeout while preserving owner destruction and Drop-bearing ZSTs.
+
 - Lower the existing NEON narrowing shift and pairwise unsigned maximum through
   native Keel operations, selecting `shrn` and `umaxp` while preserving exact
   memory widths and the existing Rust ABI. No runtime speedup is claimed.
