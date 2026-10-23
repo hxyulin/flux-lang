@@ -1026,8 +1026,14 @@ needed by a selected supertrait impl are explicitly unsupported; unrelated
 callback bounds remain allowed.
 
 `Fn`, `FnMut` and `FnOnce` bounds may return references whose lifetime
-is elided from a single input reference (`F: Fn(&T) -> &U`). Each
-call's result borrows from its argument. This also applies to returned
+is supplied by the callable contract. Owner-bearing function items passed to
+contracts introducing higher-ranked reference inputs remain explicitly
+unsupported; this conservative boundary can reject valid methods with
+independent late input lifetimes. Fixed type-parameter or iterator-item inputs
+do not introduce such binders.
+
+Callable reference output lifetimes can be elided from a single input reference
+(`F: Fn(&T) -> &U`). Each call's result borrows from its argument. This also applies to returned
 opaque closures (`-> impl Fn(&u8) -> &u8`): the hidden closure must work
 for every input lifetime, so a captured reference returned in this
 example must be `'static`. A single-lifetime binder

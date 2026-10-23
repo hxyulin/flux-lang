@@ -185,14 +185,13 @@ Regression oracles cover unrelated caller lifetimes, reference escapes, nested
 types and aliases, bounds and unused results. Named local annotations,
 function-item values and closures remain outside this extension.
 
-Trait lifetime support has two validated prerequisites: signature metadata now
+Trait lifetime prerequisites include signature metadata that
 retains trait-owner lifetimes, impl-header lifetime arguments, predicate region
 tables and inherited method regions; impl method comparison substitutes the
 owner regions through the impl header. Metadata and rustc-oracle tests cover
-these mappings. Trait lifetime declarations remain rejected until
-generic obligation selection, call-site substitution and inherited
-trait/projection regions enforce their constraints. These prerequisites do not
-yet compile the typed AST.
+these mappings. Trait lifetime declarations remain rejected while broader
+inherited trait/projection regions and unsupported caller contexts remain
+unrepresented. These prerequisites do not yet compile the typed AST.
 
 Signature checks now use the actual trait lifetime arity, resolve named,
 static and repeated arguments, and verify declaration outlives requirements
@@ -205,9 +204,18 @@ Concrete obligations now consume the preserved trait region tables, bind impl
 header lifetimes invariantly, and propagate recursive impl bounds. Ten rustc
 oracle cases exercise static-only impls, repeated lifetimes, bounded impls,
 unused results, escapes and trait type-argument regions independently of the
-declaration gate. Generic caller-bound proof, trait-method owner mapping and
-`N::cast` passed through `find_map` still need their region constraints before
-the typed AST can be enabled.
+declaration gate. Generic caller-bound proof now consumes the original caller's
+region tables, and trait-method calls and callbacks share the declaration
+owner's lifetime instantiation. Combined tests cover generic casts directly and
+through `find_map`, syntax access and invalid static-reference returns below the
+gate. General inherited bounds, closure caller mapping and abstract blanket
+forwarding remain outside this checkpoint; the full typed AST is still gated.
+
+Owner-bearing function items cannot stand in for newly higher-ranked callback
+inputs using fresh owner variables. Unrepresented cases reject explicitly,
+including unused scalar and unit outputs. Fixed type-parameter and iterator-item
+inputs remain supported. Some valid owner methods with independent late input
+lifetimes also hit this conservative boundary.
 
 Function-item callbacks now share direct calls' complete signature obligations,
 including function/owner predicates, projections and outlives constraints.
