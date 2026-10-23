@@ -41,6 +41,9 @@ pub fn compile_object(
             keel_asm::assemble_program_object(&program, keel_asm::TargetFeatures::default())
         }
         Target::X86_64LinuxGnu => keel_asm::x86::assemble_program_object(&program),
+        Target::Aarch64LinuxGnu => {
+            return Err("code generation for AArch64 Linux is not supported yet".to_owned());
+        }
     };
     object.map_err(|e| e.to_string())
 }
@@ -71,6 +74,7 @@ pub fn link_executable(
             Ok(executable.warnings)
         }
         Target::X86_64LinuxGnu => Err("linking for x86-64 Linux is not supported yet".to_owned()),
+        Target::Aarch64LinuxGnu => Err("linking for AArch64 Linux is not supported yet".to_owned()),
     }
 }
 

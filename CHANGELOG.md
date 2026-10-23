@@ -1241,6 +1241,11 @@
 
 ### Performance
 
+- Update Keel to `f37f0bd`, including bounded SIMD canonicalization and
+  improved packed shuffle selection. Adapt data-object metadata and explicitly
+  reject the newly introduced AArch64 Linux target pending Flux integration.
+  This update does not establish a compiler or runtime speedup.
+
 - Guard against slowdowns worse than linear. The corpus tests fail on a
   file a stage spends too long on for the bytes it read (200 ms, or 100
   ns/B to parse, 500 to check trees against the grammar and 1000 to

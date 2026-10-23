@@ -345,7 +345,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "keel-asm"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=1aa8c53686892e4e3c09aa0c512c03da02148f92#1aa8c53686892e4e3c09aa0c512c03da02148f92"
+source = "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb"
 dependencies = [
  "bumpalo",
  "keel-asm-ir",
@@ -357,7 +357,7 @@ dependencies = [
 [[package]]
 name = "keel-asm-ir"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=1aa8c53686892e4e3c09aa0c512c03da02148f92#1aa8c53686892e4e3c09aa0c512c03da02148f92"
+source = "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb"
 dependencies = [
  "smallvec",
 ]
@@ -365,7 +365,7 @@ dependencies = [
 [[package]]
 name = "keel-codegen"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=1aa8c53686892e4e3c09aa0c512c03da02148f92#1aa8c53686892e4e3c09aa0c512c03da02148f92"
+source = "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb"
 dependencies = [
  "keel-asm-ir",
  "keel-ir",
@@ -375,7 +375,7 @@ dependencies = [
 [[package]]
 name = "keel-frontend"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=1aa8c53686892e4e3c09aa0c512c03da02148f92#1aa8c53686892e4e3c09aa0c512c03da02148f92"
+source = "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb"
 dependencies = [
  "keel-ir",
  "smallvec",
@@ -384,12 +384,12 @@ dependencies = [
 [[package]]
 name = "keel-ir"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=1aa8c53686892e4e3c09aa0c512c03da02148f92#1aa8c53686892e4e3c09aa0c512c03da02148f92"
+source = "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb"
 
 [[package]]
 name = "keel-link"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=1aa8c53686892e4e3c09aa0c512c03da02148f92#1aa8c53686892e4e3c09aa0c512c03da02148f92"
+source = "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb"
 dependencies = [
  "object",
  "serde",
@@ -400,7 +400,7 @@ dependencies = [
 [[package]]
 name = "keel-opt"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=1aa8c53686892e4e3c09aa0c512c03da02148f92#1aa8c53686892e4e3c09aa0c512c03da02148f92"
+source = "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb"
 dependencies = [
  "keel-ir",
  "profiling",
