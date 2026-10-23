@@ -1,0 +1,14 @@
+// Separate region blocker exposed by testing projection proofs.
+// Rustc accepts; Flux MIR rejects returning next() as borrowing local `it`.
+fn first<'a, I: IntoIterator<Item = &'a u32>>(input: I) -> Option<&'a u32>
+where
+    I::IntoIter: ExactSizeIterator,
+{
+    let mut it = input.into_iter();
+    if it.len() == 0 {
+        assert_eq!(it.count(), 0);
+        return None;
+    }
+    it.next()
+}
+fn main() {}
