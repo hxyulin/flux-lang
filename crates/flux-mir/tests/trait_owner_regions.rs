@@ -6,7 +6,7 @@ fn trait_method_owner_obligations_match_rustc() {
     check_cases("trait_owner_regions");
 }
 
-// These retain the desired assertions while the separately owned proofs land.
+// Retain the desired assertions until generic caller proof is integrated.
 #[test]
 #[ignore = "requires generic caller trait-region proof integration"]
 fn abstract_trait_owner_integration_targets() {
@@ -14,7 +14,6 @@ fn abstract_trait_owner_integration_targets() {
 }
 
 #[test]
-#[ignore = "requires owner-bound FnDef HRTB boundary integration"]
 fn higher_ranked_owner_integration_targets() {
     check_cases("trait_owner_hrtb_integration");
 }
