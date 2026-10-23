@@ -22,6 +22,10 @@ use std::option::Option as SO;
 use core::option::Option as CO;
 use std::num::NonZeroU32 as SN;
 use core::num::NonZeroU32 as CN;
+use std::sync::atomic::AtomicUsize as SA;
+use core::sync::atomic::AtomicUsize as CA;
+use std::sync::atomic::Ordering as SOrder;
+use core::sync::atomic::Ordering as COrder;
 use ::std::mem as sm;
 use core::mem as cm;
 fn fused<I: SI>(i: I) -> I { i }
@@ -39,6 +43,10 @@ fn main() {
     let _: CN = SN::new(3).unwrap();
     let _ = std::fmt::format(format_args!("{} {}", s, b));
     let _ = std::thread::panicking();
+    let a: CA = SA::new(1);
+    let order: COrder = SOrder::Relaxed;
+    let _ = a.load(order);
+    std::sync::atomic::fence(SOrder::Acquire);
 }
 "#;
 
@@ -83,6 +91,8 @@ fn reexports_and_cached_library_ids() {
             ("SO", "CO"),
             ("SN", "CN"),
             ("sm", "cm"),
+            ("SA", "CA"),
+            ("SOrder", "COrder"),
         ] {
             let a = items.lookup(module, Symbol::intern(a), Ns::Types).unwrap();
             let b = items.lookup(module, Symbol::intern(b), Ns::Types).unwrap();
@@ -108,7 +118,9 @@ fn facade_keeps_library_privacy_and_alloc_opt_in() {
         "use std::fmt::flags; fn main() {}",
         "use alloc::vec::Vec; fn main() {}",
         "use std::fs; fn main() {}",
-        "use std::sync; fn main() {}",
+        "use std::sync::Arc; fn main() {}",
+        "use std::sync::Weak; fn main() {}",
+        "use std::sync::atomic::AtomicU32; fn main() {}",
         "use std::thread::spawn; fn main() {}",
         "use std::num::NonZeroU64; fn main() {}",
         "use std::vec::RawVec; fn main() {}",
