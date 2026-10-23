@@ -6,9 +6,7 @@ fn trait_method_owner_obligations_match_rustc() {
     check_cases("trait_owner_regions");
 }
 
-// Retain the desired assertions until generic caller proof is integrated.
 #[test]
-#[ignore = "requires generic caller trait-region proof integration"]
 fn abstract_trait_owner_integration_targets() {
     check_cases("trait_owner_generic_integration");
 }
