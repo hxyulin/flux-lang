@@ -56,6 +56,16 @@ fn impl_supertrait_regions_match_rustc() {
             false,
         ),
         (
+            "argument_only",
+            "trait P<T>{} trait C<T>:P<T>{} struct S; impl P<&'static i32> for S{} impl<'a>C<&'a i32> for S{} fn main(){}",
+            false,
+        ),
+        (
+            "irrelevant_where",
+            "trait P{} trait C:P{} struct S<'a>(&'a i32); impl P for S<'static>{} impl<'a>C for S<'a> where S<'static>:P{} fn main(){}",
+            false,
+        ),
+        (
             "uniform",
             "trait P {} trait C:P {} struct S<'a>(&'a i32); impl<'a>P for S<'a>{} impl<'a>C for S<'a>{} fn main(){}",
             true,
@@ -93,6 +103,16 @@ fn impl_supertrait_regions_match_rustc() {
         (
             "trait_argument_ok",
             "trait P<T>{} trait C<T>:P<T>{} struct S<'a>(&'a i32); impl<'a>P<&'a i32> for S<'a>{} impl<'a>C<&'a i32> for S<'a>{} fn main(){}",
+            true,
+        ),
+        (
+            "argument_only_ok",
+            "trait P<T>{} trait C<T>:P<T>{} struct S; impl<'a>P<&'a i32> for S{} impl<'a>C<&'a i32> for S{} fn main(){}",
+            true,
+        ),
+        (
+            "where_self",
+            "trait P{} trait C:P{} struct S<'a>(&'a i32); impl P for S<'static>{} impl<'a>C for S<'a> where S<'a>:P{} fn main(){}",
             true,
         ),
         (
