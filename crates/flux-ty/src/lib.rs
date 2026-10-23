@@ -2667,6 +2667,7 @@ fn extend_signatures(
                 .filter(|p| p.alias.args[0] == self_param),
         );
         projections.extend(resolved.projections);
+        let header_projections = projections.clone().into_boxed_slice();
         let mut type_bounds = Vec::new();
         for ty in &t.types {
             let alias = Ty::alias(traits::alias_of(bounds[0].trait_ref, self_param, ty.name));
@@ -2689,6 +2690,7 @@ fn extend_signatures(
                 defaults,
                 type_bounds: type_bounds.into(),
                 implied: implied.into(),
+                header_projections,
             },
         );
         sigs.trait_predicates.insert(id, predicates.into());

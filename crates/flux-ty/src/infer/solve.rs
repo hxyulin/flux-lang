@@ -890,6 +890,54 @@ impl Ctx<'_> {
         crate::traits::alias_bounds(self.sigs, &self.param_env, ty)
     }
 
+    /// Erased membership is one proof only when its caller equalities agree.
+    /// Declaration equalities are intentionally absent here: Rust permits a
+    /// where-clause to shadow an associated-type declaration assumption.
+    fn compatible_caller_projections(&mut self, pred: Predicate) -> bool {
+        let Some(function) = self.owner_fn else {
+            return true;
+        };
+        let projections = crate::traits::caller_projections_of(self.items, self.sigs, function);
+        let mut seen: Vec<crate::Projection> = Vec::new();
+        for p in projections {
+            if p.alias.trait_ != pred.trait_ref.trait_
+                || self.known(p.alias.args[0]) != self.known(pred.self_ty)
+                || p.alias.args.len() != 1 + pred.trait_ref.args.len()
+                || !p.alias.args[1..]
+                    .iter()
+                    .zip(pred.trait_ref.args)
+                    .all(|(&a, &b)| self.known(a) == self.known(b))
+            {
+                continue;
+            }
+            if let Some(&previous) = seen.iter().find(|q| q.alias.name == p.alias.name) {
+                // Normalize the right sides, never the constrained projection:
+                // normalizing that would simply choose one winning equality.
+                // Probe rolls inference back; generic parameters remain rigid.
+                if !self.probe(|cx| {
+                    let a = crate::traits::normalize_projection_rhs(
+                        cx.items,
+                        cx.sigs,
+                        &cx.env_projections,
+                        previous,
+                    );
+                    let b = crate::traits::normalize_projection_rhs(
+                        cx.items,
+                        cx.sigs,
+                        &cx.env_projections,
+                        p,
+                    );
+                    cx.unify(a, b)
+                }) {
+                    return false;
+                }
+            } else {
+                seen.push(p);
+            }
+        }
+        true
+    }
+
     fn select_predicate(&mut self, pred: Predicate) -> Selection {
         #[cfg(test)]
         tests::step();
@@ -952,7 +1000,8 @@ impl Ctx<'_> {
         // of trait membership, not competing candidates. Associated
         // equalities remain separate projections, with explicit bounds
         // taking precedence during normalization. Keep distinct trait
-        // arguments intact.
+        // arguments intact; caller equalities are checked before accepting
+        // a merged proof.
         for p in alias_bounds.into_iter().filter(|p| p.trait_ref.trait_ == t) {
             if !env.contains(&p) {
                 env.push(p);
@@ -964,6 +1013,9 @@ impl Ctx<'_> {
             .collect();
         match bounds.as_slice() {
             [bound] => {
+                if !self.compatible_caller_projections(*bound) {
+                    return Selection::Ambiguous;
+                }
                 self.unify_predicates(*bound, pred);
                 return Selection::Met(Vec::new());
             }
