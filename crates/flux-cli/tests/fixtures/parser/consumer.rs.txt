@@ -1,0 +1,201 @@
+use parser_subset::{
+    Edition, LexedStr, SyntaxKind,
+    parser::{self, Event, Fragment, Input, Output},
+};
+mod corpus;
+
+fn mix(hash: &mut u64, value: u64) {
+    *hash = hash.rotate_left(9) ^ value;
+    *hash = hash.wrapping_mul(0x9e3779b185ebca87);
+}
+
+fn bytes(hash: &mut u64, value: &str) {
+    mix(hash, value.len() as u64);
+    for byte in value.bytes() {
+        mix(hash, byte as u64);
+    }
+}
+
+fn output(hash: &mut u64, input: &Input, output: Output, parents: &mut usize) -> usize {
+    let mut consumed = 0;
+    mix(hash, output.events.len() as u64);
+    for (index, event) in output.events.iter().enumerate() {
+        match *event {
+            Event::Start {
+                kind,
+                forward_parent,
+            } => {
+                mix(hash, 1);
+                mix(hash, kind as u64);
+                if let Some(offset) = forward_parent {
+                    *parents += 1;
+                    let target = index + offset.get() as usize;
+                    assert!(target > index && target < output.events.len());
+                    assert!(matches!(output.events[target], Event::Start { .. }));
+                    mix(hash, offset.get() as u64);
+                } else {
+                    mix(hash, 0);
+                }
+            }
+            Event::Finish => mix(hash, 2),
+            Event::Token { kind, n_raw_tokens } => {
+                mix(hash, 3);
+                mix(hash, kind as u64);
+                mix(hash, n_raw_tokens as u64);
+                assert!(n_raw_tokens > 0);
+                consumed += n_raw_tokens as usize;
+            }
+            Event::Error { index } => {
+                assert!((index as usize) < output.errors.len());
+                mix(hash, 4);
+                mix(hash, index as u64);
+            }
+        }
+    }
+    assert_eq!(consumed, input.len());
+    // Replay the forward-parent chains as the production tree builder does.
+    let mut events = output.events;
+    let mut depth = 0usize;
+    for index in 0..events.len() {
+        let event = std::mem::replace(&mut events[index], Event::Finish);
+        match event {
+            Event::Start {
+                kind,
+                forward_parent,
+            } => {
+                if kind != SyntaxKind::TOMBSTONE {
+                    depth += 1;
+                }
+                let mut parent = forward_parent;
+                let mut at = index;
+                while let Some(offset) = parent {
+                    at += offset.get() as usize;
+                    match std::mem::replace(
+                        &mut events[at],
+                        Event::Start {
+                            kind: SyntaxKind::TOMBSTONE,
+                            forward_parent: None,
+                        },
+                    ) {
+                        Event::Start {
+                            kind,
+                            forward_parent,
+                        } => {
+                            if kind != SyntaxKind::TOMBSTONE {
+                                depth += 1;
+                            }
+                            parent = forward_parent;
+                        }
+                        _ => panic!("forward parent must start a node"),
+                    }
+                }
+            }
+            Event::Finish => {
+                assert!(depth > 0);
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(depth, 0);
+    for error in &output.errors {
+        bytes(hash, error);
+    }
+    output.errors.len()
+}
+
+fn source(hash: &mut u64, text: &str, edition: Edition, parents: &mut usize, trace: bool) -> usize {
+    let lexed = LexedStr::with_edition(text, edition);
+    for error in lexed.errors() {
+        mix(hash, error.token as u64);
+        bytes(hash, &error.message);
+    }
+    let input = Input::from_lexed(&lexed);
+    for index in 0..=input.len() {
+        mix(hash, input.kind(index) as u64);
+        mix(hash, input.is_joint(index) as u64);
+    }
+    let parsed = parser::parse_source_file(&input);
+    if trace {
+        println!(
+            "lex-errors={:?} events={:?} errors={:?}",
+            lexed.errors(),
+            parsed.events,
+            parsed.errors
+        );
+    }
+    lexed.errors().len() + output(hash, &input, parsed, parents)
+}
+
+fn main() {
+    let mut hash = 0;
+    let mut parents = 0;
+    let mut prefixes = 0;
+    for &(name, text, expect_errors) in corpus::FILES {
+        for edition in [Edition::E2021, Edition::E2024] {
+            let errors = source(&mut hash, text, edition, &mut parents, true);
+            assert_eq!(errors > 0, expect_errors);
+            for (end, _) in text.char_indices() {
+                source(&mut hash, &text[..end], edition, &mut parents, false);
+                prefixes += 1;
+            }
+        }
+        println!("file={} hash={}", name, hash);
+    }
+    for (fragment, text, valid) in [
+        (Fragment::Expr, "#[allow(unused)] a + b * c << 2", true),
+        (
+            Fragment::Expr,
+            "match x { Some(ref mut y) if *y > 0 => y.foo::<Vec<u8>>(), _ => 0 }",
+            true,
+        ),
+        (Fragment::Expr, "foo::<A<B<C>>>(x).field[1] += 2", true),
+        (Fragment::Pat, "Some(x @ 1..=9) | None", true),
+        (Fragment::PatParam, "Some(ref mut x)", true),
+        (Fragment::Type, "&'a mut [Option<Result<u8, E>>]", true),
+        (Fragment::Path, "crate::a::B<C<D>>", true),
+        (Fragment::Block, "{ let x = 1; x + 2 }", true),
+        (Fragment::Stmt, "let (a, b) = pair()", true),
+        (Fragment::Item, "fn f<T: Clone>(v: T) -> T { v }", true),
+        (Fragment::Vis, "pub(in crate::inner)", true),
+        (Fragment::Lifetime, "'a", true),
+        (Fragment::Literal, "-123", true),
+        (Fragment::Meta, "allow(unused)", true),
+        (Fragment::Items, "fn f() {} struct S;", true),
+        (Fragment::Stmts, "let x = 1; x + 2", true),
+        (Fragment::Expr, "a +", false),
+        (Fragment::Pat, "Some(", false),
+        (Fragment::Type, "Vec<", false),
+        (Fragment::Expr, "a b", false),
+    ] {
+        let lexed = LexedStr::new(text);
+        let input = Input::from_lexed(&lexed);
+        let parsed = parser::parse_expansion(&input, fragment);
+        assert_eq!(parsed.errors.is_empty(), valid);
+        println!("events={:?} errors={:?}", parsed.events, parsed.errors);
+        output(&mut hash, &input, parsed, &mut parents);
+        // Items and Stmts are expansion-only aggregate fragments.
+        if fragment != Fragment::Items && fragment != Fragment::Stmts {
+            for start in 0..=input.len() {
+                let result = parser::fragment_or_error(&input, start, fragment);
+                assert_eq!(parser::fragment_len(&input, start, fragment), result.ok());
+                match result {
+                    Ok(len) => {
+                        mix(&mut hash, 5);
+                        mix(&mut hash, len as u64);
+                    }
+                    Err(at) => {
+                        mix(&mut hash, 6);
+                        mix(&mut hash, at as u64);
+                    }
+                }
+            }
+        }
+        println!("fragment={:?} hash={}", fragment, hash);
+    }
+    assert!(parents > 0);
+    println!(
+        "prefixes={} forward-parents={} hash={}",
+        prefixes, parents, hash
+    );
+}
