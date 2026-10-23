@@ -2433,6 +2433,8 @@ impl Collector<'_> {
         // Macros defined in a module are in scope until its end, or
         // after it too with `#[macro_use]`.
         let mut macro_use = false;
+        let mut path = None;
+        let mut invalid_path = false;
         let attrs = crate::cfg::Attrs::new(m.attrs());
         for attr in attrs.iter() {
             if attr_name(attr) == Some("macro_use") {
@@ -2446,18 +2448,67 @@ impl Collector<'_> {
                         "arguments to `macro_use` are not allowed here",
                     ));
                 }
+            } else if attr_name(attr) == Some("path") {
+                let range = attr.syntax().text_range();
+                let message = if path.is_some() {
+                    Some("duplicate path attributes are not supported yet")
+                } else if m.item_list().is_some() {
+                    Some("path attributes on inline modules are not supported yet")
+                } else if self.db.file(ctx.file).expansion_of.is_some() {
+                    Some("path attributes in item macro expansions are not supported yet")
+                } else if self.items.modules[ctx.module].block.is_some()
+                    || m.syntax()
+                        .parent()
+                        .is_none_or(|p| p.kind() != SyntaxKind::SOURCE_FILE)
+                {
+                    Some("path attributes inside inline modules or blocks are not supported yet")
+                } else {
+                    None
+                };
+                if let Some(message) = message {
+                    self.items.diagnostics.push(Diagnostic::new(range, message));
+                    invalid_path = true;
+                    continue;
+                }
+                let literal = attr
+                    .meta()
+                    .filter(|meta| {
+                        meta.unsafe_token().is_none()
+                            && meta.eq_token().is_some()
+                            && meta.token_tree().is_none()
+                    })
+                    .and_then(|meta| meta.expr())
+                    .and_then(|expr| match expr {
+                        ast::Expr::Literal(literal) => Some(literal),
+                        _ => None,
+                    })
+                    .and_then(|literal| literal.value())
+                    .filter(|token| token.kind() == SyntaxKind::STRING);
+                match literal.map(|token| crate::literal::unescape_str(token.text())) {
+                    Some(Ok(value)) => path = Some(PathBuf::from(value)),
+                    value => {
+                        let message = value
+                            .and_then(Result::err)
+                            .unwrap_or_else(|| "expected a string literal in `path`".into());
+                        self.items.diagnostics.push(Diagnostic::new(range, message));
+                        invalid_path = true;
+                    }
+                }
             } else {
                 check_attr(attr, &mut self.items.diagnostics);
             }
         }
+        if invalid_path {
+            return;
+        }
         let outer_scope = self.macro_scope;
-        self.collect_module_inner(ctx, m);
+        self.collect_module_inner(ctx, m, path);
         if !macro_use {
             self.macro_scope = outer_scope;
         }
     }
 
-    fn collect_module_inner(&mut self, ctx: Ctx, m: ast::Module<'_>) {
+    fn collect_module_inner(&mut self, ctx: Ctx, m: ast::Module<'_>, path: Option<PathBuf>) {
         let vis = self.visibility(ctx, m.visibility());
         let Some(name) = m.name() else {
             return;
@@ -2473,62 +2524,31 @@ impl Collector<'_> {
             return;
         }
         let def_range = TextRange::new(def_start(m.syntax()), name.syntax().text_range().end());
-        let child_dir = parent.dir.join(name_text);
+        let mut child_dir = parent.dir.join(name_text);
         let krate = parent.krate;
-        let parent_dir = parent.dir.clone();
-        // File modules may configure themselves out with inner attributes.
-        // Inspect those before allocating a module binding in the parent.
-        if m.item_list().is_none() {
-            let flat = parent_dir.join(format!("{name_text}.rs"));
-            let nested = child_dir.join("mod.rs");
-            let path = match (self.db.exists(&flat), self.db.exists(&nested)) {
-                (true, false) => Some(flat),
-                (false, true) => Some(nested),
-                _ => None,
-            };
-            if let Some(path) = path
-                && let Ok(file) = self
-                    .db
-                    .load_with_edition(&path, self.db.file(ctx.file).edition)
-            {
-                let start = self.items.diagnostics.len();
-                let shared = self.db.shared(file);
-                let enabled = item_enabled(shared.parse.root(), &mut self.items.diagnostics);
-                self.tag(start, file);
-                if !enabled {
-                    return;
-                }
-            }
-        }
-        let module = self.items.modules.alloc(Module {
-            name: Symbol::intern(name_text),
-            parent: Some(ctx.module),
-            krate,
-            file: ctx.file,
-            dir: child_dir.clone(),
-            vis,
-            def_range,
-            block: None,
+        // A literal path is relative to the containing source file, including
+        // in a normal foo.rs module (whose default child directory is foo/).
+        let path = path.map(|path| {
+            self.db
+                .file(self.db.real_file(ctx.file))
+                .path
+                .parent()
+                .unwrap_or_else(|| FsPath::new(""))
+                .join(path)
         });
-        match m.item_list() {
-            Some(list) => {
-                check_inner_attrs(list.attrs(), false, false, &mut self.items.diagnostics);
-                let items: Vec<NodeId> = list.items().map(|i| i.syntax().id()).collect();
-                self.collect_items(
-                    Ctx {
-                        module,
-                        file: ctx.file,
-                    },
-                    &items,
-                );
-            }
-            None => {
-                // `mod m;` is `m.rs` or `m/mod.rs` next to the module's
-                // files; the files of `m`'s own children are in `m/`.
-                let flat = parent_dir.join(format!("{name_text}.rs"));
+        let file = if m.item_list().is_none() {
+            let path = if let Some(path) = path {
+                // Explicitly named files own their containing directory, even
+                // when the target is not named mod.rs or the module is renamed.
+                child_dir = path
+                    .parent()
+                    .unwrap_or_else(|| FsPath::new(""))
+                    .to_path_buf();
+                path
+            } else {
+                let flat = parent.dir.join(format!("{name_text}.rs"));
                 let nested = child_dir.join("mod.rs");
-                let (flat_exists, nested_exists) = (self.db.exists(&flat), self.db.exists(&nested));
-                let path = match (flat_exists, nested_exists) {
+                match (self.db.exists(&flat), self.db.exists(&nested)) {
                     (true, false) => flat,
                     (false, true) => nested,
                     (true, true) => {
@@ -2543,27 +2563,79 @@ impl Collector<'_> {
                         return;
                     }
                     (false, false) => {
-                        let message = format!("file not found for module `{name_text}`");
-                        self.items
-                            .diagnostics
-                            .push(Diagnostic::new(def_range, message));
+                        self.items.diagnostics.push(Diagnostic::new(
+                            def_range,
+                            format!("file not found for module `{name_text}`"),
+                        ));
                         return;
                     }
-                };
-                match self
-                    .db
-                    .load_with_edition(&path, self.db.file(ctx.file).edition)
-                {
-                    Ok(file) => {
-                        self.items.modules[module].file = file;
-                        self.collect_file(module, file);
-                    }
-                    Err(message) => self
-                        .items
-                        .diagnostics
-                        .push(Diagnostic::new(def_range, message)),
                 }
+            };
+            // Compare physical paths only for recursion detection. Keep the
+            // requested path and unmodified bytes in SourceDb for diagnostics.
+            let physical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            let mut ancestor = Some(ctx.module);
+            let mut depth = 0;
+            while let Some(id) = ancestor {
+                let module = &self.items.modules[id];
+                let source = &self.db.file(self.db.real_file(module.file)).path;
+                let source = std::fs::canonicalize(source).unwrap_or_else(|_| source.clone());
+                depth += 1;
+                if source == physical || depth >= 128 {
+                    self.items.diagnostics.push(Diagnostic::new(
+                        def_range,
+                        "recursive module loading or module nesting limit reached",
+                    ));
+                    return;
+                }
+                ancestor = module.parent;
             }
+            let file = match self
+                .db
+                .load_with_edition(&path, self.db.file(ctx.file).edition)
+            {
+                Ok(file) => file,
+                Err(message) => {
+                    self.items
+                        .diagnostics
+                        .push(Diagnostic::new(def_range, message));
+                    return;
+                }
+            };
+            // Target inner cfg must run before allocating a visible name.
+            let start = self.items.diagnostics.len();
+            let shared = self.db.shared(file);
+            let enabled = item_enabled(shared.parse.root(), &mut self.items.diagnostics);
+            self.tag(start, file);
+            if !enabled {
+                return;
+            }
+            Some(file)
+        } else {
+            None
+        };
+        let module = self.items.modules.alloc(Module {
+            name: Symbol::intern(name_text),
+            parent: Some(ctx.module),
+            krate,
+            file: file.unwrap_or(ctx.file),
+            dir: child_dir,
+            vis,
+            def_range,
+            block: None,
+        });
+        if let Some(list) = m.item_list() {
+            check_inner_attrs(list.attrs(), false, false, &mut self.items.diagnostics);
+            let items: Vec<NodeId> = list.items().map(|i| i.syntax().id()).collect();
+            self.collect_items(
+                Ctx {
+                    module,
+                    file: ctx.file,
+                },
+                &items,
+            );
+        } else if let Some(file) = file {
+            self.collect_file(module, file);
         }
     }
 
