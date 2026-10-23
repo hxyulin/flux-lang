@@ -1,0 +1,9 @@
+struct S { 0: u8 }
+fn read(Self) -> u8
+fn read(&S) -> u8
+    self@0: &S
+fn read(S) -> u8
+    s@0: S
+fn convert(&[u8]) -> [u8; 4]
+    s@0: &[u8]
+fn main() -> ()

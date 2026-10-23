@@ -5003,13 +5003,13 @@ impl Ctx<'_> {
             ];
             for (ty, d, mode) in tries.into_iter().flatten() {
                 match self.probe_method(ty, mode, method, inherent(ty), traits) {
-                    Ok(Some((function, trait_args))) => {
+                    Ok(Some((function, trait_args, target))) => {
                         self.record_overloaded_derefs(id, &steps);
                         return self.check_method(
                             id,
                             receiver,
                             function,
-                            (ty, d, false),
+                            (target, d, false, mode),
                             trait_args,
                             args,
                             name_range,
@@ -5054,13 +5054,13 @@ impl Ctx<'_> {
             let slice = Ty::new(TyKind::Slice(elem));
             for mode in [Mutability::Not, Mutability::Mut] {
                 match self.probe_method(slice, Some(mode), method, inherent(slice), traits) {
-                    Ok(Some((function, trait_args))) => {
+                    Ok(Some((function, trait_args, target))) => {
                         self.record_overloaded_derefs(id, &steps);
                         return self.check_method(
                             id,
                             receiver,
                             function,
-                            (slice, derefs, true),
+                            (target, derefs, true, Some(mode)),
                             trait_args,
                             args,
                             name_range,
@@ -5204,7 +5204,7 @@ impl Ctx<'_> {
         name: Symbol,
         inherent: &[flux_hir::AssocItem],
         traits: bool,
-    ) -> Result<Option<(FunctionId, Option<crate::GenericArgs>)>, ()> {
+    ) -> Result<Option<(FunctionId, Option<crate::GenericArgs>, Ty)>, ()> {
         let items = self.items;
         if !inherent.is_empty() {
             let candidates = inherent.iter().filter_map(|&item| match item {
@@ -5216,7 +5216,7 @@ impl Ctx<'_> {
                 _ => None,
             });
             match self.select(candidates, Some(ty)) {
-                Ok(function) => return Ok(Some((function, None))),
+                Ok(function) => return Ok(Some((function, None, ty))),
                 Err(2..) => return Err(()),
                 Err(_) => {}
             }
@@ -5224,27 +5224,42 @@ impl Ctx<'_> {
         if !traits {
             return Ok(None);
         }
-        let found: Vec<_> = self
+        let mut found: Vec<_> = self
             .trait_items(ty, name, true)
             .into_iter()
             .filter(|&(f, _)| self_mode(items, f) == mode)
+            .map(|(f, t)| (f, t, ty))
             .collect();
+        // At a borrowed receiver candidate, `self` on `&T` competes
+        // with `&self` on `T`. The impl's Self is the reference, but
+        // the call adjustment still borrows the original place.
+        if let Some(m) = mode {
+            let borrowed = Ty::new(TyKind::Ref(m, ty));
+            found.extend(
+                self.trait_items(borrowed, name, true)
+                    .into_iter()
+                    .filter(|&(f, _)| self_mode(items, f).is_none())
+                    .map(|(f, t)| (f, t, borrowed)),
+            );
+        }
         match found.as_slice() {
             [] => Ok(None),
-            [(function, trait_ref)] => Ok(Some((*function, trait_ref.map(|t| t.args)))),
+            [(function, trait_ref, target)] => {
+                Ok(Some((*function, trait_ref.map(|t| t.args), *target)))
+            }
             _ => Err(()),
         }
     }
 
-    /// A call of `function`, a method, on a receiver of type `base` once
-    /// `derefs` references are taken off it.
+    /// A call of `function` with `base` as Self. The receiver adjustment
+    /// is separate: borrowing may produce Self itself, or a reference to it.
     #[allow(clippy::too_many_arguments)]
     fn check_method(
         &mut self,
         id: ExprId,
         receiver: ExprId,
         function: FunctionId,
-        (base, derefs, unsize): (Ty, u32, bool),
+        (base, derefs, unsize, autoref): (Ty, u32, bool, Option<Mutability>),
         trait_args: Option<&[Ty]>,
         args: &[ExprId],
         name_range: TextRange,
@@ -5338,7 +5353,6 @@ impl Ctx<'_> {
         }
         let sig = &self.instance_sig(function, &generic_args);
         self.meet_expectation(id, sig.ret);
-        let autoref = self_mode(self.items, function);
         if autoref == Some(Mutability::Mut) {
             // As rustc's `convert_place_derefs_to_mutable` of the
             // receiver: its overloaded dereferences, and if it is used
