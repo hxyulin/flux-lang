@@ -1038,6 +1038,9 @@ normalization erases them. This includes tautological bounds; unrelated bounds
 can also conservatively reject an otherwise valid late input. Missing callback
 provenance is explicitly unsupported.
 Unbounded named and elided free-function lifetimes remain supported.
+Function-item-to-pointer coercions use the same provenance classification and
+reject missing metadata. Predicate-bound lifetimes cannot be generalized by
+first converting the item to a pointer, including through casts or `Clone`.
 
 Callable reference output lifetimes can be elided from a single input reference
 (`F: Fn(&T) -> &U`). Each call's result borrows from its argument. This also applies to returned

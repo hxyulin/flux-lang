@@ -238,6 +238,10 @@ signature tables and callback provenance, checks transitive region-free
 supertrait edges, and rejects missing metadata. The query does not admit traits
 or replace any declaration, impl or use-site checks; the public gate remains
 unconditional.
+Function-pointer reification also consumes that callback provenance, retaining
+its existing owner, static and repeated-input restrictions. Pointer annotations,
+casts, argument coercions and cloned function items cannot erase predicate-bound
+input lifetimes.
 
 Function-item callbacks now share direct calls' complete signature obligations,
 including function/owner predicates, projections and outlives constraints.
