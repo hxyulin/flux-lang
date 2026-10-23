@@ -1174,10 +1174,13 @@ metadata-preserving conversions from shared and mutable references to sized
 or supported unsized targets. `NonNull<[T]>::len` reads only slice metadata;
 constant pointer-value evaluation remains limited. Raw
 pointers have `is_null`, `cast`, `cast_mut`/`cast_const`, `addr`,
-`add`, `sub`, `offset`, `wrapping_add`, `wrapping_sub`, `offset_from`,
+`add`, `sub`, `offset`, `wrapping_add`, `wrapping_sub`, `offset_from`, `align_offset`,
 `read`, `write`, `replace`, `swap`, `drop_in_place`, `write_bytes`,
 `copy_to`, `copy_from` (and their `_nonoverlapping` forms), `as_ref`
-and `as_mut`; a `*mut T` coerces to a `*const T`. `core::mem` has
+and `as_mut`; a `*mut T` coerces to a `*const T`. `align_offset` returns an
+element count for sized pointees, with zero-sized and impossible-alignment
+cases, and panics for non-power-of-two alignments. It is runtime-only and
+does not establish allocation bounds or memory validity. `core::mem` has
 `forget`, `ManuallyDrop` (with `Deref`) and `MaybeUninit` (`new`,
 `uninit`, `zeroed`, `write`, `as_ptr`, `as_mut_ptr`, `assume_init` and
 its `_read`, `_ref`, `_mut` and `_drop` forms). Pointer arithmetic and

@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Add runtime raw-pointer `align_offset` with element-count semantics and
+  bounded arithmetic. Execute unchanged DroplessArena with rustc comparisons
+  covering growth, alignment, dedicated chunks and destruction.
+
 - Add metadata-preserving NonNull reference conversions and slice length queries
   without reading slice elements.
 
