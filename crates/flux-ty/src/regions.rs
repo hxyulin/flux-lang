@@ -399,6 +399,9 @@ pub(crate) struct Walker<'a> {
     /// In a trait's `impl` block's methods, the slots of its associated
     /// types, which `Self::Out` resolves to.
     pub self_types: &'a [(Symbol, Box<[Region]>)],
+    /// Inherited projections whose selected impl needs an unrepresented map.
+    pub unmapped_self_types: &'a [Symbol],
+    pub inherited_self_types: &'a [(Symbol, Box<[Region]>)],
     /// For resolving the types an alias is given.
     pub scope: TypeScope<'a>,
     /// Local annotations cannot yet map associated projections' written lifetimes.
@@ -425,6 +428,8 @@ impl<'a> Walker<'a> {
             names,
             self_regions: None,
             self_types: &[],
+            unmapped_self_types: &[],
+            inherited_self_types: &[],
             scope: TypeScope::default(),
             body: false,
             elided: Elided::Is(Region::Erased),
@@ -634,8 +639,24 @@ impl<'a> Walker<'a> {
             (Some(q), [name]) if matches!(&q.ty, TypeRef::Path(p) if is_self(p)) => Some(*name),
             _ => None,
         };
+        if path.qself.is_none() && own.is_some_and(|name| self.unmapped_self_types.contains(&name))
+        {
+            self.errors.push((
+                path.range(0, TextRange::default()),
+                "regions in inherited associated types are not supported for this impl".into(),
+            ));
+            return;
+        }
         if let Some(name) = own
             && let Some((_, regions)) = self.self_types.iter().find(|(n, _)| *n == name)
+        {
+            self.check_args(path);
+            out.extend_from_slice(regions);
+            return;
+        }
+        if path.qself.is_none()
+            && let Some(name) = own
+            && let Some((_, regions)) = self.inherited_self_types.iter().find(|(n, _)| *n == name)
         {
             self.check_args(path);
             out.extend_from_slice(regions);

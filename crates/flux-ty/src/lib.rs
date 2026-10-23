@@ -610,6 +610,11 @@ pub struct TypeScope<'a> {
     pub bounds: &'a [Predicate],
     /// In a trait's `impl` block, its trait: `Self::Out` is its type.
     pub self_trait: Option<TraitRef>,
+    /// Resolved supertrait edges for inherited `Self::Out` in an impl.
+    /// Keeping these separate from `bounds` avoids treating the impl being
+    /// checked as an assumption when proving its declaration obligations.
+    pub self_supertraits: &'a [Predicate],
+    pub self_inherited_types: &'a [(TraitRef, Symbol, Ty)],
     /// In a trait's `impl` block's items, its associated types: what
     /// `Self::Out` and `<Self as Tr>::Out` are, as rustc normalizes them
     /// there (the block is the one for its `Self`).
@@ -1620,8 +1625,53 @@ fn assoc_type(
             }
             return Ty::alias(traits::alias_of(trait_ref, self_ty, name));
         }
-        if path.qself.is_none() && path.segments[0] == kw::SelfUpper {
-            errors.push((at, format!("associated type `{name}` not found for `Self`")));
+        if written_self {
+            let found: Vec<_> = scope
+                .self_supertraits
+                .iter()
+                .filter(|p| has_type(p.trait_ref.trait_))
+                .map(|p| p.trait_ref)
+                .collect();
+            match found.as_slice() {
+                [inherited] => {
+                    // AliasTy has no table for erased trait-argument regions.
+                    // Preserve the qualified-projection boundary here too.
+                    if !items.traits[inherited.trait_].generics.lifetimes.is_empty()
+                        || inherited
+                            .args
+                            .iter()
+                            .any(|&t| regions::slots(items, t) != 0)
+                    {
+                        errors.push((
+                            at,
+                            "lifetimes in inherited trait projections are not supported yet".into(),
+                        ));
+                        return Ty::ERROR;
+                    }
+                    if let Some(&(_, _, ty)) = scope
+                        .self_inherited_types
+                        .iter()
+                        .find(|(tr, n, _)| tr == inherited && *n == name)
+                    {
+                        if ty.has_aliases() {
+                            errors.push((
+                                at,
+                                "nested inherited associated types are not supported yet".into(),
+                            ));
+                            return Ty::ERROR;
+                        }
+                        if scope.signature_of != Some("functions") && regions::slots(items, ty) != 0
+                        {
+                            errors.push((at, "region-bearing inherited associated types outside function signatures are not supported yet".into()));
+                            return Ty::ERROR;
+                        }
+                        return ty;
+                    }
+                    return Ty::alias(traits::alias_of(*inherited, self_ty, name));
+                }
+                [] => errors.push((at, format!("associated type `{name}` not found for `Self`"))),
+                _ => errors.push((at, format!("ambiguous associated type `{name}` for `Self`"))),
+            }
             return Ty::ERROR;
         }
     }
@@ -2623,9 +2673,13 @@ fn extend_signatures(
             resolve_predicates(items, &sigs, imp.module, &imp.generics, scope, &mut errors);
         projections.extend(resolved.projections);
         let bounds = traits::elaborate(&sigs, &resolved.predicates);
+        let self_supertraits = traits::associated_self_bounds(&sigs, self_trait, Some(self_ty));
+        let self_inherited_types = traits::associated_self_types(items, &sigs, &self_supertraits);
         let scope = TypeScope {
             bounds: &bounds,
             self_trait,
+            self_supertraits: &self_supertraits,
+            self_inherited_types: &self_inherited_types,
             ..scope
         };
         let types: Box<[(Symbol, Ty)]> = imp
@@ -2664,8 +2718,17 @@ fn extend_signatures(
         let generics = generic_names(items, konst.owner, &Generics::default());
         // Its owner's bounds, for `Self::A` or `T::A` in its type.
         let bounds = traits::elaborate(&sigs, &traits::owner_predicates(items, &sigs, konst.owner));
+        let self_trait = konst
+            .owner
+            .and_then(Owner::as_impl)
+            .and_then(|imp| sigs.impl_traits.get(imp).copied());
+        let self_supertraits =
+            traits::associated_self_bounds(&sigs, self_trait, self_ty(&sigs, konst.owner));
+        let self_inherited_types = traits::associated_self_types(items, &sigs, &self_supertraits);
         let scope = TypeScope {
             self_ty: self_ty(&sigs, konst.owner),
+            self_supertraits: &self_supertraits,
+            self_inherited_types: &self_inherited_types,
             generics: &generics,
             consts: &[],
             signature_of: Some(match (konst.owner, konst.is_static) {
@@ -2748,8 +2811,13 @@ fn extend_signatures(
             }
             _ => Vec::new(),
         };
+        let self_supertraits =
+            traits::associated_self_bounds(&sigs, self_trait, self_ty(&sigs, function.owner));
+        let self_inherited_types = traits::associated_self_types(items, &sigs, &self_supertraits);
         let scope = TypeScope {
             self_ty: self_ty(&sigs, function.owner),
+            self_supertraits: &self_supertraits,
+            self_inherited_types: &self_inherited_types,
             generics: &generics,
             consts: &consts,
             unsized_params: &unsized_params,

@@ -1609,8 +1609,14 @@ impl Ctx<'_> {
             .get(ty_ref)
             .copied()
             .unwrap_or_default();
+        let self_supertraits =
+            crate::traits::associated_self_bounds(self.sigs, self.self_trait, self.self_ty);
+        let self_inherited_types =
+            crate::traits::associated_self_types(self.items, self.sigs, &self_supertraits);
         let scope = TypeScope {
             self_ty: self.self_ty,
+            self_supertraits: &self_supertraits,
+            self_inherited_types: &self_inherited_types,
             generics: &self.generics,
             consts: &self.const_params,
             signature_of: None,
@@ -1780,8 +1786,14 @@ impl Ctx<'_> {
             .get(ty_ref)
             .copied()
             .unwrap_or_default();
+        let self_supertraits =
+            crate::traits::associated_self_bounds(self.sigs, self.self_trait, self.self_ty);
+        let self_inherited_types =
+            crate::traits::associated_self_types(self.items, self.sigs, &self_supertraits);
         let scope = TypeScope {
             self_ty: self.self_ty,
+            self_supertraits: &self_supertraits,
+            self_inherited_types: &self_inherited_types,
             generics: &self.generics,
             consts: &self.const_params,
             signature_of: None,

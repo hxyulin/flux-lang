@@ -640,6 +640,40 @@ pub fn elaborate(sigs: &Signatures, predicates: &[Predicate]) -> Vec<Predicate> 
     out
 }
 
+/// Associated-name lookup in a trait impl may use its substituted
+/// supertraits. These are lookup candidates, not declaration assumptions.
+pub(crate) fn associated_self_bounds(
+    sigs: &Signatures,
+    trait_ref: Option<TraitRef>,
+    self_ty: Option<Ty>,
+) -> Vec<Predicate> {
+    match (trait_ref, self_ty) {
+        (Some(trait_ref), Some(self_ty)) => elaborate(sigs, &[trait_ref.with_self(self_ty)]),
+        _ => Vec::new(),
+    }
+}
+
+/// Concrete inherited definitions in the current impl's type namespace.
+/// Their lifetime tables are rebased separately by region signature resolution.
+pub(crate) fn associated_self_types(
+    items: &ItemTree,
+    sigs: &Signatures,
+    candidates: &[Predicate],
+) -> Vec<(TraitRef, Symbol, Ty)> {
+    let mut out = Vec::new();
+    for &goal in candidates.iter().skip(1) {
+        let Some((imp, args)) = select_impl(items, sigs, goal) else {
+            continue;
+        };
+        for associated in &items.traits[goal.trait_ref.trait_].types {
+            if let Some(ty) = impl_type(sigs, imp, associated.name) {
+                out.push((goal.trait_ref, associated.name, ty.subst(&args)));
+            }
+        }
+    }
+    out
+}
+
 /// The bounds associated type `ty` has by its trait, elaborated, where
 /// `env` says its `Self` implements the trait: `<T as Tr>::Out: Bound`
 /// from `type Out: Bound;` in `Tr`, given `T: Tr`. None for other types.

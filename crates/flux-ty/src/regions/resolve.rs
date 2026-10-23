@@ -387,6 +387,60 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
     }
 }
 
+/// Rebase the selected impl's explicitly represented header lifetimes onto
+/// this impl's Self slots. Substitutions that introduce additional type slots
+/// need a richer map and are rejected instead of receiving elided lifetimes.
+fn inherited_self_regions(
+    items: &ItemTree,
+    sigs: &Signatures,
+    goal: crate::Predicate,
+    actual: &[Region],
+    name: Symbol,
+) -> Option<Box<[Region]>> {
+    let (imp, args) = crate::traits::select_impl(items, sigs, goal)?;
+    let header = sigs.impls[imp];
+    let regions = sigs.regions.impls.get(imp)?;
+    if header.subst(&args) != goal.self_ty
+        || slots(items, header) != slots(items, goal.self_ty)
+        || regions.self_ty.len() != actual.len()
+        || regions.trait_args.iter().any(|r| !r.is_empty())
+        || !regions.trait_lifetimes.is_empty()
+    {
+        return None;
+    }
+    let mut map = vec![None; regions.names.len()];
+    for (&pattern, &target) in regions.self_ty.iter().zip(actual) {
+        if !matches!(target, Region::Static | Region::Param(_)) {
+            return None;
+        }
+        match pattern {
+            Region::Param(i) => {
+                let entry = map.get_mut(i as usize)?;
+                if entry.is_some_and(|previous| previous != target) {
+                    return None;
+                }
+                *entry = Some(target);
+            }
+            Region::Static if target == Region::Static => {}
+            _ => return None,
+        }
+    }
+    let ty = crate::traits::impl_type(sigs, imp, name)?;
+    let table = regions.types.iter().find(|(n, _)| *n == name)?.1.as_ref();
+    if slots(items, ty) != table.len() || slots(items, ty.subst(&args)) != table.len() {
+        return None;
+    }
+    table
+        .iter()
+        .map(|r| match *r {
+            Region::Static => Some(Region::Static),
+            Region::Param(i) => map.get(i as usize).copied().flatten(),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(Into::into)
+}
+
 /// Functions' parameters and return types, with elision, and their
 /// bounds.
 fn functions(
@@ -414,6 +468,42 @@ fn functions(
             owner_names = r.names.to_vec();
             owner_outlives = r.outlives.to_vec();
         }
+        // Own associated definitions already have tables in this impl's
+        // lifetime namespace. Inherited definitions must be mapped from the
+        // selected supertrait impl, never elided as a borrow of the receiver.
+        let mut unmapped_self_types = Vec::new();
+        let mut inherited_self_types = Vec::new();
+        if let Some(flux_hir::Owner::Impl(imp)) = function.owner {
+            let self_ty = sigs.impls[imp];
+            let candidates = crate::traits::associated_self_bounds(
+                sigs,
+                sigs.impl_traits.get(imp).copied(),
+                Some(self_ty),
+            );
+            let mut tables = Vec::new();
+            for candidate in candidates.iter().skip(1) {
+                for associated in &items.traits[candidate.trait_ref.trait_].types {
+                    if self_types
+                        .iter()
+                        .chain(tables.iter())
+                        .any(|(name, _)| *name == associated.name)
+                    {
+                        continue;
+                    }
+                    match inherited_self_regions(
+                        items,
+                        sigs,
+                        *candidate,
+                        self_regions.as_deref().unwrap_or(&[]),
+                        associated.name,
+                    ) {
+                        Some(regions) => tables.push((associated.name, regions)),
+                        None => unmapped_self_types.push(associated.name),
+                    }
+                }
+            }
+            inherited_self_types = tables;
+        }
         let owner_count = owner_names.len() as u32;
         let mut names: Vec<Option<Symbol>> = owner_names.iter().map(|n| n.name).collect();
         names.extend(function.generics.lifetimes.iter().map(|l| Some(l.name)));
@@ -422,6 +512,8 @@ fn functions(
         let mut walker = Walker::new(items, function.loc.module, names);
         walker.self_regions = self_regions.as_deref();
         walker.self_types = &self_types;
+        walker.unmapped_self_types = &unmapped_self_types;
+        walker.inherited_self_types = &inherited_self_types;
         walker.scope = TypeScope {
             self_ty,
             generics: &generics,

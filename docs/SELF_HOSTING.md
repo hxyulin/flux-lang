@@ -375,14 +375,25 @@ Flux with that executable. Component comparisons are intermediate milestones;
 they do not establish a working compiler bootstrap.
 
 The next arena-root probe still encounters missing `Arc`/`Weak`, `UnsafeCell`,
-`type_name`, const `Vec::new`, associated-type handling,
-and collections. Some reported errors cascade from missing imports. The
+`type_name`, const `Vec::new`, and collections. Some reported errors cascade
+from missing imports. The
 `PhantomData` equality barrier is removed: its equality and ordering traits
 have no bounds on the marked type, with runtime coverage for unsized and
 non-comparable marked types. `Vec::resize_with` now also supports the side-table
-growth operations, calling a stateful factory only for new elements and dropping truncated elements.
+growth operations, calling a stateful factory only for new elements and
+dropping truncated elements.
 Runtime coverage includes non-Clone owners, aligned zero-sized elements and
-sparse optional slots. Whole-arena compilation remains incomplete.
+sparse optional slots.
+
+Inherited `Self::Item` now resolves through substituted supertrait edges in
+trait impls. Selected implementation lifetime tables preserve references into
+an iterator's stored data rather than its receiver borrow. A native comparison
+executes the unchanged `Values` iterator excerpt from `typed.rs`, including
+its dual slice iterators, `nth`, forward/backward calls and exact lengths.
+The complete arena-root probe no longer reports that iterator's associated-type
+or lifetime error. This is an excerpt consumer, not complete typed-arena or
+whole-arena compilation; shared ownership and the other APIs above remain
+missing.
 
 ## Next milestones
 
