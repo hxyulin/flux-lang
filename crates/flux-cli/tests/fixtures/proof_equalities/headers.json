@@ -1,0 +1,22 @@
+[
+  {
+    "name": "header_shadow",
+    "source": "trait P{type A;fn get(&self)->Self::A;}trait Q:P<A=u8>{}trait H where Self::Part:P<A=u8>{type Part:P<A=u16>;fn f(x:Self::Part)->u8{x.get()}} fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "header_conflict",
+    "source": "trait P{type A;fn get(&self)->Self::A;}trait Q:P<A=u8>{}trait H where Self::Part:Q+P<A=u16>{type Part:P<A=u16>;fn f(x:Self::Part)->u16{x.get()}} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "header_matching",
+    "source": "trait P{type A;fn get(&self)->Self::A;}trait Q:P<A=u16>{}trait H where Self::Part:Q+P<A=u16>{type Part:P<A=u16>;fn f(x:Self::Part)->u16{x.get()}} fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "header_unused_direct",
+    "source": "trait P{type A;fn get(&self)->Self::A;}trait Q:P<A=u8>{}trait H where Self::Part:P<A=u8>+P<A=u16>{type Part:P;} fn main(){}",
+    "accepts": true
+  }
+]

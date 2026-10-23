@@ -189,6 +189,10 @@ pub struct TraitSig {
     /// What `Self: Tr` says its associated types and its supertraits' are:
     /// `Out = i32` in `trait Tr: Sup<Out = i32>` or `type N: Add<Output = i32>;`.
     pub implied: Box<[Projection]>,
+    /// Header/where equalities, excluding associated-type declaration bounds.
+    /// Kept separately because caller proof compatibility must not equate
+    /// declaration assumptions with explicit where-clause assumptions.
+    pub header_projections: Box<[Projection]>,
 }
 
 /// The default of each trait's parameters, for bounds that leave them out.
@@ -510,6 +514,101 @@ pub fn projections_of(
         &elaborate(sigs, &predicates_of(items, sigs, function)),
     ));
     out
+}
+
+/// Equalities belonging to caller proofs, rather than associated-type
+/// declarations. Preserve their provenance before substitution: a declaration
+/// Self can itself be an alias at a use site.
+pub(crate) fn caller_projections_of(
+    items: &ItemTree,
+    sigs: &Signatures,
+    function: FunctionId,
+) -> Vec<Projection> {
+    let mut out = Vec::new();
+    match items.functions[function].owner {
+        Some(Owner::Impl(imp)) => {
+            out.extend(
+                sigs.impl_projections
+                    .get(imp)
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            );
+        }
+        Some(Owner::Trait(t)) => {
+            if let Some(sig) = sigs.traits.get(t) {
+                out.extend(sig.header_projections.iter().copied());
+            }
+        }
+        None => {}
+    }
+    out.extend(
+        sigs.fn_projections
+            .get(function)
+            .into_iter()
+            .flatten()
+            .copied(),
+    );
+    out.extend(caller_supertrait_projections(
+        sigs,
+        &elaborate(sigs, &predicates_of(items, sigs, function)),
+    ));
+    out
+}
+
+/// Equalities on a bound's own Self, distinguished before substitution
+/// from equalities originating in its associated-type declarations.
+fn caller_supertrait_projections(sigs: &Signatures, env: &[Predicate]) -> Vec<Projection> {
+    let mut out = Vec::new();
+    let self_param = Ty::param(0, flux_intern::kw::SelfUpper);
+    for p in env {
+        let Some(sig) = sigs.traits.get(p.trait_ref.trait_) else {
+            continue;
+        };
+        let args: Vec<Ty> = std::iter::once(p.self_ty)
+            .chain(p.trait_ref.args.iter().copied())
+            .collect();
+        out.extend(
+            sig.implied
+                .iter()
+                .filter(|q| q.alias.args[0] == self_param)
+                .map(|q| q.subst(&args)),
+        );
+    }
+    out
+}
+
+/// A written bound must satisfy its supertrait equalities even when its
+/// methods are unused. Direct contradictory where equalities alone can be
+/// unused assumptions in Rust; they are checked when selecting that proof.
+fn check_caller_supertraits(
+    items: &ItemTree,
+    sigs: &Signatures,
+    predicates: &[Predicate],
+    mut caller: Vec<Projection>,
+    file: FileId,
+    range: TextRange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let required = caller_supertrait_projections(sigs, &elaborate(sigs, predicates));
+    if required.is_empty() {
+        return;
+    }
+    caller.extend(required.iter().copied());
+    for q in required {
+        if caller.iter().any(|p| {
+            p.alias == q.alias
+                && normalize_projection_rhs(items, sigs, &caller, *p)
+                    != normalize_projection_rhs(items, sigs, &caller, q)
+        }) {
+            diagnostics.push(Diagnostic {
+                file,
+                range,
+                message: format!("type annotations needed: cannot satisfy `{q}`"),
+            });
+            break;
+        }
+    }
 }
 
 /// What the bounds of an associated item's owner say associated types
@@ -970,6 +1069,25 @@ pub fn normalize(items: &ItemTree, sigs: &Signatures, env: &[Projection], ty: Ty
         active: Vec::new(),
     };
     normalizer.go(ty, 0)
+}
+
+/// Normalize a constraint's right side without proving it from the very
+/// projection being constrained. A recursive reference to that projection
+/// stays rigid instead of taking the first competing equality in `env`.
+pub(crate) fn normalize_projection_rhs(
+    items: &ItemTree,
+    sigs: &Signatures,
+    env: &[Projection],
+    projection: Projection,
+) -> Ty {
+    let mut normalizer = Normalizer {
+        items,
+        sigs,
+        env,
+        done: rustc_hash::FxHashMap::default(),
+        active: vec![Ty::alias(projection.alias)],
+    };
+    normalizer.go(projection.ty, 0)
 }
 
 /// One [`normalize`]: what each type it met normalizes to, as aliases
@@ -2565,6 +2683,15 @@ pub fn check_well_formed(
     for (id, s) in items.structs.iter().skip(from.structs as usize) {
         let own = sigs.struct_predicates.get(id).map_or(&[][..], |p| p);
         let declared = sigs.struct_projections.get(id).map_or(&[][..], |p| p);
+        check_caller_supertraits(
+            items,
+            sigs,
+            own,
+            declared.to_vec(),
+            s.loc.file,
+            s.def_range,
+            diagnostics,
+        );
         if !struct_bounds && !aliased(sigs.structs[id]) && !aliased_bounds(own, declared) {
             continue;
         }
@@ -2587,6 +2714,15 @@ pub fn check_well_formed(
     for (id, imp) in items.impls.iter().skip(from.impls as usize) {
         let own = sigs.impl_predicates.get(id).map_or(&[][..], |p| p);
         let declared = sigs.impl_projections.get(id).map_or(&[][..], |p| p);
+        check_caller_supertraits(
+            items,
+            sigs,
+            own,
+            declared.to_vec(),
+            imp.file,
+            imp.def_range,
+            diagnostics,
+        );
         let types = sigs.impl_types.get(id).map_or(&[][..], |t| t);
         let trait_args = sigs.impl_traits.get(id).map_or(&[][..], |t| t.args);
         if !struct_bounds
@@ -2639,6 +2775,19 @@ pub fn check_well_formed(
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let own = sigs.trait_predicates.get(id).map_or(&[][..], |p| p);
         let declared = sigs.trait_projections.get(id).map_or(&[][..], |p| p);
+        let header = sigs
+            .traits
+            .get(id)
+            .map_or(&[][..], |sig| &sig.header_projections);
+        check_caller_supertraits(
+            items,
+            sigs,
+            &owner_predicates(items, sigs, Some(Owner::Trait(id))),
+            header.to_vec(),
+            t.loc.file,
+            t.def_range,
+            diagnostics,
+        );
         if !struct_bounds && !aliased_bounds(own, declared) {
             continue;
         }
@@ -2690,6 +2839,15 @@ pub fn check_well_formed(
         let sig = &sigs.fns[id];
         let own = sigs.fn_predicates.get(id).map_or(&[][..], |p| p);
         let declared = sigs.fn_projections.get(id).map_or(&[][..], |p| p);
+        check_caller_supertraits(
+            items,
+            sigs,
+            &predicates_of(items, sigs, id),
+            caller_projections_of(items, sigs, id),
+            f.loc.file,
+            f.sig_range,
+            diagnostics,
+        );
         if !struct_bounds
             && !aliased(&sig.params)
             && !sig.ret.has_aliases()

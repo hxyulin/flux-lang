@@ -1,0 +1,722 @@
+[
+  {
+    "name": "super_x.get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { x.get() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_x.get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { x.get() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_x.get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "super_x.get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "super_P__get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_P__get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { P::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_P__get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "super_P__get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "super_T__PartasP__get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_T__PartasP__get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_T__PartasP__get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "super_T__PartasP__get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "where_x.get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { x.get() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "where_x.get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { x.get() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "where_x.get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "where_x.get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "where_P__get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "where_P__get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { P::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "where_P__get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "where_P__get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "where_T__PartasP__get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "where_T__PartasP__get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "where_T__PartasP__get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "where_T__PartasP__get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q where Self:P<A=u8>{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "transitive_x.get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { x.get() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "transitive_x.get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { x.get() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "transitive_x.get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "transitive_x.get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "transitive_P__get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "transitive_P__get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { P::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "transitive_P__get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "transitive_P__get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "transitive_T__PartasP__get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "transitive_T__PartasP__get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "transitive_T__PartasP__get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "transitive_T__PartasP__get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait Q:R{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "diamond_x.get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { x.get() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "diamond_x.get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { x.get() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "diamond_x.get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "diamond_x.get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "diamond_P__get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "diamond_P__get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { P::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "diamond_P__get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "diamond_P__get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "diamond_T__PartasP__get_u8_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "diamond_T__PartasP__get_u8_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u8 where T::Part:Q,T:H { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "diamond_T__PartasP__get_u16_0",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "diamond_T__PartasP__get_u16_1",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}trait H{type Part:P<A=u16>;} fn f<T>(x:T::Part)->u16 where T::Part:Q,T:H { <T::Part as P>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "arg_distinct_a_u8_0",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u8 where T:H<u16,u32>,T::Part:Q<u8,u32> { x.a() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "arg_distinct_a_u8_1",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u8 where T::Part:Q<u8,u32>,T:H<u16,u32> { x.a() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "arg_distinct_a_u16_0",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u16 where T:H<u16,u32>,T::Part:Q<u8,u32> { x.a() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "arg_distinct_a_u16_1",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u16 where T::Part:Q<u8,u32>,T:H<u16,u32> { x.a() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "arg_distinct_a_u32_0",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u32 where T:H<u16,u32>,T::Part:Q<u8,u32> { x.a() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "arg_distinct_a_u32_1",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u32 where T::Part:Q<u8,u32>,T:H<u16,u32> { x.a() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "arg_distinct_b_u8_0",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u8 where T:H<u16,u32>,T::Part:Q<u8,u32> { x.b() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "arg_distinct_b_u8_1",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u8 where T::Part:Q<u8,u32>,T:H<u16,u32> { x.b() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "arg_distinct_b_u16_0",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u16 where T:H<u16,u32>,T::Part:Q<u8,u32> { x.b() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "arg_distinct_b_u16_1",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u16 where T::Part:Q<u8,u32>,T:H<u16,u32> { x.b() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "arg_distinct_b_u32_0",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u32 where T:H<u16,u32>,T::Part:Q<u8,u32> { x.b() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "arg_distinct_b_u32_1",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H<X,Y>{type Part:P<Y,X,A=X,B=Y>;type Other:P<X,Y,A=Y,B=X>;} fn f<T>(x:T::Part)->u32 where T::Part:Q<u8,u32>,T:H<u16,u32> { x.b() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "multi_Part_a_u8",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.a() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "multi_Other_a_u8",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Other)->u8 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.a() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "multi_Part_a_u16",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.a() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "multi_Other_a_u16",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Other)->u16 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.a() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "multi_Part_a_u32",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Part)->u32 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.a() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "multi_Other_a_u32",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Other)->u32 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.a() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "multi_Part_b_u8",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Part)->u8 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.b() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "multi_Other_b_u8",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Other)->u8 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.b() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "multi_Part_b_u16",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Part)->u16 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.b() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "multi_Other_b_u16",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Other)->u16 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.b() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "multi_Part_b_u32",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Part)->u32 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.b() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "multi_Other_b_u32",
+    "source": "trait P<X,Y> {type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<X,Y,A=Y,B=X>{} trait H {type Part:P<u8,u16,A=u8,B=u16>;type Other:P<u16,u8,A=u32,B=u8>;} fn f<T>(x:T::Other)->u32 where T:H,T::Part:Q<u8,u16>,T::Other:Q<u16,u8> { x.b() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_u8_u8",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait H{type Part:P<A=u16>;} fn f<T:H>(x:T::Part)->u8 where T::Part:Q+P<A=u8> {x.get()}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "direct_u8_u16",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait H{type Part:P<A=u16>;} fn f<T:H>(x:T::Part)->u16 where T::Part:Q+P<A=u8> {x.get()}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_u8_u32",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait H{type Part:P<A=u16>;} fn f<T:H>(x:T::Part)->u32 where T::Part:Q+P<A=u8> {x.get()}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_u16_u8",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait H{type Part:P<A=u16>;} fn f<T:H>(x:T::Part)->u8 where T::Part:Q+P<A=u16> {x.get()}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_u16_u16",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait H{type Part:P<A=u16>;} fn f<T:H>(x:T::Part)->u16 where T::Part:Q+P<A=u16> {x.get()}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_u16_u32",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait H{type Part:P<A=u16>;} fn f<T:H>(x:T::Part)->u32 where T::Part:Q+P<A=u16> {x.get()}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_u32_u8",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait H{type Part:P<A=u16>;} fn f<T:H>(x:T::Part)->u8 where T::Part:Q+P<A=u32> {x.get()}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_u32_u16",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait H{type Part:P<A=u16>;} fn f<T:H>(x:T::Part)->u16 where T::Part:Q+P<A=u32> {x.get()}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_u32_u32",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait H{type Part:P<A=u16>;} fn f<T:H>(x:T::Part)->u32 where T::Part:Q+P<A=u32> {x.get()}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u8_T__Mid_Q_x.get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u8 where T::Mid:Q { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u8_T__Mid_Q_P__get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u8 where T::Mid:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u8_T__Mid as M__Part_Q_x.get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u8 where <T::Mid as M>::Part:Q { x.get() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "nested_u8_T__Mid as M__Part_Q_P__get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u8 where <T::Mid as M>::Part:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "nested_u8_T__Mid_MPartUU_Q_x.get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H,U>(x:U)->u8 where T::Mid:M<Part=U>,U:Q { x.get() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "nested_u8_T__Mid_MPartUU_Q_P__get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H,U>(x:U)->u8 where T::Mid:M<Part=U>,U:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "nested_u16_T__Mid_Q_x.get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u16 where T::Mid:Q { x.get() }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "nested_u16_T__Mid_Q_P__get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u16 where T::Mid:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "nested_u16_T__Mid as M__Part_Q_x.get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u16 where <T::Mid as M>::Part:Q { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u16_T__Mid as M__Part_Q_P__get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u16 where <T::Mid as M>::Part:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u16_T__Mid_MPartUU_Q_x.get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H,U>(x:U)->u16 where T::Mid:M<Part=U>,U:Q { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u16_T__Mid_MPartUU_Q_P__get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H,U>(x:U)->u16 where T::Mid:M<Part=U>,U:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u32_T__Mid_Q_x.get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u32 where T::Mid:Q { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u32_T__Mid_Q_P__get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u32 where T::Mid:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u32_T__Mid as M__Part_Q_x.get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u32 where <T::Mid as M>::Part:Q { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u32_T__Mid as M__Part_Q_P__get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H>(x:<T::Mid as M>::Part)->u32 where <T::Mid as M>::Part:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u32_T__Mid_MPartUU_Q_x.get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H,U>(x:U)->u32 where T::Mid:M<Part=U>,U:Q { x.get() }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_u32_T__Mid_MPartUU_Q_P__get",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q:P<A=u8>{} trait M{type Part:P<A=u16>;} trait H{type Mid:M;} fn f<T:H,U>(x:U)->u32 where T::Mid:M<Part=U>,U:Q { P::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "finding",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait Q: P<A = u8> {}\ntrait H {\n    type Part: P<A = u16>;\n}\nfn f<T: H>(x: T::Part) -> u16\nwhere\n    T::Part: Q + P<A = u16>,\n{\n    x.get()\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "finding_matching",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait Q: P<A = u16> {}\ntrait H {\n    type Part: P<A = u16>;\n}\nfn f<T: H>(x: T::Part) -> u16\nwhere\n    T::Part: Q + P<A = u16>,\n{\n    x.get()\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "finding_only_q",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait Q: P<A = u8> {}\ntrait H {\n    type Part: P<A = u16>;\n}\nfn f<T: H>(x: T::Part) -> u16\nwhere\n    T::Part: Q,\n{\n    x.get()\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "finding_only_direct",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait Q: P<A = u8> {}\ntrait H {\n    type Part: P<A = u16>;\n}\nfn f<T: H>(x: T::Part) -> u16\nwhere\n    T::Part: P<A = u16>,\n{\n    x.get()\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "finding_no_decl_eq",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait Q: P<A = u8> {}\ntrait H {\n    type Part: P;\n}\nfn f<T: H>(x: T::Part) -> u16\nwhere\n    T::Part: Q + P<A = u16>,\n{\n    x.get()\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "finding_no_q",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait Q: P<A = u8> {}\ntrait H {\n    type Part: P<A = u16>;\n}\nfn f<T: H>(x: T::Part) -> u16\nwhere\n    T::Part: P<A = u16> + P<A = u8>,\n{\n    x.get()\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "finding_original_shape",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait Q: P<A = u8> {}\ntrait H {\n    type Part: P<A = u16>;\n    fn part(self) -> Self::Part;\n}\nfn f<T: H>(h: T) -> u16\nwhere\n    T::Part: Q + P<A = u16>,\n{\n    h.part().get()\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "reordered_direct",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait Q: P<A = u8> {}\ntrait H {\n    type Part: P<A = u16>;\n}\nfn f<T: H>(x: T::Part) -> u16\nwhere\n    T::Part: P<A = u16> + Q,\n{\n    x.get()\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "two_direct_reverse",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait Q: P<A = u8> {}\ntrait H {\n    type Part: P<A = u16>;\n}\nfn f<T: H>(x: T::Part) -> u16\nwhere\n    T::Part: P<A = u8> + P<A = u16>,\n{\n    x.get()\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "transitive_direct",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait R:P<A=u8>{} trait Q:R{}\ntrait H {\n    type Part: P<A = u16>;\n}\nfn f<T: H>(x: T::Part) -> u16\nwhere\n    T::Part: Q + P<A = u16>,\n{\n    x.get()\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "diamond_direct",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait R:P<A=u8>{} trait S:P<A=u8>{} trait Q:R+S{}\ntrait H {\n    type Part: P<A = u16>;\n}\nfn f<T: H>(x: T::Part) -> u16\nwhere\n    T::Part: Q + P<A = u16>,\n{\n    x.get()\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "where_direct",
+    "source": "trait P {\n    type A;\n    fn get(&self) -> Self::A;\n}\ntrait Q where Self:P<A=u8>{}\ntrait H {\n    type Part: P<A = u16>;\n}\nfn f<T: H>(x: T::Part) -> u16\nwhere\n    T::Part: Q + P<A = u16>,\n{\n    x.get()\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "args_u8_u8_a_u8",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u8 where T::Part:Q<u8,u32>+P<u32,u8,A=u8,B=u32>{x.a()} fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "args_u8_u8_a_u16",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u16 where T::Part:Q<u8,u32>+P<u32,u8,A=u8,B=u32>{x.a()} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "args_u8_u8_b_u32",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u32 where T::Part:Q<u8,u32>+P<u32,u8,A=u8,B=u32>{x.b()} fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "args_u8_u16_a_u8",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u8 where T::Part:Q<u8,u32>+P<u32,u8,A=u16,B=u32>{x.a()} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "args_u8_u16_a_u16",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u16 where T::Part:Q<u8,u32>+P<u32,u8,A=u16,B=u32>{x.a()} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "args_u8_u16_b_u32",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u32 where T::Part:Q<u8,u32>+P<u32,u8,A=u16,B=u32>{x.b()} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "args_u16_u8_a_u8",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u8 where T::Part:Q<u16,u32>+P<u32,u16,A=u8,B=u32>{x.a()} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "args_u16_u8_a_u16",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u16 where T::Part:Q<u16,u32>+P<u32,u16,A=u8,B=u32>{x.a()} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "args_u16_u8_b_u32",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u32 where T::Part:Q<u16,u32>+P<u32,u16,A=u8,B=u32>{x.b()} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "args_u16_u16_a_u8",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u8 where T::Part:Q<u16,u32>+P<u32,u16,A=u16,B=u32>{x.a()} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "args_u16_u16_a_u16",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u16 where T::Part:Q<u16,u32>+P<u32,u16,A=u16,B=u32>{x.a()} fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "args_u16_u16_b_u32",
+    "source": "trait P<X,Y>{type A;type B;fn a(&self)->Self::A;fn b(&self)->Self::B;} trait Q<X,Y>:P<Y,X,A=X,B=Y>{} trait H {type Part:P<u32,u8,A=u16,B=u32>;} fn f<T:H>(x:T::Part)->u32 where T::Part:Q<u16,u32>+P<u32,u16,A=u16,B=u32>{x.b()} fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "generic_U_x",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q<U>:P<A=U>{} trait H {type Part:P;} fn f<T:H,U,V>(x:T::Part)->U where T::Part:Q<U>+P<A=U>{x.get()} fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "generic_U_P",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q<U>:P<A=U>{} trait H {type Part:P;} fn f<T:H,U,V>(x:T::Part)->U where T::Part:Q<U>+P<A=U>{P::get(&x)} fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "generic_V_x",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q<U>:P<A=U>{} trait H {type Part:P;} fn f<T:H,U,V>(x:T::Part)->V where T::Part:Q<U>+P<A=V>{x.get()} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "generic_V_P",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q<U>:P<A=U>{} trait H {type Part:P;} fn f<T:H,U,V>(x:T::Part)->V where T::Part:Q<U>+P<A=V>{P::get(&x)} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "generic_u8_x",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q<U>:P<A=U>{} trait H {type Part:P;} fn f<T:H,U,V>(x:T::Part)->u8 where T::Part:Q<U>+P<A=u8>{x.get()} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "generic_u8_P",
+    "source": "trait P {type A; fn get(&self)->Self::A;} trait Q<U>:P<A=U>{} trait H {type Part:P;} fn f<T:H,U,V>(x:T::Part)->u8 where T::Part:Q<U>+P<A=u8>{P::get(&x)} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "unused_direct",
+    "source": "trait P {type A;} fn f<T:P<A=u8>+P<A=u16>>() {}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "unused_generic",
+    "source": "trait P {type A;} fn f<T:P<A=U>+P<A=V>,U,V>() {}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "unused_super",
+    "source": "trait P {type A;} trait Q:P<A=u8>{} fn f<T:Q+P<A=u16>>() {}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "return_projection",
+    "source": "trait P {type A;} fn f<T:P<A=u8>+P<A=u16>>(x:T::A)->u16{x}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "generic_direct",
+    "source": "trait P {type A;fn get(&self)->Self::A;} fn f<T:P<A=U>+P<A=V>,U,V>(x:T)->U{x.get()}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "owner_trait_conflict",
+    "source": "trait P {type A;fn get(&self)->Self::A;} trait Q:P<A=u8>{}trait H {type Part:P<A=u16>;fn f(x:Self::Part)->u16 where Self::Part:Q+P<A=u16>{x.get()}}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "owner_impl_conflict",
+    "source": "trait P {type A;fn get(&self)->Self::A;} trait Q:P<A=u8>{} struct W<T>(T);impl<T:Q+P<A=u16>> W<T>{fn f(&self)->u16{self.0.get()}}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "owner_impl_matching",
+    "source": "trait P {type A;fn get(&self)->Self::A;} trait Q:P<A=u16>{} struct W<T>(T);impl<T:Q+P<A=u16>> W<T>{fn f(&self)->u16{self.0.get()}}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "normalized_right_matching",
+    "source": "trait P {type A;fn get(&self)->Self::A;} trait O{type Out;}trait Q<U:O>:P<A=<U as O>::Out>{} fn f<T:Q<U>+P<A=u16>,U:O<Out=u16>>(x:T)->u16{x.get()}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "normalized_right_conflict",
+    "source": "trait P {type A;fn get(&self)->Self::A;} trait O{type Out;}trait Q<U:O>:P<A=<U as O>::Out>{} fn f<T:Q<U>+P<A=u16>,U:O<Out=u8>>(x:T)->u16{x.get()}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "generic_direct_matching",
+    "source": "trait P {type A;fn get(&self)->Self::A;} fn f<T:P<A=U>+P<A=U>,U>(x:T)->U{x.get()}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "multi_name_conflict",
+    "source": "trait P{type A;type B;fn b(&self)->Self::B;}trait Q:P<A=u8,B=u32>{} fn f<T:Q+P<A=u16,B=u32>>(x:T)->u32{x.b()}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "runtime_compatibility",
+    "source": "// Matching direct, transitive and diamond equalities are one membership proof.\ntrait P<X, Y> {\n    type A;\n    type B;\n    fn a(&self) -> Self::A;\n    fn b(&self) -> Self::B;\n}\ntrait R<X, Y>: P<Y, X, A = X, B = Y> {}\ntrait S<X, Y>: P<Y, X, A = X, B = Y> {}\ntrait Q<X, Y>: R<X, Y> + S<X, Y> {}\ntrait H<X, Y> {\n    type Part: P<Y, X, A = X, B = Y>;\n    fn part(self) -> Self::Part;\n}\nstruct Value(u16, u32);\nimpl P<u32, u16> for Value {\n    type A = u16;\n    type B = u32;\n    fn a(&self) -> u16 { self.0 }\n    fn b(&self) -> u32 { self.1 }\n}\n// The same Self has another implementation, with distinct trait arguments.\nimpl P<u16, u32> for Value {\n    type A = u32;\n    type B = u16;\n    fn a(&self) -> u32 { self.1 }\n    fn b(&self) -> u16 { self.0 }\n}\nimpl R<u16, u32> for Value {}\nimpl S<u16, u32> for Value {}\nimpl Q<u16, u32> for Value {}\nstruct Owner(Value);\nimpl H<u16, u32> for Owner {\n    type Part = Value;\n    fn part(self) -> Value { self.0 }\n}\nfn read<T, X, Y>(owner: T) -> (X, Y)\nwhere\n    T: H<X, Y>,\n    T::Part: Q<X, Y> + P<Y, X, A = X, B = Y>,\n{\n    let value = owner.part();\n    (value.a(), value.b())\n}\nfn main() {\n    let (a, b) = read(Owner(Value(513, 70000)));\n    assert_eq!(a, 513);\n    assert_eq!(b, 70000);\n    let v = Value(17, 90000);\n    assert_eq!(<Value as P<u16, u32>>::a(&v), 90000);\n    println!(\"compatible proofs {} {}\", a, b);\n}\n",
+    "accepts": true
+  },
+  {
+    "name": "tautology_first",
+    "source": "trait P{type A;fn get(&self)->Self::A;} fn f<T:P<A=<T as P>::A>+P<A=u8>,U,V>(x:T)->u8{x.get()}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "tautology_last",
+    "source": "trait P{type A;fn get(&self)->Self::A;} fn f<T:P<A=u8>+P<A=<T as P>::A>,U,V>(x:T)->u8{x.get()}fn main(){}",
+    "accepts": false
+  }
+]
