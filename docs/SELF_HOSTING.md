@@ -56,6 +56,12 @@ of flux-arena. Separately compiled dependency artifacts remain unsupported.
 The normal workspace suite includes these tests; the dedicated recipe repeats
 the bundled subset while expanding coverage.
 
+Literal `include_str!` now reads UTF-8 data relative to physical source files.
+A focused executable test embeds the unchanged core `hint.rs` table entry and
+dependency data, comparing bytes against rustc in both Flux modes. Expanded
+calls and virtual sources reject explicitly; this does not implement generated
+source inclusion, build scripts or the complete HIR embedded-library driver.
+
 On 2026-10-23 the seven-module test matched rustc in both Flux modes,
 using the unchanged syntax-kind and event sources, including the explicit
 local `'static` annotation and original event layout assertion.

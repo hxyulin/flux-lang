@@ -345,6 +345,15 @@ and calls in item position of macros named through modules (`a::m!();`
 at a module's top level; `crate::m!` and `core::m!` work) are not
 supported yet.
 
+Direct `include_str!("file")` calls accept a literal UTF-8 filename relative
+to the invoking physical source file, including dependency and nested-module
+sources. Included contents preserve their bytes, including BOM and CRLF, and
+use ordinary string-literal semantics for constant and static values. Calls
+inside macro expansions, including forwarding through `println!`, and calls
+from embedded virtual sources reject explicitly. Bind the result before
+passing it to another macro. Expanded filenames, `include!`, `env!` and build
+scripts remain outside this subset.
+
 Values are dropped as in rustc: a binding at the end of its block, in
 reverse order of declaration, then the function's parameters; a
 temporary at the end of its statement (a block's tail expression's
