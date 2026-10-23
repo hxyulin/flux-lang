@@ -71,3 +71,24 @@ impl<T: ?Sized> Copy for PhantomData<T> {}
 impl<T: ?Sized> crate::hash::Hash for PhantomData<T> {
     fn hash<H: crate::hash::Hasher>(&self, _state: &mut H) {}
 }
+
+// Marker values carry no runtime state, regardless of the marked type.
+impl<T: ?Sized> crate::cmp::PartialEq for PhantomData<T> {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl<T: ?Sized> crate::cmp::Eq for PhantomData<T> {}
+
+impl<T: ?Sized> crate::cmp::PartialOrd for PhantomData<T> {
+    fn partial_cmp(&self, _other: &Self) -> crate::option::Option<crate::cmp::Ordering> {
+        crate::option::Option::Some(crate::cmp::Ordering::Equal)
+    }
+}
+
+impl<T: ?Sized> crate::cmp::Ord for PhantomData<T> {
+    fn cmp(&self, _other: &Self) -> crate::cmp::Ordering {
+        crate::cmp::Ordering::Equal
+    }
+}
