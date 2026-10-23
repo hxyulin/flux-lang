@@ -527,6 +527,11 @@ pub(crate) fn impl_supertraits_match(
             return None;
         }
     }
+    for goal in &goals {
+        if !cx.impl_super_equalities(goal, &env)? {
+            return Some(false);
+        }
+    }
     cx.close_known();
     let solution = cx.solve(&Points::new(&body), &[]);
     Some(
@@ -834,6 +839,90 @@ impl<'a> Cx<'a> {
             }
         }
         true
+    }
+
+    /// Prove the equalities on each elaborated trait edge using only the
+    /// original impl header environment. In particular, never normalize with
+    /// the required equality installed as an assumption of its own proof.
+    fn impl_super_equalities(
+        &mut self,
+        goal: &ImplRegionGoal,
+        env: &[ImplRegionGoal],
+    ) -> Option<bool> {
+        let args: Vec<_> = std::iter::once(goal.predicate.self_ty)
+            .chain(goal.predicate.trait_ref.args.iter().copied())
+            .collect();
+        for p in self
+            .sigs
+            .traits
+            .get(goal.predicate.trait_ref.trait_)
+            .map_or(&[][..], |s| &s.implied)
+            .iter()
+            // Equalities on associated-type bounds (`type N: Add<Output =
+            // i32>`) belong to those types' obligations, not the Self
+            // supertrait edges elaborated by impl_super_goals.
+            .filter(|p| p.alias.args.first() == Some(&Ty::param(0, flux_intern::kw::SelfUpper)))
+        {
+            // Trait declarations have no region tables for written reference
+            // lifetimes. Only slots substituted from Self/type arguments can
+            // be represented here; do not invent regions for anything else.
+            if !self.impl_aliases_known(p.ty, &args) {
+                return None;
+            }
+            let expected_ty = self.normalize(p.ty.subst(&args));
+            let expected = self.instantiate_sig(p.ty, &[], &mut |_| None, &args, &goal.vars)?;
+            if expected.len() != self.slots(expected_ty) as usize {
+                return None;
+            }
+            let alias_goal = self.impl_region_goal(
+                flux_ty::Predicate {
+                    self_ty: p.alias.args[0],
+                    trait_ref: flux_ty::TraitRef {
+                        trait_: p.alias.trait_,
+                        name: p.alias.trait_name,
+                        args: &p.alias.args[1..],
+                    },
+                },
+                &[],
+                &TraitRefRegions::default(),
+                &[],
+                &args,
+                &goal.vars,
+            )?;
+            if !self.impl_prove_super(&alias_goal, env, 0) {
+                return None;
+            }
+            let TyKind::Alias(alias) = Ty::alias(p.alias).subst(&args).kind() else {
+                return None;
+            };
+            if !self.env.iter().any(|p| p.alias == alias) {
+                let (imp, impl_args) =
+                    flux_ty::traits::select_impl(self.items, self.sigs, alias_goal.predicate)?;
+                let value = flux_ty::traits::impl_type(self.sigs, imp, alias.name)?;
+                // The selected associated value may itself contain projections.
+                // Their impl requirements have not been proved by proving this
+                // edge, so retain the existing concrete-projection boundary.
+                if !self.impl_aliases_known(value, &impl_args) {
+                    return None;
+                }
+            }
+            let actual_ty = self.normalize(Ty::alias(alias));
+            if actual_ty != expected_ty {
+                return Some(false);
+            }
+            let actual = if self.slots(actual_ty) == 0 {
+                Vec::new()
+            } else {
+                self.normalize_regions(alias, &alias_goal.vars, 0)?
+            };
+            if actual.len() != expected.len() {
+                return None;
+            }
+            for (a, b) in actual.into_iter().zip(expected) {
+                self.equate(a, b, Category::Boring, TextRange::default());
+            }
+        }
+        Some(true)
     }
 
     fn impl_prove_super(
