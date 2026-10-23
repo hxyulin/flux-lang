@@ -4,6 +4,11 @@
 
 ### Syntax
 
+- Prove generic caller trait regions from their original bound metadata and
+  carry trait method owner lifetimes through direct calls and callbacks.
+- Reject unrepresented higher-ranked callbacks with fixed owner lifetimes,
+  preserving fixed-item callbacks and free-function identity controls.
+
 - Validate associated-type bounds and projection selection at declarations
   under universal impl lifetimes, including unused definitions and scalar
   projection results.
