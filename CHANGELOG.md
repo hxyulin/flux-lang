@@ -4,6 +4,11 @@
 
 ### Syntax
 
+- Resolve by-value trait methods on borrowed receiver candidates while keeping
+  Self types separate from borrow adjustments and preserving type-parameter
+  bound-method priority. Add maintained unchanged
+  rustc-hash source/digest comparisons through the restricted package driver.
+
 - Promote literal empty mutable arrays with preserved element lifetimes and
   alignment; add mutable-slice `Default` and unchanged StaticSliceArena runtime
   coverage. Repeat-array promotion remains outside this subset.

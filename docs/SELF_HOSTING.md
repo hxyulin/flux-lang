@@ -327,11 +327,14 @@ destructor traversal, removing the demonstrated huge-ZST timeout while retaining
 owner destruction, deallocation and Drop-bearing element behavior. This is a bounded source
 consumer milestone, not complete flux-arena compilation.
 
-Copy slice-to-array conversion and borrowed `split_first_chunk` now supply
-library prerequisites for the unchanged rustc-hash hashing implementation.
-Its implicit slice receiver autoref still fails method inference. The original
-manifest's feature options and the edition-2021 while-let boundary are separate
-limitations; these API tests do not establish a working rustc-hash executable.
+Copy slice-to-array conversion, borrowed `split_first_chunk` and method lookup
+for by-value traits on borrowed receivers now support unchanged rustc-hash
+source. A maintained package test compares default and seeded hashing over
+129 lengths at four offsets, plus tuple/string hashing, against rustc in both
+optimization modes, with rejecting compiler wrappers proving no rustc fallback.
+This uses an explicit feature-free edition-2024 manifest wrapper; the original
+manifest's feature options and edition-2021 while-let remain separate barriers.
+It does not establish complete hashbrown or interner support.
 
 A small `std` facade now reexports facilities already present in `core`
 and `alloc`, preserving their definition identities; see

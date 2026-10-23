@@ -149,3 +149,10 @@ optimization. Flux loads the dependency sources directly; it does not produce
 or consume Rust rlibs. The test's rlibs belong only to the rustc oracle.
 The original memchr manifest is still unsupported: feature selection, optional
 registry dependencies and broader edition-2021 semantics remain separate work.
+
+Unchanged `rustc-hash 2.1.3` sources compile through an explicit feature-free
+edition-2024 wrapper. Default and seeded hashing agree with rustc for 129
+lengths at four offsets, plus tuple/string hashing, in both optimization modes.
+The package test rejects any rustc invocation during Flux builds; rlibs are
+created only by the separate reference compiler. Its original manifest's
+`default-features` option and edition-2021 while-let still remain unsupported.
