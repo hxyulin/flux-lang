@@ -1,0 +1,16 @@
+trait P {
+    type A;
+    fn get(&self) -> Self::A;
+}
+trait Q: P<A = u8> {}
+trait H {
+    type Part: P<A = u16>;
+    fn part(self) -> Self::Part;
+}
+fn f<T: H>(h: T) -> u16
+where
+    T::Part: Q,
+{
+    h.part().get()
+}
+fn main() {}
