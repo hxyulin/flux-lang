@@ -4,6 +4,12 @@
 
 ### Syntax
 
+- Enforce function/owner trait predicates, projections and outlives constraints
+  for function-item callbacks, closing static-reference escape cases.
+
+- Validate actual trait lifetime arity and declaration well-formedness while
+  retaining the public trait-lifetime gate and explicit unsupported boundaries.
+
 - Constrain concrete trait obligations with invariant impl lifetime headers and
   recursive bounds; public trait lifetime support remains gated.
 

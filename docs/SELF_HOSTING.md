@@ -190,9 +190,16 @@ retains trait-owner lifetimes, impl-header lifetime arguments, predicate region
 tables and inherited method regions; impl method comparison substitutes the
 owner regions through the impl header. Metadata and rustc-oracle tests cover
 these mappings. Trait lifetime declarations remain rejected until
-well-formedness, obligation selection, call-site substitution and inherited
+generic obligation selection, call-site substitution and inherited
 trait/projection regions enforce their constraints. These prerequisites do not
 yet compile the typed AST.
+
+Signature checks now use the actual trait lifetime arity, resolve named,
+static and repeated arguments, and verify declaration outlives requirements
+and nested type-argument well-formedness. Malformed tables fail closed.
+Region-bearing defaults and deferred trait projections, supertraits and
+dyn/opaque arguments have explicit rejection boundaries. Named regions in
+bound type arguments remain gated despite their resolution coverage.
 
 Concrete obligations now consume the preserved trait region tables, bind impl
 header lifetimes invariantly, and propagate recursive impl bounds. Ten rustc
@@ -201,6 +208,13 @@ unused results, escapes and trait type-argument regions independently of the
 declaration gate. Generic caller-bound proof, trait-method owner mapping and
 `N::cast` passed through `find_map` still need their region constraints before
 the typed AST can be enabled.
+
+Function-item callbacks now share direct calls' complete signature obligations,
+including function/owner predicates, projections and outlives constraints.
+This closes the audit's three callback reductions that previously let a short
+borrow satisfy a static-only impl. Legal callback and projection controls still
+match rustc. Universal impl-supertrait validation is a separate pending fix;
+neither this fix nor the signature prerequisites enable `AstNode<'t>` yet.
 
 Nested `cfg_attr` and item/body conditional pruning are supported; conditional
 fields, variants and parameters remain unsupported. Other required constructs
