@@ -221,6 +221,8 @@ fn operand(
             | Value::StaticPart { .. }
             | Value::Ref(_)
             | Value::InteriorRef(_)
+            | Value::PointerView { .. }
+            | Value::LocalRef { .. }
             | Value::RawAddr(_) => None,
         },
         Operand::Const(
@@ -306,6 +308,8 @@ fn evaluate(
                 | Value::StaticPart { .. }
                 | Value::Ref(_)
                 | Value::InteriorRef(_)
+                | Value::PointerView { .. }
+                | Value::LocalRef { .. }
                 | Value::RawAddr(_) => {
                     return None;
                 }
