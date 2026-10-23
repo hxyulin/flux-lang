@@ -374,7 +374,7 @@ sources by Flux, followed by compiling the regression suite and rebuilding
 Flux with that executable. Component comparisons are intermediate milestones;
 they do not establish a working compiler bootstrap.
 
-The arena-root probe still encounters missing `Arc`/`Weak` and `UnsafeCell`.
+The arena-root probe still encounters missing `Arc`/`Weak`.
 Some reported errors cascade from missing imports. The
 `PhantomData` equality barrier is removed: its equality and ordering traits
 have no bounds on the marked type, with runtime coverage for unsized and
@@ -417,7 +417,7 @@ The ordered-map prerequisite is implemented as a bounded
 supports heterogeneous lookup, replacement retaining the original key, ordered
 borrowed/owned iteration, partial iterator destruction and independent clones.
 The unchanged full arena probe no longer reports the collections barrier;
-shared ownership and `UnsafeCell` still prevent whole-arena compilation.
+shared ownership still prevents whole-arena compilation.
 
 Constant evaluation now rejects shared borrows of temporary interior-mutable
 values that escape into a constant result, including through raw-pointer casts.
@@ -426,7 +426,15 @@ accepted. References into genuine static storage preserve their original symbol
 and field/index/subslice offset; static storage with interior mutability is writable.
 Constant reads of mutable static storage remain rejected. This fixes the reduced
 Cell-borrow prerequisite for a future `UnsafeCell` implementation; it does not
-provide `UnsafeCell`, atomics or shared ownership.
+provide atomics or shared ownership.
+
+Sized `UnsafeCell<T>` now provides const construction and runtime accessors,
+preserving payload layout while suppressing niches and enforcing invariance
+and Send/Sync rules. The unchanged boxed chunk-construction expression using
+`UnsafeCell<MaybeUninit<T>>` runs against rustc. Owned UnsafeCell borrowing in
+constants and const accessors remain explicitly unsupported. This removes the
+UnsafeCell import barrier; actual `Arc`/`Weak` ownership and synchronization
+remain necessary for the complete arena crate.
 
 A separate pre-existing constant-memory limitation remains: raw reinterpretation
 of a temporary `Cell<&T>` can lose the stored reference's layout. The reduced
