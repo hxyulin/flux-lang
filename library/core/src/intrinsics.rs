@@ -130,3 +130,9 @@ pub(crate) fn caller_location() -> &'static crate::panic::Location<'static> {
 pub(crate) unsafe fn read_unaligned<T>(src: *const T) -> T {
     loop {}
 }
+
+/// A static diagnostic description, emitted after type substitution.
+#[rustc_intrinsic]
+pub(crate) fn type_name<T: ?Sized>() -> &'static str {
+    loop {}
+}

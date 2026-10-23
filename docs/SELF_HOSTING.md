@@ -375,8 +375,7 @@ Flux with that executable. Component comparisons are intermediate milestones;
 they do not establish a working compiler bootstrap.
 
 The next arena-root probe still encounters missing `Arc`/`Weak`, `UnsafeCell`,
-`type_name`, and collections. Some reported errors cascade
-from missing imports. The
+and collections. Some reported errors cascade from missing imports. The
 `PhantomData` equality barrier is removed: its equality and ordering traits
 have no bounds on the marked type, with runtime coverage for unsized and
 non-comparable marked types. `Vec::resize_with` now also supports the side-table
@@ -387,8 +386,8 @@ sparse optional slots.
 Empty-vector construction is now const through the raw buffer and aligned
 `NonNull::dangling` constructor. The evaluator distinguishes a thin raw address
 from an integer or valid reference, preserving rejection of constant pointer
-round trips, comparisons, unbacked-address dereferences and null `NonNull` values. Runtime
-comparisons cover aligned and zero-sized vectors, growth after moving a const
+round trips, comparisons, unbacked-address dereferences and null `NonNull`
+values. Runtime comparisons cover aligned and zero-sized vectors, growth after moving a const
 value, raw address statics, and repeated independent uses of a const owner.
 The unchanged arena-root probe no longer rejects its const constructor.
 
@@ -404,6 +403,14 @@ missing. Reference-bearing inherited projections in function-pointer binders
 or callable/trait bounds remain explicitly excluded, including forwarding
 through aliases and wrapper declarations. Their binder metadata is not yet
 represented; the ordinary iterator consumer does not need these forms.
+
+The `std::any::type_name` prerequisite is now provided as a static diagnostic
+string, with implementation-specific spelling and no type-identity guarantee.
+A native comparison extracts unchanged `Idx`, `Arena`, and `ArenaMap`
+definitions from `typed.rs` and exercises index formatting, const construction,
+allocation/mutation, clones, owned iteration, and sparse descending inserts.
+These are owned-arena excerpts; the shared/layered arena definitions remain
+outside the executable source graph until their ownership and map APIs exist.
 
 ## Next milestones
 

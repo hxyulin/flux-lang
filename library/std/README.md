@@ -6,7 +6,7 @@ alloc. It is not a complete Rust standard library. Imports such as
 `use std::mem`, and `use std::vec::Vec` name the original definitions;
 types and trait implementations retain their core/alloc identity.
 
-The root exposes core's `array`, `ascii`, `cell`, `char`, `clone`, `cmp`,
+The root exposes core's `any`, `array`, `ascii`, `cell`, `char`, `clone`, `cmp`,
 `convert`, `default`, `ffi`, `hash`, `hint`, `iter`, `marker`, `mem`, `num`,
 `ops`, `option`, `panic`, `ptr`, `result`, `slice` and `str`, and alloc's
 `alloc`, `borrow`, `boxed`, `fmt`, `prelude`, `string` and `vec`. Only the
@@ -17,6 +17,14 @@ reexporting them does not add further standard-library APIs.
 subset (`new`/`get`, comparison, copying, hashing and formatting), whose
 zero niche preserves `Option<NonZeroU32>` at four bytes. Other NonZero
 types and APIs are not implied.
+`any` provides only `type_name<T: ?Sized>() -> &'static str`. The name is
+emitted as a static diagnostic string after type substitution, using Flux's
+diagnostic printer. Paths may be omitted; names are not unique and do not
+promise rustc's spelling. This follows the diagnostic-only
+[Rust API contract](https://doc.rust-lang.org/std/any/fn.type_name.html).
+`Any`, `TypeId`, downcasting and `type_name_of_val` remain absent. The stable
+function is not callable in constants.
+
 There are no additional collection implementations: Vec, String and Box
 remain available at their usual module paths and through the standard
 prelude. Printing macros and alloc's formatting macro also have real std

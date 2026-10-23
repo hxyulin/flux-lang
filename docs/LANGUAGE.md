@@ -1215,7 +1215,14 @@ At run time flux matches rustc with `-C overflow-checks=off -C
 panic=abort`: arithmetic wraps, shift amounts are masked to the type's
 width, and division by zero or `MIN / -1` panics. Programs print with
 `println!` and its relatives and call C through `unsafe extern "C"`
-blocks. The embedded `std` facade allows paths such as `std::fmt`,
+blocks.
+
+`core::any::type_name` and its `std` reexport return static diagnostic type
+descriptions after generic substitution. Formatting is implementation-specific;
+Flux's diagnostic printer can omit module paths and names are not unique.
+The function is non-const, and does not provide `Any`, `TypeId` or downcasting.
+
+The embedded `std` facade allows paths such as `std::fmt`,
 `std::mem`, `std::ops::Index` and `std::vec::Vec` to name the original
 `core`/`alloc` definitions. Its only thread API is `thread::panicking()`,
 which returns false because Flux aborts without unwinding. It provides no
