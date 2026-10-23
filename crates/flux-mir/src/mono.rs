@@ -840,6 +840,28 @@ pub fn expand_intrinsics(
                 };
                 (dest, Rvalue::Use(Operand::Const(constant)))
             }
+            ("type_name", []) => {
+                // A static string, independent of values or borrows of T.
+                // The public API promises a diagnostic description, not a
+                // unique name or rustc's exact formatting.
+                let name = arg_ty.to_string();
+                let bytes = name
+                    .bytes()
+                    .map(|b| crate::eval::Value::Int {
+                        bits: u128::from(b),
+                        ty: flux_ty::IntTy::U8,
+                    })
+                    .collect();
+                let index = body.promoted.len() as u32;
+                body.promoted.push(crate::eval::Value::Aggregate(bytes));
+                (
+                    dest,
+                    Rvalue::Use(Operand::Const(Constant::Promoted {
+                        index,
+                        ty: Ty::new(TyKind::Ref(Mutability::Not, Ty::STR)),
+                    })),
+                )
+            }
             (name @ ("size_of" | "align_of"), []) => {
                 let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
                 let layout = layouts.of(ty);

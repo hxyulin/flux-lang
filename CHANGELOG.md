@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Add diagnostic `core::any::type_name` and its std reexport, backed by static
+  strings. Execute unchanged owned arena/index/map source excerpts.
+
 - Support thin raw addresses in constants and const empty-vector construction,
   preserving pointer evaluation restrictions and null NonNull validation.
 
