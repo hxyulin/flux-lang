@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Compile the unchanged production lexer with real source dependencies and
+  compare tokens, ranges, contextual flags, errors and compiler-source digests
+  against rustc in both editions and optimization modes.
+
 - Compile unchanged memchr sources through an edition-2024, feature-free source
   dependency wrapper, with 32,640 native search cases compared against rustc.
   The original manifest and its edition-2021 configuration remain unsupported.
