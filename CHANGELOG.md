@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Add native LP64 AtomicUsize operations and fences with validated ordering,
+  using Keel atomic IR, plus contention and synchronized-publication coverage.
+
 - Add sized UnsafeCell with const construction, runtime accessors, payload
   layout, niche suppression, invariance and structural Send/Sync rules.
 

@@ -425,8 +425,7 @@ Owned `Cell` constants, transient borrows, and empty/absent payloads remain
 accepted. References into genuine static storage preserve their original symbol
 and field/index/subslice offset; static storage with interior mutability is writable.
 Constant reads of mutable static storage remain rejected. This fixes the reduced
-Cell-borrow prerequisite for a future `UnsafeCell` implementation; it does not
-provide atomics or shared ownership.
+Cell-borrow prerequisite; it does not provide a general byte-memory evaluator.
 
 Sized `UnsafeCell<T>` now provides const construction and runtime accessors,
 preserving payload layout while suppressing niches and enforcing invariance
@@ -435,6 +434,15 @@ and Send/Sync rules. The unchanged boxed chunk-construction expression using
 constants and const accessors remain explicitly unsupported. This removes the
 UnsafeCell import barrier; actual `Arc`/`Weak` ownership and synchronization
 remain necessary for the complete arena crate.
+
+The native AtomicUsize bridge now supplies the operations and fences needed
+for reference counting. Keel's CAS returns the old scalar; the library rebuilds
+Rust's Result and joins success/failure ordering requirements without weakening
+either path. Native contention and release/acquire publication tests use
+Flux-generated object functions with an ABI-checked rustc thread driver. This
+provides atomic operations, not Flux thread creation or Arc/Weak ownership.
+Sized shared ownership remains the next step; Arc slices additionally need
+ownership conversions and unsizing before the complete typed arena can run.
 
 A separate pre-existing constant-memory limitation remains: raw reinterpretation
 of a temporary `Cell<&T>` can lose the stored reference's layout. The reduced
