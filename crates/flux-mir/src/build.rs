@@ -790,6 +790,7 @@ pub fn closure_shims(
             mode,
             Body {
                 locals,
+                call_regions: ArenaMap::new(),
                 region_annotations: Vec::new(),
                 region_relations: Vec::new(),
                 blocks,
@@ -844,7 +845,9 @@ fn build_body(
         body,
         source_map,
         types,
+        in_closure: matches!(item, Item::Closure(..)),
         locals: Arena::new(),
+        call_regions: ArenaMap::new(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
         blocks: Vec::new(),
@@ -1025,6 +1028,7 @@ fn build_body(
     }
     let mut built = Body {
         locals: b.locals,
+        call_regions: b.call_regions,
         region_annotations: b.region_annotations,
         region_relations: b.region_relations,
         blocks: arena,
@@ -1164,7 +1168,9 @@ struct Builder<'a> {
     body: &'a flux_hir::Body,
     source_map: &'a flux_hir::BodySourceMap,
     types: &'a InferenceResult,
+    in_closure: bool,
     locals: Arena<LocalDecl>,
+    call_regions: ArenaMap<BasicBlockData, flux_ty::regions::TypeArgRegions>,
     region_annotations: Vec<(Local, Box<[flux_ty::regions::Region]>, TextRange)>,
     region_relations: Vec<(Place, Place, flux_ty::regions::Variance, TextRange)>,
     /// Blocks under construction; a block is finished once it has a
@@ -2692,6 +2698,7 @@ impl Builder<'_> {
                     range,
                 );
                 let operands = vec![receiver, Operand::Move(tuple.into())];
+                self.record_call_regions(expr, range);
                 self.call(instance.function, instance.args, operands, dest, range);
             }
             Expr::Call { callee, args } => match body.exprs[*callee] {
@@ -2704,6 +2711,7 @@ impl Builder<'_> {
                         self.bug("a call of a function not resolved", range);
                         return;
                     };
+                    self.record_call_regions(*callee, range);
                     self.call(instance.function, instance.args, args, dest, range);
                 }
                 Expr::Path(Res::Struct(strukt)) => {
@@ -2777,6 +2785,7 @@ impl Builder<'_> {
                 {
                     self.fn_spans.insert(block, name.start());
                 }
+                self.record_call_regions(expr, range);
                 self.call(instance.function, instance.args, operands, dest, range);
             }
             Expr::MethodCall { receiver, args, .. } => {
@@ -3063,6 +3072,28 @@ impl Builder<'_> {
         };
         self.assign(&temp.into(), rvalue, range);
         self.read(temp.into())
+    }
+
+    fn record_call_regions(&mut self, expr: ExprId, range: TextRange) {
+        let Some(tables) = self.types.call_regions.get(expr) else {
+            return;
+        };
+        if self.in_closure
+            && tables.iter().any(|(_, table)| {
+                table
+                    .iter()
+                    .any(|r| matches!(r, flux_ty::regions::Region::Param(_)))
+            })
+        {
+            self.errors.push(flux_hir::Diagnostic::new(
+                range,
+                "named type argument lifetimes in closures are not supported yet",
+            ));
+            return;
+        }
+        let tables = tables.clone();
+        let block = self.block();
+        self.call_regions.insert(block, tables);
     }
 
     /// Calls `func` with generic arguments `generic_args`, storing the

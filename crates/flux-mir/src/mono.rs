@@ -546,6 +546,7 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
     }
     Some(Body {
         locals,
+        call_regions: flux_arena::ArenaMap::new(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
         blocks,
@@ -645,6 +646,7 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
     });
     Body {
         locals,
+        call_regions: flux_arena::ArenaMap::new(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
         blocks,

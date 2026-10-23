@@ -53,7 +53,7 @@ pub use projection::Projection;
 pub mod validate;
 pub mod vtable;
 
-use flux_arena::{Arena, Idx};
+use flux_arena::{Arena, ArenaMap, Idx};
 use flux_hir::{FunctionId, StructId};
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
@@ -110,6 +110,8 @@ pub struct Body {
     /// Covariant initializer-to-annotation and invariant annotation-to-binding
     /// relations. The latter keep later writes subject to the annotation.
     pub region_relations: Vec<(Place, Place, flux_ty::regions::Variance, TextRange)>,
+    /// Written type-argument regions at direct calls, in the caller's environment.
+    pub call_regions: ArenaMap<BasicBlockData, flux_ty::regions::TypeArgRegions>,
     pub blocks: Arena<BasicBlockData>,
     pub param_count: usize,
     /// The bytes of each C string constant, without the terminating NUL;
@@ -207,6 +209,7 @@ impl Body {
     pub(crate) fn empty(owner: Option<FunctionId>) -> Body {
         Body {
             locals: Arena::new(),
+            call_regions: ArenaMap::new(),
             region_annotations: Vec::new(),
             region_relations: Vec::new(),
             blocks: Arena::new(),
