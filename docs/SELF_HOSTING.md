@@ -336,6 +336,11 @@ This uses an explicit feature-free edition-2024 manifest wrapper; the original
 manifest's feature options and edition-2021 while-let remain separate barriers.
 It does not establish complete hashbrown or interner support.
 
+A separate [borrowed generic method-dispatch bug](../tests/difftest/bugs/018_borrowed_generic_method_priority.rs)
+remains: a blanket method on `&T` can win over a bound method on `T` when
+the original receiver is borrowed. It also reproduces at baseline `bfa06e5`;
+the reduced case is preserved for follow-up.
+
 A small `std` facade now reexports facilities already present in `core`
 and `alloc`, preserving their definition identities; see
 [its API boundary](../library/std/README.md). Its `thread::panicking` is
