@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Support thin raw addresses in constants and const empty-vector construction,
+  preserving pointer evaluation restrictions and null NonNull validation.
+
 - Reject unrepresented inherited reference projections in function-pointer
   binders and trait bounds, preserving scalar callback and iterator support.
 

@@ -942,6 +942,7 @@ impl Ctx<'_> {
         let layout = self.layouts.of(ty);
         match value {
             V::Int { bits, .. } => put(bytes, at, *bits, layout.size as usize),
+            V::RawAddr(address) => put(bytes, at, u128::from(*address), 8),
             V::Bool(b) => bytes[at] = u8::from(*b),
             V::Static(id) => addresses.push((at, self.statics[id].clone())),
             V::Ref(pointee) => {
@@ -1968,6 +1969,14 @@ impl Lower<'_, '_, '_> {
         use flux_mir::eval::Value as V;
         match value {
             V::Int { bits, ty } => out.push(self.int_const(*bits, *ty)),
+            V::RawAddr(address) => {
+                let bits = self.int_const(u128::from(*address), IntTy::Usize);
+                out.push(
+                    self.b
+                        .ins()
+                        .convert(keel_ir::ConvertOp::IntToPtr, Type::Ptr, bits),
+                );
+            }
             V::Bool(b) => out.push(self.b.ins().iconst(Type::I8, i64::from(*b))),
             V::Static(id) => out.push(self.static_addr(*id)),
             V::Ref(pointee) => {

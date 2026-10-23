@@ -1203,7 +1203,13 @@ does not establish allocation bounds or memory validity. `core::mem` has
 `forget`, `ManuallyDrop` (with `Deref`) and `MaybeUninit` (`new`,
 `uninit`, `zeroed`, `write`, `as_ptr`, `as_mut_ptr`, `assume_init` and
 its `_read`, `_ref`, `_mut` and `_drop` forms). Pointer arithmetic and
-casts of integers to pointers are not supported in constants yet.
+integer-to-pointer casts now preserve thin raw addresses in constants. These
+addresses grant no reference validity: dereferencing these unbacked addresses,
+constant pointer comparisons,
+pointer-to-integer casts, and wide-address casts remain rejected. Empty
+`Vec::new` and `NonNull::dangling` are const constructors, preserving element
+alignment without allocating. Constructing a null `NonNull` in a constant is
+rejected.
 
 At run time flux matches rustc with `-C overflow-checks=off -C
 panic=abort`: arithmetic wraps, shift amounts are masked to the type's

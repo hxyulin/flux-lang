@@ -18,7 +18,7 @@ pub struct Vec<T> {
 
 impl<T> Vec<T> {
     /// An empty vector, which allocates nothing until it is pushed to.
-    pub fn new() -> Vec<T> {
+    pub const fn new() -> Vec<T> {
         Vec {
             buf: RawVec::new(),
             len: 0,

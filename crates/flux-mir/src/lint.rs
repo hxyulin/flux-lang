@@ -215,7 +215,11 @@ fn operand(
         }),
         Operand::Const(Constant::Item { id, args, .. }) => match consts.get(*id, args)? {
             value @ (Value::Int { .. } | Value::Bool(_)) => Some(value.clone()),
-            Value::Aggregate(_) | Value::Variant { .. } | Value::Static(_) | Value::Ref(_) => None,
+            Value::Aggregate(_)
+            | Value::Variant { .. }
+            | Value::Static(_)
+            | Value::Ref(_)
+            | Value::RawAddr(_) => None,
         },
         Operand::Const(
             Constant::Unit
@@ -294,7 +298,11 @@ fn evaluate(
             let bits = match operand(op, known, consts)? {
                 Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                 Value::Bool(b) => u128::from(b),
-                Value::Aggregate(_) | Value::Variant { .. } | Value::Static(_) | Value::Ref(_) => {
+                Value::Aggregate(_)
+                | Value::Variant { .. }
+                | Value::Static(_)
+                | Value::Ref(_)
+                | Value::RawAddr(_) => {
                     return None;
                 }
             };

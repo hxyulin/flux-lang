@@ -38,6 +38,9 @@ pub enum Value {
         ty: IntTy,
     },
     Bool(bool),
+    /// A thin raw address without an allocation or reference validity. Kept
+    /// distinct from integers so const casts cannot recover its numeric value.
+    RawAddr(u64),
     /// A tuple or struct, fields in order; `()` has none.
     Aggregate(Arc<[Value]>),
     /// Variant `index` of enum `strukt`, its fields in order.
@@ -503,6 +506,7 @@ impl<'a> Evaluator<'a> {
                         Value::Aggregate(_)
                         | Value::Variant { .. }
                         | Value::Static(_)
+                        | Value::RawAddr(_)
                         | Value::Ref(_) => {
                             unreachable!("switches on scalars")
                         }
@@ -824,7 +828,7 @@ impl<'a> Evaluator<'a> {
                 }
             }
             Value::Ref(value) => self.promoted_layouts(value, range)?,
-            Value::Int { .. } | Value::Bool(_) | Value::Static(_) => {}
+            Value::Int { .. } | Value::Bool(_) | Value::Static(_) | Value::RawAddr(_) => {}
         }
         Ok(())
     }
@@ -851,6 +855,12 @@ impl<'a> Evaluator<'a> {
                         .map(|op| self.operand(locals, generics, op, range))
                         .collect::<Result<Arc<[_]>, _>>()?
                 };
+                if let AggregateKind::Struct(strukt) = *kind
+                    && flux_ty::is_lang_struct(self.items, strukt, "non_null")
+                    && matches!(fields.first(), Some(Value::RawAddr(0)))
+                {
+                    return Err(error(range, "null pointer in `NonNull` constant".into()));
+                }
                 Ok(match *kind {
                     AggregateKind::Variant(strukt, index) => Value::Variant {
                         strukt,
@@ -946,7 +956,16 @@ impl<'a> Evaluator<'a> {
             }
             // A reference to an array as one to a slice holds the same
             // elements.
-            Rvalue::Unsize(op, _) => self.operand(locals, generics, op, range),
+            Rvalue::Unsize(op, _) => {
+                let value = self.operand(locals, generics, op, range)?;
+                if matches!(value, Value::RawAddr(_)) {
+                    return Err(error(
+                        range,
+                        "unsized raw address constants are not supported yet".into(),
+                    ));
+                }
+                Ok(value)
+            }
             // Made only once code is monomorphized.
             Rvalue::Subslice { .. } => Err(error(
                 range,
@@ -960,8 +979,21 @@ impl<'a> Evaluator<'a> {
                 let value = self.operand(locals, generics, op, range)?;
                 // A pointer as another points to the same value.
                 if to.is_pointer() {
+                    if matches!(to.kind(), TyKind::RawPtr(_, inner) if inner.is_unsized())
+                        && matches!(value, Value::Int { .. } | Value::RawAddr(_))
+                    {
+                        return Err(error(
+                            range,
+                            "unsized raw address constants are not supported yet".into(),
+                        ));
+                    }
                     return match value {
-                        Value::Ref(_) | Value::Static(_) => Ok(value),
+                        Value::Int { bits, ty } if matches!(to.kind(), TyKind::RawPtr(..)) => {
+                            Ok(Value::RawAddr(
+                                truncate(sign_extend(bits, ty) as u128, IntTy::Usize) as u64,
+                            ))
+                        }
+                        Value::RawAddr(_) | Value::Ref(_) | Value::Static(_) => Ok(value),
                         _ => Err(error(
                             range,
                             "integers cast to pointers in constants are not supported yet"
@@ -969,7 +1001,7 @@ impl<'a> Evaluator<'a> {
                         )),
                     };
                 }
-                if let Value::Ref(_) | Value::Static(_) = value {
+                if let Value::Ref(_) | Value::Static(_) | Value::RawAddr(_) = value {
                     return Err(error(
                         range,
                         "pointers cannot be cast to integers during const eval".to_owned(),
@@ -981,6 +1013,7 @@ impl<'a> Evaluator<'a> {
                     Value::Aggregate(_)
                     | Value::Variant { .. }
                     | Value::Static(_)
+                    | Value::RawAddr(_)
                     | Value::Ref(_) => {
                         unreachable!("casts are of scalars")
                     }
@@ -1358,6 +1391,7 @@ pub fn show(value: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Aggregate(_) | Value::Variant { .. } => "{aggregate}".to_owned(),
         Value::Static(_) => "{static}".to_owned(),
+        Value::RawAddr(address) => format!("0x{address:x}"),
         Value::Ref(ref pointee) => format!("&{}", show(pointee)),
     }
 }
