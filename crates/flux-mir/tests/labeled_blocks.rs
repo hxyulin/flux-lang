@@ -18,11 +18,17 @@ fn block_exit_acceptance_matches_rustc() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(fixture);
         let source = std::fs::read_to_string(&path).unwrap();
         let (_, _, hir) = flux_hir::lower_text(&path, &source);
-        let typed = flux_mir::check_file(&hir);
-        let mir = flux_mir::build_file(&hir, &typed);
-        let flux_ok = hir.diagnostics.is_empty()
-            && typed.diagnostics.is_empty()
-            && mir.diagnostics.is_empty();
+        // MIR requires diagnostic-free lowering and type checking. Follow the
+        // driver pipeline rather than lowering invalid targets in debug builds.
+        let typed = hir
+            .diagnostics
+            .is_empty()
+            .then(|| flux_mir::check_file(&hir));
+        let mir = typed
+            .as_ref()
+            .filter(|typed| typed.diagnostics.is_empty())
+            .map(|typed| flux_mir::build_file(&hir, typed));
+        let flux_ok = mir.as_ref().is_some_and(|mir| mir.diagnostics.is_empty());
         let rustc = Command::new("rustc")
             .args(["--edition=2024", "--emit=metadata", "--out-dir"])
             .arg(&dir)
@@ -42,8 +48,8 @@ fn block_exit_acceptance_matches_rustc() {
             "{}: {:?} {:?} {:?}",
             path.display(),
             hir.diagnostics,
-            typed.diagnostics,
-            mir.diagnostics
+            typed.as_ref().map(|typed| &typed.diagnostics),
+            mir.as_ref().map(|mir| &mir.diagnostics)
         );
     }
     std::fs::remove_dir_all(dir).unwrap();

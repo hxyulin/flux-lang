@@ -4,6 +4,12 @@
 
 ### Syntax
 
+- Preserve trait-owner and predicate region metadata and substitute impl-header
+  lifetimes during method comparison; trait lifetime support remains gated.
+
+- Make the labeled-block oracle follow lowering/type-checking prerequisites
+  before constructing MIR, including in debug builds.
+
 - Enforce named, impl-owned and static lifetimes in direct-call type arguments,
   preserving written regions and well-formedness through MIR instantiation.
 
