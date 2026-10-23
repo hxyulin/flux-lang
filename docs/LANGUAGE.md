@@ -724,8 +724,8 @@ its type must be `Sync`, which rules out raw pointers (E0277), and a
 `static mut` may be used only in `unsafe` code (E0133); edition 2024's
 `static_mut_refs` lint, deny-by-default, rejects references to one,
 explicit or made by a method call, so it is read and written by value.
-A constant may read an immutable static's value, but not a `static
-mut`'s (E0080).
+A constant may read an immutable static's value only when its type has no
+interior mutability; it cannot read a `static mut`'s value (E0080).
 
 Core's `Send` and `Sync` propagate structurally through supported fields,
 arrays, tuples, closures and PhantomData. Shared references require `T: Sync`
@@ -897,8 +897,16 @@ Boxed slices support `Clone` and `FromIterator`; boxed strings support
 reexported through `alloc::borrow` and `std::borrow`; String borrows as
 `str`, and slices of `Borrow<str>` values support string `join`. String,
 Vec and Box implement `Hash` when their contents do. `core::ptr::hash`
-supports thin pointers only. `String::drain` and the other `alloc`
-collections are not supported yet. Collecting an owning iterator does not
+supports thin pointers only.
+
+`alloc::collections::BTreeMap`, also reexported through `std::collections`,
+supports const `new`, bound-free `Default`, `is_empty`, heterogeneous
+`get`/`get_mut`/`contains_key`, `insert`, ordered `iter` and owned iteration,
+and `Clone` for cloneable keys/values without an `Ord` bound. Replacement
+retains the original key. Storage uses a safe AVL tree with indices into a
+vector; lookup and insertion follow logarithmic tree paths. Removal, entry,
+range and allocator APIs, other collections, and `String::drain` remain
+unsupported. Collecting an owning iterator does not
 reuse its source allocation as rustc sometimes does, so capacities can differ in those
 cases; a panic inside `alloc` that rustc reports at its own
 source (`swap_remove`, `drain` out of range) is reported at flux's.

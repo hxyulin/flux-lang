@@ -374,8 +374,8 @@ sources by Flux, followed by compiling the regression suite and rebuilding
 Flux with that executable. Component comparisons are intermediate milestones;
 they do not establish a working compiler bootstrap.
 
-The next arena-root probe still encounters missing `Arc`/`Weak`, `UnsafeCell`,
-and collections. Some reported errors cascade from missing imports. The
+The arena-root probe still encounters missing `Arc`/`Weak` and `UnsafeCell`.
+Some reported errors cascade from missing imports. The
 `PhantomData` equality barrier is removed: its equality and ordering traits
 have no bounds on the marked type, with runtime coverage for unsized and
 non-comparable marked types. `Vec::resize_with` now also supports the side-table
@@ -410,7 +410,14 @@ A native comparison extracts unchanged `Idx`, `Arena`, and `ArenaMap`
 definitions from `typed.rs` and exercises index formatting, const construction,
 allocation/mutation, clones, owned iteration, and sparse descending inserts.
 These are owned-arena excerpts; the shared/layered arena definitions remain
-outside the executable source graph until their ownership and map APIs exist.
+outside the executable source graph until their shared ownership APIs exist.
+
+The ordered-map prerequisite is implemented as a bounded
+`alloc::collections::BTreeMap` API, reexported by `std`. Its safe AVL storage
+supports heterogeneous lookup, replacement retaining the original key, ordered
+borrowed/owned iteration, partial iterator destruction and independent clones.
+The unchanged full arena probe no longer reports the collections barrier;
+shared ownership and `UnsafeCell` still prevent whole-arena compilation.
 
 Constant evaluation now rejects shared borrows of temporary interior-mutable
 values that escape into a constant result, including through raw-pointer casts.
