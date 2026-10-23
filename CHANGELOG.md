@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Add metadata-preserving NonNull reference conversions and slice length queries
+  without reading slice elements.
+
 - Resolve by-value trait methods on borrowed receiver candidates while keeping
   Self types separate from borrow adjustments and preserving type-parameter
   bound-method priority. Add maintained unchanged
