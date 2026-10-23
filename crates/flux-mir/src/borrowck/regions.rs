@@ -48,6 +48,9 @@ use crate::{
     TerminatorKind,
 };
 
+mod associated_types;
+pub(crate) use associated_types::impl_associated_values_match;
+
 /// A region variable.
 pub(crate) type Var = u32;
 

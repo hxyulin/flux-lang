@@ -208,6 +208,9 @@ pub struct ImplRegions {
     pub trait_args: Box<[Box<[Region]>]>,
     /// Each associated type's.
     pub types: Box<[(Symbol, Box<[Region]>)]>,
+    /// Projection inputs in associated values, before normalization can erase
+    /// their selection obligations (including values with no region slots).
+    pub type_selections: Box<[(Symbol, Box<[ProjectionSelection]>)]>,
     /// Its bounds, and what its header's types imply: what its items
     /// may assume.
     pub outlives: Box<[Outlives<Region>]>,
@@ -222,6 +225,14 @@ pub struct ImplRegions {
     /// The slots of what its bounds say associated types are, as
     /// [`Signatures::impl_projections`] lists them.
     pub projections: Box<[Box<[Region]>]>,
+}
+
+/// A projection's selection inputs, independently of its normalized output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionSelection {
+    pub alias: crate::AliasTy,
+    /// Self followed by the trait's type arguments, beside `alias.args`.
+    pub args: Box<[Box<[Region]>]>,
 }
 
 /// A type alias as a type and its slots, in terms of its parameters.
@@ -375,6 +386,8 @@ pub(crate) struct Walker<'a> {
     /// types captures, which are their slots.
     pub opaque_captures: Vec<Box<[Region]>>,
     pub errors: Vec<(TextRange, String)>,
+    /// Enabled only while collecting an impl associated value's regions.
+    pub selections: Option<Vec<ProjectionSelection>>,
     /// The region of the reference whose pointee is being walked, if
     /// that is what is: a trait object's lifetime bound there.
     ref_region: Option<Region>,
@@ -394,6 +407,7 @@ impl<'a> Walker<'a> {
             fresh: Vec::new(),
             opaque_captures: Vec::new(),
             errors: Vec::new(),
+            selections: None,
             ref_region: None,
         }
     }
@@ -560,6 +574,29 @@ impl<'a> Walker<'a> {
                 self.errors
                     .push((l.range, BODY_PROJECTION_LIFETIMES.to_owned()));
             }
+        }
+        if let TyKind::Alias(alias) = ty.kind()
+            && self.selections.is_some()
+        {
+            // Missing syntax-to-slot mappings stay unknown. In particular,
+            // never recover Self's lifetimes by comparing erased types: an
+            // explicitly written instance may have different lifetimes.
+            let mut args: Vec<Box<[Region]>> = alias
+                .args
+                .iter()
+                .map(|&t| vec![Region::Erased; slots(self.items, t)].into())
+                .collect();
+            if let Some(q) = &path.qself {
+                args[0] = self.regions(&q.ty, alias.args[0]);
+            } else if path.segments.first() == Some(&kw::SelfUpper)
+                && let Some(regions) = self.self_regions
+            {
+                args[0] = regions.into();
+            }
+            self.selections.as_mut().unwrap().push(ProjectionSelection {
+                alias,
+                args: args.into(),
+            });
         }
         if matches!(ty.kind(), TyKind::Param(_) | TyKind::Alias(_)) {
             self.check_args(path);
