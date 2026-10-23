@@ -1118,16 +1118,32 @@ impl Ctx<'_> {
             // Pointer input references are independently higher-ranked.
             // Fixed or constrained lifetimes in the item's signature cannot
             // be discarded when reifying it, including after `Clone`.
+            // Trait predicates can bind an own lifetime even when their
+            // normalized types erase it; explicit outlives bounds alone
+            // do not classify the binder.
+            let Some(regions) = self.sigs.regions.fns.get(def.function) else {
+                self.error(
+                    self.range(blamed),
+                    "function item pointer region metadata is not supported yet",
+                );
+                return;
+            };
+            if regions.callback_binder == crate::regions::CallbackBinder::Unclassified {
+                self.error(
+                    self.range(blamed),
+                    "function item pointer region metadata is not supported yet",
+                );
+                return;
+            }
             let mut input_lifetimes = FxHashSet::default();
-            if let Some(regions) = self.sigs.regions.fns.get(def.function)
-                && (regions.has_bounds
-                    || regions.params.iter().flatten().any(|r| match r {
-                        crate::regions::Region::Static => true,
-                        crate::regions::Region::Param(i) => {
-                            *i < regions.owner || !input_lifetimes.insert(*i)
-                        }
-                        _ => false,
-                    }))
+            if regions.callback_binder == crate::regions::CallbackBinder::SignatureBound
+                || regions.params.iter().flatten().any(|r| match r {
+                    crate::regions::Region::Static => true,
+                    crate::regions::Region::Param(i) => {
+                        *i < regions.owner || !input_lifetimes.insert(*i)
+                    }
+                    _ => false,
+                })
             {
                 self.error(
                     self.range(blamed),
