@@ -870,8 +870,9 @@ with the size it records; `core::mem::{size_of_val, align_of_val}`,
 `Box::<[T]>::new_uninit_slice(len)` allocates checked, aligned storage as
 `Box<[MaybeUninit<T>]>` without initializing or dropping `T`. Empty and
 zero-sized slices retain their requested length; slots must be initialized
-before reading their contents. Existing generic slice drop can still traverse
-huge zero-sized slices even when their elements need no drop.
+before reading their contents. Slice destruction skips element traversal when
+the element type needs no drop; dropping zero-sized elements still runs their
+destructors.
 Boxed slices support `Clone` and `FromIterator`; boxed strings support
 `From<&str>` and `Clone`. `core::borrow::{Borrow, BorrowMut}` are also
 reexported through `alloc::borrow` and `std::borrow`; String borrows as
