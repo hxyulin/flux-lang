@@ -1,0 +1,1 @@
+trait Tr<'a,'b>:Sized{fn make(x:&'a i32,y:&'b i32)->Self;} struct Pair<'x,'y>(&'x i32,&'y i32); impl<'x,'y> Tr<'y,'x> for Pair<'x,'y>{fn make(x:&'y i32,y:&'x i32)->Self{Pair(y,x)}} fn f<'a,'b>(x:&'a i32,y:&'b i32)->Pair<'b,'a>{Pair::make(x,y)} fn main(){}

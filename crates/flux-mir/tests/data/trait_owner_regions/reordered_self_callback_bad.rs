@@ -1,0 +1,1 @@
+trait Tr<'a,'b>:Sized{fn make(x:(&'a i32,&'b i32))->Option<Self>;} struct Pair<'x,'y>(&'x i32,&'y i32); impl<'x,'y> Tr<'y,'x> for Pair<'x,'y>{fn make(x:(&'y i32,&'x i32))->Option<Self>{Some(Pair(x.1,x.0))}} fn f<'a,'b>(x:&'a i32,y:&'b i32)->Option<Pair<'a,'b>>{[(x,y)].into_iter().find_map(Pair::make)} fn main(){}
