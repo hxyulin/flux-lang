@@ -2473,9 +2473,22 @@ impl Builder<'_> {
                 if *mutable && is_place(body, *inner) {
                     self.check_guard_write(*inner, true, range);
                 }
-                // A constant expression borrowed is promoted to a value
-                // that lives forever, as rustc does.
-                if !*mutable && let Some(value) = self.promotable(*inner) {
+                // Only a literal empty array may be mutably promoted here.
+                // It has no elements to mutate or drop, even for generic T
+                // or T: Drop. Other zero-sized values (including [(); 1])
+                // still need ordinary exclusive loans and local storage.
+                let promoted = if *mutable {
+                    match &body.exprs[*inner] {
+                        Expr::Array(fields) if body.lists[*fields].is_empty() => {
+                            Some(crate::eval::Value::Aggregate(Default::default()))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    self.promotable(*inner)
+                };
+                // A promoted value lives forever, as rustc's does.
+                if let Some(value) = promoted {
                     let index = self.promoted.len() as u32;
                     self.promoted.push(value);
                     let ty = self.own_ty(expr);
