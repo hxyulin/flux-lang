@@ -1,0 +1,43 @@
+fn main() -> () {
+    let mut _0: ();
+    let _1: Result<Payload, ()>; // ok
+    let _2: Payload;
+    let _3: Payload; // value
+    let _4: Result<Payload, ()>;
+    let _5: Result<Payload, ()>; // _again
+    let _6: Result<(), Payload>; // err
+    let _7: Payload;
+    let _8: Payload; // error
+    let _9: Result<(), Payload>;
+    let _10: Result<(), Payload>; // _again
+
+    bb0: {
+        _2 = Payload(const 17_i32);
+        _1 = Result::Ok(move _2);
+        _4 = move _1;
+        _3 = unwrap_unchecked::<Payload, ()>(move _4) -> bb1;
+    }
+
+    bb1: {
+        _5 = move _1;
+        _7 = Payload(const 23_i32);
+        _6 = Result::Err(move _7);
+        _9 = move _6;
+        _8 = unwrap_err_unchecked::<(), Payload>(move _9) -> bb2;
+    }
+
+    bb2: {
+        _10 = move _6;
+        _0 = const ();
+        StorageDead(_10);
+        StorageDead(_8);
+        StorageDead(_6);
+        StorageDead(_5);
+        StorageDead(_3);
+        StorageDead(_1);
+        return;
+    }
+}
+
+error 177..179: use of moved value: `ok`
+error 333..336: use of moved value: `err`

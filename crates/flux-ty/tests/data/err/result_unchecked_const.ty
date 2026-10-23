@@ -1,0 +1,15 @@
+fn take_ok(Result<u32, ()>) -> u32
+    value@0: Result<u32, ()>
+fn take_err(Result<(), u32>) -> u32
+    value@0: Result<(), u32>
+fn main() -> ()
+const OK: u32
+const ERR: u32
+error 25..69: `Result::<T, E>::unwrap_unchecked` is not yet stable as a const fn
+error 51..69: cannot call conditionally-const method `Result::<u32, ()>::unwrap_unchecked` in constants
+error 99..148: `Result::<T, E>::unwrap_err_unchecked` is not yet stable as a const fn
+error 126..148: cannot call conditionally-const method `Result::<(), u32>::unwrap_err_unchecked` in constants
+error 253..277: `Result::<T, E>::unwrap_unchecked` is not yet stable as a const fn
+error 259..277: cannot call conditionally-const method `Result::<u32, ()>::unwrap_unchecked` in constant functions
+error 385..413: `Result::<T, E>::unwrap_err_unchecked` is not yet stable as a const fn
+error 391..413: cannot call conditionally-const method `Result::<(), u32>::unwrap_err_unchecked` in constant functions
