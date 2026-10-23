@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Reject escaping constant borrows of temporary interior-mutable values while
+  retaining owned constants and transient borrows. Preserve static field/index/subslice
+  addresses, slice metadata and writable interior-mutable static storage.
+
 - Add diagnostic `core::any::type_name` and its std reexport, backed by static
   strings. Execute unchanged owned arena/index/map source excerpts.
 

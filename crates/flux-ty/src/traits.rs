@@ -3732,3 +3732,36 @@ fn check_drop_impls(
         }
     }
 }
+
+/// Whether a type contains interior mutability, independently of the active
+/// variant or array length. References and raw pointers describe pointer slots,
+/// not owned pointees. Static reads use this type-level property; promotion
+/// validation separately inspects the actual value.
+pub fn has_interior_mutability(items: &ItemTree, sigs: &Signatures, ty: Ty) -> bool {
+    fn visit(
+        items: &ItemTree,
+        sigs: &Signatures,
+        ty: Ty,
+        seen: &mut rustc_hash::FxHashSet<Ty>,
+    ) -> bool {
+        let ty = normalize(items, sigs, &[], ty);
+        if !seen.insert(ty) {
+            return false;
+        }
+        match ty.kind() {
+            TyKind::Adt(adt, _)
+                if ["cell", "ref_cell", "unsafe_cell"]
+                    .iter()
+                    .any(|lang| crate::is_lang_struct(items, adt.strukt, lang)) =>
+            {
+                true
+            }
+            TyKind::Array(elem, _) => visit(items, sigs, elem, seen),
+            TyKind::Tuple(_) | TyKind::Adt(..) | TyKind::Closure(..) => sigs
+                .contents(ty)
+                .is_some_and(|fields| fields.iter().any(|&t| visit(items, sigs, t, seen))),
+            _ => false,
+        }
+    }
+    visit(items, sigs, ty, &mut rustc_hash::FxHashSet::default())
+}

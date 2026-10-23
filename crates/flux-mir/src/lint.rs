@@ -218,7 +218,9 @@ fn operand(
             Value::Aggregate(_)
             | Value::Variant { .. }
             | Value::Static(_)
+            | Value::StaticPart { .. }
             | Value::Ref(_)
+            | Value::InteriorRef(_)
             | Value::RawAddr(_) => None,
         },
         Operand::Const(
@@ -301,7 +303,9 @@ fn evaluate(
                 Value::Aggregate(_)
                 | Value::Variant { .. }
                 | Value::Static(_)
+                | Value::StaticPart { .. }
                 | Value::Ref(_)
+                | Value::InteriorRef(_)
                 | Value::RawAddr(_) => {
                     return None;
                 }

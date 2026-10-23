@@ -174,6 +174,7 @@ pub fn lower_module(
         vtables: FxHashMap::default(),
         promoted: FxHashMap::default(),
         data: Vec::new(),
+        data_errors: Vec::new(),
         layouts,
     };
     for instance in instances {
@@ -223,11 +224,17 @@ pub fn lower_module(
             retain: false,
             hidden: false,
             init: Some(DataInit {
-                constant: !items.consts[id].is_static_mut(),
+                constant: !items.consts[id].is_static_mut()
+                    && !flux_ty::traits::has_interior_mutability(items, &typed.sigs, ty),
                 align,
                 items: bytes,
             }),
         });
+    }
+    if !ctx.data_errors.is_empty() {
+        Diagnostic::sort(&mut ctx.data_errors);
+        ctx.data_errors.dedup();
+        return Err(ctx.data_errors);
     }
     ctx.data.sort_by(|a, b| a.name.cmp(&b.name));
     module.data = ctx.data;
@@ -780,6 +787,7 @@ struct Ctx<'a> {
     /// alignment.
     promoted: FxHashMap<(Vec<u8>, u32), String>,
     data: Vec<DataObject>,
+    data_errors: Vec<Diagnostic>,
     /// How values are laid out in memory, as rustc lays them out.
     layouts: Layouts<'a>,
 }
@@ -907,22 +915,53 @@ impl Ctx<'_> {
         let layout = self.layouts.of(ty);
         let mut bytes = vec![0u8; layout.size.max(1) as usize];
         // The addresses, which the linker fills in, by offset.
-        let mut addresses: Vec<(usize, String)> = Vec::new();
+        let mut addresses: Vec<(usize, String, u32)> = Vec::new();
         self.write_bytes(value, ty, 0, &mut bytes, &mut addresses);
         let mut items = Vec::new();
         let mut at = 0;
         addresses.sort();
-        for (offset, symbol) in addresses {
+        for (offset, symbol, addend) in addresses {
             if offset > at {
                 items.push(DataItem::Bytes(bytes[at..offset].to_vec()));
             }
-            items.push(DataItem::Ptr { symbol, addend: 0 });
+            items.push(DataItem::Ptr { symbol, addend });
             at = offset + 8;
         }
         if at < bytes.len() {
             items.push(DataItem::Bytes(bytes[at..].to_vec()));
         }
         (items, layout.align as u32)
+    }
+
+    fn static_part(
+        &self,
+        id: flux_hir::ConstId,
+        path: &[flux_mir::eval::StaticProjection],
+    ) -> (u64, Ty) {
+        use flux_mir::eval::StaticProjection as P;
+        let mut ty = self.typed.sigs.consts[id];
+        let mut variant = 0;
+        let mut offset = 0;
+        for p in path {
+            match *p {
+                P::Downcast(v) => variant = v,
+                P::Field(i) => {
+                    offset += self.layouts.of(ty).field_offset(variant, i);
+                    ty = self.typed.sigs.variant_fields(ty, variant).unwrap()[i as usize];
+                    variant = 0;
+                }
+                P::Index(i) => {
+                    ty = ty.sequence_elem().unwrap();
+                    offset += self.layouts.of(ty).size * i;
+                }
+                P::Subslice { from, len } => {
+                    let elem = ty.sequence_elem().unwrap();
+                    offset += self.layouts.of(elem).size * from;
+                    ty = Ty::array(elem, len);
+                }
+            }
+        }
+        (offset, ty)
     }
 
     /// Writes `value`, of type `ty`, into `bytes` at `at`, laid out as
@@ -933,7 +972,7 @@ impl Ctx<'_> {
         ty: Ty,
         at: usize,
         bytes: &mut [u8],
-        addresses: &mut Vec<(usize, String)>,
+        addresses: &mut Vec<(usize, String, u32)>,
     ) {
         use flux_mir::eval::Value as V;
         let put = |bytes: &mut [u8], at: usize, bits: u128, width: usize| {
@@ -944,10 +983,33 @@ impl Ctx<'_> {
             V::Int { bits, .. } => put(bytes, at, *bits, layout.size as usize),
             V::RawAddr(address) => put(bytes, at, u128::from(*address), 8),
             V::Bool(b) => bytes[at] = u8::from(*b),
-            V::Static(id) => addresses.push((at, self.statics[id].clone())),
+            V::Static(id) => {
+                addresses.push((at, self.statics[id].clone(), 0));
+                if let Some(len) = static_slice_metadata(ty, self.typed.sigs.consts[*id]) {
+                    put(bytes, at + 8, u128::from(len), 8);
+                }
+            }
+            V::StaticPart { id, path } => {
+                let (offset, stored) = self.static_part(*id, path);
+                let addend = u32::try_from(offset).unwrap_or_else(|_| {
+                    let loc = &self.hir.items.consts[*id];
+                    let mut d = Diagnostic::new(
+                        loc.def_range,
+                        "static pointer addends larger than u32 are not supported yet",
+                    );
+                    d.file = loc.loc.file;
+                    self.data_errors.push(d);
+                    0
+                });
+                addresses.push((at, self.statics[id].clone(), addend));
+                if let Some(len) = static_slice_metadata(ty, stored) {
+                    put(bytes, at + 8, u128::from(len), 8);
+                }
+            }
+            V::InteriorRef(_) => unreachable!("escaping interior borrows are rejected"),
             V::Ref(pointee) => {
                 let (symbol, len) = self.referenced(pointee, ty);
-                addresses.push((at, symbol));
+                addresses.push((at, symbol, 0));
                 if let Some(len) = len {
                     put(bytes, at + 8, u128::from(len), 8);
                 }
@@ -1978,7 +2040,21 @@ impl Lower<'_, '_, '_> {
                 );
             }
             V::Bool(b) => out.push(self.b.ins().iconst(Type::I8, i64::from(*b))),
-            V::Static(id) => out.push(self.static_addr(*id)),
+            V::Static(id) => {
+                out.push(self.static_addr(*id));
+                if let Some(len) = static_slice_metadata(ty, self.sigs.consts[*id]) {
+                    out.push(self.int_const(u128::from(len), IntTy::Usize));
+                }
+            }
+            V::StaticPart { id, path } => {
+                let (offset, stored) = self.ctx.static_part(*id, path);
+                let address = self.static_addr(*id);
+                out.push(self.offset(address, offset));
+                if let Some(len) = static_slice_metadata(ty, stored) {
+                    out.push(self.int_const(u128::from(len), IntTy::Usize));
+                }
+            }
+            V::InteriorRef(_) => unreachable!("escaping interior borrows are rejected"),
             V::Ref(pointee) => {
                 let (symbol, len) = self.ctx.referenced(pointee, ty);
                 let data = self.b.import_data(&symbol);
@@ -2937,4 +3013,17 @@ fn aligned(ty: Type) -> MemoryFlags {
         align: Layout::Scalar(ty).align() as u32,
         ..MemoryFlags::default()
     }
+}
+
+fn static_slice_metadata(pointer: Ty, stored: Ty) -> Option<u64> {
+    let target = match pointer.kind() {
+        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => t,
+        _ => return None,
+    };
+    if matches!(target.kind(), TyKind::Slice(_))
+        && let TyKind::Array(_, len) = stored.kind()
+    {
+        return len.as_usize();
+    }
+    None
 }

@@ -52,10 +52,44 @@ pub enum Value {
     /// The address of a static, which reading through gives its
     /// initial value.
     Static(ConstId),
+    /// A reference/raw pointer into the original static, not a promoted copy.
+    StaticPart {
+        id: ConstId,
+        path: Arc<[StaticProjection]>,
+    },
     /// A shared reference to a value: what it points to, which cannot
     /// change while it is borrowed. A reference to a slice holds the
     /// elements as an aggregate.
     Ref(Arc<Value>),
+    /// A transient borrow of interior-mutable storage. Casts must retain
+    /// this origin even if the pointer's final pointee type hides it.
+    InteriorRef(Arc<Value>),
+}
+
+/// Constant projections contain no frame-local indices or dereferences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticProjection {
+    Field(u32),
+    Index(u64),
+    Downcast(u32),
+    Subslice { from: u64, len: u64 },
+}
+
+/// The stored type at an address path, before any raw pointer reinterpretation.
+pub fn static_path_type(sigs: &Signatures, mut ty: Ty, path: &[StaticProjection]) -> Option<Ty> {
+    let mut variant = 0;
+    for p in path {
+        match *p {
+            StaticProjection::Downcast(v) => variant = v,
+            StaticProjection::Field(i) => {
+                ty = *sigs.variant_fields(ty, variant)?.get(i as usize)?;
+                variant = 0;
+            }
+            StaticProjection::Index(_) => ty = ty.sequence_elem()?,
+            StaticProjection::Subslice { len, .. } => ty = Ty::array(ty.sequence_elem()?, len),
+        }
+    }
+    Some(ty)
 }
 
 impl Value {
@@ -225,7 +259,15 @@ impl<'a> Evaluator<'a> {
         // A constant's own arithmetic is always checked.
         let result = self
             .switched(body)
-            .and_then(|()| self.run(body, Vec::new(), c.args, 0, true));
+            .and_then(|()| self.run(body, Vec::new(), c.args, 0, true))
+            .and_then(|value| {
+                self.check_escaping_borrows(
+                    &value,
+                    self.sigs.consts[c.konst].subst(c.args),
+                    self.items.consts[c.konst].def_range,
+                )?;
+                Ok(value)
+            });
         self.steps = steps;
         self.in_progress.pop();
         if let Err(e) = &result
@@ -238,6 +280,89 @@ impl<'a> Evaluator<'a> {
         result
     }
 
+    fn inline_interior(&self, value: &Value, ty: Ty) -> bool {
+        let ty = flux_ty::traits::normalize(self.items, self.sigs, &[], ty);
+        if let TyKind::Adt(adt, _) = ty.kind()
+            && ["cell", "ref_cell", "unsafe_cell"]
+                .iter()
+                .any(|lang| flux_ty::is_lang_struct(self.items, adt.strukt, lang))
+        {
+            return true;
+        }
+        match value {
+            Value::Aggregate(fields) => {
+                if let TyKind::Array(elem, _) | TyKind::Slice(elem) = ty.kind() {
+                    fields.iter().any(|v| self.inline_interior(v, elem))
+                } else {
+                    self.sigs.fields(ty).is_some_and(|types| {
+                        fields
+                            .iter()
+                            .zip(types)
+                            .any(|(v, &t)| self.inline_interior(v, t))
+                    })
+                }
+            }
+            Value::Variant { index, fields, .. } => {
+                self.sigs.variant_fields(ty, *index).is_some_and(|types| {
+                    fields
+                        .iter()
+                        .zip(types)
+                        .any(|(v, &t)| self.inline_interior(v, t))
+                })
+            }
+            _ => false,
+        }
+    }
+
+    fn check_escaping_borrows(
+        &self,
+        value: &Value,
+        ty: Ty,
+        range: TextRange,
+    ) -> Result<(), EvalError> {
+        let ty = flux_ty::traits::normalize(self.items, self.sigs, &[], ty);
+        match value {
+            Value::InteriorRef(_) => return Err(error(range,
+                "shared borrow of a temporary with interior mutability cannot escape constant evaluation".into())),
+            Value::Ref(inner) => {
+                let target = match ty.kind() {
+                    TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => t,
+                    _ => Ty::ERROR,
+                };
+                if matches!(ty.kind(), TyKind::Ref(..)) && self.inline_interior(inner, target) {
+                    return Err(error(range, "shared borrow of a temporary with interior mutability cannot escape constant evaluation".into()));
+                }
+                self.check_escaping_borrows(inner, target, range)?;
+            }
+            Value::Aggregate(fields) => {
+                let element = match ty.kind() {
+                    TyKind::Array(elem, _) | TyKind::Slice(elem) => Some(elem),
+                    _ => None,
+                };
+                let types = self.sigs.fields(ty);
+                for (i, field) in fields.iter().enumerate() {
+                    // A raw-pointer cast can erase the original aggregate
+                    // type. Its stored borrow origins must still be checked.
+                    let ty = element
+                        .or_else(|| types.and_then(|types| types.get(i).copied()))
+                        .unwrap_or(Ty::ERROR);
+                    self.check_escaping_borrows(field, ty, range)?;
+                }
+            }
+            Value::Variant { index, fields, .. } => {
+                let types = self.sigs.variant_fields(ty, *index);
+                for (i, field) in fields.iter().enumerate() {
+                    let ty = types
+                        .and_then(|types| types.get(i).copied())
+                        .unwrap_or(Ty::ERROR);
+                    self.check_escaping_borrows(field, ty, range)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// The initial value of static `id`, read at `range`. A constant may
     /// not read a `static mut`, whose value may change; a static's
     /// initializer reads its initial value.
@@ -246,7 +371,14 @@ impl<'a> Evaluator<'a> {
             .in_progress
             .first()
             .is_some_and(|c| self.items.consts[c.konst].is_static.is_some());
-        if self.items.consts[id].is_static_mut() && !in_static {
+        if !in_static
+            && (self.items.consts[id].is_static_mut()
+                || flux_ty::traits::has_interior_mutability(
+                    self.items,
+                    self.sigs,
+                    self.sigs.consts[id],
+                ))
+        {
             return Err(error(
                 range,
                 "constant accesses mutable global memory".to_owned(),
@@ -506,8 +638,10 @@ impl<'a> Evaluator<'a> {
                         Value::Aggregate(_)
                         | Value::Variant { .. }
                         | Value::Static(_)
+                        | Value::StaticPart { .. }
                         | Value::RawAddr(_)
-                        | Value::Ref(_) => {
+                        | Value::Ref(_)
+                        | Value::InteriorRef(_) => {
                             unreachable!("switches on scalars")
                         }
                     };
@@ -761,6 +895,43 @@ impl<'a> Evaluator<'a> {
                     let value = self.static_value(*id, range)?;
                     return project(locals, &value, &place.projection[1..], range);
                 }
+                if let Some(Some(Value::StaticPart { id, path })) = locals.get(place.local.index())
+                    && place.projection.first() == Some(&ProjectionElem::Deref)
+                {
+                    let mut value = self.static_value(*id, range)?;
+                    for p in path.iter() {
+                        value = match (p, value) {
+                            (
+                                StaticProjection::Field(i),
+                                Value::Aggregate(fields) | Value::Variant { fields, .. },
+                            ) => fields[*i as usize].clone(),
+                            (StaticProjection::Index(i), Value::Aggregate(fields)) => {
+                                fields[*i as usize].clone()
+                            }
+                            (
+                                StaticProjection::Subslice { from, len },
+                                Value::Aggregate(fields),
+                            ) => {
+                                let end = from.checked_add(*len).ok_or_else(|| {
+                                    error(range, "static subslice is out of bounds".into())
+                                })?;
+                                let fields =
+                                    fields.get(*from as usize..end as usize).ok_or_else(|| {
+                                        error(range, "static subslice is out of bounds".into())
+                                    })?;
+                                Value::Aggregate(fields.into())
+                            }
+                            (StaticProjection::Downcast(_), value @ Value::Variant { .. }) => value,
+                            _ => {
+                                return Err(error(
+                                    range,
+                                    "static projection in constants is not supported yet".into(),
+                                ));
+                            }
+                        };
+                    }
+                    return project(locals, &value, &place.projection[1..], range);
+                }
                 read(locals, place, range)
             }
             Operand::Const(constant) => match *constant {
@@ -827,8 +998,12 @@ impl<'a> Evaluator<'a> {
                     self.promoted_layouts(field, range)?;
                 }
             }
-            Value::Ref(value) => self.promoted_layouts(value, range)?,
-            Value::Int { .. } | Value::Bool(_) | Value::Static(_) | Value::RawAddr(_) => {}
+            Value::Ref(value) | Value::InteriorRef(value) => self.promoted_layouts(value, range)?,
+            Value::Int { .. }
+            | Value::Bool(_)
+            | Value::Static(_)
+            | Value::StaticPart { .. }
+            | Value::RawAddr(_) => {}
         }
         Ok(())
     }
@@ -892,35 +1067,53 @@ impl<'a> Evaluator<'a> {
             }
             // An array's length is its type's; a slice is behind a
             // reference.
-            Rvalue::Len { place, .. } => match body.place_ty(place, self.sigs).kind() {
-                flux_ty::TyKind::Array(_, len) => Ok(Value::Int {
-                    bits: u128::from(len.subst(generics).as_usize().unwrap_or(0)),
-                    ty: IntTy::Usize,
-                }),
-                // A slice's, behind a reference: its elements.
-                _ => match self.operand(locals, generics, &Operand::Copy(place.clone()), range)? {
-                    Value::Aggregate(elements) => Ok(Value::Int {
-                        bits: elements.len() as u128,
-                        ty: IntTy::Usize,
-                    }),
-                    _ => Err(error(
-                        range,
-                        "references in constants are not supported yet".to_owned(),
-                    )),
-                },
-            },
-            Rvalue::Discriminant(place) => match read(locals, place, range)? {
-                Value::Variant { strukt, index, .. } => {
-                    let bits = self
-                        .discriminant(strukt, index)
-                        .map_err(|e| used(e, range, false))?;
+            Rvalue::Len { place, .. } => {
+                let ty = body.place_ty(place, self.sigs).subst(generics);
+                // Slice metadata is known from the stored array path. Reading
+                // its length must not read an interior-mutable allocation.
+                let stored = if place.projection.as_ref() == [ProjectionElem::Deref] {
+                    match locals.get(place.local.index()).and_then(Option::as_ref) {
+                        Some(Value::Static(id)) => Some(self.sigs.consts[*id]),
+                        Some(Value::StaticPart { id, path }) => {
+                            static_path_type(self.sigs, self.sigs.consts[*id], path)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(len) = ty.array_len().or_else(|| stored.and_then(Ty::array_len)) {
                     Ok(Value::Int {
-                        bits,
-                        ty: flux_ty::discriminant_ty(self.items, strukt),
+                        bits: u128::from(len),
+                        ty: IntTy::Usize,
                     })
+                } else {
+                    match self.operand(locals, generics, &Operand::Copy(place.clone()), range)? {
+                        Value::Aggregate(elements) => Ok(Value::Int {
+                            bits: elements.len() as u128,
+                            ty: IntTy::Usize,
+                        }),
+                        _ => Err(error(
+                            range,
+                            "references in constants are not supported yet".into(),
+                        )),
+                    }
                 }
-                _ => unreachable!("discriminants are of enums"),
-            },
+            }
+            Rvalue::Discriminant(place) => {
+                match self.operand(locals, generics, &Operand::Copy(place.clone()), range)? {
+                    Value::Variant { strukt, index, .. } => {
+                        let bits = self
+                            .discriminant(strukt, index)
+                            .map_err(|e| used(e, range, false))?;
+                        Ok(Value::Int {
+                            bits,
+                            ty: flux_ty::discriminant_ty(self.items, strukt),
+                        })
+                    }
+                    _ => unreachable!("discriminants are of enums"),
+                }
+            }
             // A shared reference is to a value that cannot change while
             // it is borrowed: a copy of it.
             Rvalue::Ref {
@@ -928,8 +1121,107 @@ impl<'a> Evaluator<'a> {
                 place,
                 ..
             } => {
-                let value = self.operand(locals, generics, &Operand::Copy(place.clone()), range)?;
-                Ok(Value::Ref(Arc::new(value)))
+                if place.projection.first() == Some(&ProjectionElem::Deref) {
+                    let origin = match locals.get(place.local.index()).and_then(Option::as_ref) {
+                        Some(Value::Static(id)) => Some((*id, Vec::new())),
+                        Some(Value::StaticPart { id, path }) => Some((*id, path.to_vec())),
+                        _ => None,
+                    };
+                    if let Some((id, mut path)) = origin {
+                        let root = Place {
+                            local: place.local,
+                            projection: vec![ProjectionElem::Deref].into(),
+                        };
+                        let view = flux_ty::traits::normalize(
+                            self.items,
+                            self.sigs,
+                            &[],
+                            body.place_ty(&root, self.sigs).subst(generics),
+                        );
+                        let stored = static_path_type(self.sigs, self.sigs.consts[id], &path);
+                        let compatible = stored == Some(view)
+                            || matches!((stored.map(Ty::kind), view.kind()),
+                                (Some(TyKind::Array(a, _)), TyKind::Slice(b)) if a == b);
+                        if !compatible {
+                            return Err(error(range, "reborrowing reinterpreted static pointers in constants is not supported yet".into()));
+                        }
+                        for p in place.projection.iter().skip(1) {
+                            path.push(match *p {
+                                ProjectionElem::Field(i) => StaticProjection::Field(i),
+                                ProjectionElem::Downcast(i) => StaticProjection::Downcast(i),
+                                ProjectionElem::Index(local) => {
+                                    StaticProjection::Index(index(locals, local) as u64)
+                                }
+                                ProjectionElem::ConstantIndex {
+                                    offset, from_end, ..
+                                } => {
+                                    let stored =
+                                        static_path_type(self.sigs, self.sigs.consts[id], &path);
+                                    let Some(TyKind::Array(_, len)) = stored.map(Ty::kind) else {
+                                        return Err(error(
+                                            range,
+                                            "static slice projections are not supported yet".into(),
+                                        ));
+                                    };
+                                    let len = len.as_usize().ok_or_else(|| {
+                                        error(range, "unknown static array length".into())
+                                    })?;
+                                    StaticProjection::Index(if from_end {
+                                        len - u64::from(offset)
+                                    } else {
+                                        u64::from(offset)
+                                    })
+                                }
+                                ProjectionElem::Subslice { from, to, from_end } => {
+                                    let len =
+                                        static_path_type(self.sigs, self.sigs.consts[id], &path)
+                                            .and_then(Ty::array_len)
+                                            .ok_or_else(|| {
+                                                error(range, "unknown static array length".into())
+                                            })?;
+                                    let end = if from_end {
+                                        len.checked_sub(u64::from(to))
+                                    } else {
+                                        Some(u64::from(to))
+                                    };
+                                    let len = end
+                                        .filter(|&end| end <= len)
+                                        .and_then(|end| end.checked_sub(u64::from(from)))
+                                        .ok_or_else(|| {
+                                            error(range, "static subslice is out of bounds".into())
+                                        })?;
+                                    StaticProjection::Subslice {
+                                        from: u64::from(from),
+                                        len,
+                                    }
+                                }
+                                _ => {
+                                    return Err(error(
+                                        range,
+                                        "nested static address projections are not supported yet"
+                                            .into(),
+                                    ));
+                                }
+                            });
+                        }
+                        return Ok(if path.is_empty() {
+                            Value::Static(id)
+                        } else {
+                            Value::StaticPart {
+                                id,
+                                path: path.into(),
+                            }
+                        });
+                    }
+                }
+                let mut inherited = false;
+                let value = read_with_origin(locals, place, range, &mut inherited)?;
+                let ty = body.place_ty(place, self.sigs).subst(generics);
+                Ok(if inherited || self.inline_interior(&value, ty) {
+                    Value::InteriorRef(Arc::new(value))
+                } else {
+                    Value::Ref(Arc::new(value))
+                })
             }
             // Reborrowing a promoted empty array or slice cannot mutate a
             // stored value. Keep the mutable-reference restriction for every
@@ -993,7 +1285,11 @@ impl<'a> Evaluator<'a> {
                                 truncate(sign_extend(bits, ty) as u128, IntTy::Usize) as u64,
                             ))
                         }
-                        Value::RawAddr(_) | Value::Ref(_) | Value::Static(_) => Ok(value),
+                        Value::RawAddr(_)
+                        | Value::Ref(_)
+                        | Value::InteriorRef(_)
+                        | Value::Static(_)
+                        | Value::StaticPart { .. } => Ok(value),
                         _ => Err(error(
                             range,
                             "integers cast to pointers in constants are not supported yet"
@@ -1001,7 +1297,12 @@ impl<'a> Evaluator<'a> {
                         )),
                     };
                 }
-                if let Value::Ref(_) | Value::Static(_) | Value::RawAddr(_) = value {
+                if let Value::Ref(_)
+                | Value::InteriorRef(_)
+                | Value::Static(_)
+                | Value::StaticPart { .. }
+                | Value::RawAddr(_) = value
+                {
                     return Err(error(
                         range,
                         "pointers cannot be cast to integers during const eval".to_owned(),
@@ -1013,8 +1314,10 @@ impl<'a> Evaluator<'a> {
                     Value::Aggregate(_)
                     | Value::Variant { .. }
                     | Value::Static(_)
+                    | Value::StaticPart { .. }
                     | Value::RawAddr(_)
-                    | Value::Ref(_) => {
+                    | Value::Ref(_)
+                    | Value::InteriorRef(_) => {
                         unreachable!("casts are of scalars")
                     }
                 };
@@ -1115,18 +1418,39 @@ fn index(locals: &[Option<Value>], local: crate::Local) -> usize {
 }
 
 fn read(locals: &[Option<Value>], place: &Place, range: TextRange) -> Result<Value, EvalError> {
+    read_with_origin(locals, place, range, &mut false)
+}
+
+fn read_with_origin(
+    locals: &[Option<Value>],
+    place: &Place,
+    range: TextRange,
+    interior: &mut bool,
+) -> Result<Value, EvalError> {
     let value = locals[place.local.index()]
         .as_ref()
         .ok_or_else(|| error(range, "use of an uninitialized value".to_owned()))?;
-    project(locals, value, &place.projection, range)
+    project_with_origin(locals, value, &place.projection, range, interior)
 }
 
 /// The part of `value` at `projection`, whose indices are in `locals`.
 fn project(
     locals: &[Option<Value>],
+    value: &Value,
+    projection: &[ProjectionElem],
+    range: TextRange,
+) -> Result<Value, EvalError> {
+    project_with_origin(locals, value, projection, range, &mut false)
+}
+
+/// Preserve origin whenever a projection dereferences interior-mutable
+/// temporary storage, including references nested in aggregates or references.
+fn project_with_origin(
+    locals: &[Option<Value>],
     mut value: &Value,
     projection: &[ProjectionElem],
     range: TextRange,
+    interior: &mut bool,
 ) -> Result<Value, EvalError> {
     for (k, elem) in projection.iter().enumerate() {
         value = match (elem, value) {
@@ -1151,9 +1475,13 @@ fn project(
                     to as usize
                 };
                 let part = Value::Aggregate(elements[from as usize..end].into());
-                return project(locals, &part, &projection[k + 1..], range);
+                return project_with_origin(locals, &part, &projection[k + 1..], range, interior);
             }
             (ProjectionElem::Downcast(_), Value::Variant { .. }) => value,
+            (ProjectionElem::Deref, Value::InteriorRef(pointee)) => {
+                *interior = true;
+                pointee
+            }
             (ProjectionElem::Deref, Value::Ref(pointee)) => pointee,
             _ => {
                 return Err(error(
@@ -1390,9 +1718,9 @@ pub fn show(value: &Value) -> String {
         }
         Value::Bool(b) => b.to_string(),
         Value::Aggregate(_) | Value::Variant { .. } => "{aggregate}".to_owned(),
-        Value::Static(_) => "{static}".to_owned(),
+        Value::Static(_) | Value::StaticPart { .. } => "{static}".to_owned(),
         Value::RawAddr(address) => format!("0x{address:x}"),
-        Value::Ref(ref pointee) => format!("&{}", show(pointee)),
+        Value::Ref(ref pointee) | Value::InteriorRef(ref pointee) => format!("&{}", show(pointee)),
     }
 }
 
