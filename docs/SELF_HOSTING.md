@@ -185,6 +185,15 @@ Regression oracles cover unrelated caller lifetimes, reference escapes, nested
 types and aliases, bounds and unused results. Named local annotations,
 function-item values and closures remain outside this extension.
 
+Trait lifetime support has two validated prerequisites: signature metadata now
+retains trait-owner lifetimes, impl-header lifetime arguments, predicate region
+tables and inherited method regions; impl method comparison substitutes the
+owner regions through the impl header. Metadata and rustc-oracle tests cover
+these mappings. Trait lifetime declarations remain rejected until
+well-formedness, obligation selection, call-site substitution and inherited
+trait/projection regions enforce their constraints. These prerequisites do not
+yet compile the typed AST.
+
 Nested `cfg_attr` and item/body conditional pruning are supported; conditional
 fields, variants and parameters remain unsupported. Other required constructs
 include generated/included source,
