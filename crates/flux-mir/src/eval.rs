@@ -921,6 +921,29 @@ impl<'a> Evaluator<'a> {
                 let value = self.operand(locals, generics, &Operand::Copy(place.clone()), range)?;
                 Ok(Value::Ref(Arc::new(value)))
             }
+            // Reborrowing a promoted empty array or slice cannot mutate a
+            // stored value. Keep the mutable-reference restriction for every
+            // other pointee and for borrows of local array storage.
+            Rvalue::Ref { place, .. }
+                if place.projection.len() == 1
+                    && place.projection.first() == Some(&ProjectionElem::Deref)
+                    && match body.place_ty(place, self.sigs).subst(generics).kind() {
+                        TyKind::Array(_, len) => len.as_usize() == Some(0),
+                        TyKind::Slice(_) => true,
+                        _ => false,
+                    } =>
+            {
+                let value = self.operand(locals, generics, &Operand::Copy(place.clone()), range)?;
+                match value {
+                    Value::Aggregate(ref fields) if fields.is_empty() => {
+                        Ok(Value::Ref(Arc::new(value)))
+                    }
+                    _ => Err(error(
+                        range,
+                        "mutable references in constants are not supported yet".to_owned(),
+                    )),
+                }
+            }
             // A reference to an array as one to a slice holds the same
             // elements.
             Rvalue::Unsize(op, _) => self.operand(locals, generics, op, range),

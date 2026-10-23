@@ -2661,6 +2661,24 @@ impl<'a> Cx<'a> {
             Operand::Const(c) => {
                 let ty = c.ty();
                 let n = self.slots(ty);
+                // An empty mutable promotion contains no element references.
+                // Its storage is static, but lifetimes in the element type
+                // must be inferred at the use (the pointee is invariant),
+                // rather than being forced to static as an actual stored
+                // reference would be. No other promoted value gets this rule.
+                if let crate::Constant::Promoted { index, .. } = c
+                    && let TyKind::Ref(Mutability::Mut, pointee) = ty.kind()
+                    && let TyKind::Array(_, len) = pointee.kind()
+                    && len.as_usize() == Some(0)
+                    && matches!(
+                        self.body.promoted.get(*index as usize),
+                        Some(crate::eval::Value::Aggregate(fields)) if fields.is_empty()
+                    )
+                {
+                    let mut regions: Slots = self.fresh_list(n).into_iter().collect();
+                    regions[0] = STATIC;
+                    return (ty, regions);
+                }
                 (ty, std::iter::repeat_n(STATIC, n as usize).collect())
             }
         }
