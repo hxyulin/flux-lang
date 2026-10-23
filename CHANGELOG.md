@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Compile the unchanged production parser and lexer through source dependencies,
+  comparing events, recovery, fragment matching and forward-parent replay with
+  rustc, including every UTF-8 prefix of the parser fixtures.
+
 - Compile the unchanged production lexer with real source dependencies and
   compare tokens, ranges, contextual flags, errors and compiler-source digests
   against rustc in both editions and optimization modes.
