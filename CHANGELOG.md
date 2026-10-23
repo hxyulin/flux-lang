@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Enforce named, impl-owned and static lifetimes in direct-call type arguments,
+  preserving written regions and well-formedness through MIR instantiation.
+
 - Execute the unchanged lexer/parser/lossless-tree pipeline under Flux, comparing
   tree dumps, recovery, navigation, trivia and expansion origins against rustc.
 
