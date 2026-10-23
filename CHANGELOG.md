@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Support labeled block expressions with value exits, fallthrough, nested
+  labels and scope cleanup; reject invalid continue/unlabeled exits and names.
+
 - Compile the unchanged production parser and lexer through source dependencies,
   comparing events, recovery, fragment matching and forward-parent replay with
   rustc, including every UTF-8 prefix of the parser fixtures.

@@ -138,7 +138,7 @@ reported as "not supported yet":
   && x > 1 && let Ok(y) = b`), `match` with guards (`if let` guards
   too), `loop`, `while`,
   `while let`, `for` loops, labels on loops (`'a: for`, `break 'a`,
-  `continue 'a`; labeled blocks are not supported yet), `break` (with
+  `continue 'a`) and blocks (`'a: { ... }`, `break 'a value`), `break` (with
   a value) and `continue`,
   `return`, calls, of functions, closures and values of types bounded
   by the `Fn`-family traits (`f(x)`, `(self.f)(x)`), unary and binary

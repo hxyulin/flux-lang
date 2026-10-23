@@ -87,8 +87,8 @@ the actual lexer. An explicit wrapper retains `Input::from_lexed` and the
 production Edition/TextRange declarations, while excluding tree construction
 and the typed AST. It uses the same real dependency boundary as the lexer test.
 
-Rustc and Flux agree with and without optimization on all 22 current parser
-fixtures, 18,334 UTF-8 prefixes and 20 fragment cases spanning 14 fragment kinds.
+At its initial checkpoint, rustc and Flux agreed with and without optimization
+on 22 parser fixtures, 18,334 UTF-8 prefixes and 20 fragment cases spanning 14 fragment kinds.
 The comparison checks events, errors, complete input consumption and replay of
 202,928 forward-parent links. Fragment matching at each token position is also
 covered. These counts describe the current fixtures; the test reads production
@@ -165,8 +165,12 @@ procedural macros and the unsafe implementations in the arena/interner.
 These need focused probes and Rust-compatible semantics; simply parsing
 the workspace does not establish support.
 
-Concrete later consumers include `AstNode<'t>`'s trait lifetime parameter,
-the labeled block `'alias: { ... }` in type resolution. `repr(align(N))`
+Concrete later consumers include `AstNode<'t>`'s trait lifetime parameter.
+Labeled block expressions used by `'alias: { ... }` in type resolution now
+support break values, fallthrough and nested exits with scope cleanup; targeted
+initialization, move and borrow rejections agree with rustc. Whole type-checker
+compilation still needs its source dependencies and runtime APIs.
+`repr(align(N))`
 now supports the arena's explicit alignment prerequisite, but this alone does
 not establish arena compilation. The parser's `NonZeroU32` prerequisite now has
 checked `new`/`get`, comparison and formatting support with the correct
