@@ -2097,19 +2097,25 @@ impl<'a> Cx<'a> {
         };
         let sigs = self.sigs;
         let sig = &sigs.fns[def.function];
-        let regions = sigs.regions.fns.get(def.function)?;
+        let Some(regions) = sigs.regions.fns.get(def.function) else {
+            self.missing_trait_owner_regions(def.function, self.call_range);
+            return None;
+        };
         let lifetimes = self.fresh_list(regions.names.len() as u32);
         let mut type_vars = Vec::new();
         for &arg in def.args {
             let n = self.slots(arg);
             type_vars.push(self.fresh_list(n));
         }
+        let range = self.call_range;
+        // Enforce the owner contract even if a malformed input/output table
+        // makes normalization fall back before it can produce output slots.
+        self.signature_obligations(def.function, &lifetimes, def.args, &type_vars, range);
         let mut map = |r: Region| match r {
             Region::Static => Some(STATIC),
             Region::Param(i) => lifetimes.get(i as usize).copied(),
             Region::Erased | Region::Late(_) => None,
         };
-        let range = self.call_range;
         let mut at = 0;
         for (i, &ty) in def.sig.params().iter().enumerate() {
             let n = self.slots(ty) as usize;
@@ -2132,7 +2138,6 @@ impl<'a> Cx<'a> {
             );
         }
         let output = self.instantiate_sig(sig.ret, &regions.ret, &mut map, def.args, &type_vars)?;
-        self.signature_obligations(def.function, &lifetimes, def.args, &type_vars, range);
         Some(output)
     }
 
@@ -2995,6 +3000,7 @@ impl<'a> Cx<'a> {
         self.output_closures.clear();
         self.call_range = range;
         let Some(regions) = sigs.regions.fns.get(func) else {
+            self.missing_trait_owner_regions(func, range);
             for (id, upvars) in passed {
                 self.passed_closure(id, &upvars, args, dest, range, false);
             }
@@ -3098,6 +3104,18 @@ impl<'a> Cx<'a> {
         }
     }
 
+    fn missing_trait_owner_regions(&mut self, func: flux_hir::FunctionId, range: TextRange) {
+        if matches!(
+            self.items.functions[func].owner,
+            Some(flux_hir::Owner::Trait(_))
+        ) {
+            self.errors.push(Diagnostic::new(
+                range,
+                "trait method owner region metadata is not supported yet",
+            ));
+        }
+    }
+
     /// Enforces the complete signature contract for both direct calls and
     /// function items used through callable bounds. Type selection erases
     /// regions, so owner and function predicates must also constrain the
@@ -3112,6 +3130,7 @@ impl<'a> Cx<'a> {
     ) {
         let (items, sigs) = (self.items, self.sigs);
         let Some(regions) = sigs.regions.fns.get(func) else {
+            self.missing_trait_owner_regions(func, range);
             return;
         };
         let map = |r: Region| match r {
@@ -3151,6 +3170,73 @@ impl<'a> Cx<'a> {
         };
         let mut bounds: Vec<(flux_ty::Predicate, &[Region], TraitRefRegions)> = Vec::new();
         match (owner, block) {
+            (Some(flux_hir::Owner::Trait(t)), _) => {
+                let list = flux_ty::traits::owner_predicates(items, sigs, owner);
+                let expected = flux_ty::traits::trait_self_predicate(items, t);
+                let metadata = sigs.regions.traits.get(t);
+                let count = expected.trait_ref.args.len();
+                // This prefix belongs to the trait declaration, not to the
+                // selected impl's binder. Param tables expand through the
+                // very same type_vars as the inputs and output of this call.
+                let valid = metadata.is_some_and(|r| {
+                    r.names.len() == items.traits[t].generics.lifetimes.len()
+                        && r.names.len() == regions.owner as usize
+                        && regions.names.get(..regions.owner as usize) == Some(&r.names[..])
+                }) && regions.owner as usize <= regions.names.len()
+                    && lifetimes.len() == regions.names.len()
+                    && list.first() == Some(&expected)
+                    && generic_args.len() > count
+                    && type_vars.len() == generic_args.len()
+                    && generic_args
+                        .iter()
+                        .zip(type_vars)
+                        .take(count + 1)
+                        .all(|(&t, v)| v.len() == self.slots(t) as usize);
+                if !valid {
+                    self.errors.push(Diagnostic::new(
+                        range,
+                        "trait method owner region metadata is not supported yet",
+                    ));
+                } else {
+                    bounds.push((
+                        expected,
+                        &[],
+                        TraitRefRegions {
+                            lifetimes: (0..regions.owner).map(Region::Param).collect(),
+                            // One table per declared type argument, even when
+                            // its substituted type contributes multiple slots.
+                            args: vec![Box::default(); count].into(),
+                        },
+                    ));
+                }
+                for &p in list.iter().skip(1) {
+                    // TraitRegions has no predicate/projection tables. Keep
+                    // region-free owner bounds, but never invent the missing
+                    // tables for region-bearing owner requirements.
+                    if self.slots(p.self_ty) != 0
+                        || p.trait_ref.args.iter().any(|&t| self.slots(t) != 0)
+                        || !sigs
+                            .regions
+                            .traits
+                            .get(p.trait_ref.trait_)
+                            .is_some_and(|r| r.names.is_empty())
+                    {
+                        self.errors.push(Diagnostic::new(
+                            range,
+                            "trait method owner bound regions are not supported yet",
+                        ));
+                    }
+                    bounds.push((p, &[], TraitRefRegions::default()));
+                }
+                if regions.owner != 0
+                    && sigs.trait_projections.get(t).is_some_and(|p| !p.is_empty())
+                {
+                    self.errors.push(Diagnostic::new(
+                        range,
+                        "trait method owner projection regions are not supported yet",
+                    ));
+                }
+            }
             (Some(flux_hir::Owner::Impl(_)), Some((imp, r))) => {
                 let list = sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
                 for (k, &p) in list.iter().enumerate() {
