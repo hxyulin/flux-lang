@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Add `Vec::resize_with` for typed arena side-table growth, including stateful
+  factories, non-Clone values, truncation and zero-sized elements.
+
 - Add bound-free equality and ordering for `PhantomData`, removing a typed-arena
   library prerequisite while preserving the marked type's existing semantics.
 

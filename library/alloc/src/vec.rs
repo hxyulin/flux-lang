@@ -332,6 +332,20 @@ impl<T> Vec<T> {
         }
     }
 
+    /// Grows to `new_len` by calling `f` once for each new element, or
+    /// truncates without calling it. Existing elements keep their values.
+    pub fn resize_with<F: FnMut() -> T>(&mut self, new_len: usize, mut f: F) {
+        let len = self.len;
+        if new_len > len {
+            self.reserve(new_len - len);
+            while self.len < new_len {
+                self.push(f());
+            }
+        } else {
+            self.truncate(new_len);
+        }
+    }
+
     /// Adds clones of `other`'s elements.
     pub fn extend_from_slice(&mut self, other: &[T])
     where
