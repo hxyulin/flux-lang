@@ -619,6 +619,107 @@ fn memchr_sources_match_rustc_across_search_boundaries() {
     }
 }
 
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn rustc_hash_sources_match_rustc_across_lengths_and_offsets() {
+    // This edition-2024 feature-free wrapper compiles unchanged source. It
+    // does not establish upstream manifest/features or edition-2021 support.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = Command::new("cargo")
+        .current_dir(&root)
+        .args([
+            "metadata",
+            "--offline",
+            "--locked",
+            "--format-version",
+            "1",
+            "--filter-platform",
+            "aarch64-apple-darwin",
+        ])
+        .output()
+        .unwrap();
+    success(&output);
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let package = metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "rustc-hash")
+        .unwrap();
+    let source = std::path::Path::new(package["manifest_path"].as_str().unwrap());
+    let fixture = Fixture::new();
+    copy_source_package(source.parent().unwrap(), &fixture.0.join("rustc-hash-src"));
+    for file in ["lib.rs", "seeded_state.rs"] {
+        assert_eq!(
+            std::fs::read(source.parent().unwrap().join("src").join(file)).unwrap(),
+            std::fs::read(fixture.0.join("rustc-hash-src/src").join(file)).unwrap(),
+        );
+    }
+    fixture.write("rustc-hash/Cargo.toml", "[package]\nname='rustc-hash'\nversion='0.1.0'\nedition='2024'\n[lib]\nname='rustc_hash'\npath='../rustc-hash-src/src/lib.rs'\n");
+    fixture.write("Cargo.toml", "[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nrustc-hash={path='rustc-hash'}\n");
+    fixture.write(
+        "src/main.rs",
+        include_str!("fixtures/rustc_hash/consumer.rs.txt"),
+    );
+    let mut expected = None;
+    for args in [&[][..], &["-O"][..]] {
+        let library = fixture.0.join("librustc_hash.rlib");
+        let output = Command::new("rustc")
+            .args([
+                "--edition=2024",
+                "--crate-type=rlib",
+                "--crate-name=rustc_hash",
+            ])
+            .args(args)
+            .arg(fixture.0.join("rustc-hash-src/src/lib.rs"))
+            .arg("-o")
+            .arg(&library)
+            .output()
+            .unwrap();
+        success(&output);
+        let reference = fixture.0.join("reference");
+        let output = Command::new("rustc")
+            .args([
+                "--edition=2024",
+                "-C",
+                "panic=abort",
+                "-C",
+                "overflow-checks=off",
+            ])
+            .args(args)
+            .arg(fixture.0.join("src/main.rs"))
+            .arg("--extern")
+            .arg(format!("rustc_hash={}", library.display()))
+            .arg("-o")
+            .arg(&reference)
+            .output()
+            .unwrap();
+        success(&output);
+        let reference = Command::new(reference).output().unwrap();
+        success(&reference);
+        if let Some(expected) = &expected {
+            assert_eq!(&reference.stdout, expected);
+        } else {
+            expected = Some(reference.stdout.clone());
+        }
+        // Fixture::run installs rejecting compiler wrappers and checks their
+        // invocation log, independently of the explicit rustc oracle above.
+        let actual = fixture.run("run", args);
+        success(&actual);
+        assert_eq!(actual.stdout, reference.stdout);
+        assert_eq!(actual.stderr, reference.stderr);
+        assert!(
+            std::fs::read_dir(fixture.0.join("target/flux"))
+                .unwrap()
+                .all(|entry| entry
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_none_or(|ext| ext != "rlib"))
+        );
+    }
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn unicode_ident_comparison(original_manifest: bool) {
     // Locate the version Cargo already built for this workspace. The reference
