@@ -3,8 +3,8 @@
 On arm64 macOS, Flux can build a restricted Cargo package:
 
 ```sh
-flux package build --manifest-path /path/to/Cargo.toml [--bin NAME] [-O]
-flux package run --manifest-path /path/to/Cargo.toml [--bin NAME] [-O] -- PROGRAM_ARGS
+flux package build --manifest-path /path/to/Cargo.toml [--bin NAME] [-O] [--timings]
+flux package run --manifest-path /path/to/Cargo.toml [--bin NAME] [-O] [--timings] -- PROGRAM_ARGS
 ```
 
 This is a manifest driver. It runs real `cargo metadata --offline --no-deps
@@ -15,6 +15,12 @@ bounded path-only graph does not use Cargo's general resolved feature graph.
 It never asks rustc to compile source, never falls back to rustc, and does not implement `RUSTC`, Cargo's compiler protocol, rustc
 library metadata, or general Cargo compatibility. Cargo must be installed.
 Flux's existing language and embedded-library limitations still apply.
+
+`--timings` prints compilation scopes to stderr, including package planning,
+each offline metadata invocation with decoding/validation, source loading and
+backend phases. The package elapsed scope stops before program execution.
+Nested scopes overlap and must not be added together; see the
+[timing boundaries](ARCHITECTURE.md#compilation-timings).
 
 The supported manifest subset is deliberately narrow:
 
@@ -64,7 +70,7 @@ The supported manifest subset is deliberately narrow:
   and names beginning `CARGO_BUILD_`, `CARGO_TARGET_`, `CARGO_PROFILE_`
   or `CARGO_UNSTABLE_` are rejected, including empty values.
   Unknown command options (including `--target`, `--release`, `--features`,
-  output overrides and timing options) are rejected by the CLI.
+  output overrides) are rejected by the CLI.
 
 Exported `macro_rules!` macros support dependency aliases and transitive
 reexports. `$crate` retains the defining crate's identity through nested,
