@@ -22,11 +22,15 @@ fn cached_unicode_ident_normalized_manifest_selects_2021_library() {
     // JSON string escaping also produces a valid TOML basic string here.
     let dep_path = serde_json::to_string(&dependency.to_string_lossy()).unwrap();
     std::fs::write(root.join("Cargo.toml"), format!("[package]\nname='unicode-probe'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nunicode-ident={{path={dep_path}}}\n")).unwrap();
-    let result = plan(&Options {
-        manifest_path: root.join("Cargo.toml"),
-        bin: None,
-        optimize: false,
-    });
+    let result = plan(
+        &Options {
+            manifest_path: root.join("Cargo.toml"),
+            bin: None,
+            optimize: false,
+            timings: false,
+        },
+        &mut build::Timings::new(false, "test"),
+    );
     std::fs::remove_dir_all(root).unwrap();
     let plan = result.unwrap();
     assert_eq!(plan.sources.len(), 2);

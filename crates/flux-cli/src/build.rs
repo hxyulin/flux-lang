@@ -28,24 +28,46 @@ pub(crate) fn crate_name(file: &Path) -> String {
     }
 }
 
-/// Phase timings, printed with `--timings`.
-#[derive(Default)]
-struct Timings(Vec<(&'static str, Duration)>);
+/// Opt-in scoped timings. Totals are elapsed wall time, never sums of scopes.
+pub(crate) struct Timings {
+    start: Option<Instant>,
+    total: &'static str,
+    phases: Vec<(&'static str, Duration)>,
+}
 
 impl Timings {
-    fn time<T>(&mut self, phase: &'static str, f: impl FnOnce() -> T) -> T {
-        let start = Instant::now();
-        let result = f();
-        self.0.push((phase, start.elapsed()));
-        result
+    pub(crate) fn new(enabled: bool, total: &'static str) -> Self {
+        Self {
+            start: enabled.then(Instant::now),
+            total,
+            phases: Vec::new(),
+        }
     }
 
-    fn print(&self) {
-        let total: Duration = self.0.iter().map(|(_, d)| *d).sum();
-        for (phase, duration) in &self.0 {
-            eprintln!("{phase:>10}  {duration:>10.2?}");
+    pub(crate) fn record(&mut self, phase: &'static str, duration: Duration) {
+        self.phases.push((phase, duration));
+    }
+
+    pub(crate) fn time<T>(&mut self, phase: &'static str, f: impl FnOnce() -> T) -> T {
+        let start = self.start.map(|_| Instant::now());
+        let result = f();
+        if let Some(start) = start {
+            self.phases.push((phase, start.elapsed()));
         }
-        eprintln!("{:>10}  {total:>10.2?}", "total");
+        result
+    }
+}
+
+impl Drop for Timings {
+    fn drop(&mut self) {
+        if let Some(start) = self.start {
+            let total = start.elapsed();
+            eprintln!("timings (nested scopes; do not sum):");
+            for (phase, duration) in &self.phases {
+                eprintln!("{phase:<38}  {duration:>10.2?}");
+            }
+            eprintln!("{:<38}  {total:>10.2?}", self.total);
+        }
     }
 }
 
@@ -79,7 +101,15 @@ pub(crate) struct SourceInput {
     pub dependencies: Vec<(String, usize)>,
 }
 
+// The scoped boundary includes diagnostics and destruction of compile-local data.
+// It excludes CLI parsing, request construction, printing this timing report, final
+// driver error formatting, program execution, and process/global teardown.
 pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
+    let mut timings = Timings::new(request.options.timings, "compile scoped elapsed");
+    compile_inner(request, &mut timings)
+}
+
+fn compile_inner(request: CompileRequest<'_>, timings: &mut Timings) -> Result<bool, String> {
     let CompileRequest {
         file,
         crate_name,
@@ -87,9 +117,8 @@ pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
         options,
         sources,
     } = request;
-    let mut timings = Timings::default();
     // `core`'s files are parsed with the database.
-    let (mut db, root) = timings.time("parse", || {
+    let (mut db, root) = timings.time("database + root load/parse", || {
         let mut db = SourceDb::new();
         let edition = sources
             .last()
@@ -98,26 +127,31 @@ pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
         (db, root)
     });
     let root = root?;
-    let mut graph = Vec::new();
-    for source in sources {
-        graph.push(flux_hir::SourceCrate {
-            root: db.load_with_edition(&source.file, source.edition)?,
-            name: Symbol::intern(&source.name),
-            dependencies: source
-                .dependencies
-                .iter()
-                .map(|(alias, target)| (Symbol::intern(alias), *target))
-                .collect(),
-        });
-    }
-    let hir = timings.time("hir", || {
+    let graph = timings.time("source dependency load/parse", || {
+        let mut graph = Vec::new();
+        for source in sources {
+            graph.push(flux_hir::SourceCrate {
+                root: db.load_with_edition(&source.file, source.edition)?,
+                name: Symbol::intern(&source.name),
+                dependencies: source
+                    .dependencies
+                    .iter()
+                    .map(|(alias, target)| (Symbol::intern(alias), *target))
+                    .collect(),
+            });
+        }
+        Ok::<_, String>(graph)
+    })?;
+    let hir = timings.time("hir (includes module load/parse)", || {
         if graph.is_empty() {
             flux_hir::lower(&mut db, root, Symbol::intern(crate_name))
         } else {
             flux_hir::lower_sources(&mut db, &graph)
         }
     });
-    let typed = timings.time("types", || flux_mir::check_file(&hir));
+    let typed = timings.time("types (includes const evaluation)", || {
+        flux_mir::check_file(&hir)
+    });
     let mut errors = db.syntax_errors();
     errors.extend(hir.diagnostics.iter().cloned());
     errors.extend(typed.diagnostics.iter().cloned());
@@ -125,31 +159,49 @@ pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
         errors.push(d);
     }
     if !errors.is_empty() {
-        let more = flux_mir::check_clean_bodies(&hir, &typed, &errors);
+        let more = timings.time("mir checks on clean bodies", || {
+            flux_mir::check_clean_bodies(&hir, &typed, &errors)
+        });
         errors.extend(more);
     } else {
-        let mir = timings.time("mir", || flux_mir::build_file(&hir, &typed));
+        let mir = timings.time("mir build + checks", || flux_mir::build_file(&hir, &typed));
         errors.extend(mir.diagnostics.iter().cloned());
         if errors.is_empty() {
             let target = Target::host()
                 .ok_or("flux can only compile for arm64 macOS and x86-64 Linux hosts")?;
-            let mut module =
-                match timings.time("lower", || flux_codegen::lower_module(&hir, &typed, &mir)) {
-                    Ok(module) => module,
-                    Err(found) => {
-                        errors.extend(found);
-                        report_all(&db, &mut errors);
-                        return Ok(false);
-                    }
-                };
+            let mut module = match timings.time("mono + keel lowering", || {
+                flux_codegen::lower_module(&hir, &typed, &mir)
+            }) {
+                Ok(module) => module,
+                Err(found) => {
+                    errors.extend(found);
+                    report_all(&db, &mut errors);
+                    return Ok(false);
+                }
+            };
             let tier = if options.optimize {
                 OptimizationTier::Full
             } else {
                 OptimizationTier::None
             };
-            let object = timings.time("codegen", || {
-                flux_codegen::compile_object(&mut module, target, tier)
-            })?;
+            let object = if options.timings {
+                let (result, backend) = timings.time("backend (inclusive)", || {
+                    flux_codegen::compile_object_with_timings(&mut module, target, tier)
+                });
+                for (name, duration) in [
+                    ("  backend verify", backend.verify),
+                    ("  backend optimize", backend.optimize),
+                    ("  backend native codegen", backend.codegen),
+                    ("  backend assemble", backend.assemble),
+                ] {
+                    if let Some(duration) = duration {
+                        timings.phases.push((name, duration));
+                    }
+                }
+                result?
+            } else {
+                flux_codegen::compile_object(&mut module, target, tier)?
+            };
             let warnings = timings.time("link", || {
                 flux_codegen::link_executable(&object, target, output)
             })?;
@@ -159,9 +211,6 @@ pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
         }
     }
     report_all(&db, &mut errors);
-    if options.timings {
-        timings.print();
-    }
     Ok(errors.is_empty())
 }
 

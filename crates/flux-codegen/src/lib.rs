@@ -27,25 +27,75 @@ pub fn compile_object(
     target: Target,
     tier: OptimizationTier,
 ) -> Result<Vec<u8>, String> {
-    if let Err(errors) = keel_ir::verify_module(module) {
+    compile_object_inner(module, target, tier, None)
+}
+
+/// Completed or failed backend scopes. `None` means the scope was not reached.
+/// These are not a total: error formatting and destruction of backend temporaries
+/// can happen outside the measured calls.
+#[derive(Default, Debug)]
+pub struct ObjectTimings {
+    pub verify: Option<std::time::Duration>,
+    pub optimize: Option<std::time::Duration>,
+    pub codegen: Option<std::time::Duration>,
+    pub assemble: Option<std::time::Duration>,
+}
+
+/// The opt-in equivalent of [`compile_object`], retaining partial timings on errors.
+/// The ordinary entry point performs no clock reads.
+pub fn compile_object_with_timings(
+    module: &mut keel_ir::Module,
+    target: Target,
+    tier: OptimizationTier,
+) -> (Result<Vec<u8>, String>, ObjectTimings) {
+    let mut timings = ObjectTimings::default();
+    let result = compile_object_inner(module, target, tier, Some(&mut timings));
+    (result, timings)
+}
+
+fn measured<T>(slot: Option<&mut Option<std::time::Duration>>, f: impl FnOnce() -> T) -> T {
+    let Some(slot) = slot else { return f() };
+    let start = std::time::Instant::now();
+    let result = f();
+    *slot = Some(start.elapsed());
+    result
+}
+
+fn compile_object_inner(
+    module: &mut keel_ir::Module,
+    target: Target,
+    tier: OptimizationTier,
+    mut timings: Option<&mut ObjectTimings>,
+) -> Result<Vec<u8>, String> {
+    if let Err(errors) = measured(timings.as_deref_mut().map(|t| &mut t.verify), || {
+        keel_ir::verify_module(module)
+    }) {
         let lines: Vec<String> = errors.iter().map(|e| format!("  {e}")).collect();
         return Err(format!(
             "internal error: flux produced invalid keel IR:\n{}\n{module}",
             lines.join("\n")
         ));
     }
-    keel_opt::optimize_with_tier(module, tier).map_err(|e| e.to_string())?;
-    let program = keel_codegen::compile_program(module, target).map_err(|e| e.to_string())?;
-    let object = match target {
-        Target::Aarch64AppleDarwin => {
-            keel_asm::assemble_program_object(&program, keel_asm::TargetFeatures::default())
-        }
-        Target::X86_64LinuxGnu => keel_asm::x86::assemble_program_object(&program),
-        Target::Aarch64LinuxGnu => {
-            return Err("code generation for AArch64 Linux is not supported yet".to_owned());
-        }
-    };
-    object.map_err(|e| e.to_string())
+    measured(timings.as_deref_mut().map(|t| &mut t.optimize), || {
+        keel_opt::optimize_with_tier(module, tier)
+    })
+    .map_err(|e| e.to_string())?;
+    let program = measured(timings.as_deref_mut().map(|t| &mut t.codegen), || {
+        keel_codegen::compile_program(module, target)
+    })
+    .map_err(|e| e.to_string())?;
+    measured(timings.map(|t| &mut t.assemble), || {
+        let object = match target {
+            Target::Aarch64AppleDarwin => {
+                keel_asm::assemble_program_object(&program, keel_asm::TargetFeatures::default())
+            }
+            Target::X86_64LinuxGnu => keel_asm::x86::assemble_program_object(&program),
+            Target::Aarch64LinuxGnu => {
+                return Err("code generation for AArch64 Linux is not supported yet".to_owned());
+            }
+        };
+        object.map_err(|e| e.to_string())
+    })
 }
 
 /// Links `object` against the C library into an executable at `output`.
