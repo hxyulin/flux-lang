@@ -971,10 +971,17 @@ impl<'a> Cx<'a> {
             else {
                 return false;
             };
+            let actual_ty = Ty::alias(p.alias).subst(&args);
+            // Only the impl header's equalities are assumptions. A selected
+            // impl's required equality must also hold after lifetime erasure,
+            // including when neither side contributes any region slots.
+            if self.normalize(actual_ty) != self.normalize(p.ty.subst(&args)) {
+                return false;
+            }
             if expected.is_empty() {
                 continue;
             }
-            let TyKind::Alias(alias) = Ty::alias(p.alias).subst(&args).kind() else {
+            let TyKind::Alias(alias) = actual_ty.kind() else {
                 return false;
             };
             let alias_vars = match proven.iter().find(|g| {
