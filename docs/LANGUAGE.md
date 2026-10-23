@@ -731,7 +731,7 @@ Core's `Send` and `Sync` propagate structurally through supported fields,
 arrays, tuples, closures and PhantomData. Shared references require `T: Sync`
 for either marker; mutable references require `T: Send` for Send and `T: Sync`
 for Sync. Raw pointers do not receive either marker automatically, and Cell
-is not Sync. Explicit unsafe implementations replace structural propagation,
+and UnsafeCell are not Sync. Explicit unsafe implementations replace structural propagation,
 including their generic obligations; shared statics use the same Sync rules.
 Lifetime specialization/bounds in marker implementations and custom auto
 traits remain unsupported. Recursive structural proofs are conservatively
@@ -772,6 +772,12 @@ its caller; `Ref<T>` and `RefMut<T>` implement `Deref`, and `RefMut<T>`
 also implements `DerefMut`, with references tied to the borrowed guard;
 unsized guard targets remain unsupported; all of them, and `BorrowError` and `BorrowMutError`,
 are `Debug` as rustc writes them),
+`core::cell::UnsafeCell<T>` for sized payloads, with const `new` and runtime
+`get`, `get_mut`, and `into_inner`. It preserves payload size/alignment,
+suppresses niches, is invariant in `T`, and is Send when `T: Send`. Owned
+UnsafeCell borrowing during const evaluation and const accessors remain
+unsupported; represented genuine static addresses retain the earlier static
+borrow support. Unsizing is not provided.
 `core::ptr::{addr_of, addr_of_mut}`,
 `core::default::Default` (in the prelude) for the integers, `bool`,
 `char`, `&str`, `&[T]`, `&mut [T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,

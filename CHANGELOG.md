@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Add sized UnsafeCell with const construction, runtime accessors, payload
+  layout, niche suppression, invariance and structural Send/Sync rules.
+
 - Add the bounded BTreeMap API needed by layered arenas, using safe AVL storage,
   heterogeneous queries, ordered iteration and ownership-correct consumption.
 
