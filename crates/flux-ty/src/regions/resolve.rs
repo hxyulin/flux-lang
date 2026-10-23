@@ -255,12 +255,17 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
         walker.names = all_names.iter().map(|n| n.name).collect();
         walker.self_regions = Some(&self_regions);
         walker.elided = Elided::Missing(None);
+        let mut type_selections = Vec::new();
         let types: Box<[(Symbol, Box<[Region]>)]> = imp
             .types
             .iter()
             .map(|t| {
                 let ty = crate::traits::impl_type(sigs, id, t.name).unwrap_or(Ty::ERROR);
-                (t.name, walker.regions(&t.ty, ty))
+                walker.selections = Some(Vec::new());
+                let regions = walker.regions(&t.ty, ty);
+                type_selections
+                    .push((t.name, walker.selections.take().unwrap().into_boxed_slice()));
+                (t.name, regions)
             })
             .collect();
         let mut list = std::mem::take(&mut walker.errors);
@@ -371,6 +376,7 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
                 trait_args: trait_args.into(),
                 trait_lifetimes,
                 types,
+                type_selections: type_selections.into(),
                 outlives: outlives.into(),
                 bounds,
                 bound_selfs,
