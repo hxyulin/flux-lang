@@ -26,7 +26,7 @@
 use flux_hir::def_map::{Def, Ns, Resolved};
 use flux_hir::{
     Const, Function, GenericArgs, Generics, Impl, ItemTree, LifetimeRef, ModuleId, Path, Struct,
-    TypeAlias, TypeAliasId, TypeRef,
+    Trait, TypeAlias, TypeAliasId, TypeRef,
 };
 use flux_intern::{Symbol, kw};
 use flux_syntax::TextRange;
@@ -137,6 +137,8 @@ pub struct FnRegions {
     /// The slots of the types its own bounds are on (`&'a T` in `where
     /// &'a T: Tr`), as [`Signatures::fn_predicates`] lists them.
     pub bound_selfs: Box<[Box<[Region]>]>,
+    /// Each resolved predicate's trait arguments, in the same order.
+    pub bound_traits: Box<[TraitRefRegions]>,
     /// The slots of what its own bounds say associated types are
     /// (`I: Iterator<Item = &'a T>`), as [`Signatures::fn_projections`]
     /// lists them.
@@ -176,12 +178,33 @@ pub struct StructRegions {
     pub outlives: Box<[Outlives<Region>]>,
 }
 
+/// The regions of a trait reference, beside its erased [`crate::TraitRef`].
+/// Lifetime arguments are invariant and precede the type arguments in Rust;
+/// they must not be confused with the region slots inside those types.
+/// Preserving these tables does not establish that an obligation holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TraitRefRegions {
+    pub lifetimes: Box<[Region]>,
+    pub args: Box<[Box<[Region]>]>,
+}
+
+/// A trait's lifetime parameters and the bounds its methods inherit.
+/// Trait lifetime declarations remain unsupported until selection and
+/// obligation checking consume their argument tables.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TraitRegions {
+    pub names: Box<[LifetimeName]>,
+    pub outlives: Box<[Outlives<Region>]>,
+}
+
 /// The lifetimes of an `impl` block's header.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImplRegions {
     pub names: Box<[LifetimeName]>,
     pub self_ty: Box<[Region]>,
-    /// The slots of each of its trait's arguments, after `Self`.
+    /// Its trait's lifetime arguments, in terms of this impl's parameters.
+    pub trait_lifetimes: Box<[Region]>,
+    /// The slots of each of its trait's type arguments, after `Self`.
     pub trait_args: Box<[Box<[Region]>]>,
     /// Each associated type's.
     pub types: Box<[(Symbol, Box<[Region]>)]>,
@@ -194,6 +217,8 @@ pub struct ImplRegions {
     /// The slots of the types its bounds are on, as
     /// [`Signatures::impl_predicates`] lists them.
     pub bound_selfs: Box<[Box<[Region]>]>,
+    /// Each resolved predicate's trait arguments, in the same order.
+    pub bound_traits: Box<[TraitRefRegions]>,
     /// The slots of what its bounds say associated types are, as
     /// [`Signatures::impl_projections`] lists them.
     pub projections: Box<[Box<[Region]>]>,
@@ -209,6 +234,7 @@ pub struct AliasRegions {
 /// The lifetimes of every signature.
 #[derive(Debug, Clone, Default)]
 pub struct RegionSigs {
+    pub traits: flux_arena::LayeredArenaMap<Trait, TraitRegions>,
     pub fns: flux_arena::LayeredArenaMap<Function, FnRegions>,
     pub structs: flux_arena::LayeredArenaMap<Struct, StructRegions>,
     pub impls: flux_arena::LayeredArenaMap<Impl, ImplRegions>,

@@ -19,8 +19,8 @@ pub(crate) fn resolve_regions(
     let push = |errors: &mut Errors, file, list: Vec<(TextRange, String)>| {
         errors.extend(list.into_iter().map(|(r, m)| (file, r, m)));
     };
-    // Traits: lifetime parameters are not supported.
-    for (_, t) in items.traits.iter().skip(from.traits as usize) {
+    // Retain trait owner regions even while lifetime declarations are rejected.
+    for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let mut list = Vec::new();
         for l in t.generics.lifetimes.iter() {
             list.push((
@@ -44,6 +44,31 @@ pub(crate) fn resolve_regions(
                 &mut list,
             );
         }
+        let names: Box<[LifetimeName]> = own_names(&t.generics).collect();
+        let named: Vec<Option<Symbol>> = names.iter().map(|n| n.name).collect();
+        let generics = crate::generic_names(
+            items,
+            Some(flux_hir::Owner::Trait(id)),
+            &Generics::default(),
+        );
+        let mut outlives = Vec::new();
+        bounds_outlives(
+            items,
+            t.loc.module,
+            &t.generics,
+            &named,
+            &generics,
+            &mut outlives,
+            &mut list,
+        );
+        dedup(&mut outlives);
+        sigs.regions.traits.insert(
+            id,
+            TraitRegions {
+                names,
+                outlives: outlives.into(),
+            },
+        );
         push(&mut errors, t.loc.file, list);
     }
     structs(items, sigs, from, &mut errors);
@@ -180,9 +205,13 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
         let self_regions = walker.regions(&imp.self_ty, self_ty);
         let trait_ref = sigs.impl_traits.get(id).copied();
         let mut trait_args: Vec<Box<[Region]>> = Vec::new();
+        let mut trait_lifetimes = Box::default();
         if let (Some(trait_ref), Some(bound)) = (trait_ref, &imp.trait_ref) {
             let last = bound.path.segments.len().saturating_sub(1);
             let written = bound.path.args(last);
+            trait_lifetimes = written.map_or(Box::default(), |w| {
+                w.lifetimes.iter().map(|&l| walker.named(l)).collect()
+            });
             if let Some(w) = written
                 && let Some(&l) = w.lifetimes.first()
             {
@@ -235,6 +264,7 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
             let r = Region::Param(i as u32);
             let decided = self_regions
                 .iter()
+                .chain(trait_lifetimes.iter())
                 .chain(trait_args.iter().flat_map(|a| a.iter()))
                 .any(|&s| s == r)
                 || in_bounds.iter().any(|b| b.name == l.name);
@@ -276,7 +306,7 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
         }
         errors.extend(list.into_iter().map(|(r, m)| (imp.file, r, m)));
         dedup(&mut outlives);
-        let (bound_selfs, projections) = bound_regions(
+        let (bound_selfs, bound_traits, projections) = bound_regions(
             items,
             imp.module,
             &imp.generics,
@@ -291,10 +321,12 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
                 names: all_names.into(),
                 self_ty: self_regions,
                 trait_args: trait_args.into(),
+                trait_lifetimes,
                 types,
                 outlives: outlives.into(),
                 bounds,
                 bound_selfs,
+                bound_traits,
                 projections,
             },
         );
@@ -321,6 +353,12 @@ fn functions(
             owner_outlives = r.outlives.to_vec();
             self_regions = Some(r.self_ty.clone());
             self_types = r.types.clone();
+        }
+        if let Some(flux_hir::Owner::Trait(trait_)) = function.owner
+            && let Some(r) = sigs.regions.traits.get(trait_)
+        {
+            owner_names = r.names.to_vec();
+            owner_outlives = r.outlives.to_vec();
         }
         let owner_count = owner_names.len() as u32;
         let mut names: Vec<Option<Symbol>> = owner_names.iter().map(|n| n.name).collect();
@@ -435,7 +473,7 @@ fn functions(
         });
         dedup(&mut outlives);
         errors.extend(list.into_iter().map(|(r, m)| (function.loc.file, r, m)));
-        let (bound_selfs, projections) = bound_regions(
+        let (bound_selfs, bound_traits, projections) = bound_regions(
             items,
             function.loc.module,
             &function.generics,
@@ -455,6 +493,7 @@ fn functions(
                 has_bounds: !function.generics.outlives.is_empty()
                     || !function.generics.type_outlives.is_empty(),
                 bound_selfs,
+                bound_traits,
                 projections,
                 opaques: opaques.into(),
             },
@@ -475,7 +514,7 @@ fn bound_regions(
     type_names: &[Symbol],
     predicates: &[crate::Predicate],
     projections: &[crate::traits::Projection],
-) -> (Tables, Tables) {
+) -> (Tables, Box<[TraitRefRegions]>, Tables) {
     let mut walker = Walker::new(items, module, names.to_vec());
     walker.scope = TypeScope {
         generics: type_names,
@@ -491,6 +530,35 @@ fn bound_regions(
     } else {
         Box::default()
     };
+    let traits = if predicates.len() == written.len() {
+        written
+            .iter()
+            .zip(predicates)
+            .map(|(w, p)| {
+                let last = w.bound.path.segments.len().saturating_sub(1);
+                let args = w.bound.path.args(last);
+                let lifetimes = args.map_or(Box::default(), |a| {
+                    a.lifetimes.iter().map(|&l| walker.named(l)).collect()
+                });
+                let types = p
+                    .trait_ref
+                    .args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &ty)| match args.and_then(|a| a.types.get(i)) {
+                        Some(t) => walker.regions(t, ty),
+                        None => vec![Region::Erased; slots(items, ty)].into(),
+                    })
+                    .collect();
+                TraitRefRegions {
+                    lifetimes,
+                    args: types,
+                }
+            })
+            .collect()
+    } else {
+        Box::default()
+    };
     let bindings = written.iter().flat_map(|w| {
         let last = w.bound.path.segments.len().saturating_sub(1);
         let args = w.bound.path.args(last);
@@ -501,15 +569,15 @@ fn bound_regions(
     let mut tables = Vec::with_capacity(projections.len());
     for ((b, args), p) in bindings.zip(projections) {
         if b.name != p.alias.name {
-            return (selfs, Box::default());
+            return (selfs, traits, Box::default());
         }
         tables.push(projection_regions(&mut walker, b, args, p));
     }
     if tables.len() != projections.len() {
-        return (selfs, Box::default());
+        return (selfs, traits, Box::default());
     }
     // Errors are the bounds' own, reported with them.
-    (selfs, tables.into())
+    (selfs, traits, tables.into())
 }
 
 /// A parenthesized `Fn` bound has its own elision scope, including when
@@ -678,8 +746,15 @@ fn bounds_outlives(
     }
     let scope = TypeScope {
         generics: type_names,
+        // A trait's first type parameter is `Self`; unlike an impl's,
+        // it is an abstract parameter rather than a concrete header type.
+        self_ty: type_names
+            .iter()
+            .position(|&n| n == kw::SelfUpper)
+            .map(|i| Ty::param(i as u32, kw::SelfUpper)),
         ..TypeScope::default()
     };
+    walker.scope = scope;
     for p in generics.type_outlives.iter() {
         let r = walker.named(p.lifetime);
         let mut scratch = Vec::new();
