@@ -430,8 +430,12 @@ them, through rustc's `SliceIndex`),
 x in &mut array` iterate a slice of the array. `for x in array` and
 `array.into_iter()` iterate it by value, with `core::array::IntoIter<T,
 N>` (with `as_slice`), which moves the elements out one by one and
-drops those it has not given when it is dropped. `core::slice` also
+drops those it has not given when it is dropped. `TryFrom<&[T]> for [T; N]`
+copies `Copy` elements when the slice length is exactly `N`, otherwise returning
+`core::array::TryFromSliceError`. `core::slice` also
 has `first_mut`, `last_mut`, `get_mut`, `split_first`, `split_last`,
+`split_first_chunk::<N>` (a borrowed array prefix and remaining slice, or `None`
+when too short; zero gives an empty prefix and the complete suffix),
 `swap`, `reverse`, `rotate_left`, `rotate_right`, `split_at`,
 `split_at_mut`, `copy_from_slice`, `clone_from_slice`, `fill`,
 `contains`, `starts_with`, `ends_with`, `windows`, `chunks`,

@@ -321,6 +321,12 @@ mutable-slice promotion and mutable-slice `Default`; `DroplessArena` also needs
 pointer APIs. The existing huge-ZST drop traversal limitation remains separate
 from allocation support.
 
+Copy slice-to-array conversion and borrowed `split_first_chunk` now supply
+library prerequisites for the unchanged rustc-hash hashing implementation.
+Its implicit slice receiver autoref still fails method inference. The original
+manifest's feature options and the edition-2021 while-let boundary are separate
+limitations; these API tests do not establish a working rustc-hash executable.
+
 A small `std` facade now reexports facilities already present in `core`
 and `alloc`, preserving their definition identities; see
 [its API boundary](../library/std/README.md). Its `thread::panicking` is
