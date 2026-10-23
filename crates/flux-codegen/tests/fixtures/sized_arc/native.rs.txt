@@ -1,0 +1,101 @@
+use std::cell::UnsafeCell;
+use std::sync::{Arc, Weak};
+unsafe extern "C" {
+    fn arc_test_dropped(sum: usize);
+}
+struct Payload {
+    slots: [UnsafeCell<usize>; 8],
+}
+// SAFETY: the host gives each slot to one worker; all reads occur in the
+// destructor after the last strong decrement's release/acquire synchronization.
+unsafe impl Send for Payload {}
+unsafe impl Sync for Payload {}
+impl Drop for Payload {
+    fn drop(&mut self) {
+        let mut sum = 0;
+        for slot in &self.slots {
+            sum += unsafe { *slot.get() };
+        }
+        unsafe {
+            arc_test_dropped(sum);
+        }
+    }
+}
+fn arc_create() -> *mut u8 {
+    Box::into_raw(Box::new(Arc::new(Payload {
+        slots: [
+            UnsafeCell::new(0),
+            UnsafeCell::new(0),
+            UnsafeCell::new(0),
+            UnsafeCell::new(0),
+            UnsafeCell::new(0),
+            UnsafeCell::new(0),
+            UnsafeCell::new(0),
+            UnsafeCell::new(0),
+        ],
+    }))) as *mut u8
+}
+fn arc_clone(p: *mut u8) -> *mut u8 {
+    let value = unsafe { &*(p as *const Arc<Payload>) };
+    Box::into_raw(Box::new(value.clone())) as *mut u8
+}
+fn arc_downgrade(p: *mut u8) -> *mut u8 {
+    let value = unsafe { &*(p as *const Arc<Payload>) };
+    Box::into_raw(Box::new(Arc::downgrade(value))) as *mut u8
+}
+fn weak_clone(p: *mut u8) -> *mut u8 {
+    let value = unsafe { &*(p as *const Weak<Payload>) };
+    Box::into_raw(Box::new(value.clone())) as *mut u8
+}
+fn weak_upgrade(p: *mut u8) -> *mut u8 {
+    let value = unsafe { &*(p as *const Weak<Payload>) };
+    match value.upgrade() {
+        Some(value) => Box::into_raw(Box::new(value)) as *mut u8,
+        None => std::ptr::null_mut(),
+    }
+}
+fn arc_release(p: *mut u8) -> usize {
+    drop(unsafe { Box::from_raw(p as *mut Arc<Payload>) });
+    1
+}
+fn weak_release(p: *mut u8) -> usize {
+    drop(unsafe { Box::from_raw(p as *mut Weak<Payload>) });
+    1
+}
+fn arc_write_release(p: *mut u8, slot: usize) -> usize {
+    let value = unsafe { Box::from_raw(p as *mut Arc<Payload>) };
+    unsafe {
+        *value.slots[slot].get() = slot + 1;
+    }
+    drop(value);
+    1
+}
+fn empty_weak_control() -> usize {
+    let weak = Weak::<Payload>::new();
+    let cloned = weak.clone();
+    assert!(weak.upgrade().is_none());
+    assert!(cloned.upgrade().is_none());
+    1
+}
+fn main() {
+    let empty: fn() -> usize = empty_weak_control;
+    empty();
+    let make: fn() -> *mut u8 = arc_create;
+    let clone: fn(*mut u8) -> *mut u8 = arc_clone;
+    let down: fn(*mut u8) -> *mut u8 = arc_downgrade;
+    let wc: fn(*mut u8) -> *mut u8 = weak_clone;
+    let up: fn(*mut u8) -> *mut u8 = weak_upgrade;
+    let ar: fn(*mut u8) -> usize = arc_release;
+    let wr: fn(*mut u8) -> usize = weak_release;
+    let write: fn(*mut u8, usize) -> usize = arc_write_release;
+    let a = make();
+    let b = clone(a);
+    let w = down(a);
+    let w2 = wc(w);
+    let c = up(w);
+    ar(c);
+    write(b, 0);
+    ar(a);
+    wr(w);
+    wr(w2);
+}

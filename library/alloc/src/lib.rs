@@ -18,4 +18,5 @@ mod raw_vec;
 pub mod slice;
 pub mod str;
 pub mod string;
+pub mod sync;
 pub mod vec;

@@ -26,6 +26,10 @@ use std::sync::atomic::AtomicUsize as SA;
 use core::sync::atomic::AtomicUsize as CA;
 use std::sync::atomic::Ordering as SOrder;
 use core::sync::atomic::Ordering as COrder;
+use std::sync::Arc as SArc;
+use alloc::sync::Arc as AArc;
+use std::sync::Weak as SWeak;
+use alloc::sync::Weak as AWeak;
 use ::std::mem as sm;
 use core::mem as cm;
 fn fused<I: SI>(i: I) -> I { i }
@@ -93,6 +97,8 @@ fn reexports_and_cached_library_ids() {
             ("sm", "cm"),
             ("SA", "CA"),
             ("SOrder", "COrder"),
+            ("SArc", "AArc"),
+            ("SWeak", "AWeak"),
         ] {
             let a = items.lookup(module, Symbol::intern(a), Ns::Types).unwrap();
             let b = items.lookup(module, Symbol::intern(b), Ns::Types).unwrap();
@@ -118,8 +124,6 @@ fn facade_keeps_library_privacy_and_alloc_opt_in() {
         "use std::fmt::flags; fn main() {}",
         "use alloc::vec::Vec; fn main() {}",
         "use std::fs; fn main() {}",
-        "use std::sync::Arc; fn main() {}",
-        "use std::sync::Weak; fn main() {}",
         "use std::sync::atomic::AtomicU32; fn main() {}",
         "use std::thread::spawn; fn main() {}",
         "use std::num::NonZeroU64; fn main() {}",

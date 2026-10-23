@@ -126,3 +126,10 @@ pub fn assert_failed<T: Debug, U: Debug>(
 pub fn unwrap_failed<E: Debug>(msg: &str, error: &E) -> ! {
     panic_fmt(format_args!("{msg}: {error:?}"))
 }
+
+/// Terminates immediately, including when an ownership counter is exhausted.
+#[doc(hidden)]
+pub fn abort_now() -> ! {
+    // SAFETY: C abort has no preconditions and never returns.
+    unsafe { abort() }
+}
