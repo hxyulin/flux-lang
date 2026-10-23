@@ -33,6 +33,85 @@ fn free_early_callback_binders_match_rustc() {
             }
         }
     }
+    // Trait predicates fix an own lifetime even when trivially satisfied.
+    for kind in ["Fn", "FnMut", "FnOnce"] {
+        for (suffix, ret, body, output) in [
+            ("ref", "&'a i32", "x", "&i32"),
+            ("scalar", "i32", "*x", "i32"),
+            ("unit", "()", "()", "()"),
+            ("unused", "&'a i32", "x", "&i32"),
+        ] {
+            for (form, prelude, predicate) in [
+                ("copy", "", "&'a i32: Copy"),
+                ("sized", "", "&'a i32: Sized"),
+                ("custom", "trait Tr {} impl<T> Tr for T {}", "&'a i32: Tr"),
+                (
+                    "assoc",
+                    "trait Tr {type Out;} impl<'t> Tr for &'t i32 {type Out=&'t i32;}",
+                    "&'a i32: Tr<Out=&'a i32>",
+                ),
+            ] {
+                let need_body = if suffix == "unused" {
+                    ""
+                } else {
+                    "let x=17; f(&x);"
+                };
+                cases.push((format!("{kind}_{suffix}_{form}_bad"), format!("{prelude} fn get<'a>(x:&'a i32)->{ret} where {predicate} {{{body}}} fn need<F:{kind}(&i32)->{output}>(mut f:F){{{need_body}}} fn main(){{need(get);}}"), false, true));
+            }
+        }
+    }
+    for (name, source) in [
+        (
+            "equality_only_bad",
+            "trait Tr{type Out;} impl Tr for (){type Out=&'static i32;} fn get<'a>(_:&'a i32) where ():Tr<Out=&'a i32>{} fn need<F:Fn(&i32)>(_:F){} fn main(){need(get);}",
+        ),
+        (
+            "forward_predicate_bad",
+            "fn get<'a>(_:&'a i32) where &'a i32:Copy{} fn need<F:Fn(&i32)>(_:F){} fn forward<F:Fn(&i32)>(f:F){need(f)} fn main(){forward(get);}",
+        ),
+        (
+            "nested_predicate_bad",
+            "fn get<'a>(_:Option<&'a i32>) where &'a i32:Copy{} fn need<F:Fn(Option<&i32>)>(_:F){} fn main(){need(get);}",
+        ),
+        (
+            "alias_self_bad",
+            "type R<'a> = &'a i32; fn get<'a>(_:&'a i32) where R<'a>:Copy{} fn need<F:Fn(&i32)>(_:F){} fn main(){need(get);}",
+        ),
+        (
+            "erased_alias_bad",
+            "type R<'a> = i32; fn get<'a>(_:&'a i32) where R<'a>:Copy{} fn need<F:Fn(&i32)>(_:F){} fn main(){need(get);}",
+        ),
+        (
+            "mixed_predicate_bad",
+            "fn get<'a>(_:i32,_:&'a i32) where &'a i32:Copy{} fn need<T,F:Fn(T,&i32)>(_:T,_:F){} fn main(){need(0,get);}",
+        ),
+    ] {
+        cases.push((name.into(), source.into(), false, true));
+    }
+    for (name, source) in [
+        (
+            "static_predicate_late",
+            "fn get<'a>(x:&'a i32)->&'a i32 where &'static i32:Copy{x} fn need<F:Fn(&i32)->&i32>(_:F){} fn main(){need(get);}",
+        ),
+        (
+            "unrelated_copy",
+            "fn get<'a,T:Copy>(x:&'a T)->&'a T{x} fn need<F:Fn(&i32)->&i32>(_:F){} fn main(){need(get);}",
+        ),
+        (
+            "independent_binder",
+            "fn get<'a,F:for<'b> Fn(&'b i32)>(x:&'a i32,_:F)->&'a i32{x} fn unit(_:&i32){} fn main(){let x=0;get(&x,unit);}",
+        ),
+        (
+            "fixed_predicate_param",
+            "fn get<'a>(x:&'a i32)->&'a i32 where &'a i32:Copy{x} fn need<T,F:Fn(T)->T>(x:T,f:F)->T{f(x)} fn main(){let x=17;assert_eq!(*need(&x,get),17);}",
+        ),
+        (
+            "fixed_predicate_alias",
+            "fn get<'a>(x:&'a i32)->Option<&'a i32> where &'a i32:Copy{Some(x)} fn main(){let x=17;assert_eq!(*[&x].into_iter().find_map(get).unwrap(),17);}",
+        ),
+    ] {
+        cases.push((name.into(), source.into(), true, false));
+    }
     for (name, source) in [
         (
             "named_late",
@@ -61,7 +140,7 @@ fn free_early_callback_binders_match_rustc() {
     ] {
         cases.push((name.into(), source.into(), true, false));
     }
-    // has_bounds is intentionally a conservative signature-level boundary,
+    // CallbackBinder retains the conservative explicit-outlives boundary,
     // not an early/late classifier. Both of these inputs are late in Rust.
     for (name, source) in [
         (
@@ -147,7 +226,7 @@ fn missing_free_callback_metadata_fails_closed() {
         .find(|(_, f)| f.name.as_str() == "need" && f.owner.is_none())
         .unwrap()
         .0;
-    for corruption in 0..5 {
+    for corruption in 0..6 {
         let mut typed = flux_mir::check_file(&hir);
         assert!(typed.diagnostics.is_empty());
         match corruption {
@@ -168,13 +247,14 @@ fn missing_free_callback_metadata_fails_closed() {
                 typed.sigs.regions.fns.get_mut(need).unwrap().bound_traits[0].args[0][0] =
                     flux_ty::regions::Region::Erased
             }
-            _ => {
+            4 => {
                 typed.sigs.regions.fns.get_mut(need).unwrap().bound_traits[0].args[0][0] =
                     flux_ty::regions::Region::Param(999)
             }
+            _ => typed.sigs.regions.fns.get_mut(get).unwrap().callback_binder = Default::default(),
         }
         let mir = flux_mir::build_file(&hir, &typed);
-        let expected = if corruption == 0 {
+        let expected = if corruption == 0 || corruption == 5 {
             "function item callback region metadata is not supported yet"
         } else {
             BOUNDARY

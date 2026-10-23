@@ -3445,9 +3445,10 @@ impl<'a> Cx<'a> {
     ) {
         // Function items fix their owner's and early-bound lifetimes when
         // instantiated. Fresh variables in function_output cannot prove
-        // universality. has_bounds conservatively includes type-outlives
-        // bounds and bounds unrelated to an otherwise late input lifetime;
-        // we do not yet represent which own lifetimes are early-bound.
+        // universality. The callback metadata includes own lifetime occurrences
+        // anywhere in predicates, even alias arguments erased by normalization.
+        // Explicit outlives bounds retain their conservative signature boundary;
+        // this is not a general early/late partition or universe proof.
         // Keep this check even for unit/scalar outputs, before prove's
         // FnDef early return and projection fallback.
         if flux_ty::fn_trait_kind(self.items, p.trait_ref.trait_).is_some()
@@ -3460,7 +3461,16 @@ impl<'a> Cx<'a> {
                 ));
                 return;
             };
-            if regions.owner != 0 || regions.has_bounds {
+            if regions.callback_binder == flux_ty::regions::CallbackBinder::Unclassified {
+                self.errors.push(Diagnostic::new(
+                    range,
+                    "function item callback region metadata is not supported yet",
+                ));
+                return;
+            }
+            if regions.owner != 0
+                || regions.callback_binder == flux_ty::regions::CallbackBinder::SignatureBound
+            {
                 let message = if regions.owner != 0 {
                     "higher-ranked callbacks with owner lifetimes are not supported yet"
                 } else {
