@@ -1245,6 +1245,10 @@
 
 ### Performance
 
+- Lower the existing NEON narrowing shift and pairwise unsigned maximum through
+  native Keel operations, selecting `shrn` and `umaxp` while preserving exact
+  memory widths and the existing Rust ABI. No runtime speedup is claimed.
+
 - Add package `--timings`, elapsed compilation scopes, dependency planning and
   loading scopes, and backend verification/optimization/codegen/assembly
   subtimings. Preserve partial reports on ordinary failures without adding

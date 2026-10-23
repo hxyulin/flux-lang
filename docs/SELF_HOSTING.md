@@ -382,9 +382,10 @@ const-generic lane extraction through packed Keel operations. Calls require
 unsafe code in the current subset. Public callable wrappers also support
 unsafe function pointers; they do not expose intrinsic stub bodies to indirect
 calls. Narrowing shift and pairwise unsigned maximum are also supported:
-narrowing checks `1..=8` and writes eight bytes through scalar operations;
-pairwise maximum combines scalarized shuffles with packed comparison/selection.
-Native `shrn`/`umaxp` selection is not implemented. Legacy trailing const
+narrowing checks `1..=8` and uses a native `shrn` with an eight-byte result;
+pairwise unsigned maximum uses native `umaxp`. The pointer-based Rust call
+convention is unchanged, and exact-width memory accesses remain checked.
+Legacy trailing const
 arguments now work for the two lane APIs and narrowing shifts in direct calls;
 compound const expressions remain unsupported. Explicit unsafe functions with
 bodies now accept baseline `target_feature(enable = "neon")` on AArch64,
