@@ -1241,6 +1241,11 @@
 
 ### Performance
 
+- Add package `--timings`, elapsed compilation scopes, dependency planning and
+  loading scopes, and backend verification/optimization/codegen/assembly
+  subtimings. Preserve partial reports on ordinary failures without adding
+  timing clocks to ordinary builds.
+
 - Update Keel to `f37f0bd`, including bounded SIMD canonicalization and
   improved packed shuffle selection. Adapt data-object metadata and explicitly
   reject the newly introduced AArch64 Linux target pending Flux integration.

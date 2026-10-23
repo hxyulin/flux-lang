@@ -1084,8 +1084,35 @@ whose arguments are those of the pointer's signature, leaf for
 leaf.
 
 Only arm64 macOS can link so far: Linux needs glibc's startup objects
-passed to keel's ELF linker. `flux build --timings` prints each phase's
-time.
+passed to keel's ELF linker.
+
+### Compilation timings
+
+`flux build/run` and `flux package build/run` accept `--timings`. Reports go
+to stderr, including reached scopes on ordinary failures. Disabled timing
+performs no clock reads or phase-record allocations.
+
+`compile scoped elapsed` covers the compilation driver, diagnostics and
+compile-local destruction. For packages, `package compile scoped elapsed`
+also covers planning, output-directory setup and printing the inner report,
+but ends before running the program or destroying the returned package plan.
+CLI parsing, request construction, final driver error formatting, the scope's
+own report and process/global teardown remain outside these boundaries.
+These are scoped wall durations, not sums of phases or full process times.
+
+Planning includes nested Cargo metadata invocation, decoding and validation
+for each source crate. Root and dependency loading scopes do not cover all
+parsing: HIR lowering also loads module files. Type checking includes constant
+evaluation; MIR construction and checking share one scope; Keel lowering
+includes monomorphization. The inclusive backend scope contains verification,
+optimization, native code generation and assembly. Those child scopes measure
+the named calls and can exclude surrounding error formatting and destruction.
+Linking includes SDK discovery, output writing and signing. Never add nested
+scopes together or label an unmeasured remainder as metadata time.
+
+Unreached backend scopes are absent on failures; abrupt aborts need not produce
+a complete report. Compiler latency, generated-program performance and Rust
+build-cache timings are separate measurements.
 
 ## Names and memory
 
