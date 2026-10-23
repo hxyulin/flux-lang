@@ -164,8 +164,11 @@ fn structs(
                 lifetimes: s.generics.lifetimes.len() as u32,
                 fields,
                 // Mutation through a shared reference makes the payload
-                // invariant, despite the direct single-field representation.
-                variances: if crate::is_lang_struct(items, id, "unsafe_cell") {
+                // invariant, despite storing `T` directly in these core types.
+                variances: if crate::is_lang_struct(items, id, "unsafe_cell")
+                    || crate::is_lang_struct(items, id, "cell")
+                    || crate::is_lang_struct(items, id, "ref_cell")
+                {
                     vec![Variance::Invariant; count].into()
                 } else if crate::is_lang_struct(items, id, "phantom_data") {
                     // `PhantomData<T>` acts as if it held a `T`.
