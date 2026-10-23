@@ -527,6 +527,11 @@ Methods are found as rustc finds them: on the receiver's type, then on
 each type it dereferences to, the type's own methods before those of
 traits, and those of traits only if the trait is in scope (defined or
 imported in the module, or in the prelude) or bounds a type parameter.
+A by-value method on `&T` competes with a method borrowing `T` at the same
+actual receiver type; inherent methods and methods from a type parameter's
+bounds retain their priority. Repeated by-value trait calls on concrete
+`&mut T` receivers can still reject as moved, and competing dynamic-object
+methods can still report ambiguity.
 A call of a generic function or method must meet its bounds, and an
 `impl` block must define its trait's required methods with its
 signatures; flux reports what rustc does where they do not (E0277,

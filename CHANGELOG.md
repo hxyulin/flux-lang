@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Fix borrowed generic method dispatch by grouping equivalent receiver
+  candidates before applying inherent and type-parameter bound priority.
+
 - Add runtime raw-pointer `align_offset` with element-count semantics and
   bounded arithmetic. Execute unchanged DroplessArena with rustc comparisons
   covering growth, alignment, dedicated chunks and destruction.
