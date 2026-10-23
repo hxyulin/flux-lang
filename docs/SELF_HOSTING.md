@@ -316,10 +316,15 @@ removes the guard-based Vec access errors in unchanged `dropless.rs`; allocation
 and pointer API prerequisites remain. It does not establish full arena support.
 
 `Box<[T]>::new_uninit_slice` now supplies checked uninitialized storage for
-both arena implementations. `StaticSliceArena` still requires valid empty
-mutable-slice promotion and mutable-slice `Default`; `DroplessArena` also needs
-pointer APIs. The existing huge-ZST drop traversal limitation remains separate
-from allocation support.
+both arena implementations. Literal empty mutable-array promotion and mutable
+slice `Default` now complete the demonstrated `StaticSliceArena` prerequisites.
+The runtime suite loads its unchanged production file directly, comparing
+initialized values, chunk boundaries, retained references and alignment against
+rustc in both Flux modes. Its intentional process-lifetime leaks remain part
+of the source contract. Repeat-array promotion remains unsupported;
+`DroplessArena` still needs pointer APIs, and the huge-ZST drop traversal
+limitation remains separate from allocation support. This is a bounded source
+consumer milestone, not complete flux-arena compilation.
 
 Copy slice-to-array conversion and borrowed `split_first_chunk` now supply
 library prerequisites for the unchanged rustc-hash hashing implementation.
