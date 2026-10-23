@@ -1006,7 +1006,28 @@ impl Ctx<'_> {
                     put(bytes, at + 8, u128::from(len), 8);
                 }
             }
-            V::InteriorRef(_) => unreachable!("escaping interior borrows are rejected"),
+            V::InteriorRef(_) | V::LocalRef { .. } => {
+                unreachable!("escaping transient borrows are rejected")
+            }
+            V::PointerView {
+                pointer, source, ..
+            } => {
+                let stored_size = self.layouts.of(*source).size as usize;
+                let size = layout.size as usize;
+                let mut storage = vec![0; stored_size];
+                let mut pointers = Vec::new();
+                self.write_bytes(pointer, *source, 0, &mut storage, &mut pointers);
+                // Pointer casts preserve the original allocation and may drop
+                // wide metadata, never grow a pointer without new metadata.
+                assert!(size <= stored_size);
+                bytes[at..at + size].copy_from_slice(&storage[..size]);
+                addresses.extend(
+                    pointers
+                        .into_iter()
+                        .filter(|(offset, _, _)| *offset < size)
+                        .map(|(offset, symbol, addend)| (at + offset, symbol, addend)),
+                );
+            }
             V::Ref(pointee) => {
                 let (symbol, len) = self.referenced(pointee, ty);
                 addresses.push((at, symbol, 0));
@@ -2054,7 +2075,18 @@ impl Lower<'_, '_, '_> {
                     out.push(self.int_const(u128::from(len), IntTy::Usize));
                 }
             }
-            V::InteriorRef(_) => unreachable!("escaping interior borrows are rejected"),
+            V::InteriorRef(_) | V::LocalRef { .. } => {
+                unreachable!("escaping transient borrows are rejected")
+            }
+            V::PointerView {
+                pointer, source, ..
+            } => {
+                let mut original = Values::new();
+                self.value_leaves(pointer, *source, &mut original);
+                let count = (self.ctx.layouts.of(ty).size / 8) as usize;
+                assert!(count <= original.len());
+                out.extend(original.into_iter().take(count));
+            }
             V::Ref(pointee) => {
                 let (symbol, len) = self.ctx.referenced(pointee, ty);
                 let data = self.b.import_data(&symbol);
