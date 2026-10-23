@@ -11,6 +11,7 @@ mod macros;
 pub mod alloc;
 pub mod borrow;
 pub mod boxed;
+pub mod collections;
 pub mod fmt;
 pub mod prelude;
 mod raw_vec;

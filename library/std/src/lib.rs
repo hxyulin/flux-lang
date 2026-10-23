@@ -3,7 +3,7 @@
 
 extern crate alloc;
 
-pub use ::alloc::{alloc, borrow, boxed, fmt, format, prelude, string, vec};
+pub use ::alloc::{alloc, borrow, boxed, collections, fmt, format, prelude, string, vec};
 pub use core::{
     any, array, ascii, cell, char, clone, cmp, convert, default, ffi, hash, hint, iter, marker, mem,
     num, ops, option, panic, ptr, result,
