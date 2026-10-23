@@ -44,12 +44,8 @@ impl Clone for char { fn clone(&self) -> char { *self } }
 impl Clone for () { fn clone(&self) -> () { () } }
 impl<T: ?Sized> Clone for *const T { fn clone(&self) -> Self { *self } }
 impl<T: ?Sized> Clone for *mut T { fn clone(&self) -> Self { *self } }
-// Function pointers, which rustc's `core` clones through a built-in
-// impl for every arity.
-impl<R> Clone for fn() -> R { fn clone(&self) -> Self { *self } }
-impl<A, R> Clone for fn(A) -> R { fn clone(&self) -> Self { *self } }
-impl<A, B, R> Clone for fn(A, B) -> R { fn clone(&self) -> Self { *self } }
-impl<A, B, C, R> Clone for fn(A, B, C) -> R { fn clone(&self) -> Self { *self } }
+// Function items and pointers implement `Clone` through a compiler shim
+// that copies them, independently of their arity and safety.
 
 // Tuples clone each element.
 impl<A: Clone> Clone for (A,) {
