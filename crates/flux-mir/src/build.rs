@@ -100,6 +100,10 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     // Patterns that name constants are checked with their values; rustc
     // does not borrow-check the bodies whose patterns have errors.
     diagnostics.extend(crate::borrowck::check_impl_methods(&hir.items, &typed.sigs));
+    diagnostics.extend(crate::borrowck::check_impl_supertraits(
+        &hir.items,
+        &typed.sigs,
+    ));
     let (found, failed) = check_patterns(hir, typed, &bodies, &consts, &unchecked, true);
     diagnostics.extend(found);
     for (id, body) in bodies.iter() {

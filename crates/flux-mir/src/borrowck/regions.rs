@@ -427,6 +427,123 @@ pub(crate) fn impl_method_matches(
     })
 }
 
+/// Checks the supertraits at the declaration, even for an unused, empty
+/// impl. Header lifetimes are universal: selecting a supertrait impl may
+/// require relations, but may not add them to what the header guarantees.
+pub(crate) fn impl_supertraits_match(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: flux_hir::ImplId,
+) -> Option<bool> {
+    let (Some(block), Some(&self_ty), Some(&trait_ref)) = (
+        sigs.regions.impls.get(imp),
+        sigs.impls.get(imp),
+        sigs.impl_traits.get(imp),
+    ) else {
+        return Some(true);
+    };
+    if sigs
+        .traits
+        .get(trait_ref.trait_)
+        .is_none_or(|t| t.supertraits.is_empty())
+    {
+        return Some(true);
+    }
+    let body = Body::empty(None);
+    let none = Requirements::default();
+    let mut cx = Cx::new(&body, items, sigs, &none);
+    cx.env = sigs
+        .impl_projections
+        .get(imp)
+        .map_or(Vec::new(), |p| p.to_vec());
+    cx.new_universal("'static".into());
+    let lifetimes: Vec<_> = (0..block.names.len())
+        .map(|i| cx.new_universal(format!("'{i}")))
+        .collect();
+    let map = |r| match r {
+        Region::Static => Some(STATIC),
+        Region::Param(i) => lifetimes.get(i as usize).copied(),
+        Region::Erased | Region::Late(_) => None,
+    };
+    for p in block.outlives.iter() {
+        match *p {
+            Outlives::Region(a, b) => {
+                let (Some(a), Some(b)) = (map(a), map(b)) else {
+                    return None;
+                };
+                cx.known_pairs.push((a, b));
+            }
+            Outlives::Type(t, b) => {
+                let b = map(b)?;
+                cx.known_types.push((t, b));
+            }
+        }
+    }
+    let mut env = Vec::new();
+    for (k, &p) in sigs
+        .impl_predicates
+        .get(imp)
+        .map_or(&[][..], |p| p)
+        .iter()
+        .enumerate()
+    {
+        let Some(goal) = cx.impl_region_goal(
+            p,
+            block.bound_selfs.get(k).map_or(&[], |t| t),
+            block
+                .bound_traits
+                .get(k)
+                .unwrap_or(&TraitRefRegions::default()),
+            &lifetimes,
+            &[],
+            &[],
+        ) else {
+            // An unrelated higher-ranked callback bound need not be
+            // interpreted to prove this impl's supertraits.
+            continue;
+        };
+        cx.impl_super_goals(goal, &mut env, 0);
+    }
+    for (p, table) in cx.env.clone().iter().zip(block.projections.iter()) {
+        if let Some(vars) = cx.instantiate_sig(p.ty, table, &mut { map }, &[], &[]) {
+            cx.env_regions.push((p.alias, vars));
+        }
+    }
+    let vars = cx.instantiate_sig(self_ty, &block.self_ty, &mut { map }, &[], &[])?;
+    let mut root = ImplRegionGoal {
+        predicate: trait_ref.with_self(self_ty),
+        vars: vec![vars],
+    };
+    for (&ty, table) in trait_ref.args.iter().zip(block.trait_args.iter()) {
+        let vars = cx.instantiate_sig(ty, table, &mut { map }, &[], &[])?;
+        root.vars.push(vars);
+    }
+    let mut goals = Vec::new();
+    if !cx.impl_super_goals(root, &mut goals, 0) {
+        return None;
+    }
+    for goal in goals.iter().skip(1) {
+        if !cx.impl_prove_super(goal, &env, 0) {
+            return None;
+        }
+    }
+    cx.close_known();
+    let solution = cx.solve(&Points::new(&body), &[]);
+    Some(
+        cx.check_universal(&solution).is_empty()
+            && cx.check_type_tests(&solution).is_empty()
+            && cx.errors.is_empty(),
+    )
+}
+
+/// The erased predicate and its separate region slots. Trait declarations
+/// with lifetime parameters remain guarded by signature checking.
+#[derive(Clone)]
+struct ImplRegionGoal {
+    predicate: flux_ty::Predicate,
+    vars: Vec<Vec<Var>>,
+}
+
 struct Cx<'a> {
     body: &'a Body,
     items: &'a ItemTree,
@@ -605,6 +722,291 @@ impl<'a> Cx<'a> {
             late_inputs: Vec::new(),
             call_projections: Vec::new(),
         }
+    }
+
+    /// Concrete associated-type normalization may itself select an impl
+    /// with region-dependent bounds. Until that selection can be proved here,
+    /// only projections guaranteed by the header's own bounds are available.
+    fn impl_aliases_known(&self, ty: Ty, args: &[Ty]) -> bool {
+        let ty = if args.is_empty() { ty } else { ty.subst(args) };
+        if let TyKind::Alias(alias) = ty.kind()
+            && !self.env.iter().any(|p| p.alias == alias)
+        {
+            return false;
+        }
+        ty.children().all(|t| self.impl_aliases_known(t, &[]))
+    }
+
+    /// Instantiate an impl bound without inventing lifetimes for missing
+    /// metadata. An unrepresentable obligation must fail this universal check.
+    #[allow(clippy::too_many_arguments)]
+    fn impl_region_goal(
+        &mut self,
+        p: flux_ty::Predicate,
+        table: &[Region],
+        trait_regions: &TraitRefRegions,
+        lifetimes: &[Var],
+        args: &[Ty],
+        arg_vars: &[Vec<Var>],
+    ) -> Option<ImplRegionGoal> {
+        if !trait_regions.lifetimes.is_empty() {
+            return None;
+        }
+        let mut map = |r| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => lifetimes.get(i as usize).copied(),
+            Region::Erased | Region::Late(_) => None,
+        };
+        let mut vars = Vec::new();
+        let mut types = Vec::new();
+        for (k, &ty) in std::iter::once(&p.self_ty)
+            .chain(p.trait_ref.args)
+            .enumerate()
+        {
+            let table = if k == 0 {
+                table
+            } else {
+                trait_regions.args.get(k - 1).map_or(&[][..], |t| t)
+            };
+            if !self.impl_aliases_known(ty, args) {
+                return None;
+            }
+            let instance = self.normalize(if args.is_empty() { ty } else { ty.subst(args) });
+            let slots = self.instantiate_sig(ty, table, &mut map, args, arg_vars)?;
+            if slots.len() != self.slots(instance) as usize {
+                return None;
+            }
+            types.push(instance);
+            vars.push(slots);
+        }
+        Some(ImplRegionGoal {
+            predicate: flux_ty::Predicate {
+                self_ty: types[0],
+                trait_ref: flux_ty::TraitRef {
+                    args: Ty::list(&types[1..]),
+                    ..p.trait_ref
+                },
+            },
+            vars,
+        })
+    }
+
+    /// Elaborate while retaining the slots contributed by Self and generic
+    /// arguments. Written reference lifetimes in supertrait arguments do not
+    /// yet have tables; reject that boundary instead of guessing their regions.
+    fn impl_super_goals(
+        &mut self,
+        goal: ImplRegionGoal,
+        out: &mut Vec<ImplRegionGoal>,
+        depth: u32,
+    ) -> bool {
+        if depth > 32 {
+            return false;
+        }
+        if out
+            .iter()
+            .any(|g| g.predicate == goal.predicate && g.vars == goal.vars)
+        {
+            return true;
+        }
+        out.push(goal.clone());
+        let args: Vec<_> = std::iter::once(goal.predicate.self_ty)
+            .chain(goal.predicate.trait_ref.args.iter().copied())
+            .collect();
+        for &sup in self
+            .sigs
+            .traits
+            .get(goal.predicate.trait_ref.trait_)
+            .map_or(&[][..], |s| &s.supertraits)
+        {
+            let Some(next) = self.impl_region_goal(
+                sup.with_self(Ty::param(0, flux_intern::kw::SelfUpper)),
+                &[],
+                &TraitRefRegions::default(),
+                &[],
+                &args,
+                &goal.vars,
+            ) else {
+                return false;
+            };
+            if !self.impl_super_goals(next, out, depth + 1) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn impl_prove_super(
+        &mut self,
+        goal: &ImplRegionGoal,
+        env: &[ImplRegionGoal],
+        depth: u32,
+    ) -> bool {
+        if depth > 32 {
+            return false;
+        }
+        let range = TextRange::default();
+        if self.items.traits[goal.predicate.trait_ref.trait_].lang == Some(flux_intern::sym::sized)
+            || flux_ty::traits::is_builtin_copy(
+                self.items,
+                goal.predicate.trait_ref.trait_,
+                goal.predicate.self_ty,
+            )
+        {
+            return flux_ty::traits::holds(self.items, self.sigs, &[], goal.predicate);
+        }
+        if let Some(known) = env
+            .iter()
+            .find(|g| g.predicate == goal.predicate && g.vars == goal.vars)
+            .or_else(|| env.iter().find(|g| g.predicate == goal.predicate))
+        {
+            for (a, b) in known.vars.iter().zip(&goal.vars) {
+                if a.len() != b.len() {
+                    return false;
+                }
+                for (&a, &b) in a.iter().zip(b) {
+                    self.equate(a, b, Category::Boring, range);
+                }
+            }
+            return true;
+        }
+        let Some((imp, args)) = flux_ty::traits::select_impl(self.items, self.sigs, goal.predicate)
+        else {
+            // Built-in, region-free obligations (notably Sized and Copy)
+            // need no user impl. Never use erased environment bounds here.
+            return goal.vars.iter().all(Vec::is_empty)
+                && flux_ty::traits::holds(self.items, self.sigs, &[], goal.predicate);
+        };
+        let Some(block) = self.sigs.regions.impls.get(imp) else {
+            return false;
+        };
+        let header: Vec<_> = std::iter::once(goal.predicate.self_ty)
+            .chain(goal.predicate.trait_ref.args.iter().copied())
+            .collect();
+        let Some(binding) = self.bind_impl(imp, &args, &header, &goal.vars, &[], range, depth)
+        else {
+            return false;
+        };
+        let lifetimes: Vec<_> = binding
+            .lifetimes
+            .into_iter()
+            .map(|v| v.unwrap_or_else(|| self.fresh()))
+            .collect();
+        let type_vars: Vec<_> = binding
+            .types
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| {
+                v.unwrap_or_else(|| {
+                    let n = self.slots(args[i]);
+                    self.fresh_list(n)
+                })
+            })
+            .collect();
+        let map = |r| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => lifetimes.get(i as usize).copied(),
+            Region::Erased | Region::Late(_) => None,
+        };
+        for p in block.bounds.iter() {
+            match *p {
+                Outlives::Region(a, b) => {
+                    let (Some(a), Some(b)) = (map(a), map(b)) else {
+                        return false;
+                    };
+                    self.outlives(a, b, Category::Boring, range);
+                }
+                Outlives::Type(t, b) => {
+                    let Some(b) = map(b) else { return false };
+                    let Some(vars) = self.instantiate_sig(t, &[], &mut { map }, &args, &type_vars)
+                    else {
+                        return false;
+                    };
+                    for v in vars {
+                        self.outlives(v, b, Category::Boring, range);
+                    }
+                    self.type_outlives(self.normalize(t.subst(&args)), b, range);
+                }
+            }
+        }
+        let mut proven = Vec::new();
+        for (k, &p) in self
+            .sigs
+            .impl_predicates
+            .get(imp)
+            .map_or(&[][..], |p| p)
+            .iter()
+            .enumerate()
+        {
+            let Some(next) = self.impl_region_goal(
+                p,
+                block.bound_selfs.get(k).map_or(&[], |t| t),
+                block
+                    .bound_traits
+                    .get(k)
+                    .unwrap_or(&TraitRefRegions::default()),
+                &lifetimes,
+                &args,
+                &type_vars,
+            ) else {
+                return false;
+            };
+            if !self.impl_prove_super(&next, env, depth + 1) {
+                return false;
+            }
+            proven.push(next);
+        }
+        for (p, table) in self
+            .sigs
+            .impl_projections
+            .get(imp)
+            .map_or(&[][..], |p| p)
+            .iter()
+            .zip(block.projections.iter())
+        {
+            if !self.impl_aliases_known(p.ty, &args) {
+                return false;
+            }
+            let Some(expected) = self.instantiate_sig(p.ty, table, &mut { map }, &args, &type_vars)
+            else {
+                return false;
+            };
+            if expected.is_empty() {
+                continue;
+            }
+            let TyKind::Alias(alias) = Ty::alias(p.alias).subst(&args).kind() else {
+                return false;
+            };
+            let alias_vars = match proven.iter().find(|g| {
+                g.predicate.trait_ref.trait_ == alias.trait_
+                    && alias.args.first() == Some(&g.predicate.self_ty)
+                    && alias.args.get(1..) == Some(g.predicate.trait_ref.args)
+            }) {
+                Some(g) => g.vars.clone(),
+                None => {
+                    let mut vars = Vec::new();
+                    for &ty in p.alias.args {
+                        let Some(v) =
+                            self.instantiate_sig(ty, &[], &mut { map }, &args, &type_vars)
+                        else {
+                            return false;
+                        };
+                        vars.push(v);
+                    }
+                    vars
+                }
+            };
+            let Some(actual) = self.normalize_regions(alias, &alias_vars, depth + 1) else {
+                return false;
+            };
+            if actual.len() != expected.len() {
+                return false;
+            }
+            for (a, b) in actual.into_iter().zip(expected) {
+                self.equate(a, b, Category::Boring, range);
+            }
+        }
+        true
     }
 
     fn slots(&mut self, ty: Ty) -> u32 {

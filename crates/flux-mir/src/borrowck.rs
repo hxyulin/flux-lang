@@ -149,6 +149,27 @@ pub fn check_impl_methods(items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
     diagnostics
 }
 
+/// Supertraits must hold for every lifetime allowed by the impl header,
+/// including when the impl has no methods and nothing uses it.
+pub fn check_impl_supertraits(items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
+    items
+        .impls
+        .iter()
+        .skip(items.core.impls as usize)
+        .filter_map(|(imp, data)| {
+            data.trait_?;
+            let message = match regions::impl_supertraits_match(items, sigs, imp) {
+                Some(true) => return None,
+                Some(false) => "supertrait lifetime requirements are not satisfied by the impl header",
+                None => "supertrait lifetime requirements that cannot be resolved from the impl header are not supported yet",
+            };
+            let mut d = Diagnostic::new(data.self_range, message);
+            d.file = data.file;
+            Some(d)
+        })
+        .collect()
+}
+
 struct Loan {
     place: Place,
     mutability: Mutability,
