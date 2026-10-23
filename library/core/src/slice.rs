@@ -104,6 +104,20 @@ impl<T> [T] {
         if self.len() == 0 { None } else { Some((&self[0], &self[1..])) }
     }
 
+    /// The first `N` elements as an array and the remaining slice, or
+    /// `None` if fewer than `N` elements remain.
+    pub fn split_first_chunk<const N: usize>(&self) -> Option<(&[T; N], &[T])> {
+        if self.len() < N {
+            None
+        } else {
+            // SAFETY: the length check ensures the array fits. Its alignment
+            // is T's alignment, and both references borrow the original slice.
+            // For N = 0 the prefix is empty and the suffix is the whole slice.
+            let first = unsafe { &*(self.as_ptr() as *const [T; N]) };
+            Some((first, &self[N..]))
+        }
+    }
+
     /// The last element and the rest, or `None` if the slice is empty.
     pub fn split_last(&self) -> Option<(&T, &[T])> {
         let len = self.len();
