@@ -14,7 +14,7 @@ use crate::default::Default;
 use crate::fmt::{self, Debug, Display, Formatter};
 use crate::marker::Copy;
 use crate::mem;
-use crate::ops::{Drop, FnOnce};
+use crate::ops::{Deref, DerefMut, Drop, FnOnce};
 use crate::option::Option::{self, None, Some};
 use crate::panicking::panic;
 use crate::result::Result::{self, Err, Ok};
@@ -343,6 +343,14 @@ impl<'b, T> Ref<'b, T> {
     }
 }
 
+impl<'b, T> Deref for Ref<'b, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.value
+    }
+}
+
 /// The value's.
 impl<'b, T: Debug> Debug for Ref<'b, T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -365,6 +373,20 @@ pub struct RefMut<'b, T> {
 impl<'b, T> RefMut<'b, T> {
     fn value_mut(&mut self) -> &mut T {
         &mut *self.value
+    }
+}
+
+impl<'b, T> Deref for RefMut<'b, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &*self.value
+    }
+}
+
+impl<'b, T> DerefMut for RefMut<'b, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.value_mut()
     }
 }
 
