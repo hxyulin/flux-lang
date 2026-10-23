@@ -37,6 +37,9 @@ pub(crate) const BODY_PROJECTION_LIFETIMES: &str =
     "lifetimes in associated type annotations are not supported yet";
 
 mod resolve;
+mod trait_profile;
+
+pub use trait_profile::{TraitProfileError, TraitProfileReason, required_method_trait_profile};
 
 pub(crate) use resolve::resolve_regions;
 
