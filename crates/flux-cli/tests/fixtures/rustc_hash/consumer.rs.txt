@@ -1,0 +1,23 @@
+use core::hash::{BuildHasher, Hash, Hasher};
+use rustc_hash::{FxHasher, FxSeededState};
+
+fn main() {
+    let mut storage = [0u8; 132];
+    for i in 0..storage.len() {
+        storage[i] = (i * 37 + 11) as u8;
+    }
+    for offset in 0..=3 {
+        for len in 0..=128 {
+            let bytes = &storage[offset..offset + len];
+            let mut plain = FxHasher::default();
+            plain.write(bytes);
+            let mut seeded = FxSeededState::with_seed(123).build_hasher();
+            seeded.write(bytes);
+            seeded.write_u32(0x12345678);
+            println!("{} {} {} {}", offset, len, plain.finish(), seeded.finish());
+        }
+    }
+    let mut values = FxHasher::default();
+    ("flux", (17u32, true)).hash(&mut values);
+    println!("values {}", values.finish());
+}
