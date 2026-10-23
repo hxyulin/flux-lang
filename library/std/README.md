@@ -25,9 +25,9 @@ promise rustc's spelling. This follows the diagnostic-only
 `Any`, `TypeId`, downcasting and `type_name_of_val` remain absent. The stable
 function is not callable in constants.
 
-There are no additional collection implementations: Vec, String and Box
-remain available at their usual module paths and through the standard
-prelude. Printing macros and alloc's formatting macro also have real std
+`collections` reexports the bounded BTreeMap implementation from alloc. Vec,
+String and Box remain available at their usual module paths and through the
+standard prelude. Printing macros and alloc's formatting macro also have real std
 reexports so explicit imports work in no_std libraries that opt into std.
 
 `thread` exposes only `panicking() -> bool`. Flux's existing panic runtime
@@ -58,6 +58,10 @@ compilations. Std is crate 2; source dependencies follow it in graph order,
 then the executable crate. Without dependencies the program remains crate 3;
 core and alloc retain crate IDs 0 and 1. No rustc library metadata is loaded.
 
-Filesystem, synchronization, atomics and missing core/alloc APIs remain
-outside this facade's scope. The NonZeroU32 layout support is implemented
-in core/compiler code rather than simulated by facade aliases.
+`sync` reexports sized `Arc`/`Weak` from alloc and the bounded core atomic
+module (`AtomicUsize`, `Ordering`, and fences). These have real atomic
+operations and ownership semantics; they do not provide mutexes, locks,
+thread creation, or dynamically sized Arc payloads. Sized `UnsafeCell` is
+also available through `cell`. Filesystem and the remaining runtime/library
+APIs are absent. The NonZeroU32 layout support is implemented in core/compiler
+code rather than simulated by facade aliases.

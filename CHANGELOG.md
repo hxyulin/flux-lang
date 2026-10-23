@@ -4,6 +4,14 @@
 
 ### Syntax
 
+- Preserve original allocation layout and frame lifetimes for supported constant
+  pointer views; fix reference extraction through temporary Cell storage (020).
+
+- Add sized atomic Arc/Weak and execute unchanged SharedSlice source against
+  rustc. Deduplicate identical associated trait proofs during iterator inference.
+
+- Enforce Cell and RefCell payload invariance while retaining Arc/Weak covariance.
+
 - Add native LP64 AtomicUsize operations and fences with validated ordering,
   using Keel atomic IR, plus contention and synchronized-publication coverage.
 
