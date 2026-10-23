@@ -216,6 +216,18 @@ inputs using fresh owner variables. Unrepresented cases reject explicitly,
 including unused scalar and unit outputs. Fixed type-parameter and iterator-item
 inputs remain supported. Some valid owner methods with independent late input
 lifetimes also hit this conservative boundary.
+Free-function items with explicit signature lifetime/type-outlives bounds use
+the same conservative boundary; fresh variables do not prove higher-ranked
+generality. Ordinary unbounded named/elided identity functions and fixed-item
+callbacks remain covered by runtime controls.
+
+The dedicated `typed_ast_readiness` test now assembles all unchanged syntax
+sources, including the full typed AST. Its basic and comprehensive consumers
+cover 135 node/sum interfaces, 535 generated accessors and 82 conversions.
+It retains exactly the declaration-gate diagnostic and requires zero unrelated
+type errors and zero independent MIR errors. Rustc checks the same source graph
+separately. This is readiness evidence below the gate, not a native Flux build
+of the typed AST.
 
 Function-item callbacks now share direct calls' complete signature obligations,
 including function/owner predicates, projections and outlives constraints.
