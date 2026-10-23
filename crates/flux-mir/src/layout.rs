@@ -440,7 +440,7 @@ impl<'a> Layouts<'a> {
             }
             // rustc's `UnsafeCell`, which `Cell` and `RefCell`'s value
             // are, hides its value's niche.
-            if lang("cell") || lang("ref_cell") {
+            if lang("cell") || lang("ref_cell") || lang("unsafe_cell") {
                 layout.niche = None;
             }
             if lang("maybe_uninit") {

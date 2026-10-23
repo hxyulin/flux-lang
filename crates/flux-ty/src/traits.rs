@@ -1479,9 +1479,9 @@ pub(crate) fn auto_trait_requirements(
             }) {
                 return None;
             }
-            // Cell is core's interior-mutability primitive (its field is
-            // represented directly, without an UnsafeCell wrapper).
-            if crate::is_lang_struct(items, adt.strukt, "cell")
+            // The direct interior-mutability primitives are never structurally Sync.
+            if (crate::is_lang_struct(items, adt.strukt, "cell")
+                || crate::is_lang_struct(items, adt.strukt, "unsafe_cell"))
                 && items.traits[t].lang.is_some_and(|l| l.as_str() == "sync")
             {
                 return None;

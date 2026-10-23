@@ -19,6 +19,39 @@ use crate::option::Option::{self, None, Some};
 use crate::panicking::panic;
 use crate::result::Result::{self, Err, Ok};
 
+/// A sized value that may be mutated through a shared reference.
+/// The caller must uphold aliasing and data-race rules when using `get`.
+/// This has `T`'s size and alignment, but hides its niches from enclosing enums.
+/// Only construction is supported in constants; borrowing this storage and
+/// calling its accessors in constants are not supported yet.
+#[lang = "unsafe_cell"]
+pub struct UnsafeCell<T> {
+    value: T,
+}
+
+impl<T> UnsafeCell<T> {
+    /// A cell holding `value`.
+    pub const fn new(value: T) -> UnsafeCell<T> {
+        UnsafeCell { value }
+    }
+
+    /// A raw pointer to the value. Dereferencing it requires `unsafe`.
+    /// Calling this in constants is not supported yet.
+    pub fn get(&self) -> *mut T {
+        self as *const UnsafeCell<T> as *mut T
+    }
+
+    /// Exclusive access to the value.
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+
+    /// Takes the value out of the cell.
+    pub fn into_inner(self) -> T {
+        self.value
+    }
+}
+
 /// A mutable place behind `value`, which a shared reference reaches.
 fn as_mut<T>(value: &T) -> &mut T {
     unsafe { &mut *(value as *const T as *mut T) }
