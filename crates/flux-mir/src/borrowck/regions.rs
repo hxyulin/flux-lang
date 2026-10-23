@@ -435,6 +435,25 @@ pub(crate) fn impl_supertraits_match(
     sigs: &Signatures,
     imp: flux_hir::ImplId,
 ) -> Option<bool> {
+    impl_header_match(items, sigs, imp, false)
+}
+
+/// Associated-value bounds use the same universal header assumptions as
+/// supertraits, but remain a separate set of declaration obligations.
+pub(crate) fn impl_associated_bounds_match(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: flux_hir::ImplId,
+) -> Option<bool> {
+    impl_header_match(items, sigs, imp, true)
+}
+
+fn impl_header_match(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: flux_hir::ImplId,
+    associated: bool,
+) -> Option<bool> {
     let (Some(block), Some(&self_ty), Some(&trait_ref)) = (
         sigs.regions.impls.get(imp),
         sigs.impls.get(imp),
@@ -442,11 +461,13 @@ pub(crate) fn impl_supertraits_match(
     ) else {
         return Some(true);
     };
-    if sigs
-        .traits
-        .get(trait_ref.trait_)
-        .is_none_or(|t| t.supertraits.is_empty())
-    {
+    if sigs.traits.get(trait_ref.trait_).is_none_or(|t| {
+        if associated {
+            t.type_bounds.is_empty()
+        } else {
+            t.supertraits.is_empty()
+        }
+    }) {
         return Some(true);
     }
     let body = Body::empty(None);
@@ -519,17 +540,104 @@ pub(crate) fn impl_supertraits_match(
         root.vars.push(vars);
     }
     let mut goals = Vec::new();
-    if !cx.impl_super_goals(root, &mut goals, 0) {
-        return None;
-    }
-    for goal in goals.iter().skip(1) {
-        if !cx.impl_prove_super(goal, &env, 0) {
+    if associated {
+        let args: Vec<_> = std::iter::once(self_ty)
+            .chain(trait_ref.args.iter().copied())
+            .collect();
+        // Definitions are substitutions, not the required equalities. Their
+        // projection-selection well-formedness is a separate declaration check.
+        for &(name, ref table) in &block.types {
+            let value = flux_ty::traits::impl_type(sigs, imp, name)?;
+            // An abstract projection guaranteed by an original header bound
+            // carries that declaration's bounds. It selects no concrete impl.
+            if let TyKind::Alias(alias) = value.kind()
+                && cx.normalize(value) == value
+                && env.iter().any(|g| {
+                    g.predicate.self_ty == alias.args[0]
+                        && g.predicate.trait_ref.trait_ == alias.trait_
+                        && g.predicate.trait_ref.args == &alias.args[1..]
+                })
+            {
+                let header: Vec<_> = env.iter().map(|g| g.predicate).collect();
+                cx.header_aliases.push(alias);
+                for bound in flux_ty::traits::alias_bounds(sigs, &header, value) {
+                    let goal = cx.impl_region_goal(
+                        bound,
+                        &[],
+                        &TraitRefRegions::default(),
+                        &[],
+                        &[],
+                        &[],
+                    )?;
+                    if !cx.impl_super_goals(goal, &mut env, 0) {
+                        return None;
+                    }
+                }
+            }
+            if !cx.impl_aliases_known(value, &[]) {
+                return None;
+            }
+            let vars = cx.instantiate_sig(value, table, &mut { map }, &[], &[])?;
+            if vars.len() != cx.slots(cx.normalize(value)) as usize {
+                return None;
+            }
+            let alias = AliasTy {
+                trait_: trait_ref.trait_,
+                trait_name: trait_ref.name,
+                name,
+                args: Ty::list(&args),
+            };
+            cx.env.push(flux_ty::Projection { alias, ty: value });
+            cx.env_regions.push((alias, vars));
+        }
+        let sig = sigs.traits.get(trait_ref.trait_)?;
+        for &(name, bound) in &sig.type_bounds {
+            let alias = AliasTy {
+                trait_: trait_ref.trait_,
+                trait_name: trait_ref.name,
+                name,
+                args: Ty::list(
+                    &(0..args.len())
+                        .map(|i| Ty::param(i as u32, flux_intern::kw::SelfUpper))
+                        .collect::<Vec<_>>(),
+                ),
+            };
+            let goal = cx.impl_region_goal(
+                bound.with_self(Ty::alias(alias)),
+                &[],
+                &TraitRefRegions::default(),
+                &[],
+                &args,
+                &root.vars,
+            )?;
+            if !cx.impl_super_goals(goal, &mut goals, 0) {
+                return None;
+            }
+        }
+        for goal in &goals {
+            if !cx.impl_prove_super(goal, &env, 0) {
+                return None;
+            }
+            if !cx.impl_super_equalities(goal, &env)? {
+                return Some(false);
+            }
+        }
+        if !cx.impl_equalities(&root, &env, true)? {
+            return Some(false);
+        }
+    } else {
+        if !cx.impl_super_goals(root, &mut goals, 0) {
             return None;
         }
-    }
-    for goal in &goals {
-        if !cx.impl_super_equalities(goal, &env)? {
-            return Some(false);
+        for goal in goals.iter().skip(1) {
+            if !cx.impl_prove_super(goal, &env, 0) {
+                return None;
+            }
+        }
+        for goal in &goals {
+            if !cx.impl_super_equalities(goal, &env)? {
+                return Some(false);
+            }
         }
     }
     cx.close_known();
@@ -555,6 +663,9 @@ struct Cx<'a> {
     sigs: &'a Signatures,
     /// What the bounds in scope say associated types are.
     env: Vec<flux_ty::Projection>,
+    /// Abstract associated values whose owner is an original impl-header
+    /// predicate. Only the associated-bound declaration check populates this.
+    header_aliases: Vec<AliasTy>,
     slot_counts: FxHashMap<Ty, u32>,
     /// The first variable of each local's slots, and one past the last
     /// local's.
@@ -697,6 +808,7 @@ impl<'a> Cx<'a> {
             items,
             sigs,
             env,
+            header_aliases: Vec::new(),
             slot_counts: FxHashMap::default(),
             local_base: Vec::new(),
             vars: 0,
@@ -736,6 +848,7 @@ impl<'a> Cx<'a> {
         let ty = if args.is_empty() { ty } else { ty.subst(args) };
         if let TyKind::Alias(alias) = ty.kind()
             && !self.env.iter().any(|p| p.alias == alias)
+            && !self.header_aliases.contains(&alias)
         {
             return false;
         }
@@ -849,6 +962,15 @@ impl<'a> Cx<'a> {
         goal: &ImplRegionGoal,
         env: &[ImplRegionGoal],
     ) -> Option<bool> {
+        self.impl_equalities(goal, env, false)
+    }
+
+    fn impl_equalities(
+        &mut self,
+        goal: &ImplRegionGoal,
+        env: &[ImplRegionGoal],
+        associated: bool,
+    ) -> Option<bool> {
         let args: Vec<_> = std::iter::once(goal.predicate.self_ty)
             .chain(goal.predicate.trait_ref.args.iter().copied())
             .collect();
@@ -858,10 +980,14 @@ impl<'a> Cx<'a> {
             .get(goal.predicate.trait_ref.trait_)
             .map_or(&[][..], |s| &s.implied)
             .iter()
-            // Equalities on associated-type bounds (`type N: Add<Output =
-            // i32>`) belong to those types' obligations, not the Self
-            // supertrait edges elaborated by impl_super_goals.
-            .filter(|p| p.alias.args.first() == Some(&Ty::param(0, flux_intern::kw::SelfUpper)))
+            // Keep associated-value equalities separate from Self's
+            // supertrait edges, including when the trait has both.
+            .filter(|p| {
+                let self_param = Ty::param(0, flux_intern::kw::SelfUpper);
+                if associated {
+                    matches!(p.alias.args.first().map(|t| t.kind()), Some(TyKind::Alias(a)) if a.trait_ == goal.predicate.trait_ref.trait_ && a.args.first() == Some(&self_param))
+                } else { p.alias.args.first() == Some(&self_param) }
+            })
         {
             // Trait declarations have no region tables for written reference
             // lifetimes. Only slots substituted from Self/type arguments can
@@ -892,8 +1018,16 @@ impl<'a> Cx<'a> {
             if !self.impl_prove_super(&alias_goal, env, 0) {
                 return None;
             }
-            let TyKind::Alias(alias) = Ty::alias(p.alias).subst(&args).kind() else {
-                return None;
+            let alias = if associated {
+                let alias_args: Vec<_> = std::iter::once(alias_goal.predicate.self_ty)
+                    .chain(alias_goal.predicate.trait_ref.args.iter().copied())
+                    .collect();
+                AliasTy { args: Ty::list(&alias_args), ..p.alias }
+            } else {
+                let TyKind::Alias(alias) = Ty::alias(p.alias).subst(&args).kind() else {
+                    return None;
+                };
+                alias
             };
             if !self.env.iter().any(|p| p.alias == alias) {
                 let (imp, impl_args) =

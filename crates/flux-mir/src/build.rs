@@ -104,6 +104,10 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         &hir.items,
         &typed.sigs,
     ));
+    diagnostics.extend(crate::borrowck::check_impl_associated_bounds(
+        &hir.items,
+        &typed.sigs,
+    ));
     let (found, failed) = check_patterns(hir, typed, &bodies, &consts, &unchecked, true);
     diagnostics.extend(found);
     for (id, body) in bodies.iter() {
