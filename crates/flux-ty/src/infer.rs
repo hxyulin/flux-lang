@@ -1113,6 +1113,26 @@ impl Ctx<'_> {
                 return;
             }
             let extern_fn = self.items.functions[def.function].is_extern;
+            // Pointer input references are independently higher-ranked.
+            // Fixed or constrained lifetimes in the item's signature cannot
+            // be discarded when reifying it, including after `Clone`.
+            let mut input_lifetimes = FxHashSet::default();
+            if let Some(regions) = self.sigs.regions.fns.get(def.function)
+                && (regions.has_bounds
+                    || regions.params.iter().flatten().any(|r| match r {
+                        crate::regions::Region::Static => true,
+                        crate::regions::Region::Param(i) => {
+                            *i < regions.owner || !input_lifetimes.insert(*i)
+                        }
+                        _ => false,
+                    }))
+            {
+                self.error(
+                    self.range(blamed),
+                    "function pointers to functions with constrained input lifetimes are not supported yet",
+                );
+                return;
+            }
             let reified = Ty::new(TyKind::FnPtr(crate::FnSigTy {
                 is_unsafe: ptr.is_unsafe,
                 ..def.sig

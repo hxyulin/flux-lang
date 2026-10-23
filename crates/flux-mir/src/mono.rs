@@ -431,10 +431,10 @@ fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
     if is_fn_shim(items, instance) {
         return true;
     }
-    // A closure is cloned by a copy: it is `Clone` only where `Copy`.
+    // Functions and pointers clone by copying, as do `Copy` closures.
     if matches!(
         instance.args.first().map(|t| t.kind()),
-        Some(TyKind::Closure(..))
+        Some(TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_))
     ) && Some(instance.function) == lang_method(items, "clone", "clone")
     {
         return true;
@@ -454,8 +454,8 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
     }
     let array = instance.args[0];
     let (elem, len) = match array.kind() {
-        // A closure, `Copy`: a copy of it.
-        TyKind::Closure(..) => (array, 0),
+        // A function item, pointer or `Copy` closure: a copy of it.
+        TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_) => (array, 0),
         _ => return None,
     };
     let usize = Ty::int(flux_ty::IntTy::Usize);

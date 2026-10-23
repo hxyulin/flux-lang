@@ -1482,9 +1482,8 @@ fn normalize_predicate(items: &ItemTree, sigs: &Signatures, p: Predicate) -> Pre
     }
 }
 
-/// Whether `ty: t` holds by the compiler's say: shared references are
-/// `Copy` and `Clone`, which `core` cannot write until functions may
-/// return references.
+/// Whether `ty: t` holds by the compiler's say, including `Copy` and
+/// `Clone` for function items and pointers of every supported signature.
 pub fn is_builtin_copy(items: &ItemTree, t: TraitId, ty: Ty) -> bool {
     let lang = items.traits[t].lang;
     match ty.kind() {
@@ -1493,9 +1492,11 @@ pub fn is_builtin_copy(items: &ItemTree, t: TraitId, ty: Ty) -> bool {
         TyKind::Ref(Mutability::Not, _) | TyKind::Never => {
             matches!(lang, Some(l) if l.as_str() == "copy" || l.as_str() == "clone")
         }
-        // Function items and pointers are `Copy`; `core` implements
-        // `Clone` for pointers of up to three parameters.
-        TyKind::FnDef(_) | TyKind::FnPtr(_) => matches!(lang, Some(l) if l.as_str() == "copy"),
+        // Cloning copies the value without calling it or relating its
+        // signature's types or higher-ranked input lifetimes.
+        TyKind::FnDef(_) | TyKind::FnPtr(_) => {
+            matches!(lang, Some(l) if l.as_str() == "copy" || l.as_str() == "clone")
+        }
         _ => false,
     }
 }

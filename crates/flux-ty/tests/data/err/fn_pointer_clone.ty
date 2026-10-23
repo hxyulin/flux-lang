@@ -1,0 +1,21 @@
+fn duplicate<T>(&T) -> T
+    value@0: &T
+fn danger(&i32) -> i32
+    value@0: &i32
+fn static_only(&i32) -> i32
+    value@0: &i32
+fn needs_fn<F>(F) -> ()
+fn main() -> ()
+    pointer@0: unsafe fn(&i32) -> i32
+    cloned@1: unsafe fn(&i32) -> i32
+    safe@2: fn(&i32) -> i32
+    restricted@3: fn(&i32) -> i32 {static_only}
+    general@4: fn(&i32) -> i32
+fn tied<'a>(&mut &i32, &i32) -> ()
+fn tied_clone() -> ()
+    item@0: fn(&mut &i32, &i32) {tied}
+error 345..351: mismatched types: expected `fn(&i32) -> i32`, found `unsafe fn(&i32) -> i32`
+error 357..367: call to unsafe function is unsafe and requires unsafe function or block
+error 382..388: the trait bound `unsafe fn(&i32) -> i32: Fn<(&i32,)>` is not satisfied
+error 472..482: function pointers to functions with constrained input lifetimes are not supported yet
+error 618..622: function pointers to functions with constrained input lifetimes are not supported yet
