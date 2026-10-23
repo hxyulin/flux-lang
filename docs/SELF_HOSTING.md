@@ -412,12 +412,21 @@ allocation/mutation, clones, owned iteration, and sparse descending inserts.
 These are owned-arena excerpts; the shared/layered arena definitions remain
 outside the executable source graph until their ownership and map APIs exist.
 
-Before admitting const `UnsafeCell` constructors, constant evaluation also
-needs to reject shared borrows of temporary interior-mutable values. The
-existing `Cell` API currently exposes this gap: rustc rejects the reduced
-[compile-only case](../tests/difftest/bugs/019_const_interior_mutable_borrow.rs)
-with E0492 while Flux accepts it, including with the older compiler before
-diagnostic type names. No invalid executable was run.
+Constant evaluation now rejects shared borrows of temporary interior-mutable
+values that escape into a constant result, including through raw-pointer casts.
+Owned `Cell` constants, transient borrows, and empty/absent payloads remain
+accepted. References into genuine static storage preserve their original symbol
+and field/index/subslice offset; static storage with interior mutability is writable.
+Constant reads of mutable static storage remain rejected. This fixes the reduced
+Cell-borrow prerequisite for a future `UnsafeCell` implementation; it does not
+provide `UnsafeCell`, atomics or shared ownership.
+
+A separate pre-existing constant-memory limitation remains: raw reinterpretation
+of a temporary `Cell<&T>` can lose the stored reference's layout. The reduced
+[reproducer](../tests/difftest/bugs/020_const_reinterpreted_reference.rs)
+is preserved; it also fails with the compiler from before this checkpoint.
+This requires typed pointer/memory interpretation beyond preserving static
+addresses and rejecting escaping temporary borrows.
 
 ## Next milestones
 

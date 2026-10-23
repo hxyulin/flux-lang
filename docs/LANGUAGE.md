@@ -1115,6 +1115,14 @@ types are, and a type that is `Copy` for some lifetimes only where a
 value of it is copied. A borrowed constant expression (`&5`, `&[1, 2]`) lives
 forever, as rustc promotes it.
 
+Shared borrows of temporary interior-mutable values cannot escape constant
+evaluation, including through raw-pointer casts. Owned interior-mutable
+constants and transient borrows remain accepted, as do empty arrays and absent
+enum payloads. References to statics and their represented field, array-element
+and subslice projections retain the original static address. Constant reads of
+mutable static storage reject; static initializers may read initial values. Reinterpreted and
+nested-dereference static address projections remain unsupported.
+
 A literal empty mutable array (`&mut []`) can also be promoted, including
 generic, dropping and aligned element types. Its empty storage is static;
 lifetimes inside the element type remain constrained by their uses. Mutable
