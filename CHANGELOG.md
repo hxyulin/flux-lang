@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Promote literal empty mutable arrays with preserved element lifetimes and
+  alignment; add mutable-slice `Default` and unchanged StaticSliceArena runtime
+  coverage. Repeat-array promotion remains outside this subset.
+
 - Add Copy slice-to-array conversion with `TryFromSliceError` and borrowed
   `split_first_chunk`, including zero-length, alignment and borrow coverage.
 

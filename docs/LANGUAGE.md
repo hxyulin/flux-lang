@@ -755,7 +755,7 @@ unsized guard targets remain unsupported; all of them, and `BorrowError` and `Bo
 are `Debug` as rustc writes them),
 `core::ptr::{addr_of, addr_of_mut}`,
 `core::default::Default` (in the prelude) for the integers, `bool`,
-`char`, `&str`, `&[T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,
+`char`, `&str`, `&[T]`, `&mut [T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,
 `core::mem::{drop, swap, replace, take}` (`drop` also in the prelude;
 `swap` and `replace` are not `const` yet, as rustc's are),
 `core::convert::{identity, From, Into, TryFrom, TryInto, AsRef, AsMut,
@@ -1094,6 +1094,14 @@ for a parameter's). So must what a callee's bounds say its associated
 types are, and a type that is `Copy` for some lifetimes only where a
 value of it is copied. A borrowed constant expression (`&5`, `&[1, 2]`) lives
 forever, as rustc promotes it.
+
+A literal empty mutable array (`&mut []`) can also be promoted, including
+generic, dropping and aligned element types. Its empty storage is static;
+lifetimes inside the element type remain constrained by their uses. Mutable
+slice `Default` uses this construction without requiring `T: Default`.
+Repeat arrays such as `&mut [0; 0]` remain unsupported for this promotion.
+Nonempty mutable temporaries, other zero-sized values and named local storage
+retain their ordinary borrowing restrictions.
 
 Raw pointers and `core::ptr::read_unaligned` provide unsafe unaligned reads
 of u8/u16/u32/u64/usize. They use alignment-one loads without creating source
