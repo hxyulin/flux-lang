@@ -1,7 +1,7 @@
 //! Declaration classification only: no gate suppression or invalid execution.
 use flux_hir::{Hir, Owner, TraitId};
 use flux_ty::regions::{
-    Region, TraitProfileReason as Reason, required_method_trait_profile as profile,
+    CallbackBinder, Region, TraitProfileReason as Reason, required_method_trait_profile as profile,
 };
 use flux_ty::{Signatures, Ty};
 
@@ -241,6 +241,25 @@ fn corrupted_owner_and_method_tables_fail_closed() {
             _ => sigs.regions.fns.get_mut(method).unwrap().names[0].range = Default::default(),
         }
         assert!(profile(&hir, &sigs, id).is_err(), "corruption {corruption}");
+    }
+}
+
+#[test]
+fn callback_provenance_is_reconstructed_before_profile_acceptance() {
+    let (hir, sigs, id) = resolve(SHAPE);
+    let method = hir.items.traits[id].functions[1];
+    assert_eq!(profile(&hir, &sigs, id), Ok(()));
+    assert_eq!(
+        sigs.regions.fns[method].callback_binder,
+        CallbackBinder::Independent
+    );
+    for provenance in [CallbackBinder::Unclassified, CallbackBinder::SignatureBound] {
+        let mut changed = sigs.clone();
+        changed.regions.fns.get_mut(method).unwrap().callback_binder = provenance;
+        assert_eq!(
+            profile(&hir, &changed, id).unwrap_err().reason,
+            Reason::SignatureMetadata
+        );
     }
 }
 
