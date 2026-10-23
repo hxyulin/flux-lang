@@ -263,3 +263,59 @@ pub(crate) unsafe fn __atomic_usize_fence_acqrel() {
 pub(crate) unsafe fn __atomic_usize_fence_seqcst() {
     loop {}
 }
+
+// Private u32-only bridge; mono validates the exact substituted word.
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_load_relaxed<T>(p: *const T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_load_acquire<T>(p: *const T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_load_seqcst<T>(p: *const T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_store_relaxed<T>(p: *mut T, value: T) {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_store_release<T>(p: *mut T, value: T) {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_store_seqcst<T>(p: *mut T, value: T) {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_add_relaxed<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_add_acquire<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_add_release<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_add_acqrel<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_add_seqcst<T>(p: *mut T, value: T) -> T {
+    loop {}
+}

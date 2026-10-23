@@ -24,6 +24,8 @@ use std::num::NonZeroU32 as SN;
 use core::num::NonZeroU32 as CN;
 use std::sync::atomic::AtomicUsize as SA;
 use core::sync::atomic::AtomicUsize as CA;
+use std::sync::atomic::AtomicU32 as SA32;
+use core::sync::atomic::AtomicU32 as CA32;
 use std::sync::atomic::Ordering as SOrder;
 use core::sync::atomic::Ordering as COrder;
 use std::sync::Arc as SArc;
@@ -50,6 +52,9 @@ fn main() {
     let a: CA = SA::new(1);
     let order: COrder = SOrder::Relaxed;
     let _ = a.load(order);
+    let a32: CA32 = SA32::new(1);
+    let _ = a32.fetch_add(1, order);
+    let _ = a32.load(order);
     std::sync::atomic::fence(SOrder::Acquire);
 }
 "#;
@@ -96,6 +101,7 @@ fn reexports_and_cached_library_ids() {
             ("SN", "CN"),
             ("sm", "cm"),
             ("SA", "CA"),
+            ("SA32", "CA32"),
             ("SOrder", "COrder"),
             ("SArc", "AArc"),
             ("SWeak", "AWeak"),
@@ -124,7 +130,7 @@ fn facade_keeps_library_privacy_and_alloc_opt_in() {
         "use std::fmt::flags; fn main() {}",
         "use alloc::vec::Vec; fn main() {}",
         "use std::fs; fn main() {}",
-        "use std::sync::atomic::AtomicU32; fn main() {}",
+        "use std::sync::atomic::AtomicU64; fn main() {}",
         "use std::thread::spawn; fn main() {}",
         "use std::num::NonZeroU64; fn main() {}",
         "use std::vec::RawVec; fn main() {}",

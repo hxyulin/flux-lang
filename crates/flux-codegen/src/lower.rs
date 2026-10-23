@@ -2541,7 +2541,7 @@ impl Lower<'_, '_, '_> {
                     return;
                 }
                 if items.functions[*func].intrinsic
-                    && let Some((op, order)) =
+                    && let Some((op, order, word)) =
                         flux_mir::mono::atomic_intrinsic(items.functions[*func].name.as_str())
                 {
                     use keel_ir::{Ordering, RmwOp};
@@ -2554,8 +2554,13 @@ impl Lower<'_, '_, '_> {
                         _ => unreachable!("validated atomic order"),
                     };
                     let values: Vec<_> = args.iter().map(|arg| self.operand(arg)[0]).collect();
+                    let word = match word {
+                        IntTy::U32 => Type::I32,
+                        IntTy::Usize => Type::I64,
+                        _ => unreachable!("validated atomic word"),
+                    };
                     let value = match op {
-                        "load" => Some(self.b.ins().atomic_load(Type::I64, ordering, values[0])),
+                        "load" => Some(self.b.ins().atomic_load(word, ordering, values[0])),
                         "store" => {
                             self.b.ins().atomic_store(ordering, values[1], values[0]);
                             None

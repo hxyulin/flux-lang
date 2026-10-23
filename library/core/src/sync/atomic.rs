@@ -1,4 +1,4 @@
-//! Sized LP64 atomic storage, backed by native atomic instructions.
+//! Bounded atomic storage, backed by native atomic instructions.
 use crate::cell::UnsafeCell;
 use crate::intrinsics;
 use crate::marker::Sync;
@@ -159,6 +159,82 @@ impl AtomicUsize {
         failure: Ordering,
     ) -> Result<usize, usize> {
         self.compare_exchange(current, new, success, failure)
+    }
+}
+
+/// A naturally aligned, sized atomic 32-bit unsigned word.
+/// Shared accesses use only native atomic operations; exclusive access may
+/// use `get_mut` or `into_inner`. No wider or overlapping access is permitted.
+#[repr(C, align(4))]
+pub struct AtomicU32 {
+    value: UnsafeCell<u32>,
+}
+
+// SAFETY: every shared access to the UnsafeCell is a native atomic operation.
+// Send propagates structurally from UnsafeCell<u32>; no generic payload is hidden.
+unsafe impl Sync for AtomicU32 {}
+
+impl AtomicU32 {
+    /// Initializes private storage; subsequent shared accesses are atomic.
+    pub const fn new(value: u32) -> AtomicU32 {
+        AtomicU32 {
+            value: UnsafeCell::new(value),
+        }
+    }
+
+    /// Exclusive access, with no concurrent atomic accesses possible.
+    pub fn get_mut(&mut self) -> &mut u32 {
+        self.value.get_mut()
+    }
+
+    /// Consumes the atomic and returns its value.
+    pub fn into_inner(self) -> u32 {
+        self.value.into_inner()
+    }
+
+    /// Loads with Relaxed, Acquire or SeqCst; other orders panic.
+    #[track_caller]
+    pub fn load(&self, order: Ordering) -> u32 {
+        // SAFETY: storage is initialized, aligned and accessed atomically.
+        unsafe {
+            match order {
+                Relaxed => intrinsics::__atomic_u32_load_relaxed(self.value.get()),
+                Acquire => intrinsics::__atomic_u32_load_acquire(self.value.get()),
+                SeqCst => intrinsics::__atomic_u32_load_seqcst(self.value.get()),
+                Release => panic("there is no such thing as a release load"),
+                AcqRel => panic("there is no such thing as an acquire-release load"),
+            }
+        }
+    }
+
+    /// Stores with Relaxed, Release or SeqCst; other orders panic.
+    #[track_caller]
+    pub fn store(&self, value: u32, order: Ordering) {
+        // SAFETY: storage is initialized, aligned and accessed atomically.
+        unsafe {
+            match order {
+                Relaxed => intrinsics::__atomic_u32_store_relaxed(self.value.get(), value),
+                Release => intrinsics::__atomic_u32_store_release(self.value.get(), value),
+                SeqCst => intrinsics::__atomic_u32_store_seqcst(self.value.get(), value),
+                Acquire => panic("there is no such thing as an acquire store"),
+                AcqRel => panic("there is no such thing as an acquire-release store"),
+            }
+        }
+    }
+
+    /// Adds with wrapping arithmetic and returns the previous value.
+    #[track_caller]
+    pub fn fetch_add(&self, value: u32, order: Ordering) -> u32 {
+        // SAFETY: storage is initialized, aligned and accessed atomically.
+        unsafe {
+            match order {
+                Relaxed => intrinsics::__atomic_u32_add_relaxed(self.value.get(), value),
+                Acquire => intrinsics::__atomic_u32_add_acquire(self.value.get(), value),
+                Release => intrinsics::__atomic_u32_add_release(self.value.get(), value),
+                AcqRel => intrinsics::__atomic_u32_add_acqrel(self.value.get(), value),
+                SeqCst => intrinsics::__atomic_u32_add_seqcst(self.value.get(), value),
+            }
+        }
     }
 }
 
