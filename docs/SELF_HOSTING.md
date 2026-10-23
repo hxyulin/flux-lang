@@ -79,6 +79,21 @@ lexer without claiming that the complete syntax crate compiles. Its full
 source graph still first rejects lifetime parameters on `AstNode<'t>` and named
 lifetimes in body types in `ast/ext.rs`.
 
+## Parser over real lexer input
+
+`mbx test --release -p flux-cli --test parser_selfhost` compiles the unchanged
+production parser, its input/event types and complete grammar modules alongside
+the actual lexer. An explicit wrapper retains `Input::from_lexed` and the
+production Edition/TextRange declarations, while excluding tree construction
+and the typed AST. It uses the same real dependency boundary as the lexer test.
+
+Rustc and Flux agree with and without optimization on all 22 current parser
+fixtures, 18,334 UTF-8 prefixes and 20 fragment cases spanning 14 fragment kinds.
+The comparison checks events, errors, complete input consumption and replay of
+202,928 forward-parent links. Fragment matching at each token position is also
+covered. These counts describe the current fixtures; the test reads production
+sources and parser fixtures as they evolve. No compiler repair was required.
+
 ## Main gaps to the complete compiler
 
 ### Compiler input and crate builds
@@ -187,8 +202,9 @@ alloc gaps first, without requiring an operating-system API all at once.
 
 1. Keep the executable source subset passing as its source evolves.
 2. Keep the lexer source-dependency comparison passing on real compiler inputs.
-3. Compile the token input, parser and syntax-tree pipeline, then require its output on
-   the workspace to agree with the rustc-built compiler.
+3. Extend the lexer/parser source graph to actual tree construction and require
+   its output on the workspace to agree with the rustc-built compiler. Add
+   trait/body lifetime support before including the complete typed AST.
 4. Expand into arena/interner and semantic analysis, while adding crate
    builds and the required library/runtime facilities.
 
