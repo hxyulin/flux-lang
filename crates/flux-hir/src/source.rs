@@ -123,6 +123,14 @@ const ALLOC_FILES: &[(&str, &str)] = &[
 /// `library/core/src`, relative to [`CORE_ROOT`].
 const CORE_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/core/src/lib.rs")),
+    (
+        "sync/mod.rs",
+        include_str!("../../../library/core/src/sync/mod.rs"),
+    ),
+    (
+        "sync/atomic.rs",
+        include_str!("../../../library/core/src/sync/atomic.rs"),
+    ),
     ("any.rs", include_str!("../../../library/core/src/any.rs")),
     (
         "macros.rs",

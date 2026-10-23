@@ -42,6 +42,7 @@ pub mod ptr;
 pub mod result;
 pub mod slice;
 pub mod str;
+pub mod sync;
 mod unicode;
 
 /// Legacy integer constants used by existing Rust libraries.

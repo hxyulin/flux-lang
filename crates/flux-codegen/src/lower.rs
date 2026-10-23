@@ -2508,6 +2508,53 @@ impl Lower<'_, '_, '_> {
                     }
                     return;
                 }
+                if items.functions[*func].intrinsic
+                    && let Some((op, order)) =
+                        flux_mir::mono::atomic_intrinsic(items.functions[*func].name.as_str())
+                {
+                    use keel_ir::{Ordering, RmwOp};
+                    let ordering = match order {
+                        "relaxed" => Ordering::Relaxed,
+                        "acquire" => Ordering::Acquire,
+                        "release" => Ordering::Release,
+                        "acqrel" => Ordering::AcqRel,
+                        "seqcst" => Ordering::SeqCst,
+                        _ => unreachable!("validated atomic order"),
+                    };
+                    let values: Vec<_> = args.iter().map(|arg| self.operand(arg)[0]).collect();
+                    let value = match op {
+                        "load" => Some(self.b.ins().atomic_load(Type::I64, ordering, values[0])),
+                        "store" => {
+                            self.b.ins().atomic_store(ordering, values[1], values[0]);
+                            None
+                        }
+                        "add" | "sub" => Some(self.b.ins().atomic_rmw(
+                            if op == "add" { RmwOp::Add } else { RmwOp::Sub },
+                            ordering,
+                            values[0],
+                            values[1],
+                        )),
+                        "cas" => Some(
+                            self.b
+                                .ins()
+                                .atomic_cas(ordering, values[0], values[1], values[2]),
+                        ),
+                        "fence" => {
+                            self.b.ins().fence(ordering);
+                            None
+                        }
+                        _ => unreachable!("validated atomic operation"),
+                    };
+                    if let Some(value) = value {
+                        self.write(dest, &[value]);
+                    }
+                    if let Some(target) = target {
+                        self.b.ins().jump(self.blocks[target.index()], &[]);
+                    } else {
+                        self.b.ins().trap();
+                    }
+                    return;
+                }
                 // Of a trait object: through its vtable.
                 if items.functions[*func].intrinsic {
                     self.dyn_intrinsic(*func, args, dest, *target);

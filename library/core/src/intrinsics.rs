@@ -136,3 +136,130 @@ pub(crate) unsafe fn read_unaligned<T>(src: *const T) -> T {
 pub(crate) fn type_name<T: ?Sized>() -> &'static str {
     loop {}
 }
+
+// Private, naturally aligned usize-only atomic bridge. RMW and strong CAS
+// return the OLD scalar. Mono rejects every other substitution.
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_load_relaxed<T>(p: *const T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_load_acquire<T>(p: *const T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_load_seqcst<T>(p: *const T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_store_relaxed<T>(p: *mut T, value: T) {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_store_release<T>(p: *mut T, value: T) {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_store_seqcst<T>(p: *mut T, value: T) {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_add_relaxed<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_add_acquire<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_add_release<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_add_acqrel<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_add_seqcst<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_sub_relaxed<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_sub_acquire<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_sub_release<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_sub_acqrel<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_sub_seqcst<T>(p: *mut T, value: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_cas_relaxed<T>(p: *mut T, expected: T, new: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_cas_acquire<T>(p: *mut T, expected: T, new: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_cas_release<T>(p: *mut T, expected: T, new: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_cas_acqrel<T>(p: *mut T, expected: T, new: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_cas_seqcst<T>(p: *mut T, expected: T, new: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_fence_acquire() {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_fence_release() {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_fence_acqrel() {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_usize_fence_seqcst() {
+    loop {}
+}
