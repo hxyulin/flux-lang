@@ -213,8 +213,17 @@ Function-item callbacks now share direct calls' complete signature obligations,
 including function/owner predicates, projections and outlives constraints.
 This closes the audit's three callback reductions that previously let a short
 borrow satisfy a static-only impl. Legal callback and projection controls still
-match rustc. Universal impl-supertrait validation is a separate pending fix;
-neither this fix nor the signature prerequisites enable `AstNode<'t>` yet.
+match rustc.
+
+Impl-supertrait validation now runs at declarations, including unused and empty
+impls. It checks the header's universal lifetimes against the selected
+supertrait impls and their bounds instead of assuming newly required outlives
+relations. Both audit supertrait reductions now reject alongside all three
+callback reductions. Generic wrappers, transitive supertraits, static/repeated
+headers and associated-type equality controls have focused coverage.
+Unrepresented supertrait regions and higher-ranked callback obligations needed
+by a selected supertrait impl remain explicitly unsupported. The trait-lifetime
+guard remains; these fixes do not yet enable `AstNode<'t>`.
 
 Nested `cfg_attr` and item/body conditional pruning are supported; conditional
 fields, variants and parameters remain unsupported. Other required constructs
