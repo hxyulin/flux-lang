@@ -4990,20 +4990,17 @@ impl Ctx<'_> {
                 .map_or(&[][..], |v| v)
         };
         loop {
-            // `&self` on a `&T` receiver passes it on.
-            let through = match base.kind() {
-                TyKind::Ref(m, pointee) => Some((self.shallow(pointee), derefs + 1, Some(m))),
-                _ => None,
-            };
-            let tries = [
-                Some((base, derefs, None)),
-                through,
-                Some((base, derefs, Some(Mutability::Not))),
-                Some((base, derefs, Some(Mutability::Mut))),
-            ];
-            for (ty, d, mode) in tries.into_iter().flatten() {
-                match self.probe_method(ty, mode, method, inherent(ty), traits) {
-                    Ok(Some((function, trait_args, target))) => {
+            for mode in [None, Some(Mutability::Not), Some(Mutability::Mut)] {
+                match self.probe_method(base, mode, method, inherent(base), traits) {
+                    Ok(Some((function, trait_args, target, through))) => {
+                        let (d, mode) = if through {
+                            let TyKind::Ref(m, _) = base.kind() else {
+                                unreachable!()
+                            };
+                            (derefs + 1, Some(m))
+                        } else {
+                            (derefs, mode)
+                        };
                         self.record_overloaded_derefs(id, &steps);
                         return self.check_method(
                             id,
@@ -5054,7 +5051,7 @@ impl Ctx<'_> {
             let slice = Ty::new(TyKind::Slice(elem));
             for mode in [Mutability::Not, Mutability::Mut] {
                 match self.probe_method(slice, Some(mode), method, inherent(slice), traits) {
-                    Ok(Some((function, trait_args, target))) => {
+                    Ok(Some((function, trait_args, target, _))) => {
                         self.record_overloaded_derefs(id, &steps);
                         return self.check_method(
                             id,
@@ -5193,9 +5190,10 @@ impl Ctx<'_> {
         Ty::ERROR
     }
 
-    /// The method `name` whose `self` is `ty`, taken as `mode` says:
+    /// The method at receiver candidate `ty`, borrowed as `mode` says:
     /// inherent, else of a trait (with the trait's generic arguments if
-    /// a bound gives them). `Err` if several are (E0034).
+    /// a bound gives them). The final flag requests a pointee reborrow
+    /// when the candidate itself is a reference. `Err` if several (E0034).
     #[allow(clippy::type_complexity)]
     fn probe_method(
         &mut self,
@@ -5204,10 +5202,27 @@ impl Ctx<'_> {
         name: Symbol,
         inherent: &[flux_hir::AssocItem],
         traits: bool,
-    ) -> Result<Option<(FunctionId, Option<crate::GenericArgs>, Ty)>, ()> {
+    ) -> Result<Option<(FunctionId, Option<crate::GenericArgs>, Ty, bool)>, ()> {
         let items = self.items;
-        if !inherent.is_empty() {
-            let candidates = inherent.iter().filter_map(|&item| match item {
+        // A candidate is the actual receiver type, not just impl Self:
+        // `self` on `&T` and `&self` on `T` compete at the same step.
+        // Keep impl Self separate from the receiver adjustment: a
+        // method on the pointee reborrows rather than moving it.
+        let through = match (mode, ty.kind()) {
+            (None, TyKind::Ref(m, pointee)) => Some((self.shallow(pointee), Some(m), true)),
+            _ => None,
+        };
+        let candidates = [Some((ty, mode, false)), through];
+        let mut inherent_found = None;
+        for (target, mode, through) in candidates.into_iter().flatten() {
+            let inherent = if through {
+                impl_target(items, target)
+                    .and_then(|t| items.assoc.get(&(t, name)))
+                    .map_or(&[][..], |v| v)
+            } else {
+                inherent
+            };
+            let functions = inherent.iter().filter_map(|&item| match item {
                 flux_hir::AssocItem::Function(f)
                     if items.functions[f].has_self && self_mode(items, f) == mode =>
                 {
@@ -5215,38 +5230,50 @@ impl Ctx<'_> {
                 }
                 _ => None,
             });
-            match self.select(candidates, Some(ty)) {
-                Ok(function) => return Ok(Some((function, None, ty))),
+            match self.select(functions, Some(target)) {
+                Ok(function) => {
+                    if inherent_found.is_some() {
+                        return Err(());
+                    }
+                    inherent_found = Some((function, None, target, through));
+                }
                 Err(2..) => return Err(()),
                 Err(_) => {}
             }
         }
+        if inherent_found.is_some() {
+            return Ok(inherent_found);
+        }
         if !traits {
             return Ok(None);
         }
-        let mut found: Vec<_> = self
-            .trait_items(ty, name, true)
-            .into_iter()
-            .filter(|&(f, _)| self_mode(items, f) == mode)
-            .map(|(f, t)| (f, t, ty))
-            .collect();
-        // At a borrowed receiver candidate, `self` on `&T` competes
-        // with `&self` on `T`. The impl's Self is the reference, but
-        // the call adjustment still borrows the original place.
-        if let Some(m) = mode {
-            let borrowed = Ty::new(TyKind::Ref(m, ty));
+        let mut found = Vec::new();
+        for (target, mode, through) in candidates.into_iter().flatten() {
             found.extend(
-                self.trait_items(borrowed, name, true)
+                self.trait_items(target, name, true)
                     .into_iter()
-                    .filter(|&(f, _)| self_mode(items, f).is_none())
-                    .map(|(f, t)| (f, t, borrowed)),
+                    .filter(|&(f, _)| self_mode(items, f) == mode)
+                    .map(|(f, t)| (f, t, target, through)),
             );
+            // An autoref also admits a by-value method whose Self is
+            // the borrowed type; it borrows the original place.
+            if let Some(m) = mode
+                && !through
+            {
+                let borrowed = Ty::new(TyKind::Ref(m, target));
+                found.extend(
+                    self.trait_items(borrowed, name, true)
+                        .into_iter()
+                        .filter(|&(f, _)| self_mode(items, f).is_none())
+                        .map(|(f, t)| (f, t, borrowed, false)),
+                );
+            }
         }
         // At the same receiver candidate, a type parameter's bound
         // methods precede in-scope impl methods, including those with
         // borrowed Self. Projection and reference bounds have no such
         // priority. Keep all preferred methods to preserve ambiguity.
-        let mut preferred = |&(_, t, target): &(_, Option<crate::TraitRef>, Ty)| {
+        let mut preferred = |&(_, t, target, _): &(_, Option<crate::TraitRef>, Ty, bool)| {
             t.is_some() && matches!(self.shallow(target).kind(), TyKind::Param(_))
         };
         if found.iter().any(&mut preferred) {
@@ -5254,9 +5281,12 @@ impl Ctx<'_> {
         }
         match found.as_slice() {
             [] => Ok(None),
-            [(function, trait_ref, target)] => {
-                Ok(Some((*function, trait_ref.map(|t| t.args), *target)))
-            }
+            [(function, trait_ref, target, through)] => Ok(Some((
+                *function,
+                trait_ref.map(|t| t.args),
+                *target,
+                *through,
+            ))),
             _ => Err(()),
         }
     }
