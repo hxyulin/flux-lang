@@ -412,6 +412,13 @@ allocation/mutation, clones, owned iteration, and sparse descending inserts.
 These are owned-arena excerpts; the shared/layered arena definitions remain
 outside the executable source graph until their ownership and map APIs exist.
 
+Before admitting const `UnsafeCell` constructors, constant evaluation also
+needs to reject shared borrows of temporary interior-mutable values. The
+existing `Cell` API currently exposes this gap: rustc rejects the reduced
+[compile-only case](../tests/difftest/bugs/019_const_interior_mutable_borrow.rs)
+with E0492 while Flux accepts it, including with the older compiler before
+diagnostic type names. No invalid executable was run.
+
 ## Next milestones
 
 1. Keep the executable source subset passing as its source evolves.
