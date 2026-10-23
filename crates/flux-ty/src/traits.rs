@@ -861,6 +861,7 @@ pub fn alias_projections(sigs: &Signatures, alias: AliasTy) -> Vec<Projection> {
 /// `type N: Add<Output = i32>;` in `Num`.
 pub fn implied_projections(sigs: &Signatures, env: &[Predicate]) -> Vec<Projection> {
     let mut out = Vec::new();
+    let mut associated = Vec::new();
     for p in env {
         let Some(sig) = sigs.traits.get(p.trait_ref.trait_) else {
             continue;
@@ -871,8 +872,21 @@ pub fn implied_projections(sigs: &Signatures, env: &[Predicate]) -> Vec<Projecti
         let args: Vec<Ty> = std::iter::once(p.self_ty)
             .chain(p.trait_ref.args.iter().copied())
             .collect();
-        out.extend(sig.implied.iter().map(|q| q.subst(&args)));
+        for q in sig.implied.iter().map(|q| q.subst(&args)) {
+            // An explicit bound on an associated type, including its
+            // supertraits, decides normalization before the type's
+            // declaration bounds. For `T: H, T::Part: Q`, Q's
+            // `Self: P<A = u8>` precedes H's `Part: P<A = u16>`.
+            // Keep both equalities: predicate deduplication does not
+            // discharge projection obligations at calls or impls.
+            if q.alias.args[0] == p.self_ty {
+                out.push(q);
+            } else {
+                associated.push(q);
+            }
+        }
     }
+    out.extend(associated);
     out
 }
 

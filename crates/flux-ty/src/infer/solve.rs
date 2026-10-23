@@ -948,8 +948,11 @@ impl Ctx<'_> {
         let alias_bounds = self.alias_bounds(self_ty);
         // A declaration bound can also be implied by an explicit bound:
         // `I::IntoIter: ExactSizeIterator` and `IntoIterator::IntoIter`
-        // both supply the same `Iterator` predicate. These are one proof,
-        // not competing candidates. Keep distinct trait arguments intact.
+        // both supply the same `Iterator` predicate. These are one proof
+        // of trait membership, not competing candidates. Associated
+        // equalities remain separate projections, with explicit bounds
+        // taking precedence during normalization. Keep distinct trait
+        // arguments intact.
         for p in alias_bounds.into_iter().filter(|p| p.trait_ref.trait_ == t) {
             if !env.contains(&p) {
                 env.push(p);
