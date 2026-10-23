@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Resolve inherited `Self::Item` through substituted supertraits, preserving
+  selected-impl lifetimes for represented function signatures. Execute the
+  unchanged arena `Values` iterator excerpt against rustc.
+
 - Add `Vec::resize_with` for typed arena side-table growth, including stateful
   factories, non-Clone values, truncation and zero-sized elements.
 

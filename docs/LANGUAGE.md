@@ -536,6 +536,16 @@ A call of a generic function or method must meet its bounds, and an
 `impl` block must define its trait's required methods with its
 signatures; flux reports what rustc does where they do not (E0277,
 E0599, E0046, E0053, ...), and conflicting `impl` blocks of a trait.
+In a trait impl, unqualified `Self::Out` can name an associated type of a
+supertrait. Lookup substitutes generic arguments through every edge and
+rejects ambiguous declarations or distinct instantiations. Represented function
+signatures map selected-impl lifetime parameters through Self's header slots;
+references returned by an iterator can therefore outlive its receiver borrow.
+Trait lifetime arguments, region-bearing trait type arguments, nested inherited
+projections, region-bearing inherited types outside function signatures, and
+selected impls requiring additional slot substitutions remain unsupported.
+These lookup candidates do not become assumptions when checking the impl.
+
 Calls of trait methods are static: each calls the method of the
 `impl` block for its types, chosen when the program is compiled.
 Operators on other types than integers and `bool` call the methods of
