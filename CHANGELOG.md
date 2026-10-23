@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Enforce predicate-bound callback provenance during function-pointer
+  reification, including casts, argument coercions and cloned function items.
+
 - Track callback lifetime provenance across trait predicates and normalized-away
   arguments, rejecting unrepresented early-binding signatures explicitly.
 - Add a structural required-method trait profile without changing the public
