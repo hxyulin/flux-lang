@@ -111,3 +111,109 @@ fn trait_lifetime_obligations_remain_closed_against_rustc_oracles() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn trait_owner_substitution_matches_rustc_method_constraints() {
+    let cases = [
+        (
+            "ast_node",
+            include_str!("../../flux-ty/tests/data/trait_lifetime_regions/ast_node.rs"),
+            true,
+        ),
+        (
+            "renamed",
+            "trait Tr<'a> { fn get(x:&'a i32)->&'a i32; } struct S; impl<'x> Tr<'x> for S { fn get(x:&'x i32)->&'x i32 {x} } fn main() {}",
+            true,
+        ),
+        (
+            "static",
+            "trait Tr<'a> { fn get(x:&'a i32)->&'a i32; } struct S; impl Tr<'static> for S { fn get(x:&'static i32)->&'static i32 {x} } fn main() {}",
+            true,
+        ),
+        (
+            "repeated",
+            "trait Tr<'a,'b> { fn get(x:&'a i32,y:&'b i32)->&'a i32; } struct S; impl<'x> Tr<'x,'x> for S { fn get(x:&'x i32,_:&'x i32)->&'x i32 {x} } fn main() {}",
+            true,
+        ),
+        (
+            "reordered",
+            "trait Tr<'a,'b> { fn get(x:&'a i32,y:&'b i32)->&'a i32; } struct S; impl<'x,'y> Tr<'y,'x> for S { fn get(x:&'y i32,_:&'x i32)->&'y i32 {x} } fn main() {}",
+            true,
+        ),
+        (
+            "weak_output",
+            "trait Tr<'a> { fn get(x:&'a i32)->&'static i32; } struct S; impl<'x> Tr<'x> for S { fn get(x:&'x i32)->&'x i32 {x} } fn main() {}",
+            false,
+        ),
+        (
+            "stronger_method_bound",
+            "trait Tr<'a> { fn get<'b>(x:&'b i32)->&'b i32; } struct S; impl<'x> Tr<'x> for S { fn get<'b:'x>(x:&'b i32)->&'b i32 {x} } fn main() {}",
+            false,
+        ),
+        (
+            "self_and_trait_lifetimes_differ",
+            "trait Tr<'a> { fn get(self)->&'a i32; } struct Node<'x>(&'x i32); impl<'x,'y> Tr<'y> for Node<'x> { fn get(self)->&'x i32 {self.0} } fn main() {}",
+            false,
+        ),
+        (
+            "bounded_self_lifetime",
+            "trait Tr<'a> { fn get(self)->&'a i32; } struct Node<'x>(&'x i32); impl<'x:'y,'y> Tr<'y> for Node<'x> { fn get(self)->&'y i32 {self.0} } fn main() {}",
+            true,
+        ),
+        (
+            "wrong_input",
+            "trait Tr<'a> { fn get(x:&'a i32)->&'a i32; } struct S; impl<'x> Tr<'x> for S { fn get(x:&'static i32)->&'x i32 {x} } fn main() {}",
+            false,
+        ),
+        (
+            "wrong_output",
+            "trait Tr<'a,'b> { fn get(x:&'a i32,y:&'b i32)->&'a i32; } struct S; impl<'x,'y> Tr<'x,'y> for S { fn get(_:&'x i32,y:&'y i32)->&'y i32 {y} } fn main() {}",
+            false,
+        ),
+        (
+            "own_lifetime",
+            "trait Tr<'a> { fn get<'b>(x:&'b i32,y:&'a i32)->&'b i32; } struct S; impl<'x> Tr<'x> for S { fn get<'z>(x:&'z i32,_:&'x i32)->&'z i32 {x} } fn main() {}",
+            true,
+        ),
+        (
+            "bound",
+            "trait Tr<'a,'b:'a> { fn get(x:&'b i32)->&'a i32; } struct S; impl<'x,'y:'x> Tr<'x,'y> for S { fn get(x:&'y i32)->&'x i32 {x} } fn main() {}",
+            true,
+        ),
+    ];
+    let dir = std::env::temp_dir().join(format!(
+        "flux-trait-method-substitution-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, source, compatible) in cases {
+        let path = dir.join(format!("{name}.rs"));
+        std::fs::write(&path, source).unwrap();
+        let rustc = Command::new("rustc")
+            .args(["--edition=2024", "--emit=metadata", "--out-dir"])
+            .arg(&dir)
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert_eq!(
+            rustc.status.success(),
+            compatible,
+            "{name}: {}",
+            String::from_utf8_lossy(&rustc.stderr)
+        );
+        let (db, _, hir) = flux_hir::lower_text(&path, source);
+        assert!(db.syntax_errors().is_empty());
+        assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
+        let (sigs, diagnostics) = flux_ty::signatures(&hir.items);
+        // Exercise comparison independently of the declaration guard. This
+        // checks actual constraints, without enabling erased obligations.
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message == "lifetime parameters on traits are not supported yet")
+        );
+        let methods = flux_mir::borrowck::check_impl_methods(&hir.items, &sigs);
+        assert_eq!(methods.is_empty(), compatible, "{name}: {methods:?}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

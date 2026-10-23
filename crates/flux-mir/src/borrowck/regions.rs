@@ -241,7 +241,11 @@ pub(crate) fn impl_method_matches(
     let block_vars: Vec<Var> = (0..owner)
         .map(|i| cx.new_universal(format!("'{i}")))
         .collect();
-    let trait_vars: Vec<Var> = (0..tr.names.len())
+    let trait_owner = tr.owner as usize;
+    if block.trait_lifetimes.len() != trait_owner {
+        return false;
+    }
+    let trait_vars: Vec<Var> = (trait_owner..tr.names.len())
         .map(|i| cx.new_universal(format!("'t{i}")))
         .collect();
     let own_vars: Vec<Var> = (owner..ir.names.len()).map(|_| cx.fresh()).collect();
@@ -251,9 +255,17 @@ pub(crate) fn impl_method_matches(
         Region::Param(i) => own_vars.get(i as usize - owner).copied(),
         Region::Erased | Region::Late(_) => None,
     };
+    // The trait's owner parameters are instantiated by the impl header,
+    // not fresh universal lifetimes. Only the method's own lifetimes are
+    // universal here: `impl<'x> Tr<'x>` maps the trait's `'a` to `'x`.
     let map_trait = |r: Region| match r {
         Region::Static => Some(STATIC),
-        Region::Param(i) => trait_vars.get(i as usize).copied(),
+        Region::Param(i) if (i as usize) < trait_owner => block
+            .trait_lifetimes
+            .get(i as usize)
+            .copied()
+            .and_then(map_impl),
+        Region::Param(i) => trait_vars.get(i as usize - trait_owner).copied(),
         Region::Erased | Region::Late(_) => None,
     };
     // What the block's bounds and the method's say associated types are.
