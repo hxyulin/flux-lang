@@ -1818,6 +1818,7 @@ impl Collector<'_> {
         self.record_macro_path(ctx, path, def);
         let def = &self.items.macros[def];
         let site = macros::CallSite {
+            read_text: crate::source::SourceDb::read_include_str,
             items: self.items,
             krate: self.items.modules[ctx.module].krate,
             module: ctx.module,
@@ -1953,6 +1954,7 @@ impl Collector<'_> {
         }
         let real = self.real_file(ctx.file);
         let site = macros::CallSite {
+            read_text: crate::source::SourceDb::read_include_str,
             items: self.items,
             krate: self.items.modules[ctx.module].krate,
             module: ctx.module,
@@ -3404,6 +3406,7 @@ impl Collector<'_> {
             };
             let real = self.real_file(ctx.file);
             let site = macros::CallSite {
+                read_text: crate::source::SourceDb::read_include_str,
                 items: self.items,
                 krate: self.items.modules[ctx.module].krate,
                 module: ctx.module,

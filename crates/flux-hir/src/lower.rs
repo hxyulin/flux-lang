@@ -2000,6 +2000,7 @@ impl<'a> Ctx<'a> {
             return None;
         }
         let site = CallSite {
+            read_text: crate::source::SourceDb::read_include_str,
             items: self.items,
             krate: self.items.modules[self.module].krate,
             module: self.module,
