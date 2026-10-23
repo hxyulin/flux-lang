@@ -98,8 +98,24 @@ fn main() { println!("{} {} {}", inspect(0), inspect(1), inspect(2)); }
     );
     let expected = success(Command::new(root.join("reference")).output().unwrap());
     for args in [&[][..], &["-O"][..]] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        // Build-runner settings describe this test binary, not its fixture.
+        // Match the isolation used by the package and edition tests.
+        for (key, _) in std::env::vars_os() {
+            let name = key.to_string_lossy();
+            if name.contains("RUSTFLAGS")
+                || name.contains("RUSTDOCFLAGS")
+                || name.starts_with("CARGO_BUILD_")
+                || name.starts_with("CARGO_TARGET_")
+                || name.starts_with("CARGO_PROFILE_")
+                || name.starts_with("CARGO_UNSTABLE_")
+                || name == "CARGO_INCREMENTAL"
+            {
+                command.env_remove(key);
+            }
+        }
         let actual = success(
-            Command::new(env!("CARGO_BIN_EXE_flux"))
+            command
                 .current_dir(&root)
                 .args(["package", "run", "--manifest-path", "Cargo.toml"])
                 .args(args)

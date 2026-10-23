@@ -4,6 +4,11 @@
 
 ### Syntax
 
+- Implement built-in Clone for function items and safe/unsafe function pointers,
+  preserving safety and conservatively rejecting constrained input reification.
+
+- Add unsafe Result extraction methods with payload ownership and drop coverage.
+
 - Add unsafe unaligned reads for u8/u16/u32/u64/usize with alignment-one loads
   and explicit unsupported-substitution and const-evaluation errors.
 
