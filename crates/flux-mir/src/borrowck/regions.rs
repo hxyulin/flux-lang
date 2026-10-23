@@ -2208,8 +2208,9 @@ impl<'a> Cx<'a> {
         range: TextRange,
     ) {
         match kind {
-            // The supported union fields contain only integers, including
-            // through arrays and concrete Copy structs, so have no regions.
+            // Union validation admits only fields without stored regions,
+            // recursively through aggregates. Function pointer parameters have
+            // their own late-bound regions and carry no borrowed value here.
             AggregateKind::Union(..) => {}
             AggregateKind::Tuple => {
                 let TyKind::Tuple(list) = dest_ty.kind() else {

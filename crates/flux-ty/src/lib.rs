@@ -2882,7 +2882,7 @@ fn extend_signatures(
             let ty = traits::normalize(items, &sigs, &[], ty);
             let message = if !supported_union_field(items, &sigs, ty, &mut FxHashMap::default(), 0)
             {
-                Some("only concrete integer, array and struct union fields are supported yet")
+                Some("this union field type is not supported yet")
             } else if !traits::is_copy(items, &sigs, &[], ty)
                 || traits::needs_drop(items, &sigs, &[], ty)
             {
@@ -3855,8 +3855,9 @@ fn function_name(items: &ItemTree, f: FunctionId) -> Symbol {
 }
 
 /// A deliberately region-free, sized subset. Check every substituted field,
-/// including nested structs, rather than treating an ADT's Copy impl as proof
-/// that its representation is supported. Cycles cannot have a finite layout.
+/// including enum variants and nested unions, rather than treating an ADT's
+/// Copy impl as proof that its representation is supported. Reject recursive
+/// generic arguments conservatively, even when they occur only in phantom data.
 fn supported_union_field(
     items: &ItemTree,
     sigs: &Signatures,
@@ -3876,20 +3877,30 @@ fn supported_union_field(
     // The depth bound also stops expanding generic cycles such as S<S<T>>.
     checked.insert(ty, false);
     let supported = match ty.kind() {
-        TyKind::Int(_) => true,
+        TyKind::Int(_) | TyKind::Bool => true,
+        TyKind::Tuple([]) => true,
+        // Function pointers carry no borrowed value. Their parameter references
+        // are late-bound; signature resolution rejects named lifetimes and
+        // reference returns that would require tracking regions in the pointer.
+        // Do not recurse into the signature as though its inputs were storage.
+        TyKind::FnPtr(_) => true,
         TyKind::Array(elem, len) => {
             len.as_usize().is_some() && supported_union_field(items, sigs, elem, checked, depth + 1)
         }
-        TyKind::Adt(adt, _)
-            if !items.structs[adt.strukt].is_enum()
-                && !items.structs[adt.strukt].is_union
-                && !is_lang_struct(items, adt.strukt, "manually_drop") =>
-        {
-            sigs.fields(ty).is_some_and(|fields| {
-                fields
-                    .iter()
-                    .all(|&field| supported_union_field(items, sigs, field, checked, depth + 1))
-            })
+        TyKind::Adt(adt, args) if !is_lang_struct(items, adt.strukt, "manually_drop") => {
+            // Region slots also occur in type arguments, even when they are
+            // phantom. Check these with the same memoized traversal rather
+            // than expanding a shared generic type's region slots repeatedly.
+            items.structs[adt.strukt].generics.lifetimes.is_empty()
+                && args.iter().all(|&arg| {
+                    matches!(arg.kind(), TyKind::Value(_))
+                        || supported_union_field(items, sigs, arg, checked, depth + 1)
+                })
+                && sigs.contents(ty).is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .all(|&field| supported_union_field(items, sigs, field, checked, depth + 1))
+                })
         }
         _ => false,
     };
