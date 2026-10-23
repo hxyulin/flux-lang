@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Add Copy slice-to-array conversion with `TryFromSliceError` and borrowed
+  `split_first_chunk`, including zero-length, alignment and borrow coverage.
+
 - Support direct literal `include_str!` from physical source files, preserving
   UTF-8 contents and source-relative paths with explicit unsupported diagnostics
   for macro-expanded calls and virtual sources.
