@@ -153,6 +153,16 @@ impl<T: ?Sized> *const T {
 }
 
 impl<T> *const T {
+    /// The element offset needed to reach `align`, or `usize::MAX` if
+    /// impossible. `align` must be a power of two. This checks alignment
+    /// only, not allocation bounds or whether memory can be accessed.
+    /// Constant evaluation is not supported.
+    #[track_caller]
+    pub fn align_offset(self, align: usize) -> usize {
+        assert!(align.is_power_of_two(), "align_offset: align is not a power-of-two");
+        alignment_offset(self as usize, size_of::<T>(), align)
+    }
+
     /// The pointer `count` values on.
     pub unsafe fn add(self, count: usize) -> *const T {
         (self as usize).wrapping_add(count.wrapping_mul(size_of::<T>())) as *const T
@@ -248,6 +258,13 @@ impl<T: ?Sized> *mut T {
 }
 
 impl<T> *mut T {
+    /// The element offset needed to reach `align`, or `usize::MAX` if
+    /// impossible. See the shared pointer method for the contract.
+    #[track_caller]
+    pub fn align_offset(self, align: usize) -> usize {
+        (self as *const T).align_offset(align)
+    }
+
     /// The pointer `count` values on.
     pub unsafe fn add(self, count: usize) -> *mut T {
         (self as usize).wrapping_add(count.wrapping_mul(size_of::<T>())) as *mut T
@@ -337,6 +354,41 @@ impl<T> *mut T {
         unsafe { copy_nonoverlapping(src, self, count) }
     }
 
+}
+
+// Solve address + stride * offset = 0 (mod align), where align is a
+// nonzero power of two. All arithmetic concerns addresses only; no
+// pointer is constructed or accessed here.
+fn alignment_offset(address: usize, stride: usize, align: usize) -> usize {
+    if address & (align - 1) == 0 {
+        return 0;
+    }
+    if stride == 0 {
+        return usize::MAX;
+    }
+    let stride_bits = stride.trailing_zeros();
+    let align_bits = align.trailing_zeros();
+    let shift = if stride_bits < align_bits { stride_bits } else { align_bits };
+    if address & ((1usize << shift) - 1) != 0 {
+        return usize::MAX;
+    }
+    let mask = (align >> shift) - 1;
+    let odd_stride = stride >> shift;
+    let distance = 0usize.wrapping_sub(address >> shift);
+    if odd_stride == 1 {
+        return distance & mask;
+    }
+    // An odd number has inverse 1 modulo 2. Newton lifting doubles
+    // the number of correct bits each time: y <- y * (2 - x*y).
+    // At most six iterations are needed on a 64-bit target, regardless
+    // of the address, stride or requested alignment.
+    let mut inverse = 1usize;
+    let mut bits = 1u32;
+    while bits < align_bits - shift {
+        inverse = inverse.wrapping_mul(2usize.wrapping_sub(odd_stride.wrapping_mul(inverse)));
+        bits *= 2;
+    }
+    distance.wrapping_mul(inverse) & mask
 }
 
 /// A `*mut T` that is never null, so that `Option<NonNull<T>>` is one
