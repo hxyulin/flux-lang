@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Validate associated-type bounds and projection selection at declarations
+  under universal impl lifetimes, including unused definitions and scalar
+  projection results.
+
 - Prove associated-type equalities on Self supertrait edges and check selected
   impl projection types even without lifetime slots, rejecting contradictory
   implementations and reference escapes.

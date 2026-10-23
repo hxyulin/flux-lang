@@ -227,6 +227,12 @@ have dedicated checks and negative regressions, including direct and `find_map`
 reference escapes and incompatible callable output types. Required equalities
 are proved using the original header assumptions; nested selected projections
 outside those assumptions remain explicitly unsupported.
+Associated-type bounds now receive their own declaration check, including
+lifetime equality for the selected associated values. Projection selection in
+associated definitions is checked separately, including unused definitions and
+results that normalize to scalar types. Matching abstract associated values can
+use bounds guaranteed by the original impl header; missing projection input
+metadata remains an explicit unsupported boundary.
 Unrepresented supertrait regions and higher-ranked callback obligations needed
 by a selected supertrait impl remain explicitly unsupported. The trait-lifetime
 guard remains; these fixes do not yet enable `AstNode<'t>`.
