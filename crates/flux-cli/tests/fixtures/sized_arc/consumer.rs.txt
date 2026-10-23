@@ -1,0 +1,54 @@
+#[path = "../../crates/flux-arena/src/shared_slice.rs"]
+mod shared_slice;
+use shared_slice::SharedSlicePool;
+
+fn main() {
+    let mut pool = SharedSlicePool::default();
+    let first = pool.alloc([1u32, 2, 3]);
+    let next = pool.alloc([4u32, 5]);
+    let cloned = first.clone();
+    assert_eq!(&*next, &[4, 5]);
+    for i in 0..300 {
+        assert_eq!(pool.alloc([i])[0], i);
+    }
+    let large = pool.alloc(0..300);
+    let part = first.slice(1..3);
+    drop((first, pool));
+    assert_eq!(&*cloned, &[1, 2, 3]);
+    assert_eq!(&*part, &[2, 3]);
+    assert_eq!(large.len(), 300);
+    let mut empty = SharedSlicePool::<()>::default();
+    assert!(empty.alloc([]).is_empty());
+    assert_eq!(empty.alloc([(); 300]).len(), 300);
+    println!("shared slices {} {} {}", cloned[0], part[1], large[299]);
+}
+
+#[cfg(test)]
+mod additional_controls {
+    use super::*;
+    struct WrongEmpty(bool);
+    impl Iterator for WrongEmpty {
+        type Item = u32;
+        fn next(&mut self) -> Option<u32> {
+            if self.0 {
+                self.0 = false;
+                Some(7)
+            } else {
+                None
+            }
+        }
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (0, Some(0))
+        }
+    }
+    impl ExactSizeIterator for WrongEmpty {}
+    #[test]
+    fn malicious_empty_iterator_is_rejected() {
+        let mut pool = SharedSlicePool::default();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.alloc(WrongEmpty(true))))
+                .is_err()
+        );
+        assert_eq!(&*pool.alloc([9]), &[9]);
+    }
+}

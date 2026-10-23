@@ -1,0 +1,18 @@
+// Rustc accepts; Flux reports inference errors at count() and the for loop.
+// No shared ownership types are involved. Compile-only regression reduction.
+fn consume<I: IntoIterator<Item = u32>>(input: I)
+where
+    I::IntoIter: ExactSizeIterator,
+{
+    let values = input.into_iter();
+    if values.len() == 0 {
+        assert_eq!(values.count(), 0);
+        return;
+    }
+    for value in values {
+        let _: u32 = value;
+    }
+}
+fn main() {
+    consume([1u32, 2]);
+}
