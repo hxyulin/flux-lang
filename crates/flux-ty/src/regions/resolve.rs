@@ -574,7 +574,7 @@ fn functions(
 /// lifetime argument without making its occurrence in a predicate late-bound.
 /// HIR has already elided its supported single Fn binder; unsupported named or
 /// multiple binders are diagnosed by lowering and are not admitted here.
-fn callback_binder(
+pub(super) fn callback_binder(
     items: &ItemTree,
     sigs: &Signatures,
     id: flux_hir::FunctionId,

@@ -154,6 +154,8 @@ pub fn required_method_trait_profile(
         if sig.params.len() != f.params.len()
             || r.params.len() != sig.params.len()
             || r.has_bounds
+            || r.callback_binder == super::CallbackBinder::Unclassified
+            || r.callback_binder != super::resolve::callback_binder(items, sigs, id, r)
             || !r.bound_selfs.is_empty()
             || !r.bound_traits.is_empty()
             || !r.projections.is_empty()
