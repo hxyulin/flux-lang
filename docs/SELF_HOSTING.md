@@ -62,6 +62,23 @@ MIR stage; it does not establish native compilation of those crates.
 The event module's `Option<NonZeroU32>` field uses a four-byte zero niche,
 preserving the unchanged event layout rather than replacing the production type.
 
+## Lexer with real source dependencies
+
+`mbx test --release -p flux-cli --test lexer_selfhost` compiles the unchanged
+production lexer, syntax-kind and tree modules, with the production `Edition`
+declaration, through an explicit library wrapper that excludes the typed AST.
+The graph uses unchanged memchr sources through the edition-2024 feature-free
+wrapper and the original unicode-ident package. Flux invokes no rustc during
+its build; separate rustc builds provide the execution oracle.
+
+The comparison checks exact token kinds, ranges, text, contextual flags and
+errors on small valid and invalid inputs, 796 UTF-8 prefixes, and digests over
+eight production files (172,994 bytes at this checkpoint). Both source editions
+and both optimization modes agree. This extends native coverage to the actual
+lexer without claiming that the complete syntax crate compiles. Its full
+source graph still first rejects lifetime parameters on `AstNode<'t>` and named
+lifetimes in body types in `ast/ext.rs`.
+
 ## Main gaps to the complete compiler
 
 ### Compiler input and crate builds
@@ -169,9 +186,8 @@ alloc gaps first, without requiring an operating-system API all at once.
 ## Next milestones
 
 1. Keep the executable source subset passing as its source evolves.
-2. Compile the lexer and token input after defining how their two external
-   dependencies are built. Compare token streams on real compiler sources.
-3. Compile the parser and syntax-tree pipeline, then require its output on
+2. Keep the lexer source-dependency comparison passing on real compiler inputs.
+3. Compile the token input, parser and syntax-tree pipeline, then require its output on
    the workspace to agree with the rustc-built compiler.
 4. Expand into arena/interner and semantic analysis, while adding crate
    builds and the required library/runtime facilities.
