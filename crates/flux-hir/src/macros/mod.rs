@@ -257,6 +257,8 @@ pub(crate) struct CallSite<'a> {
     pub module: ModuleId,
     /// The file the call is written in, not an expansion's.
     pub real_file: FileId,
+    /// Loading is supplied by the source layer, never by token formatting.
+    pub read_text: fn(&crate::source::SourceFile, &str) -> Result<String, String>,
 }
 
 /// A call's expansion: its tree, and the hygiene contexts it made, each
@@ -628,6 +630,23 @@ pub(crate) fn expand(
                 names.reverse();
                 names.join("::")
             };
+            let include_str = |path: &str| {
+                // Expansion ranges/hygiene do not yet carry a physical FileId
+                // per token. In particular a wrapper may be defined in another
+                // file. Do not silently interpret that as the invocation root.
+                if call
+                    .tokens()
+                    .any(|t| call.tree().token_origin(t.index()).is_some())
+                {
+                    return Err("include_str! in macro expansions is not supported yet".into());
+                }
+                let source = site
+                    .items
+                    .files
+                    .get(&site.real_file)
+                    .ok_or_else(|| "include_str! source file is unknown".to_owned())?;
+                (site.read_text)(source, path)
+            };
             let cx = BuiltinCx {
                 name: def.name,
                 toks: inner,
@@ -636,6 +655,7 @@ pub(crate) fn expand(
                 core: if in_core { "crate" } else { "::core" },
                 location: &location,
                 module_path: &module_path,
+                include_str: &include_str,
             };
             match builtin::expand(builtin, &cx) {
                 Ok(out) => out,

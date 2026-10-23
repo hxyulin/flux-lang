@@ -379,6 +379,25 @@ impl SourceDb {
         Ok(self.add_with_edition(path, text, edition))
     }
 
+    /// Loads UTF-8 data relative to a physical source file, without parsing or
+    /// normalizing it. In particular BOM and CRLF bytes belong to the value.
+    /// This is an explicit capability supplied to macro expansion.
+    pub(crate) fn read_include_str(source: &SourceFile, filename: &str) -> Result<String, String> {
+        if source.expansion_of.is_some()
+            || source.path.starts_with(CORE_ROOT)
+            || source.path.starts_with(ALLOC_ROOT)
+            || source.path.starts_with(STD_ROOT)
+        {
+            return Err("include_str! from virtual sources is not supported yet".into());
+        }
+        let parent = source
+            .path
+            .parent()
+            .ok_or_else(|| "include_str! source directory is unknown".to_owned())?;
+        let path = parent.join(filename);
+        std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))
+    }
+
     /// Whether `path` exists on disk or in an embedded library.
     pub fn exists(&self, path: &Path) -> bool {
         let built_in = |root: &str, files: &[(&str, &str)]| {

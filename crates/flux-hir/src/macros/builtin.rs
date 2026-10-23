@@ -25,13 +25,14 @@ pub enum Builtin {
     FormatArgsNl,
     Concat,
     Stringify,
+    IncludeStr,
     Line,
     Column,
     File,
     ModulePath,
     Cfg,
     CompileError,
-    /// `env!`, `include_str!` and the others flux does not have yet.
+    /// `env!` and the others flux does not have yet.
     Unsupported,
 }
 
@@ -46,6 +47,7 @@ impl Builtin {
             "format_args_nl" => Builtin::FormatArgsNl,
             "concat" => Builtin::Concat,
             "stringify" => Builtin::Stringify,
+            "include_str" => Builtin::IncludeStr,
             "line" => Builtin::Line,
             "column" => Builtin::Column,
             "file" => Builtin::File,
@@ -70,6 +72,8 @@ pub(crate) struct BuiltinCx<'a> {
     /// Where the call is, for `line!`, `column!` and `file!`: one-based
     /// line and column of its start, and the file's path.
     pub location: &'a dyn Fn() -> (u32, u32, String),
+    /// Explicit source-loading capability; formatting itself performs no I/O.
+    pub include_str: &'a dyn Fn(&str) -> Result<String, String>,
     /// The path of the module the call is in, for `module_path!`.
     pub module_path: &'a dyn Fn() -> String,
 }
@@ -212,6 +216,21 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
         Builtin::FormatArgsNl => format_args(cx, cx.toks, true, &mut out)?,
         Builtin::Concat => {
             let value = concat(cx, cx.toks)?;
+            out.push(cx.string(&value, cx.origin()));
+        }
+        Builtin::IncludeStr => {
+            let filename = match cx.toks {
+                [t] | [t, Tok { kind: T![,], .. }] if t.kind == SyntaxKind::STRING => t,
+                _ => {
+                    return Err((
+                        cx.call,
+                        "include_str! requires a string literal filename".into(),
+                    ));
+                }
+            };
+            let path = crate::literal::unescape_str(filename.text.as_str())
+                .map_err(|e| (filename.range(), e))?;
+            let value = (cx.include_str)(&path).map_err(|e| (cx.call, e))?;
             out.push(cx.string(&value, cx.origin()));
         }
         Builtin::Stringify => out.push(cx.string(&pretty(cx.toks), cx.origin())),
