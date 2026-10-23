@@ -4,6 +4,9 @@
 
 ### Syntax
 
+- Execute the unchanged lexer/parser/lossless-tree pipeline under Flux, comparing
+  tree dumps, recovery, navigation, trivia and expansion origins against rustc.
+
 - Support labeled block expressions with value exits, fallthrough, nested
   labels and scope cleanup; reject invalid continue/unlabeled exits and names.
 
