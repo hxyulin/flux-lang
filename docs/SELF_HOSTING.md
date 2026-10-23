@@ -76,8 +76,9 @@ errors on small valid and invalid inputs, 796 UTF-8 prefixes, and digests over
 eight production files (172,994 bytes at this checkpoint). Both source editions
 and both optimization modes agree. This extends native coverage to the actual
 lexer without claiming that the complete syntax crate compiles. Its full
-source graph still first rejects lifetime parameters on `AstNode<'t>` and named
-lifetimes in body types in `ast/ext.rs`.
+source graph still first rejects lifetime parameters on `AstNode<'t>`. The
+named type arguments in `ast/ext.rs`, originally another blocker, are now
+enforced at direct calls as described below.
 
 ## Parser over real lexer input
 
@@ -109,7 +110,7 @@ expansion-origin cases covering span merging, hygiene and missing origins.
 At its initial checkpoint this produced identical 2,031,458-byte outputs.
 No compiler repair was needed. This establishes native execution of the
 untyped syntax pipeline, while the complete syntax crate still needs proper
-trait and body lifetime support for its typed AST.
+trait lifetime support for its typed AST.
 
 ## Main gaps to the complete compiler
 
@@ -176,6 +177,14 @@ Other named body lifetimes, lifetime-qualified function pointers and
 associated projections, and annotations on uncaptured closure places
 remain explicitly unsupported.
 
+Direct function/method turbofish type arguments now preserve written named,
+impl-owned and static regions through MIR call instantiation and enforce
+well-formedness. This removes the five named-type-argument diagnostics from
+unchanged `ast/ext.rs`; it does not yet unblock `AstNode<'t>`'s trait lifetimes.
+Regression oracles cover unrelated caller lifetimes, reference escapes, nested
+types and aliases, bounds and unused results. Named local annotations,
+function-item values and closures remain outside this extension.
+
 Nested `cfg_attr` and item/body conditional pruning are supported; conditional
 fields, variants and parameters remain unsupported. Other required constructs
 include generated/included source,
@@ -225,7 +234,7 @@ alloc gaps first, without requiring an operating-system API all at once.
 1. Keep the executable source subset passing as its source evolves.
 2. Keep the lexer source-dependency comparison passing on real compiler inputs.
 3. Keep the complete untyped lexer/parser/tree source graph passing on compiler
-   inputs. Add trait/body lifetime support to include the complete typed AST
+   inputs. Add trait lifetime support to include the complete typed AST
    and compile the whole syntax crate through source dependencies.
 4. Expand into arena/interner and semantic analysis, while adding crate
    builds and the required library/runtime facilities.

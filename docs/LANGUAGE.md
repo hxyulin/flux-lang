@@ -979,8 +979,7 @@ References may be anywhere a value may: parameters, return values
 &[i32] = &[2, 3];`, shared ones only). Lifetimes are written as in
 Rust: parameters on functions, structs, enums and `impl` blocks with
 their bounds (`<'a, 'b: 'a, T: 'a>`, `where 'a: 'b`), `&'a T`, `&'a
-self`, `'static`, `'_` and lifetime arguments (`Parser<'a>`; not in
-expressions yet), with rustc's elision rules for function signatures
+self`, `'static`, `'_` and lifetime arguments (`Parser<'a>`), with rustc's elision rules for function signatures
 (E0106 with rustc's help where they find nothing), `impl` headers,
 constants and statics, and its errors for undeclared, outer, reserved
 and unused lifetimes (E0261, E0401, E0262, E0637, E0392) and wrong
@@ -993,9 +992,16 @@ those of structs and traits in what they say associated types are.
 Local `let` annotations can require `'static`, including nested reference
 and ADT types, aliases and defaults. The borrow checker enforces this on
 initialization, destructuring, later assignments and branches. Other named
-body lifetimes (`let x: &'a i32`), lifetimes in function-pointer types and
+body lifetime annotations (`let x: &'a i32`), lifetimes in function-pointer types and
 lifetime-qualified associated projections are not supported yet. Nor are
-lifetime annotations on uncaptured places in closures. A trait's `impl` block may be for
+lifetime annotations on uncaptured places in closures.
+Direct function and method calls accept named, impl-owned and static lifetimes
+inside written type arguments, such as `nth_child::<Expr<'t>>(node)`.
+The borrow checker enforces these written regions and their well-formedness
+constraints, including when the return value is unused. Named arguments in
+closures and function-item values remain unsupported; constructor paths and
+general named local annotations are outside this extension.
+A trait's `impl` block may be for
 some lifetimes only:
 naming one twice (`impl<'a> PartialEq for Token<'a>`, whose `Rhs` is
 `Token<'a>` too), naming `'static` (`impl Tr for &'static S`), or
