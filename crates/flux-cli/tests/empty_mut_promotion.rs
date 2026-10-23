@@ -7,6 +7,18 @@ fn promotion_boundaries_match_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     let cases = [
         (
+            "default_nested",
+            "fn f<'a>(_: &'a u8) -> &'a mut [&'a u8] { Default::default() }",
+            true,
+            true,
+        ),
+        (
+            "default_lifetime",
+            "fn f<'a>(_: &'a u8)-> &'static mut [&'a u8] { Default::default() } fn bad() { let x=0; let y=f(&x); let _=y.len(); }",
+            false,
+            false,
+        ),
+        (
             "const_empty",
             "const fn f<T>() -> &'static mut [T] { &mut [] } const A: &'static mut [u64] = f();",
             true,
