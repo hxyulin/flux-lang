@@ -1,0 +1,190 @@
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use std::sync::{Arc, Barrier, Mutex};
+static DROPS: AtomicUsize = AtomicUsize::new(0);
+static SUM: AtomicUsize = AtomicUsize::new(0);
+static LIVE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+static FREES: AtomicUsize = AtomicUsize::new(0);
+unsafe extern "C" {
+    fn malloc(n: usize) -> *mut u8;
+    fn free(p: *mut u8);
+}
+#[unsafe(no_mangle)]
+extern "C" fn arc_test_malloc(n: usize) -> *mut u8 {
+    // SAFETY: libc malloc accepts any size; null is checked before use.
+    let p = unsafe { malloc(n) };
+    assert!(!p.is_null());
+    LIVE.lock().unwrap().push(p as usize);
+    ALLOCS.fetch_add(1, SeqCst);
+    p
+}
+#[unsafe(no_mangle)]
+extern "C" fn arc_test_free(p: *mut u8) {
+    let mut live = LIVE.lock().unwrap();
+    let at = live
+        .iter()
+        .position(|&x| x == p as usize)
+        .expect("double or invalid free");
+    live.swap_remove(at);
+    FREES.fetch_add(1, SeqCst);
+    // SAFETY: the live set proves this is a unique, still-live libc allocation.
+    unsafe {
+        free(p);
+    }
+}
+#[unsafe(no_mangle)]
+extern "C" fn arc_test_dropped(sum: usize) {
+    SUM.fetch_add(sum, SeqCst);
+    DROPS.fetch_add(1, SeqCst);
+}
+// Each wrapper owns exactly one Flux handle. No host reads its representation.
+// Sending a wrapper transfers ownership; all FFI borrows end before its release.
+struct Strong(*mut u8);
+struct Weak(*mut u8);
+// SAFETY: transferring the wrapper transfers its one strong owner; Payload
+// is Send + Sync and Flux atomically manages its shared allocation.
+unsafe impl Send for Strong {}
+// SAFETY: the wrapper transfers one weak owner, which pins its atomic header.
+unsafe impl Send for Weak {}
+impl Strong {
+    fn new() -> Self {
+        // SAFETY: audited C scalar ABI; the result owns a fresh strong wrapper.
+        Self(unsafe { arc_create() })
+    }
+    fn clone(&self) -> Self {
+        // SAFETY: self pins a live wrapper for this borrow; result is a new owner.
+        Self(unsafe { arc_clone(self.0) })
+    }
+    fn weak(&self) -> Weak {
+        // SAFETY: self pins the strong wrapper until downgrade returns.
+        Weak(unsafe { arc_downgrade(self.0) })
+    }
+    fn write_release(self, slot: usize) {
+        let p = self.0;
+        std::mem::forget(self);
+        // SAFETY: ownership moved out of self once; the worker has its unique
+        // slot in 0..8, and the Flux call consumes this wrapper exactly once.
+        assert_eq!(unsafe { arc_write_release(p, slot) }, 1);
+    }
+}
+impl Drop for Strong {
+    fn drop(&mut self) {
+        // SAFETY: Drop consumes the uniquely owned live wrapper exactly once.
+        assert_eq!(unsafe { arc_release(self.0) }, 1);
+    }
+}
+impl Weak {
+    fn clone(&self) -> Self {
+        // SAFETY: self pins a live wrapper for this borrow; result is a new owner.
+        Self(unsafe { weak_clone(self.0) })
+    }
+    fn upgrade(&self) -> Option<Strong> {
+        // SAFETY: self pins the weak wrapper/header throughout this borrow.
+        let p = unsafe { weak_upgrade(self.0) };
+        if p.is_null() { None } else { Some(Strong(p)) }
+    }
+}
+impl Drop for Weak {
+    fn drop(&mut self) {
+        // SAFETY: Drop consumes the uniquely owned live wrapper exactly once.
+        assert_eq!(unsafe { weak_release(self.0) }, 1);
+    }
+}
+fn balanced() {
+    assert!(LIVE.lock().unwrap().is_empty());
+    assert_eq!(ALLOCS.load(SeqCst), FREES.load(SeqCst));
+}
+fn main() {
+    // SAFETY: audited no-argument C scalar function, with no preconditions.
+    assert_eq!(unsafe { empty_weak_control() }, 1);
+    assert_eq!(ALLOCS.load(SeqCst), 0);
+    let a = Strong::new();
+    // One Vec allocation moved to one combined header/payload block, plus wrapper.
+    assert_eq!(ALLOCS.load(SeqCst), 3);
+    assert_eq!(FREES.load(SeqCst), 1);
+    assert_eq!(LIVE.lock().unwrap().len(), 2);
+    let w = a.weak();
+    let upgraded = w.upgrade().unwrap();
+    drop(a);
+    assert_eq!(DROPS.load(SeqCst), 0);
+    drop(upgraded);
+    assert_eq!(DROPS.load(SeqCst), 8);
+    assert!(w.upgrade().is_none());
+    drop(w);
+    balanced();
+    for _ in 0..40 {
+        SUM.store(0, SeqCst);
+        let start = DROPS.load(SeqCst);
+        let a = Strong::new();
+        let weak = a.weak();
+        let barrier = Arc::new(Barrier::new(9));
+        let mut threads = Vec::new();
+        for slot in 0..8 {
+            let a = a.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..400 {
+                    let c = a.clone();
+                    let w = c.weak();
+                    drop(w.upgrade().unwrap());
+                }
+                a.write_release(slot);
+            }));
+        }
+        drop(a);
+        barrier.wait();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(DROPS.load(SeqCst), start + 8);
+        assert_eq!(SUM.load(SeqCst), 36); // last strong sees all eight plain writes
+        assert!(weak.upgrade().is_none());
+        assert_eq!(LIVE.lock().unwrap().len(), 2); // header plus opaque weak wrapper
+        drop(weak);
+        balanced();
+
+        // Race upgrade against last strong, retaining a distinct weak in each
+        // worker. Successful upgrades pin the data until their own drop.
+        let start = DROPS.load(SeqCst);
+        let a = Strong::new();
+        let weak = a.weak();
+        let barrier = Arc::new(Barrier::new(5));
+        let mut threads = Vec::new();
+        for _ in 0..4 {
+            let weak = weak.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..400 {
+                    drop(weak.upgrade());
+                }
+            }));
+        }
+        barrier.wait();
+        drop(a);
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert!(weak.upgrade().is_none());
+        assert_eq!(DROPS.load(SeqCst), start + 8);
+        drop(weak);
+        balanced();
+
+        // Last explicit weak versus last strong; neither host wrapper aliases.
+        let start = DROPS.load(SeqCst);
+        let a = Strong::new();
+        let weak = a.weak();
+        let barrier = Arc::new(Barrier::new(2));
+        let other = barrier.clone();
+        let thread = std::thread::spawn(move || {
+            other.wait();
+            drop(weak);
+        });
+        barrier.wait();
+        drop(a);
+        thread.join().unwrap();
+        assert_eq!(DROPS.load(SeqCst), start + 8);
+        balanced();
+    }
+}

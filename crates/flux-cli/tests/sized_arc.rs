@@ -524,7 +524,12 @@ fn checked_counter_limits_abort_without_wrapping() {
     // production debug API. Counts are exaggerated while exclusively owned;
     // this can only leak ownership, not permit premature destruction.
     let library = include_str!("../../../library/alloc/src/sync.rs")
-        .replace("use crate::alloc::", "use std::alloc::");
+        .replace("use crate::alloc::", "use std::alloc::")
+        .replace("use crate::vec::Vec;", "use std::vec::Vec;")
+        .replace(
+            "crate::raw_vec::capacity_overflow()",
+            "panic!(\"capacity overflow\")",
+        );
     for (name, setup, operation) in [
         (
             "strong_clone",
