@@ -3357,6 +3357,41 @@ impl<'a> Cx<'a> {
         range: TextRange,
         depth: u32,
     ) {
+        // Function items fix their owner's lifetimes when the item is
+        // instantiated. Fresh owner variables in function_output cannot
+        // prove that the item works for every lifetime a callback binds.
+        // Keep this check here, even for unit/scalar outputs: prove's
+        // FnDef early return and projection fallback do not reject it.
+        if flux_ty::fn_trait_kind(self.items, p.trait_ref.trait_).is_some()
+            && let TyKind::FnDef(def) = self.normalize(p.self_ty.subst(args)).kind()
+            && self
+                .sigs
+                .regions
+                .fns
+                .get(def.function)
+                .is_some_and(|r| r.owner != 0)
+            && let Some(&input) = p.trait_ref.args.first()
+        {
+            let table = trait_regions.args.first().map_or(&[][..], |t| t);
+            let inputs = self.bound_slots_in(input, table, lifetimes, args, arg_vars);
+            // Param/Alias-supplied slots are fixed by the caller, not
+            // introduced by this bound (notably find_map's Self::Item).
+            let unrepresented = inputs.is_none_or(|inputs| {
+                self.late_slots(input, &inputs, args, arg_vars)
+                    .iter()
+                    .any(|v| self.holes.contains(v) || self.late_inputs.contains(v))
+            });
+            if unrepresented {
+                let d = Diagnostic::new(
+                    range,
+                    "higher-ranked callbacks with owner lifetimes are not supported yet",
+                );
+                if !self.errors.contains(&d) {
+                    self.errors.push(d);
+                }
+                return;
+            }
+        }
         // A closure's `Fn`-family bound: how the callee calls it.
         if flux_ty::fn_trait_kind(self.items, p.trait_ref.trait_).is_some()
             && let self_ty = self.normalize(p.self_ty.subst(args))
