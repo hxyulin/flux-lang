@@ -82,10 +82,6 @@ fn union_rejections() {
             "borrowed",
         ),
         (
-            "union U { a: bool } fn main() {}",
-            "only concrete integer, array and struct union fields are supported yet",
-        ),
-        (
             "struct S(u32); union U { a: S } fn main() {}",
             "union fields must implement Copy",
         ),
@@ -173,14 +169,6 @@ fn aggregate_union_rejections() {
             "#[derive(Copy, Clone)] struct S(u32); impl Drop for S { fn drop(&mut self) {} } union U { a: S } fn main() {}",
             "destructor",
         ),
-        (
-            "#[derive(Copy, Clone)] enum E { A, B } union U { a: E } fn main() {}",
-            "only concrete integer",
-        ),
-        (
-            "#[derive(Copy, Clone)] union A { a: u32 } union U { a: A } fn main() {}",
-            "only concrete integer",
-        ),
         ("union U { a: [u8] } fn main() {}", "unsized fields"),
         (
             "struct S([u8]); union U { a: S } fn main() {}",
@@ -188,15 +176,15 @@ fn aggregate_union_rejections() {
         ),
         (
             "#[derive(Copy, Clone)] struct S(&'static u32); union U { a: S } fn main() {}",
-            "only concrete integer",
+            "this union field type is not supported yet",
         ),
         (
             "union U { a: (u32, u32) } fn main() {}",
-            "only concrete integer",
+            "this union field type is not supported yet",
         ),
         (
             "union U { a: core::mem::ManuallyDrop<u32> } fn main() {}",
-            "only concrete integer",
+            "this union field type is not supported yet",
         ),
         (
             "#[derive(Copy, Clone)] struct S(u32); union U { a: S } fn main() { let u = U { a: S(1) }; let _ = u.a.0; }",
@@ -229,4 +217,130 @@ fn aggregate_union_rejections() {
             "{text}: expected {expected:?}, found {found:?}"
         );
     }
+}
+
+#[test]
+fn concrete_copy_union_fields_match_rustc_boundary() {
+    // Check both compilers: valid Rust outside the supported representation
+    // subset must remain an explicit rejection, not silently lose regions.
+    let cases = [
+        (
+            "union U { empty: (), flag: bool } fn main() { let u = U { flag: true }; let _ = unsafe { u.flag }; }",
+            true,
+            None,
+        ),
+        (
+            "#[derive(Copy, Clone)] enum E { A, B { flag: bool, n: usize } } union U { e: E } fn main() { let _ = U { e: E::B { flag: true, n: 3 } }; }",
+            true,
+            None,
+        ),
+        (
+            "#[derive(Copy, Clone)] union Inner { flag: bool, byte: u8 } #[derive(Copy, Clone)] struct S { kind: Inner } union U { s: S } fn main() {}",
+            true,
+            None,
+        ),
+        (
+            "union U { call: unsafe fn(&[u8], &mut usize) -> Option<usize> } fn main() {}",
+            true,
+            None,
+        ),
+        (
+            "#[derive(Copy, Clone)] enum E<T> { A, B(T) } union U { e: E<[bool; 4]> } fn main() {}",
+            true,
+            None,
+        ),
+        (
+            "enum E { A, B(bool) } union U { e: E } fn main() {}",
+            false,
+            Some("union fields must implement Copy"),
+        ),
+        (
+            "enum E { A, B(bool) } impl Drop for E { fn drop(&mut self) {} } union U { e: E } fn main() {}",
+            false,
+            Some("union fields must implement Copy"),
+        ),
+        (
+            "union Inner { byte: u8 } union U { inner: Inner } fn main() {}",
+            false,
+            Some("union fields must implement Copy"),
+        ),
+        (
+            "#[derive(Copy, Clone)] enum E<T> { A, B(T) } struct S(u8); union U { e: E<S> } fn main() {}",
+            false,
+            Some("union fields must implement Copy"),
+        ),
+        (
+            "union U<T: Copy> { field: T } fn main() {}",
+            true,
+            Some("generic unions are not supported yet"),
+        ),
+        (
+            "union U { r: &'static u8 } fn main() {}",
+            true,
+            Some("this union field type is not supported yet"),
+        ),
+        (
+            "#[derive(Copy, Clone)] enum E { A, B(&'static u8) } union U { e: E } fn main() {}",
+            true,
+            Some("this union field type is not supported yet"),
+        ),
+        (
+            "#[derive(Copy, Clone)] struct S(&'static u8); #[derive(Copy, Clone)] union Inner { s: S } union U { inner: Inner } fn main() {}",
+            true,
+            Some("this union field type is not supported yet"),
+        ),
+        (
+            "union U { marker: core::marker::PhantomData<&'static u8> } fn main() {}",
+            true,
+            Some("this union field type is not supported yet"),
+        ),
+        (
+            "union U { pair: (u32, bool) } fn main() {}",
+            true,
+            Some("this union field type is not supported yet"),
+        ),
+        (
+            "union U { pointer: *const u8 } fn main() {}",
+            true,
+            Some("this union field type is not supported yet"),
+        ),
+        (
+            "union U { call: fn() -> &'static u8 } fn main() {}",
+            true,
+            Some("lifetimes in function pointer types are not supported yet"),
+        ),
+        (
+            "union U { a: bool, b: u8 } fn main() { let mut u = U { a: true }; unsafe { let a = &u.a; u.b = 1; let _ = *a; } }",
+            false,
+            Some("borrowed"),
+        ),
+    ];
+    let dir = std::env::temp_dir().join(format!("flux-union-boundary-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (i, (text, rustc_accepts, expected)) in cases.iter().enumerate() {
+        let source = dir.join(format!("case_{i}.rs"));
+        std::fs::write(&source, text).unwrap();
+        let rustc = std::process::Command::new("rustc")
+            .args(["--edition=2024", "--emit=metadata", "-Awarnings"])
+            .arg(&source)
+            .arg("--out-dir")
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            rustc.status.success(),
+            *rustc_accepts,
+            "{text}: {}",
+            String::from_utf8_lossy(&rustc.stderr)
+        );
+        let found = errors(text);
+        match expected {
+            None => assert!(found.is_empty(), "{text}: {found:?}"),
+            Some(expected) => assert!(
+                found.iter().any(|e| e.contains(expected)),
+                "{text}: expected {expected:?}, found {found:?}"
+            ),
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
