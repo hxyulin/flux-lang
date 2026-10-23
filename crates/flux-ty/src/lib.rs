@@ -261,6 +261,7 @@ impl Signatures {
         self.impl_types.freeze();
         self.opaques.freeze();
         self.trait_defaults.freeze();
+        self.regions.traits.freeze();
         self.regions.fns.freeze();
         self.regions.structs.freeze();
         self.regions.impls.freeze();
