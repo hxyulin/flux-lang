@@ -539,6 +539,86 @@ fn original_unicode_ident_package_matches_rustc_on_every_unicode_scalar() {
     unicode_ident_comparison(true);
 }
 
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn memchr_sources_match_rustc_across_search_boundaries() {
+    // This explicit edition-2024, feature-free wrapper exercises unchanged
+    // sources, not memchr's original manifest or its edition-2021 semantics.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = Command::new("cargo")
+        .current_dir(&root)
+        .args([
+            "metadata",
+            "--offline",
+            "--locked",
+            "--format-version",
+            "1",
+            "--filter-platform",
+            "aarch64-apple-darwin",
+        ])
+        .output()
+        .unwrap();
+    success(&output);
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let package = metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "memchr")
+        .unwrap();
+    let source = std::path::Path::new(package["manifest_path"].as_str().unwrap());
+    let fixture = Fixture::new();
+    copy_source_package(source.parent().unwrap(), &fixture.0.join("memchr-src"));
+    fixture.write("memchr/Cargo.toml", "[package]\nname='memchr'\nversion='0.1.0'\nedition='2024'\n[lib]\npath='../memchr-src/src/lib.rs'\n");
+    fixture.write("Cargo.toml", "[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nmemchr={path='memchr'}\n");
+    fixture.write(
+        "src/main.rs",
+        include_str!("fixtures/memchr/consumer.rs.txt"),
+    );
+    let mut expected = None;
+    for args in [&[][..], &["-O"][..]] {
+        let library = fixture.0.join("libmemchr.rlib");
+        let output = Command::new("rustc")
+            .args(["--edition=2024", "--crate-type=rlib", "--crate-name=memchr"])
+            .args(args)
+            .arg(fixture.0.join("memchr-src/src/lib.rs"))
+            .arg("-o")
+            .arg(&library)
+            .output()
+            .unwrap();
+        success(&output);
+        let reference = fixture.0.join("reference");
+        let output = Command::new("rustc")
+            .args([
+                "--edition=2024",
+                "-C",
+                "panic=abort",
+                "-C",
+                "overflow-checks=off",
+            ])
+            .args(args)
+            .arg(fixture.0.join("src/main.rs"))
+            .arg("--extern")
+            .arg(format!("memchr={}", library.display()))
+            .arg("-o")
+            .arg(&reference)
+            .output()
+            .unwrap();
+        success(&output);
+        let reference = Command::new(reference).output().unwrap();
+        success(&reference);
+        if let Some(expected) = &expected {
+            assert_eq!(&reference.stdout, expected);
+        } else {
+            expected = Some(reference.stdout.clone());
+        }
+        let actual = fixture.run("run", args);
+        success(&actual);
+        assert_eq!(actual.stdout, reference.stdout);
+        assert_eq!(actual.stderr, reference.stderr);
+    }
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn unicode_ident_comparison(original_manifest: bool) {
     // Locate the version Cargo already built for this workspace. The reference

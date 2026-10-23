@@ -4,6 +4,13 @@
 
 ### Syntax
 
+- Compile unchanged memchr sources through an edition-2024, feature-free source
+  dependency wrapper, with 32,640 native search cases compared against rustc.
+  The original manifest and its edition-2021 configuration remain unsupported.
+
+- Support concrete Copy bool/unit/enum/function-pointer/nested-union fields
+  while preserving region-free storage and explicit unsupported boundaries.
+
 - Implement built-in Clone for function items and safe/unsafe function pointers,
   preserving safety and conservatively rejecting constrained input reification.
 

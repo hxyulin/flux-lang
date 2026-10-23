@@ -189,19 +189,24 @@ the compiler again with equivalent behavior.
 The original cached `unicode-ident 1.0.27` manifest and sources now compile
 as a local path dependency under the bounded edition-2021 implementation.
 Classification counts and a digest across every Unicode scalar match rustc
-with and without Flux optimization. Registry dependency resolution and the
-remaining `memchr` language/library requirements are still outstanding.
+with and without Flux optimization. Registry dependency resolution remains
+outstanding.
 
 Unchanged `memchr 2.8.3` sources now lower to HIR without diagnostics under the
-file command's edition-2024 boundary. The subsequent type/MIR probe still
-reports broader union fields, function-pointer Clone and Result
-`unwrap_unchecked`. Thin pointer comparisons and bounded unsigned unaligned
+file command's edition-2024 boundary, and the complete source root now passes
+type/MIR checking. Concrete Copy union fields, function-pointer Clone and
+Result `unwrap_unchecked` remove the last diagnostics from that probe.
+Thin pointer comparisons and bounded unsigned unaligned
 reads now have runtime coverage. Cfg pruning
 now precedes block-tail selection, removing the earlier unit/value mismatches.
-Its original package
-also needs feature selection and broader edition-2021 macro support. Source
-probes use the file command's explicit edition-2024 boundary and do not
-establish package compilation.
+A package regression now compiles those unchanged sources as a path dependency
+through an explicit edition-2024, feature-free wrapper. Across 32,640 cases,
+rustc and Flux executables agree both without and with optimization: byte
+search variants, counts, substring search, cloned finders and forward/reverse
+iterators are exercised at different lengths and offsets. This is native
+compilation of a real dependency's sources, without rustc in the Flux build.
+The original manifest still needs feature selection, optional registry
+dependencies and broader edition-2021 semantics; it is not yet supported.
 
 Struct/enum `non_exhaustive` attributes enforce external construction and
 pattern restrictions through source dependencies. Variant-level attributes
@@ -236,11 +241,12 @@ SSE/SSE2/FXSR on x86-64 independently of the compiler's own build flags.
 The union front end parses contextual declarations and macro item fragments;
 disabled declarations are pruned before semantic processing. All 45 unchanged
 `memchr` Rust files parse and match the syntax grammar. A bounded executable
-integer/array/concrete-Copy-struct union subset supports overlapping storage, default/`repr(C)`
+concrete-Copy union subset supports overlapping storage, default/`repr(C)`
 layout, Copy/Clone, safe field writes, unsafe reads/references, moves and
 overlap checks, including nested projections through different union fields.
-The accepted aggregates recursively contain only integer leaves; this includes
-the array-backed NEON wrappers. Union constant evaluation, generic union
-declarations, enum/reference/pointer fields and patterns remain unsupported.
-The `PrefilterKind` representation prerequisite is covered by scalar and actual
-NEON wrapper regressions; whole `memchr` compilation is still unverified.
+Accepted storage recursively includes integers, bool, unit, function pointers,
+arrays, structs, enum payloads and nested unions, including the array-backed
+NEON wrappers and actual SearcherKind fields. Union constant evaluation,
+generic union declarations, stored references/raw pointers and patterns remain
+unsupported. Copy requirements and the region-free storage restriction remain
+checked recursively.

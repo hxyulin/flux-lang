@@ -133,4 +133,13 @@ path dependency using its unchanged edition-2021 manifest and sources.
 Classification counts and a digest across every Unicode scalar match rustc
 with and without Flux optimization. The edition-2024 source-wrapper test
 also remains. This does not add registry resolution or compilation of its
-dev dependencies. `memchr` still requires missing language and library APIs.
+dev dependencies.
+
+Unchanged `memchr 2.8.3` sources also compile and run through an explicit
+edition-2024, feature-free path-library wrapper. A 32,640-case comparison covers
+offsets, lengths, byte-search variants, counts, substring searches, cloned
+finders and forward/reverse iterators; rustc and Flux agree with and without
+optimization. Flux loads the dependency sources directly; it does not produce
+or consume Rust rlibs. The test's rlibs belong only to the rustc oracle.
+The original memchr manifest is still unsupported: feature selection, optional
+registry dependencies and broader edition-2021 semantics remain separate work.
