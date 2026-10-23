@@ -1588,6 +1588,20 @@ fn assoc_type(
         {
             return ty;
         }
+        // AliasTy has no trait-region table. Reject these projections until
+        // normalization can preserve their owner and type-argument regions.
+        if !items.traits[trait_ref.trait_].generics.lifetimes.is_empty()
+            || trait_ref
+                .args
+                .iter()
+                .any(|&t| regions::slots(items, t) != 0)
+        {
+            errors.push((
+                qrange,
+                "lifetimes in qualified trait projections are not supported yet".into(),
+            ));
+            return Ty::ERROR;
+        }
         return Ty::alias(traits::alias_of(trait_ref, self_ty, name));
     }
     // `Self::Out` in a trait's `impl` block: the block's own.
