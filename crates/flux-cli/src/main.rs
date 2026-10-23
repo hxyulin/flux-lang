@@ -61,7 +61,7 @@ struct BuildOptions {
     /// Optimize with keel's full pipeline.
     #[arg(short = 'O')]
     optimize: bool,
-    /// Print how long each phase took.
+    /// Print scoped compilation timings (excludes execution of the program).
     #[arg(long)]
     timings: bool,
 }

@@ -724,3 +724,151 @@ fn main() {
         assert_eq!(actual.stderr, expected.stderr);
     }
 }
+
+#[test]
+fn timing_flags_and_planning_failures() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", "[workspace]\n");
+    for command in ["build", "run"] {
+        let output = fixture.run(command, &["--timings"]);
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("planning (inclusive of metadata)"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("package compile scoped elapsed"),
+            "{stderr}"
+        );
+        assert!(
+            !stderr
+                .lines()
+                .any(|line| line.starts_with("compile scoped elapsed"))
+        );
+        assert!(!stderr.contains("backend verify"));
+        let ordinary = fixture.run(command, &[]);
+        assert!(!String::from_utf8_lossy(&ordinary.stderr).contains("scoped elapsed"));
+    }
+    // Valid TOML with an invalid Cargo package name reaches a metadata failure.
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname='invalid!name'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    let output = fixture.run("build", &["--timings"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cargo metadata failed"), "{stderr}");
+    assert!(
+        stderr.contains("cargo metadata + decode/validate"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("planning (inclusive of metadata)"),
+        "{stderr}"
+    );
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn package_timings_cover_compilation_and_exclude_program_execution() {
+    let fixture = Fixture::new();
+    for flags in [&["--timings"][..], &["--timings", "-O"][..]] {
+        let output = fixture.run("run", flags);
+        success(&output);
+        assert_eq!(output.stdout, b"probe=42\n");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for scope in [
+            "cargo metadata + decode/validate",
+            "planning (inclusive of metadata)",
+            "source dependency load/parse",
+            "hir (includes module load/parse)",
+            "backend (inclusive)",
+            "backend verify",
+            "backend optimize",
+            "backend native codegen",
+            "backend assemble",
+            "link",
+            "compile scoped elapsed",
+            "package compile scoped elapsed",
+        ] {
+            assert!(stderr.contains(scope), "missing {scope}: {stderr}");
+        }
+    }
+    let ordinary = fixture.run("run", &[]);
+    success(&ordinary);
+    assert!(ordinary.stderr.is_empty());
+    // Invalid examples are compile-only, never run.
+    fixture.write("src/main.rs", "fn main() { let x: bool = 42; }");
+    let output = fixture.run("build", &["--timings"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("types (includes const evaluation)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("package compile scoped elapsed"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("backend verify"));
+}
+
+#[test]
+fn single_file_timings_survive_source_load_failure() {
+    let fixture = Fixture::new();
+    for timed in [false, true] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        command.arg("build").arg(fixture.0.join("missing.rs"));
+        if timed {
+            command.arg("--timings");
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.contains("database + root load/parse"),
+            timed,
+            "{stderr}"
+        );
+        assert_eq!(stderr.contains("compile scoped elapsed"), timed, "{stderr}");
+    }
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn single_file_timings_survive_lowering_and_link_failures() {
+    let fixture = Fixture::new();
+    // The constant is evaluated only during monomorphization, after MIR checks.
+    // Use an associated constant so evaluation happens at compile time.
+    fixture.write("src/main.rs", "trait Tr { const N: u8; const BAD: u8 = Self::N * 100; } struct S; impl Tr for S { const N: u8 = 100; } fn get<T: Tr>() -> u8 { T::BAD } fn main() { let _ = get::<S>(); }");
+    let compile = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        command
+            .arg("build")
+            .arg(fixture.0.join("src/main.rs"))
+            .arg("--timings")
+            .arg("-o")
+            .arg(fixture.0.join("program"));
+        command
+    };
+    let output = compile().output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("overflow"), "{stderr}");
+    assert!(stderr.contains("mono + keel lowering"), "{stderr}");
+    assert!(stderr.contains("compile scoped elapsed"), "{stderr}");
+    assert!(!stderr.contains("backend verify"), "{stderr}");
+    fixture.write("src/main.rs", "fn main() {}");
+    let output = compile()
+        .env("SDKROOT", fixture.0.join("missing-sdk"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("backend assemble"), "{stderr}");
+    assert!(
+        stderr.lines().any(|line| line.starts_with("link ")),
+        "{stderr}"
+    );
+    assert!(stderr.contains("compile scoped elapsed"), "{stderr}");
+}

@@ -29,6 +29,9 @@ pub(crate) struct Options {
     /// Enable Flux/Keel backend optimization (not a Cargo release profile).
     #[arg(short = 'O', long)]
     optimize: bool,
+    /// Print scoped compilation timings (excludes execution of the program).
+    #[arg(long)]
+    timings: bool,
 }
 
 #[derive(Deserialize)]
@@ -66,22 +69,31 @@ struct Plan {
 
 pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     let (Command::Build(options) | Command::Run { options, .. }) = command;
-    let plan = plan(options)?;
-    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        return Err("package builds support only arm64 macOS hosts".into());
-    }
-    std::fs::create_dir_all(plan.output.parent().unwrap())
-        .map_err(|e| format!("cannot create output directory: {e}"))?;
-    if !build::compile(CompileRequest {
-        file: &plan.source,
-        crate_name: &plan.crate_name,
-        output: &plan.output,
-        sources: &plan.sources,
-        options: BuildOptions {
-            optimize: options.optimize,
-            timings: false,
-        },
-    })? {
+    // This boundary includes planning, output-directory setup and compilation
+    // (including its timing report), but stops before execution. On success the
+    // returned Plan is destroyed outside this scope.
+    // CLI parsing, final driver error formatting and process teardown are outside.
+    let (plan, compiled) = {
+        let mut timings = build::Timings::new(options.timings, "package compile scoped elapsed");
+        let plan = plan(options, &mut timings)?;
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return Err("package builds support only arm64 macOS hosts".into());
+        }
+        std::fs::create_dir_all(plan.output.parent().unwrap())
+            .map_err(|e| format!("cannot create output directory: {e}"))?;
+        let compiled = build::compile(CompileRequest {
+            file: &plan.source,
+            crate_name: &plan.crate_name,
+            output: &plan.output,
+            sources: &plan.sources,
+            options: BuildOptions {
+                optimize: options.optimize,
+                timings: options.timings,
+            },
+        })?;
+        (plan, compiled)
+    };
+    if !compiled {
         return Ok(ExitCode::FAILURE);
     }
     if let Command::Run { args, .. } = command {
@@ -95,10 +107,21 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     }
 }
 
-fn plan(options: &Options) -> Result<Plan, String> {
+fn plan(options: &Options, timings: &mut build::Timings) -> Result<Plan, String> {
+    // Keep the inclusive planning duration even when validation or metadata fails.
+    let start = options.timings.then(std::time::Instant::now);
+    let result = plan_inner(options, timings);
+    if let Some(start) = start {
+        timings.record("planning (inclusive of metadata)", start.elapsed());
+    }
+    result
+}
+
+fn plan_inner(options: &Options, timings: &mut build::Timings) -> Result<Plan, String> {
     let manifest = canonical_manifest(&options.manifest_path)?;
     let root = manifest.parent().unwrap();
     let mut loader = SourceGraph {
+        timings,
         manifests: Vec::new(),
         sources: Vec::new(),
         active: Vec::new(),
@@ -133,14 +156,15 @@ fn canonical_manifest(path: &Path) -> Result<PathBuf, String> {
     Ok(manifest)
 }
 
-struct SourceGraph {
+struct SourceGraph<'a> {
+    timings: &'a mut build::Timings,
     manifests: Vec<PathBuf>,
     sources: Vec<SourceInput>,
     active: Vec<PathBuf>,
     target_names: Vec<String>,
 }
 
-impl SourceGraph {
+impl SourceGraph<'_> {
     fn visit(
         &mut self,
         manifest: &Path,
@@ -208,7 +232,11 @@ impl SourceGraph {
                 dependencies.push((name, index));
             }
         }
-        let package = metadata_package(manifest)?;
+        let package = self
+            .timings
+            .time("  cargo metadata + decode/validate", || {
+                metadata_package(manifest)
+            })?;
         let target = select_target(&package, library, bin)?;
         let index = self.sources.len();
         self.sources.push(SourceInput {
