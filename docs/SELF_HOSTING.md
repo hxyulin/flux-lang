@@ -221,6 +221,12 @@ supertrait impls and their bounds instead of assuming newly required outlives
 relations. Both audit supertrait reductions now reject alongside all three
 callback reductions. Generic wrappers, transitive supertraits, static/repeated
 headers and associated-type equality controls have focused coverage.
+The follow-up review found missing Self-edge associated-type equalities and
+skipped projection type checks when no lifetime slots were present. Both now
+have dedicated checks and negative regressions, including direct and `find_map`
+reference escapes and incompatible callable output types. Required equalities
+are proved using the original header assumptions; nested selected projections
+outside those assumptions remain explicitly unsupported.
 Unrepresented supertrait regions and higher-ranked callback obligations needed
 by a selected supertrait impl remain explicitly unsupported. The trait-lifetime
 guard remains; these fixes do not yet enable `AstNode<'t>`.

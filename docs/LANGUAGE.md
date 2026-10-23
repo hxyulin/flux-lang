@@ -1011,6 +1011,11 @@ types name is E0207, as in rustc.
 Supertrait obligations are also checked at impl declarations, even for empty
 or unused impls, under the lifetimes and bounds its header permits. A selected
 supertrait impl may require only outlives relations that follow from that header.
+Associated-type equalities on Self supertrait edges are proved against the
+original header assumptions, comparing both types and represented lifetime
+slots. Selected impl bounds also require matching projection types when no
+lifetime slots are present. Nested selected projections that cannot be proved
+from the header remain explicitly unsupported.
 Unrepresented supertrait argument regions and higher-ranked callback obligations
 needed by a selected supertrait impl are explicitly unsupported; unrelated
 callback bounds remain allowed.

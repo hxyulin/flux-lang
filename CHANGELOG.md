@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Prove associated-type equalities on Self supertrait edges and check selected
+  impl projection types even without lifetime slots, rejecting contradictory
+  implementations and reference escapes.
+
 - Validate impl supertrait lifetimes at declarations, including unused and empty
   impls, rejecting static-reference escapes through invalid implementations.
 
