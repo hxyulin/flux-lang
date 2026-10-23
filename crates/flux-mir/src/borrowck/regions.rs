@@ -2018,7 +2018,7 @@ impl<'a> Cx<'a> {
     fn generate(&mut self) {
         let body = self.body;
         let copy = flux_ty::traits::copy_trait_ref(self.items);
-        for data in body.blocks.values() {
+        for (block, data) in body.blocks.iter() {
             for statement in &data.statements {
                 if let StatementKind::Assign(dest, rvalue) = &statement.kind {
                     self.assign(dest, rvalue, statement.range);
@@ -2038,7 +2038,14 @@ impl<'a> Cx<'a> {
                     args,
                     dest,
                     ..
-                } => self.call(*func, generic_args, args, dest, range),
+                } => self.call(
+                    *func,
+                    generic_args,
+                    args,
+                    dest,
+                    range,
+                    body.call_regions.get(block).map_or(&[], |r| &r[..]),
+                ),
                 TerminatorKind::CallIndirect { args, dest, .. } => {
                     self.opaque_call(args, dest, range)
                 }
@@ -2289,6 +2296,7 @@ impl<'a> Cx<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn call(
         &mut self,
         func: flux_hir::FunctionId,
@@ -2296,6 +2304,7 @@ impl<'a> Cx<'a> {
         args: &[Operand],
         dest: &Place,
         range: TextRange,
+        written: &[(u32, Box<[Region]>)],
     ) {
         let (items, sigs) = (self.items, self.sigs);
         // The `Fn`-family methods of closures, function items and
@@ -2339,6 +2348,38 @@ impl<'a> Cx<'a> {
         for &a in generic_args {
             let n = self.slots(a);
             type_vars.push(self.fresh_list(n));
+        }
+        // The type argument is fixed by the caller's spelling, even where
+        // the callee's parameters/results alone would allow a shorter region.
+        for (index, table) in written {
+            let Some(vars) = type_vars.get(*index as usize) else {
+                continue;
+            };
+            for (&var, region) in vars.iter().zip(table.iter()) {
+                let declared = match *region {
+                    Region::Static => Some(STATIC),
+                    Region::Param(i) => Some(1 + i),
+                    Region::Erased | Region::Late(_) => None,
+                };
+                if let Some(declared) = declared {
+                    self.equate(var, declared, Category::CallArgument, range);
+                }
+            }
+            let mut implied = Vec::new();
+            flux_ty::regions::implied_outlives_with_static(
+                items,
+                sigs,
+                generic_args[*index as usize],
+                vars,
+                Some(STATIC),
+                &mut implied,
+            );
+            for constraint in implied {
+                match constraint {
+                    Outlives::Region(a, b) => self.outlives(a, b, Category::CallArgument, range),
+                    Outlives::Type(t, b) => self.type_outlives(t, b, range),
+                }
+            }
         }
         let mut map = |r: Region| match r {
             Region::Static => Some(STATIC),

@@ -57,6 +57,10 @@ pub enum Region {
     Late(u32),
 }
 
+/// Written type arguments' region slots, indexed in a call's full generic list.
+/// Entries with entirely inferred slots need no additional call constraint.
+pub type TypeArgRegions = Vec<(u32, Box<[Region]>)>;
+
 /// How a type's subtyping depends on one of its parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Variance {

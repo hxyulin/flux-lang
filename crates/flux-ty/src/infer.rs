@@ -68,6 +68,8 @@ pub struct InferenceResult {
     /// associated functions of a generic struct with one name, the one
     /// for the type it is called on.
     pub calls: ArenaMap<Expr, Instance>,
+    /// Written function type arguments, indexed in the full generic argument list.
+    pub call_regions: ArenaMap<Expr, crate::regions::TypeArgRegions>,
     /// The trait method each operator on a type other than the integers
     /// and `bool` calls: `Add::add` for `a + b`, `PartialEq::eq` for
     /// `a == b`, `PartialOrd::lt` for `a < b`, `AddAssign::add_assign`
@@ -1581,10 +1583,10 @@ impl Ctx<'_> {
     }
 
     fn resolve_type_ref(&mut self, ty_ref: TypeRefId) -> Ty {
-        self.resolve_body_type(ty_ref, false)
+        self.resolve_body_type(ty_ref, false, false)
     }
 
-    fn resolve_body_type(&mut self, ty_ref: TypeRefId, local: bool) -> Ty {
+    fn resolve_body_type(&mut self, ty_ref: TypeRefId, local: bool, argument: bool) -> Ty {
         let range = self
             .source_map
             .types
@@ -1612,7 +1614,7 @@ impl Ctx<'_> {
             range,
             &mut self.diagnostics,
         );
-        self.check_written_lifetimes(ty_ref, ty, local);
+        self.check_written_lifetimes(ty_ref, ty, local, argument);
         let ty = self.fill_placeholders(ty, range);
         if ty.has_aliases() {
             let body = self.body;
@@ -1627,7 +1629,7 @@ impl Ctx<'_> {
     /// resolved to `ty`: each must be in scope, and a struct's as many
     /// as it has. Elided ones are inferred by the borrow checker; flux
     /// enforces explicit `'static` in local annotations in MIR.
-    fn check_written_lifetimes(&mut self, ty_ref: TypeRefId, ty: Ty, local: bool) {
+    fn check_written_lifetimes(&mut self, ty_ref: TypeRefId, ty: Ty, local: bool, argument: bool) {
         let written = &self.body.types[ty_ref];
         let mut found = Vec::new();
         crate::regions::lifetimes_in(written, &mut found);
@@ -1647,7 +1649,7 @@ impl Ctx<'_> {
             names.extend(generics.lifetimes.iter().map(|l| Some(l.name)));
         }
         let mut walker = crate::regions::Walker::new(self.items, self.module, names);
-        walker.body = local;
+        walker.body = local || argument;
         walker.scope = TypeScope {
             self_ty: self.self_ty,
             generics: &self.generics,
@@ -1667,6 +1669,7 @@ impl Ctx<'_> {
             self.error(range, message);
         }
         if unsupported
+            && !argument
             && let Some(l) = found
                 .iter()
                 .find(|l| !l.is_anonymous() && !(local && l.is_static()))
@@ -1717,6 +1720,7 @@ impl Ctx<'_> {
         kind: &str,
         params: &[flux_hir::GenericParam],
         written: Option<&SegmentArgs>,
+        argument: bool,
         origin: TextRange,
     ) -> Vec<Ty> {
         let count = params.len();
@@ -1735,15 +1739,24 @@ impl Ctx<'_> {
             .types
             .iter()
             .zip(params)
-            .map(|(&ty, param)| self.resolve_generic_arg_ref(ty, param))
+            .map(|(&ty, param)| self.resolve_generic_arg_ref_in(ty, param, argument))
             .collect()
     }
 
     /// The generic argument `ty_ref` of the body, for `param`: a type, or
     /// for a const parameter, a constant.
     fn resolve_generic_arg_ref(&mut self, ty_ref: TypeRefId, param: &flux_hir::GenericParam) -> Ty {
+        self.resolve_generic_arg_ref_in(ty_ref, param, false)
+    }
+
+    fn resolve_generic_arg_ref_in(
+        &mut self,
+        ty_ref: TypeRefId,
+        param: &flux_hir::GenericParam,
+        argument: bool,
+    ) -> Ty {
         if !param.is_const() {
-            return self.resolve_type_ref(ty_ref);
+            return self.resolve_body_type(ty_ref, false, argument);
         }
         let range = self
             .source_map
@@ -1820,7 +1833,7 @@ impl Ctx<'_> {
             return Ty::adt(strukt, def.name, &[]);
         }
         let kind = if def.is_enum() { "enum" } else { "struct" };
-        let args = self.own_args(kind, &def.generics.params, written.as_ref(), origin);
+        let args = self.own_args(kind, &def.generics.params, written.as_ref(), false, origin);
         Ty::adt(strukt, def.name, &args)
     }
 
@@ -1871,7 +1884,7 @@ impl Ctx<'_> {
             return None;
         };
         let params = &self.items.structs[adt.strukt].generics.params;
-        let args = self.own_args("struct", params, Some(&written), self.range(expr));
+        let args = self.own_args("struct", params, Some(&written), false, self.range(expr));
         let ty = Ty::adt(adt.strukt, adt.name, &args);
         // `W::<u8>`, which must meet `W`'s bounds.
         let range = TextRange::new(self.range(expr).start(), written.range.end());
@@ -2136,6 +2149,7 @@ impl Ctx<'_> {
             kind,
             &data.generics.params[..explicit],
             written.as_ref(),
+            true,
             origin,
         );
         args.extend(own);
@@ -3427,7 +3441,7 @@ impl Ctx<'_> {
                     init,
                     else_branch,
                 } => {
-                    let declared = ty.map(|ty| self.resolve_body_type(ty, true));
+                    let declared = ty.map(|ty| self.resolve_body_type(ty, true, false));
                     if let (Some(written), Some(declared)) = (ty, declared) {
                         self.let_annotations.insert(pat, (written, declared));
                     }
@@ -6053,6 +6067,84 @@ impl Ctx<'_> {
             self.check_sized_args(expr, function, args);
             calls.insert(expr, Instance { function, args });
         }
+        // Lifetimes are separate from erased `Ty`. Preserve the slots of each
+        // explicitly written function type argument for call instantiation.
+        let mut direct = FxHashSet::default();
+        for (expr, data) in self.body.exprs.iter() {
+            match data {
+                Expr::Call { callee, .. } => {
+                    direct.insert(*callee);
+                }
+                Expr::MethodCall { .. } => {
+                    direct.insert(expr);
+                }
+                _ => {}
+            }
+        }
+        let names = self
+            .owner_fn
+            .and_then(|f| self.sigs.regions.fns.get(f))
+            .map_or_else(Vec::new, |r| r.names.iter().map(|n| n.name).collect());
+        let mut call_regions = ArenaMap::new();
+        for (expr, instance) in calls.iter() {
+            let Some(written) = self
+                .body
+                .generic_args
+                .get(expr)
+                .and_then(|g| g.item.as_ref())
+            else {
+                continue;
+            };
+            let count = self.items.functions[instance.function].generics.len();
+            let offset = instance.args.len().saturating_sub(count);
+            let mut tables = Vec::new();
+            for (i, &written) in written.types.iter().enumerate() {
+                let Some(&ty) = instance.args.get(offset + i) else {
+                    continue;
+                };
+                let mut walker =
+                    crate::regions::Walker::new(self.items, self.module, names.clone());
+                walker.body = true;
+                walker.self_regions = self
+                    .owner_fn
+                    .and_then(|f| self.items.impl_of(f))
+                    .and_then(|imp| self.sigs.regions.impls.get(imp))
+                    .map(|r| &*r.self_ty);
+                walker.scope = TypeScope {
+                    self_ty: self.self_ty,
+                    generics: &self.generics,
+                    consts: &self.const_params,
+                    bounds: &self.param_env,
+                    defaults: Some(&self.sigs.trait_defaults),
+                    ..TypeScope::default()
+                };
+                let regions = walker.regions(&self.body.types[written], ty);
+                for (range, message) in walker.errors {
+                    if !self
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.range == range && d.message == message)
+                    {
+                        self.error(range, message);
+                    }
+                }
+                if regions.iter().any(|r| *r != crate::regions::Region::Erased) {
+                    tables.push(((offset + i) as u32, regions));
+                }
+            }
+            if !tables.is_empty() {
+                // Function-item types erase regions too. Until those values carry
+                // their instantiation, permit written lifetimes only at direct calls.
+                if !direct.contains(&expr) {
+                    self.error(
+                        self.range(expr),
+                        "lifetimes in function item values are not supported yet",
+                    );
+                } else {
+                    call_regions.insert(expr, tables);
+                }
+            }
+        }
         self.calls = instances;
         let overloaded = std::mem::take(&mut self.overloads);
         let mut overloads = ArenaMap::new();
@@ -6226,6 +6318,7 @@ impl Ctx<'_> {
             coercion_derefs,
             reified: self.reified,
             calls,
+            call_regions,
             overloads,
             consts,
             compared_refs: self.compared_refs,
