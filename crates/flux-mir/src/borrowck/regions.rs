@@ -3443,39 +3443,48 @@ impl<'a> Cx<'a> {
         range: TextRange,
         depth: u32,
     ) {
-        // Function items fix their owner's lifetimes when the item is
-        // instantiated. Fresh owner variables in function_output cannot
-        // prove that the item works for every lifetime a callback binds.
-        // Keep this check here, even for unit/scalar outputs: prove's
-        // FnDef early return and projection fallback do not reject it.
+        // Function items fix their owner's and early-bound lifetimes when
+        // instantiated. Fresh variables in function_output cannot prove
+        // universality. has_bounds conservatively includes type-outlives
+        // bounds and bounds unrelated to an otherwise late input lifetime;
+        // we do not yet represent which own lifetimes are early-bound.
+        // Keep this check even for unit/scalar outputs, before prove's
+        // FnDef early return and projection fallback.
         if flux_ty::fn_trait_kind(self.items, p.trait_ref.trait_).is_some()
             && let TyKind::FnDef(def) = self.normalize(p.self_ty.subst(args)).kind()
-            && self
-                .sigs
-                .regions
-                .fns
-                .get(def.function)
-                .is_some_and(|r| r.owner != 0)
-            && let Some(&input) = p.trait_ref.args.first()
         {
-            let table = trait_regions.args.first().map_or(&[][..], |t| t);
-            let inputs = self.bound_slots_in(input, table, lifetimes, args, arg_vars);
-            // Param/Alias-supplied slots are fixed by the caller, not
-            // introduced by this bound (notably find_map's Self::Item).
-            let unrepresented = inputs.is_none_or(|inputs| {
-                self.late_slots(input, &inputs, args, arg_vars)
-                    .iter()
-                    .any(|v| self.holes.contains(v) || self.late_inputs.contains(v))
-            });
-            if unrepresented {
-                let d = Diagnostic::new(
+            let Some(regions) = self.sigs.regions.fns.get(def.function) else {
+                self.errors.push(Diagnostic::new(
                     range,
-                    "higher-ranked callbacks with owner lifetimes are not supported yet",
-                );
-                if !self.errors.contains(&d) {
-                    self.errors.push(d);
-                }
+                    "function item callback region metadata is not supported yet",
+                ));
                 return;
+            };
+            if regions.owner != 0 || regions.has_bounds {
+                let message = if regions.owner != 0 {
+                    "higher-ranked callbacks with owner lifetimes are not supported yet"
+                } else {
+                    "higher-ranked callbacks with signature lifetime bounds are not supported yet"
+                };
+                let inputs = p.trait_ref.args.first().and_then(|&input| {
+                    let table = trait_regions.args.first()?;
+                    let inputs = self.bound_slots_in(input, table, lifetimes, args, arg_vars)?;
+                    // Preserve the original input provenance: Param/Alias
+                    // slots are fixed by the caller, not bound here.
+                    Some(self.late_slots(input, &inputs, args, arg_vars))
+                });
+                let unrepresented = inputs.is_none_or(|inputs| {
+                    inputs
+                        .iter()
+                        .any(|v| self.holes.contains(v) || self.late_inputs.contains(v))
+                });
+                if unrepresented {
+                    let d = Diagnostic::new(range, message);
+                    if !self.errors.contains(&d) {
+                        self.errors.push(d);
+                    }
+                    return;
+                }
             }
         }
         // A closure's `Fn`-family bound: how the callee calls it.
