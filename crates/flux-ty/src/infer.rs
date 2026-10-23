@@ -5242,6 +5242,16 @@ impl Ctx<'_> {
                     .map(|(f, t)| (f, t, borrowed)),
             );
         }
+        // At the same receiver candidate, a type parameter's bound
+        // methods precede in-scope impl methods, including those with
+        // borrowed Self. Projection and reference bounds have no such
+        // priority. Keep all preferred methods to preserve ambiguity.
+        let mut preferred = |&(_, t, target): &(_, Option<crate::TraitRef>, Ty)| {
+            t.is_some() && matches!(self.shallow(target).kind(), TyKind::Param(_))
+        };
+        if found.iter().any(&mut preferred) {
+            found.retain(preferred);
+        }
         match found.as_slice() {
             [] => Ok(None),
             [(function, trait_ref, target)] => {

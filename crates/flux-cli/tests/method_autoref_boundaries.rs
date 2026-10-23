@@ -39,6 +39,21 @@ fn autoref_rejections_match_rustc() {
             "multiple applicable items in scope",
         ),
         (
+            "bound_ambiguity",
+            "trait A { fn pick(&self); } trait B { fn pick(&self); } trait C { fn pick(self); } impl<T> C for &T { fn pick(self) {} } fn pick<T: A + B>(x: T) { x.pick(); } fn main() {}",
+            "multiple applicable items in scope",
+        ),
+        (
+            "borrowed_bound_ambiguity",
+            "trait A { fn pick(self); } trait B { fn pick(self); } fn pick<'a, T: 'a>(x: T) where &'a T: A + B { x.pick(); } fn main() {}",
+            "multiple applicable items in scope",
+        ),
+        (
+            "projection_ambiguity",
+            "trait A { fn pick(&self); } trait B { fn pick(self); } impl<T> B for &T { fn pick(self) {} } trait Container { type Item: A; } fn pick<T: Container>(x: T::Item) { x.pick(); } fn main() {}",
+            "multiple applicable items in scope",
+        ),
+        (
             "scope",
             "struct S; mod hidden { pub trait Pick { fn pick(self); } impl Pick for &super::S { fn pick(self) {} } } fn main() { S.pick(); }",
             "no method named `pick` found",
@@ -69,4 +84,35 @@ fn autoref_rejections_match_rustc() {
         let diagnostics = String::from_utf8_lossy(&flux.stderr);
         assert!(diagnostics.contains(expected), "{name}: {diagnostics}");
     }
+}
+
+#[test]
+fn bound_priority_source_matches_rustc() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let source = root.join("tests/run/method_autoref_bound_priority.rs");
+    let metadata =
+        std::env::temp_dir().join(format!("flux-bound-priority-{}.rmeta", std::process::id()));
+    let rustc = Command::new("rustc")
+        .args(["--edition=2024", "--emit=metadata"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&metadata)
+        .output()
+        .unwrap();
+    assert!(
+        rustc.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rustc.stderr)
+    );
+    let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .current_dir(&root)
+        .arg("mir")
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        flux.status.success(),
+        "{}",
+        String::from_utf8_lossy(&flux.stderr)
+    );
 }
