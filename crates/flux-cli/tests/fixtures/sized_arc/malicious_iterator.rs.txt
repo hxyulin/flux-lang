@@ -1,0 +1,18 @@
+#[path = "shared_slice.rs"]
+mod shared_slice;
+struct Wrong(std::ops::Range<u32>);
+impl Iterator for Wrong {
+    type Item = u32;
+    fn next(&mut self) -> Option<u32> {
+        self.0.next()
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (CLAIMED, Some(CLAIMED))
+    }
+}
+impl ExactSizeIterator for Wrong {}
+fn main() {
+    let mut pool = shared_slice::SharedSlicePool::default();
+    let _ = pool.alloc(Wrong(0..ACTUAL));
+    panic!("incorrect length was accepted");
+}

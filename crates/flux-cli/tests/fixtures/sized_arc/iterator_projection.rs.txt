@@ -1,5 +1,5 @@
-// Rustc accepts; Flux reports inference errors at count() and the for loop.
-// No shared ownership types are involved. Compile-only regression reduction.
+// Regression: Flux formerly reported inference errors at count() and the for loop.
+// No shared ownership types are involved. Minimal regression reduction.
 fn consume<I: IntoIterator<Item = u32>>(input: I)
 where
     I::IntoIter: ExactSizeIterator,

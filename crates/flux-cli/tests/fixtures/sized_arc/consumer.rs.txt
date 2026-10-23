@@ -6,6 +6,9 @@ fn main() {
     let mut pool = SharedSlicePool::default();
     let first = pool.alloc([1u32, 2, 3]);
     let next = pool.alloc([4u32, 5]);
+    // Adjacent published ranges demonstrate reuse of the same live chunk.
+    // SAFETY: first has three live elements; this forms its one-past pointer.
+    assert_eq!(unsafe { first.as_ptr().add(3) }, next.as_ptr());
     let cloned = first.clone();
     assert_eq!(&*next, &[4, 5]);
     for i in 0..300 {
@@ -20,6 +23,19 @@ fn main() {
     let mut empty = SharedSlicePool::<()>::default();
     assert!(empty.alloc([]).is_empty());
     assert_eq!(empty.alloc([(); 300]).len(), 300);
+    let numbers = [17u32, 23];
+    let references = {
+        let mut borrowed = SharedSlicePool::default();
+        borrowed.alloc(numbers.iter())
+    };
+    assert_eq!(*references[1], 23);
+    let last = {
+        let mut released = SharedSlicePool::default();
+        let old = released.alloc([81u32]);
+        drop(old); // Only the pool's Weak remains; the next alloc must recover.
+        released.alloc([82u32])
+    };
+    assert_eq!(last[0], 82);
     println!("shared slices {} {} {}", cloned[0], part[1], large[299]);
 }
 
