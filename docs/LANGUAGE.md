@@ -766,7 +766,7 @@ types; each value makes the same calls of its hasher's `write_*`
 methods as rustc's, a `str` its bytes then `0xff` through `write_str`,
 a slice its length through `write_length_prefix` then its elements, all
 at once for integers, so a program's hasher gives rustc's hashes),
-`core::cell::{Cell, RefCell}` (a `RefCell`'s loans are counted, and
+`core::cell::{Cell, RefCell}` (both are invariant in their payload; a `RefCell`'s loans are counted, and
 a conflicting `borrow` or `borrow_mut` panics with rustc's message, at
 its caller; `Ref<T>` and `RefMut<T>` implement `Deref`, and `RefMut<T>`
 also implements `DerefMut`, with references tied to the borrowed guard;
@@ -786,6 +786,11 @@ not ordinary shared loads/stores. All fifteen supported CAS ordering pairs
 are accepted; invalid orders panic at the caller. Weak CAS currently uses
 Keel's strong CAS, which is permitted. Other widths, const accessors,
 compiler_fence and a threading runtime remain unsupported.
+`alloc::sync::{Arc, Weak}`, reexported through `std::sync`, support sized
+payloads with atomic reference counts: `Arc::new`, cloning, dereferencing,
+`downgrade`, `ptr_eq`, `Weak::new` and `upgrade`. Last-strong destruction and
+last-weak deallocation are separate. DST payloads, slice conversions, unsizing,
+uniqueness APIs and a Flux threading runtime remain unsupported.
 `core::ptr::{addr_of, addr_of_mut}`,
 `core::default::Default` (in the prelude) for the integers, `bool`,
 `char`, `&str`, `&[T]`, `&mut [T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,
@@ -1237,6 +1242,16 @@ integer-to-pointer casts preserve thin raw addresses in constants. These
 addresses grant no reference validity: dereferencing these unbacked addresses,
 constant pointer comparisons,
 pointer-to-integer casts, and wide-address casts remain rejected. Empty
+Constant pointer reinterpretation supports initialized scalar, fixed-array
+and concrete struct views with checked bounds, alignment and scalar validity.
+Pointer casts retain the original allocation layout and address, including
+slice metadata when represented. Read-only local storage is tracked for its
+frame lifetime; a reference into expired storage cannot escape. Copying a
+reference stored in a temporary Cell preserves the original referent. Padding
+reads, symbolic address bits, mutable local raw-memory reads, projected
+reborrows of views, unsizing views and nonempty Box ownership remain
+unsupported. Owned UnsafeCell borrowing and general const allocation are not
+provided. Evaluation limits also bound aggregate view construction.
 `Vec::new` and `NonNull::dangling` are const constructors, preserving element
 alignment without allocating. Constructing a null `NonNull` in a constant is
 rejected.

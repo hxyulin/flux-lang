@@ -374,8 +374,8 @@ sources by Flux, followed by compiling the regression suite and rebuilding
 Flux with that executable. Component comparisons are intermediate milestones;
 they do not establish a working compiler bootstrap.
 
-The arena-root probe still encounters missing `Arc`/`Weak`.
-Some reported errors cascade from missing imports. The
+Sized `Arc`/`Weak` now support shared chunks; the layered arena still needs
+`Arc<[T]>` ownership conversions and unsizing. The
 `PhantomData` equality barrier is removed: its equality and ordering traits
 have no bounds on the marked type, with runtime coverage for unsized and
 non-comparable marked types. `Vec::resize_with` now also supports the side-table
@@ -432,24 +432,36 @@ preserving payload layout while suppressing niches and enforcing invariance
 and Send/Sync rules. The unchanged boxed chunk-construction expression using
 `UnsafeCell<MaybeUninit<T>>` runs against rustc. Owned UnsafeCell borrowing in
 constants and const accessors remain explicitly unsupported. This removes the
-UnsafeCell import barrier; actual `Arc`/`Weak` ownership and synchronization
-remain necessary for the complete arena crate.
+UnsafeCell import barrier; the complete arena crate still needs dynamically
+sized shared ownership.
 
 The native AtomicUsize bridge now supplies the operations and fences needed
 for reference counting. Keel's CAS returns the old scalar; the library rebuilds
 Rust's Result and joins success/failure ordering requirements without weakening
 either path. Native contention and release/acquire publication tests use
 Flux-generated object functions with an ABI-checked rustc thread driver. This
-provides atomic operations, not Flux thread creation or Arc/Weak ownership.
-Sized shared ownership remains the next step; Arc slices additionally need
-ownership conversions and unsizing before the complete typed arena can run.
+provides atomic operations; Flux thread creation remains unsupported.
 
-A separate pre-existing constant-memory limitation remains: raw reinterpretation
-of a temporary `Cell<&T>` can lose the stored reference's layout. The reduced
-[reproducer](../tests/difftest/bugs/020_const_reinterpreted_reference.rs)
-is preserved; it also fails with the compiler from before this checkpoint.
-This requires typed pointer/memory interpretation beyond preserving static
-addresses and rejecting escaping temporary borrows.
+Sized `Arc<T>` and `Weak<T>` now use these atomics for cloning, downgrading,
+upgrading and destruction. Native contention, overflow-abort and allocation
+lifetime checks cover the ownership protocol. The unchanged `SharedSlicePool`
+and `SharedSlice` consumer compiles and matches rustc in both Flux modes,
+including borrowed payloads, chunk rollover, surviving slices and checked
+iterator lengths. Duplicate trait proofs no longer make its generic iterator
+operations ambiguous. Returning borrowed items from a generic iterator remains
+a separate region limitation. `Cell` and `RefCell` payloads are invariant;
+Arc/Weak retain covariance subject to their payload variance. Arc slices still
+need ownership conversions and unsizing before the complete typed arena can run.
+
+Typed constant-pointer views now preserve allocation layout and the stored
+referent when copying a reference through a temporary `Cell<&T>`. The former
+020 reproducer matches rustc in both optimization modes and has runtime/oracle
+coverage. Frame tokens reject references to expired local storage; scalar
+validity, bounds and alignment are checked for represented views. This is
+bounded typed interpretation, with padding, mutable frame memory, projected
+view reborrows and general const allocation still unsupported. The full
+workspace and additional local rustc comparisons passed. This coverage does
+not establish complete Rust const-memory semantics.
 
 ## Next milestones
 
