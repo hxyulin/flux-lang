@@ -170,6 +170,21 @@ pub fn check_impl_supertraits(items: &ItemTree, sigs: &Signatures) -> Vec<Diagno
         .collect()
 }
 
+/// Check associated-value bound predicates and equalities at the declaration.
+pub fn check_impl_associated_bounds(items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
+    items.impls.iter().skip(items.core.impls as usize).filter_map(|(imp, data)| {
+        data.trait_?;
+        let message = match regions::impl_associated_bounds_match(items, sigs, imp) {
+            Some(true) => return None,
+            Some(false) => "associated type bound lifetime requirements are not satisfied by the impl header",
+            None => "associated type bound requirements that cannot be resolved from the impl header are not supported yet",
+        };
+        let mut d = Diagnostic::new(data.self_range, message);
+        d.file = data.file;
+        Some(d)
+    }).collect()
+}
+
 struct Loan {
     place: Place,
     mutability: Mutability,
