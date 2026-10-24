@@ -1,0 +1,43 @@
+use implementation::OnceLock;
+use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicUsize, Ordering};
+static STATIC: OnceLock<u32> = OnceLock::new();
+struct Payload(Arc<AtomicUsize>, Box<[usize]>);
+impl Drop for Payload { fn drop(&mut self) { self.0.fetch_add(1, Ordering::Relaxed); } }
+fn main() {
+    assert_eq!(*STATIC.get_or_init(|| 17), 17);
+    let c = OnceLock::<String>::new();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.get_or_init(|| panic!("initialization failed"))));
+    assert!(panic.is_err());
+    assert!(c.get().is_none());
+    assert_eq!(c.get_or_init(|| String::from("retry")), "retry");
+    for _ in 0..8 {
+        let c = Arc::new(OnceLock::new());
+        let entered = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(9));
+        let threads: Vec<_> = (0..8).map(|_| {
+            let (c, entered, release, drops, start) = (c.clone(), entered.clone(), release.clone(), drops.clone(), start.clone());
+            std::thread::spawn(move || {
+                start.wait();
+                let p = c.get_or_init(|| {
+                    entered.fetch_add(1, Ordering::Relaxed);
+                    while release.load(Ordering::Acquire) == 0 { std::thread::yield_now(); }
+                    Payload(drops, vec![13, 29, 47].into_boxed_slice())
+                });
+                assert_eq!(&*p.1, &[13, 29, 47]);
+            })
+        }).collect();
+        start.wait();
+        while entered.load(Ordering::Relaxed) == 0 { std::thread::yield_now(); }
+        assert!(c.get().is_none());
+        release.store(1, Ordering::Release);
+        for t in threads { t.join().unwrap(); }
+        assert_eq!(entered.load(Ordering::Relaxed), 1);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(c);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+    println!("host reset/contention/drop ok");
+}

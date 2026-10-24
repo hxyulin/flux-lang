@@ -3631,16 +3631,18 @@ fn lens_signatures(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> (Signatures,
     (sigs, diagnostics)
 }
 
-/// The `drop` methods of `core`'s `Drop` impls (`array::IntoIter`'s),
-/// which no call names but drop glue calls.
+/// The embedded core, alloc and std destructors, which implicit drop glue
+/// may call even when no explicit call reaches their bodies.
 pub fn core_drop_fns(items: &ItemTree) -> Vec<FunctionId> {
     let Some(&t) = items.lang_traits.get(&sym::drop) else {
         return Vec::new();
     };
     let impls = items.trait_impls.get(&t).into_iter().flatten();
     impls
-        .filter(|&&imp| items.is_core(items.impls[imp].module))
         .flat_map(|&imp| items.impls[imp].functions.iter().copied())
+        // std shares the embedded cache but cannot define trusted lang items.
+        // Its destructors are still roots, just like core and alloc's.
+        .filter(|f| f.index() < items.core.functions as usize)
         .collect()
 }
 

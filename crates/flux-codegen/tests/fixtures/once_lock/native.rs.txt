@@ -1,0 +1,46 @@
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+struct Payload { a: usize, b: [usize; 8] }
+fn make_cell() -> *mut u8 {
+    Box::into_raw(Box::new(OnceLock::<Payload>::new())) as *mut u8
+}
+fn probe_cell(p: *mut u8) -> usize {
+    // SAFETY: the driver keeps the Flux-created allocation live through joins.
+    unsafe { if (*(p as *const OnceLock<Payload>)).get().is_none() { 0 } else { 1 } }
+}
+fn worker_cell(p: *mut u8, control: *mut usize, seed: usize) -> usize {
+    // SAFETY: control is aligned initialized host atomic storage, and p is a
+    // live Flux cell. Only OnceLock's winner writes the payload.
+    unsafe {
+        let cell = &*(p as *const OnceLock<Payload>);
+        let entered = &*(control as *const AtomicUsize);
+        let release = &*(control.add(1) as *const AtomicUsize);
+        let payload = cell.get_or_init(|| {
+            entered.fetch_add(1, Ordering::Relaxed);
+            while release.load(Ordering::Acquire) == 0 {}
+            Payload { a: seed, b: [seed, seed + 1, seed + 2, seed + 3, seed + 4, seed + 5, seed + 6, seed + 7] }
+        });
+        let mut i = 0;
+        while i < 8 {
+            assert_eq!(payload.b[i], payload.a + i);
+            i += 1;
+        }
+        payload.a
+    }
+}
+fn free_cell(p: *mut u8) -> usize {
+    // SAFETY: the host joins every user before consuming the allocation once.
+    unsafe { drop(Box::from_raw(p as *mut OnceLock<Payload>)); }
+    0
+}
+fn main() {
+    let make: fn() -> *mut u8 = make_cell;
+    let probe: fn(*mut u8) -> usize = probe_cell;
+    let worker: fn(*mut u8, *mut usize, usize) -> usize = worker_cell;
+    let free: fn(*mut u8) -> usize = free_cell;
+    let p = make();
+    let mut control = [0usize, 1];
+    assert_eq!(probe(p), 0);
+    assert_eq!(worker(p, control.as_mut_ptr(), 19), 19);
+    assert_eq!(free(p), 0);
+}
