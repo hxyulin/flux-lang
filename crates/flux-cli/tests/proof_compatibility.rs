@@ -33,6 +33,15 @@ fn trait_header_proof_provenance_matches_rustc() {
     );
 }
 
+#[test]
+fn normalized_caller_proof_keys_match_rustc() {
+    check_cases(
+        include_str!("fixtures/proof_equalities/normalized_keys.json"),
+        "normalized-keys",
+        35,
+    );
+}
+
 fn check_cases(source: &str, group: &str, count: usize) {
     let cases: Vec<Case> = serde_json::from_str(source).unwrap();
     assert_eq!(cases.len(), count);

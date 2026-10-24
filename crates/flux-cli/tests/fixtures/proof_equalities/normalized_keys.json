@@ -1,0 +1,177 @@
+[
+  {
+    "name": "key_conflict",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8> + P<U::X, A = u16>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "key_reversed",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<U::X, A = u16> + P<u8, A = u8>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "key_literal_conflict",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8> + P<u8, A = u16>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "key_matching",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8> + P<U::X, A = u8>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "key_no_other_bound",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "key_super",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A=u16> {}\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8> + Q<U::X>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "key_assoc_decl",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait H {type Part:P<u8,A=u8>;}\nfn f<T:H, U>(x: T::Part) -> u8\nwhere\n    U: R<X = u8>,\n    T::Part: P<u8, A = u8> + P<U::X, A = u16>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "key_assoc_decl_matching",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait H {type Part:P<u8,A=u8>;}\nfn f<T:H, U>(x: T::Part) -> u8\nwhere\n    U: R<X = u8>,\n    T::Part: P<u8, A = u8> + P<U::X, A = u8>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "self_key_conflict",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U, V>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8>, V:R<X=T>, V::X:P<u8,A=u16>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "self_key_matching",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U, V>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8>, V:R<X=T>, V::X:P<u8,A=u8>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "key_unused",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8> + P<U::X, A = u16>,\n{\n    0\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_unused",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A=u16> {}\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8> + Q<U::X>,\n{\n    0\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "super_unused_matching",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A=u8> {}\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8> + Q<U::X>,\n{\n    0\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "self_reversed",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U, V>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    V::X:P<u8,A=u16>, V:R<X=T>, T: P<u8, A = u8>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "self_super_unused",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X,A=u16> {}\nfn f<T, U, V>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8>, V:R<X=T>, V::X:Q<u8>,\n{\n    0\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "self_super_matching",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X,A=u8> {}\nfn f<T, U, V>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8>, V:R<X=T>, V::X:Q<u8>,\n{\n    0\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "distinct_argument",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u32>,\n    T: P<u8, A = u8> + P<U::X, A = u16>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "rigid_argument",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U, Z>(x: T) -> u8\nwhere\n    U: R<X = Z>,\n    T: P<u8, A = u8> + P<U::X, A = u16>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "rigid_rhs",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U, Z>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8> + P<U::X, A = Z>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_argument",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<(u8,), A = u8> + P<(U::X,), A = u16>,\n{\n    P::<(u8,)>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "key_chain",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U, V>(x: T) -> u8\nwhere\n    V: R<X = u8>, U: R<X = V::X>,\n    T: P<u8, A = u8> + P<U::X, A = u16>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "rhs_cycle_conflict",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = <T as P<U::X>>::A> + P<U::X, A = u16>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "rhs_key_cycle",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = <T as P<U::X>>::A> + P<U::X, A = <T as P<u8>>::A>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "self_referential_rhs",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8> + P<U::X, A = <T as P<u8>>::A>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "self_no_competitor",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U, V>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8>, V:R<X=T>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "distinct_self",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U, V, Z>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: P<u8, A = u8>, V:R<X=Z>, V::X:P<u8,A=u16>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "key_super_reverse",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A=u16> {}\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: Q<U::X> + P<u8, A = u8>,\n{\n    P::<u8>::get(&x)\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "super_unused_reverse",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A=u16> {}\nfn f<T, U>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    T: Q<U::X> + P<u8, A = u8>,\n{\n    0\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "self_super_unused_reverse",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X,A=u16> {}\nfn f<T, U, V>(x: T) -> u8\nwhere\n    U: R<X = u8>,\n    V::X:Q<u8>, V:R<X=T>, T: P<u8, A = u8>,\n{\n    0\n}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "struct_super_header",
+    "source": "trait R {type X;} trait P<X> {type A;} trait Q<X>:P<X,A=u16> {}\nstruct Container<T,U> where U:R<X=u8>, T:P<u8,A=u8>+Q<U::X> {t:T,u:U} fn main() {}",
+    "accepts": false
+  },
+  {
+    "name": "struct_super_header_matching",
+    "source": "trait R {type X;} trait P<X> {type A;} trait Q<X>:P<X,A=u8> {}\nstruct Container<T,U> where U:R<X=u8>, T:P<u8,A=u8>+Q<U::X> {t:T,u:U} fn main() {}",
+    "accepts": true
+  },
+  {
+    "name": "impl_super_header",
+    "source": "trait R {type X;} trait P<X> {type A;} trait Q<X>:P<X,A=u16> {}\nstruct Container<T,U>(T,U); impl<T,U> Container<T,U> where U:R<X=u8>, T:P<u8,A=u8>+Q<U::X> {} fn main() {}",
+    "accepts": false
+  },
+  {
+    "name": "impl_super_header_matching",
+    "source": "trait R {type X;} trait P<X> {type A;} trait Q<X>:P<X,A=u8> {}\nstruct Container<T,U>(T,U); impl<T,U> Container<T,U> where U:R<X=u8>, T:P<u8,A=u8>+Q<U::X> {} fn main() {}",
+    "accepts": true
+  },
+  {
+    "name": "trait_super_header",
+    "source": "trait R {type X;} trait P<X> {type A;} trait Q<X>:P<X,A=u16> {}\ntrait Container<T,U> where U:R<X=u8>, T:P<u8,A=u8>+Q<U::X> {} fn main() {}",
+    "accepts": false
+  },
+  {
+    "name": "trait_super_header_matching",
+    "source": "trait R {type X;} trait P<X> {type A;} trait Q<X>:P<X,A=u8> {}\ntrait Container<T,U> where U:R<X=u8>, T:P<u8,A=u8>+Q<U::X> {} fn main() {}",
+    "accepts": true
+  }
+]

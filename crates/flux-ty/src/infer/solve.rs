@@ -898,15 +898,22 @@ impl Ctx<'_> {
             return true;
         };
         let projections = crate::traits::caller_projections_of(self.items, self.sigs, function);
+        // Compare only the key components, using caller equalities. Do not
+        // normalize the constrained projection itself or import declaration
+        // equalities into the caller proof's identity.
+        let self_ty = self.caller_proof_key(&projections, pred.self_ty);
+        let args = crate::ty::map_list(pred.trait_ref.args, |ty| {
+            self.caller_proof_key(&projections, ty)
+        });
         let mut seen: Vec<crate::Projection> = Vec::new();
-        for p in projections {
+        for &p in &projections {
             if p.alias.trait_ != pred.trait_ref.trait_
-                || self.known(p.alias.args[0]) != self.known(pred.self_ty)
+                || self.caller_proof_key(&projections, p.alias.args[0]) != self_ty
                 || p.alias.args.len() != 1 + pred.trait_ref.args.len()
                 || !p.alias.args[1..]
                     .iter()
-                    .zip(pred.trait_ref.args)
-                    .all(|(&a, &b)| self.known(a) == self.known(b))
+                    .zip(args)
+                    .all(|(&a, &b)| self.caller_proof_key(&projections, a) == b)
             {
                 continue;
             }
@@ -936,6 +943,11 @@ impl Ctx<'_> {
             }
         }
         true
+    }
+
+    fn caller_proof_key(&mut self, projections: &[crate::Projection], ty: Ty) -> Ty {
+        let ty = self.known(ty);
+        crate::traits::normalize(self.items, self.sigs, projections, ty)
     }
 
     fn select_predicate(&mut self, pred: Predicate) -> Selection {
