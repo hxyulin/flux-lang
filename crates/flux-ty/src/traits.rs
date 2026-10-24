@@ -711,6 +711,7 @@ fn signature_impl_evidence(
             .iter()
             .map(|p| SignatureImplProof::normalize(items, sigs, &independent, *p))
             .collect(),
+        memberships: env,
         projections: independent,
         unsized_params,
         depth: std::cell::Cell::new(0),
@@ -733,7 +734,12 @@ fn signature_impl_evidence(
 struct SignatureImplProof<'a> {
     items: &'a ItemTree,
     sigs: &'a Signatures,
+    // Normalized memberships keep associated impl RHSs abstract. They cannot
+    // also prove requirements rewritten through caller equalities.
     env: Vec<Predicate>,
+    // Keep caller predicates before equality normalization, including through
+    // supertrait elaboration. A rewritten predicate is not independent evidence.
+    memberships: &'a [Predicate],
     projections: Vec<Projection>,
     unsized_params: &'a [bool],
     depth: std::cell::Cell<u32>,
@@ -794,10 +800,15 @@ impl SignatureImplProof<'_> {
     }
 
     fn holds(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> bool {
-        if in_env(self.sigs, &self.env, goal)
+        if in_env(self.sigs, self.memberships, goal)
             || is_builtin_copy(self.items, goal.trait_ref.trait_, goal.self_ty)
             || (self.items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized)
-                && !crate::maybe_unsized(self.items, goal.self_ty, self.unsized_params, &self.env))
+                && !crate::maybe_unsized(
+                    self.items,
+                    goal.self_ty,
+                    self.unsized_params,
+                    self.memberships,
+                ))
             || matches!(fn_goal(self.items, goal.trait_ref.trait_, goal.self_ty),
                 Some(ClosureGoal::Fn(_, params)) if goal.trait_ref.args.first() == Some(&params))
         {
@@ -853,7 +864,12 @@ impl SignatureImplProof<'_> {
                     .zip(&args)
                     .any(|(param, &ty)| {
                         !param.maybe_unsized
-                            && crate::maybe_unsized(self.items, ty, self.unsized_params, &self.env)
+                            && crate::maybe_unsized(
+                                self.items,
+                                ty,
+                                self.unsized_params,
+                                self.memberships,
+                            )
                     })
             {
                 continue;

@@ -117,6 +117,17 @@ fn signature_impl_requirements_match_rustc() {
     );
 }
 
+#[test]
+fn signature_membership_provenance_matches_rustc() {
+    // Projected membership cannot become canonical impl requirement evidence.
+    // Preserve both orders, folded equalities and matching positive neighbors.
+    check_cases(
+        include_str!("fixtures/proof_equalities/signature_memberships.json"),
+        "signature-memberships",
+        32,
+    );
+}
+
 fn check_cases(source: &str, group: &str, count: usize) {
     let cases: Vec<Case> = serde_json::from_str(source).unwrap();
     assert_eq!(cases.len(), count);
