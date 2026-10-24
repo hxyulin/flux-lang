@@ -32,6 +32,8 @@ pub(super) struct Obligation {
     pub kind: ObligationKind,
     /// How many `impl` blocks' bounds it is from `root`.
     pub depth: u32,
+    /// Unnormalized selected output for trait membership in a constant initializer.
+    pub const_output: Option<Ty>,
 }
 
 /// How an unmet obligation is reported.
@@ -279,6 +281,7 @@ impl Ctx<'_> {
             range,
             kind,
             depth: 0,
+            const_output: None,
         });
     }
 
@@ -320,14 +323,15 @@ impl Ctx<'_> {
                         ..ob.pred.trait_ref
                     },
                 };
-                let key = (pred, ob.root, ob.range, ob.kind, ob.depth);
+                let key = (pred, ob.root, ob.range, ob.kind, ob.depth, ob.const_output);
                 let stable = stable_goal_type(pred.self_ty)
                     && pred.trait_ref.args.iter().all(|&a| stable_goal_type(a))
+                    && ob.const_output.is_none_or(stable_goal_type)
                     && self.stable_solver_env();
                 if stable && expanded.contains(&key) {
                     continue;
                 }
-                match self.select_predicate(ob.pred) {
+                match self.select_predicate(ob.pred, ob.const_output) {
                     Selection::Met(nested) => {
                         if stable {
                             expanded.insert(key);
@@ -360,6 +364,7 @@ impl Ctx<'_> {
                                 root: if item_bounds { pred } else { ob.root },
                                 kind,
                                 depth: ob.depth + 1,
+                                const_output: None,
                                 ..ob
                             });
                         }
@@ -893,7 +898,7 @@ impl Ctx<'_> {
     /// Erased membership is one proof only when its caller equalities agree.
     /// Declaration equalities are intentionally absent here: Rust permits a
     /// where-clause to shadow an associated-type declaration assumption.
-    fn compatible_caller_projections(&mut self, pred: Predicate) -> bool {
+    fn compatible_caller_projections(&mut self, pred: Predicate, name: Option<Symbol>) -> bool {
         let projections = self.caller_projections.clone();
         // Compare only the key components, using caller equalities. Do not
         // normalize the constrained projection itself or import declaration
@@ -904,7 +909,8 @@ impl Ctx<'_> {
         });
         let mut seen: Vec<(crate::Projection, bool)> = Vec::new();
         for &p in &projections {
-            if p.alias.trait_ != pred.trait_ref.trait_
+            if name.is_some_and(|name| name != p.alias.name)
+                || p.alias.trait_ != pred.trait_ref.trait_
                 || self.caller_proof_key(&projections, p.alias.args[0]) != self_ty
                 || p.alias.args.len() != 1 + pred.trait_ref.args.len()
                 || !p.alias.args[1..]
@@ -961,7 +967,75 @@ impl Ctx<'_> {
         crate::traits::normalize(self.items, self.sigs, projections, ty)
     }
 
-    fn select_predicate(&mut self, pred: Predicate) -> Selection {
+    /// Follow the output before normalization erases which equalities it uses.
+    /// Caller equalities shadow declaration assumptions here just as they do
+    /// in proof compatibility. Follow every competing RHS, including aliases
+    /// nested in tuples, arrays, references and generic type arguments.
+    fn compatible_const_output(&mut self, output: Ty) -> bool {
+        if !output.has_aliases() || self.caller_projections.is_empty() {
+            return true;
+        }
+        let caller = self.caller_projections.clone();
+        let env = self.env_projections.clone();
+        let mut pending = vec![(output, 0)];
+        let mut seen = FxHashSet::default();
+        while let Some((ty, depth)) = pending.pop() {
+            let ty = self.known(ty);
+            if !ty.has_aliases() || !seen.insert(ty) {
+                continue;
+            }
+            if depth > 64 {
+                return false;
+            }
+            // Structural nesting is finite; only projection expansion needs
+            // a depth limit in addition to the visited-type cycle check.
+            pending.extend(ty.children().map(|ty| (ty, depth)));
+            let TyKind::Alias(alias) = ty.kind() else {
+                continue;
+            };
+            let pred = Predicate {
+                self_ty: alias.self_ty(),
+                trait_ref: TraitRef {
+                    trait_: alias.trait_,
+                    name: self.items.traits[alias.trait_].name,
+                    args: &alias.args[1..],
+                },
+            };
+            if !self.compatible_caller_projections(pred, Some(alias.name)) {
+                return false;
+            }
+            let key = AliasTy {
+                args: crate::ty::map_list(alias.args, |ty| self.caller_proof_key(&caller, ty)),
+                ..alias
+            };
+            let mut found = false;
+            for projections in [&caller, &env] {
+                for p in projections {
+                    if p.alias.trait_ == key.trait_
+                        && p.alias.name == key.name
+                        && crate::ty::map_list(p.alias.args, |ty| {
+                            self.caller_proof_key(&caller, ty)
+                        }) == key.args
+                    {
+                        pending.push((p.ty, depth + 1));
+                        found = true;
+                    }
+                }
+                if found {
+                    break;
+                }
+            }
+            if !found {
+                let normalized = self.caller_proof_key(&caller, ty);
+                if normalized != ty {
+                    pending.push((normalized, depth + 1));
+                }
+            }
+        }
+        true
+    }
+
+    fn select_predicate(&mut self, pred: Predicate, const_output: Option<Ty>) -> Selection {
         #[cfg(test)]
         tests::step();
         let self_ty = self.shallow(pred.self_ty);
@@ -1036,7 +1110,11 @@ impl Ctx<'_> {
             .collect();
         match bounds.as_slice() {
             [bound] => {
-                if !self.compatible_caller_projections(*bound) {
+                let compatible = match const_output {
+                    Some(output) => self.compatible_const_output(output),
+                    None => self.compatible_caller_projections(*bound, None),
+                };
+                if !compatible {
                     return Selection::Ambiguous;
                 }
                 self.unify_predicates(*bound, pred);
@@ -1633,6 +1711,17 @@ impl Ctx<'_> {
                     ),
                 };
                 self.register(pred, range, kind);
+                if self.owner_fn.is_none() {
+                    // Keep relevance local to this selected trait constant's
+                    // membership obligation. Other bounds retain their checks.
+                    self.obligations.last_mut().unwrap().const_output = Some(
+                        sigs.consts
+                            .get(konst)
+                            .copied()
+                            .unwrap_or(Ty::ERROR)
+                            .subst(args),
+                    );
+                }
                 for p in sigs.trait_predicates.get(t).into_iter().flatten() {
                     self.register(p.subst(args), segment, ObligationKind::Bound);
                 }

@@ -65,6 +65,15 @@ fn tautological_caller_equalities_match_rustc() {
     );
 }
 
+#[test]
+fn constant_output_proof_relevance_matches_rustc() {
+    check_cases(
+        include_str!("fixtures/proof_equalities/constant_relevance.json"),
+        "constant-relevance",
+        65,
+    );
+}
+
 fn check_cases(source: &str, group: &str, count: usize) {
     let cases: Vec<Case> = serde_json::from_str(source).unwrap();
     assert_eq!(cases.len(), count);
