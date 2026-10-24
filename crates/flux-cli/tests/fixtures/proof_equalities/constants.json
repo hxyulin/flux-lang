@@ -1,0 +1,197 @@
+[
+  {
+    "name": "direct_fn_match_0",
+    "source": "trait P {type A; const V:Self::A;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8>+P<A=u8>{fn v()->u8{T::V}}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "direct_fn_match_1",
+    "source": "trait P {type A; const V:Self::A;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8>+P<A=u8>{fn v()->u8{T::V}}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "direct_fn_conflict_0",
+    "source": "trait P {type A; const V:Self::A;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8>+P<A=u16>{fn v()->u8{T::V}}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_fn_conflict_1",
+    "source": "trait P {type A; const V:Self::A;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u16>+P<A=u8>{fn v()->u8{T::V}}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_const_match_0",
+    "source": "trait P {type A; const V:Self::A;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8>+P<A=u8>{const V:u8=T::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "direct_const_match_1",
+    "source": "trait P {type A; const V:Self::A;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8>+P<A=u8>{const V:u8=T::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "direct_const_conflict_0",
+    "source": "trait P {type A; const V:Self::A;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8>+P<A=u16>{const V:u8=T::V;}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_const_conflict_1",
+    "source": "trait P {type A; const V:Self::A;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u16>+P<A=u8>{const V:u8=T::V;}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "assoc_fn_match_0",
+    "source": "trait P {type A; const V:Self::A;}\ntrait H {type Part:P<A=u8>;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8>+P<A=u8>{fn v()->u8{T::Part::V}}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "assoc_fn_match_1",
+    "source": "trait P {type A; const V:Self::A;}\ntrait H {type Part:P<A=u8>;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8>+P<A=u8>{fn v()->u8{T::Part::V}}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "assoc_fn_conflict_0",
+    "source": "trait P {type A; const V:Self::A;}\ntrait H {type Part:P<A=u8>;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8>+P<A=u16>{fn v()->u8{T::Part::V}}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "assoc_fn_conflict_1",
+    "source": "trait P {type A; const V:Self::A;}\ntrait H {type Part:P<A=u8>;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u16>+P<A=u8>{fn v()->u8{T::Part::V}}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "assoc_const_match_0",
+    "source": "trait P {type A; const V:Self::A;}\ntrait H {type Part:P<A=u8>;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8>+P<A=u8>{const V:u8=T::Part::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "assoc_const_match_1",
+    "source": "trait P {type A; const V:Self::A;}\ntrait H {type Part:P<A=u8>;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8>+P<A=u8>{const V:u8=T::Part::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "assoc_const_conflict_0",
+    "source": "trait P {type A; const V:Self::A;}\ntrait H {type Part:P<A=u8>;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8>+P<A=u16>{const V:u8=T::Part::V;}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "assoc_const_conflict_1",
+    "source": "trait P {type A; const V:Self::A;}\ntrait H {type Part:P<A=u8>;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u16>+P<A=u8>{const V:u8=T::Part::V;}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "unused_False_False",
+    "source": "trait P {type A; const V:Self::A;}\nstruct S<T>(T); impl<T> S<T> where T:P<A=u8>+P<A=u16> {const V:u8=7;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "unused_False_True",
+    "source": "trait P {type A; const V:Self::A;}\nstruct S<T>(T); impl<T> S<T> where T:P<A=u16>+P<A=u8> {const V:u8=7;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "unused_True_False",
+    "source": "trait P {type A; const V:Self::A;}\ntrait H {type Part:P;}\nstruct S<T>(T); impl<T:H> S<T> where T::Part:P<A=u8>+P<A=u16> {const V:u8=7;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "unused_True_True",
+    "source": "trait P {type A; const V:Self::A;}\ntrait H {type Part:P;}\nstruct S<T>(T); impl<T:H> S<T> where T::Part:P<A=u16>+P<A=u8> {const V:u8=7;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "header_False_False",
+    "source": "trait P {type A; const V:Self::A;} trait H where Self::Part:P<A=u8>+P<A=u8> {type Part:P<A=u16>; const V:u8=Self::Part::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "header_False_True",
+    "source": "trait P {type A; const V:Self::A;} trait H where Self::Part:P<A=u8>+P<A=u8> {type Part:P<A=u16>; const V:u8=Self::Part::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "header_True_False",
+    "source": "trait P {type A; const V:Self::A;} trait H where Self::Part:P<A=u8>+P<A=u16> {type Part:P<A=u16>; const V:u8=Self::Part::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_False_False",
+    "source": "trait P {type A; const V:Self::A;} trait Q:P<A=u8>{} struct S<T>(T); impl<T> S<T> where T:Q+P<A=u8> {const V:u8=T::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_False_True",
+    "source": "trait P {type A; const V:Self::A;} trait Q:P<A=u8>{} struct S<T>(T); impl<T> S<T> where T:P<A=u8>+Q {const V:u8=T::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_True_False",
+    "source": "trait P {type A; const V:Self::A;} trait Q:P<A=u8>{} struct S<T>(T); impl<T> S<T> where T:Q+P<A=u16> {const V:u8=T::V;}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "super_True_True",
+    "source": "trait P {type A; const V:Self::A;} trait Q:P<A=u8>{} struct S<T>(T); impl<T> S<T> where T:P<A=u16>+Q {const V:u8=T::V;}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "generic_rigid_conflict",
+    "source": "trait P{type A;const V:Self::A;} struct S<T,X,Y>(T,X,Y); impl<T,X,Y>S<T,X,Y> where T:P<A=X>+P<A=Y>{const V:X=T::V;}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "generic_matching",
+    "source": "trait P{type A;const V:Self::A;} struct S<T,X>(T,X); impl<T,X>S<T,X> where T:P<A=X>+P<A=X>{const V:X=T::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "private_module_matching",
+    "source": "mod hidden {trait P{type A;const V:Self::A;} struct S<T>(T); impl<T>S<T> where T:P<A=u8>+P<A=u8>{const V:u8=T::V;}}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "private_module_conflict",
+    "source": "mod hidden {trait P{type A;const V:Self::A;} struct S<T>(T); impl<T>S<T> where T:P<A=u8>+P<A=u16>{const V:u8=T::V;}}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "trait_impl_False_False",
+    "source": "trait P{type A;const V:Self::A;} trait C{const X:u8;} struct S<T>(T); impl<T>C for S<T> where T:P<A=u8>+P<A=u8>{const X:u8=T::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "trait_impl_False_True",
+    "source": "trait P{type A;const V:Self::A;} trait C{const X:u8;} struct S<T>(T); impl<T>C for S<T> where T:P<A=u8>+P<A=u8>{const X:u8=T::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "trait_impl_True_False",
+    "source": "trait P{type A;const V:Self::A;} trait C{const X:u8;} struct S<T>(T); impl<T>C for S<T> where T:P<A=u8>+P<A=u16>{const X:u8=T::V;}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "trait_impl_True_True",
+    "source": "trait P{type A;const V:Self::A;} trait C{const X:u8;} struct S<T>(T); impl<T>C for S<T> where T:P<A=u16>+P<A=u8>{const X:u8=T::V;}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "distinct_trait_args",
+    "source": "trait P<X>{type A;const V:Self::A;} struct S<T>(T); impl<T>S<T> where T:P<u8,A=u8>+P<u16,A=u16>{const V:u8=<T as P<u8>>::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "rhs_normalization_matching",
+    "source": "trait R{type X;} trait P{type A;const V:Self::A;} struct S<T,U>(T,U); impl<T,U> S<T,U> where U:R<X=u8>,T:P<A=u8>+P<A=U::X>{const V:u8=T::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "impl_declaration_shadow_const",
+    "source": "trait P{type A;const V:Self::A;} trait H{type Part:P<A=u16>;} struct S<T>(T);impl<T:H>S<T> where T::Part:P<A=u8>+P<A=u8>{const V:u8=T::Part::V;}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "impl_declaration_shadow_fn",
+    "source": "trait P{type A;const V:Self::A;} trait H{type Part:P<A=u16>;} struct S<T>(T);impl<T:H>S<T> where T::Part:P<A=u8>+P<A=u8>{fn v()->u8{T::Part::V}}\nfn main() {}\n",
+    "accepts": true
+  }
+]

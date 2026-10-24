@@ -42,6 +42,18 @@ fn normalized_caller_proof_keys_match_rustc() {
     );
 }
 
+#[test]
+fn constant_owner_proof_provenance_matches_rustc() {
+    // Impl initializers select caller proofs even without a function owner.
+    // Includes the Rust-valid contradictory trait-default shadowing control:
+    // compatibility for trait-owned default constants is unchanged.
+    check_cases(
+        include_str!("fixtures/proof_equalities/constants.json"),
+        "constants",
+        39,
+    );
+}
+
 fn check_cases(source: &str, group: &str, count: usize) {
     let cases: Vec<Case> = serde_json::from_str(source).unwrap();
     assert_eq!(cases.len(), count);
