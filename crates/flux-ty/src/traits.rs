@@ -524,8 +524,39 @@ pub(crate) fn caller_projections_of(
     sigs: &Signatures,
     function: FunctionId,
 ) -> Vec<Projection> {
+    let mut out = caller_owner_projections(sigs, items.functions[function].owner);
+    out.extend(
+        sigs.fn_projections
+            .get(function)
+            .into_iter()
+            .flatten()
+            .copied(),
+    );
+    out.extend(caller_supertrait_projections(
+        sigs,
+        &elaborate(sigs, &predicates_of(items, sigs, function)),
+    ));
+    out
+}
+
+/// Caller-only equalities of an associated item's owner.
+pub(crate) fn caller_owner_projections_of(
+    items: &ItemTree,
+    sigs: &Signatures,
+    owner: Option<Owner>,
+) -> Vec<Projection> {
+    let mut out = caller_owner_projections(sigs, owner);
+    out.extend(caller_supertrait_projections(
+        sigs,
+        &elaborate(sigs, &owner_predicates(items, sigs, owner)),
+    ));
+    out
+}
+
+/// Written owner bounds, excluding associated-type declaration equalities.
+fn caller_owner_projections(sigs: &Signatures, owner: Option<Owner>) -> Vec<Projection> {
     let mut out = Vec::new();
-    match items.functions[function].owner {
+    match owner {
         Some(Owner::Impl(imp)) => {
             out.extend(
                 sigs.impl_projections
@@ -542,17 +573,6 @@ pub(crate) fn caller_projections_of(
         }
         None => {}
     }
-    out.extend(
-        sigs.fn_projections
-            .get(function)
-            .into_iter()
-            .flatten()
-            .copied(),
-    );
-    out.extend(caller_supertrait_projections(
-        sigs,
-        &elaborate(sigs, &predicates_of(items, sigs, function)),
-    ));
     out
 }
 

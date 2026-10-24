@@ -198,6 +198,7 @@ pub fn infer_body(
         param_env: elaborate(sigs, &predicates_of(items, sigs, function)),
         unsized_params: crate::unsized_params(items, data.owner, &data.generics),
         env_projections: crate::traits::projections_of(items, sigs, function),
+        caller_projections: crate::traits::caller_projections_of(items, sigs, function),
         self_trait: items
             .impl_of(function)
             .and_then(|imp| sigs.impl_traits.get(imp).copied()),
@@ -252,6 +253,14 @@ pub fn infer_const(
         ),
         unsized_params: crate::unsized_params(items, data.owner, &Generics::default()),
         env_projections: crate::traits::owner_projections(items, sigs, data.owner),
+        // Extend compatibility to impl initializers only. Trait defaults can
+        // shadow declaration bounds differently; preserve that existing path.
+        caller_projections: match data.owner {
+            Some(flux_hir::Owner::Impl(_)) => {
+                crate::traits::caller_owner_projections_of(items, sigs, data.owner)
+            }
+            _ => Vec::new(),
+        },
         self_trait: data
             .owner
             .and_then(flux_hir::Owner::as_impl)
@@ -294,6 +303,8 @@ struct Owner {
     unsized_params: Vec<bool>,
     /// What the bounds in scope say associated types are.
     env_projections: Vec<crate::Projection>,
+    /// Equalities from caller proofs only, retaining owner provenance.
+    caller_projections: Vec<crate::Projection>,
     /// In a trait's `impl` block, its trait.
     self_trait: Option<crate::TraitRef>,
 }
@@ -356,6 +367,7 @@ impl<'a> Ctx<'a> {
             param_env: owner.param_env,
             unsized_params: owner.unsized_params,
             env_projections: owner.env_projections,
+            caller_projections: owner.caller_projections,
             self_trait: owner.self_trait,
             projections: Vec::new(),
             normalizing: Vec::new(),
@@ -550,6 +562,8 @@ struct Ctx<'a> {
     unsized_params: Vec<bool>,
     /// What the bounds in scope say associated types are.
     env_projections: Vec<crate::Projection>,
+    /// Equalities from caller proofs only, retaining owner provenance.
+    caller_projections: Vec<crate::Projection>,
     /// In a trait's `impl` block, its trait: `Self::Out` is its type.
     self_trait: Option<crate::TraitRef>,
     /// Associated types whose `Self` is not known yet, each standing for

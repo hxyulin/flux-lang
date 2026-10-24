@@ -894,10 +894,7 @@ impl Ctx<'_> {
     /// Declaration equalities are intentionally absent here: Rust permits a
     /// where-clause to shadow an associated-type declaration assumption.
     fn compatible_caller_projections(&mut self, pred: Predicate) -> bool {
-        let Some(function) = self.owner_fn else {
-            return true;
-        };
-        let projections = crate::traits::caller_projections_of(self.items, self.sigs, function);
+        let projections = self.caller_projections.clone();
         // Compare only the key components, using caller equalities. Do not
         // normalize the constrained projection itself or import declaration
         // equalities into the caller proof's identity.
@@ -1970,6 +1967,7 @@ pub(super) mod tests {
             param_env: Vec::new(),
             unsized_params: Vec::new(),
             env_projections: Vec::new(),
+            caller_projections: Vec::new(),
             self_trait: None,
         };
         let mut cx = Ctx::new(&hir.items, &sigs, owner, body, source_map);
