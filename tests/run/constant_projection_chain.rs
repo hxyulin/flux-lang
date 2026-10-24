@@ -1,4 +1,5 @@
 // A finite caller-equality chain exceeds the old output-walk budget.
+// Its duplicate A1 proof has the same written RHS, so it stays unambiguous.
 trait Chain {
     type A0;
     type A1;
@@ -220,7 +221,7 @@ where
         A67 = <T as Chain>::A68,
         A68 = <T as Chain>::A69,
         A69 = u8,
-    >,
+    > + Chain<A1 = <T as Chain>::A2>,
 {
     const VALUE: u8 = T::VALUE;
 }

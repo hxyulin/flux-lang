@@ -898,7 +898,12 @@ impl Ctx<'_> {
     /// Erased membership is one proof only when its caller equalities agree.
     /// Declaration equalities are intentionally absent here: Rust permits a
     /// where-clause to shadow an associated-type declaration assumption.
-    fn compatible_caller_projections(&mut self, pred: Predicate, name: Option<Symbol>) -> bool {
+    fn compatible_caller_projections(
+        &mut self,
+        pred: Predicate,
+        name: Option<Symbol>,
+        normalize_rhs: bool,
+    ) -> bool {
         let projections = self.caller_projections.clone();
         // Compare only the key components, using caller equalities. Do not
         // normalize the constrained projection itself or import declaration
@@ -935,6 +940,15 @@ impl Ctx<'_> {
                 // a tautology must not hide a later incompatible equality.
                 if p.alias != previous.alias && (tautology || previous_tautology) {
                     continue;
+                }
+                // Normalizing a written caller RHS needs a unique projection
+                // candidate before the environment itself is normalized. Two
+                // different answers (A = B and A = u8) cannot establish that
+                // uniqueness by using another equality to turn B into u8.
+                // Output compatibility can compare the normalized answers;
+                // caller RHS validity is an independent prerequisite.
+                if !normalize_rhs && previous.ty != p.ty {
+                    return false;
                 }
                 // Normalize the right sides, never the constrained projection:
                 // normalizing that would simply choose one winning equality.
@@ -982,18 +996,18 @@ impl Ctx<'_> {
         // retains the guarded check for recursive constraints and ambiguous
         // cross-trait RHS values without rejecting unused concrete conflicts.
         // Keep caller provenance: declaration assumptions may be shadowed.
-        let mut pending: Vec<_> = caller.iter().map(|p| (p.ty, 0)).collect();
-        pending.push((output, 0));
+        let mut pending: Vec<_> = caller.iter().map(|p| (p.ty, 0, true)).collect();
+        pending.push((output, 0, false));
         let mut seen = FxHashSet::default();
-        while let Some((ty, depth)) = pending.pop() {
+        while let Some((ty, depth, caller_rhs)) = pending.pop() {
             let ty = self.known(ty);
-            if !ty.has_aliases() || !seen.insert(ty) {
+            if !ty.has_aliases() || !seen.insert((ty, caller_rhs)) {
                 continue;
             }
             // Stored RHS types and their structural children form a finite
             // graph. Only fallback normalization can generate new types (for
             // example an expanding impl cycle), so only it spends the budget.
-            pending.extend(ty.children().map(|ty| (ty, depth)));
+            pending.extend(ty.children().map(|ty| (ty, depth, caller_rhs)));
             let TyKind::Alias(alias) = ty.kind() else {
                 continue;
             };
@@ -1005,7 +1019,7 @@ impl Ctx<'_> {
                     args: &alias.args[1..],
                 },
             };
-            if !self.compatible_caller_projections(pred, Some(alias.name)) {
+            if !self.compatible_caller_projections(pred, Some(alias.name), !caller_rhs) {
                 return false;
             }
             let key = AliasTy {
@@ -1021,7 +1035,7 @@ impl Ctx<'_> {
                             self.caller_proof_key(&caller, ty)
                         }) == key.args
                     {
-                        pending.push((p.ty, depth));
+                        pending.push((p.ty, depth, caller_rhs));
                         found = true;
                     }
                 }
@@ -1035,7 +1049,7 @@ impl Ctx<'_> {
                     if depth == 64 {
                         return false;
                     }
-                    pending.push((normalized, depth + 1));
+                    pending.push((normalized, depth + 1, caller_rhs));
                 }
             }
         }
@@ -1119,7 +1133,7 @@ impl Ctx<'_> {
             [bound] => {
                 let compatible = match const_output {
                     Some(output) => self.compatible_const_output(output),
-                    None => self.compatible_caller_projections(*bound, None),
+                    None => self.compatible_caller_projections(*bound, None, true),
                 };
                 if !compatible {
                     return Selection::Ambiguous;
