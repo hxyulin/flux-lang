@@ -1,0 +1,372 @@
+[
+  {
+    "name": "finding",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "matching",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M + P<u8, A = u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "no_tautology",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "unconditional",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "direct_receiver",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    T: Q<u8> + P<U::X, A = <T as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "missing_requirement",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "bare_membership",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M + P<u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "substitution",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<X: M> P<X> for X { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = T>,\n    V: R<X = T>,\n    V::X: Q<T> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "native_finding",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>() -> u8\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{ 73 }\nstruct S;\nstruct U;\nstruct V;\nimpl M for S {}\nimpl Q<u8> for S {}\nimpl R for U { type X = u8; }\nimpl R for V { type X = S; }\nfn main() { println!(\"{}\", f::<S,U,V>()); }\n",
+    "accepts": true
+  },
+  {
+    "name": "finding_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "matching_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M + P<u8, A = u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "no_tautology_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "unconditional_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "direct_receiver_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    T: P<U::X, A = <T as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "missing_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "bare_membership_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M + P<u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "substitution_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<X: M> P<X> for X { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = T>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<T>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "native_finding_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>() -> u8\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{ 73 }\nstruct S;\nstruct U;\nstruct V;\nimpl M for S {}\nimpl Q<u8> for S {}\nimpl R for U { type X = u8; }\nimpl R for V { type X = S; }\nfn main() { println!(\"{}\", f::<S,U,V>()); }\n",
+    "accepts": true
+  },
+  {
+    "name": "associated_rhs",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = <T as M>::A; }\nfn f<T, U, V>()\nwhere\n    T: M<A = u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "associated_rhs_reversed",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = <T as M>::A; }\nfn f<T, U, V>()\nwhere\n    T: M<A = u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "associated_requirement",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M<A = u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "associated_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M<A = u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "associated_both",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = <T as M>::A; }\nfn f<T, U, V>()\nwhere\n    T: M<A = u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "associated_both_reversed",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = <T as M>::A; }\nfn f<T, U, V>()\nwhere\n    T: M<A = u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "wrong_associated_requirement",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u16>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M<A = u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "wrong_associated_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u16>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M<A = u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "missing_associated_requirement",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "missing_associated_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "wrong_rhs",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u16; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "wrong_rhs_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u16; }\nfn f<T, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "supertrait_requirement",
+    "source": "trait R { type X; }\ntrait M {} trait N: M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: N,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "supertrait_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {} trait N: M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: N,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "nested_impl_requirement",
+    "source": "trait R { type X; }\ntrait M {} trait N {} impl<T: N> M for T {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: N,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "nested_impl_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {} trait N {} impl<T: N> M for T {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: N,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "nested_missing",
+    "source": "trait R { type X; }\ntrait M {} trait N {} impl<T: N> M for T {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_missing_reversed",
+    "source": "trait R { type X; }\ntrait M {} trait N {} impl<T: N> M for T {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_associated_requirement",
+    "source": "trait R { type X; }\ntrait M {} trait N { type A; } impl<T: N<A=u8>> M for T {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: N<A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "nested_associated_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {} trait N { type A; } impl<T: N<A=u8>> M for T {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: N<A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "nested_associated_wrong",
+    "source": "trait R { type X; }\ntrait M {} trait N { type A; } impl<T: N<A=u16>> M for T {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: N<A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "nested_associated_wrong_reversed",
+    "source": "trait R { type X; }\ntrait M {} trait N { type A; } impl<T: N<A=u16>> M for T {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: N<A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "recursive_requirement",
+    "source": "trait R { type X; }\ntrait M {} impl<T: M> M for T {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "recursive_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {} impl<T: M> M for T {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "self_certifying_requirement",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A=<T as P<u8>>::A>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M<A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "self_certifying_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M { type A; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A=<T as P<u8>>::A>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T: M<A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "possible_requirement",
+    "source": "trait R { type X; }\ntrait M { type A; } trait N {} struct S<T>(T); impl<T:N> M for S<T> { type A=u8; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    S<T>: M,\n    U: R<X = u8>,\n    V: R<X = S<T>>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "possible_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M { type A; } trait N {} struct S<T>(T); impl<T:N> M for S<T> { type A=u8; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    S<T>: M,\n    U: R<X = u8>,\n    V: R<X = S<T>>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "possible_requirement_proven",
+    "source": "trait R { type X; }\ntrait M { type A; } trait N {} struct S<T>(T); impl<T:N> M for S<T> { type A=u8; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:N, S<T>: M,\n    U: R<X = u8>,\n    V: R<X = S<T>>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "possible_requirement_proven_reversed",
+    "source": "trait R { type X; }\ntrait M { type A; } trait N {} struct S<T>(T); impl<T:N> M for S<T> { type A=u8; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:N, S<T>: M,\n    U: R<X = u8>,\n    V: R<X = S<T>>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "possible_requirement_caller_equality",
+    "source": "trait R { type X; }\ntrait M { type A; } trait N {} struct S<T>(T); impl<T:N> M for S<T> { type A=u8; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    S<T>: M<A=u8>,\n    U: R<X = u8>,\n    V: R<X = S<T>>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "possible_requirement_caller_equality_reversed",
+    "source": "trait R { type X; }\ntrait M { type A; } trait N {} struct S<T>(T); impl<T:N> M for S<T> { type A=u8; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    S<T>: M<A=u8>,\n    U: R<X = u8>,\n    V: R<X = S<T>>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "possible_requirement_without_member",
+    "source": "trait R { type X; }\ntrait M { type A; } trait N {} struct S<T>(T); impl<T:N> M for S<T> { type A=u8; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:N,\n    U: R<X = u8>,\n    V: R<X = S<T>>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "possible_requirement_without_member_reversed",
+    "source": "trait R { type X; }\ntrait M { type A; } trait N {} struct S<T>(T); impl<T:N> M for S<T> { type A=u8; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<A = u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:N,\n    U: R<X = u8>,\n    V: R<X = S<T>>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "self_membership",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: P<u8>> P<u8> for T { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "self_membership_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: P<u8>> P<u8> for T { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "self_equality",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: P<u8,A=u8>> P<u8> for T { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "self_equality_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: P<u8,A=u8>> P<u8> for T { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "other_equality",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: P<u8,A=u16>> P<u8> for T { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "other_equality_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: P<u8,A=u16>> P<u8> for T { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "builtin_copy_requirement",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T where fn():Copy { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "builtin_copy_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T where fn():Copy { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "builtin_sized_requirement",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: Sized> P<u8> for T { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "builtin_sized_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: Sized> P<u8> for T { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "missing_sized",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T: ?Sized, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "missing_sized_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T: ?Sized, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "unsized_allowed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: ?Sized + M> P<u8> for T { type A = u8; }\nfn f<T: ?Sized, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "unsized_allowed_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: ?Sized + M> P<u8> for T { type A = u8; }\nfn f<T: ?Sized, U, V>()\nwhere\n    T: M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "builtin_fn_requirement",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T where fn():Fn() { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "builtin_fn_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T where fn():Fn() { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "builtin_send_requirement",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T where u8:Send { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "builtin_send_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T where u8:Send { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "builtin_sync_requirement",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T where u8:Sync { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "builtin_sync_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T where u8:Sync { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "invalid_send_requirement",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T where *const u8:Send { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "invalid_send_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T where *const u8:Send { type A=u8; }\nfn f<T, U, V>()\nwhere\n    \n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  }
+]

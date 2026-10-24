@@ -610,13 +610,15 @@ fn caller_supertrait_projections(sigs: &Signatures, env: &[Predicate]) -> Vec<Pr
 fn check_caller_supertraits(
     items: &ItemTree,
     sigs: &Signatures,
-    predicates: &[Predicate],
+    scope: (&[Predicate], &[bool]),
     mut caller: Vec<Projection>,
     file: FileId,
     range: TextRange,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let required = caller_supertrait_projections(sigs, &elaborate(sigs, predicates));
+    let (predicates, unsized_params) = scope;
+    let env = elaborate(sigs, predicates);
+    let required = caller_supertrait_projections(sigs, &env);
     if required.is_empty() {
         return;
     }
@@ -641,17 +643,17 @@ fn check_caller_supertraits(
                     && normalize_projection_rhs(items, sigs, &caller, *p)
                         == normalize_projection_rhs(items, sigs, &caller, q)
             })
-            || select_impl(items, sigs, alias_predicate(q_key))
-                .and_then(|(imp, args)| {
-                    impl_type(sigs, imp, q_key.name).map(|ty| Projection {
-                        alias: q_key,
-                        ty: ty.subst(&args),
-                    })
-                })
-                .is_some_and(|p| {
-                    normalize_projection_rhs(items, sigs, &caller, p)
-                        == normalize_projection_rhs(items, sigs, &caller, q)
-                });
+            || signature_impl_evidence(
+                items,
+                sigs,
+                &env,
+                unsized_params,
+                &caller,
+                Projection {
+                    alias: q_key,
+                    ty: q.ty,
+                },
+            );
         if caller.iter().any(|p| {
             // A written tautology cannot contradict a required equality.
             // Still check every required RHS: a recursive supertrait
@@ -668,6 +670,229 @@ fn check_caller_supertraits(
             });
             break;
         }
+    }
+}
+
+/// Independent implementation evidence for a moved supertrait equality. A
+/// separate caller membership on the canonical receiver shadows impl evidence,
+/// even when an impl could apply. Equalities for the key being justified are
+/// excluded from requirement proofs and RHS normalization to avoid circularity.
+fn signature_impl_evidence(
+    items: &ItemTree,
+    sigs: &Signatures,
+    env: &[Predicate],
+    unsized_params: &[bool],
+    caller: &[Projection],
+    required: Projection,
+) -> bool {
+    let alias = required.alias;
+    let normalize_key = |a: AliasTy| AliasTy {
+        args: crate::ty::map_list(a.args, |ty| normalize(items, sigs, caller, ty)),
+        ..a
+    };
+    let goal = alias_predicate(alias);
+    if env.iter().any(|p| {
+        p.self_ty == goal.self_ty
+            && p.trait_ref.trait_ == goal.trait_ref.trait_
+            && crate::ty::map_list(p.trait_ref.args, |ty| normalize(items, sigs, caller, ty))
+                == goal.trait_ref.args
+    }) {
+        return false;
+    }
+    let independent: Vec<_> = caller
+        .iter()
+        .copied()
+        .filter(|p| normalize_key(p.alias) != alias)
+        .collect();
+    let proof = SignatureImplProof {
+        items,
+        sigs,
+        env: env
+            .iter()
+            .map(|p| SignatureImplProof::normalize(items, sigs, &independent, *p))
+            .collect(),
+        projections: independent,
+        unsized_params,
+        depth: std::cell::Cell::new(0),
+    };
+    let Some((imp, args)) = proof.select(goal, &mut Vec::new()) else {
+        return false;
+    };
+    let Some(ty) = impl_type(sigs, imp, alias.name) else {
+        return false;
+    };
+    let provided = Projection {
+        alias,
+        ty: ty.subst(&args),
+    };
+    proof.normalize_rhs(provided) == proof.normalize_rhs(required)
+}
+
+/// Unlike ordinary normalization's possible candidates, signature evidence
+/// needs every substituted membership and associated equality to be proven.
+struct SignatureImplProof<'a> {
+    items: &'a ItemTree,
+    sigs: &'a Signatures,
+    env: Vec<Predicate>,
+    projections: Vec<Projection>,
+    unsized_params: &'a [bool],
+    depth: std::cell::Cell<u32>,
+}
+
+impl SignatureImplProof<'_> {
+    fn caller_normalize(
+        items: &ItemTree,
+        sigs: &Signatures,
+        projections: &[Projection],
+        ty: Ty,
+        guard: Option<AliasTy>,
+    ) -> Ty {
+        let mut normalizer = Normalizer {
+            items,
+            sigs,
+            env: projections,
+            caller_only: true,
+            impl_proof: None,
+            done: rustc_hash::FxHashMap::default(),
+            active: guard.map(Ty::alias).into_iter().collect(),
+        };
+        normalizer.go(ty, 0)
+    }
+
+    fn normalize_ty(&self, ty: Ty, guard: Option<AliasTy>) -> Ty {
+        let mut normalizer = Normalizer {
+            items: self.items,
+            sigs: self.sigs,
+            env: &self.projections,
+            caller_only: true,
+            impl_proof: Some(self),
+            done: rustc_hash::FxHashMap::default(),
+            active: guard.map(Ty::alias).into_iter().collect(),
+        };
+        normalizer.go(ty, 0)
+    }
+
+    fn normalize_rhs(&self, p: Projection) -> Ty {
+        self.normalize_ty(p.ty, Some(p.alias))
+    }
+
+    fn normalize(
+        items: &ItemTree,
+        sigs: &Signatures,
+        projections: &[Projection],
+        p: Predicate,
+    ) -> Predicate {
+        Predicate {
+            self_ty: Self::caller_normalize(items, sigs, projections, p.self_ty, None),
+            trait_ref: TraitRef {
+                args: crate::ty::map_list(p.trait_ref.args, |ty| {
+                    Self::caller_normalize(items, sigs, projections, ty, None)
+                }),
+                ..p.trait_ref
+            },
+        }
+    }
+
+    fn holds(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> bool {
+        if in_env(self.sigs, &self.env, goal)
+            || is_builtin_copy(self.items, goal.trait_ref.trait_, goal.self_ty)
+            || (self.items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized)
+                && !crate::maybe_unsized(self.items, goal.self_ty, self.unsized_params, &self.env))
+            || matches!(fn_goal(self.items, goal.trait_ref.trait_, goal.self_ty),
+                Some(ClosureGoal::Fn(_, params)) if goal.trait_ref.args.first() == Some(&params))
+        {
+            return true;
+        }
+        if stack.len() >= 32 || stack.contains(&goal) {
+            return false;
+        }
+        if self.select(goal, stack).is_some() {
+            return true;
+        }
+        let Some(nested) = auto_trait_requirements(self.items, self.sigs, goal) else {
+            return false;
+        };
+        stack.push(goal);
+        let proven = nested.into_iter().all(|p| self.holds(p, stack));
+        stack.pop();
+        proven
+    }
+
+    fn select(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> Option<(ImplId, Vec<Ty>)> {
+        // Normalizing an associated requirement can re-enter selection with a
+        // fresh goal stack. Bound that path as well as membership recursion.
+        let depth = self.depth.get();
+        if depth >= 32 {
+            return None;
+        }
+        self.depth.set(depth + 1);
+        let result = self.select_at(goal, stack);
+        self.depth.set(depth);
+        result
+    }
+
+    fn select_at(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> Option<(ImplId, Vec<Ty>)> {
+        if stack.len() >= 32 || stack.contains(&goal) {
+            return None;
+        }
+        stack.push(goal);
+        let mut found = None;
+        for imp in self
+            .sigs
+            .impl_index
+            .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
+        {
+            let Some(args) = match_impl(self.items, self.sigs, imp, goal) else {
+                continue;
+            };
+            if args.iter().any(|&ty| has_error(ty))
+                || self.items.impls[imp]
+                    .generics
+                    .params
+                    .iter()
+                    .zip(&args)
+                    .any(|(param, &ty)| {
+                        !param.maybe_unsized
+                            && crate::maybe_unsized(self.items, ty, self.unsized_params, &self.env)
+                    })
+            {
+                continue;
+            }
+            let memberships = self.sigs.impl_predicates.get(imp).into_iter().flatten();
+            if !memberships.copied().all(|p| {
+                let p = p.subst(&args);
+                let p = Predicate {
+                    self_ty: self.normalize_ty(p.self_ty, None),
+                    trait_ref: TraitRef {
+                        args: crate::ty::map_list(p.trait_ref.args, |ty| {
+                            self.normalize_ty(ty, None)
+                        }),
+                        ..p.trait_ref
+                    },
+                };
+                !has_error(p.self_ty)
+                    && !p.trait_ref.args.iter().any(|&ty| has_error(ty))
+                    && self.holds(p, stack)
+            }) {
+                continue;
+            }
+            let equalities = self.sigs.impl_projections.get(imp).into_iter().flatten();
+            if !equalities.copied().all(|p| {
+                let p = p.subst(&args);
+                let lhs = self.normalize_ty(Ty::alias(p.alias), None);
+                let rhs = self.normalize_rhs(p);
+                !has_error(lhs) && !has_error(rhs) && lhs == rhs
+            }) {
+                continue;
+            }
+            if found.is_some() {
+                stack.pop();
+                return None;
+            }
+            found = Some((imp, args));
+        }
+        stack.pop();
+        found
     }
 }
 
@@ -1125,6 +1350,8 @@ pub fn normalize(items: &ItemTree, sigs: &Signatures, env: &[Projection], ty: Ty
         items,
         sigs,
         env,
+        caller_only: false,
+        impl_proof: None,
         done: rustc_hash::FxHashMap::default(),
         active: Vec::new(),
     };
@@ -1144,6 +1371,8 @@ pub(crate) fn normalize_projection_rhs(
         items,
         sigs,
         env,
+        caller_only: false,
+        impl_proof: None,
         done: rustc_hash::FxHashMap::default(),
         active: vec![Ty::alias(projection.alias)],
     };
@@ -1157,6 +1386,9 @@ struct Normalizer<'a> {
     items: &'a ItemTree,
     sigs: &'a Signatures,
     env: &'a [Projection],
+    /// Signature impl evidence must not normalize through possible impls.
+    caller_only: bool,
+    impl_proof: Option<&'a SignatureImplProof<'a>>,
     done: rustc_hash::FxHashMap<Ty, Ty>,
     /// The aliases being normalized: one met again within its own
     /// normalization is a cycle, and stays as it is.
@@ -1192,6 +1424,19 @@ impl Normalizer<'_> {
                 }
                 if let Some(ret) = closure_output(items, alias) {
                     return self.go(ret, depth + 1);
+                }
+                if self.caller_only {
+                    if let Some(proof) = self.impl_proof
+                        // A caller membership without an RHS remains abstract,
+                        // even when a matching impl has proven requirements.
+                        && !in_env(sigs, &proof.env, alias_predicate(alias))
+                        && let Some((imp, args)) =
+                            proof.select(alias_predicate(alias), &mut Vec::new())
+                        && let Some(ty) = impl_type(sigs, imp, alias.name)
+                    {
+                        return self.go(ty.subst(&args), depth + 1);
+                    }
+                    return Ty::alias(alias);
                 }
                 if let TyKind::Alias(outer) = args[0].kind()
                     && let Some(p) = alias_projections(sigs, outer)
@@ -2746,7 +2991,7 @@ pub fn check_well_formed(
         check_caller_supertraits(
             items,
             sigs,
-            own,
+            (own, &crate::unsized_params(items, None, &s.generics)),
             declared.to_vec(),
             s.loc.file,
             s.def_range,
@@ -2777,7 +3022,10 @@ pub fn check_well_formed(
         check_caller_supertraits(
             items,
             sigs,
-            own,
+            (
+                own,
+                &crate::unsized_params(items, Some(Owner::Impl(id)), &Generics::default()),
+            ),
             declared.to_vec(),
             imp.file,
             imp.def_range,
@@ -2842,7 +3090,10 @@ pub fn check_well_formed(
         check_caller_supertraits(
             items,
             sigs,
-            &owner_predicates(items, sigs, Some(Owner::Trait(id))),
+            (
+                &owner_predicates(items, sigs, Some(Owner::Trait(id))),
+                &crate::unsized_params(items, Some(Owner::Trait(id)), &Generics::default()),
+            ),
             header.to_vec(),
             t.loc.file,
             t.def_range,
@@ -2902,7 +3153,10 @@ pub fn check_well_formed(
         check_caller_supertraits(
             items,
             sigs,
-            &predicates_of(items, sigs, id),
+            (
+                &predicates_of(items, sigs, id),
+                &crate::unsized_params(items, f.owner, &f.generics),
+            ),
             caller_projections_of(items, sigs, id),
             f.loc.file,
             f.sig_range,

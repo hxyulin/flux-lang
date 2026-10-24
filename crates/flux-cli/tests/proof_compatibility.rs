@@ -94,6 +94,17 @@ fn signature_tautology_receivers_match_rustc() {
     );
 }
 
+#[test]
+fn signature_impl_requirements_match_rustc() {
+    // Both orders, substituted arguments, elaborated/nested memberships and
+    // associated requirements. Missing, conflicting and circular proofs fail.
+    check_cases(
+        include_str!("fixtures/proof_equalities/signature_impls.json"),
+        "signature-impls",
+        74,
+    );
+}
+
 fn check_cases(source: &str, group: &str, count: usize) {
     let cases: Vec<Case> = serde_json::from_str(source).unwrap();
     assert_eq!(cases.len(), count);
