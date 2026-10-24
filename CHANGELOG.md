@@ -4,6 +4,13 @@
 
 ### Syntax
 
+- Add Arc slice ownership and trusted array-owner coercion; compile and execute
+  the unchanged complete flux-arena source graph against rustc in both modes.
+- Preserve caller equality provenance and required associated-type constraints
+  during trait proof deduplication, including constant output dependencies and
+  signature evidence from conditional implementations.
+
+
 - Preserve original allocation layout and frame lifetimes for supported constant
   pointer views; fix reference extraction through temporary Cell storage (020).
 

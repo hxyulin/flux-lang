@@ -16,6 +16,7 @@ struct Header {
 }
 
 /// Shared ownership of a value or slice. Cloning shares the allocation.
+#[lang = "arc"]
 pub struct Arc<T: ?Sized> {
     ptr: NonNull<Header>,
     data: NonNull<T>,

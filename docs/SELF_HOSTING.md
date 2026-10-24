@@ -374,8 +374,14 @@ sources by Flux, followed by compiling the regression suite and rebuilding
 Flux with that executable. Component comparisons are intermediate milestones;
 they do not establish a working compiler bootstrap.
 
-Sized `Arc`/`Weak` now support shared chunks; the layered arena still needs
-`Arc<[T]>` ownership conversions and unsizing. The
+The complete, unchanged `flux-arena` source root now compiles and executes
+through a literal-path consumer. The maintained `arena_selfhost` test exercises
+owned arenas and maps, both layered freeze paths, clone independence, shared
+slice ownership, static slices and dropless allocation. Rustc and Flux produce
+identical output with optimization off and on. This loads source modules
+without building the original workspace manifest; it is not a compiler bootstrap.
+`Arc<[T]>` ownership conversions and array-owner coercion remove the layered
+arena barrier. The
 `PhantomData` equality barrier is removed: its equality and ordering traits
 have no bounds on the marked type, with runtime coverage for unsized and
 non-comparable marked types. `Vec::resize_with` now also supports the side-table
@@ -450,8 +456,9 @@ including borrowed payloads, chunk rollover, surviving slices and checked
 iterator lengths. Duplicate trait proofs no longer make its generic iterator
 operations ambiguous. Returning borrowed items from a generic iterator remains
 a separate region limitation. `Cell` and `RefCell` payloads are invariant;
-Arc/Weak retain covariance subject to their payload variance. Arc slices still
-need ownership conversions and unsizing before the complete typed arena can run.
+Arc/Weak retain covariance subject to their payload variance. Arc slices now
+support Vec/iterator ownership and array-owner coercion, and the unchanged
+complete arena-root consumer executes in the maintained `arena_selfhost` test.
 
 Typed constant-pointer views now preserve allocation layout and the stored
 referent when copying a reference through a temporary `Cell<&T>`. The former

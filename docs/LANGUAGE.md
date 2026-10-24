@@ -789,8 +789,13 @@ compiler_fence and a threading runtime remain unsupported.
 `alloc::sync::{Arc, Weak}`, reexported through `std::sync`, support sized
 payloads with atomic reference counts: `Arc::new`, cloning, dereferencing,
 `downgrade`, `ptr_eq`, `Weak::new` and `upgrade`. Last-strong destruction and
-last-weak deallocation are separate. DST payloads, slice conversions, unsizing,
-uniqueness APIs and a Flux threading runtime remain unsupported.
+last-weak deallocation are separate. Slice payloads support ownership from
+`Vec<T>` and `FromIterator<T>` without requiring `T: Clone`; allocation layout
+is retained until the final weak owner is dropped. The trusted alloc
+`Arc<[T; N]>` coerces to `Arc<[T]>` by moving ownership and retaining the same
+header and data allocation; explicit coercion casts are also accepted.
+This does not add coercion through `&Arc` or `&mut Arc`, Weak unsizing,
+trait-object owners, uniqueness APIs or a Flux threading runtime.
 `core::ptr::{addr_of, addr_of_mut}`,
 `core::default::Default` (in the prelude) for the integers, `bool`,
 `char`, `&str`, `&[T]`, `&mut [T]`, `&CStr`, `()`, `Option`, tuples of up to twelve elements and `Range`,
