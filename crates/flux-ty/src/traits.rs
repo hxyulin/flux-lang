@@ -629,11 +629,34 @@ fn check_caller_supertraits(
     };
     for q in required {
         let q_key = key(q.alias);
+        // Moving a required equality to another receiver needs RHS evidence
+        // there. Membership alone carries no associated-type constraint;
+        // the equality on the original receiver must not certify that move.
+        // Keep the guarded comparison when that proof context is absent.
+        let receiver_proven = q_key.args[0] == q.alias.args[0]
+            || caller.iter().any(|p| {
+                !p.is_tautology()
+                    && p.alias.args[0] == q_key.args[0]
+                    && key(p.alias) == q_key
+                    && normalize_projection_rhs(items, sigs, &caller, *p)
+                        == normalize_projection_rhs(items, sigs, &caller, q)
+            })
+            || select_impl(items, sigs, alias_predicate(q_key))
+                .and_then(|(imp, args)| {
+                    impl_type(sigs, imp, q_key.name).map(|ty| Projection {
+                        alias: q_key,
+                        ty: ty.subst(&args),
+                    })
+                })
+                .is_some_and(|p| {
+                    normalize_projection_rhs(items, sigs, &caller, p)
+                        == normalize_projection_rhs(items, sigs, &caller, q)
+                });
         if caller.iter().any(|p| {
             // A written tautology cannot contradict a required equality.
             // Still check every required RHS: a recursive supertrait
             // declaration must not certify itself against a real constraint.
-            !(p.is_tautology() && key(p.alias) != p.alias && p.alias != q.alias)
+            !(receiver_proven && p.is_tautology() && key(p.alias) != p.alias && p.alias != q.alias)
                 && key(p.alias) == q_key
                 && normalize_projection_rhs(items, sigs, &caller, *p)
                     != normalize_projection_rhs(items, sigs, &caller, q)

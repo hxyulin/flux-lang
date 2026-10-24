@@ -74,6 +74,17 @@ fn constant_output_proof_relevance_matches_rustc() {
     );
 }
 
+#[test]
+fn signature_tautology_receivers_match_rustc() {
+    // Membership on a normalized receiver does not supply its projection RHS.
+    // Keep both orders and the direct-Self/direct-bound/matching-RHS neighbors.
+    check_cases(
+        include_str!("fixtures/proof_equalities/signatures.json"),
+        "signatures",
+        46,
+    );
+}
+
 fn check_cases(source: &str, group: &str, count: usize) {
     let cases: Vec<Case> = serde_json::from_str(source).unwrap();
     assert_eq!(cases.len(), count);

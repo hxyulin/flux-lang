@@ -1,0 +1,232 @@
+[
+  {
+    "name": "signature_b0",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8>,T:Q<u8>+P<U::X,A=<T as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b1",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8>,T:P<U::X,A=<T as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b2",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8>,T:P<u8,A=u8>+P<U::X,A=<T as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b3",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8>,T:P<U::X,A=<T as P<U::X>>::A>+P<u8,A=u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b4",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8,A=u8>,T:Q<u8>+P<U::X,A=<T as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b5",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8,A=u8>,T:P<U::X,A=<T as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b6",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8,A=u8>,T:P<u8,A=u8>+P<U::X,A=<T as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b7",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8,A=u8>,T:P<U::X,A=<T as P<U::X>>::A>+P<u8,A=u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b8",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:Q<u8>,T:Q<u8>+P<U::X,A=<T as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b9",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:Q<u8>,T:P<U::X,A=<T as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b10",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:Q<u8>,T:P<u8,A=u8>+P<U::X,A=<T as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b11",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:Q<u8>,T:P<U::X,A=<T as P<U::X>>::A>+P<u8,A=u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b12",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_b13",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_b14",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8>,V::X:P<u8,A=u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b15",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+P<u8,A=u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b16",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8,A=u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b17",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8,A=u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b18",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8,A=u8>,V::X:P<u8,A=u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b19",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:P<u8,A=u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+P<u8,A=u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b20",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:Q<u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b21",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:Q<u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b22",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:Q<u8>,V::X:P<u8,A=u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_b23",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=T>,T:Q<u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+P<u8,A=u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_no_tautology_false",
+    "source": "trait R { type X; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nfn f<T, U, V>()\nwhere\n    U: R<X = u8>,\n    V: R<X = T>,\n    T: P<u8>,\n    V::X: Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "signature_no_tautology_true",
+    "source": "trait R { type X; }\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nfn f<T, U, V>()\nwhere\n    V: R<X = T>,\n    U: R<X = u8>,\n    T: P<u8>,\n    V::X: Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "signature_tupleT_bare_super_False",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=(T,)>,(T,):P<u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_tupleT_bare_super_True",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=(T,)>,(T,):P<u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_tupleT_matching_super_False",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=(T,)>,(T,):P<u8,A=u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_tupleT_matching_super_True",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=(T,)>,(T,):P<u8,A=u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_tupleT_different_name_super_False",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=(T,)>,(T,):P<u8,B=u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_tupleT_different_name_super_True",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=(T,)>,(T,):P<u8,B=u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_arrayT_2_bare_super_False",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=[T;2]>,[T;2]:P<u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_arrayT_2_bare_super_True",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=[T;2]>,[T;2]:P<u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_arrayT_2_matching_super_False",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=[T;2]>,[T;2]:P<u8,A=u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_arrayT_2_matching_super_True",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=[T;2]>,[T;2]:P<u8,A=u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_arrayT_2_different_name_super_False",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=[T;2]>,[T;2]:P<u8,B=u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_arrayT_2_different_name_super_True",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=[T;2]>,[T;2]:P<u8,B=u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_ptrconst_T_bare_super_False",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=*const T>,*const T:P<u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_ptrconst_T_bare_super_True",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=*const T>,*const T:P<u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_ptrconst_T_matching_super_False",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=*const T>,*const T:P<u8,A=u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_ptrconst_T_matching_super_True",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=*const T>,*const T:P<u8,A=u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_ptrconst_T_different_name_super_False",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=*const T>,*const T:P<u8,B=u8>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_ptrconst_T_different_name_super_True",
+    "source": "trait R{type X;}trait P<X>{type A;type B;}trait Q<X>:P<X,A=u8>{}fn f<T,U,V>()where U:R<X=u8>,V:R<X=*const T>,*const T:P<u8,B=u8>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "signature_concrete_False",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}struct S;impl P<u8> for S{type A=u8;}impl Q<u8> for S{}fn f<U,V>()where U:R<X=u8>,V:R<X=S>,V::X:Q<u8>+P<U::X,A=<V::X as P<U::X>>::A>{}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "signature_concrete_True",
+    "source": "trait R{type X;}trait P<X>{type A;}trait Q<X>:P<X,A=u8>{}struct S;impl P<u8> for S{type A=u8;}impl Q<u8> for S{}fn f<U,V>()where U:R<X=u8>,V:R<X=S>,V::X:P<U::X,A=<V::X as P<U::X>>::A>+Q<u8>{}fn main(){}",
+    "accepts": true
+  }
+]
