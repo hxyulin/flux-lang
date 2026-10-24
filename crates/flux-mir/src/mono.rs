@@ -267,7 +267,9 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                         if !valid_atomic_signature(op, word, callee.args, &sig) {
                             let mut d = Diagnostic::new(
                                 data.terminator.range,
-                                if word == flux_ty::IntTy::U32 {
+                                if word == AtomicWord::Ptr {
+                                    "atomic intrinsic requires naturally aligned thin pointer storage and an exact pointer signature"
+                                } else if word == AtomicWord::U32 {
                                     "atomic intrinsic requires naturally aligned u32 storage and an exact scalar signature"
                                 } else {
                                     "atomic intrinsic requires naturally aligned usize storage and an exact scalar signature"
@@ -1557,13 +1559,22 @@ pub fn is_neon_intrinsic(name: &str) -> bool {
     )
 }
 
-/// Exact private atomic bridge names. Orders are fixed at the compiler boundary;
-/// arbitrary strings and runtime order values can never become Keel orderings.
-pub fn atomic_intrinsic(name: &str) -> Option<(&str, &str, flux_ty::IntTy)> {
+/// Scalar storage identity for the private native atomic bridge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtomicWord {
+    Usize,
+    U32,
+    Ptr,
+}
+
+/// Exact bridge names and fixed valid orderings; no runtime ordering crosses this boundary.
+pub fn atomic_intrinsic(name: &str) -> Option<(&str, &str, AtomicWord)> {
     let (rest, word) = if let Some(rest) = name.strip_prefix("__atomic_usize_") {
-        (rest, flux_ty::IntTy::Usize)
+        (rest, AtomicWord::Usize)
+    } else if let Some(rest) = name.strip_prefix("__atomic_u32_") {
+        (rest, AtomicWord::U32)
     } else {
-        (name.strip_prefix("__atomic_u32_")?, flux_ty::IntTy::U32)
+        (name.strip_prefix("__atomic_ptr_")?, AtomicWord::Ptr)
     };
     let (op, order) = rest.split_once('_')?;
     let valid = match op {
@@ -1576,28 +1587,37 @@ pub fn atomic_intrinsic(name: &str) -> Option<(&str, &str, flux_ty::IntTy)> {
         "fence" => matches!(order, "acquire" | "release" | "acqrel" | "seqcst"),
         _ => false,
     };
-    let valid = valid && (word == flux_ty::IntTy::Usize || matches!(op, "load" | "store" | "add"));
+    let valid = valid
+        && match word {
+            AtomicWord::Usize => true,
+            AtomicWord::U32 => matches!(op, "load" | "store" | "add"),
+            AtomicWord::Ptr => matches!(op, "load" | "store"),
+        };
     valid.then_some((op, order, word))
 }
 
-fn valid_atomic_signature(
-    op: &str,
-    word: flux_ty::IntTy,
-    args: &[Ty],
-    sig: &flux_ty::FnSig,
-) -> bool {
+fn valid_atomic_signature(op: &str, word: AtomicWord, args: &[Ty], sig: &flux_ty::FnSig) -> bool {
     if op == "fence" {
-        return word == flux_ty::IntTy::Usize
+        return word == AtomicWord::Usize
             && args.is_empty()
             && sig.params.is_empty()
             && sig.ret == Ty::UNIT;
     }
-    if !matches!(word, flux_ty::IntTy::Usize | flux_ty::IntTy::U32)
-        || (word == flux_ty::IntTy::U32 && !matches!(op, "load" | "store" | "add"))
-    {
-        return false;
-    }
-    let word = Ty::int(word);
+    let word = match word {
+        AtomicWord::Usize => Ty::int(flux_ty::IntTy::Usize),
+        AtomicWord::U32 if matches!(op, "load" | "store" | "add") => Ty::int(flux_ty::IntTy::U32),
+        AtomicWord::Ptr if matches!(op, "load" | "store") => {
+            let Some(&ty) = args.first() else {
+                return false;
+            };
+            if !matches!(ty.kind(), TyKind::RawPtr(Mutability::Mut, pointee) if !pointee.is_unsized() && !pointee.has_params())
+            {
+                return false;
+            }
+            ty
+        }
+        _ => return false,
+    };
     let ptr = Ty::raw_ptr(
         if op == "load" {
             Mutability::Not
@@ -1620,6 +1640,74 @@ fn valid_atomic_signature(
 #[cfg(test)]
 mod atomic_tests {
     use super::*;
+
+    #[test]
+    fn pointer_bridge_requires_exact_thin_mutable_pointer_signatures() {
+        let u8_ = Ty::int(flux_ty::IntTy::U8);
+        let pointer = Ty::raw_ptr(Mutability::Mut, u8_);
+        for ty in [
+            pointer,
+            Ty::raw_ptr(Mutability::Not, u8_),
+            u8_,
+            Ty::UNIT,
+            Ty::raw_ptr(Mutability::Mut, Ty::STR),
+            Ty::raw_ptr(Mutability::Mut, Ty::slice(u8_)),
+            Ty::raw_ptr(
+                Mutability::Mut,
+                Ty::new(TyKind::Ref(Mutability::Not, Ty::STR)),
+            ),
+        ] {
+            let supported =
+                matches!(ty.kind(), TyKind::RawPtr(Mutability::Mut, t) if !t.is_unsized());
+            for op in ["load", "store", "cas", "add", "sub", "fence"] {
+                let address = Ty::raw_ptr(
+                    if op == "load" {
+                        Mutability::Not
+                    } else {
+                        Mutability::Mut
+                    },
+                    ty,
+                );
+                let sig = flux_ty::FnSig {
+                    params: if op == "load" {
+                        vec![address]
+                    } else {
+                        vec![address, ty]
+                    }
+                    .into(),
+                    ret: if op == "store" { Ty::UNIT } else { ty },
+                };
+                let valid = supported && matches!(op, "load" | "store");
+                assert_eq!(
+                    valid_atomic_signature(op, AtomicWord::Ptr, &[ty], &sig),
+                    valid
+                );
+                if valid {
+                    let mut bad = sig.clone();
+                    bad.ret = Ty::BOOL;
+                    assert!(!valid_atomic_signature(op, AtomicWord::Ptr, &[ty], &bad));
+                    let mut bad = sig.clone();
+                    let mut params = bad.params.to_vec();
+                    params[0] = pointer;
+                    bad.params = params.into();
+                    assert!(!valid_atomic_signature(op, AtomicWord::Ptr, &[ty], &bad));
+                    assert!(!valid_atomic_signature(op, AtomicWord::Ptr, &[u8_], &sig));
+                    assert!(!valid_atomic_signature(op, AtomicWord::Ptr, &[], &sig));
+                }
+            }
+        }
+        for name in [
+            "__atomic_ptr_load_release",
+            "__atomic_ptr_load_acqrel",
+            "__atomic_ptr_store_acquire",
+            "__atomic_ptr_store_acqrel",
+            "__atomic_ptr_cas_seqcst",
+            "__atomic_ptr_fence_acquire",
+            "__atomic_ptr_store_unknown",
+        ] {
+            assert!(atomic_intrinsic(name).is_none(), "{name}");
+        }
+    }
 
     #[test]
     fn atomic_bridge_rejects_substitutions_and_invalid_intrinsic_orders() {
@@ -1657,13 +1745,31 @@ mod atomic_tests {
                     let supported =
                         width == flux_ty::IntTy::Usize || matches!(op, "load" | "store" | "add");
                     assert_eq!(
-                        valid_atomic_signature(op, width, &[ty], &sig),
+                        valid_atomic_signature(
+                            op,
+                            if width == flux_ty::IntTy::U32 {
+                                AtomicWord::U32
+                            } else {
+                                AtomicWord::Usize
+                            },
+                            &[ty],
+                            &sig
+                        ),
                         ty == word && supported
                     );
                     if ty == word && supported {
                         let mut bad = sig.clone();
                         bad.ret = Ty::BOOL;
-                        assert!(!valid_atomic_signature(op, width, &[ty], &bad));
+                        assert!(!valid_atomic_signature(
+                            op,
+                            if width == flux_ty::IntTy::U32 {
+                                AtomicWord::U32
+                            } else {
+                                AtomicWord::Usize
+                            },
+                            &[ty],
+                            &bad
+                        ));
                         let mut bad = sig.clone();
                         let mut params = bad.params.to_vec();
                         params[0] = Ty::raw_ptr(
@@ -1675,9 +1781,27 @@ mod atomic_tests {
                             word,
                         );
                         bad.params = params.into();
-                        assert!(!valid_atomic_signature(op, width, &[ty], &bad));
+                        assert!(!valid_atomic_signature(
+                            op,
+                            if width == flux_ty::IntTy::U32 {
+                                AtomicWord::U32
+                            } else {
+                                AtomicWord::Usize
+                            },
+                            &[ty],
+                            &bad
+                        ));
                     }
-                    assert!(!valid_atomic_signature(op, width, &[], &sig));
+                    assert!(!valid_atomic_signature(
+                        op,
+                        if width == flux_ty::IntTy::U32 {
+                            AtomicWord::U32
+                        } else {
+                            AtomicWord::Usize
+                        },
+                        &[],
+                        &sig
+                    ));
                 }
             }
         }
@@ -1708,7 +1832,7 @@ mod atomic_tests {
         };
         assert!(!valid_atomic_signature(
             "add",
-            flux_ty::IntTy::Usize,
+            AtomicWord::Usize,
             &[word],
             &bad
         ));

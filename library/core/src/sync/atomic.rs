@@ -1,7 +1,7 @@
 //! Bounded atomic storage, backed by native atomic instructions.
 use crate::cell::UnsafeCell;
 use crate::intrinsics;
-use crate::marker::Sync;
+use crate::marker::{Send, Sync};
 use crate::panicking::panic;
 use crate::result::Result::{self, Err, Ok};
 
@@ -249,6 +249,68 @@ pub fn fence(order: Ordering) {
             AcqRel => intrinsics::__atomic_usize_fence_acqrel(),
             SeqCst => intrinsics::__atomic_usize_fence_seqcst(),
             Relaxed => panic("there is no such thing as a relaxed fence"),
+        }
+    }
+}
+
+/// An atomic thin pointer to a sized value. This does not own the pointee.
+/// Shared accesses use only native atomic operations; exclusive access may
+/// use `get_mut` or `into_inner`. No wider or overlapping access is permitted.
+#[repr(C, align(8))]
+pub struct AtomicPtr<T> {
+    value: UnsafeCell<*mut T>,
+}
+
+// SAFETY: every shared access to the UnsafeCell is a native atomic operation.
+unsafe impl<T> Sync for AtomicPtr<T> {}
+// SAFETY: transferring pointer storage does not access or transfer the pointee.
+unsafe impl<T> Send for AtomicPtr<T> {}
+
+impl<T> AtomicPtr<T> {
+    /// Initializes private storage; subsequent shared accesses are atomic.
+    pub const fn new(value: *mut T) -> AtomicPtr<T> {
+        AtomicPtr {
+            value: UnsafeCell::new(value),
+        }
+    }
+
+    /// Exclusive access, with no concurrent atomic accesses possible.
+    pub fn get_mut(&mut self) -> &mut *mut T {
+        self.value.get_mut()
+    }
+
+    /// Consumes the atomic and returns its value.
+    pub fn into_inner(self) -> *mut T {
+        self.value.into_inner()
+    }
+
+    /// Loads with Relaxed, Acquire or SeqCst; other orders panic.
+    #[track_caller]
+    pub fn load(&self, order: Ordering) -> *mut T {
+        // SAFETY: storage is initialized, aligned and accessed atomically.
+        unsafe {
+            match order {
+                Relaxed => intrinsics::__atomic_ptr_load_relaxed(self.value.get()),
+                Acquire => intrinsics::__atomic_ptr_load_acquire(self.value.get()),
+                SeqCst => intrinsics::__atomic_ptr_load_seqcst(self.value.get()),
+                Release => panic("there is no such thing as a release load"),
+                AcqRel => panic("there is no such thing as an acquire-release load"),
+            }
+        }
+    }
+
+    /// Stores with Relaxed, Release or SeqCst; other orders panic.
+    #[track_caller]
+    pub fn store(&self, value: *mut T, order: Ordering) {
+        // SAFETY: storage is initialized, aligned and accessed atomically.
+        unsafe {
+            match order {
+                Relaxed => intrinsics::__atomic_ptr_store_relaxed(self.value.get(), value),
+                Release => intrinsics::__atomic_ptr_store_release(self.value.get(), value),
+                SeqCst => intrinsics::__atomic_ptr_store_seqcst(self.value.get(), value),
+                Acquire => panic("there is no such thing as an acquire store"),
+                AcqRel => panic("there is no such thing as an acquire-release store"),
+            }
         }
     }
 }
