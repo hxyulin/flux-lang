@@ -75,6 +75,15 @@ fn constant_output_proof_relevance_matches_rustc() {
 }
 
 #[test]
+fn constant_recursive_constraints_and_finite_chains_match_rustc() {
+    check_cases(
+        include_str!("fixtures/proof_equalities/constant_cycles_depth.json"),
+        "constant-cycles-depth",
+        32,
+    );
+}
+
+#[test]
 fn signature_tautology_receivers_match_rustc() {
     // Membership on a normalized receiver does not supply its projection RHS.
     // Keep both orders and the direct-Self/direct-bound/matching-RHS neighbors.

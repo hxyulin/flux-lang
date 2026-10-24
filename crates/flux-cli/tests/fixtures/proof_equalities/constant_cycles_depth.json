@@ -1,0 +1,162 @@
+[
+  {
+    "name": "own_False_11",
+    "source": "trait P{type A;const V:u8;}struct S<T>(T);impl<T> S<T> where T:P<A=<T as P>::A>+P<A=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "own_False_14",
+    "source": "trait P{type A;const V:u8;}struct S<T>(T);impl<T> S<T> where T:P<A=(<T as P>::A,)>+P<A=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "mutual_False",
+    "source": "trait P{type A;type B;const V:u8;}struct S<T>(T);impl<T> S<T> where T:P<A=T::B,B=T::A>+P<A=u8,B=u16>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "cross_False",
+    "source": "trait Q{type B;}trait P{type A;const V:u8;}struct S<T,U>(T,U);impl<T,U> S<T,U> where T:P<A=U::B>+P<A=u8>,U:Q<B=T::A>+Q<B=u16>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "concrete_False_8",
+    "source": "trait P{type A;const V:u8;}struct S<T>(T);impl<T> S<T> where T:P<A=u8>+P<A=u16>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "concrete_False_A",
+    "source": "trait P{type A;const V:Self::A;}struct S<T>(T);impl<T> S<T> where T:P<A=u8>+P<A=u16>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "second_False_A",
+    "source": "trait P{type A;type B;const V:Self::A;}struct S<T>(T);impl<T> S<T> where T:P<A=u8,B=u8>+P<A=u8,B=u16>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "second_False_B",
+    "source": "trait P{type A;type B;const V:Self::B;}struct S<T>(T);impl<T> S<T> where T:P<A=u8,B=u8>+P<A=u8,B=u16>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "acyclic_False",
+    "source": "trait Q{type X;}trait P{type A;const V:u8;}struct S<T,U>(T,U);impl<T,U:Q<X=u8>> S<T,U> where T:P<A=U::X>+P<A=u16>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "normalized_tautology_False",
+    "source": "trait R{type X;}trait P<X>{type A;const V:u8;}struct S<T,U>(T,U);impl<T,U:R<X=u8>> S<T,U> where T:P<u8,A=u8>+P<U::X,A=<T as P<U::X>>::A>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "own_True_11",
+    "source": "trait P{type A;const V:u8;}struct S<T>(T);impl<T> S<T> where T:P<A=u8>+P<A=<T as P>::A>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "own_True_14",
+    "source": "trait P{type A;const V:u8;}struct S<T>(T);impl<T> S<T> where T:P<A=u8>+P<A=(<T as P>::A,)>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "mutual_True",
+    "source": "trait P{type A;type B;const V:u8;}struct S<T>(T);impl<T> S<T> where T:P<A=u8,B=u16>+P<A=T::B,B=T::A>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "cross_True",
+    "source": "trait Q{type B;}trait P{type A;const V:u8;}struct S<T,U>(T,U);impl<T,U> S<T,U> where U:Q<B=T::A>+Q<B=u16>,T:P<A=U::B>+P<A=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "concrete_True_8",
+    "source": "trait P{type A;const V:u8;}struct S<T>(T);impl<T> S<T> where T:P<A=u16>+P<A=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "concrete_True_A",
+    "source": "trait P{type A;const V:Self::A;}struct S<T>(T);impl<T> S<T> where T:P<A=u16>+P<A=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "second_True_A",
+    "source": "trait P{type A;type B;const V:Self::A;}struct S<T>(T);impl<T> S<T> where T:P<A=u8,B=u16>+P<A=u8,B=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "second_True_B",
+    "source": "trait P{type A;type B;const V:Self::B;}struct S<T>(T);impl<T> S<T> where T:P<A=u8,B=u16>+P<A=u8,B=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "acyclic_True",
+    "source": "trait Q{type X;}trait P{type A;const V:u8;}struct S<T,U>(T,U);impl<T,U:Q<X=u8>> S<T,U> where T:P<A=u16>+P<A=U::X>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "normalized_tautology_True",
+    "source": "trait R{type X;}trait P<X>{type A;const V:u8;}struct S<T,U>(T,U);impl<T,U:R<X=u8>> S<T,U> where T:P<U::X,A=<T as P<U::X>>::A>+P<u8,A=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "chain_2",
+    "source": "trait P{type A0;type A1;const V:Self::A0;}struct S<T>(T);impl<T> S<T> where T:P<A0=<T as P>::A1,A1=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "chain_32",
+    "source": "trait P{type A0;type A1;type A2;type A3;type A4;type A5;type A6;type A7;type A8;type A9;type A10;type A11;type A12;type A13;type A14;type A15;type A16;type A17;type A18;type A19;type A20;type A21;type A22;type A23;type A24;type A25;type A26;type A27;type A28;type A29;type A30;type A31;const V:Self::A0;}struct S<T>(T);impl<T> S<T> where T:P<A0=<T as P>::A1,A1=<T as P>::A2,A2=<T as P>::A3,A3=<T as P>::A4,A4=<T as P>::A5,A5=<T as P>::A6,A6=<T as P>::A7,A7=<T as P>::A8,A8=<T as P>::A9,A9=<T as P>::A10,A10=<T as P>::A11,A11=<T as P>::A12,A12=<T as P>::A13,A13=<T as P>::A14,A14=<T as P>::A15,A15=<T as P>::A16,A16=<T as P>::A17,A17=<T as P>::A18,A18=<T as P>::A19,A19=<T as P>::A20,A20=<T as P>::A21,A21=<T as P>::A22,A22=<T as P>::A23,A23=<T as P>::A24,A24=<T as P>::A25,A25=<T as P>::A26,A26=<T as P>::A27,A27=<T as P>::A28,A28=<T as P>::A29,A29=<T as P>::A30,A30=<T as P>::A31,A31=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "chain_64",
+    "source": "trait P{type A0;type A1;type A2;type A3;type A4;type A5;type A6;type A7;type A8;type A9;type A10;type A11;type A12;type A13;type A14;type A15;type A16;type A17;type A18;type A19;type A20;type A21;type A22;type A23;type A24;type A25;type A26;type A27;type A28;type A29;type A30;type A31;type A32;type A33;type A34;type A35;type A36;type A37;type A38;type A39;type A40;type A41;type A42;type A43;type A44;type A45;type A46;type A47;type A48;type A49;type A50;type A51;type A52;type A53;type A54;type A55;type A56;type A57;type A58;type A59;type A60;type A61;type A62;type A63;const V:Self::A0;}struct S<T>(T);impl<T> S<T> where T:P<A0=<T as P>::A1,A1=<T as P>::A2,A2=<T as P>::A3,A3=<T as P>::A4,A4=<T as P>::A5,A5=<T as P>::A6,A6=<T as P>::A7,A7=<T as P>::A8,A8=<T as P>::A9,A9=<T as P>::A10,A10=<T as P>::A11,A11=<T as P>::A12,A12=<T as P>::A13,A13=<T as P>::A14,A14=<T as P>::A15,A15=<T as P>::A16,A16=<T as P>::A17,A17=<T as P>::A18,A18=<T as P>::A19,A19=<T as P>::A20,A20=<T as P>::A21,A21=<T as P>::A22,A22=<T as P>::A23,A23=<T as P>::A24,A24=<T as P>::A25,A25=<T as P>::A26,A26=<T as P>::A27,A27=<T as P>::A28,A28=<T as P>::A29,A29=<T as P>::A30,A30=<T as P>::A31,A31=<T as P>::A32,A32=<T as P>::A33,A33=<T as P>::A34,A34=<T as P>::A35,A35=<T as P>::A36,A36=<T as P>::A37,A37=<T as P>::A38,A38=<T as P>::A39,A39=<T as P>::A40,A40=<T as P>::A41,A41=<T as P>::A42,A42=<T as P>::A43,A43=<T as P>::A44,A44=<T as P>::A45,A45=<T as P>::A46,A46=<T as P>::A47,A47=<T as P>::A48,A48=<T as P>::A49,A49=<T as P>::A50,A50=<T as P>::A51,A51=<T as P>::A52,A52=<T as P>::A53,A53=<T as P>::A54,A54=<T as P>::A55,A55=<T as P>::A56,A56=<T as P>::A57,A57=<T as P>::A58,A58=<T as P>::A59,A59=<T as P>::A60,A60=<T as P>::A61,A61=<T as P>::A62,A62=<T as P>::A63,A63=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "chain_65",
+    "source": "trait P{type A0;type A1;type A2;type A3;type A4;type A5;type A6;type A7;type A8;type A9;type A10;type A11;type A12;type A13;type A14;type A15;type A16;type A17;type A18;type A19;type A20;type A21;type A22;type A23;type A24;type A25;type A26;type A27;type A28;type A29;type A30;type A31;type A32;type A33;type A34;type A35;type A36;type A37;type A38;type A39;type A40;type A41;type A42;type A43;type A44;type A45;type A46;type A47;type A48;type A49;type A50;type A51;type A52;type A53;type A54;type A55;type A56;type A57;type A58;type A59;type A60;type A61;type A62;type A63;type A64;const V:Self::A0;}struct S<T>(T);impl<T> S<T> where T:P<A0=<T as P>::A1,A1=<T as P>::A2,A2=<T as P>::A3,A3=<T as P>::A4,A4=<T as P>::A5,A5=<T as P>::A6,A6=<T as P>::A7,A7=<T as P>::A8,A8=<T as P>::A9,A9=<T as P>::A10,A10=<T as P>::A11,A11=<T as P>::A12,A12=<T as P>::A13,A13=<T as P>::A14,A14=<T as P>::A15,A15=<T as P>::A16,A16=<T as P>::A17,A17=<T as P>::A18,A18=<T as P>::A19,A19=<T as P>::A20,A20=<T as P>::A21,A21=<T as P>::A22,A22=<T as P>::A23,A23=<T as P>::A24,A24=<T as P>::A25,A25=<T as P>::A26,A26=<T as P>::A27,A27=<T as P>::A28,A28=<T as P>::A29,A29=<T as P>::A30,A30=<T as P>::A31,A31=<T as P>::A32,A32=<T as P>::A33,A33=<T as P>::A34,A34=<T as P>::A35,A35=<T as P>::A36,A36=<T as P>::A37,A37=<T as P>::A38,A38=<T as P>::A39,A39=<T as P>::A40,A40=<T as P>::A41,A41=<T as P>::A42,A42=<T as P>::A43,A43=<T as P>::A44,A44=<T as P>::A45,A45=<T as P>::A46,A46=<T as P>::A47,A47=<T as P>::A48,A48=<T as P>::A49,A49=<T as P>::A50,A50=<T as P>::A51,A51=<T as P>::A52,A52=<T as P>::A53,A53=<T as P>::A54,A54=<T as P>::A55,A55=<T as P>::A56,A56=<T as P>::A57,A57=<T as P>::A58,A58=<T as P>::A59,A59=<T as P>::A60,A60=<T as P>::A61,A61=<T as P>::A62,A62=<T as P>::A63,A63=<T as P>::A64,A64=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "chain_66",
+    "source": "trait P{type A0;type A1;type A2;type A3;type A4;type A5;type A6;type A7;type A8;type A9;type A10;type A11;type A12;type A13;type A14;type A15;type A16;type A17;type A18;type A19;type A20;type A21;type A22;type A23;type A24;type A25;type A26;type A27;type A28;type A29;type A30;type A31;type A32;type A33;type A34;type A35;type A36;type A37;type A38;type A39;type A40;type A41;type A42;type A43;type A44;type A45;type A46;type A47;type A48;type A49;type A50;type A51;type A52;type A53;type A54;type A55;type A56;type A57;type A58;type A59;type A60;type A61;type A62;type A63;type A64;type A65;const V:Self::A0;}struct S<T>(T);impl<T> S<T> where T:P<A0=<T as P>::A1,A1=<T as P>::A2,A2=<T as P>::A3,A3=<T as P>::A4,A4=<T as P>::A5,A5=<T as P>::A6,A6=<T as P>::A7,A7=<T as P>::A8,A8=<T as P>::A9,A9=<T as P>::A10,A10=<T as P>::A11,A11=<T as P>::A12,A12=<T as P>::A13,A13=<T as P>::A14,A14=<T as P>::A15,A15=<T as P>::A16,A16=<T as P>::A17,A17=<T as P>::A18,A18=<T as P>::A19,A19=<T as P>::A20,A20=<T as P>::A21,A21=<T as P>::A22,A22=<T as P>::A23,A23=<T as P>::A24,A24=<T as P>::A25,A25=<T as P>::A26,A26=<T as P>::A27,A27=<T as P>::A28,A28=<T as P>::A29,A29=<T as P>::A30,A30=<T as P>::A31,A31=<T as P>::A32,A32=<T as P>::A33,A33=<T as P>::A34,A34=<T as P>::A35,A35=<T as P>::A36,A36=<T as P>::A37,A37=<T as P>::A38,A38=<T as P>::A39,A39=<T as P>::A40,A40=<T as P>::A41,A41=<T as P>::A42,A42=<T as P>::A43,A43=<T as P>::A44,A44=<T as P>::A45,A45=<T as P>::A46,A46=<T as P>::A47,A47=<T as P>::A48,A48=<T as P>::A49,A49=<T as P>::A50,A50=<T as P>::A51,A51=<T as P>::A52,A52=<T as P>::A53,A53=<T as P>::A54,A54=<T as P>::A55,A55=<T as P>::A56,A56=<T as P>::A57,A57=<T as P>::A58,A58=<T as P>::A59,A59=<T as P>::A60,A60=<T as P>::A61,A61=<T as P>::A62,A62=<T as P>::A63,A63=<T as P>::A64,A64=<T as P>::A65,A65=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "chain_70",
+    "source": "trait P{type A0;type A1;type A2;type A3;type A4;type A5;type A6;type A7;type A8;type A9;type A10;type A11;type A12;type A13;type A14;type A15;type A16;type A17;type A18;type A19;type A20;type A21;type A22;type A23;type A24;type A25;type A26;type A27;type A28;type A29;type A30;type A31;type A32;type A33;type A34;type A35;type A36;type A37;type A38;type A39;type A40;type A41;type A42;type A43;type A44;type A45;type A46;type A47;type A48;type A49;type A50;type A51;type A52;type A53;type A54;type A55;type A56;type A57;type A58;type A59;type A60;type A61;type A62;type A63;type A64;type A65;type A66;type A67;type A68;type A69;const V:Self::A0;}struct S<T>(T);impl<T> S<T> where T:P<A0=<T as P>::A1,A1=<T as P>::A2,A2=<T as P>::A3,A3=<T as P>::A4,A4=<T as P>::A5,A5=<T as P>::A6,A6=<T as P>::A7,A7=<T as P>::A8,A8=<T as P>::A9,A9=<T as P>::A10,A10=<T as P>::A11,A11=<T as P>::A12,A12=<T as P>::A13,A13=<T as P>::A14,A14=<T as P>::A15,A15=<T as P>::A16,A16=<T as P>::A17,A17=<T as P>::A18,A18=<T as P>::A19,A19=<T as P>::A20,A20=<T as P>::A21,A21=<T as P>::A22,A22=<T as P>::A23,A23=<T as P>::A24,A24=<T as P>::A25,A25=<T as P>::A26,A26=<T as P>::A27,A27=<T as P>::A28,A28=<T as P>::A29,A29=<T as P>::A30,A30=<T as P>::A31,A31=<T as P>::A32,A32=<T as P>::A33,A33=<T as P>::A34,A34=<T as P>::A35,A35=<T as P>::A36,A36=<T as P>::A37,A37=<T as P>::A38,A38=<T as P>::A39,A39=<T as P>::A40,A40=<T as P>::A41,A41=<T as P>::A42,A42=<T as P>::A43,A43=<T as P>::A44,A44=<T as P>::A45,A45=<T as P>::A46,A46=<T as P>::A47,A47=<T as P>::A48,A48=<T as P>::A49,A49=<T as P>::A50,A50=<T as P>::A51,A51=<T as P>::A52,A52=<T as P>::A53,A53=<T as P>::A54,A54=<T as P>::A55,A55=<T as P>::A56,A56=<T as P>::A57,A57=<T as P>::A58,A58=<T as P>::A59,A59=<T as P>::A60,A60=<T as P>::A61,A61=<T as P>::A62,A62=<T as P>::A63,A63=<T as P>::A64,A64=<T as P>::A65,A65=<T as P>::A66,A66=<T as P>::A67,A67=<T as P>::A68,A68=<T as P>::A69,A69=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "chain_95",
+    "source": "trait P{type A0;type A1;type A2;type A3;type A4;type A5;type A6;type A7;type A8;type A9;type A10;type A11;type A12;type A13;type A14;type A15;type A16;type A17;type A18;type A19;type A20;type A21;type A22;type A23;type A24;type A25;type A26;type A27;type A28;type A29;type A30;type A31;type A32;type A33;type A34;type A35;type A36;type A37;type A38;type A39;type A40;type A41;type A42;type A43;type A44;type A45;type A46;type A47;type A48;type A49;type A50;type A51;type A52;type A53;type A54;type A55;type A56;type A57;type A58;type A59;type A60;type A61;type A62;type A63;type A64;type A65;type A66;type A67;type A68;type A69;type A70;type A71;type A72;type A73;type A74;type A75;type A76;type A77;type A78;type A79;type A80;type A81;type A82;type A83;type A84;type A85;type A86;type A87;type A88;type A89;type A90;type A91;type A92;type A93;type A94;const V:Self::A0;}struct S<T>(T);impl<T> S<T> where T:P<A0=<T as P>::A1,A1=<T as P>::A2,A2=<T as P>::A3,A3=<T as P>::A4,A4=<T as P>::A5,A5=<T as P>::A6,A6=<T as P>::A7,A7=<T as P>::A8,A8=<T as P>::A9,A9=<T as P>::A10,A10=<T as P>::A11,A11=<T as P>::A12,A12=<T as P>::A13,A13=<T as P>::A14,A14=<T as P>::A15,A15=<T as P>::A16,A16=<T as P>::A17,A17=<T as P>::A18,A18=<T as P>::A19,A19=<T as P>::A20,A20=<T as P>::A21,A21=<T as P>::A22,A22=<T as P>::A23,A23=<T as P>::A24,A24=<T as P>::A25,A25=<T as P>::A26,A26=<T as P>::A27,A27=<T as P>::A28,A28=<T as P>::A29,A29=<T as P>::A30,A30=<T as P>::A31,A31=<T as P>::A32,A32=<T as P>::A33,A33=<T as P>::A34,A34=<T as P>::A35,A35=<T as P>::A36,A36=<T as P>::A37,A37=<T as P>::A38,A38=<T as P>::A39,A39=<T as P>::A40,A40=<T as P>::A41,A41=<T as P>::A42,A42=<T as P>::A43,A43=<T as P>::A44,A44=<T as P>::A45,A45=<T as P>::A46,A46=<T as P>::A47,A47=<T as P>::A48,A48=<T as P>::A49,A49=<T as P>::A50,A50=<T as P>::A51,A51=<T as P>::A52,A52=<T as P>::A53,A53=<T as P>::A54,A54=<T as P>::A55,A55=<T as P>::A56,A56=<T as P>::A57,A57=<T as P>::A58,A58=<T as P>::A59,A59=<T as P>::A60,A60=<T as P>::A61,A61=<T as P>::A62,A62=<T as P>::A63,A63=<T as P>::A64,A64=<T as P>::A65,A65=<T as P>::A66,A66=<T as P>::A67,A67=<T as P>::A68,A68=<T as P>::A69,A69=<T as P>::A70,A70=<T as P>::A71,A71=<T as P>::A72,A72=<T as P>::A73,A73=<T as P>::A74,A74=<T as P>::A75,A75=<T as P>::A76,A76=<T as P>::A77,A77=<T as P>::A78,A78=<T as P>::A79,A79=<T as P>::A80,A80=<T as P>::A81,A81=<T as P>::A82,A82=<T as P>::A83,A83=<T as P>::A84,A84=<T as P>::A85,A85=<T as P>::A86,A86=<T as P>::A87,A87=<T as P>::A88,A88=<T as P>::A89,A89=<T as P>::A90,A90=<T as P>::A91,A91=<T as P>::A92,A92=<T as P>::A93,A93=<T as P>::A94,A94=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "structural_70",
+    "source": "trait P{type A;const V:[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[Self::A;1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];}struct S<T>(T);impl<T:P<A=u8>> S<T>{const C:[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[u8;1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1]=T::V;}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "cross_rhs_False_False",
+    "source": "trait Q{type B;}trait P{type A;const V:u8;}struct S<T,U>(T,U);impl<T,U> S<T,U> where U:Q<B=u8>+Q<B=u16>,T:P<A=U::B>+P<A=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "cross_rhs_False_True",
+    "source": "trait Q{type B;}trait P{type A;const V:Self::A;}struct S<T,U>(T,U);impl<T,U> S<T,U> where U:Q<B=u8>+Q<B=u16>,T:P<A=U::B>+P<A=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "cross_rhs_True_False",
+    "source": "trait Q{type B;}trait P{type A;const V:u8;}struct S<T,U>(T,U);impl<T,U> S<T,U> where U:Q<B=u16>+Q<B=u8>,T:P<A=U::B>+P<A=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "cross_rhs_True_True",
+    "source": "trait Q{type B;}trait P{type A;const V:Self::A;}struct S<T,U>(T,U);impl<T,U> S<T,U> where U:Q<B=u16>+Q<B=u8>,T:P<A=U::B>+P<A=u8>{const C:u8=T::V;}fn main(){}",
+    "accepts": false
+  }
+]
