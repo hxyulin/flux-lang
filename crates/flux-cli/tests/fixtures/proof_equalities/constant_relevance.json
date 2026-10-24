@@ -1,0 +1,327 @@
+[
+  {
+    "name": "fixed_0_0",
+    "source": "trait P {type A;type B;const V:u8;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "second_0_0",
+    "source": "trait P {type A;type B;const V:Self::A;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "tuple_0_0",
+    "source": "trait P {type A;type B;const V:(Self::A, u8);}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:(u8,u8)=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "array_0_0",
+    "source": "trait P {type A;type B;const V:[Self::A; 2];}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:[u8;2]=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "wrapper_0_0",
+    "source": "trait P {type A;type B;const V:Wrap<Self::A>;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:Wrap<u8>=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "pointer_0_0",
+    "source": "trait P {type A;type B;const V:*const Self::A;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:*const u8=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "dependent_0_0",
+    "source": "trait P {type A;type B;const V:Self::B;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:u32=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "tuple_dependent_0_0",
+    "source": "trait P {type A;type B;const V:(Self::A, Self::B);}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:(u8,u32)=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "array_dependent_0_0",
+    "source": "trait P {type A;type B;const V:[Self::B; 2];}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:[u32;2]=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "wrapper_dependent_0_0",
+    "source": "trait P {type A;type B;const V:Wrap<Self::B>;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:Wrap<u32>=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "pointer_dependent_0_0",
+    "source": "trait P {type A;type B;const V:*const Self::B;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:*const u32=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "exact_0_0_0",
+    "source": "trait P {type A;const V:u8;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8>+P<A=u16> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "exact_1_0_0",
+    "source": "trait P {type A;const V:Self::A;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8>+P<A=u16> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "fixed_0_1",
+    "source": "trait P {type A;type B;const V:u8;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "second_0_1",
+    "source": "trait P {type A;type B;const V:Self::A;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "tuple_0_1",
+    "source": "trait P {type A;type B;const V:(Self::A, u8);}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:(u8,u8)=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "array_0_1",
+    "source": "trait P {type A;type B;const V:[Self::A; 2];}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:[u8;2]=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "wrapper_0_1",
+    "source": "trait P {type A;type B;const V:Wrap<Self::A>;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:Wrap<u8>=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "pointer_0_1",
+    "source": "trait P {type A;type B;const V:*const Self::A;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:*const u8=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "dependent_0_1",
+    "source": "trait P {type A;type B;const V:Self::B;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:u32=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "tuple_dependent_0_1",
+    "source": "trait P {type A;type B;const V:(Self::A, Self::B);}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:(u8,u32)=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "array_dependent_0_1",
+    "source": "trait P {type A;type B;const V:[Self::B; 2];}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:[u32;2]=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "wrapper_dependent_0_1",
+    "source": "trait P {type A;type B;const V:Wrap<Self::B>;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:Wrap<u32>=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "pointer_dependent_0_1",
+    "source": "trait P {type A;type B;const V:*const Self::B;}\nstruct Wrap<T>(T);\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:*const u32=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "exact_0_0_1",
+    "source": "trait P {type A;const V:u8;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u16>+P<A=u8> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "exact_1_0_1",
+    "source": "trait P {type A;const V:Self::A;}\nstruct S<T>(T);\nimpl<T> S<T> where T:P<A=u16>+P<A=u8> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "fixed_1_0",
+    "source": "trait P {type A;type B;const V:u8;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:u8=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "second_1_0",
+    "source": "trait P {type A;type B;const V:Self::A;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:u8=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "tuple_1_0",
+    "source": "trait P {type A;type B;const V:(Self::A, u8);}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:(u8,u8)=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "array_1_0",
+    "source": "trait P {type A;type B;const V:[Self::A; 2];}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:[u8;2]=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "wrapper_1_0",
+    "source": "trait P {type A;type B;const V:Wrap<Self::A>;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:Wrap<u8>=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "pointer_1_0",
+    "source": "trait P {type A;type B;const V:*const Self::A;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:*const u8=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "dependent_1_0",
+    "source": "trait P {type A;type B;const V:Self::B;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:u32=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "tuple_dependent_1_0",
+    "source": "trait P {type A;type B;const V:(Self::A, Self::B);}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:(u8,u32)=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "array_dependent_1_0",
+    "source": "trait P {type A;type B;const V:[Self::B; 2];}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:[u32;2]=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "wrapper_dependent_1_0",
+    "source": "trait P {type A;type B;const V:Wrap<Self::B>;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:Wrap<u32>=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "pointer_dependent_1_0",
+    "source": "trait P {type A;type B;const V:*const Self::B;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const V:*const u32=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "exact_0_1_0",
+    "source": "trait P {type A;const V:u8;}\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8>+P<A=u16> {const V:u8=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "exact_1_1_0",
+    "source": "trait P {type A;const V:Self::A;}\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8>+P<A=u16> {const V:u8=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "fixed_1_1",
+    "source": "trait P {type A;type B;const V:u8;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:u8=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "second_1_1",
+    "source": "trait P {type A;type B;const V:Self::A;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:u8=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "tuple_1_1",
+    "source": "trait P {type A;type B;const V:(Self::A, u8);}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:(u8,u8)=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "array_1_1",
+    "source": "trait P {type A;type B;const V:[Self::A; 2];}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:[u8;2]=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "wrapper_1_1",
+    "source": "trait P {type A;type B;const V:Wrap<Self::A>;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:Wrap<u8>=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "pointer_1_1",
+    "source": "trait P {type A;type B;const V:*const Self::A;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:*const u8=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "dependent_1_1",
+    "source": "trait P {type A;type B;const V:Self::B;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:u32=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "tuple_dependent_1_1",
+    "source": "trait P {type A;type B;const V:(Self::A, Self::B);}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:(u8,u32)=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "array_dependent_1_1",
+    "source": "trait P {type A;type B;const V:[Self::B; 2];}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:[u32;2]=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "wrapper_dependent_1_1",
+    "source": "trait P {type A;type B;const V:Wrap<Self::B>;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:Wrap<u32>=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "pointer_dependent_1_1",
+    "source": "trait P {type A;type B;const V:*const Self::B;}\nstruct Wrap<T>(T);\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const V:*const u32=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "exact_0_1_1",
+    "source": "trait P {type A;const V:u8;}\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u16>+P<A=u8> {const V:u8=T::Part::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "exact_1_1_1",
+    "source": "trait P {type A;const V:Self::A;}\ntrait H {type Part;}\nstruct S<T>(T);\nimpl<T:H> S<T> where T::Part:P<A=u16>+P<A=u8> {const V:u8=T::Part::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "rhs_dependency_0_0",
+    "source": "trait P {type A; const V:Self::A;}\ntrait Q {type B;}\nstruct S<T,U>(T,U);\nimpl<T,U> S<T,U> where T:P<A=u8>, U:Q<B=u8>+Q<B=u16> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "rhs_dependency_1_0",
+    "source": "trait P {type A; const V:Self::A;}\ntrait Q {type B;}\nstruct S<T,U>(T,U);\nimpl<T,U> S<T,U> where T:P<A=U::B>, U:Q<B=u8>+Q<B=u16> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "rhs_dependency_0_1",
+    "source": "trait P {type A; const V:Self::A;}\ntrait Q {type B;}\nstruct S<T,U>(T,U);\nimpl<T,U> S<T,U> where T:P<A=u8>, U:Q<B=u16>+Q<B=u8> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "rhs_dependency_1_1",
+    "source": "trait P {type A; const V:Self::A;}\ntrait Q {type B;}\nstruct S<T,U>(T,U);\nimpl<T,U> S<T,U> where T:P<A=U::B>, U:Q<B=u16>+Q<B=u8> {const V:u8=T::V;}\nfn main(){}\n",
+    "accepts": false
+  },
+  {
+    "name": "inherent_self_0_0_0",
+    "source": "trait P {type A;type B;const VALUE:Self::A;}\nstruct S<T>(T);\n\nimpl<T> S<T> where Self:P<A=u8,B=u32>+P<A=u8,B=u64> {const RESULT:u8=Self::VALUE;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "inherent_self_0_0_1",
+    "source": "trait P {type A;type B;const VALUE:u8;}\nstruct S<T>(T);\n\nimpl<T> S<T> where Self:P<A=u8,B=u32>+P<A=u8,B=u64> {const RESULT:u8=Self::VALUE;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "inherent_self_0_1_0",
+    "source": "trait P {type A;type B;const VALUE:Self::A;}\nstruct S<T>(T);\n\nimpl<T> S<T> where Self:P<A=u8,B=u64>+P<A=u8,B=u32> {const RESULT:u8=Self::VALUE;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "inherent_self_0_1_1",
+    "source": "trait P {type A;type B;const VALUE:u8;}\nstruct S<T>(T);\n\nimpl<T> S<T> where Self:P<A=u8,B=u64>+P<A=u8,B=u32> {const RESULT:u8=Self::VALUE;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "inherent_self_1_0_0",
+    "source": "trait P {type A;type B;const VALUE:Self::A;}\nstruct S<T>(T);\ntrait H {type Part;} impl<T:H> H for S<T> {type Part=T::Part;}\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const RESULT:u8=<Self as H>::Part::VALUE;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "inherent_self_1_0_1",
+    "source": "trait P {type A;type B;const VALUE:u8;}\nstruct S<T>(T);\ntrait H {type Part;} impl<T:H> H for S<T> {type Part=T::Part;}\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u32>+P<A=u8,B=u64> {const RESULT:u8=<Self as H>::Part::VALUE;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "inherent_self_1_1_0",
+    "source": "trait P {type A;type B;const VALUE:Self::A;}\nstruct S<T>(T);\ntrait H {type Part;} impl<T:H> H for S<T> {type Part=T::Part;}\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const RESULT:u8=<Self as H>::Part::VALUE;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "inherent_self_1_1_1",
+    "source": "trait P {type A;type B;const VALUE:u8;}\nstruct S<T>(T);\ntrait H {type Part;} impl<T:H> H for S<T> {type Part=T::Part;}\nimpl<T:H> S<T> where T::Part:P<A=u8,B=u64>+P<A=u8,B=u32> {const RESULT:u8=<Self as H>::Part::VALUE;}\nfn main(){}\n",
+    "accepts": true
+  },
+  {
+    "name": "deep_structural_output",
+    "source": "trait P {type A;type B;const V:[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[Self::A;1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];}struct S<T>(T);impl<T> S<T> where T:P<A=u8,B=u32>+P<A=u8,B=u64>{const V:[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[u8;1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1];1]=T::V;}fn main(){}",
+    "accepts": true
+  }
+]
