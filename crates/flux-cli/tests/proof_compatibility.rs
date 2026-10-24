@@ -84,6 +84,18 @@ fn constant_recursive_constraints_and_finite_chains_match_rustc() {
 }
 
 #[test]
+fn constant_chain_duplicate_proofs_match_rustc() {
+    // A caller RHS must have one answer before environment normalization.
+    // Include the exact 66-link regression in both orders, finite chains,
+    // identical candidates, independent RHS normalization and tautologies.
+    check_cases(
+        include_str!("fixtures/proof_equalities/constant_chain_duplicates.json"),
+        "constant-chain-duplicates",
+        24,
+    );
+}
+
+#[test]
 fn signature_tautology_receivers_match_rustc() {
     // Membership on a normalized receiver does not supply its projection RHS.
     // Keep both orders and the direct-Self/direct-bound/matching-RHS neighbors.
