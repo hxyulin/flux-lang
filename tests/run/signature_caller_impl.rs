@@ -96,7 +96,57 @@ mod substituted {
         a + b
     }
 }
+mod projected_membership {
+    trait R {
+        type X;
+    }
+    trait M {}
+    trait P<X> {
+        type A;
+    }
+    trait Q<X>: P<X, A = u8> {}
+    impl<T: M> P<u8> for T {
+        type A = u8;
+    }
+    pub fn forward<T, U, V>() -> u8
+    where
+        V::X: M + P<u8, A = u8>,
+        U: R<X = u8>,
+        V: R<X = T>,
+        V::X: Q<U::X>,
+    {
+        37
+    }
+    pub fn reverse<T, U, V>() -> u8
+    where
+        V::X: M + P<u8, A = u8>,
+        U: R<X = u8>,
+        V: R<X = T>,
+        V::X: Q<u8>,
+    {
+        41
+    }
+    struct S;
+    struct U;
+    struct V;
+    impl M for S {}
+    impl Q<u8> for S {}
+    impl R for U {
+        type X = u8;
+    }
+    impl R for V {
+        type X = S;
+    }
+    pub fn run() -> u8 {
+        let a = forward::<S, U, V>();
+        let b = reverse::<S, U, V>();
+        assert_eq!(a, 37);
+        assert_eq!(b, 41);
+        a + b
+    }
+}
 fn main() {
+    assert_eq!(projected_membership::run(), 78);
     assert_eq!(conditional::run(), 78);
     assert_eq!(substituted::run(), 78);
     println!("signature impl 78 78");

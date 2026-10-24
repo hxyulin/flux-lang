@@ -1,0 +1,162 @@
+[
+  {
+    "name": "finding",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "without_extra_equality",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "canonical_requirement",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "without_requirement",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "without_tautology",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "bare_extra",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    V::X: P<u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "wrong_extra",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    V::X: P<u8,A=u16>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_receiver",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M,\n    T: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    T: Q<u8> + P<U::X, A = <T as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "no_extra_and_canonical",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "unconditional",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "with_canonical_bare",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:P<u8>, V::X:M,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "fold_extra",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<u8,A=u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "finding_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "without_extra_equality_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "canonical_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "without_requirement_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "without_tautology_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "bare_extra_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    V::X: P<u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "wrong_extra_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    V::X: P<u8,A=u16>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "direct_receiver_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M,\n    T: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    T: Q<u8> + P<U::X, A = <T as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "no_extra_and_canonical_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "unconditional_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "with_canonical_bare_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:P<u8>, V::X:M,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "fold_extra_reversed",
+    "source": "trait R { type X; }\ntrait M {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    V::X:M,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<u8,A=u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "argument_finding",
+    "source": "trait R { type X; }\ntrait M<X> {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M<U::X>,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "argument_canonical",
+    "source": "trait R { type X; }\ntrait M<X> {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M<u8>,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "argument_without_extra",
+    "source": "trait R { type X; }\ntrait M<X> {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M<U::X>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8> + P<U::X, A = <V::X as P<U::X>>::A>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "argument_without_tautology",
+    "source": "trait R { type X; }\ntrait M<X> {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M<U::X>,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "argument_finding_reversed",
+    "source": "trait R { type X; }\ntrait M<X> {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M<U::X>,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "argument_canonical_reversed",
+    "source": "trait R { type X; }\ntrait M<X> {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M<u8>,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "argument_without_extra_reversed",
+    "source": "trait R { type X; }\ntrait M<X> {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M<U::X>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: P<U::X, A = <V::X as P<U::X>>::A> + Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "argument_without_tautology_reversed",
+    "source": "trait R { type X; }\ntrait M<X> {}\ntrait P<X> { type A; }\ntrait Q<X>: P<X, A = u8> {}\nimpl<T: M<u8>> P<u8> for T { type A = u8; }\nfn f<T, U, V>()\nwhere\n    T:M<U::X>,\n    V::X: P<u8,A=u8>,\n    U: R<X = u8>,\n    V: R<X = T>,\n    V::X: Q<u8>,\n{}\nfn main() {}\n",
+    "accepts": true
+  }
+]
