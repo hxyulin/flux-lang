@@ -1,0 +1,68 @@
+use arena::{
+    Arena, ArenaMap, DroplessArena, Idx, LayeredArena, LayeredArenaMap, SharedSlicePool, SlicePool,
+    StaticSliceArena,
+};
+fn main() {
+    let mut a = Arena::new();
+    let x = a.alloc(11i32);
+    let y = a.alloc(22);
+    a[x] += 3;
+    assert_eq!(a[x] + a[y], 36);
+    assert_eq!(a.next_idx().into_raw(), 2);
+    let mut map = ArenaMap::<i32, i32>::new();
+    map.insert(Idx::from_raw(100), 7);
+    map.insert(x, 9);
+    map.insert(y, 5);
+    *map.get_mut(x).unwrap() += 1;
+    assert_eq!(map.remove(y), Some(5));
+    assert_eq!(map.iter().count(), 2);
+    println!("arena {} {} map {}", a[x], a[y], map[x]);
+    let mut layers = LayeredArena::new();
+    layers.freeze();
+    let first = layers.alloc(String::from("base"));
+    layers.freeze();
+    let mut copy = layers.clone();
+    let last = copy.alloc(String::from("tail"));
+    copy.freeze();
+    copy.freeze();
+    assert_eq!(layers.len(), 1);
+    assert_eq!(copy.len(), 2);
+    assert_eq!(copy[first], "base");
+    assert_eq!(copy.values().rev().count(), 2);
+    let mut m = LayeredArenaMap::<String, String>::new();
+    m.insert(first, String::from("base"));
+    m.freeze();
+    let mut n = m.clone();
+    n.get_mut(first).unwrap().push('!');
+    n.insert(last, String::from("tail"));
+    n.freeze();
+    n.freeze();
+    assert_eq!(m[first], "base");
+    assert_eq!(n.iter().count(), 2);
+    assert!(n.get(Idx::from_raw(20)).is_none());
+    println!("layered {} {}", copy[last], n[first]);
+    let mut pool = SlicePool::default();
+    let id = pool.alloc([2, 4, 6]);
+    assert_eq!(&pool[id], &[2, 4, 6]);
+    let mut shared = SharedSlicePool::default();
+    let owned = shared.alloc([3, 5, 7]);
+    let preserved = owned.clone();
+    drop(shared);
+    drop(owned);
+    assert_eq!(&*preserved, &[3, 5, 7]);
+    let mut statics = StaticSliceArena::new();
+    let permanent = statics.alloc(&[1, 3, 5]);
+    drop(statics);
+    assert_eq!(permanent, &[1, 3, 5]);
+    let bump = DroplessArena::new();
+    let value = bump.alloc(9u64);
+    let text = bump.alloc_str("arena");
+    assert_eq!(text, "arena");
+    assert_eq!(bump.alloc_slice(&[8u32, 9]), &[8, 9]);
+    println!(
+        "shared {} static {} bump {}",
+        preserved.len(),
+        permanent.len(),
+        value
+    );
+}

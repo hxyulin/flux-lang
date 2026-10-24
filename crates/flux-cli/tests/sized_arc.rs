@@ -523,7 +523,9 @@ fn checked_counter_limits_abort_without_wrapping() {
     // A test-only module copy can inspect private counters without adding a
     // production debug API. Counts are exaggerated while exclusively owned;
     // this can only leak ownership, not permit premature destruction.
+    // An ordinary test module must not claim the trusted alloc lang item.
     let library = include_str!("../../../library/alloc/src/sync.rs")
+        .replace("#[lang = \"arc\"]\n", "")
         .replace("use crate::alloc::", "use std::alloc::")
         .replace("use crate::vec::Vec;", "use std::vec::Vec;")
         .replace(

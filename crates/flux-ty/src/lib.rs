@@ -2215,6 +2215,18 @@ pub fn box_pointee(ty: Ty) -> Option<Ty> {
         .flatten()
 }
 
+/// The payload of the trusted alloc Arc, whose library representation is
+/// shared with array-owner unsizing. User types with the same name do not
+/// acquire this coercion, including in item trees without embedded libraries.
+pub fn arc_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
+    static ARC: std::sync::OnceLock<Symbol> = std::sync::OnceLock::new();
+    let TyKind::Adt(adt, args) = ty.kind() else {
+        return None;
+    };
+    let name = ARC.get_or_init(|| Symbol::intern("arc"));
+    (args.len() == 1 && items.lang_enums.get(name) == Some(&adt.strukt)).then(|| args[0])
+}
+
 /// Whether `strukt` is `core`'s struct with `#[lang = "{lang}"]`.
 pub fn is_lang_struct(items: &ItemTree, strukt: StructId, lang: &str) -> bool {
     items.lang_enums.get(&Symbol::intern(lang)) == Some(&strukt)

@@ -109,8 +109,10 @@ fn erased_layout_contract_and_overflow() {
         .join(format!("../../out/arc-slice/layout-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // Inspect a test-only library module. Production code and allocator calls
-    // remain unchanged; only embedded-library paths and abort spelling adapt.
+    // remain unchanged; embedded-library identity, paths and abort spelling adapt.
+    // This ordinary test module must not claim the trusted alloc lang item.
     let library = include_str!("../../../library/alloc/src/sync.rs")
+        .replace("#[lang = \"arc\"]\n", "")
         .replace("use crate::alloc::", "use std::alloc::")
         .replace("use crate::vec::Vec;", "use std::vec::Vec;")
         .replace(

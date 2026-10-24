@@ -1058,6 +1058,22 @@ impl Ctx<'_> {
                 _ => {}
             }
         }
+        // Moving an array Arc into a slice Arc preserves its shared header
+        // and data address; only the data pointer gains length metadata.
+        if let (Some(array), Some(slice)) = (
+            crate::arc_pointee(self.items, self.shallow(actual)),
+            crate::arc_pointee(self.items, self.shallow(expected)),
+        ) && let (TyKind::Array(elem, _), TyKind::Slice(wanted)) =
+            (self.shallow(array).kind(), self.shallow(slice).kind())
+        {
+            if self.unify(elem, wanted) {
+                self.unsizes.insert(expr, expected);
+            } else {
+                let range = self.range(blamed);
+                self.mismatch(expected, actual, range);
+            }
+            return;
+        }
         // A `&&T`, `&mut &T` or `&&mut T` where a `&T` is expected is
         // dereferenced until it is one, then reborrowed: rustc's deref
         // coercion, through references.
@@ -1419,14 +1435,16 @@ impl Ctx<'_> {
     /// Unifies `ty`, the type of expression `expr` before its parts are
     /// inferred, with the type its context wants, if they can be.
     fn meet_expectation(&mut self, expr: ExprId, ty: Ty) {
-        // A box of an unsized type wanted (`Box<dyn Tr>`): the value made
-        // is a box of a sized one, coerced after, as rustc only hints
+        // A Box or Arc of an unsized type is wanted: its constructor still
+        // makes a sized owner, coerced after, as rustc only hints
         // its arguments with what is wanted.
         if let Some(&expected) = self.expected.get(expr)
-            && let (Some(e), Some(t)) = (
-                crate::box_pointee(self.shallow(expected)),
-                crate::box_pointee(self.shallow(ty)),
-            )
+            && let Some((e, t)) = crate::box_pointee(self.shallow(expected))
+                .zip(crate::box_pointee(self.shallow(ty)))
+                .or_else(|| {
+                    crate::arc_pointee(self.items, self.shallow(expected))
+                        .zip(crate::arc_pointee(self.items, self.shallow(ty)))
+                })
             && self.shallow(e).is_unsized()
             && !self.shallow(t).is_unsized()
         {
@@ -3200,6 +3218,16 @@ impl Ctx<'_> {
                 {
                     self.unify(from, to);
                 }
+                // An array Arc's explicit `as Arc<[T]>` is also a coercion
+                // cast. Mark the operand so MIR moves the owner through its
+                // unsizing rather than treating it as a scalar enum cast.
+                if crate::arc_pointee(self.items, self.shallow(from)).is_some()
+                    && crate::arc_pointee(self.items, self.shallow(to)).is_some()
+                    && self.can_coerce(from, to, *expr)
+                {
+                    self.coerce(from, to, *expr);
+                    return to;
+                }
                 // `&x as &dyn Tr`, `p as *const dyn Tr`: an unsizing
                 // coercion.
                 if let TyKind::Ref(_, object) | TyKind::RawPtr(_, object) = to.kind()
@@ -3614,6 +3642,14 @@ impl Ctx<'_> {
         let (actual, expected) = (self.shallow(actual), self.shallow(expected));
         if actual == Ty::NEVER {
             return true;
+        }
+        if let (Some(array), Some(slice)) = (
+            crate::arc_pointee(self.items, actual),
+            crate::arc_pointee(self.items, expected),
+        ) && let (TyKind::Array(elem, _), TyKind::Slice(wanted)) =
+            (self.shallow(array).kind(), self.shallow(slice).kind())
+        {
+            return self.can_unify(elem, wanted);
         }
         if let (Some(p), Some(q)) = (crate::box_pointee(actual), crate::box_pointee(expected)) {
             let (p, q) = (self.shallow(p), self.shallow(q));

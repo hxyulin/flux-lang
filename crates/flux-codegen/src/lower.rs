@@ -2245,6 +2245,35 @@ impl Lower<'_, '_, '_> {
             // To a trait object: the pointer and the type's vtable; from
             // one, upcast, the pointer and the supertrait's vtable, which
             // the subtrait's has.
+            Rvalue::Unsize(operand, to)
+                if flux_ty::arc_pointee(&self.ctx.hir.items, *to).is_some() =>
+            {
+                let from = self.body.operand_ty(operand, self.sigs);
+                let array = flux_ty::arc_pointee(&self.ctx.hir.items, from)
+                    .expect("Arc unsizing has an Arc source");
+                let TyKind::Array(_, len) = array.kind() else {
+                    unreachable!("Arc unsizing is array to slice");
+                };
+                // The alloc contract is header, data, PhantomData. Preserve
+                // both addresses and ownership; append metadata, with no
+                // count change or allocation. The source data pointer is thin.
+                let fields = self.sigs.fields(from).expect("trusted Arc fields");
+                assert_eq!(fields.len(), 3, "trusted Arc representation");
+                let TyKind::Adt(data, args) = fields[1].kind() else {
+                    unreachable!("trusted Arc data pointer");
+                };
+                assert!(
+                    flux_ty::is_lang_struct(&self.ctx.hir.items, data.strukt, "non_null")
+                        && args == [array]
+                );
+                let values = self.operand(operand);
+                assert_eq!(values.len(), 2, "trusted sized Arc leaves");
+                smallvec![
+                    values[0],
+                    values[1],
+                    self.int_const(u128::from(array_len(len)), IntTy::Usize)
+                ]
+            }
             Rvalue::Unsize(operand, to) if is_dyn_ptr(*to) || is_dyn_box(*to) => {
                 let from = self.body.operand_ty(operand, self.sigs);
                 let (Some(pointee_of), Some(object)) = (pointee_of(from), pointee_of(*to)) else {
