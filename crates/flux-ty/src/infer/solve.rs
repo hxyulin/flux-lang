@@ -902,7 +902,7 @@ impl Ctx<'_> {
         let args = crate::ty::map_list(pred.trait_ref.args, |ty| {
             self.caller_proof_key(&projections, ty)
         });
-        let mut seen: Vec<crate::Projection> = Vec::new();
+        let mut seen: Vec<(crate::Projection, bool)> = Vec::new();
         for &p in &projections {
             if p.alias.trait_ != pred.trait_ref.trait_
                 || self.caller_proof_key(&projections, p.alias.args[0]) != self_ty
@@ -914,7 +914,22 @@ impl Ctx<'_> {
             {
                 continue;
             }
-            if let Some(&previous) = seen.iter().find(|q| q.alias.name == p.alias.name) {
+            // Only relax a tautology whose own key changes. The reverse
+            // orientation still needs the guarded RHS comparison.
+            let tautology = p.is_tautology()
+                && p.alias
+                    .args
+                    .iter()
+                    .any(|&ty| self.caller_proof_key(&projections, ty) != ty);
+            for &(previous, previous_tautology) in
+                seen.iter().filter(|(q, _)| q.alias.name == p.alias.name)
+            {
+                // A written A = A adds no constraint when distinct raw keys
+                // merge. Keep checking same-key cycles, and every real RHS:
+                // a tautology must not hide a later incompatible equality.
+                if p.alias != previous.alias && (tautology || previous_tautology) {
+                    continue;
+                }
                 // Normalize the right sides, never the constrained projection:
                 // normalizing that would simply choose one winning equality.
                 // Probe rolls inference back; generic parameters remain rigid.
@@ -935,9 +950,8 @@ impl Ctx<'_> {
                 }) {
                     return false;
                 }
-            } else {
-                seen.push(p);
             }
+            seen.push((p, tautology));
         }
         true
     }

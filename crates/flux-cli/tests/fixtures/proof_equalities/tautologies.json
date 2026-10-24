@@ -1,0 +1,162 @@
+[
+  {
+    "name": "own_rhs",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<u8, A = u8> + P<U::X, A = <T as P<U::X>>::A> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_rhs",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A = u8> {}\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: Q<u8> + P<U::X, A = <T as P<U::X>>::A> { 0 }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_rhs_body",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A = u8> {}\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: Q<u8> + P<U::X, A = <T as P<U::X>>::A> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "false_other_name",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Other { type B; }\nfn f<T: Other<B = u16>, U>(x: T) -> u8 where U: R<X = u8>, T: P<u8, A = u8> + P<U::X, A = <T as Other>::B> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "false_other_key",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T: P<u16, A = u16>, U>(x: T) -> u8 where U: R<X = u8>, T: P<u8, A = u8> + P<U::X, A = <T as P<u16>>::A> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "wrapped_cycle",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<u8, A = u8> + P<U::X, A = (<T as P<U::X>>::A,)> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "cross_cycle",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<u8, A = <T as P<U::X>>::A> + P<U::X, A = <T as P<u8>>::A> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "own_rhs_reverse",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = <T as P<U::X>>::A> + P<u8, A = u8> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_rhs_reverse",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A = u8> {}\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = <T as P<U::X>>::A> + Q<u8> { 0 }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "super_rhs_body_reverse",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A = u8> {}\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = <T as P<U::X>>::A> + Q<u8> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": true
+  },
+  {
+    "name": "false_other_name_reverse",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Other { type B; }\nfn f<T: Other<B = u16>, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = <T as Other>::B> + P<u8, A = u8> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "false_other_key_reverse",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T: P<u16, A = u16>, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = <T as P<u16>>::A> + P<u8, A = u8> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "wrapped_cycle_reverse",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = (<T as P<U::X>>::A,)> + P<u8, A = u8> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "cross_cycle_reverse",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = <T as P<u8>>::A> + P<u8, A = <T as P<U::X>>::A> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "tautology_cannot_hide_conflict_0",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<u8, A = u8> + P<U::X, A = <T as P<U::X>>::A> + P<U::X, A = u16> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "tautology_cannot_hide_conflict_1",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<u8, A = u8> + P<U::X, A = u16> + P<U::X, A = <T as P<U::X>>::A> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "tautology_cannot_hide_conflict_2",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = <T as P<U::X>>::A> + P<u8, A = u8> + P<U::X, A = u16> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "tautology_cannot_hide_conflict_3",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = <T as P<U::X>>::A> + P<U::X, A = u16> + P<u8, A = u8> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "tautology_cannot_hide_conflict_4",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = u16> + P<u8, A = u8> + P<U::X, A = <T as P<U::X>>::A> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "tautology_cannot_hide_conflict_5",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = u16> + P<U::X, A = <T as P<U::X>>::A> + P<u8, A = u8> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "signature_conflict_False",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A = u8> {}\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: Q<u8> + P<U::X, A = <T as P<U::X>>::A> + P<U::X, A = u16> { 0 }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "signature_conflict_True",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A = u8> {}\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = u16> + P<U::X, A = <T as P<U::X>>::A> + Q<u8> { 0 }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "recursive_supertrait_False",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A = <Self as P<X>>::A> {}\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<u8, A = u8> + Q<U::X> { 0 }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "recursive_supertrait_True",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\ntrait Q<X>: P<X, A = <Self as P<X>>::A> {}\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: Q<U::X> + P<u8, A = u8> { 0 }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "same_raw_projected_key_False",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = u8> + P<U::X, A = <T as P<U::X>>::A> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "same_raw_projected_key_True",
+    "source": "trait R { type X; }\ntrait P<X> { type A; fn get(&self) -> Self::A; }\nfn f<T, U>(x: T) -> u8 where U: R<X = u8>, T: P<U::X, A = <T as P<U::X>>::A> + P<U::X, A = u8> { P::<u8>::get(&x) }\nfn main() {}\n",
+    "accepts": false
+  },
+  {
+    "name": "reverse_key_rhs104",
+    "source": "trait R {type X;} trait P<X> {type A; fn get(&self)->Self::A;}trait Q<X>:P<X,A=u8> {}fn f<T,U>(x:T)->u8 where U:R<X=u8>, T:P<u8,A=<T as P<u8>>::A>+Q<U::X> {0} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "reverse_key_rhs105",
+    "source": "trait R {type X;} trait P<X> {type A; fn get(&self)->Self::A;}trait Q<X>:P<X,A=u16> {}fn f<T,U>(x:T)->u8 where U:R<X=u8>, T:P<u8,A=<T as P<u8>>::A>+Q<U::X> {0} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "reverse_key_rhs107",
+    "source": "trait R {type X;} trait P<X> {type A; fn get(&self)->Self::A;}trait Q<X>:P<X,A=<Self as P<X>>::A> {}fn f<T,U>(x:T)->u8 where U:R<X=u8>, T:P<u8,A=<T as P<u8>>::A>+Q<U::X> {0} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "reverse_key_rhs120",
+    "source": "trait R {type X;} trait P<X> {type A; fn get(&self)->Self::A;}trait Q<X>:P<X,A=u8> {}fn f<T,U>(x:T)->u8 where U:R<X=u8>, T:Q<U::X>+P<u8,A=<T as P<u8>>::A> {0} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "reverse_key_rhs121",
+    "source": "trait R {type X;} trait P<X> {type A; fn get(&self)->Self::A;}trait Q<X>:P<X,A=u16> {}fn f<T,U>(x:T)->u8 where U:R<X=u8>, T:Q<U::X>+P<u8,A=<T as P<u8>>::A> {0} fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "reverse_key_rhs123",
+    "source": "trait R {type X;} trait P<X> {type A; fn get(&self)->Self::A;}trait Q<X>:P<X,A=<Self as P<X>>::A> {}fn f<T,U>(x:T)->u8 where U:R<X=u8>, T:Q<U::X>+P<u8,A=<T as P<u8>>::A> {0} fn main(){}",
+    "accepts": false
+  }
+]

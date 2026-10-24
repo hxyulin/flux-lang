@@ -156,6 +156,12 @@ pub struct Projection {
 }
 
 impl Projection {
+    /// An exact written `A = A` adds no constraint. Test before normalization:
+    /// following other equalities could make a real constraint certify itself.
+    pub(crate) fn is_tautology(self) -> bool {
+        self.ty == Ty::alias(self.alias)
+    }
+
     pub fn subst(self, args: &[Ty]) -> Projection {
         let alias = match Ty::alias(self.alias).subst(args).kind() {
             TyKind::Alias(alias) => alias,
@@ -624,7 +630,11 @@ fn check_caller_supertraits(
     for q in required {
         let q_key = key(q.alias);
         if caller.iter().any(|p| {
-            key(p.alias) == q_key
+            // A written tautology cannot contradict a required equality.
+            // Still check every required RHS: a recursive supertrait
+            // declaration must not certify itself against a real constraint.
+            !(p.is_tautology() && key(p.alias) != p.alias && p.alias != q.alias)
+                && key(p.alias) == q_key
                 && normalize_projection_rhs(items, sigs, &caller, *p)
                     != normalize_projection_rhs(items, sigs, &caller, q)
         }) {

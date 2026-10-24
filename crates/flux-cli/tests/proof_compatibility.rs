@@ -54,6 +54,17 @@ fn constant_owner_proof_provenance_matches_rustc() {
     );
 }
 
+#[test]
+fn tautological_caller_equalities_match_rustc() {
+    // Both bound orders, signature and body paths, and real constraints
+    // surrounding a tautology. Invalid cycles are compile-only.
+    check_cases(
+        include_str!("fixtures/proof_equalities/tautologies.json"),
+        "tautologies",
+        32,
+    );
+}
+
 fn check_cases(source: &str, group: &str, count: usize) {
     let cases: Vec<Case> = serde_json::from_str(source).unwrap();
     assert_eq!(cases.len(), count);
