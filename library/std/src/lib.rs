@@ -14,6 +14,8 @@ pub use core::{slice, str, u8, u32};
 pub mod thread;
 
 pub mod sync {
+    mod once_lock;
+    pub use self::once_lock::OnceLock;
     pub use ::alloc::sync::{Arc, Weak};
     pub use core::sync::atomic;
 }

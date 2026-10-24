@@ -69,6 +69,10 @@ const STD_FILES: &[(&str, &str)] = &[
         "thread.rs",
         include_str!("../../../library/std/src/thread.rs"),
     ),
+    (
+        "sync/once_lock.rs",
+        include_str!("../../../library/std/src/sync/once_lock.rs"),
+    ),
 ];
 
 /// `library/alloc/src`, relative to [`ALLOC_ROOT`]: built into the

@@ -1,0 +1,38 @@
+use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicUsize, Ordering};
+fn main() {
+    assert_eq!(std::mem::size_of::<usize>(), 8);
+    assert_eq!(std::mem::size_of::<AtomicUsize>(), 8);
+    assert_eq!(std::mem::align_of::<AtomicUsize>(), 8);
+    for _ in 0..16 {
+        // SAFETY: Flux allocates, initializes, and later destroys its own cell;
+        // the host sees only an opaque pointer and never guesses its layout.
+        let p = unsafe { make_cell() } as usize;
+        assert_ne!(p, 0);
+        assert_eq!(unsafe { probe_cell(p as *mut u8) }, 0);
+        let control = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
+        let barrier = Arc::new(Barrier::new(9));
+        let threads: Vec<_> = (1..=8).map(|seed| {
+            let control = control.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                // SAFETY: all scalar signatures were audited against Keel IR.
+                // Arc pins the control words, touched only atomically by both
+                // compilers. The cell remains live until all workers join.
+                unsafe { worker_cell(p as *mut u8, control.as_ptr() as *mut usize, seed) }
+            })
+        }).collect();
+        barrier.wait();
+        while control[0].load(Ordering::Relaxed) == 0 { std::thread::yield_now(); }
+        assert_eq!(unsafe { probe_cell(p as *mut u8) }, 0);
+        control[1].store(1, Ordering::Release);
+        let values: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert!((1..=8).contains(&values[0]));
+        assert!(values.iter().all(|v| *v == values[0]));
+        assert_eq!(control[0].load(Ordering::Relaxed), 1);
+        assert_eq!(unsafe { probe_cell(p as *mut u8) }, 1);
+        assert_eq!(unsafe { free_cell(p as *mut u8) }, 0);
+    }
+    println!("Flux one winner / nonblocking get / payload publication ok");
+}
