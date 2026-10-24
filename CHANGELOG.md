@@ -4,6 +4,10 @@
 
 ### Syntax
 
+- Add native AtomicPtr load/store and bounded concurrent OnceLock initialization;
+  execute the unchanged interner StringTable implementation against rustc in
+  both optimization modes.
+
 - Add Arc slice ownership and trusted array-owner coercion; compile and execute
   the unchanged complete flux-arena source graph against rustc in both modes.
 - Preserve caller equality provenance and required associated-type constraints

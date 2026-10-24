@@ -369,6 +369,19 @@ alloc gaps first, without requiring an operating-system API all at once.
 
 ## Active self-hosting goal
 
+The unchanged `StringTable` implementation from `flux-intern/src/lib.rs` now
+executes in the maintained `string_table_selfhost` comparison. It uses
+`OnceLock<Box<[AtomicPtr<&'static str>]>>`, lazy bucket allocation and
+release/acquire pointer publication. Rustc and Flux match in both optimization
+modes across bucket boundaries and pointer replacement. This is the exact
+implementation excerpt with a standalone driver, not the full interner root:
+locks, LazyLock, TLS and dependency support remain separate prerequisites.
+AtomicPtr uses native pointer load/store instructions; OnceLock's single-winner
+initialization also has native contention and publication coverage. OnceLock
+static construction and heap-container marker-trait gaps remain documented
+limitations; no full compiler bootstrap is established by this component.
+
+
 The goal is an executable built from unchanged Flux compiler and dependency
 sources by Flux, followed by compiling the regression suite and rebuilding
 Flux with that executable. Component comparisons are intermediate milestones;
