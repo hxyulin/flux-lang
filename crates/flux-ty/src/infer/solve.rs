@@ -972,23 +972,27 @@ impl Ctx<'_> {
     /// in proof compatibility. Follow every competing RHS, including aliases
     /// nested in tuples, arrays, references and generic type arguments.
     fn compatible_const_output(&mut self, output: Ty) -> bool {
-        if !output.has_aliases() || self.caller_projections.is_empty() {
+        if self.caller_projections.is_empty() {
             return true;
         }
         let caller = self.caller_projections.clone();
         let env = self.env_projections.clone();
-        let mut pending = vec![(output, 0)];
+        // The projections written on a caller equality's RHS must themselves
+        // have a coherent proof, independently of the selected output. This
+        // retains the guarded check for recursive constraints and ambiguous
+        // cross-trait RHS values without rejecting unused concrete conflicts.
+        // Keep caller provenance: declaration assumptions may be shadowed.
+        let mut pending: Vec<_> = caller.iter().map(|p| (p.ty, 0)).collect();
+        pending.push((output, 0));
         let mut seen = FxHashSet::default();
         while let Some((ty, depth)) = pending.pop() {
             let ty = self.known(ty);
             if !ty.has_aliases() || !seen.insert(ty) {
                 continue;
             }
-            if depth > 64 {
-                return false;
-            }
-            // Structural nesting is finite; only projection expansion needs
-            // a depth limit in addition to the visited-type cycle check.
+            // Stored RHS types and their structural children form a finite
+            // graph. Only fallback normalization can generate new types (for
+            // example an expanding impl cycle), so only it spends the budget.
             pending.extend(ty.children().map(|ty| (ty, depth)));
             let TyKind::Alias(alias) = ty.kind() else {
                 continue;
@@ -1017,7 +1021,7 @@ impl Ctx<'_> {
                             self.caller_proof_key(&caller, ty)
                         }) == key.args
                     {
-                        pending.push((p.ty, depth + 1));
+                        pending.push((p.ty, depth));
                         found = true;
                     }
                 }
@@ -1028,6 +1032,9 @@ impl Ctx<'_> {
             if !found {
                 let normalized = self.caller_proof_key(&caller, ty);
                 if normalized != ty {
+                    if depth == 64 {
+                        return false;
+                    }
                     pending.push((normalized, depth + 1));
                 }
             }
