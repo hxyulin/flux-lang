@@ -513,3 +513,13 @@ impl<T: ?Sized> crate::fmt::Debug for NonNull<T> {
         crate::fmt::Debug::fmt(&self.pointer, f)
     }
 }
+
+/// Converts a reference to a raw pointer without changing its address.
+pub const fn from_ref<T: ?Sized>(r: &T) -> *const T {
+    r as *const T
+}
+
+/// Converts an exclusive reference to a raw pointer without changing its address.
+pub const fn from_mut<T: ?Sized>(r: &mut T) -> *mut T {
+    r as *mut T
+}

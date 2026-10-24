@@ -1,0 +1,100 @@
+fn marker<T>() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: ();
+    let _2: ();
+    let _3: ();
+    let mut _4: &AtomicPtr<&str>;
+    let _5: &AtomicPtr<&str>;
+    let _6: *mut &str;
+    let _7: *const &str;
+    let _8: &&str;
+    let mut _9: &&str;
+    let _10: *const &str;
+    let _11: Ordering;
+    let _12: *mut &str; // p
+    let mut _13: &AtomicPtr<&str>;
+    let _14: &AtomicPtr<&str>;
+    let _15: Ordering;
+    let mut _16: AtomicPtr<&str>; // atomic
+    let _17: *mut &str;
+    let _18: ();
+    let _19: *mut &str;
+    let _20: &mut *mut &str;
+    let _21: &mut AtomicPtr<&str>;
+    let _22: *mut &str;
+    let _23: AtomicPtr<&str>;
+
+    bb0: {
+        _1 = marker::<AtomicPtr<Cell<u8>>>() -> bb1;
+    }
+
+    bb1: {
+        _2 = marker::<AtomicPtr<*mut u8>>() -> bb2;
+    }
+
+    bb2: {
+        _4 = const &SLOT;
+        _5 = &(*_4);
+        _9 = const &TEXT;
+        _8 = &(*_9);
+        _7 = from_ref::<&str>(copy _8) -> bb3;
+    }
+
+    bb3: {
+        _10 = copy _7;
+        _6 = cast_mut::<&str>(copy _10) -> bb4;
+    }
+
+    bb4: {
+        _11 = Ordering::Release;
+        _3 = store::<&str>(copy _5, copy _6, copy _11) -> bb5;
+    }
+
+    bb5: {
+        StorageDead(_7);
+        _13 = const &SLOT;
+        _14 = &(*_13);
+        _15 = Ordering::Acquire;
+        _12 = load::<&str>(copy _14, copy _15) -> bb6;
+    }
+
+    bb6: {
+        _17 = copy _12;
+        _16 = new::<&str>(copy _17) -> bb7;
+    }
+
+    bb7: {
+        _19 = null_mut::<&str>() -> bb8;
+    }
+
+    bb8: {
+        _21 = &two_phase _16;
+        _20 = get_mut::<&str>(move _21) -> bb9;
+    }
+
+    bb9: {
+        (*_20) = copy _19;
+        _18 = const ();
+        StorageDead(_20);
+        _23 = move _16;
+        _22 = into_inner::<&str>(move _23) -> bb10;
+    }
+
+    bb10: {
+        StorageDead(_22);
+        _0 = const ();
+        StorageDead(_16);
+        StorageDead(_12);
+        return;
+    }
+}
+

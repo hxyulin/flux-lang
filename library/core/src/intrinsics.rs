@@ -319,3 +319,34 @@ pub(crate) unsafe fn __atomic_u32_add_acqrel<T>(p: *mut T, value: T) -> T {
 pub(crate) unsafe fn __atomic_u32_add_seqcst<T>(p: *mut T, value: T) -> T {
     loop {}
 }
+
+// Private pointer-only bridge; T must be a thin mutable raw pointer.
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_ptr_load_relaxed<T>(p: *const T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_ptr_load_acquire<T>(p: *const T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_ptr_load_seqcst<T>(p: *const T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_ptr_store_relaxed<T>(p: *mut T, value: T) {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_ptr_store_release<T>(p: *mut T, value: T) {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_ptr_store_seqcst<T>(p: *mut T, value: T) {
+    loop {}
+}

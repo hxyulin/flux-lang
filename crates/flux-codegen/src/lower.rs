@@ -2584,9 +2584,9 @@ impl Lower<'_, '_, '_> {
                     };
                     let values: Vec<_> = args.iter().map(|arg| self.operand(arg)[0]).collect();
                     let word = match word {
-                        IntTy::U32 => Type::I32,
-                        IntTy::Usize => Type::I64,
-                        _ => unreachable!("validated atomic word"),
+                        flux_mir::mono::AtomicWord::U32 => Type::I32,
+                        flux_mir::mono::AtomicWord::Usize => Type::I64,
+                        flux_mir::mono::AtomicWord::Ptr => Type::Ptr,
                     };
                     let value = match op {
                         "load" => Some(self.b.ins().atomic_load(word, ordering, values[0])),

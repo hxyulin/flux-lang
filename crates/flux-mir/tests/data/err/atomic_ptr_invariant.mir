@@ -1,0 +1,64 @@
+fn shorten<'a>(_1: AtomicPtr<&u8>, _2: &u8) -> AtomicPtr<&u8> {
+    let mut _0: AtomicPtr<&u8>;
+
+    bb0: {
+        _0 = move _1;
+        return;
+    }
+}
+
+fn extend<'a>(_1: *mut &u8) -> &u8 {
+    let mut _0: &u8;
+    let _2: *mut &u8;
+    let _3: AtomicPtr<&u8>;
+    let _4: *mut &u8;
+    let _5: &AtomicPtr<&u8>;
+    let _6: Ordering;
+
+    bb0: {
+        _4 = copy _1;
+        _3 = new::<&u8>(copy _4) -> bb1;
+    }
+
+    bb1: {
+        _5 = &_3;
+        _6 = Ordering::Acquire;
+        _2 = load::<&u8>(copy _5, copy _6) -> bb2;
+    }
+
+    bb2: {
+        _0 = copy (*_2);
+        StorageDead(_2);
+        StorageDead(_3);
+        return;
+    }
+}
+
+fn shared_mut(_1: &AtomicPtr<u8>) -> &mut *mut u8 {
+    let mut _0: &mut *mut u8;
+    let _2: &mut *mut u8;
+    let _3: &mut AtomicPtr<u8>;
+
+    bb0: {
+        _3 = &two_phase (*_1);
+        _2 = get_mut::<u8>(move _3) -> bb1;
+    }
+
+    bb1: {
+        _0 = &mut (*_2);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 128..129: lifetime may not live long enough
+error 255..297: lifetime may not live long enough
+error 358..359: cannot borrow `*a` as mutable, as it is behind a `&` reference
