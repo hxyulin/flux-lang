@@ -595,9 +595,16 @@ fn check_caller_supertraits(
         return;
     }
     caller.extend(required.iter().copied());
+    // Equality of proof keys includes projections in Self and trait args,
+    // but never normalizes the associated projection being constrained.
+    let key = |alias: AliasTy| AliasTy {
+        args: crate::ty::map_list(alias.args, |ty| normalize(items, sigs, &caller, ty)),
+        ..alias
+    };
     for q in required {
+        let q_key = key(q.alias);
         if caller.iter().any(|p| {
-            p.alias == q.alias
+            key(p.alias) == q_key
                 && normalize_projection_rhs(items, sigs, &caller, *p)
                     != normalize_projection_rhs(items, sigs, &caller, q)
         }) {
