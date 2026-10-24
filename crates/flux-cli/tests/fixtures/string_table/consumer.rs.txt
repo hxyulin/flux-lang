@@ -1,0 +1,15 @@
+static ALPHA: &str = "alpha";
+static BETA: &str = "βeta";
+fn main() {
+    let table = StringTable::new();
+    for index in [0, 1023, 1024, 3071, 3072, 4000] {
+        table.publish(index, &ALPHA);
+        assert_eq!(table.get(index), "alpha");
+    }
+    table.publish(1024, &BETA);
+    assert_eq!(table.get(1024), "βeta");
+    assert_eq!(table.get(0), "alpha");
+    for index in [0, 1023, 1024, 3071, 3072, 4000] {
+        println!("{} {}", index, table.get(index));
+    }
+}

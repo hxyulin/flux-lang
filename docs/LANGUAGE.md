@@ -784,8 +784,22 @@ fetch_add/fetch_sub, compare_exchange/compare_exchange_weak, exclusive
 get_mut/into_inner and fences. These use native 64-bit atomic operations,
 not ordinary shared loads/stores. All fifteen supported CAS ordering pairs
 are accepted; invalid orders panic at the caller. Weak CAS currently uses
-Keel's strong CAS, which is permitted. Other widths, const accessors,
-compiler_fence and a threading runtime remain unsupported.
+Keel's strong CAS, which is permitted. `AtomicU32` additionally supports
+const construction, runtime load/store/fetch_add and exclusive get_mut/into_inner
+using native 32-bit storage. `AtomicPtr<T>` supports sized pointees, const
+construction, validated runtime load/store and exclusive get_mut/into_inner.
+Its shared accesses use native pointer atomics; pointers to sized references
+such as `&str` are supported, while atomic fat pointers and pointer CAS/RMW
+are not. Other atomic widths, const accessors, compiler_fence and a threading
+runtime remain unsupported.
+`std::sync::OnceLock<T>` supports sized payloads with `new`, `Default`,
+`get`, `get_or_init` and destruction. `get` does not wait during initialization;
+`get_or_init` spins until one initializer publishes its payload with
+release/acquire ordering. Reentrant initialization deadlocks. Flux panics
+abort; a reset guard permits retry when testing the implementation under
+host unwinding. Static construction remains blocked by constant evaluation
+of `MaybeUninit::uninit`; existing heap-container Send/Sync limitations remain
+separate from OnceLock's required `Send` and `Sync` bounds.
 `alloc::sync::{Arc, Weak}`, reexported through `std::sync`, support sized
 payloads with atomic reference counts: `Arc::new`, cloning, dereferencing,
 `downgrade`, `ptr_eq`, `Weak::new` and `upgrade`. Last-strong destruction and
