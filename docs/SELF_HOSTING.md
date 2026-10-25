@@ -23,6 +23,7 @@ these source graphs.
 | `smallvec_readiness` | Unchanged smallvec 1.16.3 in its original edition 2018, using the workspace's resolved empty feature set. |
 | `hir_selfhost` | Complete unchanged HIR with arena, interner, syntax and dependency sources, original editions and resolved library features. |
 | `ty_selfhost` | Complete unchanged type checker and its nine-library source graph, with public inference and signature consumers. |
+| `mir_selfhost` | Complete unchanged MIR crate and its eleven-library source graph, with public MIR building, borrow checking and constant-evaluation consumers. |
 | `keel_asm_ir_readiness` | Complete pinned Keel assembly-IR source with original smallvec sources, structured assembly consumers and byte guards. |
 | `keel_ir_readiness` | Complete pinned Keel IR source, layouts, empty-module parsing and verification. |
 | `keel_float_math` | Unchanged pinned Keel floating-point constant folder with the complete Keel IR dependency. |
@@ -38,6 +39,7 @@ cargo test -p flux-cli --test interner_selfhost
 cargo test -p flux-cli --test smallvec_readiness
 cargo test -p flux-cli --test hir_selfhost
 cargo test -p flux-cli --test ty_selfhost
+cargo test -p flux-cli --test mir_selfhost
 cargo test -p flux-cli --test keel_asm_ir_readiness
 cargo test -p flux-cli --test keel_ir_readiness
 cargo test -p flux-cli --test keel_float_math
@@ -95,9 +97,11 @@ smallvec and flux-mir sources. Its public consumer builds and checks MIR,
 observes borrow and initialization diagnostics, and evaluates constants across
 twelve separately rustc-checked cases. It preserves original editions, resolved
 features and every source byte, with integrity checks in both worker and parent.
-Earlier snapshots passed syntax, HIR, type and full MIR admission. The latest
-audit passes syntax, HIR and types, but stops on one function-pointer metadata
-case in the trait checker. Native execution is not yet a milestone. Run its audit with:
+The guarded native comparison passes with optimization disabled and enabled,
+matching rustc output, stderr and exit status after zero syntax, HIR, type and
+MIR diagnostics. Both source-integrity checks pass. Associated types are
+normalized before structural region rows are split, preserving reference slots
+inside projected iterator items. Run its audit with:
 
 ```sh
 cargo test -p flux-cli --test mir_selfhost
@@ -164,18 +168,11 @@ Library and language support remain subject to [LANGUAGE.md](LANGUAGE.md).
 
 ## Remaining boundaries
 
-The full MIR and remaining backend source graphs have not yet been
-compiled and executed by Flux. Path/OsStr views, physical source reads and native scoped threads now provide
-its source-loading prerequisites. Custom-hasher hash collections,
-environment queries and sized/slice Rc ownership now supply focused prerequisites.
-The complete HIR and type-checker graphs have native comparison harnesses.
-The latest maintained MIR audit reaches zero syntax, HIR and type diagnostics,
-with one remaining function-pointer metadata diagnostic in the new trait-checker
-code. The outgoing-stack-argument and inactive-empty-enum lowering blockers
-have focused codegen fixes and native regressions; the complete native MIR
-comparison still needs a clean rerun. Keel IR, bumpalo and the actual Keel
-floating-point constant folder now have guarded native comparisons. The
-assembler and its object-file dependencies are the next source graph. CLI derives and Keel's
+The complete HIR, type-checker and MIR source graphs have guarded native
+comparison harnesses. Keel IR, assembly IR, bumpalo and the actual Keel
+floating-point constant folder also have native comparisons. These milestones
+do not yet build the complete compiler executable. The assembler and its
+object-file dependencies are the next source graph. CLI derives and Keel's
 dependencies/generated outputs also belong to the
 complete source closure. Sourcegen and difftest are additional workspace targets,
 not prerequisites for the first compiler executable.

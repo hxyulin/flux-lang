@@ -2591,6 +2591,10 @@ impl<'a> Cx<'a> {
     #[allow(clippy::too_many_arguments)]
     fn relate_types(&mut self, source: Ty, sub: &[Var], target: Ty, sup: &[Var],
         variance: Variance, category: Category, range: TextRange) {
+        // Resolve nested projections before counting child slots. The rows
+        // already describe the normalized types, in structural order.
+        let source = self.normalize(source);
+        let target = self.normalize(target);
         if source == target {
             return self.relate(target, sub, sup, variance, category, range);
         }
@@ -2629,10 +2633,6 @@ impl<'a> Cx<'a> {
                 }
             }
             _ => {
-                let a = self.normalize(source); let b = self.normalize(target);
-                if a != source || b != target {
-                    return self.relate_types(a, sub, b, sup, variance, category, range);
-                }
                 // Other erased-type differences retain their existing slot
                 // relation; callable differences must reach a structural arm.
                 return self.relate(target, sub, sup, variance, category, range);
