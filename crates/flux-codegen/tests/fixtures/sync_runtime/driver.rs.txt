@@ -1,0 +1,14 @@
+fn exercise(worker: fn() -> usize, totals: fn() -> usize) {
+    let start = std::sync::Arc::new(std::sync::Barrier::new(9));
+    let threads: Vec<_> = (0..8).map(|_| {
+        let start = start.clone();
+        std::thread::spawn(move || {
+            start.wait();
+            assert_eq!(worker(), 89);
+        })
+    }).collect();
+    start.wait();
+    for thread in threads { thread.join().unwrap(); }
+    assert_eq!(totals(), 24000);
+    println!("contention 1 1 8000 8000 16000");
+}

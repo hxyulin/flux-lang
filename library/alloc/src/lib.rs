@@ -15,6 +15,7 @@ pub mod collections;
 pub mod fmt;
 pub mod prelude;
 mod raw_vec;
+pub mod rc;
 pub mod slice;
 pub mod str;
 pub mod string;

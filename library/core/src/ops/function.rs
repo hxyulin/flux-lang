@@ -24,3 +24,25 @@ pub trait FnMut<Args>: FnOnce<Args> {
 pub trait Fn<Args>: FnMut<Args> {
     fn call(&self, args: Args) -> Self::Output;
 }
+
+impl<A, F: Fn<A> + ?Sized> FnOnce<A> for &F {
+    type Output = F::Output;
+    fn call_once(self, args: A) -> F::Output { F::call(self, args) }
+}
+
+impl<A, F: Fn<A> + ?Sized> FnMut<A> for &F {
+    fn call_mut(&mut self, args: A) -> F::Output { F::call(*self, args) }
+}
+
+impl<A, F: Fn<A> + ?Sized> Fn<A> for &F {
+    fn call(&self, args: A) -> F::Output { F::call(*self, args) }
+}
+
+impl<A, F: FnMut<A> + ?Sized> FnOnce<A> for &mut F {
+    type Output = F::Output;
+    fn call_once(self, args: A) -> F::Output { F::call_mut(self, args) }
+}
+
+impl<A, F: FnMut<A> + ?Sized> FnMut<A> for &mut F {
+    fn call_mut(&mut self, args: A) -> F::Output { F::call_mut(*self, args) }
+}

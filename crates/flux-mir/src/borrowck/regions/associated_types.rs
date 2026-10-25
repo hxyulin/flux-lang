@@ -37,7 +37,7 @@ pub(crate) fn impl_associated_values_match(
         }
     }
     cx.close_known();
-    let solution = cx.solve(&Points::new(&body), &[]);
+    let solution = cx.solve(&Points::new(&body), &[], &[]);
     Some(
         cx.check_universal(&solution).is_empty()
             && cx.check_type_tests(&solution).is_empty()
@@ -60,6 +60,7 @@ impl Cx<'_> {
             .impl_projections
             .get(imp)
             .map_or(Vec::new(), |p| p.to_vec());
+        self.header_predicates = self.sigs.impl_predicates.get(imp).map_or(Vec::new(), |predicates| flux_ty::traits::elaborate(self.sigs, predicates));
         self.new_universal("'static".into());
         let lifetimes: Vec<_> = (0..block.names.len())
             .map(|i| self.new_universal(format!("'{i}")))
@@ -168,6 +169,7 @@ impl Cx<'_> {
                     },
                 },
                 vars,
+                bound: Vec::new(),
             },
             env,
             0,

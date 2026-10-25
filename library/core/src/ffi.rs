@@ -203,6 +203,20 @@ fn utf8_char(bytes: &[u8], i: usize) -> Option<(char, usize)> {
     Some((unsafe { crate::char::from_u32_unchecked(c) }, len))
 }
 
+/// C's opaque void type. Its byte representation follows Rust's inhabited
+/// enum; its implementation variants are unavailable outside trusted core.
+#[lang = "c_void"]
+#[repr(u8)]
+pub enum c_void {
+    #[doc(hidden)]
+    __variant1,
+    #[doc(hidden)]
+    __variant2,
+}
+impl Debug for c_void {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result { f.debug_struct("c_void").finish() }
+}
+
 pub type c_char = i8;
 pub type c_schar = i8;
 pub type c_uchar = u8;

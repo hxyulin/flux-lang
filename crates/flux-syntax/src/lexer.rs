@@ -41,6 +41,15 @@ impl<'a> LexedStr<'a> {
         Self::with_edition(text, crate::Edition::E2024)
     }
 
+    /// Retains token kinds selected in the edition of their original source.
+    pub(crate) fn set_token_kinds(&mut self, kinds: &[(u32, SyntaxKind)]) {
+        for &(start, kind) in kinds {
+            if let Ok(index) = self.starts.binary_search(&start) {
+                self.kinds[index] = kind;
+            }
+        }
+    }
+
     /// Lexes keywords using the source crate edition.
     pub fn with_edition(text: &'a str, edition: crate::Edition) -> LexedStr<'a> {
         assert!(
@@ -65,9 +74,14 @@ impl<'a> LexedStr<'a> {
         while lexer.pos < text.len() {
             lexer.token();
         }
-        if edition == crate::Edition::E2021 {
+        if edition != crate::Edition::E2024 {
             for kind in &mut lexer.res.kinds {
                 if *kind == GEN_KW {
+                    *kind = IDENT;
+                }
+                if edition == crate::Edition::E2015
+                    && matches!(*kind, ASYNC_KW | AWAIT_KW | DYN_KW | TRY_KW)
+                {
                     *kind = IDENT;
                 }
             }
@@ -105,6 +119,10 @@ impl<'a> LexedStr<'a> {
     /// token kinds and this bit, without consulting source text.
     pub(crate) fn is_union_keyword(&self, i: usize) -> bool {
         self.kind(i) == SyntaxKind::IDENT && self.token_text(i) == "union"
+    }
+
+    pub(crate) fn is_dyn_keyword(&self, i: usize) -> bool {
+        self.kind(i) == SyntaxKind::IDENT && self.token_text(i) == "dyn"
     }
 
     pub fn token_range(&self, i: usize) -> TextRange {

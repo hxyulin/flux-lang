@@ -1,0 +1,18 @@
+#[repr(C)]#[derive(Clone, Copy)]pub struct Words { words: [u64; 2] }
+#[repr(C)]#[derive(Clone, Copy)]pub struct Padded { lead: u8, payload: u64, tail: u16 }
+#[repr(C)]#[derive(Clone, Copy)]pub struct Small { a: u8, b: u16, c: u32 }
+#[repr(C)]#[derive(Clone, Copy)]pub struct Nested { prefix: u16, small: Small, words: Words }
+#[repr(C)]#[derive(Clone, Copy)]pub struct Big { words: [u64; 5] }
+#[unsafe(no_mangle)]pub extern "C" fn sum_words(x: Words) -> u64 { x.words[0] + x.words[1] }
+#[unsafe(no_mangle)]pub extern "C" fn call_words(callback: extern "C" fn(Words) -> Words) -> u64 {
+    let result = callback(Words { words: [17, 25] }); result.words[0] + result.words[1]
+}
+#[unsafe(no_mangle)]pub extern "C" fn padded(mut x: Padded) -> Padded { x.lead += 3; x.payload += 17; x.tail += 5; x }
+#[unsafe(no_mangle)]pub extern "C" fn call_padded(callback: extern "C" fn(Padded) -> Padded) -> u64 {
+    let result = callback(Padded { lead: 3, payload: 1000, tail: 7 });
+    result.lead as u64 + result.payload + result.tail as u64
+}
+#[unsafe(no_mangle)]pub extern "C" fn small(mut x: Small) -> Small { x.a += 1; x.b += 2; x.c += 3; x }
+#[unsafe(no_mangle)]pub extern "C" fn nested(mut x: Nested) -> Nested { x.prefix += 1; x.small.c += 7; x.words.words[1] += 9; x }
+#[unsafe(no_mangle)]pub extern "C" fn big(mut x: Big) -> Big { x.words[0] += 11; x.words[4] += 13; x }
+#[unsafe(no_mangle)]pub extern "C" fn scalar(x: i8, y: u16) -> i64 { x as i64 + y as i64 }

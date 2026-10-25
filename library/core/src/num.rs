@@ -6,6 +6,7 @@
 //! caller does (in constants), as Rust's `core` does. `min` and `max`
 //! are `Ord`'s, as in Rust.
 
+pub use crate::float::ParseFloatError;
 /// A nonzero `u32`. Only checked construction and value access are
 /// implemented so far, together with comparison, copying and formatting.
 /// The private field and checked constructor preserve the nonzero validity
@@ -13,6 +14,38 @@
 #[lang = "nonzero_u32"]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NonZeroU32(u32);
+
+/// A nonzero `u64`, with zero available as the enclosing enum's niche.
+#[lang = "nonzero_u64"]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NonZeroU64(u64);
+
+impl NonZeroU64 {
+    pub const fn new(value: u64) -> Option<NonZeroU64> {
+        if value == 0 { None } else { Some(NonZeroU64(value)) }
+    }
+
+    /// The caller must ensure `value` is nonzero.
+    pub const unsafe fn new_unchecked(value: u64) -> NonZeroU64 {
+        NonZeroU64(value)
+    }
+
+    pub const fn get(self) -> u64 { self.0 }
+    pub const fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() }
+    pub const fn leading_zeros(self) -> u32 { self.0.leading_zeros() }
+}
+
+impl crate::fmt::Debug for NonZeroU64 {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl crate::fmt::Display for NonZeroU64 {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::fmt::Display::fmt(&self.0, f)
+    }
+}
 
 impl NonZeroU32 {
     pub const fn new(value: u32) -> Option<NonZeroU32> {
@@ -7152,3 +7185,68 @@ impl usize {
         usize::from_le_bytes(bytes)
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseIntError { kind: IntErrorKind }
+impl ParseIntError {
+    pub fn kind(&self) -> &IntErrorKind { &self.kind }
+}
+impl crate::fmt::Display for ParseIntError {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.write_str(match self.kind {
+            IntErrorKind::Empty => "cannot parse integer from empty string",
+            IntErrorKind::InvalidDigit => "invalid digit found in string",
+            IntErrorKind::PosOverflow => "number too large to fit in target type",
+            IntErrorKind::NegOverflow => "number too small to fit in target type",
+            IntErrorKind::Zero => "number would be zero for non-zero type",
+        })
+    }
+}
+impl crate::error::Error for ParseIntError {}
+
+macro_rules! parse_integer {
+    ($signed:expr; $($t:ty),+) => { $(
+        impl $t {
+            #[deprecated(since = "1.43.0", note = "use the MIN associated constant")]
+            pub const fn min_value() -> $t { Self::MIN }
+            #[deprecated(since = "1.43.0", note = "use the MAX associated constant")]
+            pub const fn max_value() -> $t { Self::MAX }
+            /// Parses ASCII digits in radix 2 through 36, with an optional sign.
+            #[track_caller]
+            pub const fn from_str_radix(s: &str, radix: u32) -> Result<$t, ParseIntError> {
+                assert!(radix >= 2 && radix <= 36, "from_str_radix: radix must lie in the range [2, 36]");
+                let bytes = s.as_bytes();
+                if bytes.is_empty() { return Err(ParseIntError { kind: IntErrorKind::Empty }); }
+                let negative = bytes[0] == b'-';
+                let mut index = if bytes[0] == b'+' || ($signed && negative) { 1 } else { 0 };
+                if index == bytes.len() { return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }); }
+                let mut value: $t = 0;
+                while index < bytes.len() {
+                    let byte = bytes[index];
+                    let digit = if byte >= b'0' && byte <= b'9' { (byte - b'0') as u32 }
+                        else if byte >= b'a' && byte <= b'z' { (byte - b'a') as u32 + 10 }
+                        else if byte >= b'A' && byte <= b'Z' { (byte - b'A') as u32 + 10 }
+                        else { return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }); };
+                    if digit >= radix { return Err(ParseIntError { kind: IntErrorKind::InvalidDigit }); }
+                    value = match value.checked_mul(radix as $t) {
+                        Some(value) => value,
+                        None => return Err(ParseIntError { kind: if negative { IntErrorKind::NegOverflow } else { IntErrorKind::PosOverflow } }),
+                    };
+                    let next = if $signed && negative { value.checked_sub(digit as $t) } else { value.checked_add(digit as $t) };
+                    value = match next {
+                        Some(value) => value,
+                        None => return Err(ParseIntError { kind: if negative { IntErrorKind::NegOverflow } else { IntErrorKind::PosOverflow } }),
+                    };
+                    index += 1;
+                }
+                Ok(value)
+            }
+        }
+        impl crate::str::FromStr for $t {
+            type Err = ParseIntError;
+            fn from_str(s: &str) -> Result<$t, ParseIntError> { <$t>::from_str_radix(s, 10) }
+        }
+    )+ };
+}
+parse_integer!(false; u8, u16, u32, u64, u128, usize);
+parse_integer!(true; i8, i16, i32, i64, i128, isize);

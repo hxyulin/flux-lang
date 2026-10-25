@@ -196,48 +196,24 @@ fn invalid_inputs_are_diagnosed_compile_only() {
 }
 
 #[test]
-fn expanded_calls_fail_explicitly_instead_of_guessing_a_root() {
+fn expanded_calls_use_invocation_files_and_eager_filenames() {
     let case = Case::new();
     case.write("data", "root data");
     case.write("defs/data", "definition data");
-    case.write(
-        "defs/macros.rs",
-        "#[macro_export] macro_rules! other { () => { include_str!(\"data\") }; }",
-    );
-    for source in [
-        "macro_rules! wrapped { () => { include_str!(\"data\") }; } pub fn f() -> &'static str { wrapped!() }",
-        "macro_rules! forward { ($s:literal) => { include_str!($s) }; } pub fn f() -> &'static str { forward!(\"data\") }",
-        "macro_rules! item { () => { pub const TEXT: &str = include_str!(\"data\"); }; } item!();",
-        "#[path=\"defs/macros.rs\"] mod defs; pub fn f() -> &'static str { other!() }",
+    case.write("defs/macros.rs", "#[macro_export] macro_rules! other { () => { include_str!(\"data\") }; } #[macro_export] macro_rules! setup { () => { macro_rules! generated { () => { include_str!(\"data\") }; } }; }");
+    for (source, expected) in [
+        ("macro_rules! wrapped { () => { include_str!(\"data\") }; } pub fn f() -> &'static str { wrapped!() }", "root data"),
+        ("macro_rules! forward { ($s:literal) => { include_str!($s) }; } pub fn f() -> &'static str { forward!(\"data\") }", "root data"),
+        ("#[path=\"defs/macros.rs\"] mod defs; pub fn f() -> &'static str { other!() }", "root data"),
+        ("#[path=\"defs/macros.rs\"] mod defs; setup!(); pub fn f() -> &'static str { generated!() }", "root data"),
+        ("pub fn f() -> &'static str { include_str!(concat!(\"da\", \"ta\")) }", "root data"),
     ] {
         case.write("lib.rs", source);
         case.rustc(true);
-        let (db, hir) = case.lower();
-        // The existing expansion record retains its invocation file, while
-        // definition tokens have no physical FileId of their own yet.
-        assert!(
-            db.files()
-                .any(|(_, file)| file.path == case.0.join("lib.rs") && file.expansion_of.is_some())
-        );
-        assert!(
-            hir.diagnostics
-                .iter()
-                .any(|d| d.message == "include_str! in macro expansions is not supported yet"),
-            "{:?}",
-            hir.diagnostics
-        );
+        let (_, hir) = case.lower();
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        assert!(strings(&hir).contains(&expected));
     }
-    case.write(
-        "lib.rs",
-        "pub fn f() -> &'static str { include_str!(concat!(\"da\", \"ta\")) }",
-    );
-    case.rustc(true);
-    let (_, hir) = case.lower();
-    assert!(
-        hir.diagnostics
-            .iter()
-            .any(|d| d.message.contains("requires a string literal filename"))
-    );
 }
 
 #[test]
@@ -266,7 +242,7 @@ pub fn escaped() -> &'static str {{ include_str!("quote\"終") }}
 }
 
 #[test]
-fn dependency_macro_origin_is_rejected_explicitly() {
+fn dependency_macro_uses_invocation_file() {
     let case = Case::new();
     case.write(
         "dep/lib.rs",
@@ -294,11 +270,6 @@ fn dependency_macro_origin_is_rejected_explicitly() {
             },
         ],
     );
-    assert!(
-        hir.diagnostics
-            .iter()
-            .any(|d| d.message == "include_str! in macro expansions is not supported yet"),
-        "{:?}",
-        hir.diagnostics
-    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    assert!(strings(&hir).contains(&"invocation bytes"));
 }

@@ -9,7 +9,7 @@ use flux_intern::{Symbol, kw, sym};
 use flux_syntax::ast::{self, AstChildren, AstNode};
 use flux_syntax::{NodeId, SyntaxElement, SyntaxKind, SyntaxNode, T, TextRange};
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::Diagnostic;
 use crate::def_map::DefMap;
@@ -108,7 +108,7 @@ pub struct ItemTree {
     pub core: ItemCounts,
 }
 
-/// A body macro expansion collected for its block imports.
+/// A body macro expansion retained for block items and source identity.
 #[derive(Debug, Clone)]
 pub(crate) struct BodyExpansion {
     pub definition: macros::MacroId,
@@ -133,6 +133,9 @@ pub struct ItemCounts {
 
 #[derive(Debug, Clone)]
 pub struct CrateData {
+    /// Exported macros imported with this crate's `#[macro_use] extern crate`.
+    pub macro_use: Vec<(Symbol, MacroId)>,
+    pub cfg: Option<Arc<flux_syntax::CfgOptions>>,
     pub edition: flux_syntax::Edition,
     pub name: Symbol,
     pub root: ModuleId,
@@ -142,10 +145,26 @@ pub struct CrateData {
     /// The crates its `extern crate` declarations name (`alloc`), which
     /// it may name by path as it names `core`.
     pub externs: Vec<Symbol>,
+    /// Root `extern crate` aliases also enter the extern prelude.
+    pub extern_aliases: Vec<(Symbol, CrateId)>,
+    /// Crates actually loaded by declarations or resolved external paths.
+    /// This is separate from aliases: a nested declaration also loads a crate.
+    loaded_externs: LoadedCrates,
     /// Direct source dependencies, under this crate's local import names.
     pub dependencies: Vec<(Symbol, CrateId)>,
     /// Use core's prelude and omit the implicit std extern/macro preludes.
     pub no_std: bool,
+}
+
+/// Resolution can load metadata through an immutable item-tree query. Cloning
+/// a tree snapshots the loaded edges rather than sharing mutable graph state.
+#[derive(Debug, Default)]
+struct LoadedCrates(Mutex<Vec<CrateId>>);
+
+impl Clone for LoadedCrates {
+    fn clone(&self) -> Self {
+        Self(Mutex::new(self.0.lock().unwrap().clone()))
+    }
 }
 
 /// A module: a crate's root, `mod m { ... }` or `mod m;`.
@@ -472,6 +491,8 @@ pub struct Struct {
     /// `#[repr(C)]`: fields are laid out in declaration order, as C
     /// does, and an enum's discriminant is a C `int` at least.
     pub repr_c: bool,
+    /// A transparent wrapper. Currently supported for one-field structs.
+    pub repr_transparent: bool,
     /// Minimum aggregate alignment from `#[repr(align(N))]`, or 1.
     pub repr_align: u32,
     pub loc: ItemLoc,
@@ -634,6 +655,8 @@ pub struct Function {
     pub is_unsafe: bool,
     /// Declared in an `extern` block, so defined elsewhere (in C).
     pub is_extern: bool,
+    /// Uses the C calling convention, including definitions with bodies.
+    pub c_abi: bool,
     /// `const fn`: callable in constants.
     pub is_const: bool,
     /// `#[rustc_inherit_overflow_checks]`, which only `core` may write:
@@ -649,7 +672,8 @@ pub struct Function {
     /// values that need no dropping by then, which drop elaboration
     /// finds, rather than values that may need it at all.
     pub precise_live_drops: bool,
-    /// `#[rustc_intrinsic]`, which only `core` may write: the compiler
+    /// `#[rustc_intrinsic]`, restricted to embedded compiler-owned libraries:
+    /// the compiler
     /// replaces its calls with what it does once their types are known
     /// (`mono::expand_intrinsics`), so its body never runs.
     pub intrinsic: bool,
@@ -755,6 +779,8 @@ impl LifetimeRef {
 /// A lifetime parameter, `'a` in `<'a>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifetimeParam {
+    /// Trusted Drop implementation promises not to inspect this lifetime.
+    pub may_dangle: bool,
     pub name: Symbol,
     pub range: TextRange,
 }
@@ -776,11 +802,12 @@ pub struct TypeOutlives {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenericParam {
+    /// Trusted Drop implementation promises not to inspect this type parameter.
+    pub may_dangle: bool,
     pub name: Symbol,
     pub range: TextRange,
-    /// `= Self` in `trait Add<Rhs = Self>`, `= ()` in `enum
-    /// ControlFlow<B, C = ()>`: traits', structs' and enums' parameters
-    /// only.
+    /// A trailing type or const default. Const values use TypeRef::Const
+    /// and retain their parameter's declared kind and type.
     pub default: Option<(TypeRef, TextRange)>,
     /// Made for an `impl Trait` parameter type (`x: impl Copy`), named
     /// as it is written, which turbofish cannot give.
@@ -817,7 +844,7 @@ enum Defaults {
     /// A struct's or enum's: supported, applied in types that leave
     /// them out.
     Struct,
-    /// A type alias's: valid Rust, not supported yet.
+    /// A type alias's: supported, without enforcing the alias's bounds.
     Alias,
     /// Functions' and `impl` blocks': an error.
     No,
@@ -882,6 +909,8 @@ pub enum UseKind {
 /// `Pair::<i32>::new`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Path {
+    /// Edition of the written path's leading token; generated paths use None.
+    pub edition: Option<flux_syntax::Edition>,
     pub anchor: PathAnchor,
     /// `<T as Tr>` or `<T>` before the segments: a qualified path.
     pub qself: Option<Box<QSelf>>,
@@ -921,6 +950,8 @@ pub struct GenericArgs {
     /// tuple of the parameters, and `Output` bound to the return type
     /// (`()` if none is written).
     pub parenthesized: bool,
+    /// Named lifetimes bound by a parenthesized Fn-family argument list.
+    pub bound_lifetimes: Box<[Symbol]>,
 }
 
 /// `Out = i32` in a trait's generic arguments: what one of its associated
@@ -980,6 +1011,7 @@ impl Path {
 
     pub fn single(name: Symbol) -> Path {
         Path {
+            edition: None,
             anchor: PathAnchor::Plain,
             qself: None,
             segments: Box::new([name]),
@@ -1082,9 +1114,11 @@ pub enum TypeRef {
     Infer,
     /// `fn(A, B) -> R`, or `unsafe fn(A) -> R`.
     FnPtr {
+        bound_lifetimes: Box<[Symbol]>,
         params: Box<[TypeRef]>,
         ret: Box<TypeRef>,
         is_unsafe: bool,
+        is_c: bool,
     },
     /// `impl Tr + 'a`, where it is not (yet) known what it stands for.
     /// Lowering an item makes those in a function's parameters
@@ -1227,13 +1261,24 @@ impl std::fmt::Display for TypeRef {
             }
             TypeRef::Never => f.write_str("!"),
             TypeRef::FnPtr {
+                bound_lifetimes,
                 params,
                 ret,
                 is_unsafe,
+                is_c,
             } => {
+                if !bound_lifetimes.is_empty() {
+                    f.write_str("for<")?;
+                    for (i, name) in bound_lifetimes.iter().enumerate() {
+                        if i != 0 { f.write_str(", ")?; }
+                        write!(f, "{name}")?;
+                    }
+                    f.write_str("> ")?;
+                }
                 if *is_unsafe {
                     f.write_str("unsafe ")?;
                 }
+                if *is_c { f.write_str("extern \"C\" ")?; }
                 let params: Vec<String> = params.iter().map(|p| p.to_string()).collect();
                 write!(f, "fn({})", params.join(", "))?;
                 if **ret != TypeRef::unit() {
@@ -1332,8 +1377,8 @@ impl ItemTree {
         // `alloc`, which only `core` comes before, and which may write
         // what `core` may: methods of primitive types, `lang` items.
         items.add_crate(db, FileId::alloc_root(), sym::alloc, true);
-        // The facade shares definitions through reexports, but has no
-        // permission to define primitive impls or compiler lang items.
+        // Std may define its own inherent primitive APIs and intrinsics,
+        // while compiler lang items remain restricted to core/alloc.
         items.add_crate(db, FileId::std_root(), sym::std, false);
         items.modules.freeze();
         items.functions.freeze();
@@ -1375,6 +1420,8 @@ impl ItemTree {
             expansion_depth: 0,
             expanding_types: false,
             macro_paths: Vec::new(),
+            collected_imports: rustc_hash::FxHashSet::default(),
+            pending_root_macros: Vec::new(),
         };
         collector.collect_crate(root, name, is_core, dependencies);
         collector.expand_derives();
@@ -1430,6 +1477,40 @@ impl ItemTree {
 
     pub fn is_core(&self, module: ModuleId) -> bool {
         self.crates[self.modules[module].krate.0 as usize].is_core
+    }
+
+    /// The embedded standard library, identified by its reserved source root.
+    /// A user source crate named `std` has no compiler-owned privileges.
+    pub fn is_std(&self, module: ModuleId) -> bool {
+        let krate=&self.crates[self.modules[module].krate.0 as usize];
+        self.modules[krate.root].file==FileId::std_root()
+    }
+
+    /// Record actual metadata loading without changing an extern's visibility.
+    pub(crate) fn load_extern(&self, from: CrateId, target: CrateId) {
+        let mut loaded = self.crates[from.0 as usize].loaded_externs.0.lock().unwrap();
+        if !loaded.contains(&target) {
+            loaded.push(target);
+        }
+    }
+
+    /// Std's primitive methods are visible when this crate loads the trusted
+    /// std root, directly or through metadata of a loaded dependency. Merely
+    /// declaring an available dependency does not load it.
+    pub fn std_available(&self, module: ModuleId) -> bool {
+        let mut pending = vec![self.modules[module].krate];
+        let mut seen = vec![false; self.crates.len()];
+        while let Some(id) = pending.pop() {
+            if std::mem::replace(&mut seen[id.0 as usize], true) {
+                continue;
+            }
+            let krate = &self.crates[id.0 as usize];
+            if self.is_std(krate.root) || (!krate.is_core && !krate.no_std) {
+                return true;
+            }
+            pending.extend(krate.loaded_externs.0.lock().unwrap().iter().copied());
+        }
+        false
     }
 
     /// `module`, or for a block, the module it is in: what `self` names.
@@ -1544,6 +1625,24 @@ impl ItemTree {
         self.expansion_files.get(&file).copied().unwrap_or(file)
     }
 
+    /// Resolves a body span across physical include boundaries.
+    pub fn source_span(&self, file: FileId, range: TextRange) -> (FileId, TextRange) {
+        if let Some((&file, source)) = self.files.iter().find(|(_, source)| source.contains_range(range)) {
+            (file, source.local_range(range))
+        } else { (self.real_file(file), range) }
+    }
+
+    /// Resolves a byte position used by runtime caller locations.
+    pub fn source_offset(&self, file: FileId, offset: u32) -> (FileId, u32) {
+        let (file, range) = self.source_span(file, TextRange::empty(offset));
+        (file, range.start())
+    }
+
+    /// Restores the physical source location at a diagnostic boundary.
+    pub fn resolve_diagnostic(&self, diagnostic: &mut Diagnostic) {
+        (diagnostic.file, diagnostic.range) = self.source_span(diagnostic.file, diagnostic.range);
+    }
+
     /// Whether `module` is in the crate being compiled.
     pub fn in_main_crate(&self, module: ModuleId) -> bool {
         self.modules[module].krate == self.main_crate()
@@ -1587,7 +1686,20 @@ struct MacroPathCheck {
     range: TextRange,
 }
 
+/// A path-scoped export can be declared in a module collected later. Keep
+/// the invocation's textual environment while waiting for that item namespace.
+struct PendingRootMacro {
+    name: Symbol,
+    ctx: Ctx,
+    node: NodeId,
+    scope: Option<MacroScopeId>,
+    depth: u32,
+    diagnostic: Diagnostic,
+}
+
 struct Collector<'a> {
+    pending_root_macros: Vec<PendingRootMacro>,
+    collected_imports: rustc_hash::FxHashSet<(FileId, NodeId)>,
     macro_paths: Vec<MacroPathCheck>,
     db: &'a mut SourceDb,
     items: &'a mut ItemTree,
@@ -1680,15 +1792,20 @@ impl Collector<'_> {
             block: None,
         });
         self.items.crates.push(CrateData {
+            macro_use: Vec::new(),
+            cfg: self.db.file(root).parse.tree().cfg_options().cloned(),
             edition: self.db.file(root).edition,
             name,
             root: module,
             is_core,
             externs: Vec::new(),
+            extern_aliases: Vec::new(),
+            loaded_externs: LoadedCrates::default(),
             dependencies,
             no_std: false,
         });
         self.collect_file(module, root);
+        self.collect_pending_root_macros();
     }
 
     fn record_macro_path(&mut self, ctx: Ctx, path: ast::Path<'_>, expected: MacroId) {
@@ -1742,32 +1859,41 @@ impl Collector<'_> {
     /// Items by node, so that collecting them can read more files.
     fn collect_items(&mut self, ctx: Ctx, items: &[NodeId]) {
         let _file = TypesFile::enter(ctx.file);
+        self.precollect_imports(ctx, items.iter().copied());
         for &node in items {
             let start = self.items.diagnostics.len();
             let shared = self.db.shared(ctx.file);
             if item_enabled(shared.parse.tree().node(node), &mut self.items.diagnostics) {
-                if shared.edition == flux_syntax::Edition::E2021 {
-                    for syntax in shared.parse.tree().node(node).descendants() {
-                        let sensitive = if macros::is_macro_rules(syntax) {
-                            Some("macro definitions in edition 2021")
-                        } else {
-                            match syntax.kind() {
-                                SyntaxKind::LET_EXPR => {
-                                    Some("if-let, while-let and let chains in edition 2021")
-                                }
-                                SyntaxKind::IMPL_TRAIT_TYPE => Some("impl Trait in edition 2021"),
-                                _ => None,
-                            }
-                        };
-                        if let Some(what) = sensitive {
-                            unsupported(&mut self.items.diagnostics, syntax.text_range(), what);
-                        }
-                    }
-                }
                 self.collect_item_expanding_types(ctx, node);
                 self.collect_anon_consts(ctx, node);
             }
             self.tag(start, ctx.file);
+        }
+    }
+
+    /// External imports have item scope, so an invocation can precede its
+    /// alias. Imports of current textual macros still follow their definitions.
+    fn precollect_imports(&mut self, ctx: Ctx, nodes: impl Iterator<Item = NodeId>) {
+        let shared = self.db.shared(ctx.file);
+        for node in nodes {
+            let syntax = shared.parse.tree().node(node);
+            fn external_tree(items: &ItemTree, module: ModuleId, tree: ast::UseTree<'_>, prefix: bool) -> bool {
+                let external = prefix || tree.path().and_then(|path| lower_path(path, &mut Vec::new()))
+                    .is_some_and(|path| matches!(path.anchor, PathAnchor::Plain | PathAnchor::Global)
+                        && (path.segments.len() > 1 || tree.use_tree_list().is_some())
+                        && path.segments.first().is_some_and(|&name| items.extern_crate(name, module).is_some()));
+                if let Some(list) = tree.use_tree_list() {
+                    list.use_trees().all(|tree| external_tree(items, module, tree, external))
+                } else { external }
+            }
+            let external = syntax.kind() == SyntaxKind::EXTERN_CRATE
+                || ast::Use::cast(syntax).and_then(|u| u.use_tree())
+                    .is_some_and(|tree| external_tree(self.items, ctx.module, tree, false));
+            if external && item_enabled(syntax, &mut Vec::new()) {
+                let start = self.items.diagnostics.len();
+                self.collect_item(ctx, node);
+                self.tag(start, ctx.file);
+            }
         }
     }
 
@@ -1819,6 +1945,7 @@ impl Collector<'_> {
         let def = &self.items.macros[def];
         let site = macros::CallSite {
             read_text: crate::source::SourceDb::read_include_str,
+            scope: self.macro_scope,
             items: self.items,
             krate: self.items.modules[ctx.module].krate,
             module: ctx.module,
@@ -1856,7 +1983,7 @@ impl Collector<'_> {
                 self.collect_module(ctx, m);
             }
             ast::Item::Use(u) => {
-                self.collect_use(ctx, u);
+                if self.collected_imports.insert((ctx.file, node)) { self.collect_use(ctx, u); }
             }
             ast::Item::Const(c) => {
                 self.collect_const(ctx, c, None);
@@ -1865,7 +1992,7 @@ impl Collector<'_> {
                 self.collect_enum(ctx, e);
             }
             ast::Item::ExternCrate(e) => {
-                self.collect_extern_crate(ctx, e);
+                if self.collected_imports.insert((ctx.file, node)) { self.collect_extern_crate(ctx, e); }
             }
             ast::Item::MacroCall(mc) => {
                 self.collect_macro_call(ctx, mc);
@@ -1896,9 +2023,12 @@ impl Collector<'_> {
     /// scope from here on.
     fn define_macro(&mut self, ctx: Ctx, node: SyntaxNode<'_>, export: bool, builtin: bool) {
         let krate = self.items.modules[ctx.module].krate;
-        let file = self.real_file(ctx.file);
+        let file = node.tokens().find(|token| !token.kind().is_trivia())
+            .and_then(|token| node.tree().token_origin(token.index()))
+            .and_then(|origin| self.items.macros.iter().find_map(|(_, def)| (def.group == origin.group).then_some(def.file)))
+            .unwrap_or_else(|| self.real_file(ctx.file));
         let Some(def) =
-            MacroDef::from_rules(node, krate, file, builtin, &mut self.items.diagnostics)
+            MacroDef::from_rules(node, krate, file, self.db.file(file).edition, builtin, &mut self.items.diagnostics)
         else {
             return;
         };
@@ -1907,7 +2037,8 @@ impl Collector<'_> {
         self.macro_scope = Some(self.items.push_macro_scope(self.macro_scope, name, id));
         if export {
             self.items.exported_macros.insert((krate, name), id);
-            if self.items.crates[krate.0 as usize].is_core {
+            let krate_data = &self.items.crates[krate.0 as usize];
+            if krate_data.is_core || self.items.modules[krate_data.root].file == FileId::std_root() {
                 self.items.macro_prelude.insert(name, id);
             }
         }
@@ -1939,10 +2070,33 @@ impl Collector<'_> {
             Ok(macros::Resolved::Def(id)) => id,
             Ok(macros::Resolved::Local(_)) => unreachable!("no local macros here"),
             Err(d) => {
-                self.items.diagnostics.push(d);
+                let current = self.items.modules[ctx.module].krate;
+                let root_call = lower_path(path, &mut Vec::new()).is_some_and(|p| {
+                    p.segments.len() == 1 && match p.anchor {
+                        PathAnchor::Crate => true,
+                        PathAnchor::DefinitionCrate(krate) => krate == current,
+                        PathAnchor::Plain | PathAnchor::SelfModule => self.items.modules[self.items.named_module(ctx.module)].parent.is_none(),
+                        _ => false,
+                    }
+                });
+                if root_call {
+                    self.pending_root_macros.push(PendingRootMacro {
+                        name: lower_path(path, &mut Vec::new()).expect("root macro path").segments[0],
+                        ctx, node: node.id(), scope: self.macro_scope,
+                        depth: self.expansion_depth, diagnostic: d,
+                    });
+                } else {
+                    self.items.diagnostics.push(d);
+                }
                 return;
             }
         };
+        self.collect_resolved_macro_call(ctx, mc, def);
+    }
+
+    fn collect_resolved_macro_call(&mut self, ctx: Ctx, mc: ast::MacroCall<'_>, def: MacroId) {
+        let path = mc.path().expect("resolved macro path");
+        let node = mc.syntax();
         self.record_macro_path(ctx, path, def);
         let def = self.items.macros[def].clone();
         if self.expansion_depth >= RECURSION_LIMIT {
@@ -1955,6 +2109,7 @@ impl Collector<'_> {
         let real = self.real_file(ctx.file);
         let site = macros::CallSite {
             read_text: crate::source::SourceDb::read_include_str,
+            scope: self.macro_scope,
             items: self.items,
             krate: self.items.modules[ctx.module].krate,
             module: ctx.module,
@@ -1972,8 +2127,20 @@ impl Collector<'_> {
         let Some(expansion) = expansion else {
             return;
         };
-        let file = self.db.add_expansion(expansion.parse, real);
-        self.items.expansion_files.insert(file, real);
+        let file = if let Some(path) = expansion.included_path {
+            match self.db.add_inclusion(expansion.parse, path, self.db.file(ctx.file).edition) {
+                Ok(file) => file,
+                Err(message) => {
+                    self.items.diagnostics.push(Diagnostic::new(node.text_range(), message));
+                    return;
+                }
+            }
+        } else {
+            let file = self.db.add_expansion(expansion.parse, real);
+            self.items.expansion_files.insert(file, real);
+            file
+        };
+        self.items.files.insert(file, self.db.shared(file));
         let shared = self.db.shared(file);
         let items: Vec<NodeId> = shared
             .parse
@@ -1994,6 +2161,47 @@ impl Collector<'_> {
         );
         self.tag(start, file);
         self.expansion_depth -= 1;
+    }
+
+    /// Exported macros have item scope throughout their crate. Retry only
+    /// root-path calls against exports; ordinary macros keep textual order.
+    fn collect_pending_root_macros(&mut self) {
+        let saved_scope = self.macro_scope;
+        let saved_depth = self.expansion_depth;
+        while !self.pending_root_macros.is_empty() {
+            let pending = std::mem::take(&mut self.pending_root_macros);
+            let mut unresolved = Vec::new();
+            let mut progress = false;
+            for call in pending {
+                let shared = self.db.shared(call.ctx.file);
+                let mc = ast::MacroCall::cast(shared.parse.tree().node(call.node)).expect("pending macro call");
+                let krate = self.items.modules[call.ctx.module].krate;
+                let resolved = self.items.exported_macros.get(&(krate, call.name)).copied();
+                match resolved {
+                    Some(def) => {
+                        progress = true;
+                        self.macro_scope = call.scope;
+                        self.expansion_depth = call.depth;
+                        let _file = TypesFile::enter(call.ctx.file);
+                        let start = self.items.diagnostics.len();
+                        self.collect_resolved_macro_call(call.ctx, mc, def);
+                        self.tag(start, call.ctx.file);
+                    }
+                    None => unresolved.push(call),
+                }
+            }
+            if !progress {
+                for call in unresolved {
+                    let start = self.items.diagnostics.len();
+                    self.items.diagnostics.push(call.diagnostic);
+                    self.tag(start, call.ctx.file);
+                }
+                break;
+            }
+            self.pending_root_macros.extend(unresolved);
+        }
+        self.macro_scope = saved_scope;
+        self.expansion_depth = saved_depth;
     }
 
     fn visibility(&mut self, ctx: Ctx, vis: Option<ast::Visibility<'_>>) -> Visibility {
@@ -2050,6 +2258,9 @@ impl Collector<'_> {
             // `pub(in self)`
             PathAnchor::Plain if path.as_name() == Some(kw::SelfLower) => {
                 return Some(Visibility::Module(ctx.module));
+            }
+            PathAnchor::Plain | PathAnchor::Global if path.edition.unwrap_or_else(|| self.items.edition(ctx.module)) == flux_syntax::Edition::E2015 => {
+                self.items.module_of(self.items.modules[ctx.module].krate)
             }
             PathAnchor::Plain | PathAnchor::Global => {
                 let message =
@@ -2461,7 +2672,7 @@ impl Collector<'_> {
                 } else if self.items.modules[ctx.module].block.is_some()
                     || m.syntax()
                         .parent()
-                        .is_none_or(|p| p.kind() != SyntaxKind::SOURCE_FILE)
+                        .is_none_or(|p| !matches!(p.kind(), SyntaxKind::SOURCE_FILE | SyntaxKind::MACRO_ITEMS))
                 {
                     Some("path attributes inside inline modules or blocks are not supported yet")
                 } else {
@@ -2526,7 +2737,11 @@ impl Collector<'_> {
             return;
         }
         let def_range = TextRange::new(def_start(m.syntax()), name.syntax().text_range().end());
-        let mut child_dir = parent.dir.join(name_text);
+        let source = self.db.file(ctx.file);
+        let parent_dir = if source.range_base != 0 && parent.file != ctx.file {
+            source.path.parent().unwrap_or_else(|| FsPath::new(""))
+        } else { &parent.dir };
+        let mut child_dir = parent_dir.join(name_text);
         let krate = parent.krate;
         // A literal path is relative to the containing source file, including
         // in a normal foo.rs module (whose default child directory is foo/).
@@ -2548,7 +2763,7 @@ impl Collector<'_> {
                     .to_path_buf();
                 path
             } else {
-                let flat = parent.dir.join(format!("{name_text}.rs"));
+                let flat = parent_dir.join(format!("{name_text}.rs"));
                 let nested = child_dir.join("mod.rs");
                 match (self.db.exists(&flat), self.db.exists(&nested)) {
                     (true, false) => flat,
@@ -2604,6 +2819,8 @@ impl Collector<'_> {
                     return;
                 }
             };
+            let cfg=self.items.crates[krate.0 as usize].cfg.clone();
+            let file=self.db.configured_file(file,cfg);
             // Target inner cfg must run before allocating a visible name.
             let start = self.items.diagnostics.len();
             let shared = self.db.shared(file);
@@ -2646,6 +2863,7 @@ impl Collector<'_> {
         let vis = self.visibility(ctx, u.visibility());
         if let Some(tree) = u.use_tree() {
             let prefix = Path {
+                edition: None,
                 anchor: PathAnchor::Plain,
                 qself: None,
                 segments: Box::default(),
@@ -2668,9 +2886,21 @@ impl Collector<'_> {
         let range = tree.syntax().text_range();
         let mut path = prefix.clone();
         if let Some(p) = tree.path() {
-            let Some(p) = lower_path(p, &mut self.items.diagnostics) else {
+            let Some(mut p) = lower_path(p, &mut self.items.diagnostics) else {
                 return;
             };
+            // `self` alone is a binding in expressions and at the end of
+            // imports, but `use self::{...}` anchors the entire group.
+            if tree.use_tree_list().is_some()
+                && prefix.anchor == PathAnchor::Plain
+                && prefix.segments.is_empty()
+                && p.anchor == PathAnchor::Plain
+                && &*p.segments == [kw::SelfLower]
+            {
+                p.anchor = PathAnchor::SelfModule;
+                p.segments = Box::default();
+                p.ranges = Box::default();
+            }
             if prefix.segments.is_empty() && prefix.anchor == PathAnchor::Plain {
                 path = p;
             } else if p.anchor == PathAnchor::Plain {
@@ -2695,6 +2925,9 @@ impl Collector<'_> {
             }
         }
         if tree.star_token().is_some() {
+            if path.edition.unwrap_or_else(|| self.items.edition(ctx.module)) == flux_syntax::Edition::E2015 && path.anchor == PathAnchor::Plain {
+                path.anchor = PathAnchor::Global;
+            }
             self.items.uses.push(Use {
                 module: ctx.module,
                 file: ctx.file,
@@ -2710,6 +2943,9 @@ impl Collector<'_> {
                 self.collect_use_tree(ctx, vis, &path, child);
             }
             return;
+        }
+        if path.edition.unwrap_or_else(|| self.items.edition(ctx.module)) == flux_syntax::Edition::E2015 && path.anchor == PathAnchor::Plain {
+            path.anchor = PathAnchor::Global;
         }
         // `use m::{self};` imports the module `m`.
         let module_only = path.segments.last() == Some(&kw::SelfLower);
@@ -2768,6 +3004,9 @@ impl Collector<'_> {
     }
 
     fn collect_impl(&mut self, ctx: Ctx, imp: ast::Impl<'_>) {
+        let root = self.items.crates[self.items.modules[ctx.module].krate.0 as usize].root;
+        let file = self.items.modules[root].file;
+        let trusted_drop = [FileId::CORE_ROOT, FileId::alloc_root(), FileId::std_root()].contains(&file);
         let diagnostics = &mut self.items.diagnostics;
         check_attrs(imp.attrs(), diagnostics);
         let range = imp.syntax().text_range();
@@ -2777,12 +3016,18 @@ impl Collector<'_> {
                 "visibility qualifiers are not permitted here",
             ));
         }
-        let generics = collect_generics(
+        let generics = collect_generics_with_drop(
             imp.generic_param_list(),
             imp.where_clause(),
             Defaults::No,
+            trusted_drop,
             diagnostics,
         );
+        if (generics.params.iter().any(|p| p.may_dangle)
+            || generics.lifetimes.iter().any(|p| p.may_dangle))
+            && (imp.unsafe_token().is_none() || imp.trait_ty().is_none()) {
+            diagnostics.push(Diagnostic::new(range, "`may_dangle` requires an unsafe `Drop` impl"));
+        }
         let trait_ref = match imp.trait_ty() {
             Some(ty) => match lower_bound_type(ty, diagnostics) {
                 Some(mut bound) => {
@@ -2836,7 +3081,15 @@ impl Collector<'_> {
             return;
         };
         check_attrs(list.attrs(), &mut self.items.diagnostics);
-        for item in list.items() {
+        let nodes: Vec<_> = list.items().map(|item| item.syntax().id()).collect();
+        self.collect_impl_items(ctx, id, &nodes, is_trait_impl);
+    }
+
+    fn collect_impl_items(&mut self, ctx: Ctx, id: ImplId, nodes: &[NodeId], is_trait_impl: bool) {
+        let _file = TypesFile::enter(ctx.file);
+        let shared = self.db.shared(ctx.file);
+        for &node in nodes {
+            let Some(item) = ast::Item::cast(shared.parse.tree().node(node)) else { continue };
             if !item_enabled(item.syntax(), &mut self.items.diagnostics) {
                 continue;
             }
@@ -2872,7 +3125,10 @@ impl Collector<'_> {
                     self.collect_impl_type(id, t, is_trait_impl);
                     continue;
                 }
-                ast::Item::MacroCall(_) => "macros",
+                ast::Item::MacroCall(call) => {
+                    self.collect_impl_macro(ctx, id, call, is_trait_impl);
+                    continue;
+                }
                 _ => "items like this in `impl` blocks",
             };
             unsupported(
@@ -2881,6 +3137,72 @@ impl Collector<'_> {
                 what,
             );
         }
+    }
+
+    /// Associated items from a macro keep the surrounding impl owner. They
+    /// must not enter the module namespace as ordinary item macros do.
+    fn collect_impl_macro(&mut self, ctx: Ctx, owner: ImplId, call: ast::MacroCall<'_>, is_trait_impl: bool) {
+        check_attrs(call.attrs(), &mut self.items.diagnostics);
+        if macros::is_macro_rules(call.syntax()) {
+            self.items.diagnostics.push(Diagnostic::new(call.syntax().text_range(), "macro definitions are not supported in impls"));
+            return;
+        }
+        let Some(path) = call.path() else { return };
+        let def = match macros::resolve::<()>(self.items, path, &[], self.macro_scope, ctx.module) {
+            Ok(macros::Resolved::Def(id)) => id,
+            Ok(macros::Resolved::Local(_)) => unreachable!(),
+            Err(error) => { self.items.diagnostics.push(error); return; }
+        };
+        self.record_macro_path(ctx, path, def);
+        let def = self.items.macros[def].clone();
+        if matches!(def.kind, macros::MacroKind::Builtin(macros::Builtin::Include)) {
+            self.items.diagnostics.push(Diagnostic::new(call.syntax().text_range(), "non-impl item macro in impl item position: include"));
+            return;
+        }
+        if self.expansion_depth >= RECURSION_LIMIT {
+            self.items.diagnostics.push(Diagnostic::new(call.syntax().text_range(), format!("recursion limit reached while expanding `{}!`", def.name)));
+            return;
+        }
+        let real = self.real_file(ctx.file);
+        let site = macros::CallSite {
+            read_text: crate::source::SourceDb::read_include_str,
+            scope: self.macro_scope,
+            items: self.items,
+            krate: self.items.modules[ctx.module].krate,
+            module: ctx.module,
+            real_file: real,
+        };
+        let mut diagnostics = Vec::new();
+        let expansion = macros::expand(&def, call.syntax(), &site, flux_syntax::parser::Fragment::Items, &mut diagnostics);
+        self.items.diagnostics.extend(diagnostics);
+        let Some(expansion) = expansion else { return };
+        let file = if let Some(path) = expansion.included_path {
+            match self.db.add_inclusion(expansion.parse, path, self.db.file(ctx.file).edition) {
+                Ok(file) => file,
+                Err(message) => {
+                    self.items.diagnostics.push(Diagnostic::new(call.syntax().text_range(), message));
+                    return;
+                }
+            }
+        } else {
+            let file = self.db.add_expansion(expansion.parse, real);
+            self.items.expansion_files.insert(file, real);
+            file
+        };
+        let shared = self.db.shared(file);
+        self.items.files.insert(file, Arc::clone(&shared));
+        let nodes: Vec<_> = shared.parse.tree().root().children().filter(|node| is_item_kind(node.kind())).map(|node| node.id()).collect();
+        self.expansion_depth += 1;
+        let start = self.items.diagnostics.len();
+        with_macro_types(|| {
+            let ctx = Ctx { file, ..ctx };
+            let mut diagnostics = Vec::new();
+            expand_types(shared.parse.tree().root(), &mut diagnostics, &mut |call, diagnostics| self.expand_type_call(ctx, call, diagnostics));
+            self.items.diagnostics.extend(diagnostics);
+            self.collect_impl_items(ctx, owner, &nodes, is_trait_impl);
+        });
+        self.tag(start, file);
+        self.expansion_depth -= 1;
     }
 
     /// Whether trait `impl` block `id` already has a function or constant
@@ -2944,7 +3266,7 @@ impl Collector<'_> {
                 const_unstable = true;
             } else if is_core && attr_name(attr) == Some("rustc_allow_const_fn_unstable") {
                 precise_live_drops = true;
-            } else if is_core && attr_name(attr) == Some("rustc_intrinsic") {
+            } else if (is_core || self.items.is_std(ctx.module)) && attr_name(attr) == Some("rustc_intrinsic") {
                 intrinsic = true;
             } else if is_core && attr_name(attr) == Some("rustc_legacy_const_generics") {
                 // The bounded convention used by our NEON wrappers. Keep the
@@ -3047,9 +3369,12 @@ impl Collector<'_> {
         if let Some(token) = f.async_token() {
             unsupported(diagnostics, token.text_range(), "`async` functions");
         }
-        if let Some(abi) = f.abi() {
-            // `extern "C" fn f() {}`: a Rust function callable from C.
-            unsupported(diagnostics, abi.syntax().text_range(), "`extern` functions");
+        if in_extern_block && let Some(abi) = f.abi() {
+            diagnostics.push(Diagnostic::new(abi.syntax().text_range(), "functions in `extern` blocks cannot have an `extern` qualifier"));
+        }
+        let c_abi = in_extern_block || function_c_abi(f.abi(), diagnostics);
+        if c_abi && track_caller {
+            diagnostics.push(Diagnostic::new(f.syntax().text_range(), "`#[track_caller]` requires Rust ABI"));
         }
         let mut params = Vec::new();
         let mut is_variadic = false;
@@ -3059,7 +3384,10 @@ impl Collector<'_> {
             ..ImplParams::default()
         };
         if let Some(list) = f.param_list() {
-            if let Some(param) = list.self_param() {
+            if let Some(param) = list
+                .self_param()
+                .filter(|p| item_enabled(p.syntax(), diagnostics))
+            {
                 let range = param.syntax().text_range();
                 check_inert_attrs(param.attrs(), diagnostics);
                 if owner.is_none() {
@@ -3089,8 +3417,12 @@ impl Collector<'_> {
                     has_self = true;
                 }
             }
-            let count = list.params().count();
-            for (i, param) in list.params().enumerate() {
+            let enabled_params: Vec<_> = list
+                .params()
+                .filter(|p| item_enabled(p.syntax(), diagnostics))
+                .collect();
+            let count = enabled_params.len();
+            for (i, param) in enabled_params.into_iter().enumerate() {
                 check_inert_attrs(param.attrs(), diagnostics);
                 if let Some(dots) = param.dot3_token() {
                     let message = if !in_extern_block {
@@ -3156,6 +3488,13 @@ impl Collector<'_> {
                 "`impl Trait` types in the return types of trait methods",
             );
             reject_impl_trait(&mut ret, site, diagnostics);
+        } else if self.db.file(ctx.file).edition != flux_syntax::Edition::E2024 {
+            let boundary = match self.db.file(ctx.file).edition {
+                flux_syntax::Edition::E2015 => "impl Trait in edition 2015",
+                flux_syntax::Edition::E2018 => "impl Trait in edition 2018",
+                _ => "impl Trait in edition 2021",
+            };
+            reject_impl_trait(&mut ret, ImplTraitSite::Unsupported(boundary), diagnostics);
         } else {
             collect_opaques(&mut ret, &mut opaques, diagnostics);
         }
@@ -3170,7 +3509,10 @@ impl Collector<'_> {
             && !in_extern_block
             && let Some(list) = f.param_list()
         {
-            for param in list.params() {
+            for param in list
+                .params()
+                .filter(|p| item_enabled(p.syntax(), &mut Vec::new()))
+            {
                 if let Some(pat) = param.pat()
                     && !matches!(pat, ast::Pat::IdentPat(_) | ast::Pat::WildcardPat(_))
                 {
@@ -3239,6 +3581,7 @@ impl Collector<'_> {
             },
             is_unsafe: in_extern_block || f.unsafe_token().is_some(),
             is_extern: in_extern_block,
+            c_abi,
             is_const: f.const_token().is_some(),
             inherits_overflow_checks,
             const_unstable,
@@ -3284,11 +3627,7 @@ impl Collector<'_> {
         {
             return;
         }
-        let mut blocks = Vec::new();
-        outer_blocks(tree.node(node), &mut blocks);
-        for block in blocks {
-            self.collect_block(ctx, block, function, false);
-        }
+        self.collect_body_node(ctx, tree.node(node), function);
     }
 
     /// Block `node`'s items, in a module of their own, then those of the
@@ -3299,7 +3638,6 @@ impl Collector<'_> {
         ctx: Ctx,
         node: NodeId,
         function: Option<FunctionId>,
-        generated: bool,
     ) {
         let shared = self.db.shared(ctx.file);
         let tree = shared.parse.tree();
@@ -3334,35 +3672,35 @@ impl Collector<'_> {
         } else {
             ctx
         };
+        self.precollect_imports(ctx, block.children().map(|child| child.id()));
         let outer_scope = self.macro_scope;
         for child in block.children() {
-            self.collect_body_node(ctx, child, function, generated);
+            self.collect_body_node(ctx, child, function);
         }
         self.macro_scope = outer_scope;
     }
 
-    /// Walk expressions without crossing item or block scopes. Only imports
-    /// made by body macros are collected; other generated items remain errors.
+    /// Walk expressions without crossing item or block scopes. Retained macro
+    /// expansions collect items through the same path as written block items.
     fn collect_body_node(
         &mut self,
         ctx: Ctx,
         node: SyntaxNode<'_>,
         function: Option<FunctionId>,
-        generated: bool,
     ) {
         if !item_enabled(node, &mut Vec::new()) {
             return;
         }
         if node.kind() == SyntaxKind::BLOCK_EXPR {
-            self.collect_block(ctx, node.id(), function, generated);
+            self.collect_block(ctx, node.id(), function);
             return;
         }
         if is_item_kind(node.kind()) {
+            let _file = TypesFile::enter(ctx.file);
             let start = self.items.diagnostics.len();
-            if (!generated || node.kind() == SyntaxKind::USE)
-                && item_enabled(node, &mut self.items.diagnostics)
-            {
+            if item_enabled(node, &mut self.items.diagnostics) {
                 self.collect_item_expanding_types(ctx, node.id());
+                self.collect_anon_consts(ctx, node.id());
             }
             self.tag(start, ctx.file);
             return;
@@ -3407,6 +3745,7 @@ impl Collector<'_> {
             let real = self.real_file(ctx.file);
             let site = macros::CallSite {
                 read_text: crate::source::SourceDb::read_include_str,
+            scope: self.macro_scope,
                 items: self.items,
                 krate: self.items.modules[ctx.module].krate,
                 module: ctx.module,
@@ -3423,8 +3762,19 @@ impl Collector<'_> {
                 return;
             }
             self.record_macro_path(ctx, path, id);
-            let file = self.db.add_expansion(expansion.parse, real);
-            self.items.expansion_files.insert(file, real);
+            let file = if let Some(path) = expansion.included_path {
+                match self.db.add_inclusion(expansion.parse, path, self.db.file(ctx.file).edition) {
+                Ok(file) => file,
+                Err(message) => {
+                    self.items.diagnostics.push(Diagnostic::new(node.text_range(), message));
+                    return;
+                }
+            }
+            } else {
+                let file = self.db.add_expansion(expansion.parse, real);
+                self.items.expansion_files.insert(file, real);
+                file
+            };
             self.items.body_expansions.insert(
                 (ctx.file, node.id()),
                 BodyExpansion {
@@ -3441,13 +3791,12 @@ impl Collector<'_> {
                 Ctx { file, ..ctx },
                 shared.parse.tree().root(),
                 function,
-                true,
             );
             self.expansion_depth -= 1;
             return;
         }
         for child in node.children() {
-            self.collect_body_node(ctx, child, function, generated);
+            self.collect_body_node(ctx, child, function);
         }
     }
 
@@ -3831,23 +4180,78 @@ impl Collector<'_> {
         };
         let name = Symbol::intern(name.text());
         let krate = self.items.modules[ctx.module].krate;
-        let diagnostics = &mut self.items.diagnostics;
-        if e.rename().is_some() {
-            unsupported(diagnostics, range, "renamed `extern crate` declarations");
-        } else if name == sym::alloc || name == sym::std {
-            self.items.crates[krate.0 as usize].externs.push(name);
-        } else if name != sym::core
-            && name != sym::std
-            && !self.items.crates[krate.0 as usize]
-                .dependencies
-                .iter()
-                .any(|(alias, _)| *alias == name)
-        {
-            diagnostics.push(Diagnostic::new(
-                range,
-                format!("can't find crate for `{name}`"),
-            ));
+        let alias = match e.rename() {
+            Some(rename) => match rename.name() {
+                Some(alias) => Symbol::intern(alias.text()),
+                None => {
+                    unsupported(&mut self.items.diagnostics, range, "`extern crate` underscore aliases");
+                    return;
+                }
+            },
+            None => name,
+        };
+        let own = &self.items.crates[krate.0 as usize];
+        let target = own.dependencies.iter().find(|(alias, _)| *alias == name)
+            .map(|(_, target)| *target)
+            .or_else(|| self.items.crates.iter().enumerate().find(|(i, c)| {
+                (*i as u32) < krate.0 && c.name == name && (c.is_core || name == sym::std)
+            }).map(|(i, _)| CrateId(i as u32)));
+        let Some(target) = target else {
+            self.items.diagnostics.push(Diagnostic::new(range, format!("can't find crate for `{name}`")));
+            return;
+        };
+        self.items.load_extern(krate, target);
+        let attrs = crate::cfg::Attrs::new(e.attrs());
+        for attr in attrs.iter() {
+            if attr_name(attr) == Some("macro_use") {
+                if attr.meta().is_some_and(|m| m.token_tree().is_none() && m.eq_token().is_none() && m.unsafe_token().is_none()) {
+                    if ctx.module != self.items.crates[krate.0 as usize].root {
+                        self.items.diagnostics.push(Diagnostic::new(range, "an extern crate loading macros must be at the crate root"));
+                    } else {
+                        let mut exported: Vec<_> = self.items.exported_macros.iter()
+                            .filter_map(|(&(owner, name), &id)| (owner == target).then_some((name, id))).collect();
+                        if let Some(scope) = self.items.def_map.scopes.get(self.items.module_of(target).index()) {
+                            exported.extend(scope.macros.iter().filter_map(|(&name, binding)| {
+                                match binding.def {
+                                    crate::def_map::Def::Macro(id) if binding.vis == Visibility::Public => Some((name, id)),
+                                    _ => None,
+                                }
+                            }));
+                        }
+                        self.items.crates[krate.0 as usize].macro_use.extend(exported);
+                    }
+                } else {
+                    unsupported(&mut self.items.diagnostics, attr.syntax().text_range(), "selective extern macro imports");
+                }
+            } else {
+                check_attr(attr, &mut self.items.diagnostics);
+            }
         }
+        let own = &self.items.crates[krate.0 as usize];
+        let root = own.root;
+        if ctx.module == root && e.rename().is_some() {
+            self.items.crates[krate.0 as usize].extern_aliases.push((alias, target));
+        }
+        if ctx.module == root && e.rename().is_none() && (name == sym::alloc || name == sym::std) {
+            self.items.crates[krate.0 as usize].externs.push(name);
+        }
+        let vis = self.visibility(ctx, e.visibility());
+        self.items.uses.push(Use {
+            module: ctx.module,
+            file: ctx.file,
+            vis,
+            path: Path {
+                edition: None,
+                anchor: PathAnchor::DefinitionCrate(target),
+                qself: None,
+                segments: Box::default(),
+                ranges: Box::default(),
+                anchor_ranges: Box::default(),
+                args: Box::default(),
+            },
+            kind: UseKind::Module(alias),
+            range,
+        });
     }
 
     fn collect_struct(&mut self, ctx: Ctx, s: ast::Struct<'_>) {
@@ -3895,6 +4299,15 @@ impl Collector<'_> {
             false,
         );
         let repr_c = struct_repr(&hints, &mut self.items.diagnostics);
+        let repr_transparent = hints.iter().any(|(hint, _)| hint.as_str() == "transparent");
+        if repr_transparent {
+            if hints.iter().any(|(hint, _)| hint.as_str() != "transparent") {
+                self.items.diagnostics.push(Diagnostic::new(s.syntax().text_range(), "transparent structs cannot have other repr hints"));
+            }
+            if fields.len() != 1 {
+                unsupported(&mut self.items.diagnostics, s.syntax().text_range(), "transparent structs with multiple or no fields");
+            }
+        }
         let name_range = name.syntax().text_range();
         let id = self.items.structs.alloc(Struct {
             is_union: false,
@@ -3906,6 +4319,7 @@ impl Collector<'_> {
             variants: None,
             repr: None,
             repr_c,
+            repr_transparent,
             repr_align,
             loc: ItemLoc {
                 module: ctx.module,
@@ -3981,6 +4395,9 @@ impl Collector<'_> {
         );
         let (kind, fields) = self.collect_fields(ctx, s.record_field_list(), None, false, true);
         let repr_c = struct_repr(&hints, &mut self.items.diagnostics);
+        if hints.iter().any(|(hint, _)| hint.as_str() == "transparent") {
+            self.items.diagnostics.push(Diagnostic::new(s.syntax().text_range(), "transparent unions are not supported"));
+        }
         if repr_c && hints.iter().any(|(h, _)| h.as_str() == "Rust") {
             self.items.diagnostics.push(Diagnostic::new(
                 s.syntax().text_range(),
@@ -4011,6 +4428,7 @@ impl Collector<'_> {
             variants: None,
             repr: None,
             repr_c,
+            repr_transparent: false,
             repr_align,
             loc: ItemLoc {
                 module: ctx.module,
@@ -4054,10 +4472,10 @@ impl Collector<'_> {
         };
         let kind = if let Some(list) = record {
             for field in list.fields() {
+                if !item_enabled(field.syntax(), &mut self.items.diagnostics) {
+                    continue;
+                }
                 if in_union {
-                    if !item_enabled(field.syntax(), &mut self.items.diagnostics) {
-                        continue;
-                    }
                     let attrs = crate::cfg::Attrs::new(field.attrs());
                     for attr in attrs.iter().filter(|a| attr_name(*a) != Some("cfg")) {
                         check_attr(attr, &mut self.items.diagnostics);
@@ -4096,7 +4514,11 @@ impl Collector<'_> {
             }
             StructKind::Record
         } else if let Some(list) = tuple {
-            for (i, field) in list.fields().enumerate() {
+            for field in list.fields() {
+                if !item_enabled(field.syntax(), &mut self.items.diagnostics) {
+                    continue;
+                }
+                let i = fields.len();
                 check_inert_attrs(field.attrs(), &mut self.items.diagnostics);
                 let vis = field_vis(self, field.visibility());
                 let range = field.syntax().text_range();
@@ -4156,7 +4578,13 @@ impl Collector<'_> {
             &mut self.items.diagnostics,
         );
         let def_range = TextRange::new(def_start(e.syntax()), name.syntax().text_range().end());
-        let all_variants = e.variant_list().into_iter().flat_map(|l| l.variants());
+        let enabled_variants: Vec<_> = e
+            .variant_list()
+            .into_iter()
+            .flat_map(|l| l.variants())
+            .filter(|v| item_enabled(v.syntax(), &mut self.items.diagnostics))
+            .collect();
+        let all_variants = enabled_variants.iter().copied();
         let has_fields = all_variants
             .clone()
             .any(|v| v.record_field_list().is_some() || v.tuple_field_list().is_some());
@@ -4186,7 +4614,7 @@ impl Collector<'_> {
         // `#[default]` on variants: the variant's index, the attribute's
         // range and whether it has a value, and the name's range.
         let mut defaults: Vec<(u32, TextRange, bool, TextRange)> = Vec::new();
-        for v in e.variant_list().into_iter().flat_map(|l| l.variants()) {
+        for v in enabled_variants {
             let mut marked = Vec::new();
             let attrs = crate::cfg::Attrs::new(v.attrs());
             self.items.diagnostics.extend(
@@ -4196,13 +4624,7 @@ impl Collector<'_> {
                     .map(|(r, m)| Diagnostic::new(*r, m.clone())),
             );
             for attr in attrs.iter() {
-                if attr_name(attr) == Some("cfg") {
-                    unsupported(
-                        &mut self.items.diagnostics,
-                        attr.syntax().text_range(),
-                        "conditional attributes in this position",
-                    );
-                } else if attr_name(attr) == Some("default") {
+                if attr_name(attr) == Some("default") {
                     let meta = attr.meta();
                     let has_value = meta.is_some_and(|m| {
                         m.token_tree().is_some()
@@ -4380,6 +4802,7 @@ impl Collector<'_> {
             variants: Some(variants.into()),
             repr,
             repr_c: hints.iter().any(|(h, _)| h.as_str() == "C"),
+            repr_transparent: false,
             repr_align,
             loc: ItemLoc {
                 module: ctx.module,
@@ -4512,6 +4935,7 @@ impl Collector<'_> {
                     bindings: Box::default(),
                     range: s.generics.range,
                     parenthesized: false,
+                        bound_lifetimes: Box::default(),
                 })]);
             }
             for (v, name, range, fields) in variants {
@@ -4537,6 +4961,7 @@ impl Collector<'_> {
                     },
                     is_unsafe: false,
                     is_extern: false,
+                    c_abi: false,
                     is_const: true,
                     inherits_overflow_checks: false,
                     const_unstable: false,
@@ -4624,6 +5049,7 @@ impl Collector<'_> {
                 synthetic: false,
                 kind: p.kind.clone(),
                 maybe_unsized: p.maybe_unsized,
+                may_dangle: false,
             })
             .collect();
         // As rustc expands it: each parameter's own bounds and the
@@ -4685,6 +5111,7 @@ impl Collector<'_> {
                 bindings: Box::default(),
                 range: s.generics.range,
                 parenthesized: false,
+                        bound_lifetimes: Box::default(),
             })]);
         }
         let generics = Generics {
@@ -4738,6 +5165,7 @@ impl Collector<'_> {
                         synthetic: false,
                         kind: ParamKind::Type,
                         maybe_unsized: false,
+                    may_dangle: false,
                     }]),
                     predicates: Box::new([WherePredicate {
                         ty: TypeRef::Path(Path::single(h)),
@@ -4787,6 +5215,7 @@ impl Collector<'_> {
                         bindings: Box::default(),
                         range,
                         parenthesized: false,
+                        bound_lifetimes: Box::default(),
                     })])
                     .collect();
                 (
@@ -4835,6 +5264,7 @@ impl Collector<'_> {
             },
             is_unsafe: false,
             is_extern: false,
+            c_abi: false,
             is_const: false,
             inherits_overflow_checks: false,
             const_unstable: false,
@@ -4929,23 +5359,6 @@ fn is_item_kind(kind: SyntaxKind) -> bool {
     )
 }
 
-/// The outermost blocks in `node`, itself included, outside items.
-fn outer_blocks(node: SyntaxNode<'_>, out: &mut Vec<NodeId>) {
-    if !item_enabled(node, &mut Vec::new()) {
-        return;
-    }
-    if node.kind() == SyntaxKind::BLOCK_EXPR {
-        out.push(node.id());
-        return;
-    }
-    if is_item_kind(node.kind()) {
-        return;
-    }
-    for child in node.children() {
-        outer_blocks(child, out);
-    }
-}
-
 pub(crate) fn unsupported(diagnostics: &mut Vec<Diagnostic>, range: TextRange, what: &str) {
     diagnostics.push(Diagnostic::new(
         range,
@@ -4987,7 +5400,7 @@ pub(crate) fn item_enabled(node: SyntaxNode<'_>, diagnostics: &mut Vec<Diagnosti
         let range = attr.syntax().text_range();
         let result = match tokens.as_slice() {
             [open, inner @ .., close] if open.kind == T!['('] && close.kind == T![')'] => {
-                crate::cfg::eval(range, inner)
+                crate::cfg::eval(range, inner, attrs.cfg.as_deref())
             }
             _ => Err((range, "expected `cfg` predicate in parentheses".into())),
         };
@@ -5024,6 +5437,11 @@ pub(crate) fn cfg_position(p: SyntaxNode<'_>) -> bool {
                 | SyntaxKind::EXPR_STMT
                 | SyntaxKind::MATCH_ARM
                 | SyntaxKind::RECORD_EXPR_FIELD
+                | SyntaxKind::RECORD_FIELD
+                | SyntaxKind::TUPLE_FIELD
+                | SyntaxKind::VARIANT
+                | SyntaxKind::PARAM
+                | SyntaxKind::SELF_PARAM
         )
         || ast::Expr::can_cast(p.kind())
             && p.parent().is_some_and(|parent| {
@@ -5255,11 +5673,6 @@ fn check_inert_attrs(attrs: AstChildren<'_, ast::Attr<'_>>, diagnostics: &mut Ve
     for attr in attrs.iter() {
         let path = attr.meta().and_then(|m| m.path());
         match path {
-            _ if attr_name(attr) == Some("cfg") => unsupported(
-                diagnostics,
-                attr.syntax().text_range(),
-                "conditional attributes in this position",
-            ),
             Some(path) if attr_name(attr) == Some("derive") => diagnostics.push(Diagnostic::new(
                 path.syntax().text_range(),
                 "expected non-macro attribute, found attribute macro `derive`",
@@ -5274,6 +5687,10 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
         "allow", "warn", "deny", "expect", "inline", "cold", "must_use", "doc",
     ];
     let name = attr_name(attr);
+    if name == Some("deprecated") {
+        deprecated_attr(attr, diagnostics);
+        return;
+    }
     if let Some(meta) = attr.meta()
         && meta.unsafe_token().is_none()
         && meta.token_tree().is_none()
@@ -5328,6 +5745,54 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
         None => "attributes like this are not supported yet".to_owned(),
     };
     diagnostics.push(Diagnostic::new(attr.syntax().text_range(), message));
+}
+
+/// Deprecation is lint metadata; validate its payload as for other accepted
+/// lint attributes. Flux does not currently emit deprecation warnings.
+fn deprecated_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) {
+    let meta = attr.meta().expect("named attribute");
+    let range = attr.syntax().text_range();
+    let malformed = |diagnostics: &mut Vec<Diagnostic>| {
+        diagnostics.push(Diagnostic::new(range, "malformed `deprecated` attribute input"));
+    };
+    if meta.unsafe_token().is_some() {
+        malformed(diagnostics);
+        return;
+    }
+    if meta.eq_token().is_some() {
+        if !matches!(meta.expr(), Some(ast::Expr::Literal(literal)) if literal.value().is_some_and(|token| token.kind() == SyntaxKind::STRING)) {
+            malformed(diagnostics);
+        }
+        return;
+    }
+    let Some(tree) = meta.token_tree() else { return; };
+    let mut tokens = Vec::new();
+    macros::tt::tokens_of(tree.syntax(), &mut tokens);
+    let [open, inner @ .., close] = tokens.as_slice() else {
+        malformed(diagnostics);
+        return;
+    };
+    if open.kind != T!['('] || close.kind != T![')'] {
+        malformed(diagnostics);
+        return;
+    }
+    let mut seen = Vec::new();
+    let mut rest = inner;
+    while !rest.is_empty() {
+        let [key, eq, value, tail @ ..] = rest else { malformed(diagnostics); return; };
+        if !matches!(key.text.as_str(), "since" | "note") || eq.kind != T![=]
+            || value.kind != SyntaxKind::STRING || seen.contains(&key.text)
+        {
+            malformed(diagnostics);
+            return;
+        }
+        seen.push(key.text);
+        match tail {
+            [] => break,
+            [comma, tail @ ..] if comma.kind == T![,] => rest = tail,
+            _ => { malformed(diagnostics); return; }
+        }
+    }
 }
 
 /// A path as written, without generic arguments; `None` (reported) if it
@@ -5526,6 +5991,7 @@ fn lower_path_with(
         })
         .collect();
     Some(Path {
+        edition: path.syntax().tokens().find(|t| !t.kind().is_trivia()).map(|t| t.edition()),
         anchor,
         qself,
         segments: names.into(),
@@ -5614,6 +6080,7 @@ pub(crate) fn lower_generic_args(
         bindings: bindings.into(),
         range: list.syntax().text_range(),
         parenthesized: false,
+                        bound_lifetimes: Box::default(),
     }
 }
 
@@ -5651,6 +6118,7 @@ fn lower_parenthesized_args(
         }]),
         range: TextRange::new(range.start(), end.end()),
         parenthesized: true,
+        bound_lifetimes: Box::default(),
     }
 }
 
@@ -5889,7 +6357,7 @@ fn struct_repr(hints: &[(Symbol, TextRange)], diagnostics: &mut Vec<Diagnostic>)
     for &(hint, range) in hints {
         match hint.as_str() {
             "C" => c = true,
-            "Rust" | "align" => {}
+            "Rust" | "align" | "transparent" => {}
             name if REPR_INTS.contains(&name) => diagnostics.push(Diagnostic::new(
                 range,
                 "attribute should be applied to an enum",
@@ -5967,26 +6435,16 @@ pub enum Derive {
     Hash,
 }
 
-/// `::core::module::name`, as `#[derive]` names its traits and their
+/// A path into physical embedded core, as `#[derive]` names its traits and their
 /// types.
-fn core_path(module: &str, name: &str, in_core: bool) -> Path {
-    // `core` itself names them from its root.
-    let (anchor, segments): (PathAnchor, Box<[Symbol]>) = if in_core {
-        (
-            PathAnchor::Crate,
-            Box::new([Symbol::intern(module), Symbol::intern(name)]),
-        )
-    } else {
-        (
-            PathAnchor::Global,
-            Box::new([
-                Symbol::intern("core"),
-                Symbol::intern(module),
-                Symbol::intern(name),
-            ]),
-        )
-    };
+fn core_path(module: &str, name: &str, _in_core: bool) -> Path {
+    // Compiler-generated paths name the physical embedded core crate even
+    // when edition-2015 user code cannot name it through the crate root.
+    let anchor = PathAnchor::DefinitionCrate(CrateId(0));
+    let segments = Box::new([Symbol::intern(module), Symbol::intern(name)]);
+
     Path {
+        edition: None,
         anchor,
         qself: None,
         segments,
@@ -6253,14 +6711,14 @@ fn lower_bounds(
             let Some(path) = bound.path_type().and_then(|p| p.path()) else {
                 continue;
             };
-            // `for<'a> Fn(&'a T) -> &'a U` is `Fn(&T) -> &U`, which flux
-            // supports; other higher-ranked bounds it does not yet.
+            // Fn-family binders retain named input occurrences, including
+            // repeated lifetimes in nested generic arguments.
             let binder = bound
                 .for_token()
                 .map(|_| binder_names(bound.generic_param_list(), diagnostics));
             if let Some(mut path) = lower_trait_path(path, diagnostics) {
                 match binder {
-                    Some(Some(names)) if elide_fn_binder(&mut path, &names, diagnostics) => {}
+                    Some(Some(names)) if bind_fn_lifetimes(&mut path, &names, diagnostics) => {}
                     Some(_) => {
                         unsupported(diagnostics, range, "higher-ranked bounds");
                         continue;
@@ -6284,7 +6742,17 @@ fn collect_generics(
     defaults: Defaults,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Generics {
-    let mut generics = collect_generics_as_written(list, where_clause, defaults, diagnostics);
+    collect_generics_with_drop(list, where_clause, defaults, false, diagnostics)
+}
+
+fn collect_generics_with_drop(
+    list: Option<ast::GenericParamList<'_>>,
+    where_clause: Option<ast::WhereClause<'_>>,
+    defaults: Defaults,
+    trusted_drop: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Generics {
+    let mut generics = collect_generics_as_written(list, where_clause, defaults, trusted_drop, diagnostics);
     let bounds = ImplTraitSite::NotAllowed("bounds");
     for p in generics.predicates.iter_mut() {
         reject_impl_trait(&mut p.ty, bounds, diagnostics);
@@ -6302,10 +6770,32 @@ fn collect_generics(
     generics
 }
 
+/// Only embedded implementation parameters can carry the internal unsafe
+/// drop promise. Merely naming a user crate core/alloc/std grants no privilege.
+fn drop_param_attrs(attrs: AstChildren<'_, ast::Attr<'_>>, trusted: bool, diagnostics: &mut Vec<Diagnostic>) -> bool {
+    let attrs = crate::cfg::Attrs::new(attrs);
+    diagnostics.extend(attrs.errors.iter().map(|(r, m)| Diagnostic::new(*r, m.clone())));
+    let mut found = false;
+    for attr in attrs.iter() {
+        if trusted && attr_name(attr) == Some("may_dangle") {
+            let valid = attr.meta().is_some_and(|meta| meta.token_tree().is_none()
+                && meta.eq_token().is_none() && meta.unsafe_token().is_none());
+            if !valid || found {
+                diagnostics.push(Diagnostic::new(attr.syntax().text_range(), "invalid `may_dangle` attribute"));
+            }
+            found |= valid;
+        } else {
+            check_attr(attr, diagnostics);
+        }
+    }
+    found
+}
+
 fn collect_generics_as_written(
     list: Option<ast::GenericParamList<'_>>,
     where_clause: Option<ast::WhereClause<'_>>,
     defaults: Defaults,
+    trusted_drop: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Generics {
     let mut predicates = Vec::new();
@@ -6376,7 +6866,7 @@ fn collect_generics_as_written(
             if let Some(Some(names)) = &binder
                 && !bounds
                     .iter_mut()
-                    .all(|b| elide_fn_binder(&mut b.path, names, diagnostics))
+                    .all(|b| bind_fn_lifetimes(&mut b.path, names, diagnostics))
             {
                 unsupported(diagnostics, range, "higher-ranked bounds");
                 continue;
@@ -6423,7 +6913,7 @@ fn collect_generics_as_written(
         let range = param.syntax().text_range();
         match param {
             ast::GenericParam::TypeParam(param) => {
-                check_attrs(param.attrs(), diagnostics);
+                let may_dangle = drop_param_attrs(param.attrs(), trusted_drop, diagnostics);
                 let Some(name) = param.name() else {
                     continue;
                 };
@@ -6461,14 +6951,9 @@ fn collect_generics_as_written(
                 if let Some(ty) = param.default_type() {
                     let ty_range = ty.syntax().text_range();
                     match defaults {
-                        Defaults::Trait | Defaults::Struct => {
+                        Defaults::Trait | Defaults::Struct | Defaults::Alias => {
                             default = Some((lower_type(Some(ty), diagnostics), ty_range));
                         }
-                        Defaults::Alias => unsupported(
-                            diagnostics,
-                            ty_range,
-                            "defaults for type parameters of type aliases",
-                        ),
                         Defaults::No => diagnostics.push(Diagnostic::new(
                             range,
                             "defaults for generic parameters are not allowed here",
@@ -6498,6 +6983,7 @@ fn collect_generics_as_written(
                     synthetic: false,
                     kind: ParamKind::Type,
                     maybe_unsized: false,
+                    may_dangle,
                 });
                 continue;
             }
@@ -6509,15 +6995,19 @@ fn collect_generics_as_written(
                 let name_range = name.syntax().text_range();
                 let ty_range = param.ty().map_or(range, |t| t.syntax().text_range());
                 let ty = lower_type(param.ty(), diagnostics);
-                if let Some(default) = param.default_val() {
-                    let at = default.syntax().text_range();
+                let mut default = None;
+                if let Some(value) = param.default_val() {
+                    let at = value.syntax().text_range();
                     match defaults {
-                        Defaults::No => diagnostics.push(Diagnostic::new(
-                            at,
-                            "defaults for generic parameters are not allowed here",
-                        )),
-                        _ => unsupported(diagnostics, at, "defaults for const parameters"),
+                        Defaults::No => diagnostics.push(Diagnostic::new(at, "defaults for generic parameters are not allowed here")),
+                        _ => {
+                            default = Some((TypeRef::Const(lower_const_arg(value.expr(), at, diagnostics)), at));
+                            defaulted.push(name_range);
+                        }
                     }
+                } else if defaults != Defaults::No && let Some(&earlier) = defaulted.first() {
+                    diagnostics.push(Diagnostic::new(earlier, "generic parameters with a default must be trailing"));
+                    defaulted.clear();
                 }
                 let name = Symbol::intern(name.text());
                 if params.iter().any(|p| p.name == name) {
@@ -6527,15 +7017,16 @@ fn collect_generics_as_written(
                 params.push(GenericParam {
                     name,
                     range: name_range,
-                    default: None,
+                    default,
                     synthetic: false,
                     kind: ParamKind::Const { ty, ty_range },
                     maybe_unsized: false,
+                    may_dangle: false,
                 });
                 continue;
             }
             ast::GenericParam::LifetimeParam(param) => {
-                check_attrs(param.attrs(), diagnostics);
+                let may_dangle = drop_param_attrs(param.attrs(), trusted_drop, diagnostics);
                 let Some(lifetime) = param.lifetime() else {
                     continue;
                 };
@@ -6583,6 +7074,7 @@ fn collect_generics_as_written(
                     continue;
                 }
                 lifetimes.push(LifetimeParam {
+                    may_dangle,
                     name: lifetime.name,
                     range: lifetime.range,
                 });
@@ -6675,7 +7167,19 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
         }
         ast::Type::DynTraitType(d) => return lower_dyn(d, diagnostics),
         ast::Type::FnPtrType(ptr) => return lower_fn_ptr(ptr, diagnostics),
-        ast::Type::ForType(_) => "higher-ranked types",
+        ast::Type::ForType(for_type) => {
+            let Some(names) = binder_names(for_type.generic_param_list(), diagnostics) else { return TypeRef::Error; };
+            let mut ty = lower_type(for_type.ty(), diagnostics);
+            if let TypeRef::FnPtr { bound_lifetimes, .. } = &mut ty {
+                if !bound_lifetimes.is_empty() {
+                    unsupported(diagnostics, for_type.syntax().text_range(), "nested function pointer binders");
+                    return TypeRef::Error;
+                }
+                *bound_lifetimes = names.into();
+                return ty;
+            }
+            "higher-ranked types"
+        },
         ast::Type::ImplTraitType(it) => return lower_impl_trait(it, diagnostics),
         ast::Type::InferType(_) => return TypeRef::Infer,
         ast::Type::MacroType(m) => {
@@ -7045,6 +7549,7 @@ fn desugar_impl_param(
         synthetic: true,
         kind: ParamKind::Type,
         maybe_unsized: false,
+                    may_dangle: false,
     });
     for bound in it.bounds.iter_mut() {
         visit_path_impl_traits(&mut bound.path, Nested::Site, &mut |t, at| {
@@ -7359,17 +7864,13 @@ pub(crate) fn is_anon_const(expr: ast::Expr<'_>) -> bool {
 /// `fn(A, B) -> R`, `unsafe fn(A)`; `extern "C" fn` and C-variadic ones
 /// are reported.
 fn lower_fn_ptr(ptr: ast::FnPtrType<'_>, diagnostics: &mut Vec<Diagnostic>) -> TypeRef {
-    if let Some(abi) = ptr.abi() {
-        unsupported(
-            diagnostics,
-            abi.syntax().text_range(),
-            "`extern` function pointer types",
-        );
-        return TypeRef::Error;
-    }
+    let is_c = function_c_abi(ptr.abi(), diagnostics);
     let mut params = Vec::new();
     if let Some(list) = ptr.param_list() {
         for param in list.params() {
+            if !item_enabled(param.syntax(), diagnostics) {
+                continue;
+            }
             check_inert_attrs(param.attrs(), diagnostics);
             if let Some(dots) = param.dot3_token() {
                 unsupported(
@@ -7387,10 +7888,11 @@ fn lower_fn_ptr(ptr: ast::FnPtrType<'_>, diagnostics: &mut Vec<Diagnostic>) -> T
         None => TypeRef::unit(),
     };
     TypeRef::FnPtr {
+        bound_lifetimes: Box::default(),
         params: params.into(),
         ret: Box::new(ret),
         is_unsafe: ptr.unsafe_token().is_some(),
-    }
+        is_c,    }
 }
 
 /// Whether `name` is a primitive type's.
@@ -7504,69 +8006,45 @@ fn binder_names(
     Some(names)
 }
 
-/// Rewrites a `Fn`-family bound under a binder of one lifetime,
-/// `for<'a> Fn(&'a T) -> &'a U`, as the elided `Fn(&T) -> &U` it means:
-/// whether it could, as the lifetime is its parameters' only one and
-/// appears only on references.
-fn elide_fn_binder(path: &mut Path, names: &[Symbol], diagnostics: &mut Vec<Diagnostic>) -> bool {
-    let [name] = names else {
-        return names.is_empty();
-    };
+/// Retains a Fn-family binder so region lowering can correlate repeated
+/// occurrences on references and nested generic arguments.
+fn bind_fn_lifetimes(path: &mut Path, names: &[Symbol], _diagnostics: &mut Vec<Diagnostic>) -> bool {
     let last = path.segments.len().saturating_sub(1);
-    let Some(Some(args)) = path.args.get_mut(last) else {
-        return false;
-    };
-    if !args.parenthesized {
-        return false;
-    }
-    fn walk(ty: &mut TypeRef, name: Symbol, count: &mut u32, named: &mut bool) -> bool {
-        match ty {
-            TypeRef::Ref {
-                lifetime, pointee, ..
-            } => {
-                match lifetime {
-                    Some(l) if l.name == name => {
-                        *lifetime = None;
-                        *count += 1;
-                        *named = true;
-                    }
-                    Some(_) => {}
-                    None => *count += 1,
-                }
-                walk(pointee, name, count, named)
-            }
-            TypeRef::Tuple(list) => list.iter_mut().all(|t| walk(t, name, count, named)),
-            TypeRef::Slice(t) | TypeRef::Ptr { pointee: t, .. } => walk(t, name, count, named),
-            TypeRef::Array { elem, .. } => walk(elem, name, count, named),
-            TypeRef::Path(path) => path.args.iter().flatten().all(|a| {
-                a.lifetimes.iter().all(|l| l.name != name)
-                    && a.types.iter().all(|t| {
-                        matches!(t, TypeRef::Path(_)) || {
-                            let mut inner = 0;
-                            let mut t = t.clone();
-                            walk(&mut t, name, &mut inner, &mut false) && inner == 0
-                        }
-                    })
-            }),
-            _ => true,
+    let Some(Some(args)) = path.args.get_mut(last) else { return false; };
+    if !args.parenthesized { return false; }
+    args.bound_lifetimes = names.into();
+    true
+}
+
+/// Whether a written function ABI is C. Omitted `extern` ABI means C.
+fn function_c_abi(abi: Option<ast::Abi<'_>>, diagnostics: &mut Vec<Diagnostic>) -> bool {
+    let Some(abi) = abi else { return false };
+    let name = abi.string_token().and_then(|s| crate::literal::unescape_str(s.text()).ok());
+    match name.as_deref().unwrap_or("C") {
+        "C" => true,
+        "Rust" => false,
+        _ => {
+            unsupported(diagnostics, abi.syntax().text_range(), "function ABIs other than \"C\" and \"Rust\"");
+            false
         }
     }
-    let mut inputs = 0;
-    let mut named_input = false;
-    let ok_inputs = args
-        .types
-        .iter_mut()
-        .all(|t| walk(t, *name, &mut inputs, &mut named_input));
-    let ok_outputs = args.bindings.iter_mut().all(|b| {
-        let mut named_output = false;
-        let ok = walk(&mut b.ty, *name, &mut 0, &mut named_output);
-        if named_output && !named_input {
-            diagnostics.push(Diagnostic::new(
-                b.ty_range,
-                format!("binding for associated type `{}` references lifetime `{name}`, which does not appear in the trait input types", b.name),
-            ));
-        }
-        ok
-    });
-    ok_inputs && ok_outputs && inputs == 1
+}
+
+#[cfg(test)]
+mod drop_parameter_tests {
+    use super::*;
+
+    #[test]
+    fn internal_drop_promises_preserve_parameter_identity() {
+        let parsed = flux_syntax::parse_source_file("unsafe impl<#[may_dangle] 'b, 'a, T, #[may_dangle] U> Drop for Owner<'a, 'b, U, T> {} ");
+        assert!(parsed.errors().is_empty());
+        let imp = parsed.root().children().find_map(ast::Impl::cast).unwrap();
+        let mut errors = Vec::new();
+        let generics = collect_generics_with_drop(imp.generic_param_list(), None, Defaults::No, true, &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(generics.lifetimes.iter().map(|p| p.may_dangle).collect::<Vec<_>>(), [true, false]);
+        assert_eq!(generics.params.iter().map(|p| p.may_dangle).collect::<Vec<_>>(), [false, true]);
+        let _ = collect_generics(imp.generic_param_list(), None, Defaults::No, &mut errors);
+        assert_eq!(errors.len(), 2, "user source cannot acquire the unsafe promises");
+    }
 }

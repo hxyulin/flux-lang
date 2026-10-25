@@ -1,0 +1,45 @@
+use equivalent::{Comparable, Equivalent};
+use std::cmp::Ordering;
+
+struct Key(u32, u32);
+struct Query(u32);
+impl Equivalent<Key> for Query {
+    fn equivalent(&self, key: &Key) -> bool { self.0 == key.0 }
+}
+impl Comparable<Key> for Query {
+    fn compare(&self, key: &Key) -> Ordering { self.0.cmp(&key.0) }
+}
+fn equivalent_to<Q: ?Sized + Equivalent<K>, K: ?Sized>(query: &Q, key: &K) -> bool {
+    query.equivalent(key)
+}
+fn compare_to<Q: ?Sized + Comparable<K>, K: ?Sized>(query: &Q, key: &K) -> Ordering {
+    query.compare(key)
+}
+fn main() {
+    let words = [String::from("alpha"), String::from("beta"), String::from("gamma")];
+    let mut matches = 0u32;
+    let mut less = 0u32;
+    for query in ["alpha", "beta", "delta", "gamma"] {
+        for key in &words {
+            if equivalent_to(query, key) { matches += 1; }
+            if compare_to(query, key) == Ordering::Less { less += 1; }
+        }
+    }
+    assert_eq!(matches, 3);
+    assert_eq!(less, 4);
+    assert!(equivalent_to(&7u32, &7u32));
+    assert_eq!(compare_to(&7u32, &9u32), Ordering::Less);
+    assert!(equivalent_to(&[1u32, 2][..], &[1u32, 2][..]));
+    let keys = [Key(3, 30), Key(5, 50), Key(9, 90)];
+    let mut found = 0;
+    let mut payload = 0;
+    for query in [Query(3), Query(4), Query(9)] {
+        for key in &keys {
+            if equivalent_to(&query, key) { found += 1; payload += key.1; }
+            assert_eq!(compare_to(&query, key) == Ordering::Equal, equivalent_to(&query, key));
+        }
+    }
+    assert_eq!(found, 2);
+    assert_eq!(payload, 120);
+    println!("equivalent {} {} {} {}", matches, less, found, payload);
+}

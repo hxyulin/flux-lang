@@ -78,6 +78,16 @@ impl<T> ManuallyDrop<T> {
     }
 }
 
+/// A value whose bytes are all zero.
+///
+/// # Safety
+/// All-zero bytes must represent a valid initialized `T`. In particular,
+/// references, function pointers and nonzero integers do not permit zero.
+pub unsafe fn zeroed<T>() -> T {
+    // SAFETY: the caller guarantees the zeroed representation is valid.
+    unsafe { MaybeUninit::<T>::zeroed().assume_init() }
+}
+
 /// Memory for a `T` that may not hold one yet: never dropped, and with
 /// no invalid values an enum around it could use, as rustc's union is.
 #[lang = "maybe_uninit"]
@@ -119,19 +129,19 @@ impl<T> MaybeUninit<T> {
     /// reference to it.
     pub fn write(&mut self, val: T) -> &mut T {
         unsafe {
-            crate::intrinsics::write(&mut self.value.value, val);
+            crate::intrinsics::write(&raw mut self.value.value, val);
         }
         &mut self.value.value
     }
 
     /// A pointer to the value.
     pub const fn as_ptr(&self) -> *const T {
-        &self.value.value as *const T
+        &raw const self.value.value
     }
 
     /// A mutable pointer to the value.
     pub fn as_mut_ptr(&mut self) -> *mut T {
-        &mut self.value.value as *mut T
+        &raw mut self.value.value
     }
 
     /// The value, which must have been written.
@@ -142,7 +152,7 @@ impl<T> MaybeUninit<T> {
     /// A copy of the value, which must have been written; the caller
     /// makes sure only one is dropped.
     pub unsafe fn assume_init_read(&self) -> T {
-        unsafe { crate::intrinsics::read(&self.value.value) }
+        unsafe { crate::intrinsics::read(&raw const self.value.value) }
     }
 
     /// A reference to the value, which must have been written.
@@ -184,4 +194,11 @@ pub fn replace<T>(dest: &mut T, src: T) -> T {
 #[rustc_const_unstable]
 pub fn take<T: crate::default::Default>(dest: &mut T) -> T {
     replace(dest, T::default())
+}
+
+/// Reinterprets the bits of a value of the same size. The caller must ensure
+/// that the input bits form a valid value of U. Neither value is dropped here.
+#[rustc_intrinsic]
+pub const unsafe fn transmute<T, U>(value: T) -> U {
+    loop {}
 }

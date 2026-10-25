@@ -7,16 +7,15 @@ alloc. It is not a complete Rust standard library. Imports such as
 types and trait implementations retain their core/alloc identity.
 
 The root exposes core's `any`, `array`, `ascii`, `cell`, `char`, `clone`, `cmp`,
-`convert`, `default`, `ffi`, `hash`, `hint`, `iter`, `marker`, `mem`, `num`,
+`convert`, `default`, `error`, `ffi`, `hash`, `hint`, `iter`, `marker`, `mem`, `num`,
 `ops`, `option`, `panic`, `ptr`, `result`, `slice` and `str`, and alloc's
 `alloc`, `borrow`, `boxed`, `fmt`, `prelude`, `string` and `vec`. Only the
 APIs actually implemented in those modules exist. `cell` includes the existing
 `Cell` and `RefCell` implementations, including sized borrow-guard dereferencing;
 reexporting them does not add further standard-library APIs.
-`num` now provides the checked `NonZeroU32`
-subset (`new`/`get`, comparison, copying, hashing and formatting), whose
-zero niche preserves `Option<NonZeroU32>` at four bytes. Other NonZero
-types and APIs are not implied.
+`num` provides bounded `NonZeroU32` and `NonZeroU64` APIs. Their zero niches
+preserve the corresponding Option layouts. Other NonZero types and APIs are
+not implied.
 `any` provides only `type_name<T: ?Sized>() -> &'static str`. The name is
 emitted as a static diagnostic string after type substitution, using Flux's
 diagnostic printer. Paths may be omitted; names are not unique and do not
@@ -25,16 +24,28 @@ promise rustc's spelling. This follows the diagnostic-only
 `Any`, `TypeId`, downcasting and `type_name_of_val` remain absent. The stable
 function is not callable in constants.
 
-`collections` reexports the bounded BTreeMap implementation from alloc. Vec,
+`collections` reexports the bounded BTreeMap implementation from alloc.
+`HashMap<K, V, S>` and `HashSet<T, S>` supply probing storage, borrowed lookup,
+removal, entries, iteration and ownership traits. Their default `RandomState`
+obtains keys from the operating system; clones preserve those keys.
+`std::hash::DefaultHasher` supplies streaming SipHash-1-3. Its algorithm is an
+implementation detail. Custom build hashers remain supported. Vec,
 String and Box remain available at their usual module paths and through the
 standard prelude. Printing macros and alloc's formatting macro also have real std
 reexports so explicit imports work in no_std libraries that opt into std.
 
-`thread` exposes only `panicking() -> bool`. Flux's existing panic runtime
+`thread` exposes `panicking() -> bool` and native `LocalKey` storage through
+`thread_local!`. Initializers run once per thread, and POSIX thread-exit
+destructors mark a key inaccessible before dropping its value. `with` and
+`try_with` prevent callback references from escaping. Explicit, imported and
+qualified std macro paths are supported. `panicking()` returns false. Flux's existing panic runtime
 prints the panic and calls C's abort, without unwinding or executing
 unwind destructors. Ordinary executing code therefore observes false.
-This query does not add thread creation, panic hooks, catch_unwind or an
-unwinding runtime, and must be reconsidered if those semantics change.
+`thread::scope` creates real pthread-backed workers with borrowed closures.
+Scope exit joins outstanding handles and nested workers. Consuming `join`
+returns the worker result, and worker panics abort in Flux. Native comparison
+and host-unwinding tests exercise scope cleanup. Unscoped `thread::spawn`, panic
+hooks, catch_unwind and an unwinding Flux runtime remain absent.
 
 The new FusedIterator marker in core is implemented for Fuse, mutable
 references to fused iterators, slice Iter/IterMut, and Vec IntoIter/Drain.
@@ -47,9 +58,11 @@ all embedded crates from resolution. `#![no_std]` source library roots use
 core's prelude and omit implicit std/alloc type and printing macro imports;
 `extern crate alloc` and `extern crate std` opt into those libraries. A
 no_std executable currently requires explicit std; this does not add a
-freestanding runtime. `#![no_core]` remains unsupported for user crates. Core and alloc cannot see std or the
-program. Std has ordinary crate privacy and cannot define primitive
-implementations or compiler lang items.
+freestanding runtime. `#![no_core]` remains unsupported for user crates. Core and
+alloc cannot see std or the program. Std has ordinary crate privacy. Its trusted
+embedded root supplies the standard float inherent methods; user crates do not
+gain primitive-implementation or intrinsic privileges from names or paths. Std
+cannot define compiler lang items.
 
 All embedded source files and macro expansions are cached together before
 program files are added. The shared item tree and lazy body/signature
@@ -58,10 +71,29 @@ compilations. Std is crate 2; source dependencies follow it in graph order,
 then the executable crate. Without dependencies the program remains crate 3;
 core and alloc retain crate IDs 0 and 1. No rustc library metadata is loaded.
 
-`sync` reexports sized `Arc`/`Weak` from alloc and the bounded core atomic
-module (`AtomicUsize`, `Ordering`, and fences). These have real atomic
-operations and ownership semantics; they do not provide mutexes, locks,
-thread creation, or dynamically sized Arc payloads. Sized `UnsafeCell` is
-also available through `cell`. Filesystem and the remaining runtime/library
-APIs are absent. The NonZeroU32 layout support is implemented in core/compiler
-code rather than simulated by facade aliases.
+`sync` reexports `Arc`/`Weak` from alloc, including supported slice ownership,
+and core's bounded atomic module. `OnceLock` supports static construction and
+single-winner initialization. `LazyLock` supports named functions and closures
+in statics, dereferencing and `force`.
+Sized `Mutex` and `RwLock` use acquire/release spin locks and guards that release
+on destruction. They expose lock results, poison errors, exclusive payload
+access and extraction. They do not promise fairness. The runtime aborts on panic;
+poison behavior under unwinding is tested separately with rustc.
+Native contention tests use an audited C ABI bridge to call Flux-generated
+lock functions from host threads; this does not add Rust thread creation.
+`Vec` and `Box` have Send/Sync implementations with element bounds.
+
+Floating math includes `mul_add`, `sqrt`, integral rounding and integer powers
+for both widths. Methods that Rust exposes through std require actual std
+availability, including nested imports or loaded std-using dependencies.
+Nondefault floating environments are not a general supported runtime contract;
+the fixed ties-even test is separate from default-environment rustc comparisons.
+`env` supplies target OS/family/architecture constants and UTF-8-key variable
+queries. Non-Unicode results retain their Unix bytes through VarError::NotUnicode
+and the bounded owned OsString. Borrowed OsStr and Path retain arbitrary Unix bytes through genuine unsized
+wrappers. PathBuf owns its bytes; comparison and hashing normalize components.
+The bounded filesystem API reads bytes/UTF-8, resolves canonical paths and tests
+regular-file status through native Unix calls. Environment mutation, Windows
+paths and the remaining file/directory APIs remain absent. `rc::Rc<T>` supports
+sized and slice ownership, non-atomic cloning, unique mutation and sized
+clone-on-write/extraction, and remains neither Send nor Sync.

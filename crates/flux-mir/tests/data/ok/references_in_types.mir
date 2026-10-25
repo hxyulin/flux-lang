@@ -316,20 +316,20 @@ fn main() -> () {
     let _56: usize;
     let _57: bool;
     let _58: &i32; // br
-    let _59: !;
+    let _59: ();
     let _60: !;
-    let _61: {closure}; // c
-    let _62: &[i32; 3];
-    let _63: i32; // cv
-    let _64: &i32;
-    let _65: &{closure};
-    let _66: (usize,);
-    let _67: i32; // pk
-    let _68: &i32;
+    let _61: !;
+    let _62: {closure}; // c
+    let _63: &[i32; 3];
+    let _64: i32; // cv
+    let _65: &i32;
+    let _66: &{closure};
+    let _67: (usize,);
+    let _68: i32; // pk
     let _69: &i32;
     let _70: &i32;
-    let _71: i32; // total
-    let _72: i32;
+    let _71: &i32;
+    let _72: i32; // total
     let _73: i32;
     let _74: i32;
     let _75: i32;
@@ -351,10 +351,12 @@ fn main() -> () {
     let _91: i32;
     let _92: i32;
     let _93: i32;
-    let _94: &i32;
-    let _95: bool;
-    let _96: i32;
-    let _97: ();
+    let _94: i32;
+    let _95: &i32;
+    let _96: bool;
+    let _97: i32;
+    let _98: !;
+    let _99: ();
 
     bb0: {
         _1 = [const 1_u8, const 2_u8, const 3_u8];
@@ -537,55 +539,55 @@ fn main() -> () {
     }
 
     bb29: {
-        _62 = &_37;
-        _61 = {closure}(move _62);
-        _65 = &_61;
-        _66 = (const 2_usize,);
-        _64 = call::<{closure}, (usize,)>(copy _65, move _66) -> bb30;
+        _63 = &_37;
+        _62 = {closure}(move _63);
+        _66 = &_62;
+        _67 = (const 2_usize,);
+        _65 = call::<{closure}, (usize,)>(copy _66, move _67) -> bb30;
     }
 
     bb30: {
-        _63 = copy (*_64);
-        StorageDead(_64);
-        _69 = &_31;
-        _70 = &_32;
-        _68 = pick(copy _69, copy _70, const false) -> bb31;
+        _64 = copy (*_65);
+        StorageDead(_65);
+        _70 = &_31;
+        _71 = &_32;
+        _69 = pick(copy _70, copy _71, const false) -> bb31;
     }
 
     bb31: {
-        _67 = copy (*_68);
-        StorageDead(_68);
-        _82 = copy _5;
-        _83 = copy _21;
-        _81 = Add(copy _82, copy _83);
-        _84 = copy _28;
-        _80 = Add(copy _81, copy _84);
-        _85 = copy _33;
-        _79 = Add(copy _80, copy _85);
-        _86 = copy _41;
-        _78 = Add(copy _79, copy _86);
-        _87 = copy (*_45);
-        _77 = Add(copy _78, copy _87);
-        _88 = copy (*_47);
-        _76 = Add(copy _77, copy _88);
-        _89 = copy (*_53);
-        _75 = Add(copy _76, copy _89);
-        _90 = copy (*_58);
-        _74 = Add(copy _75, copy _90);
-        _91 = copy _63;
-        _73 = Add(copy _74, copy _91);
-        _92 = copy _67;
-        _72 = Add(copy _73, copy _92);
-        _94 = statik() -> bb32;
+        _68 = copy (*_69);
+        StorageDead(_69);
+        _83 = copy _5;
+        _84 = copy _21;
+        _82 = Add(copy _83, copy _84);
+        _85 = copy _28;
+        _81 = Add(copy _82, copy _85);
+        _86 = copy _33;
+        _80 = Add(copy _81, copy _86);
+        _87 = copy _41;
+        _79 = Add(copy _80, copy _87);
+        _88 = copy (*_45);
+        _78 = Add(copy _79, copy _88);
+        _89 = copy (*_47);
+        _77 = Add(copy _78, copy _89);
+        _90 = copy (*_53);
+        _76 = Add(copy _77, copy _90);
+        _91 = copy (*_58);
+        _75 = Add(copy _76, copy _91);
+        _92 = copy _64;
+        _74 = Add(copy _75, copy _92);
+        _93 = copy _68;
+        _73 = Add(copy _74, copy _93);
+        _95 = statik() -> bb32;
     }
 
     bb32: {
-        _93 = copy (*_94);
-        _71 = Add(copy _72, copy _93);
-        StorageDead(_94);
-        _96 = copy _71;
-        _95 = Eq(copy _96, const 0_i32);
-        switchInt(copy _95) -> [0: bb34, otherwise: bb33];
+        _94 = copy (*_95);
+        _72 = Add(copy _73, copy _94);
+        StorageDead(_95);
+        _97 = copy _72;
+        _96 = Eq(copy _97, const 0_i32);
+        switchInt(copy _96) -> [0: bb34, otherwise: bb33];
     }
 
     bb33: {
@@ -598,10 +600,10 @@ fn main() -> () {
     }
 
     bb35: {
-        StorageDead(_71);
-        StorageDead(_67);
-        StorageDead(_63);
-        StorageDead(_61);
+        StorageDead(_72);
+        StorageDead(_68);
+        StorageDead(_64);
+        StorageDead(_62);
         StorageDead(_58);
         StorageDead(_53);
         StorageDead(_47);
@@ -622,7 +624,7 @@ fn main() -> () {
     }
 
     bb36: {
-        _97 = const ();
+        _99 = const ();
         goto -> bb36;
     }
 

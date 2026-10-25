@@ -1,0 +1,14 @@
+use keel_ir::{Layout, Type};
+
+fn main() {
+    let layout = Layout::Struct(vec![
+        Layout::Scalar(Type::I8),
+        Layout::Array(Box::new(Layout::Scalar(Type::I64)), 3),
+    ]);
+    assert_eq!(layout.size(), 32);
+    assert_eq!(layout.align(), 8);
+    assert_eq!(layout.leaves(), vec![(0, Type::I8), (8, Type::I64), (16, Type::I64), (24, Type::I64)]);
+    let module = keel_ir::parse("").unwrap();
+    assert!(keel_ir::verify_module(&module).is_ok());
+    println!("keel layout {} {} {}", layout.size(), layout.align(), layout.leaves().len());
+}

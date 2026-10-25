@@ -6,9 +6,9 @@ use flux_syntax::{SyntaxKind, T, TextRange};
 type Error = (TextRange, String);
 
 /// The value of `cfg!(predicate)`, for flux's target.
-pub(crate) fn eval(call: TextRange, toks: &[Tok]) -> Result<bool, Error> {
+pub(crate) fn eval(call: TextRange, toks: &[Tok], cfg: Option<&flux_syntax::CfgOptions>) -> Result<bool, Error> {
     let mut pos = 0;
-    let value = cfg_predicate(call, toks, &mut pos)?;
+    let value = cfg_predicate(call, toks, &mut pos, cfg)?;
     if toks.get(pos).is_some_and(|t| t.kind == T![,]) {
         pos += 1;
     }
@@ -18,7 +18,7 @@ pub(crate) fn eval(call: TextRange, toks: &[Tok]) -> Result<bool, Error> {
     Ok(value)
 }
 
-fn cfg_predicate(call: TextRange, toks: &[Tok], pos: &mut usize) -> Result<bool, Error> {
+fn cfg_predicate(call: TextRange, toks: &[Tok], pos: &mut usize, cfg: Option<&flux_syntax::CfgOptions>) -> Result<bool, Error> {
     let Some(name) = toks
         .get(*pos)
         .filter(|t| t.kind == SyntaxKind::IDENT || t.kind.is_keyword())
@@ -32,7 +32,7 @@ fn cfg_predicate(call: TextRange, toks: &[Tok], pos: &mut usize) -> Result<bool,
         *pos += 1;
         let mut values = Vec::new();
         while toks.get(*pos).is_some_and(|t| t.kind != T![')']) {
-            values.push(cfg_predicate(call, toks, pos)?);
+            values.push(cfg_predicate(call, toks, pos, cfg)?);
             if toks.get(*pos).is_some_and(|t| t.kind == T![,]) {
                 *pos += 1;
             } else if toks.get(*pos).is_some_and(|t| t.kind != T![')']) {
@@ -88,14 +88,17 @@ fn cfg_predicate(call: TextRange, toks: &[Tok], pos: &mut usize) -> Result<bool,
             "x86_64" => matches!(v, "fxsr" | "sse" | "sse2"),
             _ => false,
         },
-        // `test`, `feature = ".."` and names rustc does not know.
-        _ => false,
+        _ => cfg.is_some_and(|cfg| match value.as_deref() {
+            None => cfg.names.iter().any(|candidate| &**candidate == name),
+            Some(value) => cfg.values.iter().any(|(key,candidate)| &**key == name && &**candidate == value),
+        }),
     })
 }
 
 /// Expanded conditional attributes. Keeping the small expansion trees here lets
 /// every attribute consumer see ordinary attributes, including derives and reprs.
 pub(crate) struct Attrs<'a> {
+    pub(crate) cfg: Option<std::sync::Arc<flux_syntax::CfgOptions>>,
     attrs: Vec<Attr<'a>>,
     pub(crate) errors: Vec<Error>,
 }
@@ -108,7 +111,10 @@ enum Attr<'a> {
 impl<'a> Attrs<'a> {
     pub(crate) fn new(attrs: impl IntoIterator<Item = flux_syntax::ast::Attr<'a>>) -> Self {
         use flux_syntax::ast::AstNode;
+        let mut attrs=attrs.into_iter().peekable();
+        let cfg=attrs.peek().and_then(|attr| attr.syntax().tree().cfg_options()).cloned();
         let mut result = Self {
+            cfg,
             attrs: Vec::new(),
             errors: Vec::new(),
         };
@@ -162,7 +168,7 @@ impl<'a> Attrs<'a> {
                 ));
             }
             let mut pos = 0;
-            let enabled = cfg_predicate(range, inner, &mut pos)?;
+            let enabled = cfg_predicate(range, inner, &mut pos, self.cfg.as_deref())?;
             if !inner.get(pos).is_some_and(|t| t.kind == T![,]) {
                 return Err((range, "expected `,`".into()));
             }
@@ -204,7 +210,7 @@ impl<'a> Attrs<'a> {
                     &origins,
                     range,
                     flux_syntax::parser::Fragment::Items,
-                );
+                ).with_cfg_options(self.cfg.clone());
                 if let Some(error) = parse.errors().first() {
                     return Err((error.range, error.message.clone()));
                 }
@@ -235,7 +241,7 @@ mod tests {
         let parse = flux_syntax::parse_source_file(text);
         let mut tokens = Vec::new();
         tokens_of(parse.root(), &mut tokens);
-        eval(parse.root().text_range(), &tokens)
+        eval(parse.root().text_range(), &tokens, None)
     }
 
     #[test]

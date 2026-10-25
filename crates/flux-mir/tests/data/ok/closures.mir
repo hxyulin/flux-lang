@@ -221,11 +221,12 @@ fn loops() -> i32 {
     let _9: &mut Range<i32>;
     let _10: &mut Range<i32>;
     let _11: isize;
-    let _12: i32; // i
-    let _13: isize;
-    let _14: ();
-    let _15: i32;
+    let _12: !;
+    let _13: i32; // i
+    let _14: isize;
+    let _15: ();
     let _16: i32;
+    let _17: i32;
 
     bb0: {
         _1 = const 0_i32;
@@ -276,8 +277,8 @@ fn loops() -> i32 {
     }
 
     bb9: {
-        _13 = discriminant(_8);
-        switchInt(copy _13) -> [1: bb13, otherwise: bb12];
+        _14 = discriminant(_8);
+        switchInt(copy _14) -> [1: bb13, otherwise: bb12];
     }
 
     bb10: {
@@ -295,17 +296,17 @@ fn loops() -> i32 {
     }
 
     bb13: {
-        _12 = copy (_8 as #1).0;
+        _13 = copy (_8 as #1).0;
         goto -> bb14;
     }
 
     bb14: {
-        _15 = copy _12;
-        _16 = copy _1;
-        _1 = Add(copy _16, copy _15);
-        _14 = const ();
+        _16 = copy _13;
+        _17 = copy _1;
+        _1 = Add(copy _17, copy _16);
+        _15 = const ();
         _7 = const ();
-        StorageDead(_12);
+        StorageDead(_13);
         goto -> bb8;
     }
 }

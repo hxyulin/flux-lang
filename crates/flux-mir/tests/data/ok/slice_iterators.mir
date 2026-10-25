@@ -11,11 +11,12 @@ fn sum(_1: &[i32]) -> i32 {
     let _10: &mut Iter<i32>;
     let _11: &mut Iter<i32>;
     let _12: isize;
-    let _13: &i32; // x
-    let _14: isize;
-    let _15: ();
-    let _16: i32;
+    let _13: !;
+    let _14: &i32; // x
+    let _15: isize;
+    let _16: ();
     let _17: i32;
+    let _18: i32;
 
     bb0: {
         _2 = const 0_i32;
@@ -66,8 +67,8 @@ fn sum(_1: &[i32]) -> i32 {
     }
 
     bb9: {
-        _14 = discriminant(_9);
-        switchInt(copy _14) -> [1: bb13, otherwise: bb12];
+        _15 = discriminant(_9);
+        switchInt(copy _15) -> [1: bb13, otherwise: bb12];
     }
 
     bb10: {
@@ -85,17 +86,17 @@ fn sum(_1: &[i32]) -> i32 {
     }
 
     bb13: {
-        _13 = copy (_9 as #1).0;
+        _14 = copy (_9 as #1).0;
         goto -> bb14;
     }
 
     bb14: {
-        _16 = copy (*_13);
-        _17 = copy _2;
-        _2 = Add(copy _17, copy _16);
-        _15 = const ();
+        _17 = copy (*_14);
+        _18 = copy _2;
+        _2 = Add(copy _18, copy _17);
+        _16 = const ();
         _8 = const ();
-        StorageDead(_13);
+        StorageDead(_14);
         goto -> bb8;
     }
 }
@@ -117,14 +118,15 @@ fn max(_1: &[i32]) -> Option<&i32> {
     let _14: &mut Iter<i32>;
     let _15: &mut Iter<i32>;
     let _16: isize;
-    let _17: &i32; // x
-    let _18: isize;
-    let _19: bool;
-    let _20: i32;
+    let _17: !;
+    let _18: &i32; // x
+    let _19: isize;
+    let _20: bool;
     let _21: i32;
-    let _22: ();
-    let _23: &i32;
+    let _22: i32;
+    let _23: ();
     let _24: &i32;
+    let _25: &i32;
 
     bb0: {
         _4 = &(*_1);
@@ -158,8 +160,8 @@ fn max(_1: &[i32]) -> Option<&i32> {
 
     bb6: {
         StorageDead(_7);
-        _24 = copy _2;
-        _0 = Option::Some(copy _24);
+        _25 = copy _2;
+        _0 = Option::Some(copy _25);
         StorageDead(_2);
         return;
     }
@@ -195,8 +197,8 @@ fn max(_1: &[i32]) -> Option<&i32> {
     }
 
     bb13: {
-        _18 = discriminant(_13);
-        switchInt(copy _18) -> [1: bb17, otherwise: bb16];
+        _19 = discriminant(_13);
+        switchInt(copy _19) -> [1: bb17, otherwise: bb16];
     }
 
     bb14: {
@@ -214,21 +216,21 @@ fn max(_1: &[i32]) -> Option<&i32> {
     }
 
     bb17: {
-        _17 = copy (_13 as #1).0;
+        _18 = copy (_13 as #1).0;
         goto -> bb18;
     }
 
     bb18: {
-        _20 = copy (*_17);
-        _21 = copy (*_2);
-        _19 = Gt(copy _20, copy _21);
-        switchInt(copy _19) -> [0: bb20, otherwise: bb19];
+        _21 = copy (*_18);
+        _22 = copy (*_2);
+        _20 = Gt(copy _21, copy _22);
+        switchInt(copy _20) -> [0: bb20, otherwise: bb19];
     }
 
     bb19: {
-        _23 = copy _17;
-        _2 = copy _23;
-        _22 = const ();
+        _24 = copy _18;
+        _2 = copy _24;
+        _23 = const ();
         _12 = const ();
         goto -> bb21;
     }
@@ -239,7 +241,7 @@ fn max(_1: &[i32]) -> Option<&i32> {
     }
 
     bb21: {
-        StorageDead(_17);
+        StorageDead(_18);
         goto -> bb12;
     }
 }
@@ -307,7 +309,8 @@ fn main() -> () {
     let _59: i32;
     let _60: bool;
     let _61: i32;
-    let _62: ();
+    let _62: !;
+    let _63: ();
 
     bb0: {
         _1 = [const 3_i32, const 1_i32, const 4_i32, const 1_i32, const 5_i32];
@@ -489,7 +492,7 @@ fn main() -> () {
     }
 
     bb27: {
-        _62 = const ();
+        _63 = const ();
         goto -> bb27;
     }
 

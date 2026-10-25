@@ -1,0 +1,56 @@
+use smallvec::{SmallVec, smallvec};
+use core::cell::Cell;
+
+#[derive(Clone, Debug)]
+struct Tracked<'a> { value: u64, drops: &'a Cell<usize> }
+impl Drop for Tracked<'_> { fn drop(&mut self) { self.drops.set(self.drops.get() + 1); } }
+
+fn main() {
+    let mut values: SmallVec<[u64; 4]> = SmallVec::new();
+    assert!(!values.spilled());
+    for value in 0..17 { values.push(value); }
+    assert!(values.spilled());
+    values.truncate(3);
+    values.shrink_to_fit();
+    assert!(!values.spilled());
+    values.insert(1, 31);
+    values.insert_many(2, [41, 43, 47]);
+    assert_eq!(values.remove(1), 31);
+    let removed = values.swap_remove(2);
+    values.retain(|value| *value % 2 == 1);
+    let mut clone = values.clone();
+    clone.extend_from_slice(&[59, 61]);
+    let drained: Vec<_> = clone.drain(1..3).collect();
+    println!("smallvec {:?} {:?} {:?} {removed}", values, clone, drained);
+    let owned = clone.into_vec();
+    let converted: SmallVec<[u64; 4]> = SmallVec::from_vec(owned);
+    println!("converted {:?}", converted);
+    let list: SmallVec<[u64; 4]> = smallvec![3, 5, 7];
+    let repeat: SmallVec<[u64; 4]> = smallvec![11; 6];
+    println!("macros {:?} {:?}", list, repeat);
+    let left = [1, 2];
+    let right = [3, 4, 5];
+    let mut borrowed: SmallVec<[&[u64]; 4]> = SmallVec::new();
+    borrowed.push(&left);
+    borrowed.push(&right);
+    for _ in 0..8 { borrowed.push(&right); }
+    assert_eq!(borrowed[0], &left);
+    println!("borrowed {} {}", borrowed.len(), borrowed.iter().map(|slice| slice.len()).sum::<usize>());
+    let drops = Cell::new(0);
+    let mut tracked: SmallVec<[Tracked<'_>; 2]> = SmallVec::new();
+    for value in 0..13 { tracked.push(Tracked { value, drops: &drops }); }
+    {
+        let mut drain = tracked.drain(2..9);
+        assert_eq!(drain.next().unwrap().value, 2);
+    }
+    assert_eq!(drops.get(), 7);
+    assert_eq!(tracked.len(), 6);
+    let duplicate = tracked.clone();
+    drop(tracked);
+    drop(duplicate);
+    assert_eq!(drops.get(), 19);
+    let mut zst: SmallVec<[(); 4]> = SmallVec::new();
+    for _ in 0..129 { zst.push(()); }
+    assert_eq!(zst.into_iter().count(), 129);
+    println!("drops {} zst 129", drops.get());
+}

@@ -121,6 +121,14 @@ fn union_rejections() {
             "union U { a: u32 } const fn f() -> u32 { unsafe { U { a: 1 }.a } } const X: u32 = f(); fn main() {}",
             "union constant evaluation is not supported yet",
         ),
+        (
+            "union U { a: u32 } const R: &U = &U { a: 1 }; fn main() {}",
+            "union constant evaluation is not supported yet",
+        ),
+        (
+            "#[derive(Copy, Clone)] union U { a: u32 } struct W { u: U } const W0: W = W { u: U { a: 1 } }; fn main() {}",
+            "union constant evaluation is not supported yet",
+        ),
     ] {
         let found = errors(text);
         assert!(

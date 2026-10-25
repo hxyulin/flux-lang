@@ -24,6 +24,10 @@ pub struct Layout {
 #[derive(Clone, PartialEq, Eq)]
 pub struct LayoutError;
 
+/// The former name of `LayoutError`.
+#[deprecated(since = "1.28.0", note = "use LayoutError")]
+pub type LayoutErr = LayoutError;
+
 impl crate::fmt::Debug for LayoutError {
     fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
         f.write_str("LayoutError")
@@ -73,6 +77,21 @@ impl Layout {
         Layout {
             size: crate::mem::size_of_val(t),
             align: Alignment(crate::mem::align_of_val(t)),
+        }
+    }
+
+    /// The layout described by a raw pointer's type and metadata.
+    ///
+    /// # Safety
+    /// Slice lengths and trait-object vtables must describe a valid layout.
+    /// The payload need not be initialized or borrowed as a T.
+    pub const unsafe fn for_value_raw<T: ?Sized>(ptr: *const T) -> Layout {
+        Layout {
+            // SAFETY: the caller supplies valid layout metadata. These
+            // intrinsics inspect that metadata without accessing T.
+            size: unsafe { crate::intrinsics::size_of_val(ptr) },
+            // SAFETY: the same valid metadata gives alignment without a T.
+            align: Alignment(unsafe { crate::intrinsics::align_of_val(ptr) }),
         }
     }
 

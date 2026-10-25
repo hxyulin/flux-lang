@@ -266,6 +266,23 @@ impl<'a> Layouts<'a> {
         layout
     }
 
+    /// Dynamic size is `align_up(prefix + length * stride, align)` for
+    /// every represented length-metadata DST, including nested struct tails.
+    pub fn length_layout(&self, ty: Ty) -> Option<(u64, u64, u64)> {
+        match ty.kind() {
+            TyKind::Str => Some((0, 1, 1)),
+            TyKind::Slice(elem) => { let elem = self.of(elem); Some((0, elem.size, elem.align)) }
+            TyKind::Adt(..) if self.sigs.is_unsized(ty) => {
+                let fields = self.sigs.fields(ty)?;
+                let last = fields.len().checked_sub(1)?;
+                let (prefix, stride, _) = self.length_layout(fields[last])?;
+                let layout = self.of(ty);
+                Some((layout.field_offset(0, last as u32) + prefix, stride, layout.align))
+            }
+            _ => None,
+        }
+    }
+
     /// The discriminant of `variant` of `strukt`, as bits of its type.
     pub fn discriminant(&self, strukt: StructId, variant: u32) -> u128 {
         crate::discriminant_bits(self.items, self.discriminants, strukt, variant)
@@ -275,6 +292,7 @@ impl<'a> Layouts<'a> {
     fn compute(&self, ty: Ty) -> Layout {
         const PTR_MAX: u128 = u64::MAX as u128;
         match ty.kind() {
+            TyKind::Float(float) => Layout::scalar((float.bits()/8) as u8, None),
             TyKind::Int(int) => {
                 let bytes = (int.bits() / 8) as u8;
                 Layout::scalar(bytes, None)
@@ -284,15 +302,15 @@ impl<'a> Layouts<'a> {
             TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee) => {
                 let nonnull = matches!(ty.kind(), TyKind::Ref(..));
                 let valid = nonnull.then_some((1, PTR_MAX));
-                match pointee.kind() {
-                    TyKind::Slice(_) | TyKind::Str => {
+                match self.sigs.metadata(pointee) {
+                    flux_ty::Metadata::Length => {
                         let mut layout = Layout::scalar(8, valid);
                         layout.size = 16;
                         layout
                     }
                     // The data pointer, then the vtable's, which is never
                     // null: a raw pointer's niche is there.
-                    TyKind::Dynamic(_) => {
+                    flux_ty::Metadata::VTable => {
                         let mut layout = Layout::scalar(8, Some((1, PTR_MAX)));
                         layout.size = 16;
                         if !nonnull && let Some(niche) = &mut layout.niche {
@@ -301,7 +319,7 @@ impl<'a> Layouts<'a> {
                         layout
                     }
                     // rustc's `&CStr` has its length too.
-                    TyKind::CStr => Layout {
+                    _ if pointee == Ty::new(TyKind::CStr) => Layout {
                         exact: false,
                         ..Layout::scalar(8, valid)
                     },
@@ -401,12 +419,18 @@ impl<'a> Layouts<'a> {
                     shape: Shape::Struct(vec![0; fields.len()].into()),
                 };
             }
-            // A struct's last field is unsized only if its type may be,
-            // which flux's never may.
+            // Potentially unsized tails retain their position even in sized
+            // instantiations so structural unsizing preserves the prefix.
+            let parameters = flux_ty::unsized_params(self.items, None, &data.generics);
+            let bounds = flux_ty::traits::elaborate(self.sigs, self.sigs.struct_predicates.get(strukt).map_or(&[][..], |bounds| bounds));
+            let tail = self.sigs.structs[strukt].last().copied();
+            let kind = if tail.is_some_and(|tail| flux_ty::maybe_unsized(self.items, self.sigs, tail, &parameters, &bounds)) {
+                Kind::MaybeUnsized
+            } else { Kind::AlwaysSized };
             let mut layout = self.univariant_layout(
                 fields,
                 !data.repr_c,
-                Kind::AlwaysSized,
+                kind,
                 u64::from(data.repr_align),
             );
             if lang("non_null") {
@@ -418,15 +442,15 @@ impl<'a> Layouts<'a> {
                     end: u64::MAX as u128,
                 });
             }
-            if lang("nonzero_u32") {
-                // The private u32 wrapper's checked constructor excludes zero.
+            if lang("nonzero_u32") || lang("nonzero_u64") {
+                // The private integer wrappers' constructors exclude zero.
                 // As for NonNull, preserve that scalar validity range through
                 // aggregates so an enclosing enum can fill the zero niche.
                 layout.niche = Some(Niche {
                     offset: 0,
-                    bytes: 4,
+                    bytes: if lang("nonzero_u64") { 8 } else { 4 },
                     start: 1,
-                    end: u32::MAX as u128,
+                    end: if lang("nonzero_u64") { u64::MAX as u128 } else { u32::MAX as u128 },
                 });
             }
             if lang("alignment") {

@@ -446,6 +446,10 @@ impl Printer<'_> {
     fn expr(&mut self, id: ExprId) {
         match &self.body.exprs[id] {
             Expr::Missing => self.out.push_str("<missing>"),
+            Expr::Literal(Literal::Float { text, suffix }) => {
+                self.out.push_str(text.as_str());
+                if let Some(suffix) = suffix { self.out.push_str(suffix.as_str()); }
+            }
             Expr::Literal(Literal::Int { value, suffix }) => {
                 write!(self.out, "{value}").unwrap();
                 if let Some(suffix) = suffix {

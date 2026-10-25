@@ -12,6 +12,7 @@
 
 use std::fmt;
 use std::iter::FusedIterator;
+use std::sync::Arc;
 
 use crate::SyntaxKind;
 
@@ -98,16 +99,29 @@ pub(crate) struct NodeData {
 
 const _: () = assert!(size_of::<NodeData>() == 16);
 
+/// Conditional-compilation inputs attached by the source layer. Parsing
+/// preserves these inputs without interpreting or filtering the syntax.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct CfgOptions {
+    pub names: Box<[Box<str>]>,
+    pub values: Box<[(Box<str>, Box<str>)]>,
+}
+
 /// A parsed file: its text, tokens and nodes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SyntaxTree {
     text: Box<str>,
     kinds: Vec<SyntaxKind>,
+    /// Sparse lexical kinds of contextual keywords remapped by the parser.
+    remapped: Vec<(u32, SyntaxKind)>,
+    edition: crate::Edition,
+    token_editions: Vec<(u32, crate::Edition)>,
     /// Start offset of each token, plus one final entry at `text.len()`.
     starts: Vec<u32>,
     nodes: Vec<NodeData>,
     /// For a macro expansion, where its tokens and nodes came from.
     spans: Option<Box<Spans>>,
+    cfg: Option<Arc<CfgOptions>>,
 }
 
 /// Where a token of a macro expansion came from, as the expander says:
@@ -160,10 +174,30 @@ impl SyntaxTree {
         SyntaxTree {
             text,
             kinds,
+            remapped: Vec::new(),
+            edition: crate::Edition::E2024,
+            token_editions: Vec::new(),
             starts,
             nodes,
             spans: None,
+            cfg: None,
         }
+    }
+
+    pub fn cfg_options(&self) -> Option<&Arc<CfgOptions>> { self.cfg.as_ref() }
+
+    pub(crate) fn set_cfg_options(&mut self, cfg: Option<Arc<CfgOptions>>) { self.cfg = cfg; }
+
+    pub(crate) fn set_remapped_tokens(&mut self, tokens: Vec<(u32, SyntaxKind)>) {
+        self.remapped = tokens;
+    }
+
+    pub(crate) fn set_edition(&mut self, edition: crate::Edition) { self.edition = edition; }
+
+    pub(crate) fn set_token_editions(&mut self, editions: &[(u32, crate::Edition)]) {
+        self.token_editions = editions.iter().filter_map(|&(start, edition)| {
+            (edition != self.edition).then(|| self.starts.binary_search(&start).ok().map(|i| (i as u32, edition))).flatten()
+        }).collect();
     }
 
     /// Makes this tree a macro expansion's: `origins` are the expander's
@@ -591,6 +625,15 @@ pub struct SyntaxToken<'t> {
 }
 
 impl<'t> SyntaxToken<'t> {
+    pub fn edition(self) -> crate::Edition {
+        self.tree.token_editions.binary_search_by_key(&self.index, |&(i, _)| i)
+            .map_or(self.tree.edition, |i| self.tree.token_editions[i].1)
+    }
+    /// Before contextual-keyword classification, as macro token trees require.
+    pub fn lexical_kind(self) -> SyntaxKind {
+        self.tree.remapped.binary_search_by_key(&self.index, |&(index, _)| index)
+            .map_or_else(|_| self.kind(), |i| self.tree.remapped[i].1)
+    }
     pub fn index(self) -> usize {
         self.index as usize
     }

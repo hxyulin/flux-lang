@@ -16,12 +16,13 @@ use flux_syntax::parser::{self, Fragment};
 use flux_syntax::{SyntaxKind, T, TextRange};
 use rustc_hash::FxHashMap;
 
-use super::tt::{Glued, Tok, describe, glue, is_close, is_open, match_delimiters, same_token};
+use super::tt::{Glued, Tok, describe, glue, glue_at, is_close, is_open, match_delimiters, same_token};
 
 /// What a metavariable matches: `$e:expr`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FragKind {
     Expr,
+    Expr2021,
     Ident,
     Ty,
     Pat,
@@ -38,11 +39,13 @@ pub(crate) enum FragKind {
 }
 
 impl FragKind {
-    fn from_name(name: &str) -> Option<FragKind> {
+    fn from_name(name: &str, edition: flux_syntax::Edition) -> Option<FragKind> {
         Some(match name {
-            "expr" | "expr_2021" => FragKind::Expr,
+            "expr" if edition == flux_syntax::Edition::E2024 => FragKind::Expr,
+            "expr" | "expr_2021" => FragKind::Expr2021,
             "ident" => FragKind::Ident,
             "ty" => FragKind::Ty,
+            "pat" if matches!(edition, flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018) => FragKind::PatParam,
             "pat" => FragKind::Pat,
             "pat_param" => FragKind::PatParam,
             "tt" => FragKind::Tt,
@@ -61,6 +64,7 @@ impl FragKind {
     fn name(self) -> &'static str {
         match self {
             FragKind::Expr => "expr",
+            FragKind::Expr2021 => "expr_2021",
             FragKind::Ident => "ident",
             FragKind::Ty => "ty",
             FragKind::Pat => "pat",
@@ -81,6 +85,7 @@ impl FragKind {
     fn fragment(self) -> Option<Fragment> {
         Some(match self {
             FragKind::Expr => Fragment::Expr,
+            FragKind::Expr2021 => Fragment::Expr2021,
             FragKind::Ty => Fragment::Type,
             FragKind::Pat => Fragment::Pat,
             FragKind::PatParam => Fragment::PatParam,
@@ -99,7 +104,7 @@ impl FragKind {
     /// How rustc names the fragment in "expected" messages.
     fn expected(self) -> &'static str {
         match self {
-            FragKind::Expr => "expression",
+            FragKind::Expr | FragKind::Expr2021 => "expression",
             FragKind::Ty => "type",
             FragKind::Pat | FragKind::PatParam => "pattern",
             FragKind::Block => "block",
@@ -262,6 +267,7 @@ enum M {
 }
 
 struct DefReader<'a> {
+    edition: flux_syntax::Edition,
     toks: &'a [Tok],
     glued: &'a [Glued],
     errors: Vec<(TextRange, String)>,
@@ -291,11 +297,11 @@ impl DefReader<'_> {
         self.errors.push((range, message.into()));
     }
 
-    /// Whether glued token `g` is a name: `$name` and `$x:kind` take
-    /// keywords too.
+    /// Metavariable names accept keywords and the reserved identifier `_`.
+    /// This is separate from what an invocation's `ident` fragment matches.
     fn is_name(&self, g: u32) -> bool {
         let k = self.kind(g);
-        k == SyntaxKind::IDENT || k.is_keyword()
+        matches!(k, SyntaxKind::IDENT | SyntaxKind::UNDERSCORE) || k.is_keyword()
     }
 
     /// The repetition operator and separator after `$( .. )`, from
@@ -366,7 +372,7 @@ impl DefReader<'_> {
                             let end = self.range(spec).end().max(start);
                             let range = TextRange::new(start, end);
                             let spec_text = self.tok(spec).text;
-                            let Some(kind) = FragKind::from_name(spec_text.as_str()) else {
+                            let Some(kind) = FragKind::from_name(spec_text.as_str(), self.edition) else {
                                 self.error(
                                     self.range(spec),
                                     format!("invalid fragment specifier `{spec_text}`"),
@@ -569,7 +575,7 @@ impl DefReader<'_> {
             )
         };
         let token_ok = |k: SyntaxKind, text: &str| match kind {
-            FragKind::Expr | FragKind::Stmt => is_close(k) || matches!(k, T![=>] | T![,] | T![;]),
+            FragKind::Expr | FragKind::Expr2021 | FragKind::Stmt => is_close(k) || matches!(k, T![=>] | T![,] | T![;]),
             FragKind::Pat => is_close(k) || matches!(k, T![=>] | T![,] | T![=] | T![if] | T![in]),
             FragKind::PatParam => {
                 is_close(k) || matches!(k, T![=>] | T![,] | T![=] | T![|] | T![if] | T![in])
@@ -613,7 +619,7 @@ impl DefReader<'_> {
             }
             Follow::Var(other, other_name, range) => {
                 let ok = match kind {
-                    FragKind::Expr | FragKind::Stmt | FragKind::Pat | FragKind::PatParam => false,
+                    FragKind::Expr | FragKind::Expr2021 | FragKind::Stmt | FragKind::Pat | FragKind::PatParam => false,
                     FragKind::Path | FragKind::Ty => other == FragKind::Block,
                     FragKind::Vis => {
                         matches!(other, FragKind::Ident | FragKind::Ty | FragKind::Path)
@@ -681,11 +687,12 @@ fn flatten(ms: &[M], locs: &mut Vec<Loc>, next_metavar: &mut usize, seq_depth: u
 /// Reads the rules of `macro_rules! name { body }` from the body's
 /// tokens, its braces left out; errors are at `range` when they have no
 /// token of their own.
-pub(crate) fn parse_rules(toks: Vec<Tok>, range: TextRange) -> (Rules, Vec<(TextRange, String)>) {
+pub(crate) fn parse_rules(toks: Vec<Tok>, range: TextRange, edition: flux_syntax::Edition) -> (Rules, Vec<(TextRange, String)>) {
     let glued = glue(&toks);
     let closes = match_delimiters(&glued);
     let all = trees(&glued, &closes, 0, glued.len());
     let mut reader = DefReader {
+        edition,
         toks: &toks,
         glued: &glued,
         errors: Vec::new(),
@@ -771,7 +778,7 @@ pub(crate) fn parse_rules(toks: Vec<Tok>, range: TextRange) -> (Rules, Vec<(Text
 #[derive(Debug, Clone)]
 pub(crate) enum NamedMatch {
     Seq(Vec<NamedMatch>),
-    /// Glued input tokens `start..end`.
+    /// Raw input tokens `start..end`.
     Single {
         start: u32,
         end: u32,
@@ -782,37 +789,32 @@ pub(crate) enum NamedMatch {
 /// A call's tokens, as a matcher reads them.
 pub(crate) struct CallInput<'a> {
     pub toks: &'a [Tok],
+    /// The glued token view at each raw cursor, including compound suffixes.
     pub glued: Vec<Glued>,
     closes: Vec<u32>,
     parser_input: parser::Input,
-    /// For each raw token, the glued token it starts, or `u32::MAX`.
-    raw_to_glued: Vec<u32>,
     /// Where the input ends: the call's closing delimiter.
     eof: TextRange,
 }
 
 impl<'a> CallInput<'a> {
     pub(crate) fn new(toks: &'a [Tok], eof: TextRange) -> CallInput<'a> {
-        let glued = glue(toks);
+        // Keep a view at every raw boundary. A parsed type may consume one
+        // part of a compound token before the next matcher reads its suffix.
+        let glued: Vec<_> = (0..toks.len()).map(|i| glue_at(toks, i)).collect();
         let closes = match_delimiters(&glued);
         let mut parser_input = parser::Input::default();
         for t in toks {
-            parser_input.push(t.kind, t.is_union_keyword());
+            parser_input.push_contextual(t.kind, t.is_union_keyword(), t.kind == SyntaxKind::IDENT && t.text.as_str() == "dyn");
             if t.joint {
                 parser_input.set_last_joint();
             }
         }
-        let mut raw_to_glued = vec![u32::MAX; toks.len() + 1];
-        for (i, g) in glued.iter().enumerate() {
-            raw_to_glued[g.raw as usize] = i as u32;
-        }
-        raw_to_glued[toks.len()] = glued.len() as u32;
         CallInput {
             toks,
             glued,
             closes,
             parser_input,
-            raw_to_glued,
             eof,
         }
     }
@@ -829,17 +831,12 @@ impl<'a> CallInput<'a> {
         }
     }
 
-    /// Raw tokens of glued tokens `start..end`.
+    /// Raw tokens captured between matcher cursors.
     pub(crate) fn raw(&self, start: u32, end: u32) -> &'a [Tok] {
-        if start >= end {
-            return &[];
-        }
-        let a = self.glued[start as usize].raw as usize;
-        let last = self.glued[end as usize - 1];
-        &self.toks[a..(last.raw + last.len) as usize]
+        &self.toks[start as usize..end as usize]
     }
 
-    /// How many glued tokens from `pos` a fragment of kind `kind` takes;
+    /// How many raw tokens from `pos` a fragment of kind `kind` takes;
     /// an error with what was expected if they do not make one.
     fn fragment(&self, pos: usize, kind: FragKind) -> Result<usize, (TextRange, String)> {
         let at = |k: SyntaxKind| self.glued.get(pos).is_some_and(|g| g.kind == k);
@@ -852,7 +849,7 @@ impl<'a> CallInput<'a> {
                     }
                     return Ok(close as usize + 1 - pos);
                 }
-                Ok(1)
+                Ok(self.glued[pos].len as usize)
             }
             FragKind::Ident | FragKind::Lifetime => Ok(1),
             FragKind::Literal => Ok(if at(T![-]) { 2 } else { 1 }),
@@ -862,12 +859,10 @@ impl<'a> CallInput<'a> {
                 let n = match parser::fragment_or_error(&self.parser_input, raw, fragment) {
                     Ok(n) => n,
                     Err(at) => {
-                        let found = (at..self.toks.len())
-                            .find(|&r| self.raw_to_glued[r] != u32::MAX)
-                            .filter(|&r| r < self.toks.len());
+                        let found = (at < self.toks.len()).then_some(at);
                         return Err(match found {
                             Some(r) => {
-                                let g = self.raw_to_glued[r] as usize;
+                                let g = r;
                                 let t = &self.toks[r];
                                 (
                                     self.range(g),
@@ -888,11 +883,7 @@ impl<'a> CallInput<'a> {
                         });
                     }
                 };
-                let end = self.raw_to_glued[raw + n];
-                if end == u32::MAX {
-                    return Err((self.range(pos), format!("expected {}", kind.expected())));
-                }
-                Ok(end as usize - pos)
+                Ok(n)
             }
         }
     }
@@ -985,6 +976,7 @@ fn may_begin(kind: FragKind, k: SyntaxKind) -> bool {
     let is_name = k == SyntaxKind::IDENT || k.is_keyword();
     match kind {
         FragKind::Expr => can_begin_expr(k) && k != T![let],
+        FragKind::Expr2021 => can_begin_expr(k) && !matches!(k, T![let] | T![_] | T![const]),
         FragKind::Ty => can_begin_type(k),
         FragKind::Ident => is_name,
         FragKind::Literal => k.is_literal() || matches!(k, T![-] | T![true] | T![false]),
@@ -1046,7 +1038,7 @@ impl MatcherPos {
 
 /// Why a rule did not match.
 pub(crate) enum MatchError {
-    /// It does not match from glued token `at` on (the end, if it is
+    /// It does not match from raw cursor `at` on (the end, if it is
     /// the input's length): another rule may.
     Failure { at: usize },
     /// The call is wrong whatever the other rules say.
@@ -1186,7 +1178,7 @@ impl Rules {
                 (0, 0) => return Err(MatchError::Failure { at: pos }),
                 (_, 0) => {
                     std::mem::swap(&mut cur, &mut next);
-                    pos += 1;
+                    pos += token.expect("a matching token").len as usize;
                 }
                 (0, 1) => {
                     let mut mp = bb.pop().expect("one");
@@ -1380,10 +1372,11 @@ impl Transcriber<'_, '_> {
                         let raw = self.input.raw(start, end);
                         // An expression stays one when put among other
                         // tokens: `$e * 2` multiplies all of `$e`.
-                        let wrap = kind == FragKind::Expr && end - start > 1;
+                        let wrap = matches!(kind, FragKind::Expr | FragKind::Expr2021) && end - start > 1;
                         if wrap {
                             let first = raw[0].origin;
                             out.push(Tok {
+                                edition: raw[0].edition,
                                 kind: T!['('],
                                 text: Symbol::intern("("),
                                 joint: false,
@@ -1400,6 +1393,7 @@ impl Transcriber<'_, '_> {
                         if wrap {
                             let last = raw[raw.len() - 1].origin;
                             out.push(Tok {
+                                edition: raw[raw.len() - 1].edition,
                                 kind: T![')'],
                                 text: Symbol::intern(")"),
                                 joint: false,

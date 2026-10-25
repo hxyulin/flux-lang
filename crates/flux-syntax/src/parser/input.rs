@@ -13,6 +13,7 @@ pub struct Input {
     joint: Vec<u64>,
     /// Identifiers spelled `union`, excluding raw identifiers.
     union_keywords: Vec<u64>,
+    dyn_keywords: Vec<u64>,
 }
 
 impl Input {
@@ -21,6 +22,7 @@ impl Input {
             kinds: Vec::with_capacity(lexed.len()),
             joint: Vec::with_capacity(lexed.len() / 64 + 1),
             union_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
+            dyn_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
         };
         let mut was_joint = false;
         for (i, &kind) in lexed.kinds().iter().enumerate() {
@@ -31,7 +33,7 @@ impl Input {
             if was_joint {
                 input.set_last_joint();
             }
-            input.push(kind, lexed.is_union_keyword(i));
+            input.push_contextual(kind, lexed.is_union_keyword(i), lexed.is_dyn_keyword(i));
             was_joint = i + 1 < lexed.len() && !lexed.kind(i + 1).is_trivia();
         }
         input
@@ -40,15 +42,23 @@ impl Input {
     /// Adds a token and its lexer-supplied contextual classification. The
     /// grammar still sees `IDENT` except where it requests a keyword.
     pub fn push(&mut self, kind: SyntaxKind, is_union: bool) {
+        self.push_contextual(kind, is_union, false);
+    }
+
+    pub fn push_contextual(&mut self, kind: SyntaxKind, is_union: bool, is_dyn: bool) {
         let idx = self.kinds.len();
         if idx.is_multiple_of(64) {
             self.joint.push(0);
             self.union_keywords.push(0);
+            self.dyn_keywords.push(0);
         }
         if kind == SyntaxKind::IDENT && is_union {
             self.union_keywords[idx / 64] |= 1 << (idx % 64);
         }
         self.kinds.push(kind);
+        if kind == SyntaxKind::IDENT && is_dyn {
+            self.dyn_keywords[idx / 64] |= 1 << (idx % 64);
+        }
     }
 
     /// Marks the last token pushed as joint with the next.
@@ -74,6 +84,10 @@ impl Input {
         self.union_keywords
             .get(i / 64)
             .is_some_and(|word| word & (1 << (i % 64)) != 0)
+    }
+
+    pub(crate) fn is_dyn_keyword(&self, i: usize) -> bool {
+        self.dyn_keywords.get(i / 64).is_some_and(|word| word & (1 << (i % 64)) != 0)
     }
 
     /// Whether token `i` is immediately followed by token `i + 1`.

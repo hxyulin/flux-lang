@@ -16,6 +16,20 @@ use crate::result::Result::{self, Err, Ok};
 
 mod sort;
 
+/// Views one initialized value as a shared one-element slice.
+pub const fn from_ref<T>(value: &T) -> &[T] {
+    // SAFETY: [T; 1] has the same layout as T. The array reference borrows
+    // the same initialized value for the input lifetime, then unsizes.
+    unsafe { &*(value as *const T as *const [T; 1]) }
+}
+
+/// Views one uniquely borrowed value as a mutable one-element slice.
+pub const fn from_mut<T>(value: &mut T) -> &mut [T] {
+    // SAFETY: [T; 1] has T's layout; the unique input borrow is retained by
+    // the result. No second mutable reference or additional element exists.
+    unsafe { &mut *(value as *mut T as *mut [T; 1]) }
+}
+
 /// The `len` values from `data` on, as a slice, which must be valid for
 /// as long as the slice is used.
 pub unsafe fn from_raw_parts<'a, T>(data: *const T, len: usize) -> &'a [T] {
@@ -28,6 +42,11 @@ pub unsafe fn from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T]
 }
 
 impl<T> [T] {
+    /// The number of elements in the slice.
+    pub const fn len(&self) -> usize {
+        crate::intrinsics::raw_slice_len(self as *const [T])
+    }
+
     /// The first element, or `None` if the slice is empty.
     pub fn first(&self) -> Option<&T> {
         if self.len() == 0 { None } else { Some(&self[0]) }
@@ -41,26 +60,26 @@ impl<T> [T] {
 
     /// The element at `index`, or the part a range of indices gives, or
     /// `None` if it is out of bounds.
-    pub fn get<I: SliceIndex<T>>(&self, index: I) -> Option<&I::Output> {
+    pub fn get<I: SliceIndex<[T]>>(&self, index: I) -> Option<&I::Output> {
         index.get(self)
     }
 
-    /// Returns the element without checking bounds.
+    /// Returns an element or subslice without checking the index's validity.
     ///
     /// # Safety
-    /// `index` must be less than the slice's length. Only `usize` indices
-    /// are supported; unchecked range indexing is not supported yet.
-    pub unsafe fn get_unchecked(&self, index: usize) -> &T {
-        unsafe { &*self.as_ptr().add(index) }
+    /// The index must be valid for this slice, even if the result is unused.
+    pub unsafe fn get_unchecked<I: SliceIndex<[T]>>(&self, index: I) -> &I::Output {
+        // SAFETY: the caller guarantees the index is in bounds.
+        unsafe { index.get(self).unwrap_unchecked() }
     }
 
-    /// Returns a mutable element without checking bounds.
+    /// Returns an element or subslice mutably without checking validity.
     ///
     /// # Safety
-    /// `index` must be less than the slice's length. Only `usize` indices
-    /// are supported; unchecked range indexing is not supported yet.
-    pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
-        unsafe { &mut *self.as_mut_ptr().add(index) }
+    /// The index must be valid for this slice, even if the result is unused.
+    pub unsafe fn get_unchecked_mut<I: SliceIndex<[T]>>(&mut self, index: I) -> &mut I::Output {
+        // SAFETY: the caller guarantees the index is in bounds.
+        unsafe { index.get_mut(self).unwrap_unchecked() }
     }
 
     /// An iterator over references to the elements, in order.
@@ -95,7 +114,7 @@ impl<T> [T] {
 
     /// The element at `index`, or the part a range of indices gives, or
     /// `None` if it is out of bounds, mutably.
-    pub fn get_mut<I: SliceIndex<T>>(&mut self, index: I) -> Option<&mut I::Output> {
+    pub fn get_mut<I: SliceIndex<[T]>>(&mut self, index: I) -> Option<&mut I::Output> {
         index.get_mut(self)
     }
 
@@ -522,6 +541,13 @@ pub struct Iter<'a, T> {
     end: usize,
 }
 
+impl<'a, T> Iter<'a, T> {
+    /// The iterator's remaining elements, with the original slice's lifetime.
+    pub fn as_slice(&self) -> &'a [T] {
+        &self.slice[self.start..self.end]
+    }
+}
+
 impl<'a, T> crate::clone::Clone for Iter<'a, T> {
     fn clone(&self) -> Self {
         Iter {
@@ -694,135 +720,43 @@ fn inclusive_end(end: usize) -> usize {
     end + 1
 }
 
-impl<T> Index<Range<usize>> for [T] {
-    type Output = [T];
-
+impl<T, I: SliceIndex<[T]>> Index<I> for [T] {
+    type Output = I::Output;
     #[track_caller]
-    fn index(&self, index: Range<usize>) -> &[T] {
-        let r = checked_range(index.start, index.end, self.len());
-        unsafe { subslice(self, r.start, r.end) }
-    }
+    fn index(&self, index: I) -> &I::Output { SliceIndex::index(index, self) }
 }
 
-impl<T> IndexMut<Range<usize>> for [T] {
+impl<T, I: SliceIndex<[T]>> IndexMut<I> for [T] {
     #[track_caller]
-    fn index_mut(&mut self, index: Range<usize>) -> &mut [T] {
-        let r = checked_range(index.start, index.end, self.len());
-        unsafe { subslice_mut(self, r.start, r.end) }
-    }
-}
-
-impl<T> Index<RangeTo<usize>> for [T] {
-    type Output = [T];
-
-    #[track_caller]
-    fn index(&self, index: RangeTo<usize>) -> &[T] {
-        let r = checked_range(0, index.end, self.len());
-        unsafe { subslice(self, r.start, r.end) }
-    }
-}
-
-impl<T> IndexMut<RangeTo<usize>> for [T] {
-    #[track_caller]
-    fn index_mut(&mut self, index: RangeTo<usize>) -> &mut [T] {
-        let r = checked_range(0, index.end, self.len());
-        unsafe { subslice_mut(self, r.start, r.end) }
-    }
-}
-
-impl<T> Index<RangeFrom<usize>> for [T] {
-    type Output = [T];
-
-    #[track_caller]
-    fn index(&self, index: RangeFrom<usize>) -> &[T] {
-        let len = self.len();
-        if index.start > len {
-            slice_index_fail(index.start, len, len)
-        }
-        unsafe { subslice(self, index.start, len) }
-    }
-}
-
-impl<T> IndexMut<RangeFrom<usize>> for [T] {
-    #[track_caller]
-    fn index_mut(&mut self, index: RangeFrom<usize>) -> &mut [T] {
-        let len = self.len();
-        if index.start > len {
-            slice_index_fail(index.start, len, len)
-        }
-        unsafe { subslice_mut(self, index.start, len) }
-    }
-}
-
-impl<T> Index<RangeFull> for [T] {
-    type Output = [T];
-
-    #[track_caller]
-    fn index(&self, _index: RangeFull) -> &[T] {
-        self
-    }
-}
-
-impl<T> IndexMut<RangeFull> for [T] {
-    #[track_caller]
-    fn index_mut(&mut self, _index: RangeFull) -> &mut [T] {
-        self
-    }
-}
-
-impl<T> Index<RangeInclusive<usize>> for [T] {
-    type Output = [T];
-
-    #[track_caller]
-    fn index(&self, index: RangeInclusive<usize>) -> &[T] {
-        let end = inclusive_end(index.end);
-        let start = if index.exhausted { end } else { index.start };
-        let r = checked_range(start, end, self.len());
-        unsafe { subslice(self, r.start, r.end) }
-    }
-}
-
-impl<T> IndexMut<RangeInclusive<usize>> for [T] {
-    #[track_caller]
-    fn index_mut(&mut self, index: RangeInclusive<usize>) -> &mut [T] {
-        let end = inclusive_end(index.end);
-        let start = if index.exhausted { end } else { index.start };
-        let r = checked_range(start, end, self.len());
-        unsafe { subslice_mut(self, r.start, r.end) }
-    }
-}
-
-impl<T> Index<RangeToInclusive<usize>> for [T] {
-    type Output = [T];
-
-    #[track_caller]
-    fn index(&self, index: RangeToInclusive<usize>) -> &[T] {
-        let r = checked_range(0, inclusive_end(index.end), self.len());
-        unsafe { subslice(self, r.start, r.end) }
-    }
-}
-
-impl<T> IndexMut<RangeToInclusive<usize>> for [T] {
-    #[track_caller]
-    fn index_mut(&mut self, index: RangeToInclusive<usize>) -> &mut [T] {
-        let r = checked_range(0, inclusive_end(index.end), self.len());
-        unsafe { subslice_mut(self, r.start, r.end) }
-    }
+    fn index_mut(&mut self, index: I) -> &mut I::Output { SliceIndex::index_mut(index, self) }
 }
 
 /// What `get` and `get_mut` of a slice of `E`s take: a `usize`, for an
 /// element, or a range of them, for a part. rustc's `SliceIndex<[E]>`.
-#[diagnostic::on_unimplemented(message = "the type `[{E}]` cannot be indexed by `{Self}`")]
-pub trait SliceIndex<E> {
+#[diagnostic::on_unimplemented(message = "the type `{T}` cannot be indexed by `{Self}`")]
+pub unsafe trait SliceIndex<T: ?Sized>: private_slice_index::Sealed {
     /// An element, or a slice.
     type Output;
     /// What it indexes, if it is within the slice.
-    fn get(self, slice: &[E]) -> Option<&Self::Output>;
+    fn get(self, slice: &T) -> Option<&Self::Output>;
     /// What it indexes, mutably, if it is within the slice.
-    fn get_mut(self, slice: &mut [E]) -> Option<&mut Self::Output>;
+    fn get_mut(self, slice: &mut T) -> Option<&mut Self::Output>;
+    fn index(self, slice: &T) -> &Self::Output;
+    fn index_mut(self, slice: &mut T) -> &mut Self::Output;
 }
 
-impl<E> SliceIndex<E> for usize {
+mod private_slice_index {
+    pub trait Sealed {}
+    impl Sealed for usize {}
+    impl Sealed for super::Range<usize> {}
+    impl Sealed for super::RangeFrom<usize> {}
+    impl Sealed for super::RangeTo<usize> {}
+    impl Sealed for super::RangeFull {}
+    impl Sealed for super::RangeInclusive<usize> {}
+    impl Sealed for super::RangeToInclusive<usize> {}
+}
+
+unsafe impl<E> SliceIndex<[E]> for usize {
     type Output = E;
 
     fn get(self, slice: &[E]) -> Option<&E> {
@@ -832,6 +766,11 @@ impl<E> SliceIndex<E> for usize {
     fn get_mut(self, slice: &mut [E]) -> Option<&mut E> {
         if self < slice.len() { Some(&mut slice[self]) } else { None }
     }
+
+    #[track_caller]
+    fn index(self, slice: &[E]) -> &E { &slice[self] }
+    #[track_caller]
+    fn index_mut(self, slice: &mut [E]) -> &mut E { &mut slice[self] }
 }
 
 /// `slice[start..end]`, if it is within it.
@@ -852,7 +791,7 @@ fn get_range_mut<E>(slice: &mut [E], start: usize, end: usize) -> Option<&mut [E
     }
 }
 
-impl<E> SliceIndex<E> for Range<usize> {
+unsafe impl<E> SliceIndex<[E]> for Range<usize> {
     type Output = [E];
 
     fn get(self, slice: &[E]) -> Option<&[E]> {
@@ -862,9 +801,20 @@ impl<E> SliceIndex<E> for Range<usize> {
     fn get_mut(self, slice: &mut [E]) -> Option<&mut [E]> {
         get_range_mut(slice, self.start, self.end)
     }
+
+    #[track_caller]
+    fn index(self, slice: &[E]) -> &[E] {
+        let r = checked_range(self.start, self.end, slice.len());
+        unsafe { subslice(slice, r.start, r.end) }
+    }
+    #[track_caller]
+    fn index_mut(self, slice: &mut [E]) -> &mut [E] {
+        let r = checked_range(self.start, self.end, slice.len());
+        unsafe { subslice_mut(slice, r.start, r.end) }
+    }
 }
 
-impl<E> SliceIndex<E> for RangeTo<usize> {
+unsafe impl<E> SliceIndex<[E]> for RangeTo<usize> {
     type Output = [E];
 
     fn get(self, slice: &[E]) -> Option<&[E]> {
@@ -874,9 +824,20 @@ impl<E> SliceIndex<E> for RangeTo<usize> {
     fn get_mut(self, slice: &mut [E]) -> Option<&mut [E]> {
         get_range_mut(slice, 0, self.end)
     }
+
+    #[track_caller]
+    fn index(self, slice: &[E]) -> &[E] {
+        let r = checked_range(0, self.end, slice.len());
+        unsafe { subslice(slice, r.start, r.end) }
+    }
+    #[track_caller]
+    fn index_mut(self, slice: &mut [E]) -> &mut [E] {
+        let r = checked_range(0, self.end, slice.len());
+        unsafe { subslice_mut(slice, r.start, r.end) }
+    }
 }
 
-impl<E> SliceIndex<E> for RangeFrom<usize> {
+unsafe impl<E> SliceIndex<[E]> for RangeFrom<usize> {
     type Output = [E];
 
     fn get(self, slice: &[E]) -> Option<&[E]> {
@@ -888,9 +849,26 @@ impl<E> SliceIndex<E> for RangeFrom<usize> {
         let len = slice.len();
         get_range_mut(slice, self.start, len)
     }
+
+    #[track_caller]
+    fn index(self, slice: &[E]) -> &[E] {
+        let len = slice.len();
+        if self.start > len {
+            slice_index_fail(self.start, len, len)
+        }
+        unsafe { subslice(slice, self.start, len) }
+    }
+    #[track_caller]
+    fn index_mut(self, slice: &mut [E]) -> &mut [E] {
+        let len = slice.len();
+        if self.start > len {
+            slice_index_fail(self.start, len, len)
+        }
+        unsafe { subslice_mut(slice, self.start, len) }
+    }
 }
 
-impl<E> SliceIndex<E> for RangeFull {
+unsafe impl<E> SliceIndex<[E]> for RangeFull {
     type Output = [E];
 
     fn get(self, slice: &[E]) -> Option<&[E]> {
@@ -900,9 +878,18 @@ impl<E> SliceIndex<E> for RangeFull {
     fn get_mut(self, slice: &mut [E]) -> Option<&mut [E]> {
         Some(slice)
     }
+
+    #[track_caller]
+    fn index(self, slice: &[E]) -> &[E] {
+        slice
+    }
+    #[track_caller]
+    fn index_mut(self, slice: &mut [E]) -> &mut [E] {
+        slice
+    }
 }
 
-impl<E> SliceIndex<E> for RangeInclusive<usize> {
+unsafe impl<E> SliceIndex<[E]> for RangeInclusive<usize> {
     type Output = [E];
 
     fn get(self, slice: &[E]) -> Option<&[E]> {
@@ -922,9 +909,24 @@ impl<E> SliceIndex<E> for RangeInclusive<usize> {
         let start = if self.exhausted { end } else { self.start };
         get_range_mut(slice, start, end)
     }
+
+    #[track_caller]
+    fn index(self, slice: &[E]) -> &[E] {
+        let end = inclusive_end(self.end);
+        let start = if self.exhausted { end } else { self.start };
+        let r = checked_range(start, end, slice.len());
+        unsafe { subslice(slice, r.start, r.end) }
+    }
+    #[track_caller]
+    fn index_mut(self, slice: &mut [E]) -> &mut [E] {
+        let end = inclusive_end(self.end);
+        let start = if self.exhausted { end } else { self.start };
+        let r = checked_range(start, end, slice.len());
+        unsafe { subslice_mut(slice, r.start, r.end) }
+    }
 }
 
-impl<E> SliceIndex<E> for RangeToInclusive<usize> {
+unsafe impl<E> SliceIndex<[E]> for RangeToInclusive<usize> {
     type Output = [E];
 
     fn get(self, slice: &[E]) -> Option<&[E]> {
@@ -933,6 +935,17 @@ impl<E> SliceIndex<E> for RangeToInclusive<usize> {
 
     fn get_mut(self, slice: &mut [E]) -> Option<&mut [E]> {
         if self.end == usize::MAX { None } else { get_range_mut(slice, 0, self.end + 1) }
+    }
+
+    #[track_caller]
+    fn index(self, slice: &[E]) -> &[E] {
+        let r = checked_range(0, inclusive_end(self.end), slice.len());
+        unsafe { subslice(slice, r.start, r.end) }
+    }
+    #[track_caller]
+    fn index_mut(self, slice: &mut [E]) -> &mut [E] {
+        let r = checked_range(0, inclusive_end(self.end), slice.len());
+        unsafe { subslice_mut(slice, r.start, r.end) }
     }
 }
 
@@ -1410,5 +1423,38 @@ fn binary_search<T, F: FnMut(&T) -> Ordering>(v: &[T], f: &mut F) -> Result<usiz
         Ok(base)
     } else {
         Err(base + (cmp == Less) as usize)
+    }
+}
+#[derive(Clone)]
+pub struct EscapeAscii<'a> {
+    bytes: &'a [u8],
+    index: usize,
+    pending: Option<crate::ascii::EscapeDefault>,
+}
+impl<'a> EscapeAscii<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self { Self { bytes, index: 0, pending: None } }
+}
+impl Iterator for EscapeAscii<'_> {
+    type Item = u8;
+    fn next(&mut self) -> Option<u8> {
+        loop {
+            if let Some(pending) = &mut self.pending {
+                if let Some(byte) = pending.next() { return Some(byte); }
+            }
+            if self.index == self.bytes.len() { self.pending = None; return None; }
+            self.pending = Some(crate::ascii::escape_default(self.bytes[self.index]));
+            self.index += 1;
+        }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let pending = self.pending.as_ref().map_or(0, |value| value.len());
+        let remaining = self.bytes.len() - self.index;
+        (remaining + pending, remaining.checked_mul(4).and_then(|max| max.checked_add(pending)))
+    }
+}
+impl crate::iter::FusedIterator for EscapeAscii<'_> {}
+impl crate::fmt::Display for EscapeAscii<'_> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        for byte in self.clone() { crate::write!(f, "{}", byte as char)?; } Ok(())
     }
 }

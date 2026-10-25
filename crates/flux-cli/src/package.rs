@@ -343,9 +343,10 @@ fn select_target<'a>(
 
 fn edition(value: &str) -> Result<flux_syntax::Edition, String> {
     match value {
+        "2018" => Ok(flux_syntax::Edition::E2018),
         "2021" => Ok(flux_syntax::Edition::E2021),
         "2024" => Ok(flux_syntax::Edition::E2024),
-        _ => Err("package builds require edition 2021 or 2024".into()),
+        _ => Err("package builds require edition 2018, 2021 or 2024".into()),
     }
 }
 

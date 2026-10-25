@@ -1,0 +1,39 @@
+use object::{Object, ObjectSection, ObjectSymbol};
+
+fn main() {
+    let source = ".text\n.globl _answer\n_answer:\nmov x0, #42\nbl _external\nret\n";
+    let assembly = keel_asm::assemble(source).unwrap();
+    let expected = [0x40, 0x05, 0x80, 0xd2, 0, 0, 0, 0x94, 0xc0, 0x03, 0x5f, 0xd6];
+    assert_eq!(assembly.text.as_slice(), &expected);
+    assert_eq!(assembly.relocations.len(), 1);
+    assert_eq!(assembly.relocations[0].symbol, "_external");
+    assert_eq!(assembly.relocations[0].offset, 4);
+    let macho = assembly.to_macho().unwrap();
+    assert_eq!(macho, keel_asm::assemble_object(source).unwrap());
+    let file = object::File::parse(macho.as_slice()).unwrap();
+    assert_eq!(file.format(), object::BinaryFormat::MachO);
+    assert_eq!(file.architecture(), object::Architecture::Aarch64);
+    assert_eq!(file.kind(), object::ObjectKind::Relocatable);
+    let text = file.section_by_name("__text").unwrap();
+    assert_eq!(text.data().unwrap(), &expected);
+    assert_eq!(text.relocations().count(), 1);
+    assert!(file.symbols().any(|symbol| symbol.name().unwrap() == "_answer" && symbol.is_definition()));
+    assert!(file.symbols().any(|symbol| symbol.name().unwrap() == "_external" && symbol.is_undefined()));
+    println!("aarch64 macho text={} relocations={}", text.size(), text.relocations().count());
+
+    let elf = keel_asm::x86::assemble_object(".text\n.globl answer\n.type answer,@function\nanswer:\nmov eax, 42\ncall external\nret\n").unwrap();
+    let file = object::File::parse(elf.as_slice()).unwrap();
+    assert_eq!(file.format(), object::BinaryFormat::Elf);
+    assert_eq!(file.architecture(), object::Architecture::X86_64);
+    assert_eq!(file.kind(), object::ObjectKind::Relocatable);
+    let text = file.section_by_name(".text").unwrap();
+    assert_eq!(text.data().unwrap(), &[0xb8, 42, 0, 0, 0, 0xe8, 0, 0, 0, 0, 0xc3]);
+    let relocations: Vec<_> = text.relocations().collect();
+    assert_eq!(relocations.len(), 1);
+    assert_eq!(relocations[0].0, 6);
+    assert!(file.symbols().any(|symbol| symbol.name().unwrap() == "answer" && symbol.is_definition()));
+    assert!(file.symbols().any(|symbol| symbol.name().unwrap() == "external" && symbol.is_undefined()));
+    println!("x86_64 elf text={} relocations={}", text.size(), relocations.len());
+    assert!(keel_asm::assemble("not_an_instruction x0").is_err());
+    assert!(keel_asm::x86::assemble_object("not_an_instruction eax").is_err());
+}

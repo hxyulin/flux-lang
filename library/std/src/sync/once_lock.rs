@@ -3,7 +3,6 @@
 use core::cell::UnsafeCell;
 use core::default::Default;
 use core::marker::{Send, Sync};
-use core::mem::MaybeUninit;
 use core::ops::{Drop, FnOnce};
 use core::option::Option::{self, None, Some};
 use core::sync::atomic::AtomicUsize;
@@ -19,7 +18,7 @@ use core::sync::atomic::Ordering::{Acquire, Release};
 pub struct OnceLock<T> {
     // 0 = empty, 1 = initializing, 2 = ready. Only 2 permits payload reads.
     state: AtomicUsize,
-    value: UnsafeCell<MaybeUninit<T>>,
+    value: UnsafeCell<Option<T>>,
 }
 
 // SAFETY: moving the cell transfers ownership of T; shared initialization
@@ -30,12 +29,11 @@ unsafe impl<T: Send> Send for OnceLock<T> {}
 unsafe impl<T: Send + Sync> Sync for OnceLock<T> {}
 
 impl<T> OnceLock<T> {
-    /// Constructs an empty cell. Flux cannot yet evaluate the contained
-    /// MaybeUninit construction in a static initializer.
+    /// Constructs an empty cell, including in a static initializer.
     pub const fn new() -> OnceLock<T> {
         OnceLock {
             state: AtomicUsize::new(0),
-            value: UnsafeCell::new(MaybeUninit::uninit()),
+            value: UnsafeCell::new(None),
         }
     }
 
@@ -44,10 +42,18 @@ impl<T> OnceLock<T> {
         if self.state.load(Acquire) == 2 {
             // SAFETY: ready was release-published after the only write. The
             // shared borrow prevents destruction while this reference lives.
-            Some(unsafe { (*self.value.get()).assume_init_ref() })
+            unsafe { (*self.value.get()).as_ref() }
         } else {
             None
         }
+    }
+
+    /// Publishes value, or returns it when another initializer won. This
+    /// waits for an initializer already in progress, like get_or_init.
+    pub fn set(&self, value: T) -> Result<(), T> {
+        let mut value = Some(value);
+        self.get_or_init(|| value.take().unwrap());
+        match value { None => Ok(()), Some(value) => Err(value) }
     }
 
     /// Returns the published value, running f only if this caller wins.
@@ -65,12 +71,11 @@ impl<T> OnceLock<T> {
                 // SAFETY: the successful CAS grants exclusive write access;
                 // no reference to the payload exists until ready is published.
                 unsafe {
-                    (*self.value.get()).write(value);
+                    *self.value.get() = Some(value);
                 }
                 self.state.store(2, Release);
                 guard.armed = false;
-                // SAFETY: this caller initialized and published the payload.
-                return unsafe { (*self.value.get()).assume_init_ref() };
+                return self.get().unwrap();
             }
         }
     }
@@ -82,15 +87,14 @@ impl<T> Default for OnceLock<T> {
     }
 }
 
-impl<T> Drop for OnceLock<T> {
-    fn drop(&mut self) {
-        if *self.state.get_mut() == 2 {
-            // SAFETY: exclusive access rules out concurrent users. Only ready
-            // holds a T, and MaybeUninit's own drop never drops it again.
-            unsafe {
-                self.value.get_mut().assume_init_drop();
-            }
+impl<T: core::fmt::Debug> core::fmt::Debug for OnceLock<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut tuple = f.debug_tuple("OnceLock");
+        match self.get() {
+            Some(value) => { tuple.field(value); }
+            None => { tuple.field(&format_args!("<uninit>")); }
         }
+        tuple.finish()
     }
 }
 

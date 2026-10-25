@@ -23,7 +23,7 @@ pub(crate) fn file(mir: &FileMir, hir: &Hir) -> String {
         let mut closures: Vec<_> = mir
             .closures
             .iter()
-            .filter(|((c, _), _)| c.owner == id)
+            .filter(|((c, _), _)| c.owner == flux_ty::ClosureOwner::Function(id))
             .collect();
         closures.sort_by_key(|((c, kind), _)| (c.expr.into_raw(), *kind));
         for ((c, kind), body) in closures {
@@ -31,6 +31,16 @@ pub(crate) fn file(mir: &FileMir, hir: &Hir) -> String {
             body_text(&mut out, hir, &mir.discriminants, &name, body);
             out.push('\n');
         }
+    }
+    let mut closures: Vec<_> = mir.closures.iter().filter_map(|((c, kind), body)| {
+        let flux_ty::ClosureOwner::Const(owner) = c.owner else { return None; };
+        (owner.index() >= hir.items.core.consts as usize).then_some((owner, c.expr, kind, body))
+    }).collect();
+    closures.sort_by_key(|(owner, expr, kind, _)| (owner.into_raw(), expr.into_raw(), **kind));
+    for (owner, expr, kind, body) in closures {
+        let name = format!("{}::{{closure#{}}} as {}", hir.items.const_name(owner), expr.index(), kind.name());
+        body_text(&mut out, hir, &mir.discriminants, &name, body);
+        out.push('\n');
     }
     hir.write_diagnostics(&mut out, &mir.diagnostics);
     out
@@ -348,6 +358,7 @@ fn operand(hir: &Hir, operand: &Operand) -> String {
 
 fn constant_text(hir: &Hir, constant: Constant) -> String {
     match constant {
+        Constant::Float { bits, ty } => format!("float({bits:#x}, {})", ty.name()),
         Constant::Int { bits, ty } => {
             let width = ty.bits();
             let value = if ty.is_signed() && width < 128 && bits >> (width - 1) & 1 == 1 {

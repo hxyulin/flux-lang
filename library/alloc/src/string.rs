@@ -38,6 +38,12 @@ impl fmt::Debug for FromUtf8Error {
 }
 
 impl String {
+    pub fn into_boxed_str(self) -> crate::boxed::Box<str> {
+        let bytes = self.into_bytes().into_boxed_slice();
+        // SAFETY: String owns valid UTF-8, and str and [u8] have identical
+        // allocation layout and length metadata. Ownership transfers once.
+        unsafe { crate::boxed::Box::from_raw(crate::boxed::Box::into_raw(bytes) as *mut str) }
+    }
     /// An empty string, which allocates nothing yet.
     pub fn new() -> String {
         String { vec: Vec::new() }
@@ -56,6 +62,36 @@ impl String {
             Ok(_) => Ok(String { vec }),
             Err(error) => Err(FromUtf8Error { bytes: vec, error }),
         }
+    }
+
+    /// Borrows valid UTF-8 and replaces each invalid sequence with U+FFFD.
+    pub fn from_utf8_lossy(v: &[u8]) -> crate::borrow::Cow<'_, str> {
+        let first = match core::str::from_utf8(v) {
+            Ok(text) => return crate::borrow::Cow::Borrowed(text),
+            Err(error) => error,
+        };
+        let mut result = String::with_capacity(v.len());
+        let mut rest = v;
+        let mut error = first;
+        loop {
+            // Validate the prefix independently so no unchecked reference is
+            // needed, even when the invalid bytes end in a partial sequence.
+            let valid = error.valid_up_to();
+            result.push_str(core::str::from_utf8(&rest[..valid]).unwrap());
+            result.push('\u{fffd}');
+            let Some(invalid) = error.error_len() else {
+                break;
+            };
+            rest = &rest[valid + invalid..];
+            match core::str::from_utf8(rest) {
+                Ok(text) => {
+                    result.push_str(text);
+                    break;
+                }
+                Err(next) => error = next,
+            }
+        }
+        crate::borrow::Cow::Owned(result)
     }
 
     /// `bytes` as a string, which must be UTF-8.
@@ -454,5 +490,20 @@ impl core::borrow::BorrowMut<str> for String {
 impl core::hash::Hash for String {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         core::hash::Hash::hash(self.as_str(), state);
+    }
+}
+
+impl core::str::Pattern for &String {
+    fn next_match_in(&mut self, haystack: &str, lo: usize, hi: usize) -> Option<(usize, usize)> {
+        core::str::Pattern::next_match_in(&mut self.as_str(), haystack, lo, hi)
+    }
+    fn next_match_back_in(&mut self, haystack: &str, lo: usize, hi: usize) -> Option<(usize, usize)> {
+        core::str::Pattern::next_match_back_in(&mut self.as_str(), haystack, lo, hi)
+    }
+    fn prefix_len(&mut self, haystack: &str) -> Option<usize> {
+        core::str::Pattern::prefix_len(&mut self.as_str(), haystack)
+    }
+    fn suffix_len(&mut self, haystack: &str) -> Option<usize> {
+        core::str::Pattern::suffix_len(&mut self.as_str(), haystack)
     }
 }

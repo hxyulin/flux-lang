@@ -1,4 +1,4 @@
-// Compile-only source consumer. Even malformed parsed inputs are never executed here.
+// Native typed AST source consumer, including malformed parser inputs.
 use syntax_complete::{
     SyntaxNode,
     ast::{self, AstNode},
@@ -13,9 +13,9 @@ fn main() {
         "fn café<'a>(x: &'a str) -> &'a str { x }",
     ] {
         let parsed = syntax_complete::parse_source_file(text);
-        let _ = parsed.errors();
-        let _ = parsed.source_file().items().count();
-        let _ = count::<ast::Fn<'_>>(parsed.root());
-        let _ = count::<ast::Expr<'_>>(parsed.root());
+        println!("errors {}", parsed.errors().len());
+        println!("items {}", parsed.source_file().items().count());
+        println!("functions {}", count::<ast::Fn<'_>>(parsed.root()));
+        println!("expressions {}", count::<ast::Expr<'_>>(parsed.root()));
     }
 }

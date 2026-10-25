@@ -8,6 +8,7 @@ use flux_syntax::{SyntaxKind, SyntaxNode, T, TextRange, TokenOrigin};
 /// One raw token of a macro's input or output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Tok {
+    pub edition: flux_syntax::Edition,
     pub kind: SyntaxKind,
     pub text: Symbol,
     /// Whether the next token touches it: `=` then `>` joint is `=>`.
@@ -48,7 +49,7 @@ pub(crate) fn tokens_of(node: SyntaxNode<'_>, out: &mut Vec<Tok>) {
             .is_some_and(|next| next.raw_range().start() == raw.end());
         let _ = last_end.replace(raw.end());
         // Contextual keywords become identifiers again in token trees.
-        let kind = match token.kind() {
+        let kind = match token.lexical_kind() {
             T![union] => SyntaxKind::IDENT,
             kind => kind,
         };
@@ -58,6 +59,7 @@ pub(crate) fn tokens_of(node: SyntaxNode<'_>, out: &mut Vec<Tok>) {
                 for (i, &part) in parts.iter().enumerate() {
                     let last = i + 1 == parts.len();
                     out.push(Tok {
+                        edition: token.edition(),
                         kind: part,
                         text: Symbol::intern(punct_text(part)),
                         joint: !last || joint_next,
@@ -66,6 +68,7 @@ pub(crate) fn tokens_of(node: SyntaxNode<'_>, out: &mut Vec<Tok>) {
                 }
             }
             None => out.push(Tok {
+                edition: token.edition(),
                 kind,
                 text: Symbol::intern(token.text()),
                 joint: joint_next,
@@ -152,32 +155,39 @@ pub(crate) fn glue(toks: &[Tok]) -> Vec<Glued> {
     let mut out = Vec::with_capacity(toks.len());
     let mut i = 0;
     while i < toks.len() {
-        let mut glued = Glued {
-            kind: toks[i].kind,
-            raw: i as u32,
-            len: 1,
-        };
-        if toks[i].kind.is_punct() {
-            for &composite in COMPOSITES {
-                let parts = composite.composite_parts().expect("composite");
-                let fits = parts.iter().enumerate().all(|(j, &part)| {
-                    toks.get(i + j).is_some_and(|t| t.kind == part)
-                        && (j + 1 == parts.len() || toks[i + j].joint)
-                });
-                if fits {
-                    glued = Glued {
-                        kind: composite,
-                        raw: i as u32,
-                        len: parts.len() as u32,
-                    };
-                    break;
-                }
-            }
-        }
+        let glued = glue_at(toks, i);
         i += glued.len as usize;
         out.push(glued);
     }
     out
+}
+
+/// The token at a raw cursor, including a suffix exposed when the parser
+/// splits punctuation such as the closing `>` of `>=` or `>>=`.
+pub(crate) fn glue_at(toks: &[Tok], i: usize) -> Glued {
+    let mut glued = Glued {
+        kind: toks[i].kind,
+        raw: i as u32,
+        len: 1,
+    };
+    if toks[i].kind.is_punct() {
+        for &composite in COMPOSITES {
+        let parts = composite.composite_parts().expect("composite");
+        let fits = parts.iter().enumerate().all(|(j, &part)| {
+            toks.get(i + j).is_some_and(|t| t.kind == part)
+            && (j + 1 == parts.len() || toks[i + j].joint)
+        });
+        if fits {
+            glued = Glued {
+            kind: composite,
+            raw: i as u32,
+            len: parts.len() as u32,
+            };
+            break;
+        }
+        }
+    }
+    glued
 }
 
 /// For each glued token that opens a group, the index of the one that

@@ -132,6 +132,46 @@ fn main() {
 }
 
 #[test]
+fn endless_scalar_aggregate_instances_are_an_error() {
+    let text = "\
+struct W<T>(T);
+impl<T> W<T> {
+    const A: (u32, [u32; 1]) = W::<W<T>>::A;
+}
+fn get<T>() -> (u32, [u32; 1]) {
+    W::<T>::A
+}
+fn main() {
+    let _ = get::<u8>();
+}
+";
+    assert_eq!(
+        lowering_errors(text),
+        ["3:32: queries overflow the depth limit!"]
+    );
+}
+
+#[test]
+fn endless_function_pointer_aggregate_instances_are_an_error() {
+    let text = "\
+struct W<T>(T);
+impl<T> W<T> {
+    const A: (fn() -> u32, u32) = W::<W<T>>::A;
+}
+fn get<T>() -> (fn() -> u32, u32) {
+    W::<T>::A
+}
+fn main() {
+    let _ = get::<u8>();
+}
+";
+    assert_eq!(
+        lowering_errors(text),
+        ["3:35: queries overflow the depth limit!"]
+    );
+}
+
+#[test]
 fn unused_instances_are_not_evaluated() {
     let text = "\
 trait Tr {

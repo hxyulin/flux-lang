@@ -198,6 +198,7 @@ impl MacroDef {
         call: SyntaxNode<'_>,
         krate: CrateId,
         file: FileId,
+        edition: flux_syntax::Edition,
         builtin: bool,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<MacroDef> {
@@ -213,7 +214,8 @@ impl MacroDef {
                 tokens_of(tt.syntax(), &mut toks);
             }
             let inner = strip_delimiters(&toks);
-            let (rules, errors) = mbe::parse_rules(inner.to_vec(), name_range);
+            let edition = call.tokens().find(|t| !t.kind().is_trivia()).map_or(edition, |t| t.edition());
+            let (rules, errors) = mbe::parse_rules(inner.to_vec(), name_range, edition);
             for (range, message) in errors {
                 diagnostics.push(Diagnostic::new(range, message));
             }
@@ -255,6 +257,7 @@ pub(crate) struct CallSite<'a> {
     pub items: &'a ItemTree,
     pub krate: CrateId,
     pub module: ModuleId,
+    pub scope: Option<MacroScopeId>,
     /// The file the call is written in, not an expansion's.
     pub real_file: FileId,
     /// Loading is supplied by the source layer, never by token formatting.
@@ -265,6 +268,8 @@ pub(crate) struct CallSite<'a> {
 /// with the context its tokens had in the definition.
 pub(crate) struct Expansion {
     pub parse: Parse,
+    /// Physical source inclusion, whose ranges belong to this path.
+    pub included_path: Option<std::path::PathBuf>,
     pub ctxts: Vec<(u32, u32)>,
 }
 
@@ -298,28 +303,49 @@ pub(crate) fn resolve<'a, L>(
         // Current-crate item collection can call a predecessor's macro before
         // current scopes exist. Resolve through that crate's completed scope.
         if items.def_map.scopes.len() < items.modules.len() {
-            if let Some(name) = lowered.as_name()
-                && let Some(import) = items.uses.iter().rev().find(|u|
-                    u.module == items.named_module(module) && matches!(u.kind, crate::item_tree::UseKind::Named(alias) if alias == name)) {
-                lowered = import.path.clone();
-            }
-            if matches!(
-                lowered.anchor,
-                crate::PathAnchor::Plain | crate::PathAnchor::Global
-            ) && let Some(first) = lowered.segments.first()
-                && let Some((_, target)) = items.crates[krate.0 as usize]
-                    .dependencies
-                    .iter()
-                    .find(|(alias, _)| alias == first)
-            {
-                lowered.anchor = crate::PathAnchor::DefinitionCrate(*target);
+            let mut lookup_module = module;
+            let mut followed_imports = Vec::new();
+            for _ in 0..RECURSION_LIMIT {
+                if !matches!(lowered.anchor, crate::PathAnchor::Plain | crate::PathAnchor::Global) { break; }
+                let first = *lowered.segments.first()?;
+                let mut current = lookup_module;
+                let mut import = None;
+                if lowered.anchor == crate::PathAnchor::Plain {
+                    loop {
+                        import = items.uses.iter().enumerate().rev().find(|(index, u)| !followed_imports.contains(index) && u.module == current
+                            && matches!(u.kind, crate::item_tree::UseKind::Named(alias) | crate::item_tree::UseKind::Module(alias) if alias == first));
+                        if import.is_some() { break; }
+                        let data = &items.modules[current];
+                        match (data.block, data.parent) {
+                            (Some(_), Some(parent)) => current = parent,
+                            _ => break,
+                        }
+                    }
+                }
+                if let Some((index, import)) = import {
+                    // An import's own source path does not resolve through
+                    // that same binding again (`use cfg_if::cfg_if`). Keep
+                    // walking predecessor aliases without cycling on them.
+                    followed_imports.push(index);
+                    let mut path = import.path.clone();
+                    path.segments = path.segments.iter().chain(lowered.segments[1..].iter()).copied().collect();
+                    path.ranges = path.ranges.iter().chain(lowered.ranges.get(1..).unwrap_or_default()).copied().collect();
+                    path.args = path.args.iter().chain(lowered.args.get(1..).unwrap_or_default()).cloned().collect();
+                    lowered = path;
+                    lookup_module = import.module;
+                    continue;
+                }
+                // A local module shadows the implicit extern prelude. Its
+                // current-crate scope is audited after item collection.
+                if lowered.anchor == crate::PathAnchor::Plain && items.modules.iter().any(|(_, m)| m.parent == Some(items.named_module(lookup_module)) && m.name == first) {
+                    return None;
+                }
+                let target = items.modules[items.loaded_extern_crate(first, lookup_module)?].krate;
+                lowered.anchor = crate::PathAnchor::DefinitionCrate(target);
                 lowered.segments = lowered.segments[1..].into();
-                if !lowered.ranges.is_empty() {
-                    lowered.ranges = lowered.ranges[1..].into();
-                }
-                if !lowered.args.is_empty() {
-                    lowered.args = lowered.args[1..].to_vec().into();
-                }
+                lowered.ranges = lowered.ranges.get(1..).unwrap_or_default().into();
+                lowered.args = lowered.args.get(1..).unwrap_or_default().into();
+                break;
             }
             if !matches!(lowered.anchor, crate::PathAnchor::DefinitionCrate(target) if target != krate)
             {
@@ -369,6 +395,9 @@ pub(crate) fn resolve<'a, L>(
             }
             let at_root = items.modules[items.named_module(module)].parent.is_none();
             if at_root && let Some(id) = exported(krate) {
+                return Ok(Resolved::Def(id));
+            }
+            if let Some(&(_, id)) = own.macro_use.iter().rev().find(|&&(n, _)| n == name) {
                 return Ok(Resolved::Def(id));
             }
             if let Some(&id) = items.macro_prelude.get(&name)
@@ -454,14 +483,20 @@ pub(crate) fn expand(
     fragment: Fragment,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Expansion> {
+    expand_at_depth(def, call, site, fragment, diagnostics, 0)
+}
+
+fn expand_at_depth(
+    def: &MacroDef,
+    call: SyntaxNode<'_>,
+    site: &CallSite<'_>,
+    fragment: Fragment,
+    diagnostics: &mut Vec<Diagnostic>,
+    depth: u32,
+) -> Option<Expansion> {
     let call_range = call_range(call);
-    if site.items.edition(site.module) == flux_syntax::Edition::E2021
-        && matches!(def.kind, MacroKind::Rules(_))
-    {
-        diagnostics.push(Diagnostic::new(
-            call_range,
-            "macro_rules invocations in edition 2021 are not supported yet",
-        ));
+    if depth >= RECURSION_LIMIT {
+        diagnostics.push(Diagnostic::new(call_range, "recursion limit reached during eager macro expansion"));
         return None;
     }
     let mut toks = Vec::new();
@@ -540,7 +575,7 @@ pub(crate) fn expand(
                 } else {
                     TokenOrigin {
                         range: call_range,
-                        group: TokenOrigin::SYNTHETIC,
+                        group: def.group,
                         ctxt,
                     }
                 };
@@ -548,38 +583,12 @@ pub(crate) fn expand(
             };
             let crate_tokens = |t: &Tok, out: &mut Vec<Tok>| {
                 let mut t = mark(t);
-                if !site.items.crates[def.krate.0 as usize].is_core {
-                    t.origin.ctxt = DEF_CRATE_CTXT | def.krate.0;
-                    out.push(Tok {
-                        kind: T![crate],
-                        text: kw::Crate,
-                        ..t
-                    });
-                } else if def.krate == site.krate {
-                    out.push(Tok {
-                        kind: T![crate],
-                        text: kw::Crate,
-                        ..t
-                    });
-                } else {
-                    let colon = Tok {
-                        kind: T![:],
-                        text: Symbol::intern(":"),
-                        joint: true,
-                        ..t
-                    };
-                    out.push(colon);
-                    out.push(Tok {
-                        joint: false,
-                        ..colon
-                    });
-                    let name = site.items.crates[def.krate.0 as usize].name;
-                    out.push(Tok {
-                        kind: SyntaxKind::IDENT,
-                        text: name,
-                        ..t
-                    });
-                }
+                t.origin.ctxt = DEF_CRATE_CTXT | def.krate.0;
+                out.push(Tok {
+                    kind: T![crate],
+                    text: kw::Crate,
+                    ..t
+                });
             };
             let result = rules.transcribe(
                 rule,
@@ -597,19 +606,21 @@ pub(crate) fn expand(
             }
         }
         &MacroKind::Builtin(builtin) => {
+            let eager;
+            let inner = if matches!(builtin, Builtin::Concat | Builtin::Include | Builtin::IncludeStr | Builtin::IncludeBytes | Builtin::Env | Builtin::OptionEnv) {
+                eager = eager_arguments(inner, site, diagnostics, depth + 1)?;
+                &eager[..]
+            } else { inner };
             let ctxt = fresh_ctxt();
             ctxts.push((ctxt, 0));
-            // `core` itself names itself `crate`; `alloc` and the program
-            // name it `::core`.
-            let in_core = site.items.crates[site.krate.0 as usize].name == sym::core
-                && site.items.crates[site.krate.0 as usize].is_core;
+            // Builtin paths retain the physical embedded core identity.
             let location = || {
                 let file = site.items.files.get(&site.real_file);
                 let Some(file) = file else {
                     return (1, 1, String::new());
                 };
                 let text = file.text();
-                let offset = (call_range.start() as usize).min(text.len());
+                let offset = (call_range.start().saturating_sub(file.range_base) as usize).min(text.len());
                 let before = &text[..offset];
                 let line = before.matches('\n').count() as u32 + 1;
                 let line_start = before.rfind('\n').map_or(0, |i| i + 1);
@@ -630,33 +641,56 @@ pub(crate) fn expand(
                 names.reverse();
                 names.join("::")
             };
+            // Rust resolves macro-expanded include paths at the invocation's
+            // source file. A retained include itself owns its physical file,
+            // so nested includes use the included file's directory.
+            let source = site.items.files.get(&site.real_file);
             let include_str = |path: &str| {
-                // Expansion ranges/hygiene do not yet carry a physical FileId
-                // per token. In particular a wrapper may be defined in another
-                // file. Do not silently interpret that as the invocation root.
-                if call
-                    .tokens()
-                    .any(|t| call.tree().token_origin(t.index()).is_some())
-                {
-                    return Err("include_str! in macro expansions is not supported yet".into());
-                }
-                let source = site
-                    .items
-                    .files
-                    .get(&site.real_file)
-                    .ok_or_else(|| "include_str! source file is unknown".to_owned())?;
+                let source = source.ok_or_else(|| "include source file is unknown".to_owned())?;
                 (site.read_text)(source, path)
             };
+            let read_bytes = |path: &str| {
+                let source = source.ok_or_else(|| "include source file is unknown".to_owned())?;
+                crate::source::SourceDb::read_include_bytes(source, path)
+            };
+            let edition = call.children().find_map(ast::Path::cast).and_then(|p| p.segment()).and_then(|s| s.name_ref())
+                .and_then(|name| name.syntax().tokens().next()).map_or(site.items.edition(site.module), |t| t.edition());
             let cx = BuiltinCx {
                 name: def.name,
+                edition,
+                cfg: site.items.crates[site.krate.0 as usize].cfg.as_deref(),
                 toks: inner,
                 call: call_range,
                 ctxt,
-                core: if in_core { "crate" } else { "::core" },
+                core: CrateId(0),
                 location: &location,
                 module_path: &module_path,
                 include_str: &include_str,
+                read_bytes: &read_bytes,
             };
+            if builtin == Builtin::Include {
+                let result = (|| {
+                    if !matches!(fragment, Fragment::Expr | Fragment::Stmts | Fragment::Items) {
+                        return Err((call_range, "include! requires an expression or item position".into()));
+                    }
+                    let filename = builtin::filename(&cx)?;
+                    let source = source.ok_or_else(|| (call_range, "include source file is unknown".to_owned()))?;
+                    let path = crate::source::SourceDb::include_path(source, &filename).map_err(|e| (call_range, e))?;
+                    let text = include_str(&filename).map_err(|e| (call_range, e))?;
+                    let edition = site.items.edition(site.module);
+                    let parse = if fragment == Fragment::Stmts {
+                        let expression = flux_syntax::parse_included_source(text.clone().into_boxed_str(), Fragment::Expr, edition);
+                        if expression.errors().is_empty() {
+                            flux_syntax::parse_included_source(text.into_boxed_str(), fragment, edition)
+                        } else { expression }
+                    } else { flux_syntax::parse_included_source(text.into_boxed_str(), fragment, edition) };
+                    Ok(Expansion { parse: parse.with_cfg_options(site.items.crates[site.krate.0 as usize].cfg.clone()), included_path: Some(path), ctxts: Vec::new() })
+                })();
+                return match result {
+                    Ok(expansion) => Some(expansion),
+                    Err((range, message)) => { diagnostics.push(Diagnostic::new(range, message)); None }
+                };
+            }
             match builtin::expand(builtin, &cx) {
                 Ok(out) => out,
                 Err((range, message)) => {
@@ -673,13 +707,16 @@ pub(crate) fn expand(
         .zip(&output)
         .map(|(&s, t)| (s, t.origin))
         .collect();
-    let parse = flux_syntax::parse_expansion_with_edition(
+    let kinds: Vec<_> = starts.iter().zip(&output).map(|(&start, token)| (start, token.kind)).collect();
+    let editions: Vec<_> = starts.iter().zip(&output).map(|(&start, token)| (start, token.edition)).collect();
+    let parse = flux_syntax::parse_expansion_with_token_kinds(
         text.into(),
         &origins,
+        &kinds,
         call_range,
         fragment,
         site.items.edition(site.module),
-    );
+    ).with_token_editions(&editions).with_cfg_options(site.items.crates[site.krate.0 as usize].cfg.clone());
     for error in parse.errors() {
         let message = if error.message == EXPANSION_IGNORES {
             let tree = parse.tree();
@@ -704,7 +741,61 @@ pub(crate) fn expand(
     if !parse.errors().is_empty() {
         return None;
     }
-    Some(Expansion { parse, ctxts })
+    Some(Expansion { parse, ctxts, included_path: None })
+}
+
+/// Eager builtins expand nested macro arguments before interpreting literals.
+/// Parse each argument as an expression, preserving token origins for resolution.
+fn eager_arguments(toks: &[Tok], site: &CallSite<'_>, diagnostics: &mut Vec<Diagnostic>, depth: u32) -> Option<Vec<Tok>> {
+    let mut input = flux_syntax::parser::Input::default();
+    for t in toks {
+        input.push(t.kind, t.is_union_keyword());
+        if t.joint { input.set_last_joint(); }
+    }
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while pos < toks.len() {
+        let Some(n) = flux_syntax::parser::fragment_len(&input, pos, Fragment::Expr).filter(|n| *n > 0) else {
+            out.extend_from_slice(&toks[pos..]);
+            break;
+        };
+        let arg = &toks[pos..pos+n];
+        let mut starts = Vec::new();
+        let text = tt::write_text(arg, &mut starts);
+        let origins: Vec<_> = starts.into_iter().zip(arg.iter().map(|t| t.origin)).collect();
+        let kinds: Vec<_> = origins.iter().zip(arg).map(|(&(start, _), token)| (start, token.kind)).collect();
+        let editions: Vec<_> = origins.iter().zip(arg).map(|(&(start, _), token)| (start, token.edition)).collect();
+        let parse = flux_syntax::parse_expansion_with_token_kinds(text.into(), &origins, &kinds, arg[0].range(), Fragment::Expr, site.items.edition(site.module)).with_token_editions(&editions).with_cfg_options(site.items.crates[site.krate.0 as usize].cfg.clone());
+        let node = parse.tree().root().children().next()?;
+        if node.kind() == SyntaxKind::MACRO_EXPR {
+            let path = node.children().find_map(ast::Path::cast)?;
+            let def = match resolve::<()>(site.items, path, &[], site.scope, site.module) {
+                Ok(Resolved::Def(id)) => &site.items.macros[id],
+                Ok(Resolved::Local(_)) => unreachable!(),
+                Err(error) => { diagnostics.push(error); return None; }
+            };
+            let expansion = expand_at_depth(def, node, site, Fragment::Expr, diagnostics, depth)?;
+            let expanded = expansion.parse.tree().root().children().next()?;
+            let mut tokens = Vec::new();
+            tokens_of(expanded, &mut tokens);
+            // A declarative macro can itself produce a macro invocation.
+            if expanded.kind() == SyntaxKind::MACRO_EXPR {
+                if depth >= RECURSION_LIMIT {
+                    diagnostics.push(Diagnostic::new(node.text_range(), "recursion limit reached during eager macro expansion"));
+                    return None;
+                }
+                tokens = eager_arguments(&tokens, site, diagnostics, depth + 1)?;
+            }
+            out.extend(tokens);
+        } else { out.extend_from_slice(arg); }
+        pos += n;
+        if pos < toks.len() {
+            if toks[pos].kind != T![,] { out.extend_from_slice(&toks[pos..]); break; }
+            out.push(toks[pos]);
+            pos += 1;
+        }
+    }
+    Some(out)
 }
 
 /// Where a macro call is: the range of the node, or for one a macro's

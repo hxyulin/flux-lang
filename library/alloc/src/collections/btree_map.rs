@@ -60,6 +60,10 @@ impl<K, V> BTreeMap<K, V> {
         self.nodes.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
     pub fn iter(&self) -> Iter<'_, K, V> {
         let mut iter = Iter {
             map: self,
@@ -275,4 +279,51 @@ impl<K, V> Iterator for IntoIter<K, V> {
         self.descend(right);
         self.map.nodes[index].entry.take()
     }
+}
+
+impl<K, V> BTreeMap<K, V> {
+    /// Mutable values in key order. Each node index is visited once; taking
+    /// its reference from the slot prevents either iterator end yielding it twice.
+    pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
+        let mut order = Vec::new();
+        let mut stack = Vec::new();
+        let mut at = self.root;
+        while at != NONE || !stack.is_empty() {
+            while at != NONE {
+                stack.push(at);
+                at = self.nodes[at].left;
+            }
+            at = stack.pop().unwrap();
+            order.push(at);
+            at = self.nodes[at].right;
+        }
+        let values = self.nodes.iter_mut().map(|node| node.entry.as_mut().map(|(_, value)| value)).collect();
+        ValuesMut { order: order.into_iter(), values, keys: core::marker::PhantomData }
+    }
+}
+
+pub struct ValuesMut<'a, K, V> {
+    order: crate::vec::IntoIter<usize>,
+    values: Vec<Option<&'a mut V>>,
+    keys: core::marker::PhantomData<&'a mut K>,
+}
+impl<'a, K, V> core::iter::Iterator for ValuesMut<'a, K, V> {
+    type Item = &'a mut V;
+    fn next(&mut self) -> Option<&'a mut V> {
+        self.order.next().and_then(|index| self.values[index].take())
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.order.size_hint() }
+}
+impl<'a, K, V> core::iter::DoubleEndedIterator for ValuesMut<'a, K, V> {
+    fn next_back(&mut self) -> Option<&'a mut V> {
+        core::iter::DoubleEndedIterator::next_back(&mut self.order).and_then(|index| self.values[index].take())
+    }
+}
+impl<'a, K, V> core::iter::ExactSizeIterator for ValuesMut<'a, K, V> {}
+impl<'a, K, V> core::iter::FusedIterator for ValuesMut<'a, K, V> {}
+
+impl<K, V, Q: ?Sized> core::ops::Index<&Q> for BTreeMap<K, V>
+where K: Borrow<Q> + Ord, Q: Ord {
+    type Output = V;
+    fn index(&self, key: &Q) -> &V { self.get(key).expect("no entry found for key") }
 }

@@ -73,17 +73,8 @@ fn declaration_arity_names_and_elision_match_rustc() {
         let source = format!("trait Tr<'a> {{}} struct S; {body} fn main() {{}}");
         oracle(&source, accepted);
         let (_, _, messages) = resolve(&source);
-        assert!(
-            messages
-                .iter()
-                .any(|m| m == "lifetime parameters on traits are not supported yet")
-        );
         if accepted {
-            assert_eq!(
-                messages,
-                ["lifetime parameters on traits are not supported yet"],
-                "{source}"
-            );
+            assert!(messages.is_empty(), "{source}: {messages:?}");
         } else {
             assert!(
                 messages.iter().any(|m| m.contains(diagnostic)),

@@ -40,7 +40,6 @@ unsafe impl<T: ?Sized + Send + Sync> Send for Weak<T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for Weak<T> {}
 
 // Check before CAS: even leaked or concurrently cloned handles cannot wrap.
-// No uniqueness APIs use the weak counter, so it needs no lock sentinel.
 fn increment(counter: &AtomicUsize) {
     let mut old = counter.load(Relaxed);
     loop {
@@ -48,6 +47,20 @@ fn increment(counter: &AtomicUsize) {
             core::panicking::abort_now();
         }
         match counter.compare_exchange_weak(old, old + 1, Relaxed, Relaxed) {
+            Ok(_) => return,
+            Err(observed) => old = observed,
+        }
+    }
+}
+
+// get_mut briefly locks a weak count of one. A concurrent downgrade from
+// another strong owner must wait for that probe, rather than overflow-abort.
+fn increment_weak(counter: &AtomicUsize) {
+    let mut old = counter.load(Relaxed);
+    loop {
+        if old == usize::MAX { old = counter.load(Relaxed); continue; }
+        if old >= isize::MAX as usize { core::panicking::abort_now(); }
+        match counter.compare_exchange_weak(old, old + 1, Acquire, Relaxed) {
             Ok(_) => return,
             Err(observed) => old = observed,
         }
@@ -71,11 +84,24 @@ impl<T> Arc<T> {
     }
 }
 
+impl<T: Default> Default for Arc<T> {
+    fn default() -> Self { Arc::new(T::default()) }
+}
+impl<T> Default for Arc<[T]> {
+    fn default() -> Self { Arc::from(Vec::new()) }
+}
+impl<T: Clone> From<&[T]> for Arc<[T]> {
+    fn from(values: &[T]) -> Self { Arc::from(values.to_vec()) }
+}
+impl<T: ?Sized> core::convert::AsRef<T> for Arc<T> {
+    fn as_ref(&self) -> &T { &**self }
+}
+
 impl<T: ?Sized> Arc<T> {
     /// Creates a weak owner without extending the payload's lifetime.
     pub fn downgrade(this: &Arc<T>) -> Weak<T> {
         // SAFETY: a strong owner pins the header and its implicit weak count.
-        increment(unsafe { &(*this.ptr.as_ptr()).weak });
+        increment_weak(unsafe { &(*this.ptr.as_ptr()).weak });
         Weak {
             ptr: Some(this.ptr),
             data: Some(this.data),
@@ -86,6 +112,94 @@ impl<T: ?Sized> Arc<T> {
     /// Whether two handles share an allocation.
     pub fn ptr_eq(this: &Arc<T>, other: &Arc<T>) -> bool {
         this.ptr.as_ptr() == other.ptr.as_ptr()
+    }
+
+    pub fn get_mut(this: &mut Arc<T>) -> Option<&mut T> {
+        // SAFETY: this strong owner pins the initialized header.
+        let header = unsafe { this.ptr.as_ref() };
+        if header.weak.compare_exchange(1, usize::MAX, Acquire, Relaxed).is_err() { return None; }
+        let unique = header.strong.load(Acquire) == 1;
+        header.weak.store(1, Release);
+        if unique {
+            // SAFETY: no other strong or weak owner exists, and &mut this
+            // prevents a new handle while the exclusive payload borrow lives.
+            Some(unsafe { this.data.as_mut() })
+        } else { None }
+    }
+}
+
+struct RestoreStrong<'a> { counter: &'a AtomicUsize, armed: bool }
+impl Drop for RestoreStrong<'_> {
+    fn drop(&mut self) { if self.armed { self.counter.store(1, Release); } }
+}
+
+// These are the represented CloneToUninit cases: sized Clone payloads and
+// slices of Clone elements. Keeping the trait private exposes one make_mut
+// method without adding unstable standard-library trait names to user code.
+trait ClonePayload {
+    fn clone_arc(&self) -> Arc<Self>;
+    unsafe fn move_arc(raw: *const Self) -> Arc<Self>;
+}
+impl<T: Clone> ClonePayload for T {
+    fn clone_arc(&self) -> Arc<T> { Arc::new(self.clone()) }
+    unsafe fn move_arc(raw: *const T) -> Arc<T> {
+        let (ptr, storage) = allocate(Layout::new::<T>());
+        // SAFETY: allocate completed before the move. The fresh storage is
+        // aligned, and make_mut suppresses destruction of the old payload.
+        unsafe {
+            let data = storage as *mut T;
+            ptr::write(data, ptr::read(raw));
+            Arc { ptr, data: NonNull::new_unchecked(data), owner: PhantomData }
+        }
+    }
+}
+impl<T: Clone> ClonePayload for [T] {
+    fn clone_arc(&self) -> Arc<[T]> { Arc::from(self.to_vec()) }
+    unsafe fn move_arc(raw: *const [T]) -> Arc<[T]> {
+        let len = raw.len();
+        let layout = match Layout::array::<T>(len) {
+            Ok(layout) => layout,
+            Err(_) => crate::raw_vec::capacity_overflow(),
+        };
+        let (ptr, storage) = allocate(layout);
+        // SAFETY: allocation completed before transferring ownership. No
+        // fallible operation remains after moving the initialized elements.
+        unsafe {
+            let data = storage as *mut T;
+            ptr::copy_nonoverlapping(raw as *const T, data, len);
+            let slice = ptr::slice_from_raw_parts_mut(data, len);
+            Arc { ptr, data: NonNull::new_unchecked(slice), owner: PhantomData }
+        }
+    }
+}
+#[allow(private_bounds)]
+impl<T: ?Sized + ClonePayload> Arc<T> {
+    pub fn make_mut(this: &mut Self) -> &mut T {
+        let header = this.ptr;
+        // SAFETY: this owns a strong count and the associated implicit weak count.
+        let counter = unsafe { &(*header.as_ptr()).strong };
+        // SAFETY: the same strong owner pins the weak counter in this header.
+        let weak_count = unsafe { &(*header.as_ptr()).weak };
+        if counter.compare_exchange(1, 0, Acquire, Relaxed).is_err() {
+            let replacement = <T as ClonePayload>::clone_arc(&**this);
+            let old = core::mem::replace(this, replacement);
+            drop(old);
+        } else if weak_count.load(Acquire) != 1 {
+            let mut restore = RestoreStrong { counter, armed: true };
+            // SAFETY: the successful CAS reserved the last strong owner.
+            let replacement = unsafe { <T as ClonePayload>::move_arc(this.data.as_ptr() as *const T) };
+            restore.armed = false;
+            drop(restore);
+            let old = core::mem::replace(this, replacement);
+            // The old payload moved; release only its implicit weak owner. Any
+            // surviving weak handles now observe strong == 0 and cannot upgrade.
+            let weak = Weak { ptr: Some(old.ptr), data: Some(old.data), owner: PhantomData };
+            core::mem::forget(old);
+            drop(weak);
+        } else { counter.store(1, Release); }
+        // SAFETY: the retained allocation was unique, or this now holds a fresh
+        // allocation after cloning/moving. No weak handle can alias its payload.
+        unsafe { this.data.as_mut() }
     }
 }
 
@@ -106,6 +220,12 @@ impl<T: ?Sized> Deref for Arc<T> {
     fn deref(&self) -> &T {
         // SAFETY: this strong owner keeps initialized T alive for the borrow.
         unsafe { self.data.as_ref() }
+    }
+}
+
+impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for Arc<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&**self, f)
     }
 }
 
@@ -174,7 +294,7 @@ impl<T: ?Sized> Clone for Weak<T> {
     fn clone(&self) -> Weak<T> {
         if let Some(ptr) = self.ptr {
             // SAFETY: self owns a weak count, pinning the header.
-            increment(unsafe { &(*ptr.as_ptr()).weak });
+            increment_weak(unsafe { &(*ptr.as_ptr()).weak });
         }
         Weak {
             ptr: self.ptr,
@@ -271,5 +391,19 @@ impl<T> FromIterator<T> for Arc<[T]> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Arc<[T]> {
         let values: Vec<T> = iter.into_iter().collect();
         values.into()
+    }
+}
+
+impl<T: ?Sized + core::cmp::PartialEq> core::cmp::PartialEq for Arc<T> {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl<T: ?Sized + core::cmp::Eq> core::cmp::Eq for Arc<T> {}
+
+impl<T: ?Sized + core::hash::Hash> core::hash::Hash for Arc<T> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        (**self).hash(state);
     }
 }

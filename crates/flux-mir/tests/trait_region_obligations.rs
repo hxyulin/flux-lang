@@ -1,4 +1,4 @@
-//! Exercise actual MIR constraints while the public declaration gate stays closed.
+//! Region obligations after bounded trait lifetime declaration admission.
 use std::process::Command;
 
 #[test]
@@ -97,17 +97,6 @@ fn check_cases(cases: &[(&str, &str, bool)], group: &str) {
             "{name}: {:?}",
             typed.diagnostics
         );
-        if !source.contains("trait Tr<T>") {
-            assert!(
-                typed
-                    .diagnostics
-                    .iter()
-                    .any(|d| d.message == "lifetime parameters on traits are not supported yet"),
-                "declaration guard must remain closed"
-            );
-        }
-        // Keep the declaration diagnostics intact: only inspect the independent
-        // borrow-checking result, never treating this as public acceptance.
         let mir = flux_mir::build_file(&hir, &typed);
         assert_eq!(
             mir.diagnostics.is_empty(),
@@ -277,12 +266,7 @@ fn caller_metadata_fails_closed_and_candidates_are_independent() {
     for mutation in 0..6 {
         let (_, _, hir) = flux_hir::lower_text("main.rs", source);
         let mut typed = flux_mir::check_file(&hir);
-        assert!(
-            typed
-                .diagnostics
-                .iter()
-                .any(|d| d.message == "lifetime parameters on traits are not supported yet")
-        );
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
         let f = hir
             .items
             .functions

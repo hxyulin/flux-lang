@@ -1,0 +1,45 @@
+use flux_hir::{lower_text, Diagnostic};
+use flux_ty::{check_file, check_main, infer_body, signatures};
+mod cases;
+
+fn main() {
+    for &(name, source, accepts, main_accepts) in cases::CASES {
+        let (db, _, hir) = lower_text("input.rs", source);
+        assert!(db.syntax_errors().is_empty());
+        assert!(hir.diagnostics.is_empty());
+        let (sigs, signature_errors) = signatures(&hir.items);
+        assert!(signature_errors.is_empty());
+        let typed = check_file(&hir);
+        let main_error = check_main(&hir.items, &typed.sigs);
+        assert_eq!(main_error.is_none(), main_accepts);
+        assert_eq!(typed.diagnostics.is_empty() && main_error.is_none(), accepts);
+        println!("case {name} accepts={accepts}");
+        // Observe signatures and inferred binding types through public APIs.
+        for (id, function) in hir.items.functions.iter() {
+            if !hir.is_program(id) || function.ctor.is_some() { continue; }
+            let sig = &typed.sigs[id];
+            let params: Vec<String> = sig.params.iter().map(|ty| ty.to_string()).collect();
+            println!("signature {}({}) -> {}", function.name, params.join(", "), sig.ret);
+            if function.name.as_str() == "target" && name == "integer" {
+                assert_eq!(params, vec!["u32"]);
+                assert_eq!(sig.ret.to_string(), "u32");
+            }
+            if let Some((body, source_map)) = hir.body(id) {
+                let inferred = infer_body(&hir.items, &sigs, id, body, source_map);
+                let whole = &typed.bodies[id];
+                assert_eq!(inferred.diagnostics.len(), whole.diagnostics.len());
+                for (binding, data) in body.bindings.iter() {
+                    let ty = whole.binding_types[binding];
+                    assert_eq!(ty, inferred.binding_types[binding]);
+                    println!("binding {}: {}", data.name, ty);
+                    if name == "generic" && data.name.as_str() == "number" { assert_eq!(ty.to_string(), "u16"); }
+                    if name == "generic" && data.name.as_str() == "flag" { assert_eq!(ty.to_string(), "bool"); }
+                }
+            }
+        }
+        let mut diagnostics = typed.diagnostics.clone();
+        diagnostics.extend(main_error);
+        Diagnostic::sort(&mut diagnostics);
+        for diagnostic in diagnostics { println!("diagnostic {} {:?}", diagnostic.message, diagnostic.range); }
+    }
+}

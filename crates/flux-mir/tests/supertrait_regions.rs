@@ -198,8 +198,7 @@ fn impl_supertrait_regions_match_rustc() {
 #[test]
 fn unrepresented_supertrait_regions_have_an_explicit_boundary() {
     // Trait headers have no region tables for written supertrait arguments.
-    // Higher-ranked callbacks needed by a selected supertrait impl also need
-    // binder-aware entailment; unrelated callback bounds remain accepted.
+    // Callback supertrait obligations are covered separately below.
     let sources = [
         "trait P<T>{} trait C:P<&'static i32>{} struct S; impl P<&'static i32> for S{} impl C for S{} fn main(){}",
         "trait P{} trait C:P{} struct W<F>(F); impl<F:Fn(&i32)->i32>P for W<F>{} impl<F:Fn(&i32)->i32>C for W<F>{} fn main(){}",
@@ -230,7 +229,7 @@ fn unrepresented_supertrait_regions_have_an_explicit_boundary() {
         }
         assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
         let mir = flux_mir::build_file(&hir, &typed);
-        assert!(mir.diagnostics.iter().any(|d| d.message == "supertrait lifetime requirements that cannot be resolved from the impl header are not supported yet"), "{:?}", mir.diagnostics);
+        assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
     }
     std::fs::remove_dir_all(dir).unwrap();
 }

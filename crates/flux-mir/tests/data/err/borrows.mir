@@ -1219,6 +1219,7 @@ fn loop_use_ref_and_mutate() -> i32 {
     let _10: i32;
     let _11: i32;
     let _12: !;
+    let _13: !;
 
     bb0: {
         _1 = const 0_i32;
@@ -1478,6 +1479,7 @@ fn loop_mutate_ref_used_after() -> i32 {
     let _7: bool;
     let _8: i32;
     let _9: !;
+    let _10: !;
 
     bb0: {
         _1 = const 0_i32;

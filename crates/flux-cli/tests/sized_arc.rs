@@ -89,6 +89,82 @@ fn compare_executables(file: &Path, dir: &Path, name: &str, panic: Option<&str>)
 }
 
 #[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn uniqueness_and_weak_dissociation_match_rustc() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = root.join(format!("out/sized-arc/uniqueness-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    compare_executables(
+        &root.join("tests/run/arc_uniqueness.rs"),
+        &dir,
+        "uniqueness",
+        None,
+    );
+}
+
+#[test]
+fn make_mut_preserves_ownership_when_clone_or_allocation_panics() {
+    let dir = std::env::temp_dir().join(format!("flux-arc-clone-panic-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let library = include_str!("../../../library/alloc/src/sync.rs")
+        .replace("#[lang = \"arc\"]\n", "")
+        .replace("use crate::alloc::", "use std::alloc::")
+        .replace("use crate::vec::Vec;", "use std::vec::Vec;")
+        .replace("crate::raw_vec::capacity_overflow()", "panic!(\"capacity overflow\")")
+        .replace("core::panicking::abort_now()", "std::process::abort()")
+        .replace("fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {", r#"
+static FAIL_ALLOCATION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn fail_next_allocation() { FAIL_ALLOCATION.store(true, std::sync::atomic::Ordering::SeqCst); }
+fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {
+    if FAIL_ALLOCATION.swap(false, std::sync::atomic::Ordering::SeqCst) { panic!("allocation"); }
+"#);
+    let source = dir.join("panic.rs");
+    std::fs::write(&source, format!("mod implementation {{\n{library}\n}}\n{}", r#"
+use implementation::Arc;
+use std::cell::Cell;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+struct Value<'a> { clones: &'a Cell<usize>, drops: &'a Cell<usize> }
+impl Clone for Value<'_> {
+    fn clone(&self) -> Self {
+        let count = self.clones.get() + 1;
+        self.clones.set(count);
+        if count == 3 { panic!("clone"); }
+        Self { clones: self.clones, drops: self.drops }
+    }
+}
+impl Drop for Value<'_> { fn drop(&mut self) { self.drops.set(self.drops.get() + 1); } }
+fn main() {
+    let clones = Cell::new(0); let drops = Cell::new(0);
+    let mut value: Arc<[Value<'_>]> = (0..4).map(|_| Value { clones: &clones, drops: &drops }).collect();
+    let original = value.clone();
+    assert!(catch_unwind(AssertUnwindSafe(|| { let _ = Arc::make_mut(&mut value); })).is_err());
+    assert!(Arc::ptr_eq(&value, &original));
+    assert_eq!(value.len(), 4); assert_eq!(clones.get(), 3); assert_eq!(drops.get(), 2);
+    drop(original); assert_eq!(drops.get(), 2);
+    drop(value); assert_eq!(drops.get(), 6);
+    let mut value = Arc::new(Value { clones: &clones, drops: &drops });
+    let weak = Arc::downgrade(&value);
+    implementation::fail_next_allocation();
+    assert!(catch_unwind(AssertUnwindSafe(|| { let _ = Arc::make_mut(&mut value); })).is_err());
+    assert_eq!(drops.get(), 6); assert!(weak.upgrade().is_some());
+    drop(value); assert_eq!(drops.get(), 7); assert!(weak.upgrade().is_none());
+    let mut value: Arc<[Value<'_>]> = (0..2).map(|_| Value { clones: &clones, drops: &drops }).collect();
+    let weak = Arc::downgrade(&value);
+    implementation::fail_next_allocation();
+    assert!(catch_unwind(AssertUnwindSafe(|| { let _ = Arc::make_mut(&mut value); })).is_err());
+    assert_eq!(drops.get(), 7); assert!(weak.upgrade().is_some());
+    drop(value); assert_eq!(drops.get(), 9); assert!(weak.upgrade().is_none());
+}
+"#)).unwrap();
+    let executable = dir.join("panic");
+    let output = Command::new("rustc").args(["--edition=2024", "-Awarnings"])
+        .arg(&source).arg("-o").arg(&executable).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let output = Command::new(executable).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
 fn ownership_bounds_and_borrows_are_compile_only() {
     let dir = std::env::temp_dir().join(format!("flux-sized-arc-bounds-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -405,7 +481,7 @@ fn iterator_projection_boundaries_are_compile_only() {
         );
         let errors = String::from_utf8_lossy(&flux.stderr);
         let expected: &[&str] = match name {
-            "borrowed_escape" => &["cannot return value referencing local variable `it`"],
+            "borrowed_escape" => &["lifetime may not live long enough"],
             "local_escape" => &["cannot return value referencing local variable `xs`"],
             "missing_exact" => &[
                 "no method named `len` found for type `<I as IntoIterator>::IntoIter` in the current scope",
@@ -427,7 +503,7 @@ fn iterator_projection_boundaries_are_compile_only() {
             .collect();
         assert_eq!(actual, expected, "{name}: {errors}");
     }
-    // Preserve the independent borrowed-return region gap with exact diagnostics.
+    // Iterator::Item retains the declared input region through next().
     let file = dir.join("borrowed_iterator_return.rs");
     std::fs::write(
         &file,
@@ -444,15 +520,8 @@ fn iterator_projection_boundaries_are_compile_only() {
         .arg(&file)
         .output()
         .unwrap();
-    assert!(!flux.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&flux.stderr),
-        format!(
-            "{}:12:5: error: cannot return value referencing local variable `it`\n",
-            file.display()
-        )
-    );
-    // Trait lifetime declarations are still outside the public subset.
+    assert!(flux.status.success(), "{}", String::from_utf8_lossy(&flux.stderr));
+    // This associated-type trait lifetime shape remains outside admission.
     let file = dir.join("unsupported_trait_lifetime.rs");
     std::fs::write(&file, "trait Tr<'a> { type Item; } fn main() {}\n").unwrap();
     assert!(
@@ -466,10 +535,8 @@ fn iterator_projection_boundaries_are_compile_only() {
         .output()
         .unwrap();
     assert!(!flux.status.success());
-    assert!(
-        String::from_utf8_lossy(&flux.stderr)
-            .contains("lifetime parameters on traits are not supported yet")
-    );
+    assert!(String::from_utf8_lossy(&flux.stderr)
+        .contains("lifetime parameters on traits are not supported yet"));
     std::fs::remove_dir_all(dir).unwrap();
 }
 

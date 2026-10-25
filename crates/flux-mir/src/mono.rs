@@ -47,6 +47,8 @@ pub fn collect(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Vec<Instan
 pub struct Collected {
     pub instances: Vec<Instance>,
     pub reified: FxHashSet<Instance>,
+    /// Constants evaluated after their reachable caller supplies concrete arguments.
+    pub const_values: FxHashMap<flux_ty::ConstInstance, crate::eval::Value>,
 }
 
 /// [`collect`], with the instances whose address is taken.
@@ -79,6 +81,28 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
             instances.push(instance);
         }
     }
+    // All statics are emitted, but an ordinary constant becomes a root only
+    // when reachable code uses it. Otherwise an unused pointer could trigger
+    // unbounded monomorphization of a function that is never called.
+    for (id, value) in mir.const_values.items.iter() {
+        if items.consts[id].is_static.is_none() {
+            continue;
+        }
+        let mut found = Vec::new();
+        value_functions(value, &mir.const_values, &mut found);
+        for instance in found {
+            reified.insert(instance);
+            if (mir.instance_body(items, instance).is_some() || is_clone_shim(items, instance))
+                && !depths.contains_key(&instance)
+            {
+                depths.insert(instance, 0);
+                instances.push(instance);
+            }
+        }
+    }
+    let names = |id| items.const_name(id);
+    let mut evaluator = crate::eval::Evaluator::new(items, sigs, &mir.bodies, &mir.consts, &names);
+    let mut const_values = FxHashMap::default();
     let mut next = 0;
     while let Some(&caller) = instances.get(next) {
         next += 1;
@@ -91,6 +115,20 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                 (&shim, caller.args)
             }
         };
+        // A generic wrapper can acquire a vtable tail only at this instance.
+        // Reject that unrepresented dynamic layout before intrinsic expansion.
+        let mut types: Vec<_> = body.locals.values().map(|local| flux_ty::traits::instance_ty(items, sigs, local.ty, caller_args)).collect();
+        let mut seen = FxHashSet::default();
+        while let Some(ty) = types.pop() {
+            if !seen.insert(ty) { continue; }
+            if matches!(ty.kind(), TyKind::Adt(..)) && sigs.metadata(ty) == flux_ty::Metadata::VTable {
+                let owner = &items.functions[body.owner.unwrap_or(caller.function)];
+                let mut error = Diagnostic::new(owner.def_range, "trait object tails in structs are not supported yet");
+                error.file = owner.loc.file;
+                return Err(error);
+            }
+            types.extend(ty.children());
+        }
         for data in body.blocks.values() {
             // Functions whose address is taken.
             for statement in &data.statements {
@@ -145,16 +183,68 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                 .flat_map(Rvalue::operands)
                 .chain(data.terminator.kind.operands());
             for op in pointers {
-                if let Operand::Const(Constant::Fn { function, args, .. }) = op {
-                    let instance = Instance {
-                        function: *function,
-                        args: instance_args(&hir.items, sigs, args, caller_args),
-                    };
-                    let instance = flux_ty::traits::resolve_instance(&hir.items, sigs, instance);
+                let mut found = Vec::new();
+                match op {
+                    Operand::Const(Constant::Fn { function, args, .. }) => {
+                        let instance = Instance {
+                            function: *function,
+                            args: instance_args(items, sigs, args, caller_args),
+                        };
+                        found.push(flux_ty::traits::resolve_instance(items, sigs, instance));
+                    }
+                    Operand::Const(Constant::Static { id, .. }) => {
+                        if let Some(value) = mir.const_values.items.get(*id) {
+                            value_functions(value, &mir.const_values, &mut found);
+                        }
+                    }
+                    Operand::Const(Constant::Item { id, args, ty }) => {
+                        let ty = flux_ty::traits::instance_ty(items, sigs, *ty, caller_args);
+                        if !may_contain_function_address(items, sigs, ty) {
+                            continue;
+                        }
+                        let c = flux_ty::ConstInstance {
+                            konst: *id,
+                            args: instance_args(items, sigs, args, caller_args),
+                        };
+                        let c = flux_ty::traits::resolve_const(items, sigs, c);
+                        let value = if let Some(value) = mir.const_values.get(c.konst, c.args) {
+                            value
+                        } else {
+                            if let std::collections::hash_map::Entry::Vacant(entry) =
+                                const_values.entry(c)
+                            {
+                                let value = evaluator.eval_instance(c).map_err(|error| {
+                                    let mut d = Diagnostic::new(error.range, error.message);
+                                    d.file = items.consts[c.konst].loc.file;
+                                    d
+                                })?;
+                                entry.insert(value);
+                            }
+                            &const_values[&c]
+                        };
+                        value_functions(value, &mir.const_values, &mut found);
+                    }
+                    Operand::Const(Constant::Promoted { index, .. }) => {
+                        value_functions(&body.promoted[*index as usize], &mir.const_values, &mut found);
+                    }
+                    _ => {}
+                }
+                for instance in found {
                     reified.insert(instance);
-                    let has_body = mir.instance_body(&hir.items, instance).is_some()
-                        || is_clone_shim(&hir.items, instance);
+                    let has_body = mir.instance_body(items, instance).is_some()
+                        || is_clone_shim(items, instance);
                     if has_body && !depths.contains_key(&instance) {
+                        if depth + 1 > RECURSION_LIMIT {
+                            let mut d = Diagnostic::new(
+                                data.terminator.range,
+                                format!(
+                                    "reached the recursion limit while instantiating `{}`",
+                                    instance_name(hir, instance),
+                                ),
+                            );
+                            d.file = items.functions[caller.function].loc.file;
+                            return Err(d);
+                        }
                         depths.insert(instance, depth + 1);
                         instances.push(instance);
                     }
@@ -365,7 +455,74 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         d.file = f.loc.file;
         return Err(d);
     }
-    Ok(Collected { instances, reified })
+    Ok(Collected {
+        instances,
+        reified,
+        const_values,
+    })
+}
+
+/// Whether evaluating this stored type can reveal a function address. Scalar
+/// constants stay in codegen's evaluator, outside the collector's large frame.
+fn may_contain_function_address(items: &ItemTree, sigs: &Signatures, ty: Ty) -> bool {
+    let mut pending = vec![(ty, Vec::new())];
+    while let Some((ty, mut active)) = pending.pop() {
+        let ty = flux_ty::traits::normalize(items, sigs, &[], ty);
+        match ty.kind() {
+            TyKind::FnPtr(_) => return true,
+            TyKind::Ref(_, inner)
+            | TyKind::RawPtr(_, inner)
+            | TyKind::Array(inner, _)
+            | TyKind::Slice(inner) => pending.push((inner, active)),
+            TyKind::Adt(adt, args) => {
+                // A repeated declaration can introduce function pointers via
+                // associated fields after substitution. Evaluate conservatively
+                // rather than unfold pointer-linked growing types forever.
+                if active.contains(&adt.strukt) {
+                    return true;
+                }
+                active.push(adt.strukt);
+                let children = sigs.contents(ty).unwrap_or(args);
+                pending.extend(children.iter().map(|&child| (child, active.clone())));
+            }
+            TyKind::Tuple(fields) => {
+                pending.extend(fields.iter().map(|&child| (child, active.clone())));
+            }
+            TyKind::Closure(_, _) => {
+                pending.extend(
+                    sigs.contents(ty)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|&child| (child, active.clone())),
+                );
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Function addresses nested in a constant's stored value.
+fn value_functions<'a>(value: &'a crate::eval::Value, constants: &'a crate::eval::ConstValues, out: &mut Vec<Instance>) {
+    use crate::eval::Value;
+    let mut values = vec![value];
+    let mut globals = FxHashSet::default();
+    while let Some(value) = values.pop() {
+        match value {
+            Value::Function(instance) => out.push(*instance),
+            Value::Aggregate(fields) | Value::Variant { fields, .. } => {
+                values.extend(fields.iter())
+            }
+            Value::Ref(value) | Value::InteriorRef(value) | Value::LocalRef { value, .. } => {
+                values.push(value)
+            }
+            Value::PointerView { pointer, .. } => values.push(pointer),
+            Value::Static(id) | Value::StaticPart { id, .. } if globals.insert(*id) => {
+                if let Some(value) = constants.items.get(*id) { values.push(value); }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// What a pointer type points to.
@@ -763,7 +920,7 @@ pub fn expand_intrinsics(
             Some(target) => TerminatorKind::Goto(target),
             None => TerminatorKind::Unreachable,
         };
-        if matches!(data.name.as_str(), "caller_location" | "read_unaligned")
+        if matches!(data.name.as_str(), "caller_location" | "read_unaligned" | "transmute" | "fmaf32" | "fmaf64")
             || is_neon_intrinsic(data.name.as_str())
             || atomic_intrinsic(data.name.as_str()).is_some()
         {
@@ -813,43 +970,21 @@ pub fn expand_intrinsics(
                 let needs = flux_ty::traits::needs_drop(items, sigs, &[], ty);
                 (dest, Rvalue::Use(Operand::Const(Constant::Bool(needs))))
             }
-            (name @ ("size_of_val" | "align_of_val"), [ptr]) if arg_ty.is_unsized() => {
-                // A slice's or `str`'s: its length times its element's.
-                let elem = arg_ty
-                    .sequence_elem()
-                    .unwrap_or(Ty::int(flux_ty::IntTy::U8));
-                let layout = layouts.of(elem);
+            (name @ ("size_of_val" | "align_of_val"), [ptr]) if sigs.is_unsized(arg_ty) => {
+                let (prefix, stride, align) = layouts.length_layout(arg_ty).expect("represented DST length layout");
                 let usize = flux_ty::IntTy::Usize;
+                let constant = |bits| Operand::Const(Constant::Int { bits: bits as u128, ty: usize });
                 if name == "align_of_val" {
-                    let constant = Constant::Int {
-                        bits: u128::from(layout.align),
-                        ty: usize,
-                    };
-                    (dest, Rvalue::Use(Operand::Const(constant)))
+                    (dest, Rvalue::Use(constant(align)))
                 } else {
                     let ptr = pointer(body, ptr);
-                    let len = body.locals.alloc(LocalDecl {
-                        ty: Ty::int(usize),
-                        kind: LocalKind::Temp,
-                    });
-                    body.blocks[block].statements.push(Statement {
-                        kind: StatementKind::Assign(
-                            len.into(),
-                            Rvalue::Len {
-                                place: ptr.deref(),
-                                borrows: false,
-                            },
-                        ),
-                        range,
-                    });
-                    let size = Operand::Const(Constant::Int {
-                        bits: u128::from(layout.size),
-                        ty: usize,
-                    });
-                    (
-                        dest,
-                        Rvalue::BinaryOp(crate::BinOp::Mul, Operand::Move(len.into()), size),
-                    )
+                    let len = body.locals.alloc(LocalDecl { ty: Ty::int(usize), kind: LocalKind::Temp });
+                    body.blocks[block].statements.push(Statement { kind: StatementKind::Assign(len.into(), Rvalue::Len { place: ptr.deref(), borrows: false }), range });
+                    let size = body.locals.alloc(LocalDecl { ty: Ty::int(usize), kind: LocalKind::Temp });
+                    body.blocks[block].statements.push(Statement { kind: StatementKind::Assign(size.into(), Rvalue::BinaryOp(crate::BinOp::Mul, Operand::Copy(len.into()), constant(stride))), range });
+                    let padded = body.locals.alloc(LocalDecl { ty: Ty::int(usize), kind: LocalKind::Temp });
+                    body.blocks[block].statements.push(Statement { kind: StatementKind::Assign(padded.into(), Rvalue::BinaryOp(crate::BinOp::Add, Operand::Copy(size.into()), constant(prefix + align - 1))), range });
+                    (dest, Rvalue::BinaryOp(crate::BinOp::BitAnd, Operand::Copy(padded.into()), constant(!(align - 1))))
                 }
             }
             (name @ ("size_of_val" | "align_of_val"), [_]) => {
@@ -933,10 +1068,11 @@ pub fn expand_intrinsics(
             }
             // `data` as a pointer to an empty array, unsized, as a
             // reference, then its first `len` elements.
-            ("slice_from_raw_parts" | "slice_from_raw_parts_mut", [data, len]) => {
+            ("slice_from_raw_parts" | "slice_from_raw_parts_mut" | "raw_slice_from_parts" | "raw_slice_from_parts_mut", [data, len]) => {
                 let slice_ref = body.place_ty(&dest, sigs);
                 let (m, elem) = match slice_ref.kind() {
                     TyKind::Ref(m, slice) => (m, slice.sequence_elem().unwrap_or(Ty::ERROR)),
+                    TyKind::RawPtr(m, slice) => (m, slice.sequence_elem().unwrap_or(Ty::ERROR)),
                     _ => (Mutability::Not, Ty::ERROR),
                 };
                 let temp = |body: &mut Body, ty: Ty, rvalue: Rvalue| -> Operand {
@@ -1104,9 +1240,14 @@ enum Glue {
     /// places indexed by `index`, a stand-in for the loop's counter.
     Elements {
         index: Local,
-        len: u64,
+        len: GlueLen,
         glue: Vec<Glue>,
     },
+}
+
+enum GlueLen {
+    Constant(u64),
+    Slice(Place),
 }
 
 /// The length of an array in a monomorphized body, `len`, which is known.
@@ -1175,7 +1316,16 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
             let mut glue = Vec::new();
             drop_glue(items, sigs, place.index(index), elem, &mut glue);
             if !glue.is_empty() && len > 0 {
-                out.push(Glue::Elements { index, len, glue });
+                out.push(Glue::Elements { index, len: GlueLen::Constant(len), glue });
+            }
+            return;
+        }
+        TyKind::Slice(elem) => {
+            let index = element_index(place.index_locals().count());
+            let mut glue = Vec::new();
+            drop_glue(items, sigs, place.index(index), elem, &mut glue);
+            if !glue.is_empty() {
+                out.push(Glue::Elements { index, len: GlueLen::Slice(place), glue });
             }
             return;
         }
@@ -1331,6 +1481,15 @@ impl Expand<'_> {
                 let int = |value: u64| {
                     Operand::Const(Constant::int(i128::from(value), flux_ty::IntTy::Usize))
                 };
+                let mut initial = vec![assign(counter, Rvalue::Use(int(0)), self.range)];
+                let bound = match len {
+                    GlueLen::Constant(len) => int(*len),
+                    GlueLen::Slice(place) => {
+                        let length = self.body.locals.alloc(LocalDecl { ty: usize, kind: LocalKind::Temp });
+                        initial.push(assign(length, Rvalue::Len { place: place.clone(), borrows: false }, self.range));
+                        Operand::Copy(length.into())
+                    }
+                };
                 let head = self.push((Vec::new(), TerminatorKind::Unreachable));
                 let step = self.push((
                     vec![assign(
@@ -1348,7 +1507,7 @@ impl Expand<'_> {
                         Rvalue::BinaryOp(
                             crate::BinOp::Lt,
                             Operand::Copy(counter.into()),
-                            int(*len),
+                            bound,
                         ),
                         self.range,
                     )],
@@ -1363,7 +1522,7 @@ impl Expand<'_> {
                     },
                 };
                 (
-                    vec![assign(counter, Rvalue::Use(int(0)), self.range)],
+                    initial,
                     TerminatorKind::Goto(head),
                 )
             }
@@ -1393,7 +1552,10 @@ impl Glue {
             ),
             Glue::Elements { index, len, glue } => Glue::Elements {
                 index: *index,
-                len: *len,
+                len: match len {
+                    GlueLen::Constant(len) => GlueLen::Constant(*len),
+                    GlueLen::Slice(p) => GlueLen::Slice(place(p)),
+                },
                 glue: glue.iter().map(|g| g.reindex(from, to)).collect(),
             },
         }
@@ -1547,7 +1709,14 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
 pub fn is_neon_intrinsic(name: &str) -> bool {
     matches!(
         name,
-        "__neon_vld1q_u8"
+        "__neon_vld1_u8"
+            | "__neon_vst1_u8"
+            | "__neon_vdup_n_u8"
+            | "__neon_vceq_u8"
+            | "__neon_vorr_u8"
+            | "__neon_vcltz_s8"
+            | "__neon_vcgez_s8"
+            | "__neon_vld1q_u8"
             | "__neon_vdupq_n_u8"
             | "__neon_vceqq_u8"
             | "__neon_vandq_u8"
@@ -1635,6 +1804,43 @@ fn valid_atomic_signature(op: &str, word: AtomicWord, args: &[Ty], sig: &flux_ty
     args == [word]
         && sig.params.as_ref() == params
         && sig.ret == if op == "store" { Ty::UNIT } else { word }
+}
+
+#[cfg(test)]
+mod const_pointer_tests {
+    #[test]
+    fn recursive_fields_can_introduce_function_addresses_after_substitution() {
+        let (_, _, hir) = flux_hir::lower_text(
+            "pointer_storage.rs",
+            "
+            trait Data { type Out; }
+            struct Start;
+            struct Next<T>(T);
+            impl Data for Start { type Out = u32; }
+            impl<T> Data for Next<T> { type Out = fn() -> u32; }
+            struct Link<T:Data> { data:T::Out, next:*const Link<Next<T>> }
+            fn pointer_storage_probe(_:Link<Start>) {} fn main() {}",
+        );
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        let typed = crate::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let (probe, _) = hir
+            .items
+            .functions
+            .iter()
+            .find(|(_, f)| f.name.as_str() == "pointer_storage_probe")
+            .unwrap();
+        assert!(super::may_contain_function_address(
+            &hir.items,
+            &typed.sigs,
+            typed.sigs.fns[probe].params[0]
+        ));
+        assert!(!super::may_contain_function_address(
+            &hir.items,
+            &typed.sigs,
+            flux_ty::Ty::new(flux_ty::TyKind::Int(flux_ty::IntTy::U32))
+        ));
+    }
 }
 
 #[cfg(test)]

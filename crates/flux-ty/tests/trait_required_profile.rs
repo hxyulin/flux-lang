@@ -1,4 +1,4 @@
-//! Declaration classification only: no gate suppression or invalid execution.
+//! Trait declaration admission and metadata reconstruction checks.
 use flux_hir::{Hir, Owner, TraitId};
 use flux_ty::regions::{
     CallbackBinder, Region, TraitProfileReason as Reason, required_method_trait_profile as profile,
@@ -23,7 +23,7 @@ fn resolve(source: &str) -> (Hir, Signatures, TraitId) {
 const SHAPE: &str = "trait Shape<'a>: Copy { fn tag(x: bool) -> bool; fn cast(x: &'a i32) -> Option<Self>; fn view(self) -> &'a i32; }";
 
 #[test]
-fn alpha_renaming_and_elision_preserve_profile_and_gate() {
+fn alpha_renaming_and_elision_preserve_profile_and_admission() {
     for source in [
         SHAPE.to_owned(),
         SHAPE
@@ -42,11 +42,7 @@ fn alpha_renaming_and_elision_preserve_profile_and_gate() {
         assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
         assert_eq!(profile(&hir, &sigs, id), Ok(()), "{source}");
         let (_, diagnostics) = flux_ty::signatures(&hir.items);
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-        assert_eq!(
-            diagnostics[0].message,
-            "lifetime parameters on traits are not supported yet"
-        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 }
 
@@ -355,5 +351,33 @@ fn in_range_but_wrong_binder_and_elided_name_arities_reject() {
             _ => r.names[1].name = r.names[0].name,
         }
         assert!(profile(&hir, &sigs, id).is_err(), "corruption {corruption}");
+    }
+}
+
+#[test]
+fn unsupported_declarations_keep_the_production_gate() {
+    for source in [
+        "trait T<'a,'b> {}",
+        "trait T<'a,U> {}",
+        "trait T<'a> {type Out;}",
+        "trait T<'a> {fn f() {}}",
+        "trait T<'a> {fn f<'b>(x: &'b i32);}",
+        "trait T<'a> {fn f(x: fn(&'a i32));}",
+        "trait T<'a>: A<'a> {} trait A<'b> {}",
+        "trait T<'a>: A {} trait A:B<'static> {} trait B<'b> {}",
+    ] {
+        let (hir, sigs, id) = resolve(source);
+        assert!(profile(&hir, &sigs, id).is_err(), "{source}");
+        let (_, diagnostics) = flux_ty::signatures(&hir.items);
+        for lifetime in &hir.items.traits[id].generics.lifetimes {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.file == hir.items.traits[id].loc.file
+                        && d.range == lifetime.range
+                        && d.message == "lifetime parameters on traits are not supported yet"),
+                "{source}: {diagnostics:?}"
+            );
+        }
     }
 }

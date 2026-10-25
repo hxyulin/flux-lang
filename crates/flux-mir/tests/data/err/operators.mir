@@ -177,19 +177,20 @@ fn compound_after_move(_1: V, _2: V) -> () {
 
 fn add_in_loop(_1: V) -> () {
     let mut _0: ();
-    let _2: ();
-    let _3: V; // _b
-    let _4: V;
+    let _2: !;
+    let _3: ();
+    let _4: V; // _b
     let _5: V;
+    let _6: V;
 
     bb0: {
         goto -> bb1;
     }
 
     bb1: {
-        _4 = move _1;
-        _5 = V(const 1_i32);
-        _3 = add::<V, V>(move _4, move _5) -> bb3;
+        _5 = move _1;
+        _6 = V(const 1_i32);
+        _4 = add::<V, V>(move _5, move _6) -> bb3;
     }
 
     bb2: {
@@ -197,8 +198,8 @@ fn add_in_loop(_1: V) -> () {
     }
 
     bb3: {
-        _2 = const ();
-        StorageDead(_3);
+        _3 = const ();
+        StorageDead(_4);
         goto -> bb1;
     }
 }

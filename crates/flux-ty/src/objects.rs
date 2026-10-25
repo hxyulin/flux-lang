@@ -342,12 +342,32 @@ pub(crate) fn resolve_dyn(
     if tys.contains(&Ty::ERROR) {
         return Ty::ERROR;
     }
-    // A reference in its arguments would need region slots of its own.
+    // A callable with only bound input regions stores none of those regions
+    // in the object. Resolve the written input tuple to distinguish genuinely
+    // elided regions from free/static regions hidden behind aliases.
+    let callable_inputs = crate::fn_trait_kind(items, t).is_some()
+        && tys.iter().all(|&ty| crate::regions::slots(items, ty) == 0 && !mentions_object(ty))
+        && path.args(last).is_some_and(|written| {
+            if !written.parenthesized { return false; }
+            let ([input], [tuple]) = (&*written.types, trait_ref.args) else { return false; };
+            if tuple.has_params() || mentions_object(*tuple) { return false; }
+            let mut walker = crate::regions::Walker::new(items, module, Vec::new());
+            walker.scope = scope;
+            walker.elided = crate::regions::Elided::Fresh;
+            let regions = walker.regions(input, *tuple);
+            walker.errors.is_empty() && regions.iter().enumerate().all(|(i, r)| {
+                // DynTy currently has no table for repeated/free input
+                // regions. Admit independent binders only, rather than lose
+                // correlations introduced by a lifetime-bearing type alias.
+                matches!(r, crate::regions::Region::Param(_)) && !regions[..i].contains(r)
+            })
+        });
     if trait_ref
         .args
         .iter()
         .chain(&tys)
         .any(|&ty| crate::regions::slots(items, ty) > 0 || mentions_object(ty))
+        && !callable_inputs
     {
         return fail(
             errors,

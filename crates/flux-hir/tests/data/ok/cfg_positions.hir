@@ -1,0 +1,8 @@
+struct S {  }
+
+enum E {  }
+
+fn conditional_attribute() -> () {}
+
+fn parameters() -> () {}
+

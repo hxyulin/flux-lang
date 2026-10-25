@@ -50,8 +50,11 @@ fn check_cases(directory: &str) {
         let gate_count = hir
             .items
             .traits
-            .values()
-            .map(|t| t.generics.lifetimes.len())
+            .iter()
+            .filter(|(id, _)| {
+                flux_ty::regions::required_method_trait_profile(&hir, &typed.sigs, *id).is_err()
+            })
+            .map(|(_, t)| t.generics.lifetimes.len())
             .sum::<usize>();
         assert_eq!(
             typed.diagnostics.len(),
@@ -116,7 +119,7 @@ fn malformed_trait_owner_metadata_fails_closed() {
         };
         for corruption in 0..7 {
             let mut typed = flux_mir::check_file(&hir);
-            assert_eq!(typed.diagnostics.len(), 1);
+            assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
             match corruption {
                 0 => typed.sigs.regions.fns.get_mut(method).unwrap().owner = 0,
                 1 => typed.sigs.regions.fns.get_mut(method).unwrap().owner = 2,

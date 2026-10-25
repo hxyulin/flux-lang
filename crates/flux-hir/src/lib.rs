@@ -47,7 +47,7 @@ pub use item_tree::{
 pub use library::Core;
 pub use lower::{LoweredBody, lower_body, lower_const};
 pub use macros::{Builtin, MacroDef, MacroId, MacroKind, MacroScope, MacroScopeId};
-pub use source::{CORE_ROOT, FileId, SourceDb, SourceFile};
+pub use source::{CORE_ROOT, CrateCfg, FileId, SourceDb, SourceFile};
 
 use flux_arena::ArenaMap;
 use flux_intern::Symbol;
@@ -136,7 +136,7 @@ fn lower_items(db: &SourceDb, mut items: ItemTree, with_core: bool) -> Hir {
     }
     let const_bodies = lower_consts(db, &items, items.core.consts as usize, &mut diagnostics);
     for d in &mut diagnostics {
-        d.file = items.real_file(d.file);
+        items.resolve_diagnostic(d);
     }
     Diagnostic::sort(&mut diagnostics);
     Hir {

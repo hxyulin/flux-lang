@@ -66,7 +66,7 @@ pub fn as_dyn(object: Ty) -> Option<DynTy> {
 /// `object`, `d`: its trait and arguments, and the associated types of
 /// it and its supertraits that `object` gives.
 pub fn super_object(items: &ItemTree, sigs: &Signatures, object: Ty, d: DynTy, p: Predicate) -> Ty {
-    let given = flux_ty::traits::dyn_projections(sigs, object, d);
+    let given = flux_ty::traits::dyn_projections(items, sigs, object, d);
     let mut names = Vec::new();
     let mut tys = Vec::new();
     for (_, name) in flux_ty::objects::dyn_assoc(items, p.trait_ref.trait_) {

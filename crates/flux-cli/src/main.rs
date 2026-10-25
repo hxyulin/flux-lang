@@ -191,7 +191,7 @@ fn load(file: &std::path::Path) -> Result<(SourceDb, Hir), String> {
 /// were none.
 pub(crate) fn report_all(db: &SourceDb, diagnostics: &mut [Diagnostic]) -> bool {
     for d in diagnostics.iter_mut() {
-        d.file = db.real_file(d.file);
+        db.resolve_diagnostic(d);
     }
     Diagnostic::sort(diagnostics);
     // Each expansion of a macro reports what is wrong in its definition

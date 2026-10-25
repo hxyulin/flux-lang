@@ -78,8 +78,11 @@ pub fn validate_file(hir: &flux_hir::Hir, sigs: &Signatures, mir: &FileMir) -> V
         add(items.function_path(&items.functions[id]), found);
     }
     for ((c, _), body) in &mir.closures {
-        let found = validate(items, sigs, &env(c.owner), body);
-        let owner = items.function_path(&items.functions[c.owner]);
+        let (projections, owner) = match c.owner {
+            flux_ty::ClosureOwner::Function(f) => (env(f), items.function_path(&items.functions[f])),
+            flux_ty::ClosureOwner::Const(c) => (flux_ty::traits::owner_projections(items, sigs, items.consts[c].owner), items.const_name(c)),
+        };
+        let found = validate(items, sigs, &projections, body);
         add(format!("a closure in {owner}"), found);
     }
     for (id, body) in mir.consts.iter() {
@@ -121,6 +124,7 @@ impl Validator<'_> {
     /// instance's types are known, and checked, in code generation.
     fn same(&self, expected: Ty, actual: Ty) -> bool {
         expected == actual
+            || flux_ty::regions::same_fn_pointer_shape(expected, actual)
             || has_error(expected)
             || has_error(actual)
             || ((expected.has_aliases() || actual.has_aliases()) && same_shape(expected, actual))
@@ -229,7 +233,7 @@ impl Validator<'_> {
                 }
                 let from = self.operand_ty(slice);
                 let unsized_ref =
-                    matches!(from.kind(), TyKind::Ref(_, pointee) if pointee.is_unsized());
+                    matches!(from.kind(), TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee) if pointee.is_unsized());
                 if !unsized_ref && !has_error(from) {
                     self.errors
                         .push(format!("{}: a subslice of a `{from}`", what()));
@@ -258,16 +262,18 @@ impl Validator<'_> {
                                 .then_some((a, b))
                         }),
                 };
-                let unsizes = pointees.is_some_and(|(a, b)| match (a.kind(), b.kind()) {
+                let unsizes = pointees.is_some_and(|(a, b)| {
+                    if let Some((x, y)) = self.sigs.array_unsize(a, b) { return self.same(x, y); }
+                    match (a.kind(), b.kind()) {
                     (TyKind::Array(x, _), TyKind::Slice(y)) => self.same(y, x),
                     // Upcasting: to a supertrait's object.
                     (TyKind::Dynamic(x), TyKind::Dynamic(y)) => {
                         flux_ty::objects::supertraits_of(self.items, x.trait_).contains(&y.trait_)
                     }
                     // A sized value, whose trait the type checker proved.
-                    (_, TyKind::Dynamic(_)) => !a.is_unsized(),
+                    (_, TyKind::Dynamic(_)) => !self.sigs.is_unsized(a),
                     _ => false,
-                });
+                }});
                 if !unsizes && !has_error(from) && !has_error(to) {
                     self.errors
                         .push(format!("{}: `{from}` does not unsize to `{to}`", what()));
@@ -371,8 +377,9 @@ impl Validator<'_> {
 /// Whether `a` and `b` are the same type where each associated type
 /// stands for any type.
 fn same_shape(a: Ty, b: Ty) -> bool {
+    let same = same_shape;
     let all =
-        |x: &[Ty], y: &[Ty]| x.len() == y.len() && x.iter().zip(y).all(|(&x, &y)| same_shape(x, y));
+        |x: &[Ty], y: &[Ty]| x.len() == y.len() && x.iter().zip(y).all(|(&x, &y)| same(x, y));
     match (a.kind(), b.kind()) {
         _ if a == b => true,
         (TyKind::Alias(_), _) | (_, TyKind::Alias(_)) => true,
@@ -380,12 +387,12 @@ fn same_shape(a: Ty, b: Ty) -> bool {
         (TyKind::Adt(p, x), TyKind::Adt(q, y)) => p == q && all(x, y),
         (TyKind::Closure(p, x), TyKind::Closure(q, y)) => p == q && all(x, y),
         (TyKind::Ref(m, x), TyKind::Ref(n, y)) | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
-            m == n && same_shape(x, y)
+            m == n && same(x, y)
         }
-        (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && same_shape(x, y),
-        (TyKind::Slice(x), TyKind::Slice(y)) => same_shape(x, y),
+        (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && same(x, y),
+        (TyKind::Slice(x), TyKind::Slice(y)) => same(x, y),
         (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-            x.is_unsafe == y.is_unsafe && all(x.inputs_output, y.inputs_output)
+            x.is_c == y.is_c && x.is_unsafe == y.is_unsafe && all(x.inputs_output, y.inputs_output)
         }
         (TyKind::FnDef(x), TyKind::FnDef(y)) => x.function == y.function && all(x.args, y.args),
         _ => false,

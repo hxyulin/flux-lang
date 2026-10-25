@@ -17,12 +17,13 @@ fn Stack::push(_1: &mut Stack<T, N>, _2: T) -> bool {
     let _4: bool;
     let _5: usize;
     let _6: !;
-    let _7: ();
-    let _8: T;
-    let _9: usize;
-    let _10: bool;
-    let _11: ();
-    let _12: usize;
+    let _7: !;
+    let _8: ();
+    let _9: T;
+    let _10: usize;
+    let _11: bool;
+    let _12: ();
+    let _13: usize;
 
     bb0: {
         _5 = copy (*_1).1;
@@ -41,18 +42,18 @@ fn Stack::push(_1: &mut Stack<T, N>, _2: T) -> bool {
     }
 
     bb3: {
-        _8 = copy _2;
-        _9 = copy (*_1).1;
-        _10 = Lt(copy _9, const N_usize);
-        assert(copy _10, "index out of bounds") -> bb4;
+        _9 = copy _2;
+        _10 = copy (*_1).1;
+        _11 = Lt(copy _10, const N_usize);
+        assert(copy _11, "index out of bounds") -> bb4;
     }
 
     bb4: {
-        (*_1).0[_9] = copy _8;
-        _7 = const ();
-        _12 = copy (*_1).1;
-        (*_1).1 = Add(copy _12, const 1_usize);
-        _11 = const ();
+        (*_1).0[_10] = copy _9;
+        _8 = const ();
+        _13 = copy (*_1).1;
+        (*_1).1 = Add(copy _13, const 1_usize);
+        _12 = const ();
         _0 = const true;
         return;
     }

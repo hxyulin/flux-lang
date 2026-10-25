@@ -1,0 +1,47 @@
+use std::sync::{LazyLock, Mutex, OnceLock, RwLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static LAZY_CALLS: AtomicUsize = AtomicUsize::new(0);
+static ONCE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static COUNTER: LazyLock<Mutex<usize>> = LazyLock::new(init_counter);
+static PAIR: RwLock<(usize, usize)> = RwLock::new((0, 0));
+static PAYLOAD: OnceLock<Box<[usize]>> = OnceLock::new();
+
+fn init_counter() -> Mutex<usize> {
+    LAZY_CALLS.fetch_add(1, Ordering::Relaxed);
+    Mutex::new(0)
+}
+
+pub fn worker() -> usize {
+    let payload = PAYLOAD.get_or_init(|| {
+        ONCE_CALLS.fetch_add(1, Ordering::Relaxed);
+        vec![13usize, 29, 47].into_boxed_slice()
+    });
+    assert_eq!(payload[0] + payload[1] + payload[2], 89);
+    for _ in 0..1000 {
+        *COUNTER.lock().unwrap() += 1;
+        {
+            let mut pair = PAIR.write().unwrap();
+            pair.0 += 1;
+            pair.1 = pair.0 * 2;
+        }
+        let first = PAIR.read().unwrap();
+        assert_eq!(first.1, first.0 * 2);
+    }
+    89
+}
+
+pub fn totals() -> usize {
+    assert_eq!(LAZY_CALLS.load(Ordering::Relaxed), 1);
+    assert_eq!(ONCE_CALLS.load(Ordering::Relaxed), 1);
+    assert_eq!(*COUNTER.lock().unwrap(), 8000);
+    let pair = PAIR.read().unwrap();
+    assert_eq!(pair.0, 8000);
+    assert_eq!(pair.1, 16000);
+    pair.0 + pair.1
+}
+
+fn main() {
+    let _: fn() -> usize = worker;
+    let _: fn() -> usize = totals;
+}

@@ -46,6 +46,7 @@ mod interval;
 pub mod layout;
 mod lens;
 pub mod lint;
+mod transmute;
 pub mod mono;
 mod pretty;
 mod projection;
@@ -174,6 +175,8 @@ pub struct Upvars {
     /// given there may not outlive the call. Not where its signature
     /// follows from a bound, whose lifetimes it then has.
     pub annotated_refs: bool,
+    /// Parameter slots explicitly tied to static or enclosing named lifetimes.
+    pub fixed_args: Vec<u32>,
 }
 
 impl Upvars {
@@ -608,6 +611,7 @@ pub enum Operand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Constant {
+    Float { bits: u64, ty: flux_ty::FloatTy },
     /// An integer as its two's complement bits, truncated to `ty`'s width.
     Int {
         bits: u128,
@@ -639,8 +643,8 @@ pub enum Constant {
         args: GenericArgs,
         ty: Ty,
     },
-    /// The address of static `id`: of type `ty`, `&T` for a `static`
-    /// and `*mut T` for a `static mut`, as rustc's MIR has it.
+    /// The address of static `id` or a promoted monomorphic constant item:
+    /// `&T` for read-only storage and `*mut T` for a `static mut`.
     Static {
         id: flux_hir::ConstId,
         ty: Ty,
@@ -665,6 +669,7 @@ pub enum Constant {
 impl Constant {
     pub fn ty(self) -> Ty {
         match self {
+            Constant::Float { ty, .. } => Ty::float(ty),
             Constant::Int { ty, .. } => Ty::int(ty),
             Constant::Bool(_) => Ty::BOOL,
             Constant::Char(_) => Ty::CHAR,
@@ -1034,6 +1039,8 @@ impl Body {
         let mut operand = |op: &Operand| {
             if let Operand::Const(Constant::Item { id, args, .. }) = op {
                 found.push(flux_ty::ConstInstance { konst: *id, args });
+            } else if let Operand::Const(Constant::Static { id, .. }) = op {
+                found.push(flux_ty::ConstInstance { konst: *id, args: &[] });
             }
         };
         for data in self.blocks.values() {

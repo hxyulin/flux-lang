@@ -201,3 +201,95 @@ fn many_errors() {
     };
     assert_scales("errors", 1000, make, |hir| check(hir, true));
 }
+
+/// Generic arguments and substituted fields can reach the same stored type.
+/// Rewalking both paths at every wrapper makes outlives traversal quadratic.
+#[test]
+fn nested_storage_outlives() {
+    use flux_ty::{Ty, TyKind};
+    let hir = lowered("trait Value { type Stored; } struct Storage<T:Value>(T::Stored); struct Wrap<T>(T); fn storage_probe<T:Value>(_:Storage<T>) {} fn main() {}".to_owned());
+    let (sigs, errors) = flux_ty::signatures(&hir.items);
+    assert!(errors.is_empty(), "{errors:?}");
+    let (wrapper, data) = hir
+        .items
+        .structs
+        .iter()
+        .find(|(_, s)| s.name.as_str() == "Wrap")
+        .unwrap();
+    let (inspect, _) = hir
+        .items
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.as_str() == "storage_probe")
+        .unwrap();
+    let leaf = sigs.fns[inspect].params[0];
+    assert_scales(
+        "nested stored outlives",
+        40,
+        |n| {
+            let mut ty = leaf;
+            for _ in 0..n {
+                ty = Ty::adt(wrapper, data.name, &[ty]);
+            }
+            ty
+        },
+        |&ty| {
+            for _ in 0..64 {
+                let components = flux_ty::regions::outlives_type_components(&sigs, ty);
+                assert!(
+                    components
+                        .iter()
+                        .any(|ty| matches!(ty.kind(), TyKind::Alias(_))),
+                    "{components:?}, leaf {leaf:?}"
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn recursive_storage_paths_preserve_nested_projections() {
+    use flux_ty::TyKind;
+    let hir = lowered(
+        "trait Value { type Stored:Value; }
+        struct R<T:Value>(Box<G<T>>, T::Stored);
+        struct G<T:Value>(Box<R<T::Stored>>);
+        struct Pair<T:Value>(R<T>, G<T>);
+        fn storage_probe<T:Value>(_:Pair<T>) {} fn main() {}"
+            .to_owned(),
+    );
+    let (sigs, errors) = flux_ty::signatures(&hir.items);
+    assert!(errors.is_empty(), "{errors:?}");
+    let (probe, _) = hir
+        .items
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.as_str() == "storage_probe")
+        .unwrap();
+    let components = flux_ty::regions::outlives_type_components(&sigs, sigs.fns[probe].params[0]);
+    assert!(
+        components
+            .iter()
+            .any(|ty| matches!(ty.kind(), TyKind::Alias(alias)
+        if matches!(alias.args[0].kind(), TyKind::Alias(_)))),
+        "{components:?}"
+    );
+}
+
+/// Concrete recursive HIR types form many field paths but store no hidden
+/// associated outputs. Their traversal must depend on declarations, not paths.
+#[test]
+fn recursive_nominal_outlives_paths() {
+    use flux_ty::Ty;
+    let make = |n| {
+        let text = repeat(n, |i| format!("struct N{i}(*const N{}, *const N{});", (i + 1) % n, (i + 2) % n));
+        let hir = lowered(format!("{text} fn main() {{}}"));
+        let (sigs, errors) = flux_ty::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (id, definition) = hir.items.structs.iter().find(|(_, s)| s.name.as_str() == "N0").unwrap();
+        (sigs, Ty::adt(id, definition.name, &[]))
+    };
+    assert_scales("recursive nominal outlives", 3, make, |(sigs, ty)| {
+        for _ in 0..32 { assert!(flux_ty::regions::outlives_type_components(sigs, *ty).is_empty()); }
+    });
+}

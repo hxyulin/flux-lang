@@ -107,17 +107,18 @@ fn take_through_path(_1: S) -> i32 {
 
 fn take_in_loop(_1: S) -> () {
     let mut _0: ();
-    let _2: ();
-    let _3: i32;
-    let _4: S;
+    let _2: !;
+    let _3: ();
+    let _4: i32;
+    let _5: S;
 
     bb0: {
         goto -> bb1;
     }
 
     bb1: {
-        _4 = move _1;
-        _3 = take::<S>(move _4) -> bb3;
+        _5 = move _1;
+        _4 = take::<S>(move _5) -> bb3;
     }
 
     bb2: {
@@ -125,7 +126,7 @@ fn take_in_loop(_1: S) -> () {
     }
 
     bb3: {
-        _2 = const ();
+        _3 = const ();
         goto -> bb1;
     }
 }

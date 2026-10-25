@@ -1,0 +1,47 @@
+use flux_intern::{Symbol, kw, sym};
+unsafe extern "C" {
+    fn pthread_create(thread: *mut *mut u8, attr: *const u8, callback: extern "C" fn(*mut u8) -> *mut u8, arg: *mut u8) -> i32;
+    fn pthread_join(thread: *mut u8, result: *mut *mut u8) -> i32;
+}
+extern "C" fn worker(arg: *mut u8) -> *mut u8 {
+    for i in 0..512 {
+        let name = format!("threaded-{i}");
+        let symbol = Symbol::intern(&name);
+        assert_eq!(symbol.as_str(), name);
+        assert_eq!(symbol, Symbol::intern(&name));
+        assert_eq!(Symbol::intern("fn"), kw::Fn);
+    }
+    arg
+}
+fn main() {
+    assert_eq!(Symbol::intern("fn"), kw::Fn);
+    assert_eq!(Symbol::intern("u8"), sym::u8);
+    let before = flux_intern::stats().symbols;
+    let mut symbols = Vec::new();
+    for i in 0..5000 {
+        let name = format!("compiler-selfhost-{i}");
+        let symbol = Symbol::intern(&name);
+        assert_eq!(symbol.as_str(), name);
+        symbols.push(symbol);
+    }
+    let mut digest = 0u64;
+    for i in (0..5000).rev() {
+        let name = format!("compiler-selfhost-{i}");
+        let symbol = symbols[i];
+        assert_eq!(Symbol::intern(&name), symbol);
+        for byte in symbol.as_str().bytes() {
+            digest = digest.wrapping_mul(131).wrapping_add(byte as u64);
+        }
+    }
+    let mut threads = [std::ptr::null_mut(); 8];
+    for thread in &mut threads {
+        // SAFETY: workers receive no borrowed data and use synchronized interner APIs.
+        assert_eq!(unsafe { pthread_create(thread, std::ptr::null(), worker, std::ptr::null_mut()) }, 0);
+    }
+    for thread in threads {
+        // SAFETY: each successful thread creation is joined once.
+        assert_eq!(unsafe { pthread_join(thread, std::ptr::null_mut()) }, 0);
+    }
+    assert_eq!(flux_intern::stats().symbols - before, 5512);
+    println!("interner {} {} {:?} {}", symbols.len(), digest, kw::Fn, sym::u8);
+}

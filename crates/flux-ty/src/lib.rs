@@ -16,8 +16,10 @@
 //! checking: calls to `unsafe` functions need an `unsafe` block, and
 //! assignments need a `mut` binding.
 
+mod fn_regions;
 mod impl_index;
 mod in_scope;
+mod metadata;
 mod infer;
 pub mod objects;
 mod pats;
@@ -40,13 +42,14 @@ use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
 use rustc_hash::FxHashMap;
 
+pub use metadata::Metadata;
 pub use infer::{
     BuiltinMethod, Capture, CaptureMode, CaptureProj, ClosureInfo, InferenceResult, Method,
     OverloadedDeref, c_char_ptr, c_str_ref, infer_body, infer_const,
 };
 pub use traits::{Predicate, Projection, TraitRef, TraitSig};
-pub use ty::{
-    AdtId, AliasTy, ClosureArgs, ClosureId, ClosureKind, DynTy, FnDefTy, FnSigTy, GenericArgs,
+pub use ty::{FloatTy,
+    AdtId, AliasTy, ClosureArgs, ClosureId, ClosureKind, ClosureOwner, DynTy, FnDefTy, FnRegion, FnPtrRegions, FnSigTy, GenericArgs,
     InferVar, IntTy, Mutability, OpaqueTy, ParamTy, Ty, TyKind, subst_list, symbol_list,
 };
 
@@ -408,7 +411,7 @@ impl Signatures {
             return Some(true);
         }
         if Some(p.trait_ref.trait_) == self.builtins.sized {
-            return Some(!p.self_ty.is_unsized());
+            return Some(!self.is_unsized(p.self_ty));
         }
         if rigid(p.self_ty) || depth > 8 {
             return Some(false);
@@ -633,6 +636,8 @@ pub struct TypeScope<'a> {
     /// Which of `generics` have no implicit `Sized` bound
     /// ([`unsized_params`]); empty where all do.
     pub unsized_params: &'a [bool],
+    /// Resolved fields for structural DST tails, when signatures are available.
+    pub struct_fields: Option<&'a LayeredArenaMap<Struct, &'static [Ty]>>,
 }
 
 /// The values of the constants that array lengths name (`[u8; N]`), as
@@ -714,7 +719,7 @@ impl TypeScope<'_> {
     /// Whether values of `ty` may have no size known at compile time
     /// here ([`maybe_unsized`]).
     pub fn is_unsized(&self, items: &ItemTree, ty: Ty) -> bool {
-        maybe_unsized(items, ty, self.unsized_params, self.bounds)
+        maybe_unsized_with(items, self.struct_fields, ty, self.unsized_params, self.bounds)
     }
 
     /// The generic parameter called `name`, if one is in scope.
@@ -767,10 +772,16 @@ pub fn unsized_params(items: &ItemTree, owner: Option<Owner>, own: &Generics) ->
 /// `Sized`.
 pub fn maybe_unsized(
     items: &ItemTree,
+    sigs: &Signatures,
     ty: Ty,
     unsized_params: &[bool],
     bounds: &[Predicate],
 ) -> bool {
+    maybe_unsized_with(items, Some(&sigs.structs), ty, unsized_params, bounds)
+}
+
+fn maybe_unsized_with(items: &ItemTree, fields: Option<&LayeredArenaMap<Struct, &'static [Ty]>>, ty: Ty, unsized_params: &[bool], bounds: &[Predicate]) -> bool {
+    let ty = metadata::tail(fields, ty, |id| items.structs[id].is_enum());
     match ty.kind() {
         TyKind::Param(p) => {
             unsized_params.get(p.index as usize) == Some(&true)
@@ -1054,6 +1065,130 @@ pub fn wrong_arg_count(kind: &str, want: usize, got: usize) -> String {
     )
 }
 
+/// The permitted arity of type parameters, including a trailing defaulted suffix.
+pub(crate) fn type_arg_count(kind: &str, params: &[flux_hir::GenericParam], got: usize) -> Option<String> {
+    let want = params.len();
+    let required = params.iter().take_while(|p| p.default.is_none()).count();
+    if got >= required && got <= want { return None; }
+    if required == want { return Some(wrong_arg_count(kind, want, got)); }
+    let (bound, count) = if got > want { ("at most", want) } else { ("at least", required) };
+    let verb = if got == 1 { "was" } else { "were" };
+    Some(format!("{kind} takes {bound} {} but {} {verb} supplied", generic_arguments(count), generic_arguments(got)))
+}
+
+thread_local! {
+    /// Defaults can name another defaulted nominal type or alias. Detect
+    /// cycles before recursively expanding the omitted argument lists.
+    static DEFAULTING: std::cell::RefCell<Vec<Def>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Fill omitted arguments in declaration scope, substituting earlier arguments
+/// as each dependent default is appended. Expressions call this only when a
+/// nonempty argument list was written; bare paths keep their inference vars.
+pub(crate) fn fill_type_defaults(
+    items: &ItemTree,
+    owner: Def,
+    args: &mut Vec<Ty>,
+    scope: TypeScope<'_>,
+    errors: &mut Vec<(TextRange, String)>,
+) {
+    let (generics, loc) = match owner {
+        Def::Struct(id) => (&items.structs[id].generics, items.structs[id].loc),
+        Def::TypeAlias(id) => (&items.type_aliases[id].generics, items.type_aliases[id].loc),
+        _ => unreachable!("defaults belong to a nominal type or alias"),
+    };
+    if args.len() >= generics.len() { return; }
+    let cycle = DEFAULTING.with(|active| {
+        let mut active = active.borrow_mut();
+        if active.contains(&owner) || active.len() >= 128 { return true; }
+        active.push(owner);
+        false
+    });
+    if cycle {
+        let range = generics.params[args.len()].default.as_ref().map_or(generics.range, |d| d.1);
+        errors.push((range, "cycle detected when resolving type parameter defaults".into()));
+        args.resize(generics.len(), Ty::ERROR);
+        return;
+    }
+    let names = generic_names(items, None, generics);
+    let consts = generic_consts(items, None, generics);
+    let unsized_flags = unsized_params(items, None, generics);
+    let own = TypeScope {
+        generics: &names, consts: &consts, unsized_params: &unsized_flags,
+        signature_of: Some("generic parameter defaults"), lens: scope.lens,
+        defaults: scope.defaults, struct_fields: scope.struct_fields,
+        ..TypeScope::default()
+    };
+    while args.len() < generics.len() {
+        let ty = match &generics.params[args.len()].default {
+            Some((ty, range)) => resolve_generic_arg(items, loc.module, Some(&generics.params[args.len()]), ty, own, *range, errors).subst(args),
+            None => Ty::ERROR,
+        };
+        args.push(ty);
+    }
+    DEFAULTING.with(|active| { active.borrow_mut().pop(); });
+}
+
+/// Validate defaults even when no use omits them. References to later
+/// parameters must not fall through to module items with the same names.
+fn check_type_defaults(items: &ItemTree, generics: &Generics, module: ModuleId, scope: TypeScope<'_>, errors: &mut Vec<(TextRange, String)>) {
+    for (i, param) in generics.params.iter().enumerate() {
+        let Some((ty, range)) = &param.default else { continue; };
+        let mut invalid = false;
+        let mut check_path = |path: &Path| {
+            if path.anchor != flux_hir::PathAnchor::Plain { return; }
+            let Some(&name) = path.segments.first() else { return; };
+            if name == kw::SelfUpper {
+                errors.push((*range, "generic parameters cannot use `Self` in their defaults".into()));
+                invalid = true;
+            } else if generics.params.iter().skip(i).any(|p| p.name == name) {
+                errors.push((*range, "generic parameter defaults cannot reference parameters before they are declared".into()));
+                invalid = true;
+            }
+        };
+        visit_paths(ty, &mut check_path);
+        visit_default_const_paths(ty, &mut check_path);
+        if !invalid {
+            // Defaults resolve before the item's bounds: associated types
+            // need a qualified path, as in rustc (E0220).
+            let scope = TypeScope { bounds: &[], ..scope };
+            let resolved = resolve_generic_arg(items, module, Some(param), ty, scope, *range, errors);
+            if !param.is_const() {
+                let names = generics.lifetimes.iter().map(|l| Some(l.name)).collect();
+                let mut walker = regions::Walker::new(items, module, names);
+                walker.scope = scope;
+                walker.regions(ty, resolved);
+                errors.extend(walker.errors);
+            }
+        }
+    }
+}
+
+/// Constant paths are distinct from the type paths used for alias-cycle
+/// analysis. Defaults must also reject forward references in these positions.
+fn visit_default_const_paths(ty: &TypeRef, f: &mut impl FnMut(&Path)) {
+    let mut constant = |len: &flux_hir::ArrayLen| {
+        if let flux_hir::ArrayLenKind::Path(path) = &len.kind { f(path); }
+    };
+    match ty {
+        TypeRef::Const(len) => constant(len),
+        TypeRef::Array { elem, len } => { constant(len); visit_default_const_paths(elem, f); }
+        TypeRef::Path(path) => {
+            for arg in path.args.iter().flatten().flat_map(|a| a.types.iter()) {
+                visit_default_const_paths(arg, f);
+            }
+            if let Some(q) = &path.qself { visit_default_const_paths(&q.ty, f); }
+        }
+        TypeRef::Tuple(fields) => for field in fields { visit_default_const_paths(field, f); },
+        TypeRef::Ref { pointee, .. } | TypeRef::Ptr { pointee, .. } | TypeRef::Slice(pointee) => visit_default_const_paths(pointee, f),
+        TypeRef::FnPtr { params, ret, .. } => {
+            for param in params { visit_default_const_paths(param, f); }
+            visit_default_const_paths(ret, f);
+        }
+        _ => {}
+    }
+}
+
 /// Resolves a type as written in `module`: a struct, a primitive type,
 /// a generic parameter, or `Self`. Errors go to `errors`, at the part of
 /// the type they are about within `range`, and make the type an error
@@ -1167,17 +1302,33 @@ pub fn resolve_type(
                         Err(message) => fail(errors, range, message),
                     }
                 }
-                // A bare trait is a trait object in edition 2015 only.
+                Ok(Resolved::Def(Def::Trait(_))) if matches!(path.edition.unwrap_or_else(|| items.edition(module)), flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018) => {
+                    let object = flux_hir::DynRef {
+                        bounds: Box::new([flux_hir::Bound { path: path.clone(), range }]),
+                        lifetime: None,
+                        range,
+                    };
+                    crate::objects::resolve_dyn(items, module, &object, scope, range, errors)
+                }
                 Ok(Resolved::Def(Def::Trait(_))) => fail(
                     errors,
                     last_range,
                     "expected a type, found a trait".to_owned(),
                 ),
-                Ok(Resolved::Def(Def::Module(m))) => fail(
-                    errors,
-                    last_range,
-                    format!("expected type, found module `{}`", items.modules[m].name),
-                ),
+                Ok(Resolved::Def(Def::Module(m))) => {
+                    // A module named `str` (including `use core::str`) can
+                    // coexist with the primitive in a bare type position.
+                    // Qualified module paths and differently named aliases
+                    // still denote modules, and nominal types shadow builtins.
+                    if let Some(name) = path.as_name()
+                        && let Ok(ty) = primitive(name)
+                    {
+                        no_args(errors, format!("builtin type `{name}`"));
+                        ty
+                    } else {
+                        fail(errors, last_range, format!("expected type, found module `{}`", items.modules[m].name))
+                    }
+                }
                 Ok(Resolved::Def(Def::Variant(..))) => fail(
                     errors,
                     range,
@@ -1234,9 +1385,11 @@ pub fn resolve_type(
         }
         TypeRef::Never => Ty::NEVER,
         TypeRef::FnPtr {
+            bound_lifetimes,
             params,
             ret,
             is_unsafe,
+            is_c,
         } => {
             let scope = TypeScope {
                 in_fn_pointer: true,
@@ -1250,7 +1403,9 @@ pub fn resolve_type(
             if params.contains(&Ty::ERROR) || ret == Ty::ERROR {
                 return Ty::ERROR;
             }
-            Ty::new(TyKind::FnPtr(FnSigTy::new(&params, ret, *is_unsafe)))
+            let TypeRef::FnPtr { params: written, ret: written_ret, .. } = ty else { unreachable!() };
+            let description = fn_regions::describe(items, module, bound_lifetimes, written, written_ret, &params, ret, errors);
+            Ty::new(TyKind::FnPtr(FnSigTy { regions: Some(description.regions), is_c: *is_c, ..FnSigTy::new(&params, ret, *is_unsafe) }))
         }
         TypeRef::Ptr { mutable, pointee } => {
             let pointee = resolve_type(items, module, pointee, scope, range, errors);
@@ -1671,11 +1826,12 @@ fn assoc_type(
                             return Ty::ERROR;
                         }
                         if ty.has_aliases() {
-                            errors.push((
-                                at,
-                                "nested inherited associated types are not supported yet".into(),
-                            ));
-                            return Ty::ERROR;
+                            // Keep the declaring supertrait's projection. Its
+                            // selected impl may forward through another alias;
+                            // normalization must retain that header selection
+                            // and its lifetime recipe, rather than exposing an
+                            // erased RHS under the spelling `Self::Out`.
+                            return Ty::alias(traits::alias_of(*inherited, self_ty, name));
                         }
                         if (scope.signature_of != Some("functions") || scope.in_trait_bound)
                             && regions::slots(items, ty) != 0
@@ -1891,6 +2047,7 @@ pub fn struct_type(
                 bindings: Box::new([]),
                 range: at,
                 parenthesized: false,
+                bound_lifetimes: Box::default(),
             };
             &none
         }
@@ -1900,28 +2057,9 @@ pub fn struct_type(
             return Ty::ERROR;
         }
     };
-    let required = (def.generics.params.iter())
-        .take_while(|p| p.default.is_none())
-        .count();
     let got = written.types.len();
-    if got > want || got < required {
-        let kind = if def.is_enum() { "enum" } else { "struct" };
-        let verb = if got == 1 { "was" } else { "were" };
-        let message = if required < want && got > want {
-            format!(
-                "{kind} takes at most {} but {} {verb} supplied",
-                generic_arguments(want),
-                generic_arguments(got),
-            )
-        } else if required < want {
-            format!(
-                "{kind} takes at least {} but {} {verb} supplied",
-                generic_arguments(required),
-                generic_arguments(got),
-            )
-        } else {
-            wrong_arg_count(kind, want, got)
-        };
+    let kind = if def.is_enum() { "enum" } else { "struct" };
+    if let Some(message) = type_arg_count(kind, &def.generics.params, got) {
         errors.push((at, message));
         return Ty::ERROR;
     }
@@ -1932,26 +2070,7 @@ pub fn struct_type(
         errors.push((at, wrong_arg_count(kind, want, args.len())));
         return Ty::ERROR;
     }
-    // Those left out are their defaults, in terms of the ones before.
-    if args.len() < want {
-        let names = generic_names(items, None, &def.generics);
-        let own = TypeScope {
-            generics: &names,
-            signature_of: Some("structs"),
-            lens: scope.lens,
-            defaults: scope.defaults,
-            ..TypeScope::default()
-        };
-        while args.len() < want {
-            let Some((ty, ty_range)) = &def.generics.params[args.len()].default else {
-                return Ty::ERROR;
-            };
-            let mut ignored = Vec::new();
-            let ty = resolve_type(items, def.loc.module, ty, own, *ty_range, &mut ignored);
-            let ty = ty.subst(&args);
-            args.push(ty);
-        }
-    }
+    fill_type_defaults(items, Def::Struct(strukt), &mut args, scope, errors);
     if args.contains(&Ty::ERROR) {
         return Ty::ERROR;
     }
@@ -1971,7 +2090,28 @@ pub fn struct_type(
         errors.push((at, unsized_error(arg)));
         return Ty::ERROR;
     }
-    Ty::adt(strukt, def.name, &args)
+    let ty = Ty::adt(strukt, def.name, &args);
+    let tail = metadata::tail(scope.struct_fields, ty, |id| items.structs[id].is_enum());
+    if matches!(tail.kind(), TyKind::Dynamic(_)) {
+        errors.push((at, "trait object tails in structs are not supported yet".into()));
+        return Ty::ERROR;
+    }
+    ty
+}
+
+/// A nominal type's implicit Sized arguments still apply through aliases and
+/// forward field declarations after their structural metadata is available.
+fn unsized_argument(items: &ItemTree, scope: TypeScope<'_>, ty: Ty) -> Option<Ty> {
+    let mut stack = vec![ty];
+    while let Some(ty) = stack.pop() {
+        if let TyKind::Adt(adt, args) = ty.kind() {
+            for (param, &arg) in items.structs[adt.strukt].generics.params.iter().zip(args) {
+                if !param.maybe_unsized && scope.is_unsized(items, arg) { return Some(arg); }
+            }
+        }
+        stack.extend(ty.children());
+    }
+    None
 }
 
 /// rustc's E0277 for a value of unsized type `ty`.
@@ -2014,8 +2154,9 @@ pub fn alias_type(
             errors.push((b.range(), flux_hir::MISPLACED_BINDING.into()));
         }
     }
-    let args: Vec<Ty> = match path.args(last) {
+    let mut args: Vec<Ty> = match path.args(last) {
         None if want == 0 => Vec::new(),
+        None if def.generics.params[0].default.is_some() => Vec::new(),
         None => {
             errors.push((
                 at,
@@ -2026,23 +2167,29 @@ pub fn alias_type(
         Some(written) => {
             let args =
                 resolve_generic_args(items, module, &def.generics.params, written, scope, errors);
-            if args.len() != want {
-                errors.push((at, wrong_arg_count("type alias", want, args.len())));
+            if let Some(message) = type_arg_count("type alias", &def.generics.params, args.len()) {
+                errors.push((at, message));
                 return Ty::ERROR;
             }
             args
         }
     };
+    fill_type_defaults(items, Def::TypeAlias(alias), &mut args, scope, errors);
     let ty = expand_alias(items, alias, scope.lens, &mut Vec::new());
     if args.contains(&Ty::ERROR) {
         return Ty::ERROR;
     }
-    ty.subst(&args)
+    let ty = ty.subst(&args);
+    if let Some(arg) = unsized_argument(items, scope, ty) {
+        errors.push((at, unsized_error(arg)));
+        return Ty::ERROR;
+    }
+    ty
 }
 
 /// The type alias `alias` stands for, in terms of its parameters, with
 /// the errors in it; an error if it is part of a cycle of aliases.
-fn expand_alias(
+pub(crate) fn expand_alias(
     items: &ItemTree,
     alias: flux_hir::TypeAliasId,
     lens: Option<&ArrayLens<'_>>,
@@ -2166,6 +2313,7 @@ pub fn primitive(name: Symbol) -> Result<Ty, String> {
     if name == sym::str {
         return Ok(Ty::STR);
     }
+    if let Some(float) = FloatTy::from_name(name) { return Ok(Ty::float(float)); }
     match IntTy::from_name(name) {
         Some(int) => Ok(Ty::int(int)),
         None => Err(format!("`{name}` is not supported yet")),
@@ -2182,6 +2330,7 @@ pub fn impl_target(items: &ItemTree, ty: Ty) -> Option<ImplTarget> {
             .get(&Symbol::intern("CStr"))
             .map(|&s| ImplTarget::Struct(s)),
         TyKind::Int(int) => Some(ImplTarget::Primitive(int.name())),
+        TyKind::Float(float) => Some(ImplTarget::Primitive(float.name())),
         TyKind::Bool => Some(ImplTarget::Primitive(sym::bool)),
         TyKind::Char => Some(ImplTarget::Primitive(sym::char)),
         TyKind::Str => Some(ImplTarget::Primitive(sym::str)),
@@ -2345,7 +2494,7 @@ pub(crate) fn overlap(a: Ty, b: Ty) -> bool {
         (TyKind::Array(x, m), TyKind::Array(y, n)) => overlap(m, n) && overlap(x, y),
         (TyKind::Slice(x), TyKind::Slice(y)) => overlap(x, y),
         (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-            x.is_unsafe == y.is_unsafe
+            x.is_unsafe == y.is_unsafe && x.is_c == y.is_c
                 && x.inputs_output.len() == y.inputs_output.len()
                 && (x.inputs_output.iter().zip(y.inputs_output)).all(|(&a, &b)| overlap(a, b))
         }
@@ -2602,9 +2751,11 @@ fn extend_signatures(
     let mut defaults = std::mem::take(&mut sigs.trait_defaults);
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let generics = generic_names(items, Some(Owner::Trait(id)), &Generics::default());
+        let consts = generic_consts(items, Some(Owner::Trait(id)), &Generics::default());
         let scope = TypeScope {
             self_ty: Some(Ty::param(0, kw::SelfUpper)),
             generics: &generics,
+            consts: &consts,
             signature_of: Some("traits"),
             lens,
             ..TypeScope::default()
@@ -2616,14 +2767,7 @@ fn extend_signatures(
             .iter()
             .map(|p| {
                 let (ty, range) = p.default.as_ref()?;
-                Some(resolve_type(
-                    items,
-                    t.loc.module,
-                    ty,
-                    scope,
-                    *range,
-                    &mut errors,
-                ))
+                Some(resolve_generic_arg(items, t.loc.module, Some(p), ty, scope, *range, &mut errors))
             })
             .collect();
         in_file(errors, t.loc.file, &mut reported);
@@ -2645,6 +2789,7 @@ fn extend_signatures(
             signature_of: Some("traits"),
             bounds: &bounds,
             defaults: Some(&sigs.trait_defaults),
+            struct_fields: Some(&sigs.structs),
             lens,
             ..TypeScope::default()
         };
@@ -2726,6 +2871,7 @@ fn extend_signatures(
             unsized_params: &unsized_params,
             signature_of: Some("structs"),
             defaults: Some(&sigs.trait_defaults),
+            struct_fields: Some(&sigs.structs),
             lens,
             ..TypeScope::default()
         };
@@ -2738,21 +2884,15 @@ fn extend_signatures(
             bounds: &bounds,
             ..scope
         };
+        let mut default_errors = Vec::new();
+        check_type_defaults(items, &s.generics, s.loc.module, scope, &mut default_errors);
+        in_file(default_errors, s.loc.file, &mut reported);
         let mut starts = Vec::new();
         let mut fields: Vec<Ty> = Vec::new();
         for v in 0..s.variant_count() as u32 {
             starts.push(fields.len() as u32);
             let variant = s.variant(v).fields;
-            fields.extend(variant.iter().map(|f| {
-                let ty = resolve(items, s.loc, &f.ty, scope, f.range, &mut reported);
-                if scope.is_unsized(items, ty) {
-                    let mut d = Diagnostic::new(f.range, "unsized fields are not supported yet");
-                    d.file = s.loc.file;
-                    reported.push(d);
-                    return Ty::ERROR;
-                }
-                ty
-            }));
+            fields.extend(variant.iter().map(|f| resolve(items, s.loc, &f.ty, scope, f.range, &mut reported)));
         }
         starts.push(fields.len() as u32);
         sigs.structs.insert(id, Ty::list(&fields));
@@ -2765,6 +2905,33 @@ fn extend_signatures(
         }
         if !own.projections.is_empty() {
             sigs.struct_projections.insert(id, own.projections.into());
+        }
+    }
+    for (id, data) in items.structs.iter().skip(from.structs as usize) {
+        let parameters = unsized_params(items, None, &data.generics);
+        let bounds = traits::elaborate(&sigs, sigs.struct_predicates.get(id).map_or(&[][..], |bounds| bounds));
+        for variant in 0..data.variant_count() as u32 {
+            let fields = sigs.variant_fields(Ty::adt(id, data.name, &params_of(&data.generics, 0)), variant).unwrap_or_default();
+            for (index, &ty) in fields.iter().enumerate() {
+                let scope = TypeScope { struct_fields: Some(&sigs.structs), unsized_params: &parameters, bounds: &bounds, ..TypeScope::default() };
+                if let Some(arg) = unsized_argument(items, scope, ty) {
+                    let mut error = Diagnostic::new(data.variant(variant).fields[index].range, unsized_error(arg));
+                    error.file = data.loc.file;
+                    reported.push(error);
+                }
+                if maybe_unsized(items, &sigs, ty, &parameters, &bounds) {
+                    let valid_tail = !data.is_enum() && !data.is_union && index + 1 == fields.len();
+                    let tail = sigs.structural_tail(ty);
+                    let message = if !valid_tail { Some("only the last field of a struct may be unsized") }
+                        else if matches!(tail.kind(), TyKind::Dynamic(_)) { Some("trait object tails in structs are not supported yet") }
+                        else { None };
+                    if let Some(message) = message {
+                        let mut error = Diagnostic::new(data.variant(variant).fields[index].range, message);
+                        error.file = data.loc.file;
+                        reported.push(error);
+                    }
+                }
+            }
         }
     }
     for (id, imp) in items.impls.iter().skip(from.impls as usize) {
@@ -2782,12 +2949,17 @@ fn extend_signatures(
             unsized_params: &unsized_params,
             signature_of: Some("implementations"),
             defaults: Some(&sigs.trait_defaults),
+            struct_fields: Some(&sigs.structs),
             lens,
             ..TypeScope::default()
         };
         let mut errors = Vec::new();
         let mut self_trait = None;
         let mut projections = Vec::new();
+        let resolved =
+            resolve_predicates(items, &sigs, imp.module, &imp.generics, scope, &mut errors);
+        let bounds = traits::elaborate(&sigs, &resolved.predicates);
+        let scope = TypeScope { bounds: &bounds, ..scope };
         if let (Some(t), Some(bound)) = (imp.trait_, &imp.trait_ref)
             && let Some((trait_ref, bindings)) =
                 traits::trait_ref(items, imp.module, t, bound, self_ty, scope, &mut errors)
@@ -2803,10 +2975,7 @@ fn extend_signatures(
                 }
             }
         }
-        let resolved =
-            resolve_predicates(items, &sigs, imp.module, &imp.generics, scope, &mut errors);
         projections.extend(resolved.projections);
-        let bounds = traits::elaborate(&sigs, &resolved.predicates);
         let self_supertraits = traits::associated_self_bounds(&sigs, self_trait, Some(self_ty));
         let self_inherited_types = traits::associated_self_types(items, &sigs, &self_supertraits);
         let scope = TypeScope {
@@ -2879,6 +3048,7 @@ fn extend_signatures(
                 .and_then(|imp| sigs.impl_traits.get(imp).copied()),
             self_types: &[],
             defaults: Some(&sigs.trait_defaults),
+            struct_fields: Some(&sigs.structs),
             lens,
             function: None,
             unsized_params: &[],
@@ -2891,7 +3061,7 @@ fn extend_signatures(
             konst.ty_range,
             &mut reported,
         );
-        if ty.is_unsized() {
+        if scope.is_unsized(items, ty) {
             let mut d = Diagnostic::new(konst.ty_range, unsized_error(ty));
             d.file = konst.loc.file;
             reported.push(d);
@@ -2961,6 +3131,7 @@ fn extend_signatures(
             self_trait,
             self_types: &self_types,
             defaults: Some(&sigs.trait_defaults),
+            struct_fields: Some(&sigs.structs),
             lens,
             ..TypeScope::default()
         };
@@ -3000,6 +3171,9 @@ fn extend_signatures(
         // makes the type `Sized`).
         let has_body = function.has_body;
         let sized = |ty: Ty, range: TextRange, reported: &mut Vec<Diagnostic>| {
+            // A DST tuple struct has a constructor item but cannot be built
+            // by value. Calls are rejected by the ordinary value checks.
+            if function.ctor.is_some() { return ty; }
             // A parameter keeps its type, which the body's bindings have.
             if matches!(ty.kind(), TyKind::Param(_)) {
                 if has_body && scope.is_unsized(items, ty) {
@@ -3009,7 +3183,7 @@ fn extend_signatures(
                 }
                 return ty;
             }
-            if ty.is_unsized() {
+            if scope.is_unsized(items, ty) {
                 // A trait object here has its default bound, `'static`,
                 // which rustc names.
                 let message = if ty.is_dyn() {
@@ -3082,7 +3256,7 @@ fn extend_signatures(
         }
     }
     for (id, alias) in items.type_aliases.iter().skip(from.type_aliases as usize) {
-        check_alias(items, id, alias, lens, &mut reported);
+        check_alias(items, id, alias, lens, &sigs, &mut reported);
     }
     regions::resolve_regions(items, &mut sigs, from, &mut reported);
     traits::check_well_formed(items, &sigs, from, &mut reported);
@@ -3174,7 +3348,7 @@ fn extend_signatures(
     for (id, function) in items.functions.iter().skip(from.functions as usize) {
         let sig = &sigs.fns[id];
         let params = function.params.iter().zip(&sig.params);
-        if function.is_extern {
+        if function.c_abi {
             for (param, &ty) in params.clone() {
                 if contains_ref(ty) {
                     error(
@@ -3184,12 +3358,13 @@ fn extend_signatures(
                     );
                 }
             }
+            // Aggregate ABI layouts are checked after substitution by codegen,
+            // covering generic definitions and C function pointers alike.
             let types = params
                 .map(|(p, &ty)| (ty, p.range))
                 .chain([(sig.ret, function.ret_range)]);
             for (ty, range) in types {
                 let sequence = match ty.kind() {
-                    TyKind::Array(..) => true,
                     TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => t.is_unsized(),
                     _ => false,
                 };
@@ -3197,19 +3372,14 @@ fn extend_signatures(
                     error(
                         function.loc.file,
                         range,
-                        "passing arrays and slices to C is not supported yet",
-                    );
-                } else if !matches!(ty.kind(), TyKind::Tuple([])) && sigs.contents(ty).is_some() {
-                    error(
-                        function.loc.file,
-                        range,
-                        "passing structs and tuples to C is not supported yet",
+                        "passing slices to C is not supported yet",
                     );
                 }
             }
         }
     }
     diagnostics.extend(reported);
+    regions::check_trait_admission(items, &sigs, from, &mut diagnostics);
     (sigs, diagnostics)
 }
 
@@ -3222,6 +3392,7 @@ fn check_alias(
     id: flux_hir::TypeAliasId,
     alias: &flux_hir::TypeAlias,
     lens: Option<&ArrayLens<'_>>,
+    sigs: &Signatures,
     reported: &mut Vec<Diagnostic>,
 ) {
     let mut push = |range, message: String| {
@@ -3254,6 +3425,14 @@ fn check_alias(
         return;
     }
     let mut errors = Vec::new();
+    let names = generic_names(items, None, &alias.generics);
+    let consts = generic_consts(items, None, &alias.generics);
+    let unsized_flags = unsized_params(items, None, &alias.generics);
+    let scope = TypeScope { generics: &names, consts: &consts, unsized_params: &unsized_flags,
+        signature_of: Some("type aliases"), lens, defaults: Some(&sigs.trait_defaults),
+        struct_fields: Some(&sigs.structs), ..TypeScope::default() };
+    let bounds = traits::resolve_predicates(items, alias.loc.module, &alias.generics, scope, &mut errors);
+    check_type_defaults(items, &alias.generics, alias.loc.module, TypeScope { bounds: &bounds.predicates, ..scope }, &mut errors);
     let ty = expand_alias(items, id, lens, &mut errors);
     for (range, message) in errors {
         push(range, message);
@@ -3362,6 +3541,11 @@ fn impl_type(
         lens,
         ..TypeScope::default()
     };
+    // The impl header may project through its own generic bounds, as in
+    // `impl<A: Array> Trait for [A::Item]`. The later signature pass checks
+    // these predicates completely once trait defaults and supertraits exist.
+    let preliminary = traits::resolve_predicates(items, imp.module, &imp.generics, scope, &mut Vec::new());
+    let scope = TypeScope { bounds: &preliminary.predicates, ..scope };
     let mut errors = Vec::new();
     if imp.trait_ref.is_some() {
         // Only the diagnostics added here: looking through all of them
@@ -3471,6 +3655,8 @@ pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
         );
         d.file = function.loc.file;
         return Some(d);
+    } else if function.c_abi {
+        "`main` function must have the Rust ABI".to_owned()
     } else if function.is_unsafe {
         "`main` function is not allowed to be `unsafe`".to_owned()
     } else if !sig.params.is_empty() {
@@ -3876,6 +4062,7 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
                 .map(|d| Diagnostic { file, ..d.clone() }),
         );
     }
+    for diagnostic in &mut diagnostics { items.resolve_diagnostic(diagnostic); }
     Diagnostic::sort(&mut diagnostics);
     TypedFile {
         sigs,
@@ -3885,16 +4072,46 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
     }
 }
 
+/// A structural constant's scalar leaves and aggregate fields, in order.
+/// Pattern checking consumes values rather than assuming a constant is a
+/// wildcard; a newtype constant covers only its actual field values.
+#[derive(Debug, Clone)]
+pub enum PatternConst {
+    Scalar(i128),
+    Aggregate(Vec<PatternConst>),
+}
+
+/// Whether a constant of `ty` can be matched structurally. ADTs require
+/// derived PartialEq; a handwritten equality method cannot define patterns.
+/// Enum, reference and pointer constants remain outside this subset.
+pub fn structural_pattern_type(items: &ItemTree, sigs: &Signatures, ty: Ty) -> bool {
+    fn check(items: &ItemTree, sigs: &Signatures, ty: Ty, depth: u32) -> bool {
+        if depth >= 128 { return false; }
+        match ty.kind() {
+            TyKind::Int(_) | TyKind::Bool | TyKind::Char | TyKind::Error => true,
+            TyKind::Tuple(fields) => fields.iter().all(|&t| check(items, sigs, t, depth + 1)),
+            TyKind::Array(elem, len) => len.as_usize().is_some() && check(items, sigs, elem, depth + 1),
+            TyKind::Adt(adt, _) => {
+                !items.structs[adt.strukt].is_union && !sigs.is_enum(adt.strukt)
+                    && items.functions.values().any(|f| f.derived == Some((adt.strukt, flux_hir::Derive::PartialEq)))
+                    && sigs.fields(ty).is_some_and(|fields| fields.iter().all(|&t| check(items, sigs, t, depth + 1)))
+            }
+            _ => false,
+        }
+    }
+    check(items, sigs, ty, 0)
+}
+
 /// The checks of the patterns of the bodies whose patterns name
 /// constants ([`InferenceResult::deferred_pats`]), given `value`, the
-/// value of a constant of an integer type or `bool` (`1` for `true`),
-/// or `None` if it has none (reported). Bodies that name one without a
+/// scalar leaves and aggregate fields of a structural constant, or
+/// `None` if it has no value (reported). Bodies that name one without a
 /// value are not checked. Also returns the functions with errors, which
 /// rustc does not borrow-check.
 pub fn check_deferred_patterns(
     hir: &Hir,
     typed: &TypedFile,
-    value: &mut dyn FnMut(ConstInstance) -> Option<i128>,
+    value: &mut dyn FnMut(ConstInstance) -> Option<PatternConst>,
 ) -> (Vec<Diagnostic>, Vec<FunctionId>) {
     let functions = typed.bodies.iter().map(|(id, result)| {
         let file = hir.items.functions[id].loc.file;

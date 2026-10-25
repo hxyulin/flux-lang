@@ -154,7 +154,7 @@ impl DroplessArena {
         let chunk_size = if size >= DEDICATED {
             size
         } else {
-            (previous * 2).clamp(FIRST_CHUNK, MAX_CHUNK)
+            (previous * 2).clamp(FIRST_CHUNK, MAX_CHUNK).max(size)
         };
         let blocks = chunk_size.div_ceil(BLOCK);
         let chunk = NonNull::from(Box::leak(Box::<[Block]>::new_uninit_slice(blocks)));
@@ -238,6 +238,28 @@ mod tests {
         let after = arena.alloc(2u8) as *mut u8;
         assert_eq!(after.addr(), (small as *mut u8).addr() + 1);
         assert_eq!(copy, &big[..]);
+    }
+
+    #[test]
+    fn allocation_can_exceed_the_next_growth_chunk() {
+        for prefix in [0, 1] {
+            // Check reservation before copying bytes, so a sizing regression
+            // fails before an out-of-bounds write can corrupt the process.
+            let reservation = DroplessArena::new();
+            if prefix != 0 { reservation.alloc(17u8); }
+            let size = FIRST_CHUNK * 5 + 3;
+            reservation.alloc_in_new_chunk(size);
+            assert!(reservation.capacity_bytes() >= size);
+
+            let arena = DroplessArena::new();
+            if prefix != 0 { arena.alloc(17u8); }
+            let bytes = vec![31u8; size];
+            let stored = arena.alloc_slice(&bytes);
+            assert!(arena.capacity_bytes() >= bytes.len());
+            let next = arena.alloc(47u64);
+            assert_eq!(stored, bytes.as_slice());
+            assert_eq!(*next, 47);
+        }
     }
 
     #[test]

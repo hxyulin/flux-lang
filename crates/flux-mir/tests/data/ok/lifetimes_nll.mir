@@ -235,12 +235,13 @@ fn find(_1: &[i32], _2: i32) -> Option<&i32> {
     let _14: bool;
     let _15: i32;
     let _16: !;
-    let _17: &i32;
-    let _18: usize;
+    let _17: !;
+    let _18: &i32;
     let _19: usize;
-    let _20: bool;
-    let _21: ();
-    let _22: usize;
+    let _20: usize;
+    let _21: bool;
+    let _22: ();
+    let _23: usize;
 
     bb0: {
         _3 = const 0_usize;
@@ -284,10 +285,10 @@ fn find(_1: &[i32], _2: i32) -> Option<&i32> {
     }
 
     bb7: {
-        _18 = copy _3;
-        _19 = Len((*_1));
-        _20 = Lt(copy _18, copy _19);
-        assert(copy _20, "index out of bounds") -> bb10;
+        _19 = copy _3;
+        _20 = Len((*_1));
+        _21 = Lt(copy _19, copy _20);
+        assert(copy _21, "index out of bounds") -> bb10;
     }
 
     bb8: {
@@ -296,16 +297,16 @@ fn find(_1: &[i32], _2: i32) -> Option<&i32> {
     }
 
     bb9: {
-        _22 = copy _3;
-        _3 = Add(copy _22, const 1_usize);
-        _21 = const ();
+        _23 = copy _3;
+        _3 = Add(copy _23, const 1_usize);
+        _22 = const ();
         _5 = const ();
         goto -> bb5;
     }
 
     bb10: {
-        _17 = &(*_1)[_18];
-        _0 = Option::Some(copy _17);
+        _18 = &(*_1)[_19];
+        _0 = Option::Some(copy _18);
         return;
     }
 }
@@ -487,7 +488,8 @@ fn main() -> () {
     let _93: i32;
     let _94: bool;
     let _95: i32;
-    let _96: ();
+    let _96: !;
+    let _97: ();
 
     bb0: {
         _2 = Option::None;
@@ -689,7 +691,7 @@ fn main() -> () {
     }
 
     bb21: {
-        _96 = const ();
+        _97 = const ();
         goto -> bb21;
     }
 

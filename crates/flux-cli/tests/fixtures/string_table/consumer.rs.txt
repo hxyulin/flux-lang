@@ -1,14 +1,24 @@
 static ALPHA: &str = "alpha";
 static BETA: &str = "βeta";
+static TABLE: std::sync::LazyLock<std::sync::RwLock<StringTable>> =
+    std::sync::LazyLock::new(init_table);
+fn init_table() -> std::sync::RwLock<StringTable> {
+    std::sync::RwLock::new(StringTable::new())
+}
+static PUBLISHES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 fn main() {
-    let table = StringTable::new();
+    let table = TABLE.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     for index in [0, 1023, 1024, 3071, 3072, 4000] {
         table.publish(index, &ALPHA);
+        *PUBLISHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
         assert_eq!(table.get(index), "alpha");
     }
     table.publish(1024, &BETA);
     assert_eq!(table.get(1024), "βeta");
     assert_eq!(table.get(0), "alpha");
+    drop(table);
+    assert_eq!(*PUBLISHES.lock().unwrap(), 6);
+    let table = TABLE.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     for index in [0, 1023, 1024, 3071, 3072, 4000] {
         println!("{} {}", index, table.get(index));
     }

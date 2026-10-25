@@ -46,6 +46,16 @@ pub const fn null_mut<T>() -> *mut T {
     0 as *mut T
 }
 
+/// Builds slice metadata without accessing `data` or making a reference.
+pub const fn slice_from_raw_parts<T>(data: *const T, len: usize) -> *const [T] {
+    crate::intrinsics::raw_slice_from_parts(data, len)
+}
+
+/// Builds mutable slice metadata without accessing `data` or making a reference.
+pub const fn slice_from_raw_parts_mut<T>(data: *mut T, len: usize) -> *mut [T] {
+    crate::intrinsics::raw_slice_from_parts_mut(data, len)
+}
+
 /// Whether two pointers are equal: the same address.
 pub fn eq<T>(a: *const T, b: *const T) -> bool {
     a as usize == b as usize
@@ -60,7 +70,7 @@ pub fn hash<T, H: crate::hash::Hasher>(hashee: *const T, state: &mut H) {
 /// Reads the value at `src` without moving it out: a bitwise copy,
 /// which the caller makes sure is used and dropped only once.
 pub unsafe fn read<T>(src: *const T) -> T {
-    unsafe { crate::intrinsics::read(&*src) }
+    unsafe { crate::intrinsics::read(src) }
 }
 
 /// Reads an initialized value without requiring `src` to be aligned.
@@ -73,7 +83,7 @@ pub unsafe fn read_unaligned<T>(src: *const T) -> T {
 
 /// Writes `value` at `dst`, without dropping what was there.
 pub unsafe fn write<T>(dst: *mut T, value: T) {
-    unsafe { crate::intrinsics::write(&mut *dst, value) }
+    unsafe { crate::intrinsics::write(dst, value) }
 }
 
 /// Copies `count` values from `src` to `dst`, which may overlap.
@@ -103,6 +113,19 @@ pub unsafe fn swap<T>(x: *mut T, y: *mut T) {
         let a = read(x);
         copy(y, x, 1);
         write(y, a);
+    }
+}
+
+/// Swaps `count` initialized values between disjoint, aligned regions.
+pub unsafe fn swap_nonoverlapping<T>(x: *mut T, y: *mut T, count: usize) {
+    let mut i = 0;
+    while i < count {
+        unsafe {
+            let value = read(x.add(i));
+            copy_nonoverlapping(y.add(i), x.add(i), 1);
+            write(y.add(i), value);
+        }
+        i += 1;
     }
 }
 
@@ -493,7 +516,23 @@ impl<T: ?Sized> crate::convert::From<&mut T> for NonNull<T> {
     }
 }
 
+impl<T> *const [T] {
+    pub const fn len(self) -> usize {
+        crate::intrinsics::raw_slice_len(self)
+    }
+}
+
+impl<T> *mut [T] {
+    pub const fn len(self) -> usize {
+        crate::intrinsics::raw_slice_len(self as *const [T])
+    }
+}
+
 impl<T> NonNull<[T]> {
+    /// Adds slice-length metadata without accessing the allocation.
+    pub const fn slice_from_raw_parts(data: NonNull<T>, len: usize) -> Self {
+        NonNull { pointer: slice_from_raw_parts_mut(data.as_ptr(), len) }
+    }
     /// The number of elements in the slice, without accessing its contents.
     pub const fn len(self) -> usize {
         crate::intrinsics::raw_slice_len(self.pointer)
@@ -507,6 +546,22 @@ impl<T: ?Sized> PartialEq for NonNull<T> {
 }
 
 impl<T: ?Sized> Eq for NonNull<T> {}
+
+impl<T> crate::cmp::PartialOrd for NonNull<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<crate::cmp::Ordering> {
+        Some(crate::cmp::Ord::cmp(self, other))
+    }
+}
+impl<T> crate::cmp::Ord for NonNull<T> {
+    fn cmp(&self, other: &Self) -> crate::cmp::Ordering {
+        (self.pointer as usize).cmp(&(other.pointer as usize))
+    }
+}
+impl<T: ?Sized> crate::fmt::Pointer for NonNull<T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::fmt::Pointer::fmt(&self.pointer, f)
+    }
+}
 
 impl<T: ?Sized> crate::fmt::Debug for NonNull<T> {
     fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {

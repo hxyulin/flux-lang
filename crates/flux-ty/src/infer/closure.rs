@@ -170,14 +170,7 @@ impl Ctx<'_> {
         is_move: bool,
     ) -> Ty {
         let range = self.range(id);
-        let Some(owner) = self.owner_fn.filter(|_| self.const_context.is_none()) else {
-            let context = self.const_context.unwrap_or("constants");
-            self.error(
-                range,
-                format!("closures in {context} are not supported yet"),
-            );
-            return Ty::ERROR;
-        };
+        let owner = self.closure_owner;
         let mut hint = self.closure_hints.remove(id);
         let from_bound = hint.is_some();
         // Where a function pointer is expected, its signature.
@@ -249,11 +242,12 @@ impl Ctx<'_> {
                 .get(i)
                 .copied()
                 .flatten()
-                .map(|t| self.resolve_type_ref(t));
+                .map(|t| self.resolve_body_type(t, false, true));
             let expected = hinted.and_then(|h| h.get(i)).copied();
             let ty = match (declared, expected) {
                 (Some(declared), Some(expected)) => {
-                    if !self.can_unify(declared, expected) {
+                    if !self.can_unify(declared, expected)
+                        || !crate::fn_regions::same_binders(self.items, declared, expected) {
                         if self.mismatched_closures.insert(id) {
                             self.error(head, "type mismatch in closure arguments");
                         }
@@ -269,6 +263,9 @@ impl Ctx<'_> {
                 }
             };
             types.push(ty);
+            if let Some(written) = param_types.get(i).copied().flatten() {
+                self.let_annotations.insert(pat, (written, ty));
+            }
         }
         let declared_ret = ret.map(|t| self.resolve_type_ref(t));
         // A signature whose parameters did not fit says nothing more.
@@ -277,7 +274,9 @@ impl Ctx<'_> {
             .filter(|_| !self.mismatched_closures.contains(&id));
         let ret_ty = match (declared_ret, hinted_ret) {
             (Some(declared), Some(expected)) => {
-                if self.can_unify(declared, expected) {
+                if !crate::fn_regions::same_binders(self.items, declared, expected) {
+                    self.error(head, "type mismatch in closure return type");
+                } else if self.can_unify(declared, expected) {
                     self.unify(declared, expected);
                 }
                 declared
@@ -307,8 +306,10 @@ impl Ctx<'_> {
         expr_bindings(self.body, body, &mut locals);
         self.closure_locals.push(locals);
         self.expect(body, ret_ty);
+        let outer_context = self.const_context.take();
         let body_ty = self.infer_expr(body);
         self.coerce(body_ty, ret_ty, body);
+        self.const_context = outer_context;
         let locals = self.closure_locals.pop().unwrap_or_default();
         self.ret = outer_ret;
         self.closures.push(PendingClosure {
@@ -355,7 +356,10 @@ impl Ctx<'_> {
         args: &[Ty],
         param: Ty,
     ) -> Option<Hint> {
-        let param = self.shallow(param);
+        let mut param = self.shallow(param);
+        while let TyKind::Ref(_, inner) = param.kind() {
+            param = self.shallow(inner);
+        }
         if !matches!(param.kind(), TyKind::Infer(_) | TyKind::Param(_)) {
             return None;
         }
@@ -446,11 +450,21 @@ impl Ctx<'_> {
         at: TextRange,
     ) {
         for (&arg, &param) in args.iter().zip(params) {
-            if !matches!(self.body.exprs[arg], Expr::Closure { .. }) {
+            let mut closure = arg;
+            let mut shared = false;
+            let mut borrowed = false;
+            while let Expr::Ref { mutable, expr } = self.body.exprs[closure] {
+                borrowed = true;
+                shared |= !mutable;
+                closure = expr;
+            }
+            if !matches!(self.body.exprs[closure], Expr::Closure { .. }) {
                 continue;
             }
-            if let Some(hint) = self.closure_hint(function, generic_args, param) {
-                self.closure_hints.insert(arg, Hint { at, ..hint });
+            if let Some(mut hint) = self.closure_hint(function, generic_args, param) {
+                if shared { hint.kind = ClosureKind::Fn; }
+                else if borrowed { hint.kind = hint.kind.min(ClosureKind::FnMut); }
+                self.closure_hints.insert(closure, Hint { at, ..hint });
             }
         }
     }
@@ -470,7 +484,11 @@ impl Ctx<'_> {
     /// Whether `expr` is a closure, which arguments infer after the
     /// others, as rustc does, so that it may know their types.
     pub(super) fn is_closure(&self, expr: ExprId) -> bool {
-        matches!(self.body.exprs[expr], Expr::Closure { .. })
+        match self.body.exprs[expr] {
+            Expr::Closure { .. } => true,
+            Expr::Ref { expr, .. } => self.is_closure(expr),
+            _ => false,
+        }
     }
 
     /// A call of a value, `f(x)`: of a closure, or of a type parameter
@@ -483,6 +501,9 @@ impl Ctx<'_> {
         args: &[ExprId],
     ) -> Ty {
         let (base, derefs) = self.autoderef(callee_ty);
+        if let Some(context) = self.const_context {
+            self.error(self.range(id), format!("cannot call non-const closure in {context}"));
+        }
         match base.kind() {
             TyKind::Closure(_, closure_args) => {
                 let parts = ClosureArgs::split(closure_args);
@@ -614,6 +635,14 @@ impl Ctx<'_> {
         self.calls.insert(id, (function, vec![self_ty, tupled]));
     }
 
+    /// Callable trait arguments are type equalities. Expression coercions may
+    /// specialize a pointer, but selecting Fn must retain nested binders.
+    pub(super) fn unify_callable_types(&mut self, a: Ty, b: Ty) -> bool {
+        if !self.unify(a, b) { return false; }
+        let a = self.known(a); let b = self.known(b);
+        crate::fn_regions::same_binders(self.items, a, b)
+    }
+
     /// For the solver: whether a `Fn`-family bound of kind `kind` with
     /// parameters `params` on closure type `closure` holds, recording the
     /// kind to check if the closure's is not known yet.
@@ -622,7 +651,7 @@ impl Ctx<'_> {
             return false;
         };
         let parts = ClosureArgs::split(args);
-        if !self.unify(params, parts.params()) {
+        if !self.unify_callable_types(params, parts.params()) {
             // Reported at the closure already.
             return self.mismatched_closures.contains(&id.expr);
         }
@@ -762,7 +791,8 @@ impl Ctx<'_> {
         }
         // The places, as few and as short as rustc's.
         let mut captures = PendingCaptures::default();
-        for (place, use_kind, range) in found {
+        for (mut place, use_kind, range) in found {
+            if matches!(self.expression_edition(closure.expr), flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018) { place.1.clear(); }
             let mode = match use_kind {
                 UseKind::Move => CaptureMode::ByValue,
                 UseKind::Copy => CaptureMode::ByRef(Mutability::Not),

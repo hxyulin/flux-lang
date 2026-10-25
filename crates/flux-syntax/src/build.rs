@@ -28,12 +28,15 @@ pub(crate) struct TreeParts {
     kinds: Vec<SyntaxKind>,
     starts: Vec<u32>,
     nodes: Vec<NodeData>,
+    remapped: Vec<(u32, SyntaxKind)>,
 }
 
 impl TreeParts {
     /// The tree, given the text it was built from.
     pub(crate) fn into_tree(self, text: Box<str>) -> SyntaxTree {
-        SyntaxTree::new(text, self.kinds, self.starts, self.nodes)
+        let mut tree = SyntaxTree::new(text, self.kinds, self.starts, self.nodes);
+        tree.set_remapped_tokens(self.remapped);
+        tree
     }
 }
 
@@ -65,6 +68,7 @@ pub(crate) fn build(lexed: LexedStr<'_>, output: Output) -> (TreeParts, Vec<Synt
         // grows; `finish` frees what is left over.
         nodes: Vec::with_capacity(events.len() / 2 + 1),
         open: Vec::new(),
+        remapped: Vec::new(),
         errors: &mut errors,
     };
 
@@ -133,6 +137,7 @@ struct Builder<'a, 'e> {
     nodes: Vec<NodeData>,
     /// Indices of the nodes not yet finished.
     open: Vec<u32>,
+    remapped: Vec<(u32, SyntaxKind)>,
     errors: &'e mut Vec<SyntaxError>,
 }
 
@@ -169,6 +174,9 @@ impl Builder<'_, '_> {
 
     fn token(&mut self, kind: SyntaxKind, n_raw_tokens: usize) {
         self.eat_trivia();
+        if n_raw_tokens == 1 && self.kinds[self.read] != kind {
+            self.remapped.push((self.write as u32, self.kinds[self.read]));
+        }
         // A composite token spans several joint lexer tokens.
         self.kinds[self.write] = kind;
         self.starts[self.write] = self.starts[self.read];
@@ -199,6 +207,7 @@ impl Builder<'_, '_> {
             kinds: self.kinds,
             starts: self.starts,
             nodes: self.nodes,
+            remapped: self.remapped,
         }
     }
 

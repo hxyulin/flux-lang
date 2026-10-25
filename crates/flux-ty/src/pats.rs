@@ -21,11 +21,11 @@ use flux_hir::{
 use flux_syntax::TextRange;
 
 use crate::Signatures;
-use crate::ty::{IntTy, Mutability, Ty, TyKind};
+use crate::ty::{FloatTy, IntTy, Mutability, Ty, TyKind};
 
 /// The pattern checks of a body that type-checked without errors.
-/// `consts` are the values of the paths to constants in its patterns
-/// (`1` for `true`), and `mode_errors` the binding modifiers written
+/// `consts` are structural values of the paths to constants in its patterns,
+/// and `mode_errors` the binding modifiers written
 /// where a pattern borrows implicitly, found during inference.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_body(
@@ -37,7 +37,7 @@ pub(crate) fn check_body(
     pat_types: &ArenaMap<Pat, Ty>,
     pat_derefs: &ArenaMap<Pat, u32>,
     expr_types: &ArenaMap<Expr, Ty>,
-    consts: &ArenaMap<Expr, i128>,
+    consts: &ArenaMap<Expr, crate::PatternConst>,
     mode_errors: &[(TextRange, &'static str)],
 ) -> Vec<Diagnostic> {
     let mut cx = Cx {
@@ -204,6 +204,10 @@ enum Ctor {
     Single,
     Variant(u32),
     Bool(bool),
+    /// One numeric float value; the two signed zeros share a constructor.
+    Float(u64),
+    /// Every float not named by this column, including all NaN values.
+    FloatRemainder,
     /// The integers in an inclusive range, encoded by [`IntDomain`].
     Range(u128, u128),
     /// A slice of a length, or of at least one (as rustc's).
@@ -293,7 +297,7 @@ struct Cx<'a> {
     body: &'a Body,
     pat_types: &'a ArenaMap<Pat, Ty>,
     pat_derefs: &'a ArenaMap<Pat, u32>,
-    consts: &'a ArenaMap<Expr, i128>,
+    consts: &'a ArenaMap<Expr, crate::PatternConst>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -413,8 +417,8 @@ impl Cx<'_> {
     /// The value of `expr`, a literal or constant in a pattern, of an
     /// integer type.
     fn literal(&self, expr: ExprId) -> Option<i128> {
-        if let Some(&value) = self.consts.get(expr) {
-            return Some(value);
+        if let Some(crate::PatternConst::Scalar(value)) = self.consts.get(expr) {
+            return Some(*value);
         }
         match &self.body.exprs[expr] {
             // A `u128` above `i128::MAX` reads as negative, which keeps
@@ -434,6 +438,23 @@ impl Cx<'_> {
     }
 
     /// `pat` as constructors and fields.
+    /// Float patterns use numeric equality, not bit equality. NaNs never
+    /// match a literal, while both zero encodings match either zero pattern.
+    fn float_literal(&self, expr: ExprId, float: FloatTy) -> Option<u64> {
+        let bits=match &self.body.exprs[expr] {
+            Expr::Literal(Literal::Float { text, .. }) => match float {
+                FloatTy::F32 => u64::from(text.as_str().parse::<f32>().ok()?.to_bits()),
+                FloatTy::F64 => text.as_str().parse::<f64>().ok()?.to_bits(),
+            },
+            Expr::Unary { op: UnaryOp::Neg, operand } => self.float_literal(*operand,float)? ^ (1u64 << (float.bits()-1)),
+            _ => return None,
+        };
+        let sign=1u64 << (float.bits()-1);
+        let magnitude=bits & !sign;
+        let infinity=match float { FloatTy::F32 => 0x7f800000, FloatTy::F64 => 0x7ff0000000000000 };
+        if magnitude>infinity {None} else {Some(if magnitude==0 {0} else {bits})}
+    }
+
     fn lower(&self, pat: PatId) -> DPat {
         let ty = self.pat_types.get(pat).copied().unwrap_or(Ty::ERROR);
         let inner = match &self.body.pats[pat] {
@@ -478,6 +499,9 @@ impl Cx<'_> {
                 DPat::Ctor(self.adt_ctor(*strukt, *variant), lowered)
             }
             Pat::Unit(strukt, variant) => DPat::Ctor(self.adt_ctor(*strukt, *variant), Vec::new()),
+            Pat::Expr(expr) if self.consts.get(*expr).is_some() => {
+                self.constant(self.consts.get(*expr).unwrap(), ty)
+            }
             Pat::Expr(expr) => match (&self.body.exprs[*expr], ty.kind()) {
                 (Expr::Literal(Literal::Bool(b)), _) => DPat::Ctor(Ctor::Bool(*b), Vec::new()),
                 // A string: a reference to one `str` of infinitely many,
@@ -488,6 +512,10 @@ impl Cx<'_> {
                 (_, TyKind::Bool) => match self.literal(*expr) {
                     Some(value) => DPat::Ctor(Ctor::Bool(value != 0), Vec::new()),
                     None => DPat::Wild,
+                },
+                (_, TyKind::Float(float)) => match self.float_literal(*expr,float) {
+                    Some(bits) => DPat::Ctor(Ctor::Float(bits),Vec::new()),
+                    None => DPat::Or(Vec::new()),
                 },
                 (_, TyKind::Int(_) | TyKind::Char) => match self.literal(*expr) {
                     Some(value) => {
@@ -562,6 +590,24 @@ impl Cx<'_> {
         (0..derefs).fold(inner, |p, _| DPat::Ctor(Ctor::Single, vec![p]))
     }
 
+    fn constant(&self, value: &crate::PatternConst, ty: Ty) -> DPat {
+        match value {
+            crate::PatternConst::Scalar(value) => match ty.kind() {
+                TyKind::Bool => DPat::Ctor(Ctor::Bool(*value != 0), Vec::new()),
+                TyKind::Int(_) | TyKind::Char => {
+                    let at = IntDomain::of(ty).expect("a scalar").encode(*value);
+                    DPat::Ctor(Ctor::Range(at, at), Vec::new())
+                }
+                _ => DPat::Or(Vec::new()),
+            },
+            crate::PatternConst::Aggregate(values) => {
+                let fields = self.ctor_fields(ty, Ctor::Single);
+                assert_eq!(values.len(), fields.len());
+                DPat::Ctor(Ctor::Single, values.iter().zip(fields).map(|(v,t)| self.constant(v,t)).collect())
+            }
+        }
+    }
+
     fn adt_ctor(&self, strukt: flux_hir::StructId, variant: u32) -> Ctor {
         if self.items.structs[strukt].is_enum() {
             Ctor::Variant(variant)
@@ -631,7 +677,7 @@ impl Cx<'_> {
                 .sigs
                 .variant_fields(ty, v)
                 .map_or(Vec::new(), |f| f.to_vec()),
-            (Ctor::Bool(_) | Ctor::Range(..), _) => Vec::new(),
+            (Ctor::Bool(_) | Ctor::Float(_) | Ctor::FloatRemainder | Ctor::Range(..), _) => Vec::new(),
         }
     }
 
@@ -651,6 +697,14 @@ impl Cx<'_> {
                 .into_iter()
                 .map(Ctor::Bool)
                 .partition(|&c| used(c)),
+            TyKind::Float(_) => {
+                let mut present=Vec::new();
+                for head in heads {
+                    if let DPat::Ctor(ctor @ Ctor::Float(_), _) = head
+                        && !present.contains(ctor) {present.push(*ctor);}
+                }
+                (present,vec![Ctor::FloatRemainder])
+            }
             TyKind::Int(_) | TyKind::Char => {
                 self.split_ints(IntDomain::of(ty).expect("a scalar"), heads)
             }

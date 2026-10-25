@@ -1,0 +1,32 @@
+use core::mem::MaybeUninit;
+use tag::{Tag, TagSliceExt};
+
+fn main() {
+    let mut full = 0;
+    let mut special = 0;
+    let mut empty = 0;
+    for value in 0..=255u8 {
+        let tag = Tag(value);
+        full += tag.is_full() as usize;
+        special += tag.is_special() as usize;
+        if tag.is_special() { empty += tag.special_is_empty() as usize; }
+    }
+    let mut digest = 0u64;
+    for top in 0..128u64 {
+        let hash = (top << 57) | 0x1234;
+        let tag = Tag::full(hash);
+        assert_eq!(tag.0, top as u8);
+        assert!(tag.is_full());
+        digest = digest.wrapping_mul(131).wrapping_add(tag.0 as u64);
+    }
+    let mut tags = [MaybeUninit::<Tag>::uninit(); 33];
+    tags[..].fill_empty();
+    for tag in tags.iter() { assert_eq!(unsafe { tag.assume_init() }, Tag::EMPTY); }
+    tags[1..32].fill_tag(Tag::DELETED);
+    for tag in tags[1..32].iter() { assert_eq!(unsafe { tag.assume_init() }, Tag::DELETED); }
+    assert_eq!(unsafe { tags[0].assume_init() }, Tag::EMPTY);
+    assert_eq!(unsafe { tags[32].assume_init() }, Tag::EMPTY);
+    println!("tag {full} {special} {empty} {digest}");
+    println!("{:?} {:?} {:?}", Tag::EMPTY, Tag::DELETED, Tag::full(7 << 57));
+    println!("layout {} {}", core::mem::size_of::<Tag>(), core::mem::align_of::<Tag>());
+}

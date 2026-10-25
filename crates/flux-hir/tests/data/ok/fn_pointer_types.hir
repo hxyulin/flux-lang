@@ -1,0 +1,6 @@
+fn c_abi(p@0: extern "C" fn(i32)) -> () {}
+
+fn unsafe_c_abi(p@0: unsafe extern "C" fn(*const i8) -> i32) -> () {}
+
+fn main() -> () {}
+

@@ -38,7 +38,7 @@ use flux_hir::{Diagnostic, ItemTree};
 use flux_syntax::TextRange;
 use flux_ty::regions::{Outlives, Region, TraitRefRegions, Variance};
 use flux_ty::{AliasTy, Mutability, Signatures, Ty, TyKind};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::bitset::BitSet;
@@ -138,6 +138,8 @@ pub(crate) struct Regions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Ext {
     Static,
+    /// A named lifetime of the enclosing function, before closure-local slots.
+    Parent(flux_hir::FunctionId, u32),
     SelfRef,
     Upvar(u32),
     Arg(u32),
@@ -176,8 +178,9 @@ pub(crate) fn infer(
     cx.generate();
     cx.member_constraints();
     let points = Points::new(body);
-    let liveness = cx.liveness(&points);
-    let solution = cx.solve(&points, &liveness);
+    let liveness = cx.liveness(&points, true);
+    let uses = cx.liveness(&points, false);
+    let solution = cx.solve(&points, &liveness, &uses);
     let mut errors = cx.check_universal(&solution);
     // A type that may not live long enough where a lifetime already
     // does not is the same error, which rustc reports once.
@@ -337,7 +340,7 @@ pub(crate) fn impl_method_matches(
             &arg_vars,
         );
         match (mine, theirs) {
-            (Some(mine), Some(theirs)) if mine.len() == theirs.len() => {
+            (Some(mine), Some(theirs)) => {
                 // The trait's parameter, for the block's types, is well
                 // formed: what it implies is known (`&'t0 Guard<'a, T>`
                 // that `'a: 't0`), as rustc's `compare_impl_method`
@@ -350,9 +353,10 @@ pub(crate) fn impl_method_matches(
                         known_implied.push((a, b));
                     }
                 }
-                cx.relate(
-                    ty,
-                    &theirs,
+                cx.known_pairs.extend(known_implied.iter().copied());
+                cx.close_known();
+                cx.relate_types(
+                    instance, &theirs, ty,
                     &mine,
                     Variance::Covariant,
                     Category::Boring,
@@ -365,10 +369,10 @@ pub(crate) fn impl_method_matches(
     let ty = cx.normalize(impl_sig.ret);
     let mine = cx.instantiate_sig(impl_sig.ret, &ir.ret, &mut map_i, &[], &[]);
     let theirs = cx.instantiate_sig(trait_sig.ret, &tr.ret, &mut map_t, &args, &arg_vars);
+    let required_ret = cx.normalize(trait_sig.ret.subst(&args));
     match (mine, theirs) {
-        (Some(mine), Some(theirs)) if mine.len() == theirs.len() => cx.relate(
-            ty,
-            &mine,
+        (Some(mine), Some(theirs)) => cx.relate_types(
+            ty, &mine, required_ret,
             &theirs,
             Variance::Covariant,
             Category::Boring,
@@ -422,7 +426,7 @@ pub(crate) fn impl_method_matches(
             break;
         }
     }
-    cx.universal.iter().enumerate().all(|(a, &(var, _))| {
+    cx.errors.is_empty() && cx.universal.iter().enumerate().all(|(a, &(var, _))| {
         (0..n).all(|b| {
             values[var as usize * words + b / 64] & (1 << (b % 64)) == 0
                 || cx.known(a as u32, b as u32)
@@ -480,6 +484,7 @@ fn impl_header_match(
         .impl_projections
         .get(imp)
         .map_or(Vec::new(), |p| p.to_vec());
+    cx.header_predicates = sigs.impl_predicates.get(imp).map_or(Vec::new(), |predicates| flux_ty::traits::elaborate(sigs, predicates));
     cx.new_universal("'static".into());
     let lifetimes: Vec<_> = (0..block.names.len())
         .map(|i| cx.new_universal(format!("'{i}")))
@@ -537,6 +542,7 @@ fn impl_header_match(
     let mut root = ImplRegionGoal {
         predicate: trait_ref.with_self(self_ty),
         vars: vec![vars],
+        bound: Vec::new(),
     };
     for (&ty, table) in trait_ref.args.iter().zip(block.trait_args.iter()) {
         let vars = cx.instantiate_sig(ty, table, &mut { map }, &[], &[])?;
@@ -644,7 +650,7 @@ fn impl_header_match(
         }
     }
     cx.close_known();
-    let solution = cx.solve(&Points::new(&body), &[]);
+    let solution = cx.solve(&Points::new(&body), &[], &[]);
     Some(
         cx.check_universal(&solution).is_empty()
             && cx.check_type_tests(&solution).is_empty()
@@ -658,6 +664,9 @@ fn impl_header_match(
 struct ImplRegionGoal {
     predicate: flux_ty::Predicate,
     vars: Vec<Vec<Var>>,
+    /// Universally quantified callback inputs. An environment assumption may
+    /// instantiate these; a required goal must hold for their arbitrary values.
+    bound: Vec<Var>,
 }
 
 struct Cx<'a> {
@@ -669,6 +678,7 @@ struct Cx<'a> {
     /// Abstract associated values whose owner is an original impl-header
     /// predicate. Only the associated-bound declaration check populates this.
     header_aliases: Vec<AliasTy>,
+    header_predicates: Vec<flux_ty::Predicate>,
     slot_counts: FxHashMap<Ty, u32>,
     /// The first variable of each local's slots, and one past the last
     /// local's.
@@ -722,6 +732,9 @@ struct Cx<'a> {
     /// Relations implied by well-formed higher-ranked input types,
     /// such as the object bound outliving the reference in `&dyn Tr`.
     hole_pairs: rustc_hash::FxHashSet<(Var, Var)>,
+    /// Pointer callback proofs wait until output projections have added their
+    /// links, so a higher-ranked input cannot escape through Output.
+    pointer_checks: Vec<(u32, Vec<Var>, Vec<(Var, Var)>, TextRange)>,
     /// The slots of the inputs of the call whose bounds are being
     /// proven: what the callee may give a closure where its parameters'
     /// slots cannot be told.
@@ -812,6 +825,7 @@ impl<'a> Cx<'a> {
             sigs,
             env,
             header_aliases: Vec::new(),
+            header_predicates: Vec::new(),
             slot_counts: FxHashMap::default(),
             local_base: Vec::new(),
             vars: 0,
@@ -834,6 +848,7 @@ impl<'a> Cx<'a> {
             hidden: Vec::new(),
             holes: Default::default(),
             hole_pairs: Default::default(),
+            pointer_checks: Vec::new(),
             call_inputs: Vec::new(),
             proven_closures: Default::default(),
             output_closures: Default::default(),
@@ -852,6 +867,12 @@ impl<'a> Cx<'a> {
         if let TyKind::Alias(alias) = ty.kind()
             && !self.env.iter().any(|p| p.alias == alias)
             && !self.header_aliases.contains(&alias)
+            && !(self.items.traits[alias.trait_].generics.lifetimes.is_empty()
+                && alias.args.iter().all(|&arg| flux_ty::regions::slots(self.items, arg) == 0)
+                && self.header_predicates.contains(&flux_ty::Predicate {
+                    self_ty: alias.args[0],
+                    trait_ref: flux_ty::TraitRef { trait_: alias.trait_, name: alias.trait_name, args: &alias.args[1..] },
+                }))
         {
             return false;
         }
@@ -873,11 +894,15 @@ impl<'a> Cx<'a> {
         if !trait_regions.lifetimes.is_empty() {
             return None;
         }
-        let mut map = |r| match r {
-            Region::Static => Some(STATIC),
-            Region::Param(i) => lifetimes.get(i as usize).copied(),
-            Region::Erased | Region::Late(_) => None,
-        };
+        let callable = flux_ty::fn_trait_kind(self.items, p.trait_ref.trait_).is_some();
+        let mut named_bound = FxHashMap::default();
+        let mut bound = Vec::new();
+        for &region in table.iter().chain(trait_regions.args.iter().flat_map(|table| table.iter())) {
+            if let Region::Late(index) = region {
+                let var = *named_bound.entry(index).or_insert_with(|| self.new_universal(format!("'bound{index}")));
+                if !bound.contains(&var) { bound.push(var); }
+            }
+        }
         let mut vars = Vec::new();
         let mut types = Vec::new();
         for (k, &ty) in std::iter::once(&p.self_ty)
@@ -893,6 +918,21 @@ impl<'a> Cx<'a> {
                 return None;
             }
             let instance = self.normalize(if args.is_empty() { ty } else { ty.subst(args) });
+            // Erased regions in the tuple of a parenthesized Fn bound are
+            // that bound's fresh input lifetimes, not missing header lifetimes.
+            // Generic arguments contribute their existing slots unchanged.
+            let fresh: Vec<_> = if callable && k == 1 {
+                table.iter().filter(|&&r| r == Region::Erased)
+                    .map(|_| self.new_universal("'callback".into())).collect()
+            } else { Vec::new() };
+            bound.extend(fresh.iter().copied());
+            let mut fresh = fresh.into_iter();
+            let mut map = |r| match r {
+                Region::Static => Some(STATIC),
+                Region::Param(i) => lifetimes.get(i as usize).copied(),
+                Region::Late(i) => named_bound.get(&i).copied(),
+                Region::Erased => fresh.next(),
+            };
             let slots = self.instantiate_sig(ty, table, &mut map, args, arg_vars)?;
             if slots.len() != self.slots(instance) as usize {
                 return None;
@@ -909,6 +949,7 @@ impl<'a> Cx<'a> {
                 },
             },
             vars,
+            bound,
         })
     }
 
@@ -926,7 +967,7 @@ impl<'a> Cx<'a> {
         }
         if out
             .iter()
-            .any(|g| g.predicate == goal.predicate && g.vars == goal.vars)
+            .any(|g| g.predicate == goal.predicate && g.vars == goal.vars && g.bound == goal.bound)
         {
             return true;
         }
@@ -940,7 +981,7 @@ impl<'a> Cx<'a> {
             .get(goal.predicate.trait_ref.trait_)
             .map_or(&[][..], |s| &s.supertraits)
         {
-            let Some(next) = self.impl_region_goal(
+            let Some(mut next) = self.impl_region_goal(
                 sup.with_self(Ty::param(0, flux_intern::kw::SelfUpper)),
                 &[],
                 &TraitRefRegions::default(),
@@ -950,6 +991,9 @@ impl<'a> Cx<'a> {
             ) else {
                 return false;
             };
+            for &var in &goal.bound {
+                if !next.bound.contains(&var) { next.bound.push(var); }
+            }
             if !self.impl_super_goals(next, out, depth + 1) {
                 return false;
             }
@@ -1081,22 +1125,47 @@ impl<'a> Cx<'a> {
         {
             return flux_ty::traits::holds(self.items, self.sigs, &[], goal.predicate);
         }
-        if let Some(known) = env
-            .iter()
-            .find(|g| g.predicate == goal.predicate && g.vars == goal.vars)
-            .or_else(|| env.iter().find(|g| g.predicate == goal.predicate))
-        {
+        self.close_known();
+        let mut candidates = Vec::new();
+        for known in env.iter().filter(|g| g.predicate == goal.predicate) {
+            if known.vars.len() != goal.vars.len() || known.vars.iter().zip(&goal.vars).any(|(a,b)| a.len() != b.len()) { continue; }
+            let mut instantiated = FxHashMap::default();
+            let mut equalities = Vec::new();
             for (a, b) in known.vars.iter().zip(&goal.vars) {
-                if a.len() != b.len() {
-                    return false;
-                }
                 for (&a, &b) in a.iter().zip(b) {
-                    self.equate(a, b, Category::Boring, range);
+                    if known.bound.contains(&a) {
+                        if let Some(&previous) = instantiated.get(&a) { equalities.push((previous, b)); }
+                        else { instantiated.insert(a, b); }
+                    } else { equalities.push((a, b)); }
                 }
             }
+            // Prefer an assumption whose rigid universals already agree. Do
+            // not let a static-only bound hide a polymorphic bound in scope.
+            let conflicts = equalities.iter().filter(|(a,b)| {
+                match (self.universal_of.get(a), self.universal_of.get(b)) {
+                    (Some(&a), Some(&b)) => !self.known(a,b) || !self.known(b,a),
+                    _ => false,
+                }
+            }).count();
+            candidates.push((conflicts, equalities));
+        }
+        if let Some((_, equalities)) = candidates.into_iter().min_by_key(|(conflicts, _)| *conflicts) {
+            for (a,b) in equalities { self.equate(a,b,Category::Boring,range); }
             return true;
         }
-        let Some((imp, args)) = flux_ty::traits::select_impl(self.items, self.sigs, goal.predicate)
+        let selected = flux_ty::traits::select_impl(self.items, self.sigs, goal.predicate)
+            .or_else(|| {
+                // Erased selection cannot discharge a blanket impl's bounds
+                // on abstract parameters without this original header env.
+                // A unique matching header is enough to select a candidate;
+                // every bound is still proved below with its region tables.
+                let mut matches = self.sigs.impl_index
+                    .impls_for(self.items, goal.predicate.trait_ref.trait_, goal.predicate.self_ty)
+                    .filter_map(|imp| flux_ty::traits::match_impl(self.items, self.sigs, imp, goal.predicate).map(|args| (imp, args)));
+                let candidate = matches.next()?;
+                matches.next().is_none().then_some(candidate)
+            });
+        let Some((imp, args)) = selected
         else {
             // Built-in, region-free obligations (notably Sized and Copy)
             // need no user impl. Never use erased environment bounds here.
@@ -1303,13 +1372,16 @@ impl<'a> Cx<'a> {
             _ => None,
         };
         self.new_universal("'static".to_owned());
-        if let Some(r) = fn_regions {
+        let enclosing_regions = body.owner.and_then(|f| sigs.regions.fns.get(f));
+        if body.upvars.is_some() { self.closure_ext.push(Ext::Static); }
+        if let Some(r) = enclosing_regions {
             for (i, n) in r.names.iter().enumerate() {
                 let name = match n.name {
                     Some(name) => name.to_string(),
                     None => format!("'{}", i + 1),
                 };
                 self.new_universal(name);
+                if body.upvars.is_some() { self.closure_ext.push(Ext::Parent(body.owner.expect("enclosing function"), i as u32)); }
             }
         }
         // Locals.
@@ -1429,7 +1501,6 @@ impl<'a> Cx<'a> {
                     }
                 }
             }
-            self.closure_ext.push(Ext::Static);
             for i in 0..=body.param_count as u32 {
                 let local = Local::from_raw(i);
                 for (k, v) in self.local_vars(local).into_iter().enumerate() {
@@ -1483,9 +1554,12 @@ impl<'a> Cx<'a> {
         for (local, table, range) in &body.region_annotations {
             let vars = self.local_vars(*local);
             for (&v, r) in vars.iter().zip(table.iter()) {
-                if *r == Region::Static {
-                    self.equate(v, STATIC, Category::Assignment, *range);
-                }
+                let fixed = match *r {
+                    Region::Static => Some(STATIC),
+                    Region::Param(i) => enclosing_regions.and_then(|r| r.names.get(i as usize)).map(|_| 1 + i),
+                    _ => None,
+                };
+                if let Some(fixed) = fixed { self.equate(v, fixed, Category::Assignment, *range); }
             }
             let ty = body.locals[*local].ty;
             let mut implied = Vec::new();
@@ -1505,9 +1579,9 @@ impl<'a> Cx<'a> {
             }
         }
         for (source, dest, variance, range) in &body.region_relations {
-            let (_, from) = self.place_regions(source);
+            let (source, from) = self.place_regions(source);
             let (ty, to) = self.place_regions(dest);
-            self.relate(ty, &from, &to, *variance, Category::Assignment, *range);
+            self.relate_types(source, &from, ty, &to, *variance, Category::Assignment, *range);
         }
         self.close_known();
     }
@@ -1937,6 +2011,11 @@ impl<'a> Cx<'a> {
                         .all(|&t| self.inst(t, own, next, map, args, arg_vars, out))
             }
             TyKind::Dynamic(_) => own_slot(next, out),
+            TyKind::FnPtr(sig) => {
+                let Some(r) = sig.regions else { return true; };
+                for _ in 0..r.free { if !own_slot(next, out) { return false; } }
+                r.types.iter().all(|&t| self.inst(t, own, next, map, args, arg_vars, out))
+            }
             TyKind::Alias(alias) => {
                 let instance = if args.is_empty() { ty } else { ty.subst(args) };
                 let normalized = self.normalize(instance);
@@ -2005,6 +2084,31 @@ impl<'a> Cx<'a> {
             }
             return Some(vars);
         }
+        // An associated type's declaration can forward another projection:
+        // IntoIterator::IntoIter: Iterator<Item = Self::Item>. Preserve the
+        // caller's Item regions through that equality instead of tying them
+        // to the temporary reference used to call Iterator::next.
+        if let TyKind::Alias(owner) = alias.args[0].kind() {
+            let implied: Vec<_> = self.sigs.traits.get(owner.trait_).into_iter()
+                .flat_map(|sig| sig.implied.iter())
+                .map(|p| p.subst(owner.args))
+                .filter(|p| p.alias == alias)
+                .collect();
+            let mut forwarded = None;
+            for projection in implied {
+                if let TyKind::Alias(source) = projection.ty.kind()
+                    && source != alias
+                    && !self.env_late.iter().any(|(e, _)| *e == source)
+                    && let Some((_, vars)) = self.env_regions.iter().find(|(e, _)| *e == source)
+                {
+                    if forwarded.as_ref().is_some_and(|previous| previous != vars) {
+                        return None;
+                    }
+                    forwarded = Some(vars.clone());
+                }
+            }
+            if forwarded.is_some() { return forwarded; }
+        }
         // What an opaque type's bounds say, or else what an `impl`
         // block for it does (`impl<I: Iterator> IntoIterator for I`).
         if let TyKind::Opaque(opaque) = alias.args[0].kind()
@@ -2029,19 +2133,20 @@ impl<'a> Cx<'a> {
                 return self.function_output(alias.args[0], inputs);
             }
             if let TyKind::FnPtr(sig) = alias.args[0].kind() {
-                // Pointer signatures erase lifetimes here. Conservatively
-                // equate their result's slots with every argument slot,
-                // preserving invariance through nested mutable references.
-                let n = self.slots(sig.ret());
-                let outs = self.fresh_list(n);
-                for &out in &outs {
-                    for &input in inputs {
-                        self.equate(input, out, Category::CallArgument, self.call_range);
+                if sig.regions.is_some() {
+                    let mut at = 0;
+                    let mut rows = Vec::new();
+                    let TyKind::Tuple(input_types) = alias.args.get(1)?.kind() else { return None; };
+                    for &ty in input_types {
+                        let n = self.slots(ty) as usize;
+                        rows.push(inputs.get(at..at+n)?.to_vec()); at += n;
                     }
+                    let own = arg_vars.first()?;
+                    return self.pointer_inputs(sig, own, input_types, &rows, self.call_range);
                 }
-                return Some(outs);
-            }
-        }
+                if self.slots(sig.ret()) != 0 { return None; }
+                return Some(Vec::new());
+            }        }
         let (items, sigs) = (self.items, self.sigs);
         let self_ty = alias.args[0];
         let goal = flux_ty::Predicate {
@@ -2092,9 +2197,13 @@ impl<'a> Cx<'a> {
     /// a direct call. It may borrow its arguments, never an adapter that
     /// stores it; invariant slots must stay equal to the inputs' slots.
     fn function_output(&mut self, ty: Ty, inputs: &[Var]) -> Option<Vec<Var>> {
-        let TyKind::FnDef(def) = ty.kind() else {
-            return None;
-        };
+        let TyKind::FnDef(def) = ty.kind() else { return None; };
+        self.function_output_typed(ty, def.sig.params(), inputs)
+    }
+
+    fn function_output_typed(&mut self, ty: Ty, input_types: &[Ty], inputs: &[Var]) -> Option<Vec<Var>> {
+        let TyKind::FnDef(def) = ty.kind() else { return None; };
+        if input_types.len() != def.sig.params().len() { return None; }
         let sigs = self.sigs;
         let sig = &sigs.fns[def.function];
         let Some(regions) = sigs.regions.fns.get(def.function) else {
@@ -2118,7 +2227,8 @@ impl<'a> Cx<'a> {
         };
         let mut at = 0;
         for (i, &ty) in def.sig.params().iter().enumerate() {
-            let n = self.slots(ty) as usize;
+            let source = input_types[i];
+            let n = self.slots(source) as usize;
             let actual = inputs.get(at..at + n)?;
             at += n;
             let formal = self.instantiate_sig(
@@ -2128,9 +2238,8 @@ impl<'a> Cx<'a> {
                 def.args,
                 &type_vars,
             )?;
-            self.relate(
-                ty,
-                actual,
+            self.relate_types(
+                source, actual, ty,
                 &formal,
                 Variance::Covariant,
                 Category::CallArgument,
@@ -2246,6 +2355,9 @@ impl<'a> Cx<'a> {
             let (Some(&actual), Some(vars)) = (header.get(k), header_vars.get(k)) else {
                 return None;
             };
+            if !flux_ty::regions::same_fn_pointer_binders(self.items, pattern.subst(impl_args), actual) {
+                return None;
+            }
             let (mut t, mut v) = (0, 0);
             if !self.match_at(
                 pattern,
@@ -2351,6 +2463,7 @@ impl<'a> Cx<'a> {
                     true
                 }
                 (Some(Region::Erased), Some(_)) => true,
+                (Some(Region::Late(i)), Some(var)) => var == Var::MAX-i,
                 _ => false,
             }
         };
@@ -2361,6 +2474,7 @@ impl<'a> Cx<'a> {
                     return false;
                 };
                 *v += n;
+                if own.iter().any(|&var| var >= self.vars) { return false; }
                 match binding.types.get_mut(p.index as usize) {
                     Some(slot @ None) => {
                         *slot = Some(own.to_vec());
@@ -2402,6 +2516,40 @@ impl<'a> Cx<'a> {
                         .zip(y.args)
                         .all(|(&a, &b)| self.match_at(a, table, t, b, vars, v, binding, eqs))
             }
+            (TyKind::FnPtr(a), TyKind::FnPtr(b)) => {
+                // Expand both contracts. Signature-bound regions use local
+                // sentinels and can only match the same binder position;
+                // external slots still bind the impl's real region parameters.
+                // Walking the signature also binds generic captured types,
+                // whose region slots are supplied by the actual input types.
+                let an = self.slots(pattern) as usize; let bn = self.slots(actual) as usize;
+                let (Some(at), Some(bv)) = (table.get(*t..*t+an), vars.get(*v..*v+bn)) else { return false; };
+                let rows_a = match a.regions {
+                    Some(r) => {
+                        let bound: Vec<_> = (0..r.bound).map(Region::Late).collect();
+                        flux_ty::regions::instantiate_fn_pointer(self.items, a, at, &bound, Region::Static)
+                    }
+                    None if a.inputs_output.iter().all(|&ty| self.slots(ty) == 0) => Some(vec![Vec::new(); a.inputs_output.len()]),
+                    None => None,
+                };
+                let rows_b = match b.regions {
+                    Some(r) => {
+                        let bound: Vec<_> = (0..r.bound).map(|i| Var::MAX-i).collect();
+                        flux_ty::regions::instantiate_fn_pointer(self.items, b, bv, &bound, STATIC)
+                    }
+                    None if b.inputs_output.iter().all(|&ty| self.slots(ty) == 0) => Some(vec![Vec::new(); b.inputs_output.len()]),
+                    None => None,
+                };
+                let (Some(rows_a), Some(rows_b)) = (rows_a, rows_b) else { return false; };
+                if rows_a.len() != rows_b.len() { return false; }
+                *t += an; *v += bn;
+                for (((&a, &b), own), actual) in a.inputs_output.iter().zip(b.inputs_output).zip(&rows_a).zip(&rows_b) {
+                    let (mut t, mut v) = (0, 0);
+                    if !self.match_at(a, own, &mut t, b, actual, &mut v, binding, eqs)
+                        || t != own.len() || v != actual.len() { return false; }
+                }
+                true
+            }
             (TyKind::Dynamic(_), TyKind::Dynamic(_)) => slot(t, v, binding, eqs),
             _ => {
                 // Types without slots of their own to bind.
@@ -2435,6 +2583,87 @@ impl<'a> Cx<'a> {
         }
         let mut next = 0;
         self.relate_at(ty, sub, sup, &mut next, variance, category, range);
+    }
+
+    /// Relate values whose types can differ in nested pointer binders. Bound
+    /// regions are part of a callable contract, even when neither value has
+    /// any free region slots. Walk both types before using the erased slot walk.
+    #[allow(clippy::too_many_arguments)]
+    fn relate_types(&mut self, source: Ty, sub: &[Var], target: Ty, sup: &[Var],
+        variance: Variance, category: Category, range: TextRange) {
+        if source == target {
+            return self.relate(target, sub, sup, variance, category, range);
+        }
+        if variance == Variance::Bivariant { return; }
+        let mut children = Vec::new();
+        let mut roots = 0;
+        match (source.kind(), target.kind()) {
+            (TyKind::FnPtr(a), TyKind::FnPtr(b)) => {
+                if matches!(variance, Variance::Covariant | Variance::Invariant) {
+                    self.pointer_subtype(a, sub, b, sup, range);
+                }
+                if matches!(variance, Variance::Contravariant | Variance::Invariant) {
+                    self.pointer_subtype(b, sup, a, sub, range);
+                }
+                return;
+            }
+            (TyKind::Ref(a, x), TyKind::Ref(b, y)) if a == b => {
+                roots = 1;
+                children.push((x, y, if a == Mutability::Mut { Variance::Invariant } else { Variance::Covariant }));
+            }
+            (TyKind::RawPtr(a, x), TyKind::RawPtr(b, y)) if a == b => {
+                children.push((x, y, if a == Mutability::Mut { Variance::Invariant } else { Variance::Covariant }));
+            }
+            (TyKind::Array(x, _), TyKind::Array(y, _))
+                | (TyKind::Array(x, _), TyKind::Slice(y))
+                | (TyKind::Slice(x), TyKind::Slice(y)) => children.push((x, y, Variance::Covariant)),
+            (TyKind::Tuple(a), TyKind::Tuple(b)) if a.len() == b.len() => {
+                children.extend(a.iter().zip(b).map(|(&a, &b)| (a, b, Variance::Covariant)));
+            }
+            (TyKind::Adt(a, x), TyKind::Adt(b, y)) if a == b && x.len() == y.len() => {
+                roots = self.items.structs[a.strukt].generics.lifetimes.len();
+                let def = self.sigs.regions.structs.get(a.strukt);
+                for (i, (&x, &y)) in x.iter().zip(y).enumerate() {
+                    let v = def.and_then(|d| d.variances.get(roots + i)).copied().unwrap_or(Variance::Invariant);
+                    children.push((x, y, v));
+                }
+            }
+            _ => {
+                let a = self.normalize(source); let b = self.normalize(target);
+                if a != source || b != target {
+                    return self.relate_types(a, sub, b, sup, variance, category, range);
+                }
+                // Other erased-type differences retain their existing slot
+                // relation; callable differences must reach a structural arm.
+                return self.relate(target, sub, sup, variance, category, range);
+            }
+        }
+        let root_variance = |i| match target.kind() {
+            TyKind::Adt(a, _) => self.sigs.regions.structs.get(a.strukt)
+                .and_then(|d| d.variances.get(i)).copied().unwrap_or(Variance::Invariant),
+            _ => Variance::Covariant,
+        };
+        let roots_variance: Vec<_> = (0..roots).map(root_variance).collect();
+        for (i, v) in roots_variance.into_iter().enumerate() {
+            if let (Some(&a), Some(&b)) = (sub.get(i), sup.get(i)) {
+                match variance.xform(v) {
+                    Variance::Covariant => self.outlives(a, b, category, range),
+                    Variance::Contravariant => self.outlives(b, a, category, range),
+                    Variance::Invariant => self.equate(a, b, category, range),
+                    Variance::Bivariant => {}
+                }
+            }
+        }
+        let (mut a, mut b) = (roots, roots);
+        for (x, y, v) in children {
+            let n = self.slots(x) as usize; let m = self.slots(y) as usize;
+            let (Some(from), Some(to)) = (sub.get(a..a+n), sup.get(b..b+m)) else {
+                self.errors.push(Diagnostic::new(range, "nested function pointer region metadata is not supported yet"));
+                return;
+            };
+            self.relate_types(x, from, y, to, variance.xform(v), category, range);
+            a += n; b += m;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2514,6 +2743,14 @@ impl<'a> Cx<'a> {
                 let upvars = flux_ty::ClosureArgs::split(args).upvars;
                 let v = variance.xform(Variance::Invariant);
                 self.relate_at(upvars, sub, sup, next, v, category, range);
+            }
+            TyKind::FnPtr(sig) => {
+                if let Some(r) = sig.regions {
+                    let (free, types) = flux_ty::regions::fn_pointer_variances(self.items, self.sigs, sig)
+                        .unwrap_or_else(|| (vec![Variance::Invariant; r.free as usize], vec![Variance::Invariant; r.types.len()]));
+                    for v in free { slot(self, next, variance.xform(v)); }
+                    for (&ty, v) in r.types.iter().zip(types) { self.relate_at(ty, sub, sup, next, variance.xform(v), category, range); }
+                }
             }
             // As in rustc, invariant in what it captures.
             TyKind::Opaque(opaque) => {
@@ -2727,8 +2964,16 @@ impl<'a> Cx<'a> {
                     range,
                     body.call_regions.get(block).map_or(&[], |r| &r[..]),
                 ),
-                TerminatorKind::CallIndirect { args, dest, .. } => {
-                    self.opaque_call(args, dest, range)
+                TerminatorKind::CallIndirect { callee, args, dest, .. } => {
+                    let (ty, own) = self.operand_regions(callee);
+                    if let TyKind::FnPtr(sig) = ty.kind() && sig.regions.is_some() {
+                        let values: Vec<_> = args.iter().map(|op| self.operand_regions(op)).collect();
+                        let input_types: Vec<_> = values.iter().map(|(ty, _)| *ty).collect();
+                        let inputs: Vec<_> = values.iter().map(|(_, vars)| vars.to_vec()).collect();
+                        self.pointer_call(sig, &own, &input_types, &inputs, dest, range);
+                    } else {
+                        self.opaque_call(args, dest, range)
+                    }
                 }
                 _ => {}
             }
@@ -2759,10 +3004,20 @@ impl<'a> Cx<'a> {
                 }
             }
             Rvalue::Use(op) | Rvalue::Cast(op, _) => {
-                let (_, vars) = self.operand_regions(op);
-                self.relate(
-                    dest_ty,
-                    &vars,
+                if let TyKind::FnPtr(target) = dest_ty.kind() && target.regions.is_some() {
+                    if let Operand::Const(crate::Constant::Fn { function, args, .. }) = op {
+                        self.pointer_from_item(*function, args, target, &dest_vars, range);
+                        return;
+                    }
+                    let (source, own) = self.operand_regions(op);
+                    if let TyKind::FnPtr(source) = source.kind() && source != target {
+                        self.pointer_subtype(source, &own, target, &dest_vars, range);
+                        return;
+                    }
+                }
+                let (source, vars) = self.operand_regions(op);
+                self.relate_types(
+                    source, &vars, dest_ty,
                     &dest_vars,
                     Variance::Covariant,
                     category,
@@ -2800,6 +3055,88 @@ impl<'a> Cx<'a> {
                     }
                     _ => (op_ty, &[][..], None),
                 };
+                // The object's elided callable input references are fresh at
+                // every call. Capturing one into the closure's environment
+                // must therefore fail while the object is constructed.
+                let object = match to.kind() {
+                    TyKind::Ref(_, object) | TyKind::RawPtr(_, object) => Some(object),
+                    _ => flux_ty::box_pointee(*to),
+                };
+                if let Some(object) = object
+                    && let TyKind::Dynamic(d) = object.kind()
+                    && flux_ty::fn_trait_kind(self.items, d.trait_).is_some()
+                    && let Some(&tuple) = d.args.first()
+                {
+                    let count = self.slots(tuple);
+                    let universal_count = self.universal.len();
+                    let known_count = self.known_pairs.len();
+                    let function_item = matches!(pointee.kind(), TyKind::FnDef(_));
+                    let inputs = if function_item {
+                        (0..count).map(|i| self.new_universal(format!("'callable{i}"))).collect()
+                    } else { self.fresh_list(count) };
+                    if !function_item {
+                        for &input in &inputs { self.holes.insert(input); }
+                    }
+                    let mut implied = Vec::new();
+                    flux_ty::regions::implied_outlives(self.items, self.sigs, tuple, &inputs, &mut implied);
+                    for relation in implied {
+                        if let Outlives::Region(a, b) = relation {
+                            if function_item { self.known_pairs.push((a, b)); }
+                            else { self.hole_pairs.insert((a, b)); }
+                        }
+                    }
+                    if function_item { self.close_known(); }
+                    match pointee.kind() {
+                        TyKind::Closure(id, _) => self.closure_goal(id, Some(inner), Some(&inputs), None, range),
+                        TyKind::FnDef(def) => {
+                            let regions = self.sigs.regions.fns.get(def.function);
+                            if !regions.is_some_and(|r| r.owner == 0
+                                && r.callback_binder == flux_ty::regions::CallbackBinder::Independent)
+                                || def.args.iter().any(|&t| self.slots(t) != 0)
+                                || d.assoc_tys.iter().any(|&t| self.slots(t) != 0)
+                            {
+                                self.errors.push(Diagnostic::new(range, "higher-ranked callable object function regions are not supported yet"));
+                            } else {
+                                let old = std::mem::replace(&mut self.call_range, range);
+                                let input_types = match tuple.kind() { TyKind::Tuple(types) => types, _ => &[] };
+                                if self.function_output_typed(pointee, input_types, &inputs).is_none() {
+                                    self.errors.push(Diagnostic::new(range, "function item callback region metadata is not supported yet"));
+                                }
+                                self.call_range = old;
+                            }
+                        }
+                        TyKind::FnPtr(sig) => {
+                            if d.assoc_tys.iter().any(|&t| self.slots(t) != 0) {
+                                self.errors.push(Diagnostic::new(range, "callable object pointer output regions are not supported yet"));
+                            } else if sig.regions.is_some() {
+                                let TyKind::Tuple(input_types) = tuple.kind() else { return; };
+                                let mut at = 0; let mut rows = Vec::new();
+                                for &ty in input_types {
+                                    let n = self.slots(ty) as usize;
+                                    rows.push(inputs.get(at..at+n).unwrap_or(&[]).to_vec()); at += n;
+                                }
+                                if self.pointer_inputs(sig, inner, input_types, &rows, range).is_none() {
+                                    self.errors.push(Diagnostic::new(range, "callable object pointer region metadata is not supported yet"));
+                                }
+                            }
+                        }
+                        TyKind::Dynamic(_) => {}
+                        _ => {}
+                    }
+                    if function_item {
+                        // These universals belong to this proof, not to the
+                        // enclosing function or closure's exported contract.
+                        if !self.caller_equalities_fit(&[]) {
+                            self.errors.push(Diagnostic::new(range, "function item is not general enough for this callable object"));
+                        }
+                        for &(var, _) in &self.universal[universal_count..] {
+                            self.universal_of.remove(&var);
+                        }
+                        self.universal.truncate(universal_count);
+                        self.known_pairs.truncate(known_count);
+                        self.close_known();
+                    }
+                }
                 if let Some(bound) = bound {
                     for &v in inner {
                         self.outlives(v, bound, category, range);
@@ -2808,10 +3145,9 @@ impl<'a> Cx<'a> {
                 }
             }
             Rvalue::Unsize(op, _) | Rvalue::Subslice { slice: op, .. } => {
-                let (_, vars) = self.operand_regions(op);
-                self.relate(
-                    dest_ty,
-                    &vars,
+                let (source, vars) = self.operand_regions(op);
+                self.relate_types(
+                    source, &vars, dest_ty,
                     &dest_vars,
                     Variance::Covariant,
                     category,
@@ -2845,7 +3181,7 @@ impl<'a> Cx<'a> {
                         Mutability::Mut if !place_ty.is_dyn() => Variance::Invariant,
                         _ => Variance::Covariant,
                     };
-                    self.relate(place_ty, &place_vars, rest, variance, category, range);
+                    self.relate_types(place_ty, &place_vars, match dest_ty.kind() { TyKind::Ref(_, inner) => inner, _ => place_ty }, rest, variance, category, range);
                 }
                 self.reborrow(place, loan, range);
             }
@@ -2907,16 +3243,16 @@ impl<'a> Cx<'a> {
                 let mut at = 0;
                 for (op, &t) in ops.iter().zip(list) {
                     let n = self.slots(t) as usize;
-                    let (_, vars) = self.operand_regions(op);
+                    let (source, vars) = self.operand_regions(op);
                     let field = dest_vars.get(at..at + n).unwrap_or(&[]).to_vec();
-                    self.relate(t, &vars, &field, Variance::Covariant, category, range);
+                    self.relate_types(source, &vars, t, &field, Variance::Covariant, category, range);
                     at += n;
                 }
             }
             AggregateKind::Array(elem) => {
                 for op in ops {
-                    let (_, vars) = self.operand_regions(op);
-                    self.relate(elem, &vars, dest_vars, Variance::Covariant, category, range);
+                    let (source, vars) = self.operand_regions(op);
+                    self.relate_types(source, &vars, elem, dest_vars, Variance::Covariant, category, range);
                 }
             }
             AggregateKind::Struct(_) | AggregateKind::Variant(..) => {
@@ -2927,10 +3263,9 @@ impl<'a> Cx<'a> {
                 for (i, op) in ops.iter().enumerate() {
                     let (field_ty, field) =
                         self.field_regions(dest_ty, dest_vars, variant, i as u32);
-                    let (_, vars) = self.operand_regions(op);
-                    self.relate(
-                        field_ty,
-                        &vars,
+                    let (source, vars) = self.operand_regions(op);
+                    self.relate_types(
+                        source, &vars, field_ty,
                         &field,
                         Variance::Covariant,
                         category,
@@ -2946,9 +3281,9 @@ impl<'a> Cx<'a> {
                 let mut at = 0;
                 for (op, &t) in ops.iter().zip(upvars) {
                     let n = self.slots(t) as usize;
-                    let (_, vars) = self.operand_regions(op);
+                    let (source, vars) = self.operand_regions(op);
                     let field = dest_vars.get(at..at + n).unwrap_or(&[]).to_vec();
-                    self.relate(t, &vars, &field, Variance::Covariant, category, range);
+                    self.relate_types(source, &vars, t, &field, Variance::Covariant, category, range);
                     at += n;
                 }
                 // What its body requires of what it captures.
@@ -2957,6 +3292,7 @@ impl<'a> Cx<'a> {
                         for &(a, b, _) in &required.outlives {
                             let map = |e: Ext| match e {
                                 Ext::Static => Some(STATIC),
+                                Ext::Parent(_, k) => Some(1 + k),
                                 Ext::Upvar(k) => dest_vars.get(k as usize).copied(),
                                 _ => None,
                             };
@@ -2988,6 +3324,31 @@ impl<'a> Cx<'a> {
         written: &[(u32, Box<[Region]>)],
     ) {
         let (items, sigs) = (self.items, self.sigs);
+        if crate::fn_method_kind(items, func).is_some()
+            && let Some(&self_ty) = generic_args.first()
+            && let TyKind::FnPtr(sig) = self_ty.kind()
+            && sig.regions.is_some()
+        {
+            let Some(receiver) = args.first() else { return; };
+            let (mut ty, mut own) = self.operand_regions(receiver);
+            while let TyKind::Ref(_, inner) = ty.kind() {
+                if own.is_empty() { break; }
+                own.remove(0); ty = inner;
+            }
+            let (tuple, flat) = args.get(1).map(|arg| self.operand_regions(arg)).unwrap_or((Ty::UNIT, Slots::new()));
+            let TyKind::Tuple(input_types) = tuple.kind() else { return; };
+            let mut flat = flat.to_vec();
+            let mut inputs = Vec::new();
+            for &ty in input_types {
+                let n = self.slots(ty) as usize;
+                if n > flat.len() {
+                    self.errors.push(Diagnostic::new(range, "function pointer input region metadata is not supported yet"));
+                    return;
+                }
+                inputs.push(flat.drain(..n).collect());
+            }
+            return self.pointer_call(sig, &own, input_types, &inputs, dest, range);
+        }
         // The `Fn`-family methods of closures, function items and
         // pointers, whose signatures flux does not track lifetimes in:
         // a closure's body says what it requires.
@@ -3078,9 +3439,8 @@ impl<'a> Cx<'a> {
             };
             let formal = self.instantiate_sig(formal_ty, table, &mut map, generic_args, &type_vars);
             match formal {
-                Some(formal) => self.relate(
-                    ty,
-                    &actual,
+                Some(formal) => self.relate_types(
+                    ty, &actual, formal_ty.subst(generic_args),
                     &formal,
                     Variance::Covariant,
                     Category::CallArgument,
@@ -3092,9 +3452,8 @@ impl<'a> Cx<'a> {
         let category = self.category_into(dest);
         let (dest_ty, dest_vars) = self.place_regions(dest);
         match self.instantiate_sig(sig.ret, &regions.ret, &mut map, generic_args, &type_vars) {
-            Some(formal) => self.relate(
-                dest_ty,
-                &formal,
+            Some(formal) => self.relate_types(
+                sig.ret.subst(generic_args), &formal, dest_ty,
                 &dest_vars,
                 Variance::Covariant,
                 category,
@@ -3526,8 +3885,18 @@ impl<'a> Cx<'a> {
                 .filter(|v| v.len() == n);
             let inputs = p.trait_ref.args.first().and_then(|&t| {
                 let n = self.slots(self.normalize(t.subst(args))) as usize;
-                self.bound_slots_in(t, &[], lifetimes, args, arg_vars)
-                    .filter(|v| v.len() == n)
+                let table = trait_regions.args.first().map_or(&[][..], |t| &**t);
+                let old = std::mem::take(&mut self.late_inputs);
+                let count = table.iter().filter_map(|r| match r { Region::Late(i) => Some(*i as usize + 1), _ => None }).max().unwrap_or(0);
+                self.late_inputs = (0..count).map(|_| {
+                    let v = self.fresh();
+                    self.holes.insert(v);
+                    v
+                }).collect();
+                let inputs = self.bound_slots_in(t, table, lifetimes, args, arg_vars)
+                    .filter(|v| v.len() == n);
+                self.late_inputs = old;
+                inputs
             });
             if let (Some(&ty), Some(inputs)) = (p.trait_ref.args.first(), &inputs) {
                 let ty = self.normalize(ty.subst(args));
@@ -3819,7 +4188,9 @@ impl<'a> Cx<'a> {
         depth: u32,
     ) {
         let (items, sigs) = (self.items, self.sigs);
-        if trait_lifetimes.is_empty() && vars.iter().all(|v| v.is_empty()) {
+        let pointer_callback = flux_ty::fn_trait_kind(items, goal.trait_ref.trait_).is_some()
+            && matches!(goal.self_ty.kind(), TyKind::FnPtr(sig) if sig.regions.is_some());
+        if !pointer_callback && trait_lifetimes.is_empty() && vars.iter().all(|v| v.is_empty()) {
             return;
         }
         if depth > 8 {
@@ -3845,9 +4216,30 @@ impl<'a> Cx<'a> {
             }
             return;
         }
+        if flux_ty::fn_trait_kind(items, goal.trait_ref.trait_).is_some()
+            && let TyKind::FnPtr(sig) = goal.self_ty.kind()
+            && sig.regions.is_some()
+        {
+            let own = vars.first().map_or(&[][..], Vec::as_slice);
+            let flat = vars.get(1).map_or(&[][..], Vec::as_slice);
+            let Some(&tuple) = goal.trait_ref.args.first() else { return; };
+            let TyKind::Tuple(input_types) = tuple.kind() else { return; };
+            let mut inputs = Vec::new(); let mut at = 0;
+            for &ty in input_types {
+                let n = self.slots(ty) as usize;
+                let Some(row) = flat.get(at..at+n) else {
+                    self.errors.push(Diagnostic::new(range, "function pointer callback region metadata is not supported yet")); return;
+                };
+                inputs.push(row.to_vec()); at += n;
+            }
+            if self.pointer_inputs(sig, own, input_types, &inputs, range).is_none() {
+                self.errors.push(Diagnostic::new(range, "function pointer callback region metadata is not supported yet"));
+            }
+            return;
+        }
         if matches!(
             goal.self_ty.kind(),
-            TyKind::Infer(_) | TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_)
+            TyKind::Infer(_) | TyKind::Closure(..) | TyKind::FnDef(_)
         ) {
             return;
         }
@@ -3967,6 +4359,12 @@ impl<'a> Cx<'a> {
         if table.is_empty() && !self.is_callable_output(alias) {
             return;
         }
+        let actual_ty = self.normalize(Ty::alias(alias));
+        let expected_ty = self.normalize(p.ty.subst(args));
+        if !flux_ty::regions::same_fn_pointer_binders(self.items, actual_ty, expected_ty) {
+            self.errors.push(Diagnostic::new(range, "associated function pointer binders do not match"));
+            return;
+        }
         let mut alias_vars = Vec::with_capacity(p.alias.args.len());
         for &a in p.alias.args {
             let Some(vars) = self.bound_slots(a, args, arg_vars) else {
@@ -3999,15 +4397,23 @@ impl<'a> Cx<'a> {
 
     /// `T: b` for the parameters and associated types in `ty`.
     fn type_outlives(&mut self, ty: Ty, b: Var, range: TextRange) {
-        match ty.kind() {
-            TyKind::Param(_) | TyKind::Alias(_) => self.type_tests.push((ty, b, range)),
-            TyKind::FnDef(_) | TyKind::FnPtr(_) => {}
-            _ => {
-                if ty.has_params() || ty.has_aliases() {
-                    for t in ty.children() {
-                        self.type_outlives(t, b, range);
-                    }
-                }
+        let mut pending = flux_ty::regions::outlives_type_components(self.sigs, ty);
+        let mut seen = Vec::new();
+        while let Some(component) = pending.pop() {
+            if seen.contains(&component) {
+                continue;
+            }
+            seen.push(component);
+            let normalized = self.normalize(component);
+            // Only erase an abstract test when normalization introduces no
+            // reference slots. Their regions need the projection's input map,
+            // which a bare Ty does not contain.
+            if normalized != component && flux_ty::regions::slots(self.items, normalized) == 0 {
+                pending.extend(flux_ty::regions::outlives_type_components(
+                    self.sigs, normalized,
+                ));
+            } else {
+                self.type_tests.push((component, b, range));
             }
         }
     }
@@ -4022,6 +4428,7 @@ impl<'a> Cx<'a> {
         dest: &Place,
         range: TextRange,
     ) {
+        if !self.closure_parent_regions(required, range) { return; }
         let (Some(closure), Some(params)) = (args.first(), args.get(1)) else {
             return self.opaque_call(args, dest, range);
         };
@@ -4038,6 +4445,7 @@ impl<'a> Cx<'a> {
         let (_, dest_vars) = self.place_regions(dest);
         let map = |e: Ext| match e {
             Ext::Static => Some(STATIC),
+            Ext::Parent(_, k) => Some(1 + k),
             Ext::SelfRef => self_ref,
             Ext::Upvar(k) => upvars.get(k as usize).copied(),
             Ext::Arg(k) => arg_vars.get(k as usize).copied(),
@@ -4089,9 +4497,11 @@ impl<'a> Cx<'a> {
         let Some(required) = requirements.get(&id) else {
             return;
         };
+        if !self.closure_parent_regions(required, range) { return; }
         self.proven_closures.insert(id);
         let slot = |cx: &Cx<'_>, e: Ext| match e {
             Ext::Static => ClosureSlot::Var(STATIC),
+            Ext::Parent(_, k) => ClosureSlot::Var(1 + k),
             Ext::Upvar(k) => match upvars.and_then(|u| u.get(k as usize)) {
                 Some(&v) => ClosureSlot::Var(v),
                 None => ClosureSlot::None,
@@ -4120,7 +4530,7 @@ impl<'a> Cx<'a> {
                 // What must outlive a bound's own lifetime must outlive
                 // every lifetime allowed by its input type: forever
                 // unless the input's well-formedness bounds it.
-                (ClosureSlot::Var(x), ClosureSlot::HigherRanked(y)) if matches!(b, Ext::Ret(_)) => {
+                (ClosureSlot::Var(x), ClosureSlot::HigherRanked(y)) => {
                     // `&T` bounds the placeholder by the lifetimes in T:
                     // `Fn(&&'short U) -> &U` may return that inner
                     // reference without requiring it to be static.
@@ -4191,9 +4601,11 @@ impl<'a> Cx<'a> {
             }
             return outs;
         };
+        if !self.closure_parent_regions(required, range) { return outs; }
         self.output_closures.insert(id);
         let var = |e: Ext| match e {
             Ext::Static => Some(STATIC),
+            Ext::Parent(_, k) => Some(1 + k),
             Ext::Upvar(k) => upvars.get(k as usize).copied(),
             Ext::Arg(k) => inputs.get(k as usize).copied(),
             Ext::Ret(k) => outs.get(k as usize).copied(),
@@ -4208,6 +4620,23 @@ impl<'a> Cx<'a> {
             }
         }
         outs
+    }
+
+    /// Named annotation lifetimes currently retain their enclosing signature
+    /// identity. A different function needs a substitution table, never an
+    /// accidental match by the same numeric lifetime-parameter index.
+    fn closure_parent_regions(&mut self, required: &ClosureRequirements, range: TextRange) -> bool {
+        let supported = required.outlives.iter().all(|&(a, b, _)| {
+            [a, b].iter().all(|e| match e {
+                Ext::Parent(owner, _) => Some(*owner) == self.body.owner,
+                _ => true,
+            })
+        });
+        if !supported {
+            let error = Diagnostic::new(range, "named closure annotation lifetimes across function boundaries are not supported yet");
+            if !self.errors.contains(&error) { self.errors.push(error); }
+        }
+        supported
     }
 
     /// The closures in a value of type `ty` with slots `vars`: each one's
@@ -4317,6 +4746,197 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// Finish a scoped higher-ranked proof. Older inference regions cannot
+    /// capture its placeholders. An older region required to outlive every
+    /// admitted placeholder must outlive its declared upper bounds, or static
+    /// when the input signature provides none. This preserves body inference
+    /// without allowing a pointer conversion to generalize captured borrows.
+    fn finish_pointer_proof(&mut self, before: u32, bound: &[Var], implied: &[(Var, Var)], universal: usize, known: usize, range: TextRange) {
+        let mut edges = vec![Vec::new(); self.vars as usize];
+        for c in &self.constraints { edges[c.sup as usize].push(c.sub); }
+        for &(a, b) in implied { edges[a as usize].push(b); }
+        let mut reverse = vec![Vec::new(); edges.len()];
+        for (a, list) in edges.iter().enumerate() { for &b in list { reverse[b as usize].push(a as Var); } }
+        let reachable = |start: Var, edges: &[Vec<Var>]| {
+            let mut seen = vec![false; edges.len()];
+            let mut pending = vec![start];
+            while let Some(v) = pending.pop() {
+                if std::mem::replace(&mut seen[v as usize], true) { continue; }
+                pending.extend(&edges[v as usize]);
+            }
+            seen
+        };
+        let allowed = |start: Var, end: Var| {
+            let mut seen = FxHashSet::default(); let mut pending = vec![start];
+            while let Some(v) = pending.pop() {
+                if !seen.insert(v) { continue; }
+                if v == end { return true; }
+                pending.extend(implied.iter().filter_map(|&(a, b)| (a == v).then_some(b)));
+            }
+            false
+        };
+        let mut invalid = !self.caller_equalities_fit(&[]);
+        let mut promote = Vec::new();
+        for &placeholder in bound {
+            let below = reachable(placeholder, &edges);
+            let above = reachable(placeholder, &reverse);
+            if (1..before).any(|old| below[old as usize] && !allowed(placeholder, old)) { invalid = true; }
+            let upper: Vec<_> = implied.iter().filter_map(|&(a, b)| {
+                (a < before && allowed(b, placeholder)).then_some(a)
+            }).collect();
+            for old in 1..before {
+                if above[old as usize] && !allowed(old, placeholder) {
+                    if upper.is_empty() { promote.push((old, STATIC)); }
+                    else { for &upper in &upper { promote.push((old, upper)); } }
+                }
+            }
+        }
+        for (a, b) in promote { self.outlives(a, b, Category::CallArgument, range); }
+        if invalid { self.errors.push(Diagnostic::new(range, "function pointer is not general enough")); }
+        for &(var, _) in &self.universal[universal..] { self.universal_of.remove(&var); }
+        self.universal.truncate(universal);
+        self.known_pairs.truncate(known);
+        self.close_known();
+        for var in bound { self.holes.remove(var); }
+    }
+
+    fn pointer_proof_inputs(&mut self, target: flux_ty::FnSigTy, own: &[Var], bound: &[Var]) -> Option<(Vec<Vec<Var>>, Vec<(Var, Var)>)> {
+        let rows = flux_ty::regions::instantiate_fn_pointer(self.items, target, own, bound, STATIC)?;
+        let mut implied = Vec::new();
+        for (&ty, row) in target.params().iter().zip(&rows) {
+            let mut relations = Vec::new();
+            flux_ty::regions::implied_outlives_with_static(self.items, self.sigs, ty, row, Some(STATIC), &mut relations);
+            for relation in relations {
+                if let Outlives::Region(a, b) = relation { implied.push((a, b)); self.known_pairs.push((a, b)); }
+            }
+        }
+        self.close_known();
+        Some((rows, implied))
+    }
+
+    fn pointer_subtype(&mut self, source: flux_ty::FnSigTy, source_own: &[Var], target: flux_ty::FnSigTy, target_own: &[Var], range: TextRange) {
+        if source.is_c != target.is_c || (source.is_unsafe && !target.is_unsafe)
+            || source.params().len() != target.params().len() {
+            self.errors.push(Diagnostic::new(range, "incompatible function pointer signature"));
+            return;
+        }
+        let target = if target.regions.is_none()
+            && target.inputs_output.iter().all(|&ty| self.slots(ty) == 0) {
+            let rows = vec![Vec::new(); target.inputs_output.len()];
+            flux_ty::FnSigTy { regions: Some(flux_ty::FnPtrRegions::intern(0, 0, &rows, &[])), ..target }
+        } else { target };
+        let Some(r) = target.regions else {
+            self.errors.push(Diagnostic::new(range, "function pointer region metadata is not supported yet"));
+            return;
+        };
+        let before = self.vars;
+        let universal = self.universal.len(); let known = self.known_pairs.len();
+        let bound: Vec<_> = (0..r.bound).map(|i| self.new_universal(format!("'pointer{i}"))).collect();
+        let prepared = self.pointer_proof_inputs(target, target_own, &bound);
+        let mut implied = Vec::new();
+        let valid = if let Some((rows, relations)) = prepared {
+            implied = relations;
+            if let Some(output) = self.pointer_inputs(source, source_own, target.params(), &rows[..target.params().len()], range) {
+                self.relate_types(source.ret(), &output, target.ret(), rows.last().unwrap(), Variance::Covariant, Category::CallArgument, range);
+                true
+            } else { false }
+        } else { false };
+        if !valid { self.errors.push(Diagnostic::new(range, "function pointer region metadata is not supported yet")); }
+        self.finish_pointer_proof(before, &bound, &implied, universal, known, range);
+    }
+
+    fn pointer_from_item(&mut self, function: flux_hir::FunctionId, args: &[Ty], target: flux_ty::FnSigTy, own: &[Var], range: TextRange) {
+        let Some(r) = target.regions else { return; };
+        let before = self.vars;
+        let universal = self.universal.len(); let known = self.known_pairs.len();
+        let bound: Vec<_> = (0..r.bound).map(|i| self.new_universal(format!("'pointer{i}"))).collect();
+        let prepared = self.pointer_proof_inputs(target, own, &bound);
+        let mut implied = Vec::new(); let mut valid = false;
+        if let Some((rows, relations)) = prepared {
+            implied = relations;
+            let inputs: Vec<_> = rows[..target.params().len()].iter().flatten().copied().collect();
+            let ret = rows.last().unwrap();
+            if crate::fn_method_kind(self.items, function).is_some()
+                && let Some(&closure) = args.first()
+                && let TyKind::Closure(id, list) = closure.kind() {
+                let closure = flux_ty::ClosureArgs::split(list);
+                if let TyKind::Tuple(params) = closure.params().kind() && params.len() == target.params().len() {
+                    let mut closure_inputs = Vec::new();
+                    for ((&source, source_vars), &dest) in target.params().iter().zip(&rows).zip(params) {
+                        let count = self.slots(dest);
+                        let vars = self.fresh_list(count);
+                        self.relate_types(source, source_vars, dest, &vars, Variance::Covariant, Category::CallArgument, range);
+                        closure_inputs.extend(vars);
+                    }
+                    let count = self.slots(closure.ret());
+                    let result = self.fresh_list(count);
+                    for &var in &bound { self.holes.insert(var); }
+                    self.closure_goal(id, Some(&[]), Some(&closure_inputs), Some(&result), range);
+                    self.relate_types(closure.ret(), &result, target.ret(), ret, Variance::Covariant, Category::CallArgument, range);
+                    valid = true;
+                }
+            } else if let Some(regions) = self.sigs.regions.fns.get(function) {
+                // An early-bound owner or a type argument carrying regions
+                // needs item-value provenance, not erased type equality.
+                if regions.owner == 0 && !args.iter().any(|&t| flux_ty::regions::slots(self.items, t) != 0)
+                    && !(r.bound != 0 && regions.callback_binder != flux_ty::regions::CallbackBinder::Independent) {
+                    let signature = self.sigs.fns[function].subst(args);
+                    let data = &self.items.functions[function];
+                    let sig = flux_ty::FnSigTy { is_c: data.c_abi, ..flux_ty::FnSigTy::new(&signature.params, signature.ret, data.is_unsafe) };
+                    let ty = Ty::new(TyKind::FnDef(flux_ty::FnDefTy { function, name: data.name, args: Ty::list(args), sig }));
+                    let old = std::mem::replace(&mut self.call_range, range);
+                    if let Some(output) = self.function_output_typed(ty, target.params(), &inputs) {
+                        self.relate_types(signature.ret, &output, target.ret(), ret, Variance::Covariant, Category::CallArgument, range);
+                        valid = true;
+                    }
+                    self.call_range = old;
+                }
+            }
+        }
+        if !valid { self.errors.push(Diagnostic::new(range, "function item pointer region provenance is not supported yet")); }
+        self.finish_pointer_proof(before, &bound, &implied, universal, known, range);
+    }
+
+    /// A pointer's bound regions are fresh for every call. Its free regions
+    /// and type captures belong to the pointer value and cannot be generalized.
+    fn pointer_inputs(&mut self, sig: flux_ty::FnSigTy, own: &[Var], input_types: &[Ty], inputs: &[Vec<Var>], range: TextRange) -> Option<Vec<Var>> {
+        let count = match sig.regions {
+            Some(r) => r.bound,
+            None if sig.inputs_output.iter().all(|&ty| self.slots(ty) == 0) => 0,
+            None => return None,
+        };
+        let before = self.vars;
+        let mut placeholders = Vec::new();
+        for &v in inputs.iter().flatten() {
+            if self.holes.contains(&v) && !placeholders.contains(&v) { placeholders.push(v); }
+        }
+        if !placeholders.is_empty() {
+            let implied = self.hole_pairs.iter().copied().filter(|&(a, b)|
+                (placeholders.contains(&a) || !self.holes.contains(&a))
+                    && (placeholders.contains(&b) || !self.holes.contains(&b))).collect();
+            self.pointer_checks.push((before, placeholders, implied, range));
+        }
+        let bound = self.fresh_list(count);
+        let rows = if sig.regions.is_some() {
+            flux_ty::regions::instantiate_fn_pointer(self.items, sig, own, &bound, STATIC)?
+        } else { vec![Vec::new(); sig.inputs_output.len()] };
+        if inputs.len() != sig.params().len() || input_types.len() != inputs.len() { return None; }
+        for (((&ty, formal), actual), &source) in sig.params().iter().zip(&rows).zip(inputs).zip(input_types) {
+            self.relate_types(source, actual, ty, formal, Variance::Covariant, Category::CallArgument, range);
+        }
+        rows.last().cloned()
+    }
+
+    fn pointer_call(&mut self, sig: flux_ty::FnSigTy, own: &[Var], input_types: &[Ty], inputs: &[Vec<Var>], dest: &Place, range: TextRange) {
+        let Some(output) = self.pointer_inputs(sig, own, input_types, inputs, range) else {
+            self.errors.push(Diagnostic::new(range, "function pointer region metadata is not supported yet"));
+            return;
+        };
+        let (target, result) = self.place_regions(dest);
+        let category = self.category_into(dest);
+        self.relate_types(sig.ret(), &output, target, &result, Variance::Covariant, category, range);
+    }
+
     /// A call whose signature's lifetimes flux does not know: anything
     /// in its inputs may go into its result, and into whatever is behind
     /// a `&mut` in them, except a reference into what it points to.
@@ -4408,12 +5028,12 @@ impl<'a> Cx<'a> {
 
     /// The points where each local with slots is live: may be read or
     /// dropped later.
-    fn liveness(&mut self, points: &Points) -> Vec<IntervalSet> {
+    fn liveness(&mut self, points: &Points, include_drops: bool) -> Vec<IntervalSet> {
         let body = self.body;
         let tracked: Vec<bool> = (0..body.locals.len())
             .map(|i| self.local_base[i + 1] > self.local_base[i])
             .collect();
-        let live_out = super::liveness_where(body, &tracked);
+        let live_out = super::liveness_where(body, &tracked, include_drops);
         let mut live = vec![IntervalSet::new(); body.locals.len()];
         // Walking each block backwards: where each live local's current
         // run ends.
@@ -4445,7 +5065,7 @@ impl<'a> Cx<'a> {
                     _ => {}
                 }
             };
-            super::terminator_transfer(&data.terminator.kind, &mut |l, v| set(l, v, at));
+            super::terminator_transfer_with_drops(&data.terminator.kind, &mut |l, v| set(l, v, at), include_drops);
             for statement in data.statements.iter().rev() {
                 at -= 1;
                 super::statement_transfer(&statement.kind, &mut |l, v| set(l, v, at));
@@ -4466,10 +5086,188 @@ impl<'a> Cx<'a> {
         live
     }
 
+    /// An opaque value with an explicit outlives promise can be kept alive
+    /// using that promise. Captured signature parameters that its hidden
+    /// storage does not need must not extend unrelated argument borrows.
+    fn storage_live_slots(&self, ty: Ty, out: &mut Vec<bool>) {
+        if !ty.has_opaques() {
+            let count = self.slot_counts.get(&ty).copied().map(|count| count as usize)
+                .unwrap_or_else(|| flux_ty::regions::slots(self.items, ty));
+            out.extend(std::iter::repeat_n(true, count));
+            return;
+        }
+        match ty.kind() {
+            TyKind::Ref(_, inner) => {
+                out.push(true);
+                self.storage_live_slots(inner, out);
+            }
+            TyKind::RawPtr(_, inner) | TyKind::Array(inner, _) | TyKind::Slice(inner) => self.storage_live_slots(inner, out),
+            TyKind::Tuple(types) => {
+                for &ty in types { self.storage_live_slots(ty, out); }
+            }
+            TyKind::Adt(adt, args) => {
+                out.extend(std::iter::repeat_n(true, self.items.structs[adt.strukt].generics.lifetimes.len()));
+                for &ty in args { self.storage_live_slots(ty, out); }
+            }
+            TyKind::Closure(_, args) => self.storage_live_slots(flux_ty::ClosureArgs::split(args).upvars, out),
+            TyKind::Opaque(opaque) => {
+                let decl = self.sigs.regions.fns.get(opaque.function).and_then(|regions| regions.opaques.get(opaque.index as usize));
+                let promised = decl.filter(|decl| !decl.outlives.is_empty()
+                    && decl.captures.len() == opaque.lifetimes as usize
+                    && decl.outlives.iter().all(|region| *region == Region::Static || decl.captures.contains(region)));
+                if let Some(decl) = promised {
+                    out.extend(decl.captures.iter().map(|region| decl.outlives.contains(region)));
+                    for &ty in opaque.args {
+                        out.extend(std::iter::repeat_n(false, flux_ty::regions::slots(self.items, ty)));
+                    }
+                } else {
+                    out.extend(std::iter::repeat_n(true, opaque.lifetimes as usize));
+                    for &ty in opaque.args { self.storage_live_slots(ty, out); }
+                }
+            }
+            _ => out.extend(std::iter::repeat_n(true, flux_ty::regions::slots(self.items, ty))),
+        }
+    }
+
+    /// Regions a destructor can inspect. A type with no Drop implementation
+    /// delegates destruction to its fields; borrowed fields themselves do not
+    /// inspect their referents. Unknown types and user destructors remain live.
+    fn drop_live_vars(&mut self) -> FxHashSet<Var> {
+        // Measure generic argument structure with a fixed budget. Descending
+        // nested containers is finite, while a repeated declaration whose
+        // arguments grow needs a conservative stop before expanding its fields.
+        fn weight(ty: Ty, remaining: &mut usize) {
+            if *remaining == 0 { return; }
+            *remaining -= 1;
+            match ty.kind() {
+                TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => weight(t, remaining),
+                TyKind::Tuple(args) | TyKind::Adt(_, args) | TyKind::Closure(_, args) => {
+                    for &ty in args {
+                        weight(ty, remaining);
+                        if *remaining == 0 { break; }
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn size(ty: Ty) -> usize { let mut remaining = 128; weight(ty, &mut remaining); 128 - remaining }
+        fn visit(cx: &mut Cx<'_>, ty: Ty, vars: &[Var], active: &mut Vec<Ty>, out: &mut FxHashSet<Var>) {
+            let ty = cx.normalize(ty);
+            match ty.kind() {
+                TyKind::Ref(..) | TyKind::RawPtr(..) | TyKind::FnDef(_) | TyKind::FnPtr(_) => {}
+                TyKind::Array(_, len) if len.as_usize() == Some(0) => {}
+                TyKind::Array(elem, _) | TyKind::Slice(elem) => visit(cx, elem, vars, active, out),
+                TyKind::Tuple(types) => {
+                    let mut at = 0;
+                    for &ty in types {
+                        let n = cx.slots(ty) as usize;
+                        visit(cx, ty, vars.get(at..at+n).unwrap_or(&[]), active, out);
+                        at += n;
+                    }
+                }
+                TyKind::Closure(_, args) => visit(cx, flux_ty::ClosureArgs::split(args).upvars, vars, active, out),
+                TyKind::Adt(adt, _) if flux_ty::is_lang_struct(cx.items, adt.strukt, "manually_drop") => {}
+                // PhantomData is an ownership declaration even though it has
+                // no physical fields. Owned references have no destructor;
+                // owned values with Drop keep the regions their Drop may read.
+                TyKind::Adt(adt, args) if flux_ty::is_lang_struct(cx.items, adt.strukt, "phantom_data") => {
+                    if let Some(&owned) = args.first() { visit(cx, owned, vars, active, out); }
+                }
+                TyKind::Adt(adt, args) => {
+                    if let Some(imp) = flux_ty::traits::drop_impl(cx.items, cx.sigs, adt.strukt) {
+                        let generics = &cx.items.impls[imp].generics;
+                        if !generics.params.iter().any(|p| p.may_dangle)
+                            && !generics.lifetimes.iter().any(|p| p.may_dangle) {
+                            out.extend(vars.iter().copied());
+                            return;
+                        }
+                        // A Drop impl's distinct header parameters map the
+                        // promise to the instantiated owner's slots, including
+                        // reordered lifetime and type parameters.
+                        let lifetimes = cx.items.structs[adt.strukt].generics.lifetimes.len();
+                        let header = cx.sigs.regions.impls.get(imp).map(|r| &*r.self_ty);
+                        for (i, &var) in vars.iter().take(lifetimes).enumerate() {
+                            let dangling = header.and_then(|r| r.get(i)).is_some_and(|r| {
+                                matches!(r, Region::Param(p) if generics.lifetimes.get(*p as usize).is_some_and(|p| p.may_dangle))
+                            });
+                            if !dangling { out.insert(var); }
+                        }
+                        let template = cx.sigs.impls.get(imp).and_then(|t| match t.kind() {
+                            TyKind::Adt(_, args) => Some(args), _ => None,
+                        });
+                        let mut at = lifetimes;
+                        for (i, &arg) in args.iter().enumerate() {
+                            let n = cx.slots(arg) as usize;
+                            let dangling = template.and_then(|args| args.get(i)).is_some_and(|t| {
+                                matches!(t.kind(), TyKind::Param(p) if generics.params.get(p.index as usize).is_some_and(|p| p.may_dangle))
+                            });
+                            if !dangling { out.extend(vars.get(at..at+n).unwrap_or(vars).iter().copied()); }
+                            at += n;
+                        }
+                        // The unsafe promise does not suppress destruction of
+                        // owned fields. Continue through actual storage below.
+                    }
+                    if active.contains(&ty) { return; }
+                    // Exact type cycles terminate above. Growing generic
+                    // instantiations also need a bound; preserve all obligations
+                    // conservatively when declaration expansion does not stop.
+                    let growing = active.iter().rev().find(|previous| {
+                        matches!(previous.kind(), TyKind::Adt(previous, _) if previous.strukt == adt.strukt)
+                    }).is_some_and(|&previous| size(ty) >= size(previous));
+                    if growing || active.len() >= 64 {
+                        out.extend(vars.iter().copied());
+                        return;
+                    }
+                    active.push(ty);
+                    let variants = cx.sigs.variant_starts.get(adt.strukt).map_or(1, |v| v.len().saturating_sub(1));
+                    for variant in 0..variants {
+                        let fields = cx.sigs.variant_fields(ty, variant as u32).map_or(0, |f| f.len());
+                        for field in 0..fields {
+                            let (field_ty, field_vars) = cx.field_regions(ty, vars, Some(variant as u32), field as u32);
+                            if field_ty == Ty::ERROR { out.extend(vars.iter().copied()); }
+                            else { visit(cx, field_ty, &field_vars, active, out); }
+                        }
+                    }
+                    active.pop();
+                }
+                TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Dynamic(_) | TyKind::Error => { out.extend(vars.iter().copied()); }
+                _ => {}
+            }
+        }
+        let mut live = FxHashSet::default();
+        let locals: Vec<_> = self.local_base.windows(2).enumerate().map(|(i, w)| (i, w[0], w[1])).collect();
+        for (local, start, end) in locals {
+            if start == end { continue; }
+            let ty = self.body.locals[Local::from_raw(local as u32)].ty;
+            let vars: Vec<_> = (start..end).collect();
+            let before = self.vars;
+            let mut found = FxHashSet::default();
+            visit(self, ty, &vars, &mut Vec::new(), &mut found);
+            // An unrepresented field map adds fresh slots tied to the whole
+            // owner. Keep that owner conservative rather than lose obligations.
+            if found.iter().any(|&v| v >= before) { live.extend(vars); }
+            else { live.extend(found); }
+        }
+        live
+    }
+
     /// Each region's value: its strongly connected component's, made of
     /// what its members are live at and the values of the components
     /// they outlive.
-    fn solve(&mut self, points: &Points, liveness: &[IntervalSet]) -> Solution {
+    fn solve(&mut self, points: &Points, liveness: &[IntervalSet], uses: &[IntervalSet]) -> Solution {
+        for (before, bound, implied, range) in std::mem::take(&mut self.pointer_checks) {
+            let universal = self.universal.len(); let known = self.known_pairs.len();
+            for &var in &bound {
+                if !self.universal_of.contains_key(&var) {
+                    self.universal_of.insert(var, self.universal.len() as u32);
+                    self.universal.push((var, "'pointer_bound".into()));
+                }
+            }
+            self.known_pairs.extend(implied.iter().copied());
+            self.close_known();
+            self.finish_pointer_proof(before, &bound, &implied, universal, known, range);
+        }
+        let drop_live = self.drop_live_vars();
         let n = self.vars as usize;
         // The successors of each variable: what it outlives.
         let edges = Adjacency::new(n, self.constraints.iter().map(|c| (c.sup, c.sub)));
@@ -4489,8 +5287,11 @@ impl<'a> Cx<'a> {
         // regions'.
         let mut var_local = vec![u32::MAX; n];
         for (local, w) in self.local_base.windows(2).enumerate() {
-            for v in w[0]..w[1] {
-                var_local[v as usize] = local as u32;
+            let mut live = Vec::new();
+            self.storage_live_slots(self.body.locals[Local::from_raw(local as u32)].ty, &mut live);
+            debug_assert_eq!(live.len(), (w[1] - w[0]) as usize);
+            for (v, needed) in (w[0]..w[1]).zip(live) {
+                if needed { var_local[v as usize] = local as u32; }
             }
         }
         for v in 0..n {
@@ -4507,7 +5308,7 @@ impl<'a> Cx<'a> {
             if local != u32::MAX {
                 values[c]
                     .points
-                    .union_with_scratch(&liveness[local as usize], &mut scratch);
+                    .union_with_scratch(if drop_live.contains(&(v as Var)) { &liveness[local as usize] } else { &uses[local as usize] }, &mut scratch);
             }
         }
         // The members of each component, for its successors.
@@ -4566,7 +5367,7 @@ impl<'a> Cx<'a> {
                     // A parameter whose written type has a reference has
                     // a lifetime of the closure's own, which what it
                     // returns or keeps may not have.
-                    let own_arg = matches!(ext_a, Ext::Arg(_)) && upvars.annotated_refs;
+                    let own_arg = matches!(ext_a, Ext::Arg(k) if !upvars.fixed_args.contains(&k)) && upvars.annotated_refs;
                     if ext_a != Ext::SelfRef && !own_arg {
                         self.own_requirements.push((ext_a, ext_b, range));
                         continue;
@@ -4610,11 +5411,7 @@ impl<'a> Cx<'a> {
         for &(ty, var, range) in &self.type_tests {
             let value = &solution.values[solution.scc[var as usize] as usize];
             for &e in &value.ends {
-                let holds = self
-                    .known_types
-                    .iter()
-                    .any(|&(t, b)| t == ty && self.known(self.universal_of[&b], e));
-                if holds {
+                if self.known_type_outlives(ty, e, &mut Vec::new()) {
                     continue;
                 }
                 let what = match ty.kind() {
@@ -4629,6 +5426,53 @@ impl<'a> Cx<'a> {
             }
         }
         errors
+    }
+
+    /// A projection outlives a region if all its inputs do. Lifetime-bearing
+    /// trait references or type arguments need their represented region maps;
+    /// do not infer anything from erased inputs in those cases.
+    fn known_type_outlives(&self, ty: Ty, end: u32, active: &mut Vec<Ty>) -> bool {
+        let normalized = self.normalize(ty);
+        // An inherited projection can forward through another associated
+        // type. A signature's implied bound applies to that same normalized
+        // type, while selection/header lifetime obligations remain checked
+        // by the projection recipes. Do not infer equality from erased
+        // region-bearing projection inputs.
+        let represented = match normalized.kind() {
+            TyKind::Alias(alias) => self.items.traits[alias.trait_].generics.lifetimes.is_empty()
+                && alias.args.iter().all(|&arg| flux_ty::regions::slots(self.items, arg) == 0),
+            _ => flux_ty::regions::slots(self.items, normalized) == 0,
+        };
+        if self.known_types.iter().any(|&(t, b)| {
+            (t == ty || (represented && self.normalize(t) == normalized))
+                && self.known(self.universal_of[&b], end)
+        }) {
+            return true;
+        }
+        let TyKind::Alias(alias) = ty.kind() else {
+            return false;
+        };
+        if active.contains(&ty)
+            || !self.items.traits[alias.trait_]
+                .generics
+                .lifetimes
+                .is_empty()
+            || alias.args.is_empty()
+            || alias
+                .args
+                .iter()
+                .any(|&arg| flux_ty::regions::slots(self.items, arg) != 0)
+        {
+            return false;
+        }
+        active.push(ty);
+        let holds = alias.args.iter().all(|&arg| {
+            flux_ty::regions::outlives_type_components(self.sigs, arg)
+                .into_iter()
+                .all(|component| self.known_type_outlives(component, end, active))
+        });
+        active.pop();
+        holds
     }
 
     /// The constraint to blame for `from` outliving `to`: on the path of

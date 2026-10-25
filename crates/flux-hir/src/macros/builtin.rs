@@ -25,14 +25,18 @@ pub enum Builtin {
     FormatArgsNl,
     Concat,
     Stringify,
+    Include,
     IncludeStr,
+    IncludeBytes,
+    Env,
+    OptionEnv,
     Line,
     Column,
     File,
     ModulePath,
     Cfg,
     CompileError,
-    /// `env!` and the others flux does not have yet.
+    /// Other builtins flux does not have yet.
     Unsupported,
 }
 
@@ -47,7 +51,11 @@ impl Builtin {
             "format_args_nl" => Builtin::FormatArgsNl,
             "concat" => Builtin::Concat,
             "stringify" => Builtin::Stringify,
+            "include" => Builtin::Include,
             "include_str" => Builtin::IncludeStr,
+            "include_bytes" => Builtin::IncludeBytes,
+            "env" => Builtin::Env,
+            "option_env" => Builtin::OptionEnv,
             "line" => Builtin::Line,
             "column" => Builtin::Column,
             "file" => Builtin::File,
@@ -62,17 +70,20 @@ impl Builtin {
 /// What a built-in macro needs to know about its call.
 pub(crate) struct BuiltinCx<'a> {
     pub name: Symbol,
+    pub edition: flux_syntax::Edition,
+    pub cfg: Option<&'a flux_syntax::CfgOptions>,
     pub toks: &'a [Tok],
     /// The whole call.
     pub call: TextRange,
     /// The hygiene context of the tokens the macro makes.
     pub ctxt: u32,
-    /// `::core` from a program, `crate` in `core`.
-    pub core: &'static str,
+    /// The physical embedded core crate used by compiler-generated paths.
+    pub core: crate::CrateId,
     /// Where the call is, for `line!`, `column!` and `file!`: one-based
     /// line and column of its start, and the file's path.
     pub location: &'a dyn Fn() -> (u32, u32, String),
     /// Explicit source-loading capability; formatting itself performs no I/O.
+    pub read_bytes: &'a dyn Fn(&str) -> Result<Vec<u8>, String>,
     pub include_str: &'a dyn Fn(&str) -> Result<String, String>,
     /// The path of the module the call is in, for `module_path!`.
     pub module_path: &'a dyn Fn() -> String,
@@ -89,14 +100,13 @@ impl BuiltinCx<'_> {
         }
     }
 
-    /// The tokens of `source`, made by the macro: `{core}` is `::core`
-    /// or `crate`.
+    /// Generated `{core}` paths carry embedded core definition identity.
     fn quote(&self, source: &str, out: &mut Vec<Tok>) {
         self.quote_at(source, self.origin(), out);
     }
 
     fn quote_at(&self, source: &str, origin: TokenOrigin, out: &mut Vec<Tok>) {
-        let source = source.replace("{core}", self.core);
+        let source = source.replace("{core}", "crate");
         let lexed = LexedStr::new(&source);
         for i in 0..lexed.len() {
             let kind = lexed.kind(i);
@@ -104,7 +114,12 @@ impl BuiltinCx<'_> {
                 continue;
             }
             let joint = i + 1 < lexed.len() && !lexed.kind(i + 1).is_trivia();
+            let mut origin = origin;
+            if kind == T![crate] {
+                origin.ctxt = super::DEF_CRATE_CTXT | self.core.0;
+            }
             out.push(Tok {
+                edition: self.edition,
                 kind,
                 text: Symbol::intern(lexed.token_text(i)),
                 joint,
@@ -115,6 +130,7 @@ impl BuiltinCx<'_> {
 
     fn string(&self, value: &str, origin: TokenOrigin) -> Tok {
         Tok {
+            edition: self.edition,
             kind: SyntaxKind::STRING,
             text: Symbol::intern(&format!("{value:?}")),
             joint: false,
@@ -218,20 +234,46 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
             let value = concat(cx, cx.toks)?;
             out.push(cx.string(&value, cx.origin()));
         }
-        Builtin::IncludeStr => {
-            let filename = match cx.toks {
-                [t] | [t, Tok { kind: T![,], .. }] if t.kind == SyntaxKind::STRING => t,
-                _ => {
-                    return Err((
-                        cx.call,
-                        "include_str! requires a string literal filename".into(),
-                    ));
+        Builtin::Include => unreachable!("source inclusion is handled before token expansion"),
+        Builtin::IncludeStr | Builtin::IncludeBytes => {
+            let path = filename(cx)?;
+            if builtin == Builtin::IncludeStr {
+                let value = (cx.include_str)(&path).map_err(|e| (cx.call, e))?;
+                out.push(cx.string(&value, cx.origin()));
+            } else {
+                let bytes = (cx.read_bytes)(&path).map_err(|e| (cx.call, e))?;
+                // A byte string has type &'static [u8; N], including N == 0.
+                let mut literal = String::from("b\"");
+                for byte in bytes {
+                    use std::fmt::Write;
+                    write!(literal, "\\x{byte:02x}").unwrap();
                 }
+                literal.push('"');
+                cx.quote(&literal, &mut out);
+            }
+        }
+        Builtin::Env | Builtin::OptionEnv => {
+            let args = split_exprs(cx, cx.toks, false)?;
+            let max = if builtin == Builtin::Env { 2 } else { 1 };
+            if args.args.is_empty() || args.args.len() > max {
+                return Err((cx.call, format!("`{}!` requires a variable name", cx.name)));
+            }
+            let string = |arg: &[Tok]| match arg {
+                [t] if t.kind == SyntaxKind::STRING => crate::literal::unescape_str(t.text.as_str()).map_err(|e| (t.range(), e)),
+                _ => Err((cx.range_of(arg), "expected a string literal".into())),
             };
-            let path = crate::literal::unescape_str(filename.text.as_str())
-                .map_err(|e| (filename.range(), e))?;
-            let value = (cx.include_str)(&path).map_err(|e| (cx.call, e))?;
-            out.push(cx.string(&value, cx.origin()));
+            let name = string(args.args[0].1)?;
+            let message = args.args.get(1).map(|arg| string(arg.1)).transpose()?;
+            match std::env::var(&name) {
+                Ok(value) if builtin == Builtin::Env => out.push(cx.string(&value, cx.origin())),
+                Ok(value) => {
+                    cx.quote("{core}::option::Option::Some(", &mut out);
+                    out.push(cx.string(&value, cx.origin()));
+                    cx.quote(")", &mut out);
+                }
+                Err(std::env::VarError::NotPresent) if builtin == Builtin::OptionEnv => cx.quote("{core}::option::Option::<&str>::None", &mut out),
+                Err(error) => return Err((cx.call, message.unwrap_or_else(|| format!("environment variable `{name}`: {error}")))),
+            }
         }
         Builtin::Stringify => out.push(cx.string(&pretty(cx.toks), cx.origin())),
         Builtin::Line | Builtin::Column => {
@@ -255,7 +297,7 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
         }
         Builtin::ModulePath => out.push(cx.string(&(cx.module_path)(), cx.origin())),
         Builtin::Cfg => {
-            let value = crate::cfg::eval(cx.call, cx.toks)?;
+            let value = crate::cfg::eval(cx.call, cx.toks, cx.cfg)?;
             cx.quote(if value { "true" } else { "false" }, &mut out);
         }
         Builtin::CompileError => {
@@ -272,6 +314,15 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
         }
     }
     Ok(out)
+}
+
+/// A filename after eager expansion of its nested macro calls.
+pub(crate) fn filename(cx: &BuiltinCx<'_>) -> Result<String, Error> {
+    match cx.toks {
+        [t] | [t, Tok { kind: T![,], .. }] if t.kind == SyntaxKind::STRING =>
+            crate::literal::unescape_str(t.text.as_str()).map_err(|e| (t.range(), e)),
+        _ => Err((cx.call, format!("{}! requires a string literal filename", cx.name))),
+    }
 }
 
 /// `assert!(cond)` is `if !(cond) { panic("assertion failed: cond") }`;
@@ -333,6 +384,19 @@ fn panic(cx: &BuiltinCx<'_>, prefix: &str, out: &mut Vec<Tok>) -> Result<(), Err
         return Ok(());
     }
     let args = split_exprs(cx, cx.toks, true)?;
+    if prefix.is_empty() && matches!(cx.edition, flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018) && args.args.len() == 1 {
+        let (name, tokens) = &args.args[0];
+        if name.is_none() {
+            if let [token] = *tokens && token.kind == SyntaxKind::STRING {
+                let value = crate::literal::unescape_str(token.text.as_str()).map_err(|error| (token.range(), error))?;
+                cx.quote("{core}::panicking::panic(", out);
+                out.push(cx.string(&value, cx.origin()));
+                cx.quote(")", out);
+                return Ok(());
+            }
+            return Err((cx.call, "non-literal panic payloads in edition 2018 are not supported yet".into()));
+        }
+    }
     let Some(&(None, first)) = args.args.first() else {
         return Err((cx.call, "format argument must be a string literal".into()));
     };
@@ -968,6 +1032,7 @@ fn format_args(
                     }
                     // A name the string captures from where it is written.
                     let captured = Tok {
+                        edition: fmt_tok.edition,
                         kind: SyntaxKind::IDENT,
                         text: *n,
                         joint: false,

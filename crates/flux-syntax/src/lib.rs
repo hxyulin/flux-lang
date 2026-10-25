@@ -27,13 +27,15 @@ pub use build::build_tree;
 pub use lexer::LexedStr;
 pub use syntax_kind::SyntaxKind;
 pub use tree::{
-    Children, ChildrenWithTokens, NodeId, SyntaxElement, SyntaxNode, SyntaxToken, SyntaxTree,
+    CfgOptions, Children, ChildrenWithTokens, NodeId, SyntaxElement, SyntaxNode, SyntaxToken, SyntaxTree,
     TextRange, TokenOrigin,
 };
 
 /// Rust edition of one source crate. The default standalone-file mode is 2024.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Edition {
+    E2015,
+    E2018,
     E2021,
     #[default]
     E2024,
@@ -61,6 +63,27 @@ impl Parse {
 
     pub fn root(&self) -> SyntaxNode<'_> {
         self.tree.root()
+    }
+
+    /// Assigns a physical fragment a distinct coordinate interval. Raw ranges
+    /// still index its text; mapped ranges can cross body/file boundaries.
+    pub fn with_source_offset(mut self, base: u32) -> Self {
+        let lexed = LexedStr::new(self.tree.text());
+        let origins: Vec<_> = (0..lexed.len()).filter(|&i| !lexed.kind(i).is_trivia()).map(|i| {
+            let range = lexed.token_range(i);
+            (range.start(), TokenOrigin { range: TextRange::new(base + range.start(), base + range.end()), group: 1, ctxt: 0 })
+        }).collect();
+        self.tree.set_origins(&origins, TextRange::new(base, base + self.tree.text().len() as u32));
+        for error in &mut self.errors {
+            error.range = TextRange::new(base + error.range.start(), base + error.range.end());
+        }
+        self
+    }
+
+    /// Attaches compilation inputs without changing the source or its ranges.
+    pub fn with_cfg_options(mut self, cfg: Option<std::sync::Arc<CfgOptions>>) -> Self {
+        self.tree.set_cfg_options(cfg);
+        self
     }
 
     /// The root as a typed node.
@@ -99,10 +122,28 @@ pub fn parse_source_text_with_edition(text: Box<str>, edition: Edition) -> Parse
     let input = parser::Input::from_lexed(&lexed);
     let output = parser::parse_source_file(&input);
     let (parts, errors) = build::build(lexed, output);
-    Parse {
+    let mut parse = Parse {
         tree: parts.into_tree(text),
         errors,
-    }
+    };
+    parse.tree.set_edition(edition);
+    parse
+}
+
+/// Parses an included physical file in the syntactic position of `include!`.
+/// Ranges and hygiene belong to this file, rather than the macro invocation.
+pub fn parse_included_source(
+    text: Box<str>,
+    fragment: parser::Fragment,
+    edition: Edition,
+) -> Parse {
+    let lexed = LexedStr::with_edition(&text, edition);
+    let input = parser::Input::from_lexed(&lexed);
+    let output = parser::parse_expansion(&input, fragment);
+    let (parts, errors) = build::build(lexed, output);
+    let mut tree = parts.into_tree(text);
+    tree.set_edition(edition);
+    Parse { tree, errors }
 }
 
 /// Parses the text of a macro expansion as `fragment` (see
@@ -127,16 +168,39 @@ pub fn parse_expansion_with_edition(
     fragment: parser::Fragment,
     edition: Edition,
 ) -> Parse {
-    let lexed = LexedStr::with_edition(&text, edition);
+    parse_expansion_with_token_kinds(text, origins, &[], call_site, fragment, edition)
+}
+
+/// Parses expanded tokens without changing identifiers from their source
+/// edition when a macro crosses a crate edition boundary.
+pub fn parse_expansion_with_token_kinds(
+    text: Box<str>,
+    origins: &[(u32, TokenOrigin)],
+    kinds: &[(u32, SyntaxKind)],
+    call_site: TextRange,
+    fragment: parser::Fragment,
+    edition: Edition,
+) -> Parse {
+    let mut lexed = LexedStr::with_edition(&text, edition);
+    lexed.set_token_kinds(kinds);
     let input = parser::Input::from_lexed(&lexed);
     let output = parser::parse_expansion(&input, fragment);
     let (parts, mut errors) = build::build(lexed, output);
     let mut tree = parts.into_tree(text);
+    tree.set_edition(edition);
     tree.set_origins(origins, call_site);
     for error in &mut errors {
         error.range = tree.map_text_range(error.range);
     }
     Parse { tree, errors }
+}
+
+impl Parse {
+    /// Retains each macro token's source edition after parser compaction.
+    pub fn with_token_editions(mut self, editions: &[(u32, Edition)]) -> Self {
+        self.tree.set_token_editions(editions);
+        self
+    }
 }
 
 #[cfg(test)]

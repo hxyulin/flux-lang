@@ -376,7 +376,8 @@ fn through_iterator() -> () {
     let _14: &mut Map<Range<i32>, {closure}>;
     let _15: &mut Map<Range<i32>, {closure}>;
     let _16: isize;
-    let _17: isize;
+    let _17: !;
+    let _18: isize;
 
     bb0: {
         _1 = const 0_i32;
@@ -438,8 +439,8 @@ fn through_iterator() -> () {
     }
 
     bb10: {
-        _17 = discriminant(_13);
-        switchInt(copy _17) -> [1: bb14, otherwise: bb13];
+        _18 = discriminant(_13);
+        switchInt(copy _18) -> [1: bb14, otherwise: bb13];
     }
 
     bb11: {

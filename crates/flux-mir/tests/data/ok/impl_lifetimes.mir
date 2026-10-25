@@ -266,11 +266,12 @@ fn last<'a>(_1: Wrap<Iter<u8>>) -> Option<&u8> {
     let _10: &mut Wrap<Iter<u8>>;
     let _11: &mut Wrap<Iter<u8>>;
     let _12: isize;
-    let _13: &u8; // x
-    let _14: isize;
-    let _15: ();
-    let _16: Option<&u8>;
-    let _17: &u8;
+    let _13: !;
+    let _14: &u8; // x
+    let _15: isize;
+    let _16: ();
+    let _17: Option<&u8>;
+    let _18: &u8;
 
     bb0: {
         _2 = Option::None;
@@ -321,8 +322,8 @@ fn last<'a>(_1: Wrap<Iter<u8>>) -> Option<&u8> {
     }
 
     bb9: {
-        _14 = discriminant(_9);
-        switchInt(copy _14) -> [1: bb13, otherwise: bb12];
+        _15 = discriminant(_9);
+        switchInt(copy _15) -> [1: bb13, otherwise: bb12];
     }
 
     bb10: {
@@ -340,17 +341,17 @@ fn last<'a>(_1: Wrap<Iter<u8>>) -> Option<&u8> {
     }
 
     bb13: {
-        _13 = copy (_9 as #1).0;
+        _14 = copy (_9 as #1).0;
         goto -> bb14;
     }
 
     bb14: {
-        _17 = copy _13;
-        _16 = Option::Some(copy _17);
-        _2 = copy _16;
-        _15 = const ();
+        _18 = copy _14;
+        _17 = Option::Some(copy _18);
+        _2 = copy _17;
+        _16 = const ();
         _8 = const ();
-        StorageDead(_13);
+        StorageDead(_14);
         goto -> bb8;
     }
 }

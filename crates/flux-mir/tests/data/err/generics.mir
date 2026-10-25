@@ -191,17 +191,18 @@ fn after_let<T>(_1: T) -> T {
 
 fn in_loop<T>(_1: T) -> () {
     let mut _0: ();
-    let _2: ();
+    let _2: !;
     let _3: ();
-    let _4: T;
+    let _4: ();
+    let _5: T;
 
     bb0: {
         goto -> bb1;
     }
 
     bb1: {
-        _4 = move _1;
-        _3 = take::<T>(move _4) -> bb3;
+        _5 = move _1;
+        _4 = take::<T>(move _5) -> bb3;
     }
 
     bb2: {
@@ -209,7 +210,7 @@ fn in_loop<T>(_1: T) -> () {
     }
 
     bb3: {
-        _2 = const ();
+        _3 = const ();
         goto -> bb1;
     }
 }
@@ -403,17 +404,18 @@ fn method_after_field<T>(_1: Pair<T>) -> T {
 
 fn field_in_loop<T>(_1: Pair<T>) -> () {
     let mut _0: ();
-    let _2: ();
+    let _2: !;
     let _3: ();
-    let _4: T;
+    let _4: ();
+    let _5: T;
 
     bb0: {
         goto -> bb1;
     }
 
     bb1: {
-        _4 = move _1.1;
-        _3 = take::<T>(move _4) -> bb3;
+        _5 = move _1.1;
+        _4 = take::<T>(move _5) -> bb3;
     }
 
     bb2: {
@@ -421,7 +423,7 @@ fn field_in_loop<T>(_1: Pair<T>) -> () {
     }
 
     bb3: {
-        _2 = const ();
+        _3 = const ();
         goto -> bb1;
     }
 }

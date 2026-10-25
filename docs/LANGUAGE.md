@@ -2,8 +2,10 @@
 
 flux accepts a subset of Rust, edition 2024. Anything flux accepts must be
 valid Rust with the same meaning, so `rustc` can check flux's behavior.
-Package source graphs also accept a deliberately bounded
-[edition-2021 subset](EDITION_2021.md); file commands default to 2024.
+Explicit source graphs also accept a bounded edition-2018 implementation
+with legacy macro, capture, iteration and temporary-scope semantics. The
+[edition-2021 subset](EDITION_2021.md) has separate restrictions. File commands
+default to 2024.
 This page covers syntax; later stages will narrow what is accepted further
 (no `async` at first, for example) and will be documented here as they land.
 
@@ -76,7 +78,9 @@ reported as "not supported yet":
   struct's or enum's type parameters may have defaults (`enum
   ControlFlow<B, C = ()>`), which types that leave them out get, in
   terms of the arguments before them (`ControlFlow<i32>`), as in rustc;
-  const parameters (below), without defaults; associated constants
+  nominal, trait and alias type or const parameters may have defaults, while
+  function and impl parameters may not. Defaults resolve in declaration scope
+  and can use earlier parameters; associated constants
   in traits, with or without a default, in their `impl` blocks and in
   generic inherent blocks (`const N: u32;`, `const N: u32 = 1;`);
   constants (`const N: i32 = 5;`); statics (`static X: T = v;`,
@@ -101,9 +105,9 @@ reported as "not supported yet":
   containing directory for child module lookup. Inline/block overrides,
   paths in item macro expansions, duplicate path attributes and nonmodule
   placement remain explicitly unsupported. Recursive loading is bounded.
-- **Types:** paths (`i32`, `bool`, `char`, `Self`, `m::S`, `crate::m::S`,
+- **Types:** paths (`i32`, `f32`, `f64`, `bool`, `char`, `Self`, `m::S`, `crate::m::S`,
   `Pair<i32>`, a type parameter `T`), function pointers (`fn(i32) ->
-  i32`, `unsafe fn()`, but not `extern "C" fn`), associated types (`T::Out`,
+  i32`, `unsafe fn()`, `extern "C" fn(i32) -> i32`), associated types (`T::Out`,
   `Self::Out`, `<T as Tr>::Out`), `impl Trait` in functions'
   parameters and return types (below), tuples, `!`, references with or
   without lifetimes (`&T`, `&'a mut T`), raw pointers (`*const T`, `*mut T`),
@@ -114,7 +118,7 @@ reported as "not supported yet":
   pointers (`&[T]`, `&mut [T]`, `&str`, `*const [u8]`),
   `core::ffi::CStr` behind a reference, and `_` inside bodies (`let p:
   Pair<_> = ...`).
-- **Expressions:** literals: integer, boolean, byte (`b'a'`), `char`
+- **Expressions:** literals: integer, floating point, boolean, byte (`b'a'`), `char`
   (`'a'`, `'\u{1F600}'`), string (`"..."`, `r#"..."#`), byte string
   (`b"..."`, `br"..."`) and C string (`c"..."`, `cr"..."`), with their
   escapes checked as rustc's lexer checks them; local and function names, tuples, arrays (`[a, b, c]`,
@@ -175,8 +179,11 @@ reported as "not supported yet":
   differ (`[first, .., last]` of a `&mut [T]` binds both mutably), and
   an array's elements may be moved out of it one by one, what is left
   of it dropped in rustc's order; moving out of a slice is E0508.
-  Constants of other types in patterns and byte string literals are
-  not supported yet.
+  Structural constants composed of derived-PartialEq structs, tuples and arrays
+  are supported. Floating literal patterns are refutable, with signed zeros
+  equal and unnamed values including NaNs requiring wildcard coverage. Float
+  constant/range patterns, enum/reference/pointer constants and byte-string
+  patterns remain unsupported.
 - **Attributes:** outer `#[cfg(predicate)]` on ordinary items (including
   modules, imports and item macros), associated items in traits and impls,
   and declarations in extern blocks. Multiple attributes are conjunctive;
@@ -194,8 +201,11 @@ reported as "not supported yet":
   explicit semicolons and remaining item statements still prevent a tail value.
   Inner file/module `cfg` and conditional
   statements, list elements and match arms are pruned before lowering.
-  Conditional fields, variants and parameters, and expressions whose removal
-  would leave a required operand missing, remain unsupported.
+  Record/tuple fields, enum variants, receivers, and function, closure and
+  function-pointer parameters are also pruned before semantic processing.
+  Removed fields and variants do not consume tuple indices or implicit
+  discriminants. Expressions whose removal would leave a required operand
+  missing remain unsupported.
   Also `allow`, `warn`, `deny`, `expect`, `inline`,
   `cold`, `must_use` and `doc`, which are ignored, `derive` on structs
   and enums,
@@ -203,11 +213,11 @@ reported as "not supported yet":
   `#[diagnostic::on_unimplemented(message = "...")]` on traits, whose
   message reports their unmet bounds, as in rustc.
 
-Type checking follows rustc for this subset: the integer types, `bool`,
+Type checking follows rustc for this subset: the integer and floating types, `bool`,
 `char`, `str`, tuples, arrays, slices, structs, enums and `!`; integer
-literals default to `i32`; no implicit conversions; operators need
+literals default to `i32` and floating literals to `f64`; no implicit conversions; operators need
 operands of the same type, except shifts, and work on integers and
-`bool` only, with comparisons also available for `char` and thin raw pointers
+`bool`, with arithmetic and comparisons also available for floating types, and comparisons for `char` and thin raw pointers
 (tuples compare through `core`'s impls, as below), and on references
 to them, as below. `isize` and
 `usize` are 64 bits. Thin raw pointers support all six comparisons with
@@ -229,7 +239,8 @@ cast to `c_int`/`c_uint` first, and a function item one to a function
 pointer; `char`s pass as they are. Other types, which rustc passes as
 they are (`&str`), are not supported yet.
 
-`as` converts as rustc does: between integers, from `bool`, `char` and
+`as` converts as rustc does: between integers, between float widths, between
+integers and floats, from `bool`, `char` and
 fieldless enums to integers, and from `u8` (only, E0604) to `char`; a
 reference to a raw pointer to what it points to (`&mut` to `*mut` or
 `*const`, `&` to `*const` only) or, for an array, to its first element;
@@ -238,6 +249,15 @@ length, or drops it as a thin pointer; a thin one cannot become wide,
 E0607); and raw pointers to sized types to and from integers. The others
 are rustc's E0606 or E0054. A reference also coerces to a raw pointer
 where one is wanted (`let p: *const i32 = &x;`).
+
+`f32` and `f64` preserve IEEE bit representations, including signed zeros and
+NaN payloads in bit conversions. Runtime and constant arithmetic include
+remainder. Float-to-integer casts truncate and saturate, mapping NaN to zero;
+integer conversions include signed and unsigned 128-bit types. The library
+provides classification and bit methods, exact decimal `FromStr`, and shortest
+or explicit-precision `Debug` formatting. Floating literals keep their spelling
+until inference chooses the width. Other math and format APIs remain bounded by
+their implemented library methods.
 
 A byte literal (`b'a'`) is a `u8`, a byte string (`b"ab"`) a `&'static
 [u8; 2]`, which coerces to `&[u8]`, and a `char` a Unicode scalar value,
@@ -265,8 +285,10 @@ for): `starts_with`, `ends_with`, `contains`, `find`, `rfind`,
 parts are rustc's, overlapping `&str` matches included; as in rustc,
 `trim_matches` and the iterators' back ends take only the patterns of
 single characters (not a `&str`).
-`char`'s Unicode-table methods (`is_alphabetic`, `to_uppercase`) are
-not supported yet. Programs print with `println!` and the other
+`char::is_alphabetic` and `is_alphanumeric` use complete generated Unicode
+property tables. `char::UNICODE_VERSION` is available through the char module.
+The generation check uses the selected Rust toolchain; native comparisons cover
+every Unicode scalar. Unicode case conversion remains unsupported. Programs print with `println!` and the other
 printing macros (below), or through C.
 
 Values of `Copy` types are copied: integers, `bool`, raw pointers,
@@ -339,20 +361,17 @@ was given to the compiler, except that code a `macro_rules!` macro
 defines reports where it is written rather than the macro's call.
 Constant evaluation reports a literal message, and `panic!("{}", s)`
 of a `&str`, as rustc does. `let args = format_args!(..);` (rustc
-keeps the arguments alive for the `let`), `format!`, `vec!`, `env!`,
-`include!` and the like, items a macro makes inside a function body,
-and calls in item position of macros named through modules (`a::m!();`
-at a module's top level; `crate::m!` and `core::m!` work) are not
-supported yet.
+keeps the arguments alive for the `let`), `format!` and `vec!` are supported. Source inclusion and generated body
+items follow the bounds below.
 
-Direct `include_str!("file")` calls accept a literal UTF-8 filename relative
-to the invoking physical source file, including dependency and nested-module
-sources. Included contents preserve their bytes, including BOM and CRLF, and
-use ordinary string-literal semantics for constant and static values. Calls
-inside macro expansions, including forwarding through `println!`, and calls
-from embedded virtual sources reject explicitly. Bind the result before
-passing it to another macro. Expanded filenames, `include!`, `env!` and build
-scripts remain outside this subset.
+`include!`, `include_str!` and `include_bytes!` resolve filenames relative to
+physical source files, including dependency modules and macro expansions.
+`concat!` and `env!` can supply eager filenames, including generated files
+under `OUT_DIR`. Included syntax retains physical source locations. Items
+produced in impls and function blocks enter the ordinary item scopes. Virtual
+source inclusion and calls first discovered after body-item collection remain
+explicitly unsupported. This loads supplied generated output; Flux does not
+run build scripts or resolve packages.
 
 Values are dropped as in rustc: a binding at the end of its block, in
 reverse order of declaration, then the function's parameters; a
@@ -490,7 +509,11 @@ if it names one, else a constant, as in rustc, and one of the wrong
 kind is E0747; wrong counts are E0107, and arrays or instances of
 different values are E0308 (`expected an array with a size of 3, found
 one with a size of 4`, `expected `Stack<i32, 3>`, found `Stack<i32,
-4>``). Each instance is monomorphized per value, as rustc does.
+4>``). Each instance is monomorphized per value, as rustc does. Nominal, trait
+and alias const defaults use the parameter's declared type and can depend on
+earlier const parameters. Explicit partial expression arguments use trailing
+defaults; bare constructors retain ordinary expected-type inference. Generic
+arithmetic in defaults remains subject to stable `min_const_generics` rules.
 
 A struct's bounds must hold wherever it is named, and are not assumed
 there, as in rustc: `fn f<T>(w: W<T>)` with `struct W<T: Tr>` needs
@@ -700,15 +723,22 @@ a function pointer of its signature where one is wanted (an annotation,
 an argument, a field, a return value, an `as` cast), and `if` or
 `match` arms or array elements naming different functions (or
 closures that capture nothing) coerce to one, as in rustc.
-An `unsafe fn` coerces only to an `unsafe fn` pointer, and `extern`
-functions not at all. Calling either type works as calling the
+An `unsafe fn` coerces only to an `unsafe fn` pointer. Rust and C function
+pointer ABIs are distinct; coercions preserve the ABI and may weaken safety.
+C functions and C pointers do not implement the Rust `Fn` traits.
+C aggregate calls support repr(C) records and recursively nested fixed arrays
+whose physical offsets, padding, size and alignment match Keel's natural layout.
+Generic C definitions and indirect pointers use the same checks after
+instantiation. Other aggregate representations, vectors, wide pointers and
+unnamed variadic aggregate arguments reject before code generation. Ordinary
+Rust calls retain their own aggregate convention. Calling either type works as calling the
 function does; through a pointer, in constants and `const fn`s, is an
 error, as in rustc. Function items and safe or unsafe pointers implement
 `Copy` and `Clone` for every supported signature, without bounds on argument
 or result types. Reification rejects fixed, owner-bound, bounded or repeated
 input lifetimes rather than discarding their constraints; this also rejects
-some valid Rust signatures. Named pointer lifetimes and extern pointer ABIs
-remain unsupported, and elided reference outputs retain conservative checks.
+some valid Rust signatures. Named pointer lifetimes remain unsupported, and elided reference outputs
+retain conservative checks. Borrowed function pointers autodereference at calls.
 A tuple struct's or tuple variant's constructor is a function
 too, as in rustc: its path not called (`Token::Num`, `Some`, `Wrapper`)
 is a value of its own function item type (`fn(i64) -> Token
@@ -797,9 +827,20 @@ runtime remain unsupported.
 `get_or_init` spins until one initializer publishes its payload with
 release/acquire ordering. Reentrant initialization deadlocks. Flux panics
 abort; a reset guard permits retry when testing the implementation under
-host unwinding. Static construction remains blocked by constant evaluation
-of `MaybeUninit::uninit`; existing heap-container Send/Sync limitations remain
-separate from OnceLock's required `Send` and `Sync` bounds.
+host unwinding. Empty cells support static construction. `Vec<T>` and
+`Box<T>` supply owning-container Send/Sync implementations with the corresponding
+element bounds, including unsized Box payloads.
+`std::sync::LazyLock<T, F>` supports `new`, `Default`, dereferencing and `force`.
+Named functions and closures work as static initializers. Closures in
+constants, statics and inline consts retain runtime bodies and ordinary capture
+and unsafe checks; construction and noncapturing pointer coercions are
+const-evaluated. Calling a closure during const evaluation remains rejected. `Mutex` and `RwLock` provide sized
+payloads, const construction, locking guards, `get_mut`, `into_inner`, `Default`,
+poison queries and clearing, plus `PoisonError` and `LockResult`. Locks spin with
+acquire/release atomics; fairness and recursive locking are not provided.
+Guard destruction releases locks. Poisoning follows the abort-only runtime;
+the library implementations also have host-unwinding tests. Thread creation
+through the Rust standard library remains unsupported.
 `alloc::sync::{Arc, Weak}`, reexported through `std::sync`, support sized
 payloads with atomic reference counts: `Arc::new`, cloning, dereferencing,
 `downgrade`, `ptr_eq`, `Weak::new` and `upgrade`. Last-strong destruction and
@@ -910,6 +951,7 @@ arrays, `Debug`, `Default`, `From<&[T]>` and `From<[T; N]>`), whose
 in order, `vec![a, b, c]` and `vec![x; n]`, and `String` (`new`,
 `with_capacity`, `from`, `push`, `push_str`, `pop`, `insert`,
 `insert_str`, `remove`, `truncate`, `clear`, `split_off`, `from_utf8`,
+`from_utf8_lossy`,
 `into_bytes`, `as_str`, `Deref` to `str`, comparisons with `String`,
 `str` and `&str`, `+` and `+=` with `&str`, `Clone`, `Debug`,
 `Display`, `fmt::Write`, `FromIterator` and `Extend` of `char`s, `&str`s
@@ -918,7 +960,13 @@ plain `{}` shows written into the format string as rustc does),
 `ToString` for every `Display` type (with the room rustc's
 specializations make: exact for text, the most digits of an integer),
 `ToOwned` (`str` to `String`, `[T]` to `Vec<T>`), and slices' `to_vec`
-and `repeat`. `Box<T>` may hold an unsized value: `Box<[T]>` and
+and `repeat`. `Cow<'a, B>` supports borrowed/owned forms, `Deref`, `Borrow`,
+`Clone`, `Debug`, `Display`, `to_mut` and `into_owned` where their bounds hold.
+`ToOwned::Owned` must implement `Borrow<Self>`. Lossy UTF-8 conversion borrows
+valid input and replaces each invalid sequence with U+FFFD in owned storage.
+References to generic ADTs imply outlives requirements for associated types
+stored in their fields, including `Cow`'s owned form.
+`Box<T>` may hold an unsized value: `Box<[T]>` and
 `Box<dyn Tr>` from `Box<[T; N]>` and `Box<T>` where one is wanted
 (rustc's `CoerceUnsized`), `Vec::into_boxed_slice`, `into_vec` and
 `From<Vec<T>>`, dropped through the vtable's drop function and freed
@@ -1076,8 +1124,12 @@ constants and statics, and its errors for undeclared, outer, reserved
 and unused lifetimes (E0261, E0401, E0262, E0637, E0392) and wrong
 numbers of lifetime arguments (E0107, E0747). The bounds of functions
 and `impl` blocks may name lifetimes in what they say associated types
-are (`I: Iterator<Item = &'a T>`). Traits may not have lifetime
-parameters yet, bounds may not name lifetimes in their trait's generic
+are (`I: Iterator<Item = &'a T>`). Traits with one lifetime parameter and
+required safe methods are supported when their complete signature profile is
+represented, including `AstNode<'t>` and region-free supertraits. Trait type
+parameters, associated items, default bodies, method generics and region-bearing
+supertrait edges remain outside this declaration subset. Other existing
+use-site restrictions still apply. Bounds may not name lifetimes in their trait's generic
 arguments (`T: Tr<&'a U>`; `&` without one is E0637, as in rustc), nor
 those of structs and traits in what they say associated types are.
 Local `let` annotations can require `'static`, including nested reference
@@ -1182,9 +1234,11 @@ of u8/u16/u32/u64/usize. They use alignment-one loads without creating source
 references. Other type substitutions and const calls remain explicitly
 unsupported; callers must provide initialized, readable memory.
 
-Slices provide unsafe `get_unchecked` and `get_unchecked_mut` for `usize`
-indices. The caller must supply an in-bounds index; unchecked range indexing
-remains unsupported.
+Slices and strings provide unsafe `get_unchecked` and `get_unchecked_mut`
+through `SliceIndex`, including range indices. The caller must supply an
+in-bounds index and, for strings, UTF-8 boundaries. String mutation preserves
+UTF-8 through checked mutable ranges, while unsafe byte views require the
+caller to restore that invariant before their borrow ends.
 
 On AArch64, `core::arch::aarch64` provides distinct `uint8x16_t`,
 `uint16x8_t`, `uint64x2_t`, `uint8x8_t` and `uint64x1_t` types, with their
@@ -1235,7 +1289,9 @@ struct and tuple fields reordered to leave little padding (in
 declaration order with `#[repr(C)]`). `#[repr(align(N))]` on structs and
 enums accepts unsuffixed power-of-two alignments through 2^29, preserving
 aggregate size/stride and alignment in stack, static, argument/return and
-heap storage; packed, transparent and SIMD representations remain unsupported.
+heap storage. `repr(transparent)` supports exactly one field, preserving its
+layout and niche. Zero-field and multi-field transparent wrappers, packed
+representations and general SIMD representations remain unsupported.
 The layout also keeps enums' tags as small as their
 discriminants allow, and niches (`Option<&T>`, `Option<bool>`,
 `Option<NonNull<T>>` take no more room than what they hold). `core::ptr`
@@ -1288,15 +1344,33 @@ The function is non-const, and does not provide `Any`, `TypeId` or downcasting.
 
 The embedded `std` facade allows paths such as `std::fmt`,
 `std::mem`, `std::ops::Index` and `std::vec::Vec` to name the original
-`core`/`alloc` definitions. Its only thread API is `thread::panicking()`,
-which returns false because Flux aborts without unwinding. It provides no
-thread creation, filesystem, atomics or synchronization.
+`core`/`alloc` definitions. `thread::panicking()` returns false because Flux
+aborts without unwinding. Native `thread_local!` storage supports `LocalKey`
+access and thread-exit destruction through POSIX TLS. Qualified and imported
+macro calls work, including explicit std imports in no_std crates. Callback
+borrows cannot escape, and destroyed keys reject access. Scoped native threads
+support borrowed closures through `thread::scope`, `Scope::spawn` and consuming
+join handles. Scope exit joins dropped handles and nested workers; worker panics
+abort. Unscoped Rust thread creation and an unwinding runtime remain unsupported.
+`OsStr` and `Path` are genuine unsized Unix-byte wrappers, and PathBuf owns its
+bytes. Paths compare, hash and strip prefixes by normalized components, while
+filesystem calls preserve original spelling. `fs::read`, `read_to_string` and
+`canonicalize`, plus `Path::is_file`, call the native Unix runtime. NUL paths
+reject; non-Unicode paths remain representable. Windows paths, general file
+handles, writing and directory iteration remain unsupported.
+`env::consts::{OS, FAMILY, ARCH}` describes the fixed target. `env::var(&str)`
+returns UTF-8 values or VarError, preserving non-Unicode Unix bytes in an owned
+OsString. NUL or `=` in keys reports NotPresent. Other OS-string key types and
+environment mutation are not implemented. Sized `Rc<T>` supports shared
+ownership, clone-on-write and unique extraction, and remains neither Send nor
+Sync. Atomics and
+synchronization follow the bounded APIs described above.
 
 ## Deliberately rejected
 
-- **Pre-2024 editions.** `gen` and `try` are reserved keywords, so
-  `rng.gen()` and `try!(...)` are errors, as in rustc 2024. Old code needs
-  `r#gen`.
+- **Reserved keywords.** In edition 2024, `gen` and `try` are reserved, so
+  `rng.gen()` and `try!(...)` are errors. Edition-aware source graphs retain
+  the keyword rules of their declared edition.
 - **Struct literals in conditions** (`if x == S { a: 1 } {}`): rejected as
   in rustc; parenthesize them. As in rustc, one whose `{` is followed by
   `name:` is reported once and read as a struct literal.

@@ -64,44 +64,45 @@ fn print_digit(_1: i64) -> () {
 
 fn main() -> () {
     let mut _0: ();
-    let mut _1: i64; // i
-    let _2: ();
+    let _1: !;
+    let mut _2: i64; // i
     let _3: ();
-    let _4: bool;
-    let _5: i64;
-    let _6: ();
-    let _7: i64;
+    let _4: ();
+    let _5: bool;
+    let _6: i64;
+    let _7: ();
     let _8: i64;
     let _9: i64;
-    let _10: ();
-    let _11: i64;
-    let _12: !;
-    let _13: i32;
-    let _14: i64;
+    let _10: i64;
+    let _11: ();
+    let _12: i64;
+    let _13: !;
+    let _14: i32;
     let _15: i64;
+    let _16: i64;
 
     bb0: {
-        _1 = const 0_i64;
+        _2 = const 0_i64;
         goto -> bb1;
     }
 
     bb1: {
-        _5 = copy _1;
-        _4 = Lt(copy _5, const 10_i64);
-        switchInt(copy _4) -> [0: bb4, otherwise: bb3];
+        _6 = copy _2;
+        _5 = Lt(copy _6, const 10_i64);
+        switchInt(copy _5) -> [0: bb4, otherwise: bb3];
     }
 
     bb2: {
-        _15 = fib(const 20_i64) -> bb8;
+        _16 = fib(const 20_i64) -> bb8;
     }
 
     bb3: {
-        _9 = copy _1;
-        _8 = fib(copy _9) -> bb6;
+        _10 = copy _2;
+        _9 = fib(copy _10) -> bb6;
     }
 
     bb4: {
-        _2 = const ();
+        _3 = const ();
         goto -> bb2;
     }
 
@@ -110,22 +111,22 @@ fn main() -> () {
     }
 
     bb6: {
-        _7 = Rem(copy _8, const 10_i64);
-        _6 = print_digit(copy _7) -> bb7;
+        _8 = Rem(copy _9, const 10_i64);
+        _7 = print_digit(copy _8) -> bb7;
     }
 
     bb7: {
-        _11 = copy _1;
-        _1 = Add(copy _11, const 1_i64);
-        _10 = const ();
-        _3 = const ();
+        _12 = copy _2;
+        _2 = Add(copy _12, const 1_i64);
+        _11 = const ();
+        _4 = const ();
         goto -> bb5;
     }
 
     bb8: {
-        _14 = Rem(copy _15, const 256_i64);
-        _13 = copy _14 as i32;
-        _12 = exit(copy _13) -> !;
+        _15 = Rem(copy _16, const 256_i64);
+        _14 = copy _15 as i32;
+        _13 = exit(copy _14) -> !;
     }
 
     bb9: {

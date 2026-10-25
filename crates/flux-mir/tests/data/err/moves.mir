@@ -126,17 +126,18 @@ fn in_loop(_1: S) -> () {
 
 fn in_loop_loop(_1: S) -> () {
     let mut _0: ();
-    let _2: ();
+    let _2: !;
     let _3: ();
-    let _4: S;
+    let _4: ();
+    let _5: S;
 
     bb0: {
         goto -> bb1;
     }
 
     bb1: {
-        _4 = move _1;
-        _3 = take(move _4) -> bb3;
+        _5 = move _1;
+        _4 = take(move _5) -> bb3;
     }
 
     bb2: {
@@ -144,24 +145,25 @@ fn in_loop_loop(_1: S) -> () {
     }
 
     bb3: {
-        _2 = const ();
+        _3 = const ();
         goto -> bb1;
     }
 }
 
 fn field_in_loop(_1: S) -> () {
     let mut _0: ();
-    let _2: ();
+    let _2: !;
     let _3: ();
-    let _4: Inner;
+    let _4: ();
+    let _5: Inner;
 
     bb0: {
         goto -> bb1;
     }
 
     bb1: {
-        _4 = move _1.0;
-        _3 = take_inner(move _4) -> bb3;
+        _5 = move _1.0;
+        _4 = take_inner(move _5) -> bb3;
     }
 
     bb2: {
@@ -169,7 +171,7 @@ fn field_in_loop(_1: S) -> () {
     }
 
     bb3: {
-        _2 = const ();
+        _3 = const ();
         goto -> bb1;
     }
 }

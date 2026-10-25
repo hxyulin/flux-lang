@@ -1,6 +1,8 @@
 use std::cell::Cell;
 use std::sync::OnceLock;
 
+static STATIC: OnceLock<String> = OnceLock::new();
+
 struct Payload<'a> {
     drops: &'a Cell<usize>,
     text: String,
@@ -12,6 +14,9 @@ impl<'a> Drop for Payload<'a> {
 }
 
 fn main() {
+    assert!(STATIC.get().is_none());
+    assert_eq!(STATIC.get_or_init(|| String::from("static")), "static");
+    assert_eq!(STATIC.get_or_init(|| panic!("static initializer rerun")), "static");
     let number: OnceLock<usize> = OnceLock::new();
     assert!(number.get().is_none());
     assert_eq!(*number.get_or_init(|| 41), 41);

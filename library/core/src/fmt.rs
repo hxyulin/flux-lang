@@ -630,7 +630,7 @@ pub trait Binary {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
 }
 
-/// `{:e}`, which integers implement (flux has no floats).
+/// `{:e}`. Integers implement it; floating exponent formatting remains absent.
 pub trait LowerExp {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
 }

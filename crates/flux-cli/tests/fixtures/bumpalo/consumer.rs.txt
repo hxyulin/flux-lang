@@ -1,0 +1,57 @@
+use bumpalo::{Bump, collections::Vec};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+struct Owned<'a> { drops: &'a Cell<usize>, value: usize }
+impl Drop for Owned<'_> { fn drop(&mut self) { self.drops.set(self.drops.get() + 1); } }
+static ZST_DROPS: AtomicUsize = AtomicUsize::new(0);
+struct Zst;
+impl Drop for Zst { fn drop(&mut self) { ZST_DROPS.fetch_add(1, Relaxed); } }
+#[repr(align(128))]
+struct Aligned(u64);
+
+fn main() {
+    let mut arena = Bump::with_capacity(32);
+    let drops = Cell::new(0);
+    {
+        let number = arena.alloc(42u64);
+        let text = arena.alloc_str("bump é中");
+        let bytes = arena.alloc_slice_copy(&[1u8, 3, 7, 11]);
+        assert_eq!(*number, 42); assert_eq!(text, "bump é中");
+        assert_eq!(bytes, [1, 3, 7, 11]);
+        let mut values = Vec::new_in(&arena);
+        for index in 0..257 { values.push(index); }
+        assert_eq!(values.len(), 257);
+        assert_eq!(values.iter().copied().sum::<usize>(), 32896);
+        println!("bump {number} {text} {} {}", bytes.len(), values.len());
+        let aligned = arena.alloc(Aligned(19));
+        assert_eq!(aligned as *const Aligned as usize % 128, 0); assert_eq!(aligned.0, 19);
+        let mut owned = Vec::new_in(&arena);
+        for value in 0..20 { owned.push(Owned { drops: &drops, value }); }
+        owned.insert(3, Owned { drops: &drops, value: 99 });
+        drop(owned.remove(7));
+        owned.retain(|value| value.value % 2 == 0);
+        assert_eq!(owned.len(), 9);
+        { let mut drain = owned.drain(1..4); drop(drain.next().unwrap()); }
+        assert_eq!(owned.len(), 6);
+        let mut iter = owned.into_iter(); drop(iter.next().unwrap()); drop(iter);
+        assert_eq!(drops.get(), 21);
+        let mut zst = Vec::new_in(&arena);
+        for _ in 0..257 { zst.push(Zst); }
+        let mut iter = zst.into_iter(); drop(iter.next().unwrap()); drop(iter.next_back().unwrap()); drop(iter);
+        assert_eq!(ZST_DROPS.load(Relaxed), 257);
+        let mut string = bumpalo::collections::String::from_str_in("aé中z", &arena);
+        string.insert(1, 'Ω'); assert_eq!(string.remove(0), 'a');
+        string.retain(|ch| ch != 'é');
+        let tail = string.split_off(2); assert_eq!(string.as_str(), "Ω"); assert_eq!(tail.as_str(), "中z");
+        let formatted = bumpalo::format!(in &arena, "{}:{}", string, tail);
+        assert_eq!(formatted.as_str(), "Ω:中z");
+        let items = bumpalo::vec![in &arena; 2usize, 3, 5];
+        assert_eq!(items.iter().copied().sum::<usize>(), 10);
+        println!("owned {} zst {} text {}", drops.get(), ZST_DROPS.load(Relaxed), formatted);
+    }
+    arena.reset();
+    assert_eq!(*arena.alloc(17u64), 17);
+    let aligned: Bump<8> = Bump::with_min_align();
+    let value = aligned.alloc(3u8); assert_eq!(value as *const u8 as usize % 8, 0);
+}

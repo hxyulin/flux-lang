@@ -1,0 +1,56 @@
+use flux_hir::{lower_text, Diagnostic};
+use flux_mir::{build_file, check_file};
+use flux_mir::eval::{Evaluator, show};
+mod cases;
+
+fn digest(text: &str) -> u64 {
+    let mut value=0xcbf29ce484222325u64;
+    for byte in text.bytes() { value=(value ^ byte as u64).wrapping_mul(0x100000001b3); }
+    value
+}
+fn main() {
+    for &(name, source, type_accepts, mir_accepts) in cases::CASES {
+        let (db, _, hir)=lower_text("input.rs", source);
+        assert!(db.syntax_errors().is_empty());
+        assert!(hir.diagnostics.is_empty());
+        let typed=check_file(&hir);
+        assert_eq!(typed.diagnostics.is_empty(),type_accepts);
+        println!("case {name} type={type_accepts} mir={mir_accepts}");
+        if !type_accepts {
+            for diagnostic in &typed.diagnostics { println!("type {} {:?}",diagnostic.message,diagnostic.range); }
+            continue;
+        }
+        let mir=build_file(&hir,&typed);
+        assert_eq!(mir.diagnostics.is_empty(),mir_accepts);
+        assert!(mir.bugs.is_empty());
+        for (id,function) in hir.items.functions.iter() {
+            if !hir.is_program(id) || function.ctor.is_some() {continue;}
+            if let Some(body)=mir.bodies.get(id) {
+                let statements:usize=body.blocks.values().map(|block|block.statements.len()).sum();
+                println!("body {} locals={} blocks={} statements={} callees={}",function.name,body.locals.len(),body.blocks.len(),statements,body.callees().len());
+                let rebuilt=flux_mir::build(&hir,&typed,id);
+                assert_eq!(rebuilt.locals.len(),body.locals.len());
+                assert_eq!(rebuilt.blocks.len(),body.blocks.len());
+            }
+        }
+        let dump=mir.debug_dump(&hir);
+        println!("dump {} {}",dump.len(),digest(&dump));
+        let mut diagnostics=mir.diagnostics.clone();
+        Diagnostic::sort(&mut diagnostics);
+        for diagnostic in diagnostics {println!("mir {} {:?}",diagnostic.message,diagnostic.range);}
+        if mir_accepts {
+            let names=|id:flux_hir::ConstId|match hir.items.consts[id].name { Some(name)=>name.to_string(),None=>String::from("anonymous") };
+            let mut evaluator=Evaluator::new(&hir.items,&typed.sigs,&mir.bodies,&mir.consts,&names);
+            for (id,constant) in hir.items.consts.iter() {
+                if id.index()<hir.items.core.consts as usize || constant.name.map(|name|name.as_str())!=Some("ANSWER") {continue;}
+                let actual=evaluator.eval_const(id).unwrap();
+                assert_eq!(&actual,mir.const_values.get(id,&[]).unwrap());
+                let shown=show(&actual);
+                if name=="const_loop" {assert_eq!(shown,"21_u32");}
+                if name=="enum_const" {assert_eq!(shown,"7_u32");}
+                if name=="const_reference" {assert_eq!(shown,"29_u32");}
+                println!("const ANSWER {shown}");
+            }
+        }
+    }
+}

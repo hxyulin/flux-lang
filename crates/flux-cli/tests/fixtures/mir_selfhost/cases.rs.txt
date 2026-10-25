@@ -1,0 +1,15 @@
+// name, source, type checker accepts, complete MIR accepts.
+pub const CASES: &[(&str, &str, bool, bool)] = &[
+    ("integer", "fn target(x:u32)->u32{x+2}fn main(){let answer=target(3);}", true, true),
+    ("control_flow", "fn target(x:u32)->u32{let mut n=0;for i in 0..x{if i%2==0{n+=i;}}n}fn main(){let answer=target(7);}", true, true),
+    ("const_loop", "const fn target(x:u32)->u32{let mut i=0;let mut n=0;while i<x{n+=i;i+=1;}n}const ANSWER:u32=target(7);fn main(){let answer=ANSWER;}", true, true),
+    ("enum_const", "enum E{A=3,B=7}const ANSWER:u32=E::B as u32;fn main(){let answer=ANSWER;}", true, true),
+    ("const_reference", "const ANSWER:u32={let x=29;let r=&x;*r};fn main(){let answer=ANSWER;}", true, true),
+    ("closure", "fn target(x:u32)->u32{let add=|n:u32|n+x;add(3)}fn main(){let answer=target(5);}", true, true),
+    ("drop", "struct Owner(u32);impl Drop for Owner{fn drop(&mut self){}}fn target(){let owner=Owner(3);drop(owner);}fn main(){target();}", true, true),
+    ("type_error", "fn target()->u32{true}fn main(){}", false, false),
+    ("uninitialized", "fn target(flag:bool)->u32{let n;if flag{n=7;}n}fn main(){let answer=target(false);}", true, false),
+    ("move", "fn target(){let value=String::from(\"x\");let moved=value;let n=value.len();}fn main(){target();}", true, false),
+    ("borrow", "fn target(){let mut value=3;let borrowed=&value;value=5;let n=*borrowed;}fn main(){target();}", true, false),
+    ("const_overflow", "const ANSWER:u8=255u8+1;fn main(){let answer=ANSWER;}", true, false),
+];

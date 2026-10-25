@@ -1,9 +1,8 @@
-//! Trait lifetime metadata is a prerequisite, not permission to accept erased
-//! obligations. Keep the boundary closed until region-aware selection lands.
+//! Bounded trait lifetime admission preserves impl and caller obligations.
 use std::process::Command;
 
 #[test]
-fn trait_lifetime_obligations_remain_closed_against_rustc_oracles() {
+fn trait_lifetime_admission_preserves_rustc_obligations() {
     let cases = [
         (
             "ast_node",
@@ -97,17 +96,36 @@ fn trait_lifetime_obligations_remain_closed_against_rustc_oracles() {
         );
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
         let typed = flux_mir::check_file(&hir);
-        assert!(
+        let gated = hir.items.traits.iter().any(|(id, t)| {
+            !t.generics.lifetimes.is_empty()
+                && flux_ty::regions::required_method_trait_profile(&hir, &typed.sigs, id).is_err()
+        });
+        assert_eq!(
             typed
                 .diagnostics
                 .iter()
                 .any(|d| d.message == "lifetime parameters on traits are not supported yet"),
+            gated,
             "{name}: {:?}",
             typed.diagnostics
         );
-        // Error recovery must remain robust through MIR construction. The
-        // signature diagnostic above is what prevents code generation.
-        flux_mir::build_file(&hir, &typed);
+        if rustc_accepts {
+            assert!(
+                typed.diagnostics.is_empty(),
+                "{name}: {:?}",
+                typed.diagnostics
+            );
+        }
+        // Every Rust-invalid program still rejects after admission, through
+        // signature checking or the independent MIR lifetime constraints.
+        let mir = flux_mir::build_file(&hir, &typed);
+        assert_eq!(
+            typed.diagnostics.is_empty() && mir.diagnostics.is_empty(),
+            rustc_accepts,
+            "{name}: types={:?}, MIR={:?}",
+            typed.diagnostics,
+            mir.diagnostics
+        );
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -205,12 +223,11 @@ fn trait_owner_substitution_matches_rustc_method_constraints() {
         assert!(db.syntax_errors().is_empty());
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
         let (sigs, diagnostics) = flux_ty::signatures(&hir.items);
-        // Exercise comparison independently of the declaration guard. This
-        // checks actual constraints, without enabling erased obligations.
         assert!(
             diagnostics
                 .iter()
-                .any(|d| d.message == "lifetime parameters on traits are not supported yet")
+                .all(|d| d.message == "lifetime parameters on traits are not supported yet"),
+            "{name}: {diagnostics:?}"
         );
         let methods = flux_mir::borrowck::check_impl_methods(&hir.items, &sigs);
         assert_eq!(methods.is_empty(), compatible, "{name}: {methods:?}");

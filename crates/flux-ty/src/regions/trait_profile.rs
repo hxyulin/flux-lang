@@ -1,4 +1,4 @@
-//! A declaration representation boundary, deliberately independent of admission.
+//! The declaration representation boundary used by trait-lifetime admission.
 use flux_hir::{FunctionId, Generics, ItemTree, Owner, TraitId, TypeRef};
 
 use super::{Elided, LifetimeName, Outlives, Region, Walker, implied_outlives};
@@ -34,10 +34,10 @@ pub struct TraitProfileError {
 
 /// Check the initial one-owner-lifetime, required-safe-method representation.
 ///
-/// This pure query does not remove the unconditional declaration diagnostic.
+/// Admission uses this query after all signature metadata has been resolved.
 /// `Ok(())` is not a proof of a trait obligation or of supported use contexts.
 /// All syntax/HIR/type diagnostics remain independently mandatory.
-/// Future admission must retain signature WF, impl compatibility, concrete and
+/// Admission retains signature WF, impl compatibility, concrete and
 /// caller region obligations, associated declaration checks and all existing
 /// use-site guards (closures, default bodies, inherited regions, abstract
 /// blanket forwarding, named function items and higher-ranked owner items).
@@ -50,7 +50,15 @@ pub fn required_method_trait_profile(
     sigs: &Signatures,
     trait_: TraitId,
 ) -> Result<(), TraitProfileError> {
-    let items = &hir.items;
+    required_method_profile(&hir.items, &hir.diagnostics, sigs, trait_)
+}
+
+pub(crate) fn required_method_profile(
+    items: &ItemTree,
+    diagnostics: &[flux_hir::Diagnostic],
+    sigs: &Signatures,
+    trait_: TraitId,
+) -> Result<(), TraitProfileError> {
     let fail = |reason| TraitProfileError {
         trait_,
         method: None,
@@ -75,7 +83,7 @@ pub fn required_method_trait_profile(
     if t.is_unsafe {
         return Err(fail(TraitProfileReason::UnsafeTrait));
     }
-    if diagnosed(hir, t.loc.file, t.def_range) {
+    if diagnosed(diagnostics, t.loc.file, t.def_range) {
         return Err(fail(TraitProfileReason::DeclarationDiagnostics));
     }
     let owner = sigs
@@ -133,7 +141,7 @@ pub fn required_method_trait_profile(
         // Some unsupported qualifiers (for example async/extern functions)
         // are diagnosed during lowering and intentionally have no HIR flag.
         // Reject the diagnosed declaration without inspecting syntax or text.
-        if diagnosed(hir, f.loc.file, f.item_range) {
+        if diagnosed(diagnostics, f.loc.file, f.item_range) {
             return Err(fail(TraitProfileReason::DeclarationDiagnostics));
         }
         let sig = sigs
@@ -306,8 +314,12 @@ pub fn required_method_trait_profile(
     Ok(())
 }
 
-fn diagnosed(hir: &flux_hir::Hir, file: flux_hir::FileId, range: flux_syntax::TextRange) -> bool {
-    hir.diagnostics
+fn diagnosed(
+    diagnostics: &[flux_hir::Diagnostic],
+    file: flux_hir::FileId,
+    range: flux_syntax::TextRange,
+) -> bool {
+    diagnostics
         .iter()
         .any(|d| d.file == file && range.start() <= d.range.start() && d.range.end() <= range.end())
 }

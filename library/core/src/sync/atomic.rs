@@ -162,6 +162,53 @@ impl AtomicUsize {
     }
 }
 
+/// An atomic 64-bit unsigned word on Flux's 64-bit targets.
+#[repr(C, align(8))]
+pub struct AtomicU64 {
+    value: AtomicUsize,
+}
+
+impl AtomicU64 {
+    pub const fn new(value: u64) -> Self {
+        Self { value: AtomicUsize::new(value as usize) }
+    }
+    pub fn get_mut(&mut self) -> &mut u64 {
+        // SAFETY: usize and u64 have identical layout on every Flux target;
+        // exclusive access excludes atomic operations for this borrow.
+        unsafe { &mut *(self.value.get_mut() as *mut usize as *mut u64) }
+    }
+    pub fn into_inner(self) -> u64 { self.value.into_inner() as u64 }
+    #[track_caller]
+    pub fn load(&self, order: Ordering) -> u64 { self.value.load(order) as u64 }
+    #[track_caller]
+    pub fn store(&self, value: u64, order: Ordering) { self.value.store(value as usize, order); }
+    #[track_caller]
+    pub fn fetch_add(&self, value: u64, order: Ordering) -> u64 { self.value.fetch_add(value as usize, order) as u64 }
+    #[track_caller]
+    pub fn fetch_sub(&self, value: u64, order: Ordering) -> u64 { self.value.fetch_sub(value as usize, order) as u64 }
+    #[track_caller]
+    pub fn compare_exchange(&self, current: u64, new: u64, success: Ordering, failure: Ordering) -> Result<u64, u64> {
+        match self.value.compare_exchange(current as usize, new as usize, success, failure) {
+            Ok(old) => Ok(old as u64), Err(old) => Err(old as u64),
+        }
+    }
+    #[track_caller]
+    pub fn compare_exchange_weak(&self, current: u64, new: u64, success: Ordering, failure: Ordering) -> Result<u64, u64> {
+        self.compare_exchange(current, new, success, failure)
+    }
+}
+impl crate::default::Default for AtomicU64 {
+    fn default() -> Self { Self::new(0) }
+}
+impl crate::convert::From<u64> for AtomicU64 {
+    fn from(value: u64) -> Self { Self::new(value) }
+}
+impl crate::fmt::Debug for AtomicU64 {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::fmt::Debug::fmt(&self.load(Relaxed), f)
+    }
+}
+
 /// A naturally aligned, sized atomic 32-bit unsigned word.
 /// Shared accesses use only native atomic operations; exclusive access may
 /// use `get_mut` or `into_inner`. No wider or overlapping access is permitted.

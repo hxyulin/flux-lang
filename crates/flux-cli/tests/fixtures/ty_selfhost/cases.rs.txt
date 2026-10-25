@@ -1,0 +1,14 @@
+// name, source, accepts, main signature accepts
+pub const CASES: &[(&str, &str, bool, bool)] = &[
+    ("integer", "fn target(x: u32) -> u32 { let value = x + 2; value } fn main() { let answer = target(3); }", true, true),
+    ("generic", "fn target<T>(x: T) -> T { x } fn main() { let number = target(7u16); let flag = target(true); }", true, true),
+    ("struct", "struct Pair { value: u64 } fn target(p: Pair) -> u64 { p.value } fn main() { let answer = target(Pair { value: 9 }); }", true, true),
+    ("trait", "trait Read { fn read(&self) -> u32; } struct Item; impl Read for Item { fn read(&self) -> u32 { 9 } } fn target<T: Read>(x: T) -> u32 { x.read() } fn main() { let answer = target(Item); }", true, true),
+    ("closure", "fn target(x: i32) -> i32 { let add = |y: i32| y + x; add(4) } fn main() { let answer = target(3); }", true, true),
+    ("array", "fn target(xs: &[u8]) -> u8 { xs[0] } fn main() { let data = [4u8, 5]; let answer = target(&data); }", true, true),
+    ("mismatch", "fn target() -> u32 { true } fn main() {}", false, true),
+    ("arguments", "fn target(x: u32) -> u32 { x } fn main() { target(); }", false, true),
+    ("immutable", "fn target() { let x = 1; x = 2; } fn main() {}", false, true),
+    ("unsafe_call", "unsafe fn target() {} fn main() { target(); }", false, true),
+    ("main_signature", "fn target() {} fn main(x: u32) {}", false, false),
+];

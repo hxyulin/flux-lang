@@ -1,0 +1,29 @@
+use flux_hir::{lower_text, Diagnostic};
+use flux_hir::{CrateCfg, SourceCrate, SourceDb};
+use flux_intern::Symbol;
+use flux_syntax::Edition;
+mod inputs;
+fn main() {
+    for source in [
+        "fn main() { let x = 3; let _ = x + 4; }",
+        "mod nested { pub struct Value { pub x: u32 } } use nested::Value; fn main() { let _ = Value { x: 7 }; }",
+        "trait Read { fn read(&self) -> u32; } struct Item; impl Read for Item { fn read(&self) -> u32 { 9 } } fn main() {}",
+        "fn main() { missing(); }",
+    ] {
+        let (db, _, hir) = lower_text("input.rs", source);
+        let mut diagnostics = hir.diagnostics.clone();
+        Diagnostic::sort(&mut diagnostics);
+        println!("hir {} {} {} {}", db.syntax_errors().len(), hir.bodies.iter().count(), hir.items.structs.len(), diagnostics.len());
+        for diagnostic in diagnostics { println!("{} {:?}", diagnostic.message, diagnostic.range); }
+    }
+    for enabled in [false, true] {
+        let mut db = SourceDb::new();
+        let root = db.load_with_edition(std::path::Path::new(inputs::ROOT), Edition::E2024).unwrap();
+        let values = if enabled { vec![(Symbol::intern("feature"), Symbol::intern("enabled"))] } else { vec![] };
+        db.set_crate_cfg(root, CrateCfg { names: vec![], values }).unwrap();
+        let hir = flux_hir::lower_sources(&mut db, &[SourceCrate { root, name: Symbol::intern("physical"), dependencies: vec![] }]);
+        assert!(db.syntax_errors().is_empty());
+        assert!(hir.diagnostics.is_empty());
+        println!("physical {} {} {}", enabled, db.files().count(), hir.bodies.iter().count());
+    }
+}

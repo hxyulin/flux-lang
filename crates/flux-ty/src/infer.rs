@@ -15,7 +15,7 @@ use flux_intern::Symbol;
 use flux_syntax::TextRange;
 
 use crate::traits::{Predicate, elaborate, predicates_of};
-use crate::ty::{InferVar, IntTy, Mutability, Ty, TyKind};
+use crate::ty::{FloatTy, InferVar, IntTy, Mutability, Ty, TyKind};
 use crate::{
     ConstInstance, FnSig, Instance, Signatures, TypeScope, function_name, generic_names,
     impl_target, resolve_or_report, self_ty, wrong_arg_count,
@@ -30,6 +30,8 @@ pub struct InferenceResult {
     /// The type of every expression, except the callee of a direct call
     /// (`f` in `f(x)`), which has no value of its own.
     pub expr_types: ArenaMap<Expr, Ty>,
+    /// The destination types of expressions coerced from `!`.
+    pub never_coercions: ArenaMap<Expr, Ty>,
     pub binding_types: ArenaMap<Binding, Ty>,
     /// The field each `Field` expression reads, by index.
     pub field_indices: ArenaMap<Expr, u32>,
@@ -62,7 +64,7 @@ pub struct InferenceResult {
     pub coercion_derefs: ArenaMap<Expr, Vec<OverloadedDeref>>,
     /// Expressions of a function item's type that coerce to a function
     /// pointer where they are used: `let f: fn(i32) -> i32 = double;`.
-    pub reified: ArenaMap<Expr, ()>,
+    pub reified: ArenaMap<Expr, Ty>,
     /// The function each call calls, with its generic arguments: at the
     /// callee `Path`, or the `MethodCall`. Not always the path's: of the
     /// associated functions of a generic struct with one name, the one
@@ -187,6 +189,7 @@ pub fn infer_body(
     let data = &items.functions[function];
     let owner = Owner {
         function: Some(function),
+        closure_owner: crate::ClosureOwner::Function(function),
         module: data.loc.module,
         self_ty: self_ty(sigs, data.owner),
         generics: generic_names(items, data.owner, &data.generics),
@@ -236,6 +239,7 @@ pub fn infer_const(
     });
     let owner = Owner {
         function: None,
+        closure_owner: crate::ClosureOwner::Const(konst),
         module: data.loc.module,
         self_ty: enum_ty.or_else(|| self_ty(sigs, data.owner)),
         generics: generic_names(items, data.owner, &Generics::default()),
@@ -286,6 +290,7 @@ pub fn infer_const(
 struct Owner {
     /// The function whose body it is; `None` for a constant's.
     function: Option<FunctionId>,
+    closure_owner: crate::ClosureOwner,
     module: flux_hir::ModuleId,
     self_ty: Option<Ty>,
     /// The generic parameters in scope, by index.
@@ -326,6 +331,7 @@ impl<'a> Ctx<'a> {
             const_param_uses: ArenaMap::new(),
             module: owner.module,
             owner_fn: owner.function,
+            closure_owner: owner.closure_owner,
             const_context: owner.const_context,
             body,
             source_map,
@@ -334,6 +340,7 @@ impl<'a> Ctx<'a> {
             obligation_scratch: Vec::new(),
             projection_scratch: Vec::new(),
             expr_types: ArenaMap::new(),
+            never_coercions: ArenaMap::new(),
             binding_types: ArenaMap::new(),
             field_indices: ArenaMap::new(),
             field_derefs: ArenaMap::new(),
@@ -372,10 +379,12 @@ impl<'a> Ctx<'a> {
             projections: Vec::new(),
             normalizing: Vec::new(),
             obligations: Vec::new(),
+            auto_trait_paths: Vec::new(),
             reported_unmet: FxHashSet::default(),
             written_wf: FxHashSet::default(),
             signature_wf: FxHashSet::default(),
             deferred: Vec::new(),
+            pending_try_returns: Vec::new(),
             unsizes: ArenaMap::new(),
             builtin_methods: ArenaMap::new(),
             lens: crate::ArrayLens::new(&sigs.array_lens, &sigs.arg_tys),
@@ -415,6 +424,7 @@ enum VarValue {
         /// Created for an unsuffixed integer literal: unifies only with
         /// integer types, and defaults to `i32`.
         int: bool,
+        float: bool,
         /// Fed a `!` by coercion: falls back to `!` if nothing else
         /// constrains it.
         diverging: bool,
@@ -430,9 +440,14 @@ struct LoopState {
     source: LoopSource,
 }
 
+/// Residual accepted by the return type of the innermost function or closure.
+#[derive(Debug, Clone, Copy)]
+enum TryResidual { Option, Result(Ty), Break(Ty) }
+
 /// A check that needs the final types.
 #[derive(Debug, Clone, Copy)]
 enum Deferred {
+    FloatLiteral { expr: ExprId, text: Symbol },
     IntLiteral {
         expr: ExprId,
         value: u128,
@@ -502,6 +517,7 @@ struct Ctx<'a> {
     module: flux_hir::ModuleId,
     /// The function whose body this is, whose closures' types name it.
     owner_fn: Option<FunctionId>,
+    closure_owner: crate::ClosureOwner,
     /// In a constant or `const fn`: what to call it in E0015.
     const_context: Option<&'static str>,
     body: &'a Body,
@@ -513,6 +529,7 @@ struct Ctx<'a> {
     obligation_scratch: Vec<Obligation>,
     projection_scratch: Vec<solve::PendingProjection>,
     expr_types: ArenaMap<Expr, Ty>,
+    never_coercions: ArenaMap<Expr, Ty>,
     binding_types: ArenaMap<Binding, Ty>,
     field_indices: ArenaMap<Expr, u32>,
     field_derefs: ArenaMap<Expr, u32>,
@@ -522,7 +539,7 @@ struct Ctx<'a> {
     deref_coercions: ArenaMap<Expr, u32>,
     overloaded_derefs: ArenaMap<Expr, Vec<OverloadedDeref>>,
     coercion_derefs: ArenaMap<Expr, Vec<OverloadedDeref>>,
-    reified: ArenaMap<Expr, ()>,
+    reified: ArenaMap<Expr, Ty>,
     calls: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     overloads: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     consts: ArenaMap<Expr, (ConstId, Vec<Ty>)>,
@@ -574,6 +591,7 @@ struct Ctx<'a> {
     normalizing: Vec<crate::ty::AliasTy>,
     /// Trait obligations not yet met.
     obligations: Vec<Obligation>,
+    auto_trait_paths: Vec<(Predicate, Option<u32>)>,
     /// Unmet obligations reported, by range and message.
     reported_unmet: FxHashSet<(TextRange, String)>,
     /// The struct types written in the body, and in a constant, those its
@@ -582,6 +600,7 @@ struct Ctx<'a> {
     /// In a constant, the struct types its type names.
     signature_wf: FxHashSet<Ty>,
     deferred: Vec<Deferred>,
+    pending_try_returns: Vec<(ExprId, TryResidual, Ty)>,
     unsizes: ArenaMap<Expr, Ty>,
     builtin_methods: ArenaMap<Expr, (BuiltinMethod, u32)>,
     /// The values of the constants array lengths name.
@@ -624,6 +643,10 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    fn expression_edition(&self, expr: ExprId) -> flux_syntax::Edition {
+        self.source_map.editions.get(expr).copied().unwrap_or_else(|| self.items.edition(self.module))
+    }
+
     fn range(&self, expr: ExprId) -> TextRange {
         self.source_map.exprs.get(expr).copied().unwrap_or_default()
     }
@@ -655,11 +678,23 @@ impl Ctx<'_> {
         self.vars.push((
             VarValue::Unknown {
                 int,
+                float: false,
                 diverging: false,
             },
             origin,
         ));
         Ty::infer(var)
+    }
+
+    fn float_var(&self, var: InferVar) -> bool { matches!(self.vars[var.0 as usize].0, VarValue::Unknown { float: true, .. }) }
+    fn accepts_var(&self, var: InferVar, ty: Ty) -> bool {
+        (!self.unknown(var).0 || ty.as_int().is_some()) && (!self.float_var(var) || ty.as_float().is_some())
+    }
+    fn new_float_var(&mut self, origin: TextRange) -> Ty {
+        let ty = self.new_var(false, origin);
+        let TyKind::Infer(var) = ty.kind() else { unreachable!() };
+        self.vars[var.0 as usize].0 = VarValue::Unknown { int: false, float: true, diverging: false };
+        ty
     }
 
     fn root(&mut self, var: InferVar) -> InferVar {
@@ -675,7 +710,7 @@ impl Ctx<'_> {
 
     fn unknown(&self, var: InferVar) -> (bool, bool) {
         match self.vars[var.0 as usize].0 {
-            VarValue::Unknown { int, diverging } => (int, diverging),
+            VarValue::Unknown { int, diverging, .. } => (int, diverging),
             _ => unreachable!("roots of unresolved variables are unknown"),
         }
     }
@@ -722,6 +757,7 @@ impl Ctx<'_> {
                 let args = crate::ty::map_list(opaque.args, |a| self.known(a));
                 Ty::opaque(crate::OpaqueTy { args, ..opaque })
             }
+            TyKind::Dynamic(d) => Ty::new(TyKind::Dynamic(d.map(|t| self.known(t)))),
             _ => ty,
         }
     }
@@ -820,9 +856,12 @@ impl Ctx<'_> {
             (TyKind::Error, _) | (_, TyKind::Error) => true,
             (TyKind::Infer(x), TyKind::Infer(y)) => {
                 let ((xi, xd), (yi, yd)) = (self.unknown(x), self.unknown(y));
+                let (xf, yf) = (self.float_var(x), self.float_var(y));
+                if (xi || yi) && (xf || yf) { return false; }
                 self.vars[x.0 as usize].0 = VarValue::Link(y);
                 self.vars[y.0 as usize].0 = VarValue::Unknown {
                     int: xi || yi,
+                    float: xf || yf,
                     diverging: xd || yd,
                 };
                 true
@@ -875,7 +914,7 @@ impl Ctx<'_> {
             }
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
                 let mut ok =
-                    x.is_unsafe == y.is_unsafe && x.inputs_output.len() == y.inputs_output.len();
+                    x.is_unsafe == y.is_unsafe && x.is_c == y.is_c && x.inputs_output.len() == y.inputs_output.len();
                 for (&a, &b) in x.inputs_output.iter().zip(y.inputs_output) {
                     ok &= self.unify(a, b);
                 }
@@ -910,8 +949,7 @@ impl Ctx<'_> {
     }
 
     fn bind_var(&mut self, var: InferVar, ty: Ty) -> bool {
-        let (int, _) = self.unknown(var);
-        if int && ty.as_int().is_none() {
+        if !self.accepts_var(var, ty) {
             return false;
         }
         // A hidden type that would contain itself (`(f(),)` in `f`) is
@@ -937,10 +975,12 @@ impl Ctx<'_> {
     /// `expected` is: `!` coerces to anything, other types must unify.
     fn coerce(&mut self, actual: Ty, expected: Ty, expr: ExprId) {
         if self.shallow(actual) == Ty::NEVER {
+            self.never_coercions.insert(expr, expected);
             if let TyKind::Infer(var) = self.shallow(expected).kind() {
                 let (int, _) = self.unknown(var);
                 self.vars[var.0 as usize].0 = VarValue::Unknown {
                     int,
+                    float: self.float_var(var),
                     diverging: true,
                 };
             }
@@ -979,17 +1019,21 @@ impl Ctx<'_> {
         // A reference to an array where one to a slice is expected is
         // unsized, after a reborrow if it is a `&mut` (which may become a
         // `&`): rustc's unsizing coercion.
-        if let (TyKind::Ref(from, array), TyKind::Ref(to, slice)) =
-            (self.shallow(actual).kind(), self.shallow(expected).kind())
-            && let (TyKind::Array(elem, _), TyKind::Slice(expected_elem)) =
-                (self.shallow(array).kind(), self.shallow(slice).kind())
+        if let Some((from, array, to, slice, reborrow)) = match
+            (self.shallow(actual).kind(), self.shallow(expected).kind()) {
+                (TyKind::Ref(from, a), TyKind::Ref(to, b)) => Some((from, a, to, b, true)),
+                (TyKind::Ref(from, a), TyKind::RawPtr(to, b)) => Some((from, a, to, b, true)),
+                (TyKind::RawPtr(from, a), TyKind::RawPtr(to, b)) => Some((from, a, to, b, false)),
+                _ => None,
+            }
             && (from == to || from == Mutability::Mut)
+            && let Some(equalities) = self.array_unsize(array, slice)
         {
-            if from == Mutability::Mut {
+            if from == Mutability::Mut && reborrow {
                 self.reborrows.insert(expr, to);
             }
             self.unsizes.insert(expr, expected);
-            if !self.unify(elem, expected_elem) {
+            if !equalities.into_iter().all(|(a, b)| self.unify(a, b)) {
                 let range = self.range(blamed);
                 self.mismatch(expected, actual, range);
             }
@@ -1036,6 +1080,11 @@ impl Ctx<'_> {
             crate::box_pointee(self.shallow(expected)),
         ) {
             let (p, q) = (self.shallow(p), self.shallow(q));
+            if let Some(equalities) = self.array_unsize(p, q) {
+                if equalities.into_iter().all(|(a, b)| self.unify(a, b)) { self.unsizes.insert(expr, expected); }
+                else { let range = self.range(blamed); self.mismatch(expected, actual, range); }
+                return;
+            }
             match (p.kind(), q.kind()) {
                 (TyKind::Array(elem, _), TyKind::Slice(wanted)) => {
                     if self.unify(elem, wanted) {
@@ -1104,6 +1153,9 @@ impl Ctx<'_> {
             (self.shallow(actual).kind(), self.shallow(expected).kind())
         {
             self.reborrows.insert(expr, m);
+            if m == Mutability::Mut {
+                self.mutable_place(expr, false, self.range(blamed));
+            }
             if !self.unify(pointee, expected_pointee) {
                 let range = self.range(blamed);
                 self.mismatch(expected, actual, range);
@@ -1117,8 +1169,8 @@ impl Ctx<'_> {
         {
             let parts = crate::ClosureArgs::split(args);
             let params_ok = self.unify(parts.params(), Ty::tuple(ptr.params()));
-            if params_ok && self.unify(parts.ret(), ptr.ret()) {
-                self.reified.insert(expr, ());
+            if !ptr.is_c && params_ok && self.unify(parts.ret(), ptr.ret()) {
+                self.reified.insert(expr, expected);
                 self.reified_closures.push((expr, actual, expected));
             } else {
                 let range = self.range(blamed);
@@ -1131,6 +1183,10 @@ impl Ctx<'_> {
         if let (TyKind::FnDef(def), TyKind::FnPtr(ptr)) =
             (self.shallow(actual).kind(), self.shallow(expected).kind())
         {
+            if self.items.functions[def.function].intrinsic {
+                self.error(self.range(blamed), "cannot coerce intrinsics to function pointers");
+                return;
+            }
             // A method of a trait object is called through its vtable,
             // which a function pointer would need a shim for.
             if matches!(
@@ -1144,7 +1200,7 @@ impl Ctx<'_> {
                 );
                 return;
             }
-            let extern_fn = self.items.functions[def.function].is_extern;
+            let c_abi = self.items.functions[def.function].c_abi;
             // Pointer input references are independently higher-ranked.
             // Fixed or constrained lifetimes in the item's signature cannot
             // be discarded when reifying it, including after `Clone`.
@@ -1166,14 +1222,14 @@ impl Ctx<'_> {
                 return;
             }
             let mut input_lifetimes = FxHashSet::default();
-            if regions.callback_binder == crate::regions::CallbackBinder::SignatureBound
+            if ptr.regions.is_none() && (regions.callback_binder == crate::regions::CallbackBinder::SignatureBound
                 || regions.params.iter().flatten().any(|r| match r {
                     crate::regions::Region::Static => true,
                     crate::regions::Region::Param(i) => {
                         *i < regions.owner || !input_lifetimes.insert(*i)
                     }
                     _ => false,
-                })
+                }))
             {
                 self.error(
                     self.range(blamed),
@@ -1185,12 +1241,23 @@ impl Ctx<'_> {
                 is_unsafe: ptr.is_unsafe,
                 ..def.sig
             }));
-            if !extern_fn && (ptr.is_unsafe || !def.sig.is_unsafe) && self.unify(reified, expected)
+            if ptr.is_c == c_abi && (ptr.is_unsafe || !def.sig.is_unsafe) && self.unify(reified, expected)
             {
-                self.reified.insert(expr, ());
+                self.reified.insert(expr, expected);
             } else {
                 let range = self.range(blamed);
                 self.mismatch(expected, actual, range);
+            }
+            return;
+        }
+        // Pointer binder coercions have no runtime cost, but MIR must retain
+        // a cast between their distinct lifetime recipes for the region proof.
+        if let (TyKind::FnPtr(from), TyKind::FnPtr(to)) = (self.shallow(actual).kind(), self.shallow(expected).kind()) {
+            let offered = Ty::new(TyKind::FnPtr(crate::FnSigTy { is_unsafe: to.is_unsafe, ..from }));
+            if from.is_c == to.is_c && (to.is_unsafe || !from.is_unsafe) && self.unify(offered, expected) {
+                self.reified.insert(expr, expected);
+            } else {
+                self.mismatch(expected, actual, self.range(blamed));
             }
             return;
         }
@@ -1282,6 +1349,13 @@ impl Ctx<'_> {
     /// supertrait (upcasting).
     fn unsize_to_dyn(&mut self, source: Ty, target: Ty, d: crate::DynTy, expr: ExprId) -> bool {
         let range = self.range(expr);
+        if crate::fn_trait_kind(self.items, d.trait_).is_some()
+            && d.args.iter().any(|&ty| crate::regions::slots(self.items, ty) != 0)
+            && !matches!(source.kind(), TyKind::Closure(..) | TyKind::Dynamic(_) | TyKind::FnDef(_) | TyKind::FnPtr(_))
+        {
+            self.error(range, "higher-ranked callable object coercions from non-closure types are not supported yet");
+            return true;
+        }
         // Constant evaluation keeps no vtables.
         if let Some(context) = self.const_context {
             self.error(
@@ -1304,7 +1378,7 @@ impl Ctx<'_> {
             }
             // Its associated types are the source's.
             for (&name, &ty) in d.assoc_names.iter().zip(d.assoc_tys) {
-                let given = crate::traits::dyn_projections(self.sigs, source, s)
+                let given = crate::traits::dyn_projections(self.items, self.sigs, source, s)
                     .into_iter()
                     .find(|p| p.alias.name == name)
                     .map(|p| p.ty);
@@ -1320,7 +1394,7 @@ impl Ctx<'_> {
         }
         let principal = crate::traits::dyn_principal(source, d);
         self.register(principal, range, solve::ObligationKind::Bound);
-        for p in crate::traits::dyn_projections(self.sigs, target, d) {
+        for p in crate::traits::dyn_projections(self.items, self.sigs, target, d) {
             if p.alias.args[0] == target && d.assoc_names.contains(&p.alias.name) {
                 let alias = crate::traits::alias_of(
                     crate::TraitRef {
@@ -1445,8 +1519,8 @@ impl Ctx<'_> {
                     crate::arc_pointee(self.items, self.shallow(expected))
                         .zip(crate::arc_pointee(self.items, self.shallow(ty)))
                 })
-            && self.shallow(e).is_unsized()
-            && !self.shallow(t).is_unsized()
+            && self.sigs.is_unsized(self.shallow(e))
+            && !self.sigs.is_unsized(self.shallow(t))
         {
             return;
         }
@@ -1465,9 +1539,9 @@ impl Ctx<'_> {
         }
         match (a.kind(), b.kind()) {
             (TyKind::Error, _) | (_, TyKind::Error) => true,
-            (TyKind::Infer(_), TyKind::Infer(_)) => true,
-            (TyKind::Infer(var), _) => !self.unknown(var).0 || b.as_int().is_some(),
-            (_, TyKind::Infer(var)) => !self.unknown(var).0 || a.as_int().is_some(),
+            (TyKind::Infer(a), TyKind::Infer(b)) => !(self.unknown(a).0 && self.float_var(b) || self.float_var(a) && self.unknown(b).0),
+            (TyKind::Infer(var), _) => self.accepts_var(var, b),
+            (_, TyKind::Infer(var)) => self.accepts_var(var, a),
             (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y))
             | (TyKind::Ref(m, x), TyKind::Ref(n, y)) => m == n && self.can_unify(x, y),
             (TyKind::Array(x, m), TyKind::Array(y, n)) => {
@@ -1499,7 +1573,7 @@ impl Ctx<'_> {
                         .all(|(&x, &y)| self.can_unify(x, y))
             }
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-                x.is_unsafe == y.is_unsafe
+                x.is_unsafe == y.is_unsafe && x.is_c == y.is_c
                     && x.inputs_output.len() == y.inputs_output.len()
                     && (x.inputs_output.iter().zip(y.inputs_output))
                         .all(|(&a, &b)| self.can_unify(a, b))
@@ -1529,6 +1603,7 @@ impl Ctx<'_> {
     fn describe(&mut self, ty: Ty) -> String {
         let ty = self.shallow(ty);
         match ty.kind() {
+            TyKind::Infer(var) if self.float_var(var) => "{float}".to_owned(),
             TyKind::Infer(var) => match self.unknown(var) {
                 (true, _) => "{integer}".to_owned(),
                 _ => "_".to_owned(),
@@ -1588,7 +1663,8 @@ impl Ctx<'_> {
     fn describe_sig(&mut self, sig: crate::FnSigTy) -> String {
         let params: Vec<String> = sig.params().iter().map(|&p| self.describe(p)).collect();
         let unsafety = if sig.is_unsafe { "unsafe " } else { "" };
-        let mut text = format!("{unsafety}fn({})", params.join(", "));
+        let abi = if sig.is_c { "extern \"C\" " } else { "" };
+        let mut text = format!("{unsafety}{abi}fn({})", params.join(", "));
         if self.shallow(sig.ret()) != Ty::UNIT {
             text.push_str(&format!(" -> {}", self.describe(sig.ret())));
         }
@@ -1658,6 +1734,7 @@ impl Ctx<'_> {
             self_trait: self.self_trait,
             self_types: &[],
             defaults: Some(&self.sigs.trait_defaults),
+            struct_fields: Some(&self.sigs.structs),
             lens: Some(&self.lens),
             function: None,
             unsized_params: &self.unsized_params,
@@ -1712,6 +1789,7 @@ impl Ctx<'_> {
             consts: &self.const_params,
             bounds: &self.param_env,
             defaults: Some(&self.sigs.trait_defaults),
+            struct_fields: Some(&self.sigs.structs),
             ..TypeScope::default()
         };
         let regions = walker.regions(written, ty);
@@ -1754,6 +1832,7 @@ impl Ctx<'_> {
             }
             TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, self.fill_placeholders(pointee, origin)),
             TyKind::FnPtr(_) => ty.map_fn(|t| self.fill_placeholders(t, origin)),
+            TyKind::Dynamic(d) => Ty::new(TyKind::Dynamic(d.map(|t| self.fill_placeholders(t, origin)))),
             TyKind::Ref(m, pointee) => {
                 Ty::new(TyKind::Ref(m, self.fill_placeholders(pointee, origin)))
             }
@@ -1775,6 +1854,7 @@ impl Ctx<'_> {
         &mut self,
         kind: &str,
         params: &[flux_hir::GenericParam],
+        default_owner: Option<flux_hir::def_map::Def>,
         written: Option<&SegmentArgs>,
         argument: bool,
         origin: TextRange,
@@ -1784,19 +1864,25 @@ impl Ctx<'_> {
         let Some(written) = written.filter(|w| !w.types.is_empty()) else {
             return (0..count).map(|_| self.new_var(false, origin)).collect();
         };
-        if written.types.len() != count {
-            self.error(
-                written.segment,
-                wrong_arg_count(kind, count, written.types.len()),
-            );
+        let message = if default_owner.is_some() {
+            crate::type_arg_count(kind, params, written.types.len())
+        } else {
+            (written.types.len() != count).then(|| wrong_arg_count(kind, count, written.types.len()))
+        };
+        if let Some(message) = message {
+            self.error(written.segment, message);
             return vec![Ty::ERROR; count];
         }
-        written
-            .types
-            .iter()
-            .zip(params)
-            .map(|(&ty, param)| self.resolve_generic_arg_ref_in(ty, param, argument))
-            .collect()
+        let mut args: Vec<Ty> = written.types.iter().zip(params)
+            .map(|(&ty, param)| self.resolve_generic_arg_ref_in(ty, param, argument)).collect();
+        if let Some(owner) = default_owner {
+            let scope = TypeScope { defaults: Some(&self.sigs.trait_defaults),
+                struct_fields: Some(&self.sigs.structs), lens: Some(&self.lens), ..TypeScope::default() };
+            let mut errors = Vec::new();
+            crate::fill_type_defaults(self.items, owner, &mut args, scope, &mut errors);
+            for (range, message) in errors { self.error(range, message); }
+        }
+        args
     }
 
     /// The generic argument `ty_ref` of the body, for `param`: a type, or
@@ -1837,6 +1923,7 @@ impl Ctx<'_> {
             self_trait: self.self_trait,
             self_types: &[],
             defaults: Some(&self.sigs.trait_defaults),
+            struct_fields: Some(&self.sigs.structs),
             lens: Some(&self.lens),
             function: None,
             unsized_params: &self.unsized_params,
@@ -1886,7 +1973,7 @@ impl Ctx<'_> {
         }
         // Named through a type alias: its type.
         if let Some(alias) = generics.and_then(|g| g.alias) {
-            let ty = self.resolve_type_ref(alias);
+            let ty = self.resolve_path_type(alias);
             return match ty.kind() {
                 TyKind::Adt(adt, _) if adt.strukt == strukt => ty,
                 _ => Ty::ERROR,
@@ -1897,7 +1984,7 @@ impl Ctx<'_> {
             return Ty::adt(strukt, def.name, &[]);
         }
         let kind = if def.is_enum() { "enum" } else { "struct" };
-        let args = self.own_args(kind, &def.generics.params, written.as_ref(), false, origin);
+        let args = self.own_args(kind, &def.generics.params, Some(flux_hir::def_map::Def::Struct(strukt)), written.as_ref(), false, origin);
         Ty::adt(strukt, def.name, &args)
     }
 
@@ -1948,7 +2035,7 @@ impl Ctx<'_> {
             return None;
         };
         let params = &self.items.structs[adt.strukt].generics.params;
-        let args = self.own_args("struct", params, Some(&written), false, self.range(expr));
+        let args = self.own_args("struct", params, Some(flux_hir::def_map::Def::Struct(adt.strukt)), Some(&written), false, self.range(expr));
         let ty = Ty::adt(adt.strukt, adt.name, &args);
         // `W::<u8>`, which must meet `W`'s bounds.
         let range = TextRange::new(self.range(expr).start(), written.range.end());
@@ -2107,6 +2194,9 @@ impl Ctx<'_> {
         let mut found = None;
         let mut count = 0;
         for f in candidates {
+            if items.is_std(items.functions[f].loc.module)
+                && items.impl_of(f).is_some_and(|id| items.impls[id].trait_.is_none())
+                && !items.std_available(self.module) { continue; }
             let applies = match (target, items.impl_of(f)) {
                 (Some(target), Some(owner)) => {
                     let impl_ty = sigs.impls.get(owner).copied().unwrap_or(Ty::ERROR);
@@ -2132,7 +2222,7 @@ impl Ctx<'_> {
         let ty = self.shallow(ty);
         match (pattern.kind(), ty.kind()) {
             (TyKind::Param(_) | TyKind::Error, _) | (_, TyKind::Error) => true,
-            (_, TyKind::Infer(var)) => !self.unknown(var).0 || pattern.as_int().is_some(),
+            (_, TyKind::Infer(var)) => self.accepts_var(var, pattern),
             (TyKind::Adt(a, xs), TyKind::Adt(b, ys)) => {
                 a == b && xs.iter().zip(ys).all(|(&x, &y)| self.impl_applies(x, y))
             }
@@ -2146,7 +2236,7 @@ impl Ctx<'_> {
             }
             (TyKind::Slice(x), TyKind::Slice(y)) => self.impl_applies(x, y),
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-                x.is_unsafe == y.is_unsafe
+                x.is_unsafe == y.is_unsafe && x.is_c == y.is_c
                     && x.inputs_output.len() == y.inputs_output.len()
                     && (x.inputs_output.iter().zip(y.inputs_output))
                         .all(|(&a, &b)| self.impl_applies(a, b))
@@ -2212,6 +2302,7 @@ impl Ctx<'_> {
         let own = self.own_args(
             kind,
             &data.generics.params[..explicit],
+            None,
             written.as_ref(),
             true,
             origin,
@@ -2239,6 +2330,7 @@ impl Ctx<'_> {
     fn check_pat_in(&mut self, pat: PatId, expected: Ty, mode: BindingMode, uninit: bool) {
         let (body, items) = (self.body, self.items);
         let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
+        let legacy = self.source_map.pat_editions.get(pat).copied().unwrap_or_else(|| items.edition(self.module)) != flux_syntax::Edition::E2024;
         // As in rustc, a literal of a reference type (`"a"`, `b"a"`)
         // matches a reference, so does not see through one.
         let reference_literal = |e: ExprId| {
@@ -2268,7 +2360,7 @@ impl Ctx<'_> {
             Pat::Bind { binding, sub } => {
                 let data = &body.bindings[*binding];
                 let own = body.alt_by_ref.get(pat).copied().unwrap_or(data.by_ref);
-                if mode != BindingMode::Move && (own.is_some() || data.mutable) {
+                if !legacy && mode != BindingMode::Move && (own.is_some() || data.mutable) {
                     let message = if own.is_some() {
                         "cannot explicitly borrow within an implicitly-borrowing pattern"
                     } else {
@@ -2280,6 +2372,7 @@ impl Ctx<'_> {
                 let by_ref = match (own, mode) {
                     (Some(true), _) => Some(Mutability::Mut),
                     (Some(false), _) => Some(Mutability::Not),
+                    (None, _) if legacy && data.mutable => None,
                     (None, BindingMode::Move) => None,
                     (None, BindingMode::Ref(m)) => Some(m),
                 };
@@ -2312,7 +2405,7 @@ impl Ctx<'_> {
                 pat: inner,
                 mutable,
             } => {
-                if mode != BindingMode::Move {
+                if !legacy && mode != BindingMode::Move {
                     let at = TextRange::new(range.start(), (range.start() + 1).min(range.end()));
                     self.mode_errors.push((
                         at,
@@ -2731,6 +2824,13 @@ impl Ctx<'_> {
         let body = self.body;
         match &body.exprs[id] {
             Expr::Missing => Ty::ERROR,
+            Expr::Literal(Literal::Float { suffix, text }) => {
+                self.deferred.push(Deferred::FloatLiteral { expr: id, text: *text });
+                match suffix.and_then(FloatTy::from_name) {
+                    Some(float) => Ty::float(float),
+                    None => self.new_float_var(self.range(id)),
+                }
+            },
             Expr::Literal(Literal::Bool(_)) => Ty::BOOL,
             Expr::Literal(Literal::CStr(_)) => c_str_ref(),
             Expr::Literal(Literal::Char(_)) => Ty::CHAR,
@@ -3231,7 +3331,11 @@ impl Ctx<'_> {
                 // `&x as &dyn Tr`, `p as *const dyn Tr`: an unsizing
                 // coercion.
                 if let TyKind::Ref(_, object) | TyKind::RawPtr(_, object) = to.kind()
-                    && object.is_dyn()
+                    && (object.is_dyn() || matches!(to.kind(), TyKind::RawPtr(..))
+                        && match self.shallow(from).kind() {
+                            TyKind::Ref(_, source) | TyKind::RawPtr(_, source) => self.array_unsize(source, object).is_some(),
+                            _ => false,
+                        })
                     && self.can_coerce(from, to, *expr)
                 {
                     self.coerce(from, to, *expr);
@@ -3302,20 +3406,15 @@ impl Ctx<'_> {
         let control_flow = lang("ControlFlow");
         let arg = |args: &[Ty], i: usize| args.get(i).copied().unwrap_or(Ty::ERROR);
         // What it breaks with: `None`, an error, or a `Break` value.
-        enum Residual {
-            Option,
-            Result(Ty),
-            Break(Ty),
-        }
         let (output, residual) = match ty.kind() {
             TyKind::Adt(adt, args) if Some(adt.strukt) == option => {
-                (arg(args, 0), Residual::Option)
+                (arg(args, 0), TryResidual::Option)
             }
             TyKind::Adt(adt, args) if Some(adt.strukt) == result => {
-                (arg(args, 0), Residual::Result(arg(args, 1)))
+                (arg(args, 0), TryResidual::Result(arg(args, 1)))
             }
             TyKind::Adt(adt, args) if Some(adt.strukt) == control_flow => {
-                (arg(args, 1), Residual::Break(arg(args, 0)))
+                (arg(args, 1), TryResidual::Break(arg(args, 0)))
             }
             TyKind::Error => return Ty::ERROR,
             TyKind::Infer(var) if !self.unknown(var).0 => {
@@ -3344,16 +3443,33 @@ impl Ctx<'_> {
             }
             None => {}
         }
-        let ret = self.shallow(self.ret);
+        if matches!(self.shallow(self.ret).kind(), TyKind::Infer(_)) {
+            // The closure's tail or later use can determine its return type.
+            // Do not force Result's error type to the operand's error type:
+            // FromResidual may convert it to a different error after inference.
+            self.pending_try_returns.push((id, residual, self.ret));
+        } else {
+            self.check_try_return(id, residual, self.ret);
+        }
+        output
+    }
+
+    fn check_try_return(&mut self, id: ExprId, residual: TryResidual, ret: Ty) {
+        let whole = self.range(id);
+        let question = self.source_map.ops.get(id).copied().unwrap_or(whole);
+        let lang = |name: &str| self.items.lang_enums.get(&Symbol::intern(name)).copied();
+        let (option, result, control_flow) = (lang("Option"), lang("Result"), lang("ControlFlow"));
+        let arg = |args: &[Ty], i: usize| args.get(i).copied().unwrap_or(Ty::ERROR);
+        let ret = self.shallow(ret);
         let ret_adt = match ret.kind() {
-            TyKind::Error => return output,
+            TyKind::Error => return,
             TyKind::Adt(adt, args) => Some((adt.strukt, args)),
             _ => None,
         };
         let in_control_flow = "the `?` operator can only be used on `ControlFlow`s in a function that returns `ControlFlow`";
         match (residual, ret_adt) {
-            (Residual::Option, Some((s, _))) if Some(s) == option => {}
-            (Residual::Break(b), Some((s, args))) if Some(s) == control_flow => {
+            (TryResidual::Option, Some((s, _))) if Some(s) == option => {}
+            (TryResidual::Break(b), Some((s, args))) if Some(s) == control_flow => {
                 let wanted = arg(args, 0);
                 if self.can_unify(b, wanted) {
                     self.unify(b, wanted);
@@ -3364,18 +3480,18 @@ impl Ctx<'_> {
                     );
                 }
             }
-            (Residual::Break(_), Some((s, _))) if Some(s) == option => self.error(
+            (TryResidual::Break(_), Some((s, _))) if Some(s) == option => self.error(
                 question,
                 "the `?` operator can only be used on `Option`s in a function that returns `Option`",
             ),
-            (Residual::Break(_), Some((s, _))) if Some(s) == result => self.error(
+            (TryResidual::Break(_), Some((s, _))) if Some(s) == result => self.error(
                 question,
                 "the `?` operator can only be used on `Result`s in a function that returns `Result`",
             ),
-            (Residual::Option | Residual::Result(_), Some((s, _))) if Some(s) == control_flow => {
+            (TryResidual::Option | TryResidual::Result(_), Some((s, _))) if Some(s) == control_flow => {
                 self.error(question, in_control_flow)
             }
-            (Residual::Result(error), Some((s, args))) if Some(s) == result => {
+            (TryResidual::Result(error), Some((s, args))) if Some(s) == result => {
                 let target = arg(args, 1);
                 let from = self.items.lang_traits.get(&Symbol::intern("From")).copied();
                 let function = from.and_then(|t| {
@@ -3397,11 +3513,11 @@ impl Ctx<'_> {
                     self.select_obligations();
                 }
             }
-            (Residual::Option, Some((s, _))) if Some(s) == result => self.error(
+            (TryResidual::Option, Some((s, _))) if Some(s) == result => self.error(
                 question,
                 "the `?` operator can only be used on `Result`s, not `Option`s, in a function that returns `Result`",
             ),
-            (Residual::Result(_), Some((s, _))) if Some(s) == option => self.error(
+            (TryResidual::Result(_), Some((s, _))) if Some(s) == option => self.error(
                 question,
                 "the `?` operator can only be used on `Option`s, not `Result`s, in a function that returns `Option`",
             ),
@@ -3410,7 +3526,6 @@ impl Ctx<'_> {
                 "the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)",
             ),
         }
-        output
     }
 
     /// `match scrutinee { arms }`: the arms' common type, where `!` arms
@@ -3653,13 +3768,23 @@ impl Ctx<'_> {
         }
         if let (Some(p), Some(q)) = (crate::box_pointee(actual), crate::box_pointee(expected)) {
             let (p, q) = (self.shallow(p), self.shallow(q));
+            if let Some(equalities) = self.array_unsize(p, q) { return equalities.into_iter().all(|(a, b)| self.can_unify(a, b)); }
             match (p.kind(), q.kind()) {
                 (TyKind::Array(elem, _), TyKind::Slice(wanted)) => {
                     return self.can_unify(elem, wanted);
                 }
-                (_, TyKind::Dynamic(_)) if !self.can_unify(p, q) => return !p.is_unsized(),
+                (_, TyKind::Dynamic(_)) if !self.can_unify(p, q) => return !self.sigs.is_unsized(p),
                 _ => {}
             }
+        }
+        if let Some((from, a, to, b)) = match (actual.kind(), expected.kind()) {
+            (TyKind::Ref(from, a), TyKind::Ref(to, b))
+            | (TyKind::Ref(from, a), TyKind::RawPtr(to, b))
+            | (TyKind::RawPtr(from, a), TyKind::RawPtr(to, b)) => Some((from, a, to, b)),
+            _ => None,
+        } && (from == to || from == Mutability::Mut)
+            && let Some(equalities) = self.array_unsize(a, b) {
+            return equalities.into_iter().all(|(a, b)| self.can_unify(a, b));
         }
         match (actual.kind(), expected.kind()) {
             (TyKind::Ref(from, array), TyKind::Ref(to, slice))
@@ -3703,16 +3828,17 @@ impl Ctx<'_> {
             }
             (TyKind::Closure(_, args), TyKind::FnPtr(ptr)) => {
                 let parts = crate::ClosureArgs::split(args);
-                return self.can_unify(parts.params(), Ty::tuple(ptr.params()))
+                return !ptr.is_c && self.can_unify(parts.params(), Ty::tuple(ptr.params()))
                     && self.can_unify(parts.ret(), ptr.ret());
             }
             (TyKind::FnDef(def), TyKind::FnPtr(ptr)) => {
-                let extern_fn = self.items.functions[def.function].is_extern;
+                if self.items.functions[def.function].intrinsic { return false; }
+                let c_abi = self.items.functions[def.function].c_abi;
                 let reified = Ty::new(TyKind::FnPtr(crate::FnSigTy {
                     is_unsafe: ptr.is_unsafe,
                     ..def.sig
                 }));
-                return !extern_fn
+                return ptr.is_c == c_abi
                     && (ptr.is_unsafe || !def.sig.is_unsafe)
                     && self.can_unify(reified, expected);
             }
@@ -3813,7 +3939,8 @@ impl Ctx<'_> {
             Expr::Path(Res::Err) | Expr::Missing => None,
             _ => {
                 let ty = self.infer_expr(callee);
-                match self.shallow(ty).kind() {
+                let (callable, _) = self.autoderef(ty);
+                match callable.kind() {
                     TyKind::FnDef(def) => {
                         return self.call_value(id, callee, def.sig, Some(def.function), args);
                     }
@@ -4016,7 +4143,7 @@ impl Ctx<'_> {
             function,
             name,
             args: Ty::list(&args),
-            sig: crate::FnSigTy::new(&sig.params, sig.ret, data.is_unsafe),
+            sig: crate::FnSigTy { is_c: data.c_abi, ..crate::FnSigTy::new(&sig.params, sig.ret, data.is_unsafe) },
         }))
     }
 
@@ -4115,7 +4242,7 @@ impl Ctx<'_> {
                 });
                 self.select(candidates, target)
             }
-            _ => Ok(function),
+            _ => self.select(std::iter::once(function), target),
         };
         match selected {
             Ok(function) => Some((function, target, None)),
@@ -4779,7 +4906,7 @@ impl Ctx<'_> {
                 .map(|(i, _)| (i, sigs.field_types(adt.strukt, args)[i]))
                 .map(|(i, ty)| (i, self.normalize(ty, range))),
             TyKind::Error => return Ty::ERROR,
-            TyKind::Int(_) | TyKind::Bool => {
+            TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool => {
                 self.error(
                     range,
                     format!("`{base_ty}` is a primitive type and therefore doesn't have fields"),
@@ -5057,7 +5184,8 @@ impl Ctx<'_> {
         };
         loop {
             for mode in [None, Some(Mutability::Not), Some(Mutability::Mut)] {
-                match self.probe_method(base, mode, method, inherent(base), traits) {
+                match self.probe_method(base, mode, method, inherent(base), traits,
+                    (method.as_str() == "into_iter").then(|| self.expression_edition(id))) {
                     Ok(Some((function, trait_args, target, through))) => {
                         let (d, mode) = if through {
                             let TyKind::Ref(m, _) = base.kind() else {
@@ -5116,7 +5244,7 @@ impl Ctx<'_> {
         if let TyKind::Array(elem, _) = base.kind() {
             let slice = Ty::new(TyKind::Slice(elem));
             for mode in [Mutability::Not, Mutability::Mut] {
-                match self.probe_method(slice, Some(mode), method, inherent(slice), traits) {
+                match self.probe_method(slice, Some(mode), method, inherent(slice), traits, None) {
                     Ok(Some((function, trait_args, target, _))) => {
                         self.record_overloaded_derefs(id, &steps);
                         return self.check_method(
@@ -5247,7 +5375,7 @@ impl Ctx<'_> {
         }
         let ty = self.describe(receiver_ty);
         let message = match receiver_ty.kind() {
-            TyKind::Int(_) | TyKind::Bool | TyKind::Tuple(_) | TyKind::RawPtr(..) => {
+            TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool | TyKind::Tuple(_) | TyKind::RawPtr(..) => {
                 format!("methods on `{ty}` are not supported yet")
             }
             _ => format!("the method `{method}` on `{ty}` is not supported yet"),
@@ -5268,6 +5396,7 @@ impl Ctx<'_> {
         name: Symbol,
         inherent: &[flux_hir::AssocItem],
         traits: bool,
+        into_iter_edition: Option<flux_syntax::Edition>,
     ) -> Result<Option<(FunctionId, Option<crate::GenericArgs>, Ty, bool)>, ()> {
         let items = self.items;
         // A candidate is the actual receiver type, not just impl Self:
@@ -5334,6 +5463,22 @@ impl Ctx<'_> {
                         .map(|(f, t)| (f, t, borrowed, false)),
                 );
             }
+        }
+        if let Some(edition) = into_iter_edition {
+            found.retain(|&(function, _, target, _)| {
+                let skip_owned = match target.kind() {
+                    TyKind::Array(..) => matches!(edition, flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018),
+                    _ => edition != flux_syntax::Edition::E2024
+                        && crate::box_pointee(target).is_some_and(|ty| matches!(ty.kind(), TyKind::Slice(_))),
+                };
+                if !skip_owned { return true; }
+                let owner = match items.functions[function].owner {
+                    Some(flux_hir::Owner::Trait(trait_)) => Some(trait_),
+                    Some(flux_hir::Owner::Impl(imp)) => self.sigs.impl_traits.get(imp).map(|t| t.trait_),
+                    None => None,
+                };
+                !owner.is_some_and(|trait_| items.traits[trait_].lang.is_some_and(|name| name.as_str() == "IntoIterator"))
+            });
         }
         // At the same receiver candidate, a type parameter's bound
         // methods precede in-scope impl methods, including those with
@@ -5420,6 +5565,9 @@ impl Ctx<'_> {
         self.register_call_bounds(function, &generic_args, site, Some(base));
         self.select_obligations();
         let sig = &self.instance_sig(function, &generic_args);
+        // The result context constrains generic parameters before defaults
+        // such as `&[]` fix them to an array reference (`map_or`).
+        self.meet_expectation(id, sig.ret);
         // The arguments other than closures, each coerced to its
         // parameter, as rustc checks them; closures follow, once the
         // others told what they can (`fold(0i32, |acc, x| ..)`'s `acc`).
@@ -5459,6 +5607,13 @@ impl Ctx<'_> {
         }
         let sig = &self.instance_sig(function, &generic_args);
         self.meet_expectation(id, sig.ret);
+        // A by-value method on `&mut T` reborrows its receiver, just as
+        // passing that reference to an ordinary `&mut T` parameter does.
+        let (derefs, autoref) = if autoref.is_none()
+            && matches!(self.shallow(base).kind(), TyKind::Ref(Mutability::Mut, _))
+        {
+            (derefs + 1, Some(Mutability::Mut))
+        } else { (derefs, autoref) };
         if autoref == Some(Mutability::Mut) {
             // As rustc's `convert_place_derefs_to_mutable` of the
             // receiver: its overloaded dereferences, and if it is used
@@ -5558,15 +5713,17 @@ impl Ctx<'_> {
             }
             BinaryOp::Arith(arith) => self.infer_arith(id, op, arith, lhs, rhs),
             BinaryOp::Assign(arith) => {
-                if arith.is_none() {
-                    self.check_place(id, lhs, true);
-                }
                 let previous = self.union_write;
                 if arith.is_none() {
                     self.union_write = Some(lhs);
                 }
                 let ty = self.infer_expr(lhs);
                 self.union_write = previous;
+                if arith.is_none() {
+                    // Field/index autodereferences are known only after the
+                    // left expression has been inferred.
+                    self.check_place(id, lhs, true);
+                }
                 self.mutable_place(lhs, true, self.range(id));
                 match arith {
                     None => {
@@ -5638,7 +5795,7 @@ impl Ctx<'_> {
         }
         // `1 + &2` and `x += &1`, through `core`'s `impl Add<&i32> for
         // i32`. A comparison wants the same type on both sides.
-        let primitive = matches!(operand.kind(), TyKind::Int(_) | TyKind::Bool)
+        let primitive = matches!(operand.kind(), TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool)
             || matches!(operand.kind(), TyKind::Infer(var) if self.unknown(var).0);
         let reference_rhs = primitive
             && !matches!(op, BinaryOp::Cmp(_))
@@ -5832,6 +5989,8 @@ impl Ctx<'_> {
             _ => false,
         };
         let both_integral = integral(self, l) && integral(self, r);
+        let floating = |cx: &mut Self, ty: Ty| match ty.kind() { TyKind::Float(_) => true, TyKind::Infer(v) => cx.float_var(v), _ => false };
+        let both_float = floating(self, l) && floating(self, r);
         let same = match op {
             BinaryOp::Arith(ArithOp::Shl | ArithOp::Shr)
             | BinaryOp::Assign(Some(ArithOp::Shl | ArithOp::Shr)) => {
@@ -5839,11 +5998,11 @@ impl Ctx<'_> {
             }
             BinaryOp::Arith(arith) | BinaryOp::Assign(Some(arith)) => {
                 let bitwise = matches!(arith, ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor);
-                both_integral || (bitwise && l == Ty::BOOL && r == Ty::BOOL)
+                both_integral || (!bitwise && both_float) || (bitwise && l == Ty::BOOL && r == Ty::BOOL)
             }
             BinaryOp::Cmp(_) => {
                 let scalar = |cx: &mut Self, ty: Ty| {
-                    integral(cx, ty)
+                    integral(cx, ty) || floating(cx, ty)
                         || matches!(ty.kind(), TyKind::Bool | TyKind::Char | TyKind::RawPtr(..))
                 };
                 scalar(self, l) && scalar(self, r)
@@ -6056,6 +6215,12 @@ impl Ctx<'_> {
     /// (`let x; x = 1;`). Assignments to fields are checked with
     /// initialization, in MIR.
     fn check_place(&mut self, assignment: ExprId, lhs: ExprId, plain: bool) {
+        if plain && let Expr::Tuple(fields) = self.body.exprs[lhs] {
+            for field in self.body.lists[fields].to_vec() {
+                self.check_place(assignment, field, true);
+            }
+            return;
+        }
         self.mutable_place(lhs, true, self.range(assignment));
         match self.body.exprs[lhs] {
             Expr::Field { .. }
@@ -6068,7 +6233,13 @@ impl Ctx<'_> {
                 let mut base = lhs;
                 loop {
                     match self.body.exprs[base] {
-                        Expr::Field { expr, .. } => base = expr,
+                        Expr::Field { expr, .. } => {
+                            // A call returning a reference (or a Deref owner)
+                            // supplies a place behind its implicit dereference.
+                            // MIR checks whether that place is mutable.
+                            if self.field_derefs.get(base).is_some() { return; }
+                            base = expr;
+                        }
                         Expr::Index { base: inner, .. } => {
                             // Behind a pointer, or what `index_mut`
                             // returns a reference to.
@@ -6136,6 +6307,7 @@ impl Ctx<'_> {
     /// Reports a reference to a `static mut` made by `expr`, as edition
     /// 2024's deny-by-default `static_mut_refs` lint does.
     fn static_mut_ref(&mut self, expr: ExprId, mutable: bool) {
+        if self.expression_edition(expr) != flux_syntax::Edition::E2024 { return; }
         let what = if mutable { "mutable" } else { "shared" };
         self.error(
             self.range(expr),
@@ -6147,6 +6319,26 @@ impl Ctx<'_> {
 
     fn finish(mut self) -> InferenceResult {
         let mut reported = std::mem::take(&mut self.reported_vars);
+        for (expr, residual, ret) in std::mem::take(&mut self.pending_try_returns) {
+            self.check_try_return(expr, residual, ret);
+        }
+        // Comparisons of unannotated closure parameters may learn their
+        // operand types only from later uses. Select their trait operations
+        // before resolving maps or analyzing captures, not as builtin ops.
+        let deferred = std::mem::take(&mut self.deferred);
+        for check in deferred {
+            if let Deferred::Binary { expr, op: BinaryOp::Cmp(cmp), ty, rhs } = check
+                && let Expr::Binary { rhs: right, .. } = self.body.exprs[expr]
+                && matches!(self.shallow(ty).kind(), TyKind::Adt(..) | TyKind::Param(_)
+                    | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Ref(..)
+                    | TyKind::Array(..) | TyKind::Slice(_) | TyKind::Str
+                    | TyKind::CStr | TyKind::Tuple([_, ..]))
+                && self.overload(expr, BinaryOp::Cmp(cmp), ty, (right, rhs)).is_some()
+            {
+                continue;
+            }
+            self.deferred.push(check);
+        }
         // What closures capture needs the types, as rustc finds it after
         // inference, integer literals' defaults included.
         if !self.closures.is_empty() {
@@ -6170,22 +6362,6 @@ impl Ctx<'_> {
         for (expr, _) in self.body.exprs.iter() {
             if let Some(&ty) = self.expr_types.get(expr) {
                 let ty = self.resolve(ty, &mut reported);
-                // MIR currently uses 2024 temporary scopes. Keep 2021's accepted
-                // subset free of observable destructor order, including generic
-                // values that may acquire Drop after monomorphization. A tuple
-                // constructor only transfers its parameters into the result; it
-                // creates no scoped temporaries and is safe in either edition.
-                if self.items.edition(self.module) == flux_syntax::Edition::E2021
-                    && !self
-                        .owner_fn
-                        .is_some_and(|f| self.items.functions[f].ctor.is_some())
-                    && crate::traits::needs_drop(self.items, self.sigs, &self.param_env, ty)
-                {
-                    self.error(
-                        self.range(expr),
-                        "values requiring drop in edition 2021 are not supported yet",
-                    );
-                }
                 self.expr_types.insert(expr, ty);
             }
         }
@@ -6252,6 +6428,7 @@ impl Ctx<'_> {
                     consts: &self.const_params,
                     bounds: &self.param_env,
                     defaults: Some(&self.sigs.trait_defaults),
+            struct_fields: Some(&self.sigs.structs),
                     ..TypeScope::default()
                 };
                 let regions = walker.regions(&self.body.types[written], ty);
@@ -6309,6 +6486,12 @@ impl Ctx<'_> {
             consts.insert(expr, ConstInstance { konst, args });
         }
         self.consts = used;
+        let mut never_coercions = ArenaMap::new();
+        for (expr, _) in self.body.exprs.iter() {
+            if let Some(&ty) = self.never_coercions.get(expr) {
+                never_coercions.insert(expr, self.resolve(ty, &mut reported));
+            }
+        }
         let mut unsizes = ArenaMap::new();
         for (expr, _) in self.body.exprs.iter() {
             if let Some(&ty) = self.unsizes.get(expr) {
@@ -6347,7 +6530,9 @@ impl Ctx<'_> {
         let mut let_regions = ArenaMap::new();
         for (pat, &(written, ty)) in annotations.iter() {
             let ty = self.resolve(ty, &mut reported);
-            let mut walker = crate::regions::Walker::new(self.items, self.module, Vec::new());
+            let names = self.owner_fn.and_then(|f| self.sigs.regions.fns.get(f))
+                .map_or_else(Vec::new, |r| r.names.iter().map(|n| n.name).collect());
+            let mut walker = crate::regions::Walker::new(self.items, self.module, names);
             walker.body = true;
             walker.scope = TypeScope {
                 self_ty: self.self_ty,
@@ -6355,6 +6540,7 @@ impl Ctx<'_> {
                 consts: &self.const_params,
                 bounds: &self.param_env,
                 defaults: Some(&self.sigs.trait_defaults),
+            struct_fields: Some(&self.sigs.structs),
                 ..TypeScope::default()
             };
             let regions = walker.regions(&self.body.types[written], ty);
@@ -6372,7 +6558,7 @@ impl Ctx<'_> {
                     self.error(range, message);
                 }
             }
-            if regions.contains(&crate::regions::Region::Static) {
+            if regions.iter().any(|r| matches!(r, crate::regions::Region::Static | crate::regions::Region::Param(_))) {
                 let_regions.insert(pat, (ty, regions));
             }
         }
@@ -6386,11 +6572,6 @@ impl Ctx<'_> {
                 && self.in_static_mut(receiver)
             {
                 self.static_mut_ref(call, m == Mutability::Mut);
-            }
-        }
-        if self.items.edition(self.module) == flux_syntax::Edition::E2021 {
-            for (_, message) in &mut self.mode_errors {
-                *message = "binding modifiers under match ergonomics in edition 2021 are not supported yet";
             }
         }
         let mut deferred_pats = false;
@@ -6440,7 +6621,13 @@ impl Ctx<'_> {
                 },
             );
         }
+        let mut reified = ArenaMap::new();
+        let reifications = std::mem::take(&mut self.reified);
+        for (expr, &ty) in reifications.iter() {
+            reified.insert(expr, self.resolve(ty, &mut reported));
+        }
         InferenceResult {
+            never_coercions,
             closures,
             expr_types: self.expr_types,
             binding_types: self.binding_types,
@@ -6452,7 +6639,7 @@ impl Ctx<'_> {
             deref_coercions: self.deref_coercions,
             overloaded_derefs,
             coercion_derefs,
-            reified: self.reified,
+            reified,
             calls,
             call_regions,
             overloads,
@@ -6526,7 +6713,7 @@ impl Ctx<'_> {
     /// Whether `core`'s operator impls for `ty` are `const` in rustc's.
     fn const_operand(&self, ty: Ty) -> bool {
         match ty.kind() {
-            TyKind::Int(_) | TyKind::Bool | TyKind::Tuple([]) | TyKind::Error => true,
+            TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool | TyKind::Tuple([]) | TyKind::Error => true,
             TyKind::Ref(_, pointee) | TyKind::Slice(pointee) => self.const_operand(pointee),
             TyKind::Adt(adt, args) => {
                 let data = &self.items.structs[adt.strukt];
@@ -6646,7 +6833,7 @@ impl Ctx<'_> {
                 self.unknown_vars(t, out);
                 self.unknown_vars(len, out);
             }
-            TyKind::FnDef(_) | TyKind::FnPtr(_) => {
+            TyKind::FnDef(_) | TyKind::FnPtr(_) | TyKind::Dynamic(_) => {
                 for t in ty.children() {
                     self.unknown_vars(t, out);
                 }
@@ -6655,12 +6842,38 @@ impl Ctx<'_> {
         }
     }
 
+    /// Collect every equality required by structural array unsizing. Probes
+    /// only inspect these; coercions must commit prefix and element equalities.
+    fn array_unsize(&mut self, mut from: Ty, mut to: Ty) -> Option<Vec<(Ty, Ty)>> {
+        let mut equalities = Vec::new();
+        for _ in 0..256 {
+            from = self.shallow(from);
+            to = self.shallow(to);
+            match (from.kind(), to.kind()) {
+                (TyKind::Array(a, _), TyKind::Slice(b)) => {
+                    equalities.push((a, b));
+                    return Some(equalities);
+                }
+                (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a == b => {
+                    let (a, b) = (self.sigs.fields(from)?, self.sigs.fields(to)?);
+                    let last = a.len().checked_sub(1)?;
+                    if a.len() != b.len() || !a[..last].iter().zip(&b[..last]).all(|(&a, &b)| self.can_unify(a, b)) { return None; }
+                    equalities.extend(a[..last].iter().copied().zip(b[..last].iter().copied()));
+                    from = a[last];
+                    to = b[last];
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
     /// Whether values of `ty` may have no size known at compile time
     /// here: a slice, `str`, or a parameter without an implicit `Sized`
     /// bound that no bound makes `Sized`.
     fn is_unsized(&mut self, ty: Ty) -> bool {
         let ty = self.shallow(ty);
-        crate::maybe_unsized(self.items, ty, &self.unsized_params, &self.param_env)
+        crate::maybe_unsized(self.items, self.sigs, ty, &self.unsized_params, &self.param_env)
     }
 
     /// A generic parameter is `Sized` unless it is a trait's `Self` or
@@ -6708,11 +6921,15 @@ impl Ctx<'_> {
     /// asked its length; a binding of one is reported at its pattern, as
     /// rustc does.
     fn check_sized(&mut self) {
+        // Constructor items exist for DST tuple structs. Their synthetic body
+        // is a schema; every actual call still needs sized argument values.
+        if self.owner_fn.is_some_and(|f| self.items.functions[f].ctor.is_some()) { return; }
         let body = self.body;
         let mut places = FxHashSet::default();
         for (id, expr) in body.exprs.iter() {
             match *expr {
-                Expr::Ref { expr, .. } | Expr::Index { base: expr, .. } => {
+                Expr::Ref { expr, .. } | Expr::RawRef { expr, .. }
+                | Expr::Field { expr, .. } | Expr::Index { base: expr, .. } => {
                     places.insert(expr);
                 }
                 Expr::MethodCall { receiver, .. }
@@ -6778,7 +6995,10 @@ impl Ctx<'_> {
                         init: Some(init),
                         ..
                     } = *stmt
-                        && matches!(body.pats[pat], Pat::Bind { .. })
+                        // Destructuring a place observes its elements; it
+                        // does not materialize an unsized slice value. An
+                        // unsized by-value binding is still rejected above.
+                        && (matches!(body.pats[pat], Pat::Bind { .. }) || is_place_expr(body, init))
                         // A call's value must be sized, wherever it goes.
                         && !matches!(body.exprs[init], Expr::Call { .. } | Expr::MethodCall { .. })
                     {
@@ -6791,7 +7011,8 @@ impl Ctx<'_> {
             .expr_types
             .iter()
             .filter(|&(id, ty)| {
-                (ty.is_unsized() || matches!(ty.kind(), TyKind::Param(_))) && !places.contains(&id)
+                (self.sigs.is_unsized(*ty) || matches!(ty.kind(), TyKind::Param(_)))
+                    && (!places.contains(&id) || matches!(body.exprs[id], Expr::Call { .. } | Expr::MethodCall { .. }))
             })
             .map(|(id, ty)| (id, *ty))
             .collect();
@@ -6813,17 +7034,12 @@ impl Ctx<'_> {
             TyKind::Infer(var) => {
                 let (value, origin) = self.vars[var.0 as usize];
                 let ty = match value {
+                    VarValue::Unknown { float: true, .. } => Ty::float(FloatTy::F64),
                     VarValue::Unknown { int: true, .. } => Ty::int(IntTy::I32),
                     VarValue::Unknown {
                         diverging: true, ..
                     } => {
-                        if self.items.edition(self.module) == flux_syntax::Edition::E2021 {
-                            self.error(
-                                origin,
-                                "never type fallback in edition 2021 is not supported yet",
-                            );
-                        }
-                        Ty::NEVER
+                        if self.items.edition(self.module) != flux_syntax::Edition::E2024 { Ty::UNIT } else { Ty::NEVER }
                     }
                     _ => {
                         if reported.insert(var) && !self.tainted {
@@ -6864,6 +7080,7 @@ impl Ctx<'_> {
                 let args = crate::ty::map_list(opaque.args, |a| self.resolve(a, reported));
                 Ty::opaque(crate::OpaqueTy { args, ..opaque })
             }
+            TyKind::Dynamic(d) if ty.has_infer() => Ty::new(TyKind::Dynamic(d.map(|t| self.resolve(t, reported)))),
             _ => ty,
         }
     }
@@ -7039,11 +7256,7 @@ impl Ctx<'_> {
                     let ty = self.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
                     let ty = self.resolve(ty, reported);
                     // A range reports its other types itself.
-                    if !in_range
-                        && !matches!(
-                            ty.kind(),
-                            TyKind::Int(_) | TyKind::Bool | TyKind::Char | TyKind::Error
-                        )
+                    if !in_range && !crate::structural_pattern_type(self.items, self.sigs, ty)
                     {
                         self.error(
                             range,
@@ -7059,6 +7272,15 @@ impl Ctx<'_> {
                             range,
                             "only `char` and numeric types are allowed in range patterns",
                         );
+                    }
+                }
+                Deferred::FloatLiteral { expr, text } => {
+                    if let Some(float) = self.expr_types.get(expr).and_then(|ty| ty.as_float()) {
+                        let overflow = match float {
+                            FloatTy::F32 => text.as_str().parse::<f32>().is_ok_and(|v| v.is_infinite()),
+                            FloatTy::F64 => text.as_str().parse::<f64>().is_ok_and(|v| v.is_infinite()),
+                        };
+                        if overflow { self.error(self.range(expr), format!("literal out of range for `{}`", float.name())); }
                     }
                 }
                 Deferred::IntLiteral { expr, value } => {
@@ -7093,6 +7315,7 @@ impl Ctx<'_> {
                     let ok = match (op, ty.kind()) {
                         (_, TyKind::Error | TyKind::Never) => true,
                         (UnaryOp::Neg, TyKind::Int(int)) => int.is_signed(),
+                        (UnaryOp::Neg, TyKind::Float(_)) => true,
                         (UnaryOp::Not, TyKind::Int(_) | TyKind::Bool) => true,
                         _ => false,
                     };
@@ -7130,6 +7353,9 @@ impl Ctx<'_> {
                         (BinaryOp::Arith(op) | BinaryOp::Assign(Some(op)), TyKind::Bool) => {
                             matches!(op, ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor)
                         }
+                        (BinaryOp::Cmp(_), TyKind::Float(_)) => true,
+                        (BinaryOp::Arith(ArithOp::Add | ArithOp::Sub | ArithOp::Mul | ArithOp::Div | ArithOp::Rem)
+                         | BinaryOp::Assign(Some(ArithOp::Add | ArithOp::Sub | ArithOp::Mul | ArithOp::Div | ArithOp::Rem)), TyKind::Float(_)) => true,
                         (_, TyKind::Int(_)) => true,
                         _ => false,
                     };
@@ -7160,6 +7386,8 @@ impl Ctx<'_> {
                     let ok = match (from.kind(), to.kind()) {
                         (TyKind::Error | TyKind::Never, _) | (_, TyKind::Error) => true,
                         (TyKind::Int(_) | TyKind::Bool | TyKind::Char, TyKind::Int(_)) => true,
+                        (TyKind::Float(_), TyKind::Float(_) | TyKind::Int(_))
+                        | (TyKind::Int(_), TyKind::Float(_)) => true,
                         (TyKind::Int(IntTy::U8), TyKind::Char) => true,
                         // A reference as a pointer to what it points to,
                         // or to an array's first element.
@@ -7172,7 +7400,9 @@ impl Ctx<'_> {
                         // A pointer to a sized type takes no length; a
                         // pointer to a slice or `str` keeps its length.
                         (TyKind::RawPtr(_, a), TyKind::RawPtr(_, b)) => {
-                            !b.is_unsized() || a.is_unsized()
+                            let source = if self.is_unsized(a) { self.sigs.metadata(a) } else { crate::Metadata::Thin };
+                            let target = if self.is_unsized(b) { self.sigs.metadata(b) } else { crate::Metadata::Thin };
+                            target == crate::Metadata::Thin || source == target
                         }
                         (TyKind::RawPtr(_, pointee), TyKind::Int(_)) => !self.is_unsized(pointee),
                         (TyKind::Int(_), TyKind::RawPtr(_, pointee)) => !self.is_unsized(pointee),
@@ -7190,7 +7420,7 @@ impl Ctx<'_> {
                             "casts of function items and pointers are not supported yet".to_owned()
                         } else if let (TyKind::RawPtr(..), TyKind::RawPtr(_, b)) =
                             (from.kind(), to.kind())
-                            && b.is_unsized()
+                            && self.is_unsized(b)
                         {
                             format!("cannot cast thin pointer `{from}` to wide pointer `{to}`")
                         } else if let TyKind::Ref(..) = to.kind() {
@@ -7219,6 +7449,7 @@ impl Ctx<'_> {
                             Some(if int.is_signed() { "c_int" } else { "c_uint" })
                         }
                         TyKind::Bool => Some("c_int"),
+                        TyKind::Float(FloatTy::F32) => Some("c_double"),
                         TyKind::Int(int) if int.bits() == 128 => {
                             self.error(
                                 self.range(expr),
@@ -7236,6 +7467,7 @@ impl Ctx<'_> {
                             TyKind::Slice(_) | TyKind::Str | TyKind::CStr
                         ),
                         TyKind::Int(_)
+                        | TyKind::Float(_)
                         | TyKind::Char
                         | TyKind::RawPtr(..)
                         | TyKind::Error

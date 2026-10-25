@@ -204,6 +204,7 @@ fn operand(
             known.get(&place.local).cloned()
         }
         Operand::Copy(_) | Operand::Move(_) => None,
+        Operand::Const(Constant::Float { bits, ty }) => Some(Value::Float { bits: *bits, ty: *ty }),
         Operand::Const(Constant::Int { bits, ty }) => Some(Value::Int {
             bits: *bits,
             ty: *ty,
@@ -214,8 +215,9 @@ fn operand(
             ty: flux_ty::IntTy::U32,
         }),
         Operand::Const(Constant::Item { id, args, .. }) => match consts.get(*id, args)? {
-            value @ (Value::Int { .. } | Value::Bool(_)) => Some(value.clone()),
-            Value::Aggregate(_)
+            value @ (Value::Int { .. } | Value::Float { .. } | Value::Bool(_)) => Some(value.clone()),
+            Value::Function(_)
+            | Value::Aggregate(_)
             | Value::Variant { .. }
             | Value::Static(_)
             | Value::StaticPart { .. }
@@ -299,10 +301,14 @@ fn evaluate(
             _ => None,
         },
         Rvalue::Cast(op, to) => {
-            let bits = match operand(op, known, consts)? {
+            let value = operand(op, known, consts)?;
+            if let Some(result) = crate::eval::float_cast(&value, *to) { return Some(result); }
+            let bits = match value {
+                Value::Float { .. } => return None,
                 Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                 Value::Bool(b) => u128::from(b),
-                Value::Aggregate(_)
+                Value::Function(_)
+                | Value::Aggregate(_)
                 | Value::Variant { .. }
                 | Value::Static(_)
                 | Value::StaticPart { .. }

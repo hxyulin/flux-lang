@@ -33,12 +33,15 @@ use crate::{
 /// A value computed at compile time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
+    Float { bits: u64, ty: flux_ty::FloatTy },
     /// Two's complement bits, truncated to the type's width.
     Int {
         bits: u128,
         ty: IntTy,
     },
     Bool(bool),
+    /// A function address, retaining its instance for code generation.
+    Function(flux_ty::Instance),
     /// A thin raw address without an allocation or reference validity. Kept
     /// distinct from integers so const casts cannot recover its numeric value.
     RawAddr(u64),
@@ -533,6 +536,7 @@ impl<'a> Evaluator<'a> {
             return Ok(pointer_view(value.clone(), from, to));
         }
         let bits = match value {
+            Value::Float { bits, .. } if from.as_float().is_some() => Some(u128::from(*bits)),
             Value::Int { bits, .. } if from.scalar_int().is_some() => Some(*bits),
             Value::Bool(b) if from == Ty::BOOL => Some(u128::from(*b)),
             Value::RawAddr(address) if from.is_pointer() => Some(u128::from(*address)),
@@ -542,7 +546,8 @@ impl<'a> Evaluator<'a> {
             && offset < 16
         {
             let bits = bits >> (offset * 8);
-            if matches!(to.kind(), TyKind::RawPtr(_, pointee) if !pointee.is_unsized()) {
+            if let Some(ty) = to.as_float() { return Ok(Value::Float { bits: bits as u64 & if ty.bits() == 32 { u32::MAX as u64 } else { u64::MAX }, ty }); }
+            if matches!(to.kind(), TyKind::RawPtr(_, pointee) if !self.sigs.is_unsized(pointee)) {
                 return Ok(Value::RawAddr(truncate(bits, IntTy::Usize) as u64));
             }
             if let Some(int) = to.scalar_int() {
@@ -598,6 +603,24 @@ impl<'a> Evaluator<'a> {
                 }
             }
             _ => {}
+        }
+        // Assemble a scalar only from individually initialized bytes. Reads
+        // across padding or symbolic pointer relocations still fail.
+        if viewed.size > 1 && (to.scalar_int().is_some() || to.as_float().is_some() || matches!(to.kind(), TyKind::RawPtr(_, pointee) if !self.sigs.is_unsized(pointee))) {
+            let mut bits = 0;
+            for i in 0..viewed.size {
+                let byte = self.memory_value(value, from, offset + i, Ty::int(IntTy::U8), range, depth + 1)?;
+                let Value::Int { bits: byte, .. } = byte else { return Err(unsupported_view(range)); };
+                bits |= byte << (i * 8);
+            }
+            if let Some(ty) = to.as_float() { return Ok(Value::Float { bits: bits as u64, ty }); }
+            if let Some(int) = to.scalar_int() {
+                if to == Ty::CHAR && char::from_u32(bits as u32).is_none() {
+                    return Err(error(range, "invalid char in constant value".into()));
+                }
+                return Ok(Value::Int { bits: truncate(bits, int), ty: int });
+            }
+            return Ok(Value::RawAddr(bits as u64));
         }
         match to.kind() {
             TyKind::Array(elem, len) => {
@@ -708,21 +731,19 @@ impl<'a> Evaluator<'a> {
         Ok(fields)
     }
 
-    fn validate_lang_value(
+    fn validate_lang_fields(
         &mut self,
-        ty: Ty,
+        strukt: flux_hir::StructId,
         fields: &[Value],
         range: TextRange,
     ) -> Result<(), EvalError> {
-        let TyKind::Adt(adt, _) = ty.kind() else {
-            return Ok(());
-        };
-        let lang = |name| flux_ty::is_lang_struct(self.items, adt.strukt, name);
+        let lang = |name| flux_ty::is_lang_struct(self.items, strukt, name);
         if lang("non_null") && matches!(fields.first(), Some(Value::RawAddr(0))) {
             return Err(error(range, "null pointer in `NonNull` constant".into()));
         }
-        if lang("nonzero_u32") && matches!(fields.first(), Some(Value::Int { bits: 0, .. })) {
-            return Err(error(range, "zero in `NonZeroU32` constant".into()));
+        if (lang("nonzero_u32") || lang("nonzero_u64")) && matches!(fields.first(), Some(Value::Int { bits: 0, .. })) {
+            let name = if lang("nonzero_u64") { "NonZeroU64" } else { "NonZeroU32" };
+            return Err(error(range, format!("zero in `{name}` constant")));
         }
         if lang("alignment") {
             let Some(Value::Int { bits, .. }) = fields.first() else {
@@ -731,6 +752,13 @@ impl<'a> Evaluator<'a> {
             if !bits.is_power_of_two() || *bits > (1u128 << 63) {
                 return Err(error(range, "invalid alignment in constant value".into()));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_lang_value(&mut self, ty: Ty, fields: &[Value], range: TextRange) -> Result<(), EvalError> {
+        if let TyKind::Adt(adt, _) = ty.kind() {
+            self.validate_lang_fields(adt.strukt, fields, range)?;
         }
         if let Some(pointee) = flux_ty::box_pointee(ty) {
             let layout = self.view_layout(pointee, range)?;
@@ -1151,10 +1179,11 @@ impl<'a> Evaluator<'a> {
             }
             match ty.kind() {
                 TyKind::Adt(adt, _) if sigs.unions.contains(&adt.strukt) => true,
-                TyKind::Ref(_, t)
-                | TyKind::RawPtr(_, t)
-                | TyKind::Array(t, _)
-                | TyKind::Slice(t) => has_union(sigs, t, seen),
+                // A pointer stores an address, not its pointee's fields.
+                // Dereferenced union values have their own typed MIR locals;
+                // following pointer-linked growing ADTs here never terminates.
+                TyKind::Ref(..) | TyKind::RawPtr(..) => false,
+                TyKind::Array(t, _) | TyKind::Slice(t) => has_union(sigs, t, seen),
                 _ => sigs
                     .contents(ty)
                     .is_some_and(|fs| fs.iter().any(|&t| has_union(sigs, t, seen))),
@@ -1216,7 +1245,8 @@ impl<'a> Evaluator<'a> {
                     let value = match self.operand(locals, generics, discr, range)? {
                         Value::Int { bits, .. } => bits,
                         Value::Bool(b) => u128::from(b),
-                        Value::Aggregate(_)
+                        Value::Float { .. } | Value::Function(_)
+                        | Value::Aggregate(_)
                         | Value::Variant { .. }
                         | Value::Static(_)
                         | Value::StaticPart { .. }
@@ -1257,6 +1287,17 @@ impl<'a> Evaluator<'a> {
                     }
                     // `size_of`, `align_of` and `needs_drop` are known
                     // here too.
+                    if self.items.functions[*func].intrinsic
+                        && matches!(self.items.functions[*func].name.as_str(),"fmaf32"|"fmaf64") {
+                        let values: Vec<_>=args.iter().map(|arg|self.operand(locals,generics,arg,range)).collect::<Result<_,_>>()?;
+                        let [Value::Float{bits:x,ty},Value::Float{bits:y,..},Value::Float{bits:z,..}]=values.as_slice() else {unreachable!("typed fused float arguments");};
+                        let bits=match ty {
+                            flux_ty::FloatTy::F32=>u64::from(f32::from_bits(*x as u32).mul_add(f32::from_bits(*y as u32),f32::from_bits(*z as u32)).to_bits()),
+                            flux_ty::FloatTy::F64=>f64::from_bits(*x).mul_add(f64::from_bits(*y),f64::from_bits(*z)).to_bits(),
+                        };
+                        write(locals,dest,Value::Float{bits,ty:*ty},range)?;
+                        match target {Some(next)=>{block=*next;continue;},None=>return Err(error(range,"entering unreachable code".into()))}
+                    }
                     if self.is_type_intrinsic(*func) {
                         let call = (*func, *generic_args, generics);
                         block = self.type_intrinsic(call, locals, dest, *target, range)?;
@@ -1266,6 +1307,45 @@ impl<'a> Evaluator<'a> {
                         && self.items.functions[*func].name.as_str() == "unreachable_unchecked"
                     {
                         return Err(error(range, "entering unreachable code".into()));
+                    }
+                    if self.items.functions[*func].intrinsic
+                        && self.items.functions[*func].name.as_str() == "raw_slice_len"
+                        && let [Operand::Copy(pointer) | Operand::Move(pointer)] = &args[..]
+                    {
+                        let value = self.rvalue(body, locals, generics, &Rvalue::Len {
+                            place: pointer.deref(), borrows: false,
+                        }, range, false)?;
+                        write(locals, dest, value, range)?;
+                        match target {
+                            Some(target) => { block = *target; continue; }
+                            None => return Err(error(range, "entering unreachable code".into())),
+                        }
+                    }
+                    if self.items.functions[*func].intrinsic
+                        && self.items.functions[*func].name.as_str() == "transmute"
+                    {
+                        let from = generic_args[0].subst(generics);
+                        let to = generic_args[1].subst(generics);
+                        let source = self.view_layout(from, range)?;
+                        let destination = self.view_layout(to, range)?;
+                        if source.size != destination.size {
+                            return Err(error(range, "cannot transmute between types of different sizes".into()));
+                        }
+                        let value = self.operand(locals, generics, &args[0], range)?;
+                        // Symbolic addresses are never materialized as integer bits.
+                        if from.is_pointer() && to.scalar_int().is_some() {
+                            return Err(error(range, "pointer-to-integer transmute in constants is not supported yet".into()));
+                        }
+                        let value = if matches!((from.kind(), to.kind(), &value), (TyKind::FnPtr(_), TyKind::FnPtr(_), Value::Function(_))) {
+                            value
+                        } else {
+                            self.memory_value(&value, from, 0, to, range, 0)?
+                        };
+                        write(locals, dest, value, range)?;
+                        match target {
+                            Some(target) => { block = *target; continue; }
+                            None => return Err(error(range, "entering unreachable code".into())),
+                        }
                     }
                     // Only code generation expands them.
                     if self.items.functions[*func].intrinsic {
@@ -1558,10 +1638,17 @@ impl<'a> Evaluator<'a> {
                     self.promoted_layouts(&value, range)?;
                     Ok(Value::Ref(Arc::new(value)))
                 }
-                Constant::Fn { .. } => Err(error(
-                    range,
-                    "function pointers in constants are not supported yet".to_owned(),
-                )),
+                Constant::Fn { function, args, .. } => {
+                    Ok(Value::Function(flux_ty::traits::resolve_instance(
+                        self.items,
+                        self.sigs,
+                        flux_ty::Instance {
+                            function,
+                            args: Ty::list(&subst_list(args, generics)),
+                        },
+                    )))
+                }
+                Constant::Float { bits, ty } => Ok(Value::Float { bits, ty }),
                 Constant::Int { bits, ty } => Ok(Value::Int { bits, ty }),
                 Constant::Bool(b) => Ok(Value::Bool(b)),
                 Constant::Char(c) => Ok(Value::Int {
@@ -1614,11 +1701,12 @@ impl<'a> Evaluator<'a> {
                 self.promoted_layouts(value, range)?
             }
             Value::PointerView { pointer, .. } => self.promoted_layouts(pointer, range)?,
-            Value::Int { .. }
+            Value::Float { .. } | Value::Int { .. }
             | Value::Bool(_)
             | Value::Static(_)
             | Value::StaticPart { .. }
-            | Value::RawAddr(_) => {}
+            | Value::RawAddr(_)
+            | Value::Function(_) => {}
         }
         Ok(())
     }
@@ -1632,8 +1720,27 @@ impl<'a> Evaluator<'a> {
         range: TextRange,
         wrapping: bool,
     ) -> Result<Value, EvalError> {
+        // Constant dependencies usually pass through a plain operand. Keep
+        // that recursive path out of the stack-heavy computation frame.
+        if let Rvalue::Use(op) = rvalue {
+            self.operand(locals, generics, op, range)
+        } else {
+            self.computed_rvalue(body, locals, generics, rvalue, range, wrapping)
+        }
+    }
+
+    #[inline(never)]
+    fn computed_rvalue(
+        &mut self,
+        body: &Body,
+        locals: &[Option<Value>],
+        generics: GenericArgs,
+        rvalue: &Rvalue,
+        range: TextRange,
+        wrapping: bool,
+    ) -> Result<Value, EvalError> {
         match rvalue {
-            Rvalue::Use(op) => self.operand(locals, generics, op, range),
+            Rvalue::Use(_) => unreachable!("plain operands bypass this frame"),
             Rvalue::Aggregate(kind, ops) => {
                 if let AggregateKind::Variant(strukt, _) = *kind {
                     self.layout(strukt, range)?;
@@ -1645,11 +1752,8 @@ impl<'a> Evaluator<'a> {
                         .map(|op| self.operand(locals, generics, op, range))
                         .collect::<Result<Arc<[_]>, _>>()?
                 };
-                if let AggregateKind::Struct(strukt) = *kind
-                    && flux_ty::is_lang_struct(self.items, strukt, "non_null")
-                    && matches!(fields.first(), Some(Value::RawAddr(0)))
-                {
-                    return Err(error(range, "null pointer in `NonNull` constant".into()));
+                if let AggregateKind::Struct(strukt) = *kind {
+                    self.validate_lang_fields(strukt, &fields, range)?;
                 }
                 Ok(match *kind {
                     AggregateKind::Variant(strukt, index) => Value::Variant {
@@ -1687,7 +1791,11 @@ impl<'a> Evaluator<'a> {
                 // Slice metadata is known from the stored array path. Reading
                 // its length must not read an interior-mutable allocation.
                 let stored = if place.projection.as_ref() == [ProjectionElem::Deref] {
-                    match locals.get(place.local.index()).and_then(Option::as_ref) {
+                    let mut pointer = locals.get(place.local.index()).and_then(Option::as_ref);
+                    while let Some(Value::PointerView { pointer: inner, .. }) = pointer {
+                        pointer = Some(inner.as_ref());
+                    }
+                    match pointer {
                         Some(Value::Static(id)) => Some(self.sigs.consts[*id]),
                         Some(Value::StaticPart { id, path }) => {
                             static_path_type(self.sigs, self.sigs.consts[*id], path)
@@ -1965,7 +2073,7 @@ impl<'a> Evaluator<'a> {
                 let value = self.operand(locals, generics, op, range)?;
                 // A pointer as another points to the same value.
                 if to.is_pointer() {
-                    if matches!(to.kind(), TyKind::RawPtr(_, inner) if inner.is_unsized())
+                    if matches!(to.kind(), TyKind::RawPtr(_, inner) if self.sigs.is_unsized(inner))
                         && matches!(value, Value::Int { .. } | Value::RawAddr(_))
                     {
                         return Err(error(
@@ -1979,7 +2087,8 @@ impl<'a> Evaluator<'a> {
                                 truncate(sign_extend(bits, ty) as u128, IntTy::Usize) as u64,
                             ))
                         }
-                        Value::RawAddr(_)
+                        Value::Function(_)
+                        | Value::RawAddr(_)
                         | Value::Ref(_)
                         | Value::InteriorRef(_)
                         | Value::Static(_)
@@ -2007,7 +2116,8 @@ impl<'a> Evaluator<'a> {
                         )),
                     };
                 }
-                if let Value::Ref(_)
+                if let Value::Function(_)
+                | Value::Ref(_)
                 | Value::InteriorRef(_)
                 | Value::Static(_)
                 | Value::StaticPart { .. }
@@ -2020,10 +2130,13 @@ impl<'a> Evaluator<'a> {
                         "pointers cannot be cast to integers during const eval".to_owned(),
                     ));
                 }
+                if let Some(result) = float_cast(&value, to.subst(generics)) { return Ok(result); }
                 let bits = match value {
+                    Value::Float { .. } => unreachable!("typed numeric cast"),
                     Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                     Value::Bool(b) => u128::from(b),
-                    Value::Aggregate(_)
+                    Value::Function(_)
+                    | Value::Aggregate(_)
                     | Value::Variant { .. }
                     | Value::Static(_)
                     | Value::StaticPart { .. }
@@ -2043,6 +2156,7 @@ impl<'a> Evaluator<'a> {
             }
             Rvalue::UnaryOp(op, operand) => {
                 match (op, self.operand(locals, generics, operand, range)?) {
+                    (UnOp::Neg, Value::Float { bits, ty }) => Ok(Value::Float { bits: bits ^ (1u64 << (ty.bits()-1)), ty }),
                     (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
                     (UnOp::Not, Value::Int { bits, ty }) => Ok(Value::Int {
                         bits: truncate(!bits, ty),
@@ -2428,6 +2542,7 @@ fn write(
 
 /// `l op r`; an error message if it would overflow or divide by zero.
 pub fn binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, String> {
+    if let Some(value) = float_binary(op, l, r) { return Ok(value); }
     let (lb, rb, ty) = match (l, r) {
         (Value::Bool(a), Value::Bool(b)) => {
             let value = match op {
@@ -2566,6 +2681,7 @@ pub fn wrapping_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, String>
 /// `u8::MAX`.
 pub fn show(value: &Value) -> String {
     match *value {
+        Value::Float { bits, ty } => match ty { flux_ty::FloatTy::F32 => format!("{:?}_f32", f32::from_bits(bits as u32)), flux_ty::FloatTy::F64 => format!("{:?}_f64", f64::from_bits(bits)) },
         Value::Int { bits, ty } => {
             let name = ty.name();
             if bits == truncate(ty.max(), ty) {
@@ -2579,6 +2695,7 @@ pub fn show(value: &Value) -> String {
             }
         }
         Value::Bool(b) => b.to_string(),
+        Value::Function(_) => "{function}".to_owned(),
         Value::Aggregate(_) | Value::Variant { .. } => "{aggregate}".to_owned(),
         Value::Static(_) | Value::StaticPart { .. } => "{static}".to_owned(),
         Value::RawAddr(address) => format!("0x{address:x}"),
@@ -2724,4 +2841,50 @@ mod tests {
         };
         assert!(Arc::ptr_eq(&first, &second));
     }
+}
+
+/// Numeric casts use Rust's target-width rounding and saturating float-to-int rules.
+pub(crate) fn float_cast(value: &Value, to: Ty) -> Option<Value> {
+    use flux_ty::{FloatTy, IntTy};
+    if let Some(target) = to.as_float() {
+        macro_rules! convert { ($v:expr) => { match target { FloatTy::F32 => u64::from(($v as f32).to_bits()), FloatTy::F64 => ($v as f64).to_bits() } }; }
+        let bits = match *value {
+            Value::Float { bits, ty: FloatTy::F32 } => convert!(f32::from_bits(bits as u32)),
+            Value::Float { bits, ty: FloatTy::F64 } => convert!(f64::from_bits(bits)),
+            Value::Int { bits, ty } if ty.is_signed() => convert!(sign_extend(bits, ty)),
+            Value::Int { bits, .. } => convert!(bits),
+            _ => return None,
+        };
+        return Some(Value::Float { bits, ty: target });
+    }
+    let Value::Float { bits, ty } = *value else { return None; };
+    let value = match ty { FloatTy::F32 => f64::from(f32::from_bits(bits as u32)), FloatTy::F64 => f64::from_bits(bits) };
+    let target = to.as_int()?;
+    let bits = match target {
+        IntTy::I8 => (value as i8) as u128, IntTy::I16 => (value as i16) as u128,
+        IntTy::I32 => (value as i32) as u128, IntTy::I64 | IntTy::Isize => (value as i64) as u128,
+        IntTy::I128 => (value as i128) as u128, IntTy::U8 => (value as u8) as u128,
+        IntTy::U16 => (value as u16) as u128, IntTy::U32 => (value as u32) as u128,
+        IntTy::U64 | IntTy::Usize => (value as u64) as u128, IntTy::U128 => value as u128,
+    };
+    Some(Value::Int { bits: truncate(bits, target), ty: target })
+}
+
+fn float_binary(op: BinOp, l: &Value, r: &Value) -> Option<Value> {
+    use flux_ty::FloatTy;
+    let (&Value::Float { bits: a, ty }, &Value::Float { bits: b, ty: other }) = (l, r) else { return None; };
+    assert_eq!(ty, other);
+    macro_rules! calculate { ($a:expr, $b:expr) => {{
+        let (a, b) = ($a, $b);
+        let bits = match op {
+            BinOp::Eq => return Some(Value::Bool(a == b)), BinOp::Ne => return Some(Value::Bool(a != b)),
+            BinOp::Lt => return Some(Value::Bool(a < b)), BinOp::Le => return Some(Value::Bool(a <= b)),
+            BinOp::Gt => return Some(Value::Bool(a > b)), BinOp::Ge => return Some(Value::Bool(a >= b)),
+            BinOp::Add => (a+b).to_bits() as u64, BinOp::Sub => (a-b).to_bits() as u64,
+            BinOp::Mul => (a*b).to_bits() as u64, BinOp::Div => (a/b).to_bits() as u64,
+            BinOp::Rem => (a%b).to_bits() as u64, _ => unreachable!("typed float operation"),
+        };
+        Value::Float { bits, ty }
+    }}; }
+    Some(match ty { FloatTy::F32 => calculate!(f32::from_bits(a as u32), f32::from_bits(b as u32)), FloatTy::F64 => calculate!(f64::from_bits(a), f64::from_bits(b)) })
 }

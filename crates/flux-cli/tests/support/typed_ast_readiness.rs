@@ -26,7 +26,7 @@ pub fn comprehensive_consumer(generated: &str) -> String {
                         let source = source.split('<').next().unwrap();
                         conversions += 1;
                         calls.push_str(&format!(
-                            "if let Some(n) = ast::{source}::cast(root) {{ let _: ast::{name} = n.into(); }}\n"
+                            "if let Some(n) = ast::{source}::cast(root) {{ let converted: ast::{name} = n.into(); assert_eq!(converted.syntax(), root); }}\n"
                         ));
                     } else {
                         panic!("unexpected generated trait implementation: {text}");
@@ -39,7 +39,16 @@ pub fn comprehensive_consumer(generated: &str) -> String {
                         };
                         let method = function.name().unwrap().text();
                         accessors += 1;
-                        calls.push_str(&format!("let _ = n.{method}();\n"));
+                        let ret = function.ret_type().unwrap().syntax().text();
+                        if ret.contains("AstChildren") {
+                            calls.push_str(&format!(
+                                "println!(\"{name}::{method} {{}}\", n.{method}().count());\n"
+                            ));
+                        } else {
+                            calls.push_str(&format!(
+                                "println!(\"{name}::{method} {{:?}}\", n.{method}());\n"
+                            ));
+                        }
                     }
                     calls.push_str("}\n");
                 }
@@ -55,5 +64,24 @@ pub fn comprehensive_consumer(generated: &str) -> String {
     );
     let template = include_str!("../fixtures/typed_ast_readiness/consumer.rs.txt");
     assert_eq!(template.matches("// GENERATED_INTERFACES").count(), 1);
-    template.replace("// GENERATED_INTERFACES", &calls)
+    let mut inputs = String::new();
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for category in ["ok", "err"] {
+        let mut paths: Vec<_> = std::fs::read_dir(
+            repository.join(format!("crates/flux-syntax/tests/data/parser/{category}")),
+        )
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+        .collect();
+        paths.sort();
+        for path in paths {
+            let text = std::fs::read_to_string(path).unwrap();
+            inputs.push_str(&format!("{text:?},\n"));
+        }
+    }
+    assert_eq!(template.matches("// PARSER_INPUTS").count(), 1);
+    template
+        .replace("// GENERATED_INTERFACES", &calls)
+        .replace("// PARSER_INPUTS", &inputs)
 }

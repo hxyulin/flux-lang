@@ -32,6 +32,8 @@ pub(super) struct Obligation {
     pub kind: ObligationKind,
     /// How many `impl` blocks' bounds it is from `root`.
     pub depth: u32,
+    /// Consecutive auto-trait ancestors; an inductive edge clears the path.
+    pub auto_parent: Option<u32>,
     /// Unnormalized selected output for trait membership in a constant initializer.
     pub const_output: Option<Ty>,
 }
@@ -281,6 +283,7 @@ impl Ctx<'_> {
             range,
             kind,
             depth: 0,
+            auto_parent: None,
             const_output: None,
         });
     }
@@ -323,7 +326,18 @@ impl Ctx<'_> {
                         ..ob.pred.trait_ref
                     },
                 };
-                let key = (pred, ob.root, ob.range, ob.kind, ob.depth, ob.const_output);
+                let auto_trait = crate::traits::is_auto_trait(self.items, pred.trait_ref.trait_);
+                if auto_trait && !pred.self_ty.has_infer() && !pred.trait_ref.args.iter().any(|t| t.has_infer()) {
+                    let mut parent = ob.auto_parent;
+                    let mut repeated = false;
+                    while let Some(index) = parent {
+                        let (ancestor, previous) = self.auto_trait_paths[index as usize];
+                        if ancestor == pred { repeated = true; break; }
+                        parent = previous;
+                    }
+                    if repeated { progress = true; continue; }
+                }
+                let key = (pred, ob.root, ob.range, ob.kind, ob.depth, ob.const_output, ob.auto_parent);
                 let stable = stable_goal_type(pred.self_ty)
                     && pred.trait_ref.args.iter().all(|&a| stable_goal_type(a))
                     && ob.const_output.is_none_or(stable_goal_type)
@@ -357,13 +371,20 @@ impl Ctx<'_> {
                             );
                             continue;
                         }
+                        let auto_parent = if auto_trait && !nested.is_empty() {
+                            let index = self.auto_trait_paths.len() as u32;
+                            self.auto_trait_paths.push((pred, ob.auto_parent));
+                            Some(index)
+                        } else { None };
                         for pred in nested {
                             let pred = self.normalize_predicate(pred, ob.range);
+                            let auto_parent = auto_parent.filter(|_| crate::traits::is_auto_trait(self.items, pred.trait_ref.trait_));
                             self.obligations.push(Obligation {
                                 pred,
                                 root: if item_bounds { pred } else { ob.root },
                                 kind,
                                 depth: ob.depth + 1,
+                                auto_parent,
                                 const_output: None,
                                 ..ob
                             });
@@ -392,7 +413,13 @@ impl Ctx<'_> {
         std::mem::swap(&mut pending, &mut self.projections);
         let mut progress = false;
         for p in pending.drain(..) {
-            let args = crate::ty::map_list(p.alias.args, |a| self.shallow(a));
+            // An input projection may now be known (for example an
+            // iterator's Item passed to FnOnce). Normalize nested inputs
+            // before matching the associated output against caller bounds.
+            let args = crate::ty::map_list(p.alias.args, |a| {
+                let a = self.normalize(a, p.range);
+                self.known(a)
+            });
             let alias = AliasTy { args, ..p.alias };
             // Known, without an `impl` block or a bound that says what
             // it is: an associated type of a generic parameter, rigid.
@@ -545,7 +572,7 @@ impl Ctx<'_> {
             }
             TyKind::Dynamic(d) => {
                 let ty = self.shallow(alias.args[0]);
-                candidates.extend(crate::traits::dyn_projections(self.sigs, ty, d));
+                candidates.extend(crate::traits::dyn_projections(self.items, self.sigs, ty, d));
             }
             _ => {}
         }
@@ -1099,7 +1126,7 @@ impl Ctx<'_> {
         if let Some(found) = crate::traits::fn_goal(self.items, t, self_ty) {
             let params = pred.trait_ref.args.first().copied().unwrap_or(Ty::ERROR);
             return match found {
-                crate::traits::ClosureGoal::Fn(_, expected) if self.unify(params, expected) => {
+                crate::traits::ClosureGoal::Fn(_, expected) if self.unify_callable_types(params, expected) => {
                     Selection::Met(Vec::new())
                 }
                 _ => Selection::Unmet,
@@ -1216,7 +1243,21 @@ impl Ctx<'_> {
             .map(|_| self.new_var(false, TextRange::default()))
             .collect();
         let header = trait_ref.subst(&vars).with_self(self_ty.subst(&vars));
-        (self.unify_predicates(header, pred) && self.impl_args_sized(imp, &vars)).then_some(vars)
+        if !self.unify(header.self_ty, pred.self_ty) { return None; }
+        for (&argument, &expected) in header.trait_ref.args.iter().zip(pred.trait_ref.args) {
+            // Self may have fixed the input of an associated type in this
+            // argument. Normalize after that unification, not before it.
+            let argument = self.normalize(argument, TextRange::default());
+            if !self.unify(argument, expected) { return None; }
+        }
+        let resolved = self.known(header.self_ty);
+        let actual = self.known(pred.self_ty);
+        if !crate::fn_regions::same_binders(self.items, resolved, actual) { return None; }
+        for (&a, &b) in header.trait_ref.args.iter().zip(pred.trait_ref.args) {
+            let a = self.known(a); let b = self.known(b);
+            if !crate::fn_regions::same_binders(self.items, a, b) { return None; }
+        }
+        self.impl_args_sized(imp, &vars).then_some(vars)
     }
 
     /// Whether the arguments `args` of `impl` block `imp` meet its
@@ -1362,7 +1403,7 @@ impl Ctx<'_> {
             return match found {
                 crate::traits::ClosureGoal::Fn(_, params) => args
                     .and_then(|a| a.first())
-                    .is_none_or(|&a| self.unify(a, params)),
+                    .is_none_or(|&a| self.unify_callable_types(a, params)),
                 _ => false,
             };
         }
@@ -1375,7 +1416,7 @@ impl Ctx<'_> {
                     return kind_ok
                         && args
                             .and_then(|a| a.first())
-                            .is_none_or(|&a| self.unify(a, params));
+                            .is_none_or(|&a| self.unify_callable_types(a, params));
                 }
                 crate::traits::ClosureGoal::Upvars(_) => return true,
                 // Through blanket `impl` blocks, below.
@@ -1762,9 +1803,10 @@ impl Ctx<'_> {
     }
 
     /// The type a path names before an associated item: as a type, except
-    /// that a generic struct without arguments (`W::f`) gets new
-    /// variables for them, as in an expression.
-    fn resolve_path_type(&mut self, ty: flux_hir::TypeRefId) -> Ty {
+    /// that a generic struct or alias without arguments (`W::f`) gets new
+    /// variables for its parameters. Expanding the alias preserves fixed
+    /// arguments such as a hasher chosen by `FxHashMap`.
+    pub(super) fn resolve_path_type(&mut self, ty: flux_hir::TypeRefId) -> Ty {
         let items = self.items;
         if let flux_hir::TypeRef::Path(path) = &self.body.types[ty]
             && path.qself.is_none()
@@ -1777,6 +1819,19 @@ impl Ctx<'_> {
             let count = items.structs[s].generics.len();
             let args: Vec<Ty> = (0..count).map(|_| self.new_var(false, origin)).collect();
             return Ty::adt(s, items.structs[s].name, &args);
+        }
+        if let flux_hir::TypeRef::Path(path) = &self.body.types[ty]
+            && path.qself.is_none()
+            && path.args(path.segments.len().saturating_sub(1)).is_none()
+            && let Ok(flux_hir::def_map::Resolved::Def(flux_hir::def_map::Def::TypeAlias(alias))) =
+                items.resolve(self.module, path, flux_hir::def_map::Ns::Types)
+            && !items.type_aliases[alias].generics.is_empty()
+        {
+            let origin = self.source_map.types.get(ty).copied().unwrap_or_default();
+            let count = items.type_aliases[alias].generics.len();
+            let args: Vec<Ty> = (0..count).map(|_| self.new_var(false, origin)).collect();
+            let template = crate::expand_alias(items, alias, Some(&self.lens), &mut Vec::new());
+            return template.subst(&args);
         }
         self.resolve_type_ref(ty)
     }

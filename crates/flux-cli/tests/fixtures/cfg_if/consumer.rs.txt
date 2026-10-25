@@ -1,0 +1,40 @@
+use cfg_if::cfg_if;
+cfg_if! {
+    if #[cfg(target_os = "macos")] {
+        fn platform() -> u32 { 17 }
+        fn first_match() -> u32 { 23 }
+    } else if #[cfg(unix)] {
+        fn platform() -> u32 { 100 }
+        fn first_match() -> u32 { 100 }
+    } else {
+        compile_error!("unexpected target");
+    }
+}
+cfg_if! {
+    if #[cfg(any())] { compile_error!("disabled first arm"); }
+    else if #[cfg(all())] { fn secondary() -> u32 { 41 } }
+    else { compile_error!("only the first enabled arm may expand"); }
+}
+cfg_if! {
+    if #[cfg(any())] { type A = Missing; type B = Missing; }
+    else { type A = u32; type B = u32; }
+}
+cfg_if! { if #[cfg(any())] { compile_error!("no fallback"); } }
+macro_rules! sum { ($($_:expr),*) => { 0 $(+ $_)* }; }
+macro_rules! declare { ($_:ident) => { fn $_() -> u32 { 5 } }; }
+declare!(underscore_name);
+fn main() {
+    assert_eq!(sum!(1,2,3), 6);
+    assert_eq!(underscore_name(), 5);
+    let a: A = 60;
+    let b: B = 7;
+    cfg_if! {
+        if #[cfg(all())] { let local = 19; }
+        else { compile_error!("disabled body branch"); }
+    }
+    cfg_if! {
+        if #[cfg(any())] { compile_error!("disabled nested branch"); }
+        else { cfg_if! { if #[cfg(all())] { let nested = 3; } } }
+    }
+    println!("cfg-if {} {} {} {} {} {}", platform(), first_match(), secondary(), a+b, local, nested);
+}

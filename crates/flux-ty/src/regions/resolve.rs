@@ -20,15 +20,9 @@ pub(crate) fn resolve_regions(
         dedup(&mut list);
         errors.extend(list.into_iter().map(|(r, m)| (file, r, m)));
     };
-    // Retain trait owner regions even while lifetime declarations are rejected.
+    // Resolve owner regions before the declaration admission query runs.
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let mut list = Vec::new();
-        for l in t.generics.lifetimes.iter() {
-            list.push((
-                l.range,
-                "lifetime parameters on traits are not supported yet".to_owned(),
-            ));
-        }
         check_bounds(
             items,
             t.loc.module,
@@ -59,6 +53,7 @@ pub(crate) fn resolve_regions(
         let mut outlives = Vec::new();
         bounds_outlives(
             items,
+            sigs,
             t.loc.module,
             &t.generics,
             &named,
@@ -317,6 +312,7 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
         let mut outlives = Vec::new();
         bounds_outlives(
             items,
+            sigs,
             imp.module,
             &imp.generics,
             &names,
@@ -611,6 +607,7 @@ fn functions(
         let mut outlives = owner_outlives;
         bounds_outlives(
             items,
+            sigs,
             function.loc.module,
             &function.generics,
             &names,
@@ -793,6 +790,7 @@ fn callback_path_lifetimes(path: &Path, out: &mut Vec<LifetimeRef>) -> bool {
         return false;
     }
     for args in path.args.iter().flatten() {
+        let start = out.len();
         out.extend(args.lifetimes.iter().copied());
         if !args.types.iter().all(|t| callback_type_lifetimes(t, out))
             || !args
@@ -802,6 +800,9 @@ fn callback_path_lifetimes(path: &Path, out: &mut Vec<LifetimeRef>) -> bool {
         {
             return false;
         }
+        let mut tail = out.split_off(start);
+        tail.retain(|l| !args.bound_lifetimes.contains(&l.name));
+        out.extend(tail);
     }
     true
 }
@@ -910,6 +911,7 @@ fn bound_regions(
                 } else {
                     None
                 };
+                let late_names = args.map(|args| enter_fn_binder(&mut walker, args, p.trait_ref.args.first().copied()));
                 let types = p
                     .trait_ref
                     .args
@@ -929,6 +931,7 @@ fn bound_regions(
                 if let Some(outer) = outer {
                     walker.elided = outer;
                 }
+                if let Some(names) = late_names { walker.late_names = names; }
                 TraitRefRegions {
                     lifetimes,
                     args: types,
@@ -1105,6 +1108,7 @@ fn projection_regions(
     let Some(args) = args.filter(|a| a.parenthesized) else {
         return walker.regions(&binding.ty, projection.ty);
     };
+    let late_names = enter_fn_binder(walker, args, projection.alias.args.get(1).copied());
     let outer = std::mem::replace(&mut walker.elided, Elided::Is(Region::Erased));
     let mut table = walker.regions(&binding.ty, projection.ty).to_vec();
     if let (Some(input), Some(&input_ty)) = (args.types.first(), projection.alias.args.get(1)) {
@@ -1115,26 +1119,50 @@ fn projection_regions(
         walker.elided = Elided::Fresh;
         let inputs = walker.regions(input, input_ty);
         walker.fresh.truncate(fresh);
-        let mut elided = Vec::new();
         let mut seen = Vec::new();
         for (i, &r) in inputs.iter().enumerate() {
-            if matches!(r, Region::Param(j) if j as usize >= walker.names.len() + fresh)
-                && !seen.contains(&r)
-            {
-                seen.push(r);
-                elided.push(i);
+            if !seen.iter().any(|&(region, _)| region == r) {
+                let output = match r {
+                    Region::Param(j) if j as usize >= walker.names.len() + fresh => Region::Late(i as u32),
+                    r => r,
+                };
+                seen.push((r, output));
             }
         }
-        if let [only] = elided[..] {
+        if let [(_, only)] = seen[..] {
             for r in &mut table {
                 if *r == Region::Erased {
-                    *r = Region::Late(only as u32);
+                    *r = only;
                 }
             }
+        } else if table.contains(&Region::Erased) {
+            walker.errors.push((binding.ty_range, "missing lifetime specifier".to_owned()));
         }
     }
     walker.elided = outer;
+    walker.late_names = late_names;
     table.into()
+}
+
+/// Map each explicit binder to its first slot in the input tuple. Repeated
+/// occurrences then use that same slot, including inside invariant ADTs.
+fn enter_fn_binder(
+    walker: &mut Walker<'_>,
+    args: &flux_hir::GenericArgs,
+    input: Option<Ty>,
+) -> Vec<(Symbol, u32)> {
+    let old = std::mem::take(&mut walker.late_names);
+    if args.bound_lifetimes.is_empty() { return old; }
+    walker.late_names = args.bound_lifetimes.iter().enumerate()
+        .map(|(i, &name)| (name, i as u32)).collect();
+    if let (Some(written), Some(input)) = (args.types.first(), input) {
+        let table = walker.regions(written, input);
+        for (i, (_, slot)) in walker.late_names.iter_mut().enumerate() {
+            *slot = table.iter().position(|&r| r == Region::Late(i as u32))
+                .map_or(u32::MAX, |j| j as u32);
+        }
+    }
+    old
 }
 
 /// The lifetimes of `function`'s opaque types, with `walker` past its
@@ -1256,8 +1284,10 @@ fn dedup<T: PartialEq>(list: &mut Vec<T>) {
 /// The lifetime bounds of `generics` (`'a: 'b`, `T: 'a`), with the
 /// lifetimes `names` and the type parameters `type_names` in scope,
 /// into `out`.
+#[allow(clippy::too_many_arguments)]
 fn bounds_outlives(
     items: &ItemTree,
+    sigs: &Signatures,
     module: ModuleId,
     generics: &Generics,
     names: &[Option<Symbol>],
@@ -1284,6 +1314,13 @@ fn bounds_outlives(
             .map(|i| Ty::param(i as u32, kw::SelfUpper)),
         ..TypeScope::default()
     };
+    // Type-outlives subjects can be associated projections. Resolve them
+    // in the declaration's actual bound environment, just as its fields and
+    // signature do, so `I::Item: 'a` retains the declaring trait identity.
+    let mut scratch = Vec::new();
+    let predicates = crate::resolve_predicates(items, sigs, module, generics, scope, &mut scratch);
+    let bounds = crate::traits::elaborate(sigs, &predicates.predicates);
+    let scope = TypeScope { bounds: &bounds, ..scope };
     walker.scope = scope;
     for p in generics.type_outlives.iter() {
         let r = walker.named(p.lifetime);
@@ -1298,7 +1335,7 @@ fn bounds_outlives(
                 out.push(Outlives::Region(a, r));
             }
         }
-        outlives_params(ty, r, out);
+        outlives_params(sigs, ty, r, out);
     }
     errors.append(&mut walker.errors);
 }
@@ -1351,7 +1388,7 @@ fn check_bounds<'b>(
                 lifetimes_in(t, &mut named);
             }
             if args.parenthesized {
-                if let Some(l) = named.iter().find(|l| !l.is_anonymous()) {
+                if !tracked && let Some(l) = named.iter().find(|l| !l.is_anonymous()) {
                     errors.push((
                         l.range,
                         "named lifetimes in `Fn` bounds are not supported yet".to_owned(),
@@ -1368,7 +1405,7 @@ fn check_bounds<'b>(
                     let mut found = Vec::new();
                     elided_in(&b.ty, &mut found);
                     lifetimes_in(&b.ty, &mut named);
-                    if named.iter().any(|l| {
+                    if !tracked && named.iter().any(|l| {
                         !l.is_anonymous()
                             && b.ty_range.start() <= l.range.start()
                             && l.range.end() <= b.ty_range.end()
@@ -1377,7 +1414,7 @@ fn check_bounds<'b>(
                             b.ty_range,
                             "named lifetimes in `Fn` bounds are not supported yet".to_owned(),
                         ));
-                    } else if !found.is_empty() && inputs.len() != 1 {
+                    } else if !tracked && !found.is_empty() && inputs.len() != 1 {
                         for at in found {
                             errors.push((at, "missing lifetime specifier".to_owned()));
                         }
@@ -1504,12 +1541,13 @@ impl VarianceWalk<'_> {
                     *a = a.join(ambient);
                 }
             }
-            // Types without slots, whose parameters still count.
             TyKind::FnPtr(sig) => {
-                for &t in sig.params() {
-                    self.go(t, ambient.xform(Variance::Contravariant));
+                if let Some(r) = sig.regions {
+                    let (free, types) = super::fn_pointer_variances(self.items, self.sigs, sig)
+                        .unwrap_or_else(|| (vec![Variance::Invariant; r.free as usize], vec![Variance::Invariant; r.types.len()]));
+                    for variance in free { self.slot(ambient.xform(variance)); }
+                    for (&ty, variance) in r.types.iter().zip(types) { self.go(ty, ambient.xform(variance)); }
                 }
-                self.go(sig.ret(), ambient);
             }
             TyKind::Alias(alias) => {
                 for &t in alias.args {
@@ -1535,6 +1573,7 @@ fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors:
         let mut list = Vec::new();
         bounds_outlives(
             items,
+            sigs,
             s.loc.module,
             &s.generics,
             &names,

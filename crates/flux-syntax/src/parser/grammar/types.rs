@@ -26,6 +26,16 @@ pub(super) fn type_no_bounds(p: &mut Parser<'_>) {
 }
 
 fn type_inner(p: &mut Parser<'_>, allow_bounds: bool) {
+    if p.at_contextual_dyn()
+        && (NAME_REF_FIRST.contains(p.nth(1))
+            || matches!(p.nth(1), LIFETIME_IDENT | T![for] | T!['('] | T![?]))
+    {
+        let m = p.start();
+        p.bump_contextual_dyn();
+        bounds_for(p, allow_bounds);
+        m.complete(p, DYN_TRAIT_TYPE);
+        return;
+    }
     match p.current() {
         T!['('] => paren_or_tuple_type(p),
         T![!] => {

@@ -6,6 +6,7 @@
 
 use core::cmp::Ordering;
 use core::fmt;
+use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 
@@ -14,18 +15,26 @@ use crate::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 #[lang = "owned_box"]
 pub struct Box<T: ?Sized> {
     ptr: Unique<T>,
+    marker: PhantomData<T>,
 }
+
+// SAFETY: Box uniquely owns its allocation; moving it transfers ownership of T.
+unsafe impl<T: ?Sized + core::marker::Send> core::marker::Send for Box<T> {}
+// SAFETY: sharing Box exposes only shared access to its owned T.
+unsafe impl<T: ?Sized + core::marker::Sync> core::marker::Sync for Box<T> {}
 
 /// A box's memory, which dropping frees.
 struct Unique<T: ?Sized> {
     ptr: NonNull<T>,
 }
 
-impl<T: ?Sized> Drop for Unique<T> {
-    /// Its size, of a slice or trait object too, read from where it
-    /// points after its value was dropped or moved out.
+// SAFETY: deallocation uses only pointer metadata, never the payload or
+// its references. Box's own marker records ownership of the payload.
+unsafe impl<#[may_dangle] T: ?Sized> Drop for Unique<T> {
     fn drop(&mut self) {
-        let layout = unsafe { Layout::for_value(self.ptr.as_ref()) };
+        // SAFETY: the allocation's pointer and DST metadata retain its layout
+        // after the payload was dropped or moved. No reference to T is made.
+        let layout = unsafe { Layout::for_value_raw(self.ptr.as_ptr()) };
         if layout.size() != 0 {
             unsafe { dealloc(self.ptr.as_ptr() as *mut u8, layout) };
         }
@@ -48,6 +57,7 @@ impl<T> Box<T> {
         unsafe { ptr.write(x) };
         Box {
             ptr: Unique { ptr },
+            marker: PhantomData,
         }
     }
 }
@@ -66,6 +76,7 @@ impl<T: ?Sized> Box<T> {
             ptr: Unique {
                 ptr: unsafe { NonNull::new_unchecked(raw) },
             },
+            marker: PhantomData,
         }
     }
 
@@ -90,7 +101,10 @@ impl<T: ?Sized> DerefMut for Box<T> {
 }
 
 /// The value; the field frees the memory after.
-impl<T: ?Sized> Drop for Box<T> {
+// SAFETY: this destructor only drops the owned payload. PhantomData<T>
+// retains its destructor's requirements; dangling references without a
+// destructor are never inspected. Unique deallocates using metadata alone.
+unsafe impl<#[may_dangle] T: ?Sized> Drop for Box<T> {
     fn drop(&mut self) {
         unsafe { ptr::drop_in_place(self.ptr.ptr.as_ptr()) };
     }
@@ -133,6 +147,40 @@ impl<T: Default> Default for Box<T> {
     fn default() -> Box<T> {
         Box::new(T::default())
     }
+}
+
+impl<T> Default for Box<[T]> {
+    fn default() -> Self { crate::vec::Vec::new().into_boxed_slice() }
+}
+
+impl Default for Box<str> {
+    fn default() -> Self { Box::from("") }
+}
+
+impl<T: Clone> From<&[T]> for Box<[T]> {
+    fn from(value: &[T]) -> Self { value.to_vec().into_boxed_slice() }
+}
+
+impl From<crate::string::String> for Box<str> {
+    fn from(value: crate::string::String) -> Self { value.into_boxed_str() }
+}
+
+impl<T> IntoIterator for Box<[T]> {
+    type Item = T;
+    type IntoIter = crate::vec::IntoIter<T>;
+    fn into_iter(self) -> Self::IntoIter { self.into_vec().into_iter() }
+}
+
+impl<'a, T> IntoIterator for &'a Box<[T]> {
+    type Item = &'a T;
+    type IntoIter = core::slice::Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter { self.iter() }
+}
+
+impl<'a, T> IntoIterator for &'a mut Box<[T]> {
+    type Item = &'a mut T;
+    type IntoIter = core::slice::IterMut<'a, T>;
+    fn into_iter(self) -> Self::IntoIter { self.iter_mut() }
 }
 
 impl<T: ?Sized + PartialEq> PartialEq for Box<T> {
@@ -191,6 +239,10 @@ impl<T> From<crate::vec::Vec<T>> for Box<[T]> {
     fn from(v: crate::vec::Vec<T>) -> Box<[T]> {
         v.into_boxed_slice()
     }
+}
+
+impl<T, const N: usize> From<[T; N]> for Box<[T]> {
+    fn from(values: [T; N]) -> Box<[T]> { crate::vec::Vec::from(values).into_boxed_slice() }
 }
 
 impl<T> From<T> for Box<T> {

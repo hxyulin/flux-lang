@@ -190,6 +190,24 @@ fn compiler_modules_match_rustc() {
     compare_programs(&root, &dir, &[internals]);
 }
 
+#[test]
+fn trait_required_lifetime_matches_rustc() {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!(
+        "flux-trait-required-lifetime-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    compare_programs(
+        &root,
+        &dir,
+        &[root.join("tests/run/trait_required_lifetime.rs")],
+    );
+}
+
 fn compare_programs(root: &Path, dir: &Path, programs: &[PathBuf]) {
     let mut failures = Vec::new();
     for program in programs {

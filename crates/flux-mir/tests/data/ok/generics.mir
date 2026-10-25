@@ -226,17 +226,18 @@ fn move_then_reassign<T>(_1: T, _2: T) -> T {
 
 fn move_in_loop_once<T>(_1: T) -> Wrap<T> {
     let mut _0: Wrap<T>;
-    let _2: !;
+    let _2: ();
     let _3: !;
-    let _4: T;
+    let _4: !;
+    let _5: T;
 
     bb0: {
         goto -> bb1;
     }
 
     bb1: {
-        _4 = move _1;
-        _0 = Wrap(move _4);
+        _5 = move _1;
+        _0 = Wrap(move _5);
         goto -> bb2;
     }
 

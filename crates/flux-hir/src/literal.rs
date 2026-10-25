@@ -23,7 +23,7 @@ pub(crate) fn parse_int(text: &str) -> Result<Literal, String> {
     let suffix = match suffix {
         "" => None,
         "f32" | "f64" if radix == 10 => {
-            return Err("floating-point numbers are not supported yet".to_owned());
+            return parse_float(text);
         }
         "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
         | "isize" => Some(Symbol::intern(suffix)),
@@ -43,6 +43,20 @@ pub(crate) fn parse_int(text: &str) -> Result<Literal, String> {
         return Err("no valid digits found for number".to_owned());
     }
     Ok(Literal::Int { value, suffix })
+}
+
+/// Validate the decimal token while retaining its spelling for target precision.
+pub(crate) fn parse_float(text: &str) -> Result<Literal, String> {
+    let (digits, suffix) = if let Some(digits) = text.strip_suffix("f32") {
+        (digits, Some(Symbol::intern("f32")))
+    } else if let Some(digits) = text.strip_suffix("f64") {
+        (digits, Some(Symbol::intern("f64")))
+    } else { (text, None) };
+    let digits = digits.replace('_', "");
+    if digits.parse::<f64>().is_err() {
+        return Err("invalid floating-point literal".into());
+    }
+    Ok(Literal::Float { text: Symbol::intern(&digits), suffix })
 }
 
 /// What a literal's escapes may produce, as rustc's `Mode`.

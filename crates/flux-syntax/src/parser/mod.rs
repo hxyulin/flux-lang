@@ -30,6 +30,8 @@ pub fn parse_source_file(input: &Input) -> Output {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Fragment {
     Expr,
+    /// An expression before edition 2024, excluding top-level `_` and `const` blocks.
+    Expr2021,
     /// A pattern, `|` included.
     Pat,
     /// A pattern without a top-level `|`.
@@ -254,6 +256,15 @@ impl<'i> Parser<'i> {
     pub(crate) fn bump_union(&mut self) {
         assert!(self.at_union());
         self.do_bump(UNION_KW, 1);
+    }
+
+    pub(crate) fn at_contextual_dyn(&mut self) -> bool {
+        self.at(IDENT) && self.input.is_dyn_keyword(self.pos)
+    }
+
+    pub(crate) fn bump_contextual_dyn(&mut self) {
+        assert!(self.at_contextual_dyn());
+        self.do_bump(DYN_KW, 1);
     }
 
     /// Consumes the next raw token as-is.

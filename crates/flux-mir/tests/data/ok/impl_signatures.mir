@@ -121,13 +121,14 @@ fn largest<'a>(_1: &Bag) -> &i32 {
     let _12: &mut It;
     let _13: &mut It;
     let _14: isize;
-    let _15: &i32; // x
-    let _16: isize;
-    let _17: bool;
-    let _18: i32;
+    let _15: !;
+    let _16: &i32; // x
+    let _17: isize;
+    let _18: bool;
     let _19: i32;
-    let _20: ();
-    let _21: &i32;
+    let _20: i32;
+    let _21: ();
+    let _22: &i32;
 
     bb0: {
         _3 = const 0_usize;
@@ -184,8 +185,8 @@ fn largest<'a>(_1: &Bag) -> &i32 {
     }
 
     bb10: {
-        _16 = discriminant(_11);
-        switchInt(copy _16) -> [1: bb14, otherwise: bb13];
+        _17 = discriminant(_11);
+        switchInt(copy _17) -> [1: bb14, otherwise: bb13];
     }
 
     bb11: {
@@ -203,21 +204,21 @@ fn largest<'a>(_1: &Bag) -> &i32 {
     }
 
     bb14: {
-        _15 = copy (_11 as #1).0;
+        _16 = copy (_11 as #1).0;
         goto -> bb15;
     }
 
     bb15: {
-        _18 = copy (*_15);
-        _19 = copy (*_2);
-        _17 = Gt(copy _18, copy _19);
-        switchInt(copy _17) -> [0: bb17, otherwise: bb16];
+        _19 = copy (*_16);
+        _20 = copy (*_2);
+        _18 = Gt(copy _19, copy _20);
+        switchInt(copy _18) -> [0: bb17, otherwise: bb16];
     }
 
     bb16: {
-        _21 = copy _15;
-        _2 = copy _21;
-        _20 = const ();
+        _22 = copy _16;
+        _2 = copy _22;
+        _21 = const ();
         _10 = const ();
         goto -> bb18;
     }
@@ -228,7 +229,7 @@ fn largest<'a>(_1: &Bag) -> &i32 {
     }
 
     bb18: {
-        StorageDead(_15);
+        StorageDead(_16);
         goto -> bb9;
     }
 }
@@ -282,29 +283,30 @@ fn main() -> () {
     let _13: &mut Cells<u8>;
     let _14: &mut Cells<u8>;
     let _15: isize;
-    let _16: &u8; // c
-    let _17: isize;
-    let _18: ();
-    let _19: i32;
-    let _20: u8;
-    let _21: i32;
-    let mut _22: Bag; // c
-    let _23: [i32; 2];
-    let mut _24: &mut Bag; // m
-    let _25: &Bag; // r
-    let _26: &mut &mut Bag;
+    let _16: !;
+    let _17: &u8; // c
+    let _18: isize;
+    let _19: ();
+    let _20: i32;
+    let _21: u8;
+    let _22: i32;
+    let mut _23: Bag; // c
+    let _24: [i32; 2];
+    let mut _25: &mut Bag; // m
+    let _26: &Bag; // r
     let _27: &mut &mut Bag;
-    let _28: (i32, &i32, usize, &Bag, &Bag);
-    let _29: i32;
-    let _30: &i32;
-    let _31: &Bag;
-    let _32: usize;
-    let _33: It;
-    let _34: &Bag;
+    let _28: &mut &mut Bag;
+    let _29: (i32, &i32, usize, &Bag, &Bag);
+    let _30: i32;
+    let _31: &i32;
+    let _32: &Bag;
+    let _33: usize;
+    let _34: It;
     let _35: &Bag;
-    let _36: &&Bag;
-    let _37: &Bag;
+    let _36: &Bag;
+    let _37: &&Bag;
     let _38: &Bag;
+    let _39: &Bag;
 
     bb0: {
         _2 = [const 3_i32, const 4_i32];
@@ -323,12 +325,12 @@ fn main() -> () {
 
     bb2: {
         StorageDead(_7);
-        _23 = [const 1_i32, const 2_i32];
-        _22 = Bag { items: copy _23 };
-        _24 = &mut _22;
-        _27 = &mut _24;
-        _26 = &mut (*_27);
-        _25 = through(move _26) -> bb15;
+        _24 = [const 1_i32, const 2_i32];
+        _23 = Bag { items: copy _24 };
+        _25 = &mut _23;
+        _28 = &mut _25;
+        _27 = &mut (*_28);
+        _26 = through(move _27) -> bb15;
     }
 
     bb3: {
@@ -362,8 +364,8 @@ fn main() -> () {
     }
 
     bb9: {
-        _17 = discriminant(_12);
-        switchInt(copy _17) -> [1: bb13, otherwise: bb12];
+        _18 = discriminant(_12);
+        switchInt(copy _18) -> [1: bb13, otherwise: bb12];
     }
 
     bb10: {
@@ -381,49 +383,49 @@ fn main() -> () {
     }
 
     bb13: {
-        _16 = copy (_12 as #1).0;
+        _17 = copy (_12 as #1).0;
         goto -> bb14;
     }
 
     bb14: {
-        _20 = copy (*_16);
-        _19 = copy _20 as i32;
-        _21 = copy _5;
-        _5 = Add(copy _21, copy _19);
-        _18 = const ();
+        _21 = copy (*_17);
+        _20 = copy _21 as i32;
+        _22 = copy _5;
+        _5 = Add(copy _22, copy _20);
+        _19 = const ();
         _11 = const ();
-        StorageDead(_16);
+        StorageDead(_17);
         goto -> bb8;
     }
 
     bb15: {
-        _29 = copy _5;
-        _31 = &_1;
-        _30 = largest(copy _31) -> bb16;
+        _30 = copy _5;
+        _32 = &_1;
+        _31 = largest(copy _32) -> bb16;
     }
 
     bb16: {
-        _34 = &_1;
-        _33 = iter_of(copy _34) -> bb17;
+        _35 = &_1;
+        _34 = iter_of(copy _35) -> bb17;
     }
 
     bb17: {
-        _32 = copy _33.1;
-        _37 = &_1;
-        _36 = &_37;
-        _35 = pick(copy _36) -> bb18;
+        _33 = copy _34.1;
+        _38 = &_1;
+        _37 = &_38;
+        _36 = pick(copy _37) -> bb18;
     }
 
     bb18: {
-        _38 = copy _25;
-        _28 = (copy _29, copy _30, copy _32, copy _35, copy _38);
-        StorageDead(_28);
-        StorageDead(_37);
-        StorageDead(_33);
+        _39 = copy _26;
+        _29 = (copy _30, copy _31, copy _33, copy _36, copy _39);
+        StorageDead(_29);
+        StorageDead(_38);
+        StorageDead(_34);
         _0 = const ();
+        StorageDead(_26);
         StorageDead(_25);
-        StorageDead(_24);
-        StorageDead(_22);
+        StorageDead(_23);
         StorageDead(_5);
         StorageDead(_3);
         StorageDead(_1);

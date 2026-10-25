@@ -1,0 +1,90 @@
+use implementation::{LazyLock, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
+fn main() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let lazy = Arc::new(LazyLock::new(move || {
+        counted.fetch_add(1, Ordering::Relaxed);
+        Mutex::new(0usize)
+    }));
+    let rw = Arc::new(RwLock::new((0usize, 0usize)));
+    let start = Arc::new(Barrier::new(9));
+    let handles: Vec<_> = (0..8).map(|_| {
+        let (lazy, rw, start) = (lazy.clone(), rw.clone(), start.clone());
+        std::thread::spawn(move || {
+            start.wait();
+            for _ in 0..1000 {
+                *lazy.lock().unwrap() += 1;
+                {
+                    let mut pair = rw.write().unwrap();
+                    pair.0 += 1;
+                    pair.1 = pair.0 * 2;
+                }
+                let a = rw.read().unwrap();
+                let b = rw.read().unwrap();
+                assert_eq!(a.1, a.0 * 2);
+                assert_eq!(*a, *b);
+            }
+        })
+    }).collect();
+    start.wait();
+    for h in handles { h.join().unwrap(); }
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(*lazy.lock().unwrap(), 8000);
+    assert_eq!(*rw.read().unwrap(), (8000, 16000));
+
+    let lock = Mutex::new(1usize);
+    assert!(catch_unwind(AssertUnwindSafe(|| {
+        let mut guard = lock.lock().unwrap();
+        *guard = 7;
+        panic!("poison mutex");
+    })).is_err());
+    assert!(lock.is_poisoned());
+    assert_eq!(*lock.lock().unwrap_or_else(PoisonError::into_inner), 7);
+    lock.clear_poison();
+    assert_eq!(*lock.lock().unwrap(), 7);
+
+    struct DebugPanic(bool);
+    impl std::fmt::Debug for DebugPanic {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            assert!(!self.0, "debug payload panic");
+            f.write_str("payload")
+        }
+    }
+    let debug = Mutex::new(DebugPanic(true));
+    assert!(catch_unwind(AssertUnwindSafe(|| format!("{debug:?}"))).is_err());
+    assert!(debug.is_poisoned());
+    debug.lock().unwrap_or_else(PoisonError::into_inner).0 = false;
+    assert_eq!(format!("{debug:?}"), "Mutex { data: payload, poisoned: true, .. }");
+
+    let lock = RwLock::new(3usize);
+    assert!(catch_unwind(AssertUnwindSafe(|| {
+        let _guard = lock.read().unwrap();
+        panic!("reader must not poison");
+    })).is_err());
+    assert!(!lock.is_poisoned());
+    assert!(catch_unwind(AssertUnwindSafe(|| {
+        let mut guard = lock.write().unwrap();
+        *guard = 11;
+        panic!("poison writer");
+    })).is_err());
+    assert!(lock.is_poisoned());
+    assert_eq!(*lock.read().unwrap_or_else(PoisonError::into_inner), 11);
+    assert_eq!(*lock.write().unwrap_or_else(PoisonError::into_inner), 11);
+    lock.clear_poison();
+    assert_eq!(*lock.read().unwrap(), 11);
+
+    let calls = AtomicUsize::new(0);
+    let lazy = LazyLock::new(|| {
+        calls.fetch_add(1, Ordering::Relaxed);
+        panic!("poison lazy")
+    });
+    for _ in 0..2 {
+        assert!(catch_unwind(AssertUnwindSafe(|| { LazyLock::force(&lazy); })).is_err());
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    println!("host sync contention/poison ok");
+}

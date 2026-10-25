@@ -46,7 +46,7 @@ pub(super) fn expansion(p: &mut Parser<'_>, kind: Fragment) {
         _ => {
             fragment(p, kind);
             // rustc allows (and lints) a `;` after an expression.
-            if kind == Fragment::Expr && p.at(T![;]) {
+            if matches!(kind, Fragment::Expr | Fragment::Expr2021) && p.at(T![;]) {
                 p.bump(T![;]);
             }
             if !p.at_end() {
@@ -66,8 +66,9 @@ pub(super) fn expansion(p: &mut Parser<'_>, kind: Fragment) {
 /// One fragment of kind `kind`, as a macro's matcher reads it.
 pub(super) fn fragment(p: &mut Parser<'_>, kind: Fragment) {
     match kind {
-        Fragment::Expr => {
-            if p.at_ts(expressions::EXPR_FIRST) {
+        Fragment::Expr | Fragment::Expr2021 => {
+            if p.at_ts(expressions::EXPR_FIRST)
+                && !(kind == Fragment::Expr2021 && (p.at(T![_]) || p.at(T![const]))) {
                 expressions::expr(p);
             } else {
                 p.error("expected an expression");

@@ -11,10 +11,11 @@ use crate::cmp::Ordering::{self, Equal, Greater, Less};
 use crate::cmp::{Eq, Ord, PartialEq, PartialOrd};
 use crate::iter::{DoubleEndedIterator, ExactSizeIterator, Iterator};
 use crate::marker::Copy;
-use crate::ops::{FnMut, Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+use crate::ops::{FnMut, Index, IndexMut, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use crate::option::Option::{self, None, Some};
 use crate::panicking::panic;
 use crate::result::Result::{self, Err, Ok};
+use crate::slice::SliceIndex;
 
 /// The `str` the bytes are, if they are UTF-8.
 pub const fn from_utf8(v: &[u8]) -> Result<&str, Utf8Error> {
@@ -600,6 +601,28 @@ impl str {
         self as *const str as *const u8
     }
 
+    /// A mutable pointer to the first UTF-8 byte, without accessing it.
+    pub const fn as_mut_ptr(&mut self) -> *mut u8 { self as *mut str as *mut u8 }
+
+    /// # Safety
+    /// The bytes must contain valid UTF-8 before this borrow ends.
+    pub const unsafe fn as_bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: slice and string pointers share their data and length layout;
+        // the caller preserves UTF-8 validity before reusing the string.
+        unsafe { &mut *(self as *mut str as *mut [u8]) }
+    }
+
+    /// Changes only ASCII letters, preserving all UTF-8 code units.
+    pub const fn make_ascii_uppercase(&mut self) {
+        // SAFETY: ASCII case conversion preserves UTF-8 validity.
+        unsafe { self.as_bytes_mut().make_ascii_uppercase(); }
+    }
+    /// Changes only ASCII letters, preserving all UTF-8 code units.
+    pub const fn make_ascii_lowercase(&mut self) {
+        // SAFETY: ASCII case conversion preserves UTF-8 validity.
+        unsafe { self.as_bytes_mut().make_ascii_lowercase(); }
+    }
+
     /// Whether `index` is the start or end of a character: 0, the
     /// length, or a byte that is not a continuation.
     pub const fn is_char_boundary(&self, index: usize) -> bool {
@@ -752,8 +775,27 @@ impl str {
 
     /// The part of the string a range of byte offsets gives, if it is
     /// within it and at character boundaries.
-    pub fn get<I: StrIndex>(&self, index: I) -> Option<&str> {
+    pub fn get<I: SliceIndex<str>>(&self, index: I) -> Option<&I::Output> {
         index.get(self)
+    }
+
+    /// A mutable substring, if the range is within UTF-8 boundaries.
+    pub fn get_mut<I: SliceIndex<str>>(&mut self, index: I) -> Option<&mut I::Output> {
+        index.get_mut(self)
+    }
+
+    /// # Safety
+    /// The index must be in bounds and at UTF-8 character boundaries.
+    pub unsafe fn get_unchecked<I: SliceIndex<str>>(&self, index: I) -> &I::Output {
+        // SAFETY: the caller guarantees a valid substring index.
+        unsafe { index.get(self).unwrap_unchecked() }
+    }
+
+    /// # Safety
+    /// The index must be in bounds and at UTF-8 character boundaries.
+    pub unsafe fn get_unchecked_mut<I: SliceIndex<str>>(&mut self, index: I) -> &mut I::Output {
+        // SAFETY: the caller guarantees a valid substring index.
+        unsafe { index.get_mut(self).unwrap_unchecked() }
     }
 
     /// The string split at byte `mid`, which must be a character
@@ -764,6 +806,13 @@ impl str {
             panic("failed to slice string")
         }
         (substr(self, 0, mid), substr(self, mid, self.len()))
+    }
+
+    /// Splits at a byte offset if it is in bounds and a character boundary.
+    pub fn split_at_checked(&self, mid: usize) -> Option<(&str, &str)> {
+        if self.is_char_boundary(mid) {
+            Some((substr(self, 0, mid), substr(self, mid, self.len())))
+        } else { None }
     }
 
     /// The string without leading whitespace.
@@ -862,62 +911,173 @@ impl str {
     }
 }
 
-/// What `str::get` takes: a range of byte offsets. rustc's
-/// `SliceIndex<str>`.
-#[diagnostic::on_unimplemented(message = "the type `str` cannot be indexed by `{Self}`")]
-pub trait StrIndex {
-    /// The part of `s` it gives, if it is within it and at character
-    /// boundaries.
-    fn get(self, s: &str) -> Option<&str>;
-}
-
-/// `&s[start..end]`, if both are within it and at character boundaries.
 fn get_substr(s: &str, start: usize, end: usize) -> Option<&str> {
     if start <= end && s.is_char_boundary(start) && s.is_char_boundary(end) {
+        // SAFETY: the checked range contains a whole UTF-8 substring.
         Some(unsafe { from_utf8_unchecked(&s.as_bytes()[start..end]) })
-    } else {
-        None
-    }
+    } else { None }
 }
 
-impl StrIndex for Range<usize> {
-    fn get(self, s: &str) -> Option<&str> {
-        get_substr(s, self.start, self.end)
-    }
+fn get_substr_mut(s: &mut str, start: usize, end: usize) -> Option<&mut str> {
+    if start <= end && s.is_char_boundary(start) && s.is_char_boundary(end) {
+        // SAFETY: both boundaries were checked and the returned view requires
+        // mutations to preserve UTF-8, just as the original mutable string does.
+        Some(unsafe { from_utf8_unchecked_mut(&mut s.as_bytes_mut()[start..end]) })
+    } else { None }
 }
 
-impl StrIndex for RangeTo<usize> {
-    fn get(self, s: &str) -> Option<&str> {
-        get_substr(s, 0, self.end)
+#[track_caller]
+fn substr_mut(s: &mut str, start: usize, end: usize) -> &mut str {
+    if start > end || !s.is_char_boundary(start) || !s.is_char_boundary(end) {
+        slice_error_fail(s, start, end)
     }
+    // SAFETY: the range is checked, and mutable str preserves UTF-8 validity.
+    unsafe { from_utf8_unchecked_mut(crate::intrinsics::subslice_mut(s.as_bytes_mut(), start, end)) }
 }
 
-impl StrIndex for RangeFrom<usize> {
+// SAFETY: every returned substring has checked bounds and UTF-8 boundaries.
+unsafe impl SliceIndex<str> for Range<usize> {
+    type Output = str;
     fn get(self, s: &str) -> Option<&str> {
-        get_substr(s, self.start, s.len())
-    }
-}
-
-impl StrIndex for RangeFull {
-    fn get(self, s: &str) -> Option<&str> {
-        Some(s)
-    }
-}
-
-impl StrIndex for RangeInclusive<usize> {
-    fn get(self, s: &str) -> Option<&str> {
-        if self.end == usize::MAX {
-            return None;
-        }
-        let end = self.end + 1;
-        let start = if self.exhausted { end } else { self.start };
+        let start = self.start; let end = self.end;
         get_substr(s, start, end)
     }
+    fn get_mut(self, s: &mut str) -> Option<&mut str> {
+        let start = self.start; let end = self.end;
+        get_substr_mut(s, start, end)
+    }
+    #[track_caller]
+    fn index(self, s: &str) -> &str {
+        let start = self.start; let end = self.end;
+        substr(s, start, end)
+    }
+    #[track_caller]
+    fn index_mut(self, s: &mut str) -> &mut str {
+        let start = self.start; let end = self.end;
+        substr_mut(s, start, end)
+    }
 }
 
-impl StrIndex for RangeToInclusive<usize> {
+// SAFETY: every returned substring has checked bounds and UTF-8 boundaries.
+unsafe impl SliceIndex<str> for RangeTo<usize> {
+    type Output = str;
     fn get(self, s: &str) -> Option<&str> {
-        if self.end == usize::MAX { None } else { get_substr(s, 0, self.end + 1) }
+        let start = 0; let end = self.end;
+        get_substr(s, start, end)
+    }
+    fn get_mut(self, s: &mut str) -> Option<&mut str> {
+        let start = 0; let end = self.end;
+        get_substr_mut(s, start, end)
+    }
+    #[track_caller]
+    fn index(self, s: &str) -> &str {
+        let start = 0; let end = self.end;
+        substr(s, start, end)
+    }
+    #[track_caller]
+    fn index_mut(self, s: &mut str) -> &mut str {
+        let start = 0; let end = self.end;
+        substr_mut(s, start, end)
+    }
+}
+
+// SAFETY: every returned substring has checked bounds and UTF-8 boundaries.
+unsafe impl SliceIndex<str> for RangeFrom<usize> {
+    type Output = str;
+    fn get(self, s: &str) -> Option<&str> {
+        let start = self.start; let end = s.len();
+        get_substr(s, start, end)
+    }
+    fn get_mut(self, s: &mut str) -> Option<&mut str> {
+        let start = self.start; let end = s.len();
+        get_substr_mut(s, start, end)
+    }
+    #[track_caller]
+    fn index(self, s: &str) -> &str {
+        let start = self.start; let end = s.len();
+        substr(s, start, end)
+    }
+    #[track_caller]
+    fn index_mut(self, s: &mut str) -> &mut str {
+        let start = self.start; let end = s.len();
+        substr_mut(s, start, end)
+    }
+}
+
+// SAFETY: every returned substring has checked bounds and UTF-8 boundaries.
+unsafe impl SliceIndex<str> for RangeFull {
+    type Output = str;
+    fn get(self, s: &str) -> Option<&str> {
+        let start = 0; let end = s.len();
+        get_substr(s, start, end)
+    }
+    fn get_mut(self, s: &mut str) -> Option<&mut str> {
+        let start = 0; let end = s.len();
+        get_substr_mut(s, start, end)
+    }
+    #[track_caller]
+    fn index(self, s: &str) -> &str {
+        let start = 0; let end = s.len();
+        substr(s, start, end)
+    }
+    #[track_caller]
+    fn index_mut(self, s: &mut str) -> &mut str {
+        let start = 0; let end = s.len();
+        substr_mut(s, start, end)
+    }
+}
+
+// SAFETY: every returned substring has checked bounds and UTF-8 boundaries.
+unsafe impl SliceIndex<str> for RangeInclusive<usize> {
+    type Output = str;
+    fn get(self, s: &str) -> Option<&str> {
+        if self.end == usize::MAX { return None; }
+        let start = if self.exhausted { self.end + 1 } else { self.start }; let end = self.end + 1;
+        get_substr(s, start, end)
+    }
+    fn get_mut(self, s: &mut str) -> Option<&mut str> {
+        if self.end == usize::MAX { return None; }
+        let start = if self.exhausted { self.end + 1 } else { self.start }; let end = self.end + 1;
+        get_substr_mut(s, start, end)
+    }
+    #[track_caller]
+    fn index(self, s: &str) -> &str {
+        if self.end == usize::MAX { panic("attempted to index str up to maximum usize"); }
+        let start = if self.exhausted { self.end + 1 } else { self.start }; let end = self.end + 1;
+        substr(s, start, end)
+    }
+    #[track_caller]
+    fn index_mut(self, s: &mut str) -> &mut str {
+        if self.end == usize::MAX { panic("attempted to index str up to maximum usize"); }
+        let start = if self.exhausted { self.end + 1 } else { self.start }; let end = self.end + 1;
+        substr_mut(s, start, end)
+    }
+}
+
+// SAFETY: every returned substring has checked bounds and UTF-8 boundaries.
+unsafe impl SliceIndex<str> for RangeToInclusive<usize> {
+    type Output = str;
+    fn get(self, s: &str) -> Option<&str> {
+        if self.end == usize::MAX { return None; }
+        let start = 0; let end = self.end + 1;
+        get_substr(s, start, end)
+    }
+    fn get_mut(self, s: &mut str) -> Option<&mut str> {
+        if self.end == usize::MAX { return None; }
+        let start = 0; let end = self.end + 1;
+        get_substr_mut(s, start, end)
+    }
+    #[track_caller]
+    fn index(self, s: &str) -> &str {
+        if self.end == usize::MAX { panic("attempted to index str up to maximum usize"); }
+        let start = 0; let end = self.end + 1;
+        substr(s, start, end)
+    }
+    #[track_caller]
+    fn index_mut(self, s: &mut str) -> &mut str {
+        if self.end == usize::MAX { panic("attempted to index str up to maximum usize"); }
+        let start = 0; let end = self.end + 1;
+        substr_mut(s, start, end)
     }
 }
 
@@ -965,65 +1125,14 @@ fn slice_error_fail(s: &str, begin: usize, end: usize) -> ! {
     ))
 }
 
-impl Index<Range<usize>> for str {
-    type Output = str;
-
+impl<I: SliceIndex<str>> Index<I> for str {
+    type Output = I::Output;
     #[track_caller]
-    fn index(&self, index: Range<usize>) -> &str {
-        substr(self, index.start, index.end)
-    }
+    fn index(&self, index: I) -> &I::Output { index.index(self) }
 }
-
-impl Index<RangeTo<usize>> for str {
-    type Output = str;
-
+impl<I: SliceIndex<str>> IndexMut<I> for str {
     #[track_caller]
-    fn index(&self, index: RangeTo<usize>) -> &str {
-        substr(self, 0, index.end)
-    }
-}
-
-impl Index<RangeFrom<usize>> for str {
-    type Output = str;
-
-    #[track_caller]
-    fn index(&self, index: RangeFrom<usize>) -> &str {
-        substr(self, index.start, self.len())
-    }
-}
-
-impl Index<RangeFull> for str {
-    type Output = str;
-
-    #[track_caller]
-    fn index(&self, _index: RangeFull) -> &str {
-        self
-    }
-}
-
-impl Index<RangeInclusive<usize>> for str {
-    type Output = str;
-
-    #[track_caller]
-    fn index(&self, index: RangeInclusive<usize>) -> &str {
-        if index.end == usize::MAX {
-            panic("attempted to index str up to maximum usize")
-        }
-        let start = if index.exhausted { index.end + 1 } else { index.start };
-        substr(self, start, index.end + 1)
-    }
-}
-
-impl Index<RangeToInclusive<usize>> for str {
-    type Output = str;
-
-    #[track_caller]
-    fn index(&self, index: RangeToInclusive<usize>) -> &str {
-        if index.end == usize::MAX {
-            panic("attempted to index str up to maximum usize")
-        }
-        substr(self, 0, index.end + 1)
-    }
+    fn index_mut(&mut self, index: I) -> &mut I::Output { index.index_mut(self) }
 }
 
 /// A pattern searched for in a string from both ends, as rustc's
@@ -1765,4 +1874,14 @@ impl Ord for str {
             Greater
         }
     }
+}
+
+/// Parses a complete string into a value. Implementations choose their error.
+pub trait FromStr: Sized {
+    type Err;
+    fn from_str(s: &str) -> Result<Self, Self::Err>;
+}
+
+impl str {
+    pub fn parse<F: FromStr>(&self) -> Result<F, F::Err> { F::from_str(self) }
 }

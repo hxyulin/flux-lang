@@ -1,11 +1,7 @@
-//! Full unchanged typed-AST source-graph READINESS, not public compilation,
-//! native execution, or self-hosting acceptance. The public trait gate stays.
-//! Flux loads dependency sources; rustc independently checks metadata using
-//! rlibs built here from those same current sources, never building Flux.
-//! Like tree_pipeline_selfhost, this graph is bounded to arm64 macOS, memchr
-//! 2.8.3 through an explicit feature-free edition-2024 wrapper, and unicode-ident
-//! 1.0.27 through its unchanged edition-2021 manifest. No Cargo feature/build
-//! script/registry compilation support is implied.
+//! Complete unchanged syntax source graph, including the typed AST, compiled
+//! and executed by Flux and rustc. Dependency sources use the bounded memchr
+//! edition-2024 wrapper and original unicode-ident edition-2021 manifest.
+//! This source-graph test does not build the workspace or bootstrap Flux.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
 #[path = "support/typed_ast_readiness.rs"]
@@ -94,11 +90,6 @@ fn reference_library(
     library
 }
 
-/// Exact identity, not a substring/count-only allowance for unsupported errors.
-fn known_gate_only(diagnostics: &[Diagnostic], expected: &Diagnostic) -> bool {
-    diagnostics == std::slice::from_ref(expected)
-}
-
 #[test]
 fn readiness_rejects_an_actual_unrelated_type_error() {
     let root = std::env::temp_dir().join(format!(
@@ -118,25 +109,13 @@ fn readiness_rejects_an_actual_unrelated_type_error() {
     std::fs::write(root.join("rustc.stderr"), &rustc.stderr).unwrap();
     assert!(!rustc.status.success());
     assert!(String::from_utf8_lossy(&rustc.stderr).contains("mismatched types"));
-    let (db, file, hir) = flux_hir::lower_text(root.join("negative.rs"), source);
+    let (db, _, hir) = flux_hir::lower_text(root.join("negative.rs"), source);
     assert!(db.syntax_errors().is_empty());
     assert!(hir.diagnostics.is_empty());
     let typed = flux_mir::check_file(&hir);
     record(&root, "type", &db, &typed.diagnostics);
-    let owner = hir
-        .items
-        .traits
-        .values()
-        .find(|t| t.name.as_str() == "AstNode")
-        .unwrap();
-    let expected = Diagnostic {
-        file,
-        range: owner.generics.lifetimes[0].range,
-        message: "lifetime parameters on traits are not supported yet".to_owned(),
-    };
-    assert!(typed.diagnostics.contains(&expected));
-    assert_eq!(typed.diagnostics.len(), 2, "{:?}", typed.diagnostics);
-    assert!(!known_gate_only(&typed.diagnostics, &expected));
+    assert_eq!(typed.diagnostics.len(), 1, "{:?}", typed.diagnostics);
+    assert!(typed.diagnostics[0].message.contains("mismatched types"));
 }
 
 fn record(root: &Path, label: &str, db: &SourceDb, diagnostics: &[Diagnostic]) {
@@ -152,7 +131,7 @@ fn record(root: &Path, label: &str, db: &SourceDb, diagnostics: &[Diagnostic]) {
     write(root, &format!("{label}.diagnostics"), &text);
 }
 
-fn analyze(root: &Path, consumer: &str) {
+fn analyze(root: &Path, consumer: &str, expected: &std::process::Output) {
     let started = Instant::now();
     let mut db = SourceDb::new();
     let specs = [
@@ -195,70 +174,55 @@ fn analyze(root: &Path, consumer: &str) {
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     let typed = flux_mir::check_file(&hir);
     record(root, &format!("{consumer}.type"), &db, &typed.diagnostics);
-    let owners: Vec<_> = hir
-        .items
-        .traits
-        .values()
-        .filter(|t| t.name.as_str() == "AstNode")
-        .collect();
-    assert_eq!(owners.len(), 1);
-    let owner = owners[0];
-    assert_eq!(owner.generics.lifetimes.len(), 1);
-    let (file, _) = db
-        .files()
-        .find(|(_, file)| file.path == root.join("syntax/src/ast.rs"))
-        .unwrap();
-    let expected = Diagnostic {
-        file,
-        range: owner.generics.lifetimes[0].range,
-        message: "lifetime parameters on traits are not supported yet".to_owned(),
-    };
-    // Tie the semantic owner/range back to the unchanged source declaration.
-    let text = db.file(file).text();
-    let start = text.find("pub trait AstNode<'t>").unwrap() + "pub trait AstNode<".len();
-    assert_eq!(
-        expected.range,
-        flux_syntax::TextRange::new(start as u32, (start + 2) as u32)
-    );
-    assert!(
-        known_gate_only(&typed.diagnostics, &expected),
-        "{:?}",
-        typed.diagnostics
-    );
-    assert!(!known_gate_only(&[], &expected));
-    let mut unrelated = expected.clone();
-    unrelated.message = "unrelated typed error".to_owned();
-    assert!(!known_gate_only(&[unrelated.clone()], &expected));
-    assert!(!known_gate_only(&[expected.clone(), unrelated], &expected));
-    let mut wrong_location = expected.clone();
-    wrong_location.file = sources[3].root;
-    assert!(!known_gate_only(&[wrong_location], &expected));
-    let mut wrong_range = expected.clone();
-    wrong_range.range = flux_syntax::TextRange::new(0, 0);
-    assert!(!known_gate_only(&[wrong_range], &expected));
-    // Deliberate low-level prerequisite evidence, following trait_owner_regions:
-    // ONLY this known declaration gate permits inspecting independent MIR. Keep
-    // every original diagnostic untouched. Never send this result to codegen or
-    // treat it as public acceptance; build_file normally requires clean types.
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    assert!(flux_ty::check_main(&hir.items, &typed.sigs).is_none());
     let mir = flux_mir::build_file(&hir, &typed);
     record(root, &format!("{consumer}.mir"), &db, &mir.diagnostics);
     assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
-    assert!(known_gate_only(&typed.diagnostics, &expected));
+    for (label, tier) in [
+        ("debug", flux_codegen::OptimizationTier::None),
+        ("optimized", flux_codegen::OptimizationTier::Full),
+    ] {
+        let mut module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
+        let target = flux_codegen::Target::Aarch64AppleDarwin;
+        let object = flux_codegen::compile_object(&mut module, target, tier).unwrap();
+        let executable = root.join(format!("{}-{label}", consumer.replace('/', "-")));
+        flux_codegen::link_executable(&object, target, &executable).unwrap();
+        let actual = Command::new(&executable).output().unwrap();
+        let prefix = format!("{}-{label}", consumer.replace('/', "-"));
+        write(
+            root,
+            &format!("{prefix}.stdout"),
+            std::str::from_utf8(&actual.stdout).unwrap(),
+        );
+        write(
+            root,
+            &format!("{prefix}.stderr"),
+            std::str::from_utf8(&actual.stderr).unwrap(),
+        );
+        assert_eq!(
+            actual.status.code(),
+            expected.status.code(),
+            "{consumer} {label}"
+        );
+        assert_eq!(actual.stdout, expected.stdout, "{consumer} {label}");
+        assert_eq!(actual.stderr, expected.stderr, "{consumer} {label}");
+    }
     eprintln!(
-        "{consumer}: syntax=0 HIR=0 type=1 known gate MIR=0 ({:?})",
+        "{consumer}: clean syntax/HIR/types/MIR; native modes match rustc ({:?})",
         started.elapsed()
     );
 }
 
 #[test]
-fn full_unchanged_typed_ast_source_graph_readiness() {
+fn full_unchanged_typed_ast_source_graph_matches_rustc() {
     let started = Instant::now();
     let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     // Preserve the complete reproducer and all diagnostics, including on failure.
     let root =
         std::env::temp_dir().join(format!("flux-typed-ast-readiness-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    eprintln!("typed AST readiness reproducer: {}", root.display());
+    eprintln!("typed AST native comparison reproducer: {}", root.display());
     let metadata = Command::new("cargo")
         .current_dir(&repository)
         .args([
@@ -353,19 +317,33 @@ fn full_unchanged_typed_ast_source_graph_readiness() {
     for consumer in ["src/main.rs", "src/comprehensive.rs"] {
         let mut command = Command::new("rustc");
         command
-            .args(["--edition=2024", "--emit=metadata", "--out-dir"])
-            .arg(&root)
+            .args([
+                "--edition=2024",
+                "-C",
+                "panic=abort",
+                "-C",
+                "overflow-checks=off",
+                "-o",
+            ])
+            .arg(root.join("reference"))
             .arg(root.join(consumer))
             .arg("--extern")
             .arg(format!("syntax_complete={}", syntax.display()))
             .arg("-L")
             .arg(&root);
         run(&root, &consumer.replace('/', "-"), &mut command);
-        analyze(&root, consumer);
+        let expected = Command::new(root.join("reference")).output().unwrap();
+        assert!(
+            expected.status.success(),
+            "{}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert!(!expected.stdout.is_empty());
+        analyze(&root, consumer, &expected);
     }
     assert_identical(&inventory);
     eprintln!(
-        "full typed AST readiness including independent rustc oracle: {:?}",
+        "full typed AST native comparison including independent rustc oracle: {:?}",
         started.elapsed()
     );
 }

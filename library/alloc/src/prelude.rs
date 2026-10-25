@@ -10,3 +10,11 @@ pub mod rust_2024 {
     pub use crate::string::{String, ToString};
     pub use crate::vec::Vec;
 }
+
+pub mod rust_2018 {
+    pub use core::prelude::rust_2018::*;
+    pub use crate::borrow::ToOwned;
+    pub use crate::boxed::Box;
+    pub use crate::string::{String, ToString};
+    pub use crate::vec::Vec;
+}

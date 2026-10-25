@@ -25,11 +25,66 @@ pub mod aarch64 {
     #[derive(Clone, Copy)]
     pub struct uint8x8_t(pub(crate) [u8; 8]);
 
+    /// Eight signed byte lanes.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(8))]
+    #[derive(Clone, Copy)]
+    pub struct int8x8_t(pub(crate) [i8; 8]);
+
     /// One unsigned doubleword lane.
     #[allow(non_camel_case_types)]
     #[repr(C, align(8))]
     #[derive(Clone, Copy)]
     pub struct uint64x1_t(pub(crate) [u64; 1]);
+
+    /// Reads eight bytes without an alignment requirement.
+    pub unsafe fn vld1_u8(ptr: *const u8) -> uint8x8_t {
+        unsafe { __neon_vld1_u8(ptr) }
+    }
+
+    /// Writes eight bytes without an alignment requirement.
+    pub unsafe fn vst1_u8(ptr: *mut u8, value: uint8x8_t) {
+        unsafe { __neon_vst1_u8(ptr, value) }
+    }
+
+    pub unsafe fn vdup_n_u8(value: u8) -> uint8x8_t {
+        __neon_vdup_n_u8(value)
+    }
+
+    pub unsafe fn vceq_u8(a: uint8x8_t, b: uint8x8_t) -> uint8x8_t {
+        __neon_vceq_u8(a, b)
+    }
+
+    pub unsafe fn vorr_u8(a: uint8x8_t, b: uint8x8_t) -> uint8x8_t {
+        __neon_vorr_u8(a, b)
+    }
+
+    pub unsafe fn vcltz_s8(a: int8x8_t) -> uint8x8_t {
+        __neon_vcltz_s8(a)
+    }
+
+    pub unsafe fn vcgez_s8(a: int8x8_t) -> uint8x8_t {
+        __neon_vcgez_s8(a)
+    }
+
+    pub unsafe fn vreinterpret_s8_u8(a: uint8x8_t) -> int8x8_t {
+        unsafe { *(&a as *const uint8x8_t as *const int8x8_t) }
+    }
+
+    #[rustc_intrinsic]
+    unsafe fn __neon_vld1_u8(ptr: *const u8) -> uint8x8_t { loop {} }
+    #[rustc_intrinsic]
+    unsafe fn __neon_vst1_u8(ptr: *mut u8, value: uint8x8_t) { loop {} }
+    #[rustc_intrinsic]
+    fn __neon_vdup_n_u8(value: u8) -> uint8x8_t { loop {} }
+    #[rustc_intrinsic]
+    fn __neon_vceq_u8(a: uint8x8_t, b: uint8x8_t) -> uint8x8_t { loop {} }
+    #[rustc_intrinsic]
+    fn __neon_vorr_u8(a: uint8x8_t, b: uint8x8_t) -> uint8x8_t { loop {} }
+    #[rustc_intrinsic]
+    fn __neon_vcltz_s8(a: int8x8_t) -> uint8x8_t { loop {} }
+    #[rustc_intrinsic]
+    fn __neon_vcgez_s8(a: int8x8_t) -> uint8x8_t { loop {} }
 
     /// Reads sixteen readable bytes, without an alignment requirement.
     pub unsafe fn vld1q_u8(ptr: *const u8) -> uint8x16_t {

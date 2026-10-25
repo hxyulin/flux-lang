@@ -5,12 +5,14 @@
 //! and there is room for `usize::MAX` of them.
 
 use core::ptr::NonNull;
+use core::marker::PhantomData;
 
 use crate::alloc::{Layout, alloc, dealloc, handle_alloc_error, realloc};
 
 pub(crate) struct RawVec<T> {
     ptr: NonNull<T>,
     cap: usize,
+    owner: PhantomData<T>,
 }
 
 /// rustc's `RawVec::MIN_NON_ZERO_CAP`.
@@ -34,6 +36,7 @@ impl<T> RawVec<T> {
         RawVec {
             ptr: NonNull::dangling(),
             cap: 0,
+            owner: PhantomData,
         }
     }
 
@@ -53,6 +56,7 @@ impl<T> RawVec<T> {
         RawVec {
             ptr: unsafe { NonNull::new_unchecked(ptr as *mut T) },
             cap: capacity,
+            owner: PhantomData,
         }
     }
 
@@ -61,6 +65,7 @@ impl<T> RawVec<T> {
         RawVec {
             ptr: unsafe { NonNull::new_unchecked(ptr) },
             cap: if size_of::<T>() == 0 { 0 } else { capacity },
+            owner: PhantomData,
         }
     }
 
@@ -162,7 +167,8 @@ impl<T> RawVec<T> {
     }
 }
 
-impl<T> Drop for RawVec<T> {
+// SAFETY: deallocation never reads T; owners separately destroy live elements.
+unsafe impl<#[may_dangle] T> Drop for RawVec<T> {
     fn drop(&mut self) {
         if self.cap != 0 && size_of::<T>() != 0 {
             unsafe {

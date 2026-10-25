@@ -314,8 +314,9 @@ fn break_ref() -> () {
     let _3: i32; // x
     let _4: ();
     let _5: &i32;
-    let _6: !;
+    let _6: ();
     let _7: !;
+    let _8: !;
 
     bb0: {
         _3 = const 1_i32;

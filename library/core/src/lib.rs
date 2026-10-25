@@ -17,12 +17,15 @@ pub mod cell;
 mod bool;
 pub mod borrow;
 pub mod char;
+mod char_properties;
 pub mod clone;
 pub mod cmp;
 pub mod convert;
 pub mod default;
+pub mod error;
 pub mod ffi;
 pub mod fmt;
+mod float;
 pub mod hash;
 pub mod hint;
 mod intrinsics;
@@ -55,4 +58,16 @@ pub mod u8 {
 pub mod u32 {
     pub const MIN: u32 = 0;
     pub const MAX: u32 = 4_294_967_295;
+}
+
+/// Legacy pointer-sized unsigned integer constants.
+pub mod usize {
+    pub const MIN: usize = 0;
+    pub const MAX: usize = !0usize;
+}
+
+/// Legacy pointer-sized signed integer constants.
+pub mod isize {
+    pub const MAX: isize = (!0usize >> 1) as isize;
+    pub const MIN: isize = -MAX - 1;
 }

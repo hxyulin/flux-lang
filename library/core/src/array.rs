@@ -9,7 +9,7 @@ use crate::fmt::{Debug, Formatter, Result};
 use crate::intrinsics::{is_copy, read, uninit, write};
 use crate::iter::{DoubleEndedIterator, ExactSizeIterator, IntoIterator, Iterator};
 use crate::marker::Copy;
-use crate::mem::{ManuallyDrop, drop};
+use crate::mem::{ManuallyDrop, MaybeUninit, drop};
 use crate::ops::{Drop, FnMut};
 use crate::option::Option::{self, None, Some};
 use crate::slice::{Iter, IterMut};
@@ -79,7 +79,8 @@ impl<T, const N: usize> [T; N] {
 /// and `array.into_iter()` give. Dropping it drops the elements it has
 /// not given.
 pub struct IntoIter<T, const N: usize> {
-    data: ManuallyDrop<[T; N]>,
+    data: MaybeUninit<[T; N]>,
+    owner: crate::marker::PhantomData<T>,
     start: usize,
     end: usize,
 }
@@ -87,7 +88,9 @@ pub struct IntoIter<T, const N: usize> {
 impl<T, const N: usize> IntoIter<T, N> {
     /// The elements not given yet.
     pub fn as_slice(&self) -> &[T] {
-        &self.data.value[self.start..self.end]
+        // SAFETY: only start..end is initialized; all other slots may have
+        // been moved out of or may never have been written by Clone.
+        unsafe { crate::slice::from_raw_parts((self.data.as_ptr() as *const T).add(self.start), self.end - self.start) }
     }
 }
 
@@ -98,7 +101,8 @@ impl<T, const N: usize> IntoIterator for [T; N] {
 
     fn into_iter(self) -> IntoIter<T, N> {
         IntoIter {
-            data: ManuallyDrop::new(self),
+            data: MaybeUninit::new(self),
+            owner: crate::marker::PhantomData,
             start: 0,
             end: N,
         }
@@ -125,13 +129,29 @@ impl<'a, T, const N: usize> IntoIterator for &'a mut [T; N] {
     }
 }
 
+impl<T: Clone, const N: usize> Clone for IntoIter<T, N> {
+    fn clone(&self) -> IntoIter<T, N> {
+        let mut cloned: IntoIter<T, N> = IntoIter { data: MaybeUninit::uninit(), owner: crate::marker::PhantomData, start: 0, end: 0 };
+        for item in self.as_slice() {
+            let item = item.clone();
+            // SAFETY: end is below the array capacity. Publish the initialized
+            // prefix only after writing; a Clone panic drops that prefix once.
+            unsafe { write((cloned.data.as_mut_ptr() as *mut T).add(cloned.end), item); }
+            cloned.end += 1;
+        }
+        cloned
+    }
+}
+
 impl<T, const N: usize> Iterator for IntoIter<T, N> {
     type Item = T;
     const __TRUSTED_LEN: bool = true;
 
     fn next(&mut self) -> Option<T> {
         if self.start < self.end {
-            let item = unsafe { read(&self.data.value[self.start]) };
+            // SAFETY: this is an initialized live slot; advancing start
+            // transfers its ownership to the caller exactly once.
+            let item = unsafe { read((self.data.as_ptr() as *const T).add(self.start)) };
             self.start += 1;
             Some(item)
         } else {
@@ -151,7 +171,9 @@ impl<T, const N: usize> DoubleEndedIterator for IntoIter<T, N> {
     fn next_back(&mut self) -> Option<T> {
         if self.start < self.end {
             self.end -= 1;
-            Some(unsafe { read(&self.data.value[self.end]) })
+            // SAFETY: the old live range contained this slot; decrementing
+            // end removes it before ownership passes to the caller.
+            Some(unsafe { read((self.data.as_ptr() as *const T).add(self.end)) })
         } else {
             None
         }
@@ -166,7 +188,9 @@ impl<T, const N: usize> DoubleEndedIterator for IntoIter<T, N> {
         let end = self.end;
         self.end -= step;
         while i < end {
-            drop(unsafe { read(&self.data.value[i]) });
+            // SAFETY: these initialized slots were removed from the live
+            // interval before dropping, so the iterator cannot drop them again.
+            drop(unsafe { read((self.data.as_ptr() as *const T).add(i)) });
             i += 1;
         }
         self.next_back()
@@ -176,8 +200,11 @@ impl<T, const N: usize> DoubleEndedIterator for IntoIter<T, N> {
 impl<T, const N: usize> Drop for IntoIter<T, N> {
     fn drop(&mut self) {
         while self.start < self.end {
-            drop(unsafe { read(&self.data.value[self.start]) });
+            let index = self.start;
             self.start += 1;
+            // SAFETY: index belonged to the live interval and was removed
+            // before dropping its initialized payload.
+            drop(unsafe { read((self.data.as_ptr() as *const T).add(index)) });
         }
     }
 }

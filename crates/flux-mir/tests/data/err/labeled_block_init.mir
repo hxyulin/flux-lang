@@ -4,8 +4,9 @@ fn main() -> () {
     let _2: ();
     let _3: ();
     let _4: !;
-    let _5: ();
-    let _6: i32; // _y
+    let _5: !;
+    let _6: ();
+    let _7: i32; // _y
 
     bb0: {
         goto -> bb1;
@@ -16,9 +17,9 @@ fn main() -> () {
     }
 
     bb2: {
-        _6 = copy _1;
+        _7 = copy _1;
         _0 = const ();
-        StorageDead(_6);
+        StorageDead(_7);
         StorageDead(_1);
         return;
     }
@@ -35,7 +36,7 @@ fn main() -> () {
 
     bb5: {
         _1 = const 3_i32;
-        _5 = const ();
+        _6 = const ();
         _2 = const ();
         goto -> bb2;
     }

@@ -7,13 +7,13 @@
 /// A bitwise copy of `*src`, which need not be `Copy`: the caller makes
 /// sure that only one of the two is used and dropped.
 #[rustc_intrinsic]
-pub(crate) unsafe fn read<T>(src: &T) -> T {
+pub(crate) unsafe fn read<T>(src: *const T) -> T {
     loop {}
 }
 
 /// Stores `value` in `*dst` without dropping what was there.
 #[rustc_intrinsic]
-pub(crate) unsafe fn write<T>(dst: &mut T, value: T) {
+pub(crate) unsafe fn write<T>(dst: *mut T, value: T) {
     loop {}
 }
 
@@ -106,6 +106,16 @@ pub(crate) const fn raw_slice_len<T>(ptr: *const [T]) -> usize {
 /// The `len` elements from `data` on, as a mutable slice, unchecked.
 #[rustc_intrinsic]
 pub(crate) unsafe fn slice_from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T] {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) const fn raw_slice_from_parts<T>(data: *const T, len: usize) -> *const [T] {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) const fn raw_slice_from_parts_mut<T>(data: *mut T, len: usize) -> *mut [T] {
     loop {}
 }
 

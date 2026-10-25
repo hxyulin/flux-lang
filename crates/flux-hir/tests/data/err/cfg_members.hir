@@ -1,0 +1,21 @@
+struct Record {  }
+
+struct Tuple();
+
+enum Choice {  }
+
+type Function = fn();
+
+fn function() -> () {}
+
+fn closure() -> () {
+    let closure@0 = || <error>;
+}
+
+error 16..29: expected 1 cfg-pattern
+error 56..86: expected 1 cfg-pattern
+error 107..120: expected 1 cfg-pattern
+error 143..156: expected 1 cfg-pattern
+error 191..204: expected 1 cfg-pattern
+error 241..271: expected 1 cfg-pattern
+error 284..289: cannot find value `value` in this scope

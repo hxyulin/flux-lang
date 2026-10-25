@@ -6,6 +6,12 @@ use crate::vec::Vec;
 use core::borrow::Borrow;
 
 impl<T> [T] {
+    /// Concatenates slices of cloned elements, accepting Borrow<[U]> owners.
+    pub fn concat<U: Clone>(&self) -> Vec<U> where T: Borrow<[U]> {
+        let mut result = Vec::new();
+        for value in self { result.extend_from_slice(value.borrow()); }
+        result
+    }
     /// A `Vec` of clones of the elements, with as much room as they take.
     pub fn to_vec(&self) -> Vec<T>
     where

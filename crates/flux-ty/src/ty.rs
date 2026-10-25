@@ -27,7 +27,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use flux_arena::StaticSliceArena;
 
-use flux_hir::{ExprId, FunctionId, StructId, TraitId};
+use flux_hir::{ConstId, ExprId, FunctionId, StructId, TraitId};
 use flux_intern::{Symbol, sym};
 
 /// A type: a handle to its [`TyKind`].
@@ -38,6 +38,7 @@ pub struct Ty(u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TyKind {
     Int(IntTy),
+    Float(FloatTy),
     Bool,
     /// `char`: a Unicode scalar value, held as a `u32`.
     Char,
@@ -117,6 +118,17 @@ pub enum IntTy {
     U64,
     U128,
     Usize,
+}
+
+/// IEEE binary32 and binary64.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatTy { F32, F64 }
+impl FloatTy {
+    pub fn bits(self) -> u32 { match self { Self::F32 => 32, Self::F64 => 64 } }
+    pub fn name(self) -> Symbol { match self { Self::F32 => sym::f32, Self::F64 => sym::f64 } }
+    pub fn from_name(name: Symbol) -> Option<Self> {
+        match name.as_str() { "f32" => Some(Self::F32), "f64" => Some(Self::F64), _ => None }
+    }
 }
 
 /// The value of a constant of type `ty` (an integer type, `bool` or
@@ -254,20 +266,75 @@ pub fn symbol_list(names: &[Symbol]) -> &'static [Symbol] {
     list
 }
 
+/// One instruction in a function pointer's lifetime recipe. The indices
+/// are relative to that pointer's binder, free-region slots, and captured
+/// types. No item-tree identity or source lifetime name survives here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FnRegion {
+    Bound(u32),
+    Free(u32),
+    Static,
+    /// Splice the region slots of this captured type after substitution.
+    Type(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FnPtrRegions {
+    pub bound: u32,
+    pub free: u32,
+    /// One recipe per parameter, then the result.
+    pub inputs_output: &'static [&'static [FnRegion]],
+    pub types: &'static [Ty],
+}
+
+impl FnPtrRegions {
+    pub fn intern(bound: u32, free: u32, rows: &[Vec<FnRegion>], types: &[Ty]) -> &'static Self {
+        use std::sync::Mutex;
+        type Regions = (
+            HashTable<(u64, &'static FnPtrRegions)>,
+            StaticSliceArena<FnRegion>,
+            StaticSliceArena<&'static [FnRegion]>,
+            StaticSliceArena<FnPtrRegions>,
+        );
+        static REGIONS: LazyLock<Mutex<Regions>> = LazyLock::new(|| Mutex::new((
+            HashTable::new(), StaticSliceArena::default(), StaticSliceArena::default(), StaticSliceArena::default(),
+        )));
+        let hash = FxBuildHasher.hash_one((bound, free, rows, types));
+        let mut arena = REGIONS.lock().unwrap();
+        if let Some(&(_, found)) = arena.0.find(hash, |&(h, r)| h == hash
+            && r.bound == bound && r.free == free && r.types == types
+            && r.inputs_output.len() == rows.len()
+            && r.inputs_output.iter().zip(rows).all(|(a, b)| *a == b.as_slice())) {
+            return found;
+        }
+        let rows: Vec<_> = rows.iter().map(|row| arena.1.alloc(row)).collect();
+        let rows = arena.2.alloc(&rows);
+        let value = FnPtrRegions { bound, free, inputs_output: rows, types: Ty::list(types) };
+        let value = &arena.3.alloc(&[value])[0];
+        arena.0.insert_unique(hash, (hash, value), |&(h, _)| h);
+        value
+    }
+}
+
 /// A function's signature as a type: its parameters' types then its
 /// return type, and whether calling it is `unsafe`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FnSigTy {
+    /// Present on pointer types, rather than a function item's signature.
+    pub regions: Option<&'static FnPtrRegions>,
     pub inputs_output: &'static [Ty],
     pub is_unsafe: bool,
+    pub is_c: bool,
 }
 
 impl FnSigTy {
     pub fn new(params: &[Ty], ret: Ty, is_unsafe: bool) -> FnSigTy {
         let all = intern_types(params.iter().copied().chain([ret]));
         FnSigTy {
+            regions: None,
             inputs_output: all,
             is_unsafe,
+            is_c: false,
         }
     }
 
@@ -280,19 +347,34 @@ impl FnSigTy {
     }
 
     /// The signature with each type replaced by `f`'s.
-    pub fn map(self, f: impl FnMut(Ty) -> Ty) -> FnSigTy {
-        let list = map_list(self.inputs_output, f);
+    pub fn map(self, mut f: impl FnMut(Ty) -> Ty) -> FnSigTy {
+        let list = map_list(self.inputs_output, &mut f);
+        let regions = self.regions.map(|r| {
+            let types = map_list(r.types, &mut f);
+            if types == r.types { r } else {
+                let rows: Vec<_> = r.inputs_output.iter().map(|row| row.to_vec()).collect();
+                FnPtrRegions::intern(r.bound, r.free, &rows, types)
+            }
+        });
         FnSigTy {
+            regions,
             inputs_output: list,
             ..self
         }
     }
 }
 
-/// A closure: the function whose body has it, and its expression there.
+/// The item body containing a closure expression. Statics share constant bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosureOwner {
+    Function(FunctionId),
+    Const(ConstId),
+}
+
+/// A closure: its enclosing item body and its expression there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClosureId {
-    pub owner: FunctionId,
+    pub owner: ClosureOwner,
     pub expr: ExprId,
 }
 
@@ -576,6 +658,7 @@ impl Interner {
                 .chain(def.sig.inputs_output)
                 .fold(0, |f, &t| f | of(t)),
             TyKind::Int(_)
+            | TyKind::Float(_)
             | TyKind::Bool
             | TyKind::Char
             | TyKind::Str
@@ -621,6 +704,9 @@ impl Ty {
     pub const fn int(int: IntTy) -> Ty {
         Ty(PREDEFINED.len() as u32 + int as u32)
     }
+
+    pub fn float(float: FloatTy) -> Ty { Ty::new(TyKind::Float(float)) }
+    pub fn as_float(self) -> Option<FloatTy> { if let TyKind::Float(f) = self.kind() { Some(f) } else { None } }
 
     /// The type with this kind, interning it if it is new.
     pub fn new(kind: TyKind) -> Ty {
@@ -948,8 +1034,8 @@ impl Ty {
         }
     }
 
-    /// Whether the type is a slice, `str` or a trait object, which have
-    /// no size of their own.
+    /// Whether this is a primitive DST terminal. Structural wrappers need
+    /// `Signatures::is_unsized`, which follows their resolved tail fields.
     pub fn is_unsized(self) -> bool {
         matches!(
             self.kind(),
@@ -1102,6 +1188,7 @@ impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind() {
             TyKind::Int(int) => write!(f, "{}", int.name()),
+            TyKind::Float(float) => write!(f, "{}", float.name()),
             TyKind::Bool => f.write_str("bool"),
             TyKind::Tuple([one]) => write!(f, "({one},)"),
             TyKind::Tuple(elements) => {
@@ -1196,6 +1283,7 @@ fn write_sig(f: &mut fmt::Formatter<'_>, sig: FnSigTy) -> fmt::Result {
     if sig.is_unsafe {
         f.write_str("unsafe ")?;
     }
+    if sig.is_c { f.write_str("extern \"C\" ")?; }
     let params: Vec<String> = sig.params().iter().map(Ty::to_string).collect();
     write!(f, "fn({})", params.join(", "))?;
     if sig.ret() != Ty::UNIT {

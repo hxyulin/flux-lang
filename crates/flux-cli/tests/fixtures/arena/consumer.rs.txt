@@ -59,6 +59,12 @@ fn main() {
     let text = bump.alloc_str("arena");
     assert_eq!(text, "arena");
     assert_eq!(bump.alloc_slice(&[8u32, 9]), &[8, 9]);
+    // Larger than the next growth chunk but below the dedicated threshold.
+    let large = vec![31u8; 20_483];
+    let stored = bump.alloc_slice(&large);
+    assert!(bump.capacity_bytes() >= large.len());
+    assert_eq!(stored, large.as_slice());
+    assert_eq!(*bump.alloc(47u64), 47);
     println!(
         "shared {} static {} bump {}",
         preserved.len(),

@@ -9,7 +9,8 @@
 //! Aggregates cross calls as one argument per leaf; a function returning
 //! two or more leaves returns them through memory the caller provides
 //! (`sret`), laid out as a C struct of the leaves, which keel returns in
-//! registers where the platform allows.
+//! registers where the platform allows. Native C signatures instead describe
+//! aggregates with their physical layout through Keel `ByVal` and `Sret`.
 //!
 //! An enum's leaves are its discriminant, of its `repr` type (`isize`
 //! without one), then the fields of each of its variants in turn: only
@@ -64,6 +65,8 @@ pub fn lower_module(
 ) -> Result<Module, Vec<Diagnostic>> {
     let collected = flux_mir::mono::collect_all(hir, &typed.sigs, mir).map_err(|d| vec![d])?;
     let instances = collected.instances;
+    let errors = check_c_abi(hir, typed, mir, &instances);
+    if !errors.is_empty() { return Err(errors); }
     let mut module = Module::default();
     let items = &hir.items;
     let symbols: FxHashMap<FunctionId, String> = items
@@ -125,8 +128,14 @@ pub fn lower_module(
             module.decls.push(FuncDecl {
                 attrs: attrs(&typed.sigs[id]),
                 name: symbols[&id].clone(),
-                sig: signature(&typed.sigs, &layouts, &typed.sigs[id], function.is_variadic),
+                sig: if function.c_abi { c_signature(&typed.sigs, &layouts, &typed.sigs[id], function.is_variadic) } else { signature(&typed.sigs, &layouts, &typed.sigs[id], function.is_variadic) },
             });
+        }
+    }
+    // Float remainder follows C fmod's truncation rule, including signed zero.
+    for (name, scalar) in [("fmodf", Type::F32), ("fmod", Type::F64)] {
+        if declared.insert(name.to_owned()) {
+            module.decls.push(FuncDecl { name: name.into(), sig: Signature::new(&[scalar, scalar], &[scalar]), attrs: FunctionAttrs { nounwind: true, ..FunctionAttrs::default() } });
         }
     }
     // Each static's symbol, from its path as a function's is.
@@ -164,7 +173,7 @@ pub fn lower_module(
             &mir.consts,
             &names,
         ),
-        instance_values: FxHashMap::default(),
+        instance_values: collected.const_values,
         symbols: &symbols,
         statics: &statics,
         reified: collected.reified,
@@ -323,6 +332,7 @@ fn instance_symbol(
     fn encode(ty: Ty, feed: &mut impl FnMut(&[u8])) {
         match ty.kind() {
             TyKind::Int(int) => feed(int.name().as_str().as_bytes()),
+            TyKind::Float(float) => feed(float.name().as_str().as_bytes()),
             TyKind::Bool => feed(b"b"),
             TyKind::Char => feed(b"c"),
             TyKind::Str => feed(b"str"),
@@ -352,7 +362,12 @@ fn instance_symbol(
             }
             TyKind::Closure(id, args) => {
                 feed(b"C");
-                feed(&(id.owner.index() as u32).to_le_bytes());
+                let (tag, index) = match id.owner {
+                    flux_ty::ClosureOwner::Function(f) => (b"f", f.index()),
+                    flux_ty::ClosureOwner::Const(c) => (b"c", c.index()),
+                };
+                feed(tag);
+                feed(&(index as u32).to_le_bytes());
                 feed(&(id.expr.index() as u32).to_le_bytes());
                 args.iter().for_each(|&a| encode(a, feed));
                 feed(b";");
@@ -368,6 +383,7 @@ fn instance_symbol(
                 encode(pointee, feed);
             }
             TyKind::FnPtr(sig) => {
+                feed(if sig.is_c { b"C" } else { b"R" });
                 feed(if sig.is_unsafe { b"uF(" } else { b"F(" });
                 sig.inputs_output.iter().for_each(|&t| encode(t, feed));
                 feed(b")");
@@ -423,6 +439,8 @@ fn mangle(path: &[&str]) -> String {
 fn keel_type(ty: Ty) -> Option<Type> {
     match ty.kind() {
         TyKind::Int(int) => Some(int_type(int)),
+        TyKind::Float(flux_ty::FloatTy::F32) => Some(Type::F32),
+        TyKind::Float(flux_ty::FloatTy::F64) => Some(Type::F64),
         TyKind::Bool => Some(Type::I8),
         TyKind::Char => Some(Type::I32),
         // `&CStr` is a thin pointer here: flux needs only `as_ptr`.
@@ -483,8 +501,8 @@ fn is_memory(sigs: &Signatures, ty: Ty) -> bool {
 
 /// A pointer to a slice, `str` or trait object: its address, then its
 /// length or vtable.
-fn is_fat(ty: Ty) -> bool {
-    matches!(ty.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_unsized())
+fn is_fat(sigs: &Signatures, ty: Ty) -> bool {
+    matches!(ty.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if sigs.is_unsized(p))
 }
 
 /// A pointer to a trait object: its address, then its vtable's.
@@ -528,13 +546,13 @@ fn leaves(sigs: &Signatures, ty: Ty, out: &mut TypeLeaves) {
         out.push(address_leaf());
         return;
     }
-    if is_fat(ty) {
+    if is_fat(sigs, ty) {
         out.push(address_leaf());
         out.push(metadata_leaf(ty));
         return;
     }
     if let Some(variants) = sigs.variants(ty) {
-        out.push(Ty::int(discriminant(sigs, ty)));
+        if !variants.is_empty() { out.push(Ty::int(discriminant(sigs, ty))); }
         for fields in variants {
             for &field in fields {
                 leaves(sigs, field, out);
@@ -563,11 +581,11 @@ fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
     if is_memory(sigs, ty) {
         return 1;
     }
-    if is_fat(ty) {
+    if is_fat(sigs, ty) {
         return 2;
     }
     if let Some(variants) = sigs.variants(ty) {
-        return 1 + variants
+        return usize::from(!variants.is_empty()) + variants
             .iter()
             .flat_map(|fields| fields.iter())
             .map(|&f| leaf_count(sigs, f))
@@ -577,6 +595,14 @@ fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
         Some(fields) => fields.iter().map(|&f| leaf_count(sigs, f)).sum(),
         None => usize::from(keel_type(ty).is_some()),
     }
+}
+
+/// Bound Rust aggregate expansion at call boundaries. In particular, an
+/// enum's SSA leaves include every variant even though only one is stored.
+/// Larger values cross calls through their actual layout, with the callee
+/// loading its own by-value snapshot. Local scalar storage stays unchanged.
+fn indirect_argument(sigs: &Signatures, ty: Ty) -> bool {
+    !is_memory(sigs, ty) && leaf_count(sigs, ty) > 16
 }
 
 /// A keel layout of `size` bytes aligned to `align`, for an `sret`
@@ -682,11 +708,140 @@ fn signature(sigs: &Signatures, layouts: &Layouts, sig: &FnSig, variadic: bool) 
         }),
     }
     for &param in &sig.params {
-        let params = leaves_of(sigs, param).into_iter().filter_map(abi_param);
-        signature.params.extend(params);
+        if indirect_argument(sigs, param) {
+            signature.params.push(AbiParam::new(Type::Ptr));
+        } else {
+            let params = leaves_of(sigs, param).into_iter().filter_map(abi_param);
+            signature.params.extend(params);
+        }
     }
     signature.variadic = variadic;
     signature
+}
+
+/// C aggregate contracts describe physical fields, not Rust's flattened leaves.
+/// Keel has natural C layout only; reject shapes it cannot express exactly.
+fn c_layout(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Layout> {
+    let actual = layouts.of(ty);
+    if !actual.exact || is_fat(sigs, ty) { return None; }
+    let layout = match ty.kind() {
+        TyKind::Tuple([]) | TyKind::Never => Layout::Struct(Vec::new()),
+        TyKind::Array(elem, count) => Layout::Array(Box::new(c_layout(sigs, layouts, elem)?), u32::try_from(count.as_usize()?).ok()?),
+        TyKind::Adt(adt, _) => {
+            if sigs.unions.contains(&adt.strukt) || sigs.variants(ty).is_some() { return None; }
+            let fields = sigs.fields(ty)?;
+            let fields: Option<Vec<_>> = fields.iter().map(|&field| c_layout(sigs, layouts, field)).collect();
+            let fields = fields?;
+            let mut offset = 0u64;
+            for (i, field) in fields.iter().enumerate() {
+                offset = offset.next_multiple_of(field.align());
+                if offset != actual.field_offset(0, i as u32) { return None; }
+                offset += field.checked_size()?;
+            }
+            Layout::Struct(fields)
+        }
+        _ => Layout::Scalar(keel_type(ty)?),
+    };
+    (layout.checked_size()? == actual.size && layout.align() == actual.align).then_some(layout)
+}
+
+fn c_aggregate(ty: Ty) -> bool {
+    matches!(ty.kind(), TyKind::Adt(..) | TyKind::Tuple(_) | TyKind::Array(..))
+}
+
+fn c_return_kind(sigs: &Signatures, layouts: &Layouts, ret: Ty) -> Return {
+    if c_aggregate(ret) {
+        let layout = c_layout(sigs, layouts, ret).expect("C ABI preflight checked the return layout");
+        if layout.size() == 0 { Return::Values(Vec::new()) } else { Return::Memory(layout) }
+    } else { return_kind(sigs, layouts, ret) }
+}
+
+fn c_signature(sigs: &Signatures, layouts: &Layouts, sig: &FnSig, variadic: bool) -> Signature {
+    let mut signature = Signature::new(&[], &[]);
+    match c_return_kind(sigs, layouts, sig.ret) {
+        Return::Values(returns) => signature.returns = returns,
+        Return::Sret(layout) | Return::Memory(layout) => signature.params.push(AbiParam {
+            purpose: Purpose::Sret(layout), ..AbiParam::new(Type::Ptr)
+        }),
+    }
+    for &ty in &sig.params {
+        if c_aggregate(ty) {
+            let layout = c_layout(sigs, layouts, ty).expect("C ABI preflight checked the parameter layout");
+            if layout.size() != 0 { signature.params.push(AbiParam { purpose: Purpose::ByVal(layout), ..AbiParam::new(Type::Ptr) }); }
+        } else { signature.params.extend(abi_param(ty)); }
+    }
+    signature.variadic = variadic;
+    signature
+}
+
+fn c_admitted(items: &flux_hir::ItemTree, sigs: &Signatures, ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::Adt(adt, _) => {
+            let data = &items.structs[adt.strukt];
+            // The core NEON wrappers represent vectors, whose C register
+            // classification differs from an integer struct of the same size.
+            let vector = items.is_core(data.loc.module) && items.modules[data.loc.module].name.as_str() == "aarch64";
+            data.repr_c && !vector && !sigs.unions.contains(&adt.strukt) && sigs.variants(ty).is_none()
+                && sigs.fields(ty).is_some_and(|fields| fields.iter().all(|&ty| c_admitted(items, sigs, ty)))
+        }
+        TyKind::Array(elem, _) => c_admitted(items, sigs, elem),
+        TyKind::Tuple(fields) => fields.is_empty(),
+        _ => true,
+    }
+}
+
+fn c_contains_ref(sigs: &Signatures, ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::Ref(..) => true,
+        // Only stored values cross the ABI. Raw-pointer pointees are neither
+        // passed nor inspected, and may form recursive type graphs.
+        TyKind::RawPtr(..) => false,
+        TyKind::Array(ty, _) | TyKind::Slice(ty) => c_contains_ref(sigs, ty),
+        TyKind::Adt(..) => sigs.contents(ty).is_some_and(|fields| fields.iter().any(|&ty| c_contains_ref(sigs, ty))),
+        TyKind::Tuple(fields) => fields.iter().any(|&ty| c_contains_ref(sigs, ty)),
+        _ => false,
+    }
+}
+
+fn check_c_abi(hir: &Hir, typed: &TypedFile, mir: &FileMir, instances: &[Instance]) -> Vec<Diagnostic> {
+    let layouts = Layouts::new(&hir.items, &typed.sigs, &mir.discriminants);
+    let supported = |sig: &FnSig| !sig.params.iter().any(|&ty| c_contains_ref(&typed.sigs, ty))
+        && sig.params.iter().copied().chain([sig.ret]).all(|ty| c_admitted(&hir.items, &typed.sigs, ty) && c_layout(&typed.sigs, &layouts, ty).is_some());
+    let mut errors = Vec::new();
+    let mut add = |file, range| {
+        let mut error = Diagnostic::new(range, "this type layout in the C ABI is not supported yet");
+        error.file = file;
+        errors.push(error);
+    };
+    for (id, data) in hir.items.functions.iter().filter(|(_, data)| data.is_extern && data.c_abi) {
+        if !supported(&typed.sigs[id]) { add(data.loc.file, data.def_range); }
+    }
+    for &instance in instances {
+        let data = &hir.items.functions[instance.function];
+        if data.c_abi && !supported(&flux_ty::traits::instance_sig(&hir.items, &typed.sigs, instance.function, instance.args)) {
+            add(data.loc.file, data.def_range);
+        }
+        let body = flux_mir::mono::body_of(hir, &typed.sigs, mir, instance);
+        let file = hir.items.functions[body.owner.unwrap_or(instance.function)].loc.file;
+        for block in body.blocks.values() {
+            match &block.terminator.kind {
+                TerminatorKind::CallIndirect { callee, .. } => {
+                    if let Some(sig) = body.operand_ty(callee, &typed.sigs).fn_sig()
+                        && sig.is_c && !supported(&FnSig { params: sig.params().into(), ret: sig.ret() }) {
+                        add(file, block.terminator.range);
+                    }
+                }
+                TerminatorKind::Call { func, args, .. } if hir.items.functions[*func].c_abi && hir.items.functions[*func].is_variadic => {
+                    let fixed = typed.sigs[*func].params.len();
+                    if args.iter().skip(fixed).any(|arg| c_aggregate(body.operand_ty(arg, &typed.sigs))) { add(file, block.terminator.range); }
+                }
+                _ => {}
+            }
+        }
+    }
+    Diagnostic::sort(&mut errors);
+    errors.dedup();
+    errors
 }
 
 /// The signature of a function flux defines: keel's private convention
@@ -715,7 +870,8 @@ fn attrs(sig: &FnSig) -> FunctionAttrs {
 
 /// The signature of a function flux defines: keel's private convention
 /// unless its address is taken (`reified`), when it must be called
-/// through a pointer, which `cc(fast)` does not allow: C's then.
+/// through a pointer, which `cc(fast)` does not allow. Reification uses the
+/// C machine convention while keeping Rust's aggregate representation.
 fn ctx_signature(sigs: &Signatures, layouts: &Layouts, sig: &FnSig, reified: bool) -> Signature {
     if reified {
         signature(sigs, layouts, sig, false)
@@ -811,12 +967,12 @@ impl Ctx<'_> {
             instance.args,
         );
         let takes_location = self.takes_location(instance);
-        let mut signature = ctx_signature(
-            &self.typed.sigs,
-            &self.layouts,
-            sig,
-            self.reified.contains(&instance),
-        );
+        let c_abi = self.hir.items.functions[instance.function].c_abi;
+        let mut signature = if c_abi {
+            c_signature(&self.typed.sigs, &self.layouts, sig, false)
+        } else {
+            ctx_signature(&self.typed.sigs, &self.layouts, sig, self.reified.contains(&instance))
+        };
         if takes_location {
             signature.params.push(AbiParam::new(Type::Ptr));
         }
@@ -832,6 +988,7 @@ impl Ctx<'_> {
             sigs: &typed.sigs,
             body,
             file,
+            c_abi,
             takes_location,
             caller_location: None,
             b: FunctionBuilder::new(&mut function),
@@ -840,6 +997,7 @@ impl Ctx<'_> {
             variable_lists: SlicePool::default(),
             slots: Vec::new(),
             sret: None,
+            direct_sret: Vec::new(),
             callees: FxHashMap::default(),
             panic_block: None,
         };
@@ -861,7 +1019,7 @@ impl Ctx<'_> {
     /// column, in characters, as rustc counts them.
     fn location(&mut self, file: flux_hir::FileId, offset: u32) -> String {
         let items = &self.hir.items;
-        let file = items.expansion_files.get(&file).copied().unwrap_or(file);
+        let (file, offset) = items.source_offset(file, offset);
         if let Some(name) = self.locations.get(&(file, offset)) {
             return name.clone();
         }
@@ -933,6 +1091,14 @@ impl Ctx<'_> {
         (items, layout.align as u32)
     }
 
+    /// Named constants borrowed by promotion share the static projection
+    /// representation, but their data is emitted only when referenced.
+    fn constant_storage(&mut self, id: flux_hir::ConstId) -> String {
+        if let Some(name) = self.statics.get(&id) { return name.clone(); }
+        let value = self.evaluator.eval_const(id).expect("promoted constant was evaluated");
+        self.promoted(&value, self.typed.sigs.consts[id])
+    }
+
     fn static_part(
         &self,
         id: flux_hir::ConstId,
@@ -980,12 +1146,16 @@ impl Ctx<'_> {
         };
         let layout = self.layouts.of(ty);
         match value {
+            V::Float { bits, .. } => put(bytes, at, u128::from(*bits), layout.size as usize),
             V::Int { bits, .. } => put(bytes, at, *bits, layout.size as usize),
             V::RawAddr(address) => put(bytes, at, u128::from(*address), 8),
             V::Bool(b) => bytes[at] = u8::from(*b),
+            V::Function(instance) => {
+                addresses.push((at, instance_symbol(self.hir, self.symbols, *instance), 0));
+            }
             V::Static(id) => {
-                addresses.push((at, self.statics[id].clone(), 0));
-                if let Some(len) = static_slice_metadata(ty, self.typed.sigs.consts[*id]) {
+                addresses.push((at, self.constant_storage(*id), 0));
+                if let Some(len) = static_slice_metadata(&self.typed.sigs, ty, self.typed.sigs.consts[*id]) {
                     put(bytes, at + 8, u128::from(len), 8);
                 }
             }
@@ -1001,8 +1171,8 @@ impl Ctx<'_> {
                     self.data_errors.push(d);
                     0
                 });
-                addresses.push((at, self.statics[id].clone(), addend));
-                if let Some(len) = static_slice_metadata(ty, stored) {
+                addresses.push((at, self.constant_storage(*id), addend));
+                if let Some(len) = static_slice_metadata(&self.typed.sigs, ty, stored) {
                     put(bytes, at + 8, u128::from(len), 8);
                 }
             }
@@ -1242,6 +1412,7 @@ struct Lower<'a, 'c, 'f> {
     body: &'c Body,
     /// The file the body's ranges are in.
     file: flux_hir::FileId,
+    c_abi: bool,
     /// Whether the function takes where it was called from.
     takes_location: bool,
     /// That parameter, a pointer to a `Location`.
@@ -1258,9 +1429,92 @@ struct Lower<'a, 'c, 'f> {
     /// Where to store the return value, and its layout, when it is
     /// returned through memory.
     sret: Option<(Value, Layout)>,
+    /// Fresh, unborrowed locals whose storage can receive a call result.
+    direct_sret: Vec<bool>,
     callees: FxHashMap<Instance, FuncRef>,
     /// Calls `abort`; shared by every failed assertion.
     panic_block: Option<Block>,
+}
+
+/// Coalesce an aggregate temporary with its sole consumer only when neither
+/// storage address escapes and both locals have one definition. Cyclic bodies
+/// keep separate slots because a later iteration can overlap their lifetimes.
+fn memory_storage(body: &Body, sigs: &Signatures) -> (Vec<bool>, Vec<usize>, Vec<usize>) {
+    let count = body.locals.len();
+    let mut borrowed = vec![false; count];
+    let mut definitions = vec![0; count];
+    let mut uses = vec![0; count];
+    let mut copies = Vec::new();
+    for param in body.params() { definitions[param.index()] += 1; }
+    let write = |place: &Place, definitions: &mut [usize], uses: &mut [usize]| {
+        if place.projection.is_empty() { definitions[place.local.index()] += 1; }
+        else { uses[place.local.index()] += 1; }
+    };
+    let operand = |operand: &Operand, uses: &mut [usize]| {
+        if let Operand::Copy(place) | Operand::Move(place) = operand { uses[place.local.index()] += 1; }
+    };
+    let mut incoming = vec![0; body.blocks.len()];
+    for block in body.blocks.values() {
+        for next in block.terminator.kind.successors() { incoming[next.index()] += 1; }
+        for statement in &block.statements {
+            if let StatementKind::Assign(dest, value) = &statement.kind {
+                write(dest, &mut definitions, &mut uses);
+                for op in value.operands() { operand(op, &mut uses); }
+                match value {
+                    Rvalue::Ref { place, .. } => {
+                        uses[place.local.index()] += 1;
+                        if !place.has_deref() { borrowed[place.local.index()] = true; }
+                    }
+                    Rvalue::Discriminant(place) | Rvalue::Len { place, .. } => uses[place.local.index()] += 1,
+                    Rvalue::Use(Operand::Copy(src) | Operand::Move(src))
+                        if dest.projection.is_empty() && src.projection.is_empty()
+                            && body.locals[dest.local].ty == body.locals[src.local].ty
+                            && is_memory(sigs, body.locals[src.local].ty) => copies.push((src.local.index(), dest.local.index())),
+                    _ => {}
+                }
+            }
+        }
+        for op in block.terminator.kind.operands() { operand(op, &mut uses); }
+        match &block.terminator.kind {
+            TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. } => write(dest, &mut definitions, &mut uses),
+            TerminatorKind::Drop { place, .. } => uses[place.local.index()] += 1,
+            TerminatorKind::Return => uses[Body::RETURN.index()] += 1,
+            _ => {}
+        }
+    }
+    // Kahn's algorithm also detects loops outside the entry component.
+    let mut queue: Vec<_> = incoming.iter().enumerate().filter_map(|(i, &n)| (n == 0).then_some(i)).collect();
+    let mut next = 0;
+    while next < queue.len() {
+        let block = flux_mir::BasicBlock::from_raw(queue[next] as u32);
+        next += 1;
+        for successor in body.blocks[block].terminator.kind.successors() {
+            incoming[successor.index()] -= 1;
+            if incoming[successor.index()] == 0 { queue.push(successor.index()); }
+        }
+    }
+    let mut roots: Vec<_> = (0..count).collect();
+    fn root(mut local: usize, roots: &mut [usize]) -> usize {
+        let mut representative = local;
+        while roots[representative] != representative { representative = roots[representative]; }
+        while roots[local] != local {
+            let next = roots[local];
+            roots[local] = representative;
+            local = next;
+        }
+        representative
+    }
+    if queue.len() == body.blocks.len() {
+        for (src, dest) in copies {
+            if uses[src] == 1 && definitions[src] == 1 && definitions[dest] == 1 && !borrowed[src] && !borrowed[dest] {
+                let source = root(src, &mut roots);
+                let destination = root(dest, &mut roots);
+                if source != destination { roots[source] = destination; }
+            }
+        }
+    }
+    for local in 0..count { roots[local] = root(local, &mut roots); }
+    (borrowed, definitions, roots)
 }
 
 impl Lower<'_, '_, '_> {
@@ -1271,21 +1525,32 @@ impl Lower<'_, '_, '_> {
         // take blocks of its own (an enum's variants), then `bb0` runs.
         let entry = self.b.create_block();
         self.blocks = body.blocks.iter().map(|_| self.b.create_block()).collect();
-        // Locals whose own storage is borrowed need an address.
-        let mut borrowed = vec![false; body.locals.len()];
-        for data in body.blocks.values() {
-            for statement in &data.statements {
-                if let StatementKind::Assign(_, Rvalue::Ref { place, .. }) = &statement.kind
-                    && !place.has_deref()
-                {
-                    borrowed[place.local.index()] = true;
-                }
-            }
-        }
+        let (borrowed, definitions, roots) = memory_storage(body, sigs);
+        self.direct_sret = definitions.iter().zip(&borrowed).map(|(&n, &borrowed)| n == 1 && !borrowed).collect();
         self.b.switch_to_block(entry);
+        // A memory return is built directly in the caller's return slot.
+        // Its input operands still have their own by-value storage.
+        if let Return::Sret(layout) | Return::Memory(layout) =
+            if self.c_abi { c_return_kind(sigs, &self.ctx.layouts, body.locals[Body::RETURN].ty) }
+            else { return_kind(sigs, &self.ctx.layouts, body.locals[Body::RETURN].ty) }
+        {
+            let pointer = self.b.append_block_param(entry, Type::Ptr);
+            self.sret = Some((pointer, layout));
+        }
+        let mut addresses = vec![None; body.locals.len()];
         for (local, decl) in body.locals.iter() {
             if borrowed[local.index()] || is_memory(sigs, decl.ty) {
-                let address = self.new_slot(decl.ty);
+                let root = roots[local.index()];
+                let address = match addresses[root] {
+                    Some(address) => address,
+                    None => {
+                        let address = if root == Body::RETURN.index() && is_memory(sigs, body.locals[Body::RETURN].ty) {
+                            self.sret.as_ref().map(|(pointer, _)| *pointer).unwrap_or_else(|| self.new_slot(decl.ty))
+                        } else { self.new_slot(decl.ty) };
+                        addresses[root] = Some(address);
+                        address
+                    }
+                };
                 self.slots.push(Some(address));
                 self.vars.push(SliceId::default());
             } else {
@@ -1299,13 +1564,22 @@ impl Lower<'_, '_, '_> {
                 self.vars.push(vars);
             }
         }
-        if let Return::Sret(layout) | Return::Memory(layout) =
-            return_kind(sigs, &self.ctx.layouts, body.locals[Body::RETURN].ty)
-        {
-            let pointer = self.b.append_block_param(entry, Type::Ptr);
-            self.sret = Some((pointer, layout));
-        }
         for param in body.params() {
+            let ty = body.locals[param].ty;
+            if !self.c_abi && indirect_argument(sigs, ty) {
+                let pointer = self.b.append_block_param(entry, Type::Ptr);
+                let values = self.load(Location::Memory(pointer), ty);
+                self.write(&param.into(), &values);
+                continue;
+            }
+            if self.c_abi && c_aggregate(ty) {
+                if self.ctx.layouts.of(ty).size != 0 {
+                    let pointer = self.b.append_block_param(entry, Type::Ptr);
+                    let values = self.load(Location::Memory(pointer), ty);
+                    self.write(&param.into(), &values);
+                }
+                continue;
+            }
             let leaves = leaves_of(sigs, body.locals[param].ty);
             let values: Values = leaves
                 .into_iter()
@@ -1482,7 +1756,13 @@ impl Lower<'_, '_, '_> {
                 let len = self.b.ins().isub(parts[1], cut);
                 smallvec![pointer, len]
             }
-            _ => self.read(&pointer_of(place)),
+            _ => {
+                let deref = place.projection.iter().rposition(|p| matches!(p, ProjectionElem::Deref | ProjectionElem::BoxDeref)).expect("DSTs are behind pointers");
+                let pointer = Place { local: place.local, projection: place.projection.prefix(deref) };
+                let parts = self.read(&pointer);
+                let (Location::Memory(address), _) = self.locate(place) else { unreachable!("DST place is in memory"); };
+                smallvec![address, parts[1]]
+            }
         }
     }
 
@@ -1499,7 +1779,7 @@ impl Lower<'_, '_, '_> {
 
     /// Copies `size` bytes of a value of a memory type from `from` to `to`.
     fn copy(&mut self, to: Value, from: Value, size: u64) {
-        if size == 0 {
+        if size == 0 || to == from {
             return;
         }
         let len = self.b.ins().iconst(Type::I64, size as i64);
@@ -1644,7 +1924,7 @@ impl Lower<'_, '_, '_> {
             }
             return;
         }
-        if is_fat(ty) {
+        if is_fat(self.sigs, ty) {
             self.b
                 .ins()
                 .store_with_flags(values[0], address, aligned(Type::Ptr));
@@ -1868,7 +2148,7 @@ impl Lower<'_, '_, '_> {
             out.push(address);
             return;
         }
-        if is_fat(ty) {
+        if is_fat(self.sigs, ty) {
             out.push(
                 self.b
                     .ins()
@@ -1880,6 +2160,9 @@ impl Lower<'_, '_, '_> {
             return;
         }
         if let Some(variants) = sigs.variants(ty) {
+            // An empty enum has no discriminant or scalar leaves. It may be
+            // a field of an inactive variant whose flattened leaves we load.
+            if variants.is_empty() { return; }
             out.push(self.load_discriminant(address, ty));
             let layout = self.ctx.layouts.of(ty);
             for (v, fields) in variants.iter().enumerate() {
@@ -1944,8 +2227,12 @@ impl Lower<'_, '_, '_> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self.read(place),
             Operand::Const(Constant::Item { id, args, ty }) => {
-                let c = flux_ty::ConstInstance { konst: *id, args };
-                let known = self.ctx.const_values.get(*id, args);
+                let c = flux_ty::traits::resolve_const(
+                    &self.ctx.hir.items,
+                    self.sigs,
+                    flux_ty::ConstInstance { konst: *id, args },
+                );
+                let known = self.ctx.const_values.get(c.konst, c.args);
                 let value = match known.or_else(|| self.ctx.instance_values.get(&c)) {
                     Some(value) => value.clone(),
                     None => match self.ctx.evaluator.eval_instance(c) {
@@ -2040,6 +2327,10 @@ impl Lower<'_, '_, '_> {
                     self.b
                         .ins()
                         .convert(keel_ir::ConvertOp::IntToPtr, Type::Ptr, zero)
+                } else if t == Type::F32 {
+                    self.b.ins().f32const(0.0)
+                } else if t == Type::F64 {
+                    self.b.ins().f64const(0.0)
                 } else {
                     self.b.ins().iconst(t, 0)
                 }
@@ -2051,6 +2342,7 @@ impl Lower<'_, '_, '_> {
     fn value_leaves(&mut self, value: &flux_mir::eval::Value, ty: Ty, out: &mut Values) {
         use flux_mir::eval::Value as V;
         match value {
+            V::Float { bits, ty } => out.push(self.float_const(*bits, *ty)),
             V::Int { bits, ty } => out.push(self.int_const(*bits, *ty)),
             V::RawAddr(address) => {
                 let bits = self.int_const(u128::from(*address), IntTy::Usize);
@@ -2061,9 +2353,13 @@ impl Lower<'_, '_, '_> {
                 );
             }
             V::Bool(b) => out.push(self.b.ins().iconst(Type::I8, i64::from(*b))),
+            V::Function(instance) => {
+                let callee = self.callee(instance.function, instance.args);
+                out.push(self.b.ins().symbol_addr(keel_ir::Symbol::Func(callee)));
+            }
             V::Static(id) => {
                 out.push(self.static_addr(*id));
-                if let Some(len) = static_slice_metadata(ty, self.sigs.consts[*id]) {
+                if let Some(len) = static_slice_metadata(self.sigs, ty, self.sigs.consts[*id]) {
                     out.push(self.int_const(u128::from(len), IntTy::Usize));
                 }
             }
@@ -2071,7 +2367,7 @@ impl Lower<'_, '_, '_> {
                 let (offset, stored) = self.ctx.static_part(*id, path);
                 let address = self.static_addr(*id);
                 out.push(self.offset(address, offset));
-                if let Some(len) = static_slice_metadata(ty, stored) {
+                if let Some(len) = static_slice_metadata(self.sigs, ty, stored) {
                     out.push(self.int_const(u128::from(len), IntTy::Usize));
                 }
             }
@@ -2130,8 +2426,16 @@ impl Lower<'_, '_, '_> {
         self.operand(operand).first().copied()
     }
 
+    fn float_const(&mut self, bits: u64, ty: flux_ty::FloatTy) -> Value {
+        match ty {
+            flux_ty::FloatTy::F32 => self.b.ins().f32const(f32::from_bits(bits as u32)),
+            flux_ty::FloatTy::F64 => self.b.ins().f64const(f64::from_bits(bits)),
+        }
+    }
+
     fn constant(&mut self, constant: Constant) -> Option<Value> {
         match constant {
+            Constant::Float { bits, ty } => Some(self.float_const(bits, ty)),
             Constant::Int { bits, ty } => Some(self.int_const(bits, ty)),
             Constant::Bool(value) => Some(self.b.ins().iconst(Type::I8, i64::from(value))),
             Constant::Char(c) => Some(self.b.ins().iconst(Type::I32, i64::from(u32::from(c)))),
@@ -2163,7 +2467,8 @@ impl Lower<'_, '_, '_> {
 
     /// The address of static `id`.
     fn static_addr(&mut self, id: flux_hir::ConstId) -> Value {
-        let data = self.b.import_data(&self.ctx.statics[&id]);
+        let name = self.ctx.constant_storage(id);
+        let data = self.b.import_data(&name);
         self.b.ins().symbol_addr(keel_ir::Symbol::Data(data))
     }
 
@@ -2229,7 +2534,7 @@ impl Lower<'_, '_, '_> {
                 smallvec![tag]
             }
             // A reference to a slice is the pointer it is behind.
-            Rvalue::Ref { place, .. } if self.body.place_ty(place, self.sigs).is_unsized() => {
+            Rvalue::Ref { place, .. } if self.sigs.is_unsized(self.body.place_ty(place, self.sigs)) => {
                 self.slice_parts(place)
             }
             Rvalue::Ref { place, .. } => match self.locate(place).0 {
@@ -2280,6 +2585,11 @@ impl Lower<'_, '_, '_> {
                     unreachable!("unsizing is of pointers")
                 };
                 let leaves = self.operand(operand);
+                // Weakening a raw pointer's mutability retains the same
+                // object and vtable; it is not a supertrait upcast.
+                if pointee_of == object {
+                    return leaves;
+                }
                 if pointee_of.is_dyn() {
                     let index = flux_mir::vtable::super_index(
                         &self.ctx.hir.items,
@@ -2302,7 +2612,7 @@ impl Lower<'_, '_, '_> {
             }
             Rvalue::Unsize(operand, _) => {
                 let from = self.body.operand_ty(operand, self.sigs);
-                let len = match pointee_of(from).map(Ty::kind) {
+                let len = match pointee_of(from).map(|ty| self.sigs.structural_tail(ty).kind()) {
                     Some(TyKind::Array(_, len)) => array_len(len),
                     _ => 0,
                 };
@@ -2312,7 +2622,7 @@ impl Lower<'_, '_, '_> {
             // The address of element `start`, and `end - start` elements.
             Rvalue::Subslice { slice, start, end } => {
                 let elem = match self.body.operand_ty(slice, self.sigs).kind() {
-                    TyKind::Ref(_, s) => s.sequence_elem().unwrap_or(Ty::UNIT),
+                    TyKind::Ref(_, s) | TyKind::RawPtr(_, s) => s.sequence_elem().unwrap_or(Ty::UNIT),
                     _ => Ty::UNIT,
                 };
                 let size = self.ctx.layouts.of(elem).size;
@@ -2326,9 +2636,9 @@ impl Lower<'_, '_, '_> {
             Rvalue::Repeat(..) => unreachable!("arrays are built in memory"),
             // A pointer to a slice or `str` as one to a slice or `str`
             // keeps its length; as a thin pointer, drops it.
-            Rvalue::Cast(operand, to) if is_fat(self.body.operand_ty(operand, self.sigs)) => {
+            Rvalue::Cast(operand, to) if is_fat(self.sigs, self.body.operand_ty(operand, self.sigs)) => {
                 let mut leaves = self.operand(operand);
-                if !is_fat(*to) {
+                if !is_fat(self.sigs, *to) {
                     leaves.truncate(1);
                 }
                 leaves
@@ -2353,6 +2663,7 @@ impl Lower<'_, '_, '_> {
                 let ty = self.body.operand_ty(operand, self.sigs);
                 let value = self.scalar(operand)?;
                 Some(match op {
+                    UnOp::Neg if ty.as_float().is_some() => self.b.ins().fneg(value),
                     UnOp::Neg => self.b.ins().ineg(value),
                     UnOp::Not if ty == Ty::BOOL => {
                         let one = self.b.ins().iconst(Type::I8, 1);
@@ -2366,6 +2677,9 @@ impl Lower<'_, '_, '_> {
                 let from = self.body.operand_ty(operand, self.sigs);
                 let value = self.scalar(operand)?;
                 let to_ty = keel_type(*to)?;
+                if from.as_float().is_some() || to.as_float().is_some() {
+                    return Some(self.float_cast(value, from, *to));
+                }
                 // Pointers are 64-bit addresses: a pointer as another is
                 // itself, as an integer its address truncated, and an
                 // integer as a pointer is extended to 64 bits first.
@@ -2411,6 +2725,144 @@ impl Lower<'_, '_, '_> {
         }
     }
 
+    fn float_cast(&mut self, value: Value, from: Ty, to: Ty) -> Value {
+        use keel_ir::ConvertOp;
+        let target = keel_type(to).expect("numeric scalar");
+        if from.as_int().is_some_and(|i| i.bits()==128) { return self.wide_int_to_float(value,from,to); }
+        if to.as_int().is_some_and(|i| i.bits()==128) { return self.float_to_wide_int(value,from,to); }
+        match (from.as_float(), to.as_float()) {
+            (Some(a), Some(b)) if a == b => value,
+            (Some(a), Some(b)) => self.b.ins().convert(if a.bits() < b.bits() { ConvertOp::Fpext } else { ConvertOp::Fptrunc }, target, value),
+            (None, Some(_)) => {
+                let mut value = value;
+                if bits(from) < 32 { value = if from.is_signed_int() { self.b.ins().sext(Type::I32,value) } else { self.b.ins().uext(Type::I32,value) }; }
+                self.b.ins().convert(if from.is_signed_int() { ConvertOp::Sitofp } else { ConvertOp::Uitofp }, target, value)
+            }
+            (Some(_), None) => {
+                let wide = if bits(to) < 32 { Type::I32 } else { target };
+                let converted = self.b.ins().convert(if to.is_signed_int() { ConvertOp::Fptosi } else { ConvertOp::Fptoui }, wide, value);
+                if bits(to) >= 32 { return converted; }
+                let maximum = self.b.ins().iconst(wide, ((1u64 << (bits(to) - u32::from(to.is_signed_int()))) - 1) as i64);
+                let minimum = self.b.ins().iconst(wide, if to.is_signed_int() { -(1i64 << (bits(to)-1)) } else { 0 });
+                let below = self.b.ins().icmp(if to.is_signed_int() { IntCC::Slt } else { IntCC::Ult }, converted, minimum);
+                let lower = self.b.ins().select(below, minimum, converted);
+                let above = self.b.ins().icmp(if to.is_signed_int() { IntCC::Sgt } else { IntCC::Ugt }, lower, maximum);
+                let clamped = self.b.ins().select(above, maximum, lower);
+                self.b.ins().trunc(target, clamped)
+            }
+            _ => unreachable!("a float cast has a float operand or result"),
+        }
+    }
+
+    /// Round the integer significand once, to nearest-even, before an exact
+    /// power-of-two scaling. Splitting into two float additions double-rounds.
+    fn wide_int_to_float(&mut self, value: Value, from: Ty, to: Ty) -> Value {
+        use keel_ir::ConvertOp;
+        let zero=self.int_const(0,IntTy::U128);
+        let negative=self.b.ins().icmp(IntCC::Slt,value,zero);
+        let magnitude=if from.is_signed_int() { let neg=self.b.ins().ineg(value); self.b.ins().select(negative,neg,value) } else {value};
+        let sixtyfour=self.int_const(64,IntTy::U128);
+        let high=self.b.ins().ushr(magnitude,sixtyfour);
+        let high=self.b.ins().trunc(Type::I64,high);
+        let low=self.b.ins().trunc(Type::I64,magnitude);
+        let highzero=self.b.ins().iconst(Type::I64,0);
+        let has_high=self.b.ins().icmp(IntCC::Ne,high,highzero);
+        let hc=self.b.ins().clz(high); let lc=self.b.ins().clz(low);
+        let c128=self.b.ins().iconst(Type::I64,128); let c64=self.b.ins().iconst(Type::I64,64);
+        let hlen=self.b.ins().isub(c128,hc); let llen=self.b.ins().isub(c64,lc);
+        let length=self.b.ins().select(has_high,hlen,llen);
+        let float=to.as_float().expect("float target");
+        let precision=if float==flux_ty::FloatTy::F32 {24} else {53};
+        let p=self.b.ins().iconst(Type::I64,precision);
+        let large=self.b.ins().icmp(IntCC::Ugt,length,p);
+        let difference=self.b.ins().isub(length,p);
+        let shift=self.b.ins().select(large,difference,highzero);
+        let shift128=self.b.ins().uext(Type::I128,shift);
+        let quotient=self.b.ins().ushr(magnitude,shift128);
+        let one=self.int_const(1,IntTy::U128);
+        let power=self.b.ins().shl(one,shift128);
+        let mask=self.b.ins().isub(power,one);
+        let remainder=self.b.ins().and(magnitude,mask);
+        let previous=self.b.ins().isub(shift128,one);
+        let half=self.b.ins().shl(one,previous);
+        let above=self.b.ins().icmp(IntCC::Ugt,remainder,half);
+        let tie=self.b.ins().icmp(IntCC::Eq,remainder,half);
+        let odd=self.b.ins().and(quotient,one);
+        let odd=self.b.ins().icmp(IntCC::Ne,odd,zero);
+        let tie_odd=self.b.ins().and(tie,odd);
+        let up=self.b.ins().or(above,tie_odd);
+        let increment=self.b.ins().uext(Type::I128,up);
+        let rounded=self.b.ins().iadd(quotient,increment);
+        let rounded=self.b.ins().trunc(Type::I64,rounded);
+        let target=keel_type(to).expect("float target");
+        let rounded=self.b.ins().convert(ConvertOp::Uitofp,target,rounded);
+        let bias=self.b.ins().iconst(Type::I64,if precision==24 {127} else {1023});
+        let exponent=self.b.ins().iadd(shift,bias);
+        let fraction=self.b.ins().iconst(Type::I64,precision-1);
+        let scale=self.b.ins().shl(exponent,fraction);
+        let scale=if precision==24 {self.b.ins().trunc(Type::I32,scale)} else {scale};
+        let scale=self.b.ins().convert(ConvertOp::Bitcast,target,scale);
+        let result=self.b.ins().fmul(rounded,scale);
+        if from.is_signed_int() { let neg=self.b.ins().fneg(result); self.b.ins().select(negative,neg,result) } else {result}
+    }
+
+    /// Decode IEEE bits and truncate the exact significand, then clamp to the
+    /// integer range. This also handles NaN and infinity without a backend
+    /// float-to-i128 conversion or an unchecked native conversion helper.
+    fn float_to_wide_int(&mut self, value: Value, from: Ty, to: Ty) -> Value {
+        use keel_ir::ConvertOp;
+        let single=from.as_float()==Some(flux_ty::FloatTy::F32);
+        let raw=self.b.ins().convert(ConvertOp::Bitcast,if single {Type::I32} else {Type::I64},value);
+        let raw=if single {self.b.ins().uext(Type::I64,raw)} else {raw};
+        let precision=if single {23} else {52};
+        let exponent_mask=if single {255} else {2047};
+        let sign_bit=self.b.ins().iconst(Type::I64,if single {31} else {63});
+        let sign=self.b.ins().ushr(raw,sign_bit);
+        let zero64=self.b.ins().iconst(Type::I64,0);
+        let negative=self.b.ins().icmp(IntCC::Ne,sign,zero64);
+        let fraction_mask=self.b.ins().iconst(Type::I64,(1i64<<precision)-1);
+        let fraction=self.b.ins().and(raw,fraction_mask);
+        let precision_value=self.b.ins().iconst(Type::I64,precision);
+        let encoded_exp=self.b.ins().ushr(raw,precision_value);
+        let exp_mask=self.b.ins().iconst(Type::I64,exponent_mask);
+        let encoded_exp=self.b.ins().and(encoded_exp,exp_mask);
+        let exp_all=self.b.ins().icmp(IntCC::Eq,encoded_exp,exp_mask);
+        let frac_nonzero=self.b.ins().icmp(IntCC::Ne,fraction,zero64);
+        let nan=self.b.ins().and(exp_all,frac_nonzero);
+        let bias=self.b.ins().iconst(Type::I64,if single {127} else {1023});
+        let exponent=self.b.ins().isub(encoded_exp,bias);
+        let hidden=self.b.ins().iconst(Type::I64,1i64<<precision);
+        let significand=self.b.ins().or(fraction,hidden);
+        let significand=self.b.ins().uext(Type::I128,significand);
+        let shift=self.b.ins().isub(exponent,precision_value);
+        let left=self.b.ins().icmp(IntCC::Sge,shift,zero64);
+        let neg_shift=self.b.ins().ineg(shift);
+        let left_shift=self.b.ins().uext(Type::I128,shift);
+        let right_shift=self.b.ins().uext(Type::I128,neg_shift);
+        let l=self.b.ins().shl(significand,left_shift);
+        let r=self.b.ins().ushr(significand,right_shift);
+        let magnitude=self.b.ins().select(left,l,r);
+        let zero=self.int_const(0,IntTy::U128);
+        let limit=self.b.ins().iconst(Type::I64,if to.is_signed_int() {127} else {128});
+        let overflow=self.b.ins().icmp(IntCC::Sge,exponent,limit);
+        let mut result=if to.is_signed_int() {
+            let negative_value=self.b.ins().ineg(magnitude);
+            let signed=self.b.ins().select(negative,negative_value,magnitude);
+            let min=self.int_const(1u128<<127,IntTy::U128);
+            let max=self.int_const((1u128<<127)-1,IntTy::U128);
+            let bound=self.b.ins().select(negative,min,max);
+            self.b.ins().select(overflow,bound,signed)
+        } else {
+            let max=self.int_const(u128::MAX,IntTy::U128);
+            let clamped=self.b.ins().select(overflow,max,magnitude);
+            self.b.ins().select(negative,zero,clamped)
+        };
+        let below_one=self.b.ins().icmp(IntCC::Slt,exponent,zero64);
+        let zero_result=self.b.ins().or(below_one,nan);
+        result=self.b.ins().select(zero_result,zero,result);
+        result
+    }
+
     fn binary(&mut self, op: BinOp, l: &Operand, r: &Operand) -> Option<Value> {
         let ty = self.body.operand_ty(l, self.sigs);
         let signed = ty.is_signed_int();
@@ -2421,6 +2873,23 @@ impl Lower<'_, '_, '_> {
         }
         let a = self.scalar(l)?;
         let mut b = self.scalar(r)?;
+        if ty.as_float().is_some() {
+            use keel_ir::FloatCC;
+            return Some(match op {
+                BinOp::Add => self.b.ins().fadd(a,b), BinOp::Sub => self.b.ins().fsub(a,b),
+                BinOp::Mul => self.b.ins().fmul(a,b), BinOp::Div => self.b.ins().fdiv(a,b),
+                BinOp::Eq => self.b.ins().fcmp(FloatCC::Eq,a,b), BinOp::Ne => self.b.ins().fcmp(FloatCC::Ne,a,b),
+                BinOp::Lt => self.b.ins().fcmp(FloatCC::Lt,a,b), BinOp::Le => self.b.ins().fcmp(FloatCC::Le,a,b),
+                BinOp::Gt => self.b.ins().fcmp(FloatCC::Gt,a,b), BinOp::Ge => self.b.ins().fcmp(FloatCC::Ge,a,b),
+                BinOp::Rem => {
+                    let scalar = keel_type(ty).expect("float scalar");
+                    let callee = self.b.import_function(if scalar == Type::F32 { "fmodf" } else { "fmod" }, Signature::new(&[scalar,scalar], &[scalar]));
+                    let call = self.b.ins().call(callee, &[a,b]);
+                    self.b.function().inst_results(call)[0]
+                }
+                _ => unreachable!("typed float operation"),
+            });
+        }
         let cmp = |signed_cc, unsigned_cc| if signed { signed_cc } else { unsigned_cc };
         Some(match op {
             BinOp::Add => self.b.ins().iadd(a, b),
@@ -2547,9 +3016,35 @@ impl Lower<'_, '_, '_> {
                     return;
                 }
                 if items.functions[*func].intrinsic
+                    && matches!(items.functions[*func].name.as_str(),"fmaf32"|"fmaf64") {
+                    let values: Vec<_>=args.iter().map(|arg| self.scalar(arg).expect("float argument")).collect();
+                    let result=self.b.ins().fma(values[0],values[1],values[2]);
+                    self.write(dest,&[result]);
+                    if let Some(target)=target {self.b.ins().jump(self.blocks[target.index()],&[]);} else {self.b.ins().trap();}
+                    return;
+                }
+                if items.functions[*func].intrinsic
                     && flux_mir::mono::is_neon_intrinsic(items.functions[*func].name.as_str())
                 {
                     self.neon_intrinsic(*func, generic_args, args, dest, *target);
+                    return;
+                }
+                if items.functions[*func].intrinsic
+                    && items.functions[*func].name.as_str() == "transmute"
+                {
+                    let from = generic_args[0];
+                    let to = generic_args[1];
+                    let source = self.ctx.layouts.of(from);
+                    let destination = self.ctx.layouts.of(to);
+                    assert_eq!(source.size, destination.size, "validated transmute sizes");
+                    let address = self.aligned_slot(source.size, source.align.max(destination.align));
+                    let values = self.operand(&args[0]);
+                    self.store(address, from, &values);
+                    let values = self.load(Location::Memory(address), to);
+                    self.write(dest, &values);
+                    if let Some(target) = target {
+                        self.b.ins().jump(self.blocks[target.index()], &[]);
+                    } else { self.b.ins().trap(); }
                     return;
                 }
                 if items.functions[*func].intrinsic
@@ -2645,7 +3140,8 @@ impl Lower<'_, '_, '_> {
                     self.ctx.typed.sigs[*func].ret,
                     generic_args,
                 );
-                self.call(ret, args, dest, *target, |b, values| match location {
+                let is_c = items.functions[resolved.function].c_abi;
+                self.call_abi(is_c, ret, args, dest, *target, |b, values| match location {
                     Some(location) => {
                         let mut values = values.to_vec();
                         values.push(location);
@@ -2664,15 +3160,16 @@ impl Lower<'_, '_, '_> {
                 let sig = ty
                     .fn_sig()
                     .expect("indirect calls are of function pointers");
+                let is_c = sig.is_c;
                 let sig = FnSig {
                     params: sig.params().into(),
                     ret: sig.ret(),
                 };
-                let sig_ref =
-                    self.b
-                        .import_signature(signature(self.sigs, &self.ctx.layouts, &sig, false));
+                let signature = if is_c { c_signature(self.sigs, &self.ctx.layouts, &sig, false) }
+                    else { signature(self.sigs, &self.ctx.layouts, &sig, false) };
+                let sig_ref = self.b.import_signature(signature);
                 let pointer = self.scalar(callee).expect("function pointers are scalars");
-                self.call(sig.ret, args, dest, *target, |b, values| {
+                self.call_abi(is_c, sig.ret, args, dest, *target, |b, values| {
                     b.ins().call_indirect(sig_ref, pointer, values)
                 });
             }
@@ -2729,6 +3226,10 @@ impl Lower<'_, '_, '_> {
                 let values = self.read(&Body::RETURN.into());
                 let ret = self.body.locals[Body::RETURN].ty;
                 match self.sret.clone() {
+                    Some((pointer, _)) if self.c_abi => {
+                        self.store(pointer, ret, &values);
+                        self.b.ins().return_(&[]);
+                    }
                     Some((pointer, _)) if is_memory(self.sigs, ret) => {
                         let size = self.ctx.layouts.of(ret).size;
                         self.copy(pointer, values[0], size);
@@ -2760,29 +3261,59 @@ impl Lower<'_, '_, '_> {
     /// A call returning a `ret`, with arguments `args`, its result
     /// stored in `dest`, continuing at `target`: `make` makes the call
     /// instruction from the argument values, an `sret` pointer first.
-    fn call(
+    fn call_abi(
         &mut self,
+        is_c: bool,
         ret: Ty,
         args: &[flux_mir::Operand],
         dest: &flux_mir::Place,
         target: Option<flux_mir::BasicBlock>,
         make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
     ) {
-        let sret = self.sret_for(ret);
+        let direct = dest.projection.is_empty() && self.direct_sret[dest.local.index()]
+            && !args.iter().any(|arg| matches!(arg, Operand::Copy(p) | Operand::Move(p) if p.local == dest.local));
+        let sret = self.sret_for(ret, direct.then_some(dest), is_c);
         let mut values: Values = sret.iter().map(|(pointer, _)| *pointer).collect();
         for arg in args {
-            values.extend(self.operand(arg));
+            let ty = self.body.operand_ty(arg, self.sigs);
+            if is_c && c_aggregate(ty) {
+                if self.ctx.layouts.of(ty).size == 0 { continue; }
+                let leaves = self.operand(arg);
+                if is_memory(self.sigs, ty) { values.push(leaves[0]); }
+                else {
+                    let pointer = self.new_slot(ty);
+                    self.store(pointer, ty, &leaves);
+                    values.push(pointer);
+                }
+            } else if is_c { values.extend(self.operand(arg)); }
+            else { values.extend(self.rust_argument(arg)); }
         }
-        self.finish_call(ret, sret, values, dest, target, make);
+        self.finish_call(ret, sret, values, dest, target, is_c, make);
+    }
+
+    /// Marshal a Rust argument using a private temporary for an indirectly
+    /// passed scalar aggregate, so its bytes never alias another argument.
+    fn rust_argument(&mut self, arg: &Operand) -> Values {
+        let ty = self.body.operand_ty(arg, self.sigs);
+        let values = self.operand(arg);
+        if indirect_argument(self.sigs, ty) {
+            let pointer = self.new_slot(ty);
+            self.store(pointer, ty, &values);
+            smallvec![pointer]
+        } else { values }
     }
 
     /// Memory for a call's result of type `ret`, if it is returned
     /// through memory.
-    fn sret_for(&mut self, ret: Ty) -> Option<(Value, Layout)> {
-        match return_kind(self.sigs, &self.ctx.layouts, ret) {
+    fn sret_for(&mut self, ret: Ty, dest: Option<&Place>, is_c: bool) -> Option<(Value, Layout)> {
+        let kind = if is_c { c_return_kind(self.sigs, &self.ctx.layouts, ret) } else { return_kind(self.sigs, &self.ctx.layouts, ret) };
+        match kind {
             Return::Sret(layout) | Return::Memory(layout) => {
                 let align = layout.align().max(self.ctx.layouts.of(ret).align);
-                let address = self.aligned_slot(layout.size(), align);
+                let address = if is_memory(self.sigs, ret) && let Some(dest) = dest {
+                    let (Location::Memory(address), _) = self.locate(dest) else { unreachable!("memory return destination"); };
+                    address
+                } else { self.aligned_slot(layout.size(), align) };
                 Some((address, layout))
             }
             Return::Values(_) => None,
@@ -2800,11 +3331,11 @@ impl Lower<'_, '_, '_> {
         target: Option<flux_mir::BasicBlock>,
         make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
     ) {
-        let sret = self.sret_for(ret);
+        let sret = self.sret_for(ret, None, false);
         let mut values: Values = sret.iter().map(|(pointer, _)| *pointer).collect();
         values.push(first);
         values.extend(rest);
-        self.finish_call(ret, sret, values, dest, target, make);
+        self.finish_call(ret, sret, values, dest, target, false, make);
     }
 
     /// The call instruction `make` makes from `values`, its result
@@ -2817,6 +3348,7 @@ impl Lower<'_, '_, '_> {
         values: Values,
         dest: &flux_mir::Place,
         target: Option<flux_mir::BasicBlock>,
+        is_c: bool,
         make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
     ) {
         let memory = is_memory(self.sigs, ret);
@@ -2825,6 +3357,7 @@ impl Lower<'_, '_, '_> {
         // be of any type (a `match` arm calling `panic`).
         if target.is_some() {
             let results = match &sret {
+                Some((pointer, _)) if is_c => self.load(Location::Memory(*pointer), ret),
                 Some((pointer, _)) if memory => smallvec![*pointer],
                 Some((pointer, layout)) => self.load_leaves(*pointer, layout),
                 None => self
@@ -2897,8 +3430,8 @@ impl Lower<'_, '_, '_> {
             func,
             generic_args,
         );
-        let mut sig = if function.is_extern {
-            signature(self.sigs, &self.ctx.layouts, &sig, function.is_variadic)
+        let mut sig = if function.c_abi {
+            c_signature(self.sigs, &self.ctx.layouts, &sig, function.is_variadic)
         } else {
             let reified = self.ctx.reified.contains(&instance);
             ctx_signature(self.sigs, &self.ctx.layouts, &sig, reified)
@@ -2950,7 +3483,7 @@ impl Lower<'_, '_, '_> {
         let rest = &args[1..];
         let mut leaves = Values::new();
         for arg in rest {
-            leaves.extend(self.operand(arg));
+            leaves.extend(self.rust_argument(arg));
         }
         self.call_values(sig.ret, data, leaves, dest, target, |b, values| {
             b.ins().call_indirect(sig_ref, pointer, values)
@@ -2974,7 +3507,9 @@ impl Lower<'_, '_, '_> {
             .strip_prefix("__neon_")
             .expect("NEON intrinsic");
         let first = self.operand(&args[0])[0];
-        let bytes = Type::Vector(VectorType::I8x16);
+        let bytes = Type::Vector(if matches!(name, "vld1_u8" | "vst1_u8" | "vdup_n_u8" | "vceq_u8" | "vorr_u8" | "vcltz_s8" | "vcgez_s8") {
+            VectorType::I8x8
+        } else { VectorType::I8x16 });
         let value = match name {
             "vshrn_n_u16" => {
                 let TyKind::Value(shift) = generic_args[0].kind() else {
@@ -2995,7 +3530,19 @@ impl Lower<'_, '_, '_> {
                 let b = self.b.ins().load(bytes, second);
                 self.b.ins().vector_binary(VectorBinaryOp::Pumax, a, b)
             }
-            "vdupq_n_u8" => self.b.ins().vsplat(bytes, first),
+            "vdup_n_u8" | "vdupq_n_u8" => self.b.ins().vsplat(bytes, first),
+            "vcltz_s8" | "vcgez_s8" => {
+                let a = self.b.ins().load(bytes, first);
+                let zero = self.b.ins().iconst(Type::I8, 0);
+                let zero = self.b.ins().vsplat(bytes, zero);
+                self.b.ins().vicmp(if name == "vcltz_s8" { IntCC::Slt } else { IntCC::Sge }, a, zero)
+            }
+            "vst1_u8" => {
+                let second = self.operand(&args[1])[0];
+                let vector = self.b.ins().load(bytes, second);
+                self.b.ins().store(vector, first);
+                vector
+            }
             "vget_lane_u64" => self.b.ins().load(Type::I64, first),
             "vgetq_lane_u64" => {
                 let TyKind::Value(lane) = generic_args[0].kind() else {
@@ -3008,15 +3555,15 @@ impl Lower<'_, '_, '_> {
                 // The load intrinsic explicitly promises no alignment. Using
                 // the same conservative flags for aggregate inputs is valid.
                 let a = self.b.ins().load(bytes, first);
-                if name == "vld1q_u8" {
+                if matches!(name, "vld1q_u8" | "vld1_u8") {
                     a
                 } else {
                     let second = self.operand(&args[1])[0];
                     let b = self.b.ins().load(bytes, second);
                     match name {
-                        "vceqq_u8" => self.b.ins().vicmp(IntCC::Eq, a, b),
+                        "vceq_u8" | "vceqq_u8" => self.b.ins().vicmp(IntCC::Eq, a, b),
                         "vandq_u8" => self.b.ins().vector_binary(VectorBinaryOp::And, a, b),
-                        "vorrq_u8" => self.b.ins().vector_binary(VectorBinaryOp::Or, a, b),
+                        "vorr_u8" | "vorrq_u8" => self.b.ins().vector_binary(VectorBinaryOp::Or, a, b),
                         _ => unreachable!("bounded NEON intrinsic"),
                     }
                 }
@@ -3024,7 +3571,7 @@ impl Lower<'_, '_, '_> {
         };
         if matches!(name, "vgetq_lane_u64" | "vget_lane_u64") {
             self.write(dest, &[value]);
-        } else {
+        } else if name != "vst1_u8" {
             let (Location::Memory(address), _) = self.locate(dest) else {
                 unreachable!("NEON aggregates live in memory")
             };
@@ -3108,17 +3655,6 @@ impl Lower<'_, '_, '_> {
     }
 }
 
-/// The pointer `place`, a slice behind it, is behind.
-fn pointer_of(place: &Place) -> Place {
-    match &*place.projection {
-        [rest @ .., ProjectionElem::Deref | ProjectionElem::BoxDeref] => Place {
-            local: place.local,
-            projection: place.projection.prefix(rest.len()),
-        },
-        _ => unreachable!("slices are behind pointers"),
-    }
-}
-
 /// Flags for an access to a `ty` in memory laid out by a [`Layout`],
 /// which places each scalar at its natural alignment, its size.
 fn aligned(ty: Type) -> MemoryFlags {
@@ -3128,13 +3664,13 @@ fn aligned(ty: Type) -> MemoryFlags {
     }
 }
 
-fn static_slice_metadata(pointer: Ty, stored: Ty) -> Option<u64> {
+fn static_slice_metadata(sigs: &Signatures, pointer: Ty, stored: Ty) -> Option<u64> {
     let target = match pointer.kind() {
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => t,
         _ => return None,
     };
-    if matches!(target.kind(), TyKind::Slice(_))
-        && let TyKind::Array(_, len) = stored.kind()
+    if sigs.metadata(target) == flux_ty::Metadata::Length
+        && let TyKind::Array(_, len) = sigs.structural_tail(stored).kind()
     {
         return len.as_usize();
     }

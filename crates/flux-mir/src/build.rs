@@ -7,7 +7,7 @@ use flux_hir::{
 };
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
-use flux_ty::{GenericArgs, InferenceResult, IntTy, Mutability, Ty, TyKind, TypedFile};
+use flux_ty::{ClosureOwner, GenericArgs, InferenceResult, IntTy, Mutability, Ty, TyKind, TypedFile};
 
 use crate::{
     AggregateKind, AssertMessage, BasicBlock, BasicBlockData, BinOp, Body, Constant, FileMir,
@@ -19,7 +19,6 @@ use crate::{
 /// have no diagnostics from lowering or type checking.
 pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut diagnostics = Vec::new();
-    let none = crate::borrowck::Requirements::default();
     let check = |body: &Body, file, is_const, requirements: &crate::borrowck::Requirements| {
         let (found, own) = check_body(hir, typed, body, is_const, requirements);
         let found: Vec<_> = found
@@ -33,9 +32,30 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut queue: Vec<FunctionId> = Vec::new();
     let mut consts = ArenaMap::new();
     let mut unchecked = Vec::new();
+    let mut closures = rustc_hash::FxHashMap::default();
     for (id, _) in hir.const_bodies() {
         let body = build_const(hir, typed, id);
-        let found = check(&body, hir.items.consts[id].loc.file, true, &none).0;
+        let owner = ClosureOwner::Const(id);
+        let mut found_closures: Vec<_> = typed.consts[id].closures.iter().map(|(e, _)| e).collect();
+        found_closures.sort_by_key(|e| e.into_raw());
+        let mut requirements = crate::borrowck::Requirements::default();
+        for expr in found_closures {
+            let closure = build_closure(hir, typed, owner, expr);
+            let (errors, required) = check(&closure, hir.items.consts[id].loc.file, false, &requirements);
+            diagnostics.extend(errors);
+            let key = flux_ty::ClosureId { owner, expr };
+            requirements.insert(key, required);
+            let mut callees = closure.callees();
+            callees.extend(closure.object_methods(&hir.items));
+            for callee in callees {
+                queue.extend(flux_ty::call_targets(&hir.items, callee));
+            }
+            closures.insert((key, typed.consts[id].closures[expr].kind), closure);
+            for (mode, shim) in closure_shims(hir, typed, owner, expr) {
+                closures.insert((key, mode), shim);
+            }
+        }
+        let found = check(&body, hir.items.consts[id].loc.file, true, &requirements).0;
         if !found.is_empty() {
             unchecked.push(id);
         }
@@ -53,7 +73,6 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut bodies = ArenaMap::new();
     // The callees whose targets are queued already.
     let mut expanded = rustc_hash::FxHashSet::default();
-    let mut closures = rustc_hash::FxHashMap::default();
     while let Some(id) = queue.pop() {
         if bodies.get(id).is_some() || hir.body(id).is_none() || typed.bodies.get(id).is_none() {
             continue;
@@ -70,16 +89,16 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         let mut found: Vec<ExprId> = typed.bodies[id].closures.iter().map(|(e, _)| e).collect();
         found.sort_by_key(|e| e.into_raw());
         for expr in found {
-            let closure = build_closure(hir, typed, id, expr);
+            let closure = build_closure(hir, typed, ClosureOwner::Function(id), expr);
             let mut callees = closure.callees();
             callees.extend(closure.object_methods(&hir.items));
             for callee in callees {
                 queue.extend(flux_ty::call_targets(&hir.items, callee));
             }
             let kind = typed.bodies[id].closures[expr].kind;
-            let key = flux_ty::ClosureId { owner: id, expr };
+            let key = flux_ty::ClosureId { owner: ClosureOwner::Function(id), expr };
             closures.insert((key, kind), closure);
-            for (mode, shim) in closure_shims(hir, typed, id, expr) {
+            for (mode, shim) in closure_shims(hir, typed, ClosureOwner::Function(id), expr) {
                 closures.insert((key, mode), shim);
             }
         }
@@ -123,7 +142,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
             let mut own: Vec<_> = closures
                 .iter()
                 .filter(|((c, kind), _)| {
-                    c.owner == id && typed.bodies[id].closures[c.expr].kind == *kind
+                    c.owner == ClosureOwner::Function(id) && typed.bodies[id].closures[c.expr].kind == *kind
                 })
                 .collect();
             own.sort_by_key(|((c, _), _)| c.expr.into_raw());
@@ -149,6 +168,15 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
             &mut const_values,
             &mut discriminants,
         ));
+        // Enum sizes can depend on the discriminants just evaluated.
+        let checked = bodies.iter().map(|(f, body)| (ClosureOwner::Function(f), body))
+            .chain(closures.iter().map(|((c, _), body)| (c.owner, body)))
+            .chain(consts.iter().map(|(c, body)| (ClosureOwner::Const(c), body)));
+        for (owner, body) in checked {
+            let parameters = closure_unsized_parameters(hir, owner);
+            diagnostics.extend(crate::transmute::check(&hir.items, &typed.sigs, body, &parameters, &discriminants)
+                .into_iter().map(|d| flux_hir::Diagnostic { file: closure_loc(hir, owner).file, ..d }));
+        }
         // rustc lints associated constants even where they are unused.
         let linted = bodies
             .iter()
@@ -156,7 +184,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
             .chain(
                 closures
                     .iter()
-                    .map(|((c, _), body)| (hir.items.functions[c.owner].loc.file, body)),
+                    .map(|((c, _), body)| (closure_loc(hir, c.owner).file, body)),
             )
             .chain(consts.iter().filter_map(|(id, body)| {
                 let data = &hir.items.consts[id];
@@ -206,7 +234,7 @@ fn bugs(
         .iter()
         .map(|(id, body)| (hir.items.functions[id].loc.file, body));
     let closures =
-        (closures.iter()).map(|((c, _), body)| (hir.items.functions[c.owner].loc.file, body));
+        (closures.iter()).map(|((c, _), body)| (closure_loc(hir, c.owner).file, body));
     let consts = consts
         .iter()
         .map(|(id, body)| (hir.items.consts[id].loc.file, body));
@@ -267,10 +295,10 @@ pub fn check_clean_bodies(
         let mut requirements = crate::borrowck::Requirements::default();
         let mut errors = Vec::new();
         for expr in found {
-            let closure = build_closure(hir, typed, id, expr);
+            let closure = build_closure(hir, typed, ClosureOwner::Function(id), expr);
             let (found, required) = check_body(hir, typed, &closure, false, &requirements);
             errors.extend(found);
-            requirements.insert(flux_ty::ClosureId { owner: id, expr }, required);
+            requirements.insert(flux_ty::ClosureId { owner: ClosureOwner::Function(id), expr }, required);
         }
         let (found, _) = check_body(hir, typed, &body, data.is_const, &requirements);
         diagnostics.extend(
@@ -354,14 +382,18 @@ fn check_patterns(
         if skip.contains(&c.konst) {
             return None;
         }
-        match evaluator.eval_instance(c).ok()? {
-            crate::eval::Value::Int { bits, ty } if ty.is_signed() => {
-                Some(crate::eval::sign_extend(bits, ty))
-            }
-            crate::eval::Value::Int { bits, .. } => Some(bits as i128),
-            crate::eval::Value::Bool(b) => Some(b as i128),
-            _ => None,
+        fn pattern(value: crate::eval::Value) -> Option<flux_ty::PatternConst> {
+            use crate::eval::Value;
+            use flux_ty::PatternConst;
+            Some(match value {
+                Value::Int { bits, ty } if ty.is_signed() => PatternConst::Scalar(crate::eval::sign_extend(bits, ty)),
+                Value::Int { bits, .. } => PatternConst::Scalar(bits as i128),
+                Value::Bool(b) => PatternConst::Scalar(b as i128),
+                Value::Aggregate(fields) => PatternConst::Aggregate(fields.iter().cloned().map(pattern).collect::<Option<Vec<_>>>()?),
+                _ => return None,
+            })
         }
+        pattern(evaluator.eval_instance(c).ok()?)
     });
     if report {
         diagnostics.extend(eval_failures(items, &evaluator));
@@ -610,22 +642,22 @@ enum Item {
     Function(FunctionId),
     Const(ConstId),
     /// The closure expression `expr` in `owner`'s body.
-    Closure(FunctionId, ExprId),
+    Closure(ClosureOwner, ExprId),
 }
 
 /// Builds the MIR of closure `expr` of `owner`'s body, as the method of
 /// its own kind's trait: `call(&self, args)`, `call_mut(&mut self,
 /// args)` or `call_once(self, args)`, with its parameters bound from
 /// the tuple `args` and what it captures read through `self`.
-pub fn build_closure(hir: &Hir, typed: &TypedFile, owner: FunctionId, expr: ExprId) -> Body {
-    let (body, source_map) = hir.body(owner).expect("closures are in bodies");
-    let types = &typed.bodies[owner];
+pub fn build_closure(hir: &Hir, typed: &TypedFile, owner: ClosureOwner, expr: ExprId) -> Body {
+    let (body, source_map) = closure_body(hir, owner);
+    let types = closure_types(typed, owner);
     let info = &types.closures[expr];
     let TyKind::Closure(_, args) = info.ty.kind() else {
         unreachable!("closures have closure types")
     };
     let parts = flux_ty::ClosureArgs::split(args);
-    let env = flux_ty::traits::projections_of(&hir.items, &typed.sigs, owner);
+    let env = closure_projections(hir, typed, owner);
     let norm = |ty| flux_ty::traits::normalize(&hir.items, &typed.sigs, &env, ty);
     let sig = flux_ty::FnSig {
         params: Box::new([closure_self(info.kind, info.ty), norm(parts.params())]),
@@ -702,23 +734,21 @@ fn closure_self(kind: flux_ty::ClosureKind, ty: Ty) -> Ty {
 pub fn closure_shims(
     hir: &Hir,
     typed: &TypedFile,
-    owner: FunctionId,
+    owner: ClosureOwner,
     expr: ExprId,
 ) -> Vec<(flux_ty::ClosureKind, Body)> {
     use flux_ty::ClosureKind;
     let items = &hir.items;
-    let types = &typed.bodies[owner];
+    let types = closure_types(typed, owner);
     let info = &types.closures[expr];
     let TyKind::Closure(_, args) = info.ty.kind() else {
         return Vec::new();
     };
     let parts = flux_ty::ClosureArgs::split(args);
-    let env = flux_ty::traits::projections_of(items, &typed.sigs, owner);
+    let env = closure_projections(hir, typed, owner);
     let norm = |ty| flux_ty::traits::normalize(items, &typed.sigs, &env, ty);
     let (params, ret) = (norm(parts.params()), norm(parts.ret()));
-    let range = hir.body(owner).map_or_else(TextRange::default, |(_, map)| {
-        map.exprs.get(expr).copied().unwrap_or_default()
-    });
+    let range = closure_body(hir, owner).1.exprs.get(expr).copied().unwrap_or_default();
     let method = |kind: ClosureKind| {
         let t = flux_ty::fn_trait(items, kind)?;
         let name = match kind {
@@ -834,22 +864,27 @@ fn build_body(
     item: Item,
 ) -> Body {
     let module = match item {
-        Item::Function(f) | Item::Closure(f, _) => hir.items.functions[f].loc.module,
-        Item::Const(c) => hir.items.consts[c].loc.module,
+        Item::Function(f) | Item::Closure(ClosureOwner::Function(f), _) => hir.items.functions[f].loc.module,
+        Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _) => hir.items.consts[c].loc.module,
     };
     // The bounds in scope, for what is `Copy`.
     let env = match item {
-        Item::Function(f) | Item::Closure(f, _) => flux_ty::traits::elaborate(
+        Item::Function(f) | Item::Closure(ClosureOwner::Function(f), _) => flux_ty::traits::elaborate(
             &typed.sigs,
             &flux_ty::traits::predicates_of(&hir.items, &typed.sigs, f),
         ),
-        Item::Const(_) => Vec::new(),
+        Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _) => flux_ty::traits::elaborate(
+            &typed.sigs,
+            &flux_ty::traits::owner_predicates(&hir.items, &typed.sigs, hir.items.consts[c].owner),
+        ),
     };
     let projections = match item {
-        Item::Function(f) | Item::Closure(f, _) => {
+        Item::Function(f) | Item::Closure(ClosureOwner::Function(f), _) => {
             flux_ty::traits::projections_of(&hir.items, &typed.sigs, f)
         }
-        Item::Const(_) => Vec::new(),
+        Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _) => {
+            flux_ty::traits::owner_projections(&hir.items, &typed.sigs, hir.items.consts[c].owner)
+        }
     };
     let mut b = Builder {
         typed,
@@ -876,6 +911,7 @@ fn build_body(
             locals: Vec::new(),
         }],
         c_strings: Vec::new(),
+        temporary_scope_override: None,
         env,
         projections,
         extended_refs: Vec::new(),
@@ -886,6 +922,10 @@ fn build_body(
         capture_uses: Vec::new(),
         promoted: Vec::new(),
         storage_temps: Default::default(),
+        call_arguments: body.exprs.iter().filter_map(|(_, expr)| match expr {
+            Expr::Call { args, .. } | Expr::MethodCall { args, .. } => Some(*args),
+            _ => None,
+        }).flat_map(|args| body.lists[args].iter().copied()).collect(),
         bugs: Vec::new(),
         fn_spans: Default::default(),
     };
@@ -938,6 +978,8 @@ fn build_body(
                 let range = b.pat_range(pat);
                 b.declare_bindings(pat);
                 let place = Place::from(params[1]).field(i as u32);
+                b.annotate_let_bindings(pat);
+                b.annotate_let_source(pat, place.clone());
                 b.match_irrefutable(pat, place.into(), range);
             }
             (*closure_body, &[][..])
@@ -993,6 +1035,25 @@ fn build_body(
                             .any(|&t| has_ref(&body.types[t])),
                         _ => false,
                     },
+                fixed_args: {
+                    let mut fixed = Vec::new();
+                    let mut next = 0;
+                    if let Expr::Closure { params, .. } = &body.exprs[expr] {
+                        for &pat in &body.lists[*params] {
+                            if let Some((ty, table)) = types.let_regions.get(pat) {
+                                for (i, r) in table.iter().enumerate() {
+                                    if matches!(r, flux_ty::regions::Region::Static | flux_ty::regions::Region::Param(_)) {
+                                        fixed.push(next + i as u32);
+                                    }
+                                }
+                                next += flux_ty::regions::slots(&hir.items, *ty) as u32;
+                            } else {
+                                next += flux_ty::regions::slots(&hir.items, types.pat_types[pat]) as u32;
+                            }
+                        }
+                    }
+                    fixed
+                },
             })
         }
         _ => None,
@@ -1053,8 +1114,8 @@ fn build_body(
         upvars,
         capture_uses: b.capture_uses,
         owner: match item {
-            Item::Function(f) | Item::Closure(f, _) => Some(f),
-            Item::Const(_) => None,
+            Item::Function(f) | Item::Closure(ClosureOwner::Function(f), _) => Some(f),
+            Item::Const(_) | Item::Closure(ClosureOwner::Const(_), _) => None,
         },
         promoted: b.promoted,
         bugs: b.bugs,
@@ -1062,6 +1123,13 @@ fn build_body(
     };
     built.init_errors = crate::init::check(&built, &hir.items, &typed.sigs);
     built.init_errors.extend(b.errors);
+    let owner = match item {
+        Item::Function(f) => ClosureOwner::Function(f),
+        Item::Const(c) => ClosureOwner::Const(c),
+        Item::Closure(owner, _) => owner,
+    };
+    let unsized_parameters = closure_unsized_parameters(hir, owner);
+    built.init_errors.extend(crate::transmute::check(&hir.items, &typed.sigs, &built, &unsized_parameters, &crate::Discriminants::new()));
     let precise = match item {
         Item::Function(f) => hir.items.functions[f].precise_live_drops,
         Item::Const(_) | Item::Closure(..) => false,
@@ -1206,6 +1274,9 @@ struct Builder<'a> {
     loops: ArenaMap<Expr, LoopScope>,
     /// The enclosing scopes, innermost last.
     scopes: Vec<Scope>,
+    /// A pre-2024 block tail's immediate temporaries belong to its enclosing
+    /// temporary scope. Nested statements still introduce their own scopes.
+    temporary_scope_override: Option<(usize, usize)>,
     c_strings: Vec<Box<[u8]>>,
     /// The bounds in scope, elaborated: what is `Copy`, and what needs
     /// dropping.
@@ -1234,6 +1305,9 @@ struct Builder<'a> {
     /// The temporaries that may be borrowed, which die where their
     /// scope ends.
     storage_temps: rustc_hash::FxHashSet<Local>,
+    /// Explicit argument positions whose implicit mutable reborrows reserve
+    /// their loans until the call. Explicit `&mut` expressions stay immediate.
+    call_arguments: rustc_hash::FxHashSet<ExprId>,
     /// [`Body::promoted`].
     promoted: Vec<crate::eval::Value>,
     /// [`Body::bugs`].
@@ -1271,10 +1345,14 @@ fn has_ref(ty: &flux_hir::TypeRef) -> bool {
     }
 }
 
-fn is_place(body: &flux_hir::Body, expr: ExprId) -> bool {
+fn is_place(body: &flux_hir::Body, types: &InferenceResult, expr: ExprId) -> bool {
     match body.exprs[expr] {
         Expr::Path(Res::Local(_) | Res::Static(_)) => true,
-        Expr::Field { expr, .. } | Expr::Index { base: expr, .. } => is_place(body, expr),
+        Expr::Field { expr: base, .. } | Expr::Index { base, .. } => {
+            types.field_derefs.get(expr).is_some()
+                || types.overloads.get(expr).is_some()
+                || is_place(body, types, base)
+        },
         Expr::Unary {
             op: UnaryOp::Deref, ..
         } => true,
@@ -1294,25 +1372,7 @@ impl Builder<'_> {
     /// The type of `expr`'s value where it is used: a function item that
     /// coerces to a pointer is the pointer.
     fn expr_ty(&self, expr: ExprId) -> Ty {
-        let ty = self.own_ty(expr);
-        match ty.kind() {
-            TyKind::FnDef(def) if self.types.reified.get(expr).is_some() => {
-                Ty::new(TyKind::FnPtr(def.sig))
-            }
-            TyKind::Closure(_, args) if self.types.reified.get(expr).is_some() => {
-                let parts = flux_ty::ClosureArgs::split(args);
-                let params = match parts.params().kind() {
-                    TyKind::Tuple(list) => list,
-                    _ => &[],
-                };
-                Ty::new(TyKind::FnPtr(flux_ty::FnSigTy::new(
-                    params,
-                    parts.ret(),
-                    false,
-                )))
-            }
-            _ => ty,
-        }
+        self.types.reified.get(expr).copied().unwrap_or_else(|| self.own_ty(expr))
     }
 
     /// The type of `expr` itself, before coercions.
@@ -1328,6 +1388,7 @@ impl Builder<'_> {
     /// unsized to a slice reference is one, a `&mut T` reborrowed as a
     /// `&T` is that, and a `&&T` deref-coerced to a `&T` is that.
     fn value_ty(&self, expr: ExprId) -> Ty {
+        if let Some(&ty) = self.types.never_coercions.get(expr) { return ty; }
         if let Some(&ty) = self.types.unsizes.get(expr) {
             return ty;
         }
@@ -1379,6 +1440,13 @@ impl Builder<'_> {
         })
     }
 
+    fn temporary_scope(&self) -> usize {
+        match self.temporary_scope_override {
+            Some((depth, target)) if self.scopes.len() == depth => target,
+            _ => self.scopes.len() - 1,
+        }
+    }
+
     /// A temporary holding `expr`'s value, evaluated now, and dropped
     /// where the innermost scope ends if its type needs it: after the
     /// temporaries made while evaluating it, as rustc schedules drops
@@ -1389,8 +1457,8 @@ impl Builder<'_> {
         self.lower_into(expr, &temp.into());
         if self.needs_drop(ty) {
             let range = self.range(expr);
-            let scope = self.scopes.last_mut().expect("bodies have a scope");
-            scope.locals.push((temp, range));
+            let scope = self.temporary_scope();
+            self.scopes[scope].locals.push((temp, range));
         }
         temp
     }
@@ -1536,7 +1604,7 @@ impl Builder<'_> {
     fn lower_operand(&mut self, expr: ExprId) -> Operand {
         // A constant reference to an array coerced to one to a slice
         // (`f(b"ab")`) is unsized first.
-        if self.types.unsizes.get(expr).is_some() {
+        if self.types.unsizes.get(expr).is_some() || self.types.never_coercions.get(expr).is_some() {
             let temp = self.temp_for(expr);
             return self.read(temp.into());
         }
@@ -1651,8 +1719,8 @@ impl Builder<'_> {
                         let temp = self.temp_for(expr);
                         if !self.needs_drop(self.locals[temp].ty) {
                             let range = self.range(expr);
-                            let scope = self.scopes.last_mut().expect("bodies have a scope");
-                            scope.locals.push((temp, range));
+                            let scope = self.temporary_scope();
+                            self.scopes[scope].locals.push((temp, range));
                         }
                         temp
                     }
@@ -1675,10 +1743,20 @@ impl Builder<'_> {
         (base, index): (ExprId, ExprId),
         instance: flux_ty::Instance,
     ) -> Place {
+        self.overloaded_index_from(expr, (base, index), instance, None)
+    }
+
+    fn overloaded_index_from(
+        &mut self,
+        expr: ExprId,
+        (base, index): (ExprId, ExprId),
+        instance: flux_ty::Instance,
+        promoted_base: Option<Place>,
+    ) -> Place {
         let range = self.range(expr);
         let derefs = self.types.field_derefs.get(expr).copied().unwrap_or(0);
         let overloads = self.overloads_of(expr);
-        let place = self.lower_place_deref(base, derefs, &overloads);
+        let place = promoted_base.unwrap_or_else(|| self.lower_place_deref(base, derefs, &overloads));
         let mutability = if self.items.functions[instance.function].name.as_str() == "index_mut" {
             Mutability::Mut
         } else {
@@ -2062,7 +2140,19 @@ impl Builder<'_> {
     ) -> Operand {
         let receiver_range = self.range(receiver);
         let overloads = self.overloads_of(call);
-        let place = self.lower_place_deref(receiver, method.derefs, &overloads);
+        // Autoref borrows the receiver's allocation just as an explicit
+        // `&literal` does. Promote only the pure receiver, never the method
+        // call, a local place, or a value reached through overloaded Deref.
+        let promoted = if method.derefs == 0 && overloads.is_empty()
+            && !is_place(self.body, self.types, receiver)
+        {
+            match method.autoref {
+                Some(Mutability::Not) => self.promoted_const_place(receiver),
+                Some(Mutability::Mut) => self.promoted_literal_place(receiver, Mutability::Mut),
+                None => None,
+            }
+        } else { None };
+        let place = promoted.unwrap_or_else(|| self.lower_place_deref(receiver, method.derefs, &overloads));
         let ty = match method.autoref {
             Some(m) => Ty::new(TyKind::Ref(m, self.place_ty(&place))),
             None => self.place_ty(&place),
@@ -2071,8 +2161,8 @@ impl Builder<'_> {
         // A receiver taken by value is moved in now, so it is
         // dropped if an argument leaves first.
         if method.autoref.is_none() && self.needs_drop(ty) {
-            let scope = self.scopes.last_mut().expect("bodies have a scope");
-            scope.locals.push((temp, receiver_range));
+            let scope = self.temporary_scope();
+            self.scopes[scope].locals.push((temp, receiver_range));
         }
         // rustc's two-phase borrows are for autoref alone, not unsizing:
         // `arr.swap(0, arr.len() - 1)` is E0502.
@@ -2129,8 +2219,18 @@ impl Builder<'_> {
         }
     }
 
+    fn float_literal(&self, text: Symbol, expr: ExprId) -> Constant {
+        let ty=self.expr_ty(expr).as_float().expect("typed float literal");
+        let bits=match ty {
+            flux_ty::FloatTy::F32 => u64::from(text.as_str().parse::<f32>().expect("validated float").to_bits()),
+            flux_ty::FloatTy::F64 => text.as_str().parse::<f64>().expect("validated float").to_bits(),
+        };
+        Constant::Float {bits,ty}
+    }
+
     fn constant(&mut self, literal: &Literal, expr: ExprId) -> Constant {
         match (literal, self.expr_ty(expr).as_int()) {
+            (Literal::Float { text, .. }, _) => self.float_literal(*text,expr),
             (Literal::Int { value, .. }, Some(ty)) => Constant::int(*value as i128, ty),
             (Literal::Bool(value), _) => Constant::Bool(*value),
             (Literal::Char(c), _) => Constant::Char(*c),
@@ -2153,9 +2253,79 @@ impl Builder<'_> {
         }
     }
 
+    /// Borrow a projection of a constant or promotable literal root in
+    /// read-only storage. Retain the full allocation and its alignment;
+    /// indexing still evaluates its ordinary bounds checks and trait call.
+    fn promoted_const_place(&mut self, expr: ExprId) -> Option<Place> {
+        match self.body.exprs[expr] {
+            Expr::Path(res) => {
+                let constant = self.const_of(expr, res)?;
+                let ty = self.own_ty(expr);
+                if !constant.args.is_empty() || self.needs_drop(ty)
+                    || flux_ty::traits::has_interior_mutability(self.items, &self.typed.sigs, ty) {
+                    return None;
+                }
+                Some(self.static_place(constant.konst, self.range(expr)))
+            }
+            Expr::Field { expr: base, .. }
+                if self.types.field_derefs.get(expr).copied().unwrap_or(0) == 0 => {
+                let place = self.promoted_const_place(base)?;
+                Some(place.field(self.field_index(expr)))
+            }
+            Expr::Index { base, index }
+                if self.types.field_derefs.get(expr).copied().unwrap_or(0) == 0 => {
+                let place = self.promoted_const_place(base)?;
+                if let Some(&instance) = self.types.overloads.get(expr) {
+                    Some(self.overloaded_index_from(expr, (base, index), instance, Some(place)))
+                } else {
+                    Some(self.index(place, index, self.range(expr)))
+                }
+            }
+            _ => self.promoted_literal_place(expr, Mutability::Not),
+        }
+    }
+
+    /// Pure literal storage shared by explicit projections and implicit
+    /// receiver borrows. Mutable promotion is limited to the literal `[]`;
+    /// there is no stored payload to mutate, drop, or constrain invariantly.
+    fn promoted_literal_place(&mut self, expr: ExprId, mutability: Mutability) -> Option<Place> {
+        let value = if mutability == Mutability::Mut {
+            match self.body.exprs[expr] {
+                Expr::Array(fields) if self.body.lists[fields].is_empty() =>
+                    crate::eval::Value::Aggregate(Default::default()),
+                _ => return None,
+            }
+        } else { self.promotable(expr)? };
+        let index = self.promoted.len() as u32;
+        self.promoted.push(value);
+        let ty = Ty::new(TyKind::Ref(mutability, self.own_ty(expr)));
+        let pointer = self.temp(ty);
+        self.assign(&pointer.into(), Rvalue::Use(Operand::Const(Constant::Promoted { index, ty })), self.range(expr));
+        Some(Place::from(pointer).deref())
+    }
+
     /// Evaluates `expr` and stores its value in `dest`, reborrowing it if
     /// type checking said so.
     fn lower_into(&mut self, expr: ExprId, dest: &Place) {
+        if self.own_ty(expr) == Ty::NEVER && self.types.never_coercions.get(expr).is_some() {
+            // Evaluate the diverging expression with its own type. Its caller
+            // uses a destination of the coerced type only on unreachable paths.
+            let never = self.temp(Ty::NEVER);
+            self.lower_value(expr, &never.into());
+            return;
+        }
+        // A binder/free-region coercion of a pointer is represented even
+        // though both signatures have the same machine pointer layout.
+        if self.types.reified.get(expr).is_some()
+            && matches!(self.own_ty(expr).kind(), TyKind::FnPtr(_))
+            && self.own_ty(expr) != self.place_ty(dest)
+        {
+            let source = self.temp(self.own_ty(expr));
+            self.lower_value(expr, &source.into());
+            let value = self.read(source.into());
+            self.assign(dest, Rvalue::Cast(value, self.place_ty(dest)), self.range(expr));
+            return;
+        }
         // A function item coerced to a pointer: the item is evaluated,
         // for what its expression does, then its address taken.
         if self.types.reified.get(expr).is_some()
@@ -2211,21 +2381,26 @@ impl Builder<'_> {
             let mut operand = self.read(temp.into());
             let to_object =
                 matches!(ty.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn());
-            // A reference coerced to a raw pointer is cast to one, which
-            // may then be unsized to one to a trait object.
-            if let (TyKind::Ref(_, pointee), TyKind::RawPtr(m, _)) = (reference.kind(), ty.kind())
-                && to_object
+            let pointee = |ty: Ty| match ty.kind() {
+                TyKind::Ref(_, p) | TyKind::RawPtr(_, p) => Some(p),
+                _ => None,
+            };
+            let structural = pointee(reference).zip(pointee(ty))
+                .is_some_and(|(a, b)| self.typed.sigs.array_unsize(a, b).is_some());
+            // Normalize pointer kind and mutability before adding metadata.
+            if let TyKind::RawPtr(m, _) = ty.kind()
+                && (to_object || structural)
+                && let Some(pointee) = pointee(reference)
             {
-                let raw = self.temp(Ty::raw_ptr(m, pointee));
-                self.assign(
-                    &raw.into(),
-                    Rvalue::Cast(operand, Ty::raw_ptr(m, pointee)),
-                    self.range(expr),
-                );
-                operand = self.read(raw.into());
+                let raw_ty = Ty::raw_ptr(m, pointee);
+                if reference != raw_ty {
+                    let raw = self.temp(raw_ty);
+                    self.assign(&raw.into(), Rvalue::Cast(operand, raw_ty), self.range(expr));
+                    operand = self.read(raw.into());
+                }
             }
             let rvalue = if let TyKind::RawPtr(..) = ty.kind()
-                && !to_object
+                && !to_object && !structural
             {
                 Rvalue::Cast(operand, ty)
             } else {
@@ -2247,26 +2422,31 @@ impl Builder<'_> {
     }
 
     /// The value of `expr` if rustc would promote a borrow of it to a
-    /// constant: literals and fieldless enum values, or tuples and arrays
-    /// of them. The whitelist excludes runtime inputs and interior
-    /// mutability; even a fieldless enum may have a destructor.
+    /// constant: literals and aggregates built without executing user code.
+    /// Every stored field and nested reference must itself be promotable;
+    /// runtime inputs, destructors and interior mutability keep local storage.
     fn promotable(&self, expr: ExprId) -> Option<crate::eval::Value> {
         use crate::eval::Value;
-        if self.types.reified.get(expr).is_some() || self.types.unsizes.get(expr).is_some() {
-            return None;
-        }
+        if self.types.reified.get(expr).is_some() { return None; }
         let ty = self.own_ty(expr);
-        if self.needs_drop(ty) {
+        // Array-to-slice coercion retains the same promoted allocation.
+        // Other coercions may change the value's representation or call code.
+        if let Some(&target) = self.types.unsizes.get(expr) {
+            let array_slice = match (ty.kind(), target.kind()) {
+                (TyKind::Ref(Mutability::Not, from), TyKind::Ref(Mutability::Not, to)) =>
+                    matches!((from.kind(), to.kind()), (TyKind::Array(a, _), TyKind::Slice(b)) if a == b),
+                _ => false,
+            };
+            if !array_slice { return None; }
+        }
+        if self.needs_drop(ty)
+            || flux_ty::traits::has_interior_mutability(self.items, &self.typed.sigs, ty) {
             return None;
         }
         match &self.body.exprs[expr] {
             Expr::Path(Res::Variant(strukt, index))
                 if !matches!(ty.kind(), TyKind::FnDef(_))
-                    && self.items.structs[*strukt]
-                        .variants
-                        .as_ref()?
-                        .iter()
-                        .all(|v| v.fields.is_empty()) =>
+                    && self.items.structs[*strukt].variant(*index).fields.is_empty() =>
             {
                 Some(Value::Variant {
                     strukt: *strukt,
@@ -2274,6 +2454,39 @@ impl Builder<'_> {
                     fields: Default::default(),
                 })
             }
+            Expr::Path(Res::Struct(strukt))
+                if self.items.structs[*strukt].variant(0).fields.is_empty() => Some(Value::unit()),
+            Expr::Call { callee, args } => {
+                let (strukt, index) = match self.body.exprs[*callee] {
+                    Expr::Path(Res::Struct(id)) => (id, 0),
+                    Expr::Path(Res::Variant(id, index)) => (id, index),
+                    _ => return None,
+                };
+                let fields = self.body.lists[*args].iter().map(|&arg| self.promotable(arg))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(self.promoted_aggregate(strukt, index, fields))
+            }
+            Expr::Record { strukt, variant, fields, spread } => {
+                if self.items.structs[*strukt].is_union { return None; }
+                let count = self.items.structs[*strukt].variant(*variant).fields.len();
+                let mut values = if let Some(base) = spread {
+                    match self.promotable(*base)? {
+                        Value::Aggregate(fields) | Value::Variant { fields, .. } => fields.iter().cloned().map(Some).collect(),
+                        _ => return None,
+                    }
+                } else { vec![None; count] };
+                for &(name, value) in &self.body.lists[*fields] {
+                    let index = self.struct_field(*strukt, *variant, name) as usize;
+                    values[index] = Some(self.promotable(value)?);
+                }
+                Some(self.promoted_aggregate(*strukt, *variant, values.into_iter().collect::<Option<Vec<_>>>()?))
+            }
+            Expr::Ref { mutable: false, expr: inner } =>
+                Some(Value::Ref(std::sync::Arc::new(self.promotable(*inner)?))),
+            Expr::Literal(Literal::Float { text, .. }) => match self.float_literal(*text,expr) {
+                Constant::Float { bits, ty } => Some(Value::Float { bits, ty }),
+                _ => unreachable!("float literal constant"),
+            },
             Expr::Literal(Literal::Int { value, .. }) => Some(Value::Int {
                 bits: Constant::int(*value as i128, ty.as_int()?).int_bits()?,
                 ty: ty.as_int()?,
@@ -2290,6 +2503,10 @@ impl Builder<'_> {
                 op: UnaryOp::Neg,
                 operand,
             } => match &self.body.exprs[*operand] {
+                Expr::Literal(Literal::Float { text, .. }) => match self.float_literal(*text,*operand) {
+                    Constant::Float { bits, ty } => Some(Value::Float { bits: bits ^ (1u64 << (ty.bits()-1)), ty }),
+                    _ => unreachable!("float literal constant"),
+                },
                 Expr::Literal(Literal::Int { value, .. }) => {
                     let int = ty.as_int()?;
                     Some(Value::Int {
@@ -2299,6 +2516,16 @@ impl Builder<'_> {
                 }
                 _ => None,
             },
+            Expr::Repeat { value, .. } => {
+                let TyKind::Array(_, count) = ty.kind() else { return None };
+                let count = usize::try_from(count.as_usize()?).ok()?;
+                // Keep the evaluator's allocation bound. Even a zero repeat
+                // evaluates its operand, so it must pass the same pure-value
+                // qualification instead of discarding effects or destructors.
+                if count > 1 << 24 { return None; }
+                let value = self.promotable(*value)?;
+                Some(Value::Aggregate(vec![value; count].into()))
+            }
             Expr::Tuple(fields) | Expr::Array(fields) => {
                 let values: Option<Vec<Value>> = self.body.lists[*fields]
                     .iter()
@@ -2307,6 +2534,16 @@ impl Builder<'_> {
                 Some(Value::Aggregate(values?.into()))
             }
             _ => None,
+        }
+    }
+
+    /// Constructor identity and declaration field order are retained in the
+    /// promoted allocation, including enum payloads and their discriminant.
+    fn promoted_aggregate(&self, strukt: StructId, index: u32, fields: Vec<crate::eval::Value>) -> crate::eval::Value {
+        if self.items.structs[strukt].is_enum() {
+            crate::eval::Value::Variant { strukt, index, fields: fields.into() }
+        } else {
+            crate::eval::Value::Aggregate(fields.into())
         }
     }
 
@@ -2324,7 +2561,7 @@ impl Builder<'_> {
             .get(expr)
             .cloned()
             .unwrap_or_default();
-        let place = if is_place(self.body, expr) {
+        let place = if is_place(self.body, self.types, expr) {
             self.lower_place_deref(expr, derefs, &overloads)
         } else {
             let temp = self.temp(self.expr_ty(expr));
@@ -2345,7 +2582,8 @@ impl Builder<'_> {
         let rvalue = Rvalue::Ref {
             mutability,
             place,
-            two_phase: false,
+            two_phase: mutability == Mutability::Mut && self.call_arguments.contains(&expr)
+                && !matches!(self.body.exprs[expr], Expr::Ref { mutable: true, .. }),
         };
         // A block's is its value's, where rustc reports it.
         let mut at = expr;
@@ -2470,7 +2708,7 @@ impl Builder<'_> {
                 mutable,
                 expr: inner,
             } => {
-                if *mutable && is_place(body, *inner) {
+                if *mutable && is_place(body, self.types, *inner) {
                     self.check_guard_write(*inner, true, range);
                 }
                 // Only a literal empty array may be mutably promoted here.
@@ -2496,8 +2734,9 @@ impl Builder<'_> {
                     self.assign(dest, Rvalue::Use(Operand::Const(constant)), range);
                     return;
                 }
+                let promoted_place = if !*mutable { self.promoted_const_place(*inner) } else { None };
                 self.extending = self.extended_refs.contains(&expr);
-                let place = self.lower_place(*inner);
+                let place = promoted_place.unwrap_or_else(|| self.lower_place(*inner));
                 self.extending = false;
                 let mutability = if *mutable {
                     Mutability::Mut
@@ -2596,24 +2835,44 @@ impl Builder<'_> {
                 }
             }
             Expr::Block { stmts, tail, .. } => {
+                // An inline constant's value cannot borrow its evaluation frame.
+                let output = if self.body.const_blocks.get(expr).is_some() {
+                    let ty = self.expr_ty(expr);
+                    let local = self.temp(ty);
+                    let slots = flux_ty::regions::slots(self.items, ty);
+                    self.region_annotations.push((local, vec![flux_ty::regions::Region::Static; slots].into_boxed_slice(), range));
+                    Place::from(local)
+                } else { dest.clone() };
                 self.scoped(ScopeKind::Block, range, |b| {
                     for stmt in self.body.lists[*stmts].iter() {
                         b.scoped(ScopeKind::Temps, range, |b| b.lower_stmt(stmt));
                     }
                     match tail {
                         Some(tail) => {
-                            b.scoped(ScopeKind::Temps, range, |b| b.lower_into(*tail, dest));
+                            if matches!(b.source_map.editions.get(expr),Some(flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018 | flux_syntax::Edition::E2021)) {
+                                let target = b.scopes[..b.scopes.len()-1].iter().rposition(|s| s.kind == ScopeKind::Temps).unwrap_or(0);
+                                let saved = b.temporary_scope_override.replace((b.scopes.len(), target));
+                                b.lower_into(*tail, &output);
+                                b.temporary_scope_override = saved;
+                            } else {
+                                b.scoped(ScopeKind::Temps, range, |b| b.lower_into(*tail, &output));
+                            }
                         }
-                        None => b.assign_unit(dest, range),
+                        None => b.assign_unit(&output, range),
                     }
                 });
+                if output != *dest {
+                    let value = self.read(output);
+                    self.assign(dest, Rvalue::Use(value), range);
+                }
             }
             Expr::If {
                 condition,
                 then_branch,
                 else_branch,
             } if self.has_let(*condition) => {
-                self.lower_if_let(*condition, *then_branch, *else_branch, dest, range);
+                self.lower_if_let(*condition, *then_branch, *else_branch, dest, range,
+                    matches!(self.source_map.editions.get(expr),Some(flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018 | flux_syntax::Edition::E2021)));
             }
             Expr::If {
                 condition,
@@ -2762,7 +3021,14 @@ impl Builder<'_> {
                     );
                 }
                 // A value of a function item's or pointer's type.
-                _ => match self.expr_ty(*callee).kind() {
+                _ => {
+                    let mut callable = self.expr_ty(*callee);
+                    let mut derefs = 0;
+                    while let TyKind::Ref(_, pointee) = callable.kind() {
+                        callable = pointee;
+                        derefs += 1;
+                    }
+                    match callable.kind() {
                     TyKind::FnDef(def) => {
                         // Evaluated for what it does; it holds nothing.
                         self.lower_operand(*callee);
@@ -2773,7 +3039,12 @@ impl Builder<'_> {
                         self.call(def.function, def.args, args, dest, range);
                     }
                     TyKind::FnPtr(sig) => {
-                        let callee = self.lower_operand(*callee);
+                        let callee = if derefs == 0 {
+                            self.lower_operand(*callee)
+                        } else {
+                            let place = self.lower_place_deref(*callee, derefs, &[]);
+                            self.read(place)
+                        };
                         let args = self.body.lists[*args]
                             .iter()
                             .map(|&arg| self.lower_operand(arg))
@@ -2791,6 +3062,7 @@ impl Builder<'_> {
                         self.current = target;
                     }
                     _ => self.bug("a call of a value that is not callable", range),
+                    }
                 },
             },
             Expr::MethodCall { receiver, args, .. }
@@ -3437,9 +3709,14 @@ impl Builder<'_> {
                 self.lower_into(init, &local.into());
                 self.annotate_let_source(pat, local.into());
             }
+            // A wildcard still checks a pointer's binder coercion. Merely
+            // mentioning the source place would discard that static proof.
+            Pat::Wild if self.types.reified.get(init).is_some() => {
+                self.lower_operand(init);
+            }
             // `let _ = place;` does not read the place, nor does a
             // closure capture it for that.
-            Pat::Wild if is_place(self.body, init) => {
+            Pat::Wild if is_place(self.body, self.types, init) => {
                 let PatPlace::Place(place) = self.pat_place(init) else {
                     if self.types.let_regions.get(pat).is_some() {
                         self.errors.push(flux_hir::Diagnostic::new(self.pat_range(pat),
@@ -3678,7 +3955,14 @@ impl Builder<'_> {
                     self.str_eq_test(eq, place, value, fail, range);
                 } else {
                     let value = self.lower_operand(*expr);
-                    self.compare(BinOp::Eq, place, value, fail, range);
+                    let ty = self.expr_ty(*expr);
+                    if matches!(ty.kind(), TyKind::Adt(..) | TyKind::Tuple(_) | TyKind::Array(..)) {
+                        let constant = self.temp(ty);
+                        self.assign(&constant.into(), Rvalue::Use(value), range);
+                        self.structural_constant_test(place, constant.into(), ty, fail, range);
+                    } else {
+                        self.compare(BinOp::Eq, place, value, fail, range);
+                    }
                 }
                 here(self)
             }
@@ -3972,6 +4256,24 @@ impl Builder<'_> {
     }
 
     /// Goes on if `place op value`, else to `fail`.
+    /// Compare constant patterns field by field. Aggregate equality is not a
+    /// scalar MIR operation, and user PartialEq code must never define a test.
+    fn structural_constant_test(&mut self, place: Place, constant: Place, ty: Ty, fail: BasicBlock, range: TextRange) {
+        if let TyKind::Array(elem, len) = ty.kind() {
+            let len = len.as_usize().expect("checked structural array") as u32;
+            for offset in 0..len {
+                let index = ProjectionElem::ConstantIndex { offset, min_length: len, from_end: false };
+                self.structural_constant_test(place.project(index.clone()), constant.project(index), elem, fail, range);
+            }
+        } else if let Some(fields) = self.typed.sigs.fields(ty) {
+            for (index, &field) in fields.iter().enumerate() {
+                self.structural_constant_test(place.field(index as u32), constant.field(index as u32), field, fail, range);
+            }
+        } else {
+            self.compare(BinOp::Eq, place, Operand::Copy(constant), fail, range);
+        }
+    }
+
     fn compare(
         &mut self,
         op: BinOp,
@@ -4230,6 +4532,7 @@ impl Builder<'_> {
         else_branch: Option<ExprId>,
         dest: &Place,
         range: TextRange,
+        legacy: bool,
     ) {
         let depth = self.scopes.len();
         for kind in [ScopeKind::Temps, ScopeKind::Block] {
@@ -4241,18 +4544,22 @@ impl Builder<'_> {
         let then_block = self.new_block();
         let leave = self.new_block();
         let join = self.new_block();
+        let saved = if legacy { self.temporary_scope_override.replace((self.scopes.len(), depth)) } else { self.temporary_scope_override };
         self.lower_condition(condition, then_block, leave);
+        self.temporary_scope_override = saved;
         self.current = Some(then_block);
         self.lower_into(then_branch, dest);
         self.leave_scopes(depth, true, range);
         self.goto(join, range);
         self.current = Some(leave);
-        self.leave_scopes(depth, true, range);
-        self.scopes.truncate(depth);
+        if !legacy { self.leave_scopes(depth, true, range); }
+        if !legacy { self.scopes.truncate(depth); }
         match else_branch {
             Some(else_branch) => self.lower_into(else_branch, dest),
             None => self.assign_unit(dest, range),
         }
+        if legacy { self.leave_scopes(depth, true, range); }
+        self.scopes.truncate(depth);
         self.goto(join, range);
         self.current = Some(join);
     }
@@ -4341,7 +4648,14 @@ impl Builder<'_> {
     /// first, and the assignment itself carries the whole expression's
     /// range, where rustc reports assignment errors.
     fn lower_assign(&mut self, op: Option<ArithOp>, lhs: ExprId, rhs: ExprId, range: TextRange) {
-        if !is_place(self.body, lhs) {
+        if op.is_none() && matches!(self.body.exprs[lhs], Expr::Tuple(_)) {
+            // Evaluate the complete right side before evaluating any left
+            // place. Each component moves from this temporary exactly once.
+            let value = self.temp_for(rhs);
+            self.lower_tuple_assign(lhs, value.into(), range);
+            return;
+        }
+        if !is_place(self.body, self.types, lhs) {
             self.bug("an assignment to a value", range);
             return;
         }
@@ -4376,6 +4690,21 @@ impl Builder<'_> {
                 let rvalue = self.arith(arith, Operand::Copy(current.into()), r, ty, range);
                 self.assign(&place, rvalue, range);
             }
+        }
+    }
+
+    fn lower_tuple_assign(&mut self, lhs: ExprId, source: Place, range: TextRange) {
+        if let Expr::Tuple(fields) = self.body.exprs[lhs] {
+            for (index, field) in self.body.lists[fields].to_vec().into_iter().enumerate() {
+                self.lower_tuple_assign(field, source.clone().field(index as u32), range);
+            }
+        } else {
+            self.check_guard_write(lhs, false, range);
+            let place = self.lower_place(lhs);
+            if self.needs_drop(self.place_ty(&place)) {
+                self.drop_place(place.clone(), self.range(lhs));
+            }
+            self.assign(&place, Rvalue::Use(self.read(source)), range);
         }
     }
 
@@ -4569,4 +4898,43 @@ fn text_value(literal: &Literal) -> Option<crate::eval::Value> {
     Some(crate::eval::Value::Aggregate(
         bytes.iter().map(byte).collect(),
     ))
+}
+
+fn closure_types(typed: &TypedFile, owner: ClosureOwner) -> &InferenceResult {
+    match owner {
+        ClosureOwner::Function(f) => &typed.bodies[f],
+        ClosureOwner::Const(c) => &typed.consts[c],
+    }
+}
+
+fn closure_body(hir: &Hir, owner: ClosureOwner) -> (&flux_hir::Body, &flux_hir::BodySourceMap) {
+    let (body, map) = match owner {
+        ClosureOwner::Function(f) => hir.body(f),
+        ClosureOwner::Const(c) => hir.const_body(c),
+    }.expect("closures are in item bodies");
+    (body, map)
+}
+
+fn closure_loc(hir: &Hir, owner: ClosureOwner) -> flux_hir::ItemLoc {
+    match owner {
+        ClosureOwner::Function(f) => hir.items.functions[f].loc,
+        ClosureOwner::Const(c) => hir.items.consts[c].loc,
+    }
+}
+
+fn closure_projections(hir: &Hir, typed: &TypedFile, owner: ClosureOwner) -> Vec<flux_ty::Projection> {
+    match owner {
+        ClosureOwner::Function(f) => flux_ty::traits::projections_of(&hir.items, &typed.sigs, f),
+        ClosureOwner::Const(c) => flux_ty::traits::owner_projections(&hir.items, &typed.sigs, hir.items.consts[c].owner),
+    }
+}
+
+fn closure_unsized_parameters(hir: &Hir, owner: ClosureOwner) -> Vec<bool> {
+    match owner {
+        ClosureOwner::Function(f) => {
+            let data = &hir.items.functions[f];
+            flux_ty::unsized_params(&hir.items, data.owner, &data.generics)
+        }
+        ClosureOwner::Const(c) => flux_ty::unsized_params(&hir.items, hir.items.consts[c].owner, &flux_hir::Generics::default()),
+    }
 }

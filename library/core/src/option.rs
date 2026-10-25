@@ -15,6 +15,13 @@ pub enum Option<T> {
 use Option::{None, Some};
 
 impl<T> Option<T> {
+    pub fn as_deref(&self) -> Option<&T::Target> where T: crate::ops::Deref {
+        match self { Some(value) => Some(crate::ops::Deref::deref(value)), None => None }
+    }
+
+    pub fn as_deref_mut(&mut self) -> Option<&mut T::Target> where T: crate::ops::DerefMut {
+        match self { Some(value) => Some(crate::ops::DerefMut::deref_mut(value)), None => None }
+    }
     /// Whether it is `Some`.
     pub const fn is_some(&self) -> bool {
         match self {
@@ -38,6 +45,17 @@ impl<T> Option<T> {
         match self {
             Some(value) => value,
             None => panic("called `Option::unwrap()` on a `None` value"),
+        }
+    }
+
+    /// # Safety
+    /// `self` must be `Some`. Calling this on `None` is undefined behavior.
+    #[rustc_const_unstable]
+    pub unsafe fn unwrap_unchecked(self) -> T {
+        match self {
+            Some(value) => value,
+            // SAFETY: the caller guarantees the option is present.
+            None => unsafe { crate::hint::unreachable_unchecked() },
         }
     }
 
@@ -507,3 +525,42 @@ impl<T> Option<Option<T>> {
         }
     }
 }
+
+impl<T, E> Option<crate::result::Result<T, E>> {
+    pub fn transpose(self) -> crate::result::Result<Option<T>, E> {
+        match self {
+            Some(crate::result::Result::Ok(value)) => crate::result::Result::Ok(Some(value)),
+            Some(crate::result::Result::Err(error)) => crate::result::Result::Err(error),
+            None => crate::result::Result::Ok(None),
+        }
+    }
+}
+
+impl<T> Option<T> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> { IterMut { inner: self.as_mut() } }
+}
+
+impl<'a, T> crate::iter::IntoIterator for &'a mut Option<T> {
+    type Item = &'a mut T;
+    type IntoIter = IterMut<'a, T>;
+    fn into_iter(self) -> IterMut<'a, T> { self.iter_mut() }
+}
+
+pub struct IterMut<'a, T> { inner: Option<&'a mut T> }
+impl<'a, T> crate::iter::Iterator for IterMut<'a, T> {
+    type Item = &'a mut T;
+    const __TRUSTED_LEN: bool = true;
+    fn next(&mut self) -> Option<&'a mut T> { self.inner.take() }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = if self.inner.is_some() { 1 } else { 0 };
+        (n, Some(n))
+    }
+}
+impl<'a, T> crate::iter::DoubleEndedIterator for IterMut<'a, T> {
+    fn next_back(&mut self) -> Option<&'a mut T> { self.inner.take() }
+}
+impl<'a, T> crate::iter::ExactSizeIterator for IterMut<'a, T> {}
+
+impl<T> crate::iter::FusedIterator for IntoIter<T> {}
+impl<'a, T> crate::iter::FusedIterator for Iter<'a, T> {}
+impl<'a, T> crate::iter::FusedIterator for IterMut<'a, T> {}

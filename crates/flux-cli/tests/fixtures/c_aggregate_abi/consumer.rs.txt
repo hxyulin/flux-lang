@@ -1,0 +1,63 @@
+#[repr(C)]#[derive(Clone, Copy)]struct Words { words: [u64; 2] }
+#[repr(C)]#[derive(Clone, Copy)]struct Padded { lead: u8, payload: u64, tail: u16 }
+#[repr(C)]#[derive(Clone, Copy)]struct Small { a: u8, b: u16, c: u32 }
+#[repr(C)]#[derive(Clone, Copy)]struct Nested { prefix: u16, small: Small, words: Words }
+#[repr(C)]#[derive(Clone, Copy)]struct Big { words: [u64; 5] }
+unsafe extern "C" {
+    fn dlopen(path: *const i8, mode: i32) -> *mut u8;
+    fn dlsym(handle: *mut u8, name: *const i8) -> *mut u8;
+}
+extern "C" fn identity<T>(value: T) -> T { value }
+extern "C" fn local_words(mut value: Words) -> Words { value.words[0] += 1; value }
+extern "C" fn observe(value: Words, _: u64) -> u64 { value.words[0] }
+extern "C" fn local_padded(mut value: Padded) -> Padded { value.lead += 1; value.payload += 2; value.tail += 3; value }
+extern "C" fn from_pointer(value: *const Words) -> Words {
+    let mut copy = unsafe { *value }; copy.words[0] += 7; copy
+}
+fn rust_words(value: Words) -> Words { value }
+#[repr(C)]
+struct Node { next: *const [Node; 1] }
+extern "C" fn inspect_node(value: Node) -> u64 { if value.next.is_null() { 42 } else { 0 } }
+fn main() {
+    assert_eq!(inspect_node(Node { next: core::ptr::null() }), 42);
+    let indirect: extern "C" fn(Node) -> u64 = inspect_node;
+    assert_eq!(indirect(Node { next: core::ptr::null() }), 42);
+    let mut value = Words { words: [17, 25] };
+    let direct = identity(value);
+    let changed = local_words(value);
+    assert_eq!(value.words[0], 17);
+    assert_eq!(direct.words[0], 17); assert_eq!(changed.words[0], 18);
+    assert_eq!(observe(value, { value.words[0] = 99; 0 }), 17);
+    value = from_pointer(&value as *const Words);
+    assert_eq!(value.words[0], 106);
+    let rust: fn(Words) -> Words = rust_words;
+    assert_eq!(rust(value).words[0], 106);
+    assert_eq!(rust_words(value).words[1], 25);
+    unsafe {
+        let lib = dlopen(c"__LIBRARY__".as_ptr(), 2); assert!(!lib.is_null());
+        let sum: unsafe extern "C" fn(Words) -> u64 = core::mem::transmute(dlsym(lib, c"sum_words".as_ptr()));
+        let call: unsafe extern "C" fn(extern "C" fn(Words) -> Words) -> u64 = core::mem::transmute(dlsym(lib, c"call_words".as_ptr()));
+        assert_eq!(call(identity::<Words>), 42);
+        assert_eq!(call(local_words), 43);
+        let sum2: unsafe extern "C" fn(Words) -> u64 = sum;
+        assert_eq!(sum2(Words { words: [17,25] }), 42);
+        let padded: unsafe extern "C" fn(Padded) -> Padded = core::mem::transmute(dlsym(lib, c"padded".as_ptr()));
+        let p = padded(Padded { lead: 3, payload: 1000, tail: 7 });
+        assert_eq!(p.lead, 6); assert_eq!(p.payload, 1017); assert_eq!(p.tail, 12);
+        let call_padded: unsafe extern "C" fn(extern "C" fn(Padded) -> Padded) -> u64 = core::mem::transmute(dlsym(lib, c"call_padded".as_ptr()));
+        assert_eq!(call_padded(identity::<Padded>), 1010);
+        assert_eq!(call_padded(local_padded), 1016);
+        let small: unsafe extern "C" fn(Small) -> Small = core::mem::transmute(dlsym(lib, c"small".as_ptr()));
+        let s = small(Small { a: 3, b: 1000, c: 2000 });
+        assert_eq!(s.a, 4); assert_eq!(s.b, 1002); assert_eq!(s.c, 2003);
+        let nested: unsafe extern "C" fn(Nested) -> Nested = core::mem::transmute(dlsym(lib, c"nested".as_ptr()));
+        let n = nested(Nested { prefix: 13, small: s, words: value });
+        assert_eq!(n.prefix, 14); assert_eq!(n.small.c, 2010); assert_eq!(n.words.words[1], 34);
+        let big: unsafe extern "C" fn(Big) -> Big = core::mem::transmute(dlsym(lib, c"big".as_ptr()));
+        let original = Big { words: [3, 5, 7, 11, 13] }; let b = big(original);
+        assert_eq!(original.words[0], 3); assert_eq!(b.words[0], 14); assert_eq!(b.words[4], 26);
+        let scalar: unsafe extern "C" fn(i8, u16) -> i64 = core::mem::transmute(dlsym(lib, c"scalar".as_ptr()));
+        assert_eq!(scalar(-7, 65000), 64993);
+        println!("{} {} {} {} {}", sum(value), p.payload, n.small.c, b.words[4], scalar(-7,65000));
+    }
+}

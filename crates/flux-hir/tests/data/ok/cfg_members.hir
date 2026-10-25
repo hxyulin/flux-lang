@@ -1,0 +1,68 @@
+struct Record { value: i32 }
+
+struct Tuple(i32, i64);
+
+enum Choice { Kept = 0, Data(i32) = 1, Named { value: i32 } = 2 }
+
+enum Number { First = 7, Last = 8 }
+
+type Function = fn(i32) -> i32;
+
+trait Signature;
+
+impl Record;
+
+impl ::core::clone::Clone for Record;
+
+impl ::core::marker::Copy for Record;
+
+impl ::core::default::Default for Record;
+
+impl ::core::clone::Clone for Tuple;
+
+impl ::core::marker::Copy for Tuple;
+
+impl ::core::default::Default for Choice;
+
+fn take(value@0: i32) -> i32 {
+    value@0
+}
+
+fn Record::associated(value@0: i32) -> i32 {
+    value@0
+}
+
+fn Record::method(self@0: &Self) -> i32 {
+    self@0.value
+}
+
+fn take(i32) -> i32;
+
+fn main() -> () {
+    let r@0 = Record { value: 3 };
+    let t@1 = Tuple(5, 9);
+    let Tuple(a@2, b@3) = t@1;
+    let f@4: Function = take;
+    let closure@6 = |value@5: i32| value@5;
+    let value@7 = ((f@4(a@2) + closure@6(r@0.method())) + Record::associated(1));
+}
+
+fn <Record as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+    assert_param_is_clone((&self@0.value));
+    (*self@0)
+}
+
+fn <Record as ::core::default::Default>::default() -> Self {
+    Record { value: Default::default() }
+}
+
+fn <Tuple as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+    assert_param_is_clone((&self@0.0));
+    assert_param_is_clone((&self@0.1));
+    (*self@0)
+}
+
+fn <Choice as ::core::default::Default>::default() -> Self {
+    Choice::Kept
+}
+

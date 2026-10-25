@@ -3,8 +3,8 @@
 //! `Neg::neg(a)`, `a += b` is `AddAssign::add_assign(&mut a, b)`, and so
 //! on, through these traits, which the compiler knows by their `lang`
 //! names. The integer types and `bool` implement them too, so that
-//! generic code can use them; the impls are written out for each type,
-//! since flux has no macros. Operators on references to them (`&a + b`,
+//! generic code can use them; the integer impls are written out for each type.
+//! Operators on references to them (`&a + b`,
 //! `-&a`) are calls of these traits' methods, as in rustc: the impls for
 //! references are at the end.
 //!

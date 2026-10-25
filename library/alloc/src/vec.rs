@@ -16,6 +16,11 @@ pub struct Vec<T> {
     len: usize,
 }
 
+// SAFETY: the vector owns its allocation and transfers its elements with it.
+unsafe impl<T: Send> Send for Vec<T> {}
+// SAFETY: shared access exposes only shared references to the owned elements.
+unsafe impl<T: Sync> Sync for Vec<T> {}
+
 impl<T> Vec<T> {
     /// An empty vector, which allocates nothing until it is pushed to.
     pub const fn new() -> Vec<T> {
@@ -254,6 +259,22 @@ impl<T> Vec<T> {
         }
     }
 
+    /// Removes a range lazily through the returned iterator, inserting the
+    /// replacement during its destruction. Detached storage keeps this
+    /// bounded implementation safe across iterator and element panics.
+    #[track_caller]
+    pub fn splice<R, I>(&mut self, range: R, replace_with: I) -> Splice<'_, I::IntoIter>
+    where R: core::ops::RangeBounds<usize>, I: IntoIterator<Item = T> {
+        let core::ops::Range { start, end } = core::slice::range(range, ..self.len);
+        let mut removed = self.split_off(start);
+        let mut tail = removed.split_off(end - start);
+        let mut guard = RestoreSpliceTail { vec: self, tail: &mut tail, armed: true };
+        let replace_with = replace_with.into_iter();
+        guard.armed = false;
+        drop(guard);
+        Splice { vec: self, removed: removed.into_iter(), tail, replace_with }
+    }
+
     /// Drops every element, in order, keeping the memory.
     pub fn clear(&mut self) {
         self.truncate(0);
@@ -343,6 +364,19 @@ impl<T> Vec<T> {
             }
         } else {
             self.truncate(new_len);
+        }
+    }
+
+    /// Appends clones of a range already stored in this vector.
+    #[track_caller]
+    pub fn extend_from_within<R: core::ops::RangeBounds<usize>>(&mut self, range: R)
+    where T: Clone,
+    {
+        let core::ops::Range { start, end } = core::slice::range(range, ..self.len);
+        self.reserve(end - start);
+        for index in start..end {
+            let value = self[index].clone();
+            self.push(value);
         }
     }
 
@@ -481,7 +515,8 @@ pub fn from_elem<T: Clone>(elem: T, n: usize) -> Vec<T> {
     v
 }
 
-impl<T> Drop for Vec<T> {
+// SAFETY: the destructor only accesses T by dropping owned initialized elements.
+unsafe impl<#[may_dangle] T> Drop for Vec<T> {
     fn drop(&mut self) {
         unsafe { drop_range(self.as_mut_ptr(), 0, self.len) };
     }
@@ -565,6 +600,18 @@ impl<T> Default for Vec<T> {
 impl<T: fmt::Debug> fmt::Debug for Vec<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self.as_slice(), f)
+    }
+}
+
+impl<T> core::borrow::Borrow<[T]> for Vec<T> {
+    fn borrow(&self) -> &[T] {
+        self
+    }
+}
+
+impl<T> core::borrow::BorrowMut<[T]> for Vec<T> {
+    fn borrow_mut(&mut self) -> &mut [T] {
+        self
     }
 }
 
@@ -691,6 +738,33 @@ impl<'a, T> IntoIterator for &'a mut Vec<T> {
 }
 
 /// [`Vec::drain`]'s iterator.
+pub struct Splice<'a, I: Iterator + 'a> {
+    vec: &'a mut Vec<I::Item>,
+    removed: IntoIter<I::Item>,
+    tail: Vec<I::Item>,
+    replace_with: I,
+}
+impl<I: Iterator> Iterator for Splice<'_, I> {
+    type Item = I::Item;
+    fn next(&mut self) -> Option<I::Item> { self.removed.next() }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.removed.size_hint() }
+}
+impl<I: Iterator> DoubleEndedIterator for Splice<'_, I> {
+    fn next_back(&mut self) -> Option<I::Item> { self.removed.next_back() }
+}
+impl<I: Iterator> ExactSizeIterator for Splice<'_, I> {}
+struct RestoreSpliceTail<'a, T> { vec: &'a mut Vec<T>, tail: &'a mut Vec<T>, armed: bool }
+impl<T> Drop for RestoreSpliceTail<'_, T> {
+    fn drop(&mut self) { if self.armed { self.vec.append(self.tail); } }
+}
+impl<I: Iterator> Drop for Splice<'_, I> {
+    fn drop(&mut self) {
+        let guard = RestoreSpliceTail { vec: self.vec, tail: &mut self.tail, armed: true };
+        for value in self.removed.by_ref() { drop(value); }
+        for value in self.replace_with.by_ref() { guard.vec.push(value); }
+    }
+}
+
 pub struct Drain<'a, T> {
     vec: &'a mut Vec<T>,
     /// The next element it gives, and one past the last.
@@ -806,7 +880,8 @@ impl<T> DoubleEndedIterator for IntoIter<T> {
 impl<T> ExactSizeIterator for IntoIter<T> {}
 impl<T> core::iter::FusedIterator for IntoIter<T> {}
 
-impl<T> Drop for IntoIter<T> {
+// SAFETY: only the owned initialized interval is dropped; no other T is read.
+unsafe impl<#[may_dangle] T> Drop for IntoIter<T> {
     fn drop(&mut self) {
         unsafe { drop_range(self.buf.ptr(), self.start, self.end) };
     }
@@ -816,4 +891,8 @@ impl<T: core::hash::Hash> core::hash::Hash for Vec<T> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         core::hash::Hash::hash(self.as_slice(), state);
     }
+}
+
+impl<T> AsRef<[T]> for Vec<T> {
+    fn as_ref(&self) -> &[T] { self.as_slice() }
 }

@@ -137,6 +137,46 @@ fn send_sync_match_rustc() {
             true,
         ),
         (
+            "guard_named",
+            "struct Guard<'a,T>(&'a T,*const T); unsafe impl<'a,T:Sync> Sync for Guard<'a,T> {} fn f<'a,T:Sync>(_: &'a T) { sync::<Guard<'a,T>>(); } fn main() { f(&1u8); }",
+            true,
+        ),
+        (
+            "guard_elided",
+            "struct Guard<'a,T>(&'a T,*const T); unsafe impl<T:Sync> Sync for Guard<'_,T> {} fn f<'a,T:Sync>(_: &'a T) { sync::<Guard<'a,T>>(); } fn main() { f(&1u8); }",
+            true,
+        ),
+        (
+            "guard_permuted",
+            "struct Guard<'a,'b,T>(&'a T,&'b T,*const T); unsafe impl<'x,'y,T:Sync> Sync for Guard<'y,'x,T> {} fn f<'a,'b,T:Sync>(_: &'a T,_: &'b T) { sync::<Guard<'a,'b,T>>(); } fn main() { f(&1u8,&2u8); }",
+            true,
+        ),
+        (
+            "guard_mixed_elided",
+            "struct Guard<'a,'b,T>(&'a T,&'b T,*const T); unsafe impl<'a,T:Sync> Sync for Guard<'_, 'a,T> {} fn f<'a,'b,T:Sync>(_: &'a T,_: &'b T) { sync::<Guard<'a,'b,T>>(); } fn main() { f(&1u8,&2u8); }",
+            true,
+        ),
+        (
+            "guard_missing_sync",
+            "struct Guard<'a,T>(&'a T,*const T); unsafe impl<T:Sync> Sync for Guard<'_,T> {} fn main() { sync::<Guard<'_,core::cell::Cell<u8>>>(); }",
+            false,
+        ),
+        (
+            "repeated_lifetime_specialized",
+            "struct Guard<'a,'b>(&'a u8,&'b u8); unsafe impl<'a> Send for Guard<'a,'a> {} fn main() {}",
+            true,
+        ),
+        (
+            "bounded_lifetime_specialized",
+            "struct Guard<'a>(&'a u8); unsafe impl<'a:'static> Send for Guard<'a> {} fn main() {}",
+            true,
+        ),
+        (
+            "predicate_lifetime_specialized",
+            "trait Tr<'a> {} struct Guard<'a,T>(&'a u8,T); unsafe impl<'a,T:Tr<'a>> Send for Guard<'a,T> {} fn main() {}",
+            true,
+        ),
+        (
             "specialized_disables_structure",
             "struct W<T>(T); unsafe impl Send for W<u8> {} fn main() { send::<W<u16>>(); }",
             false,
@@ -194,7 +234,14 @@ fn send_sync_match_rustc() {
             && typed.diagnostics.is_empty();
         // Lifetime specialization is deliberately rejected until trait
         // selection carries region obligations through both solvers.
-        if matches!(name, "lifetime_specialized" | "nested_lifetime_specialized") {
+        if matches!(
+            name,
+            "lifetime_specialized"
+                | "nested_lifetime_specialized"
+                | "repeated_lifetime_specialized"
+                | "bounded_lifetime_specialized"
+                | "predicate_lifetime_specialized"
+        ) {
             assert!(
                 typed
                     .diagnostics
@@ -204,7 +251,15 @@ fn send_sync_match_rustc() {
         }
         assert_eq!(
             accepted,
-            expected && !matches!(name, "lifetime_specialized" | "nested_lifetime_specialized"),
+            expected
+                && !matches!(
+                    name,
+                    "lifetime_specialized"
+                        | "nested_lifetime_specialized"
+                        | "repeated_lifetime_specialized"
+                        | "bounded_lifetime_specialized"
+                        | "predicate_lifetime_specialized"
+                ),
             "{name}: flux: {:?}\n{:?}\n{:?}",
             db.file(root).parse.errors(),
             hir.diagnostics,

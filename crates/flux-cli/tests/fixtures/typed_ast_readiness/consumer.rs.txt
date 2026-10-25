@@ -1,41 +1,41 @@
-// Compile-only readiness consumer, never a native/self-hosting acceptance oracle.
+// Native coverage of generated typed AST interfaces and accessors.
 use syntax_complete::{
     SyntaxNode,
     ast::{self, AstNode},
 };
 fn round<'t, N: AstNode<'t>>(n: N, node: SyntaxNode<'t>) {
-    let _ = N::can_cast(node.kind());
-    let _ = N::cast(node);
-    let _ = n.syntax();
-    let _ = n.syntax(); // inherited Copy
+    assert!(N::can_cast(node.kind()));
+    assert!(N::cast(node).is_some());
+    assert_eq!(n.syntax(), node);
+    assert_eq!(n.syntax(), node); // inherited Copy
 }
 fn find<'t, N: AstNode<'t>>(node: SyntaxNode<'t>) -> Option<N> {
     node.children().find_map(N::cast)
 }
 fn all<'t>(root: SyntaxNode<'t>) {
     // GENERATED_INTERFACES
-    let _ = find::<ast::Expr<'t>>(root);
-    let _ = find::<ast::Type<'t>>(root);
+    println!("find expr {:?}", find::<ast::Expr<'t>>(root).map(|n| n.syntax()));
+    println!("find type {:?}", find::<ast::Type<'t>>(root).map(|n| n.syntax()));
     if let Some(x) = ast::IfExpr::cast(root) {
-        let _ = x.condition();
-        let _ = x.then_branch();
-        let _ = x.else_branch();
+        println!("extension {:?}", x.condition());
+        println!("extension {:?}", x.then_branch());
+        println!("extension {:?}", x.else_branch());
     }
     if let Some(x) = ast::WhileExpr::cast(root) {
-        let _ = x.condition();
-        let _ = x.loop_body();
+        println!("extension {:?}", x.condition());
+        println!("extension {:?}", x.loop_body());
     }
     if let Some(x) = ast::ForExpr::cast(root) {
-        let _ = x.iterable();
-        let _ = x.loop_body();
+        println!("extension {:?}", x.iterable());
+        println!("extension {:?}", x.loop_body());
     }
     if let Some(x) = ast::Impl::cast(root) {
-        let _ = x.trait_ty();
-        let _ = x.self_ty();
+        println!("extension {:?}", x.trait_ty());
+        println!("extension {:?}", x.self_ty());
     }
     if let Some(x) = ast::PathSegment::cast(root) {
-        let _ = x.self_ty();
-        let _ = x.trait_ty();
+        println!("extension {:?}", x.self_ty());
+        println!("extension {:?}", x.trait_ty());
     }
 }
 fn main() {
@@ -45,12 +45,14 @@ fn main() {
         "fn broken( { if true {",
         "impl { fn x( ; while { for in } < as >::",
         "",
+        // PARSER_INPUTS
     ] {
         let p = syntax_complete::parse_source_file(text);
-        let _ = p.errors();
-        let _ = p.source_file().items().count();
+        println!("errors {}", p.errors().len());
+        println!("items {}", p.source_file().items().count());
         all(p.root());
         for node in p.root().descendants() {
+            println!("node {:?} {:?}", node.kind(), node.text_range());
             all(node);
         }
     }

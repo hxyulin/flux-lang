@@ -29,13 +29,6 @@ impl TraitsInScope {
                     _ => None,
                 })
         };
-        let prelude: Vec<TraitId> = def_map.prelude.into_iter().flat_map(named).collect();
-        // The program's modules see `alloc`'s prelude, `core`'s names
-        // and its own (`ToString`, `ToOwned`).
-        let std_prelude: Vec<TraitId> = match def_map.std_prelude {
-            Some(m) => named(m).collect(),
-            None => prelude.clone(),
-        };
         let start = |traits: &Vec<TraitId>| {
             u32::try_from(traits.len()).expect("fewer than 2^32 traits in scope")
         };
@@ -53,11 +46,7 @@ impl TraitsInScope {
                     .filter(|_| items.modules[m].block.is_some());
             }
             let own = ModuleId::from_raw(index as u32);
-            if items.is_core(own) {
-                module_traits.extend(&prelude);
-            } else {
-                module_traits.extend(&std_prelude);
-            }
+            if let Some(prelude) = items.prelude_for(own) { module_traits.extend(named(prelude)); }
             module_traits.sort_unstable_by_key(|t| t.index());
             module_traits.dedup();
             traits.append(&mut module_traits);

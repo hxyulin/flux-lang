@@ -1,0 +1,16 @@
+unsafe extern "C" {fn fegetround()->i32;fn fesetround(mode:i32)->i32;}
+fn main(){
+    // Darwin AArch64 FE_UPWARD, FE_DOWNWARD and FE_TOWARDZERO. Fixed
+    // nearest-even must ignore every ambient setting and preserve signed zero.
+    unsafe {
+        let saved=fegetround();
+        for mode in [0x00400000,0x00800000,0x00c00000] {
+            assert_eq!(fesetround(mode),0);
+            for (x,y) in [(0.5f64,0.0f64),(-0.5,-0.0),(1.5,2.0),(2.5,2.0),(-1.5,-2.0),(-2.5,-2.0)] {
+                assert_eq!(x.round_ties_even().to_bits(),y.to_bits());
+                assert_eq!((x as f32).round_ties_even().to_bits(),(y as f32).to_bits());
+            }
+        }
+        assert_eq!(fesetround(saved),0);
+    }
+}

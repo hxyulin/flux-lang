@@ -1,12 +1,76 @@
 //! `char`'s constants and methods, and its conversions.
 //!
-//! Only what needs no Unicode tables: the ASCII methods, digits,
-//! `is_whitespace` (whose set is small) and UTF-8 lengths. A `char` is
-//! held as its `u32` value.
+//! ASCII and Unicode properties, escaping, UTF-16 decoding and UTF-8 lengths.
+//! A `char` is held as its Unicode scalar `u32` value.
 
 use crate::convert::From;
 use crate::iter::Step;
 use crate::option::Option::{self, None, Some};
+
+pub const UNICODE_VERSION: (u8, u8, u8) = crate::char_properties::UNICODE_VERSION;
+pub const REPLACEMENT_CHARACTER: char = '\u{fffd}';
+
+/// Decodes UTF-16, reporting each unpaired surrogate without losing the
+/// following code unit.
+pub fn decode_utf16<I: IntoIterator<Item = u16>>(iter: I) -> DecodeUtf16<I::IntoIter> {
+    DecodeUtf16 { iter: iter.into_iter(), buf: None }
+}
+
+#[derive(Clone, Debug)]
+pub struct DecodeUtf16<I: Iterator<Item = u16>> {
+    iter: I,
+    buf: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeUtf16Error { code: u16 }
+
+impl DecodeUtf16Error {
+    pub fn unpaired_surrogate(&self) -> u16 { self.code }
+}
+impl crate::fmt::Display for DecodeUtf16Error {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::write!(f, "unpaired surrogate found: {:x}", self.code)
+    }
+}
+impl crate::error::Error for DecodeUtf16Error {}
+
+impl<I: Iterator<Item = u16>> Iterator for DecodeUtf16<I> {
+    type Item = Result<char, DecodeUtf16Error>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let first = match self.buf.take() {
+            Some(value) => value,
+            None => self.iter.next()?,
+        };
+        if first < 0xd800 || first > 0xdfff {
+            // SAFETY: a non-surrogate u16 is a Unicode scalar value.
+            return Some(Ok(unsafe { char::from_u32_unchecked(first as u32) }));
+        }
+        if first >= 0xdc00 { return Some(Err(DecodeUtf16Error { code: first })); }
+        match self.iter.next() {
+            Some(second) if second >= 0xdc00 && second <= 0xdfff => {
+                let scalar = 0x10000 + (((first & 0x3ff) as u32) << 10) + (second & 0x3ff) as u32;
+                // SAFETY: a high/low surrogate pair encodes 0x10000..=0x10ffff.
+                Some(Ok(unsafe { char::from_u32_unchecked(scalar) }))
+            }
+            following => {
+                self.buf = following;
+                Some(Err(DecodeUtf16Error { code: first }))
+            }
+        }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (low, high) = self.iter.size_hint();
+        let (low_buf, high_buf) = match self.buf {
+            None => (0, 0),
+            Some(value) if value < 0xd800 || value > 0xdfff => (1, 1),
+            Some(_) if high == Some(0) => (1, 1),
+            Some(_) => (0, 1),
+        };
+        (low / 2 + low % 2 + low_buf, high.and_then(|n| n.checked_add(high_buf)))
+    }
+}
+impl<I: Iterator<Item = u16> + crate::iter::FusedIterator> crate::iter::FusedIterator for DecodeUtf16<I> {}
 
 /// The `char` for a digit `num` in `radix`, if it is one: `char::from_digit`.
 pub const fn from_digit(num: u32, radix: u32) -> Option<char> {
@@ -25,6 +89,50 @@ pub const unsafe fn from_u32_unchecked(i: u32) -> char {
 }
 
 impl char {
+    pub fn is_alphabetic(self) -> bool { crate::char_properties::has_property(self, 1) }
+    pub fn is_alphanumeric(self) -> bool { crate::char_properties::has_property(self, 2) }
+    pub fn escape_debug(self) -> EscapeDebug {
+        let escape = crate::fmt::escape_debug(self, true, true);
+        let literal = if escape.is_none() { Some(self) } else { None };
+        let inner = match escape {
+            Some(crate::fmt::Escape::Unicode(_)) => self.escape_default(),
+            Some(crate::fmt::Escape::Backslash(value)) => {
+                let mut chars = ['\0'; 10]; chars[0] = '\\'; chars[1] = value;
+                EscapeDefault { chars, front: 0, back: 2 }
+            }
+            None => {
+                let mut chars = ['\0'; 10]; chars[0] = self;
+                EscapeDefault { chars, front: 0, back: 1 }
+            }
+        };
+        EscapeDebug { inner, literal }
+    }
+    pub fn escape_default(self) -> EscapeDefault {
+        let mut chars = ['\0'; 10];
+        let short = match self {
+            '\t' => 't', '\r' => 'r', '\n' => 'n',
+            '\\' => '\\', '\'' => '\'', '"' => '"', _ => '\0',
+        };
+        let back = if short != '\0' {
+            chars[0] = '\\'; chars[1] = short; 2
+        } else if self >= ' ' && self <= '~' {
+            chars[0] = self; 1
+        } else {
+            chars[0] = '\\'; chars[1] = 'u'; chars[2] = '{';
+            let mut value = self as u32;
+            let mut reversed = ['\0'; 6];
+            let mut digits = 0;
+            loop {
+                reversed[digits] = b"0123456789abcdef"[(value & 15) as usize] as char;
+                digits += 1; value >>= 4;
+                if value == 0 { break; }
+            }
+            for index in 0..digits { chars[3 + index] = reversed[digits - 1 - index]; }
+            chars[3 + digits] = '}';
+            4 + digits
+        };
+        EscapeDefault { chars, front: 0, back }
+    }
     /// The highest code point.
     pub const MAX: char = '\u{10FFFF}';
     /// `U+FFFD`, which decoding puts in place of what is not UTF-8.
@@ -238,6 +346,41 @@ impl char {
     /// Makes `A` to `Z` into `a` to `z`, in place.
     pub const fn make_ascii_lowercase(&mut self) {
         *self = self.to_ascii_lowercase();
+    }
+}
+
+#[derive(Clone)]
+pub struct EscapeDefault { chars: [char; 10], front: usize, back: usize }
+
+#[derive(Clone)]
+pub struct EscapeDebug { inner: EscapeDefault, literal: Option<char> }
+impl Iterator for EscapeDebug {
+    type Item = char;
+    fn next(&mut self) -> Option<char> { self.inner.next() }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl crate::iter::ExactSizeIterator for EscapeDebug {}
+impl crate::iter::FusedIterator for EscapeDebug {}
+impl crate::fmt::Display for EscapeDebug {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        match self.literal {
+            Some(value) => crate::fmt::Display::fmt(&value, f),
+            None => crate::fmt::Display::fmt(&self.inner, f),
+        }
+    }
+}
+impl Iterator for EscapeDefault {
+    type Item = char;
+    fn next(&mut self) -> Option<char> {
+        if self.front == self.back { None } else { let value = self.chars[self.front]; self.front += 1; Some(value) }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) { let len = self.back - self.front; (len, Some(len)) }
+}
+impl crate::iter::ExactSizeIterator for EscapeDefault {}
+impl crate::iter::FusedIterator for EscapeDefault {}
+impl crate::fmt::Display for EscapeDefault {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        for value in self.clone() { crate::write!(f, "{}", value)?; } Ok(())
     }
 }
 

@@ -15,11 +15,7 @@ fn resolve(source: &str) -> (Hir, Signatures, Vec<flux_hir::Diagnostic>) {
 #[test]
 fn ast_node_owner_regions_survive_erasure() {
     let (hir, sigs, diagnostics) = resolve(include_str!("data/trait_lifetime_regions/ast_node.rs"));
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message == "lifetime parameters on traits are not supported yet")
-    );
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
     assert!(
         !diagnostics
             .iter()

@@ -113,6 +113,8 @@ pub struct DefMap {
     /// `String`, `Box`), as rustc's `std` prelude: what the program's
     /// modules see.
     pub std_prelude: Option<ModuleId>,
+    pub prelude_2018: Option<ModuleId>,
+    pub std_prelude_2018: Option<ModuleId>,
     /// Names whose import failed, by module: uses of them are not
     /// reported again.
     pub failed_imports: FxHashSet<(ModuleId, Symbol)>,
@@ -205,10 +207,19 @@ impl ResolveError {
 }
 
 impl ItemTree {
+    fn unavailable_c_void_variant(&self, from: ModuleId, def: Def) -> bool {
+        !self.is_core(from) && matches!(def, Def::Variant(id, _)
+            if self.is_core(self.structs[id].loc.module)
+                && self.structs[id].name.as_str() == "c_void")
+    }
+
     /// Resolves `path`, written in `from`, in namespace `ns`.
     pub fn resolve(&self, from: ModuleId, path: &Path, ns: Ns) -> Result<Resolved, ResolveError> {
         let mut private = None;
         let resolved = self.resolve_inner(from, path, ns, &mut private)?;
+        if matches!(resolved, Resolved::Def(def) if self.unavailable_c_void_variant(from, def)) {
+            return Err(ResolveError::Failed { at: At::Whole, message: "`c_void` variants are not supported yet".into() });
+        }
         match private {
             Some((segment, message)) => Err(ResolveError::Private {
                 segment,
@@ -251,13 +262,27 @@ impl ItemTree {
                 (module, 0)
             }
             PathAnchor::Global => {
+                if path.edition.unwrap_or_else(|| self.edition(from)) == flux_syntax::Edition::E2015 {
+                    let root = self.module_of(self.modules[from].krate);
+                    let first = segments.first().copied();
+                    let own = &self.crates[self.modules[from].krate.0 as usize];
+                    let implicit = first.filter(|&name| name == sym::std && !own.no_std || name == sym::core && own.no_std);
+                    if let Some(name) = implicit
+                        && self.scope_binding(root, name, Ns::Types).is_none()
+                        && let Some(module) = self.loaded_extern_crate(name, from)
+                    {
+                        (module, 1)
+                    } else {
+                        (root, 0)
+                    }
+                } else {
                 let Some(&first) = segments.first() else {
                     return Err(fail(At::Segment(0), "expected a name after `::`".into()));
                 };
                 // `$crate` of `alloc`'s macros is `::alloc`, which the
                 // program may not have declared.
                 match self
-                    .extern_crate(first, from)
+                    .loaded_extern_crate(first, from)
                     .or_else(|| self.any_crate(first, from))
                 {
                     Some(root) => (root, 1),
@@ -268,6 +293,7 @@ impl ItemTree {
                             format!("cannot find {what}`{first}` in the list of imported crates"),
                         ));
                     }
+                }
                 }
             }
             PathAnchor::Plain => {
@@ -433,6 +459,9 @@ impl ItemTree {
         if let ImplTarget::Struct(strukt) = target
             && let Some(variant) = self.structs[strukt].variant_named(name)
         {
+            if self.unavailable_c_void_variant(from, Def::Variant(strukt, variant)) {
+                return Err(ResolveError::Failed { at: At::Whole, message: "`c_void` variants are not supported yet".into() });
+            }
             // A record variant is a type only.
             if ns == Ns::Values && self.structs[strukt].variant(variant).kind == StructKind::Record
             {
@@ -500,6 +529,9 @@ impl ItemTree {
         if let Some(ImplTarget::Struct(strukt)) = self.alias_target(alias)
             && let Some(variant) = self.structs[strukt].variant_named(name)
         {
+            if self.unavailable_c_void_variant(self.type_aliases[alias].loc.module, Def::Variant(strukt, variant)) {
+                return Err(ResolveError::Failed { at: At::Whole, message: "`c_void` variants are not supported yet".into() });
+            }
             if ns == Ns::Values && self.structs[strukt].variant(variant).kind == StructKind::Record
             {
                 return Err(ResolveError::NotFound {
@@ -615,23 +647,29 @@ impl ItemTree {
         }
         if let Some(binding) = self.scope_binding(module, name, ns)
             && binding.kind != BindingKind::AmbiguousGlob
+            && !self.unavailable_c_void_variant(module, binding.def)
         {
             return Some(Resolved::Def(binding.def));
         }
         let own = &self.crates[self.modules[module].krate.0 as usize];
-        let prelude = if own.is_core || own.no_std {
-            self.def_map.prelude
-        } else {
-            self.def_map.std_prelude.or(self.def_map.prelude)
-        };
+        let prelude = self.prelude_for(module);
         if let Some(prelude) = prelude
             && let Some(binding) = self.def_map.scopes[prelude.index()].ns(ns).get(&name)
             && binding.vis == Visibility::Public
         {
             return Some(Resolved::Def(binding.def));
         }
+        if ns == Ns::Macros && let Some(&(_, id)) = own.macro_use.iter().rev().find(|&&(n, _)| n == name) {
+            return Some(Resolved::Def(Def::Macro(id)));
+        }
+        if ns == Ns::Macros && let Some(&id) = self.macro_prelude.get(&name) {
+            let source = &self.crates[self.macros[id].krate.0 as usize];
+            if !own.no_std || (source.name == sym::core && !crate::macros::CORE_STD_MACROS.contains(&name.as_str())) {
+                return Some(Resolved::Def(Def::Macro(id)));
+            }
+        }
         if ns == Ns::Types {
-            if let Some(root) = self.extern_crate(name, module) {
+            if let Some(root) = self.loaded_extern_crate(name, module) {
                 return Some(Resolved::Def(Def::Module(root)));
             }
             if is_primitive(name) {
@@ -641,13 +679,33 @@ impl ItemTree {
         None
     }
 
+    /// The prelude is selected by the consuming crate's edition.
+    pub fn prelude_for(&self, module: ModuleId) -> Option<ModuleId> {
+        let own = &self.crates[self.modules[module].krate.0 as usize];
+        let old = matches!(own.edition, flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018);
+        let core = if old { self.def_map.prelude_2018 } else { self.def_map.prelude };
+        let std = if old { self.def_map.std_prelude_2018 } else { self.def_map.std_prelude };
+        if own.is_core || own.no_std { core } else { std.or(core) }
+    }
+
+    /// A committed external path loads metadata, independently of its spelling
+    /// or whether it introduces a name into the current module.
+    pub(crate) fn loaded_extern_crate(&self, name: Symbol, module: ModuleId) -> Option<ModuleId> {
+        let root = self.extern_crate(name, module)?;
+        self.load_extern(self.modules[module].krate, self.modules[root].krate);
+        Some(root)
+    }
+
     /// The root of the crate called `name`, as seen from `module`: `core`,
     /// `std`, and `alloc` from later crates once `extern crate alloc;`
     /// declares it (or from `core`-like ones). A crate sees only those
     /// before it.
-    fn extern_crate(&self, name: Symbol, module: ModuleId) -> Option<ModuleId> {
+    pub(crate) fn extern_crate(&self, name: Symbol, module: ModuleId) -> Option<ModuleId> {
         let own = self.modules[module].krate;
         let own_data = &self.crates[own.0 as usize];
+        if let Some((_, target)) = own_data.extern_aliases.iter().find(|(alias, _)| *alias == name) {
+            return Some(self.module_of(*target));
+        }
         if let Some((_, target)) = own_data
             .dependencies
             .iter()
@@ -769,8 +827,10 @@ pub(crate) fn resolve(items: &mut ItemTree, from: ItemCounts) {
         .scopes
         .resize(items.modules.len(), Scope::default());
     define_items(items, from);
-    items.def_map.prelude = find_prelude(items, sym::core);
-    items.def_map.std_prelude = find_prelude(items, sym::alloc);
+    items.def_map.prelude = find_prelude(items, sym::core, "rust_2024");
+    items.def_map.std_prelude = find_prelude(items, sym::alloc, "rust_2024");
+    items.def_map.prelude_2018 = find_prelude(items, sym::core, "rust_2018");
+    items.def_map.std_prelude_2018 = find_prelude(items, sym::alloc, "rust_2018");
     resolve_imports(items, from.uses as usize);
     resolve_impls(items, from.impls as usize);
     // An import into both namespaces reports its problems once. Large
@@ -900,7 +960,7 @@ fn define_items(items: &mut ItemTree, from: ItemCounts) {
 }
 
 /// `prelude::rust_2024` of `core`-like crate `krate`.
-fn find_prelude(items: &ItemTree, krate: Symbol) -> Option<ModuleId> {
+fn find_prelude(items: &ItemTree, krate: Symbol, edition: &str) -> Option<ModuleId> {
     let core = items
         .crates
         .iter()
@@ -916,13 +976,25 @@ fn find_prelude(items: &ItemTree, krate: Symbol) -> Option<ModuleId> {
     };
     child(
         child(core, Symbol::intern("prelude"))?,
-        Symbol::intern("rust_2024"),
+        Symbol::intern(edition),
     )
 }
 
 /// Resolves every `use` from `from` on, repeating until no import makes
 /// progress.
 fn resolve_imports(items: &mut ItemTree, from: usize) {
+    // Modern imports probe the extern prelude as well as lexical modules.
+    // Rust loads that metadata even when a same-named local module wins;
+    // explicit `self::`/`crate::` imports and 2015 imports do not probe it.
+    for u in &items.uses[from..] {
+        if items.edition(u.module) != flux_syntax::Edition::E2015
+            && u.path.anchor == PathAnchor::Plain
+            && let Some(&name) = u.path.segments.first()
+        {
+            let _ = items.loaded_extern_crate(name, u.module);
+        }
+    }
+
     let mut pending: Vec<usize> = (from..items.uses.len())
         .filter(|&i| items.uses[i].kind != UseKind::Glob)
         .collect();
@@ -1382,7 +1454,7 @@ fn resolve_impls(items: &mut ItemTree, from: usize) {
                     );
                     None
                 }
-                Ok(Resolved::Primitive(name)) if items.is_core(module) => {
+                Ok(Resolved::Primitive(name)) if items.is_core(module) || items.is_std(module) => {
                     Some(ImplTarget::Primitive(name))
                 }
                 Ok(Resolved::Primitive(_)) => {

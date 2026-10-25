@@ -69,6 +69,8 @@ pub struct RangeInclusive<Idx> {
 }
 
 impl<Idx> RangeInclusive<Idx> {
+    pub const fn start(&self) -> &Idx { &self.start }
+    pub const fn end(&self) -> &Idx { &self.end }
     /// What `start..=end` makes.
     pub const fn new(start: Idx, end: Idx) -> Self {
         RangeInclusive {

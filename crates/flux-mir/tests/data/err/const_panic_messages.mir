@@ -20,8 +20,9 @@ fn named(_1: &str) -> usize {
     let _5: &str;
     let _6: !;
     let _7: !;
-    let _8: &&str;
-    let _9: &str;
+    let _8: !;
+    let _9: &&str;
+    let _10: &str;
 
     bb0: {
         _5 = &(*_1);
@@ -34,8 +35,8 @@ fn named(_1: &str) -> usize {
     }
 
     bb2: {
-        _8 = &_1;
-        _7 = panic_display::<&str>(copy _8) -> !;
+        _9 = &_1;
+        _8 = panic_display::<&str>(copy _9) -> !;
     }
 
     bb3: {
@@ -44,8 +45,8 @@ fn named(_1: &str) -> usize {
     }
 
     bb4: {
-        _9 = &(*_1);
-        _0 = len(copy _9) -> bb5;
+        _10 = &(*_1);
+        _0 = len(copy _10) -> bb5;
     }
 
     bb5: {

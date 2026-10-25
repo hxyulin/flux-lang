@@ -805,6 +805,7 @@ impl SignatureImplProof<'_> {
             || (self.items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized)
                 && !crate::maybe_unsized(
                     self.items,
+                    self.sigs,
                     goal.self_ty,
                     self.unsized_params,
                     self.memberships,
@@ -814,9 +815,8 @@ impl SignatureImplProof<'_> {
         {
             return true;
         }
-        if stack.len() >= 32 || stack.contains(&goal) {
-            return false;
-        }
+        if let Some(coinductive) = auto_cycle(self.items, goal, stack) { return coinductive; }
+        if stack.len() >= 32 { return false; }
         if self.select(goal, stack).is_some() {
             return true;
         }
@@ -866,6 +866,7 @@ impl SignatureImplProof<'_> {
                         !param.maybe_unsized
                             && crate::maybe_unsized(
                                 self.items,
+                                self.sigs,
                                 ty,
                                 self.unsized_params,
                                 self.memberships,
@@ -1138,11 +1139,14 @@ pub fn dyn_principal(ty: Ty, d: crate::DynTy) -> Predicate {
 
 /// What trait object `ty`, `d`, says the associated types of its
 /// trait and supertraits are, and what their traits imply.
-pub fn dyn_projections(sigs: &Signatures, ty: Ty, d: crate::DynTy) -> Vec<Projection> {
+pub fn dyn_projections(items: &ItemTree, sigs: &Signatures, ty: Ty, d: crate::DynTy) -> Vec<Projection> {
     let bounds = dyn_bounds(sigs, ty, d);
     let mut out = Vec::new();
     for p in &bounds {
         for (&name, &assoc) in d.assoc_names.iter().zip(d.assoc_tys) {
+            if !items.traits[p.trait_ref.trait_].types.iter().any(|ty| ty.name == name) {
+                continue;
+            }
             out.push(Projection {
                 alias: alias_of(p.trait_ref, ty, name),
                 ty: assoc,
@@ -1324,7 +1328,7 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
         }
         (TyKind::Slice(x), TyKind::Slice(y)) => match_ty(x, y, binds),
         (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-            x.is_unsafe == y.is_unsafe
+            x.is_unsafe == y.is_unsafe && x.is_c == y.is_c
                 && x.inputs_output.len() == y.inputs_output.len()
                 && (x.inputs_output.iter().zip(y.inputs_output))
                     .all(|(&a, &b)| match_ty(a, b, binds))
@@ -1469,7 +1473,7 @@ impl Normalizer<'_> {
                     return self.go(p.ty, depth + 1);
                 }
                 if let TyKind::Dynamic(d) = args[0].kind()
-                    && let Some(p) = dyn_projections(sigs, args[0], d)
+                    && let Some(p) = dyn_projections(self.items, sigs, args[0], d)
                         .into_iter()
                         .find(|p| p.alias == alias)
                 {
@@ -1702,7 +1706,10 @@ fn match_impl_sized(
         return None;
     }
     for (&x, &y) in trait_ref.args.iter().zip(goal.trait_ref.args) {
-        if !match_ty(x, y, binds) {
+        // Matching Self may already fix the input of a projection in a
+        // trait argument (`A::Item` for `SmallVec<A>`). Normalize it using
+        // those bindings before matching the remaining header.
+        if !match_impl_argument(items, sigs, x, y, binds, 0) {
             return None;
         }
     }
@@ -1713,11 +1720,44 @@ fn match_impl_sized(
         && params
             .iter()
             .zip(binds.iter())
-            .any(|(p, b)| !p.maybe_unsized && b.is_some_and(Ty::is_unsized))
+            .any(|(p, b)| !p.maybe_unsized && b.is_some_and(|ty| sigs.is_unsized(ty)))
     {
         return None;
     }
-    Some(binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect())
+    let args: Vec<_> = binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
+    if !crate::fn_regions::same_binders(items, self_ty.subst(&args), goal.self_ty)
+        || trait_ref.args.iter().zip(goal.trait_ref.args).any(|(&a, &b)|
+            !crate::fn_regions::same_binders(items, a.subst(&args), b)) {
+        return None;
+    }
+    Some(args)
+}
+
+/// Match a trait argument without confusing the impl's parameters with the
+/// caller's rigid parameters after normalizing a bound projection.
+fn match_impl_argument(items: &ItemTree, sigs: &Signatures, pattern: Ty, actual: Ty, binds: &mut [Option<Ty>], depth: u32) -> bool {
+    if depth > 64 { return false; }
+    if !pattern.has_aliases() { return match_ty(pattern, actual, binds); }
+    fn bound(ty: Ty, binds: &[Option<Ty>]) -> bool {
+        match ty.kind() {
+            TyKind::Param(parameter) => binds.get(parameter.index as usize).is_some_and(Option::is_some),
+            _ => ty.children().all(|ty| bound(ty, binds)),
+        }
+    }
+    if matches!(pattern.kind(), TyKind::Alias(_)) && bound(pattern, binds) {
+        let args: Vec<_> = binds.iter().map(|ty| ty.unwrap_or(Ty::ERROR)).collect();
+        let normalized = normalize(items, sigs, &[], pattern.subst(&args));
+        return normalized == actual;
+    }
+    let mut all = |left: &[Ty], right: &[Ty]| left.len() == right.len() && left.iter().zip(right).all(|(&left, &right)| match_impl_argument(items, sigs, left, right, binds, depth + 1));
+    match (pattern.kind(), actual.kind()) {
+        (TyKind::Adt(left, xs), TyKind::Adt(right, ys)) => left == right && all(xs, ys),
+        (TyKind::Tuple(xs), TyKind::Tuple(ys)) => all(xs, ys),
+        (TyKind::Ref(left, x), TyKind::Ref(right, y)) | (TyKind::RawPtr(left, x), TyKind::RawPtr(right, y)) => left == right && match_impl_argument(items, sigs, x, y, binds, depth + 1),
+        (TyKind::Slice(x), TyKind::Slice(y)) => match_impl_argument(items, sigs, x, y, binds, depth + 1),
+        (TyKind::Array(x, n), TyKind::Array(y, m)) => match_ty(n, m, binds) && match_impl_argument(items, sigs, x, y, binds, depth + 1),
+        _ => match_ty(pattern, actual, binds),
+    }
 }
 
 /// The parameters of `impl` block `imp` that only its bounds' associated
@@ -1787,6 +1827,13 @@ pub fn holds(items: &ItemTree, sigs: &Signatures, env: &[Predicate], goal: Predi
     holds_at(items, sigs, env, goal, &mut Vec::new())
 }
 
+/// Auto-trait cycles are coinductive only while every edge in the cycle
+/// remains an auto trait. Ordinary trait requirements stay inductive.
+fn auto_cycle(items: &ItemTree, goal: Predicate, stack: &[Predicate]) -> Option<bool> {
+    let start = stack.iter().position(|p| *p == goal)?;
+    Some(stack[start..].iter().all(|p| is_auto_trait(items, p.trait_ref.trait_)))
+}
+
 /// [`holds`], within the goals `stack` is proving. As in rustc, a goal
 /// that needs itself does not hold, nor does one that needs ever larger
 /// types.
@@ -1803,12 +1850,11 @@ fn holds_at(
     if in_env(sigs, env, goal) {
         return true;
     }
-    if stack.len() > 256 || stack.contains(&goal) {
-        return false;
-    }
+    if let Some(coinductive) = auto_cycle(items, goal, stack) { return coinductive; }
+    if stack.len() > 256 { return false; }
     // Outside bodies, a parameter is taken to be sized.
     if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized) {
-        return !goal.self_ty.is_unsized();
+        return !sigs.is_unsized(goal.self_ty);
     }
     if is_builtin_copy(items, goal.trait_ref.trait_, goal.self_ty) {
         return true;
@@ -1888,7 +1934,7 @@ pub(crate) fn is_auto_trait(items: &ItemTree, t: TraitId) -> bool {
 /// Structural auto-trait obligations. Explicit impls replace structural
 /// propagation for the entire ADT, including instantiations whose impl
 /// bounds fail. Unknown parameters and raw pointers have no candidate.
-/// Recursive types are conservatively limited by the solver's depth bound.
+/// Exact cycles are coinductive; growing instantiations retain depth limits.
 pub(crate) fn auto_trait_requirements(
     items: &ItemTree,
     sigs: &Signatures,
@@ -1901,6 +1947,7 @@ pub(crate) fn auto_trait_requirements(
     let mut trait_ref = goal.trait_ref;
     let types = match goal.self_ty.kind() {
         TyKind::Int(_)
+        | TyKind::Float(_)
         | TyKind::Bool
         | TyKind::Char
         | TyKind::Str
@@ -2036,7 +2083,7 @@ pub(crate) enum ClosureGoal {
 pub(crate) fn fn_goal(items: &ItemTree, t: TraitId, ty: Ty) -> Option<ClosureGoal> {
     let sig = ty.fn_sig()?;
     let kind = crate::fn_trait_kind(items, t)?;
-    if sig.is_unsafe {
+    if sig.is_unsafe || sig.is_c {
         return Some(ClosureGoal::No);
     }
     Some(ClosureGoal::Fn(kind, Ty::tuple(sig.params())))
@@ -2071,6 +2118,7 @@ pub fn copy_trait_ref(items: &ItemTree) -> Option<TraitRef> {
 pub fn closure_output(items: &ItemTree, alias: AliasTy) -> Option<Ty> {
     if let Some(sig) = alias.args[0].fn_sig()
         && !sig.is_unsafe
+        && !sig.is_c
         && crate::fn_trait_kind(items, alias.trait_) == Some(crate::ClosureKind::FnOnce)
     {
         return Some(sig.ret());
@@ -2364,13 +2412,26 @@ pub fn check_impls(
                 Some(TyKind::Adt(adt, _)) => {
                     let lifetimes = items.structs[adt.strukt].generics.lifetimes.len();
                     let regular_lifetimes = sigs.regions.impls.get(id).is_some_and(|r| {
-                        imp.generics.lifetimes.len() == lifetimes
+                        // Named and elided header lifetimes are both universal.
+                        // Accept a permutation of distinct binder parameters;
+                        // constants and repeated parameters specialize the impl.
+                        r.names.len() == lifetimes
                             && r.self_ty.len() == lifetimes
-                            && r.self_ty
-                                .iter()
-                                .take(lifetimes)
-                                .enumerate()
-                                .all(|(i, r)| *r == Region::Param(i as u32))
+                            && r.self_ty.iter().enumerate().all(|(i, region)| {
+                                matches!(region, Region::Param(p) if (*p as usize) < r.names.len())
+                                    && !r.self_ty[..i].contains(region)
+                            })
+                            // The signature solver erases regions. It cannot
+                            // decide applicability of a region-bearing bound.
+                            && r.bounds.is_empty()
+                            && r.bound_selfs.len() == sigs.impl_predicates.get(id).map_or(0, |p| p.len())
+                            && r.bound_traits.len() == r.bound_selfs.len()
+                            && r.projections.len() == sigs.impl_projections.get(id).map_or(0, |p| p.len())
+                            && r.bound_selfs.iter().all(|r| r.is_empty())
+                            && r.bound_traits.iter().all(|r| {
+                                r.lifetimes.is_empty() && r.args.iter().all(|a| a.is_empty())
+                            })
+                            && r.projections.iter().all(|r| r.is_empty())
                     });
                     if !regular_lifetimes
                         || !imp.generics.outlives.is_empty()
@@ -2388,8 +2449,14 @@ pub fn check_impls(
                 ),
             }
         }
+        let has_may_dangle = imp.generics.params.iter().any(|p| p.may_dangle)
+            || imp.generics.lifetimes.iter().any(|p| p.may_dangle);
+        let internal_drop = data.lang == Some(flux_intern::sym::drop) && has_may_dangle;
+        if has_may_dangle && (!internal_drop || !imp.is_unsafe) {
+            error(imp.def_range, "`may_dangle` requires an unsafe `Drop` impl".into());
+        }
         match (imp.is_unsafe, data.is_unsafe) {
-            (true, false) => error(
+            (true, false) if !internal_drop => error(
                 imp.def_range,
                 format!("implementing the trait `{}` is not unsafe", data.name),
             ),
@@ -2638,7 +2705,7 @@ fn check_method(
     let trait_name = items.traits[t].name;
     // In particular, an unsafe baseline target-feature method cannot satisfy
     // a safe trait declaration: calls through the trait must preserve safety.
-    if function.is_unsafe != decl.is_unsafe {
+    if function.is_unsafe != decl.is_unsafe || function.c_abi != decl.c_abi {
         return error(
             function.def_range,
             format!("method `{name}` has an incompatible type for trait"),
@@ -2746,7 +2813,7 @@ fn check_method(
     let mismatch = types
         .zip(ranges)
         .chain([((&sig.ret, &expected.ret), ret_range)])
-        .find(|((got, want), _)| got != want && **got != Ty::ERROR && **want != Ty::ERROR);
+        .find(|((got, want), _)| !crate::fn_regions::same_shape(**got, **want) && **got != Ty::ERROR && **want != Ty::ERROR);
     if let Some((_, range)) = mismatch {
         error(
             range,
@@ -2808,7 +2875,7 @@ fn excluded_by_bounds(
     };
     let goal = trait_ref.with_self(self_ty);
     let Some(args) = match_impl_sized(items, sigs, general, goal, false) else {
-        return false;
+        return intersection_excluded_by_local_bound(items, sigs, general, specific);
     };
     // A parameter not bounded `?Sized` is not an unsized type, as
     // rustc's implicit `Sized` bounds say: `impl<T: Clone> ToOwned for
@@ -2821,6 +2888,29 @@ fn excluded_by_bounds(
     bounds
         .iter()
         .any(|p| !holds(items, sigs, &env, p.subst(&args)))
+}
+
+/// After intersecting two headers, a local trait cannot hold for a closed
+/// foreign constructor with no matching impl. Downstream crates cannot add
+/// an impl for it under Rust's orphan rules (`&[T]`, for example).
+fn intersection_excluded_by_local_bound(items: &ItemTree, sigs: &Signatures, a: ImplId, b: ImplId) -> bool {
+    fn closed(items: &ItemTree, ty: Ty) -> bool {
+        match ty.kind() {
+            TyKind::Ref(_, inner) => closed(items, inner),
+            TyKind::Adt(adt, args) if crate::is_lang_struct(items, adt.strukt, "owned_box") => args.first().is_some_and(|&ty| closed(items, ty)),
+            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Infer(_) | TyKind::Error | TyKind::Opaque(_) | TyKind::Dynamic(_) => false,
+            _ => true,
+        }
+    }
+    let own = items.modules[items.impls[a].module].krate;
+    let a_bounds = sigs.impl_predicates.get(a).map_or(&[][..], |bounds| &**bounds);
+    let b_bounds = sigs.impl_predicates.get(b).map_or(&[][..], |bounds| &**bounds);
+    let local = |predicate: &Predicate| items.modules[items.traits[predicate.trait_ref.trait_].loc.module].krate == own;
+    if !a_bounds.iter().chain(b_bounds).any(local) { return false; }
+    let header = |id| std::iter::once(sigs.impls[id]).chain(sigs.impl_traits[id].args.iter().copied()).collect::<Vec<_>>();
+    let Some((_, bounds)) = unify_headers_with_predicates(&header(a), &header(b), a_bounds, b_bounds) else { return false; };
+    bounds.iter().any(|predicate| local(predicate) && closed(items, predicate.self_ty)
+        && sigs.impl_index.impls_for(items, predicate.trait_ref.trait_, predicate.self_ty).next().is_none())
 }
 
 /// `self`, `&self` or `&mut self`, for a `self` parameter of type `ty`.
@@ -3761,6 +3851,10 @@ pub fn unmet_leaf(
 /// its unconstrained parameters as `_`, if they may be for the same
 /// types.
 fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
+    unify_headers_with_predicates(a, b, &[], &[]).map(|(header, _)| header)
+}
+
+fn unify_headers_with_predicates(a: &[Ty], b: &[Ty], a_bounds: &[Predicate], b_bounds: &[Predicate]) -> Option<(Vec<Ty>, Vec<Predicate>)> {
     /// A type in one block's header, and which block.
     type Side = (bool, Ty);
     type Bound = rustc_hash::FxHashMap<(bool, u32), Side>;
@@ -3848,6 +3942,7 @@ fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
                 apply(bound, (side, len), depth + 1),
             ),
             TyKind::Slice(t) => Ty::slice(apply(bound, (side, t), depth + 1)),
+            TyKind::Alias(alias) => Ty::alias(AliasTy { args: Ty::list(&apply_all(alias.args)), ..alias }),
             _ => ty,
         }
     }
@@ -3856,7 +3951,16 @@ fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
         .iter()
         .zip(b)
         .all(|(&x, &y)| unify(&mut bound, (false, x), (true, y), 0));
-    unified.then(|| b.iter().map(|&t| apply(&bound, (true, t), 0)).collect())
+    unified.then(|| {
+        let header = b.iter().map(|&t| apply(&bound, (true, t), 0)).collect();
+        let bounds = [(false, a_bounds), (true, b_bounds)].into_iter().flat_map(|(side, predicates)| {
+            predicates.iter().map(|predicate| Predicate {
+                self_ty: apply(&bound, (side, predicate.self_ty), 0),
+                trait_ref: TraitRef { args: Ty::list(&predicate.trait_ref.args.iter().map(|&ty| apply(&bound, (side, ty), 0)).collect::<Vec<_>>()), ..predicate.trait_ref },
+            }).collect::<Vec<_>>()
+        }).collect();
+        (header, bounds)
+    })
 }
 
 /// Reports `impl` blocks of one trait for types that may be the same.

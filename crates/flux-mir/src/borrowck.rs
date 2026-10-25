@@ -305,7 +305,7 @@ fn statement_transfer(kind: &StatementKind, set: &mut dyn FnMut(Local, bool)) {
     }
 }
 
-fn terminator_transfer(kind: &TerminatorKind, set: &mut dyn FnMut(Local, bool)) {
+fn terminator_transfer_with_drops(kind: &TerminatorKind, set: &mut dyn FnMut(Local, bool), include_drops: bool) {
     if let TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. } = kind
         && dest.projection.is_empty()
     {
@@ -319,7 +319,7 @@ fn terminator_transfer(kind: &TerminatorKind, set: &mut dyn FnMut(Local, bool)) 
             place_uses(dest, set)
         }
         // Dropping a value may use the references in it.
-        TerminatorKind::Drop { place, .. } => set(place.local, true),
+        TerminatorKind::Drop { place, .. } if include_drops => set(place.local, true),
         _ => {}
     }
 }
@@ -328,7 +328,7 @@ fn terminator_transfer(kind: &TerminatorKind, set: &mut dyn FnMut(Local, bool)) 
 /// `tracked`: whether one is live depends on its own uses alone, and
 /// only those whose types have lifetimes matter. A block's are few, so
 /// they are listed rather than a bit each for every local.
-fn liveness_where(body: &Body, tracked: &[bool]) -> Vec<Vec<u32>> {
+fn liveness_where(body: &Body, tracked: &[bool], include_drops: bool) -> Vec<Vec<u32>> {
     let mut live_in = vec![Vec::new(); body.blocks.len()];
     let mut live_out = vec![Vec::new(); body.blocks.len()];
     // The locals live at a point, and a list of them that may also have
@@ -354,7 +354,7 @@ fn liveness_where(body: &Body, tracked: &[bool]) -> Vec<Vec<u32>> {
                     members.push(local.index() as u32);
                 }
             };
-            terminator_transfer(&data.terminator.kind, &mut set);
+            terminator_transfer_with_drops(&data.terminator.kind, &mut set, include_drops);
             for statement in data.statements.iter().rev() {
                 statement_transfer(&statement.kind, &mut set);
             }

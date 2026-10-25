@@ -33,9 +33,6 @@ fn file_module_inner_cfg_removes_its_binding_and_macros() {
 #[test]
 fn cfg_attr_does_not_hide_unsupported_conditional_positions() {
     for source in [
-        "struct S { #[cfg_attr(all(), cfg(any()))] f: i32 }",
-        "enum E { #[cfg_attr(all(), cfg(any()))] V }",
-        "fn f(#[cfg_attr(all(), cfg(any()))] p: i32) {}",
         "fn f() { let x = 1 + #[cfg_attr(all(), cfg(any()))] 2; }",
         "enum E { #[cfg_attr(not(), allow(dead_code))] V }",
         "fn f() { if true { #![cfg(any())] } }",
@@ -47,4 +44,59 @@ fn cfg_attr_does_not_hide_unsupported_conditional_positions() {
         let (_, _, hir) = flux_hir::lower_text("cfg.rs", source);
         assert!(!hir.diagnostics.is_empty(), "accepted {source}");
     }
+}
+
+#[test]
+fn conditional_members_match_rustc() {
+    let accepted = [
+        include_str!("data/ok/cfg_members.rs"),
+        "struct S { #[cfg_attr(all(), cfg_attr(all(), cfg(any())))] x: Missing }",
+        "struct S(#[cfg(any())] Missing, #[cfg(all())] i32); fn f() { let S(x) = S(1); }",
+        "#[repr(u8)] enum E { #[cfg(any())] V(Missing), A = 1, B }",
+        "#[repr(u8)] enum E { #[cfg(any())] V(Missing), #[cfg(all())] A = 1 }",
+        "fn f(#[cfg(any())] x: Missing, x: i32) {}",
+        "struct S { #[cfg(any())] x: missing!(), value: i32 }",
+        "enum E { #[cfg(any())] V { x: missing!() }, A }",
+        "fn f(#[cfg_attr(all(), cfg(any()), allow(dead_code))] x: impl Missing, value: i32) {}",
+        "unsafe extern \"C\" { fn f(#[cfg(any())] x: Missing, x: i32); }",
+    ];
+    let rejected = [
+        "struct S { #[cfg(not())] x: i32 }",
+        "struct S(#[cfg_attr(all(), cfg(not()))] i32);",
+        "enum E { #[cfg(not())] V }",
+        "fn f(#[cfg(not())] x: i32) {}",
+        "type F = fn(#[cfg(not())] i32);",
+        "fn f() { let c = |#[cfg_attr(all(), cfg(not()))] x: i32| x; }",
+        "#[repr(u8)] enum E { #[cfg(any())] V }",
+    ];
+    let dir = std::env::temp_dir().join(format!("flux-cfg-members-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (sources, expected) in [(&accepted[..], true), (&rejected[..], false)] {
+        for source in sources {
+            let path = dir.join("probe.rs");
+            std::fs::write(&path, source).unwrap();
+            let output = std::process::Command::new("rustc")
+                .args(["--edition=2024", "--crate-type=lib", "--emit=metadata"])
+                .arg(&path)
+                .arg("-o")
+                .arg(dir.join("probe.rmeta"))
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.success(),
+                expected,
+                "{source}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let (db, root, hir) = flux_hir::lower_text(&path, source);
+            assert!(db.file(root).parse.errors().is_empty(), "{source}");
+            assert_eq!(
+                hir.diagnostics.is_empty(),
+                expected,
+                "{source}\n{}",
+                hir.debug_dump()
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }

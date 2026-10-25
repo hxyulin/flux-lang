@@ -603,6 +603,13 @@ pub trait Iterator {
         Product::product(self)
     }
 
+    /// Whether the iterators differ in length or any corresponding item.
+    fn ne<I: IntoIterator>(self, other: I) -> bool
+    where Self: Sized, Self::Item: crate::cmp::PartialEq<I::Item>,
+    {
+        !self.eq(other)
+    }
+
     /// Whether its items are those of `other`, in order.
     fn eq<I: IntoIterator>(mut self, other: I) -> bool
     where

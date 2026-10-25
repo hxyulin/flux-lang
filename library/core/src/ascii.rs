@@ -1,5 +1,38 @@
 //! ASCII methods of `u8` and `[u8]`, as Rust's `core` has them.
 
+#[derive(Clone)]
+pub struct EscapeDefault { bytes: [u8; 4], front: usize, back: usize }
+
+pub fn escape_default(byte: u8) -> EscapeDefault {
+    let escaped = match byte {
+        b'\t' => b't', b'\r' => b'r', b'\n' => b'n',
+        b'\\' => b'\\', b'\'' => b'\'', b'"' => b'"', _ => 0,
+    };
+    let (bytes, back) = if escaped != 0 { ([b'\\', escaped, 0, 0], 2) }
+        else if byte >= 0x20 && byte <= 0x7e { ([byte, 0, 0, 0], 1) }
+        else { ([b'\\', b'x', b"0123456789abcdef"[(byte >> 4) as usize], b"0123456789abcdef"[(byte & 15) as usize]], 4) };
+    EscapeDefault { bytes, front: 0, back }
+}
+impl Iterator for EscapeDefault {
+    type Item = u8;
+    fn next(&mut self) -> Option<u8> {
+        if self.front == self.back { None } else { let byte = self.bytes[self.front]; self.front += 1; Some(byte) }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) { let len = self.back - self.front; (len, Some(len)) }
+}
+impl DoubleEndedIterator for EscapeDefault {
+    fn next_back(&mut self) -> Option<u8> {
+        if self.front == self.back { None } else { self.back -= 1; Some(self.bytes[self.back]) }
+    }
+}
+impl ExactSizeIterator for EscapeDefault {}
+impl crate::iter::FusedIterator for EscapeDefault {}
+impl crate::fmt::Display for EscapeDefault {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        for byte in self.clone() { crate::write!(f, "{}", byte as char)?; } Ok(())
+    }
+}
+
 impl u8 {
     /// Whether the byte is ASCII: below 128.
     pub const fn is_ascii(&self) -> bool {
@@ -114,6 +147,9 @@ impl u8 {
 }
 
 impl [u8] {
+    pub fn escape_ascii(&self) -> crate::slice::EscapeAscii<'_> {
+        crate::slice::EscapeAscii::new(self)
+    }
     /// Whether every byte is ASCII.
     pub const fn is_ascii(&self) -> bool {
         let mut i = 0;

@@ -78,23 +78,24 @@ fn twice(_1: bool) -> i32 {
 
 fn in_loop() -> () {
     let mut _0: ();
-    let _1: i32; // x
-    let _2: ();
+    let _1: !;
+    let _2: i32; // x
     let _3: ();
+    let _4: ();
 
     bb0: {
         goto -> bb1;
     }
 
     bb1: {
-        _1 = const 1_i32;
+        _2 = const 1_i32;
+        _4 = const ();
         _3 = const ();
-        _2 = const ();
         goto -> bb1;
     }
 
     bb2: {
-        StorageDead(_1);
+        StorageDead(_2);
         return;
     }
 }
@@ -103,9 +104,10 @@ fn after_loop() -> i32 {
     let mut _0: i32;
     let _1: i32; // x
     let _2: ();
-    let _3: !;
-    let _4: ();
-    let _5: !;
+    let _3: ();
+    let _4: !;
+    let _5: ();
+    let _6: !;
 
     bb0: {
         goto -> bb1;
@@ -113,7 +115,7 @@ fn after_loop() -> i32 {
 
     bb1: {
         _1 = const 1_i32;
-        _4 = const ();
+        _5 = const ();
         _2 = const ();
         goto -> bb2;
     }

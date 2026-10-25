@@ -1,0 +1,70 @@
+use keel_asm_ir::{Cfi, Directive, Expression, FieldId, Instruction, Item, Opcode, PageKind, Program, SectionKind, SymbolicInstruction, x86};
+
+fn main() {
+    let fields = vec![(FieldId::Rd, 3), (FieldId::Rn, 4), (FieldId::imm12, 17), (FieldId::sh, 0)];
+    let instruction = Instruction::new(Opcode::ADD_64_addsub_imm, fields);
+    assert_eq!(instruction.fields.len(), 4);
+    assert_eq!(instruction.fields[2], (FieldId::imm12, 17));
+    // Exercise both the inline and spilled field ownership paths.
+    let spilled = Instruction::new(Opcode::ADD_64_addsub_imm, (0..9).map(|n| (FieldId::imm12, n)));
+    assert_eq!(spilled.fields.len(), 9);
+    let symbolic = SymbolicInstruction::Compare { register: 7, is64: true, nonzero: false, target: String::from("Lexit") };
+    assert!(symbolic.validate().is_ok());
+    let inverse = symbolic.inverted_to(String::from("Lother")).unwrap();
+    assert_eq!(symbolic.target(), "Lexit");
+    assert_eq!(inverse.target(), "Lother");
+    assert_eq!(symbolic.zero_instruction().fields[0], (FieldId::Rt, 7));
+    println!("symbolic {symbolic} | {inverse}");
+    let invalid = SymbolicInstruction::PageOffset { register: 0, base: 1, load: false, kind: PageKind::Got, target: String::from("_global") };
+    println!("invalid {}", invalid.validate().unwrap_err());
+    let directives = vec![
+        Directive::Section { segment: String::from("__TEXT"), name: String::from("__cstring"), kind: SectionKind::CString },
+        Directive::CString(vec![b'a', b'"', b'\\', b'\n', 0xff]),
+        Directive::Integer { width: 8, expression: Expression::difference("_end", "_start").with_addend(-8), got: false },
+        Directive::Cfi(Cfi::DefCfa { register: 31, offset: 16 }),
+    ];
+    for directive in &directives {
+        assert!(directive.validate().is_ok());
+        let mut text = String::new();
+        directive.write_to(&mut text).unwrap();
+        assert_eq!(text, format!("{directive}"));
+        println!("directive {text}");
+    }
+    assert!(Directive::Align(17).validate().is_err());
+    assert!(Expression::symbol("bad symbol").validate().is_err());
+    let mut x = x86::Instruction::parse_intel("mov rax, qword ptr [rbx + rcx*4 + 8]").unwrap();
+    let mut printed = String::new();
+    x86::write_instruction(&mut printed, x.opcode, &x.operands, x.lock).unwrap();
+    println!("x86 {printed}");
+    assert_eq!(x86::Instruction::parse_intel(&printed).unwrap(), x);
+    let copied = x.clone();
+    x.operands.pop();
+    assert_eq!(copied.operands.len(), 2);
+    assert_eq!(x.operands.len(), 1);
+    assert!(x86::Instruction::parse_intel("not_a_real_opcode rax").is_err());
+    let mut parser = x86::SourceParser::default();
+    let parsed = parser.parse("Lparsed:\nmov rax, 7\nret\n").unwrap();
+    assert_eq!(parsed.stats().instructions, 2);
+    let mut program = Program::new();
+    program.text("hello"); program.text(""); program.text(" world");
+    assert_eq!(program.items.len(), 1);
+    program.label("_start");
+    program.instruction(instruction);
+    program.instruction(spilled);
+    program.x86_instruction(copied);
+    program.symbolic(symbolic);
+    program.branch(true, "_callee");
+    for directive in directives { program.directive(directive); }
+    program.append(parsed);
+    let copy = program.clone();
+    if let Item::Text(text) = &mut program.items[0] { text.push('!'); }
+    let stats = copy.stats();
+    assert_eq!(stats.instructions, 7);
+    assert_eq!(stats.labels, 2);
+    assert_eq!(stats.text_bytes, 11);
+    assert_eq!(program.stats().text_bytes, 12);
+    let mut adopted = Program::new();
+    adopted.append(copy);
+    assert_eq!(adopted.stats(), stats);
+    println!("transport {} {} {} {}", adopted.items.len(), stats.instructions, stats.labels, stats.text_bytes);
+}

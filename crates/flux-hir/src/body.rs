@@ -47,6 +47,9 @@ pub struct Body {
 /// construct they came from: the `loop` of a `while` maps to the `while`.
 #[derive(Debug, Default)]
 pub struct BodySourceMap {
+    /// Token editions survive expansion across crate boundaries.
+    pub editions: ArenaMap<Expr, flux_syntax::Edition>,
+    pub pat_editions: ArenaMap<Pat, flux_syntax::Edition>,
     pub exprs: ArenaMap<Expr, TextRange>,
     pub pats: ArenaMap<Pat, TextRange>,
     pub types: ArenaMap<TypeRef, TextRange>,
@@ -255,6 +258,8 @@ pub enum LoopSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal {
+    /// Decimal spelling retained until its target floating-point precision is known.
+    Float { text: Symbol, suffix: Option<Symbol> },
     /// An integer, with its suffix (`u8` in `1u8`) if any.
     Int {
         value: u128,
