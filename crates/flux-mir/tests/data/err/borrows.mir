@@ -355,8 +355,8 @@ fn same_ref_twice(_1: &mut S) -> () {
     let _4: &mut S;
 
     bb0: {
-        _3 = &mut (*_1);
-        _4 = &mut (*_1);
+        _3 = &two_phase (*_1);
+        _4 = &two_phase (*_1);
         _2 = pair(move _3, move _4) -> bb1;
     }
 
@@ -1589,8 +1589,8 @@ fn move_mut_ref_while_reborrowed(_1: &mut S) -> () {
         _3 = move _1;
         (*_2).0 = const 1_i32;
         _4 = const ();
-        _6 = &mut (*_3);
-        _7 = &mut (*_3);
+        _6 = &two_phase (*_3);
+        _7 = &two_phase (*_3);
         _5 = pair(move _6, move _7) -> bb1;
     }
 
@@ -2168,7 +2168,7 @@ error 956..966: cannot move out of `self.inner` which is behind a shared referen
 error 1424..1430: cannot borrow `x` as mutable more than once at a time
 error 1508..1516: cannot borrow `s` as mutable more than once at a time
 error 1583..1589: cannot borrow `a` as mutable more than once at a time
-error 1638..1639: cannot borrow `*r` as mutable more than once at a time
+error 1630..1640: cannot borrow `*r` as mutable more than once at a time
 error 1768..1774: cannot borrow `x` as mutable more than once at a time
 error 1916..1922: cannot borrow `x` as mutable because it is also borrowed as immutable
 error 2030..2032: cannot borrow `x` as immutable because it is also borrowed as mutable
@@ -2213,7 +2213,7 @@ error 6248..6249: cannot move out of `s` because it is borrowed
 error 6352..6353: cannot move out of `s` because it is borrowed
 error 6435..6436: cannot move out of `s` because it is borrowed
 error 6537..6538: cannot move out of `r` because it is borrowed
-error 6567..6569: cannot borrow `*r3` as mutable more than once at a time
+error 6558..6570: cannot borrow `*r3` as mutable more than once at a time
 error 6672..6673: cannot move out of `s` because it is borrowed
 error 6759..6765: cannot assign to `*r`, which is behind a `&` reference
 error 6814..6821: cannot assign to `r.a`, which is behind a `&` reference

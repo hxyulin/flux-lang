@@ -223,10 +223,6 @@ fn body_lifetime_boundaries_remain_closed() {
             "lifetimes in function item values",
         ),
         (
-            "fn f<'a>(x: &'a i32) { id::<fn(&'a i32)>(f); }",
-            "lifetimes in function pointer types",
-        ),
-        (
             "trait Ref { type Out; } impl<'a> Ref for &'a i32 { type Out = &'a i32; } fn f(x: &i32) { id::<<&'static i32 as Ref>::Out>(x); }",
             "lifetimes in associated type annotations",
         ),
@@ -258,4 +254,11 @@ fn closure_named_arguments_remain_closed() {
             "{ty:?} {mir:?}"
         );
     }
+}
+
+#[test]
+fn represented_named_pointer_arguments_are_admitted() {
+    let source = "fn id<T>(x:T)->T{x}fn f<'a>(x:&'a i32){id::<fn(&'a i32)>(f);}fn main(){}";
+    let (ty, mir) = check(source);
+    assert!(ty.is_empty() && mir.is_empty(), "{ty:?} {mir:?}");
 }

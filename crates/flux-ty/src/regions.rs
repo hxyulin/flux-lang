@@ -33,7 +33,10 @@ use flux_syntax::TextRange;
 
 use crate::{ClosureArgs, Signatures, Ty, TyKind, TypeScope};
 
-pub use crate::fn_regions::{instantiate as instantiate_fn_pointer, variances as fn_pointer_variances, same_binders as same_fn_pointer_binders, same_shape as same_fn_pointer_shape};
+pub use crate::fn_regions::{
+    instantiate as instantiate_fn_pointer, same_binders as same_fn_pointer_binders,
+    same_shape as same_fn_pointer_shape, variances as fn_pointer_variances,
+};
 
 pub(crate) const BODY_PROJECTION_LIFETIMES: &str =
     "lifetimes in associated type annotations are not supported yet";
@@ -301,8 +304,9 @@ pub fn slots(items: &ItemTree, ty: Ty) -> usize {
         }
         // Its lifetime bound; its arguments have none.
         TyKind::Dynamic(_) => 1,
-        TyKind::FnPtr(sig) => sig.regions.map_or(0, |r| r.free as usize
-            + r.types.iter().map(|&ty| slots(items, ty)).sum::<usize>()),
+        TyKind::FnPtr(sig) => sig.regions.map_or(0, |r| {
+            r.free as usize + r.types.iter().map(|&ty| slots(items, ty)).sum::<usize>()
+        }),
         _ => 0,
     }
 }
@@ -373,8 +377,12 @@ fn instantiate_at<R: Copy>(
         TyKind::Dynamic(_) => own_slot(next, out),
         TyKind::FnPtr(sig) => {
             if let Some(regions) = sig.regions {
-                for _ in 0..regions.free { own_slot(next, out); }
-                for &ty in regions.types { instantiate_at(items, ty, own, next, region, args, out); }
+                for _ in 0..regions.free {
+                    own_slot(next, out);
+                }
+                for &ty in regions.types {
+                    instantiate_at(items, ty, own, next, region, args, out);
+                }
             }
         }
         _ => {}
@@ -473,9 +481,17 @@ impl<'a> Walker<'a> {
         if lifetime.is_anonymous() {
             return self.elide(lifetime.range);
         }
-        if let Some(&(_, index)) = self.late_names.iter().rev().find(|&&(name, _)| name == lifetime.name) {
+        if let Some(&(_, index)) = self
+            .late_names
+            .iter()
+            .rev()
+            .find(|&&(name, _)| name == lifetime.name)
+        {
             if index == u32::MAX {
-                self.errors.push((lifetime.range, "bound output lifetime does not appear in the input types".to_owned()));
+                self.errors.push((
+                    lifetime.range,
+                    "bound output lifetime does not appear in the input types".to_owned(),
+                ));
                 return Region::Erased;
             }
             return Region::Late(index);
@@ -576,8 +592,15 @@ impl<'a> Walker<'a> {
                     self.walk(e, t, out);
                 }
             }
-            (TypeRef::FnPtr { bound_lifetimes, params, ret, .. }, TyKind::FnPtr(sig)) =>
-                self.fn_ptr(bound_lifetimes, params, ret, sig, out),
+            (
+                TypeRef::FnPtr {
+                    bound_lifetimes,
+                    params,
+                    ret,
+                    ..
+                },
+                TyKind::FnPtr(sig),
+            ) => self.fn_ptr(bound_lifetimes, params, ret, sig, out),
             (TypeRef::Opaque(i), TyKind::Opaque(opaque)) => {
                 match self.opaque_captures.get(*i as usize) {
                     Some(captures) => out.extend_from_slice(captures),
@@ -585,7 +608,10 @@ impl<'a> Walker<'a> {
                 }
             }
             (TypeRef::Path(path), TyKind::Dynamic(_))
-                if matches!(self.items.resolve(self.module, path, crate::Ns::Types), Ok(crate::Resolved::Def(crate::Def::Trait(_)))) =>
+                if matches!(
+                    self.items.resolve(self.module, path, crate::Ns::Types),
+                    Ok(crate::Resolved::Def(crate::Def::Trait(_)))
+                ) =>
             {
                 out.push(enclosing.unwrap_or(Region::Static));
             }
@@ -599,16 +625,40 @@ impl<'a> Walker<'a> {
 
     /// Bound lifetimes belong to the pointer signature. Only free lifetimes
     /// and captured generic storage contribute slots to the containing value.
-    fn fn_ptr(&mut self, names: &[Symbol], params: &[TypeRef], ret: &TypeRef, sig: crate::FnSigTy, out: &mut Vec<Region>) {
+    fn fn_ptr(
+        &mut self,
+        names: &[Symbol],
+        params: &[TypeRef],
+        ret: &TypeRef,
+        sig: crate::FnSigTy,
+        out: &mut Vec<Region>,
+    ) {
         for (i, &name) in names.iter().enumerate() {
-            if self.names.contains(&Some(name)) || self.late_names.iter().any(|&(n, _)| n == name)
-                || names[..i].contains(&name) {
-                self.errors.push((TextRange::default(), "lifetime name shadows a lifetime already in scope".into()));
+            if self.names.contains(&Some(name))
+                || self.late_names.iter().any(|&(n, _)| n == name)
+                || names[..i].contains(&name)
+            {
+                self.errors.push((
+                    TextRange::default(),
+                    "lifetime name shadows a lifetime already in scope".into(),
+                ));
             }
         }
-        let description = crate::fn_regions::describe(self.items, self.module, names, params, ret, sig.params(), sig.ret(), &mut self.errors);
-        for lifetime in description.free { out.push(self.named(lifetime)); }
-        for (written, ty) in description.captures { out.extend(self.regions(&written, ty)); }
+        let description = crate::fn_regions::describe(
+            self.items,
+            self.module,
+            names,
+            params,
+            ret,
+            sig,
+            &mut self.errors,
+        );
+        for lifetime in description.free {
+            out.push(self.named(lifetime));
+        }
+        for (written, ty) in description.captures {
+            out.extend(self.regions(&written, ty));
+        }
     }
 
     fn path(&mut self, path: &Path, ty: Ty, out: &mut Vec<Region>) {
@@ -716,10 +766,16 @@ impl<'a> Walker<'a> {
                             self.walk(written, t, &mut regions);
                         } else if let Some((written, range)) =
                             def.generics.params.get(i).and_then(|p| p.default.as_ref())
+                            && !def.generics.params[i].is_const()
                         {
-                            if !def.generics.params[i].is_const() {
-                                regions = self.default_regions(def.loc.module, &def.generics, written, *range, &lifetimes, &type_regions);
-                            }
+                            regions = self.default_regions(
+                                def.loc.module,
+                                &def.generics,
+                                written,
+                                *range,
+                                &lifetimes,
+                                &type_regions,
+                            );
                         }
                         regions.resize(slots(self.items, t), Region::Erased);
                         out.extend_from_slice(&regions);
@@ -848,14 +904,28 @@ impl<'a> Walker<'a> {
 
     /// Instantiate an omitted struct/alias default in its declaration scope.
     /// A default may carry declared lifetimes or repeat an earlier type's slots.
-    fn default_regions(&mut self, module: ModuleId, params: &flux_hir::Generics, written: &TypeRef, range: TextRange, lifetimes: &[Region], types: &[Vec<Region>]) -> Vec<Region> {
+    fn default_regions(
+        &mut self,
+        module: ModuleId,
+        params: &flux_hir::Generics,
+        written: &TypeRef,
+        range: TextRange,
+        lifetimes: &[Region],
+        types: &[Vec<Region>],
+    ) -> Vec<Region> {
         let names = params.lifetimes.iter().map(|l| Some(l.name)).collect();
         let generics = crate::generic_names(self.items, None, params);
         let consts = crate::generic_consts(self.items, None, params);
-        let scope = TypeScope { generics: &generics, consts: &consts,
-            defaults: self.scope.defaults, lens: self.scope.lens,
-            struct_fields: self.scope.struct_fields, ..TypeScope::default() };
-        let generic = crate::resolve_type(self.items, module, written, scope, range, &mut Vec::new());
+        let scope = TypeScope {
+            generics: &generics,
+            consts: &consts,
+            defaults: self.scope.defaults,
+            lens: self.scope.lens,
+            struct_fields: self.scope.struct_fields,
+            ..TypeScope::default()
+        };
+        let generic =
+            crate::resolve_type(self.items, module, written, scope, range, &mut Vec::new());
         let mut walker = Walker::new(self.items, module, names);
         walker.scope = scope;
         let table = walker.regions(written, generic);
@@ -904,13 +974,32 @@ impl<'a> Walker<'a> {
         let mut types: Vec<Vec<Region>> = Vec::new();
         for (i, param) in def.generics.params.iter().enumerate() {
             let mut regions = Vec::new();
-            if let Some((written, &range)) = path.args(last).and_then(|a| a.types.get(i).zip(a.ranges.get(i))) {
+            if let Some((written, &range)) = path
+                .args(last)
+                .and_then(|a| a.types.get(i).zip(a.ranges.get(i)))
+            {
                 let t = resolved.get(i).copied().flatten().unwrap_or_else(|| {
-                    crate::resolve_type(self.items, self.module, written, self.scope, range, &mut Vec::new())
+                    crate::resolve_type(
+                        self.items,
+                        self.module,
+                        written,
+                        self.scope,
+                        range,
+                        &mut Vec::new(),
+                    )
                 });
                 self.walk(written, t, &mut regions);
-            } else if !param.is_const() && let Some((written, range)) = &param.default {
-                regions = self.default_regions(def.loc.module, &def.generics, written, *range, &lifetimes, &types);
+            } else if !param.is_const()
+                && let Some((written, range)) = &param.default
+            {
+                regions = self.default_regions(
+                    def.loc.module,
+                    &def.generics,
+                    written,
+                    *range,
+                    &lifetimes,
+                    &types,
+                );
             }
             types.push(regions);
         }
@@ -1032,11 +1121,19 @@ pub(crate) fn lifetimes_in(ty: &TypeRef, out: &mut Vec<LifetimeRef>) {
         TypeRef::Ptr { pointee, .. }
         | TypeRef::Array { elem: pointee, .. }
         | TypeRef::Slice(pointee) => lifetimes_in(pointee, out),
-        TypeRef::FnPtr { bound_lifetimes, params, ret, .. } => {
+        TypeRef::FnPtr {
+            bound_lifetimes,
+            params,
+            ret,
+            ..
+        } => {
             let mut own = Vec::new();
             params.iter().for_each(|t| lifetimes_in(t, &mut own));
             lifetimes_in(ret, &mut own);
-            out.extend(own.into_iter().filter(|l| !bound_lifetimes.contains(&l.name)));
+            out.extend(
+                own.into_iter()
+                    .filter(|l| !bound_lifetimes.contains(&l.name)),
+            );
         }
         TypeRef::Dyn(d) => {
             for b in d.bounds.iter() {
@@ -1353,7 +1450,9 @@ fn implied_at<R: Copy + PartialEq>(
         TyKind::FnPtr(sig) => {
             if let Some(r) = sig.regions {
                 *next += r.free as usize;
-                for &ty in r.types { implied_at(items, sigs, ty, regions, next, static_region, out); }
+                for &ty in r.types {
+                    implied_at(items, sigs, ty, regions, next, static_region, out);
+                }
             }
         }
         _ => {}
@@ -1380,30 +1479,51 @@ pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
             TyKind::Alias(_) => *projection = true,
             TyKind::FnDef(_) => {}
             TyKind::FnPtr(sig) => {
-                if let Some(r) = sig.regions { for &ty in r.types { dependencies(ty, adts, projection); } }
+                if let Some(r) = sig.regions {
+                    for &ty in r.types {
+                        dependencies(ty, adts, projection);
+                    }
+                }
             }
-            TyKind::Closure(_, args) => dependencies(ClosureArgs::split(args).upvars, adts, projection),
+            TyKind::Closure(_, args) => {
+                dependencies(ClosureArgs::split(args).upvars, adts, projection)
+            }
             TyKind::Adt(adt, args) => {
                 adts.push(adt.strukt);
-                for &arg in args { dependencies(arg, adts, projection); }
+                for &arg in args {
+                    dependencies(arg, adts, projection);
+                }
             }
-            _ => for child in ty.children() { dependencies(child, adts, projection); },
+            _ => {
+                for child in ty.children() {
+                    dependencies(child, adts, projection);
+                }
+            }
         }
     }
     let mut projected = rustc_hash::FxHashSet::default();
-    let mut parents: rustc_hash::FxHashMap<flux_hir::StructId, Vec<flux_hir::StructId>> = Default::default();
+    let mut parents: rustc_hash::FxHashMap<flux_hir::StructId, Vec<flux_hir::StructId>> =
+        Default::default();
     let mut pending = Vec::new();
     for (id, fields) in sigs.structs.iter() {
         let mut children = Vec::new();
         let mut projection = false;
-        for &field in *fields { dependencies(field, &mut children, &mut projection); }
-        if projection && projected.insert(id) { pending.push(id); }
-        for child in children { parents.entry(child).or_default().push(id); }
+        for &field in *fields {
+            dependencies(field, &mut children, &mut projection);
+        }
+        if projection && projected.insert(id) {
+            pending.push(id);
+        }
+        for child in children {
+            parents.entry(child).or_default().push(id);
+        }
     }
     while let Some(id) = pending.pop() {
         if let Some(parents) = parents.get(&id) {
             for &parent in parents {
-                if projected.insert(parent) { pending.push(parent); }
+                if projected.insert(parent) {
+                    pending.push(parent);
+                }
             }
         }
     }
@@ -1428,18 +1548,30 @@ pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
             }
             TyKind::FnDef(_) => {}
             TyKind::FnPtr(sig) => {
-                if let Some(r) = sig.regions { for &ty in r.types { visit(sigs, projected, ty, active, expanded, out); } }
+                if let Some(r) = sig.regions {
+                    for &ty in r.types {
+                        visit(sigs, projected, ty, active, expanded, out);
+                    }
+                }
             }
             // Generic arguments in a closure's signature do not store values.
             // Only its environment contributes type-outlives requirements.
-            TyKind::Closure(_, args) => visit(sigs, projected, ClosureArgs::split(args).upvars, active, expanded, out),
+            TyKind::Closure(_, args) => visit(
+                sigs,
+                projected,
+                ClosureArgs::split(args).upvars,
+                active,
+                expanded,
+                out,
+            ),
             // A const array length is a generic argument, not borrowed data.
             TyKind::Array(elem, _) => visit(sigs, projected, elem, active, expanded, out),
             TyKind::Adt(adt, args) => {
                 for &arg in args {
                     visit(sigs, projected, arg, active, expanded, out);
                 }
-                if projected.contains(&adt.strukt) && !active.contains(&adt.strukt)
+                if projected.contains(&adt.strukt)
+                    && !active.contains(&adt.strukt)
                     && let Some(fields) = sigs.structs.get(adt.strukt)
                 {
                     active.push(adt.strukt);

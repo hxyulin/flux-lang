@@ -27,8 +27,8 @@ pub use build::build_tree;
 pub use lexer::LexedStr;
 pub use syntax_kind::SyntaxKind;
 pub use tree::{
-    CfgOptions, Children, ChildrenWithTokens, NodeId, SyntaxElement, SyntaxNode, SyntaxToken, SyntaxTree,
-    TextRange, TokenOrigin,
+    CfgOptions, Children, ChildrenWithTokens, NodeId, SyntaxElement, SyntaxNode, SyntaxToken,
+    SyntaxTree, TextRange, TokenOrigin,
 };
 
 /// Rust edition of one source crate. The default standalone-file mode is 2024.
@@ -69,11 +69,24 @@ impl Parse {
     /// still index its text; mapped ranges can cross body/file boundaries.
     pub fn with_source_offset(mut self, base: u32) -> Self {
         let lexed = LexedStr::new(self.tree.text());
-        let origins: Vec<_> = (0..lexed.len()).filter(|&i| !lexed.kind(i).is_trivia()).map(|i| {
-            let range = lexed.token_range(i);
-            (range.start(), TokenOrigin { range: TextRange::new(base + range.start(), base + range.end()), group: 1, ctxt: 0 })
-        }).collect();
-        self.tree.set_origins(&origins, TextRange::new(base, base + self.tree.text().len() as u32));
+        let origins: Vec<_> = (0..lexed.len())
+            .filter(|&i| !lexed.kind(i).is_trivia())
+            .map(|i| {
+                let range = lexed.token_range(i);
+                (
+                    range.start(),
+                    TokenOrigin {
+                        range: TextRange::new(base + range.start(), base + range.end()),
+                        group: 1,
+                        ctxt: 0,
+                    },
+                )
+            })
+            .collect();
+        self.tree.set_origins(
+            &origins,
+            TextRange::new(base, base + self.tree.text().len() as u32),
+        );
         for error in &mut self.errors {
             error.range = TextRange::new(base + error.range.start(), base + error.range.end());
         }
@@ -122,12 +135,10 @@ pub fn parse_source_text_with_edition(text: Box<str>, edition: Edition) -> Parse
     let input = parser::Input::from_lexed(&lexed);
     let output = parser::parse_source_file(&input);
     let (parts, errors) = build::build(lexed, output);
-    let mut parse = Parse {
+    Parse {
         tree: parts.into_tree(text),
         errors,
-    };
-    parse.tree.set_edition(edition);
-    parse
+    }
 }
 
 /// Parses an included physical file in the syntactic position of `include!`.
@@ -141,8 +152,7 @@ pub fn parse_included_source(
     let input = parser::Input::from_lexed(&lexed);
     let output = parser::parse_expansion(&input, fragment);
     let (parts, errors) = build::build(lexed, output);
-    let mut tree = parts.into_tree(text);
-    tree.set_edition(edition);
+    let tree = parts.into_tree(text);
     Parse { tree, errors }
 }
 
@@ -187,7 +197,6 @@ pub fn parse_expansion_with_token_kinds(
     let output = parser::parse_expansion(&input, fragment);
     let (parts, mut errors) = build::build(lexed, output);
     let mut tree = parts.into_tree(text);
-    tree.set_edition(edition);
     tree.set_origins(origins, call_site);
     for error in &mut errors {
         error.range = tree.map_text_range(error.range);

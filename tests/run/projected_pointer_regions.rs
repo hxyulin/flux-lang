@@ -60,7 +60,13 @@ fn id(x: &u32) -> &u32 {
     x
 }
 
+fn keep_item(value: &u32) -> Option<&u32> { Some(value) }
+
 fn main() {
+    let local = 17;
+    let pointer: fn(&u32) -> Option<&u32> = keep_item;
+    let borrowed = [&local].into_iter().map_while(pointer).next().unwrap();
+    assert_eq!(*borrowed, 17);
     static VALUE: u32 = 41;
     let pointer: fn(&u32) -> &u32 = id;
     let projected = get(&mut Source { p: &pointer }).unwrap();

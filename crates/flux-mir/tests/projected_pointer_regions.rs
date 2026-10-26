@@ -163,3 +163,53 @@ fn projected_pointer_borrow_cannot_escape() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn projected_iterator_callback_outputs_preserve_input_regions() {
+    let root =
+        std::env::temp_dir().join(format!("flux-projected-callbacks-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    for (name, source, accepts) in [
+        (
+            "local",
+            "fn keep(x:&u32)->Option<&u32>{Some(x)}fn main(){let x=7;let f:fn(&u32)->Option<&u32>=keep;assert_eq!(*[&x].into_iter().map_while(f).next().unwrap(),7);}",
+            true,
+        ),
+        (
+            "escape",
+            "fn keep(x:&u32)->Option<&u32>{Some(x)}fn escape()->&'static u32{let x=7;let f:fn(&u32)->Option<&u32>=keep;[&x].into_iter().map_while(f).next().unwrap()}fn main(){}",
+            false,
+        ),
+        (
+            "str_escape",
+            "fn keep(x:&str)->Option<&str>{Some(x)}fn escape()->&'static str{let bytes=[b'b'];let x=core::str::from_utf8(&bytes).unwrap();let f:fn(&str)->Option<&str>=keep;[x].into_iter().map_while(f).next().unwrap()}fn main(){}",
+            false,
+        ),
+    ] {
+        let path = root.join(format!("{name}.rs"));
+        std::fs::write(&path, source).unwrap();
+        let rustc = std::process::Command::new("rustc")
+            .args(["--edition=2024", "--emit=metadata"])
+            .arg(&path)
+            .arg("-o")
+            .arg(root.join(format!("{name}.rmeta")))
+            .output()
+            .unwrap();
+        assert_eq!(
+            rustc.status.success(),
+            accepts,
+            "{name}: {}",
+            String::from_utf8_lossy(&rustc.stderr)
+        );
+        let (db, _, hir) = flux_hir::lower_text(&path, source);
+        let mut errors = db.syntax_errors();
+        errors.extend(hir.diagnostics.clone());
+        let typed = flux_mir::check_file(&hir);
+        errors.extend(typed.diagnostics.clone());
+        if errors.is_empty() {
+            errors.extend(flux_mir::build_file(&hir, &typed).diagnostics);
+        }
+        assert_eq!(errors.is_empty(), accepts, "{name}: {errors:?}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -145,7 +145,7 @@ fn main() -> () {
     }
 }
 
-fn <E as ::core::clone::Clone>::clone(_1: &E) -> E {
+fn <E as $crate0::clone::Clone>::clone(_1: &E) -> E {
     let mut _0: E;
     let _2: ();
     let _3: isize;

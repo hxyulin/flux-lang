@@ -36,6 +36,7 @@ fn sample_tree() -> SyntaxTree {
                 descendants: 0,
             },
         ],
+        crate::Edition::E2024,
     )
 }
 
@@ -204,6 +205,7 @@ pub fn exercise_tree() {
             end_token: 1,
             descendants: 0,
         }],
+        crate::Edition::E2024,
     );
     trivia.set_origins(&[], call);
     assert!(trivia.validate().is_ok());

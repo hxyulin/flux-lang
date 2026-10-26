@@ -22,6 +22,8 @@
 mod body;
 mod cfg;
 pub mod def_map;
+mod intrinsic;
+pub use intrinsic::Intrinsic;
 mod item_tree;
 mod library;
 mod literal;

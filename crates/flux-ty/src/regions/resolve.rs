@@ -1123,7 +1123,9 @@ fn projection_regions(
         for (i, &r) in inputs.iter().enumerate() {
             if !seen.iter().any(|&(region, _)| region == r) {
                 let output = match r {
-                    Region::Param(j) if j as usize >= walker.names.len() + fresh => Region::Late(i as u32),
+                    Region::Param(j) if j as usize >= walker.names.len() + fresh => {
+                        Region::Late(i as u32)
+                    }
                     r => r,
                 };
                 seen.push((r, output));
@@ -1136,7 +1138,9 @@ fn projection_regions(
                 }
             }
         } else if table.contains(&Region::Erased) {
-            walker.errors.push((binding.ty_range, "missing lifetime specifier".to_owned()));
+            walker
+                .errors
+                .push((binding.ty_range, "missing lifetime specifier".to_owned()));
         }
     }
     walker.elided = outer;
@@ -1152,13 +1156,21 @@ fn enter_fn_binder(
     input: Option<Ty>,
 ) -> Vec<(Symbol, u32)> {
     let old = std::mem::take(&mut walker.late_names);
-    if args.bound_lifetimes.is_empty() { return old; }
-    walker.late_names = args.bound_lifetimes.iter().enumerate()
-        .map(|(i, &name)| (name, i as u32)).collect();
+    if args.bound_lifetimes.is_empty() {
+        return old;
+    }
+    walker.late_names = args
+        .bound_lifetimes
+        .iter()
+        .enumerate()
+        .map(|(i, &name)| (name, i as u32))
+        .collect();
     if let (Some(written), Some(input)) = (args.types.first(), input) {
         let table = walker.regions(written, input);
         for (i, (_, slot)) in walker.late_names.iter_mut().enumerate() {
-            *slot = table.iter().position(|&r| r == Region::Late(i as u32))
+            *slot = table
+                .iter()
+                .position(|&r| r == Region::Late(i as u32))
                 .map_or(u32::MAX, |j| j as u32);
         }
     }
@@ -1320,7 +1332,10 @@ fn bounds_outlives(
     let mut scratch = Vec::new();
     let predicates = crate::resolve_predicates(items, sigs, module, generics, scope, &mut scratch);
     let bounds = crate::traits::elaborate(sigs, &predicates.predicates);
-    let scope = TypeScope { bounds: &bounds, ..scope };
+    let scope = TypeScope {
+        bounds: &bounds,
+        ..scope
+    };
     walker.scope = scope;
     for p in generics.type_outlives.iter() {
         let r = walker.named(p.lifetime);
@@ -1405,11 +1420,13 @@ fn check_bounds<'b>(
                     let mut found = Vec::new();
                     elided_in(&b.ty, &mut found);
                     lifetimes_in(&b.ty, &mut named);
-                    if !tracked && named.iter().any(|l| {
-                        !l.is_anonymous()
-                            && b.ty_range.start() <= l.range.start()
-                            && l.range.end() <= b.ty_range.end()
-                    }) {
+                    if !tracked
+                        && named.iter().any(|l| {
+                            !l.is_anonymous()
+                                && b.ty_range.start() <= l.range.start()
+                                && l.range.end() <= b.ty_range.end()
+                        })
+                    {
                         errors.push((
                             b.ty_range,
                             "named lifetimes in `Fn` bounds are not supported yet".to_owned(),
@@ -1544,9 +1561,18 @@ impl VarianceWalk<'_> {
             TyKind::FnPtr(sig) => {
                 if let Some(r) = sig.regions {
                     let (free, types) = super::fn_pointer_variances(self.items, self.sigs, sig)
-                        .unwrap_or_else(|| (vec![Variance::Invariant; r.free as usize], vec![Variance::Invariant; r.types.len()]));
-                    for variance in free { self.slot(ambient.xform(variance)); }
-                    for (&ty, variance) in r.types.iter().zip(types) { self.go(ty, ambient.xform(variance)); }
+                        .unwrap_or_else(|| {
+                            (
+                                vec![Variance::Invariant; r.free as usize],
+                                vec![Variance::Invariant; r.types.len()],
+                            )
+                        });
+                    for variance in free {
+                        self.slot(ambient.xform(variance));
+                    }
+                    for (&ty, variance) in r.types.iter().zip(types) {
+                        self.go(ty, ambient.xform(variance));
+                    }
                 }
             }
             TyKind::Alias(alias) => {

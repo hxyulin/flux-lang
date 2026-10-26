@@ -5,5 +5,3 @@ fn output(fn(&i32) -> &i32) -> ()
 fn named(fn(&i32) -> i32) -> ()
     pointer@0: fn(&i32) -> i32
 fn main() -> ()
-error 220..221: function pointer types returning references are not supported yet
-error 285..292: lifetimes in function pointer types are not supported yet

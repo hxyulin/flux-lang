@@ -169,7 +169,7 @@ fn main() -> () {
     }
 }
 
-fn <Point as ::core::clone::Clone>::clone(_1: &Point) -> Point {
+fn <Point as $crate0::clone::Clone>::clone(_1: &Point) -> Point {
     let mut _0: Point;
     let _2: ();
     let _3: &i32;

@@ -202,11 +202,26 @@ fn expanded_calls_use_invocation_files_and_eager_filenames() {
     case.write("defs/data", "definition data");
     case.write("defs/macros.rs", "#[macro_export] macro_rules! other { () => { include_str!(\"data\") }; } #[macro_export] macro_rules! setup { () => { macro_rules! generated { () => { include_str!(\"data\") }; } }; }");
     for (source, expected) in [
-        ("macro_rules! wrapped { () => { include_str!(\"data\") }; } pub fn f() -> &'static str { wrapped!() }", "root data"),
-        ("macro_rules! forward { ($s:literal) => { include_str!($s) }; } pub fn f() -> &'static str { forward!(\"data\") }", "root data"),
-        ("#[path=\"defs/macros.rs\"] mod defs; pub fn f() -> &'static str { other!() }", "root data"),
-        ("#[path=\"defs/macros.rs\"] mod defs; setup!(); pub fn f() -> &'static str { generated!() }", "root data"),
-        ("pub fn f() -> &'static str { include_str!(concat!(\"da\", \"ta\")) }", "root data"),
+        (
+            "macro_rules! wrapped { () => { include_str!(\"data\") }; } pub fn f() -> &'static str { wrapped!() }",
+            "root data",
+        ),
+        (
+            "macro_rules! forward { ($s:literal) => { include_str!($s) }; } pub fn f() -> &'static str { forward!(\"data\") }",
+            "root data",
+        ),
+        (
+            "#[path=\"defs/macros.rs\"] mod defs; pub fn f() -> &'static str { other!() }",
+            "root data",
+        ),
+        (
+            "#[path=\"defs/macros.rs\"] mod defs; setup!(); pub fn f() -> &'static str { generated!() }",
+            "root data",
+        ),
+        (
+            "pub fn f() -> &'static str { include_str!(concat!(\"da\", \"ta\")) }",
+            "root data",
+        ),
     ] {
         case.write("lib.rs", source);
         case.rustc(true);

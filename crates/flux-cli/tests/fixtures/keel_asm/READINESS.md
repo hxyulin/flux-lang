@@ -67,7 +67,15 @@ The missing APIs include `std::io::{Read, Seek, SeekFrom}` in object,
 unchanged. The test fails at the first dirty stage and does not bypass these
 blockers to reach codegen.
 
-Validation command: `cargo test -p flux-cli --test keel_asm_readiness -- --nocapture`
+Validation command: `cargo test -p flux-cli --test keel_asm_readiness -- --ignored --nocapture`
 (run through the installed local mbx wrapper). No formatting, full workspace
 validation, compiler/library edits, commits or public actions were performed
 for this harness.
+
+This remains an opt-in progress audit while the required language and library
+features are outside the supported subset. It is ignored by the ordinary regression
+suite; explicit execution still fails at the first dirty compiler stage. The
+refactor validation rerun reported 152 HIR diagnostics with unchanged source bytes,
+including GATs, CRC feature detection/intrinsics and missing std APIs. No native
+assembler milestone is claimed. The implemented asm-ir and Keel IR graphs have
+separate active regression tests.

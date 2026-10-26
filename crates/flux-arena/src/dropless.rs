@@ -246,13 +246,17 @@ mod tests {
             // Check reservation before copying bytes, so a sizing regression
             // fails before an out-of-bounds write can corrupt the process.
             let reservation = DroplessArena::new();
-            if prefix != 0 { reservation.alloc(17u8); }
+            if prefix != 0 {
+                reservation.alloc(17u8);
+            }
             let size = FIRST_CHUNK * 5 + 3;
             reservation.alloc_in_new_chunk(size);
             assert!(reservation.capacity_bytes() >= size);
 
             let arena = DroplessArena::new();
-            if prefix != 0 { arena.alloc(17u8); }
+            if prefix != 0 {
+                arena.alloc(17u8);
+            }
             let bytes = vec![31u8; size];
             let stored = arena.alloc_slice(&bytes);
             assert!(arena.capacity_bytes() >= bytes.len());

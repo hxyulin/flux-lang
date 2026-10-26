@@ -13,13 +13,34 @@ fn owned_ascii_case_matches_rustc() {
         for compiler in ["rustc", "flux"] {
             let executable = dir.join(format!("{compiler}-{optimized}"));
             let mut command = if compiler == "rustc" {
-                let mut c = Command::new("rustc"); c.args(["--edition=2024", "-C", "panic=abort"]); c
-            } else { let mut c = Command::new(env!("CARGO_BIN_EXE_flux")); c.arg("build"); c };
-            if optimized { command.arg("-O"); }
-            let output = command.arg(&source).arg("-o").arg(&executable).output().unwrap();
-            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+                let mut c = Command::new("rustc");
+                c.args(["--edition=2024", "-C", "panic=abort"]);
+                c
+            } else {
+                let mut c = Command::new(env!("CARGO_BIN_EXE_flux"));
+                c.arg("build");
+                c
+            };
+            if optimized {
+                command.arg("-O");
+            }
+            let output = command
+                .arg(&source)
+                .arg("-o")
+                .arg(&executable)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             let output = Command::new(executable).output().unwrap();
-            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             results.push((output.stdout, output.stderr));
         }
         assert_eq!(results[0], results[1]);

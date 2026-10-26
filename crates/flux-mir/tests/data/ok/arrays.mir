@@ -120,15 +120,17 @@ fn main() -> () {
     let _7: bool;
     let _8: usize; // n
     let _9: usize;
-    let _10: [u8; 8]; // g
-    let _11: (usize, u8, i32);
-    let _12: usize;
-    let _13: u8;
+    let _10: &[u32; 3];
+    let _11: &[u32];
+    let _12: [u8; 8]; // g
+    let _13: (usize, u8, i32);
     let _14: usize;
-    let _15: bool;
-    let _16: [Noisy; 2]; // _noisy
-    let _17: Noisy;
-    let _18: Noisy;
+    let _15: u8;
+    let _16: usize;
+    let _17: bool;
+    let _18: [Noisy; 2]; // _noisy
+    let _19: Noisy;
+    let _20: Noisy;
 
     bb0: {
         _1 = [const 1_u32, const 2_u32, const 3_u32];
@@ -146,32 +148,37 @@ fn main() -> () {
     bb2: {
         _1[_6] = copy _3;
         _2 = const ();
-        _9 = Len(&_1);
-        _8 = Add(copy _9, const LONG);
-        _10 = grid() -> bb3;
+        _10 = &_1;
+        _11 = copy _10 as &[u32] (unsize);
+        _9 = len::<u32>(copy _11) -> bb3;
     }
 
     bb3: {
-        _12 = copy _8;
-        _14 = const 7_usize;
-        _15 = Lt(copy _14, const 8_usize);
-        assert(copy _15, "index out of bounds") -> bb4;
+        _8 = Add(copy _9, const LONG);
+        _12 = grid() -> bb4;
     }
 
     bb4: {
-        _13 = copy _10[_14];
-        _11 = (copy _12, copy _13, const TOTAL);
-        StorageDead(_11);
-        _17 = Noisy;
-        _18 = Noisy;
-        _16 = [move _17, move _18];
-        _0 = const ();
-        drop(_16) -> bb5;
+        _14 = copy _8;
+        _16 = const 7_usize;
+        _17 = Lt(copy _16, const 8_usize);
+        assert(copy _17, "index out of bounds") -> bb5;
     }
 
     bb5: {
-        StorageDead(_16);
-        StorageDead(_10);
+        _15 = copy _12[_16];
+        _13 = (copy _14, copy _15, const TOTAL);
+        StorageDead(_13);
+        _19 = Noisy;
+        _20 = Noisy;
+        _18 = [move _19, move _20];
+        _0 = const ();
+        drop(_18) -> bb6;
+    }
+
+    bb6: {
+        StorageDead(_18);
+        StorageDead(_12);
         StorageDead(_8);
         StorageDead(_1);
         return;

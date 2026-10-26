@@ -227,21 +227,22 @@ fn find(_1: &[i32], _2: i32) -> Option<&i32> {
     let _6: bool;
     let _7: usize;
     let _8: usize;
-    let _9: ();
-    let _10: bool;
-    let _11: i32;
-    let _12: usize;
+    let _9: &[i32];
+    let _10: ();
+    let _11: bool;
+    let _12: i32;
     let _13: usize;
-    let _14: bool;
-    let _15: i32;
-    let _16: !;
+    let _14: usize;
+    let _15: bool;
+    let _16: i32;
     let _17: !;
-    let _18: &i32;
-    let _19: usize;
+    let _18: !;
+    let _19: &i32;
     let _20: usize;
-    let _21: bool;
-    let _22: ();
-    let _23: usize;
+    let _21: usize;
+    let _22: bool;
+    let _23: ();
+    let _24: usize;
 
     bb0: {
         _3 = const 0_usize;
@@ -250,9 +251,8 @@ fn find(_1: &[i32], _2: i32) -> Option<&i32> {
 
     bb1: {
         _7 = copy _3;
-        _8 = Len(&(*_1));
-        _6 = Lt(copy _7, copy _8);
-        switchInt(copy _6) -> [0: bb4, otherwise: bb3];
+        _9 = &(*_1);
+        _8 = len::<i32>(copy _9) -> bb3;
     }
 
     bb2: {
@@ -262,51 +262,56 @@ fn find(_1: &[i32], _2: i32) -> Option<&i32> {
     }
 
     bb3: {
-        _12 = copy _3;
-        _13 = Len((*_1));
-        _14 = Lt(copy _12, copy _13);
-        assert(copy _14, "index out of bounds") -> bb6;
+        _6 = Lt(copy _7, copy _8);
+        switchInt(copy _6) -> [0: bb5, otherwise: bb4];
     }
 
     bb4: {
+        _13 = copy _3;
+        _14 = Len((*_1));
+        _15 = Lt(copy _13, copy _14);
+        assert(copy _15, "index out of bounds") -> bb7;
+    }
+
+    bb5: {
         _4 = const ();
         goto -> bb2;
     }
 
-    bb5: {
+    bb6: {
         goto -> bb1;
     }
 
-    bb6: {
-        _11 = copy (*_1)[_12];
-        _15 = copy _2;
-        _10 = Eq(copy _11, copy _15);
-        switchInt(copy _10) -> [0: bb8, otherwise: bb7];
-    }
-
     bb7: {
-        _19 = copy _3;
-        _20 = Len((*_1));
-        _21 = Lt(copy _19, copy _20);
-        assert(copy _21, "index out of bounds") -> bb10;
+        _12 = copy (*_1)[_13];
+        _16 = copy _2;
+        _11 = Eq(copy _12, copy _16);
+        switchInt(copy _11) -> [0: bb9, otherwise: bb8];
     }
 
     bb8: {
-        _9 = const ();
-        goto -> bb9;
+        _20 = copy _3;
+        _21 = Len((*_1));
+        _22 = Lt(copy _20, copy _21);
+        assert(copy _22, "index out of bounds") -> bb11;
     }
 
     bb9: {
-        _23 = copy _3;
-        _3 = Add(copy _23, const 1_usize);
-        _22 = const ();
-        _5 = const ();
-        goto -> bb5;
+        _10 = const ();
+        goto -> bb10;
     }
 
     bb10: {
-        _18 = &(*_1)[_19];
-        _0 = Option::Some(copy _18);
+        _24 = copy _3;
+        _3 = Add(copy _24, const 1_usize);
+        _23 = const ();
+        _5 = const ();
+        goto -> bb6;
+    }
+
+    bb11: {
+        _19 = &(*_1)[_20];
+        _0 = Option::Some(copy _19);
         return;
     }
 }

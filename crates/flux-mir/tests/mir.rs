@@ -306,7 +306,7 @@ fn const_eval_rejects_pointer_comparisons_even_without_const_check() {
             .items
             .functions
             .iter()
-            .find(|(_, function)| function.name.as_str() == "compare")
+            .find(|(id, function)| hir.is_program(*id) && function.name.as_str() == "compare")
             .map(|(id, _)| id)
             .unwrap();
         hir.items.functions[function].do_not_const_check = true;

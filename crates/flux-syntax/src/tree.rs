@@ -167,6 +167,7 @@ impl SyntaxTree {
         kinds: Vec<SyntaxKind>,
         starts: Vec<u32>,
         nodes: Vec<NodeData>,
+        edition: crate::Edition,
     ) -> SyntaxTree {
         debug_assert_eq!(kinds.len() + 1, starts.len());
         debug_assert_eq!(starts.last().copied(), Some(text.len() as u32));
@@ -175,7 +176,7 @@ impl SyntaxTree {
             text,
             kinds,
             remapped: Vec::new(),
-            edition: crate::Edition::E2024,
+            edition,
             token_editions: Vec::new(),
             starts,
             nodes,
@@ -184,20 +185,32 @@ impl SyntaxTree {
         }
     }
 
-    pub fn cfg_options(&self) -> Option<&Arc<CfgOptions>> { self.cfg.as_ref() }
+    pub fn cfg_options(&self) -> Option<&Arc<CfgOptions>> {
+        self.cfg.as_ref()
+    }
 
-    pub(crate) fn set_cfg_options(&mut self, cfg: Option<Arc<CfgOptions>>) { self.cfg = cfg; }
+    pub(crate) fn set_cfg_options(&mut self, cfg: Option<Arc<CfgOptions>>) {
+        self.cfg = cfg;
+    }
 
     pub(crate) fn set_remapped_tokens(&mut self, tokens: Vec<(u32, SyntaxKind)>) {
         self.remapped = tokens;
     }
 
-    pub(crate) fn set_edition(&mut self, edition: crate::Edition) { self.edition = edition; }
-
     pub(crate) fn set_token_editions(&mut self, editions: &[(u32, crate::Edition)]) {
-        self.token_editions = editions.iter().filter_map(|&(start, edition)| {
-            (edition != self.edition).then(|| self.starts.binary_search(&start).ok().map(|i| (i as u32, edition))).flatten()
-        }).collect();
+        self.token_editions = editions
+            .iter()
+            .filter_map(|&(start, edition)| {
+                (edition != self.edition)
+                    .then(|| {
+                        self.starts
+                            .binary_search(&start)
+                            .ok()
+                            .map(|i| (i as u32, edition))
+                    })
+                    .flatten()
+            })
+            .collect();
     }
 
     /// Makes this tree a macro expansion's: `origins` are the expander's
@@ -626,12 +639,16 @@ pub struct SyntaxToken<'t> {
 
 impl<'t> SyntaxToken<'t> {
     pub fn edition(self) -> crate::Edition {
-        self.tree.token_editions.binary_search_by_key(&self.index, |&(i, _)| i)
+        self.tree
+            .token_editions
+            .binary_search_by_key(&self.index, |&(i, _)| i)
             .map_or(self.tree.edition, |i| self.tree.token_editions[i].1)
     }
     /// Before contextual-keyword classification, as macro token trees require.
     pub fn lexical_kind(self) -> SyntaxKind {
-        self.tree.remapped.binary_search_by_key(&self.index, |&(index, _)| index)
+        self.tree
+            .remapped
+            .binary_search_by_key(&self.index, |&(index, _)| index)
             .map_or_else(|_| self.kind(), |i| self.tree.remapped[i].1)
     }
     pub fn index(self) -> usize {

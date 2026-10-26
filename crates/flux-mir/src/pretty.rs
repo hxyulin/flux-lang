@@ -32,13 +32,24 @@ pub(crate) fn file(mir: &FileMir, hir: &Hir) -> String {
             out.push('\n');
         }
     }
-    let mut closures: Vec<_> = mir.closures.iter().filter_map(|((c, kind), body)| {
-        let flux_ty::ClosureOwner::Const(owner) = c.owner else { return None; };
-        (owner.index() >= hir.items.core.consts as usize).then_some((owner, c.expr, kind, body))
-    }).collect();
+    let mut closures: Vec<_> = mir
+        .closures
+        .iter()
+        .filter_map(|((c, kind), body)| {
+            let flux_ty::ClosureOwner::Const(owner) = c.owner else {
+                return None;
+            };
+            (owner.index() >= hir.items.core.consts as usize).then_some((owner, c.expr, kind, body))
+        })
+        .collect();
     closures.sort_by_key(|(owner, expr, kind, _)| (owner.into_raw(), expr.into_raw(), **kind));
     for (owner, expr, kind, body) in closures {
-        let name = format!("{}::{{closure#{}}} as {}", hir.items.const_name(owner), expr.index(), kind.name());
+        let name = format!(
+            "{}::{{closure#{}}} as {}",
+            hir.items.const_name(owner),
+            expr.index(),
+            kind.name()
+        );
         body_text(&mut out, hir, &mir.discriminants, &name, body);
         out.push('\n');
     }

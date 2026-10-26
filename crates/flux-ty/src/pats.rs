@@ -441,18 +441,28 @@ impl Cx<'_> {
     /// Float patterns use numeric equality, not bit equality. NaNs never
     /// match a literal, while both zero encodings match either zero pattern.
     fn float_literal(&self, expr: ExprId, float: FloatTy) -> Option<u64> {
-        let bits=match &self.body.exprs[expr] {
+        let bits = match &self.body.exprs[expr] {
             Expr::Literal(Literal::Float { text, .. }) => match float {
                 FloatTy::F32 => u64::from(text.as_str().parse::<f32>().ok()?.to_bits()),
                 FloatTy::F64 => text.as_str().parse::<f64>().ok()?.to_bits(),
             },
-            Expr::Unary { op: UnaryOp::Neg, operand } => self.float_literal(*operand,float)? ^ (1u64 << (float.bits()-1)),
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            } => self.float_literal(*operand, float)? ^ (1u64 << (float.bits() - 1)),
             _ => return None,
         };
-        let sign=1u64 << (float.bits()-1);
-        let magnitude=bits & !sign;
-        let infinity=match float { FloatTy::F32 => 0x7f800000, FloatTy::F64 => 0x7ff0000000000000 };
-        if magnitude>infinity {None} else {Some(if magnitude==0 {0} else {bits})}
+        let sign = 1u64 << (float.bits() - 1);
+        let magnitude = bits & !sign;
+        let infinity = match float {
+            FloatTy::F32 => 0x7f800000,
+            FloatTy::F64 => 0x7ff0000000000000,
+        };
+        if magnitude > infinity {
+            None
+        } else {
+            Some(if magnitude == 0 { 0 } else { bits })
+        }
     }
 
     fn lower(&self, pat: PatId) -> DPat {
@@ -513,8 +523,8 @@ impl Cx<'_> {
                     Some(value) => DPat::Ctor(Ctor::Bool(value != 0), Vec::new()),
                     None => DPat::Wild,
                 },
-                (_, TyKind::Float(float)) => match self.float_literal(*expr,float) {
-                    Some(bits) => DPat::Ctor(Ctor::Float(bits),Vec::new()),
+                (_, TyKind::Float(float)) => match self.float_literal(*expr, float) {
+                    Some(bits) => DPat::Ctor(Ctor::Float(bits), Vec::new()),
                     None => DPat::Or(Vec::new()),
                 },
                 (_, TyKind::Int(_) | TyKind::Char) => match self.literal(*expr) {
@@ -603,7 +613,14 @@ impl Cx<'_> {
             crate::PatternConst::Aggregate(values) => {
                 let fields = self.ctor_fields(ty, Ctor::Single);
                 assert_eq!(values.len(), fields.len());
-                DPat::Ctor(Ctor::Single, values.iter().zip(fields).map(|(v,t)| self.constant(v,t)).collect())
+                DPat::Ctor(
+                    Ctor::Single,
+                    values
+                        .iter()
+                        .zip(fields)
+                        .map(|(v, t)| self.constant(v, t))
+                        .collect(),
+                )
             }
         }
     }
@@ -677,7 +694,9 @@ impl Cx<'_> {
                 .sigs
                 .variant_fields(ty, v)
                 .map_or(Vec::new(), |f| f.to_vec()),
-            (Ctor::Bool(_) | Ctor::Float(_) | Ctor::FloatRemainder | Ctor::Range(..), _) => Vec::new(),
+            (Ctor::Bool(_) | Ctor::Float(_) | Ctor::FloatRemainder | Ctor::Range(..), _) => {
+                Vec::new()
+            }
         }
     }
 
@@ -698,12 +717,15 @@ impl Cx<'_> {
                 .map(Ctor::Bool)
                 .partition(|&c| used(c)),
             TyKind::Float(_) => {
-                let mut present=Vec::new();
+                let mut present = Vec::new();
                 for head in heads {
                     if let DPat::Ctor(ctor @ Ctor::Float(_), _) = head
-                        && !present.contains(ctor) {present.push(*ctor);}
+                        && !present.contains(ctor)
+                    {
+                        present.push(*ctor);
+                    }
                 }
-                (present,vec![Ctor::FloatRemainder])
+                (present, vec![Ctor::FloatRemainder])
             }
             TyKind::Int(_) | TyKind::Char => {
                 self.split_ints(IntDomain::of(ty).expect("a scalar"), heads)

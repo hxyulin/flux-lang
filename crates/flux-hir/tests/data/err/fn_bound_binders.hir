@@ -2,25 +2,25 @@ struct S<'a>(&'a i32);
 
 impl<'a> S<'a>;
 
-fn shadow<'a, F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+fn shadow<'a, F>(f@0: F) -> () where F: Fn<(&'a i32,), Output = &'a i32> {}
 
-fn where_shadow<'a, F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+fn where_shadow<'a, F>(f@0: F) -> () where F: Fn<(&'a i32,), Output = &'a i32> {}
 
-fn reserved<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+fn reserved<F>(f@0: F) -> () where F: Fn<(&'static i32,), Output = &'static i32> {}
 
 fn anonymous<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
 
-fn bounded<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+fn bounded<F>(f@0: F) -> () where F: Fn<(&'a i32,), Output = &'a i32> {}
 
-fn S::shadow<F>(self@0: &Self, f@1: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+fn S::shadow<F>(self@0: &Self, f@1: F) -> () where F: Fn<(&'a i32,), Output = &'a i32> {}
 
-fn output_only<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+fn output_only<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &'a i32> {}
 
-fn keyword_self<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+fn keyword_self<F>(f@0: F) -> () where F: Fn<(&'self i32,), Output = &'self i32> {}
 
-fn keyword_async<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+fn keyword_async<F>(f@0: F) -> () where F: Fn<(&'async i32,), Output = &'async i32> {}
 
-fn keyword_where<F>(f@0: F) -> () where F: Fn<(&i32,), Output = &i32> {}
+fn keyword_where<F>(f@0: F) -> () where F: Fn<(&'type i32,), Output = &'type i32> {}
 
 fn main() -> () {}
 
@@ -30,7 +30,6 @@ error 232..239: invalid lifetime parameter name: `'static`
 error 304..306: `'_` cannot be used here
 error 357..364: bounds cannot be used in this context
 error 461..463: lifetime name `'a` shadows a lifetime name that is already in scope
-error 546..553: binding for associated type `Output` references lifetime `'a`, which does not appear in the trait input types
 error 588..593: lifetimes cannot use keyword names
 error 658..664: lifetimes cannot use keyword names
 error 747..752: lifetimes cannot use keyword names

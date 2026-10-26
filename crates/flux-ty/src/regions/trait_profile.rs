@@ -122,7 +122,7 @@ pub(crate) fn required_method_profile(
             || f.is_extern
             || f.is_const
             || f.is_variadic
-            || f.intrinsic
+            || f.intrinsic.is_some()
             || f.derived.is_some()
             || f.ctor.is_some()
         {

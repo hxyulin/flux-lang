@@ -168,10 +168,16 @@ fn compiler_modules_match_rustc() {
     // Compile unchanged compiler implementations, rather than copies of
     // their algorithms. Bundle modules until flux supports `#[path]`.
     let internals = dir.join("compiler_internals.rs");
+    let syntax = include_str!("../../flux-syntax/src/lib.rs");
+    let edition_start = syntax
+        .find("/// Rust edition of one source crate.")
+        .unwrap();
+    let edition_end = syntax.find("/// A problem found while lexing").unwrap();
+    let edition = &syntax[edition_start..edition_end];
     std::fs::write(
         &internals,
         format!(
-            "mod syntax_kind {{\n{}\n{}\n}}\npub use syntax_kind::SyntaxKind;\nmod rng {{\n{}\n}}\nmod bitset {{\n{}\n}}\nmod interval {{\n{}\n}}\nmod event {{\n{}\n{}\n}}\nmod generator_types {{\n{}\n{}\n}}\nmod tree {{\n{}\n{}\n}}\n{}",
+            "{edition}\nmod syntax_kind {{\n{}\n{}\n}}\npub use syntax_kind::SyntaxKind;\nmod rng {{\n{}\n}}\nmod bitset {{\n{}\n}}\nmod interval {{\n{}\n}}\nmod event {{\n{}\n{}\n}}\nmod generator_types {{\n{}\n{}\n}}\nmod tree {{\n{}\n{}\n}}\n{}",
             include_str!("../../flux-syntax/src/syntax_kind.rs"),
             include_str!("../../../tests/run/support/compiler_syntax_kind.rs"),
             include_str!("../../flux-difftest/src/rng.rs"),
@@ -209,6 +215,26 @@ fn trait_required_lifetime_matches_rustc() {
 }
 
 fn compare_programs(root: &Path, dir: &Path, programs: &[PathBuf]) {
+    // Keep compiler processes bounded while avoiding a serial build of every fixture.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(4)
+        .min(programs.len().max(1));
+    let failures = std::thread::scope(|scope| {
+        let handles: Vec<_> = programs
+            .chunks(programs.len().div_ceil(workers).max(1))
+            .map(|chunk| scope.spawn(move || compare_chunk(root, dir, chunk)))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let _ = std::fs::remove_dir_all(dir);
+    assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
+}
+
+fn compare_chunk(root: &Path, dir: &Path, programs: &[PathBuf]) -> Vec<String> {
     let mut failures = Vec::new();
     for program in programs {
         let name = program.file_stem().unwrap().to_string_lossy().into_owned();
@@ -262,6 +288,5 @@ fn compare_programs(root: &Path, dir: &Path, programs: &[PathBuf]) {
             }
         }
     }
-    let _ = std::fs::remove_dir_all(dir);
-    assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
+    failures
 }

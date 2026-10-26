@@ -177,10 +177,10 @@ fn aggregate_union_rejections() {
             "#[derive(Copy, Clone)] struct S(u32); impl Drop for S { fn drop(&mut self) {} } union U { a: S } fn main() {}",
             "destructor",
         ),
-        ("union U { a: [u8] } fn main() {}", "unsized fields"),
+        ("union U { a: [u8] } fn main() {}", "only the last field"),
         (
             "struct S([u8]); union U { a: S } fn main() {}",
-            "unsized fields",
+            "only the last field",
         ),
         (
             "#[derive(Copy, Clone)] struct S(&'static u32); union U { a: S } fn main() {}",
@@ -315,7 +315,7 @@ fn concrete_copy_union_fields_match_rustc_boundary() {
         (
             "union U { call: fn() -> &'static u8 } fn main() {}",
             true,
-            Some("lifetimes in function pointer types are not supported yet"),
+            None,
         ),
         (
             "union U { a: bool, b: u8 } fn main() { let mut u = U { a: true }; unsafe { let a = &u.a; u.b = 1; let _ = *a; } }",

@@ -87,7 +87,9 @@ impl Input {
     }
 
     pub(crate) fn is_dyn_keyword(&self, i: usize) -> bool {
-        self.dyn_keywords.get(i / 64).is_some_and(|word| word & (1 << (i % 64)) != 0)
+        self.dyn_keywords
+            .get(i / 64)
+            .is_some_and(|word| word & (1 << (i % 64)) != 0)
     }
 
     /// Whether token `i` is immediately followed by token `i + 1`.

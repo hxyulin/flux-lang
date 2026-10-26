@@ -214,7 +214,10 @@ impl MacroDef {
                 tokens_of(tt.syntax(), &mut toks);
             }
             let inner = strip_delimiters(&toks);
-            let edition = call.tokens().find(|t| !t.kind().is_trivia()).map_or(edition, |t| t.edition());
+            let edition = call
+                .tokens()
+                .find(|t| !t.kind().is_trivia())
+                .map_or(edition, |t| t.edition());
             let (rules, errors) = mbe::parse_rules(inner.to_vec(), name_range, edition);
             for (range, message) in errors {
                 diagnostics.push(Diagnostic::new(range, message));
@@ -306,7 +309,12 @@ pub(crate) fn resolve<'a, L>(
             let mut lookup_module = module;
             let mut followed_imports = Vec::new();
             for _ in 0..RECURSION_LIMIT {
-                if !matches!(lowered.anchor, crate::PathAnchor::Plain | crate::PathAnchor::Global) { break; }
+                if !matches!(
+                    lowered.anchor,
+                    crate::PathAnchor::Plain | crate::PathAnchor::Global
+                ) {
+                    break;
+                }
                 let first = *lowered.segments.first()?;
                 let mut current = lookup_module;
                 let mut import = None;
@@ -314,7 +322,9 @@ pub(crate) fn resolve<'a, L>(
                     loop {
                         import = items.uses.iter().enumerate().rev().find(|(index, u)| !followed_imports.contains(index) && u.module == current
                             && matches!(u.kind, crate::item_tree::UseKind::Named(alias) | crate::item_tree::UseKind::Module(alias) if alias == first));
-                        if import.is_some() { break; }
+                        if import.is_some() {
+                            break;
+                        }
                         let data = &items.modules[current];
                         match (data.block, data.parent) {
                             (Some(_), Some(parent)) => current = parent,
@@ -328,16 +338,35 @@ pub(crate) fn resolve<'a, L>(
                     // walking predecessor aliases without cycling on them.
                     followed_imports.push(index);
                     let mut path = import.path.clone();
-                    path.segments = path.segments.iter().chain(lowered.segments[1..].iter()).copied().collect();
-                    path.ranges = path.ranges.iter().chain(lowered.ranges.get(1..).unwrap_or_default()).copied().collect();
-                    path.args = path.args.iter().chain(lowered.args.get(1..).unwrap_or_default()).cloned().collect();
+                    path.segments = path
+                        .segments
+                        .iter()
+                        .chain(lowered.segments[1..].iter())
+                        .copied()
+                        .collect();
+                    path.ranges = path
+                        .ranges
+                        .iter()
+                        .chain(lowered.ranges.get(1..).unwrap_or_default())
+                        .copied()
+                        .collect();
+                    path.args = path
+                        .args
+                        .iter()
+                        .chain(lowered.args.get(1..).unwrap_or_default())
+                        .cloned()
+                        .collect();
                     lowered = path;
                     lookup_module = import.module;
                     continue;
                 }
                 // A local module shadows the implicit extern prelude. Its
                 // current-crate scope is audited after item collection.
-                if lowered.anchor == crate::PathAnchor::Plain && items.modules.iter().any(|(_, m)| m.parent == Some(items.named_module(lookup_module)) && m.name == first) {
+                if lowered.anchor == crate::PathAnchor::Plain
+                    && items.modules.iter().any(|(_, m)| {
+                        m.parent == Some(items.named_module(lookup_module)) && m.name == first
+                    })
+                {
                     return None;
                 }
                 let target = items.modules[items.loaded_extern_crate(first, lookup_module)?].krate;
@@ -496,7 +525,10 @@ fn expand_at_depth(
 ) -> Option<Expansion> {
     let call_range = call_range(call);
     if depth >= RECURSION_LIMIT {
-        diagnostics.push(Diagnostic::new(call_range, "recursion limit reached during eager macro expansion"));
+        diagnostics.push(Diagnostic::new(
+            call_range,
+            "recursion limit reached during eager macro expansion",
+        ));
         return None;
     }
     let mut toks = Vec::new();
@@ -607,10 +639,20 @@ fn expand_at_depth(
         }
         &MacroKind::Builtin(builtin) => {
             let eager;
-            let inner = if matches!(builtin, Builtin::Concat | Builtin::Include | Builtin::IncludeStr | Builtin::IncludeBytes | Builtin::Env | Builtin::OptionEnv) {
+            let inner = if matches!(
+                builtin,
+                Builtin::Concat
+                    | Builtin::Include
+                    | Builtin::IncludeStr
+                    | Builtin::IncludeBytes
+                    | Builtin::Env
+                    | Builtin::OptionEnv
+            ) {
                 eager = eager_arguments(inner, site, diagnostics, depth + 1)?;
                 &eager[..]
-            } else { inner };
+            } else {
+                inner
+            };
             let ctxt = fresh_ctxt();
             ctxts.push((ctxt, 0));
             // Builtin paths retain the physical embedded core identity.
@@ -620,7 +662,8 @@ fn expand_at_depth(
                     return (1, 1, String::new());
                 };
                 let text = file.text();
-                let offset = (call_range.start().saturating_sub(file.range_base) as usize).min(text.len());
+                let offset =
+                    (call_range.start().saturating_sub(file.range_base) as usize).min(text.len());
                 let before = &text[..offset];
                 let line = before.matches('\n').count() as u32 + 1;
                 let line_start = before.rfind('\n').map_or(0, |i| i + 1);
@@ -653,8 +696,13 @@ fn expand_at_depth(
                 let source = source.ok_or_else(|| "include source file is unknown".to_owned())?;
                 crate::source::SourceDb::read_include_bytes(source, path)
             };
-            let edition = call.children().find_map(ast::Path::cast).and_then(|p| p.segment()).and_then(|s| s.name_ref())
-                .and_then(|name| name.syntax().tokens().next()).map_or(site.items.edition(site.module), |t| t.edition());
+            let edition = call
+                .children()
+                .find_map(ast::Path::cast)
+                .and_then(|p| p.segment())
+                .and_then(|s| s.name_ref())
+                .and_then(|name| name.syntax().tokens().next())
+                .map_or(site.items.edition(site.module), |t| t.edition());
             let cx = BuiltinCx {
                 name: def.name,
                 edition,
@@ -671,24 +719,49 @@ fn expand_at_depth(
             if builtin == Builtin::Include {
                 let result = (|| {
                     if !matches!(fragment, Fragment::Expr | Fragment::Stmts | Fragment::Items) {
-                        return Err((call_range, "include! requires an expression or item position".into()));
+                        return Err((
+                            call_range,
+                            "include! requires an expression or item position".into(),
+                        ));
                     }
                     let filename = builtin::filename(&cx)?;
-                    let source = source.ok_or_else(|| (call_range, "include source file is unknown".to_owned()))?;
-                    let path = crate::source::SourceDb::include_path(source, &filename).map_err(|e| (call_range, e))?;
+                    let source = source
+                        .ok_or_else(|| (call_range, "include source file is unknown".to_owned()))?;
+                    let path = crate::source::SourceDb::include_path(source, &filename)
+                        .map_err(|e| (call_range, e))?;
                     let text = include_str(&filename).map_err(|e| (call_range, e))?;
                     let edition = site.items.edition(site.module);
                     let parse = if fragment == Fragment::Stmts {
-                        let expression = flux_syntax::parse_included_source(text.clone().into_boxed_str(), Fragment::Expr, edition);
+                        let expression = flux_syntax::parse_included_source(
+                            text.clone().into_boxed_str(),
+                            Fragment::Expr,
+                            edition,
+                        );
                         if expression.errors().is_empty() {
-                            flux_syntax::parse_included_source(text.into_boxed_str(), fragment, edition)
-                        } else { expression }
-                    } else { flux_syntax::parse_included_source(text.into_boxed_str(), fragment, edition) };
-                    Ok(Expansion { parse: parse.with_cfg_options(site.items.crates[site.krate.0 as usize].cfg.clone()), included_path: Some(path), ctxts: Vec::new() })
+                            flux_syntax::parse_included_source(
+                                text.into_boxed_str(),
+                                fragment,
+                                edition,
+                            )
+                        } else {
+                            expression
+                        }
+                    } else {
+                        flux_syntax::parse_included_source(text.into_boxed_str(), fragment, edition)
+                    };
+                    Ok(Expansion {
+                        parse: parse
+                            .with_cfg_options(site.items.crates[site.krate.0 as usize].cfg.clone()),
+                        included_path: Some(path),
+                        ctxts: Vec::new(),
+                    })
                 })();
                 return match result {
                     Ok(expansion) => Some(expansion),
-                    Err((range, message)) => { diagnostics.push(Diagnostic::new(range, message)); None }
+                    Err((range, message)) => {
+                        diagnostics.push(Diagnostic::new(range, message));
+                        None
+                    }
                 };
             }
             match builtin::expand(builtin, &cx) {
@@ -707,8 +780,16 @@ fn expand_at_depth(
         .zip(&output)
         .map(|(&s, t)| (s, t.origin))
         .collect();
-    let kinds: Vec<_> = starts.iter().zip(&output).map(|(&start, token)| (start, token.kind)).collect();
-    let editions: Vec<_> = starts.iter().zip(&output).map(|(&start, token)| (start, token.edition)).collect();
+    let kinds: Vec<_> = starts
+        .iter()
+        .zip(&output)
+        .map(|(&start, token)| (start, token.kind))
+        .collect();
+    let editions: Vec<_> = starts
+        .iter()
+        .zip(&output)
+        .map(|(&start, token)| (start, token.edition))
+        .collect();
     let parse = flux_syntax::parse_expansion_with_token_kinds(
         text.into(),
         &origins,
@@ -716,7 +797,9 @@ fn expand_at_depth(
         call_range,
         fragment,
         site.items.edition(site.module),
-    ).with_token_editions(&editions).with_cfg_options(site.items.crates[site.krate.0 as usize].cfg.clone());
+    )
+    .with_token_editions(&editions)
+    .with_cfg_options(site.items.crates[site.krate.0 as usize].cfg.clone());
     for error in parse.errors() {
         let message = if error.message == EXPANSION_IGNORES {
             let tree = parse.tree();
@@ -741,38 +824,74 @@ fn expand_at_depth(
     if !parse.errors().is_empty() {
         return None;
     }
-    Some(Expansion { parse, ctxts, included_path: None })
+    Some(Expansion {
+        parse,
+        ctxts,
+        included_path: None,
+    })
 }
 
 /// Eager builtins expand nested macro arguments before interpreting literals.
 /// Parse each argument as an expression, preserving token origins for resolution.
-fn eager_arguments(toks: &[Tok], site: &CallSite<'_>, diagnostics: &mut Vec<Diagnostic>, depth: u32) -> Option<Vec<Tok>> {
+fn eager_arguments(
+    toks: &[Tok],
+    site: &CallSite<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+    depth: u32,
+) -> Option<Vec<Tok>> {
     let mut input = flux_syntax::parser::Input::default();
     for t in toks {
         input.push(t.kind, t.is_union_keyword());
-        if t.joint { input.set_last_joint(); }
+        if t.joint {
+            input.set_last_joint();
+        }
     }
     let mut out = Vec::new();
     let mut pos = 0;
     while pos < toks.len() {
-        let Some(n) = flux_syntax::parser::fragment_len(&input, pos, Fragment::Expr).filter(|n| *n > 0) else {
+        let Some(n) =
+            flux_syntax::parser::fragment_len(&input, pos, Fragment::Expr).filter(|n| *n > 0)
+        else {
             out.extend_from_slice(&toks[pos..]);
             break;
         };
-        let arg = &toks[pos..pos+n];
+        let arg = &toks[pos..pos + n];
         let mut starts = Vec::new();
         let text = tt::write_text(arg, &mut starts);
-        let origins: Vec<_> = starts.into_iter().zip(arg.iter().map(|t| t.origin)).collect();
-        let kinds: Vec<_> = origins.iter().zip(arg).map(|(&(start, _), token)| (start, token.kind)).collect();
-        let editions: Vec<_> = origins.iter().zip(arg).map(|(&(start, _), token)| (start, token.edition)).collect();
-        let parse = flux_syntax::parse_expansion_with_token_kinds(text.into(), &origins, &kinds, arg[0].range(), Fragment::Expr, site.items.edition(site.module)).with_token_editions(&editions).with_cfg_options(site.items.crates[site.krate.0 as usize].cfg.clone());
+        let origins: Vec<_> = starts
+            .into_iter()
+            .zip(arg.iter().map(|t| t.origin))
+            .collect();
+        let kinds: Vec<_> = origins
+            .iter()
+            .zip(arg)
+            .map(|(&(start, _), token)| (start, token.kind))
+            .collect();
+        let editions: Vec<_> = origins
+            .iter()
+            .zip(arg)
+            .map(|(&(start, _), token)| (start, token.edition))
+            .collect();
+        let parse = flux_syntax::parse_expansion_with_token_kinds(
+            text.into(),
+            &origins,
+            &kinds,
+            arg[0].range(),
+            Fragment::Expr,
+            site.items.edition(site.module),
+        )
+        .with_token_editions(&editions)
+        .with_cfg_options(site.items.crates[site.krate.0 as usize].cfg.clone());
         let node = parse.tree().root().children().next()?;
         if node.kind() == SyntaxKind::MACRO_EXPR {
             let path = node.children().find_map(ast::Path::cast)?;
             let def = match resolve::<()>(site.items, path, &[], site.scope, site.module) {
                 Ok(Resolved::Def(id)) => &site.items.macros[id],
                 Ok(Resolved::Local(_)) => unreachable!(),
-                Err(error) => { diagnostics.push(error); return None; }
+                Err(error) => {
+                    diagnostics.push(error);
+                    return None;
+                }
             };
             let expansion = expand_at_depth(def, node, site, Fragment::Expr, diagnostics, depth)?;
             let expanded = expansion.parse.tree().root().children().next()?;
@@ -781,16 +900,24 @@ fn eager_arguments(toks: &[Tok], site: &CallSite<'_>, diagnostics: &mut Vec<Diag
             // A declarative macro can itself produce a macro invocation.
             if expanded.kind() == SyntaxKind::MACRO_EXPR {
                 if depth >= RECURSION_LIMIT {
-                    diagnostics.push(Diagnostic::new(node.text_range(), "recursion limit reached during eager macro expansion"));
+                    diagnostics.push(Diagnostic::new(
+                        node.text_range(),
+                        "recursion limit reached during eager macro expansion",
+                    ));
                     return None;
                 }
                 tokens = eager_arguments(&tokens, site, diagnostics, depth + 1)?;
             }
             out.extend(tokens);
-        } else { out.extend_from_slice(arg); }
+        } else {
+            out.extend_from_slice(arg);
+        }
         pos += n;
         if pos < toks.len() {
-            if toks[pos].kind != T![,] { out.extend_from_slice(&toks[pos..]); break; }
+            if toks[pos].kind != T![,] {
+                out.extend_from_slice(&toks[pos..]);
+                break;
+            }
             out.push(toks[pos]);
             pos += 1;
         }

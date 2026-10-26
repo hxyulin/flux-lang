@@ -1,7 +1,7 @@
 //! Borrow checking: a borrow must not conflict with other uses of what it
 //! borrows while the reference may still be used.
 //!
-//! Each `&place` or `&mut place` is a *loan*, whose region [`regions`]
+//! Each `&place` or `&mut place` is a *loan*, whose region `regions`
 //! infers as rustc's non-lexical lifetimes do: the points where a
 //! reference made from it, or a value holding one, may still be used,
 //! and those its signature's lifetimes require (a reference returned,
@@ -305,7 +305,11 @@ fn statement_transfer(kind: &StatementKind, set: &mut dyn FnMut(Local, bool)) {
     }
 }
 
-fn terminator_transfer_with_drops(kind: &TerminatorKind, set: &mut dyn FnMut(Local, bool), include_drops: bool) {
+fn terminator_transfer_with_drops(
+    kind: &TerminatorKind,
+    set: &mut dyn FnMut(Local, bool),
+    include_drops: bool,
+) {
     if let TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. } = kind
         && dest.projection.is_empty()
     {
@@ -1271,7 +1275,7 @@ mod tests {
             ]
         );
         events.clear();
-        terminator_transfer(
+        terminator_transfer_with_drops(
             &TerminatorKind::CallIndirect {
                 callee: Operand::Copy(place(0)),
                 args: vec![Operand::Copy(place(1)), Operand::Move(place(0))],
@@ -1279,6 +1283,7 @@ mod tests {
                 target: None,
             },
             &mut |l, live| events.push((l, live)),
+            true,
         );
         assert_eq!(
             events,

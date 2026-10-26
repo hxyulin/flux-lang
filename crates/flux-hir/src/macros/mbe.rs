@@ -16,7 +16,9 @@ use flux_syntax::parser::{self, Fragment};
 use flux_syntax::{SyntaxKind, T, TextRange};
 use rustc_hash::FxHashMap;
 
-use super::tt::{Glued, Tok, describe, glue, glue_at, is_close, is_open, match_delimiters, same_token};
+use super::tt::{
+    Glued, Tok, describe, glue, glue_at, is_close, is_open, match_delimiters, same_token,
+};
 
 /// What a metavariable matches: `$e:expr`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +47,14 @@ impl FragKind {
             "expr" | "expr_2021" => FragKind::Expr2021,
             "ident" => FragKind::Ident,
             "ty" => FragKind::Ty,
-            "pat" if matches!(edition, flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018) => FragKind::PatParam,
+            "pat"
+                if matches!(
+                    edition,
+                    flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
+                ) =>
+            {
+                FragKind::PatParam
+            }
             "pat" => FragKind::Pat,
             "pat_param" => FragKind::PatParam,
             "tt" => FragKind::Tt,
@@ -372,7 +381,8 @@ impl DefReader<'_> {
                             let end = self.range(spec).end().max(start);
                             let range = TextRange::new(start, end);
                             let spec_text = self.tok(spec).text;
-                            let Some(kind) = FragKind::from_name(spec_text.as_str(), self.edition) else {
+                            let Some(kind) = FragKind::from_name(spec_text.as_str(), self.edition)
+                            else {
                                 self.error(
                                     self.range(spec),
                                     format!("invalid fragment specifier `{spec_text}`"),
@@ -575,7 +585,9 @@ impl DefReader<'_> {
             )
         };
         let token_ok = |k: SyntaxKind, text: &str| match kind {
-            FragKind::Expr | FragKind::Expr2021 | FragKind::Stmt => is_close(k) || matches!(k, T![=>] | T![,] | T![;]),
+            FragKind::Expr | FragKind::Expr2021 | FragKind::Stmt => {
+                is_close(k) || matches!(k, T![=>] | T![,] | T![;])
+            }
             FragKind::Pat => is_close(k) || matches!(k, T![=>] | T![,] | T![=] | T![if] | T![in]),
             FragKind::PatParam => {
                 is_close(k) || matches!(k, T![=>] | T![,] | T![=] | T![|] | T![if] | T![in])
@@ -619,7 +631,11 @@ impl DefReader<'_> {
             }
             Follow::Var(other, other_name, range) => {
                 let ok = match kind {
-                    FragKind::Expr | FragKind::Expr2021 | FragKind::Stmt | FragKind::Pat | FragKind::PatParam => false,
+                    FragKind::Expr
+                    | FragKind::Expr2021
+                    | FragKind::Stmt
+                    | FragKind::Pat
+                    | FragKind::PatParam => false,
                     FragKind::Path | FragKind::Ty => other == FragKind::Block,
                     FragKind::Vis => {
                         matches!(other, FragKind::Ident | FragKind::Ty | FragKind::Path)
@@ -687,7 +703,11 @@ fn flatten(ms: &[M], locs: &mut Vec<Loc>, next_metavar: &mut usize, seq_depth: u
 /// Reads the rules of `macro_rules! name { body }` from the body's
 /// tokens, its braces left out; errors are at `range` when they have no
 /// token of their own.
-pub(crate) fn parse_rules(toks: Vec<Tok>, range: TextRange, edition: flux_syntax::Edition) -> (Rules, Vec<(TextRange, String)>) {
+pub(crate) fn parse_rules(
+    toks: Vec<Tok>,
+    range: TextRange,
+    edition: flux_syntax::Edition,
+) -> (Rules, Vec<(TextRange, String)>) {
     let glued = glue(&toks);
     let closes = match_delimiters(&glued);
     let all = trees(&glued, &closes, 0, glued.len());
@@ -805,7 +825,11 @@ impl<'a> CallInput<'a> {
         let closes = match_delimiters(&glued);
         let mut parser_input = parser::Input::default();
         for t in toks {
-            parser_input.push_contextual(t.kind, t.is_union_keyword(), t.kind == SyntaxKind::IDENT && t.text.as_str() == "dyn");
+            parser_input.push_contextual(
+                t.kind,
+                t.is_union_keyword(),
+                t.kind == SyntaxKind::IDENT && t.text.as_str() == "dyn",
+            );
             if t.joint {
                 parser_input.set_last_joint();
             }
@@ -1372,7 +1396,8 @@ impl Transcriber<'_, '_> {
                         let raw = self.input.raw(start, end);
                         // An expression stays one when put among other
                         // tokens: `$e * 2` multiplies all of `$e`.
-                        let wrap = matches!(kind, FragKind::Expr | FragKind::Expr2021) && end - start > 1;
+                        let wrap =
+                            matches!(kind, FragKind::Expr | FragKind::Expr2021) && end - start > 1;
                         if wrap {
                             let first = raw[0].origin;
                             out.push(Tok {

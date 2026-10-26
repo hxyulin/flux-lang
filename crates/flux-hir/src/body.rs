@@ -259,7 +259,10 @@ pub enum LoopSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal {
     /// Decimal spelling retained until its target floating-point precision is known.
-    Float { text: Symbol, suffix: Option<Symbol> },
+    Float {
+        text: Symbol,
+        suffix: Option<Symbol>,
+    },
     /// An integer, with its suffix (`u8` in `1u8`) if any.
     Int {
         value: u128,
@@ -463,7 +466,7 @@ pub struct Binding {
     /// `ref x` (`Some(false)`) or `ref mut x` (`Some(true)`): binds a
     /// reference to the matched place rather than its value. Matching a
     /// reference with a pattern that is not one may make a plain binding
-    /// one too; type checking says which ([`flux_ty`]'s binding modes).
+    /// one too; type checking says which (`flux_ty`'s binding modes).
     pub by_ref: Option<bool>,
 }
 

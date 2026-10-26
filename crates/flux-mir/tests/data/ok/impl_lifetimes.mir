@@ -589,7 +589,7 @@ fn main() -> () {
     }
 }
 
-fn <Token<'a> as ::core::clone::Clone>::clone(_1: &Token) -> Token {
+fn <Token<'a> as $crate0::clone::Clone>::clone(_1: &Token) -> Token {
     let mut _0: Token;
     let _2: ();
     let _3: isize;
@@ -643,7 +643,7 @@ fn <Token<'a> as ::core::clone::Clone>::clone(_1: &Token) -> Token {
     }
 }
 
-fn <Token<'a> as ::core::cmp::PartialEq>::eq(_1: &Token, _2: &Token) -> bool {
+fn <Token<'a> as $crate0::cmp::PartialEq>::eq(_1: &Token, _2: &Token) -> bool {
     let mut _0: bool;
     let _3: isize;
     let _4: isize;
@@ -752,7 +752,7 @@ fn <Token<'a> as ::core::cmp::PartialEq>::eq(_1: &Token, _2: &Token) -> bool {
     }
 }
 
-fn <Token<'a> as ::core::cmp::Eq>::assert_receiver_is_total_eq(_1: &Token) -> () {
+fn <Token<'a> as $crate0::cmp::Eq>::assert_receiver_is_total_eq(_1: &Token) -> () {
     let mut _0: ();
     let _2: isize;
     let _3: &&[u8]; // __self_0
@@ -804,7 +804,7 @@ fn <Token<'a> as ::core::cmp::Eq>::assert_receiver_is_total_eq(_1: &Token) -> ()
     }
 }
 
-fn <Token<'a> as ::core::cmp::PartialOrd>::partial_cmp(_1: &Token, _2: &Token) -> Option<Ordering> {
+fn <Token<'a> as $crate0::cmp::PartialOrd>::partial_cmp(_1: &Token, _2: &Token) -> Option<Ordering> {
     let mut _0: Option<Ordering>;
     let _3: isize; // __self_discr
     let _4: isize;
@@ -966,7 +966,7 @@ fn <Token<'a> as ::core::cmp::PartialOrd>::partial_cmp(_1: &Token, _2: &Token) -
     }
 }
 
-fn <Token<'a> as ::core::cmp::Ord>::cmp(_1: &Token, _2: &Token) -> Ordering {
+fn <Token<'a> as $crate0::cmp::Ord>::cmp(_1: &Token, _2: &Token) -> Ordering {
     let mut _0: Ordering;
     let _3: isize; // __self_discr
     let _4: isize;
@@ -1128,7 +1128,7 @@ fn <Token<'a> as ::core::cmp::Ord>::cmp(_1: &Token, _2: &Token) -> Ordering {
     }
 }
 
-fn <Token<'a> as ::core::fmt::Debug>::fmt(_1: &Token, _2: &mut Formatter) -> Result<(), Error> {
+fn <Token<'a> as $crate0::fmt::Debug>::fmt(_1: &Token, _2: &mut Formatter) -> Result<(), Error> {
     let mut _0: Result<(), Error>;
     let _3: isize;
     let _4: &mut Formatter;
@@ -1203,7 +1203,7 @@ fn <Token<'a> as ::core::fmt::Debug>::fmt(_1: &Token, _2: &mut Formatter) -> Res
     }
 }
 
-fn <Token<'a> as ::core::default::Default>::default() -> Token {
+fn <Token<'a> as $crate0::default::Default>::default() -> Token {
     let mut _0: Token;
 
     bb0: {

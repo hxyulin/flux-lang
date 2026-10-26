@@ -112,7 +112,7 @@ fn main() -> () {
     }
 }
 
-fn <Pair as ::core::cmp::PartialEq>::eq(_1: &Pair, _2: &Pair) -> bool {
+fn <Pair as $crate0::cmp::PartialEq>::eq(_1: &Pair, _2: &Pair) -> bool {
     let mut _0: bool;
     let _3: bool;
     let _4: i32;
@@ -144,7 +144,7 @@ fn <Pair as ::core::cmp::PartialEq>::eq(_1: &Pair, _2: &Pair) -> bool {
     }
 }
 
-fn <Pair as ::core::cmp::PartialOrd>::partial_cmp(_1: &Pair, _2: &Pair) -> Option<Ordering> {
+fn <Pair as $crate0::cmp::PartialOrd>::partial_cmp(_1: &Pair, _2: &Pair) -> Option<Ordering> {
     let mut _0: Option<Ordering>;
     let _3: Option<Ordering>;
     let _4: &i32;
@@ -206,7 +206,7 @@ fn <Pair as ::core::cmp::PartialOrd>::partial_cmp(_1: &Pair, _2: &Pair) -> Optio
     }
 }
 
-fn <Shape as ::core::cmp::PartialEq>::eq(_1: &Shape, _2: &Shape) -> bool {
+fn <Shape as $crate0::cmp::PartialEq>::eq(_1: &Shape, _2: &Shape) -> bool {
     let mut _0: bool;
     let _3: isize;
     let _4: isize;
@@ -312,7 +312,7 @@ fn <Shape as ::core::cmp::PartialEq>::eq(_1: &Shape, _2: &Shape) -> bool {
     }
 }
 
-fn <Shape as ::core::cmp::PartialOrd>::partial_cmp(_1: &Shape, _2: &Shape) -> Option<Ordering> {
+fn <Shape as $crate0::cmp::PartialOrd>::partial_cmp(_1: &Shape, _2: &Shape) -> Option<Ordering> {
     let mut _0: Option<Ordering>;
     let _3: isize; // __self_discr
     let _4: isize;

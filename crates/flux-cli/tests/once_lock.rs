@@ -1,33 +1,12 @@
 //! Compile-only ownership/marker/lifetime contracts. Invalid Rust is never run.
+mod support;
+
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 fn bounded(dir: &Path, name: &str, command: &mut Command) -> Output {
-    let out = dir.join(format!("{name}.stdout"));
-    let err = dir.join(format!("{name}.stderr"));
-    let mut child = command
-        .stdout(Stdio::from(std::fs::File::create(&out).unwrap()))
-        .stderr(Stdio::from(std::fs::File::create(&err).unwrap()))
-        .spawn()
-        .unwrap();
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if start.elapsed() > Duration::from_secs(60) {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("{name} timed out");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    Output {
-        status,
-        stdout: std::fs::read(out).unwrap(),
-        stderr: std::fs::read(err).unwrap(),
-    }
+    support::process::run(command, dir, name, Duration::from_secs(60)).completed()
 }
 
 #[test]

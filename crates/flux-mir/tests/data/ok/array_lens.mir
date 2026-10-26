@@ -27,8 +27,14 @@ fn main() -> () {
     let _5: usize; // n
     let _6: usize;
     let _7: usize;
-    let _8: usize;
-    let _9: usize;
+    let _8: &[bool; 7];
+    let _9: &[bool];
+    let _10: usize;
+    let _11: &[u16; 6];
+    let _12: &[u16];
+    let _13: usize;
+    let _14: &[u8; 4];
+    let _15: &[u8];
 
     bb0: {
         _2 = [const false; 7];
@@ -38,11 +44,26 @@ fn main() -> () {
     }
 
     bb1: {
-        _7 = Len(&_1.0);
-        _8 = Len(&_3);
-        _6 = Add(copy _7, copy _8);
-        _9 = Len(&_4);
-        _5 = Add(copy _6, copy _9);
+        _8 = &_1.0;
+        _9 = copy _8 as &[bool] (unsize);
+        _7 = len::<bool>(copy _9) -> bb2;
+    }
+
+    bb2: {
+        _11 = &_3;
+        _12 = copy _11 as &[u16] (unsize);
+        _10 = len::<u16>(copy _12) -> bb3;
+    }
+
+    bb3: {
+        _6 = Add(copy _7, copy _10);
+        _14 = &_4;
+        _15 = copy _14 as &[u8] (unsize);
+        _13 = len::<u8>(copy _15) -> bb4;
+    }
+
+    bb4: {
+        _5 = Add(copy _6, copy _13);
         _0 = const ();
         StorageDead(_5);
         StorageDead(_4);

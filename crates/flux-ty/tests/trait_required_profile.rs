@@ -109,10 +109,6 @@ fn excluded_declaration_shapes_have_reasons() {
             "trait T<'a> {async fn f();}",
             Reason::DeclarationDiagnostics,
         ),
-        (
-            "trait T<'a> {extern \"C\" fn f();}",
-            Reason::DeclarationDiagnostics,
-        ),
         ("trait T<'a> {fn f(x:fn(&i32));}", Reason::SignatureType),
         ("trait T<'a> {fn f(x:&dyn Copy);}", Reason::SignatureType),
         ("trait T<'a> {fn f(x:_);}", Reason::SignatureType),
@@ -123,7 +119,7 @@ fn excluded_declaration_shapes_have_reasons() {
     ] {
         let (hir, sigs, id) = resolve(source);
         assert_eq!(
-            profile(&hir, &sigs, id).unwrap_err().reason,
+            profile(&hir, &sigs, id).expect_err(source).reason,
             reason,
             "{source}"
         );
@@ -320,7 +316,7 @@ fn method_qualifiers_and_missing_adt_metadata_fail_closed() {
             0 => f.is_const = true,
             1 => f.is_extern = true,
             2 => f.is_variadic = true,
-            3 => f.intrinsic = true,
+            3 => f.intrinsic = Some(flux_hir::Intrinsic::SizeOf),
             _ => f.has_body = true,
         }
         assert_eq!(
@@ -380,4 +376,10 @@ fn unsupported_declarations_keep_the_production_gate() {
             );
         }
     }
+}
+
+#[test]
+fn scalar_c_method_signatures_are_in_profile() {
+    let (hir, sigs, id) = resolve("trait T<'a> {extern \"C\" fn f();}");
+    assert!(profile(&hir, &sigs, id).is_ok());
 }

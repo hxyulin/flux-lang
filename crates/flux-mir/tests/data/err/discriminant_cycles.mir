@@ -68,7 +68,7 @@ fn promoted(_1: &[Promoted]) -> isize {
     }
 }
 
-fn <Valued as ::core::clone::Clone>::clone(_1: &Valued) -> Valued {
+fn <Valued as $crate0::clone::Clone>::clone(_1: &Valued) -> Valued {
     let mut _0: Valued;
     let _2: ();
     let _3: isize;

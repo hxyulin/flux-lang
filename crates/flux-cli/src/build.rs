@@ -198,12 +198,14 @@ fn compile_inner(request: CompileRequest<'_>, timings: &mut Timings) -> Result<b
                         timings.phases.push((name, duration));
                     }
                 }
-                result?
+                result.map_err(|error| error.to_string())?
             } else {
-                flux_codegen::compile_object(&mut module, target, tier)?
+                flux_codegen::compile_object(&mut module, target, tier)
+                    .map_err(|error| error.to_string())?
             };
             let warnings = timings.time("link", || {
                 flux_codegen::link_executable(&object, target, output)
+                    .map_err(|error| error.to_string())
             })?;
             for warning in warnings {
                 eprintln!("warning: {warning}");

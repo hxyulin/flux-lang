@@ -340,7 +340,7 @@ fn main() -> () {
     }
 }
 
-fn <Owned as ::core::clone::Clone>::clone(_1: &Owned) -> Owned {
+fn <Owned as $crate0::clone::Clone>::clone(_1: &Owned) -> Owned {
     let mut _0: Owned;
     let _2: i32;
     let _3: &i32;
@@ -356,7 +356,7 @@ fn <Owned as ::core::clone::Clone>::clone(_1: &Owned) -> Owned {
     }
 }
 
-fn <Pair<T> as ::core::clone::Clone>::clone(_1: &Pair<T>) -> Pair<T> {
+fn <Pair<T> as $crate0::clone::Clone>::clone(_1: &Pair<T>) -> Pair<T> {
     let mut _0: Pair<T>;
     let _2: T;
     let _3: &T;

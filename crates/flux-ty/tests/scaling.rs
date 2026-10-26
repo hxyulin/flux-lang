@@ -282,14 +282,27 @@ fn recursive_storage_paths_preserve_nested_projections() {
 fn recursive_nominal_outlives_paths() {
     use flux_ty::Ty;
     let make = |n| {
-        let text = repeat(n, |i| format!("struct N{i}(*const N{}, *const N{});", (i + 1) % n, (i + 2) % n));
+        let text = repeat(n, |i| {
+            format!(
+                "struct N{i}(*const N{}, *const N{});",
+                (i + 1) % n,
+                (i + 2) % n
+            )
+        });
         let hir = lowered(format!("{text} fn main() {{}}"));
         let (sigs, errors) = flux_ty::signatures(&hir.items);
         assert!(errors.is_empty(), "{errors:?}");
-        let (id, definition) = hir.items.structs.iter().find(|(_, s)| s.name.as_str() == "N0").unwrap();
+        let (id, definition) = hir
+            .items
+            .structs
+            .iter()
+            .find(|(_, s)| s.name.as_str() == "N0")
+            .unwrap();
         (sigs, Ty::adt(id, definition.name, &[]))
     };
     assert_scales("recursive nominal outlives", 3, make, |(sigs, ty)| {
-        for _ in 0..32 { assert!(flux_ty::regions::outlives_type_components(sigs, *ty).is_empty()); }
+        for _ in 0..32 {
+            assert!(flux_ty::regions::outlives_type_components(sigs, *ty).is_empty());
+        }
     });
 }

@@ -46,10 +46,10 @@ mod interval;
 pub mod layout;
 mod lens;
 pub mod lint;
-mod transmute;
 pub mod mono;
 mod pretty;
 mod projection;
+mod transmute;
 pub use projection::Projection;
 pub mod validate;
 pub mod vtable;
@@ -611,7 +611,10 @@ pub enum Operand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Constant {
-    Float { bits: u64, ty: flux_ty::FloatTy },
+    Float {
+        bits: u64,
+        ty: flux_ty::FloatTy,
+    },
     /// An integer as its two's complement bits, truncated to `ty`'s width.
     Int {
         bits: u128,
@@ -1040,7 +1043,10 @@ impl Body {
             if let Operand::Const(Constant::Item { id, args, .. }) = op {
                 found.push(flux_ty::ConstInstance { konst: *id, args });
             } else if let Operand::Const(Constant::Static { id, .. }) = op {
-                found.push(flux_ty::ConstInstance { konst: *id, args: &[] });
+                found.push(flux_ty::ConstInstance {
+                    konst: *id,
+                    args: &[],
+                });
             }
         };
         for data in self.blocks.values() {

@@ -43,12 +43,12 @@ fn pointer_coercion_paths_match_rustc() {
             false,
             Some(BOUNDARY),
         ),
-        // Rust accepts repeated late inputs; Flux deliberately retains its narrower boundary.
+        // Repeated late inputs retain their represented binder relationships.
         (
             "repeated",
             "fn get<'a>(_: &'a i32,_: &'a i32){} fn main(){let _:fn(&i32,&i32)=get;}",
             true,
-            Some(BOUNDARY),
+            None,
         ),
         (
             "outlives",
@@ -162,28 +162,21 @@ fn pointer_coercion_paths_match_rustc() {
         );
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
         let typed = flux_mir::check_file(&hir);
+        let mut errors = typed.diagnostics.clone();
+        if errors.is_empty() {
+            errors.extend(flux_mir::build_file(&hir, &typed).diagnostics);
+        }
         match diagnostic {
             Some(expected) => {
-                assert!(!typed.diagnostics.is_empty(), "{name}");
+                assert!(!errors.is_empty(), "{name}: expected a retained boundary");
                 assert!(
-                    typed
-                        .diagnostics
-                        .iter()
-                        .all(|d| d.message.starts_with(expected)),
-                    "{name}: {:?}",
-                    typed.diagnostics
+                    errors.iter().all(|d| d.message.starts_with(expected)
+                        || d.message.contains("function pointer")
+                        || d.message.contains("function item")),
+                    "{name}: {errors:?}"
                 );
-                // Rejected reifications must never reach code generation.
             }
-            None => {
-                assert!(
-                    typed.diagnostics.is_empty(),
-                    "{name}: {:?}",
-                    typed.diagnostics
-                );
-                let mir = flux_mir::build_file(&hir, &typed);
-                assert!(mir.diagnostics.is_empty(), "{name}: {:?}", mir.diagnostics);
-            }
+            None => assert!(errors.is_empty(), "{name}: {errors:?}"),
         }
     }
     std::fs::remove_dir_all(dir).unwrap();

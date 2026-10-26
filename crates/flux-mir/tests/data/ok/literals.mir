@@ -57,9 +57,14 @@ fn kind(_1: char) -> u8 {
 
 fn len(_1: &[u8]) -> usize {
     let mut _0: usize;
+    let _2: &[u8];
 
     bb0: {
-        _0 = Len(&(*_1));
+        _2 = &(*_1);
+        _0 = len::<u8>(copy _2) -> bb1;
+    }
+
+    bb1: {
         return;
     }
 }

@@ -18,53 +18,53 @@ struct Split { inner: Point }
 
 struct Square { side: u32 }
 
-impl ::core::clone::Clone for Point;
+impl $crate0::clone::Clone for Point;
 
-impl ::core::marker::Copy for Point;
+impl $crate0::marker::Copy for Point;
 
-impl ::core::cmp::PartialEq for Point;
+impl $crate0::cmp::PartialEq for Point;
 
-impl ::core::cmp::Eq for Point;
+impl $crate0::cmp::Eq for Point;
 
-impl ::core::clone::Clone for Tuple;
+impl $crate0::clone::Clone for Tuple;
 
-impl ::core::cmp::PartialEq for Tuple;
+impl $crate0::cmp::PartialEq for Tuple;
 
-impl ::core::clone::Clone for Unit;
+impl $crate0::clone::Clone for Unit;
 
-impl ::core::marker::Copy for Unit;
+impl $crate0::marker::Copy for Unit;
 
-impl ::core::cmp::PartialEq for Unit;
+impl $crate0::cmp::PartialEq for Unit;
 
-impl ::core::cmp::Eq for Unit;
+impl $crate0::cmp::Eq for Unit;
 
-impl ::core::clone::Clone for Empty;
+impl $crate0::clone::Clone for Empty;
 
-impl ::core::cmp::PartialEq for Empty;
+impl $crate0::cmp::PartialEq for Empty;
 
-impl ::core::clone::Clone for EmptyTuple;
+impl $crate0::clone::Clone for EmptyTuple;
 
-impl ::core::cmp::PartialEq for EmptyTuple;
+impl $crate0::cmp::PartialEq for EmptyTuple;
 
-impl<T> ::core::clone::Clone for Pair<T> where T: ::core::clone::Clone;
+impl<T> $crate0::clone::Clone for Pair<T> where T: $crate0::clone::Clone;
 
-impl<T> ::core::marker::Copy for Pair<T> where T: ::core::marker::Copy;
+impl<T> $crate0::marker::Copy for Pair<T> where T: $crate0::marker::Copy;
 
-impl<A, B> ::core::cmp::PartialEq for Two<A, B> where A: ::core::cmp::PartialEq, B: ::core::cmp::PartialEq;
+impl<A, B> $crate0::cmp::PartialEq for Two<A, B> where A: $crate0::cmp::PartialEq, B: $crate0::cmp::PartialEq;
 
-impl<A, B> ::core::cmp::Eq for Two<A, B> where A: ::core::cmp::Eq, B: ::core::cmp::Eq;
+impl<A, B> $crate0::cmp::Eq for Two<A, B> where A: $crate0::cmp::Eq, B: $crate0::cmp::Eq;
 
-impl<T, U> ::core::clone::Clone for Bounded<T, U> where T: Copy, T: ::core::clone::Clone, U: ::core::clone::Clone, U: Eq;
+impl<T, U> $crate0::clone::Clone for Bounded<T, U> where T: Copy, T: $crate0::clone::Clone, U: $crate0::clone::Clone, U: Eq;
 
-impl<T, U> ::core::cmp::PartialEq for Bounded<T, U> where T: Copy, T: ::core::cmp::PartialEq, U: ::core::cmp::PartialEq, U: Eq;
+impl<T, U> $crate0::cmp::PartialEq for Bounded<T, U> where T: Copy, T: $crate0::cmp::PartialEq, U: $crate0::cmp::PartialEq, U: Eq;
 
-impl ::core::clone::Clone for Split;
+impl $crate0::clone::Clone for Split;
 
-impl ::core::cmp::PartialEq for Split;
+impl $crate0::cmp::PartialEq for Split;
 
-impl ::core::clone::Clone for Square;
+impl $crate0::clone::Clone for Square;
 
-impl ::core::marker::Copy for Square;
+impl $crate0::marker::Copy for Square;
 
 fn main() -> () {
     let p@0 = Point { x: 1, y: 2 };
@@ -72,85 +72,85 @@ fn main() -> () {
     let _s@2 = Square { side: 3 }.clone();
 }
 
-fn <Point as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <Point as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     assert_param_is_clone((&self@0.x));
     assert_param_is_clone((&self@0.y));
     (*self@0)
 }
 
-fn <Point as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Point as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     ((self@0.x == other@1.x) && (self@0.y == other@1.y))
 }
 
-fn <Point as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
+fn <Point as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
     Eq::assert_receiver_is_total_eq((&self@0.x));
     Eq::assert_receiver_is_total_eq((&self@0.y));
 }
 
-fn <Tuple as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <Tuple as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     Tuple { 0: Clone::clone((&self@0.0)), 1: Clone::clone((&self@0.1)) }
 }
 
-fn <Tuple as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Tuple as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     ((self@0.0 == other@1.0) && (self@0.1 == other@1.1))
 }
 
-fn <Unit as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <Unit as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     (*self@0)
 }
 
-fn <Unit as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Unit as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     true
 }
 
-fn <Unit as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {}
+fn <Unit as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {}
 
-fn <Empty as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <Empty as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     Empty {  }
 }
 
-fn <Empty as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Empty as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     true
 }
 
-fn <EmptyTuple as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <EmptyTuple as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     EmptyTuple {  }
 }
 
-fn <EmptyTuple as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <EmptyTuple as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     true
 }
 
-fn <Pair<T> as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <Pair<T> as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     Pair { 0: Clone::clone((&self@0.0)), 1: Clone::clone((&self@0.1)) }
 }
 
-fn <Two<A, B> as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Two<A, B> as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     ((self@0.a == other@1.a) && (self@0.b == other@1.b))
 }
 
-fn <Two<A, B> as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
+fn <Two<A, B> as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
     Eq::assert_receiver_is_total_eq((&self@0.a));
     Eq::assert_receiver_is_total_eq((&self@0.b));
 }
 
-fn <Bounded<T, U> as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <Bounded<T, U> as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     Bounded { 0: Clone::clone((&self@0.0)), 1: Clone::clone((&self@0.1)) }
 }
 
-fn <Bounded<T, U> as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Bounded<T, U> as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     ((self@0.0 == other@1.0) && (self@0.1 == other@1.1))
 }
 
-fn <Split as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <Split as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     Split { inner: Clone::clone((&self@0.inner)) }
 }
 
-fn <Split as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Split as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     (self@0.inner == other@1.inner)
 }
 
-fn <Square as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <Square as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     assert_param_is_clone((&self@0.side));
     (*self@0)
 }

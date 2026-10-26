@@ -2,8 +2,7 @@ fn duplicate<T: Clone>(value: &T) -> T {
     value.clone()
 }
 
-// Clone imposes no bound on the signature's types, but cannot make
-// unsupported pointer lifetime annotations representable.
+// Clone preserves a function pointer's represented lifetime contract.
 fn output(pointer: fn(&i32) -> &i32) {
     let _ = duplicate(&pointer);
 }

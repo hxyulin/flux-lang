@@ -60,7 +60,13 @@ impl Cx<'_> {
             .impl_projections
             .get(imp)
             .map_or(Vec::new(), |p| p.to_vec());
-        self.header_predicates = self.sigs.impl_predicates.get(imp).map_or(Vec::new(), |predicates| flux_ty::traits::elaborate(self.sigs, predicates));
+        self.header_predicates = self
+            .sigs
+            .impl_predicates
+            .get(imp)
+            .map_or(Vec::new(), |predicates| {
+                flux_ty::traits::elaborate(self.sigs, predicates)
+            });
         self.new_universal("'static".into());
         let lifetimes: Vec<_> = (0..block.names.len())
             .map(|i| self.new_universal(format!("'{i}")))

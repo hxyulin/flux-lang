@@ -46,7 +46,9 @@ impl TraitsInScope {
                     .filter(|_| items.modules[m].block.is_some());
             }
             let own = ModuleId::from_raw(index as u32);
-            if let Some(prelude) = items.prelude_for(own) { module_traits.extend(named(prelude)); }
+            if let Some(prelude) = items.prelude_for(own) {
+                module_traits.extend(named(prelude));
+            }
             module_traits.sort_unstable_by_key(|t| t.index());
             module_traits.dedup();
             traits.append(&mut module_traits);

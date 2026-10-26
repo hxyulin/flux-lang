@@ -14,38 +14,43 @@ fn Parser::peek(_1: &Parser) -> Option<&u8> {
     let _2: bool;
     let _3: usize;
     let _4: usize;
-    let _5: &u8;
-    let _6: usize;
+    let _5: &[u8];
+    let _6: &u8;
     let _7: usize;
-    let _8: bool;
+    let _8: usize;
+    let _9: bool;
 
     bb0: {
         _3 = copy (*_1).1;
-        _4 = Len(&(*(*_1).0));
-        _2 = Lt(copy _3, copy _4);
-        switchInt(copy _2) -> [0: bb2, otherwise: bb1];
+        _5 = &(*(*_1).0);
+        _4 = len::<u8>(copy _5) -> bb1;
     }
 
     bb1: {
-        _6 = copy (*_1).1;
-        _7 = Len((*(*_1).0));
-        _8 = Lt(copy _6, copy _7);
-        assert(copy _8, "index out of bounds") -> bb4;
+        _2 = Lt(copy _3, copy _4);
+        switchInt(copy _2) -> [0: bb3, otherwise: bb2];
     }
 
     bb2: {
-        _0 = Option::None;
-        goto -> bb3;
+        _7 = copy (*_1).1;
+        _8 = Len((*(*_1).0));
+        _9 = Lt(copy _7, copy _8);
+        assert(copy _9, "index out of bounds") -> bb5;
     }
 
     bb3: {
-        return;
+        _0 = Option::None;
+        goto -> bb4;
     }
 
     bb4: {
-        _5 = &(*(*_1).0)[_6];
-        _0 = Option::Some(copy _5);
-        goto -> bb3;
+        return;
+    }
+
+    bb5: {
+        _6 = &(*(*_1).0)[_7];
+        _0 = Option::Some(copy _6);
+        goto -> bb4;
     }
 }
 
@@ -179,38 +184,43 @@ fn get(_1: &[i32], _2: usize) -> Option<&i32> {
     let _3: bool;
     let _4: usize;
     let _5: usize;
-    let _6: &i32;
-    let _7: usize;
+    let _6: &[i32];
+    let _7: &i32;
     let _8: usize;
-    let _9: bool;
+    let _9: usize;
+    let _10: bool;
 
     bb0: {
         _4 = copy _2;
-        _5 = Len(&(*_1));
-        _3 = Lt(copy _4, copy _5);
-        switchInt(copy _3) -> [0: bb2, otherwise: bb1];
+        _6 = &(*_1);
+        _5 = len::<i32>(copy _6) -> bb1;
     }
 
     bb1: {
-        _7 = copy _2;
-        _8 = Len((*_1));
-        _9 = Lt(copy _7, copy _8);
-        assert(copy _9, "index out of bounds") -> bb4;
+        _3 = Lt(copy _4, copy _5);
+        switchInt(copy _3) -> [0: bb3, otherwise: bb2];
     }
 
     bb2: {
-        _0 = Option::None;
-        goto -> bb3;
+        _8 = copy _2;
+        _9 = Len((*_1));
+        _10 = Lt(copy _8, copy _9);
+        assert(copy _10, "index out of bounds") -> bb5;
     }
 
     bb3: {
-        return;
+        _0 = Option::None;
+        goto -> bb4;
     }
 
     bb4: {
-        _6 = &(*_1)[_7];
-        _0 = Option::Some(copy _6);
-        goto -> bb3;
+        return;
+    }
+
+    bb5: {
+        _7 = &(*_1)[_8];
+        _0 = Option::Some(copy _7);
+        goto -> bb4;
     }
 }
 

@@ -208,7 +208,8 @@ impl ResolveError {
 
 impl ItemTree {
     fn unavailable_c_void_variant(&self, from: ModuleId, def: Def) -> bool {
-        !self.is_core(from) && matches!(def, Def::Variant(id, _)
+        !self.is_core(from)
+            && matches!(def, Def::Variant(id, _)
             if self.is_core(self.structs[id].loc.module)
                 && self.structs[id].name.as_str() == "c_void")
     }
@@ -218,7 +219,10 @@ impl ItemTree {
         let mut private = None;
         let resolved = self.resolve_inner(from, path, ns, &mut private)?;
         if matches!(resolved, Resolved::Def(def) if self.unavailable_c_void_variant(from, def)) {
-            return Err(ResolveError::Failed { at: At::Whole, message: "`c_void` variants are not supported yet".into() });
+            return Err(ResolveError::Failed {
+                at: At::Whole,
+                message: "`c_void` variants are not supported yet".into(),
+            });
         }
         match private {
             Some((segment, message)) => Err(ResolveError::Private {
@@ -262,11 +266,14 @@ impl ItemTree {
                 (module, 0)
             }
             PathAnchor::Global => {
-                if path.edition.unwrap_or_else(|| self.edition(from)) == flux_syntax::Edition::E2015 {
+                if path.edition.unwrap_or_else(|| self.edition(from)) == flux_syntax::Edition::E2015
+                {
                     let root = self.module_of(self.modules[from].krate);
                     let first = segments.first().copied();
                     let own = &self.crates[self.modules[from].krate.0 as usize];
-                    let implicit = first.filter(|&name| name == sym::std && !own.no_std || name == sym::core && own.no_std);
+                    let implicit = first.filter(|&name| {
+                        name == sym::std && !own.no_std || name == sym::core && own.no_std
+                    });
                     if let Some(name) = implicit
                         && self.scope_binding(root, name, Ns::Types).is_none()
                         && let Some(module) = self.loaded_extern_crate(name, from)
@@ -276,24 +283,26 @@ impl ItemTree {
                         (root, 0)
                     }
                 } else {
-                let Some(&first) = segments.first() else {
-                    return Err(fail(At::Segment(0), "expected a name after `::`".into()));
-                };
-                // `$crate` of `alloc`'s macros is `::alloc`, which the
-                // program may not have declared.
-                match self
-                    .loaded_extern_crate(first, from)
-                    .or_else(|| self.any_crate(first, from))
-                {
-                    Some(root) => (root, 1),
-                    None => {
-                        let what = if segments.len() == 1 { "crate " } else { "" };
-                        return Err(fail(
-                            At::Segment(0),
-                            format!("cannot find {what}`{first}` in the list of imported crates"),
-                        ));
+                    let Some(&first) = segments.first() else {
+                        return Err(fail(At::Segment(0), "expected a name after `::`".into()));
+                    };
+                    // `$crate` of `alloc`'s macros is `::alloc`, which the
+                    // program may not have declared.
+                    match self
+                        .loaded_extern_crate(first, from)
+                        .or_else(|| self.any_crate(first, from))
+                    {
+                        Some(root) => (root, 1),
+                        None => {
+                            let what = if segments.len() == 1 { "crate " } else { "" };
+                            return Err(fail(
+                                At::Segment(0),
+                                format!(
+                                    "cannot find {what}`{first}` in the list of imported crates"
+                                ),
+                            ));
+                        }
                     }
-                }
                 }
             }
             PathAnchor::Plain => {
@@ -460,7 +469,10 @@ impl ItemTree {
             && let Some(variant) = self.structs[strukt].variant_named(name)
         {
             if self.unavailable_c_void_variant(from, Def::Variant(strukt, variant)) {
-                return Err(ResolveError::Failed { at: At::Whole, message: "`c_void` variants are not supported yet".into() });
+                return Err(ResolveError::Failed {
+                    at: At::Whole,
+                    message: "`c_void` variants are not supported yet".into(),
+                });
             }
             // A record variant is a type only.
             if ns == Ns::Values && self.structs[strukt].variant(variant).kind == StructKind::Record
@@ -529,8 +541,14 @@ impl ItemTree {
         if let Some(ImplTarget::Struct(strukt)) = self.alias_target(alias)
             && let Some(variant) = self.structs[strukt].variant_named(name)
         {
-            if self.unavailable_c_void_variant(self.type_aliases[alias].loc.module, Def::Variant(strukt, variant)) {
-                return Err(ResolveError::Failed { at: At::Whole, message: "`c_void` variants are not supported yet".into() });
+            if self.unavailable_c_void_variant(
+                self.type_aliases[alias].loc.module,
+                Def::Variant(strukt, variant),
+            ) {
+                return Err(ResolveError::Failed {
+                    at: At::Whole,
+                    message: "`c_void` variants are not supported yet".into(),
+                });
             }
             if ns == Ns::Values && self.structs[strukt].variant(variant).kind == StructKind::Record
             {
@@ -659,12 +677,19 @@ impl ItemTree {
         {
             return Some(Resolved::Def(binding.def));
         }
-        if ns == Ns::Macros && let Some(&(_, id)) = own.macro_use.iter().rev().find(|&&(n, _)| n == name) {
+        if ns == Ns::Macros
+            && let Some(&(_, id)) = own.macro_use.iter().rev().find(|&&(n, _)| n == name)
+        {
             return Some(Resolved::Def(Def::Macro(id)));
         }
-        if ns == Ns::Macros && let Some(&id) = self.macro_prelude.get(&name) {
+        if ns == Ns::Macros
+            && let Some(&id) = self.macro_prelude.get(&name)
+        {
             let source = &self.crates[self.macros[id].krate.0 as usize];
-            if !own.no_std || (source.name == sym::core && !crate::macros::CORE_STD_MACROS.contains(&name.as_str())) {
+            if !own.no_std
+                || (source.name == sym::core
+                    && !crate::macros::CORE_STD_MACROS.contains(&name.as_str()))
+            {
                 return Some(Resolved::Def(Def::Macro(id)));
             }
         }
@@ -682,10 +707,25 @@ impl ItemTree {
     /// The prelude is selected by the consuming crate's edition.
     pub fn prelude_for(&self, module: ModuleId) -> Option<ModuleId> {
         let own = &self.crates[self.modules[module].krate.0 as usize];
-        let old = matches!(own.edition, flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018);
-        let core = if old { self.def_map.prelude_2018 } else { self.def_map.prelude };
-        let std = if old { self.def_map.std_prelude_2018 } else { self.def_map.std_prelude };
-        if own.is_core || own.no_std { core } else { std.or(core) }
+        let old = matches!(
+            own.edition,
+            flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
+        );
+        let core = if old {
+            self.def_map.prelude_2018
+        } else {
+            self.def_map.prelude
+        };
+        let std = if old {
+            self.def_map.std_prelude_2018
+        } else {
+            self.def_map.std_prelude
+        };
+        if own.is_core || own.no_std {
+            core
+        } else {
+            std.or(core)
+        }
     }
 
     /// A committed external path loads metadata, independently of its spelling
@@ -703,7 +743,11 @@ impl ItemTree {
     pub(crate) fn extern_crate(&self, name: Symbol, module: ModuleId) -> Option<ModuleId> {
         let own = self.modules[module].krate;
         let own_data = &self.crates[own.0 as usize];
-        if let Some((_, target)) = own_data.extern_aliases.iter().find(|(alias, _)| *alias == name) {
+        if let Some((_, target)) = own_data
+            .extern_aliases
+            .iter()
+            .find(|(alias, _)| *alias == name)
+        {
             return Some(self.module_of(*target));
         }
         if let Some((_, target)) = own_data

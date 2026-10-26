@@ -54,12 +54,16 @@ pub struct SourceFile {
 
 impl SourceFile {
     pub(crate) fn contains_range(&self, range: flux_syntax::TextRange) -> bool {
-        self.range_base != 0 && range.start() >= self.range_base
+        self.range_base != 0
+            && range.start() >= self.range_base
             && range.end() <= self.range_base + self.text().len() as u32
     }
 
     pub(crate) fn local_range(&self, range: flux_syntax::TextRange) -> flux_syntax::TextRange {
-        flux_syntax::TextRange::new(range.start() - self.range_base, range.end() - self.range_base)
+        flux_syntax::TextRange::new(
+            range.start() - self.range_base,
+            range.end() - self.range_base,
+        )
     }
 
     pub fn text(&self) -> &str {
@@ -89,21 +93,48 @@ pub const STD_ROOT: &str = "<std>";
 
 const STD_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/std/src/lib.rs")),
-    ("float.rs", include_str!("../../../library/std/src/float.rs")),
+    (
+        "float.rs",
+        include_str!("../../../library/std/src/float.rs"),
+    ),
     ("hash.rs", include_str!("../../../library/std/src/hash.rs")),
     ("env.rs", include_str!("../../../library/std/src/env.rs")),
     ("ffi.rs", include_str!("../../../library/std/src/ffi.rs")),
-    ("ffi/os_str.rs", include_str!("../../../library/std/src/ffi/os_str.rs")),
+    (
+        "ffi/os_str.rs",
+        include_str!("../../../library/std/src/ffi/os_str.rs"),
+    ),
     ("path.rs", include_str!("../../../library/std/src/path.rs")),
     ("fs.rs", include_str!("../../../library/std/src/fs.rs")),
     ("io.rs", include_str!("../../../library/std/src/io.rs")),
-    ("collections.rs", include_str!("../../../library/std/src/collections.rs")),
-    ("collections/hash_map.rs", include_str!("../../../library/std/src/collections/hash_map.rs")),
-    ("collections/hash_set.rs", include_str!("../../../library/std/src/collections/hash_set.rs")),
-    ("collections/vec_deque.rs", include_str!("../../../library/std/src/collections/vec_deque.rs")),
-    ("macros.rs", include_str!("../../../library/std/src/macros.rs")),
-    ("thread/local.rs", include_str!("../../../library/std/src/thread/local.rs")),
-    ("thread/scoped.rs", include_str!("../../../library/std/src/thread/scoped.rs")),
+    (
+        "collections.rs",
+        include_str!("../../../library/std/src/collections.rs"),
+    ),
+    (
+        "collections/hash_map.rs",
+        include_str!("../../../library/std/src/collections/hash_map.rs"),
+    ),
+    (
+        "collections/hash_set.rs",
+        include_str!("../../../library/std/src/collections/hash_set.rs"),
+    ),
+    (
+        "collections/vec_deque.rs",
+        include_str!("../../../library/std/src/collections/vec_deque.rs"),
+    ),
+    (
+        "macros.rs",
+        include_str!("../../../library/std/src/macros.rs"),
+    ),
+    (
+        "thread/local.rs",
+        include_str!("../../../library/std/src/thread/local.rs"),
+    ),
+    (
+        "thread/scoped.rs",
+        include_str!("../../../library/std/src/thread/scoped.rs"),
+    ),
     (
         "thread.rs",
         include_str!("../../../library/std/src/thread.rs"),
@@ -191,9 +222,18 @@ const ALLOC_FILES: &[(&str, &str)] = &[
 /// `library/core/src`, relative to [`CORE_ROOT`].
 const CORE_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/core/src/lib.rs")),
-    ("float/decimal.rs", include_str!("../../../library/core/src/float/decimal.rs")),
-    ("float.rs", include_str!("../../../library/core/src/float.rs")),
-    ("char_properties.rs", include_str!("../../../library/core/src/char_properties.rs")),
+    (
+        "float/decimal.rs",
+        include_str!("../../../library/core/src/float/decimal.rs"),
+    ),
+    (
+        "float.rs",
+        include_str!("../../../library/core/src/float.rs"),
+    ),
+    (
+        "char_properties.rs",
+        include_str!("../../../library/core/src/char_properties.rs"),
+    ),
     (
         "sync/mod.rs",
         include_str!("../../../library/core/src/sync/mod.rs"),
@@ -208,7 +248,10 @@ const CORE_FILES: &[(&str, &str)] = &[
         include_str!("../../../library/core/src/macros.rs"),
     ),
     ("hint.rs", include_str!("../../../library/core/src/hint.rs")),
-    ("error.rs", include_str!("../../../library/core/src/error.rs")),
+    (
+        "error.rs",
+        include_str!("../../../library/core/src/error.rs"),
+    ),
     ("ptr.rs", include_str!("../../../library/core/src/ptr.rs")),
     ("cell.rs", include_str!("../../../library/core/src/cell.rs")),
     ("hash.rs", include_str!("../../../library/core/src/hash.rs")),
@@ -383,40 +426,76 @@ impl SourceDb {
             .filter(|(_, f)| f.expansion_of.is_none())
             .map(|(i, f)| (f.path.clone(), FileId(i as u32)))
             .collect();
-        let next_include_offset = files.iter().map(|f| f.range_base + f.text().len() as u32 + 1).max().unwrap_or(0).max(1 << 30);
-        SourceDb { files, by_path, next_include_offset, configured: Default::default() }
+        let next_include_offset = files
+            .iter()
+            .map(|f| f.range_base + f.text().len() as u32 + 1)
+            .max()
+            .unwrap_or(0)
+            .max(1 << 30);
+        SourceDb {
+            files,
+            by_path,
+            next_include_offset,
+            configured: Default::default(),
+        }
     }
 
     /// Sets a physical root's compilation inputs before lowering its source
     /// graph. Embedded libraries keep their own configuration and cannot be
     /// changed through a user crate's inputs.
     pub fn set_crate_cfg(&mut self, root: FileId, cfg: CrateCfg) -> Result<(), String> {
-        let source = self.files.get(root.0 as usize).ok_or_else(|| "unknown crate source".to_owned())?;
-        if source.expansion_of.is_some() || source.path.starts_with(CORE_ROOT)
-            || source.path.starts_with(ALLOC_ROOT) || source.path.starts_with(STD_ROOT) {
+        let source = self
+            .files
+            .get(root.0 as usize)
+            .ok_or_else(|| "unknown crate source".to_owned())?;
+        if source.expansion_of.is_some()
+            || source.path.starts_with(CORE_ROOT)
+            || source.path.starts_with(ALLOC_ROOT)
+            || source.path.starts_with(STD_ROOT)
+        {
             return Err("expected a physical crate root".into());
         }
         let mut names: Vec<Box<str>> = cfg.names.iter().map(|name| name.as_str().into()).collect();
-        let mut values: Vec<(Box<str>,Box<str>)> = cfg.values.iter().map(|(name,value)| (name.as_str().into(),value.as_str().into())).collect();
-        names.sort(); names.dedup(); values.sort(); values.dedup();
-        let cfg = (!names.is_empty() || !values.is_empty()).then(|| Arc::new(flux_syntax::CfgOptions { names: names.into(), values: values.into() }));
+        let mut values: Vec<(Box<str>, Box<str>)> = cfg
+            .values
+            .iter()
+            .map(|(name, value)| (name.as_str().into(), value.as_str().into()))
+            .collect();
+        names.sort();
+        names.dedup();
+        values.sort();
+        values.dedup();
+        let cfg = (!names.is_empty() || !values.is_empty()).then(|| {
+            Arc::new(flux_syntax::CfgOptions {
+                names: names.into(),
+                values: values.into(),
+            })
+        });
         let mut source = (**source).clone();
         source.parse = source.parse.with_cfg_options(cfg);
         self.files[root.0 as usize] = Arc::new(source);
-        self.configured.retain(|(file,_),_| *file != root);
+        self.configured.retain(|(file, _), _| *file != root);
         Ok(())
     }
 
     /// A module shared physically by several crates needs one syntax identity
     /// for each configuration. Its text, path, edition and ranges stay intact.
-    pub(crate) fn configured_file(&mut self, file: FileId, cfg: Option<Arc<flux_syntax::CfgOptions>>) -> FileId {
-        if self.file(file).parse.tree().cfg_options() == cfg.as_ref() { return file; }
-        if let Some(&id) = self.configured.get(&(file,cfg.clone())) { return id; }
+    pub(crate) fn configured_file(
+        &mut self,
+        file: FileId,
+        cfg: Option<Arc<flux_syntax::CfgOptions>>,
+    ) -> FileId {
+        if self.file(file).parse.tree().cfg_options() == cfg.as_ref() {
+            return file;
+        }
+        if let Some(&id) = self.configured.get(&(file, cfg.clone())) {
+            return id;
+        }
         let mut source = self.file(file).clone();
         source.parse = source.parse.with_cfg_options(cfg.clone());
-        let id=FileId(self.files.len() as u32);
+        let id = FileId(self.files.len() as u32);
         self.files.push(Arc::new(source));
-        self.configured.insert((file,cfg),id);
+        self.configured.insert((file, cfg), id);
         id
     }
 
@@ -437,14 +516,28 @@ impl SourceDb {
 
     /// Retains an included file's own path and ranges. Each inclusion gets a
     /// syntax identity because its fragment and lexical scope may differ.
-    pub(crate) fn add_inclusion(&mut self, parse: Parse, path: PathBuf, edition: flux_syntax::Edition) -> Result<FileId, String> {
+    pub(crate) fn add_inclusion(
+        &mut self,
+        parse: Parse,
+        path: PathBuf,
+        edition: flux_syntax::Edition,
+    ) -> Result<FileId, String> {
         let id = FileId(self.files.len() as u32);
         let range_base = self.next_include_offset;
-        let size = u32::try_from(parse.tree().text().len()).ok().and_then(|size| size.checked_add(1));
-        self.next_include_offset = size.and_then(|size| range_base.checked_add(size))
+        let size = u32::try_from(parse.tree().text().len())
+            .ok()
+            .and_then(|size| size.checked_add(1));
+        self.next_include_offset = size
+            .and_then(|size| range_base.checked_add(size))
             .ok_or_else(|| "included source size limit exceeded".to_owned())?;
         let parse = parse.with_source_offset(range_base);
-        self.files.push(Arc::new(SourceFile { path, parse, edition, expansion_of: None, range_base }));
+        self.files.push(Arc::new(SourceFile {
+            path,
+            parse,
+            edition,
+            expansion_of: None,
+            range_base,
+        }));
         Ok(id)
     }
 
@@ -456,7 +549,10 @@ impl SourceDb {
 
     /// Restores a diagnostic's physical file and byte offsets after lowering.
     pub fn resolve_diagnostic(&self, diagnostic: &mut crate::Diagnostic) {
-        if let Some((file, source)) = self.files().find(|(_, source)| source.contains_range(diagnostic.range)) {
+        if let Some((file, source)) = self
+            .files()
+            .find(|(_, source)| source.contains_range(diagnostic.range))
+        {
             diagnostic.file = file;
             diagnostic.range = source.local_range(diagnostic.range);
         }
@@ -536,13 +632,18 @@ impl SourceDb {
         {
             return Err("includes from virtual sources are not supported yet".into());
         }
-        let parent = source.path.parent()
+        let parent = source
+            .path
+            .parent()
             .ok_or_else(|| "include source directory is unknown".to_owned())?;
         Ok(parent.join(filename))
     }
 
     /// Reads bytes unchanged, including BOM, CRLF and non-UTF-8 data.
-    pub(crate) fn read_include_bytes(source: &SourceFile, filename: &str) -> Result<Vec<u8>, String> {
+    pub(crate) fn read_include_bytes(
+        source: &SourceFile,
+        filename: &str,
+    ) -> Result<Vec<u8>, String> {
         let path = Self::include_path(source, filename)?;
         std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))
     }
@@ -580,7 +681,11 @@ impl SourceDb {
             .flat_map(|(id, f)| {
                 f.parse.errors().iter().map(move |e| crate::Diagnostic {
                     file: id,
-                    range: if f.contains_range(e.range) { f.local_range(e.range) } else { e.range },
+                    range: if f.contains_range(e.range) {
+                        f.local_range(e.range)
+                    } else {
+                        e.range
+                    },
                     message: e.message.clone(),
                 })
             })

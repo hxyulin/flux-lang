@@ -214,7 +214,7 @@ fn unsupported_declarations_fail_before_compilation() {
 }
 
 #[test]
-fn discovered_targets_configuration_and_ambiguity_are_rejected() {
+fn discovered_targets_configuration_and_ambiguity_are_checked() {
     for (path, content, expected) in [
         ("build.rs", "fn main() {}", "build.rs"),
         ("src/lib.rs", "pub fn f() {}", "not a supported binary"),
@@ -253,7 +253,7 @@ fn discovered_targets_configuration_and_ambiguity_are_rejected() {
         "Cargo.toml",
         "[package]\nname='old'\nversion='0.1.0'\nedition='2018'\n",
     );
-    fixture.reject("edition 2021 or 2024");
+    success(&fixture.run("build", &[]));
     let fixture = Fixture::new();
     let output = fixture.run("build", &["--bin", "missing"]);
     assert!(String::from_utf8_lossy(&output.stderr).contains("matching binary"));

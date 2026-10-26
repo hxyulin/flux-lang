@@ -22,6 +22,7 @@ use crate::TextRange;
 #[derive(Debug, Clone)]
 pub struct LexedStr<'a> {
     text: &'a str,
+    edition: crate::Edition,
     kinds: Vec<SyntaxKind>,
     /// Byte offset of each token, plus one final entry at `text.len()`.
     starts: Vec<u32>,
@@ -66,6 +67,7 @@ impl<'a> LexedStr<'a> {
             pos: 0,
             res: LexedStr {
                 text,
+                edition,
                 kinds: Vec::with_capacity(capacity),
                 starts: Vec::with_capacity(capacity + 1),
                 errors: Vec::new(),
@@ -88,6 +90,11 @@ impl<'a> LexedStr<'a> {
         }
         lexer.res.starts.push(text.len() as u32);
         lexer.res
+    }
+
+    /// The source edition used to classify keywords.
+    pub fn edition(&self) -> crate::Edition {
+        self.edition
     }
 
     pub fn text(&self) -> &'a str {

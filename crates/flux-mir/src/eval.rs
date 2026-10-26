@@ -33,7 +33,10 @@ use crate::{
 /// A value computed at compile time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
-    Float { bits: u64, ty: flux_ty::FloatTy },
+    Float {
+        bits: u64,
+        ty: flux_ty::FloatTy,
+    },
     /// Two's complement bits, truncated to the type's width.
     Int {
         bits: u128,
@@ -546,7 +549,17 @@ impl<'a> Evaluator<'a> {
             && offset < 16
         {
             let bits = bits >> (offset * 8);
-            if let Some(ty) = to.as_float() { return Ok(Value::Float { bits: bits as u64 & if ty.bits() == 32 { u32::MAX as u64 } else { u64::MAX }, ty }); }
+            if let Some(ty) = to.as_float() {
+                return Ok(Value::Float {
+                    bits: bits as u64
+                        & if ty.bits() == 32 {
+                            u32::MAX as u64
+                        } else {
+                            u64::MAX
+                        },
+                    ty,
+                });
+            }
             if matches!(to.kind(), TyKind::RawPtr(_, pointee) if !self.sigs.is_unsized(pointee)) {
                 return Ok(Value::RawAddr(truncate(bits, IntTy::Usize) as u64));
             }
@@ -606,19 +619,40 @@ impl<'a> Evaluator<'a> {
         }
         // Assemble a scalar only from individually initialized bytes. Reads
         // across padding or symbolic pointer relocations still fail.
-        if viewed.size > 1 && (to.scalar_int().is_some() || to.as_float().is_some() || matches!(to.kind(), TyKind::RawPtr(_, pointee) if !self.sigs.is_unsized(pointee))) {
+        if viewed.size > 1
+            && (to.scalar_int().is_some()
+                || to.as_float().is_some()
+                || matches!(to.kind(), TyKind::RawPtr(_, pointee) if !self.sigs.is_unsized(pointee)))
+        {
             let mut bits = 0;
             for i in 0..viewed.size {
-                let byte = self.memory_value(value, from, offset + i, Ty::int(IntTy::U8), range, depth + 1)?;
-                let Value::Int { bits: byte, .. } = byte else { return Err(unsupported_view(range)); };
+                let byte = self.memory_value(
+                    value,
+                    from,
+                    offset + i,
+                    Ty::int(IntTy::U8),
+                    range,
+                    depth + 1,
+                )?;
+                let Value::Int { bits: byte, .. } = byte else {
+                    return Err(unsupported_view(range));
+                };
                 bits |= byte << (i * 8);
             }
-            if let Some(ty) = to.as_float() { return Ok(Value::Float { bits: bits as u64, ty }); }
+            if let Some(ty) = to.as_float() {
+                return Ok(Value::Float {
+                    bits: bits as u64,
+                    ty,
+                });
+            }
             if let Some(int) = to.scalar_int() {
                 if to == Ty::CHAR && char::from_u32(bits as u32).is_none() {
                     return Err(error(range, "invalid char in constant value".into()));
                 }
-                return Ok(Value::Int { bits: truncate(bits, int), ty: int });
+                return Ok(Value::Int {
+                    bits: truncate(bits, int),
+                    ty: int,
+                });
             }
             return Ok(Value::RawAddr(bits as u64));
         }
@@ -741,8 +775,14 @@ impl<'a> Evaluator<'a> {
         if lang("non_null") && matches!(fields.first(), Some(Value::RawAddr(0))) {
             return Err(error(range, "null pointer in `NonNull` constant".into()));
         }
-        if (lang("nonzero_u32") || lang("nonzero_u64")) && matches!(fields.first(), Some(Value::Int { bits: 0, .. })) {
-            let name = if lang("nonzero_u64") { "NonZeroU64" } else { "NonZeroU32" };
+        if (lang("nonzero_u32") || lang("nonzero_u64"))
+            && matches!(fields.first(), Some(Value::Int { bits: 0, .. }))
+        {
+            let name = if lang("nonzero_u64") {
+                "NonZeroU64"
+            } else {
+                "NonZeroU32"
+            };
             return Err(error(range, format!("zero in `{name}` constant")));
         }
         if lang("alignment") {
@@ -756,7 +796,12 @@ impl<'a> Evaluator<'a> {
         Ok(())
     }
 
-    fn validate_lang_value(&mut self, ty: Ty, fields: &[Value], range: TextRange) -> Result<(), EvalError> {
+    fn validate_lang_value(
+        &mut self,
+        ty: Ty,
+        fields: &[Value],
+        range: TextRange,
+    ) -> Result<(), EvalError> {
         if let TyKind::Adt(adt, _) = ty.kind() {
             self.validate_lang_fields(adt.strukt, fields, range)?;
         }
@@ -1017,7 +1062,14 @@ impl<'a> Evaluator<'a> {
 
     fn is_type_intrinsic(&self, func: FunctionId) -> bool {
         let data = &self.items.functions[func];
-        data.intrinsic && matches!(data.name.as_str(), "size_of" | "align_of" | "needs_drop")
+        matches!(
+            data.intrinsic,
+            Some(
+                flux_hir::Intrinsic::SizeOf
+                    | flux_hir::Intrinsic::AlignOf
+                    | flux_hir::Intrinsic::NeedsDrop
+            )
+        )
     }
 
     /// `size_of::<T>()`, `align_of::<T>()` or `needs_drop::<T>()` into
@@ -1245,7 +1297,8 @@ impl<'a> Evaluator<'a> {
                     let value = match self.operand(locals, generics, discr, range)? {
                         Value::Int { bits, .. } => bits,
                         Value::Bool(b) => u128::from(b),
-                        Value::Float { .. } | Value::Function(_)
+                        Value::Float { .. }
+                        | Value::Function(_)
                         | Value::Aggregate(_)
                         | Value::Variant { .. }
                         | Value::Static(_)
@@ -1287,16 +1340,40 @@ impl<'a> Evaluator<'a> {
                     }
                     // `size_of`, `align_of` and `needs_drop` are known
                     // here too.
-                    if self.items.functions[*func].intrinsic
-                        && matches!(self.items.functions[*func].name.as_str(),"fmaf32"|"fmaf64") {
-                        let values: Vec<_>=args.iter().map(|arg|self.operand(locals,generics,arg,range)).collect::<Result<_,_>>()?;
-                        let [Value::Float{bits:x,ty},Value::Float{bits:y,..},Value::Float{bits:z,..}]=values.as_slice() else {unreachable!("typed fused float arguments");};
-                        let bits=match ty {
-                            flux_ty::FloatTy::F32=>u64::from(f32::from_bits(*x as u32).mul_add(f32::from_bits(*y as u32),f32::from_bits(*z as u32)).to_bits()),
-                            flux_ty::FloatTy::F64=>f64::from_bits(*x).mul_add(f64::from_bits(*y),f64::from_bits(*z)).to_bits(),
+                    if matches!(
+                        self.items.functions[*func].intrinsic,
+                        Some(flux_hir::Intrinsic::Fmaf32 | flux_hir::Intrinsic::Fmaf64)
+                    ) {
+                        let values: Vec<_> = args
+                            .iter()
+                            .map(|arg| self.operand(locals, generics, arg, range))
+                            .collect::<Result<_, _>>()?;
+                        let [
+                            Value::Float { bits: x, ty },
+                            Value::Float { bits: y, .. },
+                            Value::Float { bits: z, .. },
+                        ] = values.as_slice()
+                        else {
+                            unreachable!("typed fused float arguments");
                         };
-                        write(locals,dest,Value::Float{bits,ty:*ty},range)?;
-                        match target {Some(next)=>{block=*next;continue;},None=>return Err(error(range,"entering unreachable code".into()))}
+                        let bits = match ty {
+                            flux_ty::FloatTy::F32 => u64::from(
+                                f32::from_bits(*x as u32)
+                                    .mul_add(f32::from_bits(*y as u32), f32::from_bits(*z as u32))
+                                    .to_bits(),
+                            ),
+                            flux_ty::FloatTy::F64 => f64::from_bits(*x)
+                                .mul_add(f64::from_bits(*y), f64::from_bits(*z))
+                                .to_bits(),
+                        };
+                        write(locals, dest, Value::Float { bits, ty: *ty }, range)?;
+                        match target {
+                            Some(next) => {
+                                block = *next;
+                                continue;
+                            }
+                            None => return Err(error(range, "entering unreachable code".into())),
+                        }
                     }
                     if self.is_type_intrinsic(*func) {
                         let call = (*func, *generic_args, generics);
@@ -1304,51 +1381,74 @@ impl<'a> Evaluator<'a> {
                         continue;
                     }
                     if self.items.functions[*func].intrinsic
-                        && self.items.functions[*func].name.as_str() == "unreachable_unchecked"
+                        == Some(flux_hir::Intrinsic::UnreachableUnchecked)
                     {
                         return Err(error(range, "entering unreachable code".into()));
                     }
                     if self.items.functions[*func].intrinsic
-                        && self.items.functions[*func].name.as_str() == "raw_slice_len"
+                        == Some(flux_hir::Intrinsic::RawSliceLen)
                         && let [Operand::Copy(pointer) | Operand::Move(pointer)] = &args[..]
                     {
-                        let value = self.rvalue(body, locals, generics, &Rvalue::Len {
-                            place: pointer.deref(), borrows: false,
-                        }, range, false)?;
+                        let value = self.rvalue(
+                            body,
+                            locals,
+                            generics,
+                            &Rvalue::Len {
+                                place: pointer.deref(),
+                                borrows: false,
+                            },
+                            range,
+                            false,
+                        )?;
                         write(locals, dest, value, range)?;
                         match target {
-                            Some(target) => { block = *target; continue; }
+                            Some(target) => {
+                                block = *target;
+                                continue;
+                            }
                             None => return Err(error(range, "entering unreachable code".into())),
                         }
                     }
-                    if self.items.functions[*func].intrinsic
-                        && self.items.functions[*func].name.as_str() == "transmute"
+                    if self.items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::Transmute)
                     {
                         let from = generic_args[0].subst(generics);
                         let to = generic_args[1].subst(generics);
                         let source = self.view_layout(from, range)?;
                         let destination = self.view_layout(to, range)?;
                         if source.size != destination.size {
-                            return Err(error(range, "cannot transmute between types of different sizes".into()));
+                            return Err(error(
+                                range,
+                                "cannot transmute between types of different sizes".into(),
+                            ));
                         }
                         let value = self.operand(locals, generics, &args[0], range)?;
                         // Symbolic addresses are never materialized as integer bits.
                         if from.is_pointer() && to.scalar_int().is_some() {
-                            return Err(error(range, "pointer-to-integer transmute in constants is not supported yet".into()));
+                            return Err(error(
+                                range,
+                                "pointer-to-integer transmute in constants is not supported yet"
+                                    .into(),
+                            ));
                         }
-                        let value = if matches!((from.kind(), to.kind(), &value), (TyKind::FnPtr(_), TyKind::FnPtr(_), Value::Function(_))) {
+                        let value = if matches!(
+                            (from.kind(), to.kind(), &value),
+                            (TyKind::FnPtr(_), TyKind::FnPtr(_), Value::Function(_))
+                        ) {
                             value
                         } else {
                             self.memory_value(&value, from, 0, to, range, 0)?
                         };
                         write(locals, dest, value, range)?;
                         match target {
-                            Some(target) => { block = *target; continue; }
+                            Some(target) => {
+                                block = *target;
+                                continue;
+                            }
                             None => return Err(error(range, "entering unreachable code".into())),
                         }
                     }
                     // Only code generation expands them.
-                    if self.items.functions[*func].intrinsic {
+                    if self.items.functions[*func].intrinsic.is_some() {
                         return Err(error(
                             range,
                             "this operation is not supported in constants yet".to_owned(),
@@ -1701,7 +1801,8 @@ impl<'a> Evaluator<'a> {
                 self.promoted_layouts(value, range)?
             }
             Value::PointerView { pointer, .. } => self.promoted_layouts(pointer, range)?,
-            Value::Float { .. } | Value::Int { .. }
+            Value::Float { .. }
+            | Value::Int { .. }
             | Value::Bool(_)
             | Value::Static(_)
             | Value::StaticPart { .. }
@@ -2130,7 +2231,9 @@ impl<'a> Evaluator<'a> {
                         "pointers cannot be cast to integers during const eval".to_owned(),
                     ));
                 }
-                if let Some(result) = float_cast(&value, to.subst(generics)) { return Ok(result); }
+                if let Some(result) = float_cast(&value, to.subst(generics)) {
+                    return Ok(result);
+                }
                 let bits = match value {
                     Value::Float { .. } => unreachable!("typed numeric cast"),
                     Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
@@ -2156,7 +2259,10 @@ impl<'a> Evaluator<'a> {
             }
             Rvalue::UnaryOp(op, operand) => {
                 match (op, self.operand(locals, generics, operand, range)?) {
-                    (UnOp::Neg, Value::Float { bits, ty }) => Ok(Value::Float { bits: bits ^ (1u64 << (ty.bits()-1)), ty }),
+                    (UnOp::Neg, Value::Float { bits, ty }) => Ok(Value::Float {
+                        bits: bits ^ (1u64 << (ty.bits() - 1)),
+                        ty,
+                    }),
                     (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
                     (UnOp::Not, Value::Int { bits, ty }) => Ok(Value::Int {
                         bits: truncate(!bits, ty),
@@ -2542,7 +2648,9 @@ fn write(
 
 /// `l op r`; an error message if it would overflow or divide by zero.
 pub fn binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, String> {
-    if let Some(value) = float_binary(op, l, r) { return Ok(value); }
+    if let Some(value) = float_binary(op, l, r) {
+        return Ok(value);
+    }
     let (lb, rb, ty) = match (l, r) {
         (Value::Bool(a), Value::Bool(b)) => {
             let value = match op {
@@ -2681,7 +2789,10 @@ pub fn wrapping_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, String>
 /// `u8::MAX`.
 pub fn show(value: &Value) -> String {
     match *value {
-        Value::Float { bits, ty } => match ty { flux_ty::FloatTy::F32 => format!("{:?}_f32", f32::from_bits(bits as u32)), flux_ty::FloatTy::F64 => format!("{:?}_f64", f64::from_bits(bits)) },
+        Value::Float { bits, ty } => match ty {
+            flux_ty::FloatTy::F32 => format!("{:?}_f32", f32::from_bits(bits as u32)),
+            flux_ty::FloatTy::F64 => format!("{:?}_f64", f64::from_bits(bits)),
+        },
         Value::Int { bits, ty } => {
             let name = ty.name();
             if bits == truncate(ty.max(), ty) {
@@ -2777,6 +2888,91 @@ fn constant_index(len: usize, offset: u32, from_end: bool) -> usize {
     }
 }
 
+/// Numeric casts use Rust's target-width rounding and saturating float-to-int rules.
+pub(crate) fn float_cast(value: &Value, to: Ty) -> Option<Value> {
+    use flux_ty::{FloatTy, IntTy};
+    if let Some(target) = to.as_float() {
+        macro_rules! convert {
+            ($v:expr) => {
+                match target {
+                    FloatTy::F32 => u64::from(($v as f32).to_bits()),
+                    FloatTy::F64 => ($v as f64).to_bits(),
+                }
+            };
+        }
+        let bits = match *value {
+            Value::Float {
+                bits,
+                ty: FloatTy::F32,
+            } => convert!(f32::from_bits(bits as u32)),
+            Value::Float {
+                bits,
+                ty: FloatTy::F64,
+            } => convert!(f64::from_bits(bits)),
+            Value::Int { bits, ty } if ty.is_signed() => convert!(sign_extend(bits, ty)),
+            Value::Int { bits, .. } => convert!(bits),
+            _ => return None,
+        };
+        return Some(Value::Float { bits, ty: target });
+    }
+    let Value::Float { bits, ty } = *value else {
+        return None;
+    };
+    let value = match ty {
+        FloatTy::F32 => f64::from(f32::from_bits(bits as u32)),
+        FloatTy::F64 => f64::from_bits(bits),
+    };
+    let target = to.as_int()?;
+    let bits = match target {
+        IntTy::I8 => (value as i8) as u128,
+        IntTy::I16 => (value as i16) as u128,
+        IntTy::I32 => (value as i32) as u128,
+        IntTy::I64 | IntTy::Isize => (value as i64) as u128,
+        IntTy::I128 => (value as i128) as u128,
+        IntTy::U8 => (value as u8) as u128,
+        IntTy::U16 => (value as u16) as u128,
+        IntTy::U32 => (value as u32) as u128,
+        IntTy::U64 | IntTy::Usize => (value as u64) as u128,
+        IntTy::U128 => value as u128,
+    };
+    Some(Value::Int {
+        bits: truncate(bits, target),
+        ty: target,
+    })
+}
+
+fn float_binary(op: BinOp, l: &Value, r: &Value) -> Option<Value> {
+    use flux_ty::FloatTy;
+    let (&Value::Float { bits: a, ty }, &Value::Float { bits: b, ty: other }) = (l, r) else {
+        return None;
+    };
+    assert_eq!(ty, other);
+    macro_rules! calculate {
+        ($a:expr, $b:expr) => {{
+            let (a, b) = ($a, $b);
+            let bits = match op {
+                BinOp::Eq => return Some(Value::Bool(a == b)),
+                BinOp::Ne => return Some(Value::Bool(a != b)),
+                BinOp::Lt => return Some(Value::Bool(a < b)),
+                BinOp::Le => return Some(Value::Bool(a <= b)),
+                BinOp::Gt => return Some(Value::Bool(a > b)),
+                BinOp::Ge => return Some(Value::Bool(a >= b)),
+                BinOp::Add => (a + b).to_bits() as u64,
+                BinOp::Sub => (a - b).to_bits() as u64,
+                BinOp::Mul => (a * b).to_bits() as u64,
+                BinOp::Div => (a / b).to_bits() as u64,
+                BinOp::Rem => (a % b).to_bits() as u64,
+                _ => unreachable!("typed float operation"),
+            };
+            Value::Float { bits, ty }
+        }};
+    }
+    Some(match ty {
+        FloatTy::F32 => calculate!(f32::from_bits(a as u32), f32::from_bits(b as u32)),
+        FloatTy::F64 => calculate!(f64::from_bits(a), f64::from_bits(b)),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2841,50 +3037,4 @@ mod tests {
         };
         assert!(Arc::ptr_eq(&first, &second));
     }
-}
-
-/// Numeric casts use Rust's target-width rounding and saturating float-to-int rules.
-pub(crate) fn float_cast(value: &Value, to: Ty) -> Option<Value> {
-    use flux_ty::{FloatTy, IntTy};
-    if let Some(target) = to.as_float() {
-        macro_rules! convert { ($v:expr) => { match target { FloatTy::F32 => u64::from(($v as f32).to_bits()), FloatTy::F64 => ($v as f64).to_bits() } }; }
-        let bits = match *value {
-            Value::Float { bits, ty: FloatTy::F32 } => convert!(f32::from_bits(bits as u32)),
-            Value::Float { bits, ty: FloatTy::F64 } => convert!(f64::from_bits(bits)),
-            Value::Int { bits, ty } if ty.is_signed() => convert!(sign_extend(bits, ty)),
-            Value::Int { bits, .. } => convert!(bits),
-            _ => return None,
-        };
-        return Some(Value::Float { bits, ty: target });
-    }
-    let Value::Float { bits, ty } = *value else { return None; };
-    let value = match ty { FloatTy::F32 => f64::from(f32::from_bits(bits as u32)), FloatTy::F64 => f64::from_bits(bits) };
-    let target = to.as_int()?;
-    let bits = match target {
-        IntTy::I8 => (value as i8) as u128, IntTy::I16 => (value as i16) as u128,
-        IntTy::I32 => (value as i32) as u128, IntTy::I64 | IntTy::Isize => (value as i64) as u128,
-        IntTy::I128 => (value as i128) as u128, IntTy::U8 => (value as u8) as u128,
-        IntTy::U16 => (value as u16) as u128, IntTy::U32 => (value as u32) as u128,
-        IntTy::U64 | IntTy::Usize => (value as u64) as u128, IntTy::U128 => value as u128,
-    };
-    Some(Value::Int { bits: truncate(bits, target), ty: target })
-}
-
-fn float_binary(op: BinOp, l: &Value, r: &Value) -> Option<Value> {
-    use flux_ty::FloatTy;
-    let (&Value::Float { bits: a, ty }, &Value::Float { bits: b, ty: other }) = (l, r) else { return None; };
-    assert_eq!(ty, other);
-    macro_rules! calculate { ($a:expr, $b:expr) => {{
-        let (a, b) = ($a, $b);
-        let bits = match op {
-            BinOp::Eq => return Some(Value::Bool(a == b)), BinOp::Ne => return Some(Value::Bool(a != b)),
-            BinOp::Lt => return Some(Value::Bool(a < b)), BinOp::Le => return Some(Value::Bool(a <= b)),
-            BinOp::Gt => return Some(Value::Bool(a > b)), BinOp::Ge => return Some(Value::Bool(a >= b)),
-            BinOp::Add => (a+b).to_bits() as u64, BinOp::Sub => (a-b).to_bits() as u64,
-            BinOp::Mul => (a*b).to_bits() as u64, BinOp::Div => (a/b).to_bits() as u64,
-            BinOp::Rem => (a%b).to_bits() as u64, _ => unreachable!("typed float operation"),
-        };
-        Value::Float { bits, ty }
-    }}; }
-    Some(match ty { FloatTy::F32 => calculate!(f32::from_bits(a as u32), f32::from_bits(b as u32)), FloatTy::F64 => calculate!(f64::from_bits(a), f64::from_bits(b)) })
 }

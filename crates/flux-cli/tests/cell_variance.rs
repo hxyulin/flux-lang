@@ -134,9 +134,9 @@ fn covariance_and_safe_mutation_constraints() {
         );
     }
     oracle(
-        "unsupported_fn_regions",
+        "fn_regions",
         "fn f<'a>(x: fn(&'a u32)) -> fn(&'a u32) { x }",
         true,
-        false,
+        true,
     );
 }

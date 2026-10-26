@@ -91,18 +91,19 @@ fn const_addresses_match_rustc() {
 }
 
 #[test]
-fn wide_address_casts_remain_rejected() {
+fn array_address_unsizing_keeps_the_const_evaluation_boundary() {
     let text =
         "const P:*const [u8]=(37usize as *const [u8; 3]) as *const [u8]; fn main(){let _=P;}";
     let (_, _, hir) = flux_hir::lower_text("unsize.rs", text);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
     assert!(
-        typed
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("cannot cast thin pointer")),
+        mir.diagnostics.iter().any(|d| d.message.contains(
+            "unsizing raw addresses or reinterpreted pointers in constants is not supported yet"
+        )),
         "{:?}",
-        typed.diagnostics
+        mir.diagnostics
     );
 }

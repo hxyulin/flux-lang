@@ -111,7 +111,7 @@ fn main() -> () {
     }
 }
 
-fn <Token as ::core::clone::Clone>::clone(_1: &Token) -> Token {
+fn <Token as $crate0::clone::Clone>::clone(_1: &Token) -> Token {
     let mut _0: Token;
     let _2: ();
     let _3: isize;

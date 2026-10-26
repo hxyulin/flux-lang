@@ -172,19 +172,19 @@ pub(crate) fn glue_at(toks: &[Tok], i: usize) -> Glued {
     };
     if toks[i].kind.is_punct() {
         for &composite in COMPOSITES {
-        let parts = composite.composite_parts().expect("composite");
-        let fits = parts.iter().enumerate().all(|(j, &part)| {
-            toks.get(i + j).is_some_and(|t| t.kind == part)
-            && (j + 1 == parts.len() || toks[i + j].joint)
-        });
-        if fits {
-            glued = Glued {
-            kind: composite,
-            raw: i as u32,
-            len: parts.len() as u32,
-            };
-            break;
-        }
+            let parts = composite.composite_parts().expect("composite");
+            let fits = parts.iter().enumerate().all(|(j, &part)| {
+                toks.get(i + j).is_some_and(|t| t.kind == part)
+                    && (j + 1 == parts.len() || toks[i + j].joint)
+            });
+            if fits {
+                glued = Glued {
+                    kind: composite,
+                    raw: i as u32,
+                    len: parts.len() as u32,
+                };
+                break;
+            }
         }
     }
     glued

@@ -71,7 +71,7 @@ struct NoTraits;
     let dir = std::env::temp_dir().join(format!("flux-btree-map-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let wrapper = format!(
-        "mod vec {{ pub use std::vec::Vec; }}\n#[path = {implementation:?}] mod implementation;\n"
+        "mod vec {{ pub use std::vec::{{Vec, IntoIter}}; }}\n#[path = {implementation:?}] mod implementation;\n"
     );
     // The implementation file is loaded verbatim. Only the driver's import changes.
     let wrapped = format!(

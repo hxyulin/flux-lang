@@ -25,6 +25,7 @@ error 225..229: cannot find type `Nope` in this scope
 error 250..251: the placeholder `_` is not allowed within types on item signatures for type aliases
 error 267..273: cycle detected when expanding type alias `Cycle1`
 error 320..324: cannot find trait `Nope` in this scope
+error 320..324: cannot find trait `Nope` in this scope
 error 392..397: missing generics for type alias `Twice`
 error 417..422: type alias takes 1 generic argument but 2 generic arguments were supplied
 error 453..459: type alias `Hidden` is private

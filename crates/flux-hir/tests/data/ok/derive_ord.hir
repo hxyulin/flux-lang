@@ -16,82 +16,82 @@ enum Computed { First = (START + 1), Second = First + 1 }
 
 enum Single { Only(u8) = 0 }
 
-impl ::core::cmp::PartialEq for Point;
+impl $crate0::cmp::PartialEq for Point;
 
-impl ::core::cmp::Eq for Point;
+impl $crate0::cmp::Eq for Point;
 
-impl ::core::cmp::PartialOrd for Point;
+impl $crate0::cmp::PartialOrd for Point;
 
-impl ::core::cmp::Ord for Point;
+impl $crate0::cmp::Ord for Point;
 
-impl ::core::cmp::PartialEq for Tuple;
+impl $crate0::cmp::PartialEq for Tuple;
 
-impl ::core::cmp::PartialOrd for Tuple;
+impl $crate0::cmp::PartialOrd for Tuple;
 
-impl ::core::cmp::PartialEq for Unit;
+impl $crate0::cmp::PartialEq for Unit;
 
-impl ::core::cmp::Eq for Unit;
+impl $crate0::cmp::Eq for Unit;
 
-impl ::core::cmp::PartialOrd for Unit;
+impl $crate0::cmp::PartialOrd for Unit;
 
-impl ::core::cmp::Ord for Unit;
+impl $crate0::cmp::Ord for Unit;
 
-impl<T> ::core::cmp::PartialEq for Wrapper<T> where T: ::core::cmp::PartialEq;
+impl<T> $crate0::cmp::PartialEq for Wrapper<T> where T: $crate0::cmp::PartialEq;
 
-impl<T> ::core::cmp::Eq for Wrapper<T> where T: ::core::cmp::Eq;
+impl<T> $crate0::cmp::Eq for Wrapper<T> where T: $crate0::cmp::Eq;
 
-impl<T> ::core::cmp::PartialOrd for Wrapper<T> where T: ::core::cmp::PartialOrd;
+impl<T> $crate0::cmp::PartialOrd for Wrapper<T> where T: $crate0::cmp::PartialOrd;
 
-impl<T> ::core::cmp::Ord for Wrapper<T> where T: ::core::cmp::Ord;
+impl<T> $crate0::cmp::Ord for Wrapper<T> where T: $crate0::cmp::Ord;
 
-impl ::core::cmp::PartialEq for Fieldless;
+impl $crate0::cmp::PartialEq for Fieldless;
 
-impl ::core::cmp::Eq for Fieldless;
+impl $crate0::cmp::Eq for Fieldless;
 
-impl ::core::cmp::PartialOrd for Fieldless;
+impl $crate0::cmp::PartialOrd for Fieldless;
 
-impl ::core::cmp::Ord for Fieldless;
+impl $crate0::cmp::Ord for Fieldless;
 
-impl ::core::cmp::PartialEq for Mixed;
+impl $crate0::cmp::PartialEq for Mixed;
 
-impl ::core::cmp::Eq for Mixed;
+impl $crate0::cmp::Eq for Mixed;
 
-impl ::core::cmp::PartialOrd for Mixed;
+impl $crate0::cmp::PartialOrd for Mixed;
 
-impl ::core::cmp::Ord for Mixed;
+impl $crate0::cmp::Ord for Mixed;
 
-impl ::core::cmp::PartialEq for Signed;
+impl $crate0::cmp::PartialEq for Signed;
 
-impl ::core::cmp::PartialOrd for Signed;
+impl $crate0::cmp::PartialOrd for Signed;
 
-impl ::core::cmp::PartialEq for Computed;
+impl $crate0::cmp::PartialEq for Computed;
 
-impl ::core::cmp::Eq for Computed;
+impl $crate0::cmp::Eq for Computed;
 
-impl ::core::cmp::PartialOrd for Computed;
+impl $crate0::cmp::PartialOrd for Computed;
 
-impl ::core::cmp::Ord for Computed;
+impl $crate0::cmp::Ord for Computed;
 
-impl ::core::cmp::PartialEq for Single;
+impl $crate0::cmp::PartialEq for Single;
 
-impl ::core::cmp::PartialOrd for Single;
+impl $crate0::cmp::PartialOrd for Single;
 
 fn main() -> () {
     let _a@0 = (Point { x: 1, y: 2, z: 3 } < Point { x: 1, y: 2, z: 4 });
     let _b@1: Ordering = Mixed::Unit.cmp((&Mixed::Record { a: true }));
 }
 
-fn <Point as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Point as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     (((self@0.x == other@1.x) && (self@0.y == other@1.y)) && (self@0.z == other@1.z))
 }
 
-fn <Point as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
+fn <Point as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
     Eq::assert_receiver_is_total_eq((&self@0.x));
     Eq::assert_receiver_is_total_eq((&self@0.y));
     Eq::assert_receiver_is_total_eq((&self@0.z));
 }
 
-fn <Point as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
+fn <Point as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
     match PartialOrd::partial_cmp((&self@0.x), (&other@1.x)) {
         Option::Some(Ordering::Equal) => match PartialOrd::partial_cmp((&self@0.y), (&other@1.y)) {
             Option::Some(Ordering::Equal) => PartialOrd::partial_cmp((&self@0.z), (&other@1.z)),
@@ -101,7 +101,7 @@ fn <Point as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self
     }
 }
 
-fn <Point as ::core::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> ::core::cmp::Ordering {
+fn <Point as $crate0::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> $crate0::cmp::Ordering {
     match Ord::cmp((&self@0.x), (&other@1.x)) {
         Ordering::Equal => match Ord::cmp((&self@0.y), (&other@1.y)) {
             Ordering::Equal => Ord::cmp((&self@0.z), (&other@1.z)),
@@ -111,52 +111,52 @@ fn <Point as ::core::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> ::core::cm
     }
 }
 
-fn <Tuple as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Tuple as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     (self@0.0 == other@1.0)
 }
 
-fn <Tuple as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
+fn <Tuple as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
     PartialOrd::partial_cmp((&self@0.0), (&other@1.0))
 }
 
-fn <Unit as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Unit as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     true
 }
 
-fn <Unit as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {}
+fn <Unit as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {}
 
-fn <Unit as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
+fn <Unit as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
     Option::Some(Ordering::Equal)
 }
 
-fn <Unit as ::core::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> ::core::cmp::Ordering {
+fn <Unit as $crate0::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> $crate0::cmp::Ordering {
     Ordering::Equal
 }
 
-fn <Wrapper<T> as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Wrapper<T> as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     ((self@0.0 == other@1.0) && (self@0.1 == other@1.1))
 }
 
-fn <Wrapper<T> as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
+fn <Wrapper<T> as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
     Eq::assert_receiver_is_total_eq((&self@0.0));
     Eq::assert_receiver_is_total_eq((&self@0.1));
 }
 
-fn <Wrapper<T> as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
+fn <Wrapper<T> as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
     match PartialOrd::partial_cmp((&self@0.0), (&other@1.0)) {
         Option::Some(Ordering::Equal) => PartialOrd::partial_cmp((&self@0.1), (&other@1.1)),
         cmp@2 => cmp@2,
     }
 }
 
-fn <Wrapper<T> as ::core::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> ::core::cmp::Ordering {
+fn <Wrapper<T> as $crate0::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> $crate0::cmp::Ordering {
     match Ord::cmp((&self@0.0), (&other@1.0)) {
         Ordering::Equal => Ord::cmp((&self@0.1), (&other@1.1)),
         cmp@2 => cmp@2,
     }
 }
 
-fn <Fieldless as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Fieldless as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     match self@0 {
         Fieldless::A => match other@1 {
             Fieldless::A => true,
@@ -169,14 +169,14 @@ fn <Fieldless as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> b
     }
 }
 
-fn <Fieldless as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
+fn <Fieldless as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
     match self@0 {
         Fieldless::A => {},
         Fieldless::B => {},
     }
 }
 
-fn <Fieldless as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
+fn <Fieldless as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
     let __self_discr@2 = match self@0 {
         Fieldless::A => 0isize,
         Fieldless::B => 1isize,
@@ -188,7 +188,7 @@ fn <Fieldless as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &
     PartialOrd::partial_cmp((&__self_discr@2), (&__arg1_discr@3))
 }
 
-fn <Fieldless as ::core::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> ::core::cmp::Ordering {
+fn <Fieldless as $crate0::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> $crate0::cmp::Ordering {
     let __self_discr@2 = match self@0 {
         Fieldless::A => 0isize,
         Fieldless::B => 1isize,
@@ -200,7 +200,7 @@ fn <Fieldless as ::core::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> ::core
     Ord::cmp((&__self_discr@2), (&__arg1_discr@3))
 }
 
-fn <Mixed as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Mixed as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     match self@0 {
         Mixed::Unit => match other@1 {
             Mixed::Unit => true,
@@ -217,7 +217,7 @@ fn <Mixed as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool 
     }
 }
 
-fn <Mixed as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
+fn <Mixed as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
     match self@0 {
         Mixed::Unit => {},
         Mixed::Tuple(__self_0@1, __self_1@2) => {
@@ -230,7 +230,7 @@ fn <Mixed as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () 
     }
 }
 
-fn <Mixed as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
+fn <Mixed as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
     let __self_discr@2 = match self@0 {
         Mixed::Unit => 0isize,
         Mixed::Tuple(..) => 1isize,
@@ -257,7 +257,7 @@ fn <Mixed as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self
     }
 }
 
-fn <Mixed as ::core::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> ::core::cmp::Ordering {
+fn <Mixed as $crate0::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> $crate0::cmp::Ordering {
     let __self_discr@2 = match self@0 {
         Mixed::Unit => 0isize,
         Mixed::Tuple(..) => 1isize,
@@ -284,7 +284,7 @@ fn <Mixed as ::core::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> ::core::cm
     }
 }
 
-fn <Signed as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Signed as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     match self@0 {
         Signed::Low => match other@1 {
             Signed::Low => true,
@@ -301,7 +301,7 @@ fn <Signed as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool
     }
 }
 
-fn <Signed as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
+fn <Signed as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
     let __self_discr@2 = match self@0 {
         Signed::Low => (-1i8),
         Signed::High => 5i8,
@@ -315,7 +315,7 @@ fn <Signed as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Sel
     PartialOrd::partial_cmp((&__self_discr@2), (&__arg1_discr@3))
 }
 
-fn <Computed as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Computed as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     match self@0 {
         Computed::First => match other@1 {
             Computed::First => true,
@@ -328,14 +328,14 @@ fn <Computed as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bo
     }
 }
 
-fn <Computed as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
+fn <Computed as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
     match self@0 {
         Computed::First => {},
         Computed::Second => {},
     }
 }
 
-fn <Computed as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
+fn <Computed as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
     let __self_discr@2 = match self@0 {
         Computed::First => _,
         Computed::Second => (_ + 1isize),
@@ -347,7 +347,7 @@ fn <Computed as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &S
     PartialOrd::partial_cmp((&__self_discr@2), (&__arg1_discr@3))
 }
 
-fn <Computed as ::core::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> ::core::cmp::Ordering {
+fn <Computed as $crate0::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> $crate0::cmp::Ordering {
     let __self_discr@2 = match self@0 {
         Computed::First => _,
         Computed::Second => (_ + 1isize),
@@ -359,7 +359,7 @@ fn <Computed as ::core::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> ::core:
     Ord::cmp((&__self_discr@2), (&__arg1_discr@3))
 }
 
-fn <Single as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Single as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     match self@0 {
         Single::Only(__self_0@2) => match other@1 {
             Single::Only(__other_0@3) => ((*__self_0@2) == (*__other_0@3)),
@@ -368,7 +368,7 @@ fn <Single as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool
     }
 }
 
-fn <Single as ::core::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
+fn <Single as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
     match self@0 {
         Single::Only(__self_0@2) => match other@1 {
             Single::Only(__arg1_0@3) => PartialOrd::partial_cmp(__self_0@2, __arg1_0@3),

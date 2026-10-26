@@ -263,9 +263,14 @@ fn main::{closure#18} as FnOnce(_1: {closure}, _2: ()) -> () {
 
 fn main::{closure#29} as Fn(_1: &{closure}, _2: ()) -> usize {
     let mut _0: usize;
+    let _3: &[i32];
 
     bb0: {
-        _0 = Len(&(*(*_1).0));
+        _3 = &(*(*_1).0);
+        _0 = len::<i32>(copy _3) -> bb1;
+    }
+
+    bb1: {
         return;
     }
 }
@@ -307,7 +312,7 @@ fn main::{closure#39} as FnMut(_1: &mut {closure}, _2: ()) -> () {
     let _3: &mut S;
 
     bb0: {
-        _3 = &mut (*(*_1).0);
+        _3 = &two_phase (*(*_1).0);
         _0 = by_mut(move _3) -> bb1;
     }
 

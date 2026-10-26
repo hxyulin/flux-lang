@@ -1,37 +1,16 @@
 //! Executes the unchanged complete arena source graph, without its Cargo manifest.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
+mod support;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 // File-backed output avoids a full pipe blocking a child before its timeout.
 fn bounded(root: &Path, label: &str, command: &mut Command) -> Output {
-    let stdout = root.join(format!("{label}.stdout"));
-    let stderr = root.join(format!("{label}.stderr"));
-    let mut child = command
-        .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
-        .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()))
-        .env_remove("RUST_BACKTRACE")
-        .spawn()
-        .unwrap();
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if start.elapsed() > Duration::from_secs(60) {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("{label} timed out");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    Output {
-        status,
-        stdout: std::fs::read(stdout).unwrap(),
-        stderr: std::fs::read(stderr).unwrap(),
-    }
+    command.env_remove("RUST_BACKTRACE");
+    support::process::run(command, root, label, Duration::from_secs(60)).completed()
 }
 
 fn compile(root: &Path, source: &Path, output: &Path, flux: bool, optimized: bool) {

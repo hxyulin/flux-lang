@@ -46,50 +46,53 @@ fn main() -> () {
     let _8: usize;
     let _9: bool;
     let _10: usize;
-    let _11: &mut [i32]; // m
-    let _12: &mut [i32; 4];
-    let _13: &mut [i32];
-    let _14: RangeTo<usize>;
-    let _15: &mut [i32];
-    let _16: &[i32]; // n
-    let _17: &[i32; 4];
-    let _18: &[i32];
-    let _19: RangeFrom<usize>;
-    let _20: &[i32];
-    let _21: ();
-    let _22: usize;
+    let _11: &[i32];
+    let _12: &mut [i32]; // m
+    let _13: &mut [i32; 4];
+    let _14: &mut [i32];
+    let _15: RangeTo<usize>;
+    let _16: &mut [i32];
+    let _17: &[i32]; // n
+    let _18: &[i32; 4];
+    let _19: &[i32];
+    let _20: RangeFrom<usize>;
+    let _21: &[i32];
+    let _22: ();
     let _23: usize;
-    let _24: bool;
-    let _25: usize;
-    let _26: [i32; 3]; // v
-    let _27: &[i32]; // w
-    let _28: &[i32; 3];
-    let _29: &[i32];
-    let _30: RangeFrom<usize>;
+    let _24: usize;
+    let _25: bool;
+    let _26: usize;
+    let _27: &[i32];
+    let _28: [i32; 3]; // v
+    let _29: &[i32]; // w
+    let _30: &[i32; 3];
     let _31: &[i32];
-    let _32: ();
-    let _33: usize;
-    let _34: usize;
-    let _35: bool;
-    let _36: &mut [i32]; // t
-    let _37: &mut [i32; 4];
-    let _38: &mut [i32; 4];
-    let _39: &mut [i32]; // u
-    let _40: &mut [i32];
-    let _41: RangeTo<usize>;
-    let _42: usize;
-    let _43: usize;
-    let _44: &mut [i32];
-    let _45: ();
-    let _46: usize;
-    let _47: usize;
-    let _48: bool;
-    let mut _49: G; // g
-    let _50: [i32; 4];
-    let _51: ();
-    let _52: &mut G;
-    let _53: usize;
-    let _54: &mut i32;
+    let _32: RangeFrom<usize>;
+    let _33: &[i32];
+    let _34: ();
+    let _35: usize;
+    let _36: usize;
+    let _37: bool;
+    let _38: &mut [i32]; // t
+    let _39: &mut [i32; 4];
+    let _40: &mut [i32; 4];
+    let _41: &mut [i32]; // u
+    let _42: &mut [i32];
+    let _43: RangeTo<usize>;
+    let _44: usize;
+    let _45: usize;
+    let _46: &[i32];
+    let _47: &mut [i32];
+    let _48: ();
+    let _49: usize;
+    let _50: usize;
+    let _51: bool;
+    let mut _52: G; // g
+    let _53: [i32; 4];
+    let _54: ();
+    let _55: &mut G;
+    let _56: usize;
+    let _57: &mut i32;
 
     bb0: {
         _1 = [const 1_i32, const 2_i32, const 3_i32, const 4_i32];
@@ -109,92 +112,104 @@ fn main() -> () {
     bb2: {
         _1[_8] = const 5_i32;
         _7 = const ();
-        _10 = Len(&(*_2));
-        StorageDead(_10);
-        _12 = &mut _1;
-        _13 = move _12 as &mut [i32] (unsize);
-        _14 = RangeTo { end: const 2_usize };
-        _15 = index_mut::<[i32], RangeTo<usize>>(move _13, copy _14) -> bb3;
+        _11 = &(*_2);
+        _10 = len::<i32>(copy _11) -> bb3;
     }
 
     bb3: {
-        _11 = &mut (*_15);
-        _17 = &_1;
-        _18 = copy _17 as &[i32] (unsize);
-        _19 = RangeFrom { start: const 2_usize };
-        _20 = index::<[i32], RangeFrom<usize>>(move _18, move _19) -> bb4;
+        StorageDead(_10);
+        _13 = &mut _1;
+        _14 = move _13 as &mut [i32] (unsize);
+        _15 = RangeTo { end: const 2_usize };
+        _16 = index_mut::<[i32], RangeTo<usize>>(move _14, copy _15) -> bb4;
     }
 
     bb4: {
-        _16 = &(*_20);
-        _22 = const 0_usize;
-        _23 = Len((*_11));
-        _24 = Lt(copy _22, copy _23);
-        assert(copy _24, "index out of bounds") -> bb5;
+        _12 = &mut (*_16);
+        _18 = &_1;
+        _19 = copy _18 as &[i32] (unsize);
+        _20 = RangeFrom { start: const 2_usize };
+        _21 = index::<[i32], RangeFrom<usize>>(move _19, move _20) -> bb5;
     }
 
     bb5: {
-        (*_11)[_22] = const 1_i32;
-        _21 = const ();
-        _25 = Len(&(*_16));
-        StorageDead(_25);
-        _26 = [const 1_i32, const 2_i32, const 3_i32];
-        _28 = &_26;
-        _29 = copy _28 as &[i32] (unsize);
-        _30 = RangeFrom { start: const 1_usize };
-        _31 = index::<[i32], RangeFrom<usize>>(move _29, move _30) -> bb6;
+        _17 = &(*_21);
+        _23 = const 0_usize;
+        _24 = Len((*_12));
+        _25 = Lt(copy _23, copy _24);
+        assert(copy _25, "index out of bounds") -> bb6;
     }
 
     bb6: {
-        _27 = &(*_31);
-        _33 = const 0_usize;
-        _34 = Len((*_27));
-        _35 = Lt(copy _33, copy _34);
-        assert(copy _35, "index out of bounds") -> bb7;
+        (*_12)[_23] = const 1_i32;
+        _22 = const ();
+        _27 = &(*_17);
+        _26 = len::<i32>(copy _27) -> bb7;
     }
 
     bb7: {
-        (*_27)[_33] = const 3_i32;
-        _32 = const ();
-        _38 = &mut _1;
-        _37 = &mut (*_38);
-        _36 = move _37 as &mut [i32] (unsize);
-        _40 = &mut (*_36);
-        _43 = Len(&(*_36));
-        _42 = Sub(copy _43, const 1_usize);
-        _41 = RangeTo { end: copy _42 };
-        _44 = index_mut::<[i32], RangeTo<usize>>(move _40, copy _41) -> bb8;
+        StorageDead(_26);
+        _28 = [const 1_i32, const 2_i32, const 3_i32];
+        _30 = &_28;
+        _31 = copy _30 as &[i32] (unsize);
+        _32 = RangeFrom { start: const 1_usize };
+        _33 = index::<[i32], RangeFrom<usize>>(move _31, move _32) -> bb8;
     }
 
     bb8: {
-        _39 = &mut (*_44);
-        _46 = const 0_usize;
-        _47 = Len((*_39));
-        _48 = Lt(copy _46, copy _47);
-        assert(copy _48, "index out of bounds") -> bb9;
+        _29 = &(*_33);
+        _35 = const 0_usize;
+        _36 = Len((*_29));
+        _37 = Lt(copy _35, copy _36);
+        assert(copy _37, "index out of bounds") -> bb9;
     }
 
     bb9: {
-        (*_39)[_46] = const 3_i32;
-        _45 = const ();
-        _50 = [const 0_i32; 4];
-        _49 = G { cells: copy _50, w: const 2_usize };
-        _52 = &mut _49;
-        _53 = copy _49.1;
-        _54 = index_mut::<G, usize>(move _52, copy _53) -> bb10;
+        (*_29)[_35] = const 3_i32;
+        _34 = const ();
+        _40 = &mut _1;
+        _39 = &mut (*_40);
+        _38 = move _39 as &mut [i32] (unsize);
+        _42 = &mut (*_38);
+        _46 = &(*_38);
+        _45 = len::<i32>(copy _46) -> bb10;
     }
 
     bb10: {
-        (*_54) = const 1_i32;
-        _51 = const ();
+        _44 = Sub(copy _45, const 1_usize);
+        _43 = RangeTo { end: copy _44 };
+        _47 = index_mut::<[i32], RangeTo<usize>>(move _42, copy _43) -> bb11;
+    }
+
+    bb11: {
+        _41 = &mut (*_47);
+        _49 = const 0_usize;
+        _50 = Len((*_41));
+        _51 = Lt(copy _49, copy _50);
+        assert(copy _51, "index out of bounds") -> bb12;
+    }
+
+    bb12: {
+        (*_41)[_49] = const 3_i32;
+        _48 = const ();
+        _53 = [const 0_i32; 4];
+        _52 = G { cells: copy _53, w: const 2_usize };
+        _55 = &mut _52;
+        _56 = copy _52.1;
+        _57 = index_mut::<G, usize>(move _55, copy _56) -> bb13;
+    }
+
+    bb13: {
+        (*_57) = const 1_i32;
+        _54 = const ();
         _0 = const ();
-        StorageDead(_49);
-        StorageDead(_39);
-        StorageDead(_36);
-        StorageDead(_27);
-        StorageDead(_26);
-        StorageDead(_16);
-        StorageDead(_11);
+        StorageDead(_52);
+        StorageDead(_41);
+        StorageDead(_38);
+        StorageDead(_29);
+        StorageDead(_28);
+        StorageDead(_17);
+        StorageDead(_12);
         StorageDead(_2);
         StorageDead(_1);
         return;

@@ -4,7 +4,7 @@
 //! once its types are known.
 //!
 //! Inside a body, where types have variables, inference selects `impl`
-//! blocks itself ([`crate::infer`]); here every type is known, up to the
+//! blocks itself (`crate::infer`); here every type is known, up to the
 //! generic parameters in scope, which are treated as distinct types that
 //! implement what their bounds say.
 
@@ -815,8 +815,12 @@ impl SignatureImplProof<'_> {
         {
             return true;
         }
-        if let Some(coinductive) = auto_cycle(self.items, goal, stack) { return coinductive; }
-        if stack.len() >= 32 { return false; }
+        if let Some(coinductive) = auto_cycle(self.items, goal, stack) {
+            return coinductive;
+        }
+        if stack.len() >= 32 {
+            return false;
+        }
         if self.select(goal, stack).is_some() {
             return true;
         }
@@ -1139,12 +1143,21 @@ pub fn dyn_principal(ty: Ty, d: crate::DynTy) -> Predicate {
 
 /// What trait object `ty`, `d`, says the associated types of its
 /// trait and supertraits are, and what their traits imply.
-pub fn dyn_projections(items: &ItemTree, sigs: &Signatures, ty: Ty, d: crate::DynTy) -> Vec<Projection> {
+pub fn dyn_projections(
+    items: &ItemTree,
+    sigs: &Signatures,
+    ty: Ty,
+    d: crate::DynTy,
+) -> Vec<Projection> {
     let bounds = dyn_bounds(sigs, ty, d);
     let mut out = Vec::new();
     for p in &bounds {
         for (&name, &assoc) in d.assoc_names.iter().zip(d.assoc_tys) {
-            if !items.traits[p.trait_ref.trait_].types.iter().any(|ty| ty.name == name) {
+            if !items.traits[p.trait_ref.trait_]
+                .types
+                .iter()
+                .any(|ty| ty.name == name)
+            {
                 continue;
             }
             out.push(Projection {
@@ -1328,7 +1341,8 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
         }
         (TyKind::Slice(x), TyKind::Slice(y)) => match_ty(x, y, binds),
         (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-            x.is_unsafe == y.is_unsafe && x.is_c == y.is_c
+            x.is_unsafe == y.is_unsafe
+                && x.is_c == y.is_c
                 && x.inputs_output.len() == y.inputs_output.len()
                 && (x.inputs_output.iter().zip(y.inputs_output))
                     .all(|(&a, &b)| match_ty(a, b, binds))
@@ -1726,8 +1740,12 @@ fn match_impl_sized(
     }
     let args: Vec<_> = binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
     if !crate::fn_regions::same_binders(items, self_ty.subst(&args), goal.self_ty)
-        || trait_ref.args.iter().zip(goal.trait_ref.args).any(|(&a, &b)|
-            !crate::fn_regions::same_binders(items, a.subst(&args), b)) {
+        || trait_ref
+            .args
+            .iter()
+            .zip(goal.trait_ref.args)
+            .any(|(&a, &b)| !crate::fn_regions::same_binders(items, a.subst(&args), b))
+    {
         return None;
     }
     Some(args)
@@ -1735,12 +1753,25 @@ fn match_impl_sized(
 
 /// Match a trait argument without confusing the impl's parameters with the
 /// caller's rigid parameters after normalizing a bound projection.
-fn match_impl_argument(items: &ItemTree, sigs: &Signatures, pattern: Ty, actual: Ty, binds: &mut [Option<Ty>], depth: u32) -> bool {
-    if depth > 64 { return false; }
-    if !pattern.has_aliases() { return match_ty(pattern, actual, binds); }
+fn match_impl_argument(
+    items: &ItemTree,
+    sigs: &Signatures,
+    pattern: Ty,
+    actual: Ty,
+    binds: &mut [Option<Ty>],
+    depth: u32,
+) -> bool {
+    if depth > 64 {
+        return false;
+    }
+    if !pattern.has_aliases() {
+        return match_ty(pattern, actual, binds);
+    }
     fn bound(ty: Ty, binds: &[Option<Ty>]) -> bool {
         match ty.kind() {
-            TyKind::Param(parameter) => binds.get(parameter.index as usize).is_some_and(Option::is_some),
+            TyKind::Param(parameter) => binds
+                .get(parameter.index as usize)
+                .is_some_and(Option::is_some),
             _ => ty.children().all(|ty| bound(ty, binds)),
         }
     }
@@ -1749,13 +1780,25 @@ fn match_impl_argument(items: &ItemTree, sigs: &Signatures, pattern: Ty, actual:
         let normalized = normalize(items, sigs, &[], pattern.subst(&args));
         return normalized == actual;
     }
-    let mut all = |left: &[Ty], right: &[Ty]| left.len() == right.len() && left.iter().zip(right).all(|(&left, &right)| match_impl_argument(items, sigs, left, right, binds, depth + 1));
+    let mut all = |left: &[Ty], right: &[Ty]| {
+        left.len() == right.len()
+            && left.iter().zip(right).all(|(&left, &right)| {
+                match_impl_argument(items, sigs, left, right, binds, depth + 1)
+            })
+    };
     match (pattern.kind(), actual.kind()) {
         (TyKind::Adt(left, xs), TyKind::Adt(right, ys)) => left == right && all(xs, ys),
         (TyKind::Tuple(xs), TyKind::Tuple(ys)) => all(xs, ys),
-        (TyKind::Ref(left, x), TyKind::Ref(right, y)) | (TyKind::RawPtr(left, x), TyKind::RawPtr(right, y)) => left == right && match_impl_argument(items, sigs, x, y, binds, depth + 1),
-        (TyKind::Slice(x), TyKind::Slice(y)) => match_impl_argument(items, sigs, x, y, binds, depth + 1),
-        (TyKind::Array(x, n), TyKind::Array(y, m)) => match_ty(n, m, binds) && match_impl_argument(items, sigs, x, y, binds, depth + 1),
+        (TyKind::Ref(left, x), TyKind::Ref(right, y))
+        | (TyKind::RawPtr(left, x), TyKind::RawPtr(right, y)) => {
+            left == right && match_impl_argument(items, sigs, x, y, binds, depth + 1)
+        }
+        (TyKind::Slice(x), TyKind::Slice(y)) => {
+            match_impl_argument(items, sigs, x, y, binds, depth + 1)
+        }
+        (TyKind::Array(x, n), TyKind::Array(y, m)) => {
+            match_ty(n, m, binds) && match_impl_argument(items, sigs, x, y, binds, depth + 1)
+        }
         _ => match_ty(pattern, actual, binds),
     }
 }
@@ -1831,7 +1874,11 @@ pub fn holds(items: &ItemTree, sigs: &Signatures, env: &[Predicate], goal: Predi
 /// remains an auto trait. Ordinary trait requirements stay inductive.
 fn auto_cycle(items: &ItemTree, goal: Predicate, stack: &[Predicate]) -> Option<bool> {
     let start = stack.iter().position(|p| *p == goal)?;
-    Some(stack[start..].iter().all(|p| is_auto_trait(items, p.trait_ref.trait_)))
+    Some(
+        stack[start..]
+            .iter()
+            .all(|p| is_auto_trait(items, p.trait_ref.trait_)),
+    )
 }
 
 /// [`holds`], within the goals `stack` is proving. As in rustc, a goal
@@ -1850,8 +1897,12 @@ fn holds_at(
     if in_env(sigs, env, goal) {
         return true;
     }
-    if let Some(coinductive) = auto_cycle(items, goal, stack) { return coinductive; }
-    if stack.len() > 256 { return false; }
+    if let Some(coinductive) = auto_cycle(items, goal, stack) {
+        return coinductive;
+    }
+    if stack.len() > 256 {
+        return false;
+    }
     // Outside bodies, a parameter is taken to be sized.
     if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized) {
         return !sigs.is_unsized(goal.self_ty);
@@ -2453,7 +2504,10 @@ pub fn check_impls(
             || imp.generics.lifetimes.iter().any(|p| p.may_dangle);
         let internal_drop = data.lang == Some(flux_intern::sym::drop) && has_may_dangle;
         if has_may_dangle && (!internal_drop || !imp.is_unsafe) {
-            error(imp.def_range, "`may_dangle` requires an unsafe `Drop` impl".into());
+            error(
+                imp.def_range,
+                "`may_dangle` requires an unsafe `Drop` impl".into(),
+            );
         }
         match (imp.is_unsafe, data.is_unsafe) {
             (true, false) if !internal_drop => error(
@@ -2813,7 +2867,11 @@ fn check_method(
     let mismatch = types
         .zip(ranges)
         .chain([((&sig.ret, &expected.ret), ret_range)])
-        .find(|((got, want), _)| !crate::fn_regions::same_shape(**got, **want) && **got != Ty::ERROR && **want != Ty::ERROR);
+        .find(|((got, want), _)| {
+            !crate::fn_regions::same_shape(**got, **want)
+                && **got != Ty::ERROR
+                && **want != Ty::ERROR
+        });
     if let Some((_, range)) = mismatch {
         error(
             range,
@@ -2893,24 +2951,61 @@ fn excluded_by_bounds(
 /// After intersecting two headers, a local trait cannot hold for a closed
 /// foreign constructor with no matching impl. Downstream crates cannot add
 /// an impl for it under Rust's orphan rules (`&[T]`, for example).
-fn intersection_excluded_by_local_bound(items: &ItemTree, sigs: &Signatures, a: ImplId, b: ImplId) -> bool {
+fn intersection_excluded_by_local_bound(
+    items: &ItemTree,
+    sigs: &Signatures,
+    a: ImplId,
+    b: ImplId,
+) -> bool {
     fn closed(items: &ItemTree, ty: Ty) -> bool {
         match ty.kind() {
             TyKind::Ref(_, inner) => closed(items, inner),
-            TyKind::Adt(adt, args) if crate::is_lang_struct(items, adt.strukt, "owned_box") => args.first().is_some_and(|&ty| closed(items, ty)),
-            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Infer(_) | TyKind::Error | TyKind::Opaque(_) | TyKind::Dynamic(_) => false,
+            TyKind::Adt(adt, args) if crate::is_lang_struct(items, adt.strukt, "owned_box") => {
+                args.first().is_some_and(|&ty| closed(items, ty))
+            }
+            TyKind::Param(_)
+            | TyKind::Alias(_)
+            | TyKind::Infer(_)
+            | TyKind::Error
+            | TyKind::Opaque(_)
+            | TyKind::Dynamic(_) => false,
             _ => true,
         }
     }
     let own = items.modules[items.impls[a].module].krate;
-    let a_bounds = sigs.impl_predicates.get(a).map_or(&[][..], |bounds| &**bounds);
-    let b_bounds = sigs.impl_predicates.get(b).map_or(&[][..], |bounds| &**bounds);
-    let local = |predicate: &Predicate| items.modules[items.traits[predicate.trait_ref.trait_].loc.module].krate == own;
-    if !a_bounds.iter().chain(b_bounds).any(local) { return false; }
-    let header = |id| std::iter::once(sigs.impls[id]).chain(sigs.impl_traits[id].args.iter().copied()).collect::<Vec<_>>();
-    let Some((_, bounds)) = unify_headers_with_predicates(&header(a), &header(b), a_bounds, b_bounds) else { return false; };
-    bounds.iter().any(|predicate| local(predicate) && closed(items, predicate.self_ty)
-        && sigs.impl_index.impls_for(items, predicate.trait_ref.trait_, predicate.self_ty).next().is_none())
+    let a_bounds = sigs
+        .impl_predicates
+        .get(a)
+        .map_or(&[][..], |bounds| &**bounds);
+    let b_bounds = sigs
+        .impl_predicates
+        .get(b)
+        .map_or(&[][..], |bounds| &**bounds);
+    let local = |predicate: &Predicate| {
+        items.modules[items.traits[predicate.trait_ref.trait_].loc.module].krate == own
+    };
+    if !a_bounds.iter().chain(b_bounds).any(local) {
+        return false;
+    }
+    let header = |id| {
+        std::iter::once(sigs.impls[id])
+            .chain(sigs.impl_traits[id].args.iter().copied())
+            .collect::<Vec<_>>()
+    };
+    let Some((_, bounds)) =
+        unify_headers_with_predicates(&header(a), &header(b), a_bounds, b_bounds)
+    else {
+        return false;
+    };
+    bounds.iter().any(|predicate| {
+        local(predicate)
+            && closed(items, predicate.self_ty)
+            && sigs
+                .impl_index
+                .impls_for(items, predicate.trait_ref.trait_, predicate.self_ty)
+                .next()
+                .is_none()
+    })
 }
 
 /// `self`, `&self` or `&mut self`, for a `self` parameter of type `ty`.
@@ -3854,7 +3949,12 @@ fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
     unify_headers_with_predicates(a, b, &[], &[]).map(|(header, _)| header)
 }
 
-fn unify_headers_with_predicates(a: &[Ty], b: &[Ty], a_bounds: &[Predicate], b_bounds: &[Predicate]) -> Option<(Vec<Ty>, Vec<Predicate>)> {
+fn unify_headers_with_predicates(
+    a: &[Ty],
+    b: &[Ty],
+    a_bounds: &[Predicate],
+    b_bounds: &[Predicate],
+) -> Option<(Vec<Ty>, Vec<Predicate>)> {
     /// A type in one block's header, and which block.
     type Side = (bool, Ty);
     type Bound = rustc_hash::FxHashMap<(bool, u32), Side>;
@@ -3942,7 +4042,10 @@ fn unify_headers_with_predicates(a: &[Ty], b: &[Ty], a_bounds: &[Predicate], b_b
                 apply(bound, (side, len), depth + 1),
             ),
             TyKind::Slice(t) => Ty::slice(apply(bound, (side, t), depth + 1)),
-            TyKind::Alias(alias) => Ty::alias(AliasTy { args: Ty::list(&apply_all(alias.args)), ..alias }),
+            TyKind::Alias(alias) => Ty::alias(AliasTy {
+                args: Ty::list(&apply_all(alias.args)),
+                ..alias
+            }),
             _ => ty,
         }
     }
@@ -3953,12 +4056,28 @@ fn unify_headers_with_predicates(a: &[Ty], b: &[Ty], a_bounds: &[Predicate], b_b
         .all(|(&x, &y)| unify(&mut bound, (false, x), (true, y), 0));
     unified.then(|| {
         let header = b.iter().map(|&t| apply(&bound, (true, t), 0)).collect();
-        let bounds = [(false, a_bounds), (true, b_bounds)].into_iter().flat_map(|(side, predicates)| {
-            predicates.iter().map(|predicate| Predicate {
-                self_ty: apply(&bound, (side, predicate.self_ty), 0),
-                trait_ref: TraitRef { args: Ty::list(&predicate.trait_ref.args.iter().map(|&ty| apply(&bound, (side, ty), 0)).collect::<Vec<_>>()), ..predicate.trait_ref },
-            }).collect::<Vec<_>>()
-        }).collect();
+        let bounds = [(false, a_bounds), (true, b_bounds)]
+            .into_iter()
+            .flat_map(|(side, predicates)| {
+                predicates
+                    .iter()
+                    .map(|predicate| Predicate {
+                        self_ty: apply(&bound, (side, predicate.self_ty), 0),
+                        trait_ref: TraitRef {
+                            args: Ty::list(
+                                &predicate
+                                    .trait_ref
+                                    .args
+                                    .iter()
+                                    .map(|&ty| apply(&bound, (side, ty), 0))
+                                    .collect::<Vec<_>>(),
+                            ),
+                            ..predicate.trait_ref
+                        },
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         (header, bounds)
     })
 }

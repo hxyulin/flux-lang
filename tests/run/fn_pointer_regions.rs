@@ -21,7 +21,13 @@ struct Specialize;
 impl InputContract for Specialize {
     fn call(value: fn(&'static u32) -> &'static u32) -> u32 { *value(&FIXED) }
 }
+trait Object { fn value(&self) -> u32; }
+impl Object for u32 { fn value(&self) -> u32 { *self } }
+fn read_box(value: &Box<dyn Object>) -> u32 { value.value() }
 fn main() {
+    let boxed: Box<dyn Object> = Box::new(17u32);
+    let reader: fn(&Box<dyn Object>) -> u32 = read_box;
+    assert_eq!(reader(&boxed), 17);
     let pool = RefCell::new(Pool { words: vec![vec![7u32, 11]], bytes: vec![vec![3u8, 5]] });
     let mut sum = 0;
     for _ in 0..37 {

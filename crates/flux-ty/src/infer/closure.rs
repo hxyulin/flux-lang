@@ -247,7 +247,8 @@ impl Ctx<'_> {
             let ty = match (declared, expected) {
                 (Some(declared), Some(expected)) => {
                     if !self.can_unify(declared, expected)
-                        || !crate::fn_regions::same_binders(self.items, declared, expected) {
+                        || !crate::fn_regions::same_binders(self.items, declared, expected)
+                    {
                         if self.mismatched_closures.insert(id) {
                             self.error(head, "type mismatch in closure arguments");
                         }
@@ -462,8 +463,11 @@ impl Ctx<'_> {
                 continue;
             }
             if let Some(mut hint) = self.closure_hint(function, generic_args, param) {
-                if shared { hint.kind = ClosureKind::Fn; }
-                else if borrowed { hint.kind = hint.kind.min(ClosureKind::FnMut); }
+                if shared {
+                    hint.kind = ClosureKind::Fn;
+                } else if borrowed {
+                    hint.kind = hint.kind.min(ClosureKind::FnMut);
+                }
                 self.closure_hints.insert(closure, Hint { at, ..hint });
             }
         }
@@ -502,7 +506,10 @@ impl Ctx<'_> {
     ) -> Ty {
         let (base, derefs) = self.autoderef(callee_ty);
         if let Some(context) = self.const_context {
-            self.error(self.range(id), format!("cannot call non-const closure in {context}"));
+            self.error(
+                self.range(id),
+                format!("cannot call non-const closure in {context}"),
+            );
         }
         match base.kind() {
             TyKind::Closure(_, closure_args) => {
@@ -638,8 +645,11 @@ impl Ctx<'_> {
     /// Callable trait arguments are type equalities. Expression coercions may
     /// specialize a pointer, but selecting Fn must retain nested binders.
     pub(super) fn unify_callable_types(&mut self, a: Ty, b: Ty) -> bool {
-        if !self.unify(a, b) { return false; }
-        let a = self.known(a); let b = self.known(b);
+        if !self.unify(a, b) {
+            return false;
+        }
+        let a = self.known(a);
+        let b = self.known(b);
         crate::fn_regions::same_binders(self.items, a, b)
     }
 
@@ -792,7 +802,12 @@ impl Ctx<'_> {
         // The places, as few and as short as rustc's.
         let mut captures = PendingCaptures::default();
         for (mut place, use_kind, range) in found {
-            if matches!(self.expression_edition(closure.expr), flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018) { place.1.clear(); }
+            if matches!(
+                self.expression_edition(closure.expr),
+                flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
+            ) {
+                place.1.clear();
+            }
             let mode = match use_kind {
                 UseKind::Move => CaptureMode::ByValue,
                 UseKind::Copy => CaptureMode::ByRef(Mutability::Not),

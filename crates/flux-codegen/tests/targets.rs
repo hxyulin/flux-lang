@@ -29,7 +29,8 @@ fn supported_object_formats_and_unimplemented_linux_target() {
             Target::Aarch64LinuxGnu,
             OptimizationTier::None,
         )
-        .unwrap_err(),
+        .unwrap_err()
+        .to_string(),
         "code generation for AArch64 Linux is not supported yet"
     );
     assert_eq!(
@@ -38,7 +39,7 @@ fn supported_object_formats_and_unimplemented_linux_target() {
             Target::Aarch64LinuxGnu,
             std::path::Path::new("unused"),
         )
-        .unwrap_err(),
+        .unwrap_err().to_string(),
         "linking for AArch64 Linux is not supported yet"
     );
 }
@@ -80,7 +81,8 @@ fn opt_in_timings_preserve_objects_and_partial_verification_failure() {
         Target::Aarch64AppleDarwin,
         OptimizationTier::None,
     );
-    assert_eq!(result.unwrap_err(), ordinary);
+    assert_eq!(result.unwrap_err().to_string(), ordinary.to_string());
+    assert_eq!(ordinary.stage(), flux_codegen::Stage::Verify);
     assert!(scopes.verify.is_some());
     assert!(scopes.optimize.is_none());
     assert!(scopes.codegen.is_none());

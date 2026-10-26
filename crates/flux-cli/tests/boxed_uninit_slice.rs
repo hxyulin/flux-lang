@@ -1,37 +1,16 @@
 //! Valid programs whose unrepresentable layouts or exhausted allocation abort.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
+mod support;
+
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 fn bounded(dir: &Path, command: &mut Command) -> Output {
-    let stdout = dir.join("command.stdout");
-    let stderr = dir.join("command.stderr");
-    let mut child = command
-        .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
-        .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()))
-        .env_remove("RUST_BACKTRACE")
-        .spawn()
-        .unwrap();
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if start.elapsed() > Duration::from_secs(30) {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("boxed slice allocation command timed out: {command:?}");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    Output {
-        status,
-        stdout: std::fs::read(stdout).unwrap(),
-        stderr: std::fs::read(stderr).unwrap(),
-    }
+    command.env_remove("RUST_BACKTRACE");
+    support::process::run(command, dir, "command", Duration::from_secs(30)).completed()
 }
 
 #[test]

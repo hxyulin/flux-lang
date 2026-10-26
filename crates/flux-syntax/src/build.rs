@@ -25,6 +25,7 @@ pub fn build_tree(lexed: LexedStr<'_>, output: Output) -> (SyntaxTree, Vec<Synta
 /// A tree without its text, so that the text can be moved into it rather
 /// than copied.
 pub(crate) struct TreeParts {
+    edition: crate::Edition,
     kinds: Vec<SyntaxKind>,
     starts: Vec<u32>,
     nodes: Vec<NodeData>,
@@ -34,7 +35,7 @@ pub(crate) struct TreeParts {
 impl TreeParts {
     /// The tree, given the text it was built from.
     pub(crate) fn into_tree(self, text: Box<str>) -> SyntaxTree {
-        let mut tree = SyntaxTree::new(text, self.kinds, self.starts, self.nodes);
+        let mut tree = SyntaxTree::new(text, self.kinds, self.starts, self.nodes, self.edition);
         tree.set_remapped_tokens(self.remapped);
         tree
     }
@@ -47,6 +48,7 @@ pub(crate) fn build(lexed: LexedStr<'_>, output: Output) -> (TreeParts, Vec<Synt
         errors: mut messages,
     } = output;
     let text = lexed.text();
+    let edition = lexed.edition();
     // Lexer errors name raw token indices, which compaction invalidates.
     let mut errors: Vec<SyntaxError> = lexed
         .errors()
@@ -119,7 +121,7 @@ pub(crate) fn build(lexed: LexedStr<'_>, output: Output) -> (TreeParts, Vec<Synt
             }
         }
     }
-    let parts = builder.finish();
+    let parts = builder.finish(edition);
     errors.sort_by_key(|e| (e.range.start(), e.range.end()));
     (parts, errors)
 }
@@ -175,7 +177,8 @@ impl Builder<'_, '_> {
     fn token(&mut self, kind: SyntaxKind, n_raw_tokens: usize) {
         self.eat_trivia();
         if n_raw_tokens == 1 && self.kinds[self.read] != kind {
-            self.remapped.push((self.write as u32, self.kinds[self.read]));
+            self.remapped
+                .push((self.write as u32, self.kinds[self.read]));
         }
         // A composite token spans several joint lexer tokens.
         self.kinds[self.write] = kind;
@@ -192,7 +195,7 @@ impl Builder<'_, '_> {
         });
     }
 
-    fn finish(mut self) -> TreeParts {
+    fn finish(mut self, edition: crate::Edition) -> TreeParts {
         assert!(self.open.is_empty(), "unbalanced events");
         assert_eq!(self.read, self.len, "not every token was placed");
         self.starts[self.write] = self.text.len() as u32;
@@ -204,6 +207,7 @@ impl Builder<'_, '_> {
         self.starts.shrink_to_fit();
         self.nodes.shrink_to_fit();
         TreeParts {
+            edition,
             kinds: self.kinds,
             starts: self.starts,
             nodes: self.nodes,
@@ -261,5 +265,28 @@ impl Builder<'_, '_> {
             }
         }
         attached
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn public_and_owned_builders_preserve_source_editions() {
+        let source = "fn main() { let r#gen = 1; }";
+        for edition in [
+            crate::Edition::E2015,
+            crate::Edition::E2018,
+            crate::Edition::E2021,
+            crate::Edition::E2024,
+        ] {
+            let lexed = LexedStr::with_edition(source, edition);
+            let input = crate::parser::Input::from_lexed(&lexed);
+            let (tree, errors) = build_tree(lexed, crate::parser::parse_source_file(&input));
+            let owned = crate::parse_source_text_with_edition(source.into(), edition);
+            assert_eq!(&tree, owned.tree(), "{edition:?}");
+            assert_eq!(errors, owned.errors());
+            assert!(tree.root().tokens().all(|token| token.edition() == edition));
+        }
     }
 }

@@ -38,5 +38,9 @@ keel-ir = { git = "https://github.com/hxyulin/keel", rev = "f37f0bd48b14993e69f3
 keel-link = { git = "https://github.com/hxyulin/keel", rev = "f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb" }
 keel-opt = { git = "https://github.com/hxyulin/keel", rev = "f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb" }
 
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
 [workspace.lints.clippy]
+dbg_macro = "warn"
 undocumented_unsafe_blocks = "deny"

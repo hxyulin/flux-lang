@@ -1,0 +1,364 @@
+//! Rust and native C call signature classification and admission.
+use super::{
+    AbiParam, ArgExt, CallConv, Diagnostic, FileMir, FnSig, FunctionAttrs, Hir, Instance, Layout,
+    Layouts, Purpose, Signature, Signatures, TerminatorKind, Ty, TyKind, Type, TypedFile,
+    bytes_layout, is_fat, is_memory, keel_type, leaf_count, leaves_of,
+};
+
+/// How a value of `ty` crosses a call: narrow integers are extended by
+/// their signedness, as Apple's arm64 ABI requires of C callers.
+pub(super) fn abi_param(ty: Ty) -> Option<AbiParam> {
+    let mut param = AbiParam::new(keel_type(ty)?);
+    if matches!(param.ty, Type::I8 | Type::I16) {
+        param.ext = if ty.is_signed_int() {
+            ArgExt::Sext
+        } else {
+            ArgExt::Uext
+        };
+    }
+    Some(param)
+}
+
+pub(super) fn signature(
+    sigs: &Signatures,
+    layouts: &Layouts,
+    sig: &FnSig,
+    variadic: bool,
+) -> Signature {
+    Convention::RustReified.signature(sigs, layouts, sig, variadic)
+}
+
+/// A source convention, separate from Keel's final machine call convention.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Convention {
+    RustFast,
+    RustReified,
+    C,
+}
+
+pub(super) enum Argument {
+    Ignore,
+    Direct,
+    Indirect,
+    ByVal(Layout),
+}
+
+impl Convention {
+    pub fn is_c(self) -> bool {
+        self == Self::C
+    }
+
+    /// The same classification drives declaration, caller and callee lowering.
+    pub fn argument(self, sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Argument {
+        if self.is_c() && c_aggregate(ty) {
+            let layout =
+                c_layout(sigs, layouts, ty).expect("C ABI preflight checked the parameter layout");
+            if layout.size() == 0 {
+                Argument::Ignore
+            } else {
+                Argument::ByVal(layout)
+            }
+        } else if !self.is_c() && indirect_argument(sigs, ty) {
+            Argument::Indirect
+        } else {
+            Argument::Direct
+        }
+    }
+
+    pub fn result(self, sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Return {
+        if self.is_c() {
+            c_return_kind(sigs, layouts, ty)
+        } else {
+            return_kind(sigs, layouts, ty)
+        }
+    }
+
+    pub fn signature(
+        self,
+        sigs: &Signatures,
+        layouts: &Layouts,
+        sig: &FnSig,
+        variadic: bool,
+    ) -> Signature {
+        let mut signature = Signature::new(&[], &[]);
+        match self.result(sigs, layouts, sig.ret) {
+            Return::Values(returns) => signature.returns = returns,
+            Return::Sret(layout) | Return::Memory(layout) => signature.params.push(AbiParam {
+                purpose: Purpose::Sret(layout),
+                ..AbiParam::new(Type::Ptr)
+            }),
+        }
+        for &ty in &sig.params {
+            match self.argument(sigs, layouts, ty) {
+                Argument::Ignore => {}
+                Argument::Direct => signature
+                    .params
+                    .extend(leaves_of(sigs, ty).into_iter().filter_map(abi_param)),
+                Argument::Indirect => signature.params.push(AbiParam::new(Type::Ptr)),
+                Argument::ByVal(layout) => signature.params.push(AbiParam {
+                    purpose: Purpose::ByVal(layout),
+                    ..AbiParam::new(Type::Ptr)
+                }),
+            }
+        }
+        signature.variadic = variadic;
+        if self == Self::RustFast && signature.returns.len() <= 1 {
+            signature.cc = CallConv::Fast;
+            for param in signature.params.iter_mut().chain(&mut signature.returns) {
+                param.ext = ArgExt::None;
+            }
+        }
+        signature
+    }
+}
+
+/// C aggregate contracts describe physical fields, not Rust's flattened leaves.
+/// Keel has natural C layout only; reject shapes it cannot express exactly.
+fn c_layout(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Layout> {
+    let actual = layouts.of(ty);
+    if !actual.exact || is_fat(sigs, ty) {
+        return None;
+    }
+    let layout = match ty.kind() {
+        TyKind::Tuple([]) | TyKind::Never => Layout::Struct(Vec::new()),
+        TyKind::Array(elem, count) => Layout::Array(
+            Box::new(c_layout(sigs, layouts, elem)?),
+            u32::try_from(count.as_usize()?).ok()?,
+        ),
+        TyKind::Adt(adt, _) => {
+            if sigs.unions.contains(&adt.strukt) || sigs.variants(ty).is_some() {
+                return None;
+            }
+            let fields = sigs.fields(ty)?;
+            let fields: Option<Vec<_>> = fields
+                .iter()
+                .map(|&field| c_layout(sigs, layouts, field))
+                .collect();
+            let fields = fields?;
+            let mut offset = 0u64;
+            for (i, field) in fields.iter().enumerate() {
+                offset = offset.next_multiple_of(field.align());
+                if offset != actual.field_offset(0, i as u32) {
+                    return None;
+                }
+                offset += field.checked_size()?;
+            }
+            Layout::Struct(fields)
+        }
+        _ => Layout::Scalar(keel_type(ty)?),
+    };
+    (layout.checked_size()? == actual.size && layout.align() == actual.align).then_some(layout)
+}
+
+fn c_aggregate(ty: Ty) -> bool {
+    matches!(
+        ty.kind(),
+        TyKind::Adt(..) | TyKind::Tuple(_) | TyKind::Array(..)
+    )
+}
+
+fn c_return_kind(sigs: &Signatures, layouts: &Layouts, ret: Ty) -> Return {
+    if c_aggregate(ret) {
+        let layout =
+            c_layout(sigs, layouts, ret).expect("C ABI preflight checked the return layout");
+        if layout.size() == 0 {
+            Return::Values(Vec::new())
+        } else {
+            Return::Memory(layout)
+        }
+    } else {
+        return_kind(sigs, layouts, ret)
+    }
+}
+
+pub(super) fn c_signature(
+    sigs: &Signatures,
+    layouts: &Layouts,
+    sig: &FnSig,
+    variadic: bool,
+) -> Signature {
+    Convention::C.signature(sigs, layouts, sig, variadic)
+}
+
+fn c_admitted(items: &flux_hir::ItemTree, sigs: &Signatures, ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::Adt(adt, _) => {
+            let data = &items.structs[adt.strukt];
+            // The core NEON wrappers represent vectors, whose C register
+            // classification differs from an integer struct of the same size.
+            let vector = items.is_core(data.loc.module)
+                && items.modules[data.loc.module].name.as_str() == "aarch64";
+            data.repr_c
+                && !vector
+                && !sigs.unions.contains(&adt.strukt)
+                && sigs.variants(ty).is_none()
+                && sigs
+                    .fields(ty)
+                    .is_some_and(|fields| fields.iter().all(|&ty| c_admitted(items, sigs, ty)))
+        }
+        TyKind::Array(elem, _) => c_admitted(items, sigs, elem),
+        TyKind::Tuple(fields) => fields.is_empty(),
+        _ => true,
+    }
+}
+
+fn c_contains_ref(sigs: &Signatures, ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::Ref(..) => true,
+        // Only stored values cross the ABI. Raw-pointer pointees are neither
+        // passed nor inspected, and may form recursive type graphs.
+        TyKind::RawPtr(..) => false,
+        TyKind::Array(ty, _) | TyKind::Slice(ty) => c_contains_ref(sigs, ty),
+        TyKind::Adt(..) => sigs
+            .contents(ty)
+            .is_some_and(|fields| fields.iter().any(|&ty| c_contains_ref(sigs, ty))),
+        TyKind::Tuple(fields) => fields.iter().any(|&ty| c_contains_ref(sigs, ty)),
+        _ => false,
+    }
+}
+
+pub(super) fn check_c_abi(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+    instances: &[Instance],
+) -> Vec<Diagnostic> {
+    let layouts = Layouts::new(&hir.items, &typed.sigs, &mir.discriminants);
+    let supported = |sig: &FnSig| {
+        !sig.params.iter().any(|&ty| c_contains_ref(&typed.sigs, ty))
+            && sig.params.iter().copied().chain([sig.ret]).all(|ty| {
+                c_admitted(&hir.items, &typed.sigs, ty)
+                    && c_layout(&typed.sigs, &layouts, ty).is_some()
+            })
+    };
+    let mut errors = Vec::new();
+    let mut add = |file, range| {
+        let mut error =
+            Diagnostic::new(range, "this type layout in the C ABI is not supported yet");
+        error.file = file;
+        errors.push(error);
+    };
+    for (id, data) in hir
+        .items
+        .functions
+        .iter()
+        .filter(|(_, data)| data.is_extern && data.c_abi)
+    {
+        if !supported(&typed.sigs[id]) {
+            add(data.loc.file, data.def_range);
+        }
+    }
+    for &instance in instances {
+        let data = &hir.items.functions[instance.function];
+        if data.c_abi
+            && !supported(&flux_ty::traits::instance_sig(
+                &hir.items,
+                &typed.sigs,
+                instance.function,
+                instance.args,
+            ))
+        {
+            add(data.loc.file, data.def_range);
+        }
+        let body = flux_mir::mono::body_of(hir, &typed.sigs, mir, instance);
+        let file = hir.items.functions[body.owner.unwrap_or(instance.function)]
+            .loc
+            .file;
+        for block in body.blocks.values() {
+            match &block.terminator.kind {
+                TerminatorKind::CallIndirect { callee, .. } => {
+                    if let Some(sig) = body.operand_ty(callee, &typed.sigs).fn_sig()
+                        && sig.is_c
+                        && !supported(&FnSig {
+                            params: sig.params().into(),
+                            ret: sig.ret(),
+                        })
+                    {
+                        add(file, block.terminator.range);
+                    }
+                }
+                TerminatorKind::Call { func, args, .. }
+                    if hir.items.functions[*func].c_abi
+                        && hir.items.functions[*func].is_variadic =>
+                {
+                    let fixed = typed.sigs[*func].params.len();
+                    if args
+                        .iter()
+                        .skip(fixed)
+                        .any(|arg| c_aggregate(body.operand_ty(arg, &typed.sigs)))
+                    {
+                        add(file, block.terminator.range);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Diagnostic::sort(&mut errors);
+    errors.dedup();
+    errors
+}
+
+pub(super) fn attrs(sig: &FnSig) -> FunctionAttrs {
+    FunctionAttrs {
+        noreturn: sig.ret == Ty::NEVER,
+        // Flux has no unwinding: a panic aborts.
+        nounwind: true,
+        ..FunctionAttrs::default()
+    }
+}
+
+/// The signature of a function flux defines: keel's private convention
+/// unless its address is taken (`reified`), when it must be called
+/// through a pointer, which `cc(fast)` does not allow. Reification uses the
+/// C machine convention while keeping Rust's aggregate representation.
+pub(super) fn ctx_signature(
+    sigs: &Signatures,
+    layouts: &Layouts,
+    sig: &FnSig,
+    reified: bool,
+) -> Signature {
+    let convention = if reified {
+        Convention::RustReified
+    } else {
+        Convention::RustFast
+    };
+    convention.signature(sigs, layouts, sig, false)
+}
+
+/// How a function returning `ret` returns it: nothing, one value, or
+/// through memory with this layout.
+pub(super) enum Return {
+    Values(Vec<AbiParam>),
+    Sret(Layout),
+    /// A value of a memory type, laid out as it is.
+    Memory(Layout),
+}
+
+fn return_kind(sigs: &Signatures, layouts: &Layouts, ret: Ty) -> Return {
+    if is_memory(sigs, ret) {
+        let layout = layouts.of(ret);
+        // Nothing to return (`[T; 0]`): keel has no empty `sret`.
+        if layout.size == 0 {
+            return Return::Values(Vec::new());
+        }
+        return Return::Memory(bytes_layout(layout.size, layout.align));
+    }
+    let leaves = leaves_of(sigs, ret);
+    if leaves.len() <= 1 {
+        return Return::Values(leaves.into_iter().filter_map(abi_param).collect());
+    }
+    let fields = leaves
+        .iter()
+        .map(|&leaf| Layout::Scalar(keel_type(leaf).expect("leaves are scalars")))
+        .collect();
+    Return::Sret(Layout::Struct(fields))
+}
+
+/// Bound Rust aggregate expansion at call boundaries. In particular, an
+/// enum's SSA leaves include every variant even though only one is stored.
+/// Larger values cross calls through their actual layout, with the callee
+/// loading its own by-value snapshot. Local scalar storage stays unchanged.
+fn indirect_argument(sigs: &Signatures, ty: Ty) -> bool {
+    !is_memory(sigs, ty) && leaf_count(sigs, ty) > 16
+}

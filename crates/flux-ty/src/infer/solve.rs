@@ -327,17 +327,34 @@ impl Ctx<'_> {
                     },
                 };
                 let auto_trait = crate::traits::is_auto_trait(self.items, pred.trait_ref.trait_);
-                if auto_trait && !pred.self_ty.has_infer() && !pred.trait_ref.args.iter().any(|t| t.has_infer()) {
+                if auto_trait
+                    && !pred.self_ty.has_infer()
+                    && !pred.trait_ref.args.iter().any(|t| t.has_infer())
+                {
                     let mut parent = ob.auto_parent;
                     let mut repeated = false;
                     while let Some(index) = parent {
                         let (ancestor, previous) = self.auto_trait_paths[index as usize];
-                        if ancestor == pred { repeated = true; break; }
+                        if ancestor == pred {
+                            repeated = true;
+                            break;
+                        }
                         parent = previous;
                     }
-                    if repeated { progress = true; continue; }
+                    if repeated {
+                        progress = true;
+                        continue;
+                    }
                 }
-                let key = (pred, ob.root, ob.range, ob.kind, ob.depth, ob.const_output, ob.auto_parent);
+                let key = (
+                    pred,
+                    ob.root,
+                    ob.range,
+                    ob.kind,
+                    ob.depth,
+                    ob.const_output,
+                    ob.auto_parent,
+                );
                 let stable = stable_goal_type(pred.self_ty)
                     && pred.trait_ref.args.iter().all(|&a| stable_goal_type(a))
                     && ob.const_output.is_none_or(stable_goal_type)
@@ -375,10 +392,14 @@ impl Ctx<'_> {
                             let index = self.auto_trait_paths.len() as u32;
                             self.auto_trait_paths.push((pred, ob.auto_parent));
                             Some(index)
-                        } else { None };
+                        } else {
+                            None
+                        };
                         for pred in nested {
                             let pred = self.normalize_predicate(pred, ob.range);
-                            let auto_parent = auto_parent.filter(|_| crate::traits::is_auto_trait(self.items, pred.trait_ref.trait_));
+                            let auto_parent = auto_parent.filter(|_| {
+                                crate::traits::is_auto_trait(self.items, pred.trait_ref.trait_)
+                            });
                             self.obligations.push(Obligation {
                                 pred,
                                 root: if item_bounds { pred } else { ob.root },
@@ -1126,7 +1147,9 @@ impl Ctx<'_> {
         if let Some(found) = crate::traits::fn_goal(self.items, t, self_ty) {
             let params = pred.trait_ref.args.first().copied().unwrap_or(Ty::ERROR);
             return match found {
-                crate::traits::ClosureGoal::Fn(_, expected) if self.unify_callable_types(params, expected) => {
+                crate::traits::ClosureGoal::Fn(_, expected)
+                    if self.unify_callable_types(params, expected) =>
+                {
                     Selection::Met(Vec::new())
                 }
                 _ => Selection::Unmet,
@@ -1243,19 +1266,28 @@ impl Ctx<'_> {
             .map(|_| self.new_var(false, TextRange::default()))
             .collect();
         let header = trait_ref.subst(&vars).with_self(self_ty.subst(&vars));
-        if !self.unify(header.self_ty, pred.self_ty) { return None; }
+        if !self.unify(header.self_ty, pred.self_ty) {
+            return None;
+        }
         for (&argument, &expected) in header.trait_ref.args.iter().zip(pred.trait_ref.args) {
             // Self may have fixed the input of an associated type in this
             // argument. Normalize after that unification, not before it.
             let argument = self.normalize(argument, TextRange::default());
-            if !self.unify(argument, expected) { return None; }
+            if !self.unify(argument, expected) {
+                return None;
+            }
         }
         let resolved = self.known(header.self_ty);
         let actual = self.known(pred.self_ty);
-        if !crate::fn_regions::same_binders(self.items, resolved, actual) { return None; }
+        if !crate::fn_regions::same_binders(self.items, resolved, actual) {
+            return None;
+        }
         for (&a, &b) in header.trait_ref.args.iter().zip(pred.trait_ref.args) {
-            let a = self.known(a); let b = self.known(b);
-            if !crate::fn_regions::same_binders(self.items, a, b) { return None; }
+            let a = self.known(a);
+            let b = self.known(b);
+            if !crate::fn_regions::same_binders(self.items, a, b) {
+                return None;
+            }
         }
         self.impl_args_sized(imp, &vars).then_some(vars)
     }
@@ -2136,6 +2168,7 @@ pub(super) mod tests {
         let (function, (body, source_map)) = hir.bodies.iter().next().unwrap();
         let owner = super::super::Owner {
             function: Some(function),
+            closure_owner: crate::ClosureOwner::Function(function),
             module: hir.items.functions[function].loc.module,
             self_ty: None,
             generics: Vec::new(),
@@ -2183,10 +2216,19 @@ pub(super) mod tests {
         let text = include_str!("../../tests/data/ok/solver_diamond.rs");
         let (_, _, hir) = flux_hir::lower_text("main.rs", text);
         assert!(hir.diagnostics.is_empty());
+        let (sigs, errors) = crate::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (function, (body, source_map)) = hir
+            .bodies
+            .iter()
+            .find(|(id, _)| hir.items.functions[*id].name.as_str() == "main")
+            .expect("the diamond fixture has a main body");
+        // Measure the diamond, not every embedded library body reached by
+        // check_file. Library growth must not change this algorithmic bound.
         WORK.with(|work| work.set(Some(0)));
-        let typed = crate::check_file(&hir);
+        let result = crate::infer_body(&hir.items, &sigs, function, body, source_map);
         let count = WORK.with(|work| work.replace(None).unwrap());
-        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         println!("diamond: {count} goal evaluations");
     }
 }

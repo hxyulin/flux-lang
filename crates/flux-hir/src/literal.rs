@@ -51,12 +51,17 @@ pub(crate) fn parse_float(text: &str) -> Result<Literal, String> {
         (digits, Some(Symbol::intern("f32")))
     } else if let Some(digits) = text.strip_suffix("f64") {
         (digits, Some(Symbol::intern("f64")))
-    } else { (text, None) };
+    } else {
+        (text, None)
+    };
     let digits = digits.replace('_', "");
     if digits.parse::<f64>().is_err() {
         return Err("invalid floating-point literal".into());
     }
-    Ok(Literal::Float { text: Symbol::intern(&digits), suffix })
+    Ok(Literal::Float {
+        text: Symbol::intern(&digits),
+        suffix,
+    })
 }
 
 /// What a literal's escapes may produce, as rustc's `Mode`.
@@ -325,7 +330,9 @@ mod tests {
         assert!(int("340282366920938463463374607431768211456").is_err());
         assert!(int("1u7").is_err());
         assert!(int("0x").is_err());
-        assert!(int("1f32").is_err());
+        assert!(
+            matches!(parse_int("1f32"), Ok(Literal::Float { suffix: Some(suffix), .. }) if suffix.as_str() == "f32")
+        );
     }
 
     #[test]

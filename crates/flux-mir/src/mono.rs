@@ -117,13 +117,24 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         };
         // A generic wrapper can acquire a vtable tail only at this instance.
         // Reject that unrepresented dynamic layout before intrinsic expansion.
-        let mut types: Vec<_> = body.locals.values().map(|local| flux_ty::traits::instance_ty(items, sigs, local.ty, caller_args)).collect();
+        let mut types: Vec<_> = body
+            .locals
+            .values()
+            .map(|local| flux_ty::traits::instance_ty(items, sigs, local.ty, caller_args))
+            .collect();
         let mut seen = FxHashSet::default();
         while let Some(ty) = types.pop() {
-            if !seen.insert(ty) { continue; }
-            if matches!(ty.kind(), TyKind::Adt(..)) && sigs.metadata(ty) == flux_ty::Metadata::VTable {
+            if !seen.insert(ty) {
+                continue;
+            }
+            if matches!(ty.kind(), TyKind::Adt(..))
+                && sigs.metadata(ty) == flux_ty::Metadata::VTable
+            {
                 let owner = &items.functions[body.owner.unwrap_or(caller.function)];
-                let mut error = Diagnostic::new(owner.def_range, "trait object tails in structs are not supported yet");
+                let mut error = Diagnostic::new(
+                    owner.def_range,
+                    "trait object tails in structs are not supported yet",
+                );
                 error.file = owner.loc.file;
                 return Err(error);
             }
@@ -225,7 +236,11 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                         value_functions(value, &mir.const_values, &mut found);
                     }
                     Operand::Const(Constant::Promoted { index, .. }) => {
-                        value_functions(&body.promoted[*index as usize], &mir.const_values, &mut found);
+                        value_functions(
+                            &body.promoted[*index as usize],
+                            &mir.const_values,
+                            &mut found,
+                        );
                     }
                     _ => {}
                 }
@@ -255,7 +270,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                 // What dropping in place drops.
                 TerminatorKind::Call {
                     func, generic_args, ..
-                } if hir.items.functions[*func].intrinsic
+                } if hir.items.functions[*func].intrinsic.is_some()
                     && hir.items.functions[*func].name.as_str() == "drop_in_place" =>
                 {
                     let ty = instance_args(&hir.items, sigs, generic_args, caller_args)
@@ -344,7 +359,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                     }
                 }
 
-                if hir.items.functions[callee.function].intrinsic {
+                if hir.items.functions[callee.function].intrinsic.is_some() {
                     if let Some((op, _, word)) =
                         atomic_intrinsic(hir.items.functions[callee.function].name.as_str())
                     {
@@ -503,7 +518,11 @@ fn may_contain_function_address(items: &ItemTree, sigs: &Signatures, ty: Ty) -> 
 }
 
 /// Function addresses nested in a constant's stored value.
-fn value_functions<'a>(value: &'a crate::eval::Value, constants: &'a crate::eval::ConstValues, out: &mut Vec<Instance>) {
+fn value_functions<'a>(
+    value: &'a crate::eval::Value,
+    constants: &'a crate::eval::ConstValues,
+    out: &mut Vec<Instance>,
+) {
     use crate::eval::Value;
     let mut values = vec![value];
     let mut globals = FxHashSet::default();
@@ -518,7 +537,9 @@ fn value_functions<'a>(value: &'a crate::eval::Value, constants: &'a crate::eval
             }
             Value::PointerView { pointer, .. } => values.push(pointer),
             Value::Static(id) | Value::StaticPart { id, .. } if globals.insert(*id) => {
-                if let Some(value) = constants.items.get(*id) { values.push(value); }
+                if let Some(value) = constants.items.get(*id) {
+                    values.push(value);
+                }
             }
             _ => {}
         }
@@ -863,7 +884,7 @@ pub fn instance_body<'b>(
     // Intrinsics first: dropping in place is a drop to expand.
     let intrinsics = body.blocks.values().any(|data| {
         matches!(data.terminator.kind, TerminatorKind::Call { func, .. }
-            if hir.items.functions[func].intrinsic)
+            if hir.items.functions[func].intrinsic.is_some())
     });
     if intrinsics {
         expand_intrinsics(&hir.items, sigs, discriminants, body.to_mut());
@@ -913,32 +934,34 @@ pub fn expand_intrinsics(
             continue;
         };
         let data = &items.functions[func];
-        if !data.intrinsic {
+        let Some(intrinsic) = data.intrinsic else {
             continue;
-        }
+        };
         let goto = match target {
             Some(target) => TerminatorKind::Goto(target),
             None => TerminatorKind::Unreachable,
         };
-        if matches!(data.name.as_str(), "caller_location" | "read_unaligned" | "transmute" | "fmaf32" | "fmaf64")
-            || is_neon_intrinsic(data.name.as_str())
-            || atomic_intrinsic(data.name.as_str()).is_some()
+        if matches!(
+            intrinsic.name(),
+            "caller_location" | "read_unaligned" | "transmute" | "fmaf32" | "fmaf64"
+        ) || intrinsic.is_neon()
+            || atomic_intrinsic(intrinsic.name()).is_some()
         {
             // Code generation's: where the call is.
             continue;
         }
-        if data.name.as_str() == "unreachable_unchecked" {
+        if intrinsic.name() == "unreachable_unchecked" {
             body.blocks[block].terminator.kind = TerminatorKind::Unreachable;
             continue;
         }
-        if data.name.as_str() == "uninit" {
+        if intrinsic.name() == "uninit" {
             // Nothing: its memory is written before it is read.
             body.blocks[block].terminator.kind = goto;
             continue;
         }
         // Of a trait object: through its vtable, code generation's.
         let arg_ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
-        let name = data.name.as_str();
+        let name = intrinsic.name();
         if matches!(name, "size_of_val" | "align_of_val" | "drop_in_place") && arg_ty.is_dyn() {
             continue;
         }
@@ -959,7 +982,7 @@ pub fn expand_intrinsics(
             });
             Place::from(temp)
         };
-        let (place, rvalue) = match (data.name.as_str(), args.as_slice()) {
+        let (place, rvalue) = match (intrinsic.name(), args.as_slice()) {
             ("is_copy", []) => {
                 let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
                 let copy = flux_ty::traits::is_copy(items, sigs, &[], ty);
@@ -971,20 +994,72 @@ pub fn expand_intrinsics(
                 (dest, Rvalue::Use(Operand::Const(Constant::Bool(needs))))
             }
             (name @ ("size_of_val" | "align_of_val"), [ptr]) if sigs.is_unsized(arg_ty) => {
-                let (prefix, stride, align) = layouts.length_layout(arg_ty).expect("represented DST length layout");
+                let (prefix, stride, align) = layouts
+                    .length_layout(arg_ty)
+                    .expect("represented DST length layout");
                 let usize = flux_ty::IntTy::Usize;
-                let constant = |bits| Operand::Const(Constant::Int { bits: bits as u128, ty: usize });
+                let constant = |bits| {
+                    Operand::Const(Constant::Int {
+                        bits: bits as u128,
+                        ty: usize,
+                    })
+                };
                 if name == "align_of_val" {
                     (dest, Rvalue::Use(constant(align)))
                 } else {
                     let ptr = pointer(body, ptr);
-                    let len = body.locals.alloc(LocalDecl { ty: Ty::int(usize), kind: LocalKind::Temp });
-                    body.blocks[block].statements.push(Statement { kind: StatementKind::Assign(len.into(), Rvalue::Len { place: ptr.deref(), borrows: false }), range });
-                    let size = body.locals.alloc(LocalDecl { ty: Ty::int(usize), kind: LocalKind::Temp });
-                    body.blocks[block].statements.push(Statement { kind: StatementKind::Assign(size.into(), Rvalue::BinaryOp(crate::BinOp::Mul, Operand::Copy(len.into()), constant(stride))), range });
-                    let padded = body.locals.alloc(LocalDecl { ty: Ty::int(usize), kind: LocalKind::Temp });
-                    body.blocks[block].statements.push(Statement { kind: StatementKind::Assign(padded.into(), Rvalue::BinaryOp(crate::BinOp::Add, Operand::Copy(size.into()), constant(prefix + align - 1))), range });
-                    (dest, Rvalue::BinaryOp(crate::BinOp::BitAnd, Operand::Copy(padded.into()), constant(!(align - 1))))
+                    let len = body.locals.alloc(LocalDecl {
+                        ty: Ty::int(usize),
+                        kind: LocalKind::Temp,
+                    });
+                    body.blocks[block].statements.push(Statement {
+                        kind: StatementKind::Assign(
+                            len.into(),
+                            Rvalue::Len {
+                                place: ptr.deref(),
+                                borrows: false,
+                            },
+                        ),
+                        range,
+                    });
+                    let size = body.locals.alloc(LocalDecl {
+                        ty: Ty::int(usize),
+                        kind: LocalKind::Temp,
+                    });
+                    body.blocks[block].statements.push(Statement {
+                        kind: StatementKind::Assign(
+                            size.into(),
+                            Rvalue::BinaryOp(
+                                crate::BinOp::Mul,
+                                Operand::Copy(len.into()),
+                                constant(stride),
+                            ),
+                        ),
+                        range,
+                    });
+                    let padded = body.locals.alloc(LocalDecl {
+                        ty: Ty::int(usize),
+                        kind: LocalKind::Temp,
+                    });
+                    body.blocks[block].statements.push(Statement {
+                        kind: StatementKind::Assign(
+                            padded.into(),
+                            Rvalue::BinaryOp(
+                                crate::BinOp::Add,
+                                Operand::Copy(size.into()),
+                                constant(prefix + align - 1),
+                            ),
+                        ),
+                        range,
+                    });
+                    (
+                        dest,
+                        Rvalue::BinaryOp(
+                            crate::BinOp::BitAnd,
+                            Operand::Copy(padded.into()),
+                            constant(!(align - 1)),
+                        ),
+                    )
                 }
             }
             (name @ ("size_of_val" | "align_of_val"), [_]) => {
@@ -1068,7 +1143,13 @@ pub fn expand_intrinsics(
             }
             // `data` as a pointer to an empty array, unsized, as a
             // reference, then its first `len` elements.
-            ("slice_from_raw_parts" | "slice_from_raw_parts_mut" | "raw_slice_from_parts" | "raw_slice_from_parts_mut", [data, len]) => {
+            (
+                "slice_from_raw_parts"
+                | "slice_from_raw_parts_mut"
+                | "raw_slice_from_parts"
+                | "raw_slice_from_parts_mut",
+                [data, len],
+            ) => {
                 let slice_ref = body.place_ty(&dest, sigs);
                 let (m, elem) = match slice_ref.kind() {
                     TyKind::Ref(m, slice) => (m, slice.sequence_elem().unwrap_or(Ty::ERROR)),
@@ -1316,7 +1397,11 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
             let mut glue = Vec::new();
             drop_glue(items, sigs, place.index(index), elem, &mut glue);
             if !glue.is_empty() && len > 0 {
-                out.push(Glue::Elements { index, len: GlueLen::Constant(len), glue });
+                out.push(Glue::Elements {
+                    index,
+                    len: GlueLen::Constant(len),
+                    glue,
+                });
             }
             return;
         }
@@ -1325,7 +1410,11 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
             let mut glue = Vec::new();
             drop_glue(items, sigs, place.index(index), elem, &mut glue);
             if !glue.is_empty() {
-                out.push(Glue::Elements { index, len: GlueLen::Slice(place), glue });
+                out.push(Glue::Elements {
+                    index,
+                    len: GlueLen::Slice(place),
+                    glue,
+                });
             }
             return;
         }
@@ -1485,8 +1574,18 @@ impl Expand<'_> {
                 let bound = match len {
                     GlueLen::Constant(len) => int(*len),
                     GlueLen::Slice(place) => {
-                        let length = self.body.locals.alloc(LocalDecl { ty: usize, kind: LocalKind::Temp });
-                        initial.push(assign(length, Rvalue::Len { place: place.clone(), borrows: false }, self.range));
+                        let length = self.body.locals.alloc(LocalDecl {
+                            ty: usize,
+                            kind: LocalKind::Temp,
+                        });
+                        initial.push(assign(
+                            length,
+                            Rvalue::Len {
+                                place: place.clone(),
+                                borrows: false,
+                            },
+                            self.range,
+                        ));
                         Operand::Copy(length.into())
                     }
                 };
@@ -1504,11 +1603,7 @@ impl Expand<'_> {
                 self.body.blocks[head] = BasicBlockData {
                     statements: vec![assign(
                         within,
-                        Rvalue::BinaryOp(
-                            crate::BinOp::Lt,
-                            Operand::Copy(counter.into()),
-                            bound,
-                        ),
+                        Rvalue::BinaryOp(crate::BinOp::Lt, Operand::Copy(counter.into()), bound),
                         self.range,
                     )],
                     terminator: Terminator {
@@ -1521,10 +1616,7 @@ impl Expand<'_> {
                         range: self.range,
                     },
                 };
-                (
-                    initial,
-                    TerminatorKind::Goto(head),
-                )
+                (initial, TerminatorKind::Goto(head))
             }
         }
     }
@@ -1703,29 +1795,6 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
         }
     }
     body
-}
-
-/// Core's bounded NEON intrinsics are emitted directly as Keel operations.
-pub fn is_neon_intrinsic(name: &str) -> bool {
-    matches!(
-        name,
-        "__neon_vld1_u8"
-            | "__neon_vst1_u8"
-            | "__neon_vdup_n_u8"
-            | "__neon_vceq_u8"
-            | "__neon_vorr_u8"
-            | "__neon_vcltz_s8"
-            | "__neon_vcgez_s8"
-            | "__neon_vld1q_u8"
-            | "__neon_vdupq_n_u8"
-            | "__neon_vceqq_u8"
-            | "__neon_vandq_u8"
-            | "__neon_vorrq_u8"
-            | "__neon_vgetq_lane_u64"
-            | "__neon_vget_lane_u64"
-            | "__neon_vshrn_n_u16"
-            | "__neon_vpmaxq_u8"
-    )
 }
 
 /// Scalar storage identity for the private native atomic bridge.

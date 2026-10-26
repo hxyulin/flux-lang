@@ -271,13 +271,20 @@ impl<'a> Layouts<'a> {
     pub fn length_layout(&self, ty: Ty) -> Option<(u64, u64, u64)> {
         match ty.kind() {
             TyKind::Str => Some((0, 1, 1)),
-            TyKind::Slice(elem) => { let elem = self.of(elem); Some((0, elem.size, elem.align)) }
+            TyKind::Slice(elem) => {
+                let elem = self.of(elem);
+                Some((0, elem.size, elem.align))
+            }
             TyKind::Adt(..) if self.sigs.is_unsized(ty) => {
                 let fields = self.sigs.fields(ty)?;
                 let last = fields.len().checked_sub(1)?;
                 let (prefix, stride, _) = self.length_layout(fields[last])?;
                 let layout = self.of(ty);
-                Some((layout.field_offset(0, last as u32) + prefix, stride, layout.align))
+                Some((
+                    layout.field_offset(0, last as u32) + prefix,
+                    stride,
+                    layout.align,
+                ))
             }
             _ => None,
         }
@@ -292,7 +299,7 @@ impl<'a> Layouts<'a> {
     fn compute(&self, ty: Ty) -> Layout {
         const PTR_MAX: u128 = u64::MAX as u128;
         match ty.kind() {
-            TyKind::Float(float) => Layout::scalar((float.bits()/8) as u8, None),
+            TyKind::Float(float) => Layout::scalar((float.bits() / 8) as u8, None),
             TyKind::Int(int) => {
                 let bytes = (int.bits() / 8) as u8;
                 Layout::scalar(bytes, None)
@@ -422,17 +429,23 @@ impl<'a> Layouts<'a> {
             // Potentially unsized tails retain their position even in sized
             // instantiations so structural unsizing preserves the prefix.
             let parameters = flux_ty::unsized_params(self.items, None, &data.generics);
-            let bounds = flux_ty::traits::elaborate(self.sigs, self.sigs.struct_predicates.get(strukt).map_or(&[][..], |bounds| bounds));
-            let tail = self.sigs.structs[strukt].last().copied();
-            let kind = if tail.is_some_and(|tail| flux_ty::maybe_unsized(self.items, self.sigs, tail, &parameters, &bounds)) {
-                Kind::MaybeUnsized
-            } else { Kind::AlwaysSized };
-            let mut layout = self.univariant_layout(
-                fields,
-                !data.repr_c,
-                kind,
-                u64::from(data.repr_align),
+            let bounds = flux_ty::traits::elaborate(
+                self.sigs,
+                self.sigs
+                    .struct_predicates
+                    .get(strukt)
+                    .map_or(&[][..], |bounds| bounds),
             );
+            let tail = self.sigs.structs[strukt].last().copied();
+            let kind = if tail.is_some_and(|tail| {
+                flux_ty::maybe_unsized(self.items, self.sigs, tail, &parameters, &bounds)
+            }) {
+                Kind::MaybeUnsized
+            } else {
+                Kind::AlwaysSized
+            };
+            let mut layout =
+                self.univariant_layout(fields, !data.repr_c, kind, u64::from(data.repr_align));
             if lang("non_null") {
                 // `#[rustc_layout_scalar_valid_range_start(1)]`.
                 layout.niche = Some(Niche {
@@ -450,7 +463,11 @@ impl<'a> Layouts<'a> {
                     offset: 0,
                     bytes: if lang("nonzero_u64") { 8 } else { 4 },
                     start: 1,
-                    end: if lang("nonzero_u64") { u64::MAX as u128 } else { u32::MAX as u128 },
+                    end: if lang("nonzero_u64") {
+                        u64::MAX as u128
+                    } else {
+                        u32::MAX as u128
+                    },
                 });
             }
             if lang("alignment") {

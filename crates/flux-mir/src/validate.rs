@@ -79,8 +79,13 @@ pub fn validate_file(hir: &flux_hir::Hir, sigs: &Signatures, mir: &FileMir) -> V
     }
     for ((c, _), body) in &mir.closures {
         let (projections, owner) = match c.owner {
-            flux_ty::ClosureOwner::Function(f) => (env(f), items.function_path(&items.functions[f])),
-            flux_ty::ClosureOwner::Const(c) => (flux_ty::traits::owner_projections(items, sigs, items.consts[c].owner), items.const_name(c)),
+            flux_ty::ClosureOwner::Function(f) => {
+                (env(f), items.function_path(&items.functions[f]))
+            }
+            flux_ty::ClosureOwner::Const(c) => (
+                flux_ty::traits::owner_projections(items, sigs, items.consts[c].owner),
+                items.const_name(c),
+            ),
         };
         let found = validate(items, sigs, &projections, body);
         add(format!("a closure in {owner}"), found);
@@ -232,8 +237,7 @@ impl Validator<'_> {
                     self.check(usize, found, || format!("{} ({bound})", what()));
                 }
                 let from = self.operand_ty(slice);
-                let unsized_ref =
-                    matches!(from.kind(), TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee) if pointee.is_unsized());
+                let unsized_ref = matches!(from.kind(), TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee) if pointee.is_unsized());
                 if !unsized_ref && !has_error(from) {
                     self.errors
                         .push(format!("{}: a subslice of a `{from}`", what()));
@@ -263,17 +267,21 @@ impl Validator<'_> {
                         }),
                 };
                 let unsizes = pointees.is_some_and(|(a, b)| {
-                    if let Some((x, y)) = self.sigs.array_unsize(a, b) { return self.same(x, y); }
-                    match (a.kind(), b.kind()) {
-                    (TyKind::Array(x, _), TyKind::Slice(y)) => self.same(y, x),
-                    // Upcasting: to a supertrait's object.
-                    (TyKind::Dynamic(x), TyKind::Dynamic(y)) => {
-                        flux_ty::objects::supertraits_of(self.items, x.trait_).contains(&y.trait_)
+                    if let Some((x, y)) = self.sigs.array_unsize(a, b) {
+                        return self.same(x, y);
                     }
-                    // A sized value, whose trait the type checker proved.
-                    (_, TyKind::Dynamic(_)) => !self.sigs.is_unsized(a),
-                    _ => false,
-                }});
+                    match (a.kind(), b.kind()) {
+                        (TyKind::Array(x, _), TyKind::Slice(y)) => self.same(y, x),
+                        // Upcasting: to a supertrait's object.
+                        (TyKind::Dynamic(x), TyKind::Dynamic(y)) => {
+                            flux_ty::objects::supertraits_of(self.items, x.trait_)
+                                .contains(&y.trait_)
+                        }
+                        // A sized value, whose trait the type checker proved.
+                        (_, TyKind::Dynamic(_)) => !self.sigs.is_unsized(a),
+                        _ => false,
+                    }
+                });
                 if !unsizes && !has_error(from) && !has_error(to) {
                     self.errors
                         .push(format!("{}: `{from}` does not unsize to `{to}`", what()));
@@ -378,8 +386,7 @@ impl Validator<'_> {
 /// stands for any type.
 fn same_shape(a: Ty, b: Ty) -> bool {
     let same = same_shape;
-    let all =
-        |x: &[Ty], y: &[Ty]| x.len() == y.len() && x.iter().zip(y).all(|(&x, &y)| same(x, y));
+    let all = |x: &[Ty], y: &[Ty]| x.len() == y.len() && x.iter().zip(y).all(|(&x, &y)| same(x, y));
     match (a.kind(), b.kind()) {
         _ if a == b => true,
         (TyKind::Alias(_), _) | (_, TyKind::Alias(_)) => true,

@@ -53,6 +53,6 @@ pub fn build(file: &Path, out: &Path, passes: usize) -> Result<(), String> {
     let program = keel_codegen::compile_program(&module, target).map_err(|e| e.to_string())?;
     let object = keel_asm::assemble_program_object(&program, keel_asm::TargetFeatures::default())
         .map_err(|e| e.to_string())?;
-    flux_codegen::link_executable(&object, target, out)?;
+    flux_codegen::link_executable(&object, target, out).map_err(|error| error.to_string())?;
     Ok(())
 }

@@ -6,13 +6,13 @@ enum Maybe<T> { Just(T) = 0, Nothing = 1 }
 
 impl Shape;
 
-impl ::core::clone::Clone for Level;
+impl $crate0::clone::Clone for Level;
 
-impl ::core::marker::Copy for Level;
+impl $crate0::marker::Copy for Level;
 
-impl ::core::cmp::PartialEq for Level;
+impl $crate0::cmp::PartialEq for Level;
 
-impl ::core::cmp::Eq for Level;
+impl $crate0::cmp::Eq for Level;
 
 fn Shape::empty() -> Self {
     Shape::Empty
@@ -88,7 +88,7 @@ fn main() -> () {
     let _ = (Level::Low == Level::High);
 }
 
-fn <Level as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <Level as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     match self@0 {
         Level::Low => {},
         Level::Mid => {},
@@ -97,7 +97,7 @@ fn <Level as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
     (*self@0)
 }
 
-fn <Level as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+fn <Level as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
     match self@0 {
         Level::Low => match other@1 {
             Level::Low => true,
@@ -114,7 +114,7 @@ fn <Level as ::core::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool 
     }
 }
 
-fn <Level as ::core::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
+fn <Level as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
     match self@0 {
         Level::Low => {},
         Level::Mid => {},

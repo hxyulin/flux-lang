@@ -12,6 +12,8 @@
 //! calls the Rust `main` and returns 0. A failed MIR assertion calls libc's
 //! `abort`, as a panic does with `panic=abort`.
 
+mod error;
+pub use error::{Error, Stage};
 mod lower;
 
 use std::path::{Path, PathBuf};
@@ -26,7 +28,7 @@ pub fn compile_object(
     module: &mut keel_ir::Module,
     target: Target,
     tier: OptimizationTier,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Error> {
     compile_object_inner(module, target, tier, None)
 }
 
@@ -47,7 +49,7 @@ pub fn compile_object_with_timings(
     module: &mut keel_ir::Module,
     target: Target,
     tier: OptimizationTier,
-) -> (Result<Vec<u8>, String>, ObjectTimings) {
+) -> (Result<Vec<u8>, Error>, ObjectTimings) {
     let mut timings = ObjectTimings::default();
     let result = compile_object_inner(module, target, tier, Some(&mut timings));
     (result, timings)
@@ -66,24 +68,27 @@ fn compile_object_inner(
     target: Target,
     tier: OptimizationTier,
     mut timings: Option<&mut ObjectTimings>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Error> {
     if let Err(errors) = measured(timings.as_deref_mut().map(|t| &mut t.verify), || {
         keel_ir::verify_module(module)
     }) {
         let lines: Vec<String> = errors.iter().map(|e| format!("  {e}")).collect();
-        return Err(format!(
-            "internal error: flux produced invalid keel IR:\n{}\n{module}",
-            lines.join("\n")
+        return Err(Error::message(
+            Stage::Verify,
+            format!(
+                "internal error: flux produced invalid keel IR:\n{}\n{module}",
+                lines.join("\n")
+            ),
         ));
     }
     measured(timings.as_deref_mut().map(|t| &mut t.optimize), || {
         keel_opt::optimize_with_tier(module, tier)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(Error::optimize)?;
     let program = measured(timings.as_deref_mut().map(|t| &mut t.codegen), || {
         keel_codegen::compile_program(module, target)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(Error::codegen)?;
     measured(timings.map(|t| &mut t.assemble), || {
         let object = match target {
             Target::Aarch64AppleDarwin => {
@@ -91,24 +96,24 @@ fn compile_object_inner(
             }
             Target::X86_64LinuxGnu => keel_asm::x86::assemble_program_object(&program),
             Target::Aarch64LinuxGnu => {
-                return Err("code generation for AArch64 Linux is not supported yet".to_owned());
+                return Err(Error::message(
+                    Stage::Codegen,
+                    "code generation for AArch64 Linux is not supported yet",
+                ));
             }
         };
-        object.map_err(|e| e.to_string())
+        object.map_err(Error::assemble)
     })
 }
 
 /// Links `object` against the C library into an executable at `output`.
 /// Returns the linker's warnings.
-pub fn link_executable(
-    object: &[u8],
-    target: Target,
-    output: &Path,
-) -> Result<Vec<String>, String> {
+pub fn link_executable(object: &[u8], target: Target, output: &Path) -> Result<Vec<String>, Error> {
     match target {
         Target::Aarch64AppleDarwin => {
             let sdk = macos_sdk()?;
-            let system = keel_link::Dylib::from_tbd(&sdk.join("usr/lib/libSystem.tbd"), &sdk)?;
+            let system = keel_link::Dylib::from_tbd(&sdk.join("usr/lib/libSystem.tbd"), &sdk)
+                .map_err(|message| Error::message(Stage::Sdk, message))?;
             let input = keel_link::Input {
                 name: "flux.o",
                 bytes: object,
@@ -119,26 +124,37 @@ pub fn link_executable(
                     dylibs: vec![system],
                     ..keel_link::Options::default()
                 },
-            )?;
-            keel_link::write_signed(&executable, output)?;
+            )
+            .map_err(|message| Error::message(Stage::Link, message))?;
+            keel_link::write_signed(&executable, output)
+                .map_err(|message| Error::message(Stage::Write, message))?;
             Ok(executable.warnings)
         }
-        Target::X86_64LinuxGnu => Err("linking for x86-64 Linux is not supported yet".to_owned()),
-        Target::Aarch64LinuxGnu => Err("linking for AArch64 Linux is not supported yet".to_owned()),
+        Target::X86_64LinuxGnu => Err(Error::message(
+            Stage::Link,
+            "linking for x86-64 Linux is not supported yet",
+        )),
+        Target::Aarch64LinuxGnu => Err(Error::message(
+            Stage::Link,
+            "linking for AArch64 Linux is not supported yet",
+        )),
     }
 }
 
 /// The macOS SDK: `$SDKROOT`, or what `xcrun` reports.
-fn macos_sdk() -> Result<PathBuf, String> {
+fn macos_sdk() -> Result<PathBuf, Error> {
     if let Some(root) = std::env::var_os("SDKROOT").filter(|s| !s.is_empty()) {
         return Ok(PathBuf::from(root));
     }
     let output = std::process::Command::new("xcrun")
         .args(["--sdk", "macosx", "--show-sdk-path"])
         .output()
-        .map_err(|e| format!("cannot find the macOS SDK (set SDKROOT): {e}"))?;
+        .map_err(|error| Error::io(Stage::Sdk, "cannot find the macOS SDK (set SDKROOT)", error))?;
     if !output.status.success() {
-        return Err("cannot find the macOS SDK; set SDKROOT".to_owned());
+        return Err(Error::message(
+            Stage::Sdk,
+            "cannot find the macOS SDK; set SDKROOT",
+        ));
     }
     Ok(PathBuf::from(
         String::from_utf8_lossy(&output.stdout).trim(),

@@ -28,12 +28,27 @@ fn extern_aliases_match_rustc() {
         for source in sources {
             let path = root.join("probe.rs");
             std::fs::write(&path, source).unwrap();
-            let oracle = Command::new("rustc").args(["--edition=2024", "--crate-type=lib", "--emit=metadata"])
-                .arg(&path).arg("-o").arg(root.join("probe.rmeta")).output().unwrap();
-            assert_eq!(oracle.status.success(), expected, "{source}: {}", String::from_utf8_lossy(&oracle.stderr));
+            let oracle = Command::new("rustc")
+                .args(["--edition=2024", "--crate-type=lib", "--emit=metadata"])
+                .arg(&path)
+                .arg("-o")
+                .arg(root.join("probe.rmeta"))
+                .output()
+                .unwrap();
+            assert_eq!(
+                oracle.status.success(),
+                expected,
+                "{source}: {}",
+                String::from_utf8_lossy(&oracle.stderr)
+            );
             let (db, file, hir) = flux_hir::lower_text(&path, source);
             assert!(db.file(file).parse.errors().is_empty());
-            assert_eq!(hir.diagnostics.is_empty(), expected, "{source}: {:?}", hir.diagnostics);
+            assert_eq!(
+                hir.diagnostics.is_empty(),
+                expected,
+                "{source}: {:?}",
+                hir.diagnostics
+            );
         }
     }
     std::fs::remove_dir_all(root).unwrap();
@@ -54,11 +69,26 @@ fn transparent_single_field_wrappers_match_rustc() {
     ] {
         let path = root.join("probe.rs");
         std::fs::write(&path, source).unwrap();
-        let oracle = Command::new("rustc").args(["--edition=2024", "--crate-type=lib", "--emit=metadata"])
-            .arg(&path).arg("-o").arg(root.join("probe.rmeta")).output().unwrap();
-        assert_eq!(oracle.status.success(), expected, "{source}: {}", String::from_utf8_lossy(&oracle.stderr));
+        let oracle = Command::new("rustc")
+            .args(["--edition=2024", "--crate-type=lib", "--emit=metadata"])
+            .arg(&path)
+            .arg("-o")
+            .arg(root.join("probe.rmeta"))
+            .output()
+            .unwrap();
+        assert_eq!(
+            oracle.status.success(),
+            expected,
+            "{source}: {}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
         let (_, _, hir) = flux_hir::lower_text(&path, source);
-        assert_eq!(hir.diagnostics.is_empty(), expected, "{source}: {:?}", hir.diagnostics);
+        assert_eq!(
+            hir.diagnostics.is_empty(),
+            expected,
+            "{source}: {:?}",
+            hir.diagnostics
+        );
     }
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -70,7 +100,10 @@ fn deprecation_attributes_match_rustc() {
     for (attribute, accepted) in [
         ("#[deprecated]", true),
         ("#[deprecated = \"use another function\"]", true),
-        ("#[deprecated(note = \"use another function\", since = \"1.0.0\",)]", true),
+        (
+            "#[deprecated(note = \"use another function\", since = \"1.0.0\",)]",
+            true,
+        ),
         ("#[deprecated(note = 7)]", false),
         ("#[deprecated(note = \"a\", note = \"b\")]", false),
         ("#[deprecated(reason = \"a\")]", false),
@@ -79,11 +112,26 @@ fn deprecation_attributes_match_rustc() {
         let source = format!("{attribute} fn old() {{}}");
         let path = root.join("probe.rs");
         std::fs::write(&path, &source).unwrap();
-        let oracle = Command::new("rustc").args(["--edition=2024", "--crate-type=lib", "--emit=metadata"])
-            .arg(&path).arg("-o").arg(root.join("probe.rmeta")).output().unwrap();
-        assert_eq!(oracle.status.success(), accepted, "{source}: {}", String::from_utf8_lossy(&oracle.stderr));
+        let oracle = Command::new("rustc")
+            .args(["--edition=2024", "--crate-type=lib", "--emit=metadata"])
+            .arg(&path)
+            .arg("-o")
+            .arg(root.join("probe.rmeta"))
+            .output()
+            .unwrap();
+        assert_eq!(
+            oracle.status.success(),
+            accepted,
+            "{source}: {}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
         let (_, _, hir) = flux_hir::lower_text(&path, &source);
-        assert_eq!(hir.diagnostics.is_empty(), accepted, "{source}: {:?}", hir.diagnostics);
+        assert_eq!(
+            hir.diagnostics.is_empty(),
+            accepted,
+            "{source}: {:?}",
+            hir.diagnostics
+        );
     }
     std::fs::remove_dir_all(root).unwrap();
 }

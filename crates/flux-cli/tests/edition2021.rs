@@ -162,8 +162,14 @@ fn mixed_editions_normalized_library_unit_matches_rustc() {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn sensitive_2021_constructs_fail_explicitly() {
     for (source, expected) in [
-        ("pub fn f() { if let Some(_) = Some(1) && true {} }", "let chains"),
-        ("pub fn f() -> impl Copy { 1u32 }", "impl Trait in edition 2021"),
+        (
+            "pub fn f() { if let Some(_) = Some(1) && true {} }",
+            "let chains",
+        ),
+        (
+            "pub fn f() -> impl Copy { 1u32 }",
+            "impl Trait in edition 2021",
+        ),
     ] {
         let fixture = Fixture::new();
         dependency(&fixture, source);
@@ -226,7 +232,8 @@ fn tail_temporary_drop_order_is_not_silently_compiled_as_2024() {
     }
     assert_eq!(observed[0], b"drop=1\ndrop=2\nvalue=2\n");
     assert_eq!(observed[1], b"drop=2\ndrop=1\nvalue=2\n");
-    let output=fixture.run("build",&[]);success(&output);
+    let output = fixture.run("build", &[]);
+    success(&output);
 }
 
 #[test]
@@ -253,7 +260,8 @@ fn if_let_temporary_drop_order_is_not_silently_compiled_as_2024() {
     }
     assert_eq!(observed[0], b"else\ndrop\n");
     assert_eq!(observed[1], b"drop\nelse\n");
-    let output=fixture.run("build",&[]);success(&output);
+    let output = fixture.run("build", &[]);
+    success(&output);
 }
 
 #[test]
@@ -299,7 +307,14 @@ fn edition_sensitive_syntax_and_lifetime_rejections_match_rustc_boundaries() {
             );
         }
         let output = fixture.run("build", &[]);
-        assert_eq!(output.status.success(), accepts_2021, "{source}: {}",String::from_utf8_lossy(&output.stderr));
-        if !accepts_2021 { assert!(String::from_utf8_lossy(&output.stderr).contains(expected)); }
+        assert_eq!(
+            output.status.success(),
+            accepts_2021,
+            "{source}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if !accepts_2021 {
+            assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
+        }
     }
 }

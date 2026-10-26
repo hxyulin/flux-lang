@@ -68,7 +68,8 @@ pub(super) fn fragment(p: &mut Parser<'_>, kind: Fragment) {
     match kind {
         Fragment::Expr | Fragment::Expr2021 => {
             if p.at_ts(expressions::EXPR_FIRST)
-                && !(kind == Fragment::Expr2021 && (p.at(T![_]) || p.at(T![const]))) {
+                && !(kind == Fragment::Expr2021 && (p.at(T![_]) || p.at(T![const])))
+            {
                 expressions::expr(p);
             } else {
                 p.error("expected an expression");

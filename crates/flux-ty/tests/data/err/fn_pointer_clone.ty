@@ -17,5 +17,3 @@ fn tied_clone() -> ()
 error 345..351: mismatched types: expected `fn(&i32) -> i32`, found `unsafe fn(&i32) -> i32`
 error 357..367: call to unsafe function is unsafe and requires unsafe function or block
 error 382..388: the trait bound `unsafe fn(&i32) -> i32: Fn<(&i32,)>` is not satisfied
-error 472..482: function pointers to functions with constrained input lifetimes are not supported yet
-error 618..622: function pointers to functions with constrained input lifetimes are not supported yet

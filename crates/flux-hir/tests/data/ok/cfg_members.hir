@@ -12,17 +12,17 @@ trait Signature;
 
 impl Record;
 
-impl ::core::clone::Clone for Record;
+impl $crate0::clone::Clone for Record;
 
-impl ::core::marker::Copy for Record;
+impl $crate0::marker::Copy for Record;
 
-impl ::core::default::Default for Record;
+impl $crate0::default::Default for Record;
 
-impl ::core::clone::Clone for Tuple;
+impl $crate0::clone::Clone for Tuple;
 
-impl ::core::marker::Copy for Tuple;
+impl $crate0::marker::Copy for Tuple;
 
-impl ::core::default::Default for Choice;
+impl $crate0::default::Default for Choice;
 
 fn take(value@0: i32) -> i32 {
     value@0
@@ -47,22 +47,22 @@ fn main() -> () {
     let value@7 = ((f@4(a@2) + closure@6(r@0.method())) + Record::associated(1));
 }
 
-fn <Record as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <Record as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     assert_param_is_clone((&self@0.value));
     (*self@0)
 }
 
-fn <Record as ::core::default::Default>::default() -> Self {
+fn <Record as $crate0::default::Default>::default() -> Self {
     Record { value: Default::default() }
 }
 
-fn <Tuple as ::core::clone::Clone>::clone(self@0: &Self) -> Self {
+fn <Tuple as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     assert_param_is_clone((&self@0.0));
     assert_param_is_clone((&self@0.1));
     (*self@0)
 }
 
-fn <Choice as ::core::default::Default>::default() -> Self {
+fn <Choice as $crate0::default::Default>::default() -> Self {
     Choice::Kept
 }
 

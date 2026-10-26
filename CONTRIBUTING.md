@@ -95,6 +95,12 @@ Programs in `tests/run` are compiled with rustc (`-C overflow-checks=off
 the same output, panic messages and exit status: `cargo test -p
 flux-cli --test run`. Both are given the program's path relative to the
 repository, which panic messages show.
+Shared CLI test mechanics live in `crates/flux-cli/tests/support`: `process`
+runs bounded commands with file-backed output, `oracle` compares ordinary native
+fixtures, and `inventory` records original bytes and physical diagnostic paths.
+Graph tests keep their dependencies, cfg and assertions explicit. Audit parents
+check original source bytes even when their worker fails or times out.
+
 This needs arm64 macOS, where flux can link executables so far. Write
 programs so rustc cannot fold them at compile time (pass values through
 function parameters), or its overflow lints reject them.

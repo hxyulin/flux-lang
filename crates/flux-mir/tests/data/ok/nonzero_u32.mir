@@ -183,7 +183,7 @@ fn main() -> () {
     let _1: ();
     let _2: bool;
     let _3: bool;
-    let _4: Option<NonZeroU32>;
+    let mut _4: &Option<NonZeroU32>;
     let _5: &Option<NonZeroU32>;
     let _6: !;
     let _7: ();
@@ -216,14 +216,13 @@ fn main() -> () {
     let _34: !;
 
     bb0: {
-        _4 = const ZERO;
-        _5 = &_4;
+        _4 = const &ZERO;
+        _5 = &(*_4);
         _3 = is_none::<NonZeroU32>(copy _5) -> bb1;
     }
 
     bb1: {
         _2 = Not(copy _3);
-        StorageDead(_4);
         switchInt(copy _2) -> [0: bb3, otherwise: bb2];
     }
 

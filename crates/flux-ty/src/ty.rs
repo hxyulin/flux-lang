@@ -122,12 +122,29 @@ pub enum IntTy {
 
 /// IEEE binary32 and binary64.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FloatTy { F32, F64 }
+pub enum FloatTy {
+    F32,
+    F64,
+}
 impl FloatTy {
-    pub fn bits(self) -> u32 { match self { Self::F32 => 32, Self::F64 => 64 } }
-    pub fn name(self) -> Symbol { match self { Self::F32 => sym::f32, Self::F64 => sym::f64 } }
+    pub fn bits(self) -> u32 {
+        match self {
+            Self::F32 => 32,
+            Self::F64 => 64,
+        }
+    }
+    pub fn name(self) -> Symbol {
+        match self {
+            Self::F32 => sym::f32,
+            Self::F64 => sym::f64,
+        }
+    }
     pub fn from_name(name: Symbol) -> Option<Self> {
-        match name.as_str() { "f32" => Some(Self::F32), "f64" => Some(Self::F64), _ => None }
+        match name.as_str() {
+            "f32" => Some(Self::F32),
+            "f64" => Some(Self::F64),
+            _ => None,
+        }
     }
 }
 
@@ -213,7 +230,7 @@ pub struct OpaqueTy {
 
 /// `dyn Tr<A, Out = B>`: its trait, the trait's generic arguments after
 /// `Self`, and the associated types of the trait and its supertraits,
-/// each named and given, in the order [`crate::traits::dyn_assoc`]
+/// each named and given, in the order [`crate::objects::dyn_assoc`]
 /// gives them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DynTy {
@@ -296,20 +313,37 @@ impl FnPtrRegions {
             StaticSliceArena<&'static [FnRegion]>,
             StaticSliceArena<FnPtrRegions>,
         );
-        static REGIONS: LazyLock<Mutex<Regions>> = LazyLock::new(|| Mutex::new((
-            HashTable::new(), StaticSliceArena::default(), StaticSliceArena::default(), StaticSliceArena::default(),
-        )));
+        static REGIONS: LazyLock<Mutex<Regions>> = LazyLock::new(|| {
+            Mutex::new((
+                HashTable::new(),
+                StaticSliceArena::default(),
+                StaticSliceArena::default(),
+                StaticSliceArena::default(),
+            ))
+        });
         let hash = FxBuildHasher.hash_one((bound, free, rows, types));
         let mut arena = REGIONS.lock().unwrap();
-        if let Some(&(_, found)) = arena.0.find(hash, |&(h, r)| h == hash
-            && r.bound == bound && r.free == free && r.types == types
-            && r.inputs_output.len() == rows.len()
-            && r.inputs_output.iter().zip(rows).all(|(a, b)| *a == b.as_slice())) {
+        if let Some(&(_, found)) = arena.0.find(hash, |&(h, r)| {
+            h == hash
+                && r.bound == bound
+                && r.free == free
+                && r.types == types
+                && r.inputs_output.len() == rows.len()
+                && r.inputs_output
+                    .iter()
+                    .zip(rows)
+                    .all(|(a, b)| *a == b.as_slice())
+        }) {
             return found;
         }
         let rows: Vec<_> = rows.iter().map(|row| arena.1.alloc(row)).collect();
         let rows = arena.2.alloc(&rows);
-        let value = FnPtrRegions { bound, free, inputs_output: rows, types: Ty::list(types) };
+        let value = FnPtrRegions {
+            bound,
+            free,
+            inputs_output: rows,
+            types: Ty::list(types),
+        };
         let value = &arena.3.alloc(&[value])[0];
         arena.0.insert_unique(hash, (hash, value), |&(h, _)| h);
         value
@@ -351,7 +385,9 @@ impl FnSigTy {
         let list = map_list(self.inputs_output, &mut f);
         let regions = self.regions.map(|r| {
             let types = map_list(r.types, &mut f);
-            if types == r.types { r } else {
+            if types == r.types {
+                r
+            } else {
                 let rows: Vec<_> = r.inputs_output.iter().map(|row| row.to_vec()).collect();
                 FnPtrRegions::intern(r.bound, r.free, &rows, types)
             }
@@ -640,33 +676,15 @@ impl Interner {
             return id;
         }
         let of = |ty: Ty| KINDS.get(ty.0).map_or(0, |(_, flags)| flags);
-        let flags = match kind {
+        let own = match kind {
             TyKind::Param(_) => HAS_PARAM,
             TyKind::Infer(_) => HAS_INFER,
-            TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
-                list.iter().fold(0, |f, &t| f | of(t))
-            }
-            TyKind::Alias(alias) => alias.args.iter().fold(HAS_ALIAS, |f, &t| f | of(t)),
-            TyKind::Opaque(opaque) => opaque.args.iter().fold(HAS_OPAQUE, |f, &t| f | of(t)),
-            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => of(t),
-            TyKind::Array(t, len) => of(t) | of(len),
-            TyKind::FnPtr(sig) => sig.inputs_output.iter().fold(0, |f, &t| f | of(t)),
-            TyKind::Dynamic(d) => d.args.iter().chain(d.assoc_tys).fold(0, |f, &t| f | of(t)),
-            TyKind::FnDef(def) => def
-                .args
-                .iter()
-                .chain(def.sig.inputs_output)
-                .fold(0, |f, &t| f | of(t)),
-            TyKind::Int(_)
-            | TyKind::Float(_)
-            | TyKind::Bool
-            | TyKind::Char
-            | TyKind::Str
-            | TyKind::Never
-            | TyKind::CStr
-            | TyKind::Value(_) => 0,
+            TyKind::Alias(_) => HAS_ALIAS,
+            TyKind::Opaque(_) => HAS_OPAQUE,
             TyKind::Error => HAS_ERROR,
+            _ => 0,
         };
+        let flags = kind.children().fold(own, |flags, ty| flags | of(ty));
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         assert!(id < EMPTY.0, "more than u32::MAX types interned");
         // Written before the index is published, so whoever has the
@@ -705,8 +723,16 @@ impl Ty {
         Ty(PREDEFINED.len() as u32 + int as u32)
     }
 
-    pub fn float(float: FloatTy) -> Ty { Ty::new(TyKind::Float(float)) }
-    pub fn as_float(self) -> Option<FloatTy> { if let TyKind::Float(f) = self.kind() { Some(f) } else { None } }
+    pub fn float(float: FloatTy) -> Ty {
+        Ty::new(TyKind::Float(float))
+    }
+    pub fn as_float(self) -> Option<FloatTy> {
+        if let TyKind::Float(f) = self.kind() {
+            Some(f)
+        } else {
+            None
+        }
+    }
 
     /// The type with this kind, interning it if it is new.
     pub fn new(kind: TyKind) -> Ty {
@@ -822,35 +848,12 @@ impl Ty {
         if !self.has_opaques() {
             return self;
         }
-        let mut go = |t: Ty| t.map_opaques(f);
         match self.kind() {
             TyKind::Opaque(opaque) => {
-                let args = map_list(opaque.args, &mut go);
+                let args = map_list(opaque.args, |t| t.map_opaques(f));
                 f(OpaqueTy { args, ..opaque })
             }
-            TyKind::Tuple(list) => Ty::new(TyKind::Tuple(map_list(list, go))),
-            TyKind::Adt(adt, list) => {
-                let list = map_list(list, go);
-                Ty::new(TyKind::Adt(adt, list))
-            }
-            TyKind::Closure(id, list) => {
-                let list = map_list(list, go);
-                Ty::new(TyKind::Closure(id, list))
-            }
-            TyKind::Alias(alias) => {
-                let list = map_list(alias.args, go);
-                Ty::alias(AliasTy {
-                    args: list,
-                    ..alias
-                })
-            }
-            TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
-            TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
-            TyKind::Array(t, len) => Ty::array_of(go(t), go(len)),
-            TyKind::Slice(t) => Ty::slice(go(t)),
-            TyKind::FnDef(_) | TyKind::FnPtr(_) => self.map_fn(go),
-            TyKind::Dynamic(d) => Ty::new(TyKind::Dynamic(d.map(go))),
-            _ => self,
+            _ => self.map_children(|t| t.map_opaques(f)),
         }
     }
 
@@ -906,24 +909,7 @@ impl Ty {
     fn subst_node(self, args: &[Ty], mapped: impl Fn(Ty) -> Ty) -> Ty {
         match self.kind() {
             TyKind::Param(param) => args.get(param.index as usize).copied().unwrap_or(Ty::ERROR),
-            TyKind::Tuple(elements) => Ty::new(TyKind::Tuple(map_list(elements, &mapped))),
-            TyKind::Adt(adt, list) => Ty::new(TyKind::Adt(adt, map_list(list, &mapped))),
-            TyKind::Closure(id, list) => Ty::new(TyKind::Closure(id, map_list(list, &mapped))),
-            TyKind::Alias(alias) => Ty::alias(AliasTy {
-                args: map_list(alias.args, &mapped),
-                ..alias
-            }),
-            TyKind::Opaque(opaque) => Ty::opaque(OpaqueTy {
-                args: map_list(opaque.args, &mapped),
-                ..opaque
-            }),
-            TyKind::RawPtr(m, pointee) => Ty::raw_ptr(m, mapped(pointee)),
-            TyKind::Ref(m, pointee) => Ty::new(TyKind::Ref(m, mapped(pointee))),
-            TyKind::Array(elem, len) => Ty::array_of(mapped(elem), mapped(len)),
-            TyKind::Slice(elem) => Ty::slice(mapped(elem)),
-            TyKind::FnDef(_) | TyKind::FnPtr(_) => self.map_fn(&mapped),
-            TyKind::Dynamic(d) => Ty::new(TyKind::Dynamic(d.map(&mapped))),
-            _ => self,
+            _ => self.map_children(mapped),
         }
     }
 
@@ -999,30 +985,46 @@ impl Ty {
         }
     }
 
+    /// Rebuild this node after mapping its immediate structural children.
+    /// This visits type arguments and callable metadata, not stored ADT fields;
+    /// drop, layout and region-variance walks keep their own semantic policies.
+    pub fn map_children(self, mut f: impl FnMut(Ty) -> Ty) -> Ty {
+        let kind = match self.kind() {
+            TyKind::Tuple(list) => TyKind::Tuple(map_list(list, f)),
+            TyKind::Adt(adt, list) => TyKind::Adt(adt, map_list(list, f)),
+            TyKind::Closure(id, list) => TyKind::Closure(id, map_list(list, f)),
+            TyKind::Alias(alias) => TyKind::Alias(AliasTy {
+                args: map_list(alias.args, f),
+                ..alias
+            }),
+            TyKind::Opaque(opaque) => TyKind::Opaque(OpaqueTy {
+                args: map_list(opaque.args, f),
+                ..opaque
+            }),
+            TyKind::RawPtr(m, t) => TyKind::RawPtr(m, f(t)),
+            TyKind::Ref(m, t) => TyKind::Ref(m, f(t)),
+            TyKind::Array(t, len) => TyKind::Array(f(t), f(len)),
+            TyKind::Slice(t) => TyKind::Slice(f(t)),
+            TyKind::FnDef(_) | TyKind::FnPtr(_) => return self.map_fn(f),
+            TyKind::Dynamic(d) => TyKind::Dynamic(d.map(f)),
+            TyKind::Bool
+            | TyKind::Int(_)
+            | TyKind::Float(_)
+            | TyKind::Char
+            | TyKind::Str
+            | TyKind::CStr
+            | TyKind::Param(_)
+            | TyKind::Infer(_)
+            | TyKind::Value(_)
+            | TyKind::Never
+            | TyKind::Error => return self,
+        };
+        Ty::new(kind)
+    }
+
     /// The types directly inside this one.
     pub fn children(self) -> impl Iterator<Item = Ty> + Clone {
-        let mut inline = [None; 2];
-        let (first, second): (&'static [Ty], &'static [Ty]) = match self.kind() {
-            TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => (list, &[]),
-            TyKind::Alias(alias) => (alias.args, &[]),
-            TyKind::Opaque(opaque) => (opaque.args, &[]),
-            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => {
-                inline[0] = Some(t);
-                (&[], &[])
-            }
-            TyKind::Array(t, len) => {
-                inline = [Some(t), Some(len)];
-                (&[], &[])
-            }
-            TyKind::FnPtr(sig) => (sig.inputs_output, &[]),
-            TyKind::FnDef(def) => (def.args, def.sig.inputs_output),
-            TyKind::Dynamic(d) => (d.args, d.assoc_tys),
-            _ => (&[], &[]),
-        };
-        inline
-            .into_iter()
-            .flatten()
-            .chain(first.iter().chain(second).copied())
+        self.kind().children()
     }
 
     /// The signature of a function item or pointer type.
@@ -1073,6 +1075,39 @@ impl Ty {
     /// `*const T`, `*mut T`, `&T` or `&mut T`.
     pub fn is_pointer(self) -> bool {
         matches!(self.kind(), TyKind::RawPtr(..) | TyKind::Ref(..))
+    }
+}
+
+impl TyKind {
+    fn children(self) -> impl Iterator<Item = Ty> + Clone {
+        let mut inline = [None; 2];
+        let (first, second): (&'static [Ty], &'static [Ty]) = match self {
+            TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => (list, &[]),
+            TyKind::Alias(alias) => (alias.args, &[]),
+            TyKind::Opaque(opaque) => (opaque.args, &[]),
+            TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => {
+                inline[0] = Some(t);
+                (&[], &[])
+            }
+            TyKind::Array(t, len) => {
+                inline = [Some(t), Some(len)];
+                (&[], &[])
+            }
+            TyKind::FnPtr(sig) => (sig.inputs_output, &[]),
+            TyKind::FnDef(def) => (def.args, def.sig.inputs_output),
+            TyKind::Dynamic(d) => (d.args, d.assoc_tys),
+            _ => (&[], &[]),
+        };
+        let captures = match self {
+            TyKind::FnPtr(sig) => sig.regions,
+            TyKind::FnDef(def) => def.sig.regions,
+            _ => None,
+        }
+        .map_or(&[][..], |r| r.types);
+        inline
+            .into_iter()
+            .flatten()
+            .chain(first.iter().chain(second).chain(captures).copied())
     }
 }
 
@@ -1283,7 +1318,9 @@ fn write_sig(f: &mut fmt::Formatter<'_>, sig: FnSigTy) -> fmt::Result {
     if sig.is_unsafe {
         f.write_str("unsafe ")?;
     }
-    if sig.is_c { f.write_str("extern \"C\" ")?; }
+    if sig.is_c {
+        f.write_str("extern \"C\" ")?;
+    }
     let params: Vec<String> = sig.params().iter().map(Ty::to_string).collect();
     write!(f, "fn({})", params.join(", "))?;
     if sig.ret() != Ty::UNIT {
@@ -1295,6 +1332,23 @@ fn write_sig(f: &mut fmt::Formatter<'_>, sig: FnSigTy) -> fmt::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_callable_types_participate_in_folding_and_flags() {
+        let parameter = Ty::param(0, Symbol::intern("Captured"));
+        let recipe = FnPtrRegions::intern(0, 0, &[vec![], vec![]], &[parameter]);
+        let pointer = Ty::new(TyKind::FnPtr(FnSigTy {
+            regions: Some(recipe),
+            ..FnSigTy::new(&[Ty::UNIT], Ty::UNIT, false)
+        }));
+        assert!(pointer.has_params());
+        let replaced = pointer.subst(&[Ty::STR]);
+        assert!(!replaced.has_params());
+        let sig = replaced.fn_sig().unwrap();
+        assert_eq!(sig.regions.unwrap().types, &[Ty::STR]);
+        assert_eq!(sig.params(), &[Ty::UNIT]);
+        assert_eq!(pointer.map_children(|ty| ty), pointer);
+    }
 
     #[test]
     fn substitution_memoizes_shared_nodes_and_is_simultaneous() {

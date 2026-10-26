@@ -23,7 +23,8 @@ use crate::item_tree::{
     unsupported, with_macro_types,
 };
 use crate::literal::{
-    parse_float, parse_int, unescape_byte, unescape_byte_str, unescape_c_str, unescape_char, unescape_str,
+    parse_float, parse_int, unescape_byte, unescape_byte_str, unescape_c_str, unescape_char,
+    unescape_str,
 };
 use crate::macros::{self, CallSite, MacroDef, MacroScopeId, RECURSION_LIMIT};
 use crate::{
@@ -433,7 +434,9 @@ fn derived_body(
 /// The physical core helper used to check every field of a derived `Clone`.
 fn assert_param_is_clone(items: &ItemTree, module: ModuleId) -> Res {
     let anchor = PathAnchor::DefinitionCrate(crate::CrateId(0));
-    let segments = ["clone", "assert_param_is_clone"].map(Symbol::intern).into();
+    let segments = ["clone", "assert_param_is_clone"]
+        .map(Symbol::intern)
+        .into();
 
     let path = Path {
         edition: None,
@@ -1951,13 +1954,17 @@ impl<'a> Ctx<'a> {
 
     /// The file the body is written in, not an expansion's.
     fn real_file(&self) -> FileId {
-        self.expansion_file.map(|file| self.items.real_file(file)).unwrap_or_else(|| self.place.map_or(FileId::UNKNOWN, |p| {
-            self.items
-                .expansion_files
-                .get(&p.file)
-                .copied()
-                .unwrap_or(p.file)
-        }))
+        self.expansion_file
+            .map(|file| self.items.real_file(file))
+            .unwrap_or_else(|| {
+                self.place.map_or(FileId::UNKNOWN, |p| {
+                    self.items
+                        .expansion_files
+                        .get(&p.file)
+                        .copied()
+                        .unwrap_or(p.file)
+                })
+            })
     }
 
     /// Expands the macro call `node` as `fragment`, reporting why not if
@@ -2026,7 +2033,10 @@ impl<'a> Ctx<'a> {
         }
         let expansion = macros::expand(&def, node, &site, fragment, &mut self.diagnostics)?;
         if expansion.included_path.is_some() {
-            self.error(node.text_range(), "source inclusion after body item collection is not supported yet");
+            self.error(
+                node.text_range(),
+                "source inclusion after body item collection is not supported yet",
+            );
             return None;
         }
         for (new, old) in expansion.ctxts {
@@ -2064,9 +2074,16 @@ impl<'a> Ctx<'a> {
             .syntax_file(node)
             .and_then(|file| self.items.body_macro_definitions.get(&(file, node.id())))
             .map(|&id| self.items.macros[id].clone());
-        if let Some(def) = retained
-            .or_else(|| MacroDef::from_rules(node, krate, file, self.items.edition(self.module), false, &mut self.diagnostics))
-        {
+        if let Some(def) = retained.or_else(|| {
+            MacroDef::from_rules(
+                node,
+                krate,
+                file,
+                self.items.edition(self.module),
+                false,
+                &mut self.diagnostics,
+            )
+        }) {
             self.local_macros.push((
                 def.name,
                 LocalMacro {
@@ -2166,9 +2183,12 @@ impl<'a> Ctx<'a> {
         match ty {
             TypeRef::Path(path) => self.load_path_metadata(path),
             TypeRef::Tuple(types) => {
-                for ty in types { self.load_type_metadata(ty); }
+                for ty in types {
+                    self.load_type_metadata(ty);
+                }
             }
-            TypeRef::Ptr { pointee, .. } | TypeRef::Ref { pointee, .. }
+            TypeRef::Ptr { pointee, .. }
+            | TypeRef::Ref { pointee, .. }
             | TypeRef::Slice(pointee) => self.load_type_metadata(pointee),
             TypeRef::Array { elem, len } => {
                 self.load_type_metadata(elem);
@@ -2177,14 +2197,20 @@ impl<'a> Ctx<'a> {
                 }
             }
             TypeRef::FnPtr { params, ret, .. } => {
-                for ty in params { self.load_type_metadata(ty); }
+                for ty in params {
+                    self.load_type_metadata(ty);
+                }
                 self.load_type_metadata(ret);
             }
             TypeRef::Dyn(d) => {
-                for bound in &d.bounds { self.load_path_metadata(&bound.path); }
+                for bound in &d.bounds {
+                    self.load_path_metadata(&bound.path);
+                }
             }
             TypeRef::ImplTrait(t) => {
-                for bound in &t.bounds { self.load_path_metadata(&bound.path); }
+                for bound in &t.bounds {
+                    self.load_path_metadata(&bound.path);
+                }
             }
             TypeRef::Const(len) => {
                 if let crate::ArrayLenKind::Path(path) = &len.kind {
@@ -2198,16 +2224,26 @@ impl<'a> Ctx<'a> {
     fn load_path_metadata(&self, path: &Path) {
         if let Some(qself) = &path.qself {
             self.load_type_metadata(&qself.ty);
-            if let Some(trait_) = &qself.trait_ { self.load_path_metadata(trait_); }
+            if let Some(trait_) = &qself.trait_ {
+                self.load_path_metadata(trait_);
+            }
         } else if !(path.anchor == PathAnchor::Plain
-            && path.segments.first().is_some_and(|n| self.generics.contains(n))) {
+            && path
+                .segments
+                .first()
+                .is_some_and(|n| self.generics.contains(n)))
+        {
             // Ignore errors here; inference reports them with the full type
             // scope. Successful external prefixes still load their metadata.
             let _ = self.items.resolve(self.module, path, Ns::Types);
         }
         for args in path.args.iter().flatten() {
-            for ty in &args.types { self.load_type_metadata(ty); }
-            for binding in &args.bindings { self.load_type_metadata(&binding.ty); }
+            for ty in &args.types {
+                self.load_type_metadata(ty);
+            }
+            for binding in &args.bindings {
+                self.load_type_metadata(&binding.ty);
+            }
         }
     }
 
@@ -2264,13 +2300,17 @@ impl<'a> Ctx<'a> {
     }
 
     fn syntax_edition(&self, node: SyntaxNode<'_>) -> flux_syntax::Edition {
-        node.tokens().find(|t| !t.kind().is_trivia()).map_or(self.items.edition(self.module), |t| t.edition())
+        node.tokens()
+            .find(|t| !t.kind().is_trivia())
+            .map_or(self.items.edition(self.module), |t| t.edition())
     }
 
     fn lower_expr(&mut self, expr: ast::Expr<'_>) -> ExprId {
         let edition = self.syntax_edition(expr.syntax());
         let id = self.lower_expr_inner(expr);
-        if self.source_map.editions.get(id).is_none() { self.source_map.editions.insert(id, edition); }
+        if self.source_map.editions.get(id).is_none() {
+            self.source_map.editions.insert(id, edition);
+        }
         id
     }
 
@@ -2460,7 +2500,9 @@ impl<'a> Ctx<'a> {
                             args,
                         };
                         let id = self.alloc_expr(call, range);
-                        self.source_map.editions.insert(id, self.syntax_edition(name.syntax()));
+                        self.source_map
+                            .editions
+                            .insert(id, self.syntax_edition(name.syntax()));
                         let name_range = name.syntax().text_range();
                         self.source_map.expr_fields.insert(id, [name_range]);
                         if let Some(generics) = generics {
@@ -3248,7 +3290,9 @@ impl<'a> Ctx<'a> {
             },
             syntax.text_range(),
         );
-        self.source_map.editions.insert(id, self.syntax_edition(syntax));
+        self.source_map
+            .editions
+            .insert(id, self.syntax_edition(syntax));
         if is_const {
             self.const_blocks.insert(id, ());
             self.check_const_block_locals(expr_start, binding_start);
@@ -3365,12 +3409,11 @@ impl<'a> Ctx<'a> {
                 // Collected with the item tree, lowered on their own;
                 // retained expansions also have their block items collected.
                 ast::Stmt::Item(item) => {
-                    if self.expansion_depth > 0
-                        && self.macro_tail_is_expr
-                    {
+                    if self.expansion_depth > 0 && self.macro_tail_is_expr {
                         self.error(item.syntax().text_range(), "expected an expression");
                     } else if self.expansion_depth > 0
-                        && !self.expansion_file
+                        && !self
+                            .expansion_file
                             .is_some_and(|file| self.syntax_file(item.syntax()) == Some(file))
                     {
                         self.unsupported(
@@ -4163,7 +4206,9 @@ impl<'a> Ctx<'a> {
         if path.anchor == PathAnchor::Plain
             && path.segments.len() > 1
             && (self.generics.contains(&path.segments[0])
-                || (path.segments[0] == kw::SelfUpper && self.self_is_any && !concrete_self_variant))
+                || (path.segments[0] == kw::SelfUpper
+                    && self.self_is_any
+                    && !concrete_self_variant))
         {
             if path.segments.len() > 3 {
                 self.unsupported(path.range(1, range), "associated types of associated types");
@@ -4481,13 +4526,19 @@ impl<'a> Ctx<'a> {
             return Expr::Missing;
         };
         match literal.kind() {
-            Some(LiteralKind::Int | LiteralKind::Float) => match if literal.kind() == Some(LiteralKind::Float) { parse_float(token.text()) } else { parse_int(token.text()) } {
-                Ok(literal) => Expr::Literal(literal),
-                Err(message) => {
-                    self.error(range, message);
-                    Expr::Missing
+            Some(LiteralKind::Int | LiteralKind::Float) => {
+                match if literal.kind() == Some(LiteralKind::Float) {
+                    parse_float(token.text())
+                } else {
+                    parse_int(token.text())
+                } {
+                    Ok(literal) => Expr::Literal(literal),
+                    Err(message) => {
+                        self.error(range, message);
+                        Expr::Missing
+                    }
                 }
-            },
+            }
             Some(LiteralKind::Bool(value)) => Expr::Literal(Literal::Bool(value)),
             Some(kind) => {
                 let text = token.text();
@@ -4529,7 +4580,12 @@ impl<'a> Ctx<'a> {
         id
     }
 
-    fn lower_pat(&mut self, pat: Option<ast::Pat<'_>>, parent: SyntaxNode<'_>, site: PatSite) -> PatId {
+    fn lower_pat(
+        &mut self,
+        pat: Option<ast::Pat<'_>>,
+        parent: SyntaxNode<'_>,
+        site: PatSite,
+    ) -> PatId {
         let edition = self.syntax_edition(pat.map_or(parent, |pat| pat.syntax()));
         let id = self.lower_pat_inner(pat, parent, site);
         self.source_map.pat_editions.insert(id, edition);
@@ -4714,11 +4770,16 @@ impl<'a> Ctx<'a> {
             // Known variants of a concrete impl Self lower as structural
             // variant patterns, including units. Associated constants and
             // abstract trait Self continue through constant-pattern lowering.
-            if first == kw::SelfUpper && path.segments.len() == 2
+            if first == kw::SelfUpper
+                && path.segments.len() == 2
                 && self.self_target.is_some_and(|target| {
-                    matches!(self.items.resolve_assoc(self.module, target, &path, 1, Ns::Types),
-                        Ok(Resolved::Def(Def::Variant(..))))
-                }) {
+                    matches!(
+                        self.items
+                            .resolve_assoc(self.module, target, &path, 1, Ns::Types),
+                        Ok(Resolved::Def(Def::Variant(..)))
+                    )
+                })
+            {
                 return false;
             }
             // `T::N`, and `Self::N` in a trait.

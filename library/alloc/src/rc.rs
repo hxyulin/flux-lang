@@ -1,12 +1,15 @@
 //! Non-atomic shared ownership with separately typed payload metadata.
+use crate::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+use crate::vec::Vec;
 use core::cell::Cell;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::ptr::{self, NonNull};
-use crate::alloc::{Layout, alloc, dealloc, handle_alloc_error};
-use crate::vec::Vec;
 
-struct Header { strong: Cell<usize>, layout: Layout }
+struct Header {
+    strong: Cell<usize>,
+    layout: Layout,
+}
 
 /// Shared ownership confined to one thread. NonNull keeps Rc !Send and !Sync.
 pub struct Rc<T: ?Sized> {
@@ -22,12 +25,18 @@ impl<T> Rc<T> {
         unsafe {
             let data = raw as *mut T;
             ptr::write(data, value);
-            Rc { ptr, data: NonNull::new_unchecked(data), owner: PhantomData }
+            Rc {
+                ptr,
+                data: NonNull::new_unchecked(data),
+                owner: PhantomData,
+            }
         }
     }
 
     pub fn try_unwrap(this: Rc<T>) -> Result<T, Rc<T>> {
-        if Rc::strong_count(&this) != 1 { return Err(this); }
+        if Rc::strong_count(&this) != 1 {
+            return Err(this);
+        }
         let header = this.ptr;
         let data = this.data;
         core::mem::forget(this);
@@ -53,7 +62,9 @@ impl<T: ?Sized> Rc<T> {
     }
 
     pub fn get_mut(this: &mut Rc<T>) -> Option<&mut T> {
-        if Rc::strong_count(this) != 1 { return None; }
+        if Rc::strong_count(this) != 1 {
+            return None;
+        }
         // SAFETY: the only strong owner is exclusively borrowed. There are no
         // weak owners, so no other handle can acquire or access the payload.
         Some(unsafe { this.data.as_mut() })
@@ -89,7 +100,11 @@ impl<T: ?Sized> Clone for Rc<T> {
             handle_alloc_error(unsafe { (*self.ptr.as_ptr()).layout });
         }
         count.set(strong + 1);
-        Rc { ptr: self.ptr, data: self.data, owner: PhantomData }
+        Rc {
+            ptr: self.ptr,
+            data: self.data,
+            owner: PhantomData,
+        }
     }
 }
 
@@ -100,9 +115,15 @@ impl<T: ?Sized> Deref for Rc<T> {
         unsafe { self.data.as_ref() }
     }
 }
-impl<T: ?Sized> AsRef<T> for Rc<T> { fn as_ref(&self) -> &T { self } }
+impl<T: ?Sized> AsRef<T> for Rc<T> {
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
 
-struct Release { ptr: NonNull<Header> }
+struct Release {
+    ptr: NonNull<Header>,
+}
 impl Drop for Release {
     fn drop(&mut self) {
         // SAFETY: the final strong owner transfers the allocation to this
@@ -149,9 +170,17 @@ fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {
     // offset aligns the payload and the layout covers both header and payload.
     unsafe {
         let base = alloc(layout);
-        if base.is_null() { handle_alloc_error(layout); }
+        if base.is_null() {
+            handle_alloc_error(layout);
+        }
         let ptr = base as *mut Header;
-        ptr::write(ptr, Header { strong: Cell::new(1), layout });
+        ptr::write(
+            ptr,
+            Header {
+                strong: Cell::new(1),
+                layout,
+            },
+        );
         (NonNull::new_unchecked(ptr), base.add(offset))
     }
 }
@@ -171,12 +200,24 @@ impl<T> From<Vec<T>> for Rc<[T]> {
             ptr::copy_nonoverlapping(values.as_ptr(), data, len);
             values.set_len(0);
             let slice = core::slice::from_raw_parts_mut(data, len);
-            Rc { ptr, data: NonNull::new_unchecked(slice as *mut [T]), owner: PhantomData }
+            Rc {
+                ptr,
+                data: NonNull::new_unchecked(slice as *mut [T]),
+                owner: PhantomData,
+            }
         }
     }
 }
-impl<T> Default for Rc<[T]> { fn default() -> Self { Vec::new().into() } }
-impl<T: Clone> From<&[T]> for Rc<[T]> { fn from(values: &[T]) -> Self { values.to_vec().into() } }
+impl<T> Default for Rc<[T]> {
+    fn default() -> Self {
+        Vec::new().into()
+    }
+}
+impl<T: Clone> From<&[T]> for Rc<[T]> {
+    fn from(values: &[T]) -> Self {
+        values.to_vec().into()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -187,13 +228,21 @@ mod tests {
             let owner = Rc::new(7u32);
             // SAFETY: the handle keeps this allocation live. Only its Cell
             // counter is changed, and this child must abort before destruction.
-            unsafe { (*owner.ptr.as_ptr()).strong.set(isize::MAX as usize); }
+            unsafe {
+                (*owner.ptr.as_ptr()).strong.set(isize::MAX as usize);
+            }
             let _ = owner.clone();
             panic!("overflow clone returned");
         }
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "rc::tests::count_overflow_aborts"])
-            .env("FLUX_RC_OVERFLOW_CHILD", "1").output().unwrap();
-        assert!(result.status.code().is_none(), "overflow must abort: {:?}", result.status);
+            .env("FLUX_RC_OVERFLOW_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.code().is_none(),
+            "overflow must abort: {:?}",
+            result.status
+        );
     }
 }

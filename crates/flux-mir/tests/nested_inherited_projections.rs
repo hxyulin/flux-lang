@@ -4,32 +4,126 @@ fn nested_inherited_projections_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-nested-inherited-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
-        ("iterator_forward", "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn main(){let mut s=S([7u32,9].into_iter());assert_eq!(s.next_back(),Some(9));}", true),
-        ("generic_swapped", "trait Select<A,B>{type Out;fn get(&self)->Self::Out;}trait Child<A,B>:Select<B,A>{fn inherited(&self)->Self::Out;}struct S<T>(T);impl<T:Copy> Select<u16,u8>for S<T>{type Out=Option<T>;fn get(&self)->Self::Out{Some(self.0)}}impl<T:Copy>Child<u8,u16>for S<T>{fn inherited(&self)->Self::Out{self.get()}}fn main(){assert_eq!(S(7u32).inherited(),Some(7));}", true),
-        ("nested_alias", "trait Source{type Out;fn get(&self)->Self::Out;}trait Base{type Out;}trait Child:Base{fn get(&self)->Self::Out;}struct S<T>(T);impl<T:Source>Base for S<T>{type Out=Option<T::Out>;}impl<T:Source>Child for S<T>{fn get(&self)->Self::Out{Some(self.0.get())}}fn main(){}", true),
-        ("borrowed_iterator", "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn keep<'a>(a:&'a[u32])->Option<&'a u32>{S(a.iter()).next_back()}fn main(){}", true),
-        ("borrowed_mut_iterator", "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn keep<'a>(a:&'a mut[u32])->Option<&'a mut u32>{S(a.iter_mut()).next_back()}fn main(){}", true),
-        ("index_mut", "use std::ops::{Index,IndexMut};use std::slice::SliceIndex;struct V<T>(Vec<T>);impl<T,I:SliceIndex<[T]>>Index<I>for V<T>{type Output=I::Output;fn index(&self,i:I)->&Self::Output{&self.0.as_slice()[i]}}impl<T,I:SliceIndex<[T]>>IndexMut<I>for V<T>{fn index_mut(&mut self,i:I)->&mut Self::Output{&mut self.0.as_mut_slice()[i]}}fn main(){let mut v=V(vec![1u32,2,3]);v[1]=7;assert_eq!(v[1],7);}", true),
-        ("nested_swapped", "trait Source<A>{type Out;fn get(&self)->Self::Out;}trait Base<A,B>{type Out;}trait Child<A,B>:Base<B,A>{fn get(&self)->Self::Out;}struct S<T>(T);impl<T:Source<u16>>Base<u16,u8>for S<T>{type Out=Option<T::Out>;}impl<T:Source<u16>>Child<u8,u16>for S<T>{fn get(&self)->Self::Out{Some(self.0.get())}}fn main(){}", true),
-        ("mut_borrow_escape", "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn bad<'a>(a:&'a mut[u32])->&'static mut u32{S(a.iter_mut()).next_back().unwrap()}fn main(){}", false),
-        ("conflicting_mut_borrow", "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn bad(a:&mut[u32]){let mut s=S(a.iter_mut());let x=s.next_back().unwrap();a[0]=7;println!(\"{}\",x);}fn main(){}", false),
-        ("static_header_nested", "trait Source{type Out;}trait Base{type Out;}trait Child:Base{fn get(&self)->&Self::Out;}struct S<'a,T>(&'a T);impl<T:Source>Base for S<'static,T>{type Out=T::Out;}impl<T:Source>Child for S<'_,T>{fn get(&self)->&Self::Out{panic!()}}fn main(){}", false),
-        ("two_inputs_escape", "trait Source{type Out;fn get(&self)->Self::Out;}trait Base{type Out;}trait Child:Base{fn inherited(&self)->Self::Out;}struct S<'a,'b>(&'a u32,&'b u32);impl<'a,'b>Source for S<'a,'b>{type Out=&'b u32;fn get(&self)->Self::Out{self.1}}struct W<T>(T);impl<T:Source>Base for W<T>{type Out=T::Out;}impl<T:Source>Child for W<T>{fn inherited(&self)->Self::Out{self.0.get()}}fn bad<'a,'b>(a:&'a u32,b:&'b u32)->&'a u32{W(S(a,b)).inherited()}fn main(){}", false),
-        ("owner_field_contract", "struct S<'a,I:Iterator>{drain:std::slice::Iter<'a,I::Item>,replace:I}impl<'a,I:Iterator>S<'a,I>{fn size(&self)->usize{self.drain.as_slice().len()}}impl<I:Iterator>Drop for S<'_,I>{fn drop(&mut self){let _=self.drain.as_slice();}}fn main(){}", true),
-        ("owner_explicit_projection", "struct S<'a,I:Iterator>where I::Item:'a{drain:std::slice::Iter<'a,I::Item>,replace:I}impl<'a,I:Iterator>S<'a,I>{fn size(&self)->usize{self.drain.as_slice().len()}}fn main(){}", true),
-        ("owner_invariant_projection", "use std::marker::PhantomData;struct Drain<'a,T>{marker:PhantomData<&'a mut T>}impl<'a,T>Drain<'a,T>{fn fill(&mut self){}}struct S<'a,I:Iterator>where I::Item:'a{drain:Drain<'a,I::Item>,replace:I}impl<I:Iterator>Drop for S<'_,I>{fn drop(&mut self){self.drain.fill();}}fn main(){}", true),
-        ("owner_explicit_only", "use std::marker::PhantomData;fn needs<'a,T:'a>(_:&'a (),_:PhantomData<T>){}struct S<'a,I:Iterator>where I::Item:'a{token:&'a (),replace:I}impl<'a,I:Iterator>S<'a,I>{fn check(&self){needs(self.token,PhantomData::<I::Item>);}}fn main(){}", true),
-        ("owner_projection_escape", "use std::marker::PhantomData;struct Drain<'a,T>{marker:PhantomData<&'a mut T>}struct S<'a,I:Iterator>where I::Item:'a{drain:Drain<'a,I::Item>,replace:I}fn bad<'b>(x:&'b u32)->S<'static,std::array::IntoIter<&'b u32,1>>{S{drain:Drain{marker:PhantomData},replace:[x].into_iter()}}fn main(){let x=7;let mut s=bad(&x);let leaked:&'static u32=s.replace.next().unwrap();println!(\"{}\",leaked);}", false),
-        ("wrong_args", "trait Base<T>{type Out;}trait Child:Base<u16>{fn get()->Self::Out;}trait Source{type Item;}struct S<I>(I);impl<I:Source>Base<u8>for S<I>{type Out=I::Item;}impl<I:Source>Child for S<I>{fn get()->Self::Out{panic!()}}fn main(){}", false),
-        ("wrong_output", "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{Some(false)}}fn main(){}", false),
-        ("borrow_escape", "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn bad()->&'static u32{let a=[7,9];S(a.iter()).next_back().unwrap()}fn main(){}", false),
+        (
+            "iterator_forward",
+            "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn main(){let mut s=S([7u32,9].into_iter());assert_eq!(s.next_back(),Some(9));}",
+            true,
+        ),
+        (
+            "generic_swapped",
+            "trait Select<A,B>{type Out;fn get(&self)->Self::Out;}trait Child<A,B>:Select<B,A>{fn inherited(&self)->Self::Out;}struct S<T>(T);impl<T:Copy> Select<u16,u8>for S<T>{type Out=Option<T>;fn get(&self)->Self::Out{Some(self.0)}}impl<T:Copy>Child<u8,u16>for S<T>{fn inherited(&self)->Self::Out{self.get()}}fn main(){assert_eq!(S(7u32).inherited(),Some(7));}",
+            true,
+        ),
+        (
+            "nested_alias",
+            "trait Source{type Out;fn get(&self)->Self::Out;}trait Base{type Out;}trait Child:Base{fn get(&self)->Self::Out;}struct S<T>(T);impl<T:Source>Base for S<T>{type Out=Option<T::Out>;}impl<T:Source>Child for S<T>{fn get(&self)->Self::Out{Some(self.0.get())}}fn main(){}",
+            true,
+        ),
+        (
+            "borrowed_iterator",
+            "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn keep<'a>(a:&'a[u32])->Option<&'a u32>{S(a.iter()).next_back()}fn main(){}",
+            true,
+        ),
+        (
+            "borrowed_mut_iterator",
+            "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn keep<'a>(a:&'a mut[u32])->Option<&'a mut u32>{S(a.iter_mut()).next_back()}fn main(){}",
+            true,
+        ),
+        (
+            "index_mut",
+            "use std::ops::{Index,IndexMut};use std::slice::SliceIndex;struct V<T>(Vec<T>);impl<T,I:SliceIndex<[T]>>Index<I>for V<T>{type Output=I::Output;fn index(&self,i:I)->&Self::Output{&self.0.as_slice()[i]}}impl<T,I:SliceIndex<[T]>>IndexMut<I>for V<T>{fn index_mut(&mut self,i:I)->&mut Self::Output{&mut self.0.as_mut_slice()[i]}}fn main(){let mut v=V(vec![1u32,2,3]);v[1]=7;assert_eq!(v[1],7);}",
+            true,
+        ),
+        (
+            "nested_swapped",
+            "trait Source<A>{type Out;fn get(&self)->Self::Out;}trait Base<A,B>{type Out;}trait Child<A,B>:Base<B,A>{fn get(&self)->Self::Out;}struct S<T>(T);impl<T:Source<u16>>Base<u16,u8>for S<T>{type Out=Option<T::Out>;}impl<T:Source<u16>>Child<u8,u16>for S<T>{fn get(&self)->Self::Out{Some(self.0.get())}}fn main(){}",
+            true,
+        ),
+        (
+            "mut_borrow_escape",
+            "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn bad<'a>(a:&'a mut[u32])->&'static mut u32{S(a.iter_mut()).next_back().unwrap()}fn main(){}",
+            false,
+        ),
+        (
+            "conflicting_mut_borrow",
+            "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn bad(a:&mut[u32]){let mut s=S(a.iter_mut());let x=s.next_back().unwrap();a[0]=7;println!(\"{}\",x);}fn main(){}",
+            false,
+        ),
+        (
+            "static_header_nested",
+            "trait Source{type Out;}trait Base{type Out;}trait Child:Base{fn get(&self)->&Self::Out;}struct S<'a,T>(&'a T);impl<T:Source>Base for S<'static,T>{type Out=T::Out;}impl<T:Source>Child for S<'_,T>{fn get(&self)->&Self::Out{panic!()}}fn main(){}",
+            false,
+        ),
+        (
+            "two_inputs_escape",
+            "trait Source{type Out;fn get(&self)->Self::Out;}trait Base{type Out;}trait Child:Base{fn inherited(&self)->Self::Out;}struct S<'a,'b>(&'a u32,&'b u32);impl<'a,'b>Source for S<'a,'b>{type Out=&'b u32;fn get(&self)->Self::Out{self.1}}struct W<T>(T);impl<T:Source>Base for W<T>{type Out=T::Out;}impl<T:Source>Child for W<T>{fn inherited(&self)->Self::Out{self.0.get()}}fn bad<'a,'b>(a:&'a u32,b:&'b u32)->&'a u32{W(S(a,b)).inherited()}fn main(){}",
+            false,
+        ),
+        (
+            "owner_field_contract",
+            "struct S<'a,I:Iterator>{drain:std::slice::Iter<'a,I::Item>,replace:I}impl<'a,I:Iterator>S<'a,I>{fn size(&self)->usize{self.drain.as_slice().len()}}impl<I:Iterator>Drop for S<'_,I>{fn drop(&mut self){let _=self.drain.as_slice();}}fn main(){}",
+            true,
+        ),
+        (
+            "owner_explicit_projection",
+            "struct S<'a,I:Iterator>where I::Item:'a{drain:std::slice::Iter<'a,I::Item>,replace:I}impl<'a,I:Iterator>S<'a,I>{fn size(&self)->usize{self.drain.as_slice().len()}}fn main(){}",
+            true,
+        ),
+        (
+            "owner_invariant_projection",
+            "use std::marker::PhantomData;struct Drain<'a,T>{marker:PhantomData<&'a mut T>}impl<'a,T>Drain<'a,T>{fn fill(&mut self){}}struct S<'a,I:Iterator>where I::Item:'a{drain:Drain<'a,I::Item>,replace:I}impl<I:Iterator>Drop for S<'_,I>{fn drop(&mut self){self.drain.fill();}}fn main(){}",
+            true,
+        ),
+        (
+            "owner_explicit_only",
+            "use std::marker::PhantomData;fn needs<'a,T:'a>(_:&'a (),_:PhantomData<T>){}struct S<'a,I:Iterator>where I::Item:'a{token:&'a (),replace:I}impl<'a,I:Iterator>S<'a,I>{fn check(&self){needs(self.token,PhantomData::<I::Item>);}}fn main(){}",
+            true,
+        ),
+        (
+            "owner_projection_escape",
+            "use std::marker::PhantomData;struct Drain<'a,T>{marker:PhantomData<&'a mut T>}struct S<'a,I:Iterator>where I::Item:'a{drain:Drain<'a,I::Item>,replace:I}fn bad<'b>(x:&'b u32)->S<'static,std::array::IntoIter<&'b u32,1>>{S{drain:Drain{marker:PhantomData},replace:[x].into_iter()}}fn main(){let x=7;let mut s=bad(&x);let leaked:&'static u32=s.replace.next().unwrap();println!(\"{}\",leaked);}",
+            false,
+        ),
+        (
+            "wrong_args",
+            "trait Base<T>{type Out;}trait Child:Base<u16>{fn get()->Self::Out;}trait Source{type Item;}struct S<I>(I);impl<I:Source>Base<u8>for S<I>{type Out=I::Item;}impl<I:Source>Child for S<I>{fn get()->Self::Out{panic!()}}fn main(){}",
+            false,
+        ),
+        (
+            "wrong_output",
+            "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{Some(false)}}fn main(){}",
+            false,
+        ),
+        (
+            "borrow_escape",
+            "struct S<I:Iterator>(I);impl<I:Iterator>Iterator for S<I>{type Item=I::Item;fn next(&mut self)->Option<Self::Item>{self.0.next()}}impl<I:DoubleEndedIterator>DoubleEndedIterator for S<I>{fn next_back(&mut self)->Option<Self::Item>{self.0.next_back()}}fn bad()->&'static u32{let a=[7,9];S(a.iter()).next_back().unwrap()}fn main(){}",
+            false,
+        ),
     ] {
-        let path=root.join(format!("{name}.rs")); std::fs::write(&path,source).unwrap();
-        let oracle=std::process::Command::new("rustc").args(["--edition=2024","--emit=metadata"]).arg(&path).arg("-o").arg(root.join("oracle.rmeta")).output().unwrap();
-        assert_eq!(oracle.status.success(),accepted,"{name}: {}",String::from_utf8_lossy(&oracle.stderr));
-        let (_,_,hir)=flux_hir::lower_text(&path,source);
-        let mut errors=hir.diagnostics.clone();
-        if errors.is_empty() { let typed=flux_mir::check_file(&hir); errors.extend(typed.diagnostics.clone()); if errors.is_empty(){errors.extend(flux_mir::build_file(&hir,&typed).diagnostics);} }
-        assert_eq!(errors.is_empty(),accepted,"{name}: {errors:?}");
+        let path = root.join(format!("{name}.rs"));
+        std::fs::write(&path, source).unwrap();
+        let oracle = std::process::Command::new("rustc")
+            .args(["--edition=2024", "--emit=metadata"])
+            .arg(&path)
+            .arg("-o")
+            .arg(root.join("oracle.rmeta"))
+            .output()
+            .unwrap();
+        assert_eq!(
+            oracle.status.success(),
+            accepted,
+            "{name}: {}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+        let (_, _, hir) = flux_hir::lower_text(&path, source);
+        let mut errors = hir.diagnostics.clone();
+        if errors.is_empty() {
+            let typed = flux_mir::check_file(&hir);
+            errors.extend(typed.diagnostics.clone());
+            if errors.is_empty() {
+                errors.extend(flux_mir::build_file(&hir, &typed).diagnostics);
+            }
+        }
+        assert_eq!(errors.is_empty(), accepted, "{name}: {errors:?}");
     }
 }

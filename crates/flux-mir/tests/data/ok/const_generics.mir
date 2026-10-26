@@ -228,7 +228,6 @@ fn main() -> () {
     let _16: &[u8; 5];
     let _17: i32; // p
     let _18: &P;
-    let _19: P;
 
     bb0: {
         _2 = [const 1_i32, const 2_i32, const 3_i32];
@@ -277,13 +276,11 @@ fn main() -> () {
 
     bb10: {
         _14 = Add(copy _15, const Stack::CAPACITY::<u8, 2>);
-        _19 = P;
-        _18 = &_19;
+        _18 = const &promoted[0];
         _17 = pick::<P, 0>(copy _18) -> bb11;
     }
 
     bb11: {
-        StorageDead(_19);
         _0 = const ();
         StorageDead(_17);
         StorageDead(_14);

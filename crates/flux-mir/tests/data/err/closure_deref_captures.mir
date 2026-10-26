@@ -110,9 +110,16 @@ fn main::{closure#6} as FnOnce(_1: {closure}, _2: ()) -> i32 {
 
 fn main::{closure#18} as Fn(_1: &{closure}, _2: ()) -> usize {
     let mut _0: usize;
+    let _3: &[S; 1];
+    let _4: &[S];
 
     bb0: {
-        _0 = Len(&(*(*_1).0));
+        _3 = &(*(*_1).0);
+        _4 = copy _3 as &[S] (unsize);
+        _0 = len::<S>(copy _4) -> bb1;
+    }
+
+    bb1: {
         return;
     }
 }

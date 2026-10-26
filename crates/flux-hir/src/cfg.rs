@@ -6,7 +6,11 @@ use flux_syntax::{SyntaxKind, T, TextRange};
 type Error = (TextRange, String);
 
 /// The value of `cfg!(predicate)`, for flux's target.
-pub(crate) fn eval(call: TextRange, toks: &[Tok], cfg: Option<&flux_syntax::CfgOptions>) -> Result<bool, Error> {
+pub(crate) fn eval(
+    call: TextRange,
+    toks: &[Tok],
+    cfg: Option<&flux_syntax::CfgOptions>,
+) -> Result<bool, Error> {
     let mut pos = 0;
     let value = cfg_predicate(call, toks, &mut pos, cfg)?;
     if toks.get(pos).is_some_and(|t| t.kind == T![,]) {
@@ -18,7 +22,12 @@ pub(crate) fn eval(call: TextRange, toks: &[Tok], cfg: Option<&flux_syntax::CfgO
     Ok(value)
 }
 
-fn cfg_predicate(call: TextRange, toks: &[Tok], pos: &mut usize, cfg: Option<&flux_syntax::CfgOptions>) -> Result<bool, Error> {
+fn cfg_predicate(
+    call: TextRange,
+    toks: &[Tok],
+    pos: &mut usize,
+    cfg: Option<&flux_syntax::CfgOptions>,
+) -> Result<bool, Error> {
     let Some(name) = toks
         .get(*pos)
         .filter(|t| t.kind == SyntaxKind::IDENT || t.kind.is_keyword())
@@ -90,7 +99,10 @@ fn cfg_predicate(call: TextRange, toks: &[Tok], pos: &mut usize, cfg: Option<&fl
         },
         _ => cfg.is_some_and(|cfg| match value.as_deref() {
             None => cfg.names.iter().any(|candidate| &**candidate == name),
-            Some(value) => cfg.values.iter().any(|(key,candidate)| &**key == name && &**candidate == value),
+            Some(value) => cfg
+                .values
+                .iter()
+                .any(|(key, candidate)| &**key == name && &**candidate == value),
         }),
     })
 }
@@ -111,8 +123,11 @@ enum Attr<'a> {
 impl<'a> Attrs<'a> {
     pub(crate) fn new(attrs: impl IntoIterator<Item = flux_syntax::ast::Attr<'a>>) -> Self {
         use flux_syntax::ast::AstNode;
-        let mut attrs=attrs.into_iter().peekable();
-        let cfg=attrs.peek().and_then(|attr| attr.syntax().tree().cfg_options()).cloned();
+        let mut attrs = attrs.into_iter().peekable();
+        let cfg = attrs
+            .peek()
+            .and_then(|attr| attr.syntax().tree().cfg_options())
+            .cloned();
         let mut result = Self {
             cfg,
             attrs: Vec::new(),
@@ -210,7 +225,8 @@ impl<'a> Attrs<'a> {
                     &origins,
                     range,
                     flux_syntax::parser::Fragment::Items,
-                ).with_cfg_options(self.cfg.clone());
+                )
+                .with_cfg_options(self.cfg.clone());
                 if let Some(error) = parse.errors().first() {
                     return Err((error.range, error.message.clone()));
                 }

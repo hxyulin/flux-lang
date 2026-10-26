@@ -20,4 +20,3 @@ error 282..286: constant pattern cannot depend on generic parameters
 error 374..378: expected unit struct, unit variant or constant, found associated function `T::f`
 error 464..469: only `char` and numeric types are allowed in range patterns
 error 553..557: mismatched types: expected `u8`, found `i32`
-error 644..645: constants of type `(i32, i32)` in patterns are not supported yet

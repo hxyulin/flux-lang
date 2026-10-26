@@ -5,7 +5,7 @@
 //! undefined behavior. It is type-directed: every expression is generated
 //! for a type it must have, from the variables in scope that it may use
 //! there, so the program type-checks and borrow-checks by construction.
-//! The rules it follows are deliberately conservative (see [`func`]).
+//! The rules it follows are deliberately conservative (see `func`).
 //!
 //! A program prints what it computes as it goes: every observation is
 //! `ck(tag, hash)`, which prints the tag and a hash of the value and folds

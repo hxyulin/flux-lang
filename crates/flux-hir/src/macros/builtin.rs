@@ -259,7 +259,9 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
                 return Err((cx.call, format!("`{}!` requires a variable name", cx.name)));
             }
             let string = |arg: &[Tok]| match arg {
-                [t] if t.kind == SyntaxKind::STRING => crate::literal::unescape_str(t.text.as_str()).map_err(|e| (t.range(), e)),
+                [t] if t.kind == SyntaxKind::STRING => {
+                    crate::literal::unescape_str(t.text.as_str()).map_err(|e| (t.range(), e))
+                }
                 _ => Err((cx.range_of(arg), "expected a string literal".into())),
             };
             let name = string(args.args[0].1)?;
@@ -271,8 +273,16 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
                     out.push(cx.string(&value, cx.origin()));
                     cx.quote(")", &mut out);
                 }
-                Err(std::env::VarError::NotPresent) if builtin == Builtin::OptionEnv => cx.quote("{core}::option::Option::<&str>::None", &mut out),
-                Err(error) => return Err((cx.call, message.unwrap_or_else(|| format!("environment variable `{name}`: {error}")))),
+                Err(std::env::VarError::NotPresent) if builtin == Builtin::OptionEnv => {
+                    cx.quote("{core}::option::Option::<&str>::None", &mut out)
+                }
+                Err(error) => {
+                    return Err((
+                        cx.call,
+                        message
+                            .unwrap_or_else(|| format!("environment variable `{name}`: {error}")),
+                    ));
+                }
             }
         }
         Builtin::Stringify => out.push(cx.string(&pretty(cx.toks), cx.origin())),
@@ -319,9 +329,13 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
 /// A filename after eager expansion of its nested macro calls.
 pub(crate) fn filename(cx: &BuiltinCx<'_>) -> Result<String, Error> {
     match cx.toks {
-        [t] | [t, Tok { kind: T![,], .. }] if t.kind == SyntaxKind::STRING =>
-            crate::literal::unescape_str(t.text.as_str()).map_err(|e| (t.range(), e)),
-        _ => Err((cx.call, format!("{}! requires a string literal filename", cx.name))),
+        [t] | [t, Tok { kind: T![,], .. }] if t.kind == SyntaxKind::STRING => {
+            crate::literal::unescape_str(t.text.as_str()).map_err(|e| (t.range(), e))
+        }
+        _ => Err((
+            cx.call,
+            format!("{}! requires a string literal filename", cx.name),
+        )),
     }
 }
 
@@ -384,17 +398,29 @@ fn panic(cx: &BuiltinCx<'_>, prefix: &str, out: &mut Vec<Tok>) -> Result<(), Err
         return Ok(());
     }
     let args = split_exprs(cx, cx.toks, true)?;
-    if prefix.is_empty() && matches!(cx.edition, flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018) && args.args.len() == 1 {
+    if prefix.is_empty()
+        && matches!(
+            cx.edition,
+            flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
+        )
+        && args.args.len() == 1
+    {
         let (name, tokens) = &args.args[0];
         if name.is_none() {
-            if let [token] = *tokens && token.kind == SyntaxKind::STRING {
-                let value = crate::literal::unescape_str(token.text.as_str()).map_err(|error| (token.range(), error))?;
+            if let [token] = *tokens
+                && token.kind == SyntaxKind::STRING
+            {
+                let value = crate::literal::unescape_str(token.text.as_str())
+                    .map_err(|error| (token.range(), error))?;
                 cx.quote("{core}::panicking::panic(", out);
                 out.push(cx.string(&value, cx.origin()));
                 cx.quote(")", out);
                 return Ok(());
             }
-            return Err((cx.call, "non-literal panic payloads in edition 2018 are not supported yet".into()));
+            return Err((
+                cx.call,
+                "non-literal panic payloads in edition 2018 are not supported yet".into(),
+            ));
         }
     }
     let Some(&(None, first)) = args.args.first() else {

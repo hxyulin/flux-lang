@@ -14,11 +14,32 @@ flux is a Cargo workspace:
 | [`flux-intern`](../crates/flux-intern/src/lib.rs) | Global, thread-safe string interning (`Symbol`) |
 | [`flux-arena`](../crates/flux-arena/src/lib.rs) | Bump allocation and typed index arenas |
 
-Libraries do no I/O.
+Each semantic stage consumes the preceding stage's data. Source loading goes
+through `SourceDb`; backend object emission and executable linking are exposed by
+`flux-codegen`. The CLI owns arguments, diagnostic output and execution.
 
-Later stages (name resolution, type checking, borrow checking, lowering to
-[keel](https://github.com/hxyulin/keel) IR) will each be their own crate
-consuming the one before; see the [roadmap](ROADMAP.md).
+Within HIR, `item_tree` owns the data model. Its `collect`, `attributes` and
+`generics` modules handle collection policy, attribute admission and generic
+syntax separately. Type checking separates written-type resolution (`resolve`)
+from signature construction (`signature`) and per-body inference.
+
+`Ty::children` and `Ty::map_children` define structural traversal, including
+callable recipe captures. Inference resolution and substitution share those
+mechanics. Stored fields, drop requirements and variance still use specialized
+walks: a type argument is not necessarily stored data.
+
+MIR relates normalized types through checked region rows. Row cursors preserve
+root and child order instead of manually slicing erased projections. Function
+pointer binder proofs live separately in `borrowck/regions/callable`.
+
+Codegen's `lower/abi` classifies Rust fast, reified Rust and C arguments. Signatures,
+caller marshalling and callee loading consume the same classification. Native C
+physical layouts remain separate from Rust's scalar leaves.
+
+Trusted embedded intrinsic declarations resolve once to `flux_hir::Intrinsic`.
+Evaluation, monomorphization and codegen implement their own stages using that
+identity. Backend failures expose `flux_codegen::Error::stage()` and standard
+error sources while retaining existing diagnostic text.
 
 ## Parsing
 

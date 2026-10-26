@@ -110,14 +110,20 @@ fn make_mut_preserves_ownership_when_clone_or_allocation_panics() {
         .replace("#[lang = \"arc\"]\n", "")
         .replace("use crate::alloc::", "use std::alloc::")
         .replace("use crate::vec::Vec;", "use std::vec::Vec;")
-        .replace("crate::raw_vec::capacity_overflow()", "panic!(\"capacity overflow\")")
+        .replace(
+            "crate::raw_vec::capacity_overflow()",
+            "panic!(\"capacity overflow\")",
+        )
         .replace("core::panicking::abort_now()", "std::process::abort()")
-        .replace("fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {", r#"
+        .replace(
+            "fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {",
+            r#"
 static FAIL_ALLOCATION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn fail_next_allocation() { FAIL_ALLOCATION.store(true, std::sync::atomic::Ordering::SeqCst); }
 fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {
     if FAIL_ALLOCATION.swap(false, std::sync::atomic::Ordering::SeqCst) { panic!("allocation"); }
-"#);
+"#,
+        );
     let source = dir.join("panic.rs");
     std::fs::write(&source, format!("mod implementation {{\n{library}\n}}\n{}", r#"
 use implementation::Arc;
@@ -157,11 +163,24 @@ fn main() {
 }
 "#)).unwrap();
     let executable = dir.join("panic");
-    let output = Command::new("rustc").args(["--edition=2024", "-Awarnings"])
-        .arg(&source).arg("-o").arg(&executable).output().unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let output = Command::new("rustc")
+        .args(["--edition=2024", "-Awarnings"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let output = Command::new(executable).output().unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -520,7 +539,11 @@ fn iterator_projection_boundaries_are_compile_only() {
         .arg(&file)
         .output()
         .unwrap();
-    assert!(flux.status.success(), "{}", String::from_utf8_lossy(&flux.stderr));
+    assert!(
+        flux.status.success(),
+        "{}",
+        String::from_utf8_lossy(&flux.stderr)
+    );
     // This associated-type trait lifetime shape remains outside admission.
     let file = dir.join("unsupported_trait_lifetime.rs");
     std::fs::write(&file, "trait Tr<'a> { type Item; } fn main() {}\n").unwrap();
@@ -535,8 +558,10 @@ fn iterator_projection_boundaries_are_compile_only() {
         .output()
         .unwrap();
     assert!(!flux.status.success());
-    assert!(String::from_utf8_lossy(&flux.stderr)
-        .contains("lifetime parameters on traits are not supported yet"));
+    assert!(
+        String::from_utf8_lossy(&flux.stderr)
+            .contains("lifetime parameters on traits are not supported yet")
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }
 

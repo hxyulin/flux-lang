@@ -129,10 +129,7 @@ fn facade_keeps_library_privacy_and_alloc_opt_in() {
         "use std::intrinsics; fn main() {}",
         "use std::fmt::flags; fn main() {}",
         "use alloc::vec::Vec; fn main() {}",
-        "use std::fs; fn main() {}",
-        "use std::sync::atomic::AtomicU64; fn main() {}",
         "use std::thread::spawn; fn main() {}",
-        "use std::num::NonZeroU64; fn main() {}",
         "use std::vec::RawVec; fn main() {}",
         "use core::unicode; fn main() {}",
     ] {
@@ -173,4 +170,21 @@ fn arbitrary_iterators_are_not_marked_fused() {
         "{:?}",
         typed.diagnostics
     );
+}
+
+#[test]
+fn implemented_facade_modules_are_admitted() {
+    for source in [
+        "use std::fs; fn main() {}",
+        "use std::sync::atomic::AtomicU64; fn main() {}",
+        "use std::num::NonZeroU64; fn main() {}",
+    ] {
+        let (_, _, hir) = flux_hir::lower_text("main.rs", source);
+        assert!(
+            hir.diagnostics.is_empty(),
+            "{source}: {:?}",
+            hir.diagnostics
+        );
+        assert!(flux_ty::check_file(&hir).diagnostics.is_empty(), "{source}");
+    }
 }
