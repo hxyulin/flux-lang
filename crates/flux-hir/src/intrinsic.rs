@@ -55,7 +55,6 @@ intrinsics! {
     SliceFromRawPartsMut => "slice_from_raw_parts_mut",
     RawSliceFromParts => "raw_slice_from_parts",
     RawSliceFromPartsMut => "raw_slice_from_parts_mut",
-    CStrFromPtr => "c_str_from_ptr",
     CallerLocation => "caller_location",
     ReadUnaligned => "read_unaligned",
     TypeName => "type_name",

@@ -970,9 +970,9 @@ executable. No C compiler or system linker is involved.
   the tag, extending a direct one, and comparing a niche with the values
   the other variants have in it. `size_of::<T>()` and `align_of::<T>()`
   (`core`'s intrinsics) are constants from the layout once `T` is
-  known, also in constant evaluation; for a type flux lays out
-  otherwise than rustc (`&CStr`, one pointer here), they are not
-  supported yet.
+  known, also in constant evaluation. CStr references carry a data pointer
+  and a byte length including NUL, with the same layout and reference niche
+  as a byte-slice reference.
 - Aggregates are passed as one argument per leaf. keel functions return
   at most one value, so a function returning two or more leaves returns
   them through an `sret` pointer to a C struct of the leaves in the

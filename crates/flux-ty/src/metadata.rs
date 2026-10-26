@@ -53,7 +53,7 @@ impl Signatures {
 
     pub fn metadata(&self, ty: Ty) -> Metadata {
         match self.structural_tail(ty).kind() {
-            TyKind::Slice(_) | TyKind::Str => Metadata::Length,
+            TyKind::Slice(_) | TyKind::Str | TyKind::CStr => Metadata::Length,
             TyKind::Dynamic(_) => Metadata::VTable,
             TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => {
                 Metadata::Generic(self.structural_tail(ty))

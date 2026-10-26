@@ -1041,7 +1041,7 @@ impl Ty {
     pub fn is_unsized(self) -> bool {
         matches!(
             self.kind(),
-            TyKind::Slice(_) | TyKind::Str | TyKind::Dynamic(_)
+            TyKind::Slice(_) | TyKind::Str | TyKind::CStr | TyKind::Dynamic(_)
         )
     }
 

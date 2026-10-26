@@ -462,7 +462,6 @@ fn keel_type(ty: Ty) -> Option<Type> {
         TyKind::Float(flux_ty::FloatTy::F64) => Some(Type::F64),
         TyKind::Bool => Some(Type::I8),
         TyKind::Char => Some(Type::I32),
-        // `&CStr` is a thin pointer here: flux needs only `as_ptr`.
         TyKind::RawPtr(..) | TyKind::Ref(..) | TyKind::FnPtr(_) => Some(Type::Ptr),
         // A function item has no value: it is its type.
         TyKind::FnDef(_) => None,
@@ -2134,6 +2133,15 @@ impl Lower<'_, '_, '_> {
                 let mut leaves = Values::new();
                 self.value_leaves(&value, *ty, &mut leaves);
                 leaves
+            }
+            Operand::Const(Constant::CStr(index)) => {
+                let pointer = self
+                    .constant(Constant::CStr(*index))
+                    .expect("C string constants have a data pointer");
+                // CStr stores the byte length including its terminating NUL.
+                let len = self.body.c_strings[*index as usize].len() + 1;
+                let len = self.int_const(len as u128, IntTy::Usize);
+                smallvec![pointer, len]
             }
             Operand::Const(constant) => self.constant(*constant).into_iter().collect(),
         }

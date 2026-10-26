@@ -12,9 +12,8 @@ use crate::option::Option::{self, None, Some};
 use crate::result::Result::{self, Err, Ok};
 
 /// A borrowed C string, NUL-terminated: what `c"..."` gives, as
-/// `&'static CStr`. The compiler knows its layout: a `&CStr` is a
-/// pointer to its first byte, where rustc's also has its length, so
-/// its length is counted where it is needed. `as_ptr` is built in.
+/// `&'static CStr`. References carry a byte pointer and the length including
+/// the terminating NUL. `as_ptr` returns only the byte pointer.
 #[lang = "CStr"]
 pub struct CStr {
     _unsized: (),
@@ -55,17 +54,12 @@ impl CStr {
 
     /// Its length in bytes, without the NUL.
     pub fn count_bytes(&self) -> usize {
-        let start = self.as_ptr() as usize;
-        let mut len = 0;
-        while unsafe { *((start + len) as *const u8) } != 0 {
-            len += 1;
-        }
-        len
+        crate::mem::size_of_val(self) - 1
     }
 
     /// Whether it has no bytes before the NUL.
     pub fn is_empty(&self) -> bool {
-        unsafe { *(self.as_ptr() as *const u8) == 0 }
+        self.count_bytes() == 0
     }
 
     /// Its bytes, without the NUL.

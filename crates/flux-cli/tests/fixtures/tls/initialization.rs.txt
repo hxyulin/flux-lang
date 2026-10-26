@@ -1,0 +1,72 @@
+//! Exercise the embedded TLS initializer's unwind paths with host Rust.
+extern crate alloc as alloc_crate;
+extern crate self as core;
+
+pub use std::{cell, error, fmt, mem, ops, ptr, sync};
+
+pub mod io {
+    pub fn flush_stdout() {
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+    }
+}
+
+#[path = __TLS_DIRECTORY__]
+mod thread {
+    #[path = "local.rs"]
+    pub mod local;
+}
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use thread::local::LocalKey;
+
+#[test]
+fn panicking_initializer_can_be_retried() {
+    static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+    static KEY: LocalKey<usize> = LocalKey::__new(|| {
+        assert_ne!(ATTEMPTS.fetch_add(1, Ordering::Relaxed), 0, "first attempt");
+        41
+    });
+    std::thread::spawn(|| {
+        assert!(std::panic::catch_unwind(|| KEY.with(|_| ())).is_err());
+        KEY.with(|value| assert_eq!(*value, 41));
+        KEY.with(|value| assert_eq!(*value, 41));
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ATTEMPTS.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn cell_set_skips_the_initializer_and_reuses_storage() {
+    static KEY: LocalKey<cell::Cell<u32>> = LocalKey::__new(|| panic!("must not initialize"));
+    std::thread::spawn(|| {
+        KEY.set(7);
+        assert_eq!(KEY.get(), 7);
+        KEY.set(19);
+        assert_eq!(KEY.get(), 19);
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn replacing_noncopy_cell_payloads_drops_each_value_once() {
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+    struct Tracked;
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    static KEY: LocalKey<cell::Cell<Tracked>> = LocalKey::__new(|| panic!("must not initialize"));
+    std::thread::spawn(|| {
+        KEY.set(Tracked);
+        assert_eq!(DROPS.load(Ordering::Relaxed), 0);
+        KEY.set(Tracked);
+        assert_eq!(DROPS.load(Ordering::Relaxed), 1);
+    })
+    .join()
+    .unwrap();
+    assert_eq!(DROPS.load(Ordering::Relaxed), 2);
+}

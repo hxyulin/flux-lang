@@ -120,10 +120,16 @@ pub(crate) const fn raw_slice_from_parts_mut<T>(data: *mut T, len: usize) -> *mu
 }
 
 /// The C string at `ptr`, which must end in NUL and stay there for as
-/// long as the reference is used. A `&CStr` is the pointer itself.
-#[rustc_intrinsic]
+/// long as the reference is used.
 pub(crate) unsafe fn c_str_from_ptr<'a>(ptr: *const u8) -> &'a crate::ffi::CStr {
-    loop {}
+    let mut len = 0;
+    // SAFETY: the caller guarantees an accessible NUL-terminated byte sequence.
+    while unsafe { *ptr.add(len) } != 0 {
+        len += 1;
+    }
+    // SAFETY: the same allocation includes the terminating byte. CStr uses
+    // the slice's length metadata, including that byte, and does not mutate it.
+    unsafe { &*(raw_slice_from_parts(ptr, len + 1) as *const crate::ffi::CStr) }
 }
 
 /// Where the `#[track_caller]` function calling this was called, or

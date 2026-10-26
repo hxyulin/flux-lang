@@ -912,7 +912,6 @@ pub fn instance_body<'b>(
 ///   `&s[start..end]`, unchecked;
 /// - `slice_from_raw_parts(data, len)`: `data` as a pointer to an empty
 ///   array, unsized, then its first `len` elements, unchecked;
-/// - `c_str_from_ptr(p)`: `p` as the `&CStr` it is.
 pub fn expand_intrinsics(
     items: &ItemTree,
     sigs: &Signatures,
@@ -1137,10 +1136,6 @@ pub fn expand_intrinsics(
                     end: end.clone(),
                 },
             ),
-            ("c_str_from_ptr", [ptr]) => {
-                let ty = body.place_ty(&dest, sigs);
-                (dest, Rvalue::Cast(ptr.clone(), ty))
-            }
             // `data` as a pointer to an empty array, unsized, as a
             // reference, then its first `len` elements.
             (

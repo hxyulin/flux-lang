@@ -3269,8 +3269,7 @@ impl Builder<'_> {
                 self.call(instance.function, instance.args, operands, dest, range);
             }
             Expr::MethodCall { receiver, args, .. } => {
-                // Only `CStr::as_ptr` type-checks: the reference is the
-                // pointer.
+                // CStr::as_ptr erases the length metadata from its reference.
                 let receiver = self.lower_operand(*receiver);
                 for &arg in self.body.lists[*args].iter() {
                     self.lower_operand(arg);

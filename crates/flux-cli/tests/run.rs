@@ -66,7 +66,7 @@ fn normalize(stderr: &str) -> String {
     out
 }
 
-fn run(executable: &Path) -> Outcome {
+fn run(executable: &Path, time_limit: Duration) -> Outcome {
     let mut child = Command::new(executable)
         .env_remove("RUST_BACKTRACE")
         .stdout(Stdio::piped())
@@ -90,7 +90,7 @@ fn run(executable: &Path) -> Outcome {
         if let Some(status) = child.try_wait().unwrap() {
             break Some(status);
         }
-        if start.elapsed() > TIME_LIMIT {
+        if start.elapsed() > time_limit {
             let _ = child.kill();
             let _ = child.wait();
             break None;
@@ -238,6 +238,13 @@ fn compare_chunk(root: &Path, dir: &Path, programs: &[PathBuf]) -> Vec<String> {
     let mut failures = Vec::new();
     for program in programs {
         let name = program.file_stem().unwrap().to_string_lossy().into_owned();
+        // This fixture checks every Unicode scalar, rather than a small sample.
+        // Both baseline Flux modes take about 17 seconds on the validation host.
+        let time_limit = if name == "unicode_properties" {
+            Duration::from_secs(60)
+        } else {
+            TIME_LIMIT
+        };
         // As given on the command line, which panic messages show.
         let program = program.strip_prefix(root).unwrap_or(program);
         let reference = dir.join(format!("{name}-rustc"));
@@ -261,7 +268,7 @@ fn compare_chunk(root: &Path, dir: &Path, programs: &[PathBuf]) -> Vec<String> {
             failures.push(format!("{name}: {message}"));
             continue;
         }
-        let expected = run(&reference);
+        let expected = run(&reference, time_limit);
         for optimize in [false, true] {
             let suffix = if optimize { "-O" } else { "" };
             let executable = dir.join(format!("{name}-flux{suffix}"));
@@ -278,7 +285,7 @@ fn compare_chunk(root: &Path, dir: &Path, programs: &[PathBuf]) -> Vec<String> {
                 failures.push(format!("{name}{suffix}: {message}"));
                 continue;
             }
-            let actual = run(&executable);
+            let actual = run(&executable, time_limit);
             if actual != expected {
                 failures.push(format!(
                     "{name}{suffix}: expected {}, got {}",

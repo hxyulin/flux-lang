@@ -149,8 +149,7 @@ pub struct Layout {
     pub align: u64,
     pub niche: Option<Niche>,
     pub uninhabited: bool,
-    /// The layout is rustc's: not for a type flux lays out otherwise (a
-    /// `&CStr`, one pointer here and two in rustc).
+    /// Whether the complete layout is known and matches rustc's representation.
     pub exact: bool,
     pub shape: Shape,
 }
@@ -270,7 +269,7 @@ impl<'a> Layouts<'a> {
     /// every represented length-metadata DST, including nested struct tails.
     pub fn length_layout(&self, ty: Ty) -> Option<(u64, u64, u64)> {
         match ty.kind() {
-            TyKind::Str => Some((0, 1, 1)),
+            TyKind::Str | TyKind::CStr => Some((0, 1, 1)),
             TyKind::Slice(elem) => {
                 let elem = self.of(elem);
                 Some((0, elem.size, elem.align))
@@ -325,11 +324,6 @@ impl<'a> Layouts<'a> {
                         }
                         layout
                     }
-                    // rustc's `&CStr` has its length too.
-                    _ if pointee == Ty::new(TyKind::CStr) => Layout {
-                        exact: false,
-                        ..Layout::scalar(8, valid)
-                    },
                     _ => Layout::scalar(8, valid),
                 }
             }

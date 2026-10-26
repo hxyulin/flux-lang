@@ -230,9 +230,9 @@ that C functions take. `core` gives `CStr` rustc's `PartialEq` (with
 bytes, and `count_bytes`, `is_empty`, `to_bytes`, `to_bytes_with_nul`,
 `to_str`, `from_bytes_with_nul` and `from_bytes_until_nul` (with
 `FromBytesWithNulError` and `FromBytesUntilNulError`), which are not
-`const` yet, as rustc's are: a `&CStr` is a pointer to its first byte,
-where rustc's has its length too, so the length is counted where it is
-needed. As in rustc, arguments after a variadic
+`const` yet, as rustc's are. References and raw pointers to `CStr` carry
+the data address and the byte length including NUL. Their layout, optional
+reference niche, and dynamic size/alignment match rustc. As in rustc, arguments after a variadic
 function's `...` must be at least 32 bits wide or pointers (raw
 pointers, or references to sized values): `u8`, `i16` and `bool` need a
 cast to `c_int`/`c_uint` first, and a function item one to a function

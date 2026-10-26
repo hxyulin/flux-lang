@@ -251,10 +251,16 @@ impl<T: 'static> LocalKey<T> {
     }
 
     pub fn try_with<F: FnOnce(&T) -> R, R>(&'static self, f: F) -> Result<R, AccessError> {
-        self.try_with_value(None, |value, _| f(value))
+        let (key, mut pointer) = self.storage()?;
+        if pointer.is_null() {
+            pointer = self.initialize(key, self.init)?;
+        }
+        // SAFETY: storage rejects destroyed/initializing keys, and initialization
+        // publishes a live Slot<T> owned by this thread before returning.
+        Ok(f(unsafe { &(*(pointer as *const Slot<T>)).value }))
     }
 
-    fn try_with_value<F: FnOnce(&T, Option<T>) -> R, R>(&'static self, mut initial: Option<T>, f: F) -> Result<R, AccessError> {
+    fn storage(&'static self) -> Result<(Key, *mut u8), AccessError> {
         let key = *self.key.get_or_init(|| {
             let mut key: Key = 0;
             // SAFETY: key points to writable storage with the target's pthread_key_t size.
@@ -263,22 +269,7 @@ impl<T: 'static> LocalKey<T> {
             key
         });
         // SAFETY: key was published only after successful native initialization.
-        let mut pointer = unsafe { pthread_getspecific(key) };
-        if pointer.is_null() {
-            #[cfg(target_os = "macos")]
-            if !apple::enable() { return Err(AccessError); }
-            // SAFETY: this key belongs to the current thread; no references exist yet.
-            assert_eq!(unsafe { pthread_setspecific(key, marker(key, 1)) }, 0);
-            let mut guard = Initializing { key, armed: true };
-            let value = match initial.take() { Some(value) => value, None => (self.init)() };
-            let slot = Box::new(Slot { key, value });
-            pointer = Box::into_raw(slot) as *mut u8;
-            // SAFETY: this allocation remains owned by the native TLS key until destruction.
-            assert_eq!(unsafe { pthread_setspecific(key, pointer) }, 0);
-            #[cfg(target_os = "macos")]
-            apple::register(key, destroy::<T>, core::mem::needs_drop::<T>());
-            guard.armed = false;
-        }
+        let pointer = unsafe { pthread_getspecific(key) };
         let state = (pointer as usize) & 3;
         if state == 1 {
             panic!("cannot recursively initialize thread-local storage");
@@ -286,9 +277,24 @@ impl<T: 'static> LocalKey<T> {
         if state != 0 {
             return Err(AccessError);
         }
-        // SAFETY: initialization has completed, and the current thread alone
-        // accesses the live Slot. The callback cannot retain this borrow.
-        Ok(f(unsafe { &(*(pointer as *const Slot<T>)).value }, initial))
+        Ok((key, pointer))
+    }
+
+    fn initialize<I: FnOnce() -> T>(&'static self, key: Key, init: I) -> Result<*mut u8, AccessError> {
+        #[cfg(target_os = "macos")]
+        if !apple::enable() { return Err(AccessError); }
+        // SAFETY: storage found an empty key on this thread. Mark it before
+        // calling user code, so recursive access observes initialization.
+        assert_eq!(unsafe { pthread_setspecific(key, marker(key, 1)) }, 0);
+        let mut guard = Initializing { key, armed: true };
+        let slot = Box::new(Slot { key, value: init() });
+        let pointer = Box::into_raw(slot) as *mut u8;
+        // SAFETY: the key owns this allocation until its registered destructor runs.
+        assert_eq!(unsafe { pthread_setspecific(key, pointer) }, 0);
+        #[cfg(target_os = "macos")]
+        apple::register(key, destroy::<T>, core::mem::needs_drop::<T>());
+        guard.armed = false;
+        Ok(pointer)
     }
 }
 
@@ -296,11 +302,18 @@ impl<T: 'static> LocalKey<core::cell::Cell<T>> {
     /// Setting an uninitialized key supplies its initial value directly;
     /// the thread_local initializer is deliberately not run.
     pub fn set(&'static self, value: T) {
-        self.try_with_value(Some(core::cell::Cell::new(value)), |cell, initial| {
-            if let Some(value) = initial { cell.set(value.into_inner()); }
-        }).expect("cannot access a Thread Local Storage value during or after destruction");
+        let (key, pointer) = self.storage()
+            .expect("cannot access a Thread Local Storage value during or after destruction");
+        if pointer.is_null() {
+            self.initialize(key, || core::cell::Cell::new(value))
+                .expect("cannot access a Thread Local Storage value during or after destruction");
+        } else {
+            // SAFETY: storage returned this thread's live Slot<Cell<T>>.
+            unsafe { &(*(pointer as *const Slot<core::cell::Cell<T>>)).value }.set(value);
+        }
     }
 }
+
 impl<T: Copy + 'static> LocalKey<core::cell::Cell<T>> {
     pub fn get(&'static self) -> T { self.with(|cell| cell.get()) }
 }

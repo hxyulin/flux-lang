@@ -40,6 +40,17 @@ fn sum(bytes: &[u8]) -> i64 {
 }
 
 fn main() {
+    const REFERENCE_SIZE: usize = core::mem::size_of::<&CStr>();
+    assert_eq!(REFERENCE_SIZE, 2 * core::mem::size_of::<usize>());
+    assert_eq!(core::mem::size_of::<*const CStr>(), REFERENCE_SIZE);
+    assert_eq!(core::mem::size_of::<Option<&CStr>>(), REFERENCE_SIZE);
+    assert_eq!(core::mem::align_of::<&CStr>(), core::mem::align_of::<usize>());
+    assert_eq!(core::mem::size_of_val(c""), 1);
+    assert_eq!(core::mem::size_of_val(c"abc"), 4);
+    assert_eq!(core::mem::align_of_val(c"abc"), 1);
+    let raw = c"metadata" as *const CStr;
+    // SAFETY: this raw pointer still designates the live literal allocation.
+    assert_eq!(unsafe { core::mem::size_of_val(&*raw) }, 9);
     let a = name(1);
     let b = c"one";
     show(1, (a == b) as i64 + 2 * (a != name(0)) as i64);
@@ -53,6 +64,7 @@ fn main() {
 
     let good = [b'h', b'i', 0];
     let made = CStr::from_bytes_with_nul(&good).unwrap();
+    assert_eq!(core::mem::size_of_val(made), good.len());
     show(9, (made == c"hi") as i64 + 2 * made.count_bytes() as i64);
     unsafe {
         printf(c"%s\n".as_ptr(), made.as_ptr());

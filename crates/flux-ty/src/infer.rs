@@ -4713,7 +4713,7 @@ impl Ctx<'_> {
                 return ret;
             }
         }
-        // Built in: a `&CStr` is the pointer.
+        // Built in: as_ptr discards the CStr reference's length metadata.
         if receiver_ty == c_str_ref() && method.as_str() == "as_ptr" {
             if !args.is_empty() {
                 let got = args.len();
@@ -6392,12 +6392,13 @@ impl Ctx<'_> {
                 {
                     places.insert(receiver);
                 }
-                // Compared by reference: `a[..2] == b[..2]`.
+                // Comparisons borrow their operands, even if trait selection
+                // failed. Do not add a spurious unsized-move diagnostic then.
                 Expr::Binary {
                     op: BinaryOp::Cmp(_),
                     lhs,
                     rhs,
-                } if self.overloads.get(id).is_some() => {
+                } => {
                     places.insert(lhs);
                     places.insert(rhs);
                 }
