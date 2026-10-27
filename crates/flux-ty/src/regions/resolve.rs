@@ -583,7 +583,18 @@ fn structs(
             &s.generics,
             std::iter::empty(),
             items.is_core(s.loc.module),
-            false,
+            true,
+            &mut list,
+        );
+        let names: Vec<_> = s.generics.lifetimes.iter().map(|l| Some(l.name)).collect();
+        let (bound_selfs, bound_traits, projections) = bound_regions(
+            items,
+            s.loc.module,
+            &s.generics,
+            &names,
+            &generics,
+            sigs.struct_predicates.get(id).map_or(&[][..], |p| p),
+            sigs.struct_projections.get(id).map_or(&[][..], |p| p),
             &mut list,
         );
         dedup(&mut list);
@@ -592,6 +603,9 @@ fn structs(
         sigs.regions.structs.insert(
             id,
             StructRegions {
+                bound_selfs,
+                bound_traits,
+                projections,
                 lifetimes: s.generics.lifetimes.len() as u32,
                 fields,
                 // Mutation through a shared reference makes the payload
@@ -613,6 +627,22 @@ fn structs(
     }
     struct_variances(items, sigs, from);
     struct_outlives(items, sigs, from, errors);
+    for (id, data) in items.structs.iter().skip(from) {
+        let metadata = &sigs.regions.structs[id];
+        let mut assumptions = metadata.outlives.to_vec();
+        let mut list = Vec::new();
+        check_bound_wf(
+            items,
+            sigs,
+            &data.generics,
+            sigs.struct_predicates.get(id).map_or(&[][..], |p| p),
+            &metadata.bound_selfs,
+            &metadata.bound_traits,
+            &mut assumptions,
+            &mut list,
+        );
+        errors.extend(list.into_iter().map(|(r, m)| (data.loc.file, r, m)));
+    }
     for (id, s) in items.structs.iter().skip(from) {
         if sigs.structs[id].contains(&Ty::ERROR) {
             continue;
@@ -761,13 +791,27 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
         );
         dedup(&mut outlives);
         let bounds: Box<[Outlives<Region>]> = outlives.clone().into();
-        implied_outlives(items, sigs, self_ty, &self_regions, &mut outlives);
+        implied_outlives_with_static(
+            items,
+            sigs,
+            self_ty,
+            &self_regions,
+            Some(Region::Static),
+            &mut outlives,
+        );
         // As with the self type, Rust assumes the header's argument types
         // are well formed. The trait declaration's explicit bounds still
         // need proof, e.g. `impl Tr<'a, &'b T>` cannot assume `'b: 'a`.
         if let Some(trait_ref) = trait_ref {
             for (&arg, regions) in trait_ref.args.iter().zip(&trait_args) {
-                implied_outlives(items, sigs, arg, regions, &mut outlives);
+                implied_outlives_with_static(
+                    items,
+                    sigs,
+                    arg,
+                    regions,
+                    Some(Region::Static),
+                    &mut outlives,
+                );
             }
         }
         dedup(&mut outlives);
@@ -882,6 +926,197 @@ fn inherited_self_regions(
         })
         .collect::<Option<Vec<_>>>()
         .map(Into::into)
+}
+
+/// Reconstruct the represented contract of a safe trait method with one
+/// owner lifetime, type-only locals and no associated/opaque signature types.
+/// Admission compares this independent result with every stored table.
+pub(super) fn safe_method_contract(
+    items: &ItemTree,
+    sigs: &Signatures,
+    id: flux_hir::FunctionId,
+) -> Option<(crate::FnSig, FnRegions, crate::traits::Bounds)> {
+    let function = items.functions.get(id)?;
+    let Some(flux_hir::Owner::Trait(owner)) = function.owner else {
+        return None;
+    };
+    let declaration = items.traits.get(owner)?;
+    let owner_names: Vec<_> = own_names(&declaration.generics).collect();
+    let names = crate::generic_names(items, function.owner, &function.generics);
+    let self_ty = Ty::param(0, kw::SelfUpper);
+    let owner_bounds = crate::traits::owner_predicates(items, sigs, function.owner);
+    let lens = crate::ArrayLens {
+        values: &sigs.array_lens,
+        missing: Default::default(),
+        arg_tys: &sigs.arg_tys,
+        new_arg_tys: Default::default(),
+    };
+    let scope = TypeScope {
+        self_ty: Some(self_ty),
+        generics: &names,
+        bounds: &owner_bounds,
+        signature_of: Some("functions"),
+        defaults: Some(&sigs.trait_defaults),
+        struct_fields: Some(&sigs.structs),
+        lens: Some(&lens),
+        ..TypeScope::default()
+    };
+    let mut errors = Vec::new();
+    let bounds = crate::resolve_predicates(
+        items,
+        sigs,
+        function.loc.module,
+        &function.generics,
+        scope,
+        &mut errors,
+    );
+    let environment: Vec<_> = owner_bounds
+        .iter()
+        .chain(&bounds.predicates)
+        .copied()
+        .collect();
+    let environment = crate::traits::elaborate(sigs, &environment);
+    let scope = TypeScope {
+        bounds: &environment,
+        ..scope
+    };
+    let signature = crate::FnSig {
+        params: function
+            .params
+            .iter()
+            .map(|parameter| {
+                crate::resolve_type(
+                    items,
+                    function.loc.module,
+                    &parameter.ty,
+                    scope,
+                    parameter.range,
+                    &mut errors,
+                )
+            })
+            .collect(),
+        ret: crate::resolve_type(
+            items,
+            function.loc.module,
+            &function.ret,
+            scope,
+            function.ret_range,
+            &mut errors,
+        ),
+    };
+    let mut walker = Walker::new(
+        items,
+        function.loc.module,
+        owner_names.iter().map(|name| name.name).collect(),
+    );
+    walker.scope = scope;
+    walker.elided = Elided::Fresh;
+    let params: Box<[Box<[Region]>]> = function
+        .params
+        .iter()
+        .zip(signature.params.iter())
+        .map(|(written, &ty)| walker.regions(&written.ty, ty))
+        .collect();
+    let mut distinct = Vec::new();
+    for row in &params {
+        let mut own = Vec::new();
+        for &region in row {
+            if !own.contains(&region) {
+                own.push(region);
+            }
+        }
+        distinct.extend(own);
+    }
+    walker.elided = if function.has_self
+        && matches!(
+            function.params.first().map(|parameter| &parameter.ty),
+            Some(TypeRef::Ref { .. })
+        ) {
+        Elided::Is(*params.first()?.first()?)
+    } else if distinct.len() == 1 {
+        Elided::Is(distinct[0])
+    } else {
+        Elided::Missing(None)
+    };
+    let ret = walker.regions(&function.ret, signature.ret);
+    let mut all_names = owner_names;
+    all_names.extend(
+        walker
+            .fresh
+            .iter()
+            .map(|&range| LifetimeName { name: None, range }),
+    );
+    errors.append(&mut walker.errors);
+    let region_names: Vec<_> = all_names.iter().map(|name| name.name).collect();
+    let mut outlives = Vec::new();
+    bounds_outlives(
+        items,
+        sigs,
+        function.loc.module,
+        &function.generics,
+        &region_names,
+        &names,
+        &mut outlives,
+        &mut errors,
+    );
+    for (&ty, row) in signature.params.iter().zip(params.iter()) {
+        implied_outlives_with_static(items, sigs, ty, row, Some(Region::Static), &mut outlives);
+    }
+    implied_outlives_with_static(
+        items,
+        sigs,
+        signature.ret,
+        &ret,
+        Some(Region::Static),
+        &mut outlives,
+    );
+    outlives.retain(|bound| match *bound {
+        Outlives::Region(a, b) => a != Region::Erased && b != Region::Erased && a != b,
+        Outlives::Type(_, b) => b != Region::Erased,
+    });
+    dedup(&mut outlives);
+    let (bound_selfs, bound_traits, projections) = bound_regions(
+        items,
+        function.loc.module,
+        &function.generics,
+        &region_names,
+        &names,
+        &bounds.predicates,
+        &bounds.projections,
+        &mut errors,
+    );
+    check_bound_wf(
+        items,
+        sigs,
+        &function.generics,
+        &bounds.predicates,
+        &bound_selfs,
+        &bound_traits,
+        &mut outlives,
+        &mut errors,
+    );
+    if !errors.is_empty()
+        || !lens.missing.borrow().is_empty()
+        || !lens.new_arg_tys.borrow().is_empty()
+    {
+        return None;
+    }
+    let mut regions = FnRegions {
+        owner: declaration.generics.lifetimes.len() as u32,
+        names: all_names.into(),
+        params,
+        ret,
+        outlives: outlives.into(),
+        has_bounds: !function.generics.outlives.is_empty()
+            || !function.generics.type_outlives.is_empty(),
+        callback_binder: CallbackBinder::Unclassified,
+        bound_selfs,
+        bound_traits,
+        projections,
+        opaques: Box::default(),
+    };
+    regions.callback_binder = callback_binder(items, sigs, id, &regions);
+    Some((signature, regions, bounds))
 }
 
 /// Functions' parameters and return types, with elision, and their
@@ -1075,23 +1310,36 @@ fn functions(
             &mut list,
         );
         for (&ty, regions) in sig_params.iter().zip(params.iter()) {
-            implied_outlives(items, sigs, ty, regions, &mut outlives);
+            implied_outlives_with_static(
+                items,
+                sigs,
+                ty,
+                regions,
+                Some(Region::Static),
+                &mut outlives,
+            );
         }
-        implied_outlives(items, sigs, sig_ret, &ret, &mut outlives);
+        implied_outlives_with_static(
+            items,
+            sigs,
+            sig_ret,
+            &ret,
+            Some(Region::Static),
+            &mut outlives,
+        );
         outlives.retain(|p| match *p {
             Outlives::Region(a, b) => a != Region::Erased && b != Region::Erased && a != b,
             Outlives::Type(_, b) => b != Region::Erased,
         });
         dedup(&mut outlives);
-        let (bound_selfs, bound_traits, projections) = bound_regions(
+        walker.names = names.clone();
+        let (bound_selfs, bound_traits, projections) = bound_regions_with_walker(
             items,
-            function.loc.module,
             &function.generics,
-            &names,
-            &generics,
             sigs.fn_predicates.get(id).map_or(&[][..], |p| p),
             sigs.fn_projections.get(id).map_or(&[][..], |p| p),
             &mut list,
+            &mut walker,
         );
         check_bound_wf(
             items,
@@ -1341,9 +1589,30 @@ fn bound_regions(
         generics: type_names,
         ..TypeScope::default()
     };
+    bound_regions_with_walker(
+        items,
+        generics,
+        predicates,
+        projections,
+        errors,
+        &mut walker,
+    )
+}
+
+/// Method bounds use the same selected associated-type rows as their inputs
+/// and outputs. Reconstructing a fresh walker here would erase inherited
+/// `Self::Item` lifetimes inside callable argument tuples.
+fn bound_regions_with_walker(
+    items: &ItemTree,
+    generics: &Generics,
+    predicates: &[crate::Predicate],
+    projections: &[crate::traits::Projection],
+    errors: &mut Vec<(TextRange, String)>,
+    walker: &mut Walker<'_>,
+) -> (Tables, Box<[TraitRefRegions]>, Tables) {
     walker.elided = Elided::NotAllowed;
     let written = &generics.predicates;
-    let selfs = if predicates.len() == written.len() {
+    let selfs: Tables = if predicates.len() == written.len() {
         written
             .iter()
             .zip(predicates)
@@ -1352,7 +1621,7 @@ fn bound_regions(
     } else {
         Box::default()
     };
-    let traits = if predicates.len() == written.len() {
+    let traits: Box<[TraitRefRegions]> = if predicates.len() == written.len() {
         written
             .iter()
             .zip(predicates)
@@ -1370,7 +1639,7 @@ fn bound_regions(
                 } else {
                     None
                 };
-                let late_names = args.map(|args| enter_fn_binder(&mut walker, args, p.trait_ref.args.first().copied()));
+                let late_names = args.map(|args| enter_fn_binder(walker, args, p.trait_ref.args.first().copied()));
                 let types = p
                     .trait_ref
                     .args
@@ -1400,6 +1669,32 @@ fn bound_regions(
     } else {
         Box::default()
     };
+    // These erased goals cannot select between different written argument
+    // lifetimes. Rust also reports ambiguous where clauses, even when the
+    // two lifetimes have mutual outlives bounds. Identical rows are harmless.
+    for (index, table) in traits.iter().enumerate() {
+        let args = written[index]
+            .bound
+            .path
+            .args
+            .last()
+            .and_then(Option::as_ref);
+        if args.is_some_and(|args| args.parenthesized)
+            || (table.lifetimes.is_empty() && table.args.iter().all(|row| row.is_empty()))
+        {
+            continue;
+        }
+        if (0..index).any(|previous| {
+            predicates[previous] == predicates[index]
+                && selfs[previous] == selfs[index]
+                && traits[previous] != *table
+        }) {
+            errors.push((
+                written[index].bound.range,
+                "ambiguous trait lifetime arguments".to_owned(),
+            ));
+        }
+    }
     errors.append(&mut walker.errors);
     let bindings = written.iter().flat_map(|w| {
         let last = w.bound.path.segments.len().saturating_sub(1);
@@ -1414,7 +1709,7 @@ fn bound_regions(
             errors.append(&mut walker.errors);
             return (selfs, traits, Box::default());
         }
-        tables.push(projection_regions(&mut walker, b, args, p));
+        tables.push(projection_regions(walker, b, args, p));
     }
     if tables.len() != projections.len() {
         errors.append(&mut walker.errors);
@@ -1670,6 +1965,28 @@ fn opaque_regions(
                     bound.range,
                     "lifetimes in opaque trait arguments are not supported yet".to_owned(),
                 ));
+            }
+            // Opaque metadata records associated outputs and Fn binders, not
+            // region rows for arbitrary trait type arguments. Full predicate
+            // tables in functions/impls do not make this context represented.
+            for args in bound
+                .path
+                .args
+                .iter()
+                .flatten()
+                .filter(|a| !a.parenthesized)
+            {
+                let mut named = Vec::new();
+                for ty in &args.types {
+                    lifetimes_in(ty, &mut named);
+                }
+                if let Some(lifetime) = named.iter().find(|l| !l.is_anonymous()) {
+                    walker.errors.push((
+                        lifetime.range,
+                        "lifetimes in the generic arguments of bounds are not supported yet"
+                            .to_owned(),
+                    ));
+                }
             }
         }
         let mut list = Vec::new();
@@ -1960,6 +2277,7 @@ fn check_bounds<'b>(
             }
             if let Some(l) = named.iter().find(|l| !l.is_anonymous())
                 && !in_core
+                && !tracked
             {
                 errors.push((
                     l.range,
@@ -2104,7 +2422,7 @@ impl VarianceWalk<'_> {
 /// bounds, and what their fields' types imply, until nothing changes.
 fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors: &mut Errors) {
     let mut explicit: Vec<Vec<Outlives<Region>>> = Vec::new();
-    for (_, s) in items.structs.iter().skip(from) {
+    for (id, s) in items.structs.iter().skip(from) {
         let names: Vec<Option<Symbol>> =
             s.generics.lifetimes.iter().map(|l| Some(l.name)).collect();
         let type_names: Vec<Symbol> = s.generics.params.iter().map(|p| p.name).collect();
@@ -2122,6 +2440,18 @@ fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors:
         );
         dedup(&mut list);
         errors.extend(list.into_iter().map(|(r, m)| (s.loc.file, r, m)));
+        if let Some(metadata) = sigs.regions.structs.get(id) {
+            check_bound_wf(
+                items,
+                sigs,
+                &s.generics,
+                sigs.struct_predicates.get(id).map_or(&[][..], |p| p),
+                &metadata.bound_selfs,
+                &metadata.bound_traits,
+                &mut out,
+                &mut Vec::new(),
+            );
+        }
         explicit.push(out);
     }
     // Each round adds what one more level of nesting implies.

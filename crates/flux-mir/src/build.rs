@@ -129,6 +129,10 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     // Patterns that name constants are checked with their values; rustc
     // does not borrow-check the bodies whose patterns have errors.
     diagnostics.extend(crate::borrowck::check_impl_methods(&hir.items, &typed.sigs));
+    diagnostics.extend(crate::borrowck::check_adt_declarations(
+        &hir.items,
+        &typed.sigs,
+    ));
     diagnostics.extend(crate::borrowck::check_impl_supertraits(
         &hir.items,
         &typed.sigs,
@@ -634,7 +638,7 @@ pub fn build_const(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Body {
         params: Box::default(),
         ret: typed.sigs.consts[konst],
     };
-    build_body(
+    let mut built = build_body(
         hir,
         typed,
         body,
@@ -642,7 +646,9 @@ pub fn build_const(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Body {
         &typed.consts[konst],
         &sig,
         Item::Const(konst),
-    )
+    );
+    built.constant_owner = Some(konst);
+    built
 }
 
 /// Builds the MIR of `function`. Its body must have lowered and
@@ -886,6 +892,7 @@ pub fn closure_shims(
                 upvars: None,
                 capture_uses: Vec::new(),
                 owner: None,
+                constant_owner: None,
                 promoted: Vec::new(),
                 bugs: Vec::new(),
                 fn_spans: Default::default(),
@@ -1172,6 +1179,7 @@ fn build_body(
             Item::Function(f) | Item::Closure(ClosureOwner::Function(f), _) => Some(f),
             Item::Const(_) | Item::Closure(ClosureOwner::Const(_), _) => None,
         },
+        constant_owner: None,
         promoted: b.promoted,
         bugs: b.bugs,
         fn_spans: b.fn_spans,

@@ -37,6 +37,7 @@ use crate::{
     TerminatorKind, place_name,
 };
 
+pub(crate) use regions::check_adt_declarations;
 pub use regions::{ClosureRequirements, Ext, Requirements};
 
 /// The diagnostics for `body`'s conflicting borrows and its writes and

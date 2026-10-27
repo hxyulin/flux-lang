@@ -423,6 +423,9 @@ pub(super) fn impl_family_values_match(
             if !reverse {
                 let value = flux_ty::traits::impl_type(sigs, imp, definition.name)?;
                 let row = cx.instantiate_sig(value, &actual.value, &mut { map_impl }, &[], &[])?;
+                if !cx.adt_declaration_uses(value, &row, &env)? {
+                    return Some(false);
+                }
                 for &bound in &decl.output_outlives {
                     let target = map_decl(bound)?;
                     for &v in &row {

@@ -571,11 +571,14 @@ supertrait. Lookup substitutes generic arguments through every edge and
 rejects ambiguous declarations or distinct instantiations. Represented function
 signatures map selected-impl lifetime parameters through Self's header slots;
 references returned by an iterator can therefore outlive its receiver borrow.
-Trait lifetime arguments, region-bearing trait type arguments, nested inherited
-projections, region-bearing inherited types outside function signatures, and
-selected impls requiring additional slot substitutions remain unsupported.
-Reference-bearing inherited projections in function-pointer binders and trait
-bounds also reject, including through aliases, generic wrappers and defaults.
+Callable method bounds use the same selected associated-item rows as their
+function signatures. Generic Fn/FnMut/FnOnce calls check these input rows;
+captured callbacks carry the requirements through their closure contracts.
+Inherited projections with unrepresented trait-argument rows, inherited types
+outside function signatures, and selected impls requiring additional slot
+substitutions remain unsupported. Reference-bearing inherited projections in
+function-pointer binders also reject, including through aliases, generic
+wrappers and defaults.
 Carrier detection is conservative when fields or projections can hide a binder;
 scalar inherited callback signatures remain available.
 These lookup candidates do not become assumptions when checking the impl.
@@ -1172,14 +1175,35 @@ family profile admits one-owner-lifetime traits with associated families, safe
 default methods and method-local lifetime parameters when their complete rows
 can be reconstructed. Owner/method type parameters, unsafe methods, dynamic,
 opaque and function-pointer signature types, and region-bearing supertrait edges
-remain outside that profile. Other existing
-use-site restrictions still apply. Bounds may not name lifetimes in their trait's generic
-arguments (`T: Tr<&'a U>`; `&` without one is E0637, as in rustc), nor
-those of structs and traits in what they say associated types are.
+remain outside that family profile. A safe-method profile also admits borrowed
+receivers and Copy by-value receivers, safe default bodies and method-local type
+parameters with represented region-free trait bounds. It reconstructs signatures,
+region rows, predicates and outlives requirements before admission.
+
+Functions, impls and nominal structs/enums can name lifetimes in tracked trait
+bounds, including `R: ReadRef<'data>` and `T: From<&'a Q>`. Trait lifetime arguments
+and regions inside trait type arguments remain separate and invariant when proving
+an obligation. Conflicting repeated lifetime-bearing type-argument rows are
+diagnosed. References in
+bounds need an explicit lifetime (E0637). Nominal contracts are checked at
+construction, in signatures and nested declarations, and when an explicit type
+argument forms a type. An unused type alias remains lazy; using it enforces the
+expanded type's bounds. Unsupported trait-declaration/supertrait edges and arbitrary
+opaque trait-argument regions retain explicit gates. Nominal lifetime contracts
+inside function-pointer signatures, and declaration equalities needing unrepresented
+owner/family projection input rows, also reject explicitly. Other existing use-site
+restrictions still apply.
 Lifetimeless traits may require `Self: 'static`, including the colon form
 `trait Pod: Copy + 'static`. This contract propagates through represented
 supertraits and is enforced on implementations and callers. Named-lifetime
 supertrait edges remain outside this subset.
+Static outlives requirements of well-formed function parameter/result types and
+impl header types are available inside those declarations. Callers must still
+prove those requirements. A requested trait bound's other type arguments do not
+become assumptions merely because the bound requires them to outlive a lifetime.
+A known formation-check gap remains for discarded static-bounded aggregates:
+`struct U<T: 'static>(T);` followed by `let _ = U(&local);` can be accepted even
+though rustc rejects it. Signature and caller checks do not cover this case yet.
 Local `let` annotations can require `'static`, including nested reference
 and ADT types, aliases and defaults. The borrow checker enforces this on
 initialization, destructuring, later assignments and branches. Other named

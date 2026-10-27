@@ -52,8 +52,10 @@ mod callable;
 use callable::PointerCheck;
 mod rows;
 use rows::RegionRow;
+mod adt_bounds;
 mod associated_types;
 mod families;
+pub(crate) use adt_bounds::check_adt_declarations;
 pub(crate) use associated_types::impl_associated_values_match;
 
 /// A region variable.
@@ -1496,7 +1498,30 @@ impl<'a> Cx<'a> {
             (Some(f), None) => sigs.regions.fns.get(f),
             _ => None,
         };
-        self.new_universal("'static".to_owned());
+        let constant_impl =
+            body.constant_owner
+                .and_then(|konst| match self.items.consts[konst].owner {
+                    Some(flux_hir::Owner::Impl(imp)) => Some(imp),
+                    _ => None,
+                });
+        let constant_lifetimes = if let Some(imp) = constant_impl {
+            match self.impl_header_environment(imp) {
+                Some((lifetimes, _)) => Some(lifetimes),
+                None => {
+                    self.errors.push(Diagnostic::new(
+                        TextRange::default(),
+                        "constant owner lifetime metadata is not represented",
+                    ));
+                    if self.universal.is_empty() {
+                        self.new_universal("'static".into());
+                    }
+                    None
+                }
+            }
+        } else {
+            self.new_universal("'static".to_owned());
+            None
+        };
         let enclosing_regions = body.owner.and_then(|f| sigs.regions.fns.get(f));
         if body.upvars.is_some() {
             self.closure_ext.push(Ext::Static);
@@ -1604,9 +1629,21 @@ impl<'a> Cx<'a> {
             };
             signature.push((Body::RETURN, vars));
         } else if body.owner.is_none() && body.upvars.is_none() {
-            // A constant's or static's value lives forever.
-            let n = self.local_vars(Body::RETURN).len();
-            signature.push((Body::RETURN, Some(vec![STATIC; n])));
+            if let Some(konst) = body.constant_owner {
+                let lifetimes = constant_lifetimes.as_deref().unwrap_or(&[]);
+                let mut map = |r| match r {
+                    Region::Static => Some(STATIC),
+                    Region::Param(i) => lifetimes.get(i as usize).copied(),
+                    _ => None,
+                };
+                let vars = sigs.regions.consts.get(konst).and_then(|row| {
+                    self.instantiate_sig(body.locals[Body::RETURN].ty, row, &mut map, &[], &[])
+                });
+                signature.push((Body::RETURN, vars));
+            } else {
+                let n = self.local_vars(Body::RETURN).len();
+                signature.push((Body::RETURN, Some(vec![STATIC; n])));
+            }
         } else if let Some(upvars) = &body.upvars {
             // A closure: each lifetime of what it is given is universal,
             // and how they must relate is its creator's to check.
@@ -1661,8 +1698,10 @@ impl<'a> Cx<'a> {
                 }
             }
         }
+        let mut adt_obligations = Vec::new();
         for (local, sig_vars) in signature {
             let vars = self.local_vars(local);
+            adt_obligations.push((body.locals[local].ty, vars.clone(), range));
             match sig_vars {
                 Some(sig_vars) if sig_vars.len() == vars.len() => {
                     for (&v, &s) in vars.iter().zip(&sig_vars) {
@@ -1690,7 +1729,12 @@ impl<'a> Cx<'a> {
                     Region::Static => Some(STATIC),
                     Region::Param(i) => enclosing_regions
                         .and_then(|r| r.names.get(i as usize))
-                        .map(|_| 1 + i),
+                        .map(|_| 1 + i)
+                        .or_else(|| {
+                            constant_lifetimes
+                                .as_ref()
+                                .and_then(|rows| rows.get(i as usize).copied())
+                        }),
                     _ => None,
                 };
                 if let Some(fixed) = fixed {
@@ -1698,6 +1742,7 @@ impl<'a> Cx<'a> {
                 }
             }
             let ty = body.locals[*local].ty;
+            adt_obligations.push((ty, vars.clone(), *range));
             let mut implied = Vec::new();
             flux_ty::regions::implied_outlives_with_static(
                 self.items,
@@ -1728,6 +1773,9 @@ impl<'a> Cx<'a> {
             );
         }
         self.close_known();
+        for (ty, vars, range) in adt_obligations {
+            self.adt_obligations(ty, &vars, range);
+        }
     }
 
     /// The slots of `hidden`, `f`'s return type `sig_ty` (with slots
@@ -3619,6 +3667,7 @@ impl<'a> Cx<'a> {
         category: Category,
         range: TextRange,
     ) {
+        self.adt_obligations(dest_ty, dest_vars, range);
         match kind {
             // Union validation admits only fields without stored regions,
             // recursively through aggregates. Function pointer parameters have
@@ -3965,6 +4014,11 @@ impl<'a> Cx<'a> {
             Region::Param(i) => lifetimes.get(i as usize).copied(),
             Region::Erased | Region::Late(_) => None,
         };
+        // Even zero-sized operations can form a bounded ADT as a written type
+        // argument without ever materializing a value of that type.
+        for (&ty, vars) in generic_args.iter().zip(type_vars) {
+            self.adt_obligations(ty, vars, range);
+        }
         // The callee's bounds, and what its types imply.
         for p in regions.outlives.iter() {
             match *p {
@@ -4482,7 +4536,8 @@ impl<'a> Cx<'a> {
 
     /// Try original caller predicates with their own region tables. Do not
     /// borrow metadata from an erased-equal predicate or from the callee.
-    /// Closures and trait-owner predicates need separate owner mappings.
+    /// Callable bounds in closures use the enclosing function's universal
+    /// prefix, which closure region construction preserves as parent slots.
     fn caller_bound(
         &mut self,
         goal: flux_ty::Predicate,
@@ -4490,7 +4545,19 @@ impl<'a> Cx<'a> {
         trait_lifetimes: &[Var],
         range: TextRange,
     ) -> bool {
-        let Some(f) = self.body.owner.filter(|_| self.body.upvars.is_none()) else {
+        if self.body.constant_owner.is_some() {
+            let goal = ImplRegionGoal {
+                predicate: goal,
+                vars: vars.to_vec(),
+                lifetimes: trait_lifetimes.to_vec(),
+                bound: Vec::new(),
+            };
+            return self.impl_prove_super(&goal, &self.family_goals.clone(), 0);
+        }
+        let Some(f) = self.body.owner.filter(|_| {
+            self.body.upvars.is_none()
+                || flux_ty::fn_trait_kind(self.items, goal.trait_ref.trait_).is_some()
+        }) else {
             return false;
         };
         let Some(r) = self.sigs.regions.fns.get(f) else {
@@ -4554,7 +4621,14 @@ impl<'a> Cx<'a> {
                     ..p.trait_ref
                 },
             };
-            if predicate != goal
+            let callable_supertrait = predicate.self_ty == goal.self_ty
+                && predicate.trait_ref.args == goal.trait_ref.args
+                && matches!(
+                    (flux_ty::fn_trait_kind(self.items, predicate.trait_ref.trait_),
+                     flux_ty::fn_trait_kind(self.items, goal.trait_ref.trait_)),
+                    (Some(source), Some(target)) if source <= target
+                );
+            if (predicate != goal && !callable_supertrait)
                 || tables.lifetimes.len() != trait_lifetimes.len()
                 || tables.lifetimes.len()
                     != self.items.traits[p.trait_ref.trait_]
@@ -4565,9 +4639,24 @@ impl<'a> Cx<'a> {
             {
                 continue;
             }
+            let callable = flux_ty::fn_trait_kind(self.items, p.trait_ref.trait_).is_some();
+            let count = tables.args.iter().map(|row| row.len()).sum::<usize>();
+            let mut erased = self
+                .fresh_list(if callable { count as u32 } else { 0 })
+                .into_iter();
+            let mut late = FxHashMap::default();
+            if callable {
+                for &region in tables.args.iter().flatten() {
+                    if let Region::Late(index) = region {
+                        late.entry(index).or_insert_with(|| self.fresh());
+                    }
+                }
+            }
             let mut map = |region| match region {
                 Region::Static => Some(STATIC),
                 Region::Param(i) if (i as usize) < r.names.len() => Some(1 + i),
+                Region::Erased if callable => erased.next(),
+                Region::Late(i) if callable => late.get(&i).copied(),
                 _ => None,
             };
             let Some(lifetimes) = tables
@@ -4604,7 +4693,11 @@ impl<'a> Cx<'a> {
                 }
                 equalities.extend(known.into_iter().zip(vars[i].iter().copied()));
             }
-            if !complete || !self.caller_equalities_fit(&equalities) {
+            // Captured input rows are universals of the closure body, not
+            // the enclosing function. Export their required relationship to
+            // the parent row; the closure's construction/call proves it.
+            let exported_callable = callable && self.body.upvars.is_some();
+            if !complete || (!exported_callable && !self.caller_equalities_fit(&equalities)) {
                 continue;
             }
             // These are requirements, never new header assumptions. The final
@@ -4681,11 +4774,18 @@ impl<'a> Cx<'a> {
             ));
             return;
         }
-        // Callable input/output contracts use the existing higher-ranked
-        // callback path; matching those binders is outside caller trait proof.
+        // Callable bounds may fix input rows to the enclosing method's
+        // lifetimes, including inherited associated values. Check those rows
+        // against the caller contract before using its abstract callable.
         if flux_ty::fn_trait_kind(items, goal.trait_ref.trait_).is_some()
             && matches!(goal.self_ty.kind(), TyKind::Param(_) | TyKind::Alias(_))
         {
+            if !self.caller_bound(goal, vars, trait_lifetimes, range) {
+                self.errors.push(Diagnostic::new(
+                    range,
+                    "caller callable lifetime obligation cannot be proved",
+                ));
+            }
             return;
         }
         if matches!(goal.self_ty.kind(), TyKind::Param(_) | TyKind::Alias(_)) {

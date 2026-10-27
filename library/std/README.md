@@ -31,7 +31,9 @@ promise rustc's spelling. This follows the diagnostic-only
 `Any`, `TypeId`, downcasting and `type_name_of_val` remain absent. The stable
 function is not callable in constants.
 
-`collections` reexports the bounded BTreeMap implementation from alloc.
+`collections` reexports the bounded BTreeMap implementation and `TryReserveError`
+from alloc. Vec's `try_reserve` and `try_reserve_exact` return capacity or
+allocation errors without changing existing elements when reservation fails.
 `HashMap<K, V, S>` and `HashSet<T, S>` supply probing storage, borrowed lookup,
 removal, entries, iteration and ownership traits. Their default `RandomState`
 obtains keys from the operating system; clones preserve those keys.
@@ -105,11 +107,14 @@ paths and the remaining file/directory APIs remain absent. `rc::Rc<T>` supports
 sized and slice ownership, non-atomic cloning, unique mutation and sized
 clone-on-write/extraction, and remains neither Send nor Sync.
 
-`io` provides `Read`, `Seek`, `SeekFrom` and forwarding implementations for
-mutable references. Reads from byte slices and the default `read_exact`,
+`io` provides `Read`, `Write`, `Seek`, `SeekFrom` and forwarding implementations
+for mutable references. Reads from byte slices and the default `read_exact`,
 `read_to_end` and `read_to_string` helpers handle short reads, interrupted calls,
 EOF and UTF-8 errors. Seeking is supplied by the implementing stream; this does
-not add `File`, `Cursor`, buffered readers or writing APIs. Error kinds retain
+not add `File`, `Cursor` or buffered readers. Write supplies partial byte writes,
+`write_all`, `write_fmt` and flushing, with Vec and mutable byte-slice sinks.
+Boxed writers forward to their underlying implementation. Vectored writes and
+filesystem/stdout writer implementations remain absent. Error kinds retain
 platform categories and formatting. Stability gating for the Rust-unstable
 `FilesystemLoop`, `InProgress`, `TooManyOpenFiles`, `InputOutputError` and
 `Uncategorized` variant names is not implemented.

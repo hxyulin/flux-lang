@@ -1297,7 +1297,10 @@ impl Ctx<'_> {
         let mut names: Vec<Option<Symbol>> = Vec::new();
         let owner = match self.owner_fn {
             Some(f) => self.items.functions[f].owner,
-            None => None,
+            None => match self.closure_owner {
+                crate::ClosureOwner::Const(konst) => self.items.consts[konst].owner,
+                crate::ClosureOwner::Function(_) => None,
+            },
         };
         if let Some(generics) = self.items.owner_generics(owner) {
             names.extend(generics.lifetimes.iter().map(|l| Some(l.name)));

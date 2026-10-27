@@ -1,4 +1,4 @@
-//! Byte-stream reading, seeking, and filesystem errors.
+//! Byte-stream reading, writing, seeking, and filesystem errors.
 use crate::alloc_crate::string::String;
 use crate::alloc_crate::vec::Vec;
 
@@ -344,4 +344,82 @@ impl<S: Seek + ?Sized> Seek for &mut S {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64> { (**self).seek(pos) }
     fn rewind(&mut self) -> Result<()> { (**self).rewind() }
     fn stream_position(&mut self) -> Result<u64> { (**self).stream_position() }
+}
+
+
+/// A destination for bytes. A successful write may consume only part of a buffer.
+pub trait Write {
+    /// Writes up to `buf.len()` bytes and returns the number consumed.
+    /// A successful count must not exceed the input length; zero means no progress.
+    fn write(&mut self, buf: &[u8]) -> Result<usize>;
+    /// Sends buffered output to its destination.
+    fn flush(&mut self) -> Result<()>;
+
+    fn write_all(&mut self, mut buf: &[u8]) -> Result<()> {
+        while !buf.is_empty() {
+            match self.write(buf) {
+                Ok(0) => return Err(Error { code: 0, message: Some("failed to write whole buffer"), custom_kind: Some(ErrorKind::WriteZero) }),
+                Ok(count) => { buf = &buf[count..]; }
+                Err(error) => {
+                    if error.kind() != ErrorKind::Interrupted { return Err(error); }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> Result<()> {
+        let mut adapter = WriteAdapter { writer: self, error: None };
+        match core::fmt::write(&mut adapter, args) {
+            Ok(()) => Ok(()),
+            Err(_) => match adapter.error {
+                Some(error) => Err(error),
+                None => panic!("a formatting trait implementation returned an error when the underlying stream did not"),
+            },
+        }
+    }
+
+    fn by_ref(&mut self) -> &mut Self where Self: Sized { self }
+}
+
+struct WriteAdapter<'a, W: Write + ?Sized> {
+    writer: &'a mut W,
+    error: Option<Error>,
+}
+impl<W: Write + ?Sized> core::fmt::Write for WriteAdapter<'_, W> {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        match self.writer.write_all(text.as_bytes()) {
+            Ok(()) => Ok(()),
+            Err(error) => { self.error = Some(error); Err(core::fmt::Error) }
+        }
+    }
+}
+
+impl<W: Write + ?Sized> Write for &mut W {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> { (**self).write(buf) }
+    fn flush(&mut self) -> Result<()> { (**self).flush() }
+    fn write_all(&mut self, buf: &[u8]) -> Result<()> { (**self).write_all(buf) }
+    fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> Result<()> { (**self).write_fmt(args) }
+}
+impl<W: Write + ?Sized> Write for crate::alloc_crate::boxed::Box<W> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> { (**self).write(buf) }
+    fn flush(&mut self) -> Result<()> { (**self).flush() }
+    fn write_all(&mut self, buf: &[u8]) -> Result<()> { (**self).write_all(buf) }
+    fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> Result<()> { (**self).write_fmt(args) }
+}
+impl Write for Vec<u8> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> { self.extend_from_slice(buf); Ok(buf.len()) }
+    fn flush(&mut self) -> Result<()> { Ok(()) }
+    fn write_all(&mut self, buf: &[u8]) -> Result<()> { self.extend_from_slice(buf); Ok(()) }
+}
+impl Write for &mut [u8] {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        let count = core::cmp::min(buf.len(), self.len());
+        let bytes = core::mem::take(self);
+        let (written, remaining) = bytes.split_at_mut(count);
+        written.copy_from_slice(&buf[..count]);
+        *self = remaining;
+        Ok(count)
+    }
+    fn flush(&mut self) -> Result<()> { Ok(()) }
 }

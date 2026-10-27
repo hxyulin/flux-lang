@@ -143,6 +143,16 @@ impl<'a> Child for S<'a> {
         let (_, _, hir) = flux_hir::lower_text(&path, &text);
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
         let typed = flux_mir::check_file(&hir);
+        if matches!(name, "fn_bound" | "output_bound") {
+            assert!(
+                typed.diagnostics.is_empty(),
+                "{name}: {:?}",
+                typed.diagnostics
+            );
+            let mir = flux_mir::build_file(&hir, &typed);
+            assert!(!mir.diagnostics.is_empty(), "accepted {name}");
+            continue;
+        }
         assert!(
             typed
                 .diagnostics

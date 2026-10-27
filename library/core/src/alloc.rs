@@ -36,7 +36,22 @@ impl crate::fmt::Debug for LayoutError {
 
 impl crate::fmt::Debug for Layout {
     fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
-        f.write_str("Layout")
+        f.debug_struct("Layout")
+            .field("size", &self.size)
+            .field("align", &self.align)
+            .finish()
+    }
+}
+
+impl crate::fmt::Debug for Alignment {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        let mut shift = 0;
+        let mut align = self.0;
+        while align > 1 {
+            align >>= 1;
+            shift += 1;
+        }
+        write!(f, "{} (1 << {})", self.0, shift)
     }
 }
 

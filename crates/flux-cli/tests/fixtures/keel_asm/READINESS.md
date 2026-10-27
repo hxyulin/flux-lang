@@ -161,3 +161,47 @@ audit. Separate active GAT tests cover lifetime/type/const families, selected im
 header substitution, required and output bounds, lending, iterator item equalities
 and owner-lifetime associated bindings. The native lending consumer matches rustc
 with optimization off/on; this does not prove the whole object dependency graph.
+
+## Tracked trait lifetime bounds
+
+The guarded audit in `out/keel-asm-readiness/24620` reaches type checking with
+zero syntax/HIR diagnostics and seven type diagnostics, down from 111. It ran in
+19.39 seconds. Both source-integrity guards are `[]`, and the rustc consumer passed.
+The remaining diagnostics are three `TryReserveError` uses, two missing
+`std::io::Write` uses and two region-bearing inherited associated types outside
+function signatures. MIR and Flux codegen did not run.
+
+Ordinary bounds such as `R: ReadRef<'data>` on nominal types now retain their
+predicate rows. Value and declaration checks prove them under the original
+owner environment, including associated constants. The ReadRef and ObjectSymbol
+method shapes admit safe default bodies and represented method-local generic
+bounds. Static well-formedness requirements from impl self/header arguments and
+function parameter/result types are available inside those declarations; callers
+must still satisfy them. This also removes the 88 static-WF diagnostics exposed
+by the intermediate audit `out/keel-asm-readiness/98494`.
+
+True lifetime-bearing supertrait edges, function-pointer-contained nominal
+contracts and unrepresented projection equalities remain explicitly unsupported.
+Separate native consumers cover the implemented pieces, not the whole assembler.
+
+## Body type-checking inventory
+
+The guarded audit in `out/keel-asm-readiness/62811` resolves all seven previous
+signature diagnostics. Syntax and HIR diagnostics remain zero. Rustc compiled
+and executed the reference consumer; both source-integrity guards are `[]`.
+
+Body type checking now runs and reports 257 diagnostics, including cascades.
+The byte-string pattern family accounts for 42 explicit gates and 31 same-site
+array/slice mismatches. Other direct prerequisites include 60 slice/Vec/iterator
+API diagnostics, 30 BTreeMap API diagnostics, 21 Cow/string comparison errors,
+and three boxed-error conversions. Missing APIs also cause inference and
+unsized-slice cascades. These counts group messages rather than proving each
+root cause. `type-summary.json` in the audit directory groups the exact messages.
+MIR and native Flux codegen did not run.
+
+The focused changes add fallible Vec growth with unchanged contents on failure,
+`TryReserveError`, byte-stream `Write`, and inherited associated item lifetimes
+inside callable method bounds. The callable proof checks the selected owner row
+and exports captured-row requirements through the existing closure contract.
+Wrong-owner, static-input, nested-row and mutable-invariance cases reject.
+Separate native tests compare each implementation with rustc off/on.

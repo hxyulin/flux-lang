@@ -144,6 +144,8 @@ pub struct Body {
     /// The function whose body (or closure in its body) this is: whose
     /// signature and bounds it has.
     pub owner: Option<FunctionId>,
+    /// The constant whose initializer this is, preserving its impl environment.
+    pub constant_owner: Option<flux_hir::ConstId>,
     /// The values [`Constant::Promoted`] refers to.
     pub promoted: Vec<eval::Value>,
     /// Code that type checking should have ruled out, which building
@@ -225,6 +227,7 @@ impl Body {
             upvars: None,
             capture_uses: Vec::new(),
             owner,
+            constant_owner: None,
             promoted: Vec::new(),
             bugs: Vec::new(),
             fn_spans: Default::default(),

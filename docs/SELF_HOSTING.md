@@ -195,12 +195,14 @@ dependencies/generated outputs also belong to the
 complete source closure. Sourcegen and difftest are additional workspace targets,
 not prerequisites for the first compiler executable.
 
-The latest assembler audit, `out/keel-asm-readiness/91406`, has zero syntax and
-HIR diagnostics. GAT declarations and associated `where` clauses now survive
-collection, and the graph reaches type checking with 111 diagnostics. Most are
-unsupported lifetime arguments in trait/supertrait bounds; the inventory also
-includes inherited projections, `TryReserveError` and `std::io::Write`. Both
-source-integrity guards pass. MIR and native codegen remain gated; see
+The latest assembler audit, `out/keel-asm-readiness/62811`, has zero syntax and
+HIR diagnostics. The previous seven signature diagnostics are resolved:
+`TryReserveError`, fallible Vec reservation, `std::io::Write`, and inherited
+associated-type rows inside callable method bounds are implemented. Body type
+checking now reports 257 diagnostics, including missing collection/slice APIs,
+byte-string patterns and conversion/coercion gaps. This count includes cascades;
+it is not 257 independent features. Both source-integrity guards pass. MIR and
+native codegen remain gated; see
 the [readiness report](../crates/flux-cli/tests/fixtures/keel_asm/READINESS.md).
 
 The focused `gat_lending` native comparison exercises shared/mutable lending,
@@ -210,11 +212,25 @@ Family type/const arguments and contract rejection cases have separate type and
 MIR oracle suites. This is bounded GAT support, not an object-file or complete
 assembler native milestone.
 
+Tracked trait bounds now preserve owner lifetime arguments and regions inside
+type arguments on functions, impls and nominal types. Nominal contracts are
+checked in values, annotations, signatures, nested declarations, type arguments
+and associated constants. Safe default methods cover borrowed receivers and
+Copy by-value receivers with represented method-local generics. Static WF facts
+from signature and impl-header types remain distinct from caller obligations.
+The `adt_trait_regions`, `safe_trait_defaults`, `trait_type_arguments` and
+`static_signature_wf` native consumers match rustc off/on.
+
 Current bounded language implementations still reject unsupported shapes.
 The latest function-pointer review also found two unresolved correctness issues:
 object lifetime defaults cross intervening container types incorrectly, and
 implied input bounds permit some output-lifetime conversions that rustc rejects.
 These findings remain open despite the existing focused oracle coverage.
+A separate existing formation-check gap accepts a discarded static-bounded
+aggregate such as `struct U<T: 'static>(T); let _ = U(&local);`. Rust rejects it.
+The explicitly ignored `discarded_static_aggregate_requires_wf` test in
+`crates/flux-mir/tests/static_signature_wf.rs` retains this negative reproducer;
+the active signature-WF tests still enforce static requirements at calls.
 Examples include unproven zero-sized transparent marker fields, broader dynamic
 callable lifetime forms, generic associated-constant promotion, raw-slice construction
 in constant evaluation and generic unions. The dynamic callback extension

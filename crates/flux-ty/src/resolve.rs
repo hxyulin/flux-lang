@@ -1450,8 +1450,7 @@ fn assoc_type_base(
                             // erased RHS under the spelling `Self::Out`.
                             return Ty::alias(traits::alias_of(items, *inherited, self_ty, name));
                         }
-                        if (scope.signature_of != Some("functions") || scope.in_trait_bound)
-                            && regions::slots(items, ty) != 0
+                        if scope.signature_of != Some("functions") && regions::slots(items, ty) != 0
                         {
                             errors.push((at, "region-bearing inherited associated types outside function signatures are not supported yet".into()));
                             return Ty::ERROR;

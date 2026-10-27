@@ -87,6 +87,16 @@ impl<T> Vec<T> {
         self.buf.reserve_exact(self.len, additional);
     }
 
+    /// Makes room for at least `additional` more elements without aborting on allocation failure.
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), crate::collections::TryReserveError> {
+        self.buf.try_reserve(self.len, additional)
+    }
+
+    /// Makes room for exactly `additional` more elements without aborting on allocation failure.
+    pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), crate::collections::TryReserveError> {
+        self.buf.try_reserve_exact(self.len, additional)
+    }
+
     /// Gives back the room past its elements.
     pub fn shrink_to_fit(&mut self) {
         if self.capacity() > self.len {

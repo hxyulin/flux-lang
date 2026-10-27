@@ -8,6 +8,7 @@ use core::ptr::NonNull;
 use core::marker::PhantomData;
 
 use crate::alloc::{Layout, alloc, dealloc, handle_alloc_error, realloc};
+use crate::collections::TryReserveError;
 
 pub(crate) struct RawVec<T> {
     ptr: NonNull<T>,
@@ -81,54 +82,58 @@ impl<T> RawVec<T> {
         }
     }
 
-    /// Room for `additional` more values after `len`, growing
-    /// amortized.
+    /// Room for `additional` more values after `len`, growing amortized.
     pub(crate) fn reserve(&mut self, len: usize, additional: usize) {
-        if additional > self.capacity().wrapping_sub(len) {
-            self.grow_amortized(len, additional);
+        if let Err(error) = self.try_reserve(len, additional) {
+            error.handle();
         }
     }
 
-    /// Room for `additional` more values after `len`, growing to exactly
-    /// that.
     pub(crate) fn reserve_exact(&mut self, len: usize, additional: usize) {
-        if additional > self.capacity().wrapping_sub(len) {
-            if size_of::<T>() == 0 {
-                capacity_overflow();
-            }
-            let cap = match len.checked_add(additional) {
-                Some(cap) => cap,
-                None => capacity_overflow(),
-            };
-            self.finish_grow(cap);
+        if let Err(error) = self.try_reserve_exact(len, additional) {
+            error.handle();
         }
+    }
+
+    pub(crate) fn try_reserve(&mut self, len: usize, additional: usize) -> Result<(), TryReserveError> {
+        if additional <= self.capacity().wrapping_sub(len) {
+            return Ok(());
+        }
+        self.grow_amortized(len, additional)
+    }
+
+    pub(crate) fn try_reserve_exact(&mut self, len: usize, additional: usize) -> Result<(), TryReserveError> {
+        if additional <= self.capacity().wrapping_sub(len) {
+            return Ok(());
+        }
+        let cap = len.checked_add(additional).ok_or_else(TryReserveError::capacity_overflow)?;
+        self.finish_grow(cap)
     }
 
     /// Room for one more value, full as it is.
     pub(crate) fn grow_one(&mut self) {
-        self.grow_amortized(self.cap, 1);
+        if let Err(error) = self.grow_amortized(self.cap, 1) {
+            error.handle();
+        }
     }
 
-    fn grow_amortized(&mut self, len: usize, additional: usize) {
+    fn grow_amortized(&mut self, len: usize, additional: usize) -> Result<(), TryReserveError> {
         if size_of::<T>() == 0 {
-            capacity_overflow();
+            return Err(TryReserveError::capacity_overflow());
         }
-        let required = match len.checked_add(additional) {
-            Some(required) => required,
-            None => capacity_overflow(),
-        };
+        let required = len.checked_add(additional).ok_or_else(TryReserveError::capacity_overflow)?;
         let doubled = self.cap * 2;
         let cap = if doubled > required { doubled } else { required };
         let min = min_non_zero_cap(size_of::<T>());
         let cap = if min > cap { min } else { cap };
-        self.finish_grow(cap);
+        self.finish_grow(cap)
     }
 
-    fn finish_grow(&mut self, cap: usize) {
-        let new_layout = match Layout::array::<T>(cap) {
-            Ok(layout) => layout,
-            Err(_) => capacity_overflow(),
-        };
+    fn finish_grow(&mut self, cap: usize) -> Result<(), TryReserveError> {
+        if size_of::<T>() == 0 {
+            return Err(TryReserveError::capacity_overflow());
+        }
+        let new_layout = Layout::array::<T>(cap).map_err(|_| TryReserveError::capacity_overflow())?;
         let ptr = if self.cap == 0 {
             unsafe { alloc(new_layout) }
         } else {
@@ -138,10 +143,11 @@ impl<T> RawVec<T> {
             unsafe { realloc(self.ptr.as_ptr() as *mut u8, old_layout, new_layout.size()) }
         };
         if ptr.is_null() {
-            handle_alloc_error(new_layout);
+            return Err(TryReserveError::alloc_error(new_layout));
         }
         self.ptr = unsafe { NonNull::new_unchecked(ptr as *mut T) };
         self.cap = cap;
+        Ok(())
     }
 
     /// Room for exactly `cap` values, no more than there is.

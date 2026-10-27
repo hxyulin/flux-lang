@@ -1,7 +1,7 @@
 //! The declaration representation boundary used by trait-lifetime admission.
 use flux_hir::{FunctionId, Generics, ItemTree, Owner, TraitId, TypeRef};
 
-use super::{Elided, LifetimeName, Outlives, Region, Walker, implied_outlives};
+use super::{Elided, LifetimeName, Outlives, Region, Walker, implied_outlives_with_static};
 use crate::{Signatures, Ty, TyKind, TypeScope};
 
 /// Why a declaration does not have the bounded required-method profile.
@@ -225,7 +225,14 @@ pub(crate) fn required_method_profile(
                 }
             }
             distinct.extend(own);
-            implied_outlives(items, sigs, ty, table, &mut outlives);
+            implied_outlives_with_static(
+                items,
+                sigs,
+                ty,
+                table,
+                Some(Region::Static),
+                &mut outlives,
+            );
         }
         w.elided =
             if f.has_self && matches!(f.params.first().map(|p| &p.ty), Some(TypeRef::Ref { .. })) {
@@ -245,7 +252,14 @@ pub(crate) fn required_method_profile(
             return Err(fail(TraitProfileReason::SignatureType));
         }
         let ret = w.regions(&f.ret, sig.ret);
-        implied_outlives(items, sigs, sig.ret, &ret, &mut outlives);
+        implied_outlives_with_static(
+            items,
+            sigs,
+            sig.ret,
+            &ret,
+            Some(Region::Static),
+            &mut outlives,
+        );
         outlives.retain(|p| match *p {
             Outlives::Region(a, b) => a != Region::Erased && b != Region::Erased && a != b,
             Outlives::Type(_, b) => b != Region::Erased,
@@ -290,7 +304,18 @@ pub(crate) fn required_method_profile(
     {
         return Err(fail(TraitProfileReason::OwnerMetadata));
     }
+    region_free_graph(items, sigs, trait_)?;
+    Ok(())
+}
+
+/// Validate all represented supertrait edges without recursive graph walks.
+fn region_free_graph(
+    items: &ItemTree,
+    sigs: &Signatures,
+    trait_: TraitId,
+) -> Result<bool, TraitProfileError> {
     // Iterative DFS keeps even long malformed cycles off the call stack.
+    let mut copy = false;
     let mut active = rustc_hash::FxHashSet::default();
     let mut done = rustc_hash::FxHashSet::default();
     let mut work = vec![(trait_, false)];
@@ -306,10 +331,191 @@ pub(crate) fn required_method_profile(
                     reason: TraitProfileReason::SupertraitCycle,
                 });
             }
+            copy |= items.traits[id].lang == Some(flux_intern::sym::copy);
             let edges = region_free_edges(items, sigs, id)?;
             work.push((id, true));
             work.extend(edges.into_iter().rev().map(|id| (id, false)));
         }
+    }
+    Ok(copy)
+}
+
+/// Check represented safe borrowed or Copy-by-value trait methods, including
+/// defaults and method-local type parameters with region-free trait bounds.
+/// Trait/method obligations and bodies still need their ordinary checks.
+pub fn safe_method_trait_profile(
+    hir: &flux_hir::Hir,
+    sigs: &Signatures,
+    trait_: TraitId,
+) -> Result<(), TraitProfileError> {
+    safe_method_profile(&hir.items, &hir.diagnostics, sigs, trait_)
+}
+
+pub(crate) fn safe_method_profile(
+    items: &ItemTree,
+    diagnostics: &[flux_hir::Diagnostic],
+    sigs: &Signatures,
+    trait_: TraitId,
+) -> Result<(), TraitProfileError> {
+    let fail = |method, reason| TraitProfileError {
+        trait_,
+        method,
+        reason,
+    };
+    let data = items
+        .traits
+        .get(trait_)
+        .ok_or(fail(None, TraitProfileReason::MissingMetadata))?;
+    if data.generics.lifetimes.len() != 1 {
+        return Err(fail(None, TraitProfileReason::OwnerLifetimes));
+    }
+    if !data.generics.params.is_empty() || has_predicates(&data.generics) {
+        return Err(fail(None, TraitProfileReason::TraitPredicates));
+    }
+    if !data.types.is_empty() || !data.consts.is_empty() {
+        return Err(fail(None, TraitProfileReason::AssociatedItems));
+    }
+    if data.is_unsafe {
+        return Err(fail(None, TraitProfileReason::UnsafeTrait));
+    }
+    if diagnosed(diagnostics, data.loc.file, data.def_range) {
+        return Err(fail(None, TraitProfileReason::DeclarationDiagnostics));
+    }
+    let owner = sigs
+        .regions
+        .traits
+        .get(trait_)
+        .ok_or(fail(None, TraitProfileReason::MissingMetadata))?;
+    if owner.names.as_ref()
+        != [LifetimeName {
+            name: Some(data.generics.lifetimes[0].name),
+            range: data.generics.lifetimes[0].range,
+        }]
+        || !owner.outlives.is_empty()
+        || !owner.families.is_empty()
+    {
+        return Err(fail(None, TraitProfileReason::OwnerMetadata));
+    }
+    let copy = region_free_graph(items, sigs, trait_)?;
+    let mut listed = rustc_hash::FxHashSet::default();
+    for &method in &data.functions {
+        let bad = |reason| fail(Some(method), reason);
+        let function = items
+            .functions
+            .get(method)
+            .ok_or(bad(TraitProfileReason::MissingMetadata))?;
+        if !listed.insert(method) || function.owner != Some(Owner::Trait(trait_)) {
+            return Err(bad(TraitProfileReason::OwnerMetadata));
+        }
+        if !function.has_self
+            || function.is_unsafe
+            || function.is_extern
+            || function.is_const
+            || function.is_variadic
+            || function.intrinsic.is_some()
+            || function.derived.is_some()
+            || function.ctor.is_some()
+            || !function.opaques.is_empty()
+        {
+            return Err(bad(TraitProfileReason::MethodShape));
+        }
+        if !function.generics.lifetimes.is_empty()
+            || !function.generics.outlives.is_empty()
+            || !function.generics.type_outlives.is_empty()
+            || function.generics.params.iter().any(|parameter| {
+                parameter.is_const() || parameter.maybe_unsized || parameter.default.is_some()
+            })
+        {
+            return Err(bad(TraitProfileReason::MethodGenerics));
+        }
+        let own_names: Vec<_> = function
+            .generics
+            .params
+            .iter()
+            .map(|parameter| parameter.name)
+            .collect();
+        for predicate in &function.generics.predicates {
+            if !matches!(&predicate.ty,TypeRef::Path(path) if path.as_name().is_some_and(|name|own_names.contains(&name)))
+                || predicate.bound.path.qself.is_some()
+                || predicate.bound.path.args.iter().flatten().any(|arguments| {
+                    !arguments.lifetimes.is_empty()
+                        || !arguments.bindings.is_empty()
+                        || arguments.parenthesized
+                        || !arguments.types.iter().all(|ty| written_type(ty, true))
+                })
+                || items
+                    .resolve_trait(function.loc.module, &predicate.bound)
+                    .0
+                    .is_none_or(|id| !items.traits[id].generics.lifetimes.is_empty())
+            {
+                return Err(bad(TraitProfileReason::MethodGenerics));
+            }
+        }
+        if !written_type(&function.ret, false)
+            || function.params.iter().any(|p| !written_type(&p.ty, false))
+        {
+            return Err(bad(TraitProfileReason::SignatureType));
+        }
+        if diagnosed(diagnostics, function.loc.file, function.item_range) {
+            return Err(bad(TraitProfileReason::DeclarationDiagnostics));
+        }
+        let signature = sigs
+            .fns
+            .get(method)
+            .ok_or(bad(TraitProfileReason::MissingMetadata))?;
+        let self_ty = Ty::param(0, flux_intern::kw::SelfUpper);
+        let receiver = match signature.params.first().copied().map(Ty::kind) {
+            Some(TyKind::Param(parameter)) => parameter.index == 0 && copy,
+            Some(TyKind::Ref(_, pointee)) => pointee == self_ty,
+            _ => false,
+        };
+        if !receiver
+            || signature.params.len() != function.params.len()
+            || signature
+                .params
+                .iter()
+                .chain([&signature.ret])
+                .any(|&ty| type_slots(items, sigs, ty, 1 + own_names.len()).is_none())
+        {
+            return Err(bad(TraitProfileReason::SignatureType));
+        }
+        let regions = sigs
+            .regions
+            .fns
+            .get(method)
+            .ok_or(bad(TraitProfileReason::MissingMetadata))?;
+        let Some((expected_signature, expected_regions, bounds)) =
+            super::resolve::safe_method_contract(items, sigs, method)
+        else {
+            return Err(bad(TraitProfileReason::SignatureMetadata));
+        };
+        if bounds.predicates.iter().any(|predicate| {
+            type_slots(items, sigs, predicate.self_ty, 1 + own_names.len()) != Some(0)
+                || predicate
+                    .trait_ref
+                    .args
+                    .iter()
+                    .any(|&ty| type_slots(items, sigs, ty, 1 + own_names.len()) != Some(0))
+        }) {
+            return Err(bad(TraitProfileReason::MethodGenerics));
+        }
+        if *signature != expected_signature
+            || *regions != expected_regions
+            || sigs.fn_predicates.get(method).map_or(&[][..], |p| p) != bounds.predicates.as_slice()
+            || sigs.fn_projections.get(method).map_or(&[][..], |p| p)
+                != bounds.projections.as_slice()
+            || regions.callback_binder == super::CallbackBinder::Unclassified
+            || sigs.opaques.get(method).is_some_and(|o| !o.is_empty())
+        {
+            return Err(bad(TraitProfileReason::SignatureMetadata));
+        }
+    }
+    if items
+        .functions
+        .iter()
+        .any(|(id, f)| f.owner == Some(Owner::Trait(trait_)) && !listed.contains(&id))
+    {
+        return Err(fail(None, TraitProfileReason::OwnerMetadata));
     }
     Ok(())
 }
@@ -375,6 +581,7 @@ fn type_slots(items: &ItemTree, sigs: &Signatures, t: Ty, params: usize) -> Opti
         }
         TyKind::Param(p) if (p.index as usize) < params => Some(0),
         TyKind::Int(_)
+        | TyKind::Float(_)
         | TyKind::Bool
         | TyKind::Char
         | TyKind::Str

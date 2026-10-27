@@ -44,7 +44,9 @@ pub(crate) const BODY_PROJECTION_LIFETIMES: &str =
 mod resolve;
 mod trait_profile;
 
-pub use trait_profile::{TraitProfileError, TraitProfileReason, required_method_trait_profile};
+pub use trait_profile::{
+    TraitProfileError, TraitProfileReason, required_method_trait_profile, safe_method_trait_profile,
+};
 
 pub(crate) use resolve::resolve_regions;
 
@@ -195,6 +197,11 @@ pub struct OpaqueRegions {
 /// The lifetimes of a struct's or enum's fields.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StructRegions {
+    /// Original declaration predicates, beside `Signatures::struct_predicates`.
+    pub bound_selfs: Box<[Box<[Region]>]>,
+    pub bound_traits: Box<[TraitRefRegions]>,
+    /// Original associated equalities, beside `struct_projections`.
+    pub projections: Box<[Box<[Region]>]>,
     /// How many lifetime parameters it has.
     pub lifetimes: u32,
     /// The slots of each field's type, as [`Signatures::structs`] lists
@@ -1794,6 +1801,7 @@ pub(crate) fn check_trait_admission(
         if t.generics.lifetimes.is_empty()
             || trait_profile::required_method_profile(items, diagnostics, sigs, id).is_ok()
             || trait_profile::family_method_profile(items, diagnostics, sigs, id)
+            || trait_profile::safe_method_profile(items, diagnostics, sigs, id).is_ok()
         {
             continue;
         }
