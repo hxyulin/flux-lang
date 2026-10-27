@@ -4125,7 +4125,9 @@ impl Builder<'_> {
             }
             Pat::Expr(expr) => {
                 let place = self.resolve(place, range);
-                if let Expr::Literal(Literal::Bool(value)) = body.exprs[*expr] {
+                if let Expr::Literal(Literal::ByteStr(bytes)) = &body.exprs[*expr] {
+                    self.byte_string_test(place, bytes, fail, range);
+                } else if let Expr::Literal(Literal::Bool(value)) = body.exprs[*expr] {
                     let ok = self.new_block();
                     let (on_false, otherwise) = if value { (fail, ok) } else { (ok, fail) };
                     self.terminate(
@@ -4239,6 +4241,45 @@ impl Builder<'_> {
                 fail,
                 range,
             ),
+        }
+    }
+
+    /// A byte literal tests slice length before reading its bytes. Arrays
+    /// already have the checked literal length, so need only element tests.
+    fn byte_string_test(&mut self, place: Place, bytes: &[u8], fail: BasicBlock, range: TextRange) {
+        let slice = matches!(self.place_ty(&place).kind(), TyKind::Ref(_, pointee) if matches!(pointee.kind(), TyKind::Slice(_)));
+        let place = place.deref();
+        if slice {
+            let len = self.temp(Ty::int(IntTy::Usize));
+            self.assign(
+                &len.into(),
+                Rvalue::Len {
+                    place: place.clone(),
+                    borrows: false,
+                },
+                range,
+            );
+            self.compare(
+                BinOp::Eq,
+                len.into(),
+                Operand::Const(Constant::int(bytes.len() as i128, IntTy::Usize)),
+                fail,
+                range,
+            );
+        }
+        for (offset, &byte) in bytes.iter().enumerate() {
+            let element = place.project(ProjectionElem::ConstantIndex {
+                offset: offset as u32,
+                min_length: bytes.len() as u32,
+                from_end: false,
+            });
+            self.compare(
+                BinOp::Eq,
+                element,
+                Operand::Const(Constant::int(i128::from(byte), IntTy::U8)),
+                fail,
+                range,
+            );
         }
     }
 

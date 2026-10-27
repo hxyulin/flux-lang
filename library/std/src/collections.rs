@@ -1,5 +1,6 @@
 //! Collections with the caller-supplied hashing used by compiler source graphs.
 pub use crate::alloc_crate::collections::{BTreeMap, BTreeSet, TryReserveError};
+pub use crate::alloc_crate::collections::btree_map;
 pub mod hash_map;
 pub mod hash_set;
 pub mod vec_deque;

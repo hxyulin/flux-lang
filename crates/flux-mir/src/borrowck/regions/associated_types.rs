@@ -90,6 +90,10 @@ impl Cx<'_> {
                 Outlives::Type(t, b) => self.known_types.push((t, map(b)?)),
             }
         }
+        // Elaborating header predicates can instantiate a selected family.
+        // Its proof may query universals, so close the original header facts
+        // before adding any obligations from that selection.
+        self.close_known();
         let mut env = Vec::new();
         for (k, &p) in self
             .sigs
@@ -114,6 +118,8 @@ impl Cx<'_> {
             };
             self.impl_super_goals(goal, &mut env, 0);
         }
+        // Callable header binders can extend the universal region set.
+        self.close_known();
         for (p, table) in self.env.clone().iter().zip(block.projections.iter()) {
             if let Some(vars) = self.instantiate_sig(p.ty, table, &mut { map }, &[], &[]) {
                 self.env_regions.push((p.alias, vars));

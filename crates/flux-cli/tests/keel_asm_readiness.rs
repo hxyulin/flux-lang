@@ -35,7 +35,7 @@ use support::inventory::collect as inventory;
 use support::inventory::report;
 
 #[test]
-#[ignore = "readiness audit requires collection APIs, patterns and coercions; run explicitly with --ignored"]
+#[ignore = "readiness audit requires MIR lifetime proofs, const drop and borrow fixes; run explicitly with --ignored"]
 fn unchanged_keel_asm_matches_rustc() {
     if std::env::var_os("FLUX_KEEL_ASM_ROOT").is_some() {
         keel_asm_worker();

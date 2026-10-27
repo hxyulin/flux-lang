@@ -166,7 +166,8 @@ reported as "not supported yet":
 - **Patterns:** `x`, `mut x`, `ref x`, `ref mut x`, `x @ pat`, `_`,
   tuples, structs and variants (`S { a, b: x, .. }`, `E::V(x, ..)`,
   `None`), with `..` rest patterns, integer, byte, `char`, `bool` and
-  string literals (`-1`, `b'a'`, `'x'`, `true`, `"add"`), constants of
+  string literals (`-1`, `b'a'`, `'x'`, `true`, `"add"`), byte-string
+  literals on shared byte-array or byte-slice references (`b"ELF"`), constants of
   integer types, `char` and `bool` (`N`, `i32::MAX`, `Self::N`), ranges
   whose ends are either (`1..=9`, `0..N`, `5..`, `..=i8::MIN`,
   `'a'..='z'`), or-patterns (`1 | 2`), reference patterns (`&x`), and
@@ -185,8 +186,7 @@ reported as "not supported yet":
   Structural constants composed of derived-PartialEq structs, tuples and arrays
   are supported. Floating literal patterns are refutable, with signed zeros
   equal and unnamed values including NaNs requiring wildcard coverage. Float
-  constant/range patterns, enum/reference/pointer constants and byte-string
-  patterns remain unsupported.
+  constant/range patterns and enum/reference/pointer constants remain unsupported.
 - **Attributes:** outer `#[cfg(predicate)]` on ordinary items (including
   modules, imports and item macros), associated items in traits and impls,
   and declarations in extern blocks. Multiple attributes are conjunctive;
@@ -605,6 +605,11 @@ Trait objects reject callable GATs. A family unavailable because of a `Self: Siz
 bound, including one implied by a supertrait, is excluded from object requirements.
 Associated-family region inputs in function-pointer signatures remain explicitly
 unsupported, as do family-projection subjects in generic outlives clauses.
+An open correctness case remains when a family projection normalizes without a
+satisfying higher-ranked callable impl: a static-only callback bound can be
+admitted where Rust requires a universally callable input. The isolated evidence
+is recorded in `out/family-static-callback-review`; this shape is not claimed
+verified by the family support tests.
 Associated type defaults, inherent associated types, `?Sized` outputs
 and arguments on the left side of associated-type bindings remain unsupported.
 Lifetime-bearing trait admission remains bounded to represented signatures; this
@@ -1022,11 +1027,14 @@ supports thin pointers only.
 
 `alloc::collections::BTreeMap`, also reexported through `std::collections`,
 supports const `new`, bound-free `Default`, `is_empty`, heterogeneous
-`get`/`get_mut`/`contains_key`, `insert`, ordered `iter` and owned iteration,
-and `Clone` for cloneable keys/values without an `Ord` bound. Replacement
+`get`/`get_mut`/`contains_key`, `insert`, `remove`/`remove_entry`,
+`first_key_value`, ordered `iter`/`keys`/`values`, borrowed and owned iteration,
+entry insertion/mutation, `FromIterator`, equality, Debug, and `Clone` for
+cloneable keys/values without an `Ord` bound. Replacement
 retains the original key. Storage uses a safe AVL tree with indices into a
-vector; lookup and insertion follow logarithmic tree paths. Removal, entry,
-range and allocator APIs, other collections, and `String::drain` remain
+vector; lookup, insertion and removal follow logarithmic tree paths. Removed
+slots are reused. Range and allocator APIs, remaining entry conveniences,
+other collections, and `String::drain` remain
 unsupported. Collecting an owning iterator does not
 reuse its source allocation as rustc sometimes does, so capacities can differ in those
 cases; a panic inside `alloc` that rustc reports at its own

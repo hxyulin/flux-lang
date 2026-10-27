@@ -1574,6 +1574,10 @@ impl<'a> Cx<'a> {
                     }
                 }
             }
+            // Instantiating a selected family can prove caller bounds. Its
+            // proof must see the original signature assumptions before any
+            // family requirements are generated.
+            self.close_known();
             for table in r.params.iter() {
                 for &region in table.iter() {
                     if let Region::Param(i) = region
@@ -1645,6 +1649,9 @@ impl<'a> Cx<'a> {
                 signature.push((Body::RETURN, Some(vec![STATIC; n])));
             }
         } else if let Some(upvars) = &body.upvars {
+            // Parent slots are already universal before inherited projection
+            // rows are instantiated. Capture/argument relations are added below.
+            self.close_known();
             // A closure: each lifetime of what it is given is universal,
             // and how they must relate is its creator's to check.
             let by_ref = upvars.kind != flux_ty::ClosureKind::FnOnce;
@@ -1720,6 +1727,10 @@ impl<'a> Cx<'a> {
                 }
             }
         }
+        // Unrepresented signature rows and closure parameters may have added
+        // universals. Close only their declared/implied assumptions before
+        // local annotations or relations can select another family.
+        self.close_known();
         // A written local annotation constrains every assignment to its
         // bindings, even if the binding is unused or initialized on a branch.
         for (local, table, range) in &body.region_annotations {

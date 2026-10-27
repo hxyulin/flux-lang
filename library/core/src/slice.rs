@@ -142,9 +142,10 @@ impl<T> [T] {
     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         let end = self.len();
         IterMut {
-            slice: self,
+            ptr: self.as_mut_ptr(),
             start: 0,
             end,
+            marker: crate::marker::PhantomData,
         }
     }
 
@@ -235,7 +236,7 @@ impl<T> [T] {
     /// The slice split at `mid`: `[0, mid)` and `[mid, len)`; panics if
     /// `mid > len`.
     #[track_caller]
-    pub fn split_at(&self, mid: usize) -> (&[T], &[T]) {
+    pub const fn split_at(&self, mid: usize) -> (&[T], &[T]) {
         let len = self.len();
         if mid > len {
             panic("mid > len")
@@ -246,12 +247,38 @@ impl<T> [T] {
     /// The slice split at `mid`, mutably: `[0, mid)` and `[mid, len)`;
     /// panics if `mid > len`.
     #[track_caller]
-    pub fn split_at_mut(&mut self, mid: usize) -> (&mut [T], &mut [T]) {
+    pub const fn split_at_mut(&mut self, mid: usize) -> (&mut [T], &mut [T]) {
         let len = self.len();
         if mid > len {
             panic("mid > len")
         }
         unsafe { (subslice_mut(self, 0, mid), subslice_mut(self, mid, len)) }
+    }
+
+    /// Splits at `mid`, or returns `None` when it exceeds the length.
+    pub const fn split_at_checked(&self, mid: usize) -> Option<(&[T], &[T])> {
+        if mid > self.len() { None } else { Some(self.split_at(mid)) }
+    }
+
+    /// Splits mutably at `mid`, or returns `None` when it exceeds the length.
+    pub const fn split_at_mut_checked(&mut self, mid: usize) -> Option<(&mut [T], &mut [T])> {
+        if mid > self.len() { None } else { Some(self.split_at_mut(mid)) }
+    }
+
+    /// Removes a matching prefix without copying any elements.
+    pub fn strip_prefix(&self, prefix: &[T]) -> Option<&[T]> where T: PartialEq {
+        if prefix.len() > self.len() { return None; }
+        let mut i = 0;
+        while i < prefix.len() {
+            if self[i] != prefix[i] { return None; }
+            i += 1;
+        }
+        Some(&self[prefix.len()..])
+    }
+
+    /// Splits around each element accepted by `pred`, keeping empty pieces.
+    pub fn split<P: FnMut(&T) -> bool>(&self, pred: P) -> Split<'_, T, P> {
+        Split { slice: self, pred, finished: false }
     }
 
     /// Copies the elements of `src`, which must be as long (or this
@@ -529,12 +556,27 @@ impl<T> [T] {
     where
         T: PartialOrd,
     {
+        self.is_sorted_by(|a: &T, b: &T| a <= b)
+    }
+
+    /// Whether every adjacent pair is accepted by `compare`.
+    pub fn is_sorted_by<F: FnMut(&T, &T) -> bool>(&self, mut compare: F) -> bool {
         let mut i = 1;
         while i < self.len() {
-            if self[i - 1] > self[i] {
-                return false;
-            }
+            if !compare(&self[i - 1], &self[i]) { return false; }
             i += 1;
+        }
+        true
+    }
+
+    /// Whether the keys are in nondecreasing order.
+    pub fn is_sorted_by_key<K: PartialOrd, F: FnMut(&T) -> K>(&self, mut f: F) -> bool {
+        let mut iter = self.iter();
+        let mut previous = match iter.next() { Some(value) => f(value), None => return true };
+        for value in iter {
+            let next = f(value);
+            if !(previous <= next) { return false; }
+            previous = next;
         }
         true
     }
@@ -660,6 +702,13 @@ impl<T> [T] {
         self as *const [T] as *const T
     }
 
+    /// The half-open pointer range of the slice, including its end pointer.
+    pub fn as_ptr_range(&self) -> Range<*const T> {
+        let start = self.as_ptr();
+        // SAFETY: the one-past-end pointer stays within the slice allocation.
+        Range { start, end: unsafe { start.add(self.len()) } }
+    }
+
     /// A mutable pointer to the first element.
     pub const fn as_mut_ptr(&mut self) -> *mut T {
         self as *mut [T] as *mut T
@@ -670,9 +719,42 @@ impl<T> [T] {
 /// [`[T]::iter_mut`] and `for x in &mut slice` give.
 #[lang = "slice_iter_mut"]
 pub struct IterMut<'a, T> {
-    slice: &'a mut [T],
+    ptr: *mut T,
     start: usize,
     end: usize,
+    marker: crate::marker::PhantomData<&'a mut T>,
+}
+
+// SAFETY: the iterator transfers a unique borrow of its remaining elements.
+unsafe impl<T: Send> Send for IterMut<'_, T> {}
+// SAFETY: shared iterator access exposes only shared references to T.
+unsafe impl<T: Sync> Sync for IterMut<'_, T> {}
+
+impl<'a, T> IterMut<'a, T> {
+    /// A shared view of the elements that have not been yielded.
+    pub fn as_slice(&self) -> &[T] {
+        // SAFETY: only the remaining interval is shared. Previously yielded
+        // mutable references are disjoint and may still be in use.
+        unsafe { from_raw_parts(self.ptr.add(self.start), self.end - self.start) }
+    }
+
+    /// Consumes the iterator and returns its remaining unique slice.
+    pub fn into_slice(self) -> &'a mut [T] {
+        // SAFETY: yielded elements lie outside this remaining interval. The
+        // iterator is consumed, so no later call can yield these elements.
+        unsafe { from_raw_parts_mut(self.ptr.add(self.start), self.end - self.start) }
+    }
+}
+
+impl<T: crate::fmt::Debug> crate::fmt::Debug for Iter<'_, T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_tuple("Iter").field(&self.as_slice()).finish()
+    }
+}
+impl<T: crate::fmt::Debug> crate::fmt::Debug for IterMut<'_, T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_tuple("IterMut").field(&self.as_slice()).finish()
+    }
 }
 
 impl<'a, T> Iterator for IterMut<'a, T> {
@@ -683,19 +765,17 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 
     fn __iterator_get_unchecked(&mut self, idx: usize) -> &'a mut T {
         let i = self.start + idx;
-        // Each index is asked for once.
-        let rest = unsafe { subslice_mut(self.slice, i, i + 1) };
-        &mut rest[0]
+        // SAFETY: the trusted random-access caller asks each index once.
+        unsafe { &mut *self.ptr.add(i) }
     }
 
     fn next(&mut self) -> Option<&'a mut T> {
         if self.start < self.end {
             let i = self.start;
             self.start += 1;
-            // Elements given are not given again, so their borrows may
-            // outlive this one of the iterator.
-            let rest = unsafe { subslice_mut(self.slice, i, i + 1) };
-            Some(&mut rest[0])
+            // SAFETY: advancing the initialized interval makes this element
+            // unavailable to every future call, including next_back.
+            Some(unsafe { &mut *self.ptr.add(i) })
         } else {
             None
         }
@@ -715,8 +795,9 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
         if self.start < self.end {
             self.end -= 1;
             let i = self.end;
-            let rest = unsafe { subslice_mut(self.slice, i, i + 1) };
-            Some(&mut rest[0])
+            // SAFETY: shrinking the interval excludes this element from
+            // every subsequent yield and remaining-slice view.
+            Some(unsafe { &mut *self.ptr.add(i) })
         } else {
             None
         }
@@ -801,6 +882,7 @@ mod private_slice_index {
     impl Sealed for super::RangeFull {}
     impl Sealed for super::RangeInclusive<usize> {}
     impl Sealed for super::RangeToInclusive<usize> {}
+    impl Sealed for (super::Bound<usize>, super::Bound<usize>) {}
 }
 
 unsafe impl<E> SliceIndex<[E]> for usize {
@@ -1504,4 +1586,88 @@ impl crate::fmt::Display for EscapeAscii<'_> {
     fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
         for byte in self.clone() { crate::write!(f, "{}", byte as char)?; } Ok(())
     }
+}
+
+
+// SAFETY: every method checks both endpoint arithmetic and slice bounds before
+// constructing a view. Mutable results retain the unique input borrow.
+unsafe impl<E> SliceIndex<[E]> for (Bound<usize>, Bound<usize>) {
+    type Output = [E];
+    fn get(self, slice: &[E]) -> Option<&[E]> {
+        let range = tuple_range_checked(self, slice.len())?;
+        get_range(slice, range.start, range.end)
+    }
+    fn get_mut(self, slice: &mut [E]) -> Option<&mut [E]> {
+        let range = tuple_range_checked(self, slice.len())?;
+        get_range_mut(slice, range.start, range.end)
+    }
+    #[track_caller]
+    fn index(self, slice: &[E]) -> &[E] {
+        let range = bounds_range(self, slice.len());
+        // SAFETY: bounds_range checked both endpoints and their order.
+        unsafe { subslice(slice, range.start, range.end) }
+    }
+    #[track_caller]
+    fn index_mut(self, slice: &mut [E]) -> &mut [E] {
+        let range = bounds_range(self, slice.len());
+        // SAFETY: bounds_range checked both endpoints and their order.
+        unsafe { subslice_mut(slice, range.start, range.end) }
+    }
+}
+
+fn tuple_range_checked(bounds: (Bound<usize>, Bound<usize>), len: usize) -> Option<Range<usize>> {
+    let start = match bounds.0 {
+        Bound::Included(value) => value,
+        Bound::Excluded(value) => value.checked_add(1)?,
+        Bound::Unbounded => 0,
+    };
+    let end = match bounds.1 {
+        Bound::Included(value) => value.checked_add(1)?,
+        Bound::Excluded(value) => value,
+        Bound::Unbounded => len,
+    };
+    if start > end || end > len { None } else { Some(Range { start, end }) }
+}
+
+/// Shared pieces separated by elements accepted by a predicate.
+pub struct Split<'a, T, P: FnMut(&T) -> bool> { slice: &'a [T], pred: P, finished: bool }
+impl<'a, T, P: FnMut(&T) -> bool> Iterator for Split<'a, T, P> {
+    type Item = &'a [T];
+    fn next(&mut self) -> Option<&'a [T]> {
+        if self.finished { return None; }
+        let mut i = 0;
+        while i < self.slice.len() {
+            if (self.pred)(&self.slice[i]) {
+                let result = &self.slice[..i];
+                self.slice = &self.slice[i + 1..];
+                return Some(result);
+            }
+            i += 1;
+        }
+        self.finished = true;
+        Some(self.slice)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.finished { (0, Some(0)) } else { (1, self.slice.len().checked_add(1)) }
+    }
+}
+impl<'a, T, P: FnMut(&T) -> bool> DoubleEndedIterator for Split<'a, T, P> {
+    fn next_back(&mut self) -> Option<&'a [T]> {
+        if self.finished { return None; }
+        let mut i = self.slice.len();
+        while i > 0 {
+            i -= 1;
+            if (self.pred)(&self.slice[i]) {
+                let result = &self.slice[i + 1..];
+                self.slice = &self.slice[..i];
+                return Some(result);
+            }
+        }
+        self.finished = true;
+        Some(self.slice)
+    }
+}
+impl<T, P: FnMut(&T) -> bool> crate::iter::FusedIterator for Split<'_, T, P> {}
+impl<T, P: Clone + FnMut(&T) -> bool> Clone for Split<'_, T, P> {
+    fn clone(&self) -> Self { Split { slice: self.slice, pred: self.pred.clone(), finished: self.finished } }
 }

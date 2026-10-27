@@ -108,3 +108,26 @@ impl<B: ToOwned + core::fmt::Display + ?Sized> core::fmt::Display for Cow<'_, B>
         core::fmt::Display::fmt(&**self, f)
     }
 }
+
+impl<B: ToOwned + ?Sized, C: ToOwned + ?Sized> PartialEq<Cow<'_, C>> for Cow<'_, B>
+where B: PartialEq<C> {
+    fn eq(&self, other: &Cow<'_, C>) -> bool { **self == **other }
+}
+impl<B: ToOwned + Eq + ?Sized> Eq for Cow<'_, B> {}
+
+impl PartialEq<str> for Cow<'_, str> {
+    fn eq(&self, other: &str) -> bool { **self == *other }
+}
+impl PartialEq<&str> for Cow<'_, str> {
+    fn eq(&self, other: &&str) -> bool { **self == **other }
+}
+impl PartialEq<Cow<'_, str>> for str {
+    fn eq(&self, other: &Cow<'_, str>) -> bool { *self == **other }
+}
+impl PartialEq<Cow<'_, str>> for &str {
+    fn eq(&self, other: &Cow<'_, str>) -> bool { **self == **other }
+}
+
+impl<'a, T: Clone> From<Vec<T>> for Cow<'a, [T]> {
+    fn from(value: Vec<T>) -> Self { Cow::Owned(value) }
+}

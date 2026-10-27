@@ -205,3 +205,38 @@ inside callable method bounds. The callable proof checks the selected owner row
 and exports captured-row requirements through the existing closure contract.
 Wrong-owner, static-input, nested-row and mutable-invariance cases reject.
 Separate native tests compare each implementation with rustc off/on.
+
+## Complete body type checking
+
+The guarded audit in `out/keel-asm-readiness/77654` has zero syntax, HIR and
+type diagnostics. It resolves all 257 diagnostics from the previous inventory.
+Both original-source integrity guards are `[]`; rustc's reference consumer passes.
+The upstream source graph is unchanged.
+
+MIR checking completes with 231 diagnostics, grouped in `mir-summary.json`:
+
+| Diagnostic family | Count |
+| --- | ---: |
+| caller-bound lifetime proofs | 206 |
+| lifetimes | 10 |
+| generic destructors in const functions | 8 |
+| mutable binding requirements | 3 |
+| unrepresented associated bound requirements | 2 |
+| overlapping mutable borrows | 2 |
+
+The earlier attempt `out/keel-asm-readiness/64857` reached the same clean type
+stage but panicked during selected-family proof initialization. The fix closes
+only the original signature/header assumptions before projection instantiation;
+it does not turn requested family requirements into assumptions. The final
+inventory above completes that stage without the panic. Codegen has not run.
+
+Focused comparisons cover byte-string pattern exhaustiveness, static associated
+inference, mutable iterator views, collection ownership/panic behavior, cached
+sorting, and conversion lifetimes. BTreeMap remains an AVL implementation with
+the represented standard API, not a copy of Rust's private B-tree layout.
+
+A separate family/static-callback reduction was observed during investigation:
+`out/family-static-callback-review` records Rust rejecting an unsatisfied
+higher-ranked impl requirement that Flux currently admits. Version provenance is
+unverified. This is an open correctness boundary, not a verified pre-existing
+defect or a fix claimed by this wave.

@@ -11,6 +11,10 @@ pub struct String {
     vec: Vec<u8>,
 }
 
+impl core::convert::AsRef<str> for String {
+    fn as_ref(&self) -> &str { self }
+}
+
 /// Bytes that are not UTF-8, given back.
 pub struct FromUtf8Error {
     bytes: Vec<u8>,

@@ -251,6 +251,10 @@ impl<T> From<T> for Box<T> {
     }
 }
 
+impl<'a, E: core::error::Error + 'a> From<E> for Box<dyn core::error::Error + 'a> {
+    fn from(error: E) -> Self { Box::new(error) }
+}
+
 impl<T: ?Sized + core::hash::Hash> core::hash::Hash for Box<T> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         (**self).hash(state);

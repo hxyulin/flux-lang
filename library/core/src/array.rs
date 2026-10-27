@@ -36,6 +36,14 @@ impl<T: Copy, const N: usize> TryFrom<&[T]> for [T; N] {
     }
 }
 
+impl<T: Copy, const N: usize> TryFrom<&mut [T]> for [T; N] {
+    type Error = TryFromSliceError;
+
+    fn try_from(slice: &mut [T]) -> crate::result::Result<[T; N], TryFromSliceError> {
+        <[T; N]>::try_from(&*slice)
+    }
+}
+
 /// An array of `N` elements, each `cb(i)` for its index `i`, made in
 /// order.
 pub fn from_fn<T, const N: usize, F: FnMut(usize) -> T>(mut cb: F) -> [T; N] {

@@ -67,6 +67,10 @@ impl<T: ?Sized> Clone for PhantomData<T> {
 
 impl<T: ?Sized> Copy for PhantomData<T> {}
 
+impl<T: ?Sized> crate::default::Default for PhantomData<T> {
+    fn default() -> Self { PhantomData }
+}
+
 /// It hashes nothing.
 impl<T: ?Sized> crate::hash::Hash for PhantomData<T> {
     fn hash<H: crate::hash::Hasher>(&self, _state: &mut H) {}

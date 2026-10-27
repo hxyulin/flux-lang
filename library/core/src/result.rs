@@ -247,6 +247,24 @@ impl<T: crate::clone::Clone, E: crate::clone::Clone> crate::clone::Clone for Res
 
 impl<T: crate::marker::Copy, E: crate::marker::Copy> crate::marker::Copy for Result<T, E> {}
 
+impl<T, E> Result<crate::option::Option<T>, E> {
+    /// Exchanges the Result and Option layers, retaining an error as Some(Err).
+    pub fn transpose(self) -> crate::option::Option<Result<T, E>> {
+        match self {
+            Ok(crate::option::Option::Some(value)) => crate::option::Option::Some(Ok(value)),
+            Ok(crate::option::Option::None) => crate::option::Option::None,
+            Err(error) => crate::option::Option::Some(Err(error)),
+        }
+    }
+}
+
+impl<T: Clone, E> Result<&T, E> {
+    /// Clones a successful borrowed value, preserving the owned error.
+    pub fn cloned(self) -> Result<T, E> {
+        match self { Ok(value) => Ok(value.clone()), Err(error) => Err(error) }
+    }
+}
+
 impl<T: crate::cmp::PartialEq, E: crate::cmp::PartialEq> crate::cmp::PartialEq for Result<T, E> {
     fn eq(&self, other: &Self) -> bool {
         match self {

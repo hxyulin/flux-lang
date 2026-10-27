@@ -1018,11 +1018,10 @@ impl Body {
         for data in self.blocks.values() {
             for statement in &data.statements {
                 if let StatementKind::Assign(_, Rvalue::Unsize(_, to)) = &statement.kind
-                    && let TyKind::Ref(_, p) | TyKind::RawPtr(_, p) = to.kind()
-                    && let TyKind::Dynamic(d) = p.kind()
-                    && !traits.contains(&d.trait_)
+                    && let Some(trait_) = flux_ty::objects::unsize_trait(*to)
+                    && !traits.contains(&trait_)
                 {
-                    traits.push(d.trait_);
+                    traits.push(trait_);
                 }
             }
         }

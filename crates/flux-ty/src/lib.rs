@@ -1392,13 +1392,7 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
         let traits: Vec<flux_hir::TraitId> = result
             .unsizes
             .iter()
-            .filter_map(|(_, ty)| match ty.kind() {
-                TyKind::Ref(_, p) | TyKind::RawPtr(_, p) => match p.kind() {
-                    TyKind::Dynamic(d) => Some(d.trait_),
-                    _ => None,
-                },
-                _ => None,
-            })
+            .filter_map(|(_, &ty)| objects::unsize_trait(ty))
             .collect();
         let drop = (!traits.is_empty())
             .then(|| objects::drop_in_place(items))

@@ -1996,11 +1996,8 @@ impl Ctx<'_> {
                 if let Expr::Unary { .. } = body.exprs[*expr] {
                     self.negated_pats.insert(*expr);
                 }
-                if let Expr::Literal(Literal::ByteStr(_) | Literal::CStr(_)) = body.exprs[*expr] {
-                    self.error(
-                        range,
-                        "byte string literals in patterns are not supported yet",
-                    );
+                if let Expr::Literal(Literal::CStr(_)) = body.exprs[*expr] {
+                    self.error(range, "c string literals in patterns are not supported yet");
                 }
                 // A string is compared with `<str as PartialEq>::eq`, a
                 // call like an operator's.
@@ -2017,7 +2014,19 @@ impl Ctx<'_> {
                     });
                 }
                 let ty = self.infer_expr(*expr);
-                if !self.unify(expected, ty) {
+                // Byte literals are fixed arrays, but Rust also permits them
+                // as exact-length patterns on shared byte slices. This is a
+                // pattern relation, not a value coercion or reference peel.
+                let byte_slice = matches!(body.exprs[*expr], Expr::Literal(Literal::ByteStr(_)))
+                    && match self.shallow(expected).kind() {
+                        TyKind::Ref(Mutability::Not, pointee) => match self.shallow(pointee).kind()
+                        {
+                            TyKind::Slice(elem) => self.unify(elem, Ty::int(IntTy::U8)),
+                            _ => false,
+                        },
+                        _ => false,
+                    };
+                if !byte_slice && !self.unify(expected, ty) {
                     self.mismatch(expected, ty, range);
                 }
             }

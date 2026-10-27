@@ -6,6 +6,19 @@ use crate::vec::Vec;
 use core::borrow::Borrow;
 
 impl<T> [T] {
+    /// Sorts stably while evaluating each element's key at most once.
+    pub fn sort_by_cached_key<K: Ord, F: FnMut(&T) -> K>(&mut self, mut f: F) {
+        let mut indices = Vec::with_capacity(self.len());
+        for (index, value) in self.iter().enumerate() { indices.push((f(value), index)); }
+        indices.sort_unstable_by(|a: &(K, usize), b: &(K, usize)| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        for i in 0..indices.len() {
+            let mut index = indices[i].1;
+            while index < i { index = indices[index].1; }
+            indices[i].1 = index;
+            self.swap(i, index);
+        }
+    }
+
     /// Concatenates slices of cloned elements, accepting Borrow<[U]> owners.
     pub fn concat<U: Clone>(&self) -> Vec<U> where T: Borrow<[U]> {
         let mut result = Vec::new();

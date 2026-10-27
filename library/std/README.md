@@ -34,6 +34,9 @@ function is not callable in constants.
 `collections` reexports the bounded BTreeMap implementation and `TryReserveError`
 from alloc. Vec's `try_reserve` and `try_reserve_exact` return capacity or
 allocation errors without changing existing elements when reservation fails.
+BTreeMap supports balanced removal with slot reuse, ordered keys/values,
+borrowed iteration, entry insertion/mutation, collection from iterators and
+equality. Range and allocator APIs remain absent.
 `HashMap<K, V, S>` and `HashSet<T, S>` supply probing storage, borrowed lookup,
 removal, entries, iteration and ownership traits. Their default `RandomState`
 obtains keys from the operating system; clones preserve those keys.
@@ -42,6 +45,20 @@ implementation detail. Custom build hashers remain supported. Vec,
 String and Box remain available at their usual module paths and through the
 standard prelude. Printing macros and alloc's formatting macro also have real std
 reexports so explicit imports work in no_std libraries that opt into std.
+
+Cow supports borrowed/owned comparisons and owned Vec-to-slice conversion.
+`Result::transpose` and `Result<&T, E>::cloned` preserve moved errors and values;
+transpose is currently a runtime API in this facade. Error values convert to
+`Box<dyn Error + 'a>` while retaining the source lifetime. String implements
+`AsRef<str>`, and `str::trim_ascii` removes only ASCII whitespace.
+
+Slices provide checked splitting, tuple-bound indexing, separator splitting,
+prefix stripping, sorted checks and pointer ranges. Shared splits evaluate in
+constants; nonempty mutable constant slicing remains unsupported. Cached-key
+sorting preserves equal-key order and owns its temporary keys. Mutable slice
+iterators expose only their remaining disjoint elements, and Vec's owning
+iterators support remaining views, Clone and Debug. Vec also supports
+`retain_mut` with cleanup when a predicate or removed value's destructor panics.
 
 `thread` exposes `panicking() -> bool` and native `LocalKey` storage through
 `thread_local!`. Initializers run once per thread, and POSIX thread-exit

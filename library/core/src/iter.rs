@@ -603,6 +603,40 @@ pub trait Iterator {
         Product::product(self)
     }
 
+    /// Compares corresponding items lexicographically.
+    fn cmp<I: IntoIterator<Item = Self::Item>>(mut self, other: I) -> crate::cmp::Ordering
+    where Self: Sized, Self::Item: Ord {
+        let mut other = other.into_iter();
+        loop {
+            match (self.next(), other.next()) {
+                (None, None) => return crate::cmp::Ordering::Equal,
+                (None, Some(_)) => return crate::cmp::Ordering::Less,
+                (Some(_), None) => return crate::cmp::Ordering::Greater,
+                (Some(a), Some(b)) => {
+                    let order = a.cmp(&b);
+                    if order != crate::cmp::Ordering::Equal { return order; }
+                }
+            }
+        }
+    }
+
+    /// Partially compares corresponding items lexicographically.
+    fn partial_cmp<I: IntoIterator>(mut self, other: I) -> Option<crate::cmp::Ordering>
+    where Self: Sized, Self::Item: PartialOrd<I::Item> {
+        let mut other = other.into_iter();
+        loop {
+            match (self.next(), other.next()) {
+                (None, None) => return Some(crate::cmp::Ordering::Equal),
+                (None, Some(_)) => return Some(crate::cmp::Ordering::Less),
+                (Some(_), None) => return Some(crate::cmp::Ordering::Greater),
+                (Some(a), Some(b)) => match a.partial_cmp(&b) {
+                    Some(crate::cmp::Ordering::Equal) => {},
+                    result => return result,
+                },
+            }
+        }
+    }
+
     /// Whether the iterators differ in length or any corresponding item.
     fn ne<I: IntoIterator>(self, other: I) -> bool
     where Self: Sized, Self::Item: crate::cmp::PartialEq<I::Item>,
@@ -1105,7 +1139,7 @@ impl<B, I: DoubleEndedIterator, F: FnMut(I::Item) -> Option<B>> DoubleEndedItera
 }
 
 /// [`Iterator::enumerate`]'s.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Enumerate<I> {
     iter: I,
     count: usize,

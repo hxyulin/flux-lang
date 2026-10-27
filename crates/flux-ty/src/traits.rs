@@ -3315,15 +3315,18 @@ fn excluded_by_bounds(
         .any(|p| !holds(items, sigs, &env, p.subst(&args)))
 }
 
-/// After intersecting two headers, a local trait cannot hold for a closed
-/// foreign constructor with no matching impl. Downstream crates cannot add
-/// an impl for it under Rust's orphan rules (`&[T]`, for example).
+/// Intersected headers retain implicit Sized requirements. A local bound also
+/// cannot hold for an orphan-closed constructor without an existing proof:
+/// downstream crates cannot add that impl (`&[T]`, for example).
 fn intersection_excluded_by_local_bound(
     items: &ItemTree,
     sigs: &Signatures,
     a: ImplId,
     b: ImplId,
 ) -> bool {
+    fn resolved(ty: Ty) -> bool {
+        !ty.has_params() && !ty.has_infer() && !ty.has_aliases() && !ty.has_opaques()
+    }
     fn closed(items: &ItemTree, ty: Ty) -> bool {
         match ty.kind() {
             TyKind::Ref(_, inner) => closed(items, inner),
@@ -3334,39 +3337,74 @@ fn intersection_excluded_by_local_bound(
             | TyKind::Alias(_)
             | TyKind::Infer(_)
             | TyKind::Error
-            | TyKind::Opaque(_)
-            | TyKind::Dynamic(_) => false,
+            | TyKind::Opaque(_) => false,
+            // The fixed principal trait determines locality, independently of
+            // its generic arguments. Implicit object proofs are checked below.
+            TyKind::Dynamic(_) => true,
             _ => true,
         }
     }
     let own = items.modules[items.impls[a].module].krate;
-    let a_bounds = sigs
-        .impl_predicates
-        .get(a)
-        .map_or(&[][..], |bounds| &**bounds);
-    let b_bounds = sigs
-        .impl_predicates
-        .get(b)
-        .map_or(&[][..], |bounds| &**bounds);
+    let bounds_of = |id: ImplId| {
+        let mut bounds = sigs
+            .impl_predicates
+            .get(id)
+            .map_or(&[][..], |bounds| &**bounds)
+            .to_vec();
+        // Header matching checks implicit Sized separately. The symmetric
+        // intersection must carry the same requirement through substitution.
+        if let Some(sized) = sigs.builtins.sized {
+            for (index, param) in items.impls[id].generics.params.iter().enumerate() {
+                if !param.is_const() && !param.maybe_unsized {
+                    bounds.push(Predicate {
+                        self_ty: Ty::param(index as u32, param.name),
+                        trait_ref: TraitRef {
+                            trait_: sized,
+                            name: items.traits[sized].name,
+                            args: &[],
+                        },
+                    });
+                }
+            }
+        }
+        bounds
+    };
+    let a_bounds = bounds_of(a);
+    let b_bounds = bounds_of(b);
     let local = |predicate: &Predicate| {
         items.modules[items.traits[predicate.trait_ref.trait_].loc.module].krate == own
     };
-    if !a_bounds.iter().chain(b_bounds).any(local) {
-        return false;
-    }
     let header = |id| {
         std::iter::once(sigs.impls[id])
             .chain(sigs.impl_traits[id].args.iter().copied())
             .collect::<Vec<_>>()
     };
     let Some((_, bounds)) =
-        unify_headers_with_predicates(&header(a), &header(b), a_bounds, b_bounds)
+        unify_headers_with_predicates(&header(a), &header(b), &a_bounds, &b_bounds)
     else {
         return false;
     };
     bounds.iter().any(|predicate| {
+        if sigs.builtins.sized == Some(predicate.trait_ref.trait_)
+            && sigs.is_unsized(predicate.self_ty)
+        {
+            return true;
+        }
+        let open_object_bound = match predicate.self_ty.kind() {
+            TyKind::Dynamic(object) => {
+                crate::objects::supertraits_of(items, object.trait_)
+                    .contains(&predicate.trait_ref.trait_)
+                    && (!resolved(predicate.self_ty)
+                        || !predicate.trait_ref.args.iter().copied().all(resolved))
+            }
+            _ => false,
+        };
         local(predicate)
             && closed(items, predicate.self_ty)
+            && !open_object_bound
+            // Objects and builtin traits can satisfy bounds without an impl
+            // block. Absence from the index alone is not a negative proof.
+            && !holds(items, sigs, &[], *predicate)
             && sigs
                 .impl_index
                 .impls_for(items, predicate.trait_ref.trait_, predicate.self_ty)
@@ -4464,6 +4502,11 @@ fn unify_headers_with_predicates(
                 occurs(bound, var, (side, t), depth + 1)
                     || occurs(bound, var, (side, len), depth + 1)
             }
+            TyKind::Dynamic(object) => object
+                .args
+                .iter()
+                .chain(object.assoc_tys)
+                .any(|&t| occurs(bound, var, (side, t), depth + 1)),
             _ => false,
         }
     }
@@ -4501,6 +4544,12 @@ fn unify_headers_with_predicates(
                     && unify(bound, (a.0, x), (b.0, y), depth + 1)
             }
             (TyKind::Slice(x), TyKind::Slice(y)) => unify(bound, (a.0, x), (b.0, y), depth + 1),
+            (TyKind::Dynamic(x), TyKind::Dynamic(y)) => {
+                x.trait_ == y.trait_
+                    && x.assoc_names == y.assoc_names
+                    && all(x.args, y.args)
+                    && all(x.assoc_tys, y.assoc_tys)
+            }
             _ => a.1 == b.1,
         }
     }
@@ -4526,6 +4575,11 @@ fn unify_headers_with_predicates(
             TyKind::Alias(alias) => {
                 Ty::alias(alias.map_args(|t| apply(bound, (side, t), depth + 1)))
             }
+            TyKind::Dynamic(object) => Ty::new(TyKind::Dynamic(crate::DynTy {
+                args: Ty::list(&apply_all(object.args)),
+                assoc_tys: Ty::list(&apply_all(object.assoc_tys)),
+                ..object
+            })),
             _ => ty,
         }
     }

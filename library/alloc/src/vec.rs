@@ -201,22 +201,34 @@ impl<T> Vec<T> {
     /// Keeps the elements `f` accepts, in order, dropping the others as
     /// it meets them.
     pub fn retain<F: FnMut(&T) -> bool>(&mut self, mut f: F) {
-        let len = self.len;
-        let mut deleted = 0;
+        self.retain_mut(|value: &mut T| f(value));
+    }
+
+    /// Mutates elements and keeps those accepted by `f`, in order.
+    /// Unvisited elements stay in the vector if the predicate unwinds.
+    pub fn retain_mut<F: FnMut(&mut T) -> bool>(&mut self, mut f: F) {
+        let original = self.len;
         self.len = 0;
-        unsafe {
-            let base = self.as_mut_ptr();
-            for i in 0..len {
-                let cur = base.add(i);
-                if !f(&*cur) {
-                    ptr::drop_in_place(cur);
-                    deleted += 1;
-                } else if deleted > 0 {
-                    ptr::copy_nonoverlapping(cur, base.add(i - deleted), 1);
+        let mut guard = RetainGuard { vec: self, original, processed: 0, deleted: 0 };
+        while guard.processed < original {
+            // SAFETY: processed indexes the initialized unvisited interval.
+            // Its unique reference ends before moving or dropping the value.
+            let current = unsafe { guard.vec.as_mut_ptr().add(guard.processed) };
+            if !f(unsafe { &mut *current }) {
+                guard.processed += 1;
+                guard.deleted += 1;
+                // SAFETY: the slot is removed from the live interval before
+                // running user Drop, so the guard never drops it again.
+                unsafe { ptr::drop_in_place(current) };
+            } else {
+                if guard.deleted != 0 {
+                    // SAFETY: the destination is a preceding deleted slot.
+                    // Each initialized retained element moves exactly once.
+                    unsafe { ptr::copy_nonoverlapping(current, guard.vec.as_mut_ptr().add(guard.processed - guard.deleted), 1) };
                 }
+                guard.processed += 1;
             }
         }
-        self.len = len - deleted;
     }
 
     /// Adds `value` at the end, growing if it is full.
@@ -501,6 +513,21 @@ impl<T> Extend<T> for Vec<T> {
 impl<'a, T: Copy + 'a> Extend<&'a T> for Vec<T> {
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
         self.extend(iter.into_iter().copied());
+    }
+}
+
+struct RetainGuard<'a, T> { vec: &'a mut Vec<T>, original: usize, processed: usize, deleted: usize }
+impl<T> Drop for RetainGuard<'_, T> {
+    fn drop(&mut self) {
+        if self.deleted != 0 && self.processed != self.original {
+            // SAFETY: move the still-initialized unvisited tail into the gap.
+            // Overlap is allowed; the old trailing bytes cease to be live.
+            unsafe {
+                let base = self.vec.as_mut_ptr();
+                ptr::copy(base.add(self.processed), base.add(self.processed - self.deleted), self.original - self.processed);
+            }
+        }
+        self.vec.len = self.original - self.deleted;
     }
 }
 
@@ -855,6 +882,22 @@ impl<T> IntoIter<T> {
     /// The elements not taken yet.
     pub fn as_slice(&self) -> &[T] {
         unsafe { core::slice::from_raw_parts(self.buf.ptr().add(self.start), self.end - self.start) }
+    }
+}
+
+impl<T> IntoIter<T> {
+    /// A unique view of the elements that have not been yielded.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: only this iterator owns the remaining initialized interval.
+        unsafe { core::slice::from_raw_parts_mut(self.buf.ptr().add(self.start), self.end - self.start) }
+    }
+}
+impl<T: Clone> Clone for IntoIter<T> {
+    fn clone(&self) -> Self { self.as_slice().to_vec().into_iter() }
+}
+impl<T: fmt::Debug> fmt::Debug for IntoIter<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("IntoIter").field(&self.as_slice()).finish()
     }
 }
 

@@ -519,6 +519,17 @@ impl Cx<'_> {
                 (Expr::Literal(Literal::Str(_)), _) => {
                     DPat::Ctor(Ctor::Single, vec![DPat::Or(Vec::new())])
                 }
+                (Expr::Literal(Literal::ByteStr(bytes)), TyKind::Ref(_, pointee)) => {
+                    let fields = bytes
+                        .iter()
+                        .map(|&b| DPat::Ctor(Ctor::Range(u128::from(b), u128::from(b)), Vec::new()))
+                        .collect();
+                    let ctor = match pointee.kind() {
+                        TyKind::Slice(_) => Ctor::Slice(SliceKind::Fixed(bytes.len() as u32)),
+                        _ => Ctor::Single,
+                    };
+                    DPat::Ctor(Ctor::Single, vec![DPat::Ctor(ctor, fields)])
+                }
                 (_, TyKind::Bool) => match self.literal(*expr) {
                     Some(value) => DPat::Ctor(Ctor::Bool(value != 0), Vec::new()),
                     None => DPat::Wild,

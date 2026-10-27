@@ -195,14 +195,14 @@ dependencies/generated outputs also belong to the
 complete source closure. Sourcegen and difftest are additional workspace targets,
 not prerequisites for the first compiler executable.
 
-The latest assembler audit, `out/keel-asm-readiness/62811`, has zero syntax and
-HIR diagnostics. The previous seven signature diagnostics are resolved:
-`TryReserveError`, fallible Vec reservation, `std::io::Write`, and inherited
-associated-type rows inside callable method bounds are implemented. Body type
-checking now reports 257 diagnostics, including missing collection/slice APIs,
-byte-string patterns and conversion/coercion gaps. This count includes cascades;
-it is not 257 independent features. Both source-integrity guards pass. MIR and
-native codegen remain gated; see
+The latest assembler audit, `out/keel-asm-readiness/77654`, has zero syntax,
+HIR and type diagnostics. All 257 body type diagnostics from the preceding
+inventory are resolved through byte-string patterns, collection/slice APIs,
+conversion contracts and associated-function inference. Both source-integrity
+guards pass. MIR checking now completes with 231 diagnostics: 206 caller-bound
+lifetime proofs, ten lifetime errors, eight generic const-drop errors and seven
+other associated-bound/mutable-borrow diagnostics. These counts include repeated
+instances. Native assembler codegen remains gated; see
 the [readiness report](../crates/flux-cli/tests/fixtures/keel_asm/READINESS.md).
 
 The focused `gat_lending` native comparison exercises shared/mutable lending,

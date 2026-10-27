@@ -1001,6 +1001,81 @@ impl<'a> Evaluator<'a> {
         )
     }
 
+    /// Slice an existing constant reference while retaining static allocation
+    /// identity and transient frame provenance.
+    fn subslice_value(
+        &mut self,
+        value: Value,
+        start: usize,
+        end: usize,
+        mutable: bool,
+        range: TextRange,
+    ) -> Result<Value, EvalError> {
+        let static_origin = match &value {
+            Value::Static(id) => Some((*id, Vec::new())),
+            Value::StaticPart { id, path } => Some((*id, path.to_vec())),
+            _ => None,
+        };
+        if let Some((id, mut path)) = static_origin {
+            let len = static_path_type(self.sigs, self.sigs.consts[id], &path)
+                .and_then(Ty::array_len)
+                .ok_or_else(|| error(range, "static slice metadata is not supported yet".into()))?
+                as usize;
+            if start > end || end > len {
+                return Err(error(range, "constant subslice is out of bounds".into()));
+            }
+            if mutable {
+                return Err(error(
+                    range,
+                    "mutable references in constants are not supported yet".into(),
+                ));
+            }
+            path.push(StaticProjection::Subslice {
+                from: start as u64,
+                len: (end - start) as u64,
+            });
+            return Ok(Value::StaticPart {
+                id,
+                path: path.into(),
+            });
+        }
+        let inner = match &value {
+            Value::Ref(inner) | Value::InteriorRef(inner) => inner,
+            Value::LocalRef { value, .. } => value,
+            _ => {
+                return Err(error(
+                    range,
+                    "slicing reinterpreted pointers in constants is not supported yet".into(),
+                ));
+            }
+        };
+        let Value::Aggregate(elements) = &**inner else {
+            return Err(error(range, "constant subslice requires an array".into()));
+        };
+        let elements = elements
+            .get(start..end)
+            .ok_or_else(|| error(range, "constant subslice is out of bounds".into()))?;
+        // Mutable constant memory retains its existing explicit restriction.
+        // Empty promoted mutable slices have no reachable storage to modify.
+        if mutable && (!elements.is_empty() || matches!(value, Value::LocalRef { .. })) {
+            return Err(error(
+                range,
+                "mutable references in constants are not supported yet".into(),
+            ));
+        }
+        let sliced = Arc::new(Value::Aggregate(elements.into()));
+        Ok(match value {
+            Value::Ref(_) => Value::Ref(sliced),
+            Value::InteriorRef(_) => Value::InteriorRef(sliced),
+            Value::LocalRef { origin, raw, .. } => Value::LocalRef {
+                value: sliced,
+                origin,
+                raw,
+            },
+            _ => unreachable!("reference form checked above"),
+        })
+    }
+
     /// The initial value of static `id`, read at `range`. A constant may
     /// not read a `static mut`, whose value may change; a static's
     /// initializer reads its initial value.
@@ -1404,6 +1479,39 @@ impl<'a> Evaluator<'a> {
                         match target {
                             Some(target) => {
                                 block = *target;
+                                continue;
+                            }
+                            None => return Err(error(range, "entering unreachable code".into())),
+                        }
+                    }
+                    if matches!(
+                        self.items.functions[*func].intrinsic,
+                        Some(flux_hir::Intrinsic::Subslice | flux_hir::Intrinsic::SubsliceMut)
+                    ) && let [slice, start, end] = &args[..]
+                    {
+                        let value = self.operand(locals, generics, slice, range)?;
+                        let start = self.operand(locals, generics, start, range)?;
+                        let end = self.operand(locals, generics, end, range)?;
+                        let (Value::Int { bits: start, .. }, Value::Int { bits: end, .. }) =
+                            (start, end)
+                        else {
+                            return Err(error(
+                                range,
+                                "constant subslice bounds must be integers".into(),
+                            ));
+                        };
+                        let value = self.subslice_value(
+                            value,
+                            start as usize,
+                            end as usize,
+                            self.items.functions[*func].intrinsic
+                                == Some(flux_hir::Intrinsic::SubsliceMut),
+                            range,
+                        )?;
+                        write(locals, dest, value, range)?;
+                        match target {
+                            Some(next) => {
+                                block = *next;
                                 continue;
                             }
                             None => return Err(error(range, "entering unreachable code".into())),
@@ -2161,11 +2269,24 @@ impl<'a> Evaluator<'a> {
                 }
                 Ok(value)
             }
-            // Made only once code is monomorphized.
-            Rvalue::Subslice { .. } => Err(error(
-                range,
-                "slicing in constants is not supported yet".to_owned(),
-            )),
+            Rvalue::Subslice { slice, start, end } => {
+                let mutable = matches!(
+                    body.operand_ty(slice, self.sigs).subst(generics).kind(),
+                    TyKind::Ref(flux_ty::Mutability::Mut, _)
+                        | TyKind::RawPtr(flux_ty::Mutability::Mut, _)
+                );
+                let value = self.operand(locals, generics, slice, range)?;
+                let start = self.operand(locals, generics, start, range)?;
+                let end = self.operand(locals, generics, end, range)?;
+                let (Value::Int { bits: start, .. }, Value::Int { bits: end, .. }) = (start, end)
+                else {
+                    return Err(error(
+                        range,
+                        "constant subslice bounds must be integers".into(),
+                    ));
+                };
+                self.subslice_value(value, start as usize, end as usize, mutable, range)
+            }
             Rvalue::Ref { .. } => Err(error(
                 range,
                 "mutable references in constants are not supported yet".to_owned(),

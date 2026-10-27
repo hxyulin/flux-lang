@@ -72,7 +72,7 @@ pub(crate) const fn needs_drop<T>() -> bool {
 
 /// `&slice[start..end]`, unchecked: `start <= end <= slice.len()`.
 #[rustc_intrinsic]
-pub(crate) unsafe fn subslice<T>(slice: &[T], start: usize, end: usize) -> &[T] {
+pub(crate) const unsafe fn subslice<T>(slice: &[T], start: usize, end: usize) -> &[T] {
     loop {}
 }
 
@@ -81,7 +81,7 @@ pub(crate) unsafe fn subslice<T>(slice: &[T], start: usize, end: usize) -> &[T] 
 /// would be, so that disjoint parts of one slice may be borrowed at
 /// once (`split_at_mut`, `IterMut`); the caller gives it the right one.
 #[rustc_intrinsic]
-pub(crate) unsafe fn subslice_mut<'a, 'b, T>(
+pub(crate) const unsafe fn subslice_mut<'a, 'b, T>(
     slice: &'a mut [T],
     start: usize,
     end: usize,

@@ -842,6 +842,18 @@ impl str {
         self.trim_start().trim_end()
     }
 
+    /// The string without leading and trailing ASCII whitespace.
+    pub const fn trim_ascii(&self) -> &str {
+        let bytes = self.as_bytes();
+        let mut start = 0;
+        let mut end = bytes.len();
+        while start < end && bytes[start].is_ascii_whitespace() { start += 1; }
+        while start < end && bytes[end - 1].is_ascii_whitespace() { end -= 1; }
+        // SAFETY: ASCII whitespace is a single UTF-8 byte, so removing it
+        // cannot split a scalar or change the validity of the remaining text.
+        unsafe { from_utf8_unchecked(crate::intrinsics::subslice(bytes, start, end)) }
+    }
+
     /// The parts of the string between the matches of `pat`.
     pub fn split<P: Pattern>(&self, pat: P) -> Split<'_, P> {
         Split { inner: SplitInternal::new(self, pat, true) }

@@ -19,6 +19,19 @@ use flux_syntax::TextRange;
 use crate::ty::{DynTy, symbol_list};
 use crate::{Ty, TyKind, TypeScope};
 
+/// The trait object behind a reference, raw pointer or owning Box target.
+/// Its default methods must be collected even when no direct call names them.
+pub fn unsize_trait(target: Ty) -> Option<TraitId> {
+    let pointee = match target.kind() {
+        TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee) => pointee,
+        _ => crate::box_pointee(target)?,
+    };
+    match pointee.kind() {
+        TyKind::Dynamic(object) => Some(object.trait_),
+        _ => None,
+    }
+}
+
 /// The `Self` a trait object's bounds are resolved with: no type, so
 /// that a default naming `Self` shows (E0393).
 fn object_self() -> Ty {

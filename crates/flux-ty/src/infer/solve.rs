@@ -1666,7 +1666,11 @@ impl Ctx<'_> {
                 }
             }
         }
-        if let TyKind::Infer(var) = ty.kind()
+        // Static associated lookup can choose an unambiguous trait before
+        // Self is known. Its obligation remains pending while arguments or
+        // the expected result supply Self; receiver method lookup cannot.
+        if methods
+            && let TyKind::Infer(var) = ty.kind()
             && !self.unknown(var).0
         {
             return found;
