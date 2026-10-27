@@ -201,8 +201,12 @@ separate OUT_DIR values. OnceCell and current_dir are implemented and tested;
 the refreshed core audit reaches zero syntax/HIR diagnostics and 92 type
 diagnostics. MIR has not run. `flux cargo prepare` records Cargo build-script
 outputs and host proc-macro artifacts, and `flux cargo build` compiles supported
-binary source graphs. Proc-macro execution still needs a token expansion bridge;
-preparing a dylib does not implement expansion. The rustc reference exercises the complete backend
+binary source graphs. Function-like, attribute and derive proc macros now expand through the matching
+rustc toolchain server. The full backend audit includes the actual serde_derive
+host dylib and checks its expanded target source. Host-only syn/quote dependencies
+stay outside target compilation. The bridge is tied to a reviewed rustc commit;
+its [contract and restrictions](../crates/flux-cli/README.md#cargo-backed-source-builds)
+remain narrower than general Cargo compatibility. The rustc reference exercises the complete backend
 and linker successfully. See the [backend audit report](../crates/flux-cli/tests/fixtures/keel_backend/README.md).
 CLI derives and the backend's remaining dependencies and generated outputs also
 belong to the complete source closure. Sourcegen and difftest are additional workspace targets,

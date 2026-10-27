@@ -95,6 +95,8 @@ pub(crate) struct CompileRequest<'a> {
 }
 
 pub(crate) struct SourceInput {
+    pub host_macros: Option<Vec<flux_hir::ProcMacro>>,
+    pub compilation_dir: Option<std::path::PathBuf>,
     pub edition: flux_syntax::Edition,
     pub file: std::path::PathBuf,
     pub name: String,
@@ -132,8 +134,15 @@ fn compile_inner(request: CompileRequest<'_>, timings: &mut Timings) -> Result<b
     let graph = timings.time("source dependency load/parse", || {
         let mut graph = Vec::new();
         for source in sources {
-            let source_root = db.load_with_edition(&source.file, source.edition)?;
+            let source_root = if let Some(exports) = &source.host_macros {
+                db.add_proc_macro_crate(source.file.clone(), exports.clone())
+            } else {
+                db.load_with_edition(&source.file, source.edition)?
+            };
             db.set_crate_cfg(source_root, source.cfg.clone())?;
+            if let Some(directory) = &source.compilation_dir {
+                db.set_crate_directory(source_root, directory.clone())?;
+            }
             if let Some(environment) = &source.environment {
                 db.set_crate_env(source_root, environment.clone())?;
             }

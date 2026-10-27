@@ -34,8 +34,45 @@ impl Tok {
 /// origin: in a file, its range there in [`SOURCE_GROUP`]; in a macro
 /// expansion's tree, where the expander said it came from.
 pub(crate) fn tokens_of(node: SyntaxNode<'_>, out: &mut Vec<Tok>) {
+    tokens_ignoring(node, &[], out);
+}
+
+pub(crate) fn tokens_ignoring(node: SyntaxNode<'_>, skip: &[TextRange], out: &mut Vec<Tok>) {
+    tokens_filtered(node, skip, false, out);
+}
+pub(crate) fn proc_tokens_ignoring(node: SyntaxNode<'_>, skip: &[TextRange], out: &mut Vec<Tok>) {
+    tokens_filtered(node, skip, true, out);
+}
+fn doc_comment(text: &str) -> Option<(bool, String)> {
+    let inner = text.starts_with("//!") || text.starts_with("/*!");
+    let doc = inner
+        || (text.starts_with("///") && !text.starts_with("////"))
+        || (text.starts_with("/**") && !text.starts_with("/***") && text != "/**/");
+    if !doc {
+        return None;
+    }
+    let text = if text.starts_with("//") {
+        &text[3..]
+    } else {
+        text.get(3..text.len() - 2)?
+    };
+    Some((
+        inner,
+        text.replace("\r\n", "\n").trim_end_matches('\r').to_owned(),
+    ))
+}
+fn tokens_filtered(node: SyntaxNode<'_>, skip: &[TextRange], docs: bool, out: &mut Vec<Tok>) {
     let tree = node.tree();
-    let mut tokens = node.tokens().filter(|t| !t.kind().is_trivia()).peekable();
+    let mut tokens = node
+        .tokens()
+        .filter(|t| {
+            (!t.kind().is_trivia()
+                || (docs && t.kind() == SyntaxKind::COMMENT && doc_comment(t.text()).is_some()))
+                && !skip.iter().any(|range| {
+                    range.start() <= t.raw_range().start() && t.raw_range().end() <= range.end()
+                })
+        })
+        .peekable();
     let mut last_end = None;
     while let Some(token) = tokens.next() {
         let raw = token.raw_range();
@@ -44,6 +81,24 @@ pub(crate) fn tokens_of(node: SyntaxNode<'_>, out: &mut Vec<Tok>) {
             group: SOURCE_GROUP,
             ctxt: 0,
         });
+        if token.kind() == SyntaxKind::COMMENT {
+            if let Some((inner, text)) = doc_comment(token.text()) {
+                let text = format!("#{}[doc = {:?}]", if inner { "!" } else { "" }, text);
+                let lexed = flux_syntax::LexedStr::with_edition(&text, token.edition());
+                for i in 0..lexed.len() {
+                    if !lexed.kind(i).is_trivia() {
+                        out.push(Tok {
+                            edition: token.edition(),
+                            kind: lexed.kind(i),
+                            text: Symbol::intern(lexed.token_text(i)),
+                            joint: false,
+                            origin,
+                        });
+                    }
+                }
+            }
+            continue;
+        }
         let joint_next = tokens
             .peek()
             .is_some_and(|next| next.raw_range().start() == raw.end());
@@ -253,7 +308,15 @@ pub(crate) fn write_text(toks: &[Tok], starts: &mut Vec<u32>) -> String {
     let mut prev: Option<&Tok> = None;
     for t in toks {
         if let Some(p) = prev
-            && !(p.joint && p.kind.is_punct() && t.kind.is_punct())
+            && !(p.joint
+                && ((p.kind.is_punct() && t.kind.is_punct())
+                    || (p.kind.is_literal()
+                        && !matches!(p.kind, SyntaxKind::INT_NUMBER | SyntaxKind::FLOAT_NUMBER)
+                        && (t.kind == SyntaxKind::IDENT || t.kind.is_keyword())
+                        && p.origin.group == t.origin.group
+                        && p.origin.ctxt == t.origin.ctxt
+                        && (p.origin.range.end() == t.origin.range.start()
+                            || p.origin.range == t.origin.range))))
         {
             text.push(' ');
         }

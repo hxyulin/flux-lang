@@ -4,6 +4,7 @@ use std::process::ExitCode;
 mod build;
 mod cargo;
 mod package;
+use flux_cli::proc_macro;
 
 use clap::{Parser, Subcommand};
 use flux_hir::{Diagnostic, Hir, SourceDb};

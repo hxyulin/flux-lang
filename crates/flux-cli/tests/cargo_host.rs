@@ -159,7 +159,7 @@ fn main(){
     support::oracle::success(&output, "host proc-macro preparation");
     let prepared: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&plan).unwrap()).unwrap();
-    assert_eq!(prepared["version"], 1);
+    assert_eq!(prepared["version"], 2);
     let scripts = prepared["build_scripts"].as_object().unwrap();
     assert_eq!(scripts.len(), 3);
     let dirs = scripts
@@ -177,10 +177,16 @@ fn main(){
             .args(["-p", "app", "--features", "macros", "--plan"])
             .arg(&plan),
         &root,
-        "reject-macro-build",
+        "build-macro-target",
     );
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("no token expansion bridge"));
+    support::oracle::success(&output, "Flux target derive expansion");
+    let actual = run(
+        &mut Command::new(root.join("target/flux/app-tool")),
+        &root,
+        "run-macro-target",
+    );
+    support::oracle::success(&actual, "Flux target derive execution");
+    assert_eq!(actual.stdout, b"cargo host inputs 72\n");
     let output = run(
         Command::new("cargo")
             .args(["run", "--offline", "--locked", "--quiet", "--manifest-path"])

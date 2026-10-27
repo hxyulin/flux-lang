@@ -1502,3 +1502,13 @@ synchronization follow the bounded APIs described above.
 - Validation that rustc does after parsing: escape sequences in literals
   outside bodies (lowering checks those in bodies and constants),
   suffixes, attribute placement, `let` outside conditions.
+
+
+Procedural macros supplied by the Cargo-backed driver support function-like,
+attribute and derive expansion, including imported aliases and declared derive
+helpers. The driver uses rustc-built host dylibs through a matching out-of-process
+toolchain server; the expanded target code still passes Flux's ordinary checks.
+Direct file builds do not discover host artifacts. Unsupported hygiene and token
+representations produce diagnostics rather than silently changing expansion
+semantics. See the [driver contract](../crates/flux-cli/README.md#cargo-backed-source-builds)
+for the exact toolchain and host-process restrictions.

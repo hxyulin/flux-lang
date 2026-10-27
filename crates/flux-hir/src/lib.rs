@@ -30,6 +30,11 @@ mod literal;
 mod lower;
 mod macros;
 mod pretty;
+mod proc_macro;
+pub use proc_macro::{
+    ProcMacro, ProcMacroExpander, ProcMacroInput, ProcMacroKind, ProcMacroToken,
+    proc_macro_declarations,
+};
 mod source;
 
 pub use body::{

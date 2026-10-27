@@ -51,6 +51,9 @@ fn closure(packages: &[Value], roots: &[&str]) -> BTreeSet<usize> {
         if !seen.insert(index) {
             return;
         }
+        if packages[index]["proc_macro"] == true {
+            return;
+        }
         for edge in packages[index]["dependencies"].as_array().unwrap() {
             visit(edge["index"].as_u64().unwrap() as usize, packages, seen);
         }
@@ -263,9 +266,28 @@ fn audit(root: &Path) {
             .collect();
         save(root, "cargo-messages.json", &messages);
         let mut libraries = BTreeMap::new();
+        let mut host_macros = BTreeMap::new();
         let mut scripts = BTreeMap::new();
         for message in &messages {
             if message["reason"] == "compiler-artifact" {
+                if message["target"]["kind"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|k| k == "proc-macro")
+                {
+                    let artifact = message["filenames"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find_map(|p| p.as_str().filter(|p| p.ends_with(".dylib")))
+                        .unwrap();
+                    host_macros.insert(
+                        message["package_id"].as_str().unwrap().to_owned(),
+                        serde_json::json!({"artifact":artifact,"features":message["features"]}),
+                    );
+                }
+
                 if let Some(file) = message["filenames"]
                     .as_array()
                     .unwrap()
@@ -284,6 +306,26 @@ fn audit(root: &Path) {
                 );
             }
         }
+        for p in &packages {
+            if p["proc_macro"] == true {
+                let file = PathBuf::from(
+                    host_macros[p["id"].as_str().unwrap()]["artifact"]
+                        .as_str()
+                        .unwrap(),
+                );
+                originals.push((file.clone(), std::fs::read(file).unwrap()));
+            }
+        }
+        collect(&repo.join("crates/flux-cli/src/proc_macro"), &mut originals);
+        save(root, "host-macros.json", &host_macros);
+        let version = run(
+            Command::new("rustc").arg("-vV"),
+            root,
+            "host-rustc-version",
+            30,
+        );
+        success(&version, root, "host rustc version");
+        std::fs::write(root.join("host-rustc-version.txt"), &version.stdout).unwrap();
         for package in &packages {
             if let Some(script) = scripts.get(package["id"].as_str().unwrap()) {
                 collect(
@@ -368,50 +410,41 @@ fn audit(root: &Path) {
             );
         }
         integrity(root, &originals, "pre-flux-source-integrity.json");
-        let proc_macros: Vec<_> = packages
-            .iter()
-            .filter(|p| p["proc_macro"] == true)
-            .map(|p| p["package"].as_str().unwrap())
-            .collect();
-        let mut input_errors = Vec::new();
-        if !proc_macros.is_empty() {
-            input_errors.push(format!("host procedural-macro crates require a source-graph compilation/expansion interface: {}",proc_macros.join(", ")));
-        }
-        std::fs::write(
-            root.join("input.diagnostics"),
-            format!(
-                "count={}\n{}\n",
-                input_errors.len(),
-                input_errors.join("\n")
+        std::fs::write(root.join("input.diagnostics"), "count=0\n").unwrap();
+        let mut failed = Vec::new();
+        for (label, roots) in [
+            (
+                "full",
+                vec![
+                    "keel-codegen",
+                    "keel-frontend",
+                    "keel-opt",
+                    "keel-asm",
+                    "keel-link",
+                ],
             ),
-        )
-        .unwrap();
-        for stage in ["syntax", "hir", "type", "mir"] {
-            std::fs::write(
-                root.join(format!("full-{stage}.diagnostics")),
-                "not run: full graph input admission is blocked\n",
-            )
-            .unwrap();
-        }
-        let core = closure(
-            &packages,
-            &["keel-codegen", "keel-frontend", "keel-opt", "keel-asm"],
-        );
-        save(root, "core-indices.json", &core);
-        phase(root, "core-flux");
-        let output = run(
-            Command::new(std::env::current_exe().unwrap())
+            (
+                "core",
+                vec!["keel-codegen", "keel-frontend", "keel-opt", "keel-asm"],
+            ),
+        ] {
+            let selected = closure(&packages, &roots);
+            save(root, &format!("{label}-indices.json"), &selected);
+            phase(root, &format!("{label}-flux"));
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
                 .args(["--ignored", "--exact", TEST, "--nocapture"])
                 .env("FLUX_BACKEND_ROOT", root)
-                .env("FLUX_BACKEND_FLUX", "1"),
-            root,
-            "core-audit",
-            180,
-        );
-        success(&output, root, "core source audit");
+                .env("FLUX_BACKEND_FLUX", "1")
+                .env("FLUX_BACKEND_SCOPE", label);
+            let output = run(&mut command, root, &format!("{label}-audit"), 180);
+            if !output.status.success() {
+                failed.push(label);
+            }
+        }
         assert!(
-            input_errors.is_empty(),
-            "full backend input blockers; see {}",
+            failed.is_empty(),
+            "backend graph blockers in {failed:?}; see {}",
             root.display()
         );
         phase(root, "native-verified");
@@ -423,10 +456,13 @@ fn audit(root: &Path) {
 }
 
 fn flux_core(root: &Path) {
+    let label = std::env::var("FLUX_BACKEND_SCOPE").unwrap_or_else(|_| "core".into());
+    let full = label == "full";
     let packages: Vec<Value> =
         serde_json::from_slice(&std::fs::read(root.join("configuration.json")).unwrap()).unwrap();
     let selected: BTreeSet<usize> =
-        serde_json::from_slice(&std::fs::read(root.join("core-indices.json")).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(root.join(format!("{label}-indices.json"))).unwrap())
+            .unwrap();
     let scripts: BTreeMap<String, Value> =
         serde_json::from_slice(&std::fs::read(root.join("build-outputs.json")).unwrap()).unwrap();
     let indices: BTreeMap<usize, usize> = selected
@@ -436,16 +472,19 @@ fn flux_core(root: &Path) {
         .collect();
     save(
         root,
-        "core-configuration.json",
+        &format!("{label}-configuration.json"),
         &selected.iter().map(|&i| &packages[i]).collect::<Vec<_>>(),
     );
     for stage in ["syntax", "hir", "type", "mir"] {
         std::fs::write(
-            root.join(format!("core-{stage}.diagnostics")),
+            root.join(format!("{label}-{stage}.diagnostics")),
             "not run: waiting for preceding stages\n",
         )
         .unwrap();
     }
+    let host_macros: BTreeMap<String, Value> =
+        serde_json::from_slice(&std::fs::read(root.join("host-macros.json")).unwrap()).unwrap();
+    let version = std::fs::read_to_string(root.join("host-rustc-version.txt")).unwrap();
     let mut db = SourceDb::new();
     let mut sources = Vec::new();
     for &i in &selected {
@@ -457,15 +496,45 @@ fn flux_core(root: &Path) {
             "2024" => Edition::E2024,
             _ => panic!("unsupported source edition"),
         };
+        let source_root = if p["proc_macro"] == true {
+            let host = &host_macros[p["id"].as_str().unwrap()];
+            let mut cfg = CrateCfg::default();
+            cfg.names.push(Symbol::intern("proc_macro"));
+            cfg.values = strings(&host["features"])
+                .iter()
+                .map(|f| (Symbol::intern("feature"), Symbol::intern(f)))
+                .collect();
+            if let Some(script) = scripts.get(p["id"].as_str().unwrap()) {
+                for c in strings(&script["cfgs"]) {
+                    if let Some((k, v)) = c.split_once('=') {
+                        cfg.values
+                            .push((Symbol::intern(k), Symbol::intern(v.trim_matches('"'))));
+                    } else {
+                        cfg.names.push(Symbol::intern(&c));
+                    }
+                }
+            }
+            let artifact = Path::new(host["artifact"].as_str().unwrap());
+            let exports = flux_cli::proc_macro::exports(
+                &version,
+                artifact,
+                Path::new(p["root"].as_str().unwrap()),
+                cfg,
+            )
+            .unwrap();
+            db.add_proc_macro_crate(artifact.to_owned(), exports)
+        } else {
+            db.load_with_edition(Path::new(p["root"].as_str().unwrap()), edition)
+                .unwrap()
+        };
         let source = SourceCrate {
-            root: db
-                .load_with_edition(Path::new(p["root"].as_str().unwrap()), edition)
-                .unwrap(),
+            root: source_root,
             name: Symbol::intern(p["name"].as_str().unwrap()),
             dependencies: p["dependencies"]
                 .as_array()
                 .unwrap()
                 .iter()
+                .filter(|_| p["proc_macro"] != true)
                 .map(|d| {
                     (
                         Symbol::intern(d["name"].as_str().unwrap()),
@@ -522,10 +591,21 @@ fn flux_core(root: &Path) {
         db.set_crate_cfg(source.root, cfg).unwrap();
         sources.push(source);
     }
+    let consumer = db
+        .load_with_edition(&root.join("consumer.rs"), Edition::E2024)
+        .unwrap();
+    if full {
+        db.set_crate_cfg(
+            consumer,
+            CrateCfg {
+                names: vec![Symbol::intern("full_backend")],
+                values: Vec::new(),
+            },
+        )
+        .unwrap();
+    }
     sources.push(SourceCrate {
-        root: db
-            .load_with_edition(&root.join("consumer.rs"), Edition::E2024)
-            .unwrap(),
+        root: consumer,
         name: Symbol::intern("consumer"),
         dependencies: [
             "keel-codegen",
@@ -534,8 +614,10 @@ fn flux_core(root: &Path) {
             "keel-opt",
             "keel-asm",
             "object",
+            "keel-link",
         ]
         .into_iter()
+        .filter(|name| full || *name != "keel-link")
         .map(|name| {
             let old = packages.iter().position(|p| p["package"] == name).unwrap();
             (
@@ -545,27 +627,27 @@ fn flux_core(root: &Path) {
         })
         .collect(),
     });
-    phase(root, "core-syntax-hir");
+    phase(root, &format!("{label}-syntax-hir"));
     let hir = flux_hir::lower_sources(&mut db, &sources);
     save(
         root,
         "loaded-files.json",
         &db.files().map(|(_, f)| &f.path).collect::<Vec<_>>(),
     );
-    report(root, "core-syntax", &db, &db.syntax_errors());
-    report(root, "core-hir", &db, &hir.diagnostics);
+    report(root, &format!("{label}-syntax"), &db, &db.syntax_errors());
+    report(root, &format!("{label}-hir"), &db, &hir.diagnostics);
     assert!(
         db.syntax_errors().is_empty() && hir.diagnostics.is_empty(),
         "core syntax/HIR blockers; see {}",
         root.display()
     );
-    phase(root, "core-type");
+    phase(root, &format!("{label}-type"));
     let typed = flux_mir::check_file(&hir);
-    report(root, "core-type", &db, &typed.diagnostics);
+    report(root, &format!("{label}-type"), &db, &typed.diagnostics);
     assert!(typed.diagnostics.is_empty(), "core type blockers");
-    phase(root, "core-mir");
+    phase(root, &format!("{label}-mir"));
     let mir = flux_mir::build_file(&hir, &typed);
-    report(root, "core-mir", &db, &mir.diagnostics);
+    report(root, &format!("{label}-mir"), &db, &mir.diagnostics);
     assert!(mir.diagnostics.is_empty(), "core MIR blockers");
     for (label, tier) in [
         ("unoptimized", flux_codegen::OptimizationTier::None),
@@ -575,7 +657,10 @@ fn flux_core(root: &Path) {
             serde_json::from_slice(&std::fs::read(root.join("source-inventory.json")).unwrap())
                 .unwrap();
         integrity(root, &files, "pre-codegen-source-integrity.json");
-        phase(root, &format!("core-codegen-{label}"));
+        phase(
+            root,
+            &format!("{}-codegen-{label}", if full { "full" } else { "core" }),
+        );
         let mut module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
         let target = flux_codegen::Target::Aarch64AppleDarwin;
         let object = flux_codegen::compile_object(&mut module, target, tier).unwrap();
@@ -590,12 +675,22 @@ fn flux_core(root: &Path) {
         success(&actual, root, "native core consumer");
         assert_eq!(
             actual.stdout,
-            std::fs::read(root.join("reference-core.stdout")).unwrap()
+            std::fs::read(root.join(if full {
+                "reference-full.stdout"
+            } else {
+                "reference-core.stdout"
+            }))
+            .unwrap()
         );
         assert_eq!(
             actual.stderr,
-            std::fs::read(root.join("reference-core.stderr")).unwrap()
+            std::fs::read(root.join(if full {
+                "reference-full.stderr"
+            } else {
+                "reference-core.stderr"
+            }))
+            .unwrap()
         );
     }
-    phase(root, "core-native-verified");
+    phase(root, &format!("{label}-native-verified"));
 }

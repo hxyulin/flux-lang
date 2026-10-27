@@ -240,6 +240,8 @@ impl SourceGraph<'_> {
         let target = select_target(&package, library, bin)?;
         let index = self.sources.len();
         self.sources.push(SourceInput {
+            host_macros: None,
+            compilation_dir: None,
             cfg: Default::default(),
             environment: None,
             edition: edition(&target.edition)?,

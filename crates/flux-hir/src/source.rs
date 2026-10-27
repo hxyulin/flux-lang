@@ -81,6 +81,8 @@ pub struct SourceDb {
     /// The first file at each path: crates can have thousands of files.
     by_path: rustc_hash::FxHashMap<PathBuf, FileId>,
     next_include_offset: u32,
+    compilation_dirs: rustc_hash::FxHashMap<FileId, PathBuf>,
+    proc_macros: rustc_hash::FxHashMap<FileId, Vec<crate::ProcMacro>>,
     environments: rustc_hash::FxHashMap<FileId, Arc<std::collections::BTreeMap<String, String>>>,
     configured: rustc_hash::FxHashMap<(FileId, Option<Arc<flux_syntax::CfgOptions>>), FileId>,
 }
@@ -439,9 +441,47 @@ impl SourceDb {
             files,
             by_path,
             next_include_offset,
+            compilation_dirs: Default::default(),
+            proc_macros: Default::default(),
             environments: Default::default(),
             configured: Default::default(),
         }
+    }
+
+    /// Sets the compiler invocation directory used by host procedural macros.
+    /// This is distinct from a package's manifest directory and include paths.
+    pub fn set_crate_directory(&mut self, root: FileId, directory: PathBuf) -> Result<(), String> {
+        if self.files.get(root.0 as usize).is_none() {
+            return Err("unknown crate source".into());
+        }
+        if root.0 < FileId::std_root().0 || self.file(root).path.starts_with(STD_ROOT) {
+            return Err("expected a physical crate root".into());
+        }
+        self.compilation_dirs.insert(root, directory);
+        Ok(())
+    }
+    pub(crate) fn crate_directory(&self, root: FileId) -> Option<PathBuf> {
+        self.compilation_dirs.get(&root).cloned()
+    }
+
+    /// Registers a host-only macro crate. Its exports are already compiled;
+    /// the dylib is not parsed or presented as target Rust source.
+    pub fn add_proc_macro_crate(
+        &mut self,
+        path: PathBuf,
+        exports: Vec<crate::ProcMacro>,
+    ) -> FileId {
+        let root = self.add(path, "");
+        self.proc_macros.insert(root, exports);
+        root
+    }
+
+    pub(crate) fn has_proc_macros(&self) -> bool {
+        !self.proc_macros.is_empty()
+    }
+
+    pub(crate) fn proc_macros(&self, root: FileId) -> Option<&[crate::ProcMacro]> {
+        self.proc_macros.get(&root).map(Vec::as_slice)
     }
 
     /// Sets an isolated compile-time environment for one physical crate root.

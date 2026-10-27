@@ -1,4 +1,5 @@
 //! File and macro item collection, followed by derives and constructors.
+mod proc_macros;
 use super::{
     AnonConst, Arc, AstNode, Block, BodyExpansion, Bound, Const, ConstId, CrateData, CrateId,
     Defaults, Derive, Diagnostic, Discriminant, FIELD_TYPES, Field, FileId, FsPath, Function,
@@ -207,6 +208,7 @@ impl Collector<'_> {
             block: None,
         });
         self.items.crates.push(CrateData {
+            compilation_dir: self.db.crate_directory(root),
             environment: self.db.crate_env(root),
             macro_use: Vec::new(),
             cfg: self.db.file(root).parse.tree().cfg_options().cloned(),
@@ -220,7 +222,23 @@ impl Collector<'_> {
             dependencies,
             no_std: false,
         });
-        self.collect_file(module, root);
+        if let Some(exports) = self.db.proc_macros(root) {
+            self.items.crates[krate.0 as usize].no_std = true;
+            for host in exports {
+                let name = host.name;
+                let id = self.items.macros.alloc(macros::MacroDef {
+                    name,
+                    kind: macros::MacroKind::ProcMacro(Arc::new(host.clone())),
+                    krate,
+                    file: root,
+                    name_range: TextRange::empty(0),
+                    group: 0,
+                });
+                self.items.exported_macros.insert((krate, name), id);
+            }
+        } else {
+            self.collect_file(module, root);
+        }
         self.collect_pending_root_macros();
     }
 
@@ -280,6 +298,10 @@ impl Collector<'_> {
             let start = self.items.diagnostics.len();
             let shared = self.db.shared(ctx.file);
             if item_enabled(shared.parse.tree().node(node), &mut self.items.diagnostics) {
+                if self.collect_proc_item(ctx, node) {
+                    self.tag(start, ctx.file);
+                    continue;
+                }
                 self.collect_item_expanding_types(ctx, node);
                 self.collect_anon_consts(ctx, node);
             }
@@ -322,7 +344,25 @@ impl Collector<'_> {
                 || ast::Use::cast(syntax)
                     .and_then(|u| u.use_tree())
                     .is_some_and(|tree| external_tree(self.items, ctx.module, tree, false));
-            if external && item_enabled(syntax, &mut Vec::new()) {
+            // An attribute macro may remove or replace this import. Do not
+            // expose it before expansion; unresolved custom attributes must
+            // also wait until all ordinary imports have been collected.
+            let attrs = crate::cfg::Attrs::new(syntax.children().filter_map(ast::Attr::cast));
+            let may_replace = self.db.has_proc_macros()
+                && attrs.iter().any(|attr| {
+                    let mut errors = Vec::new();
+                    check_attr(attr, &mut errors);
+                    if !errors.is_empty() {
+                        return true;
+                    }
+                    let Some(path) = attr.meta().and_then(|m| m.path()) else {
+                        return false;
+                    };
+                    let mut tokens = Vec::new();
+                    macros::tt::tokens_of(path.syntax(), &mut tokens);
+                    self.proc_path(ctx, &tokens).is_some()
+                });
+            if external && !may_replace && item_enabled(syntax, &mut Vec::new()) {
                 let start = self.items.diagnostics.len();
                 self.collect_item(ctx, node);
                 self.tag(start, ctx.file);

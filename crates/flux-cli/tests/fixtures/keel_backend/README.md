@@ -31,19 +31,20 @@ Generated executable instructions are not executed.
 
 ## Input admission and core audit
 
-The complete source graph still has one input-interface blocker:
+The complete graph now admits host procedural macros through the matching
+toolchain server. Cargo builds serde_derive as host code; its expanded tokens
+enter ordinary Flux collection and checking. Host-only syn, quote, proc-macro2
+and unicode-ident dependencies are excluded from the target source closure.
+The complete metadata inventory still records all 39 packages. The target worker
+loads 34 source crates and one host export root. The macro dylib and bridge source
+are included in the byte guard; `host-macros.json` records the artifact.
 
-- Host procedural-macro crates, currently serde_derive, require a source-graph
-  compilation and expansion interface. They are recorded as proc-macro inputs,
-  not passed off as ordinary rlibs or replaced with generated source wrappers.
-
-`SourceDb::set_crate_env` now supplies isolated per-crate environments. The audit
+`SourceDb::set_crate_env` supplies isolated per-crate environments. The audit
 passes real Cargo OUT_DIR and rustc-env outputs to each source crate; it does not
 combine generated directories or mutate the worker's process environment.
-
-`input.diagnostics` reports those limitations. Full-graph syntax, HIR, type and
-MIR reports remain explicitly marked as not run. This audit does not implement
-procedural-macro execution or a package manager.
+`input.diagnostics` is now empty. Full graph syntax/HIR can run; types, MIR and
+codegen remain gated when ordinary source diagnostics exist. This is a supplied
+source-graph audit, not a package manager or rustc rlib bridge.
 
 A separate 18-package core closure excludes the linker and its additional
 Serde/crypto dependencies. It retains the complete assembler, codegen, frontend,
@@ -84,6 +85,19 @@ cases. MIR and Flux native execution remain gated. Both source byte guards pass.
 
 `flux cargo prepare` now creates a Cargo-backed host-input plan, including actual
 build-script outputs and proc-macro dylibs. `flux cargo build` compiles supported
-binary source graphs with Flux. Macro execution still needs a token expansion
-bridge; preparation does not establish that serde_derive can execute inside Flux.
+binary source graphs with Flux. Macro execution uses the reviewed matching toolchain bridge. Both Serialize and
+Deserialize expand the actual serde_derive dylib in focused tests; the backend
+audit also loads its real host exports.
 See [the tool's contract](../../../README.md#cargo-backed-source-builds).
+
+
+## Proc-macro admission update
+
+`out/keel-backend-readiness/70001` has zero input-interface diagnostics, zero
+syntax diagnostics and 697 full-graph HIR diagnostics. No proc-macro expansion
+failure was reported. The first ordinary blockers are missing BinaryHeap,
+LinkedList, CString, net, SystemTime and primitive modules in Serde's std surface,
+followed by additional unsupported libc declarations. Full-graph types/MIR and
+native execution did not run. The 18-package core still has zero syntax/HIR
+and 92 type diagnostics. All source-integrity guards pass. This is the expected
+failing readiness test, not a passing full-backend build.

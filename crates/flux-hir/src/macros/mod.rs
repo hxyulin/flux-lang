@@ -61,6 +61,7 @@ pub struct MacroDef {
 pub enum MacroKind {
     Rules(Arc<mbe::Rules>),
     Builtin(Builtin),
+    ProcMacro(Arc<crate::ProcMacro>),
 }
 
 /// One `macro_rules!` definition in textual scope, after the ones in
@@ -236,7 +237,7 @@ impl MacroDef {
 }
 
 /// `toks` without the delimiters around them, if they have them.
-fn strip_delimiters(toks: &[Tok]) -> &[Tok] {
+pub(crate) fn strip_delimiters(toks: &[Tok]) -> &[Tok] {
     match toks {
         [open, inner @ .., close] if tt::is_open(open.kind) && tt::is_close(close.kind) => inner,
         [open, inner @ ..] if tt::is_open(open.kind) => inner,
@@ -535,7 +536,11 @@ fn expand_at_depth(
     let tt = call
         .children()
         .find(|c| c.kind() == SyntaxKind::TOKEN_TREE)?;
-    tokens_of(tt, &mut toks);
+    if matches!(def.kind, MacroKind::ProcMacro(_)) {
+        tt::proc_tokens_ignoring(tt, &[], &mut toks);
+    } else {
+        tokens_of(tt, &mut toks);
+    }
     let inner = strip_delimiters(&toks);
     // Where the input ends: its closing delimiter, or the whole call if
     // it is empty.
@@ -545,6 +550,16 @@ fn expand_at_depth(
     };
     let mut ctxts = Vec::new();
     let output = match &def.kind {
+        MacroKind::ProcMacro(host) => {
+            if host.kind != crate::ProcMacroKind::Function {
+                diagnostics.push(Diagnostic::new(
+                    call_range,
+                    "expected a function-like macro",
+                ));
+                return None;
+            }
+            expand_proc(host, inner, None, site, call_range, &mut ctxts, diagnostics)?
+        }
         MacroKind::Rules(rules) => {
             if rules.invalid {
                 return None;
@@ -972,4 +987,121 @@ fn describe_token(kind: SyntaxKind, text: Symbol, toks: &[Tok], g: tt::Glued) ->
         return tt::describe(toks, g);
     }
     describe_kind(kind, text.as_str())
+}
+
+pub(crate) fn expand_proc(
+    host: &crate::ProcMacro,
+    tokens: &[Tok],
+    attributes: Option<&[Tok]>,
+    site: &CallSite<'_>,
+    call: TextRange,
+    contexts: &mut Vec<(u32, u32)>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<Tok>> {
+    let source = site.items.files.get(&site.real_file)?.clone();
+    let to_host = |tokens: &[Tok]| {
+        tokens
+            .iter()
+            .map(|t| crate::ProcMacroToken {
+                edition: t.edition,
+                kind: t.kind,
+                text: t.text.to_string(),
+                joint: t.joint,
+                origin: t.origin,
+            })
+            .collect()
+    };
+    let mixed = fresh_ctxt();
+    contexts.push((mixed, 0));
+    let environment = site.items.crates[site.krate.0 as usize]
+        .environment
+        .as_deref()
+        .cloned()
+        .unwrap_or_default();
+    let current_dir = match site.items.crates[site.krate.0 as usize]
+        .compilation_dir
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(std::env::current_dir)
+    {
+        Ok(directory) => directory,
+        Err(error) => {
+            diagnostics.push(Diagnostic::new(
+                call,
+                format!("cannot determine proc-macro working directory: {error}"),
+            ));
+            return None;
+        }
+    };
+    let result = host.expander.expand(crate::ProcMacroInput {
+        invocation_crate: site.krate.0,
+        tokens: to_host(tokens),
+        attributes: attributes.map(to_host),
+        range_base: source.range_base,
+        source,
+        call,
+        mixed_context: mixed,
+        environment,
+        current_dir,
+    });
+    match result {
+        Ok(tokens) => Some(
+            tokens
+                .into_iter()
+                .map(|t| Tok {
+                    edition: t.edition,
+                    kind: t.kind,
+                    text: Symbol::intern(&t.text),
+                    joint: t.joint,
+                    origin: t.origin,
+                })
+                .collect(),
+        ),
+        Err(message) => {
+            diagnostics.push(Diagnostic::new(
+                call,
+                format!("proc macro `{}`: {message}", host.name),
+            ));
+            None
+        }
+    }
+}
+
+pub(crate) fn parse_proc_output(
+    tokens: &[Tok],
+    site: &CallSite<'_>,
+    range: TextRange,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Parse> {
+    let mut starts = Vec::new();
+    let text = tt::write_text(tokens, &mut starts);
+    let origins: Vec<_> = starts
+        .iter()
+        .zip(tokens)
+        .map(|(&start, t)| (start, t.origin))
+        .collect();
+    let kinds: Vec<_> = starts
+        .iter()
+        .zip(tokens)
+        .map(|(&start, t)| (start, t.kind))
+        .collect();
+    let editions: Vec<_> = starts
+        .iter()
+        .zip(tokens)
+        .map(|(&start, t)| (start, t.edition))
+        .collect();
+    let parse = flux_syntax::parse_expansion_with_token_kinds(
+        text.into(),
+        &origins,
+        &kinds,
+        range,
+        Fragment::Items,
+        site.items.edition(site.module),
+    )
+    .with_token_editions(&editions)
+    .with_cfg_options(site.items.crates[site.krate.0 as usize].cfg.clone());
+    for error in parse.errors() {
+        diagnostics.push(Diagnostic::new(error.range, error.message.clone()));
+    }
+    parse.errors().is_empty().then_some(parse)
 }

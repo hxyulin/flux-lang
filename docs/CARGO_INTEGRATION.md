@@ -1,6 +1,8 @@
 # Cargo, Flux and Keel
 
-Research/design, 2026-10-23. The bounded C0 manifest driver is now
+Historical research/design, 2026-10-23. For the implemented Cargo-backed source
+driver, including host proc-macro expansion, see [the current CLI contract](../crates/flux-cli/README.md#cargo-backed-source-builds).
+The route comparisons below retain their original experiment scope. The bounded C0 manifest driver is now
 implemented as `flux package build/run`; see [the exact supported
 subset](PACKAGE_DRIVER.md). A bounded local path source graph is also
 implemented; general Cargo resolution, the compiler adapter and rustc backend

@@ -44,6 +44,7 @@ struct Metadata {
     packages: Vec<Package>,
     resolve: Resolve,
     target_directory: PathBuf,
+    workspace_root: PathBuf,
     workspace_default_members: Vec<String>,
 }
 #[derive(Deserialize)]
@@ -118,8 +119,12 @@ struct Message {
     #[serde(flatten)]
     fields: serde_json::Map<String, serde_json::Value>,
 }
-#[derive(Serialize)]
+#[derive(PartialEq, Eq, Serialize)]
 struct HostMacro {
+    features: Vec<String>,
+    name: String,
+    source: PathBuf,
+    edition: String,
     package_id: String,
     artifact: PathBuf,
 }
@@ -181,7 +186,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         macros: host_proc_macros,
     } = inputs(&messages, &metadata, &host)?;
     let mut plan = Plan {
-        version: 1,
+        version: 2,
         host,
         rustc,
         sources: Vec::new(),
@@ -200,12 +205,6 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         &mut visited,
         &mut active,
     )?;
-    if plan.sources.iter().any(|s| !s.proc_macros.is_empty()) {
-        plan.blockers.push(
-            "host proc-macro artifacts are prepared, but Flux has no token expansion bridge yet"
-                .into(),
-        );
-    }
     for (id, script) in &plan.build_scripts {
         if !script.linked_libs.is_empty() || !script.linked_paths.is_empty() {
             plan.blockers.push(format!(
@@ -238,20 +237,65 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return Err("Cargo source builds support only arm64 macOS hosts".into());
     }
-    let sources = plan
-        .sources
-        .iter()
-        .map(|s| {
-            Ok(SourceInput {
-                edition: edition(&s.edition)?,
-                file: s.root.clone(),
-                name: s.name.clone(),
-                dependencies: s.dependencies.clone(),
-                cfg: cfg(&s.cfgs, &s.features)?,
-                environment: Some(s.environment.clone()),
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let mut sources = Vec::new();
+    let mut hosts = BTreeMap::new();
+    for host in &plan.host_proc_macros {
+        if !plan.sources.iter().any(|source| {
+            source
+                .proc_macros
+                .iter()
+                .any(|(_, id)| id == &host.package_id)
+        }) {
+            continue;
+        }
+        let cfgs = plan
+            .build_scripts
+            .get(&host.package_id)
+            .map_or(&[][..], |s| s.cfgs.as_slice());
+        let mut host_cfg = cfg(cfgs, &host.features)?;
+        host_cfg
+            .names
+            .push(flux_intern::Symbol::intern("proc_macro"));
+        let exports =
+            crate::proc_macro::exports(&plan.rustc, &host.artifact, &host.source, host_cfg)?;
+        hosts.insert(host.package_id.as_str(), sources.len());
+        sources.push(SourceInput {
+            compilation_dir: None,
+            host_macros: Some(exports),
+            file: host.artifact.clone(),
+            name: host.name.clone(),
+            edition: edition(&host.edition)?,
+            dependencies: Vec::new(),
+            cfg: Default::default(),
+            environment: Some(BTreeMap::new()),
+        });
+    }
+    let offset = sources.len();
+    for source in &plan.sources {
+        let mut dependencies = source
+            .dependencies
+            .iter()
+            .map(|(name, index)| (name.clone(), index + offset))
+            .collect::<Vec<_>>();
+        for (alias, id) in &source.proc_macros {
+            dependencies.push((
+                alias.clone(),
+                *hosts
+                    .get(id.as_str())
+                    .ok_or("missing host proc-macro artifact")?,
+            ));
+        }
+        sources.push(SourceInput {
+            compilation_dir: Some(metadata.workspace_root.clone()),
+            host_macros: None,
+            edition: edition(&source.edition)?,
+            file: source.root.clone(),
+            name: source.name.clone(),
+            dependencies,
+            cfg: cfg(&source.cfgs, &source.features)?,
+            environment: Some(source.environment.clone()),
+        });
+    }
     let main = sources.last().ok_or("empty Cargo source graph")?;
     let executable = metadata.target_directory.join("flux").join(&target.name);
     std::fs::create_dir_all(executable.parent().expect("target output has a parent"))
@@ -378,10 +422,27 @@ fn inputs(messages: &str, metadata: &Metadata, host: &str) -> Result<HostInputs,
                         )
                     })
                     .ok_or_else(|| format!("missing host proc-macro artifact for {id}"))?;
-                macros.push(HostMacro {
+                let host_macro = HostMacro {
+                    features: message.features,
+                    name: target.name,
+                    source: target.src_path,
+                    edition: target.edition,
                     package_id: id,
                     artifact: artifact.clone(),
-                });
+                };
+                if let Some(previous) = macros
+                    .iter()
+                    .find(|previous: &&HostMacro| previous.package_id == host_macro.package_id)
+                {
+                    if previous != &host_macro {
+                        return Err(format!(
+                            "distinct host proc-macro units for {} require unit-level graph support",
+                            host_macro.package_id
+                        ));
+                    }
+                } else {
+                    macros.push(host_macro);
+                }
             } else if message
                 .filenames
                 .iter()

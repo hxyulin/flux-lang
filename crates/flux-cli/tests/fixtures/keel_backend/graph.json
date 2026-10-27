@@ -279,6 +279,7 @@
       "version": "1.0.229",
       "edition": "2021",
       "features": [
+        "alloc",
         "result",
         "std"
       ],
@@ -388,6 +389,7 @@
       "version": "1.0.229",
       "edition": "2021",
       "features": [
+        "alloc",
         "default",
         "derive",
         "serde_derive",

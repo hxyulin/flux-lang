@@ -158,6 +158,8 @@ pub struct ItemCounts {
 
 #[derive(Debug, Clone)]
 pub struct CrateData {
+    /// Compiler process cwd, distinct from CARGO_MANIFEST_DIR.
+    pub compilation_dir: Option<PathBuf>,
     /// Isolated compilation inputs; None retains standalone process lookup.
     pub environment: Option<Arc<std::collections::BTreeMap<String, String>>>,
     /// Exported macros imported with this crate's `#[macro_use] extern crate`.
