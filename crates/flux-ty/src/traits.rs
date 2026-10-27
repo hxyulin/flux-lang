@@ -2313,6 +2313,9 @@ pub fn needs_drop(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty
             .any(|&e| needs_drop(items, sigs, env, e)),
         // Holds a value it never drops.
         TyKind::Adt(adt, _) if crate::is_lang_struct(items, adt.strukt, "manually_drop") => false,
+        // Copy excludes destructors even when a stored associated type
+        // has not been normalized to its concrete representation yet.
+        TyKind::Adt(..) if is_copy(items, sigs, env, ty) => false,
         TyKind::Adt(adt, args) => {
             drop_impl(items, sigs, adt.strukt).is_some()
                 || sigs.structs[adt.strukt]

@@ -1749,7 +1749,10 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
                     operand(start);
                     operand(end);
                 }
-                Rvalue::Ref { .. } | Rvalue::Discriminant(_) | Rvalue::Len { .. } => {}
+                Rvalue::Ref { .. }
+                | Rvalue::Discriminant(_)
+                | Rvalue::DiscriminantForDrop(_)
+                | Rvalue::Len { .. } => {}
             }
         }
         match &mut data.terminator.kind {

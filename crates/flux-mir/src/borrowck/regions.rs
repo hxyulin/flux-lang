@@ -933,6 +933,67 @@ impl<'a> Cx<'a> {
         ty.children().all(|t| self.impl_aliases_known(t, &[]))
     }
 
+    /// Prove nested, region-free selections before using their normalized RHS.
+    /// Region-bearing projections still need their occurrence tables.
+    fn impl_aliases_proven(
+        &mut self,
+        ty: Ty,
+        args: &[Ty],
+        env: &[ImplRegionGoal],
+        depth: u32,
+    ) -> bool {
+        if depth > 32 {
+            return false;
+        }
+        let ty = if args.is_empty() { ty } else { ty.subst(args) };
+        if self.impl_aliases_known(ty, &[]) {
+            return true;
+        }
+        for child in ty.children() {
+            if !self.impl_aliases_proven(child, &[], env, depth + 1) {
+                return false;
+            }
+        }
+        let TyKind::Alias(alias) = ty.kind() else {
+            return true;
+        };
+        if flux_ty::regions::has_projection_inputs(alias)
+            || !self.items.traits[alias.trait_]
+                .generics
+                .lifetimes
+                .is_empty()
+            || alias.args.iter().any(|&arg| self.slots(arg) != 0)
+            || self.slots(self.normalize(ty)) != 0
+        {
+            return false;
+        }
+        let predicate = flux_ty::Predicate {
+            self_ty: alias.args[0],
+            trait_ref: flux_ty::TraitRef {
+                trait_: alias.trait_,
+                name: alias.trait_name,
+                args: &alias.args[1..],
+            },
+        };
+        let goal = ImplRegionGoal {
+            lifetimes: Vec::new(),
+            predicate,
+            vars: vec![Vec::new(); alias.args.len()],
+            bound: Vec::new(),
+        };
+        if !self.impl_prove_super(&goal, env, 0) {
+            return false;
+        }
+        let Some((imp, impl_args)) = flux_ty::traits::select_impl(self.items, self.sigs, predicate)
+        else {
+            return false;
+        };
+        let Some(value) = flux_ty::traits::impl_type(self.sigs, imp, alias.name) else {
+            return false;
+        };
+        self.impl_aliases_proven(value, &impl_args, env, depth + 1)
+    }
+
     /// Instantiate an impl bound without inventing lifetimes for missing
     /// metadata. An unrepresentable obligation must fail this universal check.
     #[allow(clippy::too_many_arguments)]
@@ -1165,10 +1226,9 @@ impl<'a> Cx<'a> {
                 let (imp, impl_args) =
                     flux_ty::traits::select_impl(self.items, self.sigs, alias_goal.predicate)?;
                 let value = flux_ty::traits::impl_type(self.sigs, imp, alias.name)?;
-                // The selected associated value may itself contain projections.
-                // Their impl requirements have not been proved by proving this
-                // edge, so retain the existing concrete-projection boundary.
-                if !self.impl_aliases_known(value, &impl_args) {
+                // Proving the outer edge does not prove the selected RHS's
+                // nested projection requirements. Discharge those separately.
+                if !self.impl_aliases_proven(value, &impl_args, env, 0) {
                     return None;
                 }
             }
@@ -3638,6 +3698,7 @@ impl<'a> Cx<'a> {
             Rvalue::BinaryOp(..)
             | Rvalue::UnaryOp(..)
             | Rvalue::Discriminant(_)
+            | Rvalue::DiscriminantForDrop(_)
             | Rvalue::Len { .. } => {}
         }
     }
@@ -4547,8 +4608,8 @@ impl<'a> Cx<'a> {
 
     /// Try original caller predicates with their own region tables. Do not
     /// borrow metadata from an erased-equal predicate or from the callee.
-    /// Callable bounds in closures use the enclosing function's universal
-    /// prefix, which closure region construction preserves as parent slots.
+    /// Closure bodies use the enclosing function's universal prefix, which
+    /// closure region construction preserves as parent slots.
     fn caller_bound(
         &mut self,
         goal: flux_ty::Predicate,
@@ -4565,10 +4626,7 @@ impl<'a> Cx<'a> {
             };
             return self.impl_prove_super(&goal, &self.family_goals.clone(), 0);
         }
-        let Some(f) = self.body.owner.filter(|_| {
-            self.body.upvars.is_none()
-                || flux_ty::fn_trait_kind(self.items, goal.trait_ref.trait_).is_some()
-        }) else {
+        let Some(f) = self.body.owner else {
             return false;
         };
         let Some(r) = self.sigs.regions.fns.get(f) else {
@@ -4704,11 +4762,11 @@ impl<'a> Cx<'a> {
                 }
                 equalities.extend(known.into_iter().zip(vars[i].iter().copied()));
             }
-            // Captured input rows are universals of the closure body, not
+            // Captures and inputs are universals of the closure body, not
             // the enclosing function. Export their required relationship to
             // the parent row; the closure's construction/call proves it.
-            let exported_callable = callable && self.body.upvars.is_some();
-            if !complete || (!exported_callable && !self.caller_equalities_fit(&equalities)) {
+            let exported = self.body.upvars.is_some();
+            if !complete || (!exported && !self.caller_equalities_fit(&equalities)) {
                 continue;
             }
             // These are requirements, never new header assumptions. The final
@@ -4849,6 +4907,12 @@ impl<'a> Cx<'a> {
                     "function pointer callback region metadata is not supported yet",
                 ));
             }
+            return;
+        }
+        // Caller predicates may constrain compound self types too, such as
+        // `&'a Q: Into<K>`. Selecting a blanket impl first would invent its
+        // prerequisites instead of using the contract the caller supplied.
+        if self.caller_bound(goal, vars, trait_lifetimes, range) {
             return;
         }
         if matches!(

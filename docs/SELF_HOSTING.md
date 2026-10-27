@@ -25,6 +25,7 @@ these source graphs.
 | `ty_selfhost` | Complete unchanged type checker and its nine-library source graph, with public inference and signature consumers. |
 | `mir_selfhost` | Complete unchanged MIR crate and its eleven-library source graph, with public MIR building, borrow checking and constant-evaluation consumers. |
 | `keel_asm_ir_readiness` | Complete pinned Keel assembly-IR source with original smallvec sources, structured assembly consumers and byte guards. |
+| `keel_asm_readiness` | Complete unchanged pinned assembler and its thirteen-package source graph, including object writing/reading and both hashbrown versions. |
 | `keel_ir_readiness` | Complete pinned Keel IR source, layouts, empty-module parsing and verification. |
 | `keel_float_math` | Unchanged pinned Keel floating-point constant folder with the complete Keel IR dependency. |
 | `bumpalo_readiness` | Original bumpalo 3.20.3 with the resolved `collections` and `default` features, including collection ownership and zero-sized drops. |
@@ -42,6 +43,7 @@ cargo test -p flux-cli --test hir_selfhost
 cargo test -p flux-cli --test ty_selfhost
 cargo test -p flux-cli --test mir_selfhost
 cargo test -p flux-cli --test keel_asm_ir_readiness
+cargo test -p flux-cli --test keel_asm_readiness
 cargo test -p flux-cli --test keel_ir_readiness
 cargo test -p flux-cli --test keel_float_math
 cargo test -p flux-cli --test bumpalo_readiness
@@ -172,7 +174,7 @@ The source milestones required compiler changes rather than algorithm rewrites:
 - Bounded NEON APIs provide the eight-byte operations used by hashbrown and
   the existing 128-bit delimiter pipeline used by Keel. `std::arch` reexports
   those core definitions. Focused native tests cover scanner masks and reified
-  calls; complete assembler native execution remains blocked below.
+  calls; the complete assembler graph also passes the native comparison below.
   Transmute checks size at generic definition time and scalar/reference
   validity during represented const evaluation. Const-field promotion retains
   root alignment, offsets and nested function addresses.
@@ -190,20 +192,28 @@ The complete HIR, type-checker and MIR source graphs have guarded native
 comparison harnesses. Keel IR, assembly IR, bumpalo and the actual Keel
 floating-point constant folder also have native comparisons. These milestones
 do not yet build the complete compiler executable. The assembler and its
-object-file dependencies are the next source graph. CLI derives and Keel's
-dependencies/generated outputs also belong to the
-complete source closure. Sourcegen and difftest are additional workspace targets,
+object-file dependencies now also pass native comparisons. The remaining backend
+source graphs are complete Keel codegen, frontend, linker and optimizer crates,
+followed by flux-codegen. CLI derives and the backend's remaining dependencies
+and generated outputs also belong to the complete source closure. Sourcegen and difftest are additional workspace targets,
 not prerequisites for the first compiler executable.
 
-The latest assembler audit, `out/keel-asm-readiness/77654`, has zero syntax,
-HIR and type diagnostics. All 257 body type diagnostics from the preceding
-inventory are resolved through byte-string patterns, collection/slice APIs,
-conversion contracts and associated-function inference. Both source-integrity
-guards pass. MIR checking now completes with 231 diagnostics: 206 caller-bound
-lifetime proofs, ten lifetime errors, eight generic const-drop errors and seven
-other associated-bound/mutable-borrow diagnostics. These counts include repeated
-instances. Native assembler codegen remains gated; see
-the [readiness report](../crates/flux-cli/tests/fixtures/keel_asm/READINESS.md).
+The guarded assembler audit, `out/keel-asm-readiness/4907`, passes with zero
+syntax, HIR, type and full MIR diagnostics. Both source-integrity guards are
+`[]`. Flux compiles the unchanged pinned assembler dependency graph and runs
+the consumer with optimization off/on; status, stdout and stderr match the
+separately compiled rustc reference. The consumer writes AArch64 Mach-O and
+x86 ELF objects and reads their sections, relocations and symbols through the
+actual object dependency. It does not execute the assembled instruction streams.
+
+The preceding 231 MIR diagnostics are resolved through caller/closure contracts,
+GAT signature well-formedness and implicit Sized bounds, nested associated-value
+proofs, Copy-aware const-drop checks, receiver-correlated slice callbacks, and
+closure capture metadata that survives drop elaboration. Drop-generated enum
+reads have separate liveness from ordinary matches; payload borrow and destructor
+rejection cases remain covered. This is an assembler dependency milestone, not
+a complete compiler bootstrap. See the
+[readiness report](../crates/flux-cli/tests/fixtures/keel_asm/READINESS.md).
 
 The focused `gat_lending` native comparison exercises shared/mutable lending,
 iterator item families, nested symbol-table families, independent data/receiver
@@ -258,8 +268,8 @@ source closure includes Keel and its required build outputs.
 
 ## Bootstrap criterion
 
-The remaining sequence is to compile and execute the semantic compiler crates,
-then the complete compiler and backend from source. A Flux-built Flux must
+The remaining sequence is to compile and execute the complete backend and
+flux-codegen source graphs, then build the compiler executable from source. A Flux-built Flux must
 compile and run the regression suite and build the compiler again with
 equivalent behavior. Component comparisons establish intermediate evidence;
 none is a claim that this final criterion has been met.

@@ -936,7 +936,9 @@ impl<'a> Evaluator<'a> {
                     {
                         true
                     }
-                    Some(Rvalue::Discriminant(place)) => add_place(place, false),
+                    Some(Rvalue::Discriminant(place) | Rvalue::DiscriminantForDrop(place)) => {
+                        add_place(place, false)
+                    }
                     _ => false,
                 }
             };
@@ -2032,7 +2034,7 @@ impl<'a> Evaluator<'a> {
                     }
                 }
             }
-            Rvalue::Discriminant(place) => {
+            Rvalue::Discriminant(place) | Rvalue::DiscriminantForDrop(place) => {
                 match self.operand(locals, generics, &Operand::Copy(place.clone()), range)? {
                     Value::Variant { strukt, index, .. } => {
                         let bits = self

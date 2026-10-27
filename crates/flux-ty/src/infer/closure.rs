@@ -41,6 +41,8 @@ use crate::ty::{ClosureArgs, ClosureId, ClosureKind, Mutability, Ty, TyKind};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureMode {
     ByRef(Mutability),
+    /// Exclusive access to an immutable binding holding a mutable reference.
+    Unique,
     ByValue,
 }
 
@@ -49,8 +51,9 @@ impl CaptureMode {
     fn rank(self) -> u8 {
         match self {
             CaptureMode::ByRef(Mutability::Not) => 0,
-            CaptureMode::ByRef(Mutability::Mut) => 1,
-            CaptureMode::ByValue => 2,
+            CaptureMode::Unique => 1,
+            CaptureMode::ByRef(Mutability::Mut) => 2,
+            CaptureMode::ByValue => 3,
         }
     }
 }
@@ -82,6 +85,7 @@ impl Capture {
         match self.mode {
             CaptureMode::ByValue => self.ty,
             CaptureMode::ByRef(m) => Ty::new(TyKind::Ref(m, self.ty)),
+            CaptureMode::Unique => Ty::new(TyKind::Ref(Mutability::Mut, self.ty)),
         }
     }
 }
@@ -133,6 +137,7 @@ pub(super) struct ClosureCall {
 /// How a place is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UseKind {
+    Unique,
     Copy,
     Move,
     Borrow(Mutability),
@@ -795,7 +800,9 @@ impl Ctx<'_> {
         for (_, use_kind, _) in &found {
             let k = match use_kind {
                 UseKind::Move => ClosureKind::FnOnce,
-                UseKind::Borrow(Mutability::Mut) | UseKind::Assign => ClosureKind::FnMut,
+                UseKind::Borrow(Mutability::Mut) | UseKind::Unique | UseKind::Assign => {
+                    ClosureKind::FnMut
+                }
                 _ => ClosureKind::Fn,
             };
             kind = kind.max(k);
@@ -803,13 +810,23 @@ impl Ctx<'_> {
         // The places, as few and as short as rustc's.
         let mut captures = PendingCaptures::default();
         for (mut place, use_kind, range) in found {
-            if matches!(
+            let legacy_unique =
+                matches!(use_kind, UseKind::Borrow(Mutability::Mut) | UseKind::Assign)
+                    && place.1.first() == Some(&CaptureProj::Deref)
+                    && matches!(
+                        self.known_binding_ty(place.0).kind(),
+                        TyKind::Ref(Mutability::Mut, _)
+                    );
+            let legacy = matches!(
                 self.expression_edition(closure.expr),
                 flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
-            ) {
+            );
+            if legacy {
                 place.1.clear();
             }
             let mode = match use_kind {
+                _ if legacy && legacy_unique => CaptureMode::Unique,
+                UseKind::Unique => CaptureMode::Unique,
                 UseKind::Move => CaptureMode::ByValue,
                 UseKind::Copy => CaptureMode::ByRef(Mutability::Not),
                 UseKind::Borrow(m) => CaptureMode::ByRef(m),
@@ -1376,6 +1393,7 @@ impl Ctx<'_> {
                 for capture in captures.iter() {
                     let kind = match capture.mode {
                         CaptureMode::ByRef(m) => UseKind::Borrow(m),
+                        CaptureMode::Unique => UseKind::Unique,
                         CaptureMode::ByValue if self.is_copy_ty(capture.ty) => UseKind::Copy,
                         CaptureMode::ByValue => UseKind::Move,
                     };

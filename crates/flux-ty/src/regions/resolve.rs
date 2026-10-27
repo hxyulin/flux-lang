@@ -257,7 +257,20 @@ fn resolve_trait_families(
             let implied:Vec<_>=sigs.traits.get(id).into_iter().flat_map(|t|t.implied.iter()).filter(|p|matches!(p.alias.args.first().map(|t|t.kind()),Some(TyKind::Alias(alias))if alias.trait_==id && alias.name==family.name)).copied().collect();
             let bindings=family.bounds.iter().flat_map(|b| {let args=b.path.args(b.path.segments.len().saturating_sub(1));args.into_iter().flat_map(move |args|args.bindings.iter().map(move |binding|(binding,Some(args))))});
             let projections:Vec<_>=bindings.zip(implied).map(|((binding,args),projection)|(binding,args,projection)).collect();
-            (family.name,family_contract(items,sigs,data.loc.module,flux_hir::Owner::Trait(id),owner_names,&family.generics,Ty::param(0,kw::SelfUpper),None,None,&family.lifetime_bounds,&output,&projections,schema,&mut list))
+            let mut contract = family_contract(items,sigs,data.loc.module,flux_hir::Owner::Trait(id),owner_names,&family.generics,Ty::param(0,kw::SelfUpper),None,None,&family.lifetime_bounds,&output,&projections,schema,&mut list);
+            // Generic associated outputs are Sized by default. HIR currently
+            // rejects relaxed family bounds, so every accepted family has it.
+            if let Some(sized) = sigs.builtins.sized
+                && (!family.generics.lifetimes.is_empty() || !family.generics.params.is_empty())
+            {
+                let mut bounds = contract.output_traits.into_vec();
+                let bound = crate::TraitRef { trait_: sized, name: items.traits[sized].name, args: &[] };
+                if !bounds.iter().any(|(existing, _)| *existing == bound) {
+                    bounds.push((bound, TraitRefRegions::default()));
+                }
+                contract.output_traits = bounds.into();
+            }
+            (family.name, contract)
         }).collect();
         sigs.regions.traits.get_mut(id).unwrap().families = families;
         errors.extend(list.into_iter().map(|(r, m)| (data.loc.file, r, m)));

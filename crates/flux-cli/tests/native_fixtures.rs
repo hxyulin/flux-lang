@@ -66,3 +66,23 @@ fn repeat_autoref_promotion() {
 fn str_ascii_owned() {
     support::oracle::compare_fixture("str_ascii_owned");
 }
+
+#[test]
+fn caller_bound_environments() {
+    support::oracle::compare_fixture("caller_bound_environments");
+}
+
+#[test]
+fn copy_const_drops() {
+    support::oracle::compare_fixture("copy_const_drops");
+}
+
+#[test]
+fn nested_associated_bounds() {
+    support::oracle::compare_fixture("nested_associated_bounds");
+}
+
+#[test]
+fn slice_callback_lifetimes() {
+    support::oracle::compare_fixture("slice_callback_lifetimes");
+}

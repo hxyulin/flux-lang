@@ -513,13 +513,13 @@ impl<T> [T] {
     /// [`Self::binary_search`] with `f` saying how each element compares
     /// with what is looked for. As rustc's, it halves the range without
     /// stopping at an equal element, so it finds the same one.
-    pub fn binary_search_by<F: FnMut(&T) -> Ordering>(&self, mut f: F) -> Result<usize, usize> {
+    pub fn binary_search_by<'a, F: FnMut(&'a T) -> Ordering>(&'a self, mut f: F) -> Result<usize, usize> {
         binary_search(self, &mut f)
     }
 
     /// [`Self::binary_search`] on the keys `f` gives.
-    pub fn binary_search_by_key<B: Ord, F: FnMut(&T) -> B>(
-        &self,
+    pub fn binary_search_by_key<'a, B: Ord, F: FnMut(&'a T) -> B>(
+        &'a self,
         b: &B,
         mut f: F,
     ) -> Result<usize, usize> {
@@ -560,7 +560,7 @@ impl<T> [T] {
     }
 
     /// Whether every adjacent pair is accepted by `compare`.
-    pub fn is_sorted_by<F: FnMut(&T, &T) -> bool>(&self, mut compare: F) -> bool {
+    pub fn is_sorted_by<'a, F: FnMut(&'a T, &'a T) -> bool>(&'a self, mut compare: F) -> bool {
         let mut i = 1;
         while i < self.len() {
             if !compare(&self[i - 1], &self[i]) { return false; }
@@ -570,7 +570,7 @@ impl<T> [T] {
     }
 
     /// Whether the keys are in nondecreasing order.
-    pub fn is_sorted_by_key<K: PartialOrd, F: FnMut(&T) -> K>(&self, mut f: F) -> bool {
+    pub fn is_sorted_by_key<'a, K: PartialOrd, F: FnMut(&'a T) -> K>(&'a self, mut f: F) -> bool {
         let mut iter = self.iter();
         let mut previous = match iter.next() { Some(value) => f(value), None => return true };
         for value in iter {
@@ -1534,7 +1534,7 @@ impl<T: Ord> Ord for [T] {
 
 /// rustc's binary search: halves the range without stopping at an equal
 /// element, so it finds the same one of several.
-fn binary_search<T, F: FnMut(&T) -> Ordering>(v: &[T], f: &mut F) -> Result<usize, usize> {
+fn binary_search<'a, T, F: FnMut(&'a T) -> Ordering>(v: &'a [T], f: &mut F) -> Result<usize, usize> {
     let mut size = v.len();
     if size == 0 {
         return Err(0);

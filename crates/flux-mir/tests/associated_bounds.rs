@@ -143,9 +143,8 @@ fn associated_bounds_match_rustc() {
 }
 
 #[test]
-fn nested_selected_values_remain_explicitly_unsupported() {
-    // A selected P::A that itself selects Q has obligations this bound
-    // proof cannot discharge. P2 owns validation of the definition itself.
+fn nested_selected_values_are_proved() {
+    // Every nested selection must discharge its own impl requirements.
     let source = "trait Q{type A;} trait P{type A;} trait C<T>{type N:P<A=T>;} struct S; impl Q for S{type A=i32;} impl P for S{type A=<S as Q>::A;} impl C<i32> for S{type N=Self;} fn main(){}";
     let dir = std::env::temp_dir().join(format!(
         "flux-associated-bound-boundary-{}",
@@ -170,6 +169,6 @@ fn nested_selected_values_remain_explicitly_unsupported() {
     let typed = flux_mir::check_file(&hir);
     assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
     let mir = flux_mir::build_file(&hir, &typed);
-    assert!(mir.diagnostics.iter().any(|d| d.message == "associated type bound requirements that cannot be resolved from the impl header are not supported yet"), "{:?}", mir.diagnostics);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
     std::fs::remove_dir_all(dir).unwrap();
 }

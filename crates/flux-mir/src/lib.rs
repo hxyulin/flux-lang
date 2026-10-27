@@ -137,10 +137,9 @@ pub struct Body {
     pub init_errors: Vec<flux_hir::Diagnostic>,
     /// A closure's body's: its kind and what it captures, through `_1`.
     pub upvars: Option<Upvars>,
-    /// The borrows that capture places for closures, by block and
-    /// statement: where the capture's use is in the closure, which rustc
-    /// reports for some errors, and whether it assigns the place.
-    pub capture_uses: Vec<(BasicBlock, usize, TextRange, bool)>,
+    /// The borrows that capture places for closures, identified by their
+    /// destination temporaries, which survive drop-block merging.
+    pub capture_uses: Vec<CaptureUse>,
     /// The function whose body (or closure in its body) this is: whose
     /// signature and bounds it has.
     pub owner: Option<FunctionId>,
@@ -156,6 +155,15 @@ pub struct Body {
     /// Where the method's name starts in each method call, by the block
     /// the call ends: where rustc's `#[track_caller]` locations point.
     pub fn_spans: rustc_hash::FxHashMap<BasicBlock, u32>,
+}
+
+/// The source use that introduced a closure's capture borrow.
+#[derive(Debug, Clone, Copy)]
+pub struct CaptureUse {
+    pub local: Local,
+    pub range: TextRange,
+    pub assigned: bool,
+    pub unique: bool,
 }
 
 /// What a closure's body captures, for messages and for what it may
@@ -555,6 +563,9 @@ pub enum Rvalue {
     /// The discriminant of the enum in `place`, as an `isize`: the value
     /// of the variant it holds.
     Discriminant(Place),
+    /// A shallow enum-tag read introduced only to select fields for drop.
+    /// Unlike matching a value, it does not keep payload references live.
+    DiscriminantForDrop(Place),
     /// `&place` or `&mut place`. A *two-phase* `&mut`, made for a method
     /// call's receiver, acts as a shared borrow until the call, so that
     /// the arguments may still read the place: `s.set(s.get())`.
@@ -1075,7 +1086,10 @@ impl Rvalue {
             Self::BinaryOp(_, l, r) => ([Some(l), Some(r), None], &[]),
             Self::Subslice { slice, start, end } => ([Some(slice), Some(start), Some(end)], &[]),
             Self::Aggregate(_, ops) => ([None; 3], ops),
-            Self::Ref { .. } | Self::Discriminant(_) | Self::Len { .. } => ([None; 3], &[]),
+            Self::Ref { .. }
+            | Self::Discriminant(_)
+            | Self::DiscriminantForDrop(_)
+            | Self::Len { .. } => ([None; 3], &[]),
         };
         fixed.into_iter().flatten().chain(rest)
     }

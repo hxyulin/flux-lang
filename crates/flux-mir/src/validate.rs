@@ -217,7 +217,7 @@ impl Validator<'_> {
                     });
                 }
             }
-            Rvalue::Discriminant(_) => {
+            Rvalue::Discriminant(_) | Rvalue::DiscriminantForDrop(_) => {
                 if !matches!(ty.kind(), TyKind::Int(_) | TyKind::Error) {
                     self.errors
                         .push(format!("{}: a discriminant stored in `{ty}`", what()));

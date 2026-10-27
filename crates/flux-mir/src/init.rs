@@ -138,7 +138,9 @@ pub(crate) fn statement_events(kind: &StatementKind) -> impl Iterator<Item = Eve
             Some(rvalue),
             match rvalue {
                 Rvalue::Ref { place, .. } => Some(Event::Borrow(place)),
-                Rvalue::Discriminant(place) => Some(Event::Read(place)),
+                Rvalue::Discriminant(place) | Rvalue::DiscriminantForDrop(place) => {
+                    Some(Event::Read(place))
+                }
                 _ => None,
             },
             Some(Event::Assign(dest)),

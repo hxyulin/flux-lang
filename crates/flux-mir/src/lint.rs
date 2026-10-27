@@ -336,6 +336,7 @@ fn evaluate(
         Rvalue::Aggregate(..)
         | Rvalue::Ref { .. }
         | Rvalue::Discriminant(_)
+        | Rvalue::DiscriminantForDrop(_)
         | Rvalue::Len { .. }
         | Rvalue::Repeat(..)
         | Rvalue::Unsize(..)

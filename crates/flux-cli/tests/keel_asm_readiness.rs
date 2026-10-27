@@ -35,7 +35,6 @@ use support::inventory::collect as inventory;
 use support::inventory::report;
 
 #[test]
-#[ignore = "readiness audit requires MIR lifetime proofs, const drop and borrow fixes; run explicitly with --ignored"]
 fn unchanged_keel_asm_matches_rustc() {
     if std::env::var_os("FLUX_KEEL_ASM_ROOT").is_some() {
         keel_asm_worker();
@@ -49,12 +48,7 @@ fn unchanged_keel_asm_matches_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     let mut worker = Command::new(std::env::current_exe().unwrap());
     worker
-        .args([
-            "--ignored",
-            "--exact",
-            "unchanged_keel_asm_matches_rustc",
-            "--nocapture",
-        ])
+        .args(["--exact", "unchanged_keel_asm_matches_rustc", "--nocapture"])
         .env("FLUX_KEEL_ASM_ROOT", &root);
     let output = bounded(&mut worker, &root, "audit", 300);
     // Also compare after a worker panic, abort, or timeout. A killed worker

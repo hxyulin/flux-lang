@@ -843,7 +843,31 @@ pub(crate) fn family_method_profile(
         {
             return false;
         }
-        if contract.output_traits.len() != family.bounds.len() {
+        let implicit_sized = sigs.builtins.sized.filter(|sized| {
+            (!family.generics.lifetimes.is_empty() || !family.generics.params.is_empty())
+                && !sigs.traits.get(id).is_some_and(|signature| {
+                    signature
+                        .type_bounds
+                        .iter()
+                        .any(|(name, bound)| *name == family.name && bound.trait_ == *sized)
+                })
+        });
+        if contract.output_traits.len()
+            != family.bounds.len() + usize::from(implicit_sized.is_some())
+        {
+            return false;
+        }
+        if let Some(sized) = implicit_sized
+            && !contract
+                .output_traits
+                .last()
+                .is_some_and(|(bound, regions)| {
+                    bound.trait_ == sized
+                        && bound.name == items.traits[sized].name
+                        && bound.args.is_empty()
+                        && *regions == super::TraitRefRegions::default()
+                })
+        {
             return false;
         }
     }

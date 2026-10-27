@@ -1556,13 +1556,84 @@ fn implied_at<R: Copy + PartialEq>(
             }
         }
         TyKind::Alias(alias) if has_projection_inputs(alias) => {
+            let owner = *next;
             *next += alias.owner_lifetimes as usize;
+            let mut arg_ranges = Vec::new();
             for &ty in alias.args {
+                let start = *next;
                 implied_at(items, sigs, ty, regions, next, static_region, out);
+                arg_ranges.push((start, *next));
             }
+            let family = *next;
             *next += alias.family_lifetimes as usize;
             for &ty in alias.family_args {
+                let start = *next;
                 implied_at(items, sigs, ty, regions, next, static_region, out);
+                arg_ranges.push((start, *next));
+            }
+            // A selected projection must prove its applicability before it
+            // normalizes. Only an abstract family contributes implied facts;
+            // its eventual caller must establish those prerequisites.
+            if crate::traits::select_impl(
+                items,
+                sigs,
+                crate::Predicate {
+                    self_ty: alias.args[0],
+                    trait_ref: crate::TraitRef {
+                        trait_: alias.trait_,
+                        name: alias.trait_name,
+                        args: &alias.args[1..],
+                    },
+                },
+            )
+            .is_some()
+            {
+                return;
+            }
+            let Some(decl) = sigs.regions.traits.get(alias.trait_).and_then(|t| {
+                t.families
+                    .iter()
+                    .find(|(name, _)| *name == alias.name)
+                    .map(|(_, f)| f)
+            }) else {
+                return;
+            };
+            let lifetime = |r: Region| match r {
+                Region::Static => static_region,
+                Region::Param(i) if i < alias.owner_lifetimes => {
+                    regions.get(owner + i as usize).copied()
+                }
+                Region::Param(i) => regions
+                    .get(family + (i - alias.owner_lifetimes) as usize)
+                    .copied(),
+                _ => None,
+            };
+            let args = alias.template_args();
+            // A projection in a well-formed signature carries its family's
+            // prerequisites just as an ADT carries its declared field bounds.
+            for prerequisite in &decl.outlives {
+                match *prerequisite {
+                    Outlives::Region(a, b) => {
+                        if let (Some(a), Some(b)) = (lifetime(a), lifetime(b))
+                            && a != b
+                        {
+                            out.push(Outlives::Region(a, b));
+                        }
+                    }
+                    Outlives::Type(ty, b) => {
+                        let Some(b) = lifetime(b) else { continue };
+                        if let TyKind::Param(param) = ty.kind()
+                            && let Some(&(start, end)) = arg_ranges.get(param.index as usize)
+                        {
+                            for &a in &regions[start.min(regions.len())..end.min(regions.len())] {
+                                if a != b {
+                                    out.push(Outlives::Region(a, b));
+                                }
+                            }
+                        }
+                        outlives_params(sigs, ty.subst(&args), b, out);
+                    }
+                }
             }
         }
         TyKind::Adt(adt, args) => {

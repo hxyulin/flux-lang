@@ -12,9 +12,9 @@ use flux_ty::{
 };
 
 use crate::{
-    AggregateKind, AssertMessage, BasicBlock, BasicBlockData, BinOp, Body, Constant, FileMir,
-    Local, LocalDecl, LocalKind, Operand, Place, PlaceTy, ProjectionElem, Rvalue, Statement,
-    StatementKind, Terminator, TerminatorKind, UnOp,
+    AggregateKind, AssertMessage, BasicBlock, BasicBlockData, BinOp, Body, CaptureUse, Constant,
+    FileMir, Local, LocalDecl, LocalKind, Operand, Place, PlaceTy, ProjectionElem, Rvalue,
+    Statement, StatementKind, Terminator, TerminatorKind, UnOp,
 };
 
 /// Builds every body of a file and checks initialization. The file must
@@ -1023,7 +1023,7 @@ fn build_body(
                 let field = env.field(i as u32);
                 let place = match capture.mode {
                     flux_ty::CaptureMode::ByValue => field,
-                    flux_ty::CaptureMode::ByRef(_) => field.deref(),
+                    flux_ty::CaptureMode::ByRef(_) | flux_ty::CaptureMode::Unique => field.deref(),
                 };
                 b.upvars.push((capture.clone(), place));
             }
@@ -1074,7 +1074,12 @@ fn build_body(
                 by_ref: info
                     .captures
                     .iter()
-                    .map(|c| matches!(c.mode, flux_ty::CaptureMode::ByRef(_)))
+                    .map(|c| {
+                        matches!(
+                            c.mode,
+                            flux_ty::CaptureMode::ByRef(_) | flux_ty::CaptureMode::Unique
+                        )
+                    })
                     .collect(),
                 mutable: info
                     .captures
@@ -1370,7 +1375,7 @@ struct Builder<'a> {
     /// reference to it points to.
     upvars: Vec<(flux_ty::Capture, Place)>,
     /// [`Body::capture_uses`].
-    capture_uses: Vec<(BasicBlock, usize, TextRange, bool)>,
+    capture_uses: Vec<CaptureUse>,
     /// The temporaries that may be borrowed, which die where their
     /// scope ends.
     storage_temps: rustc_hash::FxHashSet<Local>,
@@ -2175,7 +2180,12 @@ impl Builder<'_> {
                         operand
                     }
                 }
-                flux_ty::CaptureMode::ByRef(mutability) => {
+                mode @ (flux_ty::CaptureMode::ByRef(_) | flux_ty::CaptureMode::Unique) => {
+                    let mutability = match mode {
+                        flux_ty::CaptureMode::ByRef(m) => m,
+                        flux_ty::CaptureMode::Unique => Mutability::Mut,
+                        flux_ty::CaptureMode::ByValue => unreachable!(),
+                    };
                     if guarded && mutability == Mutability::Mut {
                         let name = self.body.bindings[capture.binding].name;
                         self.errors.push(flux_hir::Diagnostic::new(
@@ -2189,10 +2199,12 @@ impl Builder<'_> {
                         place,
                         two_phase: false,
                     };
-                    let block = self.block();
-                    let index = self.blocks[block.index()].0.len();
-                    self.capture_uses
-                        .push((block, index, capture.range, capture.assigned));
+                    self.capture_uses.push(CaptureUse {
+                        local: temp,
+                        range: capture.range,
+                        assigned: capture.assigned,
+                        unique: mode == flux_ty::CaptureMode::Unique,
+                    });
                     self.assign(&temp.into(), rvalue, range);
                     Operand::Move(temp.into())
                 }

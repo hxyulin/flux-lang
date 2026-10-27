@@ -192,7 +192,7 @@ pub(crate) fn elaborate(
                 statements.push(Statement {
                     kind: StatementKind::Assign(
                         discriminant.into(),
-                        Rvalue::Discriminant(enum_place),
+                        Rvalue::DiscriminantForDrop(enum_place),
                     ),
                     range,
                 });

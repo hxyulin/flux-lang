@@ -1292,9 +1292,9 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> (Vec<bool>, Vec<usize>, Vec
                             borrowed[place.local.index()] = true;
                         }
                     }
-                    Rvalue::Discriminant(place) | Rvalue::Len { place, .. } => {
-                        uses[place.local.index()] += 1
-                    }
+                    Rvalue::Discriminant(place)
+                    | Rvalue::DiscriminantForDrop(place)
+                    | Rvalue::Len { place, .. } => uses[place.local.index()] += 1,
                     Rvalue::Use(Operand::Copy(src) | Operand::Move(src))
                         if dest.projection.is_empty()
                             && src.projection.is_empty()
@@ -2400,7 +2400,7 @@ impl Lower<'_, '_, '_> {
             Rvalue::Aggregate(_, operands) => {
                 operands.iter().flat_map(|o| self.operand(o)).collect()
             }
-            Rvalue::Discriminant(place) => {
+            Rvalue::Discriminant(place) | Rvalue::DiscriminantForDrop(place) => {
                 let (location, _) = self.locate(place);
                 let tag = match location {
                     Location::Vars { local, start, .. } => {
@@ -2540,6 +2540,7 @@ impl Lower<'_, '_, '_> {
             | Rvalue::Aggregate(..)
             | Rvalue::Ref { .. }
             | Rvalue::Discriminant(_)
+            | Rvalue::DiscriminantForDrop(_)
             | Rvalue::Len { .. }
             | Rvalue::Repeat(..)
             | Rvalue::Unsize(..)

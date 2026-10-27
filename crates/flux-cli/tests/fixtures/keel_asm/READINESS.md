@@ -240,3 +240,46 @@ A separate family/static-callback reduction was observed during investigation:
 higher-ranked impl requirement that Flux currently admits. Version provenance is
 unverified. This is an open correctness boundary, not a verified pre-existing
 defect or a fix claimed by this wave.
+
+## Complete MIR and native execution
+
+The guarded audit `out/keel-asm-readiness/4907` passes in 46.70 seconds.
+Syntax, HIR, type and full MIR diagnostics are all zero. The unchanged source
+inventory contains 524 files and 9,964,611 bytes. Both original-source integrity
+guards are `[]`, and `phase.txt` is `native-verified`. Native Flux execution with
+optimization off/on matches rustc's status, stdout and stderr. The maintained
+readiness test is now active by default.
+
+The consumer assembles AArch64 into Mach-O through both assembler APIs and x86
+Intel syntax into ELF. It reads architecture, object format, relocatable kind,
+text bytes, relocations and defined/undefined symbols through the real object
+crate. Generated instruction streams are not executed.
+
+The 231 preceding MIR diagnostics reduce to shared compiler and library causes:
+
+- Caller bounds on compound self types and inside closures use their original
+  lifetime rows, rather than selecting unrelated blanket impl prerequisites.
+- Abstract GATs in signatures carry declared well-formedness requirements;
+  selected concrete projections and all callers still prove applicability.
+  Generic associated outputs include their implicit Sized contract.
+- Nested region-free associated selections prove their own impl predicates.
+- Proven Copy aggregates do not acquire destructor requirements from unresolved
+  associated fields. Genuine owned destructors remain subject to const checks.
+- Slice search/sorted callbacks use the receiver lifetime, matching Rust.
+- Legacy unique captures retain exclusivity without requiring the reference
+  binding to be mutable. Capture metadata uses stable destination locals instead
+  of basic-block positions invalidated by drop elaboration.
+- Drop-only discriminant reads keep destructor requirements but do not extend
+  inactive payload loans. Ordinary matching retains its previous loan liveness.
+
+Focused rustc acceptance/rejection and native comparisons cover these changes.
+Independent review caught an overly broad discriminant change; the retained
+implementation distinguishes drop-only reads and rejects the reported payload
+loan case across all four editions. Earlier FnPtr and family/static-callback
+correctness boundaries remain outside this milestone. No package manager,
+backend revision change or upstream source rewrite is involved.
+
+A separate review probe found a missing conflict check when an ordinary match
+reads enum storage while an exclusive reference to that storage is still live.
+The saved case and compiler outputs are in `out/mutable-review`. Its version
+provenance is unverified; it is not fixed or claimed as supported by this wave.

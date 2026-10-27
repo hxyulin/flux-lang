@@ -290,7 +290,9 @@ fn rvalue_text(hir: &Hir, rvalue: &Rvalue) -> String {
             let ops: Vec<String> = ops.iter().map(|o| operand(hir, o)).collect();
             format!("{{closure}}({})", ops.join(", "))
         }
-        Rvalue::Discriminant(p) => format!("discriminant({})", place(p)),
+        Rvalue::Discriminant(p) | Rvalue::DiscriminantForDrop(p) => {
+            format!("discriminant({})", place(p))
+        }
         Rvalue::Len {
             place: p,
             borrows: true,

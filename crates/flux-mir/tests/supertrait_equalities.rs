@@ -125,9 +125,8 @@ fn supertrait_equalities_match_rustc() {
 }
 
 #[test]
-fn nested_selected_projection_has_an_explicit_boundary() {
-    // Normalizing the selected P::A would select another impl. Its erased
-    // equality is insufficient evidence for any region requirements it has.
+fn nested_selected_projection_proves_its_requirements() {
+    // The nested selected impl is proved before its normalized RHS is used.
     let source = "trait Q{type A;} trait P{type A;} trait C<T>:P<A=T>{} struct S; impl Q for S{type A=i32;} impl P for S{type A=<S as Q>::A;} impl C<i32> for S{} fn main(){}";
     let dir = std::env::temp_dir().join(format!(
         "flux-supertrait-equality-boundary-{}",
@@ -152,6 +151,6 @@ fn nested_selected_projection_has_an_explicit_boundary() {
     let typed = flux_mir::check_file(&hir);
     assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
     let mir = flux_mir::build_file(&hir, &typed);
-    assert!(mir.diagnostics.iter().any(|d| d.message == "supertrait lifetime requirements that cannot be resolved from the impl header are not supported yet"), "{:?}", mir.diagnostics);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
     std::fs::remove_dir_all(dir).unwrap();
 }

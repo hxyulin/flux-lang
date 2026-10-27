@@ -92,7 +92,7 @@ pub fn check(
     for (block, data) in body.blocks.iter() {
         for (i, statement) in data.statements.iter().enumerate() {
             let point = regions.points.point(block, i);
-            checker.statement(block, i, &statement.kind, statement.range, point);
+            checker.statement(&statement.kind, statement.range, point);
         }
         let point = regions.points.point(block, data.statements.len());
         checker.terminator(&data.terminator.kind, data.terminator.range, point);
@@ -230,11 +230,9 @@ fn collect_loans(body: &Body) -> Vec<(Loan, Local)> {
             {
                 // A closure's capture outlives what it captures where it
                 // uses it, as rustc reports.
-                let capture = body
-                    .capture_uses
-                    .iter()
-                    .find(|&&(b, s, _, _)| b == block && s == i);
-                let unique = capture.is_some() && is_unique(body, place, *mutability);
+                let capture = body.capture_uses.iter().find(|c| c.local == dest.local);
+                let unique =
+                    capture.is_some_and(|c| c.unique || is_unique(body, place, *mutability));
                 let loan = Loan {
                     place: place.clone(),
                     mutability: *mutability,
@@ -242,7 +240,7 @@ fn collect_loans(body: &Body) -> Vec<(Loan, Local)> {
                     unique,
                     block,
                     statement: i,
-                    range: capture.map_or(statement.range, |c| c.2),
+                    range: capture.map_or(statement.range, |c| c.range),
                 };
                 loans.push((loan, dest.local));
             }
@@ -294,6 +292,9 @@ fn statement_transfer(kind: &StatementKind, set: &mut dyn FnMut(Local, bool)) {
                     place_uses(place, set);
                     set(place.local, true);
                 }
+                // Drop reads the enum's storage, not references in
+                // its fields. Only a pointer used to reach it must stay live.
+                Rvalue::DiscriminantForDrop(place) => place_uses(place, set),
                 _ => {
                     for operand in rvalue.operands() {
                         operand_uses(operand, set);
@@ -544,14 +545,7 @@ impl Checker<'_> {
         Some(id) != live.except && self.regions.loan_scopes[id].contains(live.point)
     }
 
-    fn statement(
-        &mut self,
-        block: BasicBlock,
-        index: usize,
-        kind: &StatementKind,
-        range: TextRange,
-        point: u32,
-    ) {
+    fn statement(&mut self, kind: &StatementKind, range: TextRange, point: u32) {
         let live = &Live {
             point,
             except: None,
@@ -569,15 +563,22 @@ impl Checker<'_> {
                                 .body
                                 .capture_uses
                                 .iter()
-                                .find(|&&(b, s, _, _)| b == block && s == index);
+                                .find(|c| c.local == dest.local);
                             match capture {
-                                Some(&(_, _, at, assigned)) => {
-                                    self.check_capture_borrow(place, at, assigned);
+                                Some(capture) => {
+                                    if !capture.unique {
+                                        self.check_capture_borrow(
+                                            place,
+                                            capture.range,
+                                            capture.assigned,
+                                        );
+                                    }
                                 }
                                 None => self.check_mutable_borrow(place, range),
                             }
-                            self.unique_access =
-                                capture.is_some() && is_unique(self.body, place, *mutability);
+                            self.unique_access = capture.is_some_and(|c| {
+                                c.unique || is_unique(self.body, place, *mutability)
+                            });
                         }
                         // A two-phase borrow is shared until the call.
                         let access = if *two_phase {
@@ -753,9 +754,7 @@ impl Checker<'_> {
     fn capturing_closure(&self, id: usize) -> Option<TextRange> {
         let (loan, temp) = &self.loans[id];
         let body = self.body;
-        body.capture_uses
-            .iter()
-            .find(|&&(b, s, _, _)| b == loan.block && s == loan.statement)?;
+        body.capture_uses.iter().find(|c| c.local == *temp)?;
         body.blocks[loan.block]
             .statements
             .iter()

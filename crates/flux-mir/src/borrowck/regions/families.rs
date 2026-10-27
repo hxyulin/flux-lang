@@ -272,7 +272,16 @@ pub(super) fn impl_family_values_match(
             .flat_map(|b| b.path.args.iter().flatten())
             .map(|a| a.bindings.len())
             .sum::<usize>();
-        if decl.output_traits.len() != declaration.bounds.len()
+        let implicit_sized = sigs.builtins.sized.is_some_and(|sized| {
+            (!declaration.generics.lifetimes.is_empty() || !declaration.generics.params.is_empty())
+                && !sigs.traits.get(trait_ref.trait_).is_some_and(|signature| {
+                    signature
+                        .type_bounds
+                        .iter()
+                        .any(|(name, bound)| *name == definition.name && bound.trait_ == sized)
+                })
+        });
+        if decl.output_traits.len() != declaration.bounds.len() + usize::from(implicit_sized)
             || decl.output_projections.len() != bindings
             || actual.value.len()
                 != flux_ty::regions::slots(
