@@ -87,17 +87,7 @@ pub(super) fn fragment(p: &mut Parser<'_>, kind: Fragment) {
         }
         Fragment::Block => expressions::block_expr(p),
         Fragment::Stmt => expressions::stmt_fragment(p),
-        Fragment::Item => {
-            let m = p.start();
-            attributes::outer_attrs(p);
-            match items::opt_item(p, m) {
-                Ok(()) => {}
-                Err(m) => {
-                    p.error("expected an item");
-                    m.abandon(p);
-                }
-            }
-        }
+        Fragment::Item => items::item_or_macro(p, false),
         Fragment::Vis => {
             opt_visibility(p);
         }

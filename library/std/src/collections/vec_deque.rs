@@ -46,6 +46,7 @@ impl<T> VecDeque<T> {
         if self.is_empty() { None } else { self.slots[(self.head + self.len - 1) % self.slots.len()].as_ref() }
     }
     pub fn clear(&mut self) { while let Some(value) = self.pop_front() { drop(value); } }
+    pub fn iter(&self) -> Iter<'_, T> { Iter { slots: &self.slots, front: self.head, len: self.len } }
 }
 impl<T> Default for VecDeque<T> { fn default() -> Self { Self::new() } }
 impl<T: Clone> Clone for VecDeque<T> {
@@ -66,4 +67,58 @@ impl<T: core::fmt::Debug> core::fmt::Debug for VecDeque<T> {
         }
         list.finish()
     }
+}
+
+impl<T> Extend<T> for VecDeque<T> {
+    fn extend<I: IntoIterator<Item=T>>(&mut self, values:I) {
+        for value in values { self.push_back(value); }
+    }
+}
+impl<T> FromIterator<T> for VecDeque<T> {
+    fn from_iter<I: IntoIterator<Item=T>>(values:I) -> Self {
+        let mut result=Self::new();
+        result.extend(values);
+        result
+    }
+}
+pub struct IntoIter<T> { deque: VecDeque<T> }
+impl<T> Iterator for IntoIter<T> {
+    type Item = T;
+    fn next(&mut self)->Option<T> { self.deque.pop_front() }
+    fn size_hint(&self)->(usize,Option<usize>) { (self.deque.len(),Some(self.deque.len())) }
+}
+impl<T> DoubleEndedIterator for IntoIter<T> { fn next_back(&mut self)->Option<T> { self.deque.pop_back() } }
+impl<T> ExactSizeIterator for IntoIter<T> { fn len(&self)->usize { self.deque.len() } }
+impl<T> core::iter::FusedIterator for IntoIter<T> {}
+impl<T> IntoIterator for VecDeque<T> {
+    type Item = T;
+    type IntoIter = IntoIter<T>;
+    fn into_iter(self)->IntoIter<T> { IntoIter { deque: self } }
+}
+pub struct Iter<'a,T> { slots: &'a [Option<T>], front:usize, len:usize }
+impl<'a,T> Clone for Iter<'a,T> { fn clone(&self)->Self { Self { slots:self.slots,front:self.front,len:self.len } } }
+impl<'a,T> Iterator for Iter<'a,T> {
+    type Item = &'a T;
+    fn next(&mut self)->Option<&'a T> {
+        if self.len==0 { return None; }
+        let index=self.front;
+        self.front=(self.front+1)%self.slots.len();
+        self.len-=1;
+        self.slots[index].as_ref()
+    }
+    fn size_hint(&self)->(usize,Option<usize>) { (self.len,Some(self.len)) }
+}
+impl<'a,T> DoubleEndedIterator for Iter<'a,T> {
+    fn next_back(&mut self)->Option<&'a T> {
+        if self.len==0 { return None; }
+        self.len-=1;
+        self.slots[(self.front+self.len)%self.slots.len()].as_ref()
+    }
+}
+impl<T> ExactSizeIterator for Iter<'_,T> { fn len(&self)->usize { self.len } }
+impl<T> core::iter::FusedIterator for Iter<'_,T> {}
+impl<'a,T> IntoIterator for &'a VecDeque<T> {
+    type Item = &'a T;
+    type IntoIter = Iter<'a,T>;
+    fn into_iter(self)->Iter<'a,T> { self.iter() }
 }

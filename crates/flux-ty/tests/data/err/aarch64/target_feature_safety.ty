@@ -15,9 +15,9 @@ fn run(&S) -> ()
     self@0: &S
 error 168..180: call to unsafe function `annotated` is unsafe and requires unsafe function or block
 error 230..234: call to unsafe function is unsafe and requires unsafe function or block
-error 265..274: mismatched types: expected `fn(u8) -> u8`, found `unsafe fn(u8) -> u8 {annotated}`
+error 265..274: cannot coerce a target-feature function to a safe function pointer outside its feature context
 error 286..295: the trait bound `unsafe fn(u8) -> u8 {annotated}: Fn<(u8,)>` is not satisfied
 error 302..315: call to unsafe function `vdupq_n_u8` is unsafe and requires unsafe function or block
-error 355..365: mismatched types: expected `fn(u8) -> uint8x16_t`, found `unsafe fn(u8) -> uint8x16_t {vdupq_n_u8}`
+error 355..365: cannot coerce a target-feature function to a safe function pointer outside its feature context
 error 471..491: method `run` has an incompatible type for trait
 error 561..574: method `run` has an incompatible type for trait

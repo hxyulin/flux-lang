@@ -7250,3 +7250,13 @@ macro_rules! parse_integer {
 }
 parse_integer!(false; u8, u16, u32, u64, u128, usize);
 parse_integer!(true; i8, i16, i32, i64, i128, isize);
+
+mod saturating;
+pub use self::saturating::Saturating;
+
+/// The IEEE-754 classification of a floating-point value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FpCategory { Nan, Infinite, Zero, Subnormal, Normal }
+
+mod wrapping;
+pub use self::wrapping::Wrapping;

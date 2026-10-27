@@ -1,5 +1,6 @@
 //! C interoperability and owned operating-system strings.
 pub use core::ffi::*;
+pub use crate::alloc_crate::ffi::{CString, NulError, IntoStringError, FromVecWithNulError};
 mod os_str;
 pub use self::os_str::OsStr;
 use crate::alloc_crate::borrow::Cow;

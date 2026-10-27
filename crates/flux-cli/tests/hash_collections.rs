@@ -12,8 +12,9 @@ mod hash_map;
 
 #[test]
 fn panicking_drops_preserve_collection_counts() {
+    use hash_map::DefaultHasher;
     use std::cell::Cell;
-    use std::hash::{BuildHasherDefault, DefaultHasher};
+    use std::hash::BuildHasherDefault;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     struct Owner<'a>(&'a Cell<bool>);
     impl Drop for Owner<'_> {

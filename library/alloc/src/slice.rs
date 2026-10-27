@@ -19,11 +19,10 @@ impl<T> [T] {
         }
     }
 
-    /// Concatenates slices of cloned elements, accepting Borrow<[U]> owners.
-    pub fn concat<U: Clone>(&self) -> Vec<U> where T: Borrow<[U]> {
-        let mut result = Vec::new();
-        for value in self { result.extend_from_slice(value.borrow()); }
-        result
+    /// Concatenates borrowed slices or strings into their owned representation.
+    pub fn concat<Item: ?Sized>(&self) -> <Self as Concat<Item>>::Output
+    where Self: Concat<Item> {
+        <Self as Concat<Item>>::concat(self)
     }
     /// A `Vec` of clones of the elements, with as much room as they take.
     pub fn to_vec(&self) -> Vec<T>
@@ -62,6 +61,29 @@ impl<T: Borrow<str>> [T] {
             first = false;
             result.push_str(value.borrow());
         }
+        result
+    }
+}
+
+/// The owned result of concatenating a slice of borrowed values.
+#[doc(hidden)]
+pub(crate) trait Concat<Item: ?Sized> {
+    type Output;
+    fn concat(slice: &Self) -> Self::Output;
+}
+impl<T: Borrow<[U]>, U: Clone> Concat<[U]> for [T] {
+    type Output = Vec<U>;
+    fn concat(slice: &Self) -> Vec<U> {
+        let mut result = Vec::new();
+        for value in slice { result.extend_from_slice(value.borrow()); }
+        result
+    }
+}
+impl<T: Borrow<str>> Concat<str> for [T] {
+    type Output = String;
+    fn concat(slice: &Self) -> String {
+        let mut result = String::new();
+        for value in slice { result.push_str(value.borrow()); }
         result
     }
 }

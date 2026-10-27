@@ -228,6 +228,10 @@ impl Ctx<'_> {
                 );
                 return;
             }
+            if !ptr.is_unsafe && !self.can_reify_function_features(def.function) {
+                self.error(self.range(blamed),"cannot coerce a target-feature function to a safe function pointer outside its feature context");
+                return;
+            }
             // A method of a trait object is called through its vtable,
             // which a function pointer would need a shim for.
             if matches!(
@@ -407,6 +411,11 @@ impl Ctx<'_> {
         expr: ExprId,
     ) -> bool {
         let range = self.range(expr);
+        let mut callable_source = source;
+        while let TyKind::Ref(_, inner) = callable_source.kind() {
+            callable_source = inner;
+        }
+        let caller_callable = matches!(callable_source.kind(), TyKind::Param(_) | TyKind::Alias(_));
         if crate::fn_trait_kind(self.items, d.trait_).is_some()
             && d.args
                 .iter()
@@ -415,15 +424,19 @@ impl Ctx<'_> {
                 source.kind(),
                 TyKind::Closure(..) | TyKind::Dynamic(_) | TyKind::FnDef(_) | TyKind::FnPtr(_)
             )
+            && !caller_callable
         {
             self.error(range, "higher-ranked callable object coercions from non-closure types are not supported yet");
             return true;
         }
-        // Constant evaluation keeps no vtables.
-        if let Some(context) = self.const_context {
+        if caller_callable
+            && d.assoc_tys
+                .iter()
+                .any(|&ty| crate::regions::slots(self.items, ty) != 0)
+        {
             self.error(
                 range,
-                format!("trait objects in {context} are not supported yet"),
+                "callable object outputs with references are not supported yet",
             );
             return true;
         }
@@ -626,6 +639,9 @@ impl Ctx<'_> {
             }
             (TyKind::FnDef(def), TyKind::FnPtr(ptr)) => {
                 if self.items.functions[def.function].intrinsic.is_some() {
+                    return false;
+                }
+                if !ptr.is_unsafe && !self.can_reify_function_features(def.function) {
                     return false;
                 }
                 let c_abi = self.items.functions[def.function].c_abi;

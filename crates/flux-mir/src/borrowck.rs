@@ -222,6 +222,7 @@ fn collect_loans(body: &Body) -> Vec<(Loan, Local)> {
             if let StatementKind::Assign(
                 dest,
                 Rvalue::Ref {
+                    raw: false,
                     mutability,
                     place,
                     two_phase,
@@ -557,6 +558,7 @@ impl Checker<'_> {
                         mutability,
                         place,
                         two_phase,
+                        ..
                     } => {
                         if *mutability == Mutability::Mut {
                             let capture = self
@@ -1299,6 +1301,7 @@ mod tests {
             &StatementKind::Assign(
                 place(0),
                 Rvalue::Ref {
+                    raw: false,
                     mutability: Mutability::Not,
                     place: place(1).project(ProjectionElem::Deref),
                     two_phase: false,

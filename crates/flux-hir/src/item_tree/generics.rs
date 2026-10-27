@@ -2,7 +2,7 @@
 use super::{
     AstChildren, AstNode, Defaults, Diagnostic, GenericParam, Generics, IN_BOUNDS, ImplTraitSite,
     LifetimeParam, OutlivesPredicate, ParamKind, Path, Relaxed, Symbol, TextRange, TypeOutlives,
-    TypeRef, WherePredicate, ast, attr_name, bind_fn_lifetimes, binder_names, check_attr,
+    TypeRef, WherePredicate, apply_bound_binder, ast, attr_name, binder_names, check_attr,
     check_attrs, expanded_type, lower_array_len, lower_bounds, lower_const_arg, lower_dyn,
     lower_fn_ptr, lower_generic_path, lower_impl_trait, lower_lifetime, reject_impl_trait,
     reject_impl_trait_in_path, unsupported,
@@ -151,16 +151,25 @@ fn collect_generics_as_written(
                     diagnostics,
                 );
             }
-            if !relaxed_here.is_empty() {
+            let has_relaxed = !relaxed_here.is_empty();
+            if has_relaxed {
                 relaxed.push((ty.clone(), relaxed_here));
             }
-            if let Some(Some(names)) = &binder
-                && !bounds
+            if let Some(Some(names)) = &binder {
+                if !lifetimes.is_empty() || has_relaxed {
+                    unsupported(
+                        diagnostics,
+                        range,
+                        "higher-ranked outlives and relaxed bounds",
+                    );
+                    continue;
+                }
+                if !bounds
                     .iter_mut()
-                    .all(|b| bind_fn_lifetimes(&mut b.path, names, diagnostics))
-            {
-                unsupported(diagnostics, range, "higher-ranked bounds");
-                continue;
+                    .all(|bound| apply_bound_binder(bound, names, diagnostics))
+                {
+                    continue;
+                }
             }
             predicates.extend(bounds.into_iter().map(|bound| WherePredicate {
                 ty: ty.clone(),

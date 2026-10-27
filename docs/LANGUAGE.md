@@ -97,7 +97,12 @@ reported as "not supported yet":
   resolve and check privacy without introducing a name; trait imports still
   contribute methods to their scope and public glob reexports; and
   `unsafe extern "C"` blocks of function declarations, including
-  C-variadic ones (`fn printf(format: *const i8, ...) -> i32;`). Items
+  C-variadic ones (`fn printf(format: *const i8, ...) -> i32;`), and foreign
+  statics. Foreign static accesses require unsafe code; taking a raw address
+  does not read the static. Literal `link_name` preserves the imported symbol.
+  Literal extern-block `link` attributes support default/explicit dynamic
+  libraries. Other link kinds, modifiers, conditional options and path names
+  are explicitly unsupported. Items
   may be `pub`, `pub(crate)`, `pub(super)`, `pub(self)` or
   `pub(in path)`, and flux checks privacy as rustc does. An enum's
   variants are named through it (`E::A`, `Self::A`) or imported
@@ -183,10 +188,10 @@ reported as "not supported yet":
   differ (`[first, .., last]` of a `&mut [T]` binds both mutably), and
   an array's elements may be moved out of it one by one, what is left
   of it dropped in rustc's order; moving out of a slice is E0508.
-  Structural constants composed of derived-PartialEq structs, tuples and arrays
+  Structural constants composed of derived-PartialEq structs, enums, tuples and arrays
   are supported. Floating literal patterns are refutable, with signed zeros
   equal and unnamed values including NaNs requiring wildcard coverage. Float
-  constant/range patterns and enum/reference/pointer constants remain unsupported.
+  constant/range patterns and reference/pointer constants remain unsupported.
 - **Attributes:** outer `#[cfg(predicate)]` on ordinary items (including
   modules, imports and item macros), associated items in traits and impls,
   and declarations in extern blocks. Multiple attributes are conjunctive;
@@ -605,6 +610,11 @@ the borrow checker preserves independent owner-data and receiver lifetimes throu
 iterator items and nested associated families. Family-local type parameters retain
 their implicit `Sized` bound unless declared `?Sized`.
 
+Associated equality bindings can supply family-local type and const arguments,
+such as `ArraySize<ArrayType<T> = [T; N]>`. Owner arguments and family arguments
+remain separate during selection and substitution. Lifetime-bearing equality
+arguments remain explicitly unsupported.
+
 Trait objects reject callable GATs. A family unavailable because of a `Self: Sized`
 bound, including one implied by a supertrait, is excluded from object requirements.
 Associated-family region inputs in function-pointer signatures remain explicitly
@@ -658,10 +668,12 @@ invoked on a trait object". A trait object's lifetime bound (`dyn Tr +
 outlive it, a bound may only shorten (behind `&mut` too, as rustc's
 unsizing coercion allows), and a parameter's lifetime bound (`T:
 'static`) holds of a trait object if its bound does (E0310, E0521, as
-rustc reports them). References and trait objects in a trait object's
-generic arguments, trait objects in constants and statics (which are
-not `Sync` anyway), references to trait objects cast to raw pointers,
-`Box<dyn Tr>` and `dyn Any` are not supported yet. A trait's crate may
+rustc reports them). Shared trait-object references in constants and statics
+retain concrete values, vtables and reachable methods; normal `Sync` and constant
+validity checks still apply. Boxed trait-object constant evaluation remains
+unsupported. References and trait objects in a trait object's generic arguments,
+references to trait objects cast to raw pointers and `dyn Any` remain restricted.
+A trait's crate may
 write inherent `impl dyn Tr` blocks (E0116 elsewhere), whose methods
 trait objects of it have.
 
@@ -865,8 +877,12 @@ using native 32-bit storage. `AtomicPtr<T>` supports sized pointees, const
 construction, validated runtime load/store and exclusive get_mut/into_inner.
 Its shared accesses use native pointer atomics; pointers to sized references
 such as `&str` are supported, while atomic fat pointers and pointer CAS/RMW
-are not. Other atomic widths, const accessors, compiler_fence and a threading
-runtime remain unsupported.
+are not. Byte and halfword load/store use matching-width instructions;
+`AtomicU8` also provides validated strong/weak compare-exchange. Signed atomic
+widths through 64 bits and `AtomicBool` provide load/store and exclusive accessors.
+These wrappers preserve their underlying byte size and alignment. Other atomic
+APIs, 128-bit atomics, const accessors and `compiler_fence` remain unsupported.
+The target advertises atomic cfgs for 8, 16, 32, 64 and pointer widths, not 128.
 `std::sync::OnceLock<T>` supports sized payloads with `new`, `Default`,
 `get`, `get_or_init` and destruction. `get` does not wait during initialization;
 `get_or_init` spins until one initializer publishes its payload with
@@ -1281,9 +1297,14 @@ opaque closures (`-> impl Fn(&u8) -> &u8`): the hidden closure must work
 for every input lifetime, so a captured reference returned in this
 example must be `'static`. A single-lifetime binder
 expressing the same relationship (`for<'a> Fn(&'a T) -> &'a U`, also
-in a `where for<'a>` clause) is supported. Other named lifetimes in
-`Fn` bounds, binders with several lifetimes, and general higher-ranked
-bounds are not supported yet.
+in a `where for<'a>` clause) is supported. Other callable binder shapes remain
+subject to the represented-region restrictions above.
+
+Non-callable higher-ranked trait predicates are also supported in bounds,
+supertraits and blanket implementations. Required predicates are proved for
+fresh universal lifetimes; caller predicates retain correlations between repeated
+and free lifetimes. Quantified lifetimes in the predicate's subject and
+higher-ranked associated equalities remain explicitly unsupported.
 
 The borrow checker infers lifetimes as rustc's (non-lexical lifetimes,
 with two-phase borrows for method receivers and borrows of distinct
@@ -1392,8 +1413,11 @@ aggregate size/stride and alignment in stack, static, argument/return and
 heap storage. `repr(transparent)` preserves the layout and niche of its one
 represented field. Additional fields must have size zero and alignment one
 for every generic instantiation. Empty and entirely zero-sized wrappers are
-also supported. Packed representations and general SIMD representations remain
-unsupported.
+also supported. `repr(packed)` and `repr(packed(N))` cap field and aggregate
+alignment, including with `repr(C)`. By-value field access remains unaligned;
+forming an insufficiently aligned reference is rejected, including implicit
+borrows. Raw field addresses remain permitted. Owned fields are moved into
+aligned storage for destruction. General SIMD representations remain unsupported.
 Extra transparent fields must be provably zero-sized and alignment one from
 their declaration. Unknown generic or associated fields and multi-variant enum
 markers remain conservatively nontrivial, even when a particular instantiated
@@ -1416,10 +1440,22 @@ and `as_mut`; a `*mut T` coerces to a `*const T`. `align_offset` returns an
 element count for sized pointees, with zero-sized and impossible-alignment
 cases, and panics for non-power-of-two alignments. It is runtime-only and
 does not establish allocation bounds or memory validity.
+Volatile reads/writes preserve actual volatile operations for supported scalar
+values, thin pointers and same-layout scalar wrappers. Aggregates, enums, wide
+pointers, 128-bit integers and over-aligned values remain explicitly unsupported.
 Unsafe `[T]::align_to<U>` splits a shared slice into a T prefix, aligned U
 middle and T suffix, preserving whole-element boundaries and the source
 lifetime. Zero-sized and impossible-alignment cases are supported. Callers
 must establish the U values' validity; mutable and const forms remain absent.
+Runtime function-item and function-pointer casts to integers expose the reified
+function's address, preserving its Rust/C ABI and unsafe signature. Taking an
+address grants no permission to invoke an unsafe or target-feature function.
+Pointer-to-integer casts remain rejected in constants.
+`core::mem::discriminant` returns a Copy/Clone, Eq, Hash and Debug variant identity
+without inspecting or moving its payload. Constant evaluation is supported for
+represented enum values. `mem::transmute_copy` checks the destination size and
+copies bytes into correctly aligned storage at runtime; its unsafe contract
+requires the copied value to be valid and ownership to be respected.
 `core::mem` has
 `forget`, `ManuallyDrop` (with `Deref`) and `MaybeUninit` (`new`,
 `uninit`, `zeroed`, `write`, `as_ptr`, `as_mut_ptr`, `assume_init` and

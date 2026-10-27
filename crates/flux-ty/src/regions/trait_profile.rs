@@ -1006,3 +1006,36 @@ pub(crate) fn family_method_profile(
             .is_some_and(|t| items.traits[t].generics.lifetimes.is_empty())
     })
 }
+
+/// Marker declarations have no method, associated-value, or stored-field
+/// contracts. Their lifetime parameters remain independent trait arguments.
+pub(crate) fn lifetime_marker_profile(
+    items: &ItemTree,
+    diagnostics: &[flux_hir::Diagnostic],
+    sigs: &Signatures,
+    trait_: TraitId,
+) -> bool {
+    let data = &items.traits[trait_];
+    let Some(regions) = sigs.regions.traits.get(trait_) else {
+        return false;
+    };
+    !data.is_unsafe
+        && data.functions.is_empty()
+        && data.types.is_empty()
+        && data.consts.is_empty()
+        && data.supertraits.is_empty()
+        && data.generics.params.is_empty()
+        && !has_predicates(&data.generics)
+        && !diagnosed(diagnostics, data.loc.file, data.def_range)
+        && regions.names.len() == data.generics.lifetimes.len()
+        && regions
+            .names
+            .iter()
+            .zip(&data.generics.lifetimes)
+            .all(|(resolved, written)| {
+                resolved.name == Some(written.name) && resolved.range == written.range
+            })
+        && regions.outlives.is_empty()
+        && regions.families.is_empty()
+        && regions.supertraits.is_empty()
+}

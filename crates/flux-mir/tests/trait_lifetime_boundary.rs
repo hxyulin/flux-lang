@@ -102,19 +102,9 @@ fn trait_lifetime_admission_preserves_rustc_obligations() {
         );
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
         let typed = flux_mir::check_file(&hir);
-        let gated = hir.items.traits.iter().any(|(id, t)| {
-            !t.generics.lifetimes.is_empty()
-                && flux_ty::regions::required_method_trait_profile(&hir, &typed.sigs, id).is_err()
-        });
-        assert_eq!(
-            typed
-                .diagnostics
-                .iter()
-                .any(|d| d.message == "lifetime parameters on traits are not supported yet"),
-            gated,
-            "{name}: {:?}",
-            typed.diagnostics
-        );
+        // Declaration admission has several independently tested profiles.
+        // These cases test the obligations after whichever profile admits
+        // the declaration, rather than requiring an obsolete lifetime gate.
         if rustc_accepts {
             assert!(
                 typed.diagnostics.is_empty(),

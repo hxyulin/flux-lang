@@ -60,7 +60,7 @@ impl Path {
             last_kind = kind;
             any = true;
         }
-        if !any || last_kind == 0 { None } else { Some(Path::new(OsStr::from_bytes(&bytes[..parent_end]))) }
+        if !any || last_kind == 0 { None } else { Some(Path::new(OsStr::from_unix_bytes(&bytes[..parent_end]))) }
     }
     pub fn strip_prefix<P: AsRef<Path>>(&self, base: P) -> Result<&Path, StripPrefixError> {
         let bytes = self.inner.as_encoded_bytes();
@@ -80,7 +80,7 @@ impl Path {
             if first { start = left; first = false; }
             end = right;
         }
-        Ok(Path::new(OsStr::from_bytes(&bytes[start..end])))
+        Ok(Path::new(OsStr::from_unix_bytes(&bytes[start..end])))
     }
     pub fn starts_with<P: AsRef<Path>>(&self, base: P) -> bool { self.strip_prefix(base).is_ok() }
     pub fn join<P: AsRef<Path>>(&self, path: P) -> PathBuf {

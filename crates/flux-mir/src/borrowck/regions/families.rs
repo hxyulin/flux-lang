@@ -139,6 +139,14 @@ impl Cx<'_> {
         if let Some(row) = self.family_projection_output(alias, inputs, owner) {
             return Some(row);
         }
+        // A represented equality in the original caller environment supplies
+        // the output row. Own type/const arguments remain part of alias identity.
+        if owner.is_empty()
+            && family.is_empty()
+            && let Some((_, row)) = self.env_regions.iter().find(|(known, _)| *known == alias)
+        {
+            return Some(row.clone());
+        }
         let Some((imp, header_args)) = flux_ty::traits::select_impl(self.items, self.sigs, goal)
         else {
             // An abstract projection keeps its occurrence inputs. Its declared

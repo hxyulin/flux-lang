@@ -240,3 +240,198 @@ impl Sub for Instant {
         self.duration_since(rhs)
     }
 }
+
+/// A timestamp on the system's realtime clock, independent of the monotonic clock.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SystemTime {
+    secs: i64,
+    nanos: u32,
+}
+/// The system-clock epoch: 1970-01-01 00:00:00 UTC.
+pub const UNIX_EPOCH: SystemTime = SystemTime { secs: 0, nanos: 0 };
+/// The positive duration by which an earlier timestamp preceded another.
+#[derive(Clone, Copy, Debug)]
+pub struct SystemTimeError(Duration);
+impl SystemTimeError {
+    pub fn duration(&self) -> Duration {
+        self.0
+    }
+}
+impl core::fmt::Display for SystemTimeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("second time provided was later than self")
+    }
+}
+impl core::error::Error for SystemTimeError {}
+impl SystemTime {
+    pub const UNIX_EPOCH: Self = UNIX_EPOCH;
+    pub fn now() -> Self {
+        let mut time = Timespec { secs: 0, nanos: 0 };
+        // SAFETY: CLOCK_REALTIME is zero on admitted Unix platforms; the
+        // pointer names a writable native timespec, as for Instant::now.
+        let result = unsafe { clock_gettime(0, &mut time) };
+        assert!(result == 0, "could not read system clock");
+        assert!(
+            time.nanos >= 0 && time.nanos < NANOS_PER_SEC as i64,
+            "invalid system clock timestamp"
+        );
+        Self {
+            secs: time.secs,
+            nanos: time.nanos as u32,
+        }
+    }
+    pub fn duration_since(&self, earlier: Self) -> Result<Duration, SystemTimeError> {
+        let lhs = self.secs as i128 * NANOS_PER_SEC as i128 + self.nanos as i128;
+        let rhs = earlier.secs as i128 * NANOS_PER_SEC as i128 + earlier.nanos as i128;
+        let delta = lhs - rhs;
+        let magnitude = if delta < 0 { -delta } else { delta };
+        let duration = Duration::new(
+            (magnitude / NANOS_PER_SEC as i128) as u64,
+            (magnitude % NANOS_PER_SEC as i128) as u32,
+        );
+        if delta < 0 {
+            Err(SystemTimeError(duration))
+        } else {
+            Ok(duration)
+        }
+    }
+    pub fn elapsed(&self) -> Result<Duration, SystemTimeError> {
+        Self::now().duration_since(*self)
+    }
+    pub fn checked_add(&self, duration: Duration) -> Option<Self> {
+        let nanos = self.nanos + duration.nanos;
+        let secs = self.secs as i128 + duration.secs as i128 + (nanos / NANOS_PER_SEC) as i128;
+        if secs > i64::MAX as i128 {
+            None
+        } else {
+            Some(Self {
+                secs: secs as i64,
+                nanos: nanos % NANOS_PER_SEC,
+            })
+        }
+    }
+    pub fn checked_sub(&self, duration: Duration) -> Option<Self> {
+        let borrow = self.nanos < duration.nanos;
+        let secs = self.secs as i128 - duration.secs as i128 - borrow as i128;
+        if secs < i64::MIN as i128 {
+            return None;
+        }
+        let nanos = if borrow {
+            self.nanos + NANOS_PER_SEC - duration.nanos
+        } else {
+            self.nanos - duration.nanos
+        };
+        Some(Self {
+            secs: secs as i64,
+            nanos,
+        })
+    }
+}
+impl Add<Duration> for SystemTime {
+    type Output = Self;
+    fn add(self, rhs: Duration) -> Self {
+        self.checked_add(rhs)
+            .expect("overflow when adding duration to system time")
+    }
+}
+impl Sub<Duration> for SystemTime {
+    type Output = Self;
+    fn sub(self, rhs: Duration) -> Self {
+        self.checked_sub(rhs)
+            .expect("overflow when subtracting duration from system time")
+    }
+}
+impl core::ops::AddAssign<Duration> for SystemTime {
+    fn add_assign(&mut self, rhs: Duration) {
+        *self = *self + rhs;
+    }
+}
+impl core::ops::SubAssign<Duration> for SystemTime {
+    fn sub_assign(&mut self, rhs: Duration) {
+        *self = *self - rhs;
+    }
+}
+impl core::fmt::Debug for SystemTime {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SystemTime")
+            .field("tv_sec", &self.secs)
+            .field("tv_nsec", &self.nanos)
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for Duration {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let (unit, digits, suffix) = if self.secs != 0 {
+            (1000000000u128, 9usize, "s")
+        } else if self.nanos >= 1000000 {
+            (1000000, 6, "ms")
+        } else if self.nanos >= 1000 {
+            (1000, 3, "µs")
+        } else {
+            (1, 0, "ns")
+        };
+        let precision = f.precision();
+        let retained = precision.unwrap_or(digits).min(digits);
+        let rounding = 10u128.pow((digits - retained) as u32);
+        let amount = self.as_nanos();
+        let mut rounded = amount / rounding;
+        let remainder = amount % rounding;
+        if remainder > rounding / 2
+            || (rounding > 1 && remainder == rounding / 2 && rounded % 2 != 0)
+        {
+            rounded += 1;
+        }
+        let decimal_unit = unit / rounding;
+        let whole = rounded / decimal_unit;
+        let mut fraction = rounded % decimal_unit;
+        let mut decimal_digits = retained;
+        if precision.is_none() {
+            while decimal_digits > 0 && fraction % 10 == 0 {
+                fraction /= 10;
+                decimal_digits -= 1;
+            }
+        }
+        let mut text = crate::alloc_crate::string::String::new();
+        if f.sign_plus() {
+            text.push('+');
+        }
+        text.push_str(&crate::alloc_crate::format!("{}", whole));
+        let output_digits = precision.unwrap_or(decimal_digits);
+        if output_digits > 0 {
+            text.push('.');
+            let significant = if precision.is_some() {
+                retained
+            } else {
+                decimal_digits
+            };
+            let mut divisor = 10u128.pow(significant.saturating_sub(1) as u32);
+            for _ in 0..significant {
+                text.push((b'0' + (fraction / divisor) as u8) as char);
+                fraction %= divisor;
+                divisor /= 10;
+            }
+            for _ in significant..output_digits {
+                text.push('0');
+            }
+        }
+        text.push_str(suffix);
+        let padding = f.width().unwrap_or(0).saturating_sub(text.chars().count());
+        let alignment = f.align().unwrap_or(core::fmt::Alignment::Left);
+        let left = match alignment {
+            core::fmt::Alignment::Left => 0,
+            core::fmt::Alignment::Right => padding,
+            core::fmt::Alignment::Center => padding / 2,
+        };
+        let mut fill = [0u8; 4];
+        let fill = f.fill().encode_utf8(&mut fill);
+        for _ in 0..left {
+            f.write_str(fill)?;
+        }
+        f.write_str(&text)?;
+        for _ in left..padding {
+            f.write_str(fill)?;
+        }
+        Ok(())
+    }
+}

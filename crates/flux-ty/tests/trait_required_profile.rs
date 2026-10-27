@@ -353,7 +353,6 @@ fn in_range_but_wrong_binder_and_elided_name_arities_reject() {
 #[test]
 fn unsupported_declarations_keep_the_production_gate() {
     for source in [
-        "trait T<'a,'b> {}",
         "trait T<'a,U> {}",
         "trait T<'a> {fn f() {}}",
         "trait T<'a> {fn f<'b>(x: &'b i32);}",
@@ -395,4 +394,15 @@ fn associated_items_use_the_separate_family_profile() {
 fn scalar_c_method_signatures_are_in_profile() {
     let (hir, sigs, id) = resolve("trait T<'a> {extern \"C\" fn f();}");
     assert!(profile(&hir, &sigs, id).is_ok());
+}
+
+#[test]
+fn empty_lifetime_only_markers_keep_independent_owner_slots() {
+    let (hir, _, id) = resolve("trait T<'a,'b> {}");
+    let (sigs, diagnostics) = flux_ty::signatures(&hir.items);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let regions = &sigs.regions.traits[id];
+    assert_eq!(regions.names.len(), 2);
+    assert_ne!(regions.names[0].name, regions.names[1].name);
+    assert!(regions.supertraits.is_empty());
 }

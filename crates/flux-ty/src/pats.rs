@@ -621,6 +621,22 @@ impl Cx<'_> {
                 }
                 _ => DPat::Or(Vec::new()),
             },
+            crate::PatternConst::Variant {
+                index,
+                fields: values,
+            } => {
+                let ctor = Ctor::Variant(*index);
+                let fields = self.ctor_fields(ty, ctor);
+                assert_eq!(values.len(), fields.len());
+                DPat::Ctor(
+                    ctor,
+                    values
+                        .iter()
+                        .zip(fields)
+                        .map(|(v, t)| self.constant(v, t))
+                        .collect(),
+                )
+            }
             crate::PatternConst::Aggregate(values) => {
                 let fields = self.ctor_fields(ty, Ctor::Single);
                 assert_eq!(values.len(), fields.len());

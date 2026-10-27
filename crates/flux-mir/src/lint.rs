@@ -222,6 +222,7 @@ fn operand(
                 Some(value.clone())
             }
             Value::Function(_)
+            | Value::DynPointer { .. }
             | Value::Aggregate(_)
             | Value::Variant { .. }
             | Value::Static(_)
@@ -315,6 +316,7 @@ fn evaluate(
                 Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                 Value::Bool(b) => u128::from(b),
                 Value::Function(_)
+                | Value::DynPointer { .. }
                 | Value::Aggregate(_)
                 | Value::Variant { .. }
                 | Value::Static(_)

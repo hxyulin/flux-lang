@@ -8,7 +8,7 @@
 use crate::clone::Clone;
 use crate::cmp::{Eq, PartialEq};
 use crate::marker::Copy;
-use crate::mem::{align_of, size_of};
+use crate::mem::{ManuallyDrop, align_of, size_of};
 use crate::option::Option::{self, None, Some};
 
 unsafe extern "C" {
@@ -84,6 +84,34 @@ pub unsafe fn read_unaligned<T>(src: *const T) -> T {
 /// Writes `value` at `dst`, without dropping what was there.
 pub unsafe fn write<T>(dst: *mut T, value: T) {
     unsafe { crate::intrinsics::write(dst, value) }
+}
+
+/// Writes an initialized value without requiring pointer alignment.
+/// The destination must be valid for writes of the entire value. Existing
+/// contents are overwritten without being dropped.
+pub unsafe fn write_unaligned<T>(dst: *mut T, value: T) {
+    let value = ManuallyDrop::new(value);
+    // SAFETY: value is initialized local storage. Byte copying imposes no
+    // alignment on dst, whose validity and ownership are the caller's contract.
+    unsafe { copy_nonoverlapping(&*value as *const T as *const u8, dst as *mut u8, size_of::<T>()); }
+}
+
+/// Reads without allowing the compiler to remove or merge the access. The
+/// pointer must be valid and aligned for an initialized value of T. This is
+/// not atomic and does not synchronize threads. The current backend supports
+/// scalar and same-layout single-field scalar wrapper types only.
+pub unsafe fn read_volatile<T>(src:*const T)->T {
+    // SAFETY: the caller guarantees aligned, initialized readable storage.
+    unsafe { crate::intrinsics::read_volatile(src) }
+}
+
+/// Writes without allowing the compiler to remove or merge the access. The
+/// pointer must be valid and aligned; overwritten contents are not dropped.
+/// This is not atomic and does not synchronize threads. See read_volatile for
+/// the currently supported bounded layouts.
+pub unsafe fn write_volatile<T>(dst:*mut T,value:T) {
+    // SAFETY: the caller guarantees aligned writable storage for the value.
+    unsafe { crate::intrinsics::write_volatile(dst,value) }
 }
 
 /// Copies `count` values from `src` to `dst`, which may overlap.
@@ -221,6 +249,12 @@ impl<T> *const T {
         unsafe { read(self) }
     }
 
+    /// Reads with volatile access semantics; see [`read_volatile`].
+    pub unsafe fn read_volatile(self)->T {
+        // SAFETY: the caller guarantees this pointer's validity and alignment.
+        unsafe { read_volatile(self) }
+    }
+
     /// Reads an initialized value without requiring pointer alignment.
     /// See [`read_unaligned`] for the supported types and safety contract.
     pub unsafe fn read_unaligned(self) -> T {
@@ -329,6 +363,18 @@ impl<T> *mut T {
         unsafe { write(self, value) }
     }
 
+    /// Writes with volatile access semantics; see [`write_volatile`].
+    pub unsafe fn write_volatile(self,value:T) {
+        // SAFETY: the caller guarantees this pointer's validity and alignment.
+        unsafe { write_volatile(self,value) }
+    }
+
+    /// Writes an initialized value without requiring pointer alignment.
+    /// See [`write_unaligned`] for the validity and ownership contract.
+    pub unsafe fn write_unaligned(self, value: T) {
+        unsafe { write_unaligned(self, value) }
+    }
+
     /// Puts `src` where the pointer points, giving back what was there.
     pub unsafe fn replace(self, src: T) -> T {
         unsafe { replace(self, src) }
@@ -347,6 +393,12 @@ impl<T> *mut T {
     /// Sets `count` values' bytes to `value`.
     pub unsafe fn write_bytes(self, value: u8, count: usize) {
         unsafe { write_bytes(self, value, count) }
+    }
+
+    /// Reads with volatile access semantics; see [`read_volatile`].
+    pub unsafe fn read_volatile(self)->T {
+        // SAFETY: the caller guarantees this pointer's validity and alignment.
+        unsafe { read_volatile(self) }
     }
 
     /// Reads an initialized value without requiring pointer alignment.

@@ -12,7 +12,7 @@ pub use core::{
     mem, num, ops, option, panic, ptr, result,
 };
 pub use core::{dbg, eprint, eprintln, print, println};
-pub use core::{slice, str, u8, u32};
+pub use core::{slice, str, u8, u32, f32, f64, primitive};
 
 mod float;
 
@@ -20,6 +20,9 @@ pub mod arch;
 
 pub mod thread;
 pub mod time;
+pub mod net;
+pub mod os;
+pub mod process;
 pub mod collections;
 pub mod env;
 pub mod ffi;

@@ -32,3 +32,9 @@ pub mod rust_2018 {
     pub use crate::result::Result;
     pub use crate::result::Result::{Err, Ok};
 }
+
+/// The edition-independent core prelude and built-in derive attribute.
+pub mod v1 {
+    pub use super::rust_2018::*;
+    pub use crate::derive;
+}

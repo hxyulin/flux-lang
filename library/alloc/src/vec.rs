@@ -949,3 +949,23 @@ impl<T: core::hash::Hash> core::hash::Hash for Vec<T> {
 impl<T> AsRef<[T]> for Vec<T> {
     fn as_ref(&self) -> &[T] { self.as_slice() }
 }
+
+impl<T, const N: usize> TryFrom<Vec<T>> for [T; N] {
+    type Error = Vec<T>;
+    fn try_from(mut values: Vec<T>) -> Result<Self, Vec<T>> {
+        if values.len() != N { return Err(values); }
+        // SAFETY: the allocation contains N initialized elements and has the
+        // array's element alignment. The vector relinquishes their ownership
+        // before it drops and deallocates its now-empty allocation.
+        let array = unsafe {
+            let array = ptr::read(values.as_ptr() as *const [T; N]);
+            values.set_len(0);
+            array
+        };
+        Ok(array)
+    }
+}
+
+impl From<&str> for Vec<u8> {
+    fn from(value: &str) -> Self { value.as_bytes().to_vec() }
+}

@@ -6,7 +6,7 @@ use crate::panicking::panic;
 /// A value that may be absent. `?` returns `None` from a function
 /// that returns an `Option` if it is `None`.
 #[lang = "Option"]
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq)]
 pub enum Option<T> {
     None,
     Some(T),
@@ -372,20 +372,6 @@ impl<T: crate::clone::Clone> crate::clone::Clone for Option<T> {
 
 impl<T: crate::marker::Copy> crate::marker::Copy for Option<T> {}
 
-impl<T: crate::cmp::PartialEq> crate::cmp::PartialEq for Option<T> {
-    fn eq(&self, other: &Self) -> bool {
-        match self {
-            Some(a) => match other {
-                Some(b) => *a == *b,
-                None => false,
-            },
-            None => match other {
-                Some(_) => false,
-                None => true,
-            },
-        }
-    }
-}
 
 impl<T: crate::cmp::Eq> crate::cmp::Eq for Option<T> {}
 

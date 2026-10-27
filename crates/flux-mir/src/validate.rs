@@ -224,10 +224,18 @@ impl Validator<'_> {
                 }
             }
             Rvalue::Ref {
-                mutability, place, ..
+                raw,
+                mutability,
+                place,
+                ..
             } => {
                 let pointee = self.place_ty(place);
-                self.check(ty, Ty::new(TyKind::Ref(*mutability, pointee)), what);
+                let expected = if *raw {
+                    Ty::raw_ptr(*mutability, pointee)
+                } else {
+                    Ty::new(TyKind::Ref(*mutability, pointee))
+                };
+                self.check(ty, expected, what);
             }
             Rvalue::Len { .. } => self.check(ty, Ty::int(flux_ty::IntTy::Usize), what),
             Rvalue::Subslice { slice, start, end } => {

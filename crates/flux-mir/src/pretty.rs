@@ -249,14 +249,23 @@ fn rvalue_text(hir: &Hir, rvalue: &Rvalue) -> String {
         }
         Rvalue::Cast(o, ty) => format!("{} as {ty}", operand(hir, o)),
         Rvalue::Ref {
+            raw,
             mutability,
             place: p,
             two_phase,
         } => {
-            let kind = match (mutability, two_phase) {
-                (Mutability::Not, _) => "&",
-                (Mutability::Mut, false) => "&mut ",
-                (Mutability::Mut, true) => "&two_phase ",
+            let kind = if *raw {
+                if *mutability == Mutability::Mut {
+                    "&raw mut "
+                } else {
+                    "&raw const "
+                }
+            } else {
+                match (mutability, two_phase) {
+                    (Mutability::Not, _) => "&",
+                    (Mutability::Mut, false) => "&mut ",
+                    (Mutability::Mut, true) => "&two_phase ",
+                }
             };
             format!("{kind}{}", place(p))
         }

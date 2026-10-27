@@ -36,6 +36,7 @@
 //! immutable locals are assigned once; and [`borrowck`], that borrows do
 //! not conflict with other uses of what they borrow.
 
+mod alignment;
 mod bitset;
 pub mod borrowck;
 mod build;
@@ -570,6 +571,8 @@ pub enum Rvalue {
     /// call's receiver, acts as a shared borrow until the call, so that
     /// the arguments may still read the place: `s.set(s.get())`.
     Ref {
+        /// Raw addresses do not assert pointee alignment or validity.
+        raw: bool,
         mutability: Mutability,
         place: Place,
         two_phase: bool,

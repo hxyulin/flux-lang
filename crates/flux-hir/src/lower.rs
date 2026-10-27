@@ -219,6 +219,23 @@ pub fn lower_body<'a>(
     ctx.finish(params, root)
 }
 
+/// Rust's packed derives copy each field into aligned temporary storage.
+fn derived_field_value(ctx: &mut Ctx<'_>, packed: bool, place: ExprId, at: TextRange) -> ExprId {
+    if packed {
+        let stmts = ctx.lists.alloc([]);
+        ctx.alloc_expr(
+            Expr::Block {
+                stmts,
+                tail: Some(place),
+                is_unsafe: false,
+            },
+            at,
+        )
+    } else {
+        place
+    }
+}
+
 /// The body of the method `#[derive]` makes for `strukt`, from its
 /// fields: `S { a: Clone::clone(&self.a), .. }` for `Clone`,
 /// `self.a == other.a && ..` for `PartialEq`, and a call of
@@ -275,7 +292,7 @@ fn derived_body(
             at,
         );
         ctx.source_map.expr_fields.insert(place, [field.name_range]);
-        place
+        derived_field_value(ctx, s.repr_pack.is_some(), place, at)
     };
     // `Tr::method(&self.field)`, for the lang trait `lang`.
     let call = |ctx: &mut Ctx<'_>, lang: &str, method: &str, field: &crate::Field| {
@@ -611,6 +628,7 @@ fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) 
                     at,
                 );
                 ctx.source_map.expr_fields.insert(place, [field.name_range]);
+                let place = derived_field_value(ctx, s.repr_pack.is_some(), place, at);
                 ctx.alloc_expr(
                     Expr::Ref {
                         mutable: false,
@@ -739,6 +757,7 @@ fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -
                     at,
                 );
                 ctx.source_map.expr_fields.insert(place, [field.name_range]);
+                let place = derived_field_value(&mut ctx, s.repr_pack.is_some(), place, at);
                 let value = ctx.alloc_expr(
                     Expr::Ref {
                         mutable: false,
@@ -1338,6 +1357,7 @@ fn derived_ord_body(
                         at,
                     );
                     ctx.source_map.expr_fields.insert(place, [f.name_range]);
+                    let place = derived_field_value(&mut ctx, s.repr_pack.is_some(), place, at);
                     borrow(&mut ctx, place, at)
                 });
                 comparisons.push((call(&mut ctx, a, b, at), at));
@@ -4423,6 +4443,7 @@ impl<'a> Ctx<'a> {
             None => None,
             Some(trait_path) => {
                 let bound = Bound {
+                    bound_lifetimes: Box::default(),
                     path: trait_path.clone(),
                     range: qself.range,
                 };

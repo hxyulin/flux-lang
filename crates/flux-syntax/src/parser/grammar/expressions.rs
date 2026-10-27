@@ -407,7 +407,16 @@ fn lhs(p: &mut Parser<'_>, r: Restrictions) -> Option<(CompletedMarker, BlockLik
             if r.prefer_stmt && blocklike == BlockLike::Block {
                 return Some((atom, blocklike));
             }
-            return Some((postfix(p, atom), BlockLike::NotBlock));
+            let before = p.pos;
+            let expression = postfix(p, atom);
+            return Some((
+                expression,
+                if p.pos == before {
+                    blocklike
+                } else {
+                    BlockLike::NotBlock
+                },
+            ));
         }
     };
     expr_bp(p, operand_r, UNARY_BP);
@@ -489,7 +498,7 @@ fn atom_expr(p: &mut Parser<'_>, r: Restrictions) -> Option<(CompletedMarker, Bl
         return Some(path_expr(p, r));
     }
     let done = match p.current() {
-        T!['('] => (tuple_or_paren_expr(p), NotBlock),
+        T!['('] => tuple_or_paren_expr(p),
         T!['['] => (array_expr(p), NotBlock),
         T![|] => (closure_expr(p, r), NotBlock),
         T![move] if p.nth(1) == T![|] => (closure_expr(p, r), NotBlock),
@@ -685,13 +694,15 @@ fn record_expr_field_list(p: &mut Parser<'_>) {
 }
 
 /// `()`, `(e)`, `(e,)` or `(a, b)`.
-fn tuple_or_paren_expr(p: &mut Parser<'_>) -> CompletedMarker {
+fn tuple_or_paren_expr(p: &mut Parser<'_>) -> (CompletedMarker, BlockLike) {
+    let invisible = p.input.is_invisible_paren(p.pos);
     let m = p.start();
     p.bump(T!['(']);
     let mut count = 0;
     let mut trailing_comma = false;
+    let mut blocklike = BlockLike::NotBlock;
     while !p.at(T![')']) && !p.at_end() && p.at_ts(EXPR_FIRST) {
-        expr(p);
+        blocklike = expr_bp(p, DEFAULT, 1).map_or(BlockLike::NotBlock, |(_, kind)| kind);
         count += 1;
         trailing_comma = p.eat(T![,]);
         if !trailing_comma {
@@ -704,7 +715,12 @@ fn tuple_or_paren_expr(p: &mut Parser<'_>) -> CompletedMarker {
     } else {
         TUPLE_EXPR
     };
-    m.complete(p, kind)
+    let blocklike = if invisible && kind == PAREN_EXPR && blocklike != BlockLike::NotBlock {
+        BlockLike::Block
+    } else {
+        BlockLike::NotBlock
+    };
+    (m.complete(p, kind), blocklike)
 }
 
 /// `[a, b, c]` or `[value; count]`.

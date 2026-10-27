@@ -89,6 +89,11 @@ fn cfg_predicate(
         ("target_pointer_width", Some(v)) => v == "64",
         ("target_endian", Some(v)) => v == "little",
         ("target_vendor", Some(v)) => v == if os == "macos" { "apple" } else { "unknown" },
+        ("target_env", Some(v)) => v == if os == "macos" { "" } else { "gnu" },
+        ("target_abi", Some(v)) => v.is_empty(),
+        // Native byte/halfword/word/doubleword atomics are representable on
+        // both admitted targets. The backend does not expose 128-bit atomics.
+        ("target_has_atomic", Some(v)) => matches!(v, "8" | "16" | "32" | "64" | "ptr"),
         // Flux emits a fixed baseline target, independently of the flags used
         // to compile Flux itself. Only baseline features are advertised here;
         // optional CPU extensions require an explicit codegen configuration.

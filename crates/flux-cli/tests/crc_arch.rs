@@ -144,7 +144,7 @@ fn crc_contexts_match_rustc() {
 }
 
 #[test]
-fn safe_target_feature_requires_unimplemented_call_metadata() {
+fn safe_target_feature_obeys_call_metadata() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(format!("../../out/crc-safe-feature/{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
@@ -177,11 +177,5 @@ fn safe_target_feature_requires_unimplemented_call_metadata() {
         Duration::from_secs(60),
     )
     .completed();
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("`target_feature` on safe functions are not supported yet"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    support::oracle::success(&output, "Flux checks safe target-feature calls");
 }

@@ -197,9 +197,15 @@ source graphs are complete Keel codegen, frontend, linker and optimizer crates,
 followed by flux-codegen. The maintained `keel_backend_readiness` audit records
 that 39-package closure, actual build outputs, and a separately scoped
 18-package linker-free core. Per-crate compilation environments now provide
-separate OUT_DIR values. OnceCell and current_dir are implemented and tested;
-the refreshed core audit reaches zero syntax/HIR diagnostics and 92 type
-diagnostics. MIR has not run. `flux cargo prepare` records Cargo build-script
+separate OUT_DIR values. In `out/keel-backend-readiness/42376`, the unchanged
+18-package core has zero syntax, HIR, type and MIR diagnostics. Its Flux-built
+consumer constructs IR, optimizes, emits AArch64 and x86 code, and parses object
+output, matching rustc with optimization off/on. All byte guards pass. This
+does not yet build the complete Flux executable. The full graph now has zero
+syntax/HIR diagnostics and reaches type checking with 2,485 diagnostics, including
+cascades from associated array lengths, missing pointer APIs, union field support
+and remaining serialization trait/projection contracts. Full-graph MIR/codegen
+remain gated. `flux cargo prepare` records Cargo build-script
 outputs and host proc-macro artifacts, and `flux cargo build` compiles supported
 binary source graphs. Function-like, attribute and derive proc macros now expand through the matching
 rustc toolchain server. The full backend audit includes the actual serde_derive

@@ -70,6 +70,16 @@ pub(crate) const fn needs_drop<T>() -> bool {
     loop {}
 }
 
+#[rustc_intrinsic]
+pub(crate) const fn discriminant_value<T>(value: &T) -> u128 {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) const fn discriminant_is_signed<T>() -> bool {
+    loop {}
+}
+
 /// `&slice[start..end]`, unchecked: `start <= end <= slice.len()`.
 #[rustc_intrinsic]
 pub(crate) const unsafe fn subslice<T>(slice: &[T], start: usize, end: usize) -> &[T] {
@@ -364,5 +374,64 @@ pub(crate) unsafe fn __atomic_ptr_store_release<T>(p: *mut T, value: T) {
 
 #[rustc_intrinsic]
 pub(crate) unsafe fn __atomic_ptr_store_seqcst<T>(p: *mut T, value: T) {
+    loop {}
+}
+
+// Private byte atomic bridge; storage is naturally aligned at one byte.
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u8_load_relaxed<T>(p: *const T) -> T { loop {} }
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u8_load_acquire<T>(p: *const T) -> T { loop {} }
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u8_load_seqcst<T>(p: *const T) -> T { loop {} }
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u8_store_relaxed<T>(p: *mut T, value: T) { loop {} }
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u8_store_release<T>(p: *mut T, value: T) { loop {} }
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u8_store_seqcst<T>(p: *mut T, value: T) { loop {} }
+
+// Private halfword atomic bridge; storage is naturally aligned at one halfword.
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u16_load_relaxed<T>(p: *const T) -> T { loop {} }
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u16_load_acquire<T>(p: *const T) -> T { loop {} }
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u16_load_seqcst<T>(p: *const T) -> T { loop {} }
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u16_store_relaxed<T>(p: *mut T, value: T) { loop {} }
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u16_store_release<T>(p: *mut T, value: T) { loop {} }
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u16_store_seqcst<T>(p: *mut T, value: T) { loop {} }
+
+// Volatile memory operations retain their externally observable access flags.
+#[rustc_intrinsic]
+pub(crate) unsafe fn read_volatile<T>(src:*const T)->T{loop{}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn write_volatile<T>(dst:*mut T,value:T){loop{}}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u8_cas_relaxed<T>(p: *mut T, expected: T, new: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u8_cas_acquire<T>(p: *mut T, expected: T, new: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u8_cas_release<T>(p: *mut T, expected: T, new: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u8_cas_acqrel<T>(p: *mut T, expected: T, new: T) -> T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u8_cas_seqcst<T>(p: *mut T, expected: T, new: T) -> T {
     loop {}
 }

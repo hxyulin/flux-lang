@@ -14,6 +14,7 @@ pub struct Input {
     /// Identifiers spelled `union`, excluding raw identifiers.
     union_keywords: Vec<u64>,
     dyn_keywords: Vec<u64>,
+    invisible_parens: Vec<u64>,
 }
 
 impl Input {
@@ -23,6 +24,7 @@ impl Input {
             joint: Vec::with_capacity(lexed.len() / 64 + 1),
             union_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
             dyn_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
+            invisible_parens: Vec::with_capacity(lexed.len() / 64 + 1),
         };
         let mut was_joint = false;
         for (i, &kind) in lexed.kinds().iter().enumerate() {
@@ -51,6 +53,7 @@ impl Input {
             self.joint.push(0);
             self.union_keywords.push(0);
             self.dyn_keywords.push(0);
+            self.invisible_parens.push(0);
         }
         if kind == SyntaxKind::IDENT && is_union {
             self.union_keywords[idx / 64] |= 1 << (idx % 64);
@@ -59,6 +62,20 @@ impl Input {
         if kind == SyntaxKind::IDENT && is_dyn {
             self.dyn_keywords[idx / 64] |= 1 << (idx % 64);
         }
+    }
+
+    /// Marks expander-inserted grouping, which preserves expression precedence
+    /// without changing whether the captured expression can omit a semicolon.
+    pub fn set_last_invisible_paren(&mut self) {
+        let index = self.kinds.len() - 1;
+        debug_assert_eq!(self.kinds[index], SyntaxKind::L_PAREN);
+        self.invisible_parens[index / 64] |= 1 << (index % 64);
+    }
+
+    pub(crate) fn is_invisible_paren(&self, index: usize) -> bool {
+        self.invisible_parens
+            .get(index / 64)
+            .is_some_and(|word| word & (1 << (index % 64)) != 0)
     }
 
     /// Marks the last token pushed as joint with the next.

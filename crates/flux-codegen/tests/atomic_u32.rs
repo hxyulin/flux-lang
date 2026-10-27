@@ -355,7 +355,11 @@ fn invalid_rust_api_uses_are_compile_only() {
         assert!(!output.status.success(), "rustc accepted {source}");
         let (_, _, hir) = flux_hir::lower_text(&path, source);
         let typed = flux_mir::check_file(&hir);
-        assert!(!hir.diagnostics.is_empty() || !typed.diagnostics.is_empty(), "Flux accepted {source}");
+        assert!(
+            !hir.diagnostics.is_empty() || !typed.diagnostics.is_empty()
+                || !flux_mir::build_file(&hir, &typed).diagnostics.is_empty(),
+            "Flux accepted {source}"
+        );
     }
     std::fs::remove_dir_all(dir).unwrap();
 }

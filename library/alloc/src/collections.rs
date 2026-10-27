@@ -1,4 +1,8 @@
 //! Ordered collections backed by the shared balanced tree.
+pub mod binary_heap;
+pub mod linked_list;
+pub use binary_heap::BinaryHeap;
+pub use linked_list::LinkedList;
 pub mod btree_map;
 pub mod btree_set;
 pub use btree_map::BTreeMap;

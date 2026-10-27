@@ -210,6 +210,14 @@ impl<'a> Formatter<'a> {
         self.options.flags = (self.options.flags & !flags::ALIGN_BITS) | align;
     }
 
+    pub(crate) fn pad_float_nan(&mut self) -> Result {
+        let old = self.options;
+        self.options.flags &= !flags::SIGN_PLUS_FLAG;
+        let result = self.pad_integral(true, "", "NaN");
+        self.options = old;
+        result
+    }
+
     /// Writes an integer's digits `buf`, after its sign (`-` unless
     /// `is_nonnegative`, `+` for `{:+}`) and, for `{:#}`, `prefix`,
     /// padded to the width as integers are: `{:0}` puts zeros after the

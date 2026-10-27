@@ -52,6 +52,42 @@ pub(super) fn check_inner_attrs(
             .map(|(r, m)| Diagnostic::new(*r, m.clone())),
     );
     for attr in attrs.iter() {
+        if crate_root && matches!(attr_name(attr), Some("crate_name" | "crate_type")) {
+            let name = attr_name(attr).unwrap();
+            let value = attr
+                .meta()
+                .filter(|m| {
+                    m.unsafe_token().is_none() && m.token_tree().is_none() && m.eq_token().is_some()
+                })
+                .and_then(|m| m.expr())
+                .and_then(|e| match e {
+                    ast::Expr::Literal(l) => l.value(),
+                    _ => None,
+                })
+                .filter(|t| t.kind() == SyntaxKind::STRING)
+                .and_then(|t| crate::literal::unescape_str(t.text()).ok());
+            match value {
+                Some(value)
+                    if name == "crate_name"
+                        && !value.is_empty()
+                        && value
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_') => {}
+                Some(value)
+                    if name == "crate_type" && matches!(value.as_str(), "lib" | "rlib" | "bin") => {
+                }
+                Some(_) if name == "crate_type" => unsupported(
+                    diagnostics,
+                    attr.syntax().text_range(),
+                    "this crate output kind",
+                ),
+                _ => diagnostics.push(Diagnostic::new(
+                    attr.syntax().text_range(),
+                    format!("malformed `{name}` attribute input"),
+                )),
+            }
+            continue;
+        }
         if crate_root && attr_name(attr) == Some("no_std") {
             if !attr.meta().is_some_and(|m| {
                 m.token_tree().is_none() && m.eq_token().is_none() && m.unsafe_token().is_none()
@@ -77,7 +113,8 @@ pub(super) fn target_feature_attr(
     function: ast::Fn<'_>,
     in_extern_block: bool,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> Vec<Symbol> {
+    let mut enabled = Vec::new();
     let range = attr.syntax().text_range();
     let meta = attr.meta().expect("named attribute");
     if std::env::consts::ARCH != "aarch64" {
@@ -92,16 +129,13 @@ pub(super) fn target_feature_attr(
             range,
             "`target_feature` is not an unsafe attribute",
         ));
-        return;
+        return enabled;
     }
     if in_extern_block || function.body().is_none() {
         diagnostics.push(Diagnostic::new(
             range,
             "`target_feature` requires a function with a body",
         ));
-    }
-    if function.unsafe_token().is_none() {
-        unsupported(diagnostics, range, "`target_feature` on safe functions");
     }
     let mut tokens = Vec::new();
     if let Some(tree) = meta.token_tree() {
@@ -115,11 +149,11 @@ pub(super) fn target_feature_attr(
     };
     let [open, inner @ .., close] = tokens.as_slice() else {
         malformed(diagnostics);
-        return;
+        return enabled;
     };
     if meta.eq_token().is_some() || open.kind != T!['('] || close.kind != T![')'] {
         malformed(diagnostics);
-        return;
+        return enabled;
     }
     let mut rest = inner;
     // Empty lists are inert in rustc. Repeated keys, attributes and features
@@ -127,20 +161,25 @@ pub(super) fn target_feature_attr(
     while !rest.is_empty() {
         let [key, eq, value, tail @ ..] = rest else {
             malformed(diagnostics);
-            return;
+            return enabled;
         };
         if key.text.as_str() != "enable" || eq.kind != T![=] || value.kind != SyntaxKind::STRING {
             malformed(diagnostics);
-            return;
+            return enabled;
         }
         match crate::literal::unescape_str(value.text.as_str()) {
             Ok(features) => {
                 for feature in features.split(',') {
-                    if !matches!(feature, "neon" | "crc") {
+                    if !matches!(feature, "neon" | "crc" | "sha2" | "sha3") {
                         diagnostics.push(Diagnostic::new(
                             value.range(),
                             format!("target feature `{feature}` is not supported yet"),
                         ));
+                    } else {
+                        let feature = Symbol::intern(feature);
+                        if !enabled.contains(&feature) {
+                            enabled.push(feature);
+                        }
                     }
                 }
             }
@@ -151,10 +190,11 @@ pub(super) fn target_feature_attr(
             [comma, tail @ ..] if comma.kind == T![,] => rest = tail,
             _ => {
                 malformed(diagnostics);
-                return;
+                return enabled;
             }
         }
     }
+    enabled
 }
 
 pub(super) fn target_feature_inline(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) {
@@ -233,9 +273,34 @@ pub(super) fn check_inert_attrs(
 
 pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) {
     const IGNORED: &[&str] = &[
-        "allow", "warn", "deny", "expect", "inline", "cold", "must_use", "doc",
+        "allow", "warn", "deny", "forbid", "expect", "inline", "cold", "must_use", "doc",
     ];
     let name = attr_name(attr);
+    // This compiler hint changes diagnostic suggestions, not trait selection.
+    if let Some(meta) = attr.meta()
+        && meta.unsafe_token().is_none()
+        && let Some(path) = meta.path()
+        && path
+            .segment()
+            .and_then(|s| s.name_ref())
+            .is_some_and(|n| n.text() == "do_not_recommend")
+        && let Some(namespace) = path.qualifier()
+        && namespace.qualifier().is_none()
+        && namespace
+            .segment()
+            .and_then(|s| s.name_ref())
+            .is_some_and(|n| n.text() == "diagnostic")
+    {
+        return;
+    }
+    if name == Some("link_name") {
+        link_name_attr(attr, diagnostics);
+        return;
+    }
+    if name == Some("link") {
+        link_attr(attr, diagnostics);
+        return;
+    }
     if name == Some("deprecated") {
         deprecated_attr(attr, diagnostics);
         return;
@@ -294,6 +359,155 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
         None => "attributes like this are not supported yet".to_owned(),
     };
     diagnostics.push(Diagnostic::new(attr.syntax().text_range(), message));
+}
+
+/// Native names are safe string-valued attributes; unused placements have
+/// no effect, as rustc's unused-attribute diagnostic does not reject them.
+pub(super) fn link_name_attr(
+    attr: ast::Attr<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Symbol> {
+    let range = attr.syntax().text_range();
+    let meta = attr.meta()?;
+    if meta.unsafe_token().is_some() {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "`link_name` is not an unsafe attribute",
+        ));
+        return None;
+    }
+    let literal = if meta.eq_token().is_some() && meta.token_tree().is_none() {
+        match meta.expr() {
+            Some(ast::Expr::Literal(literal)) => {
+                literal.value().filter(|t| t.kind() == SyntaxKind::STRING)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let Some(literal) = literal else {
+        let message = if matches!(meta.expr(), Some(ast::Expr::MacroExpr(_))) {
+            "macro-valued link names are not supported yet"
+        } else {
+            "malformed `link_name` attribute input"
+        };
+        diagnostics.push(Diagnostic::new(range, message));
+        return None;
+    };
+    let name = match crate::literal::unescape_str(literal.text()) {
+        Ok(name) => name,
+        Err(message) => {
+            diagnostics.push(Diagnostic::new(range, message));
+            return None;
+        }
+    };
+    if name.is_empty() || name.contains('\0') {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "link name must be nonempty and contain no NUL characters",
+        ));
+        return None;
+    }
+    if name.starts_with('\u{1}') {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "raw assembler-prefixed link names are not supported yet",
+        ));
+        return None;
+    }
+    Some(Symbol::intern(&name))
+}
+
+/// Literal native-library requests. Other linker kinds need their own
+/// object/archive semantics and must not silently become dynamic libraries.
+pub(super) fn link_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) -> Option<Symbol> {
+    let range = attr.syntax().text_range();
+    let meta = attr.meta()?;
+    let Some(tree) = meta
+        .token_tree()
+        .filter(|_| meta.unsafe_token().is_none() && meta.eq_token().is_none())
+    else {
+        diagnostics.push(Diagnostic::new(range, "malformed `link` attribute input"));
+        return None;
+    };
+    let tokens: Vec<_> = tree
+        .syntax()
+        .children_with_tokens()
+        .filter(|t| !t.kind().is_trivia())
+        .collect();
+    let mut tokens = &tokens[1..tokens.len().saturating_sub(1)];
+    let mut name = None;
+    let mut kind = None;
+    while !tokens.is_empty() {
+        let [
+            SyntaxElement::Token(key),
+            SyntaxElement::Token(eq),
+            SyntaxElement::Token(value),
+            rest @ ..,
+        ] = tokens
+        else {
+            diagnostics.push(Diagnostic::new(
+                range,
+                "expected literal native library options",
+            ));
+            return None;
+        };
+        if eq.text() != "=" || value.kind() != SyntaxKind::STRING {
+            diagnostics.push(Diagnostic::new(
+                range,
+                "expected literal native library options",
+            ));
+            return None;
+        }
+        let value = match crate::literal::unescape_str(value.text()) {
+            Ok(value) => value,
+            Err(message) => {
+                diagnostics.push(Diagnostic::new(range, message));
+                return None;
+            }
+        };
+        let slot = match key.text() {
+            "name" => &mut name,
+            "kind" => &mut kind,
+            _ => {
+                unsupported(
+                    diagnostics,
+                    range,
+                    "native library options other than name and kind",
+                );
+                return None;
+            }
+        };
+        if slot.replace(value).is_some() {
+            diagnostics.push(Diagnostic::new(range, "duplicate native library option"));
+            return None;
+        }
+        tokens = match rest {
+            [] => rest,
+            [SyntaxElement::Token(comma), rest @ ..] if comma.text() == "," => rest,
+            _ => {
+                diagnostics.push(Diagnostic::new(range, "expected `,`"));
+                return None;
+            }
+        };
+    }
+    if kind.as_deref().is_some_and(|kind| kind != "dylib") {
+        unsupported(diagnostics, range, "native library kinds other than dylib");
+        return None;
+    }
+    let Some(name) = name.filter(|name| !name.is_empty() && !name.contains('\0')) else {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "native library name must be nonempty and contain no NUL characters",
+        ));
+        return None;
+    };
+    if name.contains('/') || name.contains('\\') {
+        unsupported(diagnostics, range, "native library path names");
+        return None;
+    }
+    Some(Symbol::intern(&name))
 }
 
 /// Deprecation is lint metadata; validate its payload as for other accepted
@@ -364,6 +578,7 @@ pub(super) fn repr_attr(
     attr: ast::Attr<'_>,
     out: &mut Vec<(Symbol, TextRange)>,
     repr_align: &mut u32,
+    repr_pack: &mut Option<u32>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let meta = attr.meta();
@@ -402,7 +617,16 @@ pub(super) fn repr_attr(
         });
         match name {
             Some(name) if known => {
-                if name.text() == "align" {
+                if name.text() == "packed" && item.len() == 1 {
+                    if repr_pack.is_some_and(|pack| pack != 1) {
+                        diagnostics.push(Diagnostic::new(
+                            name.text_range(),
+                            "conflicting packed representation hints",
+                        ));
+                    }
+                    *repr_pack = Some(1);
+                }
+                if name.text() == "align" || (name.text() == "packed" && item.len() == 2) {
                     let tree = item[1].into_node().expect("checked token tree");
                     let mut args: Vec<_> = tree
                         .children_with_tokens()
@@ -425,7 +649,10 @@ pub(super) fn repr_attr(
                     match value {
                         Some(crate::Literal::Int { value, suffix: None })
                             if value.is_power_of_two() && value <= (1 << 29) => {
-                                *repr_align = (*repr_align).max(value as u32);
+                                if name.text()=="align" {*repr_align=(*repr_align).max(value as u32);} else {
+                                    if repr_pack.is_some_and(|pack|pack!=value as u32){diagnostics.push(Diagnostic::new(range,"conflicting packed representation hints"));}
+                                    *repr_pack=Some(value as u32);
+                                }
                             }
                         Some(crate::Literal::Int { suffix: None, .. }) => diagnostics.push(
                             Diagnostic::new(range, "invalid `repr(align)` attribute: alignment must be a power of two no larger than 2^29")),
@@ -453,7 +680,7 @@ pub(super) fn struct_repr(
     for &(hint, range) in hints {
         match hint.as_str() {
             "C" => c = true,
-            "Rust" | "align" | "transparent" => {}
+            "Rust" | "align" | "transparent" | "packed" => {}
             name if REPR_INTS.contains(&name) => diagnostics.push(Diagnostic::new(
                 range,
                 "attribute should be applied to an enum",

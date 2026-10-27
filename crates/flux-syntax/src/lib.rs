@@ -193,7 +193,28 @@ pub fn parse_expansion_with_token_kinds(
 ) -> Parse {
     let mut lexed = LexedStr::with_edition(&text, edition);
     lexed.set_token_kinds(kinds);
-    let input = parser::Input::from_lexed(&lexed);
+    let mut input = parser::Input::default();
+    for (index, &kind) in lexed.kinds().iter().enumerate() {
+        if kind.is_trivia() {
+            continue;
+        }
+        input.push_contextual(
+            kind,
+            lexed.is_union_keyword(index),
+            lexed.is_dyn_keyword(index),
+        );
+        if kind == T!['(']
+            && origins
+                .binary_search_by_key(&lexed.token_start(index), |(start, _)| *start)
+                .ok()
+                .is_some_and(|at| origins[at].1.range.is_empty())
+        {
+            input.set_last_invisible_paren();
+        }
+        if index + 1 < lexed.len() && !lexed.kind(index + 1).is_trivia() {
+            input.set_last_joint();
+        }
+    }
     let output = parser::parse_expansion(&input, fragment);
     let (parts, mut errors) = build::build(lexed, output);
     let mut tree = parts.into_tree(text);

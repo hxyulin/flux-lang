@@ -17,6 +17,7 @@ use super::tt::{Tok, pretty};
 /// A macro the compiler implements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Builtin {
+    Derive,
     Assert,
     Panic,
     Unreachable,
@@ -43,6 +44,7 @@ pub enum Builtin {
 impl Builtin {
     pub(crate) fn from_name(name: &str) -> Builtin {
         match name {
+            "derive" => Builtin::Derive,
             "assert" => Builtin::Assert,
             "panic" => Builtin::Panic,
             "unreachable" => Builtin::Unreachable,
@@ -327,6 +329,9 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
                 _ => "compile_error! takes 1 argument".into(),
             };
             return Err((cx.call, message));
+        }
+        Builtin::Derive => {
+            return Err((cx.call, "expected an attribute, found `derive!`".into()));
         }
         Builtin::Unsupported => {
             return Err((cx.call, format!("`{}!` is not supported yet", cx.name)));

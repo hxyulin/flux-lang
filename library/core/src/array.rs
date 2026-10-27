@@ -361,3 +361,14 @@ impl<T: Default> Default for [T; 29] { fn default() -> [T; 29] { [T::default(), 
 impl<T: Default> Default for [T; 30] { fn default() -> [T; 30] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
 impl<T: Default> Default for [T; 31] { fn default() -> [T; 31] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
 impl<T: Default> Default for [T; 32] { fn default() -> [T; 32] { [T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default(), T::default()] } }
+
+/// Views one shared value as an array of length one without copying it.
+pub const fn from_ref<T>(value:&T)->&[T;1] {
+    // SAFETY: a one-element array has the size and alignment of its element.
+    unsafe {&*(value as *const T as *const [T;1])}
+}
+/// Views one exclusive value as an array of length one without copying it.
+pub const fn from_mut<T>(value:&mut T)->&mut [T;1] {
+    // SAFETY: the returned view preserves the input's exclusive loan and layout.
+    unsafe {&mut *(value as *mut T as *mut [T;1])}
+}

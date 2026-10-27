@@ -809,6 +809,7 @@ pub fn resolve_type(
                 {
                     let object = flux_hir::DynRef {
                         bounds: Box::new([flux_hir::Bound {
+                            bound_lifetimes: Box::default(),
                             path: path.clone(),
                             range,
                         }]),
@@ -1225,7 +1226,7 @@ fn assoc_type(
     errors: &mut Vec<(TextRange, String)>,
 ) -> Ty {
     let base = assoc_type_base(items, module, path, scope, range, errors);
-    let TyKind::Alias(mut alias) = base.kind() else {
+    let TyKind::Alias(alias) = base.kind() else {
         return base;
     };
     if scope.in_fn_pointer && regions::has_projection_inputs(alias) {
@@ -1235,21 +1236,43 @@ fn assoc_type(
         ));
         return Ty::ERROR;
     }
+    let index = path.segments.len() - 1;
+    resolve_family_arguments(
+        items,
+        module,
+        alias,
+        path.args(index),
+        scope,
+        path.range(index, range),
+        errors,
+    )
+    .map(Ty::alias)
+    .unwrap_or(Ty::ERROR)
+}
+
+/// The family's own argument list, shared by projection paths and equality
+/// bindings. Trait membership remains exclusively in `alias.args`.
+pub(crate) fn resolve_family_arguments(
+    items: &ItemTree,
+    module: ModuleId,
+    mut alias: crate::AliasTy,
+    written: Option<&flux_hir::GenericArgs>,
+    scope: TypeScope<'_>,
+    at: TextRange,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Option<crate::AliasTy> {
     let Some(declaration) = items.traits[alias.trait_]
         .types
         .iter()
         .find(|ty| ty.name == alias.name)
     else {
-        return base;
+        return Some(alias);
     };
-    let index = path.segments.len() - 1;
-    let written = path.args(index);
-    let at = path.range(index, range);
     let want = declaration.generics.params.len();
     let got = written.map_or(0, |args| args.types.len());
     if want != got {
         errors.push((at, wrong_arg_count("associated type", want, got)));
-        return Ty::ERROR;
+        return None;
     }
     let lifetimes = declaration.generics.lifetimes.len();
     let given_lifetimes = written.map_or(0, |args| args.lifetimes.len());
@@ -1258,7 +1281,7 @@ fn assoc_type(
             written.map_or(at, |args| args.range),
             format!("expected {lifetimes} lifetime arguments, found {given_lifetimes}"),
         ));
-        return Ty::ERROR;
+        return None;
     }
     if let Some(written) = written {
         if written.parenthesized || !written.bindings.is_empty() {
@@ -1266,7 +1289,7 @@ fn assoc_type(
                 written.range,
                 "associated type arguments must be types, constants or lifetimes".into(),
             ));
-            return Ty::ERROR;
+            return None;
         }
         alias.family_args = Ty::list(&resolve_generic_args(
             items,
@@ -1284,10 +1307,10 @@ fn assoc_type(
             .find(|(param, arg)| !param.maybe_unsized && scope.is_unsized(items, **arg))
         {
             errors.push((at, unsized_error(arg)));
-            return Ty::ERROR;
+            return None;
         }
     }
-    Ty::alias(alias)
+    Some(alias)
 }
 
 fn assoc_type_base(
@@ -1340,6 +1363,7 @@ fn assoc_type_base(
     // `<T as Tr>::Out`: the trait is written.
     if let Some((trait_path, qrange)) = trait_path {
         let bound = flux_hir::Bound {
+            bound_lifetimes: Box::default(),
             path: trait_path.clone(),
             range: qrange,
         };

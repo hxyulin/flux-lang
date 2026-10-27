@@ -96,6 +96,12 @@ pub const STD_ROOT: &str = "<std>";
 
 const STD_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/std/src/lib.rs")),
+    ("net.rs", include_str!("../../../library/std/src/net.rs")),
+    ("os.rs", include_str!("../../../library/std/src/os.rs")),
+    (
+        "process.rs",
+        include_str!("../../../library/std/src/process.rs"),
+    ),
     ("arch.rs", include_str!("../../../library/std/src/arch.rs")),
     (
         "float.rs",
@@ -170,6 +176,7 @@ const STD_FILES: &[(&str, &str)] = &[
 /// compiler, after `core`, as rustc's `alloc` is after its `core`.
 const ALLOC_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/alloc/src/lib.rs")),
+    ("ffi.rs", include_str!("../../../library/alloc/src/ffi.rs")),
     ("rc.rs", include_str!("../../../library/alloc/src/rc.rs")),
     (
         "collections.rs",
@@ -182,6 +189,14 @@ const ALLOC_FILES: &[(&str, &str)] = &[
     (
         "collections/btree_set.rs",
         include_str!("../../../library/alloc/src/collections/btree_set.rs"),
+    ),
+    (
+        "collections/binary_heap.rs",
+        include_str!("../../../library/alloc/src/collections/binary_heap.rs"),
+    ),
+    (
+        "collections/linked_list.rs",
+        include_str!("../../../library/alloc/src/collections/linked_list.rs"),
     ),
     (
         "macros.rs",
@@ -227,6 +242,14 @@ const ALLOC_FILES: &[(&str, &str)] = &[
 /// `library/core/src`, relative to [`CORE_ROOT`].
 const CORE_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/core/src/lib.rs")),
+    (
+        "num/saturating.rs",
+        include_str!("../../../library/core/src/num/saturating.rs"),
+    ),
+    (
+        "num/wrapping.rs",
+        include_str!("../../../library/core/src/num/wrapping.rs"),
+    ),
     (
         "float/decimal.rs",
         include_str!("../../../library/core/src/float/decimal.rs"),

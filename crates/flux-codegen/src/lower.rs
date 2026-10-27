@@ -82,7 +82,7 @@ pub fn lower_module(
         .iter()
         .map(|(id, f)| {
             let name = if f.is_extern {
-                f.name.to_string()
+                f.link_name.unwrap_or(f.name).to_string()
             } else {
                 // The function's path: its crate, its modules, and its
                 // type for an associated function, `krate::m::S::new`,
@@ -110,6 +110,11 @@ pub fn lower_module(
                         }
                     }
                     (None, None) => {}
+                }
+                if let Some((strukt, _)) = f.ctor
+                    && items.structs[strukt].is_enum()
+                {
+                    path.push(items.structs[strukt].name.as_str());
                 }
                 path.push(f.name.as_str());
                 // Source crates may share a library name, and an impl may
@@ -163,6 +168,9 @@ pub fn lower_module(
         .iter()
         .filter(|(_, c)| c.is_static.is_some())
         .map(|(id, c)| {
+            if let Some(symbol) = c.extern_symbol {
+                return (id, symbol.to_string());
+            }
             let mut path = Vec::new();
             let mut m = Some(c.loc.module);
             while let Some(id) = m {
@@ -237,6 +245,9 @@ pub fn lower_module(
     // Every static, with its initial value, in memory a `static mut`
     // may write.
     for (&id, symbol) in &statics {
+        if items.consts[id].extern_symbol.is_some() {
+            continue;
+        }
         let Some(value) = mir.const_values.items.get(id) else {
             continue;
         };
@@ -799,6 +810,7 @@ impl Ctx<'_> {
             sret: None,
             direct_sret: Vec::new(),
             callees: FxHashMap::default(),
+            address_align: FxHashMap::default(),
             panic_block: None,
         };
         lower.body();
@@ -895,6 +907,21 @@ impl Ctx<'_> {
     /// representation, but their data is emitted only when referenced.
     fn constant_storage(&mut self, id: flux_hir::ConstId) -> String {
         if let Some(name) = self.statics.get(&id) {
+            if self.hir.items.consts[id].extern_symbol.is_some()
+                && !self.data.iter().any(|data| data.name == *name)
+            {
+                self.data.push(DataObject {
+                    name: name.clone(),
+                    thread_local: false,
+                    local: false,
+                    weak_odr: false,
+                    weak: false,
+                    section: None,
+                    retain: false,
+                    hidden: false,
+                    init: None,
+                });
+            }
             return name.clone();
         }
         let value = self
@@ -957,6 +984,22 @@ impl Ctx<'_> {
             V::Bool(b) => bytes[at] = u8::from(*b),
             V::Function(instance) => {
                 addresses.push((at, instance_symbol(self.hir, self.symbols, *instance), 0));
+            }
+            V::DynPointer {
+                pointer,
+                concrete,
+                object,
+                mutable,
+            } => {
+                self.write_bytes(
+                    pointer,
+                    Ty::new(TyKind::Ref(*mutable, *concrete)),
+                    at,
+                    bytes,
+                    addresses,
+                );
+                let vtable = self.vtable(*object, *concrete);
+                addresses.push((at + 8, vtable, 0));
             }
             V::Static(id) => {
                 addresses.push((at, self.constant_storage(*id), 0));
@@ -1246,6 +1289,8 @@ struct Lower<'a, 'c, 'f> {
     /// Fresh, unborrowed locals whose storage can receive a call result.
     direct_sret: Vec<bool>,
     callees: FxHashMap<Instance, FuncRef>,
+    /// Reduced alignment of addresses derived from packed storage.
+    address_align: FxHashMap<Value, u64>,
     /// Calls `abort`; shared by every failed assertion.
     panic_block: Option<Block>,
 }
@@ -1517,6 +1562,15 @@ impl Lower<'_, '_, '_> {
                 (ProjectionElem::Field(field), Location::Memory(address)) => {
                     let layout = self.ctx.layouts.of(ty.ty);
                     let offset = layout.field_offset(ty.variant.unwrap_or(0), field);
+                    if matches!(
+                        ty.ty.kind(),
+                        TyKind::Adt(..) | TyKind::Tuple(_) | TyKind::Closure(..)
+                    ) {
+                        self.address_align
+                            .entry(address)
+                            .and_modify(|a| *a = (*a).min(layout.align))
+                            .or_insert(layout.align);
+                    }
                     Location::Memory(self.offset(address, offset))
                 }
                 (ProjectionElem::Downcast(variant), Location::Vars { local, start, .. }) => {
@@ -1642,9 +1696,15 @@ impl Lower<'_, '_, '_> {
         if size == 0 {
             return address;
         }
+        let stride = size;
         let size = self.b.ins().iconst(Type::I64, size as i64);
         let offset = self.b.ins().imul(index, size);
-        self.b.ins().ptradd(address, offset)
+        let result = self.b.ins().ptradd(address, offset);
+        if let Some(&align) = self.address_align.get(&address) {
+            self.address_align
+                .insert(result, align.min(1u64 << stride.trailing_zeros()));
+        }
+        result
     }
 
     /// Copies `size` bytes of a value of a memory type from `from` to `to`.
@@ -1737,6 +1797,16 @@ impl Lower<'_, '_, '_> {
     /// Stores at `address` the value of `rvalue`, an aggregate or repeat
     /// expression of `ty`, a memory type: each part where it goes.
     fn build_in_memory(&mut self, address: Value, rvalue: &Rvalue, ty: Ty) {
+        if matches!(
+            ty.kind(),
+            TyKind::Adt(..) | TyKind::Tuple(_) | TyKind::Closure(..)
+        ) {
+            let align = self.ctx.layouts.of(ty).align;
+            self.address_align
+                .entry(address)
+                .and_modify(|a| *a = (*a).min(align))
+                .or_insert(align);
+        }
         let sigs = self.sigs;
         match rvalue {
             Rvalue::Aggregate(AggregateKind::Union(_, field), operands) => {
@@ -1786,6 +1856,16 @@ impl Lower<'_, '_, '_> {
     /// rustc lays it out; an enum's variant is the one its first leaf,
     /// the discriminant, says.
     fn store(&mut self, address: Value, ty: Ty, values: &[Value]) {
+        if matches!(
+            ty.kind(),
+            TyKind::Adt(..) | TyKind::Tuple(_) | TyKind::Closure(..)
+        ) {
+            let align = self.ctx.layouts.of(ty).align;
+            self.address_align
+                .entry(address)
+                .and_modify(|a| *a = (*a).min(align))
+                .or_insert(align);
+        }
         let sigs = self.sigs;
         if is_memory(sigs, ty) {
             let size = self.ctx.layouts.of(ty).size;
@@ -1795,13 +1875,17 @@ impl Lower<'_, '_, '_> {
             return;
         }
         if is_fat(self.sigs, ty) {
-            self.b
-                .ins()
-                .store_with_flags(values[0], address, aligned(Type::Ptr));
+            self.b.ins().store_with_flags(
+                values[0],
+                address,
+                address_flags(&self.address_align, address, Type::Ptr),
+            );
             let at = self.offset(address, 8);
-            self.b
-                .ins()
-                .store_with_flags(values[1], at, aligned(Type::I64));
+            self.b.ins().store_with_flags(
+                values[1],
+                at,
+                address_flags(&self.address_align, at, Type::I64),
+            );
             return;
         }
         if let Some(variants) = sigs.variants(ty) {
@@ -1820,9 +1904,11 @@ impl Lower<'_, '_, '_> {
             return;
         }
         if let (Some(scalar), Some(&value)) = (keel_type(ty), values.first()) {
-            self.b
-                .ins()
-                .store_with_flags(value, address, aligned(scalar));
+            self.b.ins().store_with_flags(
+                value,
+                address,
+                address_flags(&self.address_align, address, scalar),
+            );
         }
     }
 
@@ -1910,9 +1996,11 @@ impl Lower<'_, '_, '_> {
             let int = tag_int(bytes);
             let value = self.int_const(bits, int);
             let at = self.offset(address, offset);
-            self.b
-                .ins()
-                .store_with_flags(value, at, aligned(int_type(int)));
+            self.b.ins().store_with_flags(
+                value,
+                at,
+                address_flags(&self.address_align, at, int_type(int)),
+            );
         }
     }
 
@@ -1931,15 +2019,21 @@ impl Lower<'_, '_, '_> {
             value
         };
         let at = self.offset(address, tag.offset);
-        self.b
-            .ins()
-            .store_with_flags(value, at, aligned(int_type(int)));
+        self.b.ins().store_with_flags(
+            value,
+            at,
+            address_flags(&self.address_align, at, int_type(int)),
+        );
     }
 
     /// The discriminant of the enum `ty` at `address`, of its
     /// discriminant type: the tag extended, or decoded from the niche.
     fn load_discriminant(&mut self, address: Value, ty: Ty) -> Value {
         let layout = self.ctx.layouts.of(ty);
+        self.address_align
+            .entry(address)
+            .and_modify(|a| *a = (*a).min(layout.align))
+            .or_insert(layout.align);
         let leaf = discriminant(self.sigs, ty);
         let TyKind::Adt(adt, _) = ty.kind() else {
             return self.int_const(0, leaf);
@@ -1955,10 +2049,11 @@ impl Lower<'_, '_, '_> {
         };
         let int = tag_int(tag.bytes);
         let at = self.offset(address, tag.offset);
-        let raw = self
-            .b
-            .ins()
-            .load_with_flags(int_type(int), at, aligned(int_type(int)));
+        let raw = self.b.ins().load_with_flags(
+            int_type(int),
+            at,
+            address_flags(&self.address_align, at, int_type(int)),
+        );
         // `raw` in the discriminant's type.
         let widen = |this: &mut Self, value: Value, signed: bool| -> Value {
             if leaf.bits() > int.bits() {
@@ -2013,20 +2108,34 @@ impl Lower<'_, '_, '_> {
     }
 
     fn load_into(&mut self, address: Value, ty: Ty, out: &mut Values) {
+        if matches!(
+            ty.kind(),
+            TyKind::Adt(..) | TyKind::Tuple(_) | TyKind::Closure(..)
+        ) {
+            let align = self.ctx.layouts.of(ty).align;
+            self.address_align
+                .entry(address)
+                .and_modify(|a| *a = (*a).min(align))
+                .or_insert(align);
+        }
         let sigs = self.sigs;
         if is_memory(sigs, ty) {
             out.push(address);
             return;
         }
         if is_fat(self.sigs, ty) {
-            out.push(
-                self.b
-                    .ins()
-                    .load_with_flags(Type::Ptr, address, aligned(Type::Ptr)),
-            );
+            out.push(self.b.ins().load_with_flags(
+                Type::Ptr,
+                address,
+                address_flags(&self.address_align, address, Type::Ptr),
+            ));
             let at = self.offset(address, 8);
             let meta = if is_dyn_ptr(ty) { Type::Ptr } else { Type::I64 };
-            out.push(self.b.ins().load_with_flags(meta, at, aligned(meta)));
+            out.push(self.b.ins().load_with_flags(
+                meta,
+                at,
+                address_flags(&self.address_align, at, meta),
+            ));
             return;
         }
         if let Some(variants) = sigs.variants(ty) {
@@ -2054,11 +2163,11 @@ impl Lower<'_, '_, '_> {
             return;
         }
         if let Some(scalar) = keel_type(ty) {
-            out.push(
-                self.b
-                    .ins()
-                    .load_with_flags(scalar, address, aligned(scalar)),
-            );
+            out.push(self.b.ins().load_with_flags(
+                scalar,
+                address,
+                address_flags(&self.address_align, address, scalar),
+            ));
         }
     }
 
@@ -2237,6 +2346,17 @@ impl Lower<'_, '_, '_> {
             V::Function(instance) => {
                 let callee = self.callee(instance.function, instance.args);
                 out.push(self.b.ins().symbol_addr(keel_ir::Symbol::Func(callee)));
+            }
+            V::DynPointer {
+                pointer,
+                concrete,
+                object,
+                mutable,
+            } => {
+                self.value_leaves(pointer, Ty::new(TyKind::Ref(*mutable, *concrete)), out);
+                let vtable = self.ctx.vtable(*object, *concrete);
+                let data = self.b.import_data(&vtable);
+                out.push(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)));
             }
             V::Static(id) => {
                 out.push(self.static_addr(*id));
@@ -2482,10 +2602,11 @@ impl Lower<'_, '_, '_> {
                     )
                     .expect("upcasting is to a supertrait");
                     let address = self.offset(leaves[1], 8 * index as u64);
-                    let vtable =
-                        self.b
-                            .ins()
-                            .load_with_flags(Type::Ptr, address, aligned(Type::Ptr));
+                    let vtable = self.b.ins().load_with_flags(
+                        Type::Ptr,
+                        address,
+                        address_flags(&self.address_align, address, Type::Ptr),
+                    );
                     return smallvec![leaves[0], vtable];
                 }
                 let name = self.ctx.vtable(object, pointee_of);
@@ -2571,7 +2692,10 @@ impl Lower<'_, '_, '_> {
                 // Pointers are 64-bit addresses: a pointer as another is
                 // itself, as an integer its address truncated, and an
                 // integer as a pointer is extended to 64 bits first.
-                let (from_ptr, to_ptr) = (from.is_pointer(), to.is_pointer());
+                let (from_ptr, to_ptr) = (
+                    from.is_pointer() || matches!(from.kind(), TyKind::FnPtr(_)),
+                    to.is_pointer(),
+                );
                 if from_ptr && to_ptr {
                     return Some(value);
                 }
@@ -3052,6 +3176,36 @@ impl Lower<'_, '_, '_> {
                     }
                     return;
                 }
+                if let Some(
+                    intrinsic @ (flux_hir::Intrinsic::ReadVolatile
+                    | flux_hir::Intrinsic::WriteVolatile),
+                ) = items.functions[*func].intrinsic
+                {
+                    let ty = generic_args[0];
+                    let scalar = flux_mir::mono::volatile_scalar(self.sigs, ty)
+                        .expect("validated volatile scalar");
+                    if let Some(machine) = keel_type(scalar) {
+                        let address = self.operand(&args[0])[0];
+                        let mut flags = aligned(machine);
+                        flags.volatile = true;
+                        if intrinsic == flux_hir::Intrinsic::ReadVolatile {
+                            let value = self.b.ins().load_with_flags(machine, address, flags);
+                            self.write(dest, &[value]);
+                        } else {
+                            let value = self.operand(&args[1])[0];
+                            self.b.ins().store_with_flags(value, address, flags);
+                        }
+                    } else {
+                        // Rust zero-sized volatile operations do not access memory.
+                        self.write(dest, &[]);
+                    }
+                    if let Some(target) = target {
+                        self.b.ins().jump(self.blocks[target.index()], &[]);
+                    } else {
+                        self.b.ins().trap();
+                    }
+                    return;
+                }
                 if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::ReadUnaligned) {
                     // Validated after substitution by mono. No reference to the
                     // source is formed. Keel's default load flags promise only
@@ -3082,6 +3236,8 @@ impl Lower<'_, '_, '_> {
                     };
                     let values: Vec<_> = args.iter().map(|arg| self.operand(arg)[0]).collect();
                     let word = match word {
+                        flux_mir::mono::AtomicWord::U8 => Type::I8,
+                        flux_mir::mono::AtomicWord::U16 => Type::I16,
                         flux_mir::mono::AtomicWord::U32 => Type::I32,
                         flux_mir::mono::AtomicWord::Usize => Type::I64,
                         flux_mir::mono::AtomicWord::Ptr => Type::Ptr,
@@ -3264,7 +3420,11 @@ impl Lower<'_, '_, '_> {
                     Some((pointer, layout)) => {
                         for ((offset, ty), value) in layout.leaves().into_iter().zip(values) {
                             let address = self.offset(pointer, offset);
-                            self.b.ins().store_with_flags(value, address, aligned(ty));
+                            self.b.ins().store_with_flags(
+                                value,
+                                address,
+                                address_flags(&self.address_align, address, ty),
+                            );
                         }
                         self.b.ins().return_(&[]);
                     }
@@ -3458,7 +3618,11 @@ impl Lower<'_, '_, '_> {
             .into_iter()
             .map(|(offset, ty)| {
                 let address = self.offset(pointer, offset);
-                self.b.ins().load_with_flags(ty, address, aligned(ty))
+                self.b.ins().load_with_flags(
+                    ty,
+                    address,
+                    address_flags(&self.address_align, address, ty),
+                )
             })
             .collect()
     }
@@ -3467,8 +3631,13 @@ impl Lower<'_, '_, '_> {
         if offset == 0 {
             return pointer;
         }
-        let offset = self.b.ins().iconst(Type::I64, offset as i64);
-        self.b.ins().ptradd(pointer, offset)
+        let displacement = self.b.ins().iconst(Type::I64, offset as i64);
+        let result = self.b.ins().ptradd(pointer, displacement);
+        if let Some(&align) = self.address_align.get(&pointer) {
+            self.address_align
+                .insert(result, align.min(1u64 << offset.trailing_zeros()));
+        }
+        result
     }
 
     /// Where code at `offset` in the body's file is, for a
@@ -3546,10 +3715,11 @@ impl Lower<'_, '_, '_> {
                 .import_signature(signature(self.sigs, &self.ctx.layouts, &thin, false));
         let receiver = self.operand(&args[0]);
         let address = self.offset(receiver[1], 8 * index as u64);
-        let pointer = self
-            .b
-            .ins()
-            .load_with_flags(Type::Ptr, address, aligned(Type::Ptr));
+        let pointer = self.b.ins().load_with_flags(
+            Type::Ptr,
+            address,
+            address_flags(&self.address_align, address, Type::Ptr),
+        );
         let data = receiver[0];
         let rest = &args[1..];
         let mut leaves = Values::new();
@@ -3751,6 +3921,14 @@ impl Lower<'_, '_, '_> {
 
 /// Flags for an access to a `ty` in memory laid out by a [`Layout`],
 /// which places each scalar at its natural alignment, its size.
+fn address_flags(alignments: &FxHashMap<Value, u64>, address: Value, ty: Type) -> MemoryFlags {
+    let mut flags = aligned(ty);
+    if let Some(&align) = alignments.get(&address) {
+        flags.align = flags.align.min(align as u32);
+    }
+    flags
+}
+
 fn aligned(ty: Type) -> MemoryFlags {
     MemoryFlags {
         align: Layout::Scalar(ty).align() as u32,

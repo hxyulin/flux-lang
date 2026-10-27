@@ -219,7 +219,18 @@ impl MacroDef {
                 .tokens()
                 .find(|t| !t.kind().is_trivia())
                 .map_or(edition, |t| t.edition());
-            let (rules, errors) = mbe::parse_rules(inner.to_vec(), name_range, edition);
+            let (mut rules, errors) = mbe::parse_rules(inner.to_vec(), name_range, edition);
+            rules.local_inner_macros = call.children().filter_map(ast::Attr::cast).any(|attr| {
+                crate::item_tree::attr_name(attr) == Some("macro_export")
+                    && attr
+                        .meta()
+                        .and_then(|m| m.token_tree())
+                        .is_some_and(|tree| {
+                            tree.syntax()
+                                .tokens()
+                                .any(|token| token.text() == "local_inner_macros")
+                        })
+            });
             for (range, message) in errors {
                 diagnostics.push(Diagnostic::new(range, message));
             }
@@ -303,87 +314,9 @@ pub(crate) fn resolve<'a, L>(
     let exported = |k: CrateId| items.exported_macros.get(&(k, name)).copied();
     // A macro by path, through the def map: what modules export or import.
     let by_path = || {
-        let mut lowered = crate::item_tree::lower_path(path, &mut Vec::new())?;
-        // Current-crate item collection can call a predecessor's macro before
-        // current scopes exist. Resolve through that crate's completed scope.
-        if items.def_map.scopes.len() < items.modules.len() {
-            let mut lookup_module = module;
-            let mut followed_imports = Vec::new();
-            for _ in 0..RECURSION_LIMIT {
-                if !matches!(
-                    lowered.anchor,
-                    crate::PathAnchor::Plain | crate::PathAnchor::Global
-                ) {
-                    break;
-                }
-                let first = *lowered.segments.first()?;
-                let mut current = lookup_module;
-                let mut import = None;
-                if lowered.anchor == crate::PathAnchor::Plain {
-                    loop {
-                        import = items.uses.iter().enumerate().rev().find(|(index, u)| !followed_imports.contains(index) && u.module == current
-                            && matches!(u.kind, crate::item_tree::UseKind::Named(alias) | crate::item_tree::UseKind::Module(alias) if alias == first));
-                        if import.is_some() {
-                            break;
-                        }
-                        let data = &items.modules[current];
-                        match (data.block, data.parent) {
-                            (Some(_), Some(parent)) => current = parent,
-                            _ => break,
-                        }
-                    }
-                }
-                if let Some((index, import)) = import {
-                    // An import's own source path does not resolve through
-                    // that same binding again (`use cfg_if::cfg_if`). Keep
-                    // walking predecessor aliases without cycling on them.
-                    followed_imports.push(index);
-                    let mut path = import.path.clone();
-                    path.segments = path
-                        .segments
-                        .iter()
-                        .chain(lowered.segments[1..].iter())
-                        .copied()
-                        .collect();
-                    path.ranges = path
-                        .ranges
-                        .iter()
-                        .chain(lowered.ranges.get(1..).unwrap_or_default())
-                        .copied()
-                        .collect();
-                    path.args = path
-                        .args
-                        .iter()
-                        .chain(lowered.args.get(1..).unwrap_or_default())
-                        .cloned()
-                        .collect();
-                    lowered = path;
-                    lookup_module = import.module;
-                    continue;
-                }
-                // A local module shadows the implicit extern prelude. Its
-                // current-crate scope is audited after item collection.
-                if lowered.anchor == crate::PathAnchor::Plain
-                    && items.modules.iter().any(|(_, m)| {
-                        m.parent == Some(items.named_module(lookup_module)) && m.name == first
-                    })
-                {
-                    return None;
-                }
-                let target = items.modules[items.loaded_extern_crate(first, lookup_module)?].krate;
-                lowered.anchor = crate::PathAnchor::DefinitionCrate(target);
-                lowered.segments = lowered.segments[1..].into();
-                lowered.ranges = lowered.ranges.get(1..).unwrap_or_default().into();
-                lowered.args = lowered.args.get(1..).unwrap_or_default().into();
-                break;
-            }
-            if !matches!(lowered.anchor, crate::PathAnchor::DefinitionCrate(target) if target != krate)
-            {
-                return None;
-            }
-        }
-        match items.resolve(module, &lowered, crate::def_map::Ns::Macros) {
-            Ok(crate::def_map::Resolved::Def(crate::def_map::Def::Macro(id))) => Some(id),
+        let lowered = crate::item_tree::lower_path(path, &mut Vec::new())?;
+        match resolve_predecessor(items, module, &lowered, crate::def_map::Ns::Macros)? {
+            crate::def_map::Resolved::Def(crate::def_map::Def::Macro(id)) => Some(id),
             _ => None,
         }
     };
@@ -473,6 +406,97 @@ pub(crate) fn resolve<'a, L>(
             .ok_or_else(not_found),
         _ => Err(not_found()),
     }
+}
+
+/// Resolves a completed dependency while the current crate's scopes are still
+/// being collected. Imports keep their defining module and are followed once.
+pub(crate) fn resolve_predecessor(
+    items: &ItemTree,
+    module: ModuleId,
+    path: &crate::Path,
+    ns: crate::def_map::Ns,
+) -> Option<crate::def_map::Resolved> {
+    let krate = items.modules[module].krate;
+    let mut lowered = path.clone();
+    // Current-crate item collection can call a predecessor's macro before
+    // current scopes exist. Resolve through that crate's completed scope.
+    if items.def_map.scopes.len() < items.modules.len() {
+        let mut lookup_module = module;
+        let mut followed_imports = Vec::new();
+        for _ in 0..RECURSION_LIMIT {
+            if !matches!(
+                lowered.anchor,
+                crate::PathAnchor::Plain | crate::PathAnchor::Global
+            ) {
+                break;
+            }
+            let first = *lowered.segments.first()?;
+            let mut current = lookup_module;
+            let mut import = None;
+            if lowered.anchor == crate::PathAnchor::Plain {
+                loop {
+                    import = items.uses.iter().enumerate().rev().find(|(index, u)| !followed_imports.contains(index) && u.module == current
+                            && matches!(u.kind, crate::item_tree::UseKind::Named(alias) | crate::item_tree::UseKind::Module(alias) if alias == first));
+                    if import.is_some() {
+                        break;
+                    }
+                    let data = &items.modules[current];
+                    match (data.block, data.parent) {
+                        (Some(_), Some(parent)) => current = parent,
+                        _ => break,
+                    }
+                }
+            }
+            if let Some((index, import)) = import {
+                // An import's own source path does not resolve through
+                // that same binding again (`use cfg_if::cfg_if`). Keep
+                // walking predecessor aliases without cycling on them.
+                followed_imports.push(index);
+                let mut path = import.path.clone();
+                path.segments = path
+                    .segments
+                    .iter()
+                    .chain(lowered.segments[1..].iter())
+                    .copied()
+                    .collect();
+                path.ranges = path
+                    .ranges
+                    .iter()
+                    .chain(lowered.ranges.get(1..).unwrap_or_default())
+                    .copied()
+                    .collect();
+                path.args = path
+                    .args
+                    .iter()
+                    .chain(lowered.args.get(1..).unwrap_or_default())
+                    .cloned()
+                    .collect();
+                lowered = path;
+                lookup_module = import.module;
+                continue;
+            }
+            // A local module shadows the implicit extern prelude. Its
+            // current-crate scope is audited after item collection.
+            if lowered.anchor == crate::PathAnchor::Plain
+                && items.modules.iter().any(|(_, m)| {
+                    m.parent == Some(items.named_module(lookup_module)) && m.name == first
+                })
+            {
+                return None;
+            }
+            let target = items.modules[items.loaded_extern_crate(first, lookup_module)?].krate;
+            lowered.anchor = crate::PathAnchor::DefinitionCrate(target);
+            lowered.segments = lowered.segments[1..].into();
+            lowered.ranges = lowered.ranges.get(1..).unwrap_or_default().into();
+            lowered.args = lowered.args.get(1..).unwrap_or_default().into();
+            break;
+        }
+        if !matches!(lowered.anchor, crate::PathAnchor::DefinitionCrate(target) if target != krate)
+        {
+            return None;
+        }
+    }
+    items.resolve(module, &lowered, ns).ok()
 }
 
 /// What a macro call's path names.

@@ -3,6 +3,16 @@ use crate::cmp::Ordering;
 macro_rules! float_impl {
     ($t:ty, $u:ty, $sign:expr, $exp:expr, $frac:expr, $max:expr, $minpos:expr, $epsilon:expr) => {
         impl $t {
+            pub const fn classify(self)->crate::num::FpCategory {
+                let bits=self.to_bits();
+                let exponent=bits & $exp;
+                let fraction=bits & $frac;
+                if exponent==$exp {
+                    if fraction==0 {crate::num::FpCategory::Infinite}else{crate::num::FpCategory::Nan}
+                }else if exponent==0 {
+                    if fraction==0 {crate::num::FpCategory::Zero}else{crate::num::FpCategory::Subnormal}
+                }else {crate::num::FpCategory::Normal}
+            }
             pub const NAN: Self = Self::from_bits($exp | (($frac + 1) >> 1));
             pub const INFINITY: Self = Self::from_bits($exp);
             pub const NEG_INFINITY: Self = Self::from_bits($sign | $exp);
@@ -161,20 +171,20 @@ impl crate::str::FromStr for f64 {
     fn from_str(text:&str)->Result<Self,ParseFloatError>{ Ok(Self::from_bits(parse_bits(text,false)?)) }
 }
 
-fn debug_float(bits:u64,single:bool,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {
+fn format_float(bits:u64,single:bool,f:&mut crate::fmt::Formatter<'_>,debug:bool)->crate::fmt::Result {
     let sign=if single {1u64<<31} else {1u64<<63};
     let magnitude=bits&!sign;
     let infinity=if single {0x7f800000u64} else {0x7ff0000000000000u64};
-    if magnitude>infinity { return f.pad_integral(true,"","NaN"); }
+    if magnitude>infinity { return f.pad_float_nan(); }
     if magnitude==infinity { return f.pad_integral(bits&sign==0,"","inf"); }
     if let Some(precision)=f.precision() {return fixed_float(bits,single,precision,f);}
-    if magnitude==0 { return f.pad_integral(bits&sign==0,"","0.0"); }
+    if magnitude==0 { return f.pad_integral(bits&sign==0,"",if debug {"0.0"}else{"0"}); }
     let (mut coefficient,exponent)=decimal::shortest(magnitude,single);
     let mut reversed=[0u8;20]; let mut digits=0usize;
     while coefficient!=0 { reversed[digits]=b'0'+(coefficient%10) as u8; coefficient/=10; digits+=1; }
     let scientific=digits as i32+exponent-1;
-    let mut buffer=[0u8;64]; let mut n=0usize;
-    if scientific < -4 || scientific >= 16 {
+    let mut buffer=[0u8;768]; let mut n=0usize;
+    if debug && (scientific < -4 || scientific >= 16) {
         buffer[n]=reversed[digits-1]; n+=1;
         if digits>1 {
             buffer[n]=b'.'; n+=1;
@@ -201,14 +211,14 @@ fn debug_float(bits:u64,single:bool,f:&mut crate::fmt::Formatter<'_>)->crate::fm
         if point>=digits as i32 {
             let mut zeros=point-digits as i32;
             while zeros>0 {buffer[n]=b'0'; n+=1; zeros-=1;}
-            buffer[n]=b'.'; n+=1; buffer[n]=b'0'; n+=1;
+            if debug {buffer[n]=b'.'; n+=1; buffer[n]=b'0'; n+=1;}
         }
     }
     // SAFETY: the buffer contains only ASCII digits and punctuation.
     f.pad_integral(bits&sign==0,"",unsafe { crate::str::from_utf8_unchecked(&buffer[..n]) })
 }
-impl crate::fmt::Debug for f32 { fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {debug_float(self.to_bits() as u64,true,f)} }
-impl crate::fmt::Debug for f64 { fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {debug_float(self.to_bits(),false,f)} }
+impl crate::fmt::Debug for f32 { fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {format_float(self.to_bits() as u64,true,f,true)} }
+impl crate::fmt::Debug for f64 { fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {format_float(self.to_bits(),false,f,true)} }
 
 fn fixed_float(bits:u64,single:bool,precision:usize,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {
     let fraction_bits=if single {23u32} else {52};
@@ -283,3 +293,6 @@ impl crate::convert::From<u16> for f64 { fn from(value:u16)->f64 {value as f64} 
 impl crate::convert::From<i16> for f64 { fn from(value:i16)->f64 {value as f64} }
 impl crate::convert::From<u32> for f64 { fn from(value:u32)->f64 {value as f64} }
 impl crate::convert::From<i32> for f64 { fn from(value:i32)->f64 {value as f64} }
+
+impl crate::fmt::Display for f32 {fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {format_float(self.to_bits() as u64,true,f,false)}}
+impl crate::fmt::Display for f64 {fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {format_float(self.to_bits(),false,f,false)}}

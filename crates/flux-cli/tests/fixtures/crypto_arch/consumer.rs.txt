@@ -1,0 +1,32 @@
+fn padded<const N:usize>(input:&[u8])->Vec<[u8;N]> {
+    let trailer=if N==64 {8}else{16};
+    let size=(input.len()+1+trailer+N-1)/N*N;
+    let mut bytes=vec![0u8;size];
+    bytes[..input.len()].copy_from_slice(input);
+    bytes[input.len()]=0x80;
+    let bits=(input.len() as u128*8).to_be_bytes();
+    bytes[size-trailer..].copy_from_slice(&bits[16-trailer..]);
+    bytes.chunks_exact(N).map(|part|part.try_into().unwrap()).collect()
+}
+fn sha256(input:&[u8])->[u32;8] {
+    let mut state=consts::H256_256;
+    let blocks=padded::<64>(input);
+    unsafe{sha256_impl::compress(&mut state,&blocks);}
+    state
+}
+fn sha512(input:&[u8])->[u64;8] {
+    let mut state=consts::H512_512;
+    let blocks=padded::<128>(input);
+    unsafe{sha512_impl::compress(&mut state,&blocks);}
+    state
+}
+fn main() {
+    assert_eq!(sha256(b""),[0xe3b0c442,0x98fc1c14,0x9afbf4c8,0x996fb924,0x27ae41e4,0x649b934c,0xa495991b,0x7852b855]);
+    assert_eq!(sha256(b"abc"),[0xba7816bf,0x8f01cfea,0x414140de,0x5dae2223,0xb00361a3,0x96177a9c,0xb410ff61,0xf20015ad]);
+    assert_eq!(sha512(b""),[0xcf83e1357eefb8bd,0xf1542850d66d8007,0xd620e4050b5715dc,0x83f4a921d36ce9ce,0x47d0d13c5d85f2b0,0xff8318d2877eec2f,0x63b931bd47417a81,0xa538327af927da3e]);
+    assert_eq!(sha512(b"abc"),[0xddaf35a193617aba,0xcc417349ae204131,0x12e6fa4e89a97ea2,0x0a9eeee64b55d39a,0x2192992a274fc1a8,0x36ba3c23a3feebbd,0x454d4423643ce80e,0x2a9ac94fa54ca49f]);
+    for len in [0usize,1,55,56,63,64,65,111,112,127,128,129,1000] {
+        let input:Vec<_>=(0..len).map(|i|(i*37) as u8).collect();
+        println!("sha {} {:?} {:?}",len,sha256(&input),sha512(&input));
+    }
+}

@@ -82,3 +82,7 @@ impl<'a, T, S> IntoIterator for &'a HashSet<T, S> {
     type Item = &'a T; type IntoIter = Iter<'a, T>;
     fn into_iter(self) -> Self::IntoIter { self.iter() }
 }
+
+impl<'a,T: 'a+Copy+Eq+Hash,S:BuildHasher> Extend<&'a T> for HashSet<T,S> {
+    fn extend<I:IntoIterator<Item=&'a T>>(&mut self,iter:I) {for &value in iter {self.insert(value);}}
+}

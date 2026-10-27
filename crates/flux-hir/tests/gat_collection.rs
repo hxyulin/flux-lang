@@ -180,21 +180,46 @@ fn associated_family_syntax_matches_rustc_at_the_hir_boundary() {
 
 #[test]
 fn unrepresented_family_shapes_keep_explicit_hir_gates() {
-    for (source, gate) in [
-        (
-            "trait A{type Item<'a>:?Sized;}",
-            "`?Sized` bounds are not supported yet",
-        ),
-        (
-            "trait A{type Item<'a>;}fn f<T:A<Item<'static>=u8>>(){}",
-            "generic associated types are not supported yet",
-        ),
-    ] {
-        let (_, _, hir) = flux_hir::lower_text("gat-gate.rs", source);
-        assert!(
-            hir.diagnostics.iter().any(|d| d.message == gate),
-            "{:?}",
-            hir.diagnostics
-        );
-    }
+    let (_, _, hir) = flux_hir::lower_text("gat-gate.rs", "trait A{type Item<'a>:?Sized;}");
+    assert!(
+        hir.diagnostics
+            .iter()
+            .any(|d| d.message == "`?Sized` bounds are not supported yet"),
+        "{:?}",
+        hir.diagnostics
+    );
+}
+
+#[test]
+fn family_equality_arguments_survive_collection() {
+    let (_, _, hir) = flux_hir::lower_text(
+        "gat-equality.rs",
+        "trait A{type Item<'a>;type Array<T,const N:usize>;}fn f<S:A<Item<'static>=u8,Array<u32,3>=[u32;3]>>(){}",
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let function = hir
+        .items
+        .functions
+        .values()
+        .find(|f| f.name.as_str() == "f")
+        .unwrap();
+    let binding = &function.generics.predicates[0]
+        .bound
+        .path
+        .args
+        .last()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .bindings;
+    assert_eq!(binding.len(), 2);
+    assert_eq!(binding[0].args.as_ref().unwrap().lifetimes.len(), 1);
+    assert_eq!(binding[1].args.as_ref().unwrap().types.len(), 2);
+    assert!(
+        function.generics.predicates[0]
+            .bound
+            .path
+            .to_string()
+            .contains("Array<u32, 3>")
+    );
 }

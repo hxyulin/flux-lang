@@ -48,6 +48,14 @@ pub enum Value {
     /// A thin raw address without an allocation or reference validity. Kept
     /// distinct from integers so const casts cannot recover its numeric value.
     RawAddr(u64),
+    /// A wide trait-object pointer. The backing allocation keeps its concrete
+    /// type; the object determines the emitted vtable, including after upcasts.
+    DynPointer {
+        pointer: Arc<Value>,
+        concrete: Ty,
+        object: Ty,
+        mutable: flux_ty::Mutability,
+    },
     /// A tuple or struct, fields in order; `()` has none.
     Aggregate(Arc<[Value]>),
     /// Variant `index` of enum `strukt`, its fields in order.
@@ -381,6 +389,12 @@ impl<'a> Evaluator<'a> {
                     self.pointer_value(pointer, *source, *target, range)?;
                 }
             }
+            Value::StaticPart{id,path}=>{
+                if let TyKind::Ref(_,target)=ty.kind(){self.check_static_address(*id,path,target,range)?;}
+            }
+            Value::DynPointer { pointer, concrete, mutable, .. } => {
+                self.check_escaping_borrows(pointer, Ty::new(TyKind::Ref(*mutable, *concrete)), range)?;
+            }
             Value::InteriorRef(_) => return Err(error(range,
                 "shared borrow of a temporary with interior mutability cannot escape constant evaluation".into())),
             Value::Ref(inner) => {
@@ -422,6 +436,66 @@ impl<'a> Evaluator<'a> {
         Ok(())
     }
 
+    /// Minimum alignment retained by a field address within its allocation.
+    fn static_address_alignment(
+        &mut self,
+        id: flux_hir::ConstId,
+        path: &[StaticProjection],
+        range: TextRange,
+    ) -> Result<u64, EvalError> {
+        let mut ty = self.sigs.consts[id];
+        let base = self.view_layout(ty, range)?.align;
+        let mut offset = 0u64;
+        let mut variant = 0;
+        for projection in path {
+            match *projection {
+                StaticProjection::Downcast(v) => variant = v,
+                StaticProjection::Field(field) => {
+                    offset += self.view_layout(ty, range)?.field_offset(variant, field);
+                    ty = *self
+                        .sigs
+                        .variant_fields(ty, variant)
+                        .and_then(|fields| fields.get(field as usize))
+                        .ok_or_else(|| unsupported_view(range))?;
+                    variant = 0;
+                }
+                StaticProjection::Index(index) => {
+                    ty = ty.sequence_elem().ok_or_else(|| unsupported_view(range))?;
+                    offset += index * self.view_layout(ty, range)?.size;
+                }
+                StaticProjection::Subslice { from, len } => {
+                    let element = ty.sequence_elem().ok_or_else(|| unsupported_view(range))?;
+                    offset += from * self.view_layout(element, range)?.size;
+                    // A subslice keeps a bounded sequence view. Subsequent
+                    // subslices or indices are relative to this view's start.
+                    ty = Ty::array(element, len);
+                }
+            }
+        }
+        Ok(if offset == 0 {
+            base
+        } else {
+            base.min(1u64 << offset.trailing_zeros())
+        })
+    }
+
+    fn check_static_address(
+        &mut self,
+        id: flux_hir::ConstId,
+        path: &[StaticProjection],
+        target: Ty,
+        range: TextRange,
+    ) -> Result<(), EvalError> {
+        let align = self.static_address_alignment(id, path, range)?;
+        if align < self.view_layout(target, range)?.align {
+            return Err(error(
+                range,
+                "unaligned reference or pointer read in constant".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Read the value a cast pointer views, without changing its allocation.
     fn pointer_value(
         &mut self,
@@ -448,6 +522,11 @@ impl<'a> Evaluator<'a> {
                 (**value).clone()
             }
             Value::Static(_) | Value::StaticPart { .. } => {
+                if let Value::StaticPart { id, path } = pointer
+                    && let Some(target) = pointer_pointee(target)
+                {
+                    self.check_static_address(*id, path, target, range)?;
+                }
                 let locals = [Some(pointer.clone())];
                 let place = Place {
                     local: crate::Local::from_raw(0),
@@ -1145,6 +1224,7 @@ impl<'a> Evaluator<'a> {
                 flux_hir::Intrinsic::SizeOf
                     | flux_hir::Intrinsic::AlignOf
                     | flux_hir::Intrinsic::NeedsDrop
+                    | flux_hir::Intrinsic::DiscriminantIsSigned
             )
         )
     }
@@ -1166,7 +1246,13 @@ impl<'a> Evaluator<'a> {
             .first()
             .copied()
             .unwrap_or(Ty::ERROR);
-        let value = if name.as_str() == "needs_drop" {
+        let value = if name.as_str() == "discriminant_is_signed" {
+            Value::Bool(
+                self.sigs
+                    .discriminant_ty(flux_ty::traits::normalize(self.items, self.sigs, &[], ty))
+                    .is_some_and(IntTy::is_signed),
+            )
+        } else if name.as_str() == "needs_drop" {
             Value::Bool(flux_ty::traits::needs_drop(self.items, self.sigs, &[], ty))
         } else {
             let layout = self.layout_of(ty, range)?;
@@ -1376,6 +1462,7 @@ impl<'a> Evaluator<'a> {
                         Value::Bool(b) => u128::from(b),
                         Value::Float { .. }
                         | Value::Function(_)
+                        | Value::DynPointer { .. }
                         | Value::Aggregate(_)
                         | Value::Variant { .. }
                         | Value::Static(_)
@@ -1455,6 +1542,52 @@ impl<'a> Evaluator<'a> {
                     if self.is_type_intrinsic(*func) {
                         let call = (*func, *generic_args, generics);
                         block = self.type_intrinsic(call, locals, dest, *target, range)?;
+                        continue;
+                    }
+                    if self.items.functions[*func].intrinsic
+                        == Some(flux_hir::Intrinsic::DiscriminantValue)
+                        && let [Operand::Copy(pointer) | Operand::Move(pointer)] = &args[..]
+                    {
+                        let ty = flux_ty::traits::normalize(
+                            self.items,
+                            self.sigs,
+                            &[],
+                            subst_list(generic_args, generics)[0],
+                        );
+                        let bits = if self.sigs.discriminant_ty(ty).is_some() {
+                            let Value::Int { bits, ty } = self.rvalue(
+                                body,
+                                locals,
+                                generics,
+                                &Rvalue::Discriminant(pointer.deref()),
+                                range,
+                                false,
+                            )?
+                            else {
+                                unreachable!("enum discriminants are integers");
+                            };
+                            if ty.is_signed()
+                                && ty.bits() < 128
+                                && bits & (1u128 << (ty.bits() - 1)) != 0
+                            {
+                                bits | (!0u128 << ty.bits())
+                            } else {
+                                bits
+                            }
+                        } else {
+                            0
+                        };
+                        write(
+                            locals,
+                            dest,
+                            Value::Int {
+                                bits,
+                                ty: IntTy::U128,
+                            },
+                            range,
+                        )?;
+                        block = target
+                            .ok_or_else(|| error(range, "entering unreachable code".into()))?;
                         continue;
                     }
                     if self.items.functions[*func].intrinsic
@@ -1797,6 +1930,9 @@ impl<'a> Evaluator<'a> {
                 if let Some(Some(Value::StaticPart { id, path })) = locals.get(place.local.index())
                     && place.projection.first() == Some(&ProjectionElem::Deref)
                 {
+                    let target = static_path_type(self.sigs, self.sigs.consts[*id], path)
+                        .ok_or_else(|| unsupported_view(range))?;
+                    self.check_static_address(*id, path, target, range)?;
                     let mut value = self.static_value(*id, range)?;
                     for p in path.iter() {
                         value = match (p, value) {
@@ -1910,7 +2046,9 @@ impl<'a> Evaluator<'a> {
             Value::Ref(value) | Value::InteriorRef(value) | Value::LocalRef { value, .. } => {
                 self.promoted_layouts(value, range)?
             }
-            Value::PointerView { pointer, .. } => self.promoted_layouts(pointer, range)?,
+            Value::PointerView { pointer, .. } | Value::DynPointer { pointer, .. } => {
+                self.promoted_layouts(pointer, range)?
+            }
             Value::Float { .. }
             | Value::Int { .. }
             | Value::Bool(_)
@@ -2051,11 +2189,27 @@ impl<'a> Evaluator<'a> {
             // A shared reference is to a value that cannot change while
             // it is borrowed: a copy of it.
             Rvalue::Ref {
+                raw,
                 mutability: flux_ty::Mutability::Not,
                 place,
                 ..
             } => {
                 if place.projection.first() == Some(&ProjectionElem::Deref) {
+                    if place.projection.len() == 1
+                        && let Some(Some(Value::DynPointer {
+                            pointer,
+                            concrete,
+                            object,
+                            ..
+                        })) = locals.get(place.local.index())
+                    {
+                        return Ok(Value::DynPointer {
+                            pointer: pointer.clone(),
+                            concrete: *concrete,
+                            object: *object,
+                            mutable: flux_ty::Mutability::Not,
+                        });
+                    }
                     if let Some(Some(value @ Value::PointerView { .. })) =
                         locals.get(place.local.index())
                     {
@@ -2074,7 +2228,11 @@ impl<'a> Evaluator<'a> {
                         return Ok(pointer_view(
                             value.clone(),
                             body.locals[place.local].ty.subst(generics),
-                            Ty::new(TyKind::Ref(flux_ty::Mutability::Not, pointee)),
+                            if *raw {
+                                Ty::raw_ptr(flux_ty::Mutability::Not, pointee)
+                            } else {
+                                Ty::new(TyKind::Ref(flux_ty::Mutability::Not, pointee))
+                            },
                         ));
                     }
                     let origin = match locals.get(place.local.index()).and_then(Option::as_ref) {
@@ -2159,6 +2317,10 @@ impl<'a> Evaluator<'a> {
                                 }
                             });
                         }
+                        if !*raw {
+                            let target = body.place_ty(place, self.sigs).subst(generics);
+                            self.check_static_address(id, &path, target, range)?;
+                        }
                         return Ok(if path.is_empty() {
                             Value::Static(id)
                         } else {
@@ -2228,7 +2390,7 @@ impl<'a> Evaluator<'a> {
                     Value::LocalRef {
                         value: Arc::new(value),
                         origin,
-                        raw: false,
+                        raw: *raw,
                     }
                 } else if origin.interior || self.inline_interior(&value, ty) {
                     Value::InteriorRef(Arc::new(value))
@@ -2261,8 +2423,36 @@ impl<'a> Evaluator<'a> {
             }
             // A reference to an array as one to a slice holds the same
             // elements.
-            Rvalue::Unsize(op, _) => {
+            Rvalue::Unsize(op, to) => {
                 let value = self.operand(locals, generics, op, range)?;
+                let to = flux_ty::traits::normalize(self.items, self.sigs, &[], to.subst(generics));
+                let from = flux_ty::traits::normalize(
+                    self.items,
+                    self.sigs,
+                    &[],
+                    body.operand_ty(op, self.sigs).subst(generics),
+                );
+                if flux_ty::box_pointee(to).is_some_and(|ty| ty.is_dyn()) {
+                    return Err(error(
+                        range,
+                        "boxed trait object constant evaluation is not supported yet".into(),
+                    ));
+                }
+                if let Some(object) = pointer_pointee(to).filter(|ty| ty.is_dyn()) {
+                    let mutable = match to.kind() {
+                        TyKind::Ref(m, _) | TyKind::RawPtr(m, _) => m,
+                        _ => unreachable!(),
+                    };
+                    return match value {
+                        Value::DynPointer {pointer,concrete,..} => Ok(Value::DynPointer {pointer,concrete,object,mutable}),
+                        Value::Ref(_) | Value::Static(_) | Value::StaticPart {..} | Value::LocalRef {..} | Value::InteriorRef(_) => {
+                            let concrete=pointer_pointee(from).ok_or_else(||unsupported_view(range))?;
+                            if concrete.is_dyn(){return Err(unsupported_view(range));}
+                            Ok(Value::DynPointer {pointer:Arc::new(value),concrete,object,mutable})
+                        }
+                        _=>Err(error(range,"trait objects from reinterpreted or raw addresses in constants are not supported yet".into()))
+                    };
+                }
                 if matches!(value, Value::RawAddr(_) | Value::PointerView { .. }) {
                     return Err(error(
                         range,
@@ -2312,6 +2502,7 @@ impl<'a> Evaluator<'a> {
                             ))
                         }
                         Value::Function(_)
+                        | Value::DynPointer { .. }
                         | Value::RawAddr(_)
                         | Value::Ref(_)
                         | Value::InteriorRef(_)
@@ -2341,6 +2532,7 @@ impl<'a> Evaluator<'a> {
                     };
                 }
                 if let Value::Function(_)
+                | Value::DynPointer { .. }
                 | Value::Ref(_)
                 | Value::InteriorRef(_)
                 | Value::Static(_)
@@ -2362,6 +2554,7 @@ impl<'a> Evaluator<'a> {
                     Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                     Value::Bool(b) => u128::from(b),
                     Value::Function(_)
+                    | Value::DynPointer { .. }
                     | Value::Aggregate(_)
                     | Value::Variant { .. }
                     | Value::Static(_)
@@ -2930,6 +3123,7 @@ pub fn show(value: &Value) -> String {
         }
         Value::Bool(b) => b.to_string(),
         Value::Function(_) => "{function}".to_owned(),
+        Value::DynPointer { .. } => "{trait object}".to_owned(),
         Value::Aggregate(_) | Value::Variant { .. } => "{aggregate}".to_owned(),
         Value::Static(_) | Value::StaticPart { .. } => "{static}".to_owned(),
         Value::RawAddr(address) => format!("0x{address:x}"),

@@ -20,7 +20,7 @@ use crate::{
 /// Builds every body of a file and checks initialization. The file must
 /// have no diagnostics from lowering or type checking.
 pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = crate::alignment::check_declarations(&hir.items, &typed.sigs);
     let check = |body: &Body, file, is_const, requirements: &crate::borrowck::Requirements| {
         let (found, own) = check_body(hir, typed, body, is_const, requirements);
         let found: Vec<_> = found
@@ -410,31 +410,79 @@ fn check_patterns(
     let items = &hir.items;
     let names = |id: ConstId| items.const_name(id);
     let mut evaluator = crate::eval::Evaluator::new(items, &typed.sigs, bodies, consts, &names);
+    let mut unsupported_patterns = Vec::new();
     let (mut diagnostics, failed) = flux_ty::check_deferred_patterns(hir, typed, &mut |c| {
         if skip.contains(&c.konst) {
             return None;
         }
-        fn pattern(value: crate::eval::Value) -> Option<flux_ty::PatternConst> {
+        fn pattern(
+            items: &ItemTree,
+            sigs: &flux_ty::Signatures,
+            value: crate::eval::Value,
+            ty: Ty,
+        ) -> Option<flux_ty::PatternConst> {
             use crate::eval::Value;
             use flux_ty::PatternConst;
+            let ty = flux_ty::traits::normalize(items, sigs, &[], ty);
+            if !flux_ty::structural_pattern_type(items, sigs, ty) {
+                return None;
+            }
             Some(match value {
                 Value::Int { bits, ty } if ty.is_signed() => {
                     PatternConst::Scalar(crate::eval::sign_extend(bits, ty))
                 }
                 Value::Int { bits, .. } => PatternConst::Scalar(bits as i128),
-                Value::Bool(b) => PatternConst::Scalar(b as i128),
-                Value::Aggregate(fields) => PatternConst::Aggregate(
-                    fields
-                        .iter()
-                        .cloned()
-                        .map(pattern)
-                        .collect::<Option<Vec<_>>>()?,
-                ),
+                Value::Bool(value) => PatternConst::Scalar(value as i128),
+                Value::Aggregate(fields) => {
+                    let types = match ty.kind() {
+                        TyKind::Array(elem, _) => vec![elem; fields.len()],
+                        _ => sigs.fields(ty)?.to_vec(),
+                    };
+                    PatternConst::Aggregate(
+                        fields
+                            .iter()
+                            .cloned()
+                            .zip(types)
+                            .map(|(v, t)| pattern(items, sigs, v, t))
+                            .collect::<Option<Vec<_>>>()?,
+                    )
+                }
+                Value::Variant { index, fields, .. } => {
+                    let types = sigs.variant_fields(ty, index)?;
+                    PatternConst::Variant {
+                        index,
+                        fields: fields
+                            .iter()
+                            .cloned()
+                            .zip(types)
+                            .map(|(v, &t)| pattern(items, sigs, v, t))
+                            .collect::<Option<Vec<_>>>()?,
+                    }
+                }
                 _ => return None,
             })
         }
-        pattern(evaluator.eval_instance(c).ok()?)
+        let result = pattern(
+            items,
+            &typed.sigs,
+            evaluator.eval_instance(c).ok()?,
+            typed.sigs.consts[c.konst].subst(c.args),
+        );
+        if result.is_none() && !unsupported_patterns.contains(&c.konst) {
+            unsupported_patterns.push(c.konst);
+        }
+        result
     });
+    for konst in unsupported_patterns {
+        let data = &items.consts[konst];
+        diagnostics.push(flux_hir::Diagnostic {
+            file: data.loc.file,
+            range: data.def_range,
+            message:
+                "constant patterns with non-structural or unsupported fields are not supported yet"
+                    .into(),
+        });
+    }
     if report {
         diagnostics.extend(eval_failures(items, &evaluator));
     }
@@ -471,6 +519,7 @@ fn check_body(
     crate::borrowck::ClosureRequirements,
 ) {
     let mut found = body.init_errors.clone();
+    found.extend(crate::alignment::check(body, &hir.items, &typed.sigs));
     let (errors, required) = crate::borrowck::check(body, &hir.items, &typed.sigs, requirements);
     found.extend(errors);
     if is_const {
@@ -846,6 +895,7 @@ pub fn closure_shims(
                 kind: StatementKind::Assign(
                     borrow.into(),
                     Rvalue::Ref {
+                        raw: false,
                         mutability: m,
                         place,
                         two_phase: false,
@@ -939,6 +989,7 @@ fn build_body(
         }
     };
     let mut b = Builder {
+        hir,
         typed,
         items: &hir.items,
         body,
@@ -1317,6 +1368,7 @@ struct LoopScope {
 }
 
 struct Builder<'a> {
+    hir: &'a Hir,
     typed: &'a TypedFile,
     items: &'a ItemTree,
     body: &'a flux_hir::Body,
@@ -1847,6 +1899,7 @@ impl Builder<'_> {
         let ty = self.place_ty(&place);
         let reference = self.temp(Ty::new(TyKind::Ref(mutability, ty)));
         let borrow = Rvalue::Ref {
+            raw: false,
             mutability,
             place,
             two_phase: false,
@@ -1967,6 +2020,7 @@ impl Builder<'_> {
         let ty = self.place_ty(&place);
         let reference = self.temp(Ty::new(TyKind::Ref(o.mutability, ty)));
         let borrow = Rvalue::Ref {
+            raw: false,
             mutability: o.mutability,
             place,
             two_phase: false,
@@ -2195,6 +2249,7 @@ impl Builder<'_> {
                     }
                     let temp = self.temp(capture.upvar_ty());
                     let rvalue = Rvalue::Ref {
+                        raw: false,
                         mutability,
                         place,
                         two_phase: false,
@@ -2261,6 +2316,7 @@ impl Builder<'_> {
         // `arr.swap(0, arr.len() - 1)` is E0502.
         let rvalue = match method.autoref {
             Some(mutability) => Rvalue::Ref {
+                raw: false,
                 mutability,
                 place,
                 two_phase: mutability == Mutability::Mut && !method.unsize,
@@ -2313,21 +2369,7 @@ impl Builder<'_> {
     }
 
     fn float_literal(&self, text: Symbol, expr: ExprId) -> Constant {
-        let ty = self.expr_ty(expr).as_float().expect("typed float literal");
-        let bits = match ty {
-            flux_ty::FloatTy::F32 => u64::from(
-                text.as_str()
-                    .parse::<f32>()
-                    .expect("validated float")
-                    .to_bits(),
-            ),
-            flux_ty::FloatTy::F64 => text
-                .as_str()
-                .parse::<f64>()
-                .expect("validated float")
-                .to_bits(),
-        };
-        Constant::Float { bits, ty }
+        self.promoted_float(text, self.expr_ty(expr))
     }
 
     fn constant(&mut self, literal: &Literal, expr: ExprId) -> Constant {
@@ -2545,14 +2587,27 @@ impl Builder<'_> {
     /// Every stored field and nested reference must itself be promotable;
     /// runtime inputs, destructors and interior mutability keep local storage.
     fn promotable(&self, expr: ExprId) -> Option<crate::eval::Value> {
+        self.promotable_in(self.body, self.types, expr, &mut Vec::new())
+    }
+
+    /// Qualifies referenced constants using the same rules as their uses.
+    /// The active path prevents cycles from recursing during qualification;
+    /// normal constant evaluation remains responsible for cycle diagnostics.
+    fn promotable_in(
+        &self,
+        body: &flux_hir::Body,
+        types: &InferenceResult,
+        expr: ExprId,
+        active: &mut Vec<ConstId>,
+    ) -> Option<crate::eval::Value> {
         use crate::eval::Value;
-        if self.types.reified.get(expr).is_some() {
+        if types.reified.get(expr).is_some() {
             return None;
         }
-        let ty = self.own_ty(expr);
+        let ty = types.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
         // Array-to-slice coercion retains the same promoted allocation.
         // Other coercions may change the value's representation or call code.
-        if let Some(&target) = self.types.unsizes.get(expr) {
+        if let Some(&target) = types.unsizes.get(expr) {
             let array_slice = match (ty.kind(), target.kind()) {
                 (TyKind::Ref(Mutability::Not, from), TyKind::Ref(Mutability::Not, to)) => {
                     matches!((from.kind(), to.kind()), (TyKind::Array(a, _), TyKind::Slice(b)) if a == b)
@@ -2568,7 +2623,61 @@ impl Builder<'_> {
         {
             return None;
         }
-        match &self.body.exprs[expr] {
+        match &body.exprs[expr] {
+            Expr::Path(res @ (Res::Const(_) | Res::Assoc { .. })) => {
+                let instance = types.consts.get(expr).copied().or(match res {
+                    Res::Const(konst) => Some(flux_ty::ConstInstance {
+                        konst: *konst,
+                        args: &[],
+                    }),
+                    _ => None,
+                })?;
+                if !instance.args.is_empty()
+                    || active.contains(&instance.konst)
+                    || active.len() >= 128
+                {
+                    return None;
+                }
+                let (constant, _) = self.hir.const_body(instance.konst)?;
+                let result = self.typed.consts.get(instance.konst)?;
+                active.push(instance.konst);
+                let value = self.promotable_in(constant, result, constant.root, active);
+                active.pop();
+                value
+            }
+            Expr::Block {
+                stmts,
+                tail: Some(tail),
+                ..
+            } if body.lists[*stmts].is_empty() => self.promotable_in(body, types, *tail, active),
+            Expr::Field { expr: base, .. }
+                if types.field_derefs.get(expr).copied().unwrap_or(0) == 0 =>
+            {
+                let value = self.promotable_in(body, types, *base, active)?;
+                let field = types.field_indices.get(expr).copied()? as usize;
+                match value {
+                    Value::Aggregate(fields) | Value::Variant { fields, .. } => {
+                        fields.get(field).cloned()
+                    }
+                    _ => None,
+                }
+            }
+            Expr::Index { base, index }
+                if matches!(
+                    types.expr_types.get(*base).map(|ty| ty.kind()),
+                    Some(TyKind::Array(..))
+                ) && types.overloads.get(expr).is_none() =>
+            {
+                let Value::Aggregate(fields) = self.promotable_in(body, types, *base, active)?
+                else {
+                    return None;
+                };
+                let Value::Int { bits, .. } = self.promotable_in(body, types, *index, active)?
+                else {
+                    return None;
+                };
+                fields.get(usize::try_from(bits).ok()?).cloned()
+            }
             Expr::Path(Res::Variant(strukt, index))
                 if !matches!(ty.kind(), TyKind::FnDef(_))
                     && self.items.structs[*strukt]
@@ -2588,14 +2697,14 @@ impl Builder<'_> {
                 Some(Value::unit())
             }
             Expr::Call { callee, args } => {
-                let (strukt, index) = match self.body.exprs[*callee] {
+                let (strukt, index) = match body.exprs[*callee] {
                     Expr::Path(Res::Struct(id)) => (id, 0),
                     Expr::Path(Res::Variant(id, index)) => (id, index),
                     _ => return None,
                 };
-                let fields = self.body.lists[*args]
+                let fields = body.lists[*args]
                     .iter()
-                    .map(|&arg| self.promotable(arg))
+                    .map(|&arg| self.promotable_in(body, types, arg, active))
                     .collect::<Option<Vec<_>>>()?;
                 Some(self.promoted_aggregate(strukt, index, fields))
             }
@@ -2610,7 +2719,7 @@ impl Builder<'_> {
                 }
                 let count = self.items.structs[*strukt].variant(*variant).fields.len();
                 let mut values = if let Some(base) = spread {
-                    match self.promotable(*base)? {
+                    match self.promotable_in(body, types, *base, active)? {
                         Value::Aggregate(fields) | Value::Variant { fields, .. } => {
                             fields.iter().cloned().map(Some).collect()
                         }
@@ -2619,9 +2728,9 @@ impl Builder<'_> {
                 } else {
                     vec![None; count]
                 };
-                for &(name, value) in &self.body.lists[*fields] {
+                for &(name, value) in &body.lists[*fields] {
                     let index = self.struct_field(*strukt, *variant, name) as usize;
-                    values[index] = Some(self.promotable(value)?);
+                    values[index] = Some(self.promotable_in(body, types, value, active)?);
                 }
                 Some(self.promoted_aggregate(
                     *strukt,
@@ -2632,8 +2741,24 @@ impl Builder<'_> {
             Expr::Ref {
                 mutable: false,
                 expr: inner,
-            } => Some(Value::Ref(std::sync::Arc::new(self.promotable(*inner)?))),
-            Expr::Literal(Literal::Float { text, .. }) => match self.float_literal(*text, expr) {
+            } => {
+                if let Some((id, path)) =
+                    self.promotable_const_projection(body, types, *inner, active)
+                {
+                    return Some(if path.is_empty() {
+                        Value::Static(id)
+                    } else {
+                        Value::StaticPart {
+                            id,
+                            path: path.into(),
+                        }
+                    });
+                }
+                Some(Value::Ref(std::sync::Arc::new(
+                    self.promotable_in(body, types, *inner, active)?,
+                )))
+            }
+            Expr::Literal(Literal::Float { text, .. }) => match self.promoted_float(*text, ty) {
                 Constant::Float { bits, ty } => Some(Value::Float { bits, ty }),
                 _ => unreachable!("float literal constant"),
             },
@@ -2652,9 +2777,9 @@ impl Builder<'_> {
             Expr::Unary {
                 op: UnaryOp::Neg,
                 operand,
-            } => match &self.body.exprs[*operand] {
+            } => match &body.exprs[*operand] {
                 Expr::Literal(Literal::Float { text, .. }) => {
-                    match self.float_literal(*text, *operand) {
+                    match self.promoted_float(*text, ty) {
                         Constant::Float { bits, ty } => Some(Value::Float {
                             bits: bits ^ (1u64 << (ty.bits() - 1)),
                             ty,
@@ -2682,18 +2807,96 @@ impl Builder<'_> {
                 if count > 1 << 24 {
                     return None;
                 }
-                let value = self.promotable(*value)?;
+                let value = self.promotable_in(body, types, *value, active)?;
                 Some(Value::Aggregate(vec![value; count].into()))
             }
             Expr::Tuple(fields) | Expr::Array(fields) => {
-                let values: Option<Vec<Value>> = self.body.lists[*fields]
+                let values: Option<Vec<Value>> = body.lists[*fields]
                     .iter()
-                    .map(|&f| self.promotable(f))
+                    .map(|&f| self.promotable_in(body, types, f, active))
                     .collect();
                 Some(Value::Aggregate(values?.into()))
             }
             _ => None,
         }
+    }
+
+    /// A shared borrow of a named constant retains its whole allocation,
+    /// including root alignment and field offsets, rather than copying only
+    /// the borrowed field into a new allocation.
+    fn promotable_const_projection(
+        &self,
+        body: &flux_hir::Body,
+        types: &InferenceResult,
+        expr: ExprId,
+        active: &mut Vec<ConstId>,
+    ) -> Option<(ConstId, Vec<crate::eval::StaticProjection>)> {
+        use crate::eval::{StaticProjection, Value};
+        match &body.exprs[expr] {
+            Expr::Path(res @ (Res::Const(_) | Res::Assoc { .. })) => {
+                let constant = types.consts.get(expr).copied().or(match res {
+                    Res::Const(konst) => Some(flux_ty::ConstInstance {
+                        konst: *konst,
+                        args: &[],
+                    }),
+                    _ => None,
+                })?;
+                let ty = types.expr_types.get(expr).copied()?;
+                if !constant.args.is_empty()
+                    || self.needs_drop(ty)
+                    || flux_ty::traits::has_interior_mutability(self.items, &self.typed.sigs, ty)
+                {
+                    return None;
+                }
+                Some((constant.konst, Vec::new()))
+            }
+            Expr::Field { expr: base, .. }
+                if types.field_derefs.get(expr).copied().unwrap_or(0) == 0 =>
+            {
+                let (id, mut path) =
+                    self.promotable_const_projection(body, types, *base, active)?;
+                path.push(StaticProjection::Field(
+                    types.field_indices.get(expr).copied()?,
+                ));
+                Some((id, path))
+            }
+            Expr::Index { base, index } if types.overloads.get(expr).is_none() => {
+                let TyKind::Array(_, length) = types.expr_types.get(*base)?.kind() else {
+                    return None;
+                };
+                let Value::Int { bits, .. } = self.promotable_in(body, types, *index, active)?
+                else {
+                    return None;
+                };
+                let index = u64::try_from(bits).ok()?;
+                if index >= length.as_usize()? {
+                    return None;
+                }
+                let (id, mut path) =
+                    self.promotable_const_projection(body, types, *base, active)?;
+                path.push(StaticProjection::Index(index));
+                Some((id, path))
+            }
+            _ => None,
+        }
+    }
+
+    fn promoted_float(&self, text: Symbol, ty: Ty) -> Constant {
+        let ty = ty.as_float().expect("typed float literal");
+        let bits = match ty {
+            flux_ty::FloatTy::F32 => u64::from(
+                text.as_str()
+                    .parse::<f32>()
+                    .expect("validated float")
+                    .to_bits(),
+            ),
+            flux_ty::FloatTy::F64 => text
+                .as_str()
+                .parse::<f64>()
+                .expect("validated float")
+                .to_bits(),
+        };
+        Constant::Float { bits, ty }
     }
 
     /// Constructor identity and declaration field order are retained in the
@@ -2748,6 +2951,7 @@ impl Builder<'_> {
             place
         };
         let rvalue = Rvalue::Ref {
+            raw: false,
             mutability,
             place,
             two_phase: mutability == Mutability::Mut
@@ -2891,6 +3095,14 @@ impl Builder<'_> {
                         }
                         _ => None,
                     }
+                } else if self
+                    .promotable_const_projection(body, self.types, *inner, &mut Vec::new())
+                    .is_some()
+                {
+                    // The place path below preserves a named constant's
+                    // whole allocation. Promoting only its field value here
+                    // would discard the root's alignment and field offset.
+                    None
                 } else {
                     self.promotable(*inner)
                 };
@@ -2917,6 +3129,7 @@ impl Builder<'_> {
                     Mutability::Not
                 };
                 let rvalue = Rvalue::Ref {
+                    raw: false,
                     mutability,
                     place,
                     two_phase: false,
@@ -2938,17 +3151,16 @@ impl Builder<'_> {
                     Mutability::Not
                 };
                 let place = self.lower_place(*inner);
-                let pointee = self.place_ty(&place);
-                let temp = self.temp(Ty::new(TyKind::Ref(mutability, pointee)));
-                let rvalue = Rvalue::Ref {
-                    mutability,
-                    place,
-                    two_phase: false,
-                };
-                self.assign(&temp.into(), rvalue, range);
-                let operand = self.read(temp.into());
-                let ty = self.expr_ty(expr);
-                self.assign(dest, Rvalue::Cast(operand, ty), range);
+                self.assign(
+                    dest,
+                    Rvalue::Ref {
+                        raw: true,
+                        mutability,
+                        place,
+                        two_phase: false,
+                    },
+                    range,
+                );
             }
             Expr::Record {
                 strukt,
@@ -3441,6 +3653,7 @@ impl Builder<'_> {
         let place = self.lower_place_deref(expr, 1, &[]);
         let temp = self.temp(Ty::new(TyKind::Ref(Mutability::Not, pointee)));
         let rvalue = Rvalue::Ref {
+            raw: false,
             mutability: Mutability::Not,
             place,
             two_phase: false,
@@ -3459,6 +3672,7 @@ impl Builder<'_> {
         let ty = Ty::new(TyKind::Ref(Mutability::Not, self.place_ty(&place)));
         let l = self.temp(ty);
         let rvalue = Rvalue::Ref {
+            raw: false,
             mutability: Mutability::Not,
             place,
             two_phase: false,
@@ -3468,6 +3682,7 @@ impl Builder<'_> {
         let ty = Ty::new(TyKind::Ref(Mutability::Mut, self.place_ty(&place)));
         let r = self.temp(ty);
         let rvalue = Rvalue::Ref {
+            raw: false,
             mutability: Mutability::Mut,
             place,
             two_phase: false,
@@ -3482,6 +3697,7 @@ impl Builder<'_> {
             let ty = Ty::new(TyKind::Ref(Mutability::Not, self.place_ty(&place)));
             let temp = self.temp(ty);
             let rvalue = Rvalue::Ref {
+                raw: false,
                 mutability: Mutability::Not,
                 place,
                 two_phase: false,
@@ -3565,6 +3781,7 @@ impl Builder<'_> {
         let place = self.lower_place(expr);
         let temp = self.temp(Ty::new(TyKind::Ref(mutability, self.place_ty(&place))));
         let rvalue = Rvalue::Ref {
+            raw: false,
             mutability,
             place,
             two_phase: mutability == Mutability::Mut,
@@ -4512,7 +4729,59 @@ impl Builder<'_> {
         fail: BasicBlock,
         range: TextRange,
     ) {
-        if let TyKind::Array(elem, len) = ty.kind() {
+        if let TyKind::Adt(adt, _) = ty.kind()
+            && self.items.structs[adt.strukt].is_enum()
+        {
+            let int = Ty::int(flux_ty::discriminant_ty(self.items, adt.strukt));
+            let actual = self.temp(int);
+            let expected = self.temp(int);
+            self.assign(&actual.into(), Rvalue::Discriminant(place.clone()), range);
+            self.assign(
+                &expected.into(),
+                Rvalue::Discriminant(constant.clone()),
+                range,
+            );
+            self.compare(
+                BinOp::Eq,
+                actual.into(),
+                Operand::Copy(expected.into()),
+                fail,
+                range,
+            );
+            let variants = self.typed.sigs.variants(ty).expect("an enum");
+            let join = self.new_block();
+            let mut targets = Vec::new();
+            for _ in &variants {
+                targets.push(self.new_block());
+            }
+            self.terminate(
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(actual.into()),
+                    targets: targets
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &block)| (i as u128, block))
+                        .collect(),
+                    otherwise: fail,
+                    variants: Some(adt.strukt),
+                },
+                range,
+            );
+            for (index, (fields, block)) in variants.into_iter().zip(targets).enumerate() {
+                self.current = Some(block);
+                for (field, &field_ty) in fields.iter().enumerate() {
+                    self.structural_constant_test(
+                        place.clone().downcast(index as u32).field(field as u32),
+                        constant.clone().downcast(index as u32).field(field as u32),
+                        field_ty,
+                        fail,
+                        range,
+                    );
+                }
+                self.goto(join, range);
+            }
+            self.current = Some(join);
+        } else if let TyKind::Array(elem, len) = ty.kind() {
             let len = len.as_usize().expect("checked structural array") as u32;
             for offset in 0..len {
                 let index = ProjectionElem::ConstantIndex {
@@ -4607,6 +4876,7 @@ impl Builder<'_> {
             .unwrap_or_default();
         let rvalue = match self.types.binding_refs.get(binding) {
             Some(&mutability) => Rvalue::Ref {
+                raw: false,
                 mutability,
                 place,
                 two_phase: false,

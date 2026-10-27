@@ -48,6 +48,8 @@ intrinsics! {
     AlignOfVal => "align_of_val",
     DropInPlace => "drop_in_place",
     NeedsDrop => "needs_drop",
+    DiscriminantValue => "discriminant_value",
+    DiscriminantIsSigned => "discriminant_is_signed",
     Subslice => "subslice",
     SubsliceMut => "subslice_mut",
     SliceFromRawParts => "slice_from_raw_parts",
@@ -57,6 +59,8 @@ intrinsics! {
     RawSliceFromPartsMut => "raw_slice_from_parts_mut",
     CallerLocation => "caller_location",
     ReadUnaligned => "read_unaligned",
+    ReadVolatile => "read_volatile",
+    WriteVolatile => "write_volatile",
     TypeName => "type_name",
     AtomicUsizeLoadRelaxed => "__atomic_usize_load_relaxed",
     AtomicUsizeLoadAcquire => "__atomic_usize_load_acquire",
@@ -83,6 +87,23 @@ intrinsics! {
     AtomicUsizeFenceRelease => "__atomic_usize_fence_release",
     AtomicUsizeFenceAcqrel => "__atomic_usize_fence_acqrel",
     AtomicUsizeFenceSeqcst => "__atomic_usize_fence_seqcst",
+    AtomicU8LoadRelaxed => "__atomic_u8_load_relaxed",
+    AtomicU8LoadAcquire => "__atomic_u8_load_acquire",
+    AtomicU8LoadSeqcst => "__atomic_u8_load_seqcst",
+    AtomicU8StoreRelaxed => "__atomic_u8_store_relaxed",
+    AtomicU8StoreRelease => "__atomic_u8_store_release",
+    AtomicU8StoreSeqcst => "__atomic_u8_store_seqcst",
+    AtomicU8CasRelaxed => "__atomic_u8_cas_relaxed",
+    AtomicU8CasAcquire => "__atomic_u8_cas_acquire",
+    AtomicU8CasRelease => "__atomic_u8_cas_release",
+    AtomicU8CasAcqrel => "__atomic_u8_cas_acqrel",
+    AtomicU8CasSeqcst => "__atomic_u8_cas_seqcst",
+    AtomicU16LoadRelaxed => "__atomic_u16_load_relaxed",
+    AtomicU16LoadAcquire => "__atomic_u16_load_acquire",
+    AtomicU16LoadSeqcst => "__atomic_u16_load_seqcst",
+    AtomicU16StoreRelaxed => "__atomic_u16_store_relaxed",
+    AtomicU16StoreRelease => "__atomic_u16_store_release",
+    AtomicU16StoreSeqcst => "__atomic_u16_store_seqcst",
     AtomicU32LoadRelaxed => "__atomic_u32_load_relaxed",
     AtomicU32LoadAcquire => "__atomic_u32_load_acquire",
     AtomicU32LoadSeqcst => "__atomic_u32_load_seqcst",
@@ -155,6 +176,23 @@ impl Intrinsic {
                 | Self::AtomicUsizeFenceRelease
                 | Self::AtomicUsizeFenceAcqrel
                 | Self::AtomicUsizeFenceSeqcst
+                | Self::AtomicU8LoadRelaxed
+                | Self::AtomicU8LoadAcquire
+                | Self::AtomicU8LoadSeqcst
+                | Self::AtomicU8StoreRelaxed
+                | Self::AtomicU8StoreRelease
+                | Self::AtomicU8StoreSeqcst
+                | Self::AtomicU8CasRelaxed
+                | Self::AtomicU8CasAcquire
+                | Self::AtomicU8CasRelease
+                | Self::AtomicU8CasAcqrel
+                | Self::AtomicU8CasSeqcst
+                | Self::AtomicU16LoadRelaxed
+                | Self::AtomicU16LoadAcquire
+                | Self::AtomicU16LoadSeqcst
+                | Self::AtomicU16StoreRelaxed
+                | Self::AtomicU16StoreRelease
+                | Self::AtomicU16StoreSeqcst
                 | Self::AtomicU32LoadRelaxed
                 | Self::AtomicU32LoadAcquire
                 | Self::AtomicU32LoadSeqcst

@@ -60,10 +60,10 @@ pub enum Region {
     /// Elided in a body, or erroneous (reported): the borrow checker
     /// infers it.
     Erased,
-    /// In what a `Fn`-family bound says its `Output` is (`F: Fn(&T) ->
-    /// &U`), the bound's own (higher-ranked) lifetime elided in its
-    /// parameters, the one at this slot of their tuple: a different one
-    /// at each call, which the result has as the argument does.
+    /// A lifetime quantified by the enclosing bound. Non-callable predicates
+    /// number their binder parameters independently of owner lifetimes.
+    /// In a `Fn` bound, elided input lifetimes use input-tuple slots, so the
+    /// result can retain the same input region at each fresh call.
     Late(u32),
 }
 
@@ -221,6 +221,8 @@ pub struct StructRegions {
 /// Preserving these tables does not establish that an obligation holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TraitRefRegions {
+    /// Independently quantified non-callable lifetime slots (`Region::Late`).
+    pub bound: u32,
     pub lifetimes: Box<[Region]>,
     pub args: Box<[Box<[Region]>]>,
 }
@@ -230,6 +232,8 @@ pub struct TraitRefRegions {
 /// metadata is checked; unsupported declarations retain the lifetime gate.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TraitRegions {
+    /// Region rows aligned with TraitSig::supertraits.
+    pub supertraits: Box<[TraitRefRegions]>,
     pub families: Box<[(Symbol, FamilyRegions)]>,
     pub names: Box<[LifetimeName]>,
     pub outlives: Box<[Outlives<Region>]>,
@@ -1270,6 +1274,19 @@ fn outer_lifetime(items: &ItemTree, module: ModuleId, name: Symbol) -> bool {
     false
 }
 
+fn generic_lifetimes_in(args: &flux_hir::GenericArgs, out: &mut Vec<LifetimeRef>) {
+    out.extend(args.lifetimes.iter().copied());
+    for ty in &args.types {
+        lifetimes_in(ty, out);
+    }
+    for binding in &args.bindings {
+        if let Some(own) = &binding.args {
+            generic_lifetimes_in(own, out);
+        }
+        lifetimes_in(&binding.ty, out);
+    }
+}
+
 /// The lifetimes written in `ty`, into `out`.
 pub(crate) fn lifetimes_in(ty: &TypeRef, out: &mut Vec<LifetimeRef>) {
     match ty {
@@ -1281,13 +1298,7 @@ pub(crate) fn lifetimes_in(ty: &TypeRef, out: &mut Vec<LifetimeRef>) {
         }
         TypeRef::Path(path) => {
             for args in path.args.iter().flatten() {
-                out.extend(args.lifetimes.iter().copied());
-                for t in args.types.iter() {
-                    lifetimes_in(t, out);
-                }
-                for b in args.bindings.iter() {
-                    lifetimes_in(&b.ty, out);
-                }
+                generic_lifetimes_in(args, out);
             }
             if let Some(qself) = &path.qself {
                 lifetimes_in(&qself.ty, out);
@@ -1314,9 +1325,7 @@ pub(crate) fn lifetimes_in(ty: &TypeRef, out: &mut Vec<LifetimeRef>) {
         TypeRef::Dyn(d) => {
             for b in d.bounds.iter() {
                 for args in b.path.args.iter().flatten() {
-                    out.extend(args.lifetimes.iter().copied());
-                    args.types.iter().for_each(|t| lifetimes_in(t, out));
-                    args.bindings.iter().for_each(|b| lifetimes_in(&b.ty, out));
+                    generic_lifetimes_in(args, out);
                 }
             }
             out.extend(d.lifetime);
@@ -1328,6 +1337,24 @@ pub(crate) fn lifetimes_in(ty: &TypeRef, out: &mut Vec<LifetimeRef>) {
         | TypeRef::ImplParam(_)
         | TypeRef::Opaque(_)
         | TypeRef::Error => {}
+    }
+}
+
+fn generic_elided_in(args: &flux_hir::GenericArgs, out: &mut Vec<TextRange>) {
+    out.extend(
+        args.lifetimes
+            .iter()
+            .filter(|l| l.is_anonymous())
+            .map(|l| l.range),
+    );
+    for ty in &args.types {
+        elided_in(ty, out);
+    }
+    for binding in &args.bindings {
+        if let Some(own) = &binding.args {
+            generic_elided_in(own, out);
+        }
+        elided_in(&binding.ty, out);
     }
 }
 
@@ -1351,15 +1378,7 @@ pub(crate) fn elided_in(ty: &TypeRef, out: &mut Vec<TextRange>) {
         }
         TypeRef::Path(path) => {
             for args in path.args.iter().flatten() {
-                for l in args.lifetimes.iter().filter(|l| l.is_anonymous()) {
-                    out.push(l.range);
-                }
-                for t in args.types.iter() {
-                    elided_in(t, out);
-                }
-                for b in args.bindings.iter() {
-                    elided_in(&b.ty, out);
-                }
+                generic_elided_in(args, out);
             }
         }
         TypeRef::Tuple(list) => list.iter().for_each(|t| elided_in(t, out)),
@@ -1871,6 +1890,7 @@ pub(crate) fn check_trait_admission(
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         if t.generics.lifetimes.is_empty()
             || trait_profile::required_method_profile(items, diagnostics, sigs, id).is_ok()
+            || trait_profile::lifetime_marker_profile(items, diagnostics, sigs, id)
             || trait_profile::family_method_profile(items, diagnostics, sigs, id)
             || trait_profile::safe_method_profile(items, diagnostics, sigs, id).is_ok()
         {

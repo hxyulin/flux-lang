@@ -69,6 +69,8 @@ pub struct ItemTree {
     pub consts: LayeredArena<Const>,
     pub type_aliases: LayeredArena<TypeAlias>,
     pub uses: Vec<Use>,
+    /// Native dynamic libraries requested by literal foreign-block attributes.
+    pub native_libraries: Vec<Symbol>,
     /// What each module's names mean, imports included.
     pub def_map: DefMap,
     /// The associated items of each type's inherent `impl` blocks, by
@@ -311,6 +313,8 @@ pub struct Const {
     /// evaluated like a constant's, rather than a value copied at each
     /// use. Its `node` is a `STATIC`.
     pub is_static: Option<bool>,
+    /// The imported symbol of a foreign static, which has no initializer.
+    pub extern_symbol: Option<Symbol>,
     /// `#[rustc_specialization]` in `core`: an associated constant
     /// standing in for what rustc's `core` learns by specialization
     /// (whether an iterator is `TrustedLen`, ...), which as there does
@@ -471,6 +475,9 @@ pub struct ImplType {
 /// `impl Tr for S`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Bound {
+    /// A non-callable `for<...>` binder, scoped to this predicate. Callable
+    /// binders retain their existing argument-list recipes instead.
+    pub bound_lifetimes: Box<[Symbol]>,
     pub path: Path,
     pub range: TextRange,
 }
@@ -530,6 +537,8 @@ pub struct Struct {
     pub repr_transparent: bool,
     /// Minimum aggregate alignment from `#[repr(align(N))]`, or 1.
     pub repr_align: u32,
+    /// Maximum field alignment from `#[repr(packed(N))]`.
+    pub repr_pack: Option<u32>,
     pub loc: ItemLoc,
     pub name_range: TextRange,
     /// `struct S` or `enum E`, where rustc reports errors about the
@@ -688,8 +697,13 @@ pub struct Function {
     /// Declared `unsafe fn`, or inside an `unsafe extern` block: calling
     /// it needs an `unsafe` block.
     pub is_unsafe: bool,
+    /// Target features explicitly enabled on this function. `Some([])` keeps
+    /// an empty attribute distinct: it still excludes Fn-family impls.
+    pub target_features: Option<Box<[Symbol]>>,
     /// Declared in an `extern` block, so defined elsewhere (in C).
     pub is_extern: bool,
+    /// An explicit native symbol for a foreign function declaration only.
+    pub link_name: Option<Symbol>,
     /// Uses the C calling convention, including definitions with bodies.
     pub c_abi: bool,
     /// `const fn`: callable in constants.
@@ -996,6 +1010,8 @@ pub struct GenericArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AssocBinding {
     pub name: Symbol,
+    /// Arguments of this associated family, independent of its trait's args.
+    pub args: Option<GenericArgs>,
     pub ty: TypeRef,
     pub name_range: TextRange,
     pub ty_range: TextRange,
@@ -1103,19 +1119,32 @@ impl std::fmt::Display for Path {
             }
             write!(f, "{segment}")?;
             if let Some(args) = self.args(i) {
-                f.write_str("<")?;
-                let lifetimes = args.lifetimes.iter().map(|l| l.name.to_string());
-                let types = lifetimes.chain(args.types.iter().map(|t| t.to_string()));
-                let bindings = args
-                    .bindings
-                    .iter()
-                    .map(|b| format!("{} = {}", b.name, b.ty));
-                let all: Vec<String> = types.chain(bindings).collect();
-                f.write_str(&all.join(", "))?;
-                f.write_str(">")?;
+                write!(f, "{args}")?;
             }
         }
         Ok(())
+    }
+}
+
+impl std::fmt::Display for GenericArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let parts: Vec<_> = self
+            .lifetimes
+            .iter()
+            .map(|l| l.name.to_string())
+            .chain(self.types.iter().map(ToString::to_string))
+            .chain(self.bindings.iter().map(ToString::to_string))
+            .collect();
+        write!(f, "<{}>", parts.join(", "))
+    }
+}
+impl std::fmt::Display for AssocBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)?;
+        if let Some(args) = &self.args {
+            write!(f, "{args}")?;
+        }
+        write!(f, " = {}", self.ty)
     }
 }
 
@@ -2098,16 +2127,11 @@ pub(crate) fn lower_generic_args(
                 let Some(name) = arg.name_ref() else {
                     continue;
                 };
-                if let Some(list) = arg.generic_arg_list() {
-                    unsupported(
-                        diagnostics,
-                        list.syntax().text_range(),
-                        "generic associated types",
-                    );
-                    continue;
-                }
                 bindings.push(AssocBinding {
                     name: Symbol::intern(name.text()),
+                    args: arg
+                        .generic_arg_list()
+                        .map(|list| lower_generic_args(list, diagnostics)),
                     ty: lower_type(arg.ty(), diagnostics),
                     name_range: name.syntax().text_range(),
                     ty_range: arg.ty().map_or(range, |t| t.syntax().text_range()),
@@ -2168,6 +2192,7 @@ fn lower_parenthesized_args(
         ranges: Box::new([range]),
         bindings: Box::new([AssocBinding {
             name: Symbol::intern("Output"),
+            args: None,
             ty,
             name_range: ty_range,
             ty_range,
@@ -2175,6 +2200,18 @@ fn lower_parenthesized_args(
         range: TextRange::new(range.start(), end.end()),
         parenthesized: true,
         bound_lifetimes: Box::default(),
+    }
+}
+
+fn generic_param_projections(args: &GenericArgs, params: &[GenericParam], out: &mut Vec<TypeRef>) {
+    for ty in &args.types {
+        param_projections(ty, params, out);
+    }
+    for binding in &args.bindings {
+        if let Some(own) = &binding.args {
+            generic_param_projections(own, params, out);
+        }
+        param_projections(&binding.ty, params, out);
     }
 }
 
@@ -2199,9 +2236,7 @@ fn param_projections(ty: &TypeRef, params: &[GenericParam], out: &mut Vec<TypeRe
                 return;
             }
             for args in path.args.iter().flatten() {
-                for arg in args.types.iter() {
-                    param_projections(arg, params, out);
-                }
+                generic_param_projections(args, params, out);
             }
         }
         TypeRef::Tuple(elements) => {
@@ -2227,12 +2262,7 @@ fn param_projections(ty: &TypeRef, params: &[GenericParam], out: &mut Vec<TypeRe
         TypeRef::Dyn(d) => {
             for b in d.bounds.iter() {
                 for args in b.path.args.iter().flatten() {
-                    for arg in args.types.iter() {
-                        param_projections(arg, params, out);
-                    }
-                    for binding in args.bindings.iter() {
-                        param_projections(&binding.ty, params, out);
-                    }
+                    generic_param_projections(args, params, out);
                 }
             }
         }
@@ -2346,8 +2376,17 @@ fn derive_attr(
     attr: ast::Attr<'_>,
     out: &mut Vec<(Derive, TextRange)>,
     diagnostics: &mut Vec<Diagnostic>,
+    items_tree: &ItemTree,
+    module: ModuleId,
 ) {
     let meta = attr.meta();
+    if meta.is_some_and(|m| m.unsafe_token().is_some() || m.eq_token().is_some()) {
+        diagnostics.push(Diagnostic::new(
+            attr.syntax().text_range(),
+            "malformed `derive` attribute input",
+        ));
+        return;
+    }
     let Some(tree) = meta.and_then(|m| m.token_tree()) else {
         diagnostics.push(Diagnostic::new(
             attr.syntax().text_range(),
@@ -2438,8 +2477,40 @@ fn derive_attr(
         let name = match item.as_slice() {
             [only] if single => only.into_token().map_or("", |t| t.text()),
             _ => {
-                error(range, "paths in `derive` are not supported yet".into());
-                continue;
+                let names = item
+                    .iter()
+                    .filter_map(|e| e.into_token())
+                    .filter(|t| t.kind() == SyntaxKind::IDENT)
+                    .collect::<Vec<_>>();
+                let path = Path {
+                    edition: None,
+                    anchor: if first.kind() == SyntaxKind::COLON {
+                        PathAnchor::Global
+                    } else {
+                        PathAnchor::Plain
+                    },
+                    qself: None,
+                    segments: names.iter().map(|t| Symbol::intern(t.text())).collect(),
+                    ranges: names.iter().map(|t| t.text_range()).collect(),
+                    anchor_ranges: Box::default(),
+                    args: Box::default(),
+                };
+                match macros::resolve_predecessor(
+                    items_tree,
+                    module,
+                    &path,
+                    crate::def_map::Ns::Types,
+                ) {
+                    Some(crate::def_map::Resolved::Def(crate::def_map::Def::Trait(id)))
+                        if items_tree.is_core(items_tree.traits[id].loc.module) =>
+                    {
+                        items_tree.traits[id].name.as_str()
+                    }
+                    _ => {
+                        error(range, "cannot find derive macro in this scope".into());
+                        continue;
+                    }
+                }
             }
         };
         let derive = match name {
@@ -2517,7 +2588,11 @@ fn lower_bound_type(ty: ast::Type<'_>, diagnostics: &mut Vec<Diagnostic>) -> Opt
         return None;
     };
     let path = lower_trait_path(path.path()?, diagnostics)?;
-    Some(Bound { path, range })
+    Some(Bound {
+        bound_lifetimes: Box::default(),
+        path,
+        range,
+    })
 }
 
 /// A lifetime as written.
@@ -2602,16 +2677,21 @@ fn lower_bounds(
             let binder = bound
                 .for_token()
                 .map(|_| binder_names(bound.generic_param_list(), diagnostics));
-            if let Some(mut path) = lower_trait_path(path, diagnostics) {
+            if let Some(path) = lower_trait_path(path, diagnostics) {
+                let mut lowered = Bound {
+                    bound_lifetimes: Box::default(),
+                    path,
+                    range,
+                };
                 match binder {
-                    Some(Some(names)) if bind_fn_lifetimes(&mut path, &names, diagnostics) => {}
+                    Some(Some(names)) if apply_bound_binder(&mut lowered, &names, diagnostics) => {}
                     Some(_) => {
                         unsupported(diagnostics, range, "higher-ranked bounds");
                         continue;
                     }
                     None => {}
                 }
-                out.push(Bound { path, range });
+                out.push(lowered);
             }
             continue;
         };
@@ -2655,6 +2735,7 @@ fn lower_dyn(d: ast::DynTraitType<'_>, diagnostics: &mut Vec<Diagnostic>) -> Typ
             };
             if let Some(path) = lower_trait_path(path, diagnostics) {
                 bounds.push(Bound {
+                    bound_lifetimes: Box::default(),
                     path,
                     range: bound_range,
                 });
@@ -2724,7 +2805,30 @@ fn lower_impl_trait(it: ast::ImplTraitType<'_>, diagnostics: &mut Vec<Diagnostic
         let what = if bound.question_token().is_some() {
             "`?Sized` bounds"
         } else if bound.for_token().is_some() {
-            "higher-ranked bounds"
+            let Some(bound_names) = binder_names(bound.generic_param_list(), diagnostics) else {
+                unsupported(diagnostics, bound_range, "higher-ranked bounds");
+                continue;
+            };
+            let Some(path) = bound.path_type().and_then(|p| p.path()) else {
+                continue;
+            };
+            if let Some(mut path) = lower_trait_path(path, diagnostics) {
+                if bind_fn_lifetimes(&mut path, &bound_names, diagnostics) {
+                    bounds.push(Bound {
+                        bound_lifetimes: Box::default(),
+                        path,
+                        range: bound_range,
+                    });
+                    names.push(collapse(bound.syntax().text()));
+                } else {
+                    unsupported(
+                        diagnostics,
+                        bound_range,
+                        "non-callable higher-ranked impl Trait bounds",
+                    );
+                }
+            }
+            continue;
         } else if bound.l_paren_token().is_some() {
             "parenthesized bounds"
         } else {
@@ -2733,6 +2837,7 @@ fn lower_impl_trait(it: ast::ImplTraitType<'_>, diagnostics: &mut Vec<Diagnostic
             };
             if let Some(path) = lower_trait_path(path, diagnostics) {
                 bounds.push(Bound {
+                    bound_lifetimes: Box::default(),
                     path,
                     range: bound_range,
                 });
@@ -2824,16 +2929,27 @@ fn visit_path_impl_traits(path: &mut Path, at: Nested, f: &mut dyn FnMut(&mut Ty
         }
     }
     for args in path.args.iter_mut().flatten() {
-        let (p, r) = match (args.parenthesized, at) {
-            (true, Nested::Site) => (Nested::FnParam, Nested::FnRet),
-            _ => (at, at),
-        };
-        for t in args.types.iter_mut() {
-            visit_impl_traits(t, p, f);
+        visit_generic_impl_traits(args, at, f);
+    }
+}
+
+fn visit_generic_impl_traits(
+    args: &mut GenericArgs,
+    at: Nested,
+    f: &mut dyn FnMut(&mut TypeRef, Nested),
+) {
+    let (p, r) = match (args.parenthesized, at) {
+        (true, Nested::Site) => (Nested::FnParam, Nested::FnRet),
+        _ => (at, at),
+    };
+    for t in args.types.iter_mut() {
+        visit_impl_traits(t, p, f);
+    }
+    for b in args.bindings.iter_mut() {
+        if let Some(own) = &mut b.args {
+            visit_generic_impl_traits(own, p, f);
         }
-        for b in args.bindings.iter_mut() {
-            visit_impl_traits(&mut b.ty, r, f);
-        }
+        visit_impl_traits(&mut b.ty, r, f);
     }
 }
 
@@ -3408,12 +3524,46 @@ fn binder_names(
                     }
                     ancestor = node.parent();
                 }
+                if names.contains(&lifetime.name) {
+                    diagnostics.push(Diagnostic::new(
+                        lifetime.range,
+                        "lifetime name is already used in this binder",
+                    ));
+                }
                 names.push(lifetime.name);
             }
             _ => return None,
         }
     }
     Some(names)
+}
+
+fn apply_bound_binder(
+    bound: &mut Bound,
+    names: &[Symbol],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    if bind_fn_lifetimes(&mut bound.path, names, diagnostics) {
+        return true;
+    }
+    if bound
+        .path
+        .args
+        .iter()
+        .flatten()
+        .any(|a| !a.bindings.is_empty())
+    {
+        unsupported(
+            diagnostics,
+            bound.range,
+            "higher-ranked associated type equalities",
+        );
+        return false;
+    }
+    let mut combined = names.to_vec();
+    combined.extend_from_slice(&bound.bound_lifetimes);
+    bound.bound_lifetimes = combined.into();
+    true
 }
 
 /// Retains a Fn-family binder so region lowering can correlate repeated
@@ -3430,7 +3580,9 @@ fn bind_fn_lifetimes(
     if !args.parenthesized {
         return false;
     }
-    args.bound_lifetimes = names.into();
+    let mut combined = names.to_vec();
+    combined.extend_from_slice(&args.bound_lifetimes);
+    args.bound_lifetimes = combined.into();
     true
 }
 

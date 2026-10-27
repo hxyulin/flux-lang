@@ -7,6 +7,8 @@ fn target_feature_acceptance_matches_rustc() {
         return;
     }
     let accepted = [
+        "#[target_feature(enable = \"neon\")] const fn f() {}",
+        "#[target_feature(enable = \"neon\")] fn f() {}",
         "#[target_feature(enable = \"neon\")] unsafe fn f() {}",
         "#[target_feature(enable = r#\"neon,neon\"#, enable = \"neon\",)] #[target_feature(enable = \"neon\")] unsafe fn f() {}",
         "#[target_feature()] unsafe fn f() {}",
@@ -75,10 +77,8 @@ fn target_feature_acceptance_matches_rustc() {
 fn unsupported_target_feature_contexts_remain_errors() {
     for source in [
         "struct S { #[target_feature(enable = \"neon\")] x: u8 }",
-        "#[target_feature(enable = \"neon\")] fn f() {}",
         "#[target_feature(enable = \"aes\")] unsafe fn f() {}",
         "#[target_feature(enable = \"neon,aes\")] #[target_feature(enable = \"neon\")] unsafe fn f() {}",
-        "#[target_feature(enable = \"neon\")] const fn f() {}",
         "#[cfg_attr(all(), target_feature(enable = \"aes\"))] unsafe fn f() {}",
         "#[target_feature(enable = \"avx2\")] unsafe fn f() {}",
     ] {

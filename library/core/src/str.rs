@@ -1897,3 +1897,5 @@ pub trait FromStr: Sized {
 impl str {
     pub fn parse<F: FromStr>(&self) -> Result<F, F::Err> { F::from_str(self) }
 }
+
+impl crate::error::Error for Utf8Error {}

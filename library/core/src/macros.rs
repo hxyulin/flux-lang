@@ -343,3 +343,7 @@ macro_rules! dbg {
         ),+,)
     };
 }
+
+#[macro_export]
+#[rustc_builtin_macro]
+macro_rules! derive { ($($t:tt)*) => { }; }

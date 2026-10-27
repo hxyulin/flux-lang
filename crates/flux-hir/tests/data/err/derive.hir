@@ -52,6 +52,10 @@ impl $crate0::cmp::PartialEq for Ordered;
 
 impl $crate0::cmp::Eq for Ordered;
 
+impl $crate0::clone::Clone for ByPath;
+
+impl $crate0::cmp::PartialEq for ByPath;
+
 impl $crate0::clone::Clone for LeadingComma;
 
 impl $crate0::clone::Clone for DoubleComma;
@@ -94,6 +98,14 @@ fn <Ordered as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bo
 
 fn <Ordered as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {}
 
+fn <ByPath as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
+    ByPath {  }
+}
+
+fn <ByPath as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
+    true
+}
+
 fn <LeadingComma as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     LeadingComma {  }
 }
@@ -115,8 +127,6 @@ error 507..527: `derive` may only be applied to `struct`s, `enum`s and `union`s
 error 590..606: `derive` may only be applied to `struct`s, `enum`s and `union`s
 error 667..676: malformed `derive` attribute input
 error 691..710: malformed `derive` attribute input
-error 1023..1041: paths in `derive` are not supported yet
-error 1043..1065: paths in `derive` are not supported yet
 error 1137..1138: expected identifier, found `,`
 error 1183..1184: expected identifier, found `,`
 error 1231..1234: traits in `#[derive(...)]` don't accept arguments

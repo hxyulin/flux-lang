@@ -33,6 +33,13 @@ pub enum FromBytesWithNulError {
 pub struct FromBytesUntilNulError(());
 
 impl CStr {
+    /// Borrows a readable NUL-terminated C string. The caller must ensure the
+    /// terminator lies within a live allocation for the returned lifetime.
+    pub unsafe fn from_ptr<'a>(pointer: *const c_char) -> &'a CStr {
+        // SAFETY: allocation validity and the terminating NUL are required by
+        // the caller. The intrinsic scans bytes and retains their length.
+        unsafe { c_str_from_ptr(pointer as *const u8) }
+    }
     /// The C string `bytes` is, which must end in its only NUL.
     pub fn from_bytes_with_nul(bytes: &[u8]) -> Result<&CStr, FromBytesWithNulError> {
         match nul_position(bytes) {
@@ -222,3 +229,11 @@ pub type c_long = i64;
 pub type c_ulong = u64;
 pub type c_longlong = i64;
 pub type c_ulonglong = u64;
+pub type c_float = f32;
+pub type c_double = f64;
+
+impl crate::hash::Hash for CStr {
+    fn hash<H: crate::hash::Hasher>(&self, state: &mut H) {
+        crate::hash::Hash::hash(self.to_bytes(), state);
+    }
+}

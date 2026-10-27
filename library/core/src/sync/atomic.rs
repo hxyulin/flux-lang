@@ -285,6 +285,134 @@ impl AtomicU32 {
     }
 }
 
+/// A byte-sized atomic with the same size and alignment as u8.
+#[repr(C, align(1))]
+pub struct AtomicU8 { value: UnsafeCell<u8> }
+// SAFETY: every shared storage access uses a native byte atomic instruction.
+unsafe impl Sync for AtomicU8 {}
+impl AtomicU8 {
+    pub const fn new(value:u8)->Self{Self{value:UnsafeCell::new(value)}}
+    pub fn get_mut(&mut self)->&mut u8{self.value.get_mut()}
+    pub fn into_inner(self)->u8{self.value.into_inner()}
+    #[track_caller]
+    pub fn load(&self,order:Ordering)->u8{
+        // SAFETY: the live byte storage is initialized; each branch uses an
+        // atomic load of exactly its declared width and a valid ordering.
+        unsafe{match order{
+            Relaxed=>intrinsics::__atomic_u8_load_relaxed(self.value.get()),
+            Acquire=>intrinsics::__atomic_u8_load_acquire(self.value.get()),
+            SeqCst=>intrinsics::__atomic_u8_load_seqcst(self.value.get()),
+            Release=>panic("there is no such thing as a release load"),
+            AcqRel=>panic("there is no such thing as an acquire-release load"),
+        }}
+    }
+    #[track_caller]
+    pub fn store(&self,value:u8,order:Ordering){
+        // SAFETY: the live byte storage is initialized and all shared accesses
+        // use atomic stores of exactly one byte with a validated ordering.
+        unsafe{match order{
+            Relaxed=>intrinsics::__atomic_u8_store_relaxed(self.value.get(),value),
+            Release=>intrinsics::__atomic_u8_store_release(self.value.get(),value),
+            SeqCst=>intrinsics::__atomic_u8_store_seqcst(self.value.get(),value),
+            Acquire=>panic("there is no such thing as an acquire store"),
+            AcqRel=>panic("there is no such thing as an acquire-release store"),
+        }}
+    }
+    /// Replaces `current`, returning the old value in Ok on success or Err
+    /// on failure. Failure Release and AcqRel panic; all other pairs are valid.
+    #[track_caller]
+    pub fn compare_exchange(
+        &self,
+        current: u8,
+        new: u8,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<u8, u8> {
+        // Keel has one order: join both Rust orders without weakening either.
+        // Validate failure before mapping; all fifteen remaining pairs are valid.
+        let order = match failure {
+            Release => panic("there is no such thing as a release failure ordering"),
+            AcqRel => panic("there is no such thing as an acquire-release failure ordering"),
+            SeqCst => SeqCst,
+            Relaxed => success,
+            Acquire => match success {
+                Relaxed | Acquire => Acquire,
+                Release | AcqRel => AcqRel,
+                SeqCst => SeqCst,
+            },
+        };
+        // SAFETY: aligned, live atomic storage. Pinned Keel CAS is strong and
+        // returns the old scalar on BOTH paths, not a boolean or tuple.
+        let old = unsafe {
+            match order {
+                Relaxed => intrinsics::__atomic_u8_cas_relaxed(self.value.get(), current, new),
+                Acquire => intrinsics::__atomic_u8_cas_acquire(self.value.get(), current, new),
+                Release => intrinsics::__atomic_u8_cas_release(self.value.get(), current, new),
+                AcqRel => intrinsics::__atomic_u8_cas_acqrel(self.value.get(), current, new),
+                SeqCst => intrinsics::__atomic_u8_cas_seqcst(self.value.get(), current, new),
+            }
+        };
+        if old == current { Ok(old) } else { Err(old) }
+    }
+
+    /// This bounded implementation uses strong CAS, which is allowed for weak CAS.
+    #[track_caller]
+    pub fn compare_exchange_weak(
+        &self,
+        current: u8,
+        new: u8,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<u8, u8> {
+        self.compare_exchange(current, new, success, failure)
+    }
+}
+impl crate::default::Default for AtomicU8{fn default()->Self{Self::new(0)}}
+impl crate::convert::From<u8> for AtomicU8{fn from(value:u8)->Self{Self::new(value)}}
+impl crate::fmt::Debug for AtomicU8{
+    fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result{crate::fmt::Debug::fmt(&self.load(Relaxed),f)}
+}
+
+/// A two-byte atomic with the same size and alignment as u16.
+#[repr(C, align(2))]
+pub struct AtomicU16 { value: UnsafeCell<u16> }
+// SAFETY: every shared storage access uses a native halfword atomic instruction.
+unsafe impl Sync for AtomicU16 {}
+impl AtomicU16 {
+    pub const fn new(value:u16)->Self{Self{value:UnsafeCell::new(value)}}
+    pub fn get_mut(&mut self)->&mut u16{self.value.get_mut()}
+    pub fn into_inner(self)->u16{self.value.into_inner()}
+    #[track_caller]
+    pub fn load(&self,order:Ordering)->u16{
+        // SAFETY: the live halfword storage is initialized; each branch uses an
+        // atomic load of exactly its declared width and a valid ordering.
+        unsafe{match order{
+            Relaxed=>intrinsics::__atomic_u16_load_relaxed(self.value.get()),
+            Acquire=>intrinsics::__atomic_u16_load_acquire(self.value.get()),
+            SeqCst=>intrinsics::__atomic_u16_load_seqcst(self.value.get()),
+            Release=>panic("there is no such thing as a release load"),
+            AcqRel=>panic("there is no such thing as an acquire-release load"),
+        }}
+    }
+    #[track_caller]
+    pub fn store(&self,value:u16,order:Ordering){
+        // SAFETY: the live halfword storage is initialized and all shared accesses
+        // use atomic stores of exactly two bytes with a validated ordering.
+        unsafe{match order{
+            Relaxed=>intrinsics::__atomic_u16_store_relaxed(self.value.get(),value),
+            Release=>intrinsics::__atomic_u16_store_release(self.value.get(),value),
+            SeqCst=>intrinsics::__atomic_u16_store_seqcst(self.value.get(),value),
+            Acquire=>panic("there is no such thing as an acquire store"),
+            AcqRel=>panic("there is no such thing as an acquire-release store"),
+        }}
+    }
+}
+impl crate::default::Default for AtomicU16{fn default()->Self{Self::new(0)}}
+impl crate::convert::From<u16> for AtomicU16{fn from(value:u16)->Self{Self::new(value)}}
+impl crate::fmt::Debug for AtomicU16{
+    fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result{crate::fmt::Debug::fmt(&self.load(Relaxed),f)}
+}
+
 /// An atomic fence. Relaxed is invalid and panics.
 #[track_caller]
 pub fn fence(order: Ordering) {
@@ -360,4 +488,58 @@ impl<T> AtomicPtr<T> {
             }
         }
     }
+}
+
+// Signed atomics retain exactly the unsigned storage width. All bit patterns
+// are valid in both signed and unsigned integers of the same width.
+macro_rules! signed_atomic {
+    ($name:ident, $signed:ty, $unsigned:ty, $storage:ident, $alignment:literal) => {
+        #[repr(C, align($alignment))]
+        pub struct $name { value: $storage }
+        impl $name {
+            pub const fn new(value:$signed)->Self { Self { value:$storage::new(value as $unsigned) } }
+            pub fn get_mut(&mut self)->&mut $signed {
+                // SAFETY: signed/unsigned types have identical size/alignment
+                // and every bit pattern is valid. Access is exclusive.
+                unsafe { &mut *(self.value.get_mut() as *mut $unsigned as *mut $signed) }
+            }
+            pub fn into_inner(self)->$signed { self.value.into_inner() as $signed }
+            #[track_caller]
+            pub fn load(&self,order:Ordering)->$signed { self.value.load(order) as $signed }
+            #[track_caller]
+            pub fn store(&self,value:$signed,order:Ordering) { self.value.store(value as $unsigned,order); }
+        }
+        impl crate::default::Default for $name { fn default()->Self { Self::new(0) } }
+        impl crate::convert::From<$signed> for $name { fn from(value:$signed)->Self { Self::new(value) } }
+        impl crate::fmt::Debug for $name {
+            fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result { crate::fmt::Debug::fmt(&self.load(Relaxed),f) }
+        }
+    };
+}
+signed_atomic!(AtomicI8,i8,u8,AtomicU8,1);
+signed_atomic!(AtomicI16,i16,u16,AtomicU16,2);
+signed_atomic!(AtomicI32,i32,u32,AtomicU32,4);
+signed_atomic!(AtomicI64,i64,u64,AtomicU64,8);
+signed_atomic!(AtomicIsize,isize,usize,AtomicUsize,8);
+
+/// A one-byte boolean atomic. Its private backing byte always contains 0 or 1.
+#[repr(C,align(1))]
+pub struct AtomicBool { value:AtomicU8 }
+impl AtomicBool {
+    pub const fn new(value:bool)->Self { Self { value:AtomicU8::new(value as u8) } }
+    pub fn get_mut(&mut self)->&mut bool {
+        // SAFETY: only bool constructors/stores initialize this private byte,
+        // so it has a valid bool representation. Exclusive access is retained.
+        unsafe { &mut *(self.value.get_mut() as *mut u8 as *mut bool) }
+    }
+    pub fn into_inner(self)->bool { self.value.into_inner()!=0 }
+    #[track_caller]
+    pub fn load(&self,order:Ordering)->bool { self.value.load(order)!=0 }
+    #[track_caller]
+    pub fn store(&self,value:bool,order:Ordering) { self.value.store(value as u8,order); }
+}
+impl crate::default::Default for AtomicBool { fn default()->Self { Self::new(false) } }
+impl crate::convert::From<bool> for AtomicBool { fn from(value:bool)->Self { Self::new(value) } }
+impl crate::fmt::Debug for AtomicBool {
+    fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result { crate::fmt::Debug::fmt(&self.load(Relaxed),f) }
 }

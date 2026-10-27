@@ -109,11 +109,35 @@ fn compile_object_inner(
 /// Links `object` against the C library into an executable at `output`.
 /// Returns the linker's warnings.
 pub fn link_executable(object: &[u8], target: Target, output: &Path) -> Result<Vec<String>, Error> {
+    link_executable_with_libraries(object, target, output, &[])
+}
+
+/// Links an object and the literal dynamic-library requirements collected
+/// from the source graph. Object-only callers may use [`link_executable`].
+pub fn link_executable_with_libraries(
+    object: &[u8],
+    target: Target,
+    output: &Path,
+    libraries: &[flux_intern::Symbol],
+) -> Result<Vec<String>, Error> {
     match target {
         Target::Aarch64AppleDarwin => {
             let sdk = macos_sdk()?;
             let system = keel_link::Dylib::from_tbd(&sdk.join("usr/lib/libSystem.tbd"), &sdk)
                 .map_err(|message| Error::message(Stage::Sdk, message))?;
+            let mut dylibs = vec![system];
+            let mut seen = std::collections::HashSet::new();
+            for name in libraries {
+                // Darwin's libc and libm are umbrella aliases of libSystem,
+                // already included for the executable's runtime entry point.
+                if matches!(name.as_str(), "c" | "m" | "System") || !seen.insert(*name) {
+                    continue;
+                }
+                let path = sdk.join("usr/lib").join(format!("lib{name}.tbd"));
+                let dylib = keel_link::Dylib::from_tbd(&path, &sdk)
+                    .map_err(|message| Error::message(Stage::Sdk, message))?;
+                dylibs.push(dylib);
+            }
             let input = keel_link::Input {
                 name: "flux.o",
                 bytes: object,
@@ -121,7 +145,7 @@ pub fn link_executable(object: &[u8], target: Target, output: &Path) -> Result<V
             let executable = keel_link::link(
                 &[input],
                 keel_link::Options {
-                    dylibs: vec![system],
+                    dylibs,
                     ..keel_link::Options::default()
                 },
             )

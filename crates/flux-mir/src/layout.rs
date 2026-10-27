@@ -409,7 +409,12 @@ impl<'a> Layouts<'a> {
         let Some(variants) = self.sigs.variants(ty) else {
             let fields = self.sigs.fields(ty).unwrap_or_default();
             if data.is_union {
-                let align = fields.iter().map(|&f| self.of(f).align).max().unwrap_or(1);
+                let align = fields
+                    .iter()
+                    .map(|&f| self.of(f).align)
+                    .max()
+                    .unwrap_or(1)
+                    .min(u64::from(data.repr_pack.unwrap_or(u32::MAX)));
                 let size = fields.iter().map(|&f| self.of(f).size).max().unwrap_or(0);
                 return Layout {
                     size: align_to(size, align),
@@ -450,8 +455,41 @@ impl<'a> Layouts<'a> {
             } else {
                 Kind::AlwaysSized
             };
-            let mut layout =
-                self.univariant_layout(fields, !data.repr_c, kind, u64::from(data.repr_align));
+            let mut layout = if let Some(pack) = data.repr_pack {
+                let layouts: Vec<_> = fields
+                    .iter()
+                    .map(|&field| {
+                        let mut layout = (*self.of(field)).clone();
+                        layout.align = layout.align.min(u64::from(pack));
+                        layout
+                    })
+                    .collect();
+                let mut order: Vec<_> = (0..layouts.len()).collect();
+                if !data.repr_c {
+                    let end = if kind == Kind::MaybeUnsized {
+                        order.len().saturating_sub(1)
+                    } else {
+                        order.len()
+                    };
+                    order[..end].sort_by_key(|&i| std::cmp::Reverse(layouts[i].align));
+                }
+                let refs: Vec<_> = order.iter().map(|&i| &layouts[i]).collect();
+                let mut u = univariant(&refs, false, kind, 1);
+                let offsets = u.offsets.clone();
+                for (sorted, &original) in order.iter().enumerate() {
+                    u.offsets[original] = offsets[sorted];
+                }
+                Layout {
+                    size: u.size,
+                    align: u.align,
+                    niche: u.niche,
+                    uninhabited: u.uninhabited,
+                    exact: refs.iter().all(|l| l.exact),
+                    shape: Shape::Struct(u.offsets.into()),
+                }
+            } else {
+                self.univariant_layout(fields, !data.repr_c, kind, u64::from(data.repr_align))
+            };
             if lang("non_null") {
                 // `#[rustc_layout_scalar_valid_range_start(1)]`.
                 layout.niche = Some(Niche {

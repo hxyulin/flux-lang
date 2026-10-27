@@ -2,6 +2,15 @@
 use crate::alloc_crate::string::String;
 use crate::alloc_crate::vec::Vec;
 
+/// A writer that accepts and discards all bytes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Sink;
+pub const fn sink() -> Sink { Sink }
+impl Write for Sink {
+    fn write(&mut self, bytes: &[u8]) -> Result<usize> { Ok(bytes.len()) }
+    fn flush(&mut self) -> Result<()> { Ok(()) }
+}
+
 pub type Result<T> = core::result::Result<T, Error>;
 pub struct Error { code: i32, message: Option<&'static str>, custom_kind: Option<ErrorKind> }
 #[cfg(target_os = "macos")]
@@ -421,5 +430,96 @@ impl Write for &mut [u8] {
         *self = remaining;
         Ok(count)
     }
+    fn flush(&mut self) -> Result<()> { Ok(()) }
+}
+
+/// An in-memory byte stream with an independent position.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cursor<T> {
+    inner: T,
+    pos: u64,
+}
+
+impl<T> Cursor<T> {
+    pub const fn new(inner: T) -> Cursor<T> { Cursor { inner, pos: 0 } }
+    pub const fn get_ref(&self) -> &T { &self.inner }
+    pub const fn get_mut(&mut self) -> &mut T { &mut self.inner }
+    pub fn into_inner(self) -> T { self.inner }
+    pub const fn position(&self) -> u64 { self.pos }
+    pub const fn set_position(&mut self, pos: u64) { self.pos = pos; }
+}
+
+impl<T: AsRef<[u8]>> Read for Cursor<T> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let bytes = self.inner.as_ref();
+        let start = core::cmp::min(self.pos, bytes.len() as u64) as usize;
+        let count = core::cmp::min(buf.len(), bytes.len() - start);
+        buf[..count].copy_from_slice(&bytes[start..start + count]);
+        self.pos += count as u64;
+        Ok(count)
+    }
+}
+
+impl<T: AsRef<[u8]>> Seek for Cursor<T> {
+    fn seek(&mut self, from: SeekFrom) -> Result<u64> {
+        let (base, offset) = match from {
+            SeekFrom::Start(pos) => { self.pos = pos; return Ok(pos); }
+            SeekFrom::End(offset) => (self.inner.as_ref().len() as u64, offset),
+            SeekFrom::Current(offset) => (self.pos, offset),
+        };
+        let next = if offset >= 0 {
+            base.checked_add(offset as u64)
+        } else {
+            base.checked_sub(offset.wrapping_neg() as u64)
+        };
+        match next {
+            Some(pos) => { self.pos = pos; Ok(pos) }
+            None => Err(cursor_invalid("invalid seek to a negative or overflowing position")),
+        }
+    }
+    fn stream_position(&mut self) -> Result<u64> { Ok(self.pos) }
+}
+
+fn cursor_invalid(message: &'static str) -> Error {
+    Error { code: 0, message: Some(message), custom_kind: Some(ErrorKind::InvalidInput) }
+}
+
+fn cursor_write_vec(pos: &mut u64, bytes: &mut Vec<u8>, buf: &[u8]) -> Result<usize> {
+    let start = usize::try_from(*pos).map_err(|_| cursor_invalid("cursor position exceeds maximum possible vector length"))?;
+    let end = start.checked_add(buf.len()).ok_or_else(|| cursor_invalid("cursor position exceeds maximum possible vector length"))?;
+    if end > bytes.len() { bytes.resize(end, 0); }
+    bytes[start..end].copy_from_slice(buf);
+    *pos += buf.len() as u64;
+    Ok(buf.len())
+}
+
+impl Write for Cursor<Vec<u8>> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> { cursor_write_vec(&mut self.pos, &mut self.inner, buf) }
+    fn flush(&mut self) -> Result<()> { Ok(()) }
+    fn write_all(&mut self, buf: &[u8]) -> Result<()> { self.write(buf).map(|_| ()) }
+}
+impl Write for Cursor<&mut Vec<u8>> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> { cursor_write_vec(&mut self.pos, self.inner, buf) }
+    fn flush(&mut self) -> Result<()> { Ok(()) }
+    fn write_all(&mut self, buf: &[u8]) -> Result<()> { self.write(buf).map(|_| ()) }
+}
+
+fn cursor_write_slice(pos: &mut u64, bytes: &mut [u8], buf: &[u8]) -> Result<usize> {
+    let start = core::cmp::min(*pos, bytes.len() as u64) as usize;
+    let count = core::cmp::min(buf.len(), bytes.len() - start);
+    bytes[start..start + count].copy_from_slice(&buf[..count]);
+    *pos += count as u64;
+    Ok(count)
+}
+impl Write for Cursor<&mut [u8]> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> { cursor_write_slice(&mut self.pos, self.inner, buf) }
+    fn flush(&mut self) -> Result<()> { Ok(()) }
+}
+impl<const N: usize> Write for Cursor<[u8; N]> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> { cursor_write_slice(&mut self.pos, &mut self.inner, buf) }
+    fn flush(&mut self) -> Result<()> { Ok(()) }
+}
+impl Write for Cursor<crate::alloc_crate::boxed::Box<[u8]>> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> { cursor_write_slice(&mut self.pos, &mut self.inner, buf) }
     fn flush(&mut self) -> Result<()> { Ok(()) }
 }

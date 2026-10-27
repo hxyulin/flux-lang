@@ -5,6 +5,10 @@ on arm64 macOS. The bounded audit leaves reports in
 `out/keel-backend-readiness/<parent-pid>/`. It is ignored by default while the
 reported input and library blockers remain.
 
+Set `FLUX_BACKEND_ONLY=core` or `FLUX_BACKEND_ONLY=full` to audit just one
+source closure while investigating a blocker. The report records that selection;
+a core-only pass does not establish full-backend support.
+
 The frozen `graph.json` records the 39-package normal dependency closure of
 Keel assembler, IR, codegen, frontend, optimizer and linker, at the workspace's
 pinned revision. Package IDs, versions, source identities, editions, features,
@@ -101,3 +105,37 @@ followed by additional unsupported libc declarations. Full-graph types/MIR and
 native execution did not run. The 18-package core still has zero syntax/HIR
 and 92 type diagnostics. All source-integrity guards pass. This is the expected
 failing readiness test, not a passing full-backend build.
+
+## Parallel prerequisite work
+
+The integrated audit `out/keel-backend-readiness/42376` records zero input and
+syntax diagnostics. The full graph now has zero HIR diagnostics, down from 697.
+The unchanged 18-package core has zero HIR, type and MIR diagnostics; its isolated
+worker passes native comparison with optimization off/on in 147.65 seconds.
+Both runs print `aarch64 backend text=28` and `x86 backend text=17`, matching the
+separate rustc reference. All five byte guards pass.
+
+Focused tests cover constant trait objects, generic callable-object coercions,
+enum constant patterns, type/const GAT equality bindings, and non-callable
+higher-ranked trait bounds. The library additions include collections, C strings,
+address values, system time, output cursors, files, byte/halfword atomics,
+volatile scalar accesses, and SHA/NEON helper semantics. Native comparisons use
+both optimization tiers; this evidence does not replace the guarded graph audit.
+
+The integrated source includes packed layouts, foreign static imports and native
+library linking, function-address integer casts, and byte compare-exchange.
+Named-constant aggregate promotion retains allocation alignment and field offsets;
+closure result analysis preserves correlated outputs through nested callbacks.
+
+The full worker stops at type checking with 2,485 diagnostics. These are not
+2,485 independent blockers: large groups cascade from associated array lengths,
+missing `wrapping_offset` pointer methods, additional const pointer/slice APIs,
+union field restrictions and remaining trait/projection contracts in Serde and
+crypto dependencies. The combined readiness test still fails for that full scope;
+full MIR/codegen and linker-native comparison have not run. The core pass is a
+backend dependency milestone, not a complete compiler bootstrap.
+
+Current bounded APIs reject aggregate volatile accesses and lifetime-bearing
+GAT equality arguments. SHA helpers use scalar implementations, not accelerated
+instructions. `hint::spin_loop` currently uses a no-op hint fallback; atomics
+still supply synchronization.

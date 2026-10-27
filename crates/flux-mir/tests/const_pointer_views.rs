@@ -10,6 +10,24 @@ fn const_pointer_reads_match_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     for (name, rustc_accepted, flux_accepted, text) in [
         (
+            "static_nested_subslice",
+            true,
+            true,
+            r###"static WORDS:[u32;4]=[7,11,13,17];const REST:&[u32]=match &WORDS{[_,rest@..]=>rest};static TABLE:[&[u32];2]=[REST,match REST{[first@..,_]=>first,_=>&[]}];fn main(){assert_eq!(TABLE[1],&[11,13]);}"###,
+        ),
+        (
+            "static_nested_subslice_index",
+            true,
+            true,
+            r###"static WORDS:[u32;4]=[7,11,13,17];const REST:&[u32]=match &WORDS{[_,rest@..]=>rest};const HEAD:&[u32]=match REST{[first@..,_]=>first,_=>&[]};const VALUE:&u32=&HEAD[1];fn main(){assert_eq!(*VALUE,13);}"###,
+        ),
+        (
+            "static_nested_empty_subslice",
+            true,
+            true,
+            r###"static WORDS:[u32;4]=[7,11,13,17];const REST:&[u32]=match &WORDS{[_,rest@..]=>rest};const HEAD:&[u32]=match REST{[first@..,_]=>first,_=>&[]};const EMPTY:&[u32]=match HEAD{[empty@..,_,_]=>empty,_=>&[]};fn main(){assert!(EMPTY.is_empty());}"###,
+        ),
+        (
             "dead_dynamic_temp",
             false,
             false,

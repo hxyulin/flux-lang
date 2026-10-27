@@ -274,6 +274,21 @@ impl Collector<'_> {
         }
         let crate_root = self.items.modules[module].parent.is_none();
         let attrs = crate::cfg::Attrs::new(source.attrs());
+        if crate_root {
+            let expected = self.items.crates[self.items.modules[module].krate.0 as usize].name;
+            for attr in attrs.iter().filter(|a| attr_name(*a) == Some("crate_name")) {
+                if let Some(ast::Expr::Literal(literal)) = attr.meta().and_then(|m| m.expr())
+                    && let Some(token) = literal.value().filter(|t| t.kind() == SyntaxKind::STRING)
+                    && let Ok(name) = crate::literal::unescape_str(token.text())
+                    && name != expected.as_str()
+                {
+                    self.items.diagnostics.push(Diagnostic::new(
+                        attr.syntax().text_range(),
+                        "crate name does not match the supplied crate name",
+                    ));
+                }
+            }
+        }
         let no_std = crate_root && attrs.iter().any(|a| attr_name(a) == Some("no_std"));
         if no_std {
             let own = self.items.modules[module].krate;
@@ -475,7 +490,7 @@ impl Collector<'_> {
                 self.collect_macro_call(ctx, mc);
             }
             ast::Item::Static(st) => {
-                self.collect_static(ctx, st);
+                self.collect_static(ctx, st, false);
             }
             ast::Item::Trait(t) => {
                 self.collect_trait(ctx, t);
@@ -1810,11 +1825,37 @@ impl Collector<'_> {
         let mut track_caller = false;
         let mut do_not_const_check = false;
         let mut lang = None;
+        let mut link_name = None;
         let attrs = crate::cfg::Attrs::new(f.attrs());
         let has_target_feature = attrs.iter().any(|a| attr_name(a) == Some("target_feature"));
+        let mut enabled_features = Vec::new();
+        if has_target_feature
+            && f.unsafe_token().is_none()
+            && owner.is_some_and(|owner| match owner {
+                Owner::Trait(_) => true,
+                Owner::Impl(id) => self.items.impls[id].trait_ref.is_some(),
+            })
+        {
+            self.items.diagnostics.push(Diagnostic::new(
+                f.syntax().text_range(),
+                "`target_feature` cannot be applied to safe trait methods",
+            ));
+        }
         for attr in attrs.iter() {
+            if attr_name(attr) == Some("link_name") {
+                let name = super::attributes::link_name_attr(attr, &mut self.items.diagnostics);
+                if in_extern_block && link_name.is_none() {
+                    link_name = name;
+                }
+                continue;
+            }
             if attr_name(attr) == Some("target_feature") {
-                target_feature_attr(attr, f, in_extern_block, &mut self.items.diagnostics);
+                enabled_features.extend(target_feature_attr(
+                    attr,
+                    f,
+                    in_extern_block,
+                    &mut self.items.diagnostics,
+                ));
                 continue;
             }
             if has_target_feature && attr_name(attr) == Some("inline") {
@@ -1846,16 +1887,18 @@ impl Collector<'_> {
                     .flat_map(|t| t.syntax().tokens())
                     .filter(|t| !t.kind().is_trivia())
                     .collect();
-                if matches!(tokens.as_slice(), [l, n, r]
-                    if l.kind() == SyntaxKind::L_PAREN && n.text() == "1"
-                        && r.kind() == SyntaxKind::R_PAREN)
+                if let [l, n, r] = tokens.as_slice()
+                    && l.kind() == SyntaxKind::L_PAREN
+                    && n.kind() == SyntaxKind::INT_NUMBER
+                    && r.kind() == SyntaxKind::R_PAREN
+                    && let Ok(position) = n.text().parse::<u32>()
                 {
-                    legacy_const_generic = Some(1);
+                    legacy_const_generic = Some(position);
                 } else {
                     unsupported(
                         &mut self.items.diagnostics,
                         attr.syntax().text_range(),
-                        "legacy const generic positions other than `(1)`",
+                        "malformed legacy const generic position",
                     );
                 }
             } else if is_core && attr_name(attr) == Some("rustc_do_not_const_check") {
@@ -2119,16 +2162,16 @@ impl Collector<'_> {
         } else {
             f.syntax().text_range().end()
         };
-        if legacy_const_generic.is_some()
-            && (params.len() != 1
+        if legacy_const_generic.is_some_and(|position| {
+            position as usize != params.len()
                 || generics.params.len() != 1
                 || !generics.params[0].is_const()
-                || owner.is_some())
-        {
+                || owner.is_some()
+        }) {
             unsupported(
                 &mut self.items.diagnostics,
                 f.syntax().text_range(),
-                "legacy const generics on signatures other than one const and one runtime parameter",
+                "legacy const generics without one trailing const parameter",
             );
             legacy_const_generic = None;
         }
@@ -2162,7 +2205,9 @@ impl Collector<'_> {
                 vis,
             },
             is_unsafe: in_extern_block || f.unsafe_token().is_some(),
+            target_features: has_target_feature.then(|| enabled_features.into_boxed_slice()),
             is_extern: in_extern_block,
+            link_name,
             c_abi,
             is_const: f.const_token().is_some(),
             inherits_overflow_checks,
@@ -2592,6 +2637,7 @@ impl Collector<'_> {
             item_range: range,
             discriminant: None,
             is_static: None,
+            extern_symbol: None,
             specialization: false,
             anon: Some(AnonConst {
                 function: scope.function,
@@ -2677,6 +2723,7 @@ impl Collector<'_> {
             discriminant: None,
             anon: None,
             is_static: None,
+            extern_symbol: None,
             specialization,
             macro_scope: self.macro_scope,
         });
@@ -2687,7 +2734,7 @@ impl Collector<'_> {
     }
 
     /// `static X: T = v;` or `static mut X: T = v;`.
-    fn collect_static(&mut self, ctx: Ctx, st: ast::Static<'_>) {
+    fn collect_static(&mut self, ctx: Ctx, st: ast::Static<'_>, foreign: bool) {
         check_attrs(st.attrs(), &mut self.items.diagnostics);
         let vis = self.visibility(ctx, st.visibility());
         let Some(name) = st.name() else {
@@ -2714,8 +2761,31 @@ impl Collector<'_> {
         let def_start = def_start(st.syntax());
         let header_end = st.ty().map_or(name_end, |t| t.syntax().text_range().end());
         let item_range = TextRange::new(def_start, st.syntax().text_range().end());
-        if !has_body {
+        if !has_body && !foreign {
             diagnostics.push(Diagnostic::new(item_range, "free static item without body"));
+        }
+        let mut extern_symbol = foreign.then(|| Symbol::intern(name.text()));
+        if foreign {
+            for attr in crate::cfg::Attrs::new(st.attrs()).iter() {
+                if attr_name(attr) == Some("link_name") {
+                    extern_symbol =
+                        super::attributes::link_name_attr(attr, diagnostics).or(extern_symbol);
+                    break;
+                }
+            }
+            if has_body {
+                diagnostics.push(Diagnostic::new(
+                    item_range,
+                    "foreign statics cannot have initializers",
+                ));
+            }
+            if st
+                .syntax()
+                .children_with_tokens()
+                .any(|e| matches!(e, flux_syntax::SyntaxElement::Token(t) if t.text() == "safe"))
+            {
+                unsupported(diagnostics, item_range, "safe foreign statics");
+            }
         }
         self.items.consts.alloc(Const {
             name: Some(Symbol::intern(name.text())),
@@ -2736,6 +2806,7 @@ impl Collector<'_> {
             discriminant: None,
             anon: None,
             is_static: Some(st.mut_token().is_some()),
+            extern_symbol,
             specialization: false,
             macro_scope: self.macro_scope,
         });
@@ -2872,6 +2943,21 @@ impl Collector<'_> {
         });
     }
 
+    fn is_derive_attr(&self, ctx: Ctx, attr: ast::Attr<'_>) -> bool {
+        if attr_name(attr) == Some("derive") {
+            return true;
+        }
+        let Some(path) = attr.meta().and_then(|m| m.path()) else {
+            return false;
+        };
+        let Some(path) = lower_path(path, &mut Vec::new()) else {
+            return false;
+        };
+        matches!(macros::resolve_predecessor(self.items,ctx.module,&path,crate::def_map::Ns::Macros),
+            Some(crate::def_map::Resolved::Def(crate::def_map::Def::Macro(id)))
+            if matches!(self.items.macros[id].kind,macros::MacroKind::Builtin(macros::Builtin::Derive)))
+    }
+
     fn collect_struct(&mut self, ctx: Ctx, s: ast::Struct<'_>) {
         let mut derives = Vec::new();
         let mut non_exhaustive = false;
@@ -2879,15 +2965,19 @@ impl Collector<'_> {
         let mut lang = None;
         let mut hints = Vec::new();
         let mut repr_align = 1;
+        let mut repr_pack = None;
         let attrs = crate::cfg::Attrs::new(s.attrs());
         for attr in attrs.iter() {
-            if attr_name(attr) == Some("derive") {
-                derive_attr(attr, &mut derives, &mut self.items.diagnostics);
+            if self.is_derive_attr(ctx, attr) {
+                let mut diagnostics = Vec::new();
+                derive_attr(attr, &mut derives, &mut diagnostics, self.items, ctx.module);
+                self.items.diagnostics.extend(diagnostics);
             } else if attr_name(attr) == Some("repr") {
                 repr_attr(
                     attr,
                     &mut hints,
                     &mut repr_align,
+                    &mut repr_pack,
                     &mut self.items.diagnostics,
                 );
             } else if attr_name(attr) == Some("non_exhaustive") {
@@ -2917,6 +3007,12 @@ impl Collector<'_> {
             false,
         );
         let repr_c = struct_repr(&hints, &mut self.items.diagnostics);
+        if repr_pack.is_some() && hints.iter().any(|(h, _)| h.as_str() == "align") {
+            self.items.diagnostics.push(Diagnostic::new(
+                s.syntax().text_range(),
+                "packed structs cannot have an alignment hint",
+            ));
+        }
         let repr_transparent = hints.iter().any(|(hint, _)| hint.as_str() == "transparent");
         if repr_transparent && hints.iter().any(|(hint, _)| hint.as_str() != "transparent") {
             self.items.diagnostics.push(Diagnostic::new(
@@ -2937,6 +3033,7 @@ impl Collector<'_> {
             repr_c,
             repr_transparent,
             repr_align,
+            repr_pack,
             loc: ItemLoc {
                 module: ctx.module,
                 file: ctx.file,
@@ -2960,15 +3057,19 @@ impl Collector<'_> {
         let mut lang = None;
         let mut hints = Vec::new();
         let mut repr_align = 1;
+        let mut repr_pack = None;
         let attrs = crate::cfg::Attrs::new(s.attrs());
         for attr in attrs.iter() {
-            if attr_name(attr) == Some("derive") {
-                derive_attr(attr, &mut derives, &mut self.items.diagnostics);
+            if self.is_derive_attr(ctx, attr) {
+                let mut diagnostics = Vec::new();
+                derive_attr(attr, &mut derives, &mut diagnostics, self.items, ctx.module);
+                self.items.diagnostics.extend(diagnostics);
             } else if attr_name(attr) == Some("repr") {
                 repr_attr(
                     attr,
                     &mut hints,
                     &mut repr_align,
+                    &mut repr_pack,
                     &mut self.items.diagnostics,
                 );
             } else if is_core && let Some(name) = lang_attr(attr) {
@@ -3029,6 +3130,12 @@ impl Collector<'_> {
                 "unions cannot have zero fields",
             ));
         }
+        if repr_pack.is_some() && hints.iter().any(|(hint, _)| hint.as_str() == "align") {
+            self.items.diagnostics.push(Diagnostic::new(
+                s.syntax().text_range(),
+                "packed unions cannot have an alignment hint",
+            ));
+        }
         if repr_align != 1 {
             unsupported(
                 &mut self.items.diagnostics,
@@ -3049,6 +3156,7 @@ impl Collector<'_> {
             repr_c,
             repr_transparent: false,
             repr_align,
+            repr_pack,
             loc: ItemLoc {
                 module: ctx.module,
                 file: ctx.file,
@@ -3165,17 +3273,21 @@ impl Collector<'_> {
         let mut non_exhaustive = false;
         let mut hints = Vec::new();
         let mut repr_align = 1;
+        let mut repr_pack = None;
         let is_core = self.items.is_core(ctx.module);
         let mut lang = None;
         let attrs = crate::cfg::Attrs::new(e.attrs());
         for attr in attrs.iter() {
-            if attr_name(attr) == Some("derive") {
-                derive_attr(attr, &mut derives, &mut self.items.diagnostics);
+            if self.is_derive_attr(ctx, attr) {
+                let mut diagnostics = Vec::new();
+                derive_attr(attr, &mut derives, &mut diagnostics, self.items, ctx.module);
+                self.items.diagnostics.extend(diagnostics);
             } else if attr_name(attr) == Some("repr") {
                 repr_attr(
                     attr,
                     &mut hints,
                     &mut repr_align,
+                    &mut repr_pack,
                     &mut self.items.diagnostics,
                 );
             } else if attr_name(attr) == Some("non_exhaustive") {
@@ -3376,6 +3488,7 @@ impl Collector<'_> {
                     item_range: range,
                     discriminant: Some((strukt, variants.len() as u32)),
                     is_static: None,
+                    extern_symbol: None,
                     specialization: false,
                     anon: None,
                     macro_scope: self.macro_scope,
@@ -3423,6 +3536,7 @@ impl Collector<'_> {
             repr_c: hints.iter().any(|(h, _)| h.as_str() == "C"),
             repr_transparent: false,
             repr_align,
+            repr_pack,
             loc: ItemLoc {
                 module: ctx.module,
                 file: ctx.file,
@@ -3579,6 +3693,8 @@ impl Collector<'_> {
                         vis: Visibility::Public,
                     },
                     is_unsafe: false,
+                    target_features: None,
+                    link_name: None,
                     is_extern: false,
                     c_abi: false,
                     is_const: true,
@@ -3654,6 +3770,7 @@ impl Collector<'_> {
         let in_core = self.items.is_core(ctx.module);
         let trait_path = core_path(module, name, in_core);
         let bound = Bound {
+            bound_lifetimes: Box::default(),
             path: trait_path,
             range,
         };
@@ -3689,6 +3806,19 @@ impl Collector<'_> {
                     ty,
                     ty_range: param.range,
                     bound: bound.clone(),
+                });
+            }
+        }
+        if s.repr_pack.is_some() && !matches!(derive, Derive::Default | Derive::Copy) {
+            for param in params.iter().filter(|p| !p.is_const()) {
+                predicates.push(WherePredicate {
+                    ty: TypeRef::Path(Path::single(param.name)),
+                    ty_range: param.range,
+                    bound: Bound {
+                        path: core_path("marker", "Copy", in_core),
+                        range,
+                        bound_lifetimes: Box::default(),
+                    },
                 });
             }
         }
@@ -3790,6 +3920,7 @@ impl Collector<'_> {
                         ty: TypeRef::Path(Path::single(h)),
                         ty_range: range,
                         bound: Bound {
+                            bound_lifetimes: Box::default(),
                             path: core_path("hash", "Hasher", in_core),
                             range,
                         },
@@ -3882,6 +4013,8 @@ impl Collector<'_> {
                 vis: Visibility::Public,
             },
             is_unsafe: false,
+            target_features: None,
+            link_name: None,
             is_extern: false,
             c_abi: false,
             is_const: false,
@@ -3913,7 +4046,24 @@ impl Collector<'_> {
     fn collect_extern_block(&mut self, ctx: Ctx, block: ast::ExternBlock<'_>) {
         let edition = self.db.file(ctx.file).edition;
         let diagnostics = &mut self.items.diagnostics;
-        check_attrs(block.attrs(), diagnostics);
+        let attrs = crate::cfg::Attrs::new(block.attrs());
+        diagnostics.extend(
+            attrs
+                .errors
+                .iter()
+                .map(|(range, message)| Diagnostic::new(*range, message.clone())),
+        );
+        for attr in attrs.iter() {
+            if attr_name(attr) == Some("link") {
+                if let Some(name) = super::attributes::link_attr(attr, diagnostics)
+                    && !self.items.native_libraries.contains(&name)
+                {
+                    self.items.native_libraries.push(name);
+                }
+            } else {
+                super::attributes::check_attr(attr, diagnostics);
+            }
+        }
         let abi = block.abi();
         if let Some(abi) = abi
             && abi.string_token().is_some_and(|s| s.text() != "\"C\"")
@@ -3942,11 +4092,7 @@ impl Collector<'_> {
                 ast::Item::Fn(f) => {
                     self.collect_fn(ctx, f, true, None);
                 }
-                ast::Item::Static(_) => unsupported(
-                    &mut self.items.diagnostics,
-                    item.syntax().text_range(),
-                    "statics",
-                ),
+                ast::Item::Static(st) => self.collect_static(ctx, st, true),
                 _ => self.items.diagnostics.push(Diagnostic::new(
                     item.syntax().text_range(),
                     "only functions and statics can be declared in `extern` blocks",

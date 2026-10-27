@@ -14,6 +14,43 @@ pub const fn needs_drop<T>() -> bool {
     crate::intrinsics::needs_drop::<T>()
 }
 
+/// An opaque identifier of an enum variant, independent of its fields.
+pub struct Discriminant<T> {
+    bits: u128,
+    signed: bool,
+    marker: crate::marker::PhantomData<fn() -> T>,
+}
+
+impl<T> crate::marker::Copy for Discriminant<T> {}
+impl<T> crate::clone::Clone for Discriminant<T> {
+    fn clone(&self) -> Self { *self }
+}
+impl<T> crate::cmp::PartialEq for Discriminant<T> {
+    fn eq(&self, other: &Self) -> bool { self.bits == other.bits }
+}
+impl<T> crate::cmp::Eq for Discriminant<T> {}
+impl<T> crate::hash::Hash for Discriminant<T> {
+    fn hash<H: crate::hash::Hasher>(&self, state: &mut H) { crate::hash::Hash::hash(&self.bits, state); }
+}
+impl<T> crate::fmt::Debug for Discriminant<T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        if self.signed {
+            crate::write!(f, "Discriminant({})", self.bits as i128)
+        } else {
+            crate::write!(f, "Discriminant({})", self.bits)
+        }
+    }
+}
+
+/// Returns the variant identity without inspecting or moving its fields.
+pub const fn discriminant<T>(value: &T) -> Discriminant<T> {
+    Discriminant {
+        bits: crate::intrinsics::discriminant_value(value),
+        signed: crate::intrinsics::discriminant_is_signed::<T>(),
+        marker: crate::marker::PhantomData,
+    }
+}
+
 /// The size of a `T` in bytes, as rustc lays it out: its fields
 /// reordered to leave little padding, an enum's discriminant in the
 /// smallest integer that holds them or in an invalid value of a field
@@ -201,4 +238,20 @@ pub fn take<T: crate::default::Default>(dest: &mut T) -> T {
 #[rustc_intrinsic]
 pub const unsafe fn transmute<T, U>(value: T) -> U {
     loop {}
+}
+
+/// Copies the first size_of::<Dst>() bytes, without consuming the source.
+///
+/// # Safety
+/// The source bytes must form a valid Dst. The caller must prevent duplicate
+/// use or destruction when the copy transfers ownership. Panics if Dst is larger.
+pub unsafe fn transmute_copy<Src,Dst>(source:&Src)->Dst {
+    assert!(size_of::<Src>()>=size_of::<Dst>(),"cannot transmute_copy if Dst is larger than Src");
+    let mut result=MaybeUninit::<Dst>::uninit();
+    // SAFETY: the size check bounds the read. Byte copying needs only alignment
+    // one and preserves padding/initialization; result supplies Dst's alignment.
+    unsafe {
+        crate::ptr::copy_nonoverlapping(source as *const Src as *const u8,result.as_mut_ptr() as *mut u8,size_of::<Dst>());
+        result.assume_init()
+    }
 }

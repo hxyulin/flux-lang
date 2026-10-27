@@ -5,6 +5,12 @@ pub const fn black_box<T>(dummy: T) -> T {
     dummy
 }
 
+/// Marks a short busy-wait iteration.
+///
+/// This implementation uses the no-op fallback. It does not yield to the
+/// scheduler or provide synchronization; use atomics for communication.
+pub fn spin_loop() {}
+
 /// Marks a path that cannot be reached by a valid execution.
 ///
 /// # Safety

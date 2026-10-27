@@ -411,6 +411,17 @@ fn audit(root: &Path) {
         }
         integrity(root, &originals, "pre-flux-source-integrity.json");
         std::fs::write(root.join("input.diagnostics"), "count=0\n").unwrap();
+        let only = std::env::var("FLUX_BACKEND_ONLY").ok();
+        assert!(
+            only.as_deref()
+                .is_none_or(|scope| matches!(scope, "core" | "full")),
+            "expected FLUX_BACKEND_ONLY=core or full"
+        );
+        save(
+            root,
+            "selected-scope.json",
+            &only.as_deref().unwrap_or("both"),
+        );
         let mut failed = Vec::new();
         for (label, roots) in [
             (
@@ -428,6 +439,9 @@ fn audit(root: &Path) {
                 vec!["keel-codegen", "keel-frontend", "keel-opt", "keel-asm"],
             ),
         ] {
+            if only.as_deref().is_some_and(|scope| scope != label) {
+                continue;
+            }
             let selected = closure(&packages, &roots);
             save(root, &format!("{label}-indices.json"), &selected);
             phase(root, &format!("{label}-flux"));
@@ -447,7 +461,14 @@ fn audit(root: &Path) {
             "backend graph blockers in {failed:?}; see {}",
             root.display()
         );
-        phase(root, "native-verified");
+        phase(
+            root,
+            match only.as_deref() {
+                Some("core") => "core-native-verified",
+                Some("full") => "full-native-verified",
+                _ => "native-verified",
+            },
+        );
     }));
     integrity(root, &originals, "source-integrity.json");
     if let Err(error) = result {
@@ -665,7 +686,13 @@ fn flux_core(root: &Path) {
         let target = flux_codegen::Target::Aarch64AppleDarwin;
         let object = flux_codegen::compile_object(&mut module, target, tier).unwrap();
         let executable = root.join(format!("flux-{label}"));
-        flux_codegen::link_executable(&object, target, &executable).unwrap();
+        flux_codegen::link_executable_with_libraries(
+            &object,
+            target,
+            &executable,
+            &hir.items.native_libraries,
+        )
+        .unwrap();
         let actual = run(
             &mut Command::new(executable),
             root,

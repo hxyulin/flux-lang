@@ -144,6 +144,7 @@ enum Op {
 /// them by index.
 #[derive(Debug)]
 pub struct Rules {
+    pub(crate) local_inner_macros: bool,
     pub(crate) toks: Box<[Tok]>,
     glued: Box<[Glued]>,
     rules: Box<[Rule]>,
@@ -551,14 +552,12 @@ impl DefReader<'_> {
                 M::Group { close, inner, .. } => {
                     self.check_follow(inner, &[Follow::Token(*close)]);
                 }
-                M::Sequence { inner, sep, op } => {
+                M::Sequence { inner, sep, op: _ } => {
                     let mut after = rest(self);
-                    match sep {
-                        Some(sep) => after.push(Follow::Token(*sep)),
-                        None if *op != Op::ZeroOrOne => {
-                            self.first(inner, &mut after);
-                        }
-                        None => {}
+                    // Rustc checks a separator-free body's external
+                    // followers, without adding a synthetic loop edge.
+                    if let Some(sep) = sep {
+                        after.push(Follow::Token(*sep));
                     }
                     self.check_follow(inner, &after);
                 }
@@ -786,6 +785,7 @@ pub(crate) fn parse_rules(
     }
     let errors = reader.errors;
     let rules = Rules {
+        local_inner_macros: false,
         invalid: !errors.is_empty(),
         toks: toks.into(),
         glued: glued.into(),
@@ -830,6 +830,9 @@ impl<'a> CallInput<'a> {
                 t.is_union_keyword(),
                 t.kind == SyntaxKind::IDENT && t.text.as_str() == "dyn",
             );
+            if t.kind == T!['('] && t.origin.range.is_empty() {
+                parser_input.set_last_invisible_paren();
+            }
             if t.joint {
                 parser_input.set_last_joint();
             }
@@ -1363,9 +1366,30 @@ impl Transcriber<'_, '_> {
         out: &mut Vec<Tok>,
     ) -> Result<(), (TextRange, String)> {
         let toks = &self.rules.toks;
-        for tt in tts {
+        for (position, tt) in tts.iter().enumerate() {
             match tt {
-                &Tt::Token(i) => (self.def)(&toks[i as usize], out),
+                &Tt::Token(i) => {
+                    let token = &toks[i as usize];
+                    if self.rules.local_inner_macros
+                        && (token.kind == SyntaxKind::IDENT || token.kind.is_keyword())
+                        && matches!(tts.get(position+1),Some(Tt::Token(next)) if toks[*next as usize].kind==T![!])
+                        && !matches!(position.checked_sub(1).and_then(|p|tts.get(p)),Some(Tt::Token(previous)) if matches!(toks[*previous as usize].kind,T![:] | T![::]))
+                    {
+                        (self.dollar_crate)(token, out);
+                        for _ in 0..2 {
+                            (self.def)(
+                                &Tok {
+                                    kind: T![:],
+                                    text: Symbol::intern(":"),
+                                    joint: true,
+                                    ..*token
+                                },
+                                out,
+                            );
+                        }
+                    }
+                    (self.def)(token, out);
+                }
                 &Tt::Delimited {
                     open,
                     close,

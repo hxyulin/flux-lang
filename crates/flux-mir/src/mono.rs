@@ -89,7 +89,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
             continue;
         }
         let mut found = Vec::new();
-        value_functions(value, &mir.const_values, &mut found);
+        value_functions(value, &mir.const_values, items, sigs, &mut found);
         for instance in found {
             reified.insert(instance);
             if (mir.instance_body(items, instance).is_some() || is_clone_shim(items, instance))
@@ -205,7 +205,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                     }
                     Operand::Const(Constant::Static { id, .. }) => {
                         if let Some(value) = mir.const_values.items.get(*id) {
-                            value_functions(value, &mir.const_values, &mut found);
+                            value_functions(value, &mir.const_values, items, sigs, &mut found);
                         }
                     }
                     Operand::Const(Constant::Item { id, args, ty }) => {
@@ -233,12 +233,14 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                             }
                             &const_values[&c]
                         };
-                        value_functions(value, &mir.const_values, &mut found);
+                        value_functions(value, &mir.const_values, items, sigs, &mut found);
                     }
                     Operand::Const(Constant::Promoted { index, .. }) => {
                         value_functions(
                             &body.promoted[*index as usize],
                             &mir.const_values,
+                            items,
+                            sigs,
                             &mut found,
                         );
                     }
@@ -374,6 +376,10 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                                 data.terminator.range,
                                 if word == AtomicWord::Ptr {
                                     "atomic intrinsic requires naturally aligned thin pointer storage and an exact pointer signature"
+                                } else if word == AtomicWord::U8 {
+                                    "atomic intrinsic requires u8 storage and an exact scalar signature"
+                                } else if word == AtomicWord::U16 {
+                                    "atomic intrinsic requires u16 storage and an exact scalar signature"
                                 } else if word == AtomicWord::U32 {
                                     "atomic intrinsic requires naturally aligned u32 storage and an exact scalar signature"
                                 } else {
@@ -402,6 +408,29 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                         );
                         d.file = hir.items.functions[caller.function].loc.file;
                         return Err(d);
+                    }
+                    if matches!(
+                        hir.items.functions[callee.function].intrinsic,
+                        Some(
+                            flux_hir::Intrinsic::ReadVolatile | flux_hir::Intrinsic::WriteVolatile
+                        )
+                    ) {
+                        let ty = callee.args.first().copied().unwrap_or(Ty::ERROR);
+                        let layouts =
+                            crate::layout::Layouts::new(&hir.items, sigs, &mir.discriminants);
+                        let supported = volatile_scalar(sigs, ty).is_some_and(|scalar| {
+                            let layout = layouts.of(ty);
+                            let scalar_layout = layouts.of(scalar);
+                            layout.size == scalar_layout.size && layout.align == scalar_layout.align
+                        });
+                        if !supported {
+                            let mut d = Diagnostic::new(
+                                data.terminator.range,
+                                "volatile operations support only scalars and same-layout single-field scalar wrappers yet",
+                            );
+                            d.file = hir.items.functions[caller.function].loc.file;
+                            return Err(d);
+                        }
                     }
                     // A size that would not be rustc's.
                     let name = hir.items.functions[callee.function].name;
@@ -484,7 +513,7 @@ fn may_contain_function_address(items: &ItemTree, sigs: &Signatures, ty: Ty) -> 
     while let Some((ty, mut active)) = pending.pop() {
         let ty = flux_ty::traits::normalize(items, sigs, &[], ty);
         match ty.kind() {
-            TyKind::FnPtr(_) => return true,
+            TyKind::FnPtr(_) | TyKind::Dynamic(_) => return true,
             TyKind::Ref(_, inner)
             | TyKind::RawPtr(_, inner)
             | TyKind::Array(inner, _)
@@ -521,6 +550,8 @@ fn may_contain_function_address(items: &ItemTree, sigs: &Signatures, ty: Ty) -> 
 fn value_functions<'a>(
     value: &'a crate::eval::Value,
     constants: &'a crate::eval::ConstValues,
+    items: &ItemTree,
+    sigs: &Signatures,
     out: &mut Vec<Instance>,
 ) {
     use crate::eval::Value;
@@ -529,6 +560,31 @@ fn value_functions<'a>(
     while let Some(value) = values.pop() {
         match value {
             Value::Function(instance) => out.push(*instance),
+            Value::DynPointer {
+                pointer,
+                concrete,
+                object,
+                ..
+            } => {
+                let mut pending = vec![*object];
+                let mut seen = FxHashSet::default();
+                while let Some(object) = pending.pop() {
+                    if !seen.insert(object) {
+                        continue;
+                    }
+                    if let Some(drop) = crate::vtable::drop_entry(items, sigs, *concrete) {
+                        out.push(drop);
+                    }
+                    for entry in crate::vtable::entries(items, sigs, object, *concrete) {
+                        match entry {
+                            crate::vtable::Entry::Method(instance) => out.push(instance),
+                            crate::vtable::Entry::Super(object) => pending.push(object),
+                            crate::vtable::Entry::Null => {}
+                        }
+                    }
+                }
+                values.push(pointer);
+            }
             Value::Aggregate(fields) | Value::Variant { fields, .. } => {
                 values.extend(fields.iter())
             }
@@ -721,6 +777,7 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
             statements: vec![statement(
                 element,
                 Rvalue::Ref {
+                    raw: false,
                     mutability: Mutability::Not,
                     place: Place::from(this).deref().index(counter),
                     two_phase: false,
@@ -944,7 +1001,13 @@ pub fn expand_intrinsics(
         };
         if matches!(
             intrinsic.name(),
-            "caller_location" | "read_unaligned" | "transmute" | "fmaf32" | "fmaf64"
+            "caller_location"
+                | "read_unaligned"
+                | "read_volatile"
+                | "write_volatile"
+                | "transmute"
+                | "fmaf32"
+                | "fmaf64"
         ) || intrinsic.is_neon()
             || atomic_intrinsic(intrinsic.name()).is_some()
         {
@@ -984,6 +1047,44 @@ pub fn expand_intrinsics(
             Place::from(temp)
         };
         let (place, rvalue) = match (intrinsic.name(), args.as_slice()) {
+            ("discriminant_is_signed", []) => (
+                dest,
+                Rvalue::Use(Operand::Const(Constant::Bool(
+                    sigs.discriminant_ty(flux_ty::traits::normalize(items, sigs, &[], arg_ty))
+                        .is_some_and(flux_ty::IntTy::is_signed),
+                ))),
+            ),
+            ("discriminant_value", [value]) => {
+                let Some(ty) =
+                    sigs.discriminant_ty(flux_ty::traits::normalize(items, sigs, &[], arg_ty))
+                else {
+                    body.blocks[block].statements.push(Statement {
+                        kind: StatementKind::Assign(
+                            dest,
+                            Rvalue::Use(Operand::Const(Constant::Int {
+                                bits: 0,
+                                ty: flux_ty::IntTy::U128,
+                            })),
+                        ),
+                        range,
+                    });
+                    body.blocks[block].terminator.kind = goto;
+                    continue;
+                };
+                let value = pointer(body, value);
+                let tag = body.locals.alloc(LocalDecl {
+                    ty: Ty::int(ty),
+                    kind: LocalKind::Temp,
+                });
+                body.blocks[block].statements.push(Statement {
+                    kind: StatementKind::Assign(tag.into(), Rvalue::Discriminant(value.deref())),
+                    range,
+                });
+                (
+                    dest,
+                    Rvalue::Cast(Operand::Copy(tag.into()), Ty::int(flux_ty::IntTy::U128)),
+                )
+            }
             ("is_copy", []) => {
                 let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
                 let copy = flux_ty::traits::is_copy(items, sigs, &[], ty);
@@ -1312,6 +1413,8 @@ fn drop_fn(items: &ItemTree) -> Option<FunctionId> {
 enum Glue {
     /// `Drop::drop(&mut place)`, for a `place` of type `ty`.
     Drop(Place, Ty),
+    /// Move the whole unaligned field before invoking its destructor.
+    Unaligned(Place, Ty, Vec<Glue>),
     /// For an enum at `place`, the glue of the variant it holds.
     Variants(Place, StructId, Vec<Vec<Glue>>),
     /// For an array of `len` elements, the glue of each, in order, at
@@ -1350,7 +1453,7 @@ fn glue_types(glue: &[Glue], out: &mut Vec<Ty>) {
                     glue_types(variant, out);
                 }
             }
-            Glue::Elements { glue, .. } => glue_types(glue, out),
+            Glue::Elements { glue, .. } | Glue::Unaligned(_, _, glue) => glue_types(glue, out),
         }
     }
 }
@@ -1418,7 +1521,18 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
         _ => return,
     }
     for (i, &field) in sigs.fields(ty).unwrap_or_default().iter().enumerate() {
-        drop_glue(items, sigs, place.field(i as u32), field, out);
+        let field_place = place.field(i as u32);
+        let packed =
+            matches!(ty.kind(),TyKind::Adt(adt,_) if items.structs[adt.strukt].repr_pack.is_some());
+        if packed {
+            let mut glue = Vec::new();
+            drop_glue(items, sigs, field_place.clone(), field, &mut glue);
+            if !glue.is_empty() {
+                out.push(Glue::Unaligned(field_place, field, glue));
+            }
+        } else {
+            drop_glue(items, sigs, field_place, field, out);
+        }
     }
 }
 
@@ -1445,6 +1559,7 @@ pub fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
         drop_glue(items, sigs, place, ty, &mut glue);
         let mut expand = Expand {
             items,
+            sigs,
             body,
             drop,
             unit,
@@ -1460,6 +1575,7 @@ pub fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
 /// Builds the blocks that run drop glue.
 struct Expand<'a> {
     items: &'a ItemTree,
+    sigs: &'a Signatures,
     body: &'a mut Body,
     drop: FunctionId,
     unit: Local,
@@ -1494,6 +1610,26 @@ impl Expand<'_> {
 
     fn part(&mut self, part: &Glue, target: BasicBlock) -> (Vec<Statement>, TerminatorKind) {
         match part {
+            Glue::Unaligned(place, ty, _) => {
+                let local = self.body.locals.alloc(LocalDecl {
+                    ty: *ty,
+                    kind: LocalKind::Temp,
+                });
+                let mut glue = Vec::new();
+                drop_glue(self.items, self.sigs, local.into(), *ty, &mut glue);
+                let (mut statements, kind) = self.glue(&glue, target);
+                statements.insert(
+                    0,
+                    Statement {
+                        kind: StatementKind::Assign(
+                            local.into(),
+                            Rvalue::Use(Operand::Move(place.clone())),
+                        ),
+                        range: self.range,
+                    },
+                );
+                (statements, kind)
+            }
             Glue::Drop(place, ty) => {
                 let pointer = self.body.locals.alloc(LocalDecl {
                     ty: Ty::new(TyKind::Ref(Mutability::Mut, *ty)),
@@ -1503,6 +1639,7 @@ impl Expand<'_> {
                     kind: StatementKind::Assign(
                         pointer.into(),
                         Rvalue::Ref {
+                            raw: false,
                             mutability: Mutability::Mut,
                             place: place.clone(),
                             two_phase: false,
@@ -1631,6 +1768,11 @@ impl Glue {
         };
         match self {
             Glue::Drop(p, ty) => Glue::Drop(place(p), *ty),
+            Glue::Unaligned(p, ty, glue) => Glue::Unaligned(
+                place(p),
+                *ty,
+                glue.iter().map(|g| g.reindex(from, to)).collect(),
+            ),
             Glue::Variants(p, strukt, variants) => Glue::Variants(
                 place(p),
                 *strukt,
@@ -1797,10 +1939,37 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
     body
 }
 
+/// The one machine scalar represented by a bounded volatile operation.
+/// Enum, aggregate and fat-pointer accesses are not silently decomposed.
+pub fn volatile_scalar(sigs: &Signatures, mut ty: Ty) -> Option<Ty> {
+    for _ in 0..128 {
+        match ty.kind() {
+            TyKind::Int(int) if int.bits() <= 64 => return Some(ty),
+            TyKind::Bool | TyKind::Char | TyKind::Float(_) | TyKind::FnPtr(_) => return Some(ty),
+            TyKind::RawPtr(_, pointee) | TyKind::Ref(_, pointee) if !sigs.is_unsized(pointee) => {
+                return Some(ty);
+            }
+            TyKind::Tuple([]) => return Some(Ty::UNIT),
+            TyKind::Adt(..) if sigs.variants(ty).is_none() => {
+                let fields = sigs.fields(ty)?;
+                match fields {
+                    [] => return Some(Ty::UNIT),
+                    [field] => ty = *field,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// Scalar storage identity for the private native atomic bridge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AtomicWord {
     Usize,
+    U8,
+    U16,
     U32,
     Ptr,
 }
@@ -1809,6 +1978,10 @@ pub enum AtomicWord {
 pub fn atomic_intrinsic(name: &str) -> Option<(&str, &str, AtomicWord)> {
     let (rest, word) = if let Some(rest) = name.strip_prefix("__atomic_usize_") {
         (rest, AtomicWord::Usize)
+    } else if let Some(rest) = name.strip_prefix("__atomic_u8_") {
+        (rest, AtomicWord::U8)
+    } else if let Some(rest) = name.strip_prefix("__atomic_u16_") {
+        (rest, AtomicWord::U16)
     } else if let Some(rest) = name.strip_prefix("__atomic_u32_") {
         (rest, AtomicWord::U32)
     } else {
@@ -1828,6 +2001,8 @@ pub fn atomic_intrinsic(name: &str) -> Option<(&str, &str, AtomicWord)> {
     let valid = valid
         && match word {
             AtomicWord::Usize => true,
+            AtomicWord::U8 => matches!(op, "load" | "store" | "cas"),
+            AtomicWord::U16 => matches!(op, "load" | "store"),
             AtomicWord::U32 => matches!(op, "load" | "store" | "add"),
             AtomicWord::Ptr => matches!(op, "load" | "store"),
         };
@@ -1843,6 +2018,8 @@ fn valid_atomic_signature(op: &str, word: AtomicWord, args: &[Ty], sig: &flux_ty
     }
     let word = match word {
         AtomicWord::Usize => Ty::int(flux_ty::IntTy::Usize),
+        AtomicWord::U8 if matches!(op, "load" | "store" | "cas") => Ty::int(flux_ty::IntTy::U8),
+        AtomicWord::U16 if matches!(op, "load" | "store") => Ty::int(flux_ty::IntTy::U16),
         AtomicWord::U32 if matches!(op, "load" | "store" | "add") => Ty::int(flux_ty::IntTy::U32),
         AtomicWord::Ptr if matches!(op, "load" | "store") => {
             let Some(&ty) = args.first() else {

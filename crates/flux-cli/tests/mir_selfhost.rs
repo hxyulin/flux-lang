@@ -13,6 +13,11 @@ use flux_hir::{CrateCfg, SourceCrate, SourceDb};
 use flux_intern::Symbol;
 use flux_syntax::Edition;
 
+// The unoptimized consumer rechecks the entire embedded library for each
+// input. A measured isolated run approaches a minute; allow CPU contention
+// without changing the compiler's evaluation or recursion limits.
+const NATIVE_RUN_SECONDS: u64 = 120;
+
 mod cases {
     include!("fixtures/mir_selfhost/cases.rs.txt");
 }
@@ -307,7 +312,7 @@ fn mir_selfhost_worker() {
             &mut Command::new(&libraries[11]),
             &root,
             "run-reference",
-            60,
+            NATIVE_RUN_SECONDS,
         );
         success(&expected, &root, "run-reference");
         let mut db = SourceDb::new();
@@ -409,7 +414,7 @@ fn mir_selfhost_worker() {
                 &mut Command::new(executable),
                 &root,
                 &format!("run-flux-{label}"),
-                60,
+                NATIVE_RUN_SECONDS,
             );
             assert_eq!(actual.status.code(), expected.status.code());
             assert_eq!(actual.stdout, expected.stdout);

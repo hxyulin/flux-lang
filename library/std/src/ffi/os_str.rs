@@ -13,9 +13,9 @@ impl OsStr {
     /// # Safety
     /// On Unix every byte sequence is a valid encoded OS string. The caller
     /// must retain the source allocation for the returned borrow.
-    pub unsafe fn from_encoded_bytes_unchecked(bytes: &[u8]) -> &OsStr { Self::from_bytes(bytes) }
+    pub unsafe fn from_encoded_bytes_unchecked(bytes: &[u8]) -> &OsStr { Self::from_unix_bytes(bytes) }
     pub fn new<S: AsRef<OsStr> + ?Sized>(value: &S) -> &OsStr { value.as_ref() }
-    pub(crate) fn from_bytes(bytes: &[u8]) -> &OsStr {
+    pub(crate) fn from_unix_bytes(bytes: &[u8]) -> &OsStr {
         // SAFETY: transparent OsStr has the same storage and length metadata
         // as [u8], and imposes no validity restriction on Unix bytes.
         unsafe { &*(bytes as *const [u8] as *const OsStr) }
@@ -35,7 +35,7 @@ impl ToOwned for OsStr {
     fn to_owned(&self) -> OsString { self.to_os_string() }
 }
 impl AsRef<OsStr> for OsStr { fn as_ref(&self) -> &OsStr { self } }
-impl AsRef<OsStr> for str { fn as_ref(&self) -> &OsStr { OsStr::from_bytes(self.as_bytes()) } }
+impl AsRef<OsStr> for str { fn as_ref(&self) -> &OsStr { OsStr::from_unix_bytes(self.as_bytes()) } }
 impl AsRef<OsStr> for String { fn as_ref(&self) -> &OsStr { self.as_str().as_ref() } }
 impl AsRef<OsStr> for OsString { fn as_ref(&self) -> &OsStr { self.as_os_str() } }
 impl Borrow<OsStr> for OsString { fn borrow(&self) -> &OsStr { self.as_os_str() } }
@@ -43,5 +43,5 @@ impl Deref for OsString {
     type Target = OsStr;
     fn deref(&self) -> &OsStr { self.as_os_str() }
 }
-impl OsString { pub fn as_os_str(&self) -> &OsStr { OsStr::from_bytes(&self.bytes) } }
+impl OsString { pub fn as_os_str(&self) -> &OsStr { OsStr::from_unix_bytes(&self.bytes) } }
 impl From<&OsStr> for OsString { fn from(value: &OsStr) -> Self { value.to_os_string() } }

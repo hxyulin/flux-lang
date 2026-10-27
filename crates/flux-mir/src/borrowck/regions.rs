@@ -424,6 +424,76 @@ pub(crate) fn impl_method_matches(
     }
     cx.known_pairs.extend(known_implied);
     cx.close_known();
+    if ir
+        .bound_traits
+        .iter()
+        .chain(tr.bound_traits.iter())
+        .any(|bound| bound.bound != 0)
+    {
+        let impl_lifetimes = (0..ir.names.len())
+            .map(|i| map_impl(Region::Param(i as u32)))
+            .collect::<Option<Vec<_>>>();
+        let trait_lifetimes = (0..tr.names.len())
+            .map(|i| map_trait(Region::Param(i as u32)))
+            .collect::<Option<Vec<_>>>();
+        let (Some(impl_lifetimes), Some(trait_lifetimes)) = (impl_lifetimes, trait_lifetimes)
+        else {
+            return false;
+        };
+        let mut type_rows = arg_vars.clone();
+        for &ty in args.iter().skip(type_rows.len()) {
+            let count = cx.slots(ty);
+            type_rows.push(cx.fresh_list(count));
+        }
+        let mut env = Vec::new();
+        for (predicates, rows, bounds, life, substitution, type_vars) in [
+            (
+                sigs.fn_predicates.get(trait_fn).map_or(&[][..], |p| p),
+                &tr.bound_selfs,
+                &tr.bound_traits,
+                &trait_lifetimes[..],
+                &args[..],
+                &type_rows[..],
+            ),
+            (
+                sigs.impl_predicates.get(imp).map_or(&[][..], |p| p),
+                &block.bound_selfs,
+                &block.bound_traits,
+                &impl_lifetimes[..owner],
+                &[][..],
+                &[][..],
+            ),
+        ] {
+            for ((&predicate, row), bound) in predicates.iter().zip(rows.iter()).zip(bounds.iter())
+            {
+                let Some(goal) =
+                    cx.impl_region_goal(predicate, row, bound, life, substitution, type_vars)
+                else {
+                    return false;
+                };
+                if !cx.impl_super_goals(goal, &mut env, 0) {
+                    return false;
+                }
+            }
+        }
+        for ((&predicate, row), bound) in sigs
+            .fn_predicates
+            .get(method)
+            .into_iter()
+            .flatten()
+            .zip(ir.bound_selfs.iter())
+            .zip(ir.bound_traits.iter())
+        {
+            let Some(goal) = cx.impl_region_goal(predicate, row, bound, &impl_lifetimes, &[], &[])
+            else {
+                return false;
+            };
+            if !cx.impl_prove_super(&goal, &env, 0) {
+                return false;
+            }
+        }
+        cx.close_known();
+    }
     // Each region's universal regions, until nothing changes.
     let n = cx.universal.len();
     let words = n.div_ceil(64);
@@ -1014,23 +1084,26 @@ impl<'a> Cx<'a> {
         {
             return None;
         }
-        let trait_lifetimes = trait_regions
-            .lifetimes
-            .iter()
-            .map(|&r| match r {
-                Region::Static => Some(STATIC),
-                Region::Param(i) => lifetimes.get(i as usize).copied(),
-                _ => None,
-            })
-            .collect::<Option<Vec<_>>>()?;
         let callable = flux_ty::fn_trait_kind(self.items, p.trait_ref.trait_).is_some();
         let mut named_bound = FxHashMap::default();
         let mut bound = Vec::new();
+        for index in 0..trait_regions.bound {
+            let var = self.new_universal(format!("'bound{index}"));
+            named_bound.insert(index, var);
+            bound.push(var);
+        }
         for &region in table
             .iter()
-            .chain(trait_regions.args.iter().flat_map(|table| table.iter()))
+            .chain(trait_regions.lifetimes.iter())
+            .chain(trait_regions.args.iter().flat_map(|row| row.iter()))
         {
             if let Region::Late(index) = region {
+                if trait_regions.bound != 0 && index >= trait_regions.bound {
+                    return None;
+                }
+                if trait_regions.bound == 0 && !callable {
+                    return None;
+                }
                 let var = *named_bound
                     .entry(index)
                     .or_insert_with(|| self.new_universal(format!("'bound{index}")));
@@ -1039,6 +1112,16 @@ impl<'a> Cx<'a> {
                 }
             }
         }
+        let trait_lifetimes = trait_regions
+            .lifetimes
+            .iter()
+            .map(|&region| match region {
+                Region::Static => Some(STATIC),
+                Region::Param(i) => lifetimes.get(i as usize).copied(),
+                Region::Late(i) => named_bound.get(&i).copied(),
+                Region::Erased => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
         let mut vars = Vec::new();
         let mut types = Vec::new();
         for (k, &ty) in std::iter::once(&p.self_ty)
@@ -1119,17 +1202,27 @@ impl<'a> Cx<'a> {
         let args: Vec<_> = std::iter::once(goal.predicate.self_ty)
             .chain(goal.predicate.trait_ref.args.iter().copied())
             .collect();
-        for &sup in self
+        let trait_id = goal.predicate.trait_ref.trait_;
+        let supers = self
             .sigs
             .traits
-            .get(goal.predicate.trait_ref.trait_)
-            .map_or(&[][..], |s| &s.supertraits)
-        {
+            .get(trait_id)
+            .map_or(&[][..], |s| &s.supertraits);
+        let tables = self
+            .sigs
+            .regions
+            .traits
+            .get(trait_id)
+            .map_or(&[][..], |r| &r.supertraits);
+        if supers.len() != tables.len() {
+            return false;
+        }
+        for (&sup, table) in supers.iter().zip(tables) {
             let Some(mut next) = self.impl_region_goal(
                 sup.with_self(Ty::param(0, flux_intern::kw::SelfUpper)),
                 &[],
-                &TraitRefRegions::default(),
-                &[],
+                table,
+                &goal.lifetimes,
                 &args,
                 &goal.vars,
             ) else {
@@ -1236,7 +1329,12 @@ impl<'a> Cx<'a> {
             if actual_ty != expected_ty {
                 return Some(false);
             }
-            let actual = if self.slots(actual_ty) == 0 {
+            let actual = if !p.alias.family_args.is_empty() {
+                // Associated-output edges need their own input occurrence
+                // tables; do not borrow an erased-equal Self's regions.
+                if associated{return None;}
+                self.instantiate_sig(Ty::alias(p.alias),&[],&mut |_|None,&args,&goal.vars)?
+            } else if self.slots(actual_ty) == 0 {
                 Vec::new()
             } else {
                 self.normalize_regions(alias, &alias_goal.vars, 0)?
@@ -1284,23 +1382,28 @@ impl<'a> Cx<'a> {
                 continue;
             }
             let mut instantiated = FxHashMap::default();
-            let mut equalities: Vec<_> = known
+            let mut equalities = Vec::new();
+            for (a, b) in known
                 .lifetimes
                 .iter()
                 .copied()
                 .zip(goal.lifetimes.iter().copied())
-                .collect();
-            for (a, b) in known.vars.iter().zip(&goal.vars) {
-                for (&a, &b) in a.iter().zip(b) {
-                    if known.bound.contains(&a) {
-                        if let Some(&previous) = instantiated.get(&a) {
-                            equalities.push((previous, b));
-                        } else {
-                            instantiated.insert(a, b);
-                        }
+                .chain(
+                    known
+                        .vars
+                        .iter()
+                        .zip(&goal.vars)
+                        .flat_map(|(a, b)| a.iter().copied().zip(b.iter().copied())),
+                )
+            {
+                if known.bound.contains(&a) {
+                    if let Some(&previous) = instantiated.get(&a) {
+                        equalities.push((previous, b));
                     } else {
-                        equalities.push((a, b));
+                        instantiated.insert(a, b);
                     }
+                } else {
+                    equalities.push((a, b));
                 }
             }
             // Prefer an assumption whose rigid universals already agree. Do
@@ -2707,7 +2810,8 @@ impl<'a> Cx<'a> {
             // A closure's `Output` binds the parameters it is, which
             // its header may not name (`B` of `impl<B, I, F: FnMut(I::Item)
             // -> B> Iterator for Map<I, F>`).
-            if table.is_empty() && !self.is_callable_output(alias) {
+            if table.is_empty() && !self.is_callable_output(alias) && p.alias.family_args.is_empty()
+            {
                 continue;
             }
             let type_vars: Vec<Vec<Var>> = binding
@@ -2725,7 +2829,18 @@ impl<'a> Cx<'a> {
             if alias_vars.len() != p.alias.args.len() {
                 continue;
             }
-            let Some(actual) = self.normalize_regions(alias, &alias_vars, depth + 1) else {
+            let actual = if p.alias.family_args.is_empty() {
+                self.normalize_regions(alias, &alias_vars, depth + 1)
+            } else {
+                self.instantiate_sig(
+                    Ty::alias(p.alias),
+                    &[],
+                    &mut |_| None,
+                    impl_args,
+                    &type_vars,
+                )
+            };
+            let Some(actual) = actual else {
                 continue;
             };
             let actual_ty = self.normalize(instance);
@@ -3525,14 +3640,21 @@ impl<'a> Cx<'a> {
                     let universal_count = self.universal.len();
                     let known_count = self.known_pairs.len();
                     let function_item = matches!(pointee.kind(), TyKind::FnDef(_));
-                    let inputs = if function_item {
+                    let mut caller_source = pointee;
+                    while let TyKind::Ref(_, inner) = caller_source.kind() {
+                        caller_source = inner;
+                    }
+                    let caller_callable =
+                        matches!(caller_source.kind(), TyKind::Param(_) | TyKind::Alias(_));
+                    let universal_inputs = function_item || caller_callable;
+                    let inputs = if universal_inputs {
                         (0..count)
                             .map(|i| self.new_universal(format!("'callable{i}")))
                             .collect()
                     } else {
                         self.fresh_list(count)
                     };
-                    if !function_item {
+                    if !universal_inputs {
                         for &input in &inputs {
                             self.holes.insert(input);
                         }
@@ -3547,14 +3669,14 @@ impl<'a> Cx<'a> {
                     );
                     for relation in implied {
                         if let Outlives::Region(a, b) = relation {
-                            if function_item {
+                            if universal_inputs {
                                 self.known_pairs.push((a, b));
                             } else {
                                 self.hole_pairs.insert((a, b));
                             }
                         }
                     }
-                    if function_item {
+                    if universal_inputs {
                         self.close_known();
                     }
                     match pointee.kind() {
@@ -3612,15 +3734,26 @@ impl<'a> Cx<'a> {
                             }
                         }
                         TyKind::Dynamic(_) => {}
+                        _ if caller_callable => {
+                            let goal = flux_ty::Predicate {
+                                self_ty: pointee,
+                                trait_ref: flux_ty::TraitRef {
+                                    trait_: d.trait_,
+                                    name: d.name,
+                                    args: d.args,
+                                },
+                            };
+                            self.prove(goal, &[inner.to_vec(), inputs.clone()], &[], range, 0);
+                        }
                         _ => {}
                     }
-                    if function_item {
+                    if universal_inputs {
                         // These universals belong to this proof, not to the
                         // enclosing function or closure's exported contract.
                         if !self.caller_equalities_fit(&[]) {
                             self.errors.push(Diagnostic::new(
                                 range,
-                                "function item is not general enough for this callable object",
+                                "callable is not general enough for this trait object",
                             ));
                         }
                         for &(var, _) in &self.universal[universal_count..] {
@@ -3661,6 +3794,20 @@ impl<'a> Cx<'a> {
                     category,
                     range,
                 );
+            }
+            Rvalue::Ref {
+                raw: true,
+                mutability,
+                place,
+                ..
+            } => {
+                let (place_ty, place_vars) = self.place_regions(place);
+                let variance = if *mutability == Mutability::Mut {
+                    Variance::Invariant
+                } else {
+                    Variance::Covariant
+                };
+                self.relate(place_ty, &place_vars, &dest_vars, variance, category, range);
             }
             Rvalue::Ref {
                 mutability, place, ..
@@ -4158,6 +4305,7 @@ impl<'a> Cx<'a> {
                         expected,
                         &[],
                         TraitRefRegions {
+                            bound: 0,
                             lifetimes: (0..regions.owner).map(Region::Param).collect(),
                             // One table per declared type argument, even when
                             // its substituted type contributes multiple slots.
@@ -4529,6 +4677,21 @@ impl<'a> Cx<'a> {
             );
             return;
         }
+        if trait_regions.bound != 0 {
+            let goal =
+                self.impl_region_goal(p, self_table, trait_regions, lifetimes, args, arg_vars);
+            let env = self.caller_ranked_goals();
+            if goal
+                .as_ref()
+                .is_none_or(|goal| !self.impl_prove_super(goal, &env, depth))
+            {
+                self.errors.push(Diagnostic::new(
+                    range,
+                    "higher-ranked trait lifetime obligation cannot be proved",
+                ));
+            }
+            return;
+        }
         let abstract_goal = matches!(
             self.normalize(p.self_ty.subst(args)).kind(),
             TyKind::Param(_) | TyKind::Alias(_)
@@ -4643,6 +4806,7 @@ impl<'a> Cx<'a> {
                 predicate,
                 Box::default(),
                 TraitRefRegions {
+                    bound: 0,
                     lifetimes: (0..r.owner).map(Region::Param).collect(),
                     args: vec![Box::default(); predicate.trait_ref.args.len()].into(),
                 },
@@ -4674,6 +4838,52 @@ impl<'a> Cx<'a> {
         {
             if let (Some(s), Some(t)) = (r.bound_selfs.get(i), r.bound_traits.get(i)) {
                 candidates.push((p, s.clone(), t.clone()));
+            }
+        }
+        if flux_ty::fn_trait_kind(self.items, goal.trait_ref.trait_).is_none() {
+            let known = self.caller_ranked_goals();
+            for scheme in known.iter().filter(|known| known.predicate == goal) {
+                if scheme.lifetimes.len() != trait_lifetimes.len()
+                    || scheme.vars.len() != vars.len()
+                    || scheme
+                        .vars
+                        .iter()
+                        .zip(vars)
+                        .any(|(a, b)| a.len() != b.len())
+                {
+                    continue;
+                }
+                let mut instantiated = FxHashMap::default();
+                let mut equalities = Vec::new();
+                for (a, b) in scheme
+                    .lifetimes
+                    .iter()
+                    .copied()
+                    .zip(trait_lifetimes.iter().copied())
+                    .chain(
+                        scheme
+                            .vars
+                            .iter()
+                            .zip(vars)
+                            .flat_map(|(a, b)| a.iter().copied().zip(b.iter().copied())),
+                    )
+                {
+                    if scheme.bound.contains(&a) {
+                        if let Some(&old) = instantiated.get(&a) {
+                            equalities.push((old, b));
+                        } else {
+                            instantiated.insert(a, b);
+                        }
+                    } else {
+                        equalities.push((a, b));
+                    }
+                }
+                if self.caller_equalities_fit(&equalities) {
+                    for (a, b) in equalities {
+                        self.equate(a, b, self.proving, range);
+                    }
+                    return true;
+                }
             }
         }
         for (p, self_table, tables) in candidates {
@@ -4779,6 +4989,148 @@ impl<'a> Cx<'a> {
         self.caller_family_bound(goal, vars, trait_lifetimes, range)
     }
 
+    fn trait_has_ranked_super(
+        &self,
+        id: flux_hir::TraitId,
+        seen: &mut FxHashSet<flux_hir::TraitId>,
+    ) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        self.sigs
+            .regions
+            .traits
+            .get(id)
+            .is_some_and(|r| r.supertraits.iter().any(|s| s.bound != 0))
+            || self.sigs.traits.get(id).is_some_and(|s| {
+                s.supertraits
+                    .iter()
+                    .any(|p| self.trait_has_ranked_super(p.trait_, seen))
+            })
+    }
+
+    fn requires_ranked_proof(
+        &self,
+        goal: flux_ty::Predicate,
+        seen: &mut FxHashSet<flux_ty::Predicate>,
+        depth: u32,
+    ) -> bool {
+        if !seen.insert(goal) {
+            return false;
+        }
+        if depth > 8 {
+            return true;
+        }
+        if self.trait_has_ranked_super(goal.trait_ref.trait_, &mut FxHashSet::default()) {
+            return true;
+        }
+        let selected = flux_ty::traits::select_impl(self.items, self.sigs, goal).or_else(|| {
+            let mut candidates = self
+                .sigs
+                .impl_index
+                .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
+                .filter_map(|imp| {
+                    flux_ty::traits::match_impl(self.items, self.sigs, imp, goal)
+                        .map(|args| (imp, args))
+                });
+            let first = candidates.next()?;
+            candidates.next().is_none().then_some(first)
+        });
+        let Some((imp, args)) = selected else {
+            return false;
+        };
+        if self
+            .sigs
+            .regions
+            .impls
+            .get(imp)
+            .is_some_and(|r| r.bound_traits.iter().any(|t| t.bound != 0))
+        {
+            return true;
+        }
+        self.sigs.impl_predicates.get(imp).is_some_and(|preds| {
+            preds
+                .iter()
+                .any(|p| self.requires_ranked_proof(p.subst(&args), seen, depth + 1))
+        })
+    }
+
+    fn caller_ranked_goals(&mut self) -> Vec<ImplRegionGoal> {
+        if self.body.constant_owner.is_some() {
+            return self.family_goals.clone();
+        }
+        let Some(function) = self.body.owner else {
+            return Vec::new();
+        };
+        let Some(regions) = self.sigs.regions.fns.get(function) else {
+            return Vec::new();
+        };
+        let lifetimes = (0..regions.names.len())
+            .map(|i| 1 + i as u32)
+            .collect::<Vec<_>>();
+        let mut written = Vec::new();
+        match self.items.functions[function].owner {
+            Some(flux_hir::Owner::Trait(id)) => {
+                let predicate = flux_ty::traits::trait_self_predicate(self.items, id);
+                let owner = regions.owner;
+                written.push((
+                    predicate,
+                    Box::default(),
+                    TraitRefRegions {
+                        bound: 0,
+                        lifetimes: (0..owner).map(Region::Param).collect(),
+                        args: vec![Box::default(); predicate.trait_ref.args.len()].into(),
+                    },
+                ));
+            }
+            Some(flux_hir::Owner::Impl(id)) => {
+                if let Some(block) = self.sigs.regions.impls.get(id) {
+                    for (i, &p) in self
+                        .sigs
+                        .impl_predicates
+                        .get(id)
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                    {
+                        if let (Some(row), Some(tr)) =
+                            (block.bound_selfs.get(i), block.bound_traits.get(i))
+                        {
+                            written.push((p, row.clone(), tr.clone()));
+                        }
+                    }
+                }
+            }
+            None => {}
+        }
+        for (i, &p) in self
+            .sigs
+            .fn_predicates
+            .get(function)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            if let (Some(row), Some(tr)) = (regions.bound_selfs.get(i), regions.bound_traits.get(i))
+            {
+                written.push((p, row.clone(), tr.clone()));
+            }
+        }
+        let mut goals = Vec::new();
+        for (p, row, tr) in written {
+            if tr.bound == 0
+                && !self.trait_has_ranked_super(p.trait_ref.trait_, &mut FxHashSet::default())
+            {
+                continue;
+            }
+            if let Some(goal) = self.impl_region_goal(p, &row, &tr, &lifetimes, &[], &[]) {
+                let _ = self.impl_super_goals(goal, &mut goals, 0);
+            }
+        }
+        self.close_known();
+        goals
+    }
+
     /// Avoid choosing the first erased-equal candidate when its equality
     /// already contradicts the original header. Fresh call variables can be
     /// connected to universals through argument and earlier call constraints.
@@ -4833,7 +5185,11 @@ impl<'a> Cx<'a> {
         let (items, sigs) = (self.items, self.sigs);
         let pointer_callback = flux_ty::fn_trait_kind(items, goal.trait_ref.trait_).is_some()
             && matches!(goal.self_ty.kind(), TyKind::FnPtr(sig) if sig.regions.is_some());
-        if !pointer_callback && trait_lifetimes.is_empty() && vars.iter().all(|v| v.is_empty()) {
+        if !pointer_callback
+            && trait_lifetimes.is_empty()
+            && vars.iter().all(|v| v.is_empty())
+            && !self.requires_ranked_proof(goal, &mut FxHashSet::default(), 0)
+        {
             return;
         }
         if depth > 8 {
@@ -5036,7 +5392,7 @@ impl<'a> Cx<'a> {
         let TyKind::Alias(alias) = Ty::alias(p.alias).subst(args).kind() else {
             return;
         };
-        if table.is_empty() && !self.is_callable_output(alias) {
+        if table.is_empty() && !self.is_callable_output(alias) && p.alias.family_args.is_empty() {
             return;
         }
         let actual_ty = self.normalize(Ty::alias(alias));
@@ -5055,7 +5411,18 @@ impl<'a> Cx<'a> {
             };
             alias_vars.push(vars);
         }
-        let Some(actual) = self.normalize_regions(alias, &alias_vars, 0) else {
+        let actual = if p.alias.family_args.is_empty() {
+            self.normalize_regions(alias, &alias_vars, 0)
+        } else {
+            self.instantiate_sig(Ty::alias(p.alias), &[], &mut |_| None, args, arg_vars)
+        };
+        let Some(actual) = actual else {
+            if !p.alias.family_args.is_empty() {
+                self.errors.push(Diagnostic::new(
+                    range,
+                    "associated family equality input regions are not supported yet",
+                ));
+            }
             return;
         };
         self.late_inputs = p.alias.args.get(1).map_or(Vec::new(), |&ty| {
@@ -5071,6 +5438,12 @@ impl<'a> Cx<'a> {
         let Some(expected) = expected else {
             return;
         };
+        if actual.len() != expected.len() && !p.alias.family_args.is_empty() {
+            self.errors.push(Diagnostic::new(
+                range,
+                "associated family equality region rows do not match",
+            ));
+        }
         if actual.len() == expected.len() {
             for (a, b) in actual.into_iter().zip(expected) {
                 self.equate(a, b, Category::CallArgument, range);
@@ -5361,12 +5734,14 @@ impl<'a> Cx<'a> {
                     self.closures_in(t, vars, next, out);
                 }
             }
-            TyKind::Closure(id, list) => {
+            TyKind::Closure(id, _) => {
                 let n = self.slots(ty) as usize;
                 let own = vars.get(*next..*next + n).unwrap_or(&[]).to_vec();
                 out.push((id, own));
-                let upvars = flux_ty::ClosureArgs::split(list).upvars;
-                self.closures_in(upvars, vars, next, out);
+                // Captured closures are private implementation details of this
+                // callable. Its body summary composes their calls; treating
+                // them as independent callee arguments invents result flows.
+                *next += n;
             }
             TyKind::Opaque(opaque) => {
                 *next += opaque.lifetimes as usize;
@@ -5866,6 +6241,9 @@ impl<'a> Cx<'a> {
         liveness: &[IntervalSet],
         uses: &[IntervalSet],
     ) -> Solution {
+        // Higher-ranked trait goals may introduce rigid regions while building
+        // body constraints, after the initial signature relation was closed.
+        self.close_known();
         for PointerCheck {
             before,
             bound,

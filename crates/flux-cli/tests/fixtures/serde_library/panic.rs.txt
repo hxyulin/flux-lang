@@ -1,0 +1,164 @@
+pub use std::{boxed, vec};
+extern crate alloc as alloc_crate;
+mod binary_heap;
+mod linked_list;
+mod vec_deque;
+use std::cell::Cell;
+use std::cmp::Ordering;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+struct Element<'a> {
+    n: u32,
+    drops: &'a Cell<usize>,
+    attempts: &'a Cell<usize>,
+    clones: &'a Cell<bool>,
+    compares: &'a Cell<bool>,
+    bomb: &'a Cell<Option<u32>>,
+}
+impl PartialEq for Element<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.n == other.n
+    }
+}
+impl Eq for Element<'_> {}
+impl PartialOrd for Element<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Element<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.compares.replace(false) {
+            panic!("comparison");
+        }
+        self.n.cmp(&other.n)
+    }
+}
+impl Clone for Element<'_> {
+    fn clone(&self) -> Self {
+        let n = self.attempts.get();
+        self.attempts.set(n + 1);
+        if self.clones.get() && n == 2 {
+            panic!("third clone");
+        }
+        Self {
+            n: self.n,
+            drops: self.drops,
+            attempts: self.attempts,
+            clones: self.clones,
+            compares: self.compares,
+            bomb: self.bomb,
+        }
+    }
+}
+impl Drop for Element<'_> {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+        if self.bomb.get() == Some(self.n) {
+            self.bomb.set(None);
+            panic!("payload drop");
+        }
+    }
+}
+fn main() {
+    let drops = Cell::new(0);
+    let attempts = Cell::new(0);
+    let clones = Cell::new(false);
+    let compares = Cell::new(false);
+    let bomb = Cell::new(None);
+    let make = |n| Element {
+        n,
+        drops: &drops,
+        attempts: &attempts,
+        clones: &clones,
+        compares: &compares,
+        bomb: &bomb,
+    };
+    {
+        let mut heap: binary_heap::BinaryHeap<_> = (0..8).map(&make).collect();
+        compares.set(true);
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                heap.push(make(20));
+            }))
+            .is_err()
+        );
+        assert_eq!(heap.len(), 9);
+        drop(heap);
+        assert_eq!(drops.get(), 9);
+    }
+    drops.set(0);
+    {
+        let mut heap: binary_heap::BinaryHeap<_> = (0..8).map(&make).collect();
+        compares.set(true);
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                drop(heap.pop());
+            }))
+            .is_err()
+        );
+        assert_eq!(heap.len(), 7);
+        drop(heap);
+        assert_eq!(drops.get(), 8);
+    }
+    drops.set(0);
+    attempts.set(0);
+    {
+        let list: linked_list::LinkedList<_> = (0..5).map(&make).collect();
+        clones.set(true);
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                drop(list.clone());
+            }))
+            .is_err()
+        );
+        assert_eq!(drops.get(), 2);
+        clones.set(false);
+        drop(list);
+        assert_eq!(drops.get(), 7);
+    }
+    drops.set(0);
+    {
+        let list: linked_list::LinkedList<_> = (0..5).map(&make).collect();
+        bomb.set(Some(2));
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                drop(list);
+            }))
+            .is_err()
+        );
+        assert_eq!(drops.get(), 5);
+    }
+    drops.set(0);
+    {
+        let mut list: linked_list::LinkedList<_> = (0..5).map(&make).collect();
+        bomb.set(Some(2));
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                list.clear();
+            }))
+            .is_err()
+        );
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.front().unwrap().n, 3);
+        list.push_front(make(9));
+        drop(list);
+        assert_eq!(drops.get(), 6);
+    }
+    drops.set(0);
+    attempts.set(0);
+    {
+        let queue: vec_deque::VecDeque<_> = (0..5).map(&make).collect();
+        clones.set(true);
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                drop(queue.clone());
+            }))
+            .is_err()
+        );
+        assert_eq!(drops.get(), 2);
+        clones.set(false);
+        drop(queue);
+        assert_eq!(drops.get(), 7);
+    }
+    println!("collection panic invariants passed");
+}

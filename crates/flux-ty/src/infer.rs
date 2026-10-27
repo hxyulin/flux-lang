@@ -1017,6 +1017,10 @@ impl Ctx<'_> {
     /// Unifies `ty`, the type of expression `expr` before its parts are
     /// inferred, with the type its context wants, if they can be.
     fn meet_expectation(&mut self, expr: ExprId, ty: Ty) {
+        // Divergence is a coercion, not equality with an unconstrained result.
+        if self.shallow(ty) == Ty::NEVER {
+            return;
+        }
         // A Box or Arc of an unsized type is wanted: its constructor still
         // makes a sized owner, coerced after, as rustc only hints
         // its arguments with what is wanted.
@@ -1715,6 +1719,47 @@ impl Ctx<'_> {
             .unwrap_or(Ty::ERROR)
             .subst(&args);
         self.normalize(ty, range)
+    }
+
+    /// Whether the lexical function enables every callee feature. Closures
+    /// share owner_fn; nested function items get their own body owner.
+    fn has_function_features(&self, function: FunctionId) -> bool {
+        let needed = self.items.functions[function]
+            .target_features
+            .as_deref()
+            .unwrap_or(&[]);
+        let enabled = self
+            .owner_fn
+            .and_then(|f| self.items.functions[f].target_features.as_deref())
+            .unwrap_or(&[]);
+        needed.iter().all(|feature| {
+            enabled.iter().any(|own| {
+                own == feature
+                    || match own.as_str() {
+                        "sha3" => matches!(feature.as_str(), "sha2" | "neon"),
+                        "sha2" => feature.as_str() == "neon",
+                        _ => false,
+                    }
+            })
+        })
+    }
+
+    fn function_needs_unsafe(&self, function: FunctionId) -> bool {
+        self.items.functions[function].is_unsafe || !self.has_function_features(function)
+    }
+
+    /// An inline constant's reification owner has no target features, even
+    /// when its enclosing runtime function permits direct feature calls.
+    fn can_reify_function_features(&self, function: FunctionId) -> bool {
+        if self.const_context == Some("constants") {
+            self.items.functions[function]
+                .target_features
+                .as_deref()
+                .unwrap_or(&[])
+                .is_empty()
+        } else {
+            self.has_function_features(function)
+        }
     }
 
     /// The one of `candidates`, associated functions with one name, whose
@@ -2500,10 +2545,17 @@ impl Ctx<'_> {
                     .unwrap_or(Ty::ERROR)
             }
             Expr::Path(Res::Static(c)) => {
-                if self.items.consts[*c].is_static_mut() && self.unsafe_depth == 0 {
+                if (self.items.consts[*c].is_static_mut()
+                    || self.items.consts[*c].extern_symbol.is_some())
+                    && self.unsafe_depth == 0
+                {
                     self.error(
                         self.range(id),
-                        "use of mutable static is unsafe and requires unsafe function or block",
+                        if self.items.consts[*c].extern_symbol.is_some() {
+                            "use of extern static is unsafe and requires unsafe function or block"
+                        } else {
+                            "use of mutable static is unsafe and requires unsafe function or block"
+                        },
                     );
                 }
                 self.sigs.consts.get(*c).copied().unwrap_or(Ty::ERROR)
@@ -2945,6 +2997,39 @@ impl Ctx<'_> {
                     self.coerce(from, to, *expr);
                     return to;
                 }
+                // Address exposure does not expose a callable lifetime recipe.
+                // Retain the real machine signature and monomorphized instance,
+                // then lower the immediately consumed pointer through ptrtoint.
+                let from = if to.as_int().is_some()
+                    && let TyKind::FnDef(def) = self.shallow(from).kind()
+                {
+                    if self.items.functions[def.function].intrinsic.is_some() {
+                        self.error(
+                            self.range(id),
+                            "cannot take the address of a compiler intrinsic",
+                        );
+                        return Ty::ERROR;
+                    }
+                    if matches!(
+                        self.items.functions[def.function].owner,
+                        Some(flux_hir::Owner::Trait(_))
+                    ) && def
+                        .args
+                        .first()
+                        .is_some_and(|&arg| self.shallow(arg).is_dyn())
+                    {
+                        self.error(
+                            self.range(id),
+                            "function pointers to trait objects' methods are not supported yet",
+                        );
+                        return Ty::ERROR;
+                    }
+                    let pointer = Ty::new(TyKind::FnPtr(def.sig));
+                    self.reified.insert(*expr, pointer);
+                    pointer
+                } else {
+                    from
+                };
                 self.deferred.push(Deferred::Cast { expr: id, from, to });
                 to
             }
@@ -3274,7 +3359,7 @@ impl Ctx<'_> {
         }
         let is_unsafe = found
             .iter()
-            .any(|(_, ty)| matches!(ty.kind(), TyKind::FnDef(def) if def.sig.is_unsafe));
+            .any(|(_, ty)| matches!(ty.kind(), TyKind::FnDef(def) if self.items.functions[def.function].is_unsafe || !self.can_reify_function_features(def.function)));
         // The signature of the first function item, or else the first
         // closure's.
         let sig = found.iter().find_map(|(_, ty)| match ty.kind() {
@@ -3502,7 +3587,7 @@ impl Ctx<'_> {
             }),
         };
         self.register_call_bounds(function, &generic_args, site, known);
-        if data.is_unsafe && self.unsafe_depth == 0 {
+        if self.function_needs_unsafe(function) && self.unsafe_depth == 0 {
             self.error(
                 self.range(id),
                 format!("call to unsafe function `{name}` is unsafe and requires unsafe function or block"),
@@ -3627,7 +3712,10 @@ impl Ctx<'_> {
                 self.coerce(ty, param, arg);
             }
         }
-        if sig.is_unsafe && self.unsafe_depth == 0 {
+        if function.map_or(sig.is_unsafe, |function| {
+            self.function_needs_unsafe(function)
+        }) && self.unsafe_depth == 0
+        {
             let message = match function {
                 Some(f) => format!(
                     "call to unsafe function `{}` is unsafe and requires unsafe function or block",
@@ -3919,8 +4007,21 @@ impl Ctx<'_> {
                 _ => {}
             }
             if let Some(output) = self.index_overload(id, step, index_ty, derefs, false) {
+                if matches!(index_ty.kind(), TyKind::Ref(Mutability::Mut, _)) {
+                    self.coerce(index_ty, index_ty, index);
+                }
                 self.record_overloaded_derefs(id, &steps);
                 return output;
+            }
+            // Index arguments are coercion sites. Prefer an exact mutable
+            // reference impl, then try the ordinary shared reborrow.
+            if let TyKind::Ref(Mutability::Mut, pointee) = index_ty.kind() {
+                let shared = Ty::new(TyKind::Ref(Mutability::Not, pointee));
+                if let Some(output) = self.index_overload(id, step, shared, derefs, false) {
+                    self.coerce(index_ty, shared, index);
+                    self.record_overloaded_derefs(id, &steps);
+                    return output;
+                }
             }
             match self.deref_step(step, base_range) {
                 Some((next, overloaded)) => {
@@ -5176,7 +5277,7 @@ impl Ctx<'_> {
             }
         }
         self.select_obligations();
-        if self.items.functions[function].is_unsafe && self.unsafe_depth == 0 {
+        if self.function_needs_unsafe(function) && self.unsafe_depth == 0 {
             let name = self.items.function_path(&self.items.functions[function]);
             self.error(
                 self.range(id),
@@ -5197,6 +5298,19 @@ impl Ctx<'_> {
             }
             BinaryOp::Cmp(_) => {
                 let ty = self.infer_expr(lhs);
+                // Select the nominal operand's comparison contract before
+                // its RHS constructor is inferred. Its arguments are then
+                // ordinary coercion sites, rather than an already-built ADT.
+                if matches!(self.shallow(ty).kind(), TyKind::Adt(..)) {
+                    let rhs_expected = self.new_var(false, self.range(rhs));
+                    if let Some(result) = self.overload(id, op, ty, (rhs, rhs_expected)) {
+                        self.expect(rhs, rhs_expected);
+                        let actual = self.infer_expr(rhs);
+                        self.coerce(actual, rhs_expected, rhs);
+                        self.select_obligations();
+                        return result;
+                    }
+                }
                 let rhs_ty = self.infer_expr(rhs);
                 if let Some(ty) = self.overload(id, op, ty, (rhs, rhs_ty)) {
                     return ty;
@@ -6929,6 +7043,7 @@ impl Ctx<'_> {
                             target == crate::Metadata::Thin || source == target
                         }
                         (TyKind::RawPtr(_, pointee), TyKind::Int(_)) => !self.is_unsized(pointee),
+                        (TyKind::FnPtr(_), TyKind::Int(_)) => true,
                         (TyKind::Int(_), TyKind::RawPtr(_, pointee)) => !self.is_unsized(pointee),
                         // A fieldless enum, to its discriminant.
                         (TyKind::Adt(adt, _), TyKind::Int(_)) => {

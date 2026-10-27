@@ -16,6 +16,7 @@ fn errors(text: &str) -> Vec<String> {
 fn supported_integer_unions() {
     for text in [
         "union U { a: u32, b: i32 } fn main() { let mut u = U { a: 1 }; u.b = -2; let _ = unsafe { u.a }; }",
+        "#[repr(packed)] union U { a: u32 } fn main() { let u = U { a: 7 }; assert_eq!(core::mem::align_of::<U>(), 1); let value = unsafe { u.a }; assert_eq!(value, 7); }",
         "#[derive(Copy, Clone)] union U { a: u8, b: u64 } fn main() { let u = U { b: 3 }; let v = u.clone(); let _ = unsafe { (u.a, v.b) }; }",
         "union U { a: u32, #[cfg(any())] a: Missing, #[cfg_attr(all(), cfg(any()))] b: Missing } fn main() { let _ = U { a: 1 }; }",
         "union U { a: u32, b: i32 } fn main() { let u: U; u = U { a: 1 }; let _ = unsafe { u.b }; }",
@@ -88,10 +89,6 @@ fn union_rejections() {
         (
             "union U<T: Copy> { a: T } fn main() {}",
             "generic unions are not supported yet",
-        ),
-        (
-            "#[repr(packed)] union U { a: u32 } fn main() {}",
-            "repr(packed)",
         ),
         (
             "#[repr(align(16))] union U { a: u32 } fn main() {}",

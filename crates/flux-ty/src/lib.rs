@@ -1126,6 +1126,8 @@ pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
         return Some(d);
     } else if function.c_abi {
         "`main` function must have the Rust ABI".to_owned()
+    } else if function.target_features.is_some() {
+        "`main` function is not allowed to have `target_feature`".to_owned()
     } else if function.is_unsafe {
         "`main` function is not allowed to be `unsafe`".to_owned()
     } else if !sig.params.is_empty() {
@@ -1544,11 +1546,16 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
 pub enum PatternConst {
     Scalar(i128),
     Aggregate(Vec<PatternConst>),
+    Variant {
+        index: u32,
+        fields: Vec<PatternConst>,
+    },
 }
 
 /// Whether a constant of `ty` can be matched structurally. ADTs require
 /// derived PartialEq; a handwritten equality method cannot define patterns.
-/// Enum, reference and pointer constants remain outside this subset.
+/// Enum payloads are checked against the evaluated active variant; references
+/// and pointer constants remain outside this subset.
 pub fn structural_pattern_type(items: &ItemTree, sigs: &Signatures, ty: Ty) -> bool {
     fn check(items: &ItemTree, sigs: &Signatures, ty: Ty, depth: u32) -> bool {
         if depth >= 128 {
@@ -1562,14 +1569,14 @@ pub fn structural_pattern_type(items: &ItemTree, sigs: &Signatures, ty: Ty) -> b
             }
             TyKind::Adt(adt, _) => {
                 !items.structs[adt.strukt].is_union
-                    && !sigs.is_enum(adt.strukt)
                     && items
                         .functions
                         .values()
                         .any(|f| f.derived == Some((adt.strukt, flux_hir::Derive::PartialEq)))
-                    && sigs.fields(ty).is_some_and(|fields| {
-                        fields.iter().all(|&t| check(items, sigs, t, depth + 1))
-                    })
+                    && (sigs.is_enum(adt.strukt)
+                        || sigs.fields(ty).is_some_and(|fields| {
+                            fields.iter().all(|&t| check(items, sigs, t, depth + 1))
+                        }))
             }
             _ => false,
         }

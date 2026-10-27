@@ -220,8 +220,13 @@ fn compile_inner(request: CompileRequest<'_>, timings: &mut Timings) -> Result<b
                     .map_err(|error| error.to_string())?
             };
             let warnings = timings.time("link", || {
-                flux_codegen::link_executable(&object, target, output)
-                    .map_err(|error| error.to_string())
+                flux_codegen::link_executable_with_libraries(
+                    &object,
+                    target,
+                    output,
+                    &hir.items.native_libraries,
+                )
+                .map_err(|error| error.to_string())
             })?;
             for warning in warnings {
                 eprintln!("warning: {warning}");

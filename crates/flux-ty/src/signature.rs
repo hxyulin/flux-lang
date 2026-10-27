@@ -603,7 +603,9 @@ pub(super) fn extend_signatures(
             reported.push(d);
             ty = Ty::ERROR;
         }
-        if let Some(mutable) = konst.is_static {
+        if let Some(mutable) = konst.is_static
+            && konst.extern_symbol.is_none()
+        {
             let mut error = |message: String| {
                 reported.push(Diagnostic {
                     file: konst.loc.file,

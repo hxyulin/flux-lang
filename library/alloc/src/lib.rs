@@ -13,6 +13,7 @@ pub mod borrow;
 pub mod boxed;
 pub mod collections;
 pub mod fmt;
+pub mod ffi;
 pub mod prelude;
 mod raw_vec;
 pub mod rc;

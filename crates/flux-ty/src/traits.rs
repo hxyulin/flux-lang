@@ -353,10 +353,16 @@ pub fn trait_ref(
                 name: items.traits[sup].name,
                 args: Ty::list(&args[..items.traits[sup].generics.len().min(args.len())]),
             };
-            projections.push(Projection {
-                alias: alias_of(items, sup_ref, self_ty, binding.name),
-                ty,
-            });
+            if let Some(alias) = resolve_binding_family(
+                items,
+                module,
+                alias_of(items, sup_ref, self_ty, binding.name),
+                binding,
+                scope,
+                errors,
+            ) {
+                projections.push(Projection { alias, ty });
+            }
             continue;
         }
         if !data.types.iter().any(|ty| ty.name == binding.name) {
@@ -370,12 +376,54 @@ pub fn trait_ref(
             continue;
         }
         let ty = resolve_type(items, module, &binding.ty, scope, binding.ty_range, errors);
-        projections.push(Projection {
-            alias: alias_of(items, trait_ref, self_ty, binding.name),
-            ty,
-        });
+        if let Some(alias) = resolve_binding_family(
+            items,
+            module,
+            alias_of(items, trait_ref, self_ty, binding.name),
+            binding,
+            scope,
+            errors,
+        ) {
+            projections.push(Projection { alias, ty });
+        }
     }
     Some((trait_ref, projections))
+}
+
+/// Equality binding inputs must be represented independently from their RHS.
+/// Owner type-parameter captures are recovered from the caller's generic rows;
+/// explicitly written reference/lifetime arguments need occurrence tables.
+fn resolve_binding_family(
+    items: &ItemTree,
+    module: ModuleId,
+    alias: AliasTy,
+    binding: &flux_hir::AssocBinding,
+    scope: TypeScope<'_>,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Option<AliasTy> {
+    let alias = crate::resolve::resolve_family_arguments(
+        items,
+        module,
+        alias,
+        binding.args.as_ref(),
+        scope,
+        binding.range(),
+        errors,
+    )?;
+    if alias.family_lifetimes != 0
+        || (!alias.family_args.is_empty() && alias.owner_lifetimes != 0)
+        || alias
+            .family_args
+            .iter()
+            .any(|&ty| crate::regions::slots(items, ty) != 0)
+    {
+        errors.push((
+            binding.range(),
+            "lifetime-bearing associated family equality arguments are not supported yet".into(),
+        ));
+        return None;
+    }
+    Some(alias)
 }
 
 /// The supertrait of `t`, through any chain of supertraits, that has an
@@ -2244,7 +2292,10 @@ pub(crate) enum ClosureGoal {
 pub(crate) fn fn_goal(items: &ItemTree, t: TraitId, ty: Ty) -> Option<ClosureGoal> {
     let sig = ty.fn_sig()?;
     let kind = crate::fn_trait_kind(items, t)?;
-    if sig.is_unsafe || sig.is_c {
+    if sig.is_unsafe
+        || sig.is_c
+        || matches!(ty.kind(),TyKind::FnDef(def) if items.functions[def.function].target_features.is_some())
+    {
         return Some(ClosureGoal::No);
     }
     Some(ClosureGoal::Fn(kind, Ty::tuple(sig.params())))
@@ -2280,6 +2331,7 @@ pub fn closure_output(items: &ItemTree, alias: AliasTy) -> Option<Ty> {
     if let Some(sig) = alias.args[0].fn_sig()
         && !sig.is_unsafe
         && !sig.is_c
+        && !matches!(alias.args[0].kind(),TyKind::FnDef(def) if items.functions[def.function].target_features.is_some())
         && crate::fn_trait_kind(items, alias.trait_) == Some(crate::ClosureKind::FnOnce)
     {
         return Some(sig.ret());
@@ -4075,6 +4127,27 @@ impl<'a, 'd> WfCheck<'a, 'd> {
     /// traits do not hold, at the item: rustc normalizes an item's bounds
     /// there.
     fn bound_aliases(&mut self, predicates: &[Predicate], declared: &[Projection]) {
+        for projection in declared.iter().filter(|p| !p.alias.family_args.is_empty()) {
+            let scope = WfScope {
+                env: self.scope.env,
+                projections: self.scope.projections,
+                aliases: true,
+            };
+            let mut found = Vec::new();
+            unmet_struct_bounds(
+                self.items,
+                self.sigs,
+                &scope,
+                Ty::alias(projection.alias),
+                None,
+                WfRange::at(self.span),
+                &mut self.reported,
+                &mut found,
+            );
+            for (range, message) in found {
+                self.report(range, message);
+            }
+        }
         if !self.scope.aliases {
             return;
         }
