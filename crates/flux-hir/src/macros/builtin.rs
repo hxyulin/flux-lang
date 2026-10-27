@@ -70,6 +70,7 @@ impl Builtin {
 /// What a built-in macro needs to know about its call.
 pub(crate) struct BuiltinCx<'a> {
     pub name: Symbol,
+    pub environment: Option<&'a std::collections::BTreeMap<String, String>>,
     pub edition: flux_syntax::Edition,
     pub cfg: Option<&'a flux_syntax::CfgOptions>,
     pub toks: &'a [Tok],
@@ -266,7 +267,15 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
             };
             let name = string(args.args[0].1)?;
             let message = args.args.get(1).map(|arg| string(arg.1)).transpose()?;
-            match std::env::var(&name) {
+            match cx.environment.map_or_else(
+                || std::env::var(&name),
+                |environment| {
+                    environment
+                        .get(&name)
+                        .cloned()
+                        .ok_or(std::env::VarError::NotPresent)
+                },
+            ) {
                 Ok(value) if builtin == Builtin::Env => out.push(cx.string(&value, cx.origin())),
                 Ok(value) => {
                     cx.quote("{core}::option::Option::Some(", &mut out);

@@ -99,6 +99,8 @@ pub(crate) struct SourceInput {
     pub file: std::path::PathBuf,
     pub name: String,
     pub dependencies: Vec<(String, usize)>,
+    pub cfg: flux_hir::CrateCfg,
+    pub environment: Option<std::collections::BTreeMap<String, String>>,
 }
 
 // The scoped boundary includes diagnostics and destruction of compile-local data.
@@ -130,8 +132,13 @@ fn compile_inner(request: CompileRequest<'_>, timings: &mut Timings) -> Result<b
     let graph = timings.time("source dependency load/parse", || {
         let mut graph = Vec::new();
         for source in sources {
+            let source_root = db.load_with_edition(&source.file, source.edition)?;
+            db.set_crate_cfg(source_root, source.cfg.clone())?;
+            if let Some(environment) = &source.environment {
+                db.set_crate_env(source_root, environment.clone())?;
+            }
             graph.push(flux_hir::SourceCrate {
-                root: db.load_with_edition(&source.file, source.edition)?,
+                root: source_root,
                 name: Symbol::intern(&source.name),
                 dependencies: source
                     .dependencies

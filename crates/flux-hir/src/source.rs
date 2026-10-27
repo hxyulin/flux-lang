@@ -81,6 +81,7 @@ pub struct SourceDb {
     /// The first file at each path: crates can have thousands of files.
     by_path: rustc_hash::FxHashMap<PathBuf, FileId>,
     next_include_offset: u32,
+    environments: rustc_hash::FxHashMap<FileId, Arc<std::collections::BTreeMap<String, String>>>,
     configured: rustc_hash::FxHashMap<(FileId, Option<Arc<flux_syntax::CfgOptions>>), FileId>,
 }
 
@@ -438,8 +439,41 @@ impl SourceDb {
             files,
             by_path,
             next_include_offset,
+            environments: Default::default(),
             configured: Default::default(),
         }
+    }
+
+    /// Sets an isolated compile-time environment for one physical crate root.
+    /// An explicit empty map hides the process environment. Without a map,
+    /// standalone compilations retain their process-environment behavior.
+    /// Call this before lowering; modules, includes and macro invocations use
+    /// the calling crate's snapshot, not the macro definition's environment.
+    pub fn set_crate_env(
+        &mut self,
+        root: FileId,
+        environment: std::collections::BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        let source = self
+            .files
+            .get(root.0 as usize)
+            .ok_or_else(|| "unknown crate source".to_owned())?;
+        if source.expansion_of.is_some()
+            || source.path.starts_with(CORE_ROOT)
+            || source.path.starts_with(ALLOC_ROOT)
+            || source.path.starts_with(STD_ROOT)
+        {
+            return Err("expected a physical crate root".into());
+        }
+        self.environments.insert(root, Arc::new(environment));
+        Ok(())
+    }
+
+    pub(crate) fn crate_env(
+        &self,
+        root: FileId,
+    ) -> Option<Arc<std::collections::BTreeMap<String, String>>> {
+        self.environments.get(&root).cloned()
     }
 
     /// Sets a physical root's compilation inputs before lowering its source

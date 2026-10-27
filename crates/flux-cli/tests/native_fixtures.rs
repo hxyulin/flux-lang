@@ -86,3 +86,8 @@ fn nested_associated_bounds() {
 fn slice_callback_lifetimes() {
     support::oracle::compare_fixture("slice_callback_lifetimes");
 }
+
+#[test]
+fn backend_std_prerequisites() {
+    support::oracle::compare_fixture("backend_std_prerequisites");
+}

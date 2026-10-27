@@ -1,0 +1,63 @@
+use keel_frontend::FunctionBuilder;
+use keel_ir::{Function, Module, Signature, Target, Type};
+use object::{Object, ObjectSection};
+
+fn main() {
+    let mut function = Function::new("main", Signature::new(&[], &[Type::I32]));
+    let mut builder = FunctionBuilder::new(&mut function);
+    let block = builder.create_block();
+    builder.switch_to_block(block);
+    builder.seal_block(block);
+    let a = builder.ins().iconst(Type::I32, 19);
+    let b = builder.ins().iconst(Type::I32, 23);
+    let result = builder.ins().iadd(a, b);
+    builder.ins().return_(&[result]);
+    builder.finalize();
+    let mut module = Module::default();
+    module.functions.push(function);
+    keel_ir::verify_module(&module).unwrap();
+    keel_opt::optimize_with_tier(&mut module, keel_opt::OptimizationTier::Full).unwrap();
+    keel_ir::verify_module(&module).unwrap();
+    let program = keel_codegen::compile_program(&module, Target::Aarch64AppleDarwin).unwrap();
+    let macho =
+        keel_asm::assemble_program_object(&program, keel_asm::TargetFeatures::default()).unwrap();
+    let file = object::File::parse(macho.as_slice()).unwrap();
+    assert_eq!(file.architecture(), object::Architecture::Aarch64);
+    assert!(file.section_by_name("__text").unwrap().size() > 0);
+    println!(
+        "aarch64 backend text={}",
+        file.section_by_name("__text").unwrap().size()
+    );
+    let program = keel_codegen::compile_program(&module, Target::X86_64LinuxGnu).unwrap();
+    let elf = keel_asm::x86::assemble_program_object(&program).unwrap();
+    let file = object::File::parse(elf.as_slice()).unwrap();
+    assert_eq!(file.architecture(), object::Architecture::X86_64);
+    assert!(file.section_by_name(".text").unwrap().size() > 0);
+    println!(
+        "x86 backend text={}",
+        file.section_by_name(".text").unwrap().size()
+    );
+    #[cfg(full_backend)]
+    {
+        let sdk = std::path::PathBuf::from(std::env::var("SDKROOT").unwrap());
+        let system = keel_link::Dylib::from_tbd(&sdk.join("usr/lib/libSystem.tbd"), &sdk).unwrap();
+        let executable = keel_link::link(
+            &[keel_link::Input {
+                name: "backend.o",
+                bytes: &macho,
+            }],
+            keel_link::Options {
+                dylibs: vec![system],
+                ..keel_link::Options::default()
+            },
+        )
+        .unwrap();
+        assert!(!executable.bytes.is_empty());
+        let executable = object::File::parse(executable.bytes.as_slice()).unwrap();
+        assert_eq!(executable.kind(), object::ObjectKind::Executable);
+        println!(
+            "linker executable architecture={:?}",
+            executable.architecture()
+        );
+    }
+}

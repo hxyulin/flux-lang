@@ -378,7 +378,11 @@ under `OUT_DIR`. Included syntax retains physical source locations. Items
 produced in impls and function blocks enter the ordinary item scopes. Virtual
 source inclusion and calls first discovered after body-item collection remain
 explicitly unsupported. This loads supplied generated output; Flux does not
-run build scripts or resolve packages.
+run build scripts or resolve packages internally. The `flux cargo` adapter
+uses Cargo/rustc for host preparation and passes supplied source-graph inputs.
+`SourceDb::set_crate_env` provides isolated per-crate `env!`/`option_env!` values,
+including separate OUT_DIR paths; an explicit empty environment hides process
+values. Standalone compilations without that input retain process lookup.
 
 Values are dropped as in rustc: a binding at the end of its block, in
 reverse order of declaration, then the function's parameters; a
@@ -838,6 +842,11 @@ its caller; `Ref<T>` and `RefMut<T>` implement `Deref`, and `RefMut<T>`
 also implements `DerefMut`, with references tied to the borrowed guard;
 unsized guard targets remain unsupported; all of them, and `BorrowError` and `BorrowMutError`,
 are `Debug` as rustc writes them),
+`core::cell::OnceCell<T>` supports const construction and runtime `get`,
+`get_mut`, `set`, `get_or_init`, `take` and `into_inner`, plus Default, Clone,
+From and Debug. It is Send when T is Send and is never Sync. Initializer panics
+do not publish a value; reentrant initialization panics without replacing the
+inner initializer's value. Flux runtime panics abort.
 `core::cell::UnsafeCell<T>` for sized payloads, with const `new` and runtime
 `get`, `get_mut`, and `into_inner`. It preserves payload size/alignment,
 suppresses niches, is invariant in `T`, and is Send when `T: Send`. Owned
@@ -1460,6 +1469,8 @@ filesystem calls preserve original spelling. `fs::read`, `read_to_string` and
 `canonicalize`, plus `Path::is_file`, call the native Unix runtime. NUL paths
 reject; non-Unicode paths remain representable. Windows paths, general file
 handles, writing and directory iteration remain unsupported.
+`env::current_dir()` obtains the native Unix current directory, preserves path
+bytes, retries with a larger buffer on ERANGE, and returns OS failures.
 `env::consts::{OS, FAMILY, ARCH}` describes the fixed target. `env::var(&str)`
 returns UTF-8 values or VarError, preserving non-Unicode Unix bytes in an owned
 OsString. NUL or `=` in keys reports NotPresent. Other OS-string key types and

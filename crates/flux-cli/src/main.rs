@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod build;
+mod cargo;
 mod package;
 
 use clap::{Parser, Subcommand};
@@ -17,6 +18,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare Cargo host inputs or build target sources with Flux.
+    Cargo {
+        #[command(subcommand)]
+        command: cargo::Command,
+    },
     /// Build or run a restricted standalone Cargo package with Flux.
     Package {
         #[command(subcommand)]
@@ -68,6 +74,15 @@ struct BuildOptions {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Command::Cargo { command } = &cli.command {
+        return match cargo::execute(command) {
+            Ok(code) => code,
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if let Command::Package { command } = &cli.command {
         return match package::execute(command) {
             Ok(code) => code,
@@ -161,7 +176,9 @@ fn run(command: Command) -> Result<bool, String> {
             let output = output.unwrap_or_else(|| PathBuf::from(build::crate_name(&file)));
             build::build(&file, &output, options)
         }
-        Command::Package { .. } | Command::Run { .. } => unreachable!("handled in main"),
+        Command::Cargo { .. } | Command::Package { .. } | Command::Run { .. } => {
+            unreachable!("handled in main")
+        }
         Command::Check { files } => {
             let mut ok = true;
             for file in &files {

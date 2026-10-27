@@ -435,3 +435,77 @@ impl<'b, T> Drop for RefMut<'b, T> {
         self.borrow.set(0);
     }
 }
+
+
+/// A value initialized at most once through a shared reference.
+/// Unlike a synchronized once cell, this cell cannot be shared between threads.
+pub struct OnceCell<T> {
+    value: UnsafeCell<Option<T>>,
+}
+
+impl<T> OnceCell<T> {
+    /// Creates an empty cell.
+    pub const fn new() -> OnceCell<T> {
+        OnceCell { value: UnsafeCell::new(None) }
+    }
+
+    /// Returns the initialized value, if any.
+    pub fn get(&self) -> Option<&T> {
+        // SAFETY: initialized values are never replaced through a shared
+        // reference. UnsafeCell prevents Sync, so no concurrent writer exists.
+        unsafe { (*self.value.get()).as_ref() }
+    }
+
+    /// Returns mutable access through an exclusive cell borrow.
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        self.value.get_mut().as_mut()
+    }
+
+    /// Initializes the cell, returning the supplied value if already filled.
+    pub fn set(&self, value: T) -> Result<(), T> {
+        if self.get().is_some() { return Err(value); }
+        // SAFETY: the cell is empty, so no payload reference exists. There is
+        // no user code between the check and write and the cell is not Sync.
+        unsafe { *self.value.get() = Some(value); }
+        Ok(())
+    }
+
+    /// Returns the value, initializing it on demand.
+    /// Panics if the initializer recursively initializes the same cell.
+    pub fn get_or_init<F: FnOnce() -> T>(&self, f: F) -> &T {
+        if let Some(value) = self.get() { return value; }
+        let value = f();
+        if self.set(value).is_err() { panic("reentrant init"); }
+        self.get().unwrap()
+    }
+
+    /// Removes the value through an exclusive borrow, leaving an empty cell.
+    pub fn take(&mut self) -> Option<T> { self.value.get_mut().take() }
+
+    /// Consumes the cell, returning its value.
+    pub fn into_inner(self) -> Option<T> { self.value.into_inner() }
+}
+
+impl<T> Default for OnceCell<T> {
+    fn default() -> OnceCell<T> { OnceCell::new() }
+}
+impl<T> From<T> for OnceCell<T> {
+    fn from(value: T) -> OnceCell<T> {
+        OnceCell { value: UnsafeCell::new(Some(value)) }
+    }
+}
+impl<T: Clone> Clone for OnceCell<T> {
+    fn clone(&self) -> OnceCell<T> {
+        match self.get() { Some(value) => OnceCell::from(value.clone()), None => OnceCell::new() }
+    }
+}
+impl<T: Debug> Debug for OnceCell<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut tuple = f.debug_tuple("OnceCell");
+        match self.get() {
+            Some(value) => { tuple.field(value); }
+            None => { tuple.field(&format_args!("<uninit>")); }
+        }
+        tuple.finish()
+    }
+}

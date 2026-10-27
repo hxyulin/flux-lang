@@ -48,3 +48,27 @@ pub mod consts {
     #[cfg(target_arch = "x86_64")]
     pub const ARCH: &str = "x86_64";
 }
+
+
+/// Returns the process's current working directory, preserving Unix path bytes.
+///
+/// Returns an OS error if the working directory is no longer accessible.
+pub fn current_dir() -> crate::io::Result<crate::path::PathBuf> {
+    unsafe extern "C" { fn getcwd(buffer: *mut u8, size: usize) -> *mut u8; }
+    let mut buffer = crate::alloc_crate::vec![0u8; 256];
+    loop {
+        // SAFETY: the writable buffer has the supplied length. On success,
+        // getcwd writes a terminated path within it; on failure, errno is read
+        // before making another libc call.
+        if !unsafe { getcwd(buffer.as_mut_ptr(), buffer.len()) }.is_null() {
+            let length = buffer.iter().position(|&byte| byte == 0).unwrap();
+            buffer.truncate(length);
+            return Ok(crate::path::PathBuf::from(OsString { bytes: buffer }));
+        }
+        let error = crate::io::Error::last_os_error();
+        // ERANGE has value 34 on both supported Unix targets.
+        if error.raw_os_error() != Some(34) { return Err(error); }
+        let length = buffer.len().checked_mul(2).expect("current directory path is too long");
+        buffer.resize(length, 0);
+    }
+}

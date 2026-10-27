@@ -11,8 +11,13 @@ The root exposes core's `any`, `arch`, `array`, `ascii`, `cell`, `char`, `clone`
 `ops`, `option`, `panic`, `ptr`, `result`, `slice` and `str`, and alloc's
 `alloc`, `borrow`, `boxed`, `fmt`, `prelude`, `string` and `vec`. Only the
 APIs actually implemented in those modules exist. `cell` includes the existing
-`Cell` and `RefCell` implementations, including sized borrow-guard dereferencing;
-reexporting them does not add further standard-library APIs.
+`Cell` and `RefCell` implementations, including sized borrow-guard dereferencing.
+`OnceCell<T>` supplies const `new`, `get`, `get_mut`, `set`, `get_or_init`, `take`,
+`into_inner`, Default, Clone, From and Debug. It is unsynchronized, Send when its
+payload is Send, and never Sync. Reentrant initialization panics; Flux panics abort.
+Host unwind tests verify retry after an initializer panics without filling the cell.
+`env::current_dir` returns a byte-preserving Unix PathBuf or an OS error and grows
+its buffer for long paths. It does not read the PWD environment variable.
 `std::arch` retains core's bounded architecture APIs, including the existing
 AArch64 NEON operations used by Keel's delimiter scanner.
 `arch::is_aarch64_feature_detected!("crc")` supplies runtime CRC detection on

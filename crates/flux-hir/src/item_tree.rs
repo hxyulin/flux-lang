@@ -158,6 +158,8 @@ pub struct ItemCounts {
 
 #[derive(Debug, Clone)]
 pub struct CrateData {
+    /// Isolated compilation inputs; None retains standalone process lookup.
+    pub environment: Option<Arc<std::collections::BTreeMap<String, String>>>,
     /// Exported macros imported with this crate's `#[macro_use] extern crate`.
     pub macro_use: Vec<(Symbol, MacroId)>,
     pub cfg: Option<Arc<flux_syntax::CfgOptions>>,

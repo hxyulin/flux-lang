@@ -240,6 +240,8 @@ impl SourceGraph<'_> {
         let target = select_target(&package, library, bin)?;
         let index = self.sources.len();
         self.sources.push(SourceInput {
+            cfg: Default::default(),
+            environment: None,
             edition: edition(&target.edition)?,
             file: target.src_path.clone(),
             name: target.name.replace('-', "_"),

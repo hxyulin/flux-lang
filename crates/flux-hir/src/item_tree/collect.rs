@@ -207,6 +207,7 @@ impl Collector<'_> {
             block: None,
         });
         self.items.crates.push(CrateData {
+            environment: self.db.crate_env(root),
             macro_use: Vec::new(),
             cfg: self.db.file(root).parse.tree().cfg_options().cloned(),
             edition: self.db.file(root).edition,

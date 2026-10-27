@@ -194,8 +194,18 @@ floating-point constant folder also have native comparisons. These milestones
 do not yet build the complete compiler executable. The assembler and its
 object-file dependencies now also pass native comparisons. The remaining backend
 source graphs are complete Keel codegen, frontend, linker and optimizer crates,
-followed by flux-codegen. CLI derives and the backend's remaining dependencies
-and generated outputs also belong to the complete source closure. Sourcegen and difftest are additional workspace targets,
+followed by flux-codegen. The maintained `keel_backend_readiness` audit records
+that 39-package closure, actual build outputs, and a separately scoped
+18-package linker-free core. Per-crate compilation environments now provide
+separate OUT_DIR values. OnceCell and current_dir are implemented and tested;
+the refreshed core audit reaches zero syntax/HIR diagnostics and 92 type
+diagnostics. MIR has not run. `flux cargo prepare` records Cargo build-script
+outputs and host proc-macro artifacts, and `flux cargo build` compiles supported
+binary source graphs. Proc-macro execution still needs a token expansion bridge;
+preparing a dylib does not implement expansion. The rustc reference exercises the complete backend
+and linker successfully. See the [backend audit report](../crates/flux-cli/tests/fixtures/keel_backend/README.md).
+CLI derives and the backend's remaining dependencies and generated outputs also
+belong to the complete source closure. Sourcegen and difftest are additional workspace targets,
 not prerequisites for the first compiler executable.
 
 The guarded assembler audit, `out/keel-asm-readiness/4907`, passes with zero

@@ -705,6 +705,9 @@ fn expand_at_depth(
                 .map_or(site.items.edition(site.module), |t| t.edition());
             let cx = BuiltinCx {
                 name: def.name,
+                environment: site.items.crates[site.krate.0 as usize]
+                    .environment
+                    .as_deref(),
                 edition,
                 cfg: site.items.crates[site.krate.0 as usize].cfg.as_deref(),
                 toks: inner,
