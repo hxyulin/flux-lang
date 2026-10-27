@@ -15,8 +15,26 @@ selfhost-subset:
 check:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
-    cargo test --workspace
+    python3 -m unittest discover -s scripts -p 'test_*.py'
+    python3 scripts/test.py fast
+    python3 scripts/test.py all
     cargo run -q -p flux-cli -- check examples/*.rs $(find crates -name '*.rs' -not -path '*/tests/data/*')
+
+# Run a named test group; use --target, --case or --filter for a narrower selection.
+test group="all" *args:
+    python3 scripts/test.py {{group}} {{args}}
+
+# Small smoke plan for all components or one named group; skips exhaustive suites.
+test-fast component="all" *args:
+    python3 scripts/test.py {{component}} --fast {{args}}
+
+# All unit/integration tests belonging to one workspace package, e.g. flux-mir.
+test-component package *args:
+    python3 scripts/test.py --package {{package}} {{args}}
+
+# Select tests affected by tracked and untracked changes since a Git revision.
+test-changed base="HEAD" *args:
+    python3 scripts/test.py --changed {{base}} {{args}}
 
 # Rewrite parser snapshots after an intended change; review the diff afterwards.
 snapshots:

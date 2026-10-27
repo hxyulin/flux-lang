@@ -1,4 +1,7 @@
 //! Bounded trait lifetime admission preserves impl and caller obligations.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -77,6 +80,9 @@ fn trait_lifetime_admission_preserves_rustc_obligations() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, source, rustc_accepts, rustc_message) in cases {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let output = Command::new("rustc")
@@ -205,6 +211,9 @@ fn trait_owner_substitution_matches_rustc_method_constraints() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, source, compatible) in cases {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let rustc = Command::new("rustc")

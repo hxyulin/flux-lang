@@ -1,4 +1,7 @@
 //! Stable type_name remains non-const and does not expose intrinsic internals.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -20,6 +23,9 @@ fn type_name_api_boundaries_match_rustc() {
             "fn main(){let _=core::intrinsics::type_name::<u8>();}",
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let rustc = Command::new("rustc")

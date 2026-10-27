@@ -1,4 +1,7 @@
 //! IEEE floating-point language operations match Rust.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -145,6 +148,9 @@ fn math_availability_and_const_rules_match_rustc() {
         }
     }
     for (name, code, accepts) in cases {
+        if !case_filter::selected(&name) {
+            continue;
+        }
         let source = dir.join(format!("{name}.rs"));
         std::fs::write(&source, code).unwrap();
         let rustc = Command::new("rustc")

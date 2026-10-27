@@ -13,6 +13,13 @@ pub fn success(output: &Output, label: &str) {
 }
 
 pub fn compare_fixture(name: &str) {
+    if !super::cases::selected(name) {
+        return;
+    }
+    if std::env::var_os("FLUX_TEST_NATIVE_SWEEP").is_some() {
+        eprintln!("native comparison owned by tests/run: {name}");
+        return;
+    }
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = repo.join(format!("out/native-fixtures/{}/{name}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create fixture artifacts");

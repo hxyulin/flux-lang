@@ -1,5 +1,6 @@
 //! Independent Rustc metadata and Flux semantic/MIR oracles. Invalid Rust is
 //! compile-only; native matching controls live in tests/run.
+mod support;
 use std::path::Path;
 use std::process::Command;
 
@@ -135,6 +136,9 @@ fn check_cases(source: &str, group: &str, count: usize) {
     let dir = root.join(format!("out/proof-compat/{group}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for case in cases {
+        if !support::cases::selected(&format!("{group}/{}", case.name)) {
+            continue;
+        }
         let name = &case.name;
         let file = dir.join(format!("{name}.rs"));
         std::fs::write(&file, &case.source).unwrap();
@@ -170,29 +174,40 @@ fn check_cases(source: &str, group: &str, count: usize) {
             "semantic {name}: {:?}",
             typed.diagnostics
         );
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
-            .current_dir(&root)
-            .arg("mir")
-            .arg(&file)
-            .output()
-            .unwrap();
-        assert_eq!(
-            flux.status.success(),
-            case.accepts,
-            "flux {name}: {}",
-            String::from_utf8_lossy(&flux.stderr)
-        );
-        for (compiler, output) in [("rustc", rustc), ("flux", flux)] {
-            std::fs::write(
-                dir.join(format!("{name}-{compiler}.stderr")),
-                &output.stderr,
-            )
-            .unwrap();
+        if case.accepts {
+            let mir = flux_mir::build_file(&hir, &typed);
             assert!(
-                !String::from_utf8_lossy(&output.stderr).contains("panicked"),
-                "{compiler} {name}: {:?}",
-                output
+                mir.diagnostics.is_empty(),
+                "MIR {name}: {:?}",
+                mir.diagnostics
             );
         }
+        std::fs::write(dir.join(format!("{name}-rustc.stderr")), &rustc.stderr).unwrap();
+        assert!(!String::from_utf8_lossy(&rustc.stderr).contains("panicked"));
     }
+}
+
+/// Exercise the CLI separately instead of repeating every semantic case in a child process.
+#[test]
+fn cli_reports_invalid_proof_without_panicking() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = root.join(format!("out/proof-compat/cli-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("invalid.rs");
+    std::fs::write(
+        &path,
+        "trait P {type A;} fn bad<T:P<A=u32>>(_: T)->T::A {false} fn main(){}",
+    )
+    .unwrap();
+    let output = support::process::run(
+        Command::new(env!("CARGO_BIN_EXE_flux"))
+            .arg("mir")
+            .arg(path),
+        &dir,
+        "invalid",
+        std::time::Duration::from_secs(60),
+    )
+    .completed();
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
 }

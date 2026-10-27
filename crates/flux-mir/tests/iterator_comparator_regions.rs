@@ -1,4 +1,7 @@
 //! Zip/chain/find keeps the regions of the instantiated iterator item.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn iterator_comparator_regions_match_rustc() {
     let root =
@@ -22,6 +25,9 @@ fn iterator_comparator_regions_match_rustc() {
             "struct P{range:usize}fn compare<'a>(a:&'a[u32],b:&'a[u32],p:&[P],x:&'a u32,y:&'a u32)->Option<((&'a u32,&'a u32),usize)>{let types=a.iter().zip(b);let ranges=p.iter().map(|p|p.range);types.zip(ranges).chain([((x,y),7)]).find(|((got,want),_)|**got!=**want)}fn main(){assert_eq!(compare(&[1,2],&[1,3],&[P{range:5},P{range:11}],&7,&9).unwrap().1,11);}",
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = std::process::Command::new("rustc")

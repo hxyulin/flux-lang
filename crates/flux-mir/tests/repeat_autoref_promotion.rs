@@ -1,4 +1,7 @@
 //! Repeated arrays and implicit literal receiver borrows retain their promoted allocation.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn repeat_and_autoref_promotions_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-repeat-autoref-{}", std::process::id()));
@@ -90,6 +93,9 @@ fn repeat_and_autoref_promotions_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = std::process::Command::new("rustc")

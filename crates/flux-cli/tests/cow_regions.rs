@@ -1,4 +1,7 @@
 //! Stored associated types contribute to a reference's implied outlives bounds.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -84,6 +87,9 @@ fn stored_projection_and_cow_lifetimes_match_rustc() {
             true,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, format!("{declarations}\n{body}\nfn main() {{}}")).unwrap();
         let rustc = Command::new("rustc")

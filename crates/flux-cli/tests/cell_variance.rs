@@ -1,4 +1,7 @@
 //! Lifetime contracts are compile-only: invalid Rust is never executed.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 fn oracle(name: &str, body: &str, rust_accepts: bool, flux_accepts: bool) {
@@ -125,6 +128,9 @@ fn covariance_and_safe_mutation_constraints() {
             "fn f<'a, 'b: 'a>(x: &RefCell<&'b u32>, y: &'a u32) { *x.borrow_mut() = y; }",
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         oracle(name, body, false, false);
         oracle(
             &format!("{name}_equal"),

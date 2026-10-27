@@ -1,3 +1,6 @@
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn modules_coexist_with_bare_primitive_types() {
     let dir = std::env::temp_dir().join(format!("flux-primitive-namespace-{}", std::process::id()));
@@ -54,6 +57,9 @@ fn modules_coexist_with_bare_primitive_types() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let rustc = std::process::Command::new("rustc")

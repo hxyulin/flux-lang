@@ -1,4 +1,7 @@
 //! Sized shared ownership boundaries and the unchanged source consumer gate.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::path::Path;
 use std::process::Command;
 
@@ -290,6 +293,9 @@ fn ownership_bounds_and_borrows_are_compile_only() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let file = dir.join(format!("{name}.rs"));
         std::fs::write(
             &file,
@@ -369,6 +375,9 @@ fn unchanged_shared_slice_source_matches_rustc() {
             include_str!("fixtures/sized_arc/iterator_projection.rs.txt").to_owned(),
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let file = dir.join(format!("{name}.rs"));
         std::fs::write(&file, source).unwrap();
         if name == "consumer" {
@@ -478,6 +487,9 @@ fn iterator_projection_boundaries_are_compile_only() {
             true,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let file = dir.join(format!("{name}.rs"));
         std::fs::write(&file, format!("{source}\nfn main() {{}}\n")).unwrap();
         let rustc = rustc_metadata(&file, &dir.join("test.rmeta"));

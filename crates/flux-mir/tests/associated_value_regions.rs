@@ -1,5 +1,8 @@
 //! Associated RHS selection must hold universally, even for unused definitions
 //! whose normalized values have no region slots. Invalid cases are never run.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -37,6 +40,9 @@ fn associated_value_selection_matches_rustc() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, source, accepts) in cases {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let source = format!("{source} fn main(){{}}");
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, &source).unwrap();

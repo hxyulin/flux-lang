@@ -1,4 +1,7 @@
 //! Declaration proofs instantiate higher-ranked assumptions, never static-only ones.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -56,6 +59,9 @@ fn callback_supertrait_declarations_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let source = format!(
             "trait Parent {{}} trait Child:Parent {{}} struct Guard<F>(F); impl<F:{parent}>Parent for Guard<F>{{}} impl<F:{child}>Child for Guard<F>{{}} fn main(){{}}"
         );

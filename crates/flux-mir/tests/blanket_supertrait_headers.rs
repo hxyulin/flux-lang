@@ -1,4 +1,7 @@
 //! Blanket supertrait candidates must prove every bound from the original header.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -38,6 +41,9 @@ fn abstract_blanket_supertraits_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = Command::new("rustc")

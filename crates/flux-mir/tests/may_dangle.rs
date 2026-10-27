@@ -1,4 +1,7 @@
 //! Trusted destructor promises never suppress owned-element Drop requirements.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn may_dangle_matches_rustc() {
     let root = std::env::temp_dir().join(format!("flux-may-dangle-{}", std::process::id()));
@@ -90,6 +93,9 @@ fn may_dangle_matches_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = std::process::Command::new("rustc")
@@ -159,6 +165,9 @@ fn internal_lifetime_and_reordered_parameter_promises() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let source = format!("{declaration}fn main(){{{body}}}");
         let (_, _, mut hir) = flux_hir::lower_text(root.join(format!("{name}.rs")), &source);
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);

@@ -88,6 +88,9 @@ fn const_closure_contexts_match_rustc() {
             false,
         ),
     ] {
+        if !support::cases::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, format!("{source}\nfn main(){{}}")).unwrap();
         let rustc = Command::new("rustc")

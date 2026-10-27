@@ -1,5 +1,8 @@
 //! Real core guard types must keep the parent and each dereference borrowed.
 //! Invalid Rust is checked with rustc metadata only, never executed.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::path::Path;
 use std::process::Command;
 
@@ -72,6 +75,9 @@ fn guard_borrow_boundaries_match_rustc() {
             "cannot borrow `guard` as mutable because it is also borrowed as immutable",
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         let rustc = Command::new("rustc")
             .args(["--edition=2024", "--emit=metadata"])

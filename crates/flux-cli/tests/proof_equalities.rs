@@ -1,4 +1,7 @@
 //! Compile-only oracles: contradictory assumptions must not pick a wrong output.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::path::Path;
 use std::process::Command;
 
@@ -84,6 +87,9 @@ fn projection_proof_equalities_match_rustc() {
     let dir = std::env::temp_dir().join(format!("flux-proof-equalities-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, source, accepts) in cases {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let file = dir.join(format!("{name}.rs"));
         std::fs::write(&file, &source).unwrap();
         let rustc = Command::new("rustc")

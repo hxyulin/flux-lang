@@ -1,4 +1,7 @@
 //! Structural DST wrappers retain their tail metadata and allocation.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -201,6 +204,9 @@ fn dst_wrapper_acceptance_matches_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let source = dir.join(format!("{name}.rs"));
         std::fs::write(&source, format!("{code}\nfn main(){{}}")).unwrap();
         let output = Command::new("rustc")
@@ -241,6 +247,9 @@ fn wrapped_trait_objects_fail_explicitly() {
             "struct W<T:?Sized>(T);fn f(_: &W<dyn std::fmt::Debug>){}",
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let source = dir.join(format!("{name}.rs"));
         std::fs::write(&source, format!("{code}\nfn main(){{}}")).unwrap();
         let rustc = Command::new("rustc")

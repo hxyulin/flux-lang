@@ -1,4 +1,7 @@
 //! Compile-only rustc oracles: rejected programs must never be executed.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -124,6 +127,9 @@ fn promotion_boundaries_match_rustc() {
         ),
     ];
     for (name, source, rustc_accepts, flux_accepts) in cases {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let file = dir.join(format!("{name}.rs"));
         std::fs::write(&file, format!("{source}\nfn main() {{}}\n")).unwrap();
         let rustc = Command::new("rustc")

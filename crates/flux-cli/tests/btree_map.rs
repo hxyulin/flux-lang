@@ -1,5 +1,8 @@
 //! Bounded ordered-map contracts. Invalid probes are compiled, never executed.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::path::Path;
 use std::process::Command;
 
@@ -87,6 +90,9 @@ struct NoTraits;
         ("source", wrapped.as_str(), false),
         ("flux", driver.as_str(), true),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         for optimized in [false, true] {

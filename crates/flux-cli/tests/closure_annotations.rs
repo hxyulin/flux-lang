@@ -106,6 +106,9 @@ fn named_closure_parameters_match_rustc() {
             false,
         ),
     ] {
+        if !support::cases::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let expected = bounded(
@@ -155,6 +158,9 @@ fn callable_alias_regions_keep_an_explicit_metadata_boundary() {
             "type Input<'a>=(&'a str,&'a str);fn apply(_: &dyn Fn(Input<'_>)){}fn main(){}",
         ),
     ] {
+        if !support::cases::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let expected = bounded(

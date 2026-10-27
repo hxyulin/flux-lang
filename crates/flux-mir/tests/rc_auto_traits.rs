@@ -1,4 +1,7 @@
 //! Rc's raw allocation owner must never acquire Send or Sync structurally.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn rc_auto_traits_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-rc-auto-traits-{}", std::process::id()));
@@ -45,6 +48,9 @@ fn rc_auto_traits_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = std::process::Command::new("rustc")

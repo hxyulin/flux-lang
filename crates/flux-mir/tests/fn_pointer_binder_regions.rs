@@ -1,4 +1,7 @@
 //! Reification must not erase signature-bound lifetimes before MIR sees them.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 const BOUNDARY: &str =
@@ -123,11 +126,17 @@ fn pointer_coercion_paths_match_rustc() {
             Some(BOUNDARY),
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         cases.push((name.into(), source.into(), valid, diagnostic));
     }
     let dir = std::env::temp_dir().join(format!("flux-pointer-binder-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, source, rust_valid, diagnostic) in cases {
+        if !case_filter::selected(&name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, &source).unwrap();
         let rustc = Command::new("rustc")

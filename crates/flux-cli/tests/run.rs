@@ -8,6 +8,9 @@
 //! Executables can only be linked for arm64 macOS so far; elsewhere the
 //! test reports that it was skipped.
 
+#[path = "../../../tests/support/cases.rs"]
+mod cases;
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -145,6 +148,10 @@ fn programs_match_rustc() {
         .collect();
     programs.sort();
     assert!(!programs.is_empty());
+    programs.retain(|path| cases::path_selected(path));
+    if programs.is_empty() {
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("flux-run-tests-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -154,6 +161,9 @@ fn programs_match_rustc() {
 /// A small executable milestone toward compiling flux with itself.
 #[test]
 fn compiler_modules_match_rustc() {
+    if !cases::selected("compiler_modules") {
+        return;
+    }
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         eprintln!("skipped: flux links executables only on arm64 macOS so far");
         return;
@@ -207,18 +217,23 @@ fn trait_required_lifetime_matches_rustc() {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    compare_programs(
-        &root,
-        &dir,
-        &[root.join("tests/run/trait_required_lifetime.rs")],
-    );
+    // The broad sweep owns this ordinary fixture in a complete runner plan.
+    if std::env::var_os("FLUX_TEST_NATIVE_SWEEP").is_none()
+        && cases::selected("trait_required_lifetime")
+    {
+        compare_programs(
+            &root,
+            &dir,
+            &[root.join("tests/run/trait_required_lifetime.rs")],
+        );
+    }
 }
 
 fn compare_programs(root: &Path, dir: &Path, programs: &[PathBuf]) {
     // Keep compiler processes bounded while avoiding a serial build of every fixture.
     let workers = std::thread::available_parallelism()
         .map_or(1, usize::from)
-        .min(4)
+        .min(cases::workers())
         .min(programs.len().max(1));
     let failures = std::thread::scope(|scope| {
         let handles: Vec<_> = programs

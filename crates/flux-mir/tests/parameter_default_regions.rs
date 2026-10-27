@@ -1,4 +1,7 @@
 //! Omitted alias defaults retain the declaration's lifetime substitutions.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn default_alias_regions_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-default-regions-{}", std::process::id()));
@@ -75,6 +78,9 @@ fn default_alias_regions_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = std::process::Command::new("rustc")

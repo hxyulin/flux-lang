@@ -39,3 +39,11 @@ fn commands_preserve_output_failure_and_timeout_artifacts() {
     assert_eq!(support::inventory::changed(&files), vec![&source]);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn cases_match_names_and_paths_without_broadening_the_filter() {
+    assert!(support::cases::matches_filter("ok/borrow.rs", "borrow"));
+    assert!(support::cases::matches_filter("owned", "borrow, owned"));
+    assert!(!support::cases::matches_filter("borrow", "owned"));
+    assert!(std::panic::catch_unwind(|| support::cases::matches_filter("x", " ")).is_err());
+}

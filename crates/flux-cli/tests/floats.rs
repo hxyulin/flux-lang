@@ -132,6 +132,9 @@ fn float_acceptance_matches_rustc() {
             false,
         ),
     ] {
+        if !support::cases::selected(name) {
+            continue;
+        }
         let source = dir.join(format!("{name}.rs"));
         std::fs::write(&source, format!("{code}\nfn main(){{}}")).unwrap();
         let rustc = Command::new("rustc")

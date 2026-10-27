@@ -9,6 +9,7 @@ reports are useful contributions.
 
 - Rust stable, with `rustfmt` and `clippy` (selected by `rust-toolchain.toml`).
 - [just](https://github.com/casey/just) for the repository recipes.
+- Python 3.10 or newer for test selection and scheduling (standard library only).
 - [actionlint](https://github.com/rhysd/actionlint) for workflow edits; CI pins 1.7.12.
 
 ```sh
@@ -57,6 +58,114 @@ just parse <file>          # print a syntax tree
 just hir <file>            # print the HIR of a file
 just mir <file>            # type-check a file and print its MIR
 just run <file>            # compile a program with flux and run it
+```
+
+### Fast edit/test loop
+
+```sh
+just test-fast                    # smoke checks across all components
+just test-fast borrowing          # MIR units plus selected valid/error snapshots
+just test-fast syntax             # syntax/sourcegen units, snapshots and AST freshness
+just test-fast codegen            # object generation and two native programs
+just test-changed HEAD --fast     # affected smoke targets
+just test-component flux-mir      # all unit/integration tests in this crate
+just test-component flux-ty --fast # only this crate's smoke targets
+just check                        # complete validation
+```
+
+The fast plan runs unit tests and explicit samples for syntax, name resolution,
+inference, borrowing, object emission and library APIs. On arm64 macOS it also
+runs two end-to-end programs and the Cow/C-string native checks. It excludes
+source-graph audits, scaling tests, large oracle matrices and the exhaustive
+runtime sweep. `just test fast` is an alias for `just test-fast`. Complete validation also runs
+the fast plan to catch stale smoke filters.
+
+The plan prints its exact function and fixture filters. Fast checks fail if a
+configured function or case pattern disappears, rather than passing an empty
+selection. Each test binary has a 30-second deadline, adjustable with `--timeout`.
+Compiling changed crates happens before that deadline; a fresh build can still
+take longer than the tests themselves. Use `--list` to inspect a plan without
+building. Filter overrides require `--target`.
+
+`test-component` selects a Cargo package and does not add workspace dependents.
+Its scope is unit/integration tests; `just check` includes the full downstream
+suite and doctests. A fast changed-file plan intersects smoke and affected-target
+selection. If changes select only an integration target outside the smoke plan,
+it fails with instructions to omit `--fast` and run that target directly.
+
+### Targeted tests
+
+The test runner builds selected targets once, then runs their binaries with a shared
+worker budget. Start with a group or a specific binary:
+
+```sh
+just test syntax
+just test borrowing --target projected_pointer_regions
+just test codegen --target native_fixtures --filter cow_as_ref
+just test inference --target ty --case c_str
+just test codegen --target run --case c_strings
+just test codegen --target proof_compatibility --case signatures/ --filter signature_tautology
+just test-changed HEAD --list
+just test-changed main
+just test all                 # all default tests, graph audits and doctests
+```
+
+Groups are `syntax` (syntax and source generation), `names` (HIR), `inference`
+(types), `borrowing` (MIR), `codegen` (codegen and ordinary CLI tests), `library`
+(ordinary CLI tests), `graphs` (large source-graph audits), and `units` (library
+and binary unit tests). `all` includes every group. Named groups are focused
+checks, not a claim that downstream behavior is unaffected.
+
+`--changed BASE` includes tracked edits, deletions and untracked files. Production
+edits select the owning crate and all workspace dependents, including graph tests.
+An independent integration-test edit selects that binary. Shared test fixtures
+select the crate and its dependents; runtime fixture edits select CLI tests. Embedded-library,
+configuration, runner and unknown paths select the entire suite. Explicit group,
+`--package` and `--target` restrictions intersect this selection. Review `--list`
+before narrowing it further. No changed paths means no tests run.
+
+`--filter` selects Rust test functions. `--case` selects comma-separated case-name
+substrings inside snapshot fixtures, ordinary native fixtures and named oracle
+loops. It requires `--target`; unrelated standalone test functions in that binary
+still run unless excluded with `--filter`. The runner fails if no case matches.
+Direct Cargo commands can use `FLUX_TEST_CASE=c_str cargo test -p flux-ty --test ty
+-- --nocapture`; the runner additionally checks for unmatched filters. Corpus and
+source-graph inventories deliberately remain complete.
+
+Set `--jobs N` to bound concurrently running ordinary test binaries. Their test
+functions run serially. Source-graph audits, scaling tests, the runtime sweep and
+proof compatibility run alone; the latter two use the budget internally. Outside fast mode, all
+binaries have a 30-minute outer deadline, adjustable with `--timeout SECONDS`, in
+addition to their existing command deadlines. Interrupting the runner stops active
+test process groups and prevents queued tests from starting. Logs, individual timings and
+`results.json` live under `out/test-runs/`. Local builds may pass `--cargo mbx`.
+
+A complete plan that includes the unfiltered runtime sweep assigns ordinary
+`support::oracle` native comparisons to that sweep. Focused suites still execute
+their additional IR and rejection checks. Direct Cargo runs and filtered runner
+plans perform their own native comparisons. Environment-dependent fixtures,
+foreign-library tests and graph consumers keep their separate comparisons.
+
+Thirteen ordinary native wrappers now share `native_fixtures` instead of separate
+binaries. For example, use `cargo test -p flux-cli --test native_fixtures
+projected_pointer_regions`. This keeps fixture names selectable while reducing
+repeated linking. Proof compatibility runs semantic checking and MIR building
+through the APIs once per case, with a separate CLI error-reporting smoke test.
+
+### Test compilation profile
+
+`cargo test` uses optimization level 1 for the compiler and test harnesses.
+Debug information, debug assertions and overflow checks remain enabled. The
+ordinary `cargo build` development profile is unchanged. Flux-generated programs
+still run through both unoptimized and optimized codegen modes.
+
+Changing optimization levels rebuilds artifacts that are not already cached.
+Later builds reuse them. To compare or debug without optimization, override only
+the optimization level:
+
+```sh
+CARGO_PROFILE_TEST_OPT_LEVEL=0 cargo test -p flux-mir --test mir
+CARGO_PROFILE_TEST_OPT_LEVEL=0 python3 scripts/test.py borrowing --target mir
 ```
 
 Every parser change needs a fixture. Put valid Rust in

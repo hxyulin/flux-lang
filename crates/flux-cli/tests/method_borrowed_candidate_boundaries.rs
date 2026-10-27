@@ -1,4 +1,7 @@
 //! Same-receiver candidates must retain ambiguity, move and borrow checks.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::path::Path;
 use std::process::Command;
 
@@ -59,6 +62,9 @@ fn borrowed_candidate_oracles() {
             Some("Copy"),
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let file = dir.join(format!("{name}.rs"));
         std::fs::write(&file, source).unwrap();
         let rustc = Command::new("rustc")

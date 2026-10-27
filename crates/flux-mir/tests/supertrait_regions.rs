@@ -1,5 +1,8 @@
 //! Declaration-time supertrait checking, compared with rustc. Invalid
 //! programs are only checked; their escape functions are never executed.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -149,6 +152,9 @@ fn impl_supertrait_regions_match_rustc() {
     let dir = std::env::temp_dir().join(format!("flux-supertrait-regions-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, source, accepts) in cases {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let rustc = Command::new("rustc")

@@ -1,4 +1,7 @@
 //! Written type arguments must constrain regions, even for unused call results.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 fn check(source: &str) -> (Vec<String>, Vec<String>) {
@@ -167,6 +170,9 @@ fn body_type_arguments_match_rustc() {
     let dir = std::env::temp_dir().join(format!("flux-body-type-args-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, body, accepted) in cases {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let source = format!(
             "struct Expr<'a> {{ value: &'a i32 }}\nstruct Nested<T> {{ value: T }}\ntype Alias<'a> = Nested<Expr<'a>>;\nfn id<T>(x: T) -> T {{ x }}\n{body}\nfn main() {{}}\n"
         );

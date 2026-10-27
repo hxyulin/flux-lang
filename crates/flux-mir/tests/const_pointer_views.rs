@@ -1,4 +1,7 @@
 //! Typed constant-pointer reads retain allocation layout and frame lifetimes.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -301,6 +304,9 @@ fn const_pointer_reads_match_rustc() {
             r#"const X:Box<u8>=unsafe{*(&(&1u8 as *const u8) as *const *const u8 as *const Box<u8>)};fn main(){let _=X;}"#,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, text).unwrap();
         let rustc = Command::new("rustc")

@@ -1,4 +1,7 @@
 //! Compile-only oracles; rejected Rust is never executed.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -83,6 +86,9 @@ fn reference_conversions_preserve_boundaries() {
         ),
     ];
     for (name, source, accepts) in cases {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let file = dir.join(format!("{name}.rs"));
         std::fs::write(
             &file,

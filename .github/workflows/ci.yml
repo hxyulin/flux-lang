@@ -25,7 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p flux-cli --test run
+      - run: python3 scripts/test.py fast
+      - run: python3 scripts/test.py --package flux-cli --target run
 
   miri:
     runs-on: ubuntu-latest

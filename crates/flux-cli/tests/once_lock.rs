@@ -77,6 +77,9 @@ fn compile_only_contracts() {
             true,
         ),
     ] {
+        if !support::cases::selected(name) {
+            continue;
+        }
         let file = dir.join(format!("{name}.rs"));
         std::fs::write(
             &file,

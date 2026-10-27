@@ -1,4 +1,7 @@
 //! Eight-byte NEON and bit reinterpretation match the native Rust implementation.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -271,6 +274,9 @@ fn transmute_and_neon_contexts_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let source = dir.join(format!("{name}.rs"));
         std::fs::write(&source, format!("{declaration}\nfn main(){{{body}}}")).unwrap();
         // Lane constants are diagnosed when instantiated, so ask rustc for an executable.

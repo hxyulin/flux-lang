@@ -6,3 +6,6 @@
 pub mod inventory;
 pub mod oracle;
 pub mod process;
+
+#[path = "../../../../tests/support/cases.rs"]
+pub mod cases;

@@ -1,4 +1,7 @@
 //! Check variance metadata directly, including cached core signatures.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use flux_ty::regions::Variance::{Covariant, Invariant};
 
 #[test]
@@ -36,6 +39,9 @@ fn cell_seeds_propagate_without_changing_guards_or_owners() {
         ("Marker", vec![Invariant]),
         ("Plain", vec![Covariant]),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let (id, _) = hir
             .items
             .structs

@@ -1,4 +1,7 @@
 //! Explicit signature bounds are not proof of a universal callback binder.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 const BOUNDARY: &str =
@@ -86,6 +89,9 @@ fn free_early_callback_binders_match_rustc() {
             "fn get<'a>(_:i32,_:&'a i32) where &'a i32:Copy{} fn need<T,F:Fn(T,&i32)>(_:T,_:F){} fn main(){need(0,get);}",
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         cases.push((name.into(), source.into(), false, true));
     }
     for (name, source) in [
@@ -110,6 +116,9 @@ fn free_early_callback_binders_match_rustc() {
             "fn get<'a>(x:&'a i32)->Option<&'a i32> where &'a i32:Copy{Some(x)} fn main(){let x=17;assert_eq!(*[&x].into_iter().find_map(get).unwrap(),17);}",
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         cases.push((name.into(), source.into(), true, false));
     }
     for (name, source) in [
@@ -138,6 +147,9 @@ fn free_early_callback_binders_match_rustc() {
             "fn get<'a:'a>(x:&'a i32)->i32{*x} fn need<T,F:Fn(T)->i32>(x:T,f:F)->i32{f(x)} fn main(){let x=17;assert_eq!(need(&x,get),17);}",
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         cases.push((name.into(), source.into(), true, false));
     }
     // CallbackBinder retains the conservative explicit-outlives boundary,
@@ -152,6 +164,9 @@ fn free_early_callback_binders_match_rustc() {
             "fn get<'a,T:'static>(x:&'a T)->&'a T{x} fn need<F:Fn(&i32)->&i32>(_:F){} fn main(){need(get);}",
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         cases.push((name.into(), source.into(), true, true));
     }
     // A fixed Param slot must not hide a second, independently bound input.
@@ -159,6 +174,9 @@ fn free_early_callback_binders_match_rustc() {
     let dir = std::env::temp_dir().join(format!("flux-free-early-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, source, rust_valid, rejects) in cases {
+        if !case_filter::selected(&name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, &source).unwrap();
         let rustc = Command::new("rustc")

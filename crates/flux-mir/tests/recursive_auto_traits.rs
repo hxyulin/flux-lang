@@ -1,4 +1,7 @@
 //! Only complete Send/Sync cycles are coinductive; every leaf still holds.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn recursive_auto_traits_match_rustc() {
     let root =
@@ -46,6 +49,9 @@ fn recursive_auto_traits_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = std::process::Command::new("rustc")

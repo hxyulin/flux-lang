@@ -1,5 +1,8 @@
 //! C aggregate parameters, return values and callbacks use the native ABI.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 fn success(output: &std::process::Output) {
     assert!(
@@ -92,6 +95,9 @@ fn unsupported_c_shapes_fail_before_machine_code() {
             "fn main(){let f:unsafe extern \"C\" fn(*const [u8])->u64=unsafe{std::mem::transmute(4096usize)};let s:&[u8]=&[];let _=unsafe{f(s as *const [u8])};}",
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let (_, _, hir) = flux_hir::lower_text("main.rs", source);
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
         let typed = flux_mir::check_file(&hir);

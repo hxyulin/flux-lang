@@ -150,6 +150,9 @@ fn callback_abi_and_tls_lifetimes_match_rustc() {
             true,
         ),
     ] {
+        if !support::cases::selected(name) {
+            continue;
+        }
         let path = directory.join(format!("{name}.rs"));
         std::fs::write(&path, format!("{body}\nfn main(){{}}\n")).unwrap();
         let rustc = bounded(

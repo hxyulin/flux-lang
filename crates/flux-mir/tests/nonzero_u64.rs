@@ -1,4 +1,7 @@
 //! NonZeroU64 preserves scalar validity during constant evaluation.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn nonzero_u64_constants_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-nonzero-u64-{}", std::process::id()));
@@ -30,6 +33,9 @@ fn nonzero_u64_constants_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let source = format!("{expression} fn main() {{ let _ = X; }}");
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, &source).unwrap();

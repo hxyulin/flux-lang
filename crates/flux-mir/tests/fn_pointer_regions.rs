@@ -1,4 +1,7 @@
 //! Function-pointer binders retain input/output lifetime links across storage.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod cases;
 #[test]
 fn function_pointer_regions_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-fn-pointer-regions-{}", std::process::id()));
@@ -405,6 +408,9 @@ fn function_pointer_regions_match_rustc() {
             false,
         ),
     ] {
+        if !cases::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = std::process::Command::new("rustc")

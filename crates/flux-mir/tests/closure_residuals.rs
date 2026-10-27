@@ -1,4 +1,7 @@
 //! Residual checks wait for an inferred closure return, preserving conversions.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn inferred_closure_residuals_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-closure-residuals-{}", std::process::id()));
@@ -35,6 +38,9 @@ fn inferred_closure_residuals_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = std::process::Command::new("rustc")

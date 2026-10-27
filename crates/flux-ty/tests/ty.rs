@@ -9,6 +9,10 @@
 #[path = "../../flux-syntax/tests/support/corpus.rs"]
 mod corpus;
 
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "fixture binaries use only case selection")]
+mod cases;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -37,6 +41,9 @@ fn fixtures(dir: &str) -> Vec<PathBuf> {
     files.sort();
     assert!(!files.is_empty(), "no fixtures in {}", dir.display());
     files
+        .into_iter()
+        .filter(|path| cases::path_selected(path))
+        .collect()
 }
 
 fn check_dir(name: &str, expect_errors: bool) {

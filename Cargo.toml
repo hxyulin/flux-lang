@@ -44,3 +44,9 @@ unsafe_op_in_unsafe_fn = "warn"
 [workspace.lints.clippy]
 dbg_macro = "warn"
 undocumented_unsafe_blocks = "deny"
+
+# Speed up compiler-heavy tests without disabling development-time checks.
+[profile.test]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true

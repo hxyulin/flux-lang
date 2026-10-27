@@ -1,4 +1,7 @@
 //! Only omitted expression-path arguments infer; explicit arity stays checked.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn omitted_alias_arguments_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-alias-inference-{}", std::process::id()));
@@ -50,6 +53,9 @@ fn omitted_alias_arguments_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = std::process::Command::new("rustc")

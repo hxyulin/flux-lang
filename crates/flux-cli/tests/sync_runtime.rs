@@ -223,6 +223,9 @@ fn ownership_and_marker_contracts_match_rustc() {
             false,
         ),
     ] {
+        if !support::cases::selected(name) {
+            continue;
+        }
         let file = dir.join(format!("{name}.rs"));
         std::fs::write(&file, format!("use std::sync::{{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, LazyLock}}; use std::cell::Cell; fn send<T: Send>() {{}} fn sync<T: Sync>() {{}}\n{body}\nfn main() {{}}\n")).unwrap();
         for compiler in ["rustc", "flux"] {

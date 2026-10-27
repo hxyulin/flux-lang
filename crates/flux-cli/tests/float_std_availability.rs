@@ -1,4 +1,7 @@
 //! Std float methods follow loaded crate metadata, not import spelling.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use flux_hir::{SourceCrate, SourceDb};
 use flux_intern::Symbol;
 use std::path::Path;
@@ -148,6 +151,9 @@ fn loaded_std_graph_matches_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let code = format!(
             "#![no_std]\n{decl}\npub fn f(x:f64)->f64{{let result=x.sqrt()+x.floor();{body}result}}"
         );

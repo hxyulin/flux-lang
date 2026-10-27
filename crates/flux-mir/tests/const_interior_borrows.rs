@@ -1,4 +1,7 @@
 //! Escaping interior-mutable temporary borrows reject without losing static identity.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -288,6 +291,9 @@ fn const_interior_borrows_match_rustc() {
 "#,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, text).unwrap();
         let rustc = Command::new("rustc")

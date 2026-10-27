@@ -65,6 +65,9 @@ fn scope_lifetime_and_send_contracts_match_rustc() {
             false,
         ),
     ] {
+        if !support::cases::selected(name) {
+            continue;
+        }
         let path = directory.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let reference = bounded(

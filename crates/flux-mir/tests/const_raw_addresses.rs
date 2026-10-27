@@ -1,4 +1,7 @@
 //! Thin raw constant addresses retain pointer restrictions and validity checks.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -62,6 +65,9 @@ fn const_addresses_match_rustc() {
             r#"const X:&u8=unsafe{&*(37usize as *const u8)}; fn main(){let _=X;}"#,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, text).unwrap();
         let rustc = Command::new("rustc")

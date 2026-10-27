@@ -1,5 +1,8 @@
 //! Selected supertrait impl equalities must hold even without region slots.
 //! Invalid programs are compiled only, never executed.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -57,6 +60,9 @@ fn selected_impl_projection_types_match_rustc() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, source, accepts) in cases {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let rustc = Command::new("rustc")

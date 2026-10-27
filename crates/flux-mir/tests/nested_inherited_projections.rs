@@ -1,4 +1,7 @@
 //! Inherited associated projections retain the declaring supertrait and generic substitutions.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn nested_inherited_projections_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-nested-inherited-{}", std::process::id()));
@@ -100,6 +103,9 @@ fn nested_inherited_projections_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = std::process::Command::new("rustc")

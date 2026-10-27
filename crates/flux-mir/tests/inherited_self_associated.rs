@@ -1,4 +1,7 @@
 //! Resolve inherited associated names without assuming impl validity.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -112,6 +115,9 @@ fn inherited_self_names_match_rustc() {
             r#"trait Base{type Item;} trait Child:Base{fn get(&self)->Self::Item;} struct S<'a,'b>(&'a u8,&'b u8); impl<'a> Base for S<'a,'a>{type Item=&'a u8;} impl Child for S<'_,'_>{fn get(&self)->Self::Item{self.0}}"#,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let text = format!("{declaration} fn main() {{}}");
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, &text).unwrap();
@@ -174,6 +180,9 @@ fn unrepresented_inherited_region_maps_reject_explicitly() {
         std::env::temp_dir().join(format!("flux-inherited-boundaries-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, declaration, message) in declarations {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let text = format!("{declaration} fn main() {{}}");
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, &text).unwrap();

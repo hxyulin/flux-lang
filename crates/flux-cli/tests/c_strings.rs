@@ -52,6 +52,9 @@ fn c_string_borrows_and_pointer_metadata_match_rustc() {
             false,
         ),
     ] {
+        if !support::cases::selected(name) {
+            continue;
+        }
         let input = directory.join(format!("{name}.rs"));
         std::fs::write(&input, source).unwrap();
         let reference = support::process::run(

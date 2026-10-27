@@ -1,4 +1,7 @@
 //! Normalize projections before splitting region rows, preserving callable variance.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -71,6 +74,9 @@ fn projected_pointer_regions_match_rustc() {
             true,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let source = format!(
             "trait Next {{ type Item; fn next(&mut self)->{container}; }}\n\
              struct Source<'a,'b> {{ left:&'a u32, p:{pointer}, right:&'b u32 }}\n\
@@ -186,6 +192,9 @@ fn projected_iterator_callback_outputs_preserve_input_regions() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let rustc = std::process::Command::new("rustc")

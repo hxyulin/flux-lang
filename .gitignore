@@ -1,3 +1,6 @@
 target/
 out/
 .cargo/config.toml
+
+# Python test runner bytecode.
+__pycache__/

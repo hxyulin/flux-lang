@@ -1,4 +1,7 @@
 //! Field assignment through an implicitly dereferenced returned reference.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn returned_reference_fields_match_rustc() {
     let root = std::env::temp_dir().join(format!(
@@ -38,6 +41,9 @@ fn returned_reference_fields_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let oracle = std::process::Command::new("rustc")

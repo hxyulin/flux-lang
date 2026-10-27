@@ -1,4 +1,7 @@
 //! Impl headers keep projection inputs and the caller's rigid types distinct.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 #[test]
 fn array_projection_headers_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-array-projection-{}", std::process::id()));
@@ -51,6 +54,9 @@ fn array_projection_headers_match_rustc() {
             false,
         ),
     ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let source = format!("{declarations} {body} fn main(){{}}");
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, &source).unwrap();

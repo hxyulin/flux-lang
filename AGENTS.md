@@ -68,7 +68,22 @@ flux is an experimental compiler for a subset of Rust (edition 2024). Use
 
 Run checks appropriate to the change before finishing:
 
-- `just check`: format, clippy, tests, and `flux check` over the workspace.
+- Prefer the fast/component runner during development. Start with
+  `just test-fast <component>` (`syntax`, `names`, `inference`, `borrowing`,
+  `codegen`, or `library`), then run the exact regression target or case:
+  `just test borrowing --target projected_pointer_regions --case containers`.
+  Use `just test-component flux-mir` for the complete owning crate, or
+  `just test-changed HEAD --list` to inspect affected downstream coverage.
+- Smoke checks do not replace regression coverage. Run the relevant native
+  comparison for semantic/codegen changes and the specific source graph when
+  claiming a self-hosting milestone. Do not repeatedly run all graph audits
+  while editing unrelated components.
+- Run `just check` once after the implementation settles: format, clippy,
+  runner policy checks, smoke tests, the complete suite, and workspace
+  `flux check`. Report which scope passed; never call a smoke pass full validation.
+- Scripts and documentation use plain Cargo commands. When local `mbx` is
+  installed, pass `--cargo mbx` to `scripts/test.py` for executed runner commands,
+  and run direct Cargo commands through `mbx`.
 - Parser changes: add or extend a fixture in `tests/data/parser/{ok,err}`,
   run `just snapshots`, and read the `.rast` diff to confirm the new tree.
   `cargo test -p flux-sourcegen` then checks the tree against

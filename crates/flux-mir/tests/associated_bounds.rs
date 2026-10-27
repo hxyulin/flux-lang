@@ -1,5 +1,8 @@
 //! Associated bounds must hold under universal impl header assumptions.
 //! Invalid sources are compiled for diagnostics only and never executed.
+#[path = "../../../tests/support/cases.rs"]
+#[allow(dead_code, reason = "oracle uses case selection only")]
+mod case_filter;
 use std::process::Command;
 
 #[test]
@@ -89,6 +92,9 @@ fn associated_bounds_match_rustc() {
     let dir = std::env::temp_dir().join(format!("flux-associated-bounds-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, source, accepts) in cases {
+        if !case_filter::selected(name) {
+            continue;
+        }
         let path = dir.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
         let rustc = Command::new("rustc")
