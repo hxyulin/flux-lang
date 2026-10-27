@@ -49,7 +49,12 @@ fn unchanged_keel_asm_matches_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     let mut worker = Command::new(std::env::current_exe().unwrap());
     worker
-        .args(["--exact", "unchanged_keel_asm_matches_rustc", "--nocapture"])
+        .args([
+            "--ignored",
+            "--exact",
+            "unchanged_keel_asm_matches_rustc",
+            "--nocapture",
+        ])
         .env("FLUX_KEEL_ASM_ROOT", &root);
     let output = bounded(&mut worker, &root, "audit", 300);
     // Also compare after a worker panic, abort, or timeout. A killed worker
@@ -57,7 +62,7 @@ fn unchanged_keel_asm_matches_rustc() {
     let inventory_path = root.join("source-inventory.json");
     if inventory_path.exists() {
         let originals: Vec<(PathBuf, Vec<u8>)> =
-            serde_json::from_slice(&std::fs::read(inventory_path).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(&inventory_path).unwrap()).unwrap();
         let changed: Vec<_> = support::inventory::changed(&originals);
         std::fs::write(
             root.join("parent-source-integrity.json"),
@@ -70,6 +75,11 @@ fn unchanged_keel_asm_matches_rustc() {
         );
     }
     success(&output, &root, "audit");
+    assert!(
+        inventory_path.is_file(),
+        "audit worker did not produce a source inventory; see {}",
+        root.display()
+    );
 }
 
 fn keel_asm_worker() {

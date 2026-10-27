@@ -628,7 +628,7 @@ pub(super) fn extend_signatures(
             }
             ty
         };
-        let params = function
+        let params: Box<[Ty]> = function
             .params
             .iter()
             .map(|p| {
@@ -636,6 +636,22 @@ pub(super) fn extend_signatures(
                 sized(ty, p.range, &mut reported)
             })
             .collect();
+        if function.has_self
+            && let (Some(&receiver), Some(self_ty)) = (params.first(), scope.self_ty)
+        {
+            let receiver = traits::normalize(items, &sigs, &[], receiver);
+            let valid = receiver == self_ty
+                || matches!(receiver.kind(), TyKind::Ref(_, pointee) if pointee == self_ty)
+                || super::box_pointee(receiver) == Some(self_ty);
+            if !receiver.has_error() && !valid {
+                let mut diagnostic = Diagnostic::new(
+                    function.params[0].range,
+                    "this receiver type is not supported yet; expected Self, &Self, &mut Self or Box<Self>",
+                );
+                diagnostic.file = function.loc.file;
+                reported.push(diagnostic);
+            }
+        }
         let ret = resolve(
             items,
             function.loc,

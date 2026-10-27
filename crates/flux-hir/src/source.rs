@@ -107,6 +107,7 @@ const STD_FILES: &[(&str, &str)] = &[
     ("path.rs", include_str!("../../../library/std/src/path.rs")),
     ("fs.rs", include_str!("../../../library/std/src/fs.rs")),
     ("io.rs", include_str!("../../../library/std/src/io.rs")),
+    ("time.rs", include_str!("../../../library/std/src/time.rs")),
     (
         "collections.rs",
         include_str!("../../../library/std/src/collections.rs"),

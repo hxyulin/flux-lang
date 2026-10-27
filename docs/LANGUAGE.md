@@ -65,7 +65,8 @@ reported as "not supported yet":
   written too (other `repr` hints are not supported yet); inherent `impl`
   blocks for them, with
   associated functions, methods (`self`, `mut self`, `&self`,
-  `&mut self`) and constants; traits with required and provided methods
+  `&mut self`, and explicit `self: Self`, `self: &Self`, `self: &mut Self`
+  or `self: Box<Self>`) and constants; traits with required and provided methods
   and associated functions, associated types (`type Out: Bound;`),
   generic parameters (with defaults, `trait Add<Rhs = Self>`) and
   supertraits, and `impl` blocks of them for any type (`impl Tr for S`,
@@ -92,7 +93,9 @@ reported as "not supported yet":
   items inside function bodies and constants' values, scoped to their
   block; modules, inline (`mod m { }`) and in
   files (`mod m;` as `m.rs` or `m/mod.rs`); `use` declarations, with
-  groups, renames, globs, `self`, `super` and `crate`; and
+  groups, renames, globs, `self`, `super` and `crate`. Anonymous `as _` imports
+  resolve and check privacy without introducing a name; trait imports still
+  contribute methods to their scope and public glob reexports; and
   `unsafe extern "C"` blocks of function declarations, including
   C-variadic ones (`fn printf(format: *const i8, ...) -> i32;`). Items
   may be `pub`, `pub(crate)`, `pub(super)`, `pub(self)` or
@@ -916,6 +919,10 @@ of an `Option<&T>` (`const` where rustc's are, except `take` and
 `core` is reported as not supported yet. A bounded `std` facade
 reexports implemented `core` and `alloc` APIs; see
 [library/std/README.md](../library/std/README.md) for its scope.
+The I/O facade preserves platform error categories, but does not yet gate the
+Rust-unstable `ErrorKind` names `FilesystemLoop`, `InProgress`,
+`TooManyOpenFiles`, `InputOutputError` and `Uncategorized`. Naming those variants
+is a known stable-Rust compatibility exception.
 Source library roots may use `#![no_std]`: they receive core's prelude,
 without implicit std or alloc types or printing macros. Explicit `extern
 crate alloc` and `extern crate std` opt into those libraries. Freestanding
@@ -1064,6 +1071,12 @@ and `Fn` otherwise, and `Copy` if what it captures is. The borrow
 checker treats a closure as holding the borrows of what it captures,
 for as long as it, or any value it is moved into (an adapter like
 `Map`, a struct, a call's result), may be used, with rustc's messages.
+Implicit shared-reference argument capture is less precise in some cases:
+a closure reading `self.shared` can retain a borrow of that reference field
+instead of copying its shared reference. Passing that closure into a method
+that mutably borrows `self` can therefore reject valid Rust. Explicitly copying
+the shared reference to a local before constructing the closure avoids that
+overlap. This capture-precision case remains unsupported.
 A closure implements other traits through blanket `impl` blocks, as
 any type does (`impl<F: FnMut(char) -> bool> Pattern for F`).
 Safe function items and pointers implement the `Fn`-family traits too,

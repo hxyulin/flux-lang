@@ -4821,7 +4821,7 @@ impl Ctx<'_> {
         traits: bool,
         into_iter_edition: Option<flux_syntax::Edition>,
     ) -> Result<Option<(FunctionId, Option<crate::GenericArgs>, Ty, bool)>, ()> {
-        let items = self.items;
+        let (items, sigs) = (self.items, self.sigs);
         // A candidate is the actual receiver type, not just impl Self:
         // `self` on `&T` and `&self` on `T` compete at the same step.
         // Keep impl Self separate from the receiver adjustment: a
@@ -4842,7 +4842,9 @@ impl Ctx<'_> {
             };
             let functions = inherent.iter().filter_map(|&item| match item {
                 flux_hir::AssocItem::Function(f)
-                    if items.functions[f].has_self && self_mode(items, f) == mode =>
+                    if items.functions[f].has_self
+                        && self_mode(sigs, f) == mode
+                        && !boxed_self(items, sigs, f) =>
                 {
                     Some(f)
                 }
@@ -4862,6 +4864,42 @@ impl Ctx<'_> {
         if inherent_found.is_some() {
             return Ok(inherent_found);
         }
+        // A Box<Self> receiver belongs to the pointee's impl, while the
+        // argument consumes the original box without dereferencing it.
+        if mode.is_none()
+            && let Some(pointee) = crate::box_pointee(ty)
+        {
+            let pointee = self.shallow(pointee);
+            let boxed = |f: FunctionId| items.functions[f].has_self && boxed_self(items, sigs, f);
+            let functions = impl_target(items, pointee)
+                .and_then(|target| items.assoc.get(&(target, name)))
+                .into_iter()
+                .flatten()
+                .filter_map(|&item| match item {
+                    flux_hir::AssocItem::Function(f) if boxed(f) => Some(f),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            match self.select(functions.into_iter(), Some(pointee)) {
+                Ok(function) => return Ok(Some((function, None, pointee, false))),
+                Err(2..) => return Err(()),
+                Err(_) => {}
+            }
+            if traits {
+                let functions: Vec<_> = self
+                    .trait_items(pointee, name, true)
+                    .into_iter()
+                    .filter(|&(f, _)| boxed(f))
+                    .collect();
+                match functions.as_slice() {
+                    [(f, args)] => {
+                        return Ok(Some((*f, args.map(|args| args.args), pointee, false)));
+                    }
+                    [] => {}
+                    _ => return Err(()),
+                }
+            }
+        }
         if !traits {
             return Ok(None);
         }
@@ -4870,7 +4908,7 @@ impl Ctx<'_> {
             found.extend(
                 self.trait_items(target, name, true)
                     .into_iter()
-                    .filter(|&(f, _)| self_mode(items, f) == mode)
+                    .filter(|&(f, _)| self_mode(sigs, f) == mode && !boxed_self(items, sigs, f))
                     .map(|(f, t)| (f, t, target, through)),
             );
             // An autoref also admits a by-value method whose Self is
@@ -4882,7 +4920,9 @@ impl Ctx<'_> {
                 found.extend(
                     self.trait_items(borrowed, name, true)
                         .into_iter()
-                        .filter(|&(f, _)| self_mode(items, f).is_none())
+                        .filter(|&(f, _)| {
+                            self_mode(sigs, f).is_none() && !boxed_self(items, sigs, f)
+                        })
                         .map(|(f, t)| (f, t, borrowed, false)),
                 );
             }
@@ -4905,9 +4945,7 @@ impl Ctx<'_> {
                 }
                 let owner = match items.functions[function].owner {
                     Some(flux_hir::Owner::Trait(trait_)) => Some(trait_),
-                    Some(flux_hir::Owner::Impl(imp)) => {
-                        self.sigs.impl_traits.get(imp).map(|t| t.trait_)
-                    }
+                    Some(flux_hir::Owner::Impl(imp)) => sigs.impl_traits.get(imp).map(|t| t.trait_),
                     None => None,
                 };
                 !owner.is_some_and(|trait_| {
@@ -6951,15 +6989,26 @@ impl Ctx<'_> {
     }
 }
 
-/// `function`'s signature with generic arguments `args`.
+/// Whether the receiver consumes a box around its impl or trait's Self.
+fn boxed_self(items: &ItemTree, sigs: &Signatures, f: FunctionId) -> bool {
+    let self_ty = match items.functions[f].owner {
+        Some(flux_hir::Owner::Impl(imp)) => sigs.impls.get(imp).copied(),
+        Some(flux_hir::Owner::Trait(_)) => Some(Ty::param(0, flux_intern::kw::SelfUpper)),
+        None => None,
+    };
+    let receiver = sigs.fns.get(f).and_then(|sig| sig.params.first()).copied();
+    self_ty.is_some() && receiver.and_then(crate::box_pointee) == self_ty
+}
+
 /// How method `f` takes `self`: by value (`None`) or by reference.
-fn self_mode(items: &ItemTree, f: FunctionId) -> Option<Mutability> {
-    match items.functions[f].params.first().map(|p| &p.ty) {
-        Some(flux_hir::TypeRef::Ref { mutable, .. }) => Some(if *mutable {
-            Mutability::Mut
-        } else {
-            Mutability::Not
-        }),
+fn self_mode(sigs: &Signatures, f: FunctionId) -> Option<Mutability> {
+    match sigs
+        .fns
+        .get(f)
+        .and_then(|sig| sig.params.first())
+        .map(|ty| ty.kind())
+    {
+        Some(TyKind::Ref(mutable, _)) => Some(mutable),
         _ => None,
     }
 }

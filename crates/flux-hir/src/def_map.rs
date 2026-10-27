@@ -82,6 +82,8 @@ pub struct Scope {
     pub types: FxHashMap<Symbol, Binding>,
     pub values: FxHashMap<Symbol, Binding>,
     pub macros: FxHashMap<Symbol, Binding>,
+    /// Traits imported as `_`, including anonymous public glob reexports.
+    pub anonymous_traits: Vec<Binding>,
 }
 
 impl Scope {
@@ -1050,7 +1052,10 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
         let mut still = Vec::new();
         for &i in &pending {
             let u = &items.uses[i];
-            let module_only = matches!(u.kind, UseKind::Module(_));
+            let module_only = matches!(
+                u.kind,
+                UseKind::Module(_) | UseKind::Anonymous { module_only: true }
+            );
             let mut found = Vec::new();
             let mut private = None;
             for ns in [Ns::Types, Ns::Values, Ns::Macros] {
@@ -1079,7 +1084,8 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                     Def::Struct(e) => items.structs[e].is_enum(),
                     _ => false,
                 };
-                if !module_only || module_like {
+                let anonymous_self = matches!(u.kind, UseKind::Anonymous { module_only: true });
+                if !module_only || module_like || (anonymous_self && ns == Ns::Types) {
                     found.push((ns, def));
                 }
             }
@@ -1148,8 +1154,11 @@ fn non_exhaustive_ctor_vis(items: &ItemTree, ns: Ns, def: Def, vis: Visibility) 
 /// Puts what import `index` names in its module's scope.
 fn bind_import(items: &mut ItemTree, index: usize, ns: Ns, def: Def) {
     let u = &items.uses[index];
-    let (UseKind::Named(name) | UseKind::Module(name)) = u.kind else {
-        unreachable!("globs are applied elsewhere")
+    let anonymous = matches!(u.kind, UseKind::Anonymous { .. });
+    let name = match u.kind {
+        UseKind::Named(name) | UseKind::Module(name) => name,
+        UseKind::Anonymous { .. } => *u.path.segments.last().expect("import has a path"),
+        UseKind::Glob => unreachable!("globs are applied elsewhere"),
     };
     let (module, file, range) = (u.module, u.file, u.range);
     // A re-export may not make an item more visible than it is.
@@ -1174,6 +1183,24 @@ fn bind_import(items: &mut ItemTree, index: usize, ns: Ns, def: Def) {
         u.vis
     };
     let vis = non_exhaustive_ctor_vis(items, ns, def, vis);
+    if anonymous {
+        if ns == Ns::Types && matches!(def, Def::Trait(_)) {
+            let traits = &mut items.def_map.scopes[module.index()].anonymous_traits;
+            if !traits
+                .iter()
+                .any(|binding| binding.def == def && binding.vis == vis)
+            {
+                traits.push(Binding {
+                    def,
+                    vis,
+                    kind: BindingKind::Import,
+                    file,
+                    range,
+                });
+            }
+        }
+        return;
+    }
     let scope = items.def_map.scopes[module.index()].ns_mut(ns);
     match scope.get(&name).copied() {
         Some(existing) if matches!(existing.kind, BindingKind::Item | BindingKind::Import) => {
@@ -1363,6 +1390,46 @@ fn apply_glob(items: &mut ItemTree, index: usize) -> bool {
         _ => return false,
     };
     let mut changed = false;
+    if let Ok(source) = source {
+        let anonymous: Vec<_> = items.def_map.scopes[source.index()]
+            .anonymous_traits
+            .iter()
+            .filter(|binding| items.is_visible(binding.vis, module))
+            .map(|&binding| {
+                // A glob cannot reexport an anonymous import beyond its
+                // original visibility, even when importing from a parent.
+                let vis = match (vis, binding.vis) {
+                    (vis, Visibility::Public) | (Visibility::Public, vis) => vis,
+                    (Visibility::Module(a), Visibility::Module(b)) => {
+                        Visibility::Module(if items.is_visible(Visibility::Module(a), b) {
+                            b
+                        } else {
+                            a
+                        })
+                    }
+                    (vis @ Visibility::Module(_), _) | (_, vis @ Visibility::Module(_)) => vis,
+                    (vis, _) => vis,
+                };
+                (binding, vis)
+            })
+            .collect();
+        let target = &mut items.def_map.scopes[module.index()].anonymous_traits;
+        for (binding, vis) in anonymous {
+            if !target
+                .iter()
+                .any(|existing| existing.def == binding.def && existing.vis == vis)
+            {
+                target.push(Binding {
+                    vis,
+                    kind: BindingKind::Glob,
+                    file: u_file,
+                    range: u_range,
+                    ..binding
+                });
+                changed = true;
+            }
+        }
+    }
     for ns in [Ns::Types, Ns::Values, Ns::Macros] {
         let names: Vec<(Symbol, Binding)> = match source {
             Ok(source) => items.def_map.scopes[source.index()]

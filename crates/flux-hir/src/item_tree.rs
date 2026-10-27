@@ -924,6 +924,8 @@ pub struct Use {
 pub enum UseKind {
     /// `use a::b;` or `use a::b as c;`: the name it is imported as.
     Named(Symbol),
+    /// `use a::Trait as _;`: checked but not bound to a name.
+    Anonymous { module_only: bool },
     /// `use a::{self};`: a module only.
     Module(Symbol),
     /// `use a::*;`

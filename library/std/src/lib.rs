@@ -17,6 +17,7 @@ pub use core::{slice, str, u8, u32};
 mod float;
 
 pub mod thread;
+pub mod time;
 pub mod collections;
 pub mod env;
 pub mod ffi;

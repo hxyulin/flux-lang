@@ -79,3 +79,22 @@ refactor validation rerun reported 152 HIR diagnostics with unchanged source byt
 including GATs, CRC feature detection/intrinsics and missing std APIs. No native
 assembler milestone is claimed. The implemented asm-ir and Keel IR graphs have
 separate active regression tests.
+
+## Resumed audit on 2026-10-27
+
+The guarded audit in `out/keel-asm-readiness/49032` ran after adding typed
+receivers, anonymous imports, Read/Seek traits and monotonic time APIs.
+Syntax has 0 diagnostics and HIR has 132, down from the preceding 152-diagnostic
+inventory. Both worker and parent source-integrity reports are `[]`. The rustc
+consumer passed. Types, MIR and native Flux codegen did not run.
+
+The remaining diagnostics are 80 GAT/associated-where gates, 20 CRC feature or
+intrinsic errors, 11 architecture/SIMD names, 9 pre-2024 return-position
+`impl Trait` gates, 6 multi-field transparent wrappers, 4 test attributes and
+2 lifetime bounds. These are diagnostic counts, including possible cascades.
+There are no remaining typed-receiver, anonymous-import, Read/Seek or time
+name-resolution errors in this inventory.
+
+The ignored parent test now passes `--ignored` to its worker and requires an
+inventory artifact. Without those checks an explicitly invoked parent could
+return success after its worker skipped the audit.

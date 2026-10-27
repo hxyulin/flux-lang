@@ -1347,7 +1347,7 @@ impl Ctx<'_> {
         in_scope.into_iter().any(|t| {
             let by_value = match items.traits[t].value(items, name) {
                 Some(AssocItem::Function(f)) => {
-                    items.functions[f].has_self && super::self_mode(items, f).is_none()
+                    items.functions[f].has_self && super::self_mode(self.sigs, f).is_none()
                 }
                 _ => false,
             };

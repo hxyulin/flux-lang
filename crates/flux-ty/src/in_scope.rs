@@ -24,6 +24,7 @@ impl TraitsInScope {
             def_map.scopes[module.index()]
                 .types
                 .values()
+                .chain(&def_map.scopes[module.index()].anonymous_traits)
                 .filter_map(|binding| match binding.def {
                     Def::Trait(t) => Some(t),
                     _ => None,

@@ -122,6 +122,11 @@ The source milestones required compiler changes rather than algorithm rewrites:
   remain rejected where their applicability is not represented.
 - Conditional compilation prunes fields, variants, receivers and parameters
   before numbering, derives and signature construction.
+- Explicit receivers support `Self`, shared/mutable references to `Self`, and
+  `Box<Self>`. Boxed method lookup selects the pointee's implementation while
+  consuming the original owner. Anonymous `use Trait as _` imports make methods
+  available without introducing a name, including through public glob imports.
+  Dynamic dispatch through a boxed trait-object receiver remains unsupported.
 - Closures can belong to functions, constants and statics. Their bodies execute
   with ordinary runtime capture and unsafe checks. Const construction and
   function-pointer coercions remain checked; const closure calls are rejected.
@@ -176,6 +181,14 @@ object-file dependencies are the next source graph. CLI derives and Keel's
 dependencies/generated outputs also belong to the
 complete source closure. Sourcegen and difftest are additional workspace targets,
 not prerequisites for the first compiler executable.
+
+The resumed assembler audit has zero syntax diagnostics and 132 HIR diagnostics,
+down from 152 before typed receivers, anonymous imports, Read/Seek and time APIs.
+Its source-integrity guards pass. GATs and associated `where` clauses account
+for 80 remaining diagnostics; CRC/SIMD, pre-2024 return-position `impl Trait`,
+multi-field transparent wrappers, test attributes and lifetime bounds also
+remain. This graph still stops before type checking and native codegen; see
+the [readiness report](../crates/flux-cli/tests/fixtures/keel_asm/READINESS.md).
 
 Current bounded language implementations still reject unsupported shapes.
 The latest function-pointer review also found two unresolved correctness issues:

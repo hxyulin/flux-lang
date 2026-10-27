@@ -1413,14 +1413,11 @@ impl Collector<'_> {
             ranges.pop();
             path.ranges = ranges.into();
         }
+        let anonymous = tree
+            .rename()
+            .is_some_and(|rename| rename.underscore_token().is_some());
         let rename = match tree.rename() {
-            Some(rename) => match rename.name() {
-                Some(name) => Some(Symbol::intern(name.text())),
-                None => {
-                    unsupported(&mut self.items.diagnostics, range, "`as _` imports");
-                    return;
-                }
-            },
+            Some(rename) => rename.name().map(|name| Symbol::intern(name.text())),
             None => None,
         };
         let Some(name) = rename.or_else(|| path.segments.last().copied()) else {
@@ -1428,7 +1425,9 @@ impl Collector<'_> {
             self.items.diagnostics.push(Diagnostic::new(range, message));
             return;
         };
-        let kind = if module_only {
+        let kind = if anonymous {
+            UseKind::Anonymous { module_only }
+        } else if module_only {
             UseKind::Module(name)
         } else {
             UseKind::Named(name)
@@ -1909,18 +1908,20 @@ impl Collector<'_> {
                         range,
                         "`self` parameter is only allowed in associated functions",
                     ));
-                } else if param.ty().is_some() {
-                    unsupported(diagnostics, range, "`self` parameters with a type");
                 } else {
                     let self_ty = TypeRef::Path(Path::single(kw::SelfUpper));
-                    let ty = match param.amp_token() {
-                        Some(_) => TypeRef::Ref {
-                            lifetime: param.lifetime().map(lower_lifetime),
-                            amp: param.amp_token().map_or(range, |t| t.text_range()),
-                            mutable: param.mut_token().is_some(),
-                            pointee: Box::new(self_ty),
-                        },
-                        None => self_ty,
+                    let ty = if let Some(ty) = param.ty() {
+                        lower_type(Some(ty), diagnostics)
+                    } else {
+                        match param.amp_token() {
+                            Some(_) => TypeRef::Ref {
+                                lifetime: param.lifetime().map(lower_lifetime),
+                                amp: param.amp_token().map_or(range, |t| t.text_range()),
+                                mutable: param.mut_token().is_some(),
+                                pointee: Box::new(self_ty),
+                            },
+                            None => self_ty,
+                        }
                     };
                     params.push(Param {
                         ty,

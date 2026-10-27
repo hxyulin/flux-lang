@@ -97,3 +97,19 @@ regular-file status through native Unix calls. Environment mutation, Windows
 paths and the remaining file/directory APIs remain absent. `rc::Rc<T>` supports
 sized and slice ownership, non-atomic cloning, unique mutation and sized
 clone-on-write/extraction, and remains neither Send nor Sync.
+
+`io` provides `Read`, `Seek`, `SeekFrom` and forwarding implementations for
+mutable references. Reads from byte slices and the default `read_exact`,
+`read_to_end` and `read_to_string` helpers handle short reads, interrupted calls,
+EOF and UTF-8 errors. Seeking is supplied by the implementing stream; this does
+not add `File`, `Cursor`, buffered readers or writing APIs. Error kinds retain
+platform categories and formatting. Stability gating for the Rust-unstable
+`FilesystemLoop`, `InProgress`, `TooManyOpenFiles`, `InputOutputError` and
+`Uncategorized` variant names is not implemented.
+
+`time` supplies a bounded `Duration` and `Instant` API for elapsed profiling,
+normalized nanoseconds and checked arithmetic. Native timestamps use Apple's
+`CLOCK_UPTIME_RAW` or Linux's `CLOCK_MONOTONIC` through `clock_gettime`.
+Wall-clock time, sleeping, duration parsing and the remaining formatting APIs
+are absent. Native execution is tested on arm64 macOS; Linux execution remains
+unverified.
