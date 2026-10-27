@@ -420,6 +420,18 @@ impl<'a> Layouts<'a> {
                     shape: Shape::Struct(vec![0; fields.len()].into()),
                 };
             }
+            if data.repr_transparent {
+                let field_layouts: Vec<_> = fields.iter().map(|&field| self.of(field)).collect();
+                let mut layout = field_layouts
+                    .iter()
+                    .find(|field| !field.is_1zst())
+                    .map_or_else(|| Layout::zst(false), |field| (**field).clone());
+                // Every additional field is a 1-ZST. The wrapper has exactly
+                // its represented field's layout, including scalar validity.
+                layout.uninhabited |= field_layouts.iter().any(|field| field.uninhabited);
+                layout.shape = Shape::Struct(vec![0; fields.len()].into());
+                return layout;
+            }
             // Potentially unsized tails retain their position even in sized
             // instantiations so structural unsizing preserves the prefix.
             let parameters = flux_ty::unsized_params(self.items, None, &data.generics);

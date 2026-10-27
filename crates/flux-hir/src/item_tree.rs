@@ -516,7 +516,7 @@ pub struct Struct {
     /// `#[repr(C)]`: fields are laid out in declaration order, as C
     /// does, and an enum's discriminant is a C `int` at least.
     pub repr_c: bool,
-    /// A transparent wrapper. Currently supported for one-field structs.
+    /// A transparent wrapper, whose nontrivial field determines its layout.
     pub repr_transparent: bool,
     /// Minimum aggregate alignment from `#[repr(align(N))]`, or 1.
     pub repr_align: u32,
@@ -1171,6 +1171,9 @@ pub enum TypeRef {
 /// `impl Tr + 'a + use<'a, T>`, as written.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ImplTraitRef {
+    /// The `impl` token's definition-site edition controls implicit captures,
+    /// including when a macro expands into a crate of another edition.
+    pub edition: flux_syntax::Edition,
     /// Its trait bounds, at least one.
     pub bounds: Box<[Bound]>,
     /// `'a` in `impl Tr + 'a`.
@@ -1713,6 +1716,16 @@ pub(crate) fn def_start(node: SyntaxNode<'_>) -> u32 {
 /// A false predicate does not suppress validation of the other attributes;
 /// modules and functions also inherit the cfg on their contents.
 pub(crate) fn item_enabled(node: SyntaxNode<'_>, diagnostics: &mut Vec<Diagnostic>) -> bool {
+    item_enabled_with_test_context(node, diagnostics, None)
+}
+
+/// Macro-expanded impl items have a fragment root rather than their impl as
+/// syntax parent. Their collector supplies the actual item context explicitly.
+fn item_enabled_with_test_context(
+    node: SyntaxNode<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+    free_test_function: Option<bool>,
+) -> bool {
     let attrs = crate::cfg::Attrs::new(node.children().filter_map(ast::Attr::cast));
     let mut enabled = attrs.errors.is_empty();
     diagnostics.extend(
@@ -1744,6 +1757,38 @@ pub(crate) fn item_enabled(node: SyntaxNode<'_>, diagnostics: &mut Vec<Diagnosti
                 diagnostics.push(Diagnostic::new(range, message));
                 enabled = false;
             }
+        }
+    }
+    if enabled {
+        for attr in attrs.iter().filter(|attr| attr_name(*attr) == Some("test")) {
+            let range = attr.syntax().text_range();
+            let meta = attr.meta().expect("named attribute");
+            if meta.unsafe_token().is_some() {
+                diagnostics.push(Diagnostic::new(range, "`test` is not an unsafe attribute"));
+            } else if meta.token_tree().is_some() || meta.eq_token().is_some() {
+                diagnostics.push(Diagnostic::new(
+                    range,
+                    "attribute must be of the form `#[test]`",
+                ));
+            } else if !free_test_function.unwrap_or_else(|| {
+                node.kind() == SyntaxKind::FN
+                    && !node.parent().is_some_and(|parent| {
+                        parent.kind() == SyntaxKind::ASSOC_ITEM_LIST
+                            || parent.kind() == SyntaxKind::EXTERN_BLOCK
+                            || parent
+                                .parent()
+                                .is_some_and(|owner| owner.kind() == SyntaxKind::EXTERN_BLOCK)
+                    })
+            }) {
+                diagnostics.push(Diagnostic::new(
+                    range,
+                    "the `test` attribute may only be used on a free function",
+                ));
+            }
+            // Flux builds ordinary crates, not libtest harnesses. Like rustc
+            // without `--test`, it removes test functions before resolving their
+            // signatures, bodies, or body-local macros, even with `--cfg test`.
+            enabled = false;
         }
     }
     // Inner attributes belong to the enclosing module, and can remove it
@@ -2696,6 +2741,10 @@ fn lower_impl_trait(it: ast::ImplTraitType<'_>, diagnostics: &mut Vec<Diagnostic
         return TypeRef::Error;
     }
     TypeRef::ImplTrait(Box::new(ImplTraitRef {
+        edition: it
+            .impl_token()
+            .expect("impl trait has its keyword")
+            .edition(),
         bounds: bounds.into(),
         lifetimes: lifetimes.into(),
         captures,

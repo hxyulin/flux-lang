@@ -98,3 +98,42 @@ name-resolution errors in this inventory.
 The ignored parent test now passes `--ignored` to its worker and requires an
 inventory artifact. Without those checks an explicitly invoked parent could
 return success after its worker skipped the audit.
+
+## Transparent wrappers, test attributes and architecture reexports
+
+The next guarded audit, `out/keel-asm-readiness/20836`, has zero syntax
+diagnostics and 111 HIR diagnostics. It ran in 4.70 seconds. Both source-integrity
+reports are `[]`, and the separately compiled rustc consumer passed. Type
+checking, MIR and Flux native execution remain gated by HIR.
+
+The 21 removed diagnostics were six multi-field transparent wrapper gates,
+four ordinary-build test attributes and eleven scanner architecture imports.
+Transparent wrappers now admit additional proven size-zero, alignment-one
+fields and preserve the represented field's layout and niche. Test functions
+are removed before collection in ordinary builds. `std::arch` names the
+existing core architecture definitions.
+
+The remaining 111 diagnostics comprise 80 GAT/associated-where gates, 20 CRC
+feature or intrinsic errors, nine pre-2024 return-position `impl Trait` gates
+and two lifetime bounds. These are diagnostic counts, not independent defects.
+The complete assembler still has no native milestone.
+
+## Trait bounds, older-edition opaque captures and CRC
+
+The guarded audit in `out/keel-asm-readiness/7509` has zero syntax diagnostics
+and 80 HIR diagnostics, down from 111. It ran in 5.21 seconds. Both worker and
+parent source-integrity reports are `[]`, and the rustc consumer passed.
+Type checking, MIR and Flux native execution still do not run on this graph.
+
+The removed diagnostics were two trait lifetime bounds, nine older-edition
+return-position `impl Trait` gates and 20 CRC feature/intrinsic errors. All 80
+remaining HIR diagnostics concern GATs: 70 generic associated type declarations
+and ten associated `where` clauses.
+
+The separate active `crc32fast_readiness` test compiles the unchanged crc32fast
+1.5.3 and cfg-if 1.0.5 roots with their actual editions, `std` feature and
+build-script cfg. It checks baseline/specialized paths, stream crossovers and
+combination, then compares native results with Rustc in both optimization modes.
+CRC runtime detection uses the actual CPU query. The CRC intrinsics currently
+use exact scalar folding, without hardware acceleration. The required shared
+slice `align_to` API preserves alignment, element boundaries and input lifetime.

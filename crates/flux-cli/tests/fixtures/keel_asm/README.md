@@ -1,6 +1,6 @@
 # Keel assembler readiness
 
-Run `cargo test -p flux-cli --test keel_asm_readiness -- --nocapture` on
+Run `cargo test -p flux-cli --test keel_asm_readiness -- --ignored --nocapture` on
 AArch64 macOS. The test runs one worker with a 300-second deadline and leaves evidence in
 `out/keel-asm-readiness/<parent-pid>/`, including failed runs.
 

@@ -1,0 +1,23 @@
+pub struct Table<'data> { values: &'data [u32] }
+impl<'data> Table<'data> {
+    pub fn new(values: &'data [u32]) -> Self { Table { values } }
+    pub fn enumerate(&self) -> impl Iterator<Item = (usize, &'data u32)> {
+        self.values.iter().enumerate()
+    }
+    pub fn values(&self) -> impl Iterator<Item = u32> + 'data {
+        self.values.iter().copied()
+    }
+    pub fn callback<'a>(&self, x: &'a u32) -> impl Fn() -> u32 + 'a { move || *x }
+}
+pub fn equivalent<Q: PartialEq>(key: &Q) -> impl Fn(&Q) -> bool + '_ {
+    move |value| key == value
+}
+pub fn const_array<const N: usize>() -> impl AsRef<[u8]> { [3u8; N] }
+#[macro_export]
+macro_rules! make_iterator {
+    () => {
+        fn iterator<'a>(values: &'a [u32]) -> impl Iterator<Item = &'a u32> {
+            values.iter()
+        }
+    };
+}

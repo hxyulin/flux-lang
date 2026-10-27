@@ -1,6 +1,40 @@
 //! A bounded AArch64 NEON foundation. NEON is baseline on this target.
 
 pub mod aarch64 {
+    /// Accumulates one byte with the reflected IEEE CRC-32 polynomial.
+    ///
+    /// This scalar implementation preserves the instruction's uncomplemented
+    /// state. It does not provide hardware acceleration.
+    ///
+    /// # Safety
+    /// The caller must run on an AArch64 target with the CRC feature enabled.
+    pub unsafe fn __crc32b(crc: u32, byte: u8) -> u32 {
+        let mut crc = crc ^ byte as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = (crc >> 1) ^ (0xedb8_8320u32 & 0u32.wrapping_sub(crc & 1));
+            bit += 1;
+        }
+        crc
+    }
+
+    /// Accumulates a doubleword, starting with its least significant byte.
+    ///
+    /// # Safety
+    /// The caller must run on an AArch64 target with the CRC feature enabled.
+    pub unsafe fn __crc32d(crc: u32, value: u64) -> u32 {
+        let mut crc = crc;
+        let mut value = value;
+        let mut byte = 0;
+        while byte < 8 {
+            // SAFETY: the caller establishes the same CRC feature requirement.
+            crc = unsafe { __crc32b(crc, value as u8) };
+            value >>= 8;
+            byte += 1;
+        }
+        crc
+    }
+
     /// Sixteen unsigned byte lanes, with Rust's NEON size and alignment.
     #[allow(non_camel_case_types)]
     #[repr(C, align(16))]

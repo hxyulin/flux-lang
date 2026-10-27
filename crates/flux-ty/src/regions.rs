@@ -180,8 +180,9 @@ pub struct FnRegions {
 /// return type), in terms of its function's.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OpaqueRegions {
-    /// Those it captures, which are its region slots: in edition 2024,
-    /// all of its function's, or those `use<..>` lists.
+    /// Those it captures, which are its region slots: all of its function's
+    /// in edition 2024, those mentioned in older-edition bounds, or an
+    /// explicit `use<..>` list.
     pub captures: Box<[Region]>,
     /// `'a` in `impl Tr + 'a`: what its hidden type outlives.
     pub outlives: Box<[Region]>,

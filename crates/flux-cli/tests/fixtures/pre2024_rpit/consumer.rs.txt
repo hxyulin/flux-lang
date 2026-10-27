@@ -1,0 +1,25 @@
+legacy::make_iterator!();
+fn main() {
+    let data = [11, 13, 17];
+    let table = legacy::Table::new(&data);
+    let mut entries = table.enumerate();
+    let mut values = table.values();
+    let callback = table.callback(&data[2]);
+    drop(table);
+    assert_eq!(entries.next(), Some((0, &11)));
+    assert_eq!(entries.next(), Some((1, &13)));
+    assert_eq!(entries.next(), Some((2, &17)));
+    assert_eq!(entries.next(), None);
+    assert_eq!(values.next(), Some(11));
+    assert_eq!(values.next(), Some(13));
+    assert_eq!(values.next(), Some(17));
+    assert_eq!(callback(), 17);
+    let key = String::from("capture");
+    let compare = legacy::equivalent(&key);
+    assert!(compare(&String::from("capture")));
+    assert!(!compare(&String::from("other")));
+    let array = legacy::const_array::<4>();
+    assert_eq!(array.as_ref(), &[3u8; 4]);
+    assert_eq!(iterator(&data).copied().sum::<u32>(), 41);
+    println!("rpit 3 41 {} {}", callback(), array.as_ref().len());
+}

@@ -55,14 +55,17 @@ fn extern_aliases_match_rustc() {
 }
 
 #[test]
-fn transparent_single_field_wrappers_match_rustc() {
+fn transparent_wrappers_and_repr_syntax_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-transparent-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     for (source, expected) in [
         ("#[repr(transparent)] struct Tag(u8);", true),
         ("#[repr(transparent)] struct Wrapper<T>(T);", true),
         ("#[repr(transparent)] struct Unit(());", true),
-        ("#[repr(transparent)] struct Invalid(u8, u8);", false),
+        (
+            "#[repr(transparent)] struct Marker<T>(u8, core::marker::PhantomData<T>);",
+            true,
+        ),
         ("#[repr(transparent, C)] struct Invalid(u8);", false),
         ("#[repr(transparent, align(8))] struct Invalid(u8);", false),
         ("#[repr(transparent)] union Invalid { value: u8 }", false),

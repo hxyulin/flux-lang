@@ -16,6 +16,8 @@ pub use core::{slice, str, u8, u32};
 
 mod float;
 
+pub mod arch;
+
 pub mod thread;
 pub mod time;
 pub mod collections;

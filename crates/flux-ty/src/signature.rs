@@ -315,6 +315,23 @@ pub(super) fn extend_signatures(
                 .get(id)
                 .map_or(&[][..], |bounds| bounds),
         );
+        if data.repr_transparent {
+            let fields = sigs.structs[id];
+            let nontrivial = fields
+                .iter()
+                .filter(|&&ty| {
+                    transparent_field_shape(items, &sigs, ty, &mut Vec::new()) != (true, true)
+                })
+                .count();
+            if nontrivial > 1 {
+                let mut error = Diagnostic::new(
+                    data.name_range,
+                    "transparent structs may have only one field with nonzero size or alignment greater than one",
+                );
+                error.file = data.loc.file;
+                reported.push(error);
+            }
+        }
         for variant in 0..data.variant_count() as u32 {
             let fields = sigs
                 .variant_fields(
@@ -825,4 +842,54 @@ pub(super) fn extend_signatures(
     diagnostics.extend(reported);
     regions::check_trait_admission(items, &sigs, from, &mut diagnostics);
     (sigs, diagnostics)
+}
+
+/// Facts guaranteed for every instantiation: zero size and alignment one.
+/// Unknown generic fields count as nontrivial, even if one particular use
+/// supplies a zero-sized type. Transparent representation is a declaration
+/// contract, not an optimization selected separately at each use.
+fn transparent_field_shape(
+    items: &ItemTree,
+    sigs: &Signatures,
+    ty: Ty,
+    active: &mut Vec<flux_hir::StructId>,
+) -> (bool, bool) {
+    match ty.kind() {
+        TyKind::Tuple(fields) => fields.iter().fold((true, true), |shape, &field| {
+            let field = transparent_field_shape(items, sigs, field, active);
+            (shape.0 && field.0, shape.1 && field.1)
+        }),
+        TyKind::Array(element, count) => {
+            let shape = transparent_field_shape(items, sigs, element, active);
+            (count.as_usize() == Some(0) || shape.0, shape.1)
+        }
+        TyKind::Adt(adt, _) => {
+            if active.contains(&adt.strukt) {
+                return (false, false);
+            }
+            let data = &items.structs[adt.strukt];
+            // Multiple variants need a discriminant. Explicit integer/C
+            // representations can also give a single-variant enum a tag.
+            if data.is_enum() && data.variant_count() == 0 {
+                return (true, data.repr_align <= 1);
+            }
+            if data.is_enum() && (data.variant_count() != 1 || data.repr.is_some() || data.repr_c) {
+                return (false, false);
+            }
+            active.push(adt.strukt);
+            let fields = sigs.variant_fields(ty, 0).unwrap_or_default();
+            let shape = fields
+                .iter()
+                .fold((true, data.repr_align <= 1), |shape, &field| {
+                    let field = transparent_field_shape(items, sigs, field, active);
+                    (shape.0 && field.0, shape.1 && field.1)
+                });
+            active.pop();
+            shape
+        }
+        TyKind::FnDef(_) | TyKind::Never => (true, true),
+        TyKind::Bool => (false, true),
+        TyKind::Int(int) => (false, int.bits() == 8),
+        _ => (false, false),
+    }
 }

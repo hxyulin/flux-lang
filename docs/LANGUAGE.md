@@ -199,7 +199,11 @@ reported as "not supported yet":
   `"fxsr"`, `"sse"`, `"sse2"` on x86-64. Other feature predicates are false;
   flags used to build Flux do not change this configuration. `test`,
   features and unknown predicates are false; there are no build flags or
-  test builds yet. Nested `cfg_attr` applies its selected attributes before
+  test builds yet. In ordinary builds, `#[test]` removes free functions before
+  collecting their names, signatures, bodies or local macros. Invalid attribute
+  forms and uses outside free functions are diagnosed. This does not add a test
+  harness, even when a source graph explicitly configures `cfg(test)`.
+  Nested `cfg_attr` applies its selected attributes before
   semantic consumers inspect them. Block tails are selected after cfg pruning;
   explicit semicolons and remaining item statements still prevent a tail value.
   Inner file/module `cfg` and conditional
@@ -1110,14 +1114,17 @@ bounds (its methods, calls of it, `for` loops over it, and `Copy` or
 hides, which must meet them (E0277, E0271), be the same for every
 return (E0308), and not contain itself (E0720); a body that only calls
 itself hides `!`. A closure returned so gets its signature from the
-`Fn` bound. As in edition 2024, an opaque type captures every generic
-parameter and lifetime in scope (elided ones included), or those
-`use<'a, T>` lists (which must name every type parameter): where it is
+`Fn` bound. Opaque types capture all type and const parameters. Edition 2024
+also captures every lifetime in scope, including elided ones. Older editions
+capture only lifetimes occurring in the opaque's bounds, including associated
+type equalities. The definition-site edition of the `impl` token controls this
+rule when macros cross crate editions. Explicit `use<'a, T>` lists override
+implicit captures and must name every type and const parameter: where it is
 used, what they borrow stays borrowed, and its hidden type may borrow
 only them (E0700, E0597, E0373, as in rustc), and only for as long as
 its `+ 'a` bounds and what its bounds say associated types are
 (`Item = &'a T`, elided lifetimes as in the return type) say. Auto
-traits do not leak through it (flux has none besides `Sized`).
+trait leakage through the hidden type remains unsupported.
 `impl Trait` in trait methods' return types, nested in an opaque
 type's bounds or in bounds' generic arguments (`T: Iterator<Item = impl
 Copy>`) is not supported yet; elsewhere it is rustc's E0562 ("`impl
@@ -1145,6 +1152,10 @@ supertrait edges remain outside this declaration subset. Other existing
 use-site restrictions still apply. Bounds may not name lifetimes in their trait's generic
 arguments (`T: Tr<&'a U>`; `&` without one is E0637, as in rustc), nor
 those of structs and traits in what they say associated types are.
+Lifetimeless traits may require `Self: 'static`, including the colon form
+`trait Pod: Copy + 'static`. This contract propagates through represented
+supertraits and is enforced on implementations and callers. Named-lifetime
+supertrait edges remain outside this subset.
 Local `let` annotations can require `'static`, including nested reference
 and ADT types, aliases and defaults. The borrow checker enforces this on
 initialization, destructuring, later assignments and branches. Other named
@@ -1253,7 +1264,8 @@ in-bounds index and, for strings, UTF-8 boundaries. String mutation preserves
 UTF-8 through checked mutable ranges, while unsafe byte views require the
 caller to restore that invariant before their borrow ends.
 
-On AArch64, `core::arch::aarch64` provides distinct `uint8x16_t`,
+On AArch64, `core::arch::aarch64` (also reexported as `std::arch::aarch64`)
+provides distinct `uint8x16_t`,
 `uint16x8_t`, `uint64x2_t`, `uint8x8_t` and `uint64x1_t` types, with their
 Rust sizes/alignments and Copy/Clone/Debug. The bounded API includes
 `vld1q_u8`, `vdupq_n_u8`, `vceqq_u8`, `vandq_u8`, `vorrq_u8`,
@@ -1265,13 +1277,22 @@ wrappers support unsafe function pointers; closures calling them inside an
 unsafe block can satisfy Fn bounds. Safe pointer conversions and direct
 Fn-bound use of the target-feature items are rejected. On AArch64, explicit
 unsafe functions with bodies, including const functions and methods, may carry
-`#[target_feature(enable = "neon")]`. Safe annotated functions, other features,
+`#[target_feature(enable = "neon")]` or `enable = "crc"`.
+Safe annotated functions, other features,
 foreign declarations, required trait methods and `inline(always)` combinations
 remain rejected. The attribute does not relax ordinary unsafe call rules.
 Vector C ABI support remains unsupported. Narrowing currently lowers to scalar loads/shifts
 and exactly eight byte stores. Pairwise maximum uses scalarized shuffles and
 packed unsigned comparison/selection; native `shrn`/`umaxp` selection is not
 implemented in the pinned Keel IR.
+
+`std::arch::is_aarch64_feature_detected!("crc")` queries the runtime CPU through
+macOS sysctl or Linux HWCAP. Imported aliases and explicit std in no_std crates
+work. Other feature names remain explicitly unsupported. The macro is not
+available directly under the std root, matching Rust's namespace.
+Unsafe `__crc32b` and `__crc32d` provide reflected IEEE CRC folding with scalar
+code; this adds no hardware CRC acceleration or backend instruction support.
+Linux runtime detection is implemented but has not been executed natively.
 
 The two lane-extraction wrappers and narrowing shift also accept rustc's
 legacy trailing const argument in direct path calls, including aliases and
@@ -1302,9 +1323,15 @@ struct and tuple fields reordered to leave little padding (in
 declaration order with `#[repr(C)]`). `#[repr(align(N))]` on structs and
 enums accepts unsuffixed power-of-two alignments through 2^29, preserving
 aggregate size/stride and alignment in stack, static, argument/return and
-heap storage. `repr(transparent)` supports exactly one field, preserving its
-layout and niche. Zero-field and multi-field transparent wrappers, packed
-representations and general SIMD representations remain unsupported.
+heap storage. `repr(transparent)` preserves the layout and niche of its one
+represented field. Additional fields must have size zero and alignment one
+for every generic instantiation. Empty and entirely zero-sized wrappers are
+also supported. Packed representations and general SIMD representations remain
+unsupported.
+Extra transparent fields must be provably zero-sized and alignment one from
+their declaration. Unknown generic or associated fields and multi-variant enum
+markers remain conservatively nontrivial, even when a particular instantiated
+layout could be zero-sized.
 The layout also keeps enums' tags as small as their
 discriminants allow, and niches (`Option<&T>`, `Option<bool>`,
 `Option<NonNull<T>>` take no more room than what they hold). `core::ptr`
@@ -1322,7 +1349,12 @@ pointers have `is_null`, `cast`, `cast_mut`/`cast_const`, `addr`,
 and `as_mut`; a `*mut T` coerces to a `*const T`. `align_offset` returns an
 element count for sized pointees, with zero-sized and impossible-alignment
 cases, and panics for non-power-of-two alignments. It is runtime-only and
-does not establish allocation bounds or memory validity. `core::mem` has
+does not establish allocation bounds or memory validity.
+Unsafe `[T]::align_to<U>` splits a shared slice into a T prefix, aligned U
+middle and T suffix, preserving whole-element boundaries and the source
+lifetime. Zero-sized and impossible-alignment cases are supported. Callers
+must establish the U values' validity; mutable and const forms remain absent.
+`core::mem` has
 `forget`, `ManuallyDrop` (with `Deref`) and `MaybeUninit` (`new`,
 `uninit`, `zeroed`, `write`, `as_ptr`, `as_mut_ptr`, `assume_init` and
 its `_read`, `_ref`, `_mut` and `_drop` forms). Pointer arithmetic in constants remains unsupported. Thin

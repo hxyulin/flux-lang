@@ -160,24 +160,29 @@ fn mixed_editions_normalized_library_unit_matches_rustc() {
 
 #[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn sensitive_2021_constructs_fail_explicitly() {
-    for (source, expected) in [
+fn edition_2021_construct_support_is_explicit() {
+    for (source, expected, accepted) in [
         (
             "pub fn f() { if let Some(_) = Some(1) && true {} }",
             "let chains",
+            false,
         ),
-        (
-            "pub fn f() -> impl Copy { 1u32 }",
-            "impl Trait in edition 2021",
-        ),
+        ("pub fn f() -> impl Copy { 1u32 }", "", true),
     ] {
         let fixture = Fixture::new();
         dependency(&fixture, source);
         fixture.write("src/main.rs", "fn main() {}");
         let output = fixture.run("build", &[]);
-        assert!(!output.status.success(), "accepted {source}");
+        assert_eq!(
+            output.status.success(),
+            accepted,
+            "{source}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(expected), "expected {expected}: {stderr}");
+        if !accepted {
+            assert!(stderr.contains(expected), "expected {expected}: {stderr}");
+        }
     }
 }
 
@@ -276,7 +281,7 @@ fn edition_sensitive_syntax_and_lifetime_rejections_match_rustc_boundaries() {
         ),
         (
             "pub fn f(x: &u32) -> impl Copy { x }",
-            "impl Trait in edition 2021",
+            "captures lifetime that does not appear in bounds",
             false,
             true,
         ),

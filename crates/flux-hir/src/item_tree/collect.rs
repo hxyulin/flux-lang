@@ -6,16 +6,16 @@ use super::{
     ImplTraitSite, ImplType, ItemLoc, ItemTree, LifetimeRef, LoadedCrates, MacroDef, MacroId,
     MacroImport, MacroScopeId, Module, ModuleId, NodeId, Owner, Param, ParamKind, Path, PathAnchor,
     PathBuf, RECURSION_LIMIT, Relaxed, SourceDb, Struct, StructId, StructKind, Symbol, SyntaxKind,
-    SyntaxNode, TextRange, Trait, TraitId, TraitType, TypeAlias, TypeRef, TypesFile, Use, UseKind,
-    Variant, Visibility, WherePredicate, ast, attr_name, check_attr, check_attrs,
+    SyntaxNode, TextRange, Trait, TraitId, TraitType, TypeAlias, TypeOutlives, TypeRef, TypesFile,
+    Use, UseKind, Variant, Visibility, WherePredicate, ast, attr_name, check_attr, check_attrs,
     check_inert_attrs, check_inner_attrs, collect_generics, collect_generics_with_drop,
     collect_opaques, const_expr_root, core_path, def_start, derive_attr, desugar_impl_params,
     discriminant_value, enum_repr, expand_types, function_c_abi, generic_in_discriminant,
-    int_range, is_anon_const, is_item_kind, item_enabled, kw, lang_attr, lower_bound_type,
-    lower_bounds, lower_lifetime, lower_path, lower_type, macros, non_exhaustive_attr,
-    on_unimplemented_attr, param_projections, reject_impl_trait, reject_impl_trait_in_path,
-    repr_attr, struct_repr, sym, target_feature_attr, target_feature_inline, unsupported,
-    with_macro_types,
+    int_range, is_anon_const, is_item_kind, item_enabled, item_enabled_with_test_context, kw,
+    lang_attr, lower_bound_type, lower_bounds, lower_lifetime, lower_path, lower_type, macros,
+    non_exhaustive_attr, on_unimplemented_attr, param_projections, reject_impl_trait,
+    reject_impl_trait_in_path, repr_attr, struct_repr, sym, target_feature_attr,
+    target_feature_inline, unsupported, with_macro_types,
 };
 
 impl ItemTree {
@@ -977,22 +977,30 @@ impl Collector<'_> {
             return;
         };
         let diagnostics = &mut self.items.diagnostics;
-        let generics = collect_generics(
+        let mut generics = collect_generics(
             t.generic_param_list(),
             t.where_clause(),
             Defaults::Trait,
             diagnostics,
         );
         let mut supertraits = Vec::new();
+        let mut lifetimes = Vec::new();
         if let Some(list) = t.type_bound_list() {
             lower_bounds(
                 list,
                 &mut supertraits,
-                None,
+                Some(&mut lifetimes),
                 Relaxed::Supertrait,
                 diagnostics,
             );
         }
+        let mut type_outlives = generics.type_outlives.into_vec();
+        type_outlives.extend(lifetimes.into_iter().map(|lifetime| TypeOutlives {
+            ty: TypeRef::Path(Path::single(kw::SelfUpper)),
+            ty_range: name.syntax().text_range(),
+            lifetime,
+        }));
+        generics.type_outlives = type_outlives.into();
         for bound in &mut supertraits {
             reject_impl_trait_in_path(&mut bound.path, IN_BOUNDS, diagnostics);
         }
@@ -1552,7 +1560,11 @@ impl Collector<'_> {
             let Some(item) = ast::Item::cast(shared.parse.tree().node(node)) else {
                 continue;
             };
-            if !item_enabled(item.syntax(), &mut self.items.diagnostics) {
+            if !item_enabled_with_test_context(
+                item.syntax(),
+                &mut self.items.diagnostics,
+                Some(false),
+            ) {
                 continue;
             }
             let what = match item {
@@ -2003,13 +2015,6 @@ impl Collector<'_> {
                 "`impl Trait` types in the return types of trait methods",
             );
             reject_impl_trait(&mut ret, site, diagnostics);
-        } else if self.db.file(ctx.file).edition != flux_syntax::Edition::E2024 {
-            let boundary = match self.db.file(ctx.file).edition {
-                flux_syntax::Edition::E2015 => "impl Trait in edition 2015",
-                flux_syntax::Edition::E2018 => "impl Trait in edition 2018",
-                _ => "impl Trait in edition 2021",
-            };
-            reject_impl_trait(&mut ret, ImplTraitSite::Unsupported(boundary), diagnostics);
         } else {
             collect_opaques(&mut ret, &mut opaques, diagnostics);
         }
@@ -2205,13 +2210,6 @@ impl Collector<'_> {
     /// Walk expressions without crossing item or block scopes. Retained macro
     /// expansions collect items through the same path as written block items.
     fn collect_body_node(&mut self, ctx: Ctx, node: SyntaxNode<'_>, function: Option<FunctionId>) {
-        if !item_enabled(node, &mut Vec::new()) {
-            return;
-        }
-        if node.kind() == SyntaxKind::BLOCK_EXPR {
-            self.collect_block(ctx, node.id(), function);
-            return;
-        }
         if is_item_kind(node.kind()) {
             let _file = TypesFile::enter(ctx.file);
             let start = self.items.diagnostics.len();
@@ -2220,6 +2218,13 @@ impl Collector<'_> {
                 self.collect_anon_consts(ctx, node.id());
             }
             self.tag(start, ctx.file);
+            return;
+        }
+        if !item_enabled(node, &mut Vec::new()) {
+            return;
+        }
+        if node.kind() == SyntaxKind::BLOCK_EXPR {
+            self.collect_block(ctx, node.id(), function);
             return;
         }
         if node.kind() == SyntaxKind::MACRO_EXPR {
@@ -2863,20 +2868,11 @@ impl Collector<'_> {
         );
         let repr_c = struct_repr(&hints, &mut self.items.diagnostics);
         let repr_transparent = hints.iter().any(|(hint, _)| hint.as_str() == "transparent");
-        if repr_transparent {
-            if hints.iter().any(|(hint, _)| hint.as_str() != "transparent") {
-                self.items.diagnostics.push(Diagnostic::new(
-                    s.syntax().text_range(),
-                    "transparent structs cannot have other repr hints",
-                ));
-            }
-            if fields.len() != 1 {
-                unsupported(
-                    &mut self.items.diagnostics,
-                    s.syntax().text_range(),
-                    "transparent structs with multiple or no fields",
-                );
-            }
+        if repr_transparent && hints.iter().any(|(hint, _)| hint.as_str() != "transparent") {
+            self.items.diagnostics.push(Diagnostic::new(
+                s.syntax().text_range(),
+                "transparent structs cannot have other repr hints",
+            ));
         }
         let name_range = name.syntax().text_range();
         let id = self.items.structs.alloc(Struct {

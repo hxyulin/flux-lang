@@ -93,6 +93,7 @@ pub const STD_ROOT: &str = "<std>";
 
 const STD_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/std/src/lib.rs")),
+    ("arch.rs", include_str!("../../../library/std/src/arch.rs")),
     (
         "float.rs",
         include_str!("../../../library/std/src/float.rs"),

@@ -42,6 +42,53 @@ pub unsafe fn from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T]
 }
 
 impl<T> [T] {
+    /// Splits this slice into a prefix, an aligned middle view, and a suffix.
+    ///
+    /// The middle covers as many whole `T` and `U` elements as possible after
+    /// reaching `U`'s alignment. If either type is zero-sized, the entire input
+    /// remains in the prefix and both other slices are empty.
+    ///
+    /// # Safety
+    /// The bytes in the middle must be valid initialized `U` values. The
+    /// caller must also preserve the aliasing requirements of any references
+    /// contained in those values, as for a shared transmute of the elements.
+    pub unsafe fn align_to<U>(&self) -> (&[T], &[U], &[T]) {
+        let t_size = crate::mem::size_of::<T>();
+        let u_size = crate::mem::size_of::<U>();
+        if t_size == 0 || u_size == 0 {
+            return (self, &[], &[]);
+        }
+        let offset = self.as_ptr().align_offset(crate::mem::align_of::<U>());
+        if offset > self.len() {
+            return (self, &[], &[]);
+        }
+        let (prefix, rest) = self.split_at(offset);
+        let mut a = t_size;
+        let mut b = u_size;
+        while b != 0 {
+            let remainder = a % b;
+            a = b;
+            b = remainder;
+        }
+        // Whole blocks contain u_size/gcd T elements and t_size/gcd U
+        // elements. Counting blocks first avoids overflowing a byte count.
+        let t_block = u_size / a;
+        let u_block = t_size / a;
+        let middle_len = rest.len() / t_block * u_block;
+        let suffix_len = rest.len() % t_block;
+        // SAFETY: align_offset established the middle alignment. Whole blocks
+        // stay inside the original allocation, and the suffix starts at a T
+        // element boundary. The caller establishes the middle's U validity;
+        // all three shared slices borrow the original allocation and lifetime.
+        unsafe {
+            (
+                prefix,
+                from_raw_parts(rest.as_ptr() as *const U, middle_len),
+                from_raw_parts(rest.as_ptr().add(rest.len() - suffix_len), suffix_len),
+            )
+        }
+    }
+
     /// The number of elements in the slice.
     pub const fn len(&self) -> usize {
         crate::intrinsics::raw_slice_len(self as *const [T])

@@ -3,6 +3,65 @@
 use super::*;
 
 type Errors = Vec<(flux_hir::FileId, TextRange, String)>;
+
+/// A bound on a trait's abstract Self is inherited through its supertraits.
+/// Follow only lifetimeless owners: the erased TraitRef does not represent
+/// lifetime arguments on other supertrait edges. Static Self needs no such
+/// substitution, and never follows bounds on a trait's other type arguments.
+fn inherit_static_self(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts) {
+    let self_static = |bounds: &[Outlives<Region>]| {
+        bounds.iter().any(|bound| {
+            matches!(*bound, Outlives::Type(ty, Region::Static)
+                if matches!(ty.kind(), TyKind::Param(p) if p.index == 0))
+        })
+    };
+    let mut children = vec![Vec::new(); items.traits.len()];
+    let mut requires_static = vec![false; items.traits.len()];
+    let mut pending = Vec::new();
+    for (id, data) in items.traits.iter() {
+        if !data.generics.lifetimes.is_empty() {
+            continue;
+        }
+        if sigs
+            .regions
+            .traits
+            .get(id)
+            .is_some_and(|r| self_static(&r.outlives))
+        {
+            requires_static[id.index()] = true;
+            pending.push(id);
+        }
+        if let Some(signature) = sigs.traits.get(id) {
+            for parent in &signature.supertraits {
+                if items.traits[parent.trait_].generics.lifetimes.is_empty() {
+                    children[parent.trait_.index()].push(id);
+                }
+            }
+        }
+    }
+    // Reverse edges let each static contract flow to its children once. An
+    // unrelated chain needs only the graph construction, not ancestor walks.
+    while let Some(parent) = pending.pop() {
+        for &child in &children[parent.index()] {
+            if !requires_static[child.index()] {
+                requires_static[child.index()] = true;
+                pending.push(child);
+            }
+        }
+    }
+    for (id, _) in items.traits.iter().skip(from.traits as usize) {
+        if requires_static[id.index()]
+            && let Some(regions) = sigs.regions.traits.get_mut(id)
+            && !self_static(&regions.outlives)
+        {
+            let self_ty = crate::traits::trait_self_predicate(items, id).self_ty;
+            let mut outlives = regions.outlives.to_vec();
+            outlives.push(Outlives::Type(self_ty, Region::Static));
+            regions.outlives = outlives.into();
+        }
+    }
+}
+
 /// The slots of each of a list of types.
 type Tables = Box<[Box<[Region]>]>;
 
@@ -71,6 +130,7 @@ pub(crate) fn resolve_regions(
         );
         push(&mut errors, t.loc.file, list);
     }
+    inherit_static_self(items, sigs, from);
     structs(items, sigs, from, &mut errors);
     impls(items, sigs, from, &mut errors);
     functions(items, sigs, from, &mut errors);
@@ -1179,8 +1239,8 @@ fn enter_fn_binder(
 
 /// The lifetimes of `function`'s opaque types, with `walker` past its
 /// parameters (so with the lifetimes elided there) and set up for its
-/// return type: those each captures, all of the function's unless
-/// `use<..>` lists them, those its `+ 'a` bounds name, and those of what
+/// return type: those each captures, all in edition 2024 or those appearing
+/// in older-edition bounds unless `use<..>` lists them, its `+ 'a` bounds, and what
 /// its bounds say associated types are (`Item = &'a T`, with lifetimes
 /// elided as in the return type), whose resolved bounds are `sigs`.
 fn opaque_regions(
@@ -1191,32 +1251,6 @@ fn opaque_regions(
     let all = walker.names.len() + walker.fresh.len();
     let mut out = Vec::new();
     for (i, decl) in function.opaques.iter().enumerate() {
-        let captures: Box<[Region]> = match &decl.captures {
-            None => (0..all as u32).map(Region::Param).collect(),
-            Some(list) => {
-                let mut captures = Vec::new();
-                for capture in list.iter() {
-                    let flux_hir::UseCapture::Lifetime(l) = *capture else {
-                        continue;
-                    };
-                    if l.is_static() {
-                        walker.errors.push((
-                            l.range,
-                            format!(
-                                "expected lifetime parameter in `use<...>` precise captures list, found `{}`",
-                                l.name
-                            ),
-                        ));
-                        continue;
-                    }
-                    let r = walker.named(l);
-                    if r != Region::Erased && !captures.contains(&r) {
-                        captures.push(r);
-                    }
-                }
-                captures.into()
-            }
-        };
         let outlives: Box<[Region]> = decl
             .lifetimes
             .iter()
@@ -1273,6 +1307,76 @@ fn opaque_regions(
                 projections.clear();
             }
         }
+        let captures: Box<[Region]> = match &decl.captures {
+            None if decl.edition == flux_syntax::Edition::E2024 => {
+                (0..all as u32).map(Region::Param).collect()
+            }
+            None => {
+                let mut mentioned = outlives.to_vec();
+                mentioned.extend(projections.iter().flatten().copied());
+                if let Some(sig) = sigs.get(i) {
+                    for (bound, predicate) in decl.bounds.iter().zip(sig.predicates.iter()) {
+                        let last = bound.path.segments.len().saturating_sub(1);
+                        let Some(args) = bound.path.args(last) else {
+                            continue;
+                        };
+                        // Fn inputs introduce their own universal regions;
+                        // explicit outer lifetimes still belong to the opaque.
+                        let outer = if args.parenthesized {
+                            Some(std::mem::replace(
+                                &mut walker.elided,
+                                Elided::Is(Region::Erased),
+                            ))
+                        } else {
+                            None
+                        };
+                        let late_names = enter_fn_binder(
+                            walker,
+                            args,
+                            predicate.trait_ref.args.first().copied(),
+                        );
+                        for (written, &ty) in args.types.iter().zip(predicate.trait_ref.args.iter())
+                        {
+                            mentioned.extend(walker.regions(written, ty).iter().copied());
+                        }
+                        walker.late_names = late_names;
+                        if let Some(outer) = outer {
+                            walker.elided = outer;
+                        }
+                    }
+                }
+                // Older editions capture lifetimes occurring in these bounds,
+                // not unrelated inputs or the method receiver. Type and const
+                // parameters remain in OpaqueTy's ordinary generic arguments.
+                (0..all as u32)
+                    .map(Region::Param)
+                    .filter(|r| mentioned.contains(r))
+                    .collect()
+            }
+            Some(list) => {
+                let mut captures = Vec::new();
+                for capture in list.iter() {
+                    let flux_hir::UseCapture::Lifetime(l) = *capture else {
+                        continue;
+                    };
+                    if l.is_static() {
+                        walker.errors.push((
+                            l.range,
+                            format!(
+                                "expected lifetime parameter in `use<...>` precise captures list, found `{}`",
+                                l.name
+                            ),
+                        ));
+                        continue;
+                    }
+                    let r = walker.named(l);
+                    if r != Region::Erased && !captures.contains(&r) {
+                        captures.push(r);
+                    }
+                }
+                captures.into()
+            }
+        };
         out.push(OpaqueRegions {
             captures,
             outlives,
@@ -1645,6 +1749,74 @@ fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors:
         if !changed {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../flux-syntax/tests/support/scaling.rs"]
+mod static_bound_scaling;
+
+#[cfg(test)]
+mod static_bound_tests {
+    use super::*;
+
+    #[test]
+    fn static_self_propagation_preserves_extension_boundary() {
+        let source = "trait P:'static{} trait C:P{} trait G:C{} fn main(){}";
+        let (_, _, hir) = flux_hir::lower_text("static-traits.rs", source);
+        let (mut sigs, errors) = crate::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let find = |name: &str| {
+            hir.items
+                .traits
+                .iter()
+                .find(|(_, data)| data.name.as_str() == name)
+                .unwrap()
+                .0
+        };
+        let child = find("C");
+        let grandchild = find("G");
+        sigs.regions.traits.get_mut(child).unwrap().outlives = Box::default();
+        sigs.regions.traits.get_mut(grandchild).unwrap().outlives = Box::default();
+        let mut from = hir.items.core;
+        from.traits = grandchild.index() as u32;
+        inherit_static_self(&hir.items, &mut sigs, from);
+        assert!(sigs.regions.traits[child].outlives.is_empty());
+        assert_eq!(
+            sigs.regions.traits[grandchild].outlives.as_ref(),
+            [Outlives::Type(
+                crate::traits::trait_self_predicate(&hir.items, grandchild).self_ty,
+                Region::Static
+            )]
+        );
+    }
+
+    /// No trait in this chain declares a static bound. Searching every
+    /// ancestor from every declaration must not make this common case cubic.
+    #[test]
+    fn static_self_trait_chain_scales() {
+        static_bound_scaling::assert_scales(
+            "static Self propagation through trait chains",
+            128,
+            |count| {
+                let mut source = String::from("trait T0 {}\n");
+                for index in 1..count {
+                    source.push_str(&format!("trait T{index}: T{} {{}}\n", index - 1));
+                }
+                source.push_str("fn main() {}\n");
+                let (_, _, hir) = flux_hir::lower_text("static-traits.rs", &source);
+                assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+                let (sigs, errors) = crate::signatures(&hir.items);
+                assert!(errors.is_empty(), "{errors:?}");
+                (hir.items, std::cell::RefCell::new(sigs))
+            },
+            |(items, sigs)| {
+                // Amortize timer noise without timing parsing/signature work.
+                for _ in 0..512 {
+                    inherit_static_self(items, &mut sigs.borrow_mut(), items.core);
+                }
+            },
+        );
     }
 }
 

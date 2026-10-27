@@ -29,6 +29,7 @@ these source graphs.
 | `keel_float_math` | Unchanged pinned Keel floating-point constant folder with the complete Keel IR dependency. |
 | `bumpalo_readiness` | Original bumpalo 3.20.3 with the resolved `collections` and `default` features, including collection ownership and zero-sized drops. |
 | `equivalent_readiness` | Original equivalent 1.0.3 in edition 2015, with native borrowed-key comparisons. |
+| `crc32fast_readiness` | Original crc32fast 1.5.3 and cfg-if 1.0.5, actual `std` feature/build-script cfg, baseline/specialized CRC paths and combining. |
 
 Run a graph directly, for example:
 
@@ -45,6 +46,7 @@ cargo test -p flux-cli --test keel_ir_readiness
 cargo test -p flux-cli --test keel_float_math
 cargo test -p flux-cli --test bumpalo_readiness
 cargo test -p flux-cli --test equivalent_readiness
+cargo test -p flux-cli --test crc32fast_readiness
 ```
 
 The typed-AST consumer exercises 135 generated node interfaces, 535 accessors
@@ -70,6 +72,14 @@ pointers, exact Drop counts and zero-sized elements. Locked offline metadata
 confirms no optional features are selected in the current Flux/Keel graph.
 Optional `union` and `const_generics` rustc audits do not establish Flux coverage
 for those unselected branches.
+
+The crc32fast consumer covers 90 length/offset combinations, incremental
+updates, three-stream crossover lengths and hash combination. Its original
+build script supplies the real intrinsic cfg flags to both compilers. Runtime
+CPU detection is genuine; CRC folding currently uses scalar code. This proves
+source compatibility, without hardware acceleration. The driver calls the
+public `hash` function through its qualified path: a separate import-resolution
+bug still confuses a private module and a public function sharing that name.
 
 The HIR consumer executes item collection and body lowering, resolves modules
 and traits, and compares an unresolved-name diagnostic. It also loads physical
@@ -159,7 +169,10 @@ The source milestones required compiler changes rather than algorithm rewrites:
   use acquire/release spinning, expose sized guard APIs and do not promise
   fairness. Flux panics abort; separate host tests exercise unwind recovery
   and poisoning. Native contention tests call generated code from host threads.
-- Bounded NEON APIs provide the eight-byte operations used by hashbrown.
+- Bounded NEON APIs provide the eight-byte operations used by hashbrown and
+  the existing 128-bit delimiter pipeline used by Keel. `std::arch` reexports
+  those core definitions. Focused native tests cover scanner masks and reified
+  calls; complete assembler native execution remains blocked below.
   Transmute checks size at generic definition time and scalar/reference
   validity during represented const evaluation. Const-field promotion retains
   root alignment, offsets and nested function addresses.
@@ -182,12 +195,11 @@ dependencies/generated outputs also belong to the
 complete source closure. Sourcegen and difftest are additional workspace targets,
 not prerequisites for the first compiler executable.
 
-The resumed assembler audit has zero syntax diagnostics and 132 HIR diagnostics,
-down from 152 before typed receivers, anonymous imports, Read/Seek and time APIs.
-Its source-integrity guards pass. GATs and associated `where` clauses account
-for 80 remaining diagnostics; CRC/SIMD, pre-2024 return-position `impl Trait`,
-multi-field transparent wrappers, test attributes and lifetime bounds also
-remain. This graph still stops before type checking and native codegen; see
+The latest assembler audit has zero syntax diagnostics and 80 HIR diagnostics,
+down from 111 after trait `Self: 'static` bounds, older-edition opaque captures
+and CRC support. Both source-integrity guards pass. All remaining diagnostics
+are 70 GAT declarations and 10 associated `where` clauses. This graph still
+stops before type checking and native codegen; see
 the [readiness report](../crates/flux-cli/tests/fixtures/keel_asm/READINESS.md).
 
 Current bounded language implementations still reject unsupported shapes.
@@ -195,8 +207,8 @@ The latest function-pointer review also found two unresolved correctness issues:
 object lifetime defaults cross intervening container types incorrectly, and
 implied input bounds permit some output-lifetime conversions that rustc rejects.
 These findings remain open despite the existing focused oracle coverage.
-Examples include multi-field transparent structs, broader dynamic callable
-lifetime forms, generic associated-constant promotion, raw-slice construction
+Examples include unproven zero-sized transparent marker fields, broader dynamic
+callable lifetime forms, generic associated-constant promotion, raw-slice construction
 in constant evaluation and generic unions. The dynamic callback extension
 currently covers direct elided references to concrete region-free inputs,
 region-free outputs and closure-source coercions. This is enough for the

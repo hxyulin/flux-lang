@@ -69,9 +69,9 @@ pub(super) fn check_inner_attrs(
     }
 }
 
-/// Only guaranteed baseline NEON on explicitly unsafe functions is supported.
-/// No per-function ISA or safety metadata is needed: codegen already emits this
-/// baseline, and ordinary unsafe function items retain all call/coercion rules.
+/// Only baseline NEON and scalar CRC implementations on explicitly unsafe
+/// functions are supported. Neither requires extra codegen ISA flags, and
+/// ordinary unsafe function items retain all call/coercion rules.
 pub(super) fn target_feature_attr(
     attr: ast::Attr<'_>,
     function: ast::Fn<'_>,
@@ -136,7 +136,7 @@ pub(super) fn target_feature_attr(
         match crate::literal::unescape_str(value.text.as_str()) {
             Ok(features) => {
                 for feature in features.split(',') {
-                    if feature != "neon" {
+                    if !matches!(feature, "neon" | "crc") {
                         diagnostics.push(Diagnostic::new(
                             value.range(),
                             format!("target feature `{feature}` is not supported yet"),

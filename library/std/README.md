@@ -6,13 +6,20 @@ alloc. It is not a complete Rust standard library. Imports such as
 `use std::mem`, and `use std::vec::Vec` name the original definitions;
 types and trait implementations retain their core/alloc identity.
 
-The root exposes core's `any`, `array`, `ascii`, `cell`, `char`, `clone`, `cmp`,
+The root exposes core's `any`, `arch`, `array`, `ascii`, `cell`, `char`, `clone`, `cmp`,
 `convert`, `default`, `error`, `ffi`, `hash`, `hint`, `iter`, `marker`, `mem`, `num`,
 `ops`, `option`, `panic`, `ptr`, `result`, `slice` and `str`, and alloc's
 `alloc`, `borrow`, `boxed`, `fmt`, `prelude`, `string` and `vec`. Only the
 APIs actually implemented in those modules exist. `cell` includes the existing
 `Cell` and `RefCell` implementations, including sized borrow-guard dereferencing;
 reexporting them does not add further standard-library APIs.
+`std::arch` retains core's bounded architecture APIs, including the existing
+AArch64 NEON operations used by Keel's delimiter scanner.
+`arch::is_aarch64_feature_detected!("crc")` supplies runtime CRC detection on
+macOS and Linux. The corresponding unsafe CRC intrinsics use exact scalar
+folding, without hardware acceleration. Other feature queries and safe
+target-feature functions remain outside the implemented surface. Native
+execution is verified on arm64 macOS; Linux detection remains unverified.
 `num` provides bounded `NonZeroU32` and `NonZeroU64` APIs. Their zero niches
 preserve the corresponding Option layouts. Other NonZero types and APIs are
 not implied.
