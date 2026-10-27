@@ -174,7 +174,6 @@ fn undeclared_nested_names_and_untracked_projections_are_rejected() {
         "trait Tr<'a> {} fn f<'a>(_: &'a dyn Tr<'a>) {} fn main() {}",
         "trait Tr<'a> {} trait Sub<'a> where Self: Tr<'a> {} fn main() {}",
         "trait Tr<'a> {} struct S; impl Tr<'static> for S {} fn f() -> impl Tr<'static> { S } fn main() {}",
-        "trait Tr<'a> { type Out; } fn f<'a, T: Tr<'a>>(_: <T as Tr<'a>>::Out) {} fn main() {}",
     ] {
         oracle(source, true);
         let messages = resolve(source).2;
@@ -188,6 +187,29 @@ fn undeclared_nested_names_and_untracked_projections_are_rejected() {
             "{source}: {messages:?}"
         );
     }
+}
+
+#[test]
+fn qualified_projection_retains_its_trait_owner_region() {
+    let source =
+        "trait Tr<'a> { type Out; } fn f<'a, T: Tr<'a>>(_: <T as Tr<'a>>::Out) {} fn main() {}";
+    oracle(source, true);
+    let (hir, sigs, messages) = resolve(source);
+    assert!(messages.is_empty(), "{messages:?}");
+    let (id, _) = hir
+        .items
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.as_str() == "f")
+        .unwrap();
+    assert_eq!(
+        sigs.regions.fns[id].params[0].first(),
+        Some(&Region::Param(0))
+    );
+    assert_eq!(
+        sigs.regions.fns[id].params[0].len(),
+        flux_ty::regions::slots(&hir.items, sigs.fns[id].params[0])
+    );
 }
 
 #[test]

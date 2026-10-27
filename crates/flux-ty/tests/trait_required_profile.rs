@@ -355,7 +355,6 @@ fn unsupported_declarations_keep_the_production_gate() {
     for source in [
         "trait T<'a,'b> {}",
         "trait T<'a,U> {}",
-        "trait T<'a> {type Out;}",
         "trait T<'a> {fn f() {}}",
         "trait T<'a> {fn f<'b>(x: &'b i32);}",
         "trait T<'a> {fn f(x: fn(&'a i32));}",
@@ -376,6 +375,20 @@ fn unsupported_declarations_keep_the_production_gate() {
             );
         }
     }
+}
+
+#[test]
+fn associated_items_use_the_separate_family_profile() {
+    let (hir, sigs, id) = resolve("trait T<'a> {type Out;}");
+    // The old required-method profile remains narrow; production admission
+    // separately validates associated family metadata.
+    assert!(profile(&hir, &sigs, id).is_err());
+    let (_, diagnostics) = flux_ty::signatures(&hir.items);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let owner = &sigs.regions.traits[id];
+    assert_eq!(owner.names.len(), 1);
+    assert_eq!(owner.families.len(), 1);
+    assert_eq!(owner.families[0].1.owner, 1);
 }
 
 #[test]

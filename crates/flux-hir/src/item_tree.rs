@@ -439,8 +439,12 @@ impl Trait {
 #[derive(Debug, Clone)]
 pub struct TraitType {
     pub name: Symbol,
+    /// Family-local parameters and predicates, separate from the trait's.
+    pub generics: Generics,
     /// The bounds every type given for it must meet.
     pub bounds: Box<[Bound]>,
+    /// Outlives bounds on each selected output, not on the family receiver.
+    pub lifetime_bounds: Box<[LifetimeRef]>,
     pub name_range: TextRange,
     /// The whole item.
     pub item_range: TextRange,
@@ -451,6 +455,8 @@ pub struct TraitType {
 #[derive(Debug, Clone)]
 pub struct ImplType {
     pub name: Symbol,
+    /// Family-local parameters and predicates, separate from the impl header.
+    pub generics: Generics,
     pub ty: TypeRef,
     pub ty_range: TextRange,
     pub name_range: TextRange,

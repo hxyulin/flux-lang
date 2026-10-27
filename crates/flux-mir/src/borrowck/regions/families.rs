@@ -1,0 +1,739 @@
+//! Associated family occurrence inputs and selected impl template substitution.
+use super::*;
+
+impl Cx<'_> {
+    /// Instantiate a projection's captured input row before normalizing its
+    /// output. Owner and family binders have independent variable arrays.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn instantiate_family<A: AsRef<[Var]>>(
+        &mut self,
+        alias: AliasTy,
+        own: &[Region],
+        next: &mut usize,
+        map: &mut dyn FnMut(Region) -> Option<Var>,
+        args: &[Ty],
+        arg_vars: &[A],
+    ) -> Option<Vec<Var>> {
+        let mut owner = Vec::new();
+        for _ in 0..alias.owner_lifetimes {
+            owner.push(map(*own.get(*next)?)?);
+            *next += 1;
+        }
+        let mut inputs = Vec::new();
+        for &ty in alias.args {
+            let mut row = Vec::new();
+            if !self.inst(ty, own, next, map, args, arg_vars, &mut row) {
+                return None;
+            }
+            inputs.push(row);
+        }
+        let mut family = Vec::new();
+        for _ in 0..alias.family_lifetimes {
+            family.push(map(*own.get(*next)?)?);
+            *next += 1;
+        }
+        let mut family_inputs = Vec::new();
+        for &ty in alias.family_args {
+            let mut row = Vec::new();
+            if !self.inst(ty, own, next, map, args, arg_vars, &mut row) {
+                return None;
+            }
+            family_inputs.push(row);
+        }
+        let instance = if args.is_empty() {
+            alias
+        } else {
+            let TyKind::Alias(instance) = Ty::alias(alias).subst(args).kind() else {
+                return None;
+            };
+            instance
+        };
+        self.family_prerequisites(instance, &owner, &inputs, &family, &family_inputs)?;
+        if self.family_depth > 32 {
+            return None;
+        }
+        self.family_depth += 1;
+        let output = self.family_output(
+            instance,
+            &owner,
+            &inputs,
+            &family,
+            &family_inputs,
+            self.family_depth,
+        );
+        self.family_depth -= 1;
+        output
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn family_prerequisites(
+        &mut self,
+        alias: AliasTy,
+        owner: &[Var],
+        inputs: &[Vec<Var>],
+        family: &[Var],
+        family_inputs: &[Vec<Var>],
+    ) -> Option<()> {
+        let decl = self
+            .sigs
+            .regions
+            .traits
+            .get(alias.trait_)?
+            .families
+            .iter()
+            .find(|(name, _)| *name == alias.name)?
+            .1
+            .clone();
+        if decl.owner as usize != owner.len() || decl.names.len() != owner.len() + family.len() {
+            return None;
+        }
+        let lifetimes: Vec<_> = owner.iter().chain(family).copied().collect();
+        let types: Vec<_> = inputs.iter().chain(family_inputs).cloned().collect();
+        let args = alias.template_args();
+        let map = |r| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => lifetimes.get(i as usize).copied(),
+            _ => None,
+        };
+        for prerequisite in &decl.outlives {
+            match *prerequisite {
+                Outlives::Region(a, b) => {
+                    self.outlives(map(a)?, map(b)?, Category::CallArgument, self.call_range)
+                }
+                Outlives::Type(ty, b) => {
+                    let b = map(b)?;
+                    let vars = self.bound_slots(ty, &args, &types)?;
+                    for v in vars {
+                        self.outlives(v, b, Category::CallArgument, self.call_range);
+                    }
+                    self.type_outlives(self.normalize(ty.subst(&args)), b, self.call_range);
+                }
+            }
+        }
+        Some(())
+    }
+
+    /// The selected RHS is expressed in selected header parameters followed
+    /// by family parameters, never the trait's erased membership arguments.
+    #[allow(clippy::too_many_arguments)]
+    fn family_output(
+        &mut self,
+        alias: AliasTy,
+        owner: &[Var],
+        inputs: &[Vec<Var>],
+        family: &[Var],
+        family_inputs: &[Vec<Var>],
+        depth: u32,
+    ) -> Option<Vec<Var>> {
+        if depth > 32 {
+            return None;
+        }
+        let goal = flux_ty::Predicate {
+            self_ty: alias.args[0],
+            trait_ref: flux_ty::TraitRef {
+                trait_: alias.trait_,
+                name: alias.trait_name,
+                args: &alias.args[1..],
+            },
+        };
+        if let Some(row) = self.family_projection_output(alias, inputs, owner) {
+            return Some(row);
+        }
+        let Some((imp, header_args)) = flux_ty::traits::select_impl(self.items, self.sigs, goal)
+        else {
+            // An abstract projection keeps its occurrence inputs. Its declared
+            // output lifetime bounds are applied separately, not invented from
+            // a chosen impl or another occurrence of the same erased Ty.
+            let mut row = owner.to_vec();
+            row.extend(inputs.iter().flatten().copied());
+            row.extend(family);
+            row.extend(family_inputs.iter().flatten().copied());
+            return Some(row);
+        };
+        if self.body.owner.is_none() {
+            let requirement = ImplRegionGoal {
+                predicate: goal,
+                lifetimes: owner.to_vec(),
+                vars: inputs.to_vec(),
+                bound: Vec::new(),
+            };
+            if !self.impl_prove_super(&requirement, &self.family_goals.clone(), depth) {
+                return None;
+            }
+        } else {
+            self.prove(goal, inputs, owner, self.call_range, depth);
+        }
+        let binding = self.bind_impl(
+            imp,
+            &header_args,
+            alias.args,
+            inputs,
+            owner,
+            self.call_range,
+            depth,
+        )?;
+        let impl_regions = self.sigs.regions.impls.get(imp)?;
+        let template = impl_regions
+            .families
+            .iter()
+            .find(|(name, _)| *name == alias.name)?
+            .1
+            .clone();
+        if template.owner as usize != binding.lifetimes.len()
+            || template.names.len() != binding.lifetimes.len() + family.len()
+        {
+            return None;
+        }
+        let mut lifetimes: Vec<_> = binding.lifetimes.iter().copied().collect::<Option<_>>()?;
+        lifetimes.extend(family);
+        let mut types = Vec::new();
+        for (index, row) in binding.types.into_iter().enumerate() {
+            match row {
+                Some(row) => types.push(row),
+                None if self.slots(header_args[index]) == 0 => types.push(Vec::new()),
+                None => return None,
+            }
+        }
+        // A zero-sized/scalar output still selects this impl. Its type-only
+        // outlives predicates must not disappear with an empty output row.
+        for prerequisite in &impl_regions.bounds {
+            let header_map = |r| match r {
+                Region::Static => Some(STATIC),
+                Region::Param(i) => lifetimes.get(i as usize).copied(),
+                _ => None,
+            };
+            match *prerequisite {
+                Outlives::Region(a, b) => self.outlives(
+                    header_map(a)?,
+                    header_map(b)?,
+                    Category::CallArgument,
+                    self.call_range,
+                ),
+                Outlives::Type(ty, b) => {
+                    let b = header_map(b)?;
+                    for v in self.bound_slots(ty, &header_args, &types)? {
+                        self.outlives(v, b, Category::CallArgument, self.call_range);
+                    }
+                    self.type_outlives(self.normalize(ty.subst(&header_args)), b, self.call_range);
+                }
+            }
+        }
+        types.extend(family_inputs.iter().cloned());
+        let mut args = header_args.clone();
+        args.extend(alias.family_args);
+        let value = flux_ty::traits::impl_type(self.sigs, imp, alias.name)?;
+        let mut map = |r| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => lifetimes.get(i as usize).copied(),
+            _ => None,
+        };
+        self.instantiate_sig(value, &template.value, &mut map, &args, &types)
+    }
+}
+
+/// Check each family under universal owner and family binders, even when no
+/// expression projects it. Neither declaration may silently add prerequisites.
+pub(super) fn impl_family_values_match(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: flux_hir::ImplId,
+) -> Option<bool> {
+    let Some(trait_ref) = sigs.impl_traits.get(imp).copied() else {
+        return Some(true);
+    };
+    let Some(block) = sigs.regions.impls.get(imp) else {
+        return Some(true);
+    };
+    for definition in &items.impls[imp].types {
+        let Some((_, decl)) = sigs
+            .regions
+            .traits
+            .get(trait_ref.trait_)?
+            .families
+            .iter()
+            .find(|(name, _)| *name == definition.name)
+        else {
+            continue;
+        };
+        let Some((_, actual)) = block
+            .families
+            .iter()
+            .find(|(name, _)| *name == definition.name)
+        else {
+            continue;
+        };
+        let declaration = items.traits[trait_ref.trait_]
+            .types
+            .iter()
+            .find(|f| f.name == definition.name)?;
+        let bindings = declaration
+            .bounds
+            .iter()
+            .flat_map(|b| b.path.args.iter().flatten())
+            .map(|a| a.bindings.len())
+            .sum::<usize>();
+        if decl.output_traits.len() != declaration.bounds.len()
+            || decl.output_projections.len() != bindings
+            || actual.value.len()
+                != flux_ty::regions::slots(
+                    items,
+                    flux_ty::traits::impl_type(sigs, imp, definition.name)?,
+                )
+        {
+            return None;
+        }
+        if decl.owner == 0
+            && decl.names.is_empty()
+            && definition.generics.params.is_empty()
+            && decl.output_outlives.is_empty()
+        {
+            continue;
+        }
+        if decl.owner as usize > decl.names.len() || actual.owner as usize > actual.names.len() {
+            return None;
+        }
+        if decl.names.len() - decl.owner as usize != actual.names.len() - actual.owner as usize {
+            return Some(false);
+        }
+        for reverse in [false, true] {
+            let body = Body::empty(None);
+            let none = Requirements::default();
+            let mut cx = Cx::new(&body, items, sigs, &none);
+            let (mut lifetimes, mut env) = cx.impl_header_environment(imp)?;
+            for index in actual.owner as usize..actual.names.len() {
+                lifetimes.push(cx.new_universal(format!("'family{index}")));
+            }
+            let map_impl = |r| match r {
+                Region::Static => Some(STATIC),
+                Region::Param(index) => lifetimes.get(index as usize).copied(),
+                _ => None,
+            };
+            let mut owner = Vec::new();
+            for &r in &block.trait_lifetimes {
+                owner.push(map_impl(r)?);
+            }
+            let mut declaration_lifetimes = owner.clone();
+            declaration_lifetimes.extend(&lifetimes[actual.owner as usize..]);
+            let map_decl = |r| match r {
+                Region::Static => Some(STATIC),
+                Region::Param(index) => declaration_lifetimes.get(index as usize).copied(),
+                _ => None,
+            };
+            let self_ty = sigs.impls[imp];
+            let mut args = vec![self_ty];
+            args.extend(trait_ref.args);
+            let header_count = items.impls[imp].generics.params.len();
+            for (index, param) in definition.generics.params.iter().enumerate() {
+                args.push(Ty::param((header_count + index) as u32, param.name));
+            }
+            let mut inputs =
+                vec![cx.instantiate_sig(self_ty, &block.self_ty, &mut { map_impl }, &[], &[])?];
+            for (&ty, row) in trait_ref.args.iter().zip(block.trait_args.iter()) {
+                inputs.push(cx.instantiate_sig(ty, row, &mut { map_impl }, &[], &[])?);
+            }
+            inputs.extend(definition.generics.params.iter().map(|_| Vec::new()));
+            let (assumptions, requirements) = if reverse {
+                (&actual.outlives, &decl.outlives)
+            } else {
+                (&decl.outlives, &actual.outlives)
+            };
+            for assumption in assumptions {
+                let (a, b) = match *assumption {
+                    Outlives::Region(a, b) => (Some(a), b),
+                    Outlives::Type(ty, b) => {
+                        let mapped = if reverse { map_impl(b)? } else { map_decl(b)? };
+                        let instance = if reverse { ty } else { ty.subst(&args) };
+                        for component in flux_ty::regions::outlives_type_components(sigs, instance)
+                        {
+                            cx.known_types.push((component, mapped));
+                        }
+                        if !reverse {
+                            for v in cx.bound_slots(ty, &args, &inputs)? {
+                                cx.known_pairs.push((v, mapped));
+                            }
+                        }
+                        continue;
+                    }
+                };
+                let mapper = if reverse {
+                    &map_impl as &dyn Fn(Region) -> Option<Var>
+                } else {
+                    &map_decl
+                };
+                cx.known_pairs.push((mapper(a?)?, mapper(b)?));
+            }
+            if let Some(schema) = sigs
+                .impl_families
+                .get(imp)
+                .and_then(|families| families.iter().find(|(name, _)| *name == definition.name))
+                .map(|(_, schema)| schema)
+            {
+                for (index, &predicate) in schema.predicates.iter().enumerate() {
+                    let goal = cx.impl_region_goal(
+                        predicate,
+                        actual.bound_selfs.get(index).map_or(&[], |row| row),
+                        actual
+                            .bound_traits
+                            .get(index)
+                            .unwrap_or(&TraitRefRegions::default()),
+                        &lifetimes,
+                        &[],
+                        &[],
+                    )?;
+                    if !cx.impl_super_goals(goal, &mut env, 0) {
+                        return None;
+                    }
+                    cx.header_predicates.push(predicate);
+                }
+                for (projection, table) in schema.projections.iter().zip(actual.projections.iter())
+                {
+                    let row =
+                        cx.instantiate_sig(projection.ty, table, &mut { map_impl }, &[], &[])?;
+                    cx.env.push(*projection);
+                    cx.env_regions.push((projection.alias, row));
+                }
+                cx.family_goals = env.clone();
+            }
+            cx.close_known();
+            for requirement in requirements {
+                let mapper = if reverse {
+                    &map_decl as &dyn Fn(Region) -> Option<Var>
+                } else {
+                    &map_impl
+                };
+                match *requirement {
+                    Outlives::Region(a, b) => cx.outlives(
+                        mapper(a)?,
+                        mapper(b)?,
+                        Category::Boring,
+                        definition.item_range,
+                    ),
+                    Outlives::Type(ty, b) => {
+                        let b = mapper(b)?;
+                        if reverse {
+                            for v in cx.bound_slots(ty, &args, &inputs)? {
+                                cx.outlives(v, b, Category::Boring, definition.item_range);
+                            }
+                        }
+                        let ty = if reverse { ty.subst(&args) } else { ty };
+                        cx.type_outlives(ty, b, definition.item_range);
+                    }
+                }
+            }
+            if !reverse {
+                let value = flux_ty::traits::impl_type(sigs, imp, definition.name)?;
+                let row = cx.instantiate_sig(value, &actual.value, &mut { map_impl }, &[], &[])?;
+                for &bound in &decl.output_outlives {
+                    let target = map_decl(bound)?;
+                    for &v in &row {
+                        cx.outlives(v, target, Category::Boring, definition.item_range);
+                    }
+                    cx.type_outlives(value, target, definition.item_range);
+                }
+                for (bound, tables) in &decl.output_traits {
+                    let mut vars = vec![row.clone()];
+                    for (&ty, table) in bound.args.iter().zip(tables.args.iter()) {
+                        vars.push(cx.instantiate_sig(
+                            ty,
+                            table,
+                            &mut { map_decl },
+                            &args,
+                            &inputs,
+                        )?);
+                    }
+                    let trait_lifetimes = tables
+                        .lifetimes
+                        .iter()
+                        .map(|&r| map_decl(r))
+                        .collect::<Option<_>>()?;
+                    let goal = ImplRegionGoal {
+                        predicate: bound.subst(&args).with_self(cx.normalize(value)),
+                        lifetimes: trait_lifetimes,
+                        vars,
+                        bound: Vec::new(),
+                    };
+                    if !cx.impl_prove_super(&goal, &env, 0) {
+                        return Some(false);
+                    }
+                }
+                for (projection, table) in &decl.output_projections {
+                    let expected = cx.instantiate_sig(
+                        projection.ty,
+                        table,
+                        &mut { map_decl },
+                        &args,
+                        &inputs,
+                    )?;
+                    let alias = projection
+                        .alias
+                        .map_args(|ty| cx.normalize(ty.subst(&args)));
+                    if alias.family_lifetimes != 0 || !alias.family_args.is_empty() {
+                        return None;
+                    }
+                    let actual_ty = cx.normalize(Ty::alias(alias));
+                    let expected_ty = cx.normalize(projection.ty.subst(&args));
+                    if actual_ty != expected_ty {
+                        return Some(false);
+                    }
+                    let self_vars = row.clone();
+                    let mut alias_vars = vec![self_vars];
+                    for &arg in &alias.args[1..] {
+                        let n = cx.slots(arg);
+                        if n != 0 {
+                            return None;
+                        }
+                        alias_vars.push(Vec::new());
+                    }
+                    let actual = if alias.owner_lifetimes != 0 {
+                        let (_, owner_table) = decl
+                            .output_traits
+                            .iter()
+                            .find(|(bound, _)| bound.trait_ == alias.trait_)?;
+                        let owner = owner_table
+                            .lifetimes
+                            .iter()
+                            .map(|&r| map_decl(r))
+                            .collect::<Option<Vec<_>>>()?;
+                        cx.family_prerequisites(alias, &owner, &alias_vars, &[], &[])?;
+                        cx.family_output(alias, &owner, &alias_vars, &[], &[], 0)?
+                    } else {
+                        cx.normalize_regions(alias, &alias_vars, 0)?
+                    };
+                    if actual.len() != expected.len() {
+                        return None;
+                    }
+                    for (a, b) in actual.into_iter().zip(expected) {
+                        cx.equate(a, b, Category::Boring, definition.item_range);
+                    }
+                }
+            }
+            let solution = cx.solve(&Points::new(&body), &[], &[]);
+            if !cx.check_universal(&solution).is_empty()
+                || !cx.check_type_tests(&solution).is_empty()
+                || !cx.errors.is_empty()
+            {
+                return Some(false);
+            }
+        }
+    }
+    Some(true)
+}
+
+impl Cx<'_> {
+    /// Bounds on a family are available only through its original owning
+    /// predicate, with the owner and family lifetimes from this exact value.
+    pub(super) fn caller_family_bound(
+        &mut self,
+        goal: flux_ty::Predicate,
+        vars: &[Vec<Var>],
+        trait_lifetimes: &[Var],
+        range: TextRange,
+    ) -> bool {
+        let TyKind::Alias(alias) = goal.self_ty.kind() else {
+            return false;
+        };
+        if !flux_ty::regions::has_projection_inputs(alias) || self.family_depth > 32 {
+            return false;
+        }
+        self.family_depth += 1;
+        let result = (|| -> Option<bool> {
+            let row = vars.first()?;
+            let mut next = 0;
+            let owner = row.get(..alias.owner_lifetimes as usize)?.to_vec();
+            next += owner.len();
+            let mut inputs = Vec::new();
+            for &ty in alias.args {
+                let count = self.slots(ty) as usize;
+                inputs.push(row.get(next..next + count)?.to_vec());
+                next += count;
+            }
+            let family = row
+                .get(next..next + alias.family_lifetimes as usize)?
+                .to_vec();
+            next += family.len();
+            let mut family_inputs = Vec::new();
+            for &ty in alias.family_args {
+                let count = self.slots(ty) as usize;
+                family_inputs.push(row.get(next..next + count)?.to_vec());
+                next += count;
+            }
+            if next != row.len() {
+                return None;
+            }
+            let declaration = self
+                .sigs
+                .regions
+                .traits
+                .get(alias.trait_)?
+                .families
+                .iter()
+                .find(|(name, _)| *name == alias.name)?
+                .1
+                .clone();
+            let lifetimes: Vec<_> = owner.iter().chain(&family).copied().collect();
+            let args = alias.template_args();
+            let types: Vec<_> = inputs.iter().chain(&family_inputs).cloned().collect();
+            let map = |r| match r {
+                Region::Static => Some(STATIC),
+                Region::Param(i) => lifetimes.get(i as usize).copied(),
+                _ => None,
+            };
+            let mut choice = None;
+            for (bound, tables) in &declaration.output_traits {
+                if bound.subst(&args) != goal.trait_ref {
+                    continue;
+                }
+                let mut equalities = Vec::new();
+                if tables.lifetimes.len() != trait_lifetimes.len()
+                    || vars.len() != 1 + bound.args.len()
+                {
+                    continue;
+                }
+                for (&r, &actual) in tables.lifetimes.iter().zip(trait_lifetimes) {
+                    equalities.push((map(r)?, actual));
+                }
+                for (index, (&ty, table)) in bound.args.iter().zip(tables.args.iter()).enumerate() {
+                    let expected = self.instantiate_sig(ty, table, &mut { map }, &args, &types)?;
+                    if expected.len() != vars[index + 1].len() {
+                        return None;
+                    }
+                    equalities.extend(expected.into_iter().zip(vars[index + 1].iter().copied()));
+                }
+                if self.caller_equalities_fit(&equalities) {
+                    choice = Some(equalities);
+                    break;
+                }
+            }
+            let Some(equalities) = choice else {
+                return Some(false);
+            };
+            let owner_goal = flux_ty::Predicate {
+                self_ty: alias.args[0],
+                trait_ref: flux_ty::TraitRef {
+                    trait_: alias.trait_,
+                    name: alias.trait_name,
+                    args: &alias.args[1..],
+                },
+            };
+            if !self.caller_bound(owner_goal, &inputs, &owner, range) {
+                return Some(false);
+            }
+            self.family_prerequisites(alias, &owner, &inputs, &family, &family_inputs)?;
+            for (a, b) in equalities {
+                self.equate(a, b, Category::CallArgument, range);
+            }
+            Some(true)
+        })()
+        .unwrap_or(false);
+        self.family_depth -= 1;
+        result
+    }
+}
+
+impl Cx<'_> {
+    /// Forward an associated equality on one family without retaining the
+    /// temporary receiver borrow of an iterator adapter's `next` call.
+    pub(super) fn family_projection_output(
+        &mut self,
+        alias: AliasTy,
+        arg_vars: &[Vec<Var>],
+        outer_owner: &[Var],
+    ) -> Option<Vec<Var>> {
+        let TyKind::Alias(owner_alias) = alias.args.first()?.kind() else {
+            return None;
+        };
+        if !flux_ty::regions::has_projection_inputs(owner_alias) || self.family_depth > 32 {
+            return None;
+        }
+        let row = arg_vars.first()?;
+        let mut next = 0;
+        let owner = row.get(..owner_alias.owner_lifetimes as usize)?.to_vec();
+        next += owner.len();
+        let mut inputs = Vec::new();
+        for &ty in owner_alias.args {
+            let n = self.slots(ty) as usize;
+            inputs.push(row.get(next..next + n)?.to_vec());
+            next += n;
+        }
+        let family = row
+            .get(next..next + owner_alias.family_lifetimes as usize)?
+            .to_vec();
+        next += family.len();
+        let mut family_inputs = Vec::new();
+        for &ty in owner_alias.family_args {
+            let n = self.slots(ty) as usize;
+            family_inputs.push(row.get(next..next + n)?.to_vec());
+            next += n;
+        }
+        if next != row.len() {
+            return None;
+        }
+        let contract = self
+            .sigs
+            .regions
+            .traits
+            .get(owner_alias.trait_)?
+            .families
+            .iter()
+            .find(|(name, _)| *name == owner_alias.name)?
+            .1
+            .clone();
+        let args = owner_alias.template_args();
+        let (projection, table) = contract
+            .output_projections
+            .iter()
+            .find(|(p, _)| p.alias.map_args(|ty| ty.subst(&args)) == alias)?;
+        let lifetimes: Vec<_> = owner.iter().chain(&family).copied().collect();
+        let types: Vec<_> = inputs.iter().chain(&family_inputs).cloned().collect();
+        let mut map = |r| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => lifetimes.get(i as usize).copied(),
+            _ => None,
+        };
+        if alias.owner_lifetimes as usize != outer_owner.len() {
+            return None;
+        }
+        if !outer_owner.is_empty() {
+            let (_, bound) = contract
+                .output_traits
+                .iter()
+                .find(|(bound, _)| bound.trait_ == alias.trait_)?;
+            if bound.lifetimes.len() != outer_owner.len() {
+                return None;
+            }
+            for (&r, &actual) in bound.lifetimes.iter().zip(outer_owner) {
+                self.equate(map(r)?, actual, Category::CallArgument, self.call_range);
+            }
+        }
+        self.family_depth += 1;
+        let result = self.instantiate_sig(projection.ty, table, &mut map, &args, &types);
+        self.family_depth -= 1;
+        result
+    }
+}
+
+impl Cx<'_> {
+    /// A unique blanket header can be selected on an abstract family, but its
+    /// predicates are still proved below from the original caller contracts.
+    pub(super) fn family_blanket_impl(
+        &self,
+        goal: flux_ty::Predicate,
+    ) -> Option<(flux_hir::ImplId, Vec<Ty>)> {
+        let TyKind::Alias(alias) = goal.self_ty.kind() else {
+            return None;
+        };
+        if !flux_ty::regions::has_projection_inputs(alias) {
+            return None;
+        }
+        let mut candidates = self
+            .sigs
+            .impl_index
+            .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
+            .filter(|&id| matches!(self.sigs.impls[id].kind(), TyKind::Param(_)))
+            .filter_map(|id| {
+                flux_ty::traits::match_impl(self.items, self.sigs, id, goal).map(|args| (id, args))
+            });
+        let selected = candidates.next()?;
+        candidates.next().is_none().then_some(selected)
+    }
+}

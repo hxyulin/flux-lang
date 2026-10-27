@@ -222,23 +222,68 @@ pub(super) fn extend_signatures(
         projections.extend(resolved.projections);
         let header_projections = projections.clone().into_boxed_slice();
         let mut type_bounds = Vec::new();
+        let mut families = Vec::new();
         for ty in &t.types {
-            let alias = Ty::alias(traits::alias_of(bounds[0].trait_ref, self_param, ty.name));
+            let owner = Some(Owner::Trait(id));
+            let names = generic_names(items, owner, &ty.generics);
+            let consts = generic_consts(items, owner, &ty.generics);
+            let parameters = unsized_params(items, owner, &ty.generics);
+            let family_scope = TypeScope {
+                generics: &names,
+                consts: &consts,
+                unsized_params: &parameters,
+                ..scope
+            };
+            check_family_names(&t.generics, &ty.generics, &mut errors);
+            check_const_params(items, t.loc.module, &ty.generics, &names, &mut errors);
+            let resolved = resolve_predicates(
+                items,
+                &sigs,
+                t.loc.module,
+                &ty.generics,
+                family_scope,
+                &mut errors,
+            );
+            let family_bounds: Vec<_> =
+                bounds.iter().chain(&resolved.predicates).copied().collect();
+            let family_bounds = traits::elaborate(&sigs, &family_bounds);
+            let family_scope = TypeScope {
+                bounds: &family_bounds,
+                ..family_scope
+            };
+            let mut alias = traits::alias_of(items, bounds[0].trait_ref, self_param, ty.name);
+            alias.family_args = Ty::list(&params_of(&ty.generics, generics.len()));
             for b in ty.bounds.iter() {
-                if let Some((trait_ref, bindings)) =
-                    traits::resolve_bound(items, t.loc.module, b, alias, scope, &mut errors)
-                {
+                if let Some((trait_ref, bindings)) = traits::resolve_bound(
+                    items,
+                    t.loc.module,
+                    b,
+                    Ty::alias(alias),
+                    family_scope,
+                    &mut errors,
+                ) {
                     type_bounds.push((ty.name, trait_ref));
                     implied.extend(bindings.iter().copied());
                     projections.extend(bindings);
                 }
             }
+            families.push((
+                ty.name,
+                traits::AssociatedTypeSig {
+                    owner_params: generics.len() as u32,
+                    lifetimes: ty.generics.lifetimes.len() as u32,
+                    params: ty.generics.params.iter().map(param_const_ty).collect(),
+                    predicates: resolved.predicates.into(),
+                    projections: resolved.projections.into(),
+                },
+            ));
         }
         in_file(errors, t.loc.file, &mut reported);
         let defaults = sigs.trait_defaults.get(id).cloned().unwrap_or_default();
         sigs.traits.insert(
             id,
             TraitSig {
+                families: families.into(),
                 supertraits: supertraits.into(),
                 defaults,
                 type_bounds: type_bounds.into(),
@@ -428,17 +473,65 @@ pub(super) fn extend_signatures(
             self_inherited_types: &self_inherited_types,
             ..scope
         };
-        let types: Box<[(Symbol, Ty)]> = imp
-            .types
-            .iter()
-            .map(|t| {
-                let ty = resolve_type(items, imp.module, &t.ty, scope, t.ty_range, &mut errors);
-                (t.name, ty)
-            })
-            .collect();
+        let mut types = Vec::new();
+        let mut families = Vec::new();
+        for definition in &imp.types {
+            let owner = Some(Owner::Impl(id));
+            let names = generic_names(items, owner, &definition.generics);
+            let consts = generic_consts(items, owner, &definition.generics);
+            let parameters = crate::unsized_params(items, owner, &definition.generics);
+            let family_scope = TypeScope {
+                generics: &names,
+                consts: &consts,
+                unsized_params: &parameters,
+                ..scope
+            };
+            check_family_names(&imp.generics, &definition.generics, &mut errors);
+            check_const_params(items, imp.module, &definition.generics, &names, &mut errors);
+            let resolved = resolve_predicates(
+                items,
+                &sigs,
+                imp.module,
+                &definition.generics,
+                family_scope,
+                &mut errors,
+            );
+            let family_bounds: Vec<_> =
+                bounds.iter().chain(&resolved.predicates).copied().collect();
+            let family_bounds = traits::elaborate(&sigs, &family_bounds);
+            let family_scope = TypeScope {
+                bounds: &family_bounds,
+                ..family_scope
+            };
+            let ty = resolve_type(
+                items,
+                imp.module,
+                &definition.ty,
+                family_scope,
+                definition.ty_range,
+                &mut errors,
+            );
+            types.push((definition.name, ty));
+            families.push((
+                definition.name,
+                traits::AssociatedTypeSig {
+                    owner_params: generics.len() as u32,
+                    lifetimes: definition.generics.lifetimes.len() as u32,
+                    params: definition
+                        .generics
+                        .params
+                        .iter()
+                        .map(param_const_ty)
+                        .collect(),
+                    predicates: resolved.predicates.into(),
+                    projections: resolved.projections.into(),
+                },
+            ));
+        }
+        sigs.impl_families.insert(id, families.into());
         in_file(errors, imp.file, &mut reported);
         if !types.is_empty() {
-            sigs.impl_types.insert(id, types);
+            sigs.impl_types.insert(id, types.into());
         }
         if !resolved.predicates.is_empty() {
             sigs.impl_predicates.insert(id, resolved.predicates.into());
@@ -891,5 +984,33 @@ fn transparent_field_shape(
         TyKind::Bool => (false, true),
         TyKind::Int(int) => (false, int.bits() == 8),
         _ => (false, false),
+    }
+}
+
+/// Family-local binders cannot shadow a parameter of their owning item.
+fn check_family_names(owner: &Generics, family: &Generics, errors: &mut Vec<(TextRange, String)>) {
+    for parameter in &family.params {
+        if owner
+            .params
+            .iter()
+            .any(|outer| outer.name == parameter.name)
+        {
+            errors.push((
+                parameter.range,
+                format!("generic parameter `{}` shadows its owner", parameter.name),
+            ));
+        }
+    }
+    for lifetime in &family.lifetimes {
+        if owner
+            .lifetimes
+            .iter()
+            .any(|outer| outer.name == lifetime.name)
+        {
+            errors.push((
+                lifetime.range,
+                format!("lifetime `{}` shadows its owner", lifetime.name),
+            ));
+        }
     }
 }

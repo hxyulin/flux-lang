@@ -223,13 +223,36 @@ pub struct TraitRefRegions {
 /// metadata is checked; unsupported declarations retain the lifetime gate.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TraitRegions {
+    pub families: Box<[(Symbol, FamilyRegions)]>,
     pub names: Box<[LifetimeName]>,
     pub outlives: Box<[Outlives<Region>]>,
+}
+
+/// An associated family's contract, under its owner's lifetimes followed by
+/// fresh family-local lifetime parameters. Type parameters follow the same
+/// owner-then-family order in the type signature templates.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FamilyRegions {
+    pub names: Box<[LifetimeName]>,
+    pub owner: u32,
+    /// The impl RHS's region row; empty for a trait declaration.
+    pub value: Box<[Region]>,
+    /// Where-clause prerequisites, not assumptions about an arbitrary use.
+    pub outlives: Box<[Outlives<Region>]>,
+    /// Explicit lifetime bounds on the declared output.
+    pub output_outlives: Box<[Region]>,
+    pub output_traits: Box<[(crate::TraitRef, TraitRefRegions)]>,
+    pub output_projections: Box<[(crate::Projection, Box<[Region]>)]>,
+    pub bound_selfs: Box<[Box<[Region]>]>,
+    pub bound_traits: Box<[TraitRefRegions]>,
+    pub projections: Box<[Box<[Region]>]>,
+    pub selections: Box<[ProjectionSelection]>,
 }
 
 /// The lifetimes of an `impl` block's header.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImplRegions {
+    pub families: Box<[(Symbol, FamilyRegions)]>,
     pub names: Box<[LifetimeName]>,
     pub self_ty: Box<[Region]>,
     /// Its trait's lifetime arguments, in terms of this impl's parameters.
@@ -289,6 +312,12 @@ impl RegionSigs {
     }
 }
 
+/// Only aliases with represented lifetime/family inputs have occurrence rows.
+/// Legacy lifetimeless associated values keep their existing zero-slot model.
+pub fn has_projection_inputs(alias: crate::AliasTy) -> bool {
+    alias.owner_lifetimes != 0 || alias.family_lifetimes != 0 || !alias.family_args.is_empty()
+}
+
 /// How many region slots `ty` has.
 pub fn slots(items: &ItemTree, ty: Ty) -> usize {
     match ty.kind() {
@@ -298,6 +327,16 @@ pub fn slots(items: &ItemTree, ty: Ty) -> usize {
         TyKind::Adt(adt, args) => {
             items.structs[adt.strukt].generics.lifetimes.len()
                 + args.iter().map(|&t| slots(items, t)).sum::<usize>()
+        }
+        TyKind::Alias(alias) if has_projection_inputs(alias) => {
+            alias.owner_lifetimes as usize
+                + alias.family_lifetimes as usize
+                + alias
+                    .args
+                    .iter()
+                    .chain(alias.family_args)
+                    .map(|&ty| slots(items, ty))
+                    .sum::<usize>()
         }
         TyKind::Closure(_, args) => slots(items, ClosureArgs::split(args).upvars),
         TyKind::Opaque(opaque) => {
@@ -375,6 +414,22 @@ fn instantiate_at<R: Copy>(
                 instantiate_at(items, t, own, next, region, args, out);
             }
         }
+        TyKind::Alias(alias) if has_projection_inputs(alias) => {
+            for _ in 0..alias.owner_lifetimes {
+                own_slot(next, out);
+            }
+            for &ty in alias.args {
+                instantiate_at(items, ty, own, next, region, args, out);
+            }
+            for _ in 0..alias.family_lifetimes {
+                let r = own.get(*next).copied().unwrap_or(Region::Erased);
+                *next += 1;
+                out.push(region(r));
+            }
+            for &ty in alias.family_args {
+                instantiate_at(items, ty, own, next, region, args, out);
+            }
+        }
         TyKind::Dynamic(_) => own_slot(next, out),
         TyKind::FnPtr(sig) => {
             if let Some(regions) = sig.regions {
@@ -436,6 +491,10 @@ pub(crate) struct Walker<'a> {
     pub errors: Vec<(TextRange, String)>,
     /// Enabled only while collecting an impl associated value's regions.
     pub selections: Option<Vec<ProjectionSelection>>,
+    /// Original trait bounds provide owner lifetime arguments for `T::Family`.
+    pub projection_owners: Vec<(Ty, flux_hir::TraitId, flux_hir::Bound)>,
+    /// An impl/trait's own trait arguments have already been resolved in its header.
+    pub self_projection_owner: Option<(flux_hir::TraitId, Box<[Region]>)>,
     /// The region of the reference whose pointee is being walked, if
     /// that is what is: a trait object's lifetime bound there.
     ref_region: Option<Region>,
@@ -459,6 +518,8 @@ impl<'a> Walker<'a> {
             opaque_captures: Vec::new(),
             errors: Vec::new(),
             selections: None,
+            projection_owners: Vec::new(),
+            self_projection_owner: None,
             ref_region: None,
         }
     }
@@ -663,6 +724,12 @@ impl<'a> Walker<'a> {
     }
 
     fn path(&mut self, path: &Path, ty: Ty, out: &mut Vec<Region>) {
+        if let TyKind::Alias(alias) = ty.kind()
+            && has_projection_inputs(alias)
+        {
+            self.projection_inputs(path, alias, out);
+            return;
+        }
         if self.body && path.qself.is_some() {
             let mut found = Vec::new();
             lifetimes_in(&TypeRef::Path(path.clone()), &mut found);
@@ -786,6 +853,107 @@ impl<'a> Walker<'a> {
             }
             Resolved::Def(Def::TypeAlias(id)) => self.alias(path, id, ty, out),
             _ => self.check_args(path),
+        }
+    }
+
+    fn add_projection_bounds(&mut self, generics: &Generics) {
+        for predicate in &generics.predicates {
+            let mut scratch = Vec::new();
+            let subject = crate::resolve_type(
+                self.items,
+                self.module,
+                &predicate.ty,
+                self.scope,
+                predicate.ty_range,
+                &mut scratch,
+            );
+            if let (Some(trait_), _) = self.items.resolve_trait(self.module, &predicate.bound) {
+                self.projection_owners
+                    .push((subject, trait_, predicate.bound.clone()));
+            }
+        }
+    }
+
+    /// Resolve a projection's inputs from this exact syntax occurrence. Never
+    /// infer trait lifetimes by comparing only erased self/argument types.
+    fn projection_inputs(&mut self, path: &Path, alias: crate::AliasTy, out: &mut Vec<Region>) {
+        let owner_path = path.qself.as_ref().and_then(|q| q.trait_.as_ref()).cloned();
+        let candidates: Vec<_> = self
+            .projection_owners
+            .iter()
+            .filter(|(self_ty, trait_, _)| *self_ty == alias.args[0] && *trait_ == alias.trait_)
+            .map(|(_, _, bound)| bound.path.clone())
+            .collect();
+        let owner_path = owner_path.or_else(|| {
+            if candidates.windows(2).all(|pair| pair[0] == pair[1]) {
+                candidates.first().cloned()
+            } else {
+                None
+            }
+        });
+        if alias.owner_lifetimes != 0 {
+            if let Some(owner) = &owner_path {
+                self.trait_lifetimes(owner, alias.trait_, false, out);
+            } else if let Some((trait_, lifetimes)) = &self.self_projection_owner
+                && *trait_ == alias.trait_
+                && lifetimes.len() == alias.owner_lifetimes as usize
+            {
+                out.extend(lifetimes.iter().copied());
+            } else {
+                self.errors.push((
+                    path.range(0, TextRange::default()),
+                    "projection owner lifetimes are not represented at this occurrence".into(),
+                ));
+                out.extend(std::iter::repeat_n(
+                    Region::Erased,
+                    alias.owner_lifetimes as usize,
+                ));
+            }
+        }
+        let self_ty = alias.args[0];
+        if let Some(qself) = &path.qself {
+            self.walk(&qself.ty, self_ty, out);
+        } else if path.segments.first() == Some(&kw::SelfUpper) {
+            if let Some(regions) = self.self_regions {
+                out.extend(regions.iter().copied());
+            } else {
+                out.extend(std::iter::repeat_n(
+                    Region::Erased,
+                    slots(self.items, self_ty),
+                ));
+            }
+        } else {
+            // A generic Self has no own slots; a concrete written self needs
+            // its syntax table and cannot borrow a different bound's table.
+            out.extend(std::iter::repeat_n(
+                Region::Erased,
+                slots(self.items, self_ty),
+            ));
+        }
+        for (index, &ty) in alias.args.iter().skip(1).enumerate() {
+            if let Some(written) = owner_path
+                .as_ref()
+                .and_then(|p| p.args(p.segments.len().saturating_sub(1)))
+                .and_then(|a| a.types.get(index))
+            {
+                self.walk(written, ty, out);
+            } else {
+                out.extend(std::iter::repeat_n(Region::Erased, slots(self.items, ty)));
+            }
+        }
+        self.lifetime_args(
+            path,
+            "associated type",
+            alias.family_lifetimes as usize,
+            out,
+        );
+        let last = path.segments.len().saturating_sub(1);
+        for (index, &ty) in alias.family_args.iter().enumerate() {
+            if let Some(written) = path.args(last).and_then(|a| a.types.get(index)) {
+                self.walk(written, ty, out);
+            } else {
+                out.extend(std::iter::repeat_n(Region::Erased, slots(self.items, ty)));
+            }
         }
     }
 
@@ -1380,6 +1548,16 @@ fn implied_at<R: Copy + PartialEq>(
                 implied_at(items, sigs, t, regions, next, static_region, out);
             }
         }
+        TyKind::Alias(alias) if has_projection_inputs(alias) => {
+            *next += alias.owner_lifetimes as usize;
+            for &ty in alias.args {
+                implied_at(items, sigs, ty, regions, next, static_region, out);
+            }
+            *next += alias.family_lifetimes as usize;
+            for &ty in alias.family_args {
+                implied_at(items, sigs, ty, regions, next, static_region, out);
+            }
+        }
         TyKind::Adt(adt, args) => {
             let lifetimes = items.structs[adt.strukt].generics.lifetimes.len();
             let start = *next;
@@ -1615,6 +1793,7 @@ pub(crate) fn check_trait_admission(
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         if t.generics.lifetimes.is_empty()
             || trait_profile::required_method_profile(items, diagnostics, sigs, id).is_ok()
+            || trait_profile::family_method_profile(items, diagnostics, sigs, id)
         {
             continue;
         }

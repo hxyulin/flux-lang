@@ -205,9 +205,26 @@ pub struct AliasTy {
     pub trait_name: Symbol,
     pub name: Symbol,
     pub args: GenericArgs,
+    /// Declaration arities only; actual lifetime values belong to occurrence rows.
+    pub owner_lifetimes: u32,
+    pub family_lifetimes: u32,
+    /// The family's own type/const arguments, separate from trait membership.
+    pub family_args: GenericArgs,
 }
 
 impl AliasTy {
+    pub fn map_args(self, mut f: impl FnMut(Ty) -> Ty) -> Self {
+        Self {
+            args: map_list(self.args, &mut f),
+            family_args: map_list(self.family_args, f),
+            ..self
+        }
+    }
+
+    pub fn template_args(self) -> Vec<Ty> {
+        self.args.iter().chain(self.family_args).copied().collect()
+    }
+
     pub fn self_ty(self) -> Ty {
         self.args[0]
     }
@@ -993,10 +1010,7 @@ impl Ty {
             TyKind::Tuple(list) => TyKind::Tuple(map_list(list, f)),
             TyKind::Adt(adt, list) => TyKind::Adt(adt, map_list(list, f)),
             TyKind::Closure(id, list) => TyKind::Closure(id, map_list(list, f)),
-            TyKind::Alias(alias) => TyKind::Alias(AliasTy {
-                args: map_list(alias.args, f),
-                ..alias
-            }),
+            TyKind::Alias(alias) => TyKind::Alias(alias.map_args(f)),
             TyKind::Opaque(opaque) => TyKind::Opaque(OpaqueTy {
                 args: map_list(opaque.args, f),
                 ..opaque
@@ -1083,7 +1097,7 @@ impl TyKind {
         let mut inline = [None; 2];
         let (first, second): (&'static [Ty], &'static [Ty]) = match self {
             TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => (list, &[]),
-            TyKind::Alias(alias) => (alias.args, &[]),
+            TyKind::Alias(alias) => (alias.args, alias.family_args),
             TyKind::Opaque(opaque) => (opaque.args, &[]),
             TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => {
                 inline[0] = Some(t);
@@ -1255,7 +1269,15 @@ impl fmt::Display for Ty {
                     let args: Vec<String> = alias.args[1..].iter().map(Ty::to_string).collect();
                     write!(f, "<{}>", args.join(", "))?;
                 }
-                write!(f, ">::{}", alias.name)
+                write!(f, ">::{}", alias.name)?;
+                if alias.family_lifetimes != 0 || !alias.family_args.is_empty() {
+                    let args: Vec<String> =
+                        std::iter::repeat_n("'_".to_owned(), alias.family_lifetimes as usize)
+                            .chain(alias.family_args.iter().map(Ty::to_string))
+                            .collect();
+                    write!(f, "<{}>", args.join(", "))?;
+                }
+                Ok(())
             }
             TyKind::Never => f.write_str("!"),
             TyKind::RawPtr(Mutability::Not, pointee) => write!(f, "*const {pointee}"),

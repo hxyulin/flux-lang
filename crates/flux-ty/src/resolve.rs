@@ -1224,6 +1224,80 @@ fn assoc_type(
     range: TextRange,
     errors: &mut Vec<(TextRange, String)>,
 ) -> Ty {
+    let base = assoc_type_base(items, module, path, scope, range, errors);
+    let TyKind::Alias(mut alias) = base.kind() else {
+        return base;
+    };
+    if scope.in_fn_pointer && regions::has_projection_inputs(alias) {
+        errors.push((
+            range,
+            "associated family regions in function pointers are not supported yet".into(),
+        ));
+        return Ty::ERROR;
+    }
+    let Some(declaration) = items.traits[alias.trait_]
+        .types
+        .iter()
+        .find(|ty| ty.name == alias.name)
+    else {
+        return base;
+    };
+    let index = path.segments.len() - 1;
+    let written = path.args(index);
+    let at = path.range(index, range);
+    let want = declaration.generics.params.len();
+    let got = written.map_or(0, |args| args.types.len());
+    if want != got {
+        errors.push((at, wrong_arg_count("associated type", want, got)));
+        return Ty::ERROR;
+    }
+    let lifetimes = declaration.generics.lifetimes.len();
+    let given_lifetimes = written.map_or(0, |args| args.lifetimes.len());
+    if given_lifetimes != lifetimes {
+        errors.push((
+            written.map_or(at, |args| args.range),
+            format!("expected {lifetimes} lifetime arguments, found {given_lifetimes}"),
+        ));
+        return Ty::ERROR;
+    }
+    if let Some(written) = written {
+        if written.parenthesized || !written.bindings.is_empty() {
+            errors.push((
+                written.range,
+                "associated type arguments must be types, constants or lifetimes".into(),
+            ));
+            return Ty::ERROR;
+        }
+        alias.family_args = Ty::list(&resolve_generic_args(
+            items,
+            module,
+            &declaration.generics.params,
+            written,
+            scope,
+            errors,
+        ));
+        if let Some((_, &arg)) = declaration
+            .generics
+            .params
+            .iter()
+            .zip(alias.family_args)
+            .find(|(param, arg)| !param.maybe_unsized && scope.is_unsized(items, **arg))
+        {
+            errors.push((at, unsized_error(arg)));
+            return Ty::ERROR;
+        }
+    }
+    Ty::alias(alias)
+}
+
+fn assoc_type_base(
+    items: &ItemTree,
+    module: ModuleId,
+    path: &Path,
+    scope: TypeScope<'_>,
+    range: TextRange,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Ty {
     let (self_ty, trait_path, name_index) = match &path.qself {
         Some(qself) => {
             let ty = resolve_type(items, module, &qself.ty, scope, qself.ty_range, errors);
@@ -1252,12 +1326,17 @@ fn assoc_type(
     }
     let name = path.segments[name_index];
     let at = path.range(name_index, range);
-    if let Some(args) = path.args(name_index) {
-        let at = args.ranges.first().copied().unwrap_or(args.range);
-        errors.push((at, "generic associated types are not supported yet".into()));
-        return Ty::ERROR;
-    }
     let has_type = |t: flux_hir::TraitId| items.traits[t].types.iter().any(|ty| ty.name == name);
+    let captures_inputs = |t: flux_hir::TraitId| {
+        !items.traits[t].generics.lifetimes.is_empty()
+            || items.traits[t]
+                .types
+                .iter()
+                .find(|ty| ty.name == name)
+                .is_some_and(|ty| {
+                    !ty.generics.params.is_empty() || !ty.generics.lifetimes.is_empty()
+                })
+    };
     // `<T as Tr>::Out`: the trait is written.
     if let Some((trait_path, qrange)) = trait_path {
         let bound = flux_hir::Bound {
@@ -1283,6 +1362,7 @@ fn assoc_type(
             |q| matches!(&q.ty, TypeRef::Path(p) if p.as_name() == Some(kw::SelfUpper)),
         );
         if self_written
+            && !captures_inputs(trait_ref.trait_)
             && Some(trait_ref) == scope.self_trait
             && let Some(&(_, ty)) = scope.self_types.iter().find(|(n, _)| *n == name)
         {
@@ -1290,8 +1370,8 @@ fn assoc_type(
         }
         // AliasTy has no trait-region table. Reject these projections until
         // normalization can preserve their owner and type-argument regions.
-        if !items.traits[trait_ref.trait_].generics.lifetimes.is_empty()
-            || trait_ref
+        if !captures_inputs(trait_ref.trait_)
+            && trait_ref
                 .args
                 .iter()
                 .any(|&t| regions::slots(items, t) != 0)
@@ -1302,7 +1382,7 @@ fn assoc_type(
             ));
             return Ty::ERROR;
         }
-        return Ty::alias(traits::alias_of(trait_ref, self_ty, name));
+        return Ty::alias(traits::alias_of(items, trait_ref, self_ty, name));
     }
     // `Self::Out` in a trait's `impl` block: the block's own.
     // (Only written `Self`: `I::Item` in `impl<I: It> Tr for I` is `I`'s
@@ -1314,11 +1394,12 @@ fn assoc_type(
     {
         if has_type(trait_ref.trait_) {
             if written_self
+                && !captures_inputs(trait_ref.trait_)
                 && let Some(&(_, ty)) = scope.self_types.iter().find(|(n, _)| *n == name)
             {
                 return ty;
             }
-            return Ty::alias(traits::alias_of(trait_ref, self_ty, name));
+            return Ty::alias(traits::alias_of(items, trait_ref, self_ty, name));
         }
         if written_self {
             let found: Vec<_> = scope
@@ -1331,8 +1412,8 @@ fn assoc_type(
                 [inherited] => {
                     // AliasTy has no table for erased trait-argument regions.
                     // Preserve the qualified-projection boundary here too.
-                    if !items.traits[inherited.trait_].generics.lifetimes.is_empty()
-                        || inherited
+                    if !captures_inputs(inherited.trait_)
+                        && inherited
                             .args
                             .iter()
                             .any(|&t| regions::slots(items, t) != 0)
@@ -1342,6 +1423,9 @@ fn assoc_type(
                             "lifetimes in inherited trait projections are not supported yet".into(),
                         ));
                         return Ty::ERROR;
+                    }
+                    if captures_inputs(inherited.trait_) {
+                        return Ty::alias(traits::alias_of(items, *inherited, self_ty, name));
                     }
                     if let Some(&(_, _, ty)) = scope
                         .self_inherited_types
@@ -1364,7 +1448,7 @@ fn assoc_type(
                             // normalization must retain that header selection
                             // and its lifetime recipe, rather than exposing an
                             // erased RHS under the spelling `Self::Out`.
-                            return Ty::alias(traits::alias_of(*inherited, self_ty, name));
+                            return Ty::alias(traits::alias_of(items, *inherited, self_ty, name));
                         }
                         if (scope.signature_of != Some("functions") || scope.in_trait_bound)
                             && regions::slots(items, ty) != 0
@@ -1374,7 +1458,7 @@ fn assoc_type(
                         }
                         return ty;
                     }
-                    return Ty::alias(traits::alias_of(*inherited, self_ty, name));
+                    return Ty::alias(traits::alias_of(items, *inherited, self_ty, name));
                 }
                 [] => errors.push((at, format!("associated type `{name}` not found for `Self`"))),
                 _ => errors.push((at, format!("ambiguous associated type `{name}` for `Self`"))),
@@ -1397,7 +1481,7 @@ fn assoc_type(
         }
     }
     match found.as_slice() {
-        [trait_ref] => Ty::alias(traits::alias_of(*trait_ref, self_ty, name)),
+        [trait_ref] => Ty::alias(traits::alias_of(items, *trait_ref, self_ty, name)),
         [] => {
             errors.push((
                 at,

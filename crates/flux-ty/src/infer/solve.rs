@@ -437,11 +437,10 @@ impl Ctx<'_> {
             // An input projection may now be known (for example an
             // iterator's Item passed to FnOnce). Normalize nested inputs
             // before matching the associated output against caller bounds.
-            let args = crate::ty::map_list(p.alias.args, |a| {
+            let alias = p.alias.map_args(|a| {
                 let a = self.normalize(a, p.range);
                 self.known(a)
             });
-            let alias = AliasTy { args, ..p.alias };
             // Known, without an `impl` block or a bound that says what
             // it is: an associated type of a generic parameter, rigid.
             let found = self.try_normalize(alias).or_else(|| {
@@ -500,11 +499,11 @@ impl Ctx<'_> {
             TyKind::Alias(alias) => {
                 // Known variables replaced, so that an alias met again
                 // through an `impl` block's fresh variables is the same.
-                let args = crate::ty::map_list(alias.args, |a| {
+                let alias = alias.map_args(|a| {
                     let a = self.normalize(a, origin);
                     self.known(a)
                 });
-                let alias = AliasTy { args, ..alias };
+                let args = alias.args;
                 if self.normalizing.contains(&alias) {
                     let message = format!(
                         "overflow evaluating the requirement `{} == _`",
@@ -524,7 +523,10 @@ impl Ctx<'_> {
                 let self_ty = self.shallow(args[0]);
                 // The trait's arguments may pick the block too
                 // (`<u8 as TryFrom<?T>>::Error`).
-                let unknown = args.iter().any(|&a| self.has_unknown(a));
+                let unknown = args
+                    .iter()
+                    .chain(alias.family_args)
+                    .any(|&a| self.has_unknown(a));
                 // A known type that does not implement the trait
                 // (reported where it is written).
                 if !self_ty.has_params() && !self_ty.has_aliases() && !unknown {
@@ -663,8 +665,7 @@ impl Ctx<'_> {
         };
         let args = self.unify_impl(*imp, pred)?;
         self.register_impl_projections(*imp, &args);
-        let ty = crate::traits::impl_type(self.sigs, *imp, alias.name)?;
-        Some(ty.subst(&args))
+        crate::traits::instantiate_impl_type(self.sigs, *imp, alias, &args)
     }
 
     /// What the bounds of `impl` block `imp`, used with generic arguments
@@ -708,6 +709,13 @@ impl Ctx<'_> {
                     qself.map_or(range, |q| q.ty_range),
                     ObligationKind::Bound,
                 );
+                let requirements = crate::traits::family_requirements(self.items, self.sigs, alias);
+                for predicate in requirements.predicates {
+                    self.register(predicate, range, ObligationKind::Bound);
+                }
+                for projection in requirements.projections {
+                    self.register_projection(projection, range);
+                }
                 let trait_args = qself
                     .and_then(|q| q.trait_.as_ref()?.args.last()?.as_ref())
                     .map_or(&[][..], |a| &a.types);
@@ -717,6 +725,17 @@ impl Ctx<'_> {
                         _ => trait_args.get(i - 1),
                     };
                     self.require_alias_traits(a, part, range);
+                }
+                let family_parts = match written {
+                    Some(TypeRef::Path(path)) => path
+                        .args
+                        .last()
+                        .and_then(Option::as_ref)
+                        .map_or(&[][..], |a| &a.types),
+                    _ => &[],
+                };
+                for (i, &arg) in alias.family_args.iter().enumerate() {
+                    self.require_alias_traits(arg, family_parts.get(i), range);
                 }
             }
             TyKind::Tuple(list) | TyKind::Adt(_, list) => {
@@ -812,7 +831,7 @@ impl Ctx<'_> {
                 }
             }
             TyKind::Alias(alias) => {
-                for &t in alias.args {
+                for &t in alias.args.iter().chain(alias.family_args) {
                     self.int_vars(t, out);
                 }
             }
@@ -979,10 +998,21 @@ impl Ctx<'_> {
                 && p.alias
                     .args
                     .iter()
+                    .chain(p.alias.family_args)
                     .any(|&ty| self.caller_proof_key(&projections, ty) != ty);
-            for &(previous, previous_tautology) in
-                seen.iter().filter(|(q, _)| q.alias.name == p.alias.name)
-            {
+            let family_args = crate::ty::map_list(p.alias.family_args, |ty| {
+                self.caller_proof_key(&projections, ty)
+            });
+            for &(previous, previous_tautology) in &seen {
+                if previous.alias.name != p.alias.name
+                    || previous.alias.owner_lifetimes != p.alias.owner_lifetimes
+                    || previous.alias.family_lifetimes != p.alias.family_lifetimes
+                    || crate::ty::map_list(previous.alias.family_args, |ty| {
+                        self.caller_proof_key(&projections, ty)
+                    }) != family_args
+                {
+                    continue;
+                }
                 // A written A = A adds no constraint when distinct raw keys
                 // merge. Keep checking same-key cycles, and every real RHS:
                 // a tautology must not hide a later incompatible equality.
@@ -1070,18 +1100,13 @@ impl Ctx<'_> {
             if !self.compatible_caller_projections(pred, Some(alias.name), !caller_rhs) {
                 return false;
             }
-            let key = AliasTy {
-                args: crate::ty::map_list(alias.args, |ty| self.caller_proof_key(&caller, ty)),
-                ..alias
-            };
+            let key = alias.map_args(|ty| self.caller_proof_key(&caller, ty));
             let mut found = false;
             for projections in [&caller, &env] {
                 for p in projections {
                     if p.alias.trait_ == key.trait_
                         && p.alias.name == key.name
-                        && crate::ty::map_list(p.alias.args, |ty| {
-                            self.caller_proof_key(&caller, ty)
-                        }) == key.args
+                        && p.alias.map_args(|ty| self.caller_proof_key(&caller, ty)) == key
                     {
                         pending.push((p.ty, depth, caller_rhs));
                         found = true;
@@ -1371,10 +1396,15 @@ impl Ctx<'_> {
         self.param_env
             .iter()
             .all(|p| !p.self_ty.has_infer() && !p.trait_ref.args.iter().any(|a| a.has_infer()))
-            && self
-                .env_projections
-                .iter()
-                .all(|p| !p.ty.has_infer() && !p.alias.args.iter().any(|a| a.has_infer()))
+            && self.env_projections.iter().all(|p| {
+                !p.ty.has_infer()
+                    && !p
+                        .alias
+                        .args
+                        .iter()
+                        .chain(p.alias.family_args)
+                        .any(|a| a.has_infer())
+            })
     }
 
     fn may_hold_cached(

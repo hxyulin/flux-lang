@@ -165,6 +165,7 @@ pub struct Signatures {
     pub fn_projections: LayeredArenaMap<Function, Box<[Projection]>>,
     /// The associated types each trait's `impl` block defines, by name.
     pub impl_types: LayeredArenaMap<Impl, Box<[(Symbol, Ty)]>>,
+    pub impl_families: LayeredArenaMap<Impl, Box<[(Symbol, traits::AssociatedTypeSig)]>>,
     /// The bounds of each function's opaque types (the `impl Trait`s of
     /// its return type), by index: [`traits::opaque_bounds`].
     pub opaques: LayeredArenaMap<Function, Box<[OpaqueSig]>>,
@@ -247,6 +248,7 @@ impl Signatures {
             trait_projections: self.trait_projections.clone(),
             fn_projections: self.fn_projections.clone(),
             impl_types: self.impl_types.clone(),
+            impl_families: self.impl_families.clone(),
             opaques: self.opaques.clone(),
             hidden: self.hidden.clone(),
             trait_defaults: self.trait_defaults.clone(),
@@ -280,6 +282,7 @@ impl Signatures {
         self.trait_projections.freeze();
         self.fn_projections.freeze();
         self.impl_types.freeze();
+        self.impl_families.freeze();
         self.opaques.freeze();
         self.trait_defaults.freeze();
         self.regions.traits.freeze();
@@ -488,8 +491,8 @@ impl Signatures {
         let mut go = |t: Ty| self.normalize_known(t, depth + 1, done, active);
         let normalized = match ty.kind() {
             TyKind::Alias(alias) => 'alias: {
-                let args = ty::map_list(alias.args, &mut go);
-                let alias = ty::AliasTy { args, ..alias };
+                let alias = alias.map_args(&mut go);
+                let args = alias.args;
                 // What a closure or function returns: `FnOnce`'s `Output`,
                 // the only trait with an associated type they implement.
                 if alias.name.as_str() == "Output" {
@@ -538,10 +541,15 @@ impl Signatures {
                     // = &'a T>> Iterator for Copied<I>`), from what
                     // those are for the known ones.
                     let projections = self.impl_projections.get(imp).map_or(&[][..], |p| p);
+                    let rhs_owner_params = self
+                        .impl_families
+                        .get(imp)
+                        .and_then(|families| families.iter().find(|(name, _)| *name == alias.name))
+                        .map_or_else(|| max_param(t), |(_, family)| family.owner_params);
                     let needed = projections
                         .iter()
                         .map(|p| max_param(p.ty))
-                        .chain([max_param(t)])
+                        .chain([rhs_owner_params])
                         .max()
                         .unwrap_or(0) as usize;
                     if binds.len() < needed {
@@ -570,7 +578,9 @@ impl Signatures {
                     }
                     let binds: Vec<Ty> =
                         binds.into_iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
-                    break 'alias go(t.subst(&binds));
+                    if let Some(t) = traits::instantiate_impl_type(self, imp, alias, &binds) {
+                        break 'alias go(t);
+                    }
                 }
                 Ty::alias(alias)
             }
@@ -603,7 +613,13 @@ fn max_param(ty: Ty) -> u32 {
         TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
             list.iter().map(|&t| max_param(t)).max().unwrap_or(0)
         }
-        TyKind::Alias(alias) => alias.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
+        TyKind::Alias(alias) => alias
+            .args
+            .iter()
+            .chain(alias.family_args)
+            .map(|&t| max_param(t))
+            .max()
+            .unwrap_or(0),
         TyKind::Opaque(opaque) => opaque.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Slice(t) => max_param(t),
         TyKind::Array(t, len) => max_param(t).max(max_param(len)),
@@ -716,7 +732,11 @@ pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
 /// (`T::Out`) too, as a struct's fields may.
 fn uses_param(ty: Ty, index: u32) -> bool {
     match ty.kind() {
-        TyKind::Alias(alias) => alias.args.iter().any(|&t| uses_param(t, index)),
+        TyKind::Alias(alias) => alias
+            .args
+            .iter()
+            .chain(alias.family_args)
+            .any(|&t| uses_param(t, index)),
         TyKind::Opaque(opaque) => opaque.args.iter().any(|&t| uses_param(t, index)),
         TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => uses_param(t, index),
         TyKind::Array(t, len) => uses_param(t, index) || mentions_param(len, index),

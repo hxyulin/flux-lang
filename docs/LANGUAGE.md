@@ -587,7 +587,28 @@ Operators on other types than integers and `bool` call the methods of
 `core::cmp::PartialEq` (`==`, `!=`) and `core::cmp::PartialOrd` (`<`,
 `<=`, `>`, `>=`), which `core` implements for the integers and `bool`
 too, so generic code can use them; `&a == &b` and `&a < &b` compare `a`
-and `b`. There are no generic associated types. `Sized` is, as a bound and implicitly: every type
+and `b`.
+
+Generic associated types keep their own lifetime, type and const arguments
+separate from their trait's arguments. A selected impl substitutes its header
+parameters before the family's parameters. Declaration and impl bounds, required
+`Self: 'a` bounds, output lifetime bounds and represented associated output
+equalities are checked. Lending methods can return shared or mutable references;
+the borrow checker preserves independent owner-data and receiver lifetimes through
+iterator items and nested associated families. Family-local type parameters retain
+their implicit `Sized` bound unless declared `?Sized`.
+
+Trait objects reject callable GATs. A family unavailable because of a `Self: Sized`
+bound, including one implied by a supertrait, is excluded from object requirements.
+Associated-family region inputs in function-pointer signatures remain explicitly
+unsupported, as do family-projection subjects in generic outlives clauses.
+Associated type defaults, inherent associated types, `?Sized` outputs
+and arguments on the left side of associated-type bindings remain unsupported.
+Lifetime-bearing trait admission remains bounded to represented signatures; this
+does not admit every combination of trait parameters, supertrait regions and
+dynamic or opaque outputs.
+
+`Sized` is, as a bound and implicitly: every type
 is sized but slices, `str` and trait objects, and a type parameter is
 `Sized` unless bounded `?Sized` (`fn f<T: ?Sized>(x: &T)`, `impl<T:
 ?Sized + Tr> Tr for &T`), as in rustc; a trait's `Self` is not, so its
@@ -1146,9 +1167,12 @@ numbers of lifetime arguments (E0107, E0747). The bounds of functions
 and `impl` blocks may name lifetimes in what they say associated types
 are (`I: Iterator<Item = &'a T>`). Traits with one lifetime parameter and
 required safe methods are supported when their complete signature profile is
-represented, including `AstNode<'t>` and region-free supertraits. Trait type
-parameters, associated items, default bodies, method generics and region-bearing
-supertrait edges remain outside this declaration subset. Other existing
+represented, including `AstNode<'t>` and region-free supertraits. A separate
+family profile admits one-owner-lifetime traits with associated families, safe
+default methods and method-local lifetime parameters when their complete rows
+can be reconstructed. Owner/method type parameters, unsafe methods, dynamic,
+opaque and function-pointer signature types, and region-bearing supertrait edges
+remain outside that profile. Other existing
 use-site restrictions still apply. Bounds may not name lifetimes in their trait's generic
 arguments (`T: Tr<&'a U>`; `&` without one is E0637, as in rustc), nor
 those of structs and traits in what they say associated types are.
@@ -1159,8 +1183,9 @@ supertrait edges remain outside this subset.
 Local `let` annotations can require `'static`, including nested reference
 and ADT types, aliases and defaults. The borrow checker enforces this on
 initialization, destructuring, later assignments and branches. Other named
-body lifetime annotations (`let x: &'a i32`), lifetimes in function-pointer types and
-lifetime-qualified associated projections are not supported yet. Nor are
+body lifetime annotations (`let x: &'a i32`) and unrepresented lifetime-qualified
+associated projections are not supported yet. Function pointers have the bounded
+canonical lifetime support described above; family-region recipes remain unsupported. Nor are
 lifetime annotations on uncaptured places in closures.
 Direct function and method calls accept named, impl-owned and static lifetimes
 inside written type arguments, such as `nth_child::<Expr<'t>>(node)`.

@@ -460,6 +460,7 @@ impl Ctx<'_> {
         for p in crate::traits::dyn_projections(self.items, self.sigs, target, d) {
             if p.alias.args[0] == target && d.assoc_names.contains(&p.alias.name) {
                 let alias = crate::traits::alias_of(
+                    self.items,
                     crate::TraitRef {
                         trait_: p.alias.trait_,
                         name: p.alias.trait_name,

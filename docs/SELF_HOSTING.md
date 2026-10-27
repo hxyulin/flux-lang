@@ -195,12 +195,20 @@ dependencies/generated outputs also belong to the
 complete source closure. Sourcegen and difftest are additional workspace targets,
 not prerequisites for the first compiler executable.
 
-The latest assembler audit has zero syntax diagnostics and 80 HIR diagnostics,
-down from 111 after trait `Self: 'static` bounds, older-edition opaque captures
-and CRC support. Both source-integrity guards pass. All remaining diagnostics
-are 70 GAT declarations and 10 associated `where` clauses. This graph still
-stops before type checking and native codegen; see
+The latest assembler audit, `out/keel-asm-readiness/91406`, has zero syntax and
+HIR diagnostics. GAT declarations and associated `where` clauses now survive
+collection, and the graph reaches type checking with 111 diagnostics. Most are
+unsupported lifetime arguments in trait/supertrait bounds; the inventory also
+includes inherited projections, `TryReserveError` and `std::io::Write`. Both
+source-integrity guards pass. MIR and native codegen remain gated; see
 the [readiness report](../crates/flux-cli/tests/fixtures/keel_asm/READINESS.md).
+
+The focused `gat_lending` native comparison exercises shared/mutable lending,
+iterator item families, nested symbol-table families, independent data/receiver
+lifetimes and destructor counts. It matches rustc with optimization off/on.
+Family type/const arguments and contract rejection cases have separate type and
+MIR oracle suites. This is bounded GAT support, not an object-file or complete
+assembler native milestone.
 
 Current bounded language implementations still reject unsupported shapes.
 The latest function-pointer review also found two unresolved correctness issues:

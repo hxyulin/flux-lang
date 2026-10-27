@@ -180,9 +180,21 @@ impl fmt::Display for Projection {
     }
 }
 
+/// A family's own generics and declaration-local type contracts. Templates
+/// index the owning trait/impl parameters before these own parameters.
+#[derive(Debug, Clone, Default)]
+pub struct AssociatedTypeSig {
+    pub owner_params: u32,
+    pub lifetimes: u32,
+    pub params: Box<[Option<Ty>]>,
+    pub predicates: Box<[Predicate]>,
+    pub projections: Box<[Projection]>,
+}
+
 /// A trait's resolved header.
 #[derive(Debug, Clone, Default)]
 pub struct TraitSig {
+    pub families: Box<[(Symbol, AssociatedTypeSig)]>,
     /// `Sup` in `trait Tr: Sup`, in terms of the trait's parameters,
     /// `Self` first.
     pub supertraits: Box<[TraitRef]>,
@@ -342,7 +354,7 @@ pub fn trait_ref(
                 args: Ty::list(&args[..items.traits[sup].generics.len().min(args.len())]),
             };
             projections.push(Projection {
-                alias: alias_of(sup_ref, self_ty, binding.name),
+                alias: alias_of(items, sup_ref, self_ty, binding.name),
                 ty,
             });
             continue;
@@ -359,7 +371,7 @@ pub fn trait_ref(
         }
         let ty = resolve_type(items, module, &binding.ty, scope, binding.ty_range, errors);
         projections.push(Projection {
-            alias: alias_of(trait_ref, self_ty, binding.name),
+            alias: alias_of(items, trait_ref, self_ty, binding.name),
             ty,
         });
     }
@@ -409,7 +421,7 @@ fn supertrait_with_type(items: &ItemTree, t: TraitId, name: Symbol) -> Option<Tr
 }
 
 /// `<self_ty as trait_ref>::name`.
-pub fn alias_of(trait_ref: TraitRef, self_ty: Ty, name: Symbol) -> AliasTy {
+pub fn alias_of(items: &ItemTree, trait_ref: TraitRef, self_ty: Ty, name: Symbol) -> AliasTy {
     let args: Vec<Ty> = std::iter::once(self_ty)
         .chain(trait_ref.args.iter().copied())
         .collect();
@@ -418,6 +430,13 @@ pub fn alias_of(trait_ref: TraitRef, self_ty: Ty, name: Symbol) -> AliasTy {
         trait_name: trait_ref.name,
         name,
         args: Ty::list(&args),
+        owner_lifetimes: items.traits[trait_ref.trait_].generics.lifetimes.len() as u32,
+        family_lifetimes: items.traits[trait_ref.trait_]
+            .types
+            .iter()
+            .find(|ty| ty.name == name)
+            .map_or(0, |ty| ty.generics.lifetimes.len() as u32),
+        family_args: &[],
     }
 }
 
@@ -625,10 +644,7 @@ fn check_caller_supertraits(
     caller.extend(required.iter().copied());
     // Equality of proof keys includes projections in Self and trait args,
     // but never normalizes the associated projection being constrained.
-    let key = |alias: AliasTy| AliasTy {
-        args: crate::ty::map_list(alias.args, |ty| normalize(items, sigs, &caller, ty)),
-        ..alias
-    };
+    let key = |alias: AliasTy| alias.map_args(|ty| normalize(items, sigs, &caller, ty));
     for q in required {
         let q_key = key(q.alias);
         // Moving a required equality to another receiver needs RHS evidence
@@ -686,10 +702,7 @@ fn signature_impl_evidence(
     required: Projection,
 ) -> bool {
     let alias = required.alias;
-    let normalize_key = |a: AliasTy| AliasTy {
-        args: crate::ty::map_list(a.args, |ty| normalize(items, sigs, caller, ty)),
-        ..a
-    };
+    let normalize_key = |a: AliasTy| a.map_args(|ty| normalize(items, sigs, caller, ty));
     let goal = alias_predicate(alias);
     if env.iter().any(|p| {
         p.self_ty == goal.self_ty
@@ -719,13 +732,10 @@ fn signature_impl_evidence(
     let Some((imp, args)) = proof.select(goal, &mut Vec::new()) else {
         return false;
     };
-    let Some(ty) = impl_type(sigs, imp, alias.name) else {
+    let Some(ty) = instantiate_impl_type(sigs, imp, alias, &args) else {
         return false;
     };
-    let provided = Projection {
-        alias,
-        ty: ty.subst(&args),
-    };
+    let provided = Projection { alias, ty };
     proof.normalize_rhs(provided) == proof.normalize_rhs(required)
 }
 
@@ -1075,6 +1085,9 @@ pub(crate) fn associated_self_types(
             continue;
         };
         for associated in &items.traits[goal.trait_ref.trait_].types {
+            if !associated.generics.params.is_empty() || !associated.generics.lifetimes.is_empty() {
+                continue;
+            }
             if let Some(ty) = impl_type(sigs, imp, associated.name) {
                 out.push((goal.trait_ref, associated.name, ty.subst(&args)));
             }
@@ -1108,7 +1121,7 @@ pub fn alias_bounds(sigs: &Signatures, env: &[Predicate], ty: Ty) -> Vec<Predica
         .type_bounds
         .iter()
         .filter(|&&(name, _)| name == alias.name)
-        .map(|&(_, bound)| bound.subst(alias.args).with_self(ty))
+        .map(|&(_, bound)| bound.subst(&alias.template_args()).with_self(ty))
         .collect();
     elaborate(sigs, &bounds)
 }
@@ -1161,7 +1174,7 @@ pub fn dyn_projections(
                 continue;
             }
             out.push(Projection {
-                alias: alias_of(p.trait_ref, ty, name),
+                alias: alias_of(items, p.trait_ref, ty, name),
                 ty: assoc,
             });
         }
@@ -1249,6 +1262,57 @@ fn alias_predicate(alias: AliasTy) -> Predicate {
     }
 }
 
+/// Obligations for selecting this occurrence of an associated family.
+/// These are requirements on callers, never new assumptions about its owner.
+pub fn family_requirements(items: &ItemTree, sigs: &Signatures, alias: AliasTy) -> Bounds {
+    let Some(family) = sigs
+        .traits
+        .get(alias.trait_)
+        .and_then(|signature| {
+            signature
+                .families
+                .iter()
+                .find(|(name, _)| *name == alias.name)
+        })
+        .map(|(_, family)| family)
+    else {
+        return Bounds::default();
+    };
+    let args = alias.template_args();
+    let mut requirements = Bounds {
+        predicates: family
+            .predicates
+            .iter()
+            .map(|predicate| predicate.subst(&args))
+            .collect(),
+        projections: family
+            .projections
+            .iter()
+            .map(|projection| projection.subst(&args))
+            .collect(),
+    };
+    if let Some(&sized) = items.lang_traits.get(&flux_intern::sym::sized)
+        && let Some(declaration) = items.traits[alias.trait_]
+            .types
+            .iter()
+            .find(|ty| ty.name == alias.name)
+    {
+        for (parameter, &argument) in declaration.generics.params.iter().zip(alias.family_args) {
+            if !parameter.is_const() && !parameter.maybe_unsized {
+                requirements.predicates.push(Predicate {
+                    self_ty: argument,
+                    trait_ref: TraitRef {
+                        trait_: sized,
+                        name: items.traits[sized].name,
+                        args: &[],
+                    },
+                });
+            }
+        }
+    }
+    requirements
+}
+
 /// What associated types of associated type `alias` are by its trait's
 /// declaration: `<T::N as Add>::Output == i32` for `T::N` from
 /// `type N: Add<Output = i32>;`, and what its bounds' traits say.
@@ -1260,14 +1324,14 @@ pub fn alias_projections(sigs: &Signatures, alias: AliasTy) -> Vec<Projection> {
     let mut out: Vec<Projection> = sig
         .implied
         .iter()
-        .map(|q| q.subst(alias.args))
+        .map(|q| q.subst(&alias.template_args()))
         .filter(|q| q.alias.args[0] == ty)
         .collect();
     let bounds: Vec<Predicate> = sig
         .type_bounds
         .iter()
         .filter(|&&(name, _)| name == alias.name)
-        .map(|&(_, bound)| bound.subst(alias.args).with_self(ty))
+        .map(|&(_, bound)| bound.subst(&alias.template_args()).with_self(ty))
         .collect();
     out.extend(implied_projections(sigs, &elaborate(sigs, &bounds)));
     out
@@ -1289,7 +1353,17 @@ pub fn implied_projections(sigs: &Signatures, env: &[Predicate]) -> Vec<Projecti
         let args: Vec<Ty> = std::iter::once(p.self_ty)
             .chain(p.trait_ref.args.iter().copied())
             .collect();
-        for q in sig.implied.iter().map(|q| q.subst(&args)) {
+        for q in sig
+            .implied
+            .iter()
+            .filter(|q| {
+                // Own family type/const parameters are not bound by membership
+                // alone. Instantiate these equalities at alias_projections instead.
+                crate::max_param(Ty::alias(q.alias)).max(crate::max_param(q.ty))
+                    <= args.len() as u32
+            })
+            .map(|q| q.subst(&args))
+        {
             // An explicit bound on an associated type, including its
             // supertraits, decides normalization before the type's
             // declaration bounds. For `T: H, T::Part: Q`, Q's
@@ -1350,9 +1424,14 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
         (TyKind::Alias(a), TyKind::Alias(b)) => {
             a.trait_ == b.trait_
                 && a.name == b.name
+                && a.owner_lifetimes == b.owner_lifetimes
+                && a.family_lifetimes == b.family_lifetimes
+                && a.args.len() == b.args.len()
+                && a.family_args.len() == b.family_args.len()
                 && a.args
                     .iter()
-                    .zip(b.args)
+                    .chain(a.family_args)
+                    .zip(b.args.iter().chain(b.family_args))
                     .all(|(&x, &y)| match_ty(x, y, binds))
         }
         (TyKind::Opaque(a), TyKind::Opaque(b)) => {
@@ -1371,6 +1450,33 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
 pub fn impl_type(sigs: &Signatures, imp: ImplId, name: Symbol) -> Option<Ty> {
     let types = sigs.impl_types.get(imp)?;
     types.iter().find(|(n, _)| *n == name).map(|&(_, ty)| ty)
+}
+
+/// Apply family arguments only after selecting and instantiating the impl header.
+pub fn instantiate_impl_type(
+    sigs: &Signatures,
+    imp: ImplId,
+    alias: AliasTy,
+    impl_args: &[Ty],
+) -> Option<Ty> {
+    let ty = impl_type(sigs, imp, alias.name)?;
+    if let Some(specification) = sigs
+        .impl_families
+        .get(imp)
+        .and_then(|families| families.iter().find(|(name, _)| *name == alias.name))
+        .map(|(_, signature)| signature)
+    {
+        if specification.owner_params as usize != impl_args.len()
+            || specification.lifetimes != alias.family_lifetimes
+            || specification.params.len() != alias.family_args.len()
+        {
+            return None;
+        }
+    } else if alias.family_lifetimes != 0 || !alias.family_args.is_empty() {
+        return None;
+    }
+    let args: Vec<_> = impl_args.iter().chain(alias.family_args).copied().collect();
+    Some(ty.subst(&args))
 }
 
 /// `ty` with each associated type replaced by what it is, where that is
@@ -1451,8 +1557,8 @@ impl Normalizer<'_> {
         let (items, sigs) = (self.items, self.sigs);
         match ty.kind() {
             TyKind::Alias(alias) => {
-                let args = crate::ty::map_list(alias.args, |a| self.go(a, depth + 1));
-                let alias = AliasTy { args, ..alias };
+                let alias = alias.map_args(|a| self.go(a, depth + 1));
+                let args = alias.args;
                 if let Some(p) = self.env.iter().find(|p| p.alias == alias) {
                     return self.go(p.ty, depth + 1);
                 }
@@ -1466,9 +1572,9 @@ impl Normalizer<'_> {
                         && !in_env(sigs, &proof.env, alias_predicate(alias))
                         && let Some((imp, args)) =
                             proof.select(alias_predicate(alias), &mut Vec::new())
-                        && let Some(ty) = impl_type(sigs, imp, alias.name)
+                        && let Some(ty) = instantiate_impl_type(sigs, imp, alias, &args)
                     {
-                        return self.go(ty.subst(&args), depth + 1);
+                        return self.go(ty, depth + 1);
                     }
                     return Ty::alias(alias);
                 }
@@ -1495,9 +1601,9 @@ impl Normalizer<'_> {
                 }
                 let goal = alias_predicate(alias);
                 if let Some((imp, impl_args)) = select_impl(items, sigs, goal)
-                    && let Some(t) = impl_type(sigs, imp, alias.name)
+                    && let Some(t) = instantiate_impl_type(sigs, imp, alias, &impl_args)
                 {
-                    return self.go(t.subst(&impl_args), depth + 1);
+                    return self.go(t, depth + 1);
                 }
                 Ty::alias(alias)
             }
@@ -1857,7 +1963,11 @@ fn has_error(ty: Ty) -> bool {
         TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
             list.iter().any(|&t| has_error(t))
         }
-        TyKind::Alias(alias) => alias.args.iter().any(|&t| has_error(t)),
+        TyKind::Alias(alias) => alias
+            .args
+            .iter()
+            .chain(alias.family_args)
+            .any(|&t| has_error(t)),
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => has_error(t),
         _ => false,
     }
@@ -2669,6 +2779,46 @@ pub fn check_impls(
     }
 }
 
+/// Detect a family definition returning to an associated name on the same
+/// impl header. Ignore changing family arguments, which cannot make such a
+/// definition terminate; keep projections on another Self abstract.
+fn associated_family_cycle(sigs: &Signatures, imp: ImplId, name: Symbol) -> bool {
+    let (Some(&self_ty), Some(&trait_ref)) = (sigs.impls.get(imp), sigs.impl_traits.get(imp))
+    else {
+        return false;
+    };
+    let mut pending = vec![name];
+    let mut visited = Vec::new();
+    while let Some(current) = pending.pop() {
+        if visited.contains(&current) {
+            continue;
+        }
+        visited.push(current);
+        let Some(rhs) = impl_type(sigs, imp, current) else {
+            continue;
+        };
+        let mut types = vec![rhs];
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some(ty) = types.pop() {
+            if !seen.insert(ty) {
+                continue;
+            }
+            if let TyKind::Alias(alias) = ty.kind()
+                && alias.trait_ == trait_ref.trait_
+                && alias.args.first() == Some(&self_ty)
+                && alias.args.get(1..) == Some(trait_ref.args)
+            {
+                if alias.name == name {
+                    return true;
+                }
+                pending.push(alias.name);
+            }
+            types.extend(ty.children());
+        }
+    }
+    false
+}
+
 /// Checks that associated type `ty` of trait `impl` block `imp` meets the
 /// bounds its trait puts on it.
 fn check_type_bounds(
@@ -2688,12 +2838,222 @@ fn check_type_bounds(
     let Some(sig) = sigs.traits.get(trait_ref.trait_) else {
         return;
     };
-    let args: Vec<Ty> = std::iter::once(self_ty)
+    let mut args: Vec<Ty> = std::iter::once(self_ty)
         .chain(trait_ref.args.iter().copied())
         .collect();
-    let env = elaborate(sigs, sigs.impl_predicates.get(imp).map_or(&[], |p| p));
-    let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+    let declaration = items.traits[trait_ref.trait_]
+        .types
+        .iter()
+        .find(|required| required.name == ty.name);
+    if let Some(declaration) = declaration
+        && (declaration.generics.lifetimes.len() != ty.generics.lifetimes.len()
+            || declaration.generics.params.len() != ty.generics.params.len()
+            || declaration
+                .generics
+                .params
+                .iter()
+                .zip(&ty.generics.params)
+                .any(|(required, defined)| {
+                    crate::param_const_ty(required) != crate::param_const_ty(defined)
+                }))
+    {
+        error(
+            ty.ty_range,
+            "associated type generic parameters do not match the trait declaration".into(),
+        );
+        return;
+    }
+    if (!ty.generics.params.is_empty() || !ty.generics.lifetimes.is_empty())
+        && associated_family_cycle(sigs, imp, ty.name)
+    {
+        error(ty.ty_range, "cycle in associated type family".into());
+        return;
+    }
+    args.extend(crate::params_of(
+        &ty.generics,
+        items.impls[imp].generics.params.len(),
+    ));
+    let family = sig
+        .families
+        .iter()
+        .find(|(name, _)| *name == ty.name)
+        .map(|(_, family)| family);
+    let mut env = sigs
+        .impl_predicates
+        .get(imp)
+        .map_or(Vec::new(), |predicates| predicates.to_vec());
+    if let Some(family) = family {
+        env.extend(
+            family
+                .predicates
+                .iter()
+                .map(|predicate| predicate.subst(&args)),
+        );
+    }
+    let env = elaborate(sigs, &env);
+    let own_family = sigs
+        .impl_families
+        .get(imp)
+        .and_then(|families| families.iter().find(|(name, _)| *name == ty.name))
+        .map(|(_, family)| family);
+    if let Some(family) = family {
+        let mut declared_env = sigs
+            .impl_predicates
+            .get(imp)
+            .map_or(Vec::new(), |predicates| predicates.to_vec());
+        if let Some(own) = own_family {
+            declared_env.extend(own.predicates.iter().copied());
+        }
+        let declared_env = elaborate(sigs, &declared_env);
+        let mut provided = sigs
+            .impl_projections
+            .get(imp)
+            .map_or(Vec::new(), |projections| projections.to_vec());
+        if let Some(own) = own_family {
+            provided.extend(own.projections.iter().copied());
+        }
+        let implementation_parameters =
+            crate::unsized_params(items, Some(Owner::Impl(imp)), &ty.generics);
+        let proof = SignatureImplProof {
+            items,
+            sigs,
+            env: declared_env.clone(),
+            memberships: &declared_env,
+            projections: provided,
+            unsized_params: &implementation_parameters,
+            depth: std::cell::Cell::new(0),
+        };
+        for required in &family.predicates {
+            let required = normalize_predicate(items, sigs, required.subst(&args));
+            if !proof.holds(required, &mut Vec::new()) {
+                error(
+                    ty.ty_range,
+                    "associated type impl does not satisfy its declaration bounds".into(),
+                );
+                return;
+            }
+        }
+        if let (Some(declaration), Some(sized)) = (declaration, sigs.builtins.sized) {
+            for (index, parameter) in declaration.generics.params.iter().enumerate() {
+                if crate::param_const_ty(parameter).is_none() && !parameter.maybe_unsized {
+                    let goal = Predicate {
+                        self_ty: args[1 + trait_ref.args.len() + index],
+                        trait_ref: TraitRef {
+                            trait_: sized,
+                            name: items.traits[sized].name,
+                            args: &[],
+                        },
+                    };
+                    if !proof.holds(goal, &mut Vec::new()) {
+                        error(
+                            ty.ty_range,
+                            "associated type impl does not satisfy its declaration bounds".into(),
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+        for required in &family.projections {
+            let required = required.subst(&args);
+            if proof.normalize_ty(Ty::alias(required.alias), None) != proof.normalize_rhs(required)
+            {
+                error(
+                    ty.ty_range,
+                    "associated type impl does not satisfy its declaration equalities".into(),
+                );
+                return;
+            }
+        }
+    }
+    let mut projections = sigs
+        .impl_projections
+        .get(imp)
+        .map_or(Vec::new(), |projections| projections.to_vec());
+    if let Some(family) = family {
+        projections.extend(
+            family
+                .projections
+                .iter()
+                .map(|projection| projection.subst(&args)),
+        );
+    }
+    let projections = projections.as_slice();
+    let mut declaration_parameters =
+        crate::unsized_params(items, Some(Owner::Impl(imp)), &ty.generics);
+    if let Some(declaration) = declaration {
+        let owner_count = items.impls[imp].generics.params.len();
+        for (index, parameter) in declaration.generics.params.iter().enumerate() {
+            declaration_parameters[owner_count + index] = parameter.maybe_unsized;
+        }
+    }
+    let declaration_proof = SignatureImplProof {
+        items,
+        sigs,
+        env: env.clone(),
+        memberships: &env,
+        projections: projections.to_vec(),
+        unsized_params: &declaration_parameters,
+        depth: std::cell::Cell::new(0),
+    };
+    if let Some(sized) = sigs.builtins.sized {
+        for (index, parameter) in ty.generics.params.iter().enumerate() {
+            if crate::param_const_ty(parameter).is_none() && !parameter.maybe_unsized {
+                let goal = Predicate {
+                    self_ty: args[1 + trait_ref.args.len() + index],
+                    trait_ref: TraitRef {
+                        trait_: sized,
+                        name: items.traits[sized].name,
+                        args: &[],
+                    },
+                };
+                if !declaration_proof.holds(goal, &mut Vec::new()) {
+                    error(
+                        ty.ty_range,
+                        "associated type impl has stricter bounds than its trait".into(),
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    if let Some(own) = sigs
+        .impl_families
+        .get(imp)
+        .and_then(|families| families.iter().find(|(name, _)| *name == ty.name))
+        .map(|(_, family)| family)
+    {
+        for &predicate in &own.predicates {
+            let predicate = normalize_predicate(items, sigs, predicate);
+            if !declaration_proof.holds(predicate, &mut Vec::new()) {
+                error(
+                    ty.ty_range,
+                    "associated type impl has stricter bounds than its trait".into(),
+                );
+                return;
+            }
+        }
+        for &projection in &own.projections {
+            if normalize(items, sigs, projections, Ty::alias(projection.alias))
+                != normalize(items, sigs, projections, projection.ty)
+            {
+                error(
+                    ty.ty_range,
+                    "associated type impl has stricter bounds than its trait".into(),
+                );
+                return;
+            }
+        }
+    }
     let t = normalize(items, sigs, projections, t);
+    let parameters = crate::unsized_params(items, Some(Owner::Impl(imp)), &ty.generics);
+    if (!ty.generics.params.is_empty() || !ty.generics.lifetimes.is_empty())
+        && crate::maybe_unsized(items, sigs, t, &parameters, &env)
+    {
+        error(ty.ty_range, "associated type output must be sized".into());
+        return;
+    }
+
     for &(name, bound) in sig.type_bounds.iter() {
         if name != ty.name {
             continue;
@@ -2723,10 +3083,7 @@ fn check_type_bounds(
             continue;
         }
         let q = q.subst(&args);
-        let alias = AliasTy {
-            args: crate::ty::map_list(q.alias.args, |a| normalize(items, sigs, projections, a)),
-            ..q.alias
-        };
+        let alias = q.alias.map_args(|a| normalize(items, sigs, projections, a));
         let found = normalize(items, sigs, projections, Ty::alias(alias));
         let expected = normalize(items, sigs, projections, q.ty);
         if found != expected && found != Ty::ERROR && expected != Ty::ERROR {
@@ -2841,8 +3198,18 @@ fn check_method(
         .get(imp)
         .map_or(Vec::new(), |p| p.to_vec());
     for &(name, ty) in sigs.impl_types.get(imp).map_or(&[][..], |t| t) {
+        if items.impls[imp]
+            .types
+            .iter()
+            .find(|definition| definition.name == name)
+            .is_some_and(|definition| {
+                !definition.generics.params.is_empty() || !definition.generics.lifetimes.is_empty()
+            })
+        {
+            continue;
+        }
         projections.push(Projection {
-            alias: alias_of(*trait_ref, self_ty, name),
+            alias: alias_of(items, *trait_ref, self_ty, name),
             ty,
         });
     }
@@ -3140,6 +3507,42 @@ pub fn check_trivial_bounds(
     }
 }
 
+/// Owner equalities exclude contracts quantified by a family's own binders.
+fn trait_owner_projections(sigs: &Signatures, id: TraitId) -> Vec<Projection> {
+    let declared = sigs.trait_projections.get(id).map_or(&[][..], |p| p);
+    let Some(signature) = sigs.traits.get(id) else {
+        return declared.to_vec();
+    };
+    declared
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &projection)| {
+            if index < signature.header_projections.len() {
+                return Some(projection);
+            }
+            let TyKind::Alias(family) = projection.alias.self_ty().kind() else {
+                return Some(projection);
+            };
+            if family.trait_ != id {
+                return Some(projection);
+            }
+            let local = signature
+                .families
+                .iter()
+                .find(|(name, _)| *name == family.name)
+                .map(|(_, family)| family);
+            local
+                .is_none_or(|family| {
+                    family.lifetimes == 0
+                        && family.params.is_empty()
+                        && family.predicates.is_empty()
+                        && family.projections.is_empty()
+                })
+                .then_some(projection)
+        })
+        .collect()
+}
+
 /// Checks that the types in items' signatures meet the bounds of the
 /// structs they name, given the bounds in scope where they are written:
 /// `W<u8>` with `struct W<T: Tr>` needs `u8: Tr` (E0277). As in rustc, a
@@ -3276,14 +3679,37 @@ pub fn check_well_formed(
                 check.ty(arg, part.map(|(t, _)| t), at);
             }
         }
-        for (written, &(_, ty)) in imp.types.iter().zip(types) {
-            check.ty(ty, Some(&written.ty), WfRange::at(written.ty_range));
-        }
         check.bounds(&imp.generics, own, declared);
+        for (written, &(_, ty)) in imp.types.iter().zip(types) {
+            let family = sigs
+                .impl_families
+                .get(id)
+                .and_then(|families| families.iter().find(|(name, _)| *name == written.name))
+                .map(|(_, family)| family);
+            let mut predicates = own.to_vec();
+            let mut equalities = declared.to_vec();
+            if let Some(family) = family {
+                predicates.extend(family.predicates.iter().copied());
+                equalities.extend(family.projections.iter().copied());
+            }
+            let (env, projections) = scope(predicates, equalities);
+            let wf = WfScope {
+                env: &env,
+                projections: &projections,
+                aliases: true,
+            };
+            let mut check =
+                WfCheck::new(items, sigs, imp.file, &wf, written.item_range, diagnostics);
+            check.ty(ty, Some(&written.ty), WfRange::at(written.ty_range));
+            if let Some(family) = family {
+                check.bounds(&written.generics, &family.predicates, &family.projections);
+            }
+        }
     }
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let own = sigs.trait_predicates.get(id).map_or(&[][..], |p| p);
-        let declared = sigs.trait_projections.get(id).map_or(&[][..], |p| p);
+        let all_declared = sigs.trait_projections.get(id).map_or(&[][..], |p| p);
+        let declared = trait_owner_projections(sigs, id);
         let header = sigs
             .traits
             .get(id)
@@ -3300,7 +3726,7 @@ pub fn check_well_formed(
             t.def_range,
             diagnostics,
         );
-        if !struct_bounds && !aliased_bounds(own, declared) {
+        if !struct_bounds && !aliased_bounds(own, &declared) && t.types.is_empty() {
             continue;
         }
         let (env, projections) = scope(
@@ -3319,8 +3745,48 @@ pub fn check_well_formed(
         WfCheck::new(items, sigs, t.loc.file, &wf, span, diagnostics).bounds(
             &t.generics,
             own,
-            declared,
+            &declared,
         );
+        for written in &t.types {
+            let family = sigs
+                .traits
+                .get(id)
+                .and_then(|signature| {
+                    signature
+                        .families
+                        .iter()
+                        .find(|(name, _)| *name == written.name)
+                })
+                .map(|(_, family)| family);
+            let Some(family) = family else { continue };
+            let mut predicates = owner_predicates(items, sigs, Some(Owner::Trait(id)));
+            predicates.extend(family.predicates.iter().copied());
+            let (env, mut projections) = scope(predicates, declared.clone());
+            projections.extend(family.projections.iter().copied());
+            let wf = WfScope {
+                env: &env,
+                projections: &projections,
+                aliases: true,
+            };
+            let mut check = WfCheck::new(
+                items,
+                sigs,
+                t.loc.file,
+                &wf,
+                written.item_range,
+                diagnostics,
+            );
+            check.bounds(&written.generics, &family.predicates, &family.projections);
+            let output: Vec<_> = all_declared
+                .iter()
+                .filter(|projection| {
+                    matches!(projection.alias.self_ty().kind(), TyKind::Alias(alias)
+                    if alias.trait_ == id && alias.name == written.name)
+                })
+                .copied()
+                .collect();
+            check.bound_aliases(&[], &output);
+        }
     }
     for (id, konst) in items.consts.iter().skip(from.consts as usize) {
         if !struct_bounds && !sigs.consts[id].has_aliases() && !aliased_owner(konst.owner) {
@@ -3541,16 +4007,22 @@ impl<'a, 'd> WfCheck<'a, 'd> {
     /// The associated types in the bounds of `owner`, the `impl` block or
     /// trait of an associated item, which rustc reports at the item.
     fn owner_bounds(&mut self, owner: Option<Owner>) {
+        if let Some(Owner::Trait(trait_)) = owner {
+            let declared = trait_owner_projections(self.sigs, trait_);
+            let predicates = self
+                .sigs
+                .trait_predicates
+                .get(trait_)
+                .map_or(&[][..], |p| p);
+            self.bound_aliases(predicates, &declared);
+            return;
+        }
         let (predicates, declared) = match owner {
             Some(Owner::Impl(imp)) => (
                 self.sigs.impl_predicates.get(imp),
                 self.sigs.impl_projections.get(imp),
             ),
-            Some(Owner::Trait(t)) => (
-                self.sigs.trait_predicates.get(t),
-                self.sigs.trait_projections.get(t),
-            ),
-            None => return,
+            _ => return,
         };
         self.bound_aliases(
             predicates.map_or(&[][..], |p| p),
@@ -3573,7 +4045,7 @@ impl<'a, 'd> WfCheck<'a, 'd> {
             }
         }
         for q in declared {
-            for &a in q.alias.args {
+            for &a in q.alias.args.iter().chain(q.alias.family_args) {
                 collect_aliases(a, &mut aliases);
             }
             collect_aliases(q.ty, &mut aliases);
@@ -3668,7 +4140,7 @@ fn broken_alias(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) 
 fn collect_aliases(ty: Ty, out: &mut Vec<AliasTy>) {
     match ty.kind() {
         TyKind::Alias(alias) => {
-            for &a in alias.args {
+            for &a in alias.args.iter().chain(alias.family_args) {
                 collect_aliases(a, out);
             }
             out.push(alias);
@@ -3828,10 +4300,7 @@ fn unmet_struct_bounds(
                 .flatten()
             {
                 let q = q.subst(args);
-                let alias = AliasTy {
-                    args: crate::ty::map_list(q.alias.args, &normalized),
-                    ..q.alias
-                };
+                let alias = q.alias.map_args(&normalized);
                 // Without the trait, there is no associated type (E0277).
                 let goal = Predicate {
                     self_ty: alias.args[0],
@@ -3882,11 +4351,23 @@ fn unmet_struct_bounds(
                 unmet_struct_bounds(items, sigs, scope, arg, part, at, reported, out);
             }
             let normalized = |t: Ty| normalize(items, sigs, scope.projections, t);
-            let goal = alias_predicate(AliasTy {
-                args: crate::ty::map_list(alias.args, normalized),
-                ..alias
-            });
+            let goal = alias_predicate(alias.map_args(normalized));
             let goal = normalize_predicate(items, sigs, goal);
+            let requirements = family_requirements(items, sigs, alias);
+            for requirement in requirements.predicates {
+                let requirement = normalize_predicate(items, sigs, requirement);
+                if !holds(items, sigs, scope.env, requirement) {
+                    out.push((range.bound, unmet(items, requirement)));
+                }
+            }
+            for projection in requirements.projections {
+                if normalized(Ty::alias(projection.alias)) != normalized(projection.ty) {
+                    out.push((
+                        range.bound,
+                        "associated type family requirements are not satisfied".into(),
+                    ));
+                }
+            }
             if !holds(items, sigs, scope.env, goal) {
                 let leaf = unmet_leaf(items, sigs, scope.env, goal, 0);
                 if !reported.contains(&leaf) {
@@ -4042,10 +4523,9 @@ fn unify_headers_with_predicates(
                 apply(bound, (side, len), depth + 1),
             ),
             TyKind::Slice(t) => Ty::slice(apply(bound, (side, t), depth + 1)),
-            TyKind::Alias(alias) => Ty::alias(AliasTy {
-                args: Ty::list(&apply_all(alias.args)),
-                ..alias
-            }),
+            TyKind::Alias(alias) => {
+                Ty::alias(alias.map_args(|t| apply(bound, (side, t), depth + 1)))
+            }
             _ => ty,
         }
     }

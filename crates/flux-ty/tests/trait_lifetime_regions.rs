@@ -201,10 +201,10 @@ fn trait_arguments_constrain_associated_type_lifetimes() {
             unconstrained,
             "{source}: {diagnostics:?}"
         );
-        assert!(
-            diagnostics
-                .iter()
-                .any(|d| d.message == "lifetime parameters on traits are not supported yet")
+        assert_eq!(
+            diagnostics.is_empty(),
+            !unconstrained,
+            "{source}: {diagnostics:?}"
         );
     }
 }

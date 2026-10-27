@@ -137,3 +137,27 @@ combination, then compares native results with Rustc in both optimization modes.
 CRC runtime detection uses the actual CPU query. The CRC intrinsics currently
 use exact scalar folding, without hardware acceleration. The required shared
 slice `align_to` API preserves alignment, element boundaries and input lifetime.
+
+## Associated type families
+
+The guarded audit in `out/keel-asm-readiness/91406` has zero syntax and HIR
+diagnostics and reaches type checking. It ran in 16.52 seconds. Both source
+integrity reports are `[]`, and the independently compiled rustc consumer passed.
+The 80 GAT/associated-where HIR diagnostics from the previous inventory are gone.
+
+Type checking reports 111 diagnostics, including cascades:
+
+| Diagnostic | Count |
+| --- | ---: |
+| lifetimes in supertraits and associated type bounds | 99 |
+| lifetimes in generic arguments of bounds | 3 |
+| missing `alloc::collections::TryReserveError` | 3 |
+| region-bearing inherited types outside function signatures | 2 |
+| lifetime parameters on traits outside the admitted profiles | 2 |
+| missing `std::io::Write` | 2 |
+
+MIR and native Flux codegen did not run. The graph remains an ignored progress
+audit. Separate active GAT tests cover lifetime/type/const families, selected impl
+header substitution, required and output bounds, lending, iterator item equalities
+and owner-lifetime associated bindings. The native lending consumer matches rustc
+with optimization off/on; this does not prove the whole object dependency graph.

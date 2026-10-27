@@ -567,7 +567,8 @@ impl Ctx<'_> {
                     name: items.traits[once].name,
                     args: Ty::list(&[tupled]),
                 };
-                let output = crate::traits::alias_of(once, base, Symbol::intern("Output"));
+                let output =
+                    crate::traits::alias_of(self.items, once, base, Symbol::intern("Output"));
                 self.normalize(Ty::alias(output), self.range(id))
             }
             TyKind::Infer(var) if !self.unknown(var).0 => {

@@ -63,7 +63,18 @@ pub fn supertraits_of(items: &ItemTree, t: TraitId) -> Vec<TraitId> {
 pub fn dyn_assoc(items: &ItemTree, t: TraitId) -> Vec<(TraitId, Symbol)> {
     supertraits_of(items, t)
         .into_iter()
-        .flat_map(|t| items.traits[t].types.iter().map(move |ty| (t, ty.name)))
+        .flat_map(|t| {
+            let module = items.traits[t].loc.module;
+            items.traits[t]
+                .types
+                .iter()
+                .filter(move |ty| {
+                    !ty.generics.predicates.iter().any(|predicate| {
+                        is_self(&predicate.ty) && is_sized(items, module, &predicate.bound)
+                    })
+                })
+                .map(move |ty| (t, ty.name))
+        })
         .collect()
 }
 
@@ -101,12 +112,15 @@ fn mentions_self(ty: &TypeRef) -> bool {
     }
 }
 
-/// Whether `bound`, written in `module`, names `core::marker::Sized`.
+/// Whether `bound`, written in `module`, requires a sized Self, directly
+/// or through its supertraits.
 fn is_sized(items: &ItemTree, module: ModuleId, bound: &Bound) -> bool {
-    matches!(
-        items.resolve_trait(module, bound),
-        (Some(t), _) if items.traits[t].lang == Some(flux_intern::sym::sized)
-    )
+    let (Some(trait_), _) = items.resolve_trait(module, bound) else {
+        return false;
+    };
+    supertraits_of(items, trait_)
+        .iter()
+        .any(|&id| items.traits[id].lang == Some(flux_intern::sym::sized))
 }
 
 /// Why trait `t` cannot be made a trait object, as rustc's note says
@@ -124,6 +138,18 @@ pub fn dyn_incompatibility(items: &ItemTree, t: TraitId) -> Option<String> {
                 .any(|p| is_self(&p.ty) && is_sized(items, module, &p.bound));
         if requires_sized {
             return Some("it requires `Self: Sized`".into());
+        }
+        for family in &data.types {
+            if (!family.generics.params.is_empty() || !family.generics.lifetimes.is_empty())
+                && !family.generics.predicates.iter().any(|predicate| {
+                    is_self(&predicate.ty) && is_sized(items, module, &predicate.bound)
+                })
+            {
+                return Some(format!(
+                    "associated type `{}` has generic parameters",
+                    family.name
+                ));
+            }
         }
         // `trait Tr: PartialEq` is `PartialEq<Self>`.
         for bound in data.supertraits.iter() {

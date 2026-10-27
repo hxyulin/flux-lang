@@ -8,6 +8,9 @@ pub(crate) fn impl_associated_values_match(
     sigs: &Signatures,
     imp: flux_hir::ImplId,
 ) -> Option<bool> {
+    if !families::impl_family_values_match(items, sigs, imp)? {
+        return Some(false);
+    }
     let Some(block) = sigs.regions.impls.get(imp) else {
         return Some(true);
     };
@@ -20,6 +23,11 @@ pub(crate) fn impl_associated_values_match(
     let mut cx = Cx::new(&body, items, sigs, &none);
     let (lifetimes, env) = cx.impl_header_environment(imp)?;
     for &(name, ty) in values {
+        if items.impls[imp].types.iter().any(|t| {
+            t.name == name && (!t.generics.params.is_empty() || !t.generics.lifetimes.is_empty())
+        }) {
+            continue;
+        }
         let selections = block
             .type_selections
             .iter()
@@ -111,6 +119,7 @@ impl Cx<'_> {
                 self.env_regions.push((p.alias, vars));
             }
         }
+        self.family_goals = env.clone();
         Some((lifetimes, env))
     }
 
@@ -161,6 +170,7 @@ impl Cx<'_> {
         }
         if !self.impl_prove_super(
             &ImplRegionGoal {
+                lifetimes: Vec::new(),
                 predicate: flux_ty::Predicate {
                     self_ty: self.normalize(alias.args[0]),
                     trait_ref: flux_ty::TraitRef {

@@ -899,8 +899,16 @@ impl Ctx<'_> {
                 ok
             }
             (TyKind::Alias(a), TyKind::Alias(b)) if a.trait_ == b.trait_ && a.name == b.name => {
-                let mut ok = true;
-                for (&x, &y) in a.args.iter().zip(b.args) {
+                let mut ok = a.owner_lifetimes == b.owner_lifetimes
+                    && a.family_lifetimes == b.family_lifetimes
+                    && a.args.len() == b.args.len()
+                    && a.family_args.len() == b.family_args.len();
+                for (&x, &y) in a
+                    .args
+                    .iter()
+                    .chain(a.family_args)
+                    .zip(b.args.iter().chain(b.family_args))
+                {
                     ok &= self.unify(x, y);
                 }
                 ok
@@ -1062,9 +1070,14 @@ impl Ctx<'_> {
             (TyKind::Alias(a), TyKind::Alias(b)) => {
                 a.trait_ == b.trait_
                     && a.name == b.name
+                    && a.owner_lifetimes == b.owner_lifetimes
+                    && a.family_lifetimes == b.family_lifetimes
+                    && a.args.len() == b.args.len()
+                    && a.family_args.len() == b.family_args.len()
                     && a.args
                         .iter()
-                        .zip(b.args)
+                        .chain(a.family_args)
+                        .zip(b.args.iter().chain(b.family_args))
                         .all(|(&x, &y)| self.can_unify(x, y))
             }
             (TyKind::Opaque(a), TyKind::Opaque(b)) => {
@@ -1152,8 +1165,17 @@ impl Ctx<'_> {
                 } else {
                     String::new()
                 };
+                let family_args: Vec<String> =
+                    std::iter::repeat_n("'_".to_owned(), alias.family_lifetimes as usize)
+                        .chain(alias.family_args.iter().map(|&a| self.describe(a)))
+                        .collect();
+                let family = if family_args.is_empty() {
+                    String::new()
+                } else {
+                    format!("<{}>", family_args.join(", "))
+                };
                 format!(
-                    "<{} as {}{trait_args}>::{}",
+                    "<{} as {}{trait_args}>::{}{family}",
                     args[0], alias.trait_name, alias.name
                 )
             }
@@ -4141,7 +4163,7 @@ impl Ctx<'_> {
             name: self.items.traits[t].name,
             args: Ty::list(&[]),
         };
-        let alias = crate::traits::alias_of(trait_ref, ty, Symbol::intern("Target"));
+        let alias = crate::traits::alias_of(self.items, trait_ref, ty, Symbol::intern("Target"));
         self.normalize(Ty::alias(alias), range)
     }
 
@@ -5633,7 +5655,7 @@ impl Ctx<'_> {
 
     /// `<ty as Tr>::Output`, normalized.
     fn output(&mut self, trait_ref: crate::TraitRef, ty: Ty, range: TextRange) -> Ty {
-        let alias = crate::traits::alias_of(trait_ref, ty, Symbol::intern("Output"));
+        let alias = crate::traits::alias_of(self.items, trait_ref, ty, Symbol::intern("Output"));
         self.normalize(Ty::alias(alias), range)
     }
 

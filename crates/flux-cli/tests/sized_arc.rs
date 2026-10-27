@@ -556,8 +556,8 @@ fn iterator_projection_boundaries_are_compile_only() {
         "{}",
         String::from_utf8_lossy(&flux.stderr)
     );
-    // This associated-type trait lifetime shape remains outside admission.
-    let file = dir.join("unsupported_trait_lifetime.rs");
+    // An associated type now retains its trait-owner lifetime independently.
+    let file = dir.join("associated_trait_lifetime.rs");
     std::fs::write(&file, "trait Tr<'a> { type Item; } fn main() {}\n").unwrap();
     assert!(
         rustc_metadata(&file, &dir.join("test.rmeta"))
@@ -569,10 +569,10 @@ fn iterator_projection_boundaries_are_compile_only() {
         .arg(file)
         .output()
         .unwrap();
-    assert!(!flux.status.success());
     assert!(
+        flux.status.success(),
+        "{}",
         String::from_utf8_lossy(&flux.stderr)
-            .contains("lifetime parameters on traits are not supported yet")
     );
     std::fs::remove_dir_all(dir).unwrap();
 }

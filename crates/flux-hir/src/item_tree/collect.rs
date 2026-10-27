@@ -18,6 +18,31 @@ use super::{
     target_feature_inline, unsupported, with_macro_types,
 };
 
+/// Associated definitions may place predicates before or after the RHS. Keep
+/// both sets in the same family-local scope, including their source ranges.
+fn associated_generics(t: ast::TypeAlias<'_>, diagnostics: &mut Vec<Diagnostic>) -> Generics {
+    let mut clauses = t.where_clauses();
+    let mut generics = collect_generics(
+        t.generic_param_list(),
+        clauses.next(),
+        Defaults::No,
+        diagnostics,
+    );
+    for clause in clauses {
+        let more = collect_generics(None, Some(clause), Defaults::No, diagnostics);
+        let mut predicates = generics.predicates.into_vec();
+        predicates.extend(more.predicates);
+        generics.predicates = predicates.into();
+        let mut outlives = generics.outlives.into_vec();
+        outlives.extend(more.outlives);
+        generics.outlives = outlives.into();
+        let mut type_outlives = generics.type_outlives.into_vec();
+        type_outlives.extend(more.type_outlives);
+        generics.type_outlives = type_outlives.into();
+    }
+    generics
+}
+
 impl ItemTree {
     pub(super) fn add_source_crate(
         &mut self,
@@ -835,20 +860,7 @@ impl Collector<'_> {
                 "visibility qualifiers are not permitted here",
             ));
         }
-        if let Some(list) = t.generic_param_list() {
-            unsupported(
-                diagnostics,
-                list.syntax().text_range(),
-                "generic associated types",
-            );
-        }
-        if let Some(clause) = t.where_clauses().next() {
-            unsupported(
-                diagnostics,
-                clause.syntax().text_range(),
-                "`where` clauses on associated types",
-            );
-        }
+        let generics = associated_generics(t, diagnostics);
         if t.ty().is_some() {
             diagnostics.push(Diagnostic::new(
                 item_range,
@@ -856,8 +868,15 @@ impl Collector<'_> {
             ));
         }
         let mut bounds = Vec::new();
+        let mut lifetime_bounds = Vec::new();
         if let Some(list) = t.type_bound_list() {
-            lower_bounds(list, &mut bounds, None, Relaxed::Unsupported, diagnostics);
+            lower_bounds(
+                list,
+                &mut bounds,
+                Some(&mut lifetime_bounds),
+                Relaxed::Unsupported,
+                diagnostics,
+            );
         }
         for bound in &mut bounds {
             reject_impl_trait_in_path(&mut bound.path, IN_BOUNDS, diagnostics);
@@ -874,7 +893,9 @@ impl Collector<'_> {
         }
         data.types.push(TraitType {
             name,
+            generics,
             bounds: bounds.into(),
+            lifetime_bounds: lifetime_bounds.into(),
             name_range,
             item_range,
         });
@@ -901,14 +922,7 @@ impl Collector<'_> {
                 "visibility qualifiers are not permitted here",
             ));
         }
-        let generic = t.generic_param_list();
-        if let Some(list) = generic {
-            unsupported(
-                diagnostics,
-                list.syntax().text_range(),
-                "generic associated types",
-            );
-        }
+        let generics = associated_generics(t, diagnostics);
         if let Some(list) = t.type_bound_list() {
             diagnostics.push(Diagnostic::new(
                 list.syntax().text_range(),
@@ -918,16 +932,10 @@ impl Collector<'_> {
         let (ty, ty_range) = match t.ty() {
             Some(ty) => {
                 let range = ty.syntax().text_range();
-                match generic {
-                    // Reported; defined, as far as the trait is concerned.
-                    Some(_) => (TypeRef::Error, range),
-                    None => {
-                        let mut lowered = lower_type(Some(ty), diagnostics);
-                        let site = ImplTraitSite::Unstable("associated types");
-                        reject_impl_trait(&mut lowered, site, diagnostics);
-                        (lowered, range)
-                    }
-                }
+                let mut lowered = lower_type(Some(ty), diagnostics);
+                let site = ImplTraitSite::Unstable("associated types");
+                reject_impl_trait(&mut lowered, site, diagnostics);
+                (lowered, range)
             }
             None => {
                 // Reported; defined too.
@@ -950,6 +958,7 @@ impl Collector<'_> {
         }
         imp.types.push(ImplType {
             name,
+            generics,
             ty,
             ty_range,
             name_range,

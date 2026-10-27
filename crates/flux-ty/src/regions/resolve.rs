@@ -62,6 +62,377 @@ fn inherit_static_self(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::
     }
 }
 
+/// Family-local binders are appended after owner lifetimes. The where clause
+/// is a prerequisite at each projection occurrence, never a new caller assumption.
+#[allow(clippy::too_many_arguments)]
+fn family_contract(
+    items: &ItemTree,
+    sigs: &Signatures,
+    module: ModuleId,
+    owner: flux_hir::Owner,
+    owner_names: &[LifetimeName],
+    generics: &Generics,
+    self_ty: Ty,
+    self_regions: Option<&[Region]>,
+    value: Option<(&TypeRef, Ty)>,
+    output_bounds: &[LifetimeRef],
+    output_traits: &[(&flux_hir::Bound, crate::TraitRef)],
+    output_projections: &[(
+        &flux_hir::AssocBinding,
+        Option<&flux_hir::GenericArgs>,
+        crate::Projection,
+    )],
+    schema: Option<&crate::traits::AssociatedTypeSig>,
+    errors: &mut Vec<(TextRange, String)>,
+) -> FamilyRegions {
+    for lifetime in &generics.lifetimes {
+        if owner_names
+            .iter()
+            .any(|owner| owner.name == Some(lifetime.name))
+        {
+            errors.push((
+                lifetime.range,
+                "lifetime name shadows a lifetime already in scope".into(),
+            ));
+        }
+    }
+    let mut names = owner_names.to_vec();
+    names.extend(own_names(generics));
+    let type_names = crate::generic_names(items, Some(owner), generics);
+    let constants = crate::generic_consts(items, Some(owner), generics);
+    let mut predicates = crate::traits::owner_predicates(items, sigs, Some(owner));
+    if let Some(schema) = schema {
+        predicates.extend(schema.predicates.iter().copied());
+    }
+    let predicates = crate::traits::elaborate(sigs, &predicates);
+    let mut walker = Walker::new(items, module, names.iter().map(|n| n.name).collect());
+    walker.scope = TypeScope {
+        self_ty: Some(self_ty),
+        bounds: &predicates,
+        generics: &type_names,
+        consts: &constants,
+        signature_of: Some("associated types"),
+        ..TypeScope::default()
+    };
+    walker.self_regions = self_regions;
+    walker.add_projection_bounds(generics);
+    walker.self_projection_owner = match owner {
+        flux_hir::Owner::Trait(id) => Some((
+            id,
+            (0..owner_names.len() as u32).map(Region::Param).collect(),
+        )),
+        flux_hir::Owner::Impl(id) => sigs.impl_traits.get(id).and_then(|tr| {
+            sigs.regions
+                .impls
+                .get(id)
+                .map(|r| (tr.trait_, r.trait_lifetimes.clone()))
+        }),
+    };
+    walker.elided = Elided::Missing(None);
+    let mut outlives = Vec::new();
+    for predicate in &generics.outlives {
+        let a = walker.named(predicate.longer);
+        let b = walker.named(predicate.shorter);
+        if a != Region::Erased && b != Region::Erased {
+            outlives.push(Outlives::Region(a, b));
+        }
+    }
+    for predicate in &generics.type_outlives {
+        let r = walker.named(predicate.lifetime);
+        let ty = crate::resolve_type(
+            items,
+            module,
+            &predicate.ty,
+            walker.scope,
+            predicate.ty_range,
+            errors,
+        );
+        if matches!(ty.kind(),TyKind::Alias(alias)if has_projection_inputs(alias)) {
+            errors.push((
+                predicate.ty_range,
+                "associated family projection outlives subjects are not supported yet".into(),
+            ));
+            continue;
+        }
+        let row = walker.regions(&predicate.ty, ty);
+        if r != Region::Erased {
+            for &a in &row {
+                if a != Region::Erased && a != r {
+                    outlives.push(Outlives::Region(a, r));
+                }
+            }
+            outlives_params(sigs, ty, r, &mut outlives);
+        }
+    }
+    let output_outlives = output_bounds
+        .iter()
+        .map(|&l| walker.named(l))
+        .filter(|r| *r != Region::Erased)
+        .collect();
+    let output_traits = output_traits
+        .iter()
+        .map(|(written, bound)| {
+            let mut lifetimes = Vec::new();
+            walker.trait_lifetimes(&written.path, bound.trait_, false, &mut lifetimes);
+            let args = written
+                .path
+                .args(written.path.segments.len().saturating_sub(1));
+            let rows = bound
+                .args
+                .iter()
+                .enumerate()
+                .map(|(i, &ty)| {
+                    args.and_then(|a| a.types.get(i)).map_or_else(
+                        || vec![Region::Erased; slots(items, ty)].into_boxed_slice(),
+                        |written| walker.regions(written, ty),
+                    )
+                })
+                .collect();
+            (
+                *bound,
+                TraitRefRegions {
+                    lifetimes: lifetimes.into(),
+                    args: rows,
+                },
+            )
+        })
+        .collect();
+    let output_projections = output_projections
+        .iter()
+        .map(|(written, args, projection)| {
+            (
+                *projection,
+                projection_regions(&mut walker, written, *args, projection),
+            )
+        })
+        .collect();
+    walker.selections = Some(Vec::new());
+    let row = value.map_or_else(Box::default, |(written, ty)| walker.regions(written, ty));
+    let selections = walker.selections.take().unwrap_or_default().into();
+    errors.append(&mut walker.errors);
+    let (bound_selfs, bound_traits, projections) = schema.map_or_else(
+        || (Box::default(), Box::default(), Box::default()),
+        |schema| {
+            bound_regions(
+                items,
+                module,
+                generics,
+                &names.iter().map(|n| n.name).collect::<Vec<_>>(),
+                &type_names,
+                &schema.predicates,
+                &schema.projections,
+                errors,
+            )
+        },
+    );
+    dedup(&mut outlives);
+    FamilyRegions {
+        names: names.into(),
+        owner: owner_names.len() as u32,
+        value: row,
+        outlives: outlives.into(),
+        output_outlives,
+        output_traits,
+        output_projections,
+        bound_selfs,
+        bound_traits,
+        projections,
+        selections,
+    }
+}
+
+fn resolve_trait_families(
+    items: &ItemTree,
+    sigs: &mut Signatures,
+    from: flux_hir::ItemCounts,
+    errors: &mut Errors,
+) {
+    for (id, data) in items.traits.iter().skip(from.traits as usize) {
+        let owner_names = sigs.regions.traits.get(id).map_or(&[][..], |r| &r.names);
+        let mut list = Vec::new();
+        let families = data.types.iter().map(|family| {
+            let schema=sigs.traits.get(id).and_then(|t|t.families.iter().find(|(n,_)|*n==family.name)).map(|(_,s)|s);
+            let resolved:Vec<_>=sigs.traits.get(id).into_iter().flat_map(|t|t.type_bounds.iter()).filter(|(name,_)|*name==family.name).map(|(_,bound)|*bound).collect();
+            let output:Vec<_>=family.bounds.iter().zip(resolved).collect();
+            let implied:Vec<_>=sigs.traits.get(id).into_iter().flat_map(|t|t.implied.iter()).filter(|p|matches!(p.alias.args.first().map(|t|t.kind()),Some(TyKind::Alias(alias))if alias.trait_==id && alias.name==family.name)).copied().collect();
+            let bindings=family.bounds.iter().flat_map(|b| {let args=b.path.args(b.path.segments.len().saturating_sub(1));args.into_iter().flat_map(move |args|args.bindings.iter().map(move |binding|(binding,Some(args))))});
+            let projections:Vec<_>=bindings.zip(implied).map(|((binding,args),projection)|(binding,args,projection)).collect();
+            (family.name,family_contract(items,sigs,data.loc.module,flux_hir::Owner::Trait(id),owner_names,&family.generics,Ty::param(0,kw::SelfUpper),None,None,&family.lifetime_bounds,&output,&projections,schema,&mut list))
+        }).collect();
+        sigs.regions.traits.get_mut(id).unwrap().families = families;
+        errors.extend(list.into_iter().map(|(r, m)| (data.loc.file, r, m)));
+    }
+}
+
+fn resolve_impl_families(
+    items: &ItemTree,
+    sigs: &mut Signatures,
+    from: flux_hir::ItemCounts,
+    errors: &mut Errors,
+) {
+    for (id, data) in items.impls.iter().skip(from.impls as usize) {
+        let Some(owner) = sigs.regions.impls.get(id) else {
+            continue;
+        };
+        let mut list = Vec::new();
+        let families = data
+            .types
+            .iter()
+            .map(|family| {
+                let ty = crate::traits::impl_type(sigs, id, family.name).unwrap_or(Ty::ERROR);
+                let schema = sigs
+                    .impl_families
+                    .get(id)
+                    .and_then(|f| f.iter().find(|(n, _)| *n == family.name))
+                    .map(|(_, s)| s);
+                (
+                    family.name,
+                    family_contract(
+                        items,
+                        sigs,
+                        data.module,
+                        flux_hir::Owner::Impl(id),
+                        &owner.names,
+                        &family.generics,
+                        sigs.impls[id],
+                        Some(&owner.self_ty),
+                        Some((&family.ty, ty)),
+                        &[],
+                        &[],
+                        &[],
+                        schema,
+                        &mut list,
+                    ),
+                )
+            })
+            .collect();
+        sigs.regions.impls.get_mut(id).unwrap().families = families;
+        errors.extend(list.into_iter().map(|(r, m)| (data.file, r, m)));
+    }
+}
+
+/// Infer the required Self bound from method inputs at every occurrence of
+/// one family. Rust takes their intersection, so a use with no such guarantee
+/// cannot force a stronger bound onto an otherwise general family.
+fn check_required_family_bounds(
+    items: &ItemTree,
+    sigs: &Signatures,
+    from: flux_hir::ItemCounts,
+    errors: &mut Errors,
+) {
+    fn visit(
+        items: &ItemTree,
+        ty: Ty,
+        row: &[Region],
+        next: &mut usize,
+        out: &mut Vec<(crate::AliasTy, Vec<Region>)>,
+    ) {
+        if let TyKind::Alias(alias) = ty.kind()
+            && has_projection_inputs(alias)
+        {
+            let start = *next;
+            let count = slots(items, ty);
+            if let Some(table) = row.get(start..start + count) {
+                out.push((alias, table.to_vec()));
+            }
+            *next += count;
+            return;
+        }
+        let own = match ty.kind() {
+            TyKind::Ref(..) | TyKind::Dynamic(_) => 1,
+            TyKind::Adt(adt, _) => items.structs[adt.strukt].generics.lifetimes.len(),
+            TyKind::Opaque(o) => o.lifetimes as usize,
+            TyKind::FnPtr(_) => {
+                *next += slots(items, ty);
+                return;
+            }
+            _ => 0,
+        };
+        *next += own;
+        for child in ty.children() {
+            visit(items, child, row, next, out);
+        }
+    }
+    for (id, data) in items.traits.iter().skip(from.traits as usize) {
+        for family in &data.types {
+            if family.generics.lifetimes.is_empty() {
+                continue;
+            }
+            let mut required: Option<Vec<bool>> = None;
+            for &function in &data.functions {
+                let (Some(signature), Some(regions)) =
+                    (sigs.fns.get(function), sigs.regions.fns.get(function))
+                else {
+                    continue;
+                };
+                let mut implied = Vec::new();
+                let mut occurrences = Vec::new();
+                for (&ty, row) in signature.params.iter().zip(regions.params.iter()) {
+                    implied_outlives(items, sigs, ty, row, &mut implied);
+                    visit(items, ty, row, &mut 0, &mut occurrences);
+                }
+                visit(items, signature.ret, &regions.ret, &mut 0, &mut occurrences);
+                for (alias, row) in occurrences {
+                    if alias.trait_ != id
+                        || alias.name != family.name
+                        || !matches!(alias.args.first().map(|t|t.kind()),Some(TyKind::Param(p))if p.index==0)
+                    {
+                        continue;
+                    }
+                    let at = alias.owner_lifetimes as usize
+                        + alias.args.iter().map(|&t| slots(items, t)).sum::<usize>();
+                    let mask: Vec<_> = (0..alias.family_lifetimes as usize)
+                        .map(|j| {
+                            row.get(at + j).is_some_and(|&r| {
+                                outlives_known(Outlives::Type(alias.args[0], r), &implied)
+                            })
+                        })
+                        .collect();
+                    match &mut required {
+                        Some(old) => {
+                            for (a, b) in old.iter_mut().zip(mask) {
+                                *a &= b
+                            }
+                        }
+                        None => required = Some(mask),
+                    }
+                }
+            }
+            let Some(required) = required else { continue };
+            let Some(owner) = sigs.regions.traits.get(id) else {
+                continue;
+            };
+            let Some((_, contract)) = owner.families.iter().find(|(name, _)| *name == family.name)
+            else {
+                continue;
+            };
+            let assumptions: Vec<_> = owner
+                .outlives
+                .iter()
+                .chain(contract.outlives.iter())
+                .copied()
+                .collect();
+            for (index, is_required) in required.into_iter().enumerate() {
+                if is_required
+                    && !outlives_known(
+                        Outlives::Type(
+                            Ty::param(0, kw::SelfUpper),
+                            Region::Param(contract.owner + index as u32),
+                        ),
+                        &assumptions,
+                    )
+                {
+                    errors.push((
+                        data.loc.file,
+                        family.name_range,
+                        "missing required `Self` lifetime bound on associated type".into(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// The slots of each of a list of types.
 type Tables = Box<[Box<[Region]>]>;
 
@@ -98,7 +469,7 @@ pub(crate) fn resolve_regions(
                 &Generics::default(),
                 ty.bounds.iter(),
                 items.is_core(t.loc.module),
-                false,
+                true,
                 &mut list,
             );
         }
@@ -126,14 +497,18 @@ pub(crate) fn resolve_regions(
             TraitRegions {
                 names,
                 outlives: outlives.into(),
+                families: Box::default(),
             },
         );
         push(&mut errors, t.loc.file, list);
     }
+    resolve_trait_families(items, sigs, from, &mut errors);
     inherit_static_self(items, sigs, from);
     structs(items, sigs, from, &mut errors);
     impls(items, sigs, from, &mut errors);
+    resolve_impl_families(items, sigs, from, &mut errors);
     functions(items, sigs, from, &mut errors);
+    check_required_family_bounds(items, sigs, from, &mut errors);
     // Constants and statics: elided lifetimes are `'static`.
     for (id, konst) in items.consts.iter().skip(from.consts as usize) {
         let Some(&ty) = sigs.consts.get(id) else {
@@ -195,6 +570,7 @@ fn structs(
             signature_of: Some("structs"),
             ..TypeScope::default()
         };
+        walker.add_projection_bounds(&s.generics);
         walker.elided = Elided::Missing(None);
         let fields: Box<[Box<[Region]>]> = crate::all_fields(s)
             .zip(sigs.structs[id].iter())
@@ -322,6 +698,9 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
             .types
             .iter()
             .map(|t| {
+                if !t.generics.is_empty() || !t.generics.lifetimes.is_empty() {
+                    return (t.name, Box::default());
+                }
                 let ty = crate::traits::impl_type(sigs, id, t.name).unwrap_or(Ty::ERROR);
                 walker.selections = Some(Vec::new());
                 let regions = walker.regions(&t.ty, ty);
@@ -434,6 +813,7 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
         sigs.regions.impls.insert(
             id,
             ImplRegions {
+                families: Box::default(),
                 names: all_names.into(),
                 self_ty: self_regions,
                 trait_args: trait_args.into(),
@@ -583,6 +963,25 @@ fn functions(
             signature_of: Some("functions"),
             ..TypeScope::default()
         };
+        walker.self_projection_owner = match function.owner {
+            Some(flux_hir::Owner::Trait(owner)) => {
+                Some((owner, (0..owner_count).map(Region::Param).collect()))
+            }
+            Some(flux_hir::Owner::Impl(owner)) => sigs.impl_traits.get(owner).and_then(|tr| {
+                sigs.regions
+                    .impls
+                    .get(owner)
+                    .map(|r| (tr.trait_, r.trait_lifetimes.clone()))
+            }),
+            None => None,
+        };
+        for generics in items
+            .owner_generics(function.owner)
+            .into_iter()
+            .chain([&function.generics])
+        {
+            walker.add_projection_bounds(generics);
+        }
         walker.elided = Elided::Fresh;
         let (sig_params, mut sig_ret) = (sigs.fns[id].params.clone(), sigs.fns[id].ret);
         let params: Box<[Box<[Region]>]> = function
@@ -1680,8 +2079,18 @@ impl VarianceWalk<'_> {
                 }
             }
             TyKind::Alias(alias) => {
+                let invariant = ambient.xform(Variance::Invariant);
+                for _ in 0..alias.owner_lifetimes {
+                    self.slot(invariant);
+                }
                 for &t in alias.args {
-                    self.go(t, ambient.xform(Variance::Invariant));
+                    self.go(t, invariant);
+                }
+                for _ in 0..alias.family_lifetimes {
+                    self.slot(invariant);
+                }
+                for &t in alias.family_args {
+                    self.go(t, invariant);
                 }
             }
             // `dyn Tr + 'a` is covariant in `'a`.

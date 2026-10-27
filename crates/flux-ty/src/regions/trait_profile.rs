@@ -518,6 +518,7 @@ fn region_free_edges(
     let mut type_bounds = Vec::new();
     for ty in &t.types {
         let alias = Ty::alias(crate::traits::alias_of(
+            items,
             bounds[0].trait_ref,
             self_ty,
             ty.name,
@@ -577,4 +578,200 @@ fn region_free_edges(
         }
     }
     Ok(sig.supertraits.iter().map(|e| e.trait_).collect())
+}
+
+/// Associated-family methods have explicit owner and local binders. This
+/// profile admits their represented region rows, independently of the older
+/// required-method profile; proving their contracts remains mandatory in MIR.
+pub(crate) fn family_method_profile(
+    items: &ItemTree,
+    diagnostics: &[flux_hir::Diagnostic],
+    sigs: &Signatures,
+    id: TraitId,
+) -> bool {
+    let Some(data) = items.traits.get(id) else {
+        return false;
+    };
+    if data.generics.lifetimes.len() != 1
+        || !data.generics.params.is_empty()
+        || !data.generics.predicates.is_empty()
+        || !data.consts.is_empty()
+        || data.types.is_empty()
+        || data.is_unsafe
+    {
+        return false;
+    }
+    let Some(owner) = sigs.regions.traits.get(id) else {
+        return false;
+    };
+    if owner.names.as_ref()
+        != [LifetimeName {
+            name: Some(data.generics.lifetimes[0].name),
+            range: data.generics.lifetimes[0].range,
+        }]
+        || owner.families.len() != data.types.len()
+        || diagnosed(diagnostics, data.loc.file, data.def_range)
+    {
+        return false;
+    }
+    for family in &data.types {
+        let Some((_, contract)) = owner.families.iter().find(|(name, _)| *name == family.name)
+        else {
+            return false;
+        };
+        if contract.owner != 1
+            || contract.names.len() != 1 + family.generics.lifetimes.len()
+            || !family.generics.params.is_empty()
+            || !family.generics.predicates.is_empty()
+        {
+            return false;
+        }
+        if contract.names.first() != owner.names.first()
+            || contract
+                .names
+                .iter()
+                .skip(1)
+                .zip(&family.generics.lifetimes)
+                .any(|(n, l)| n.name != Some(l.name) || n.range != l.range)
+        {
+            return false;
+        }
+        if contract.output_traits.len() != family.bounds.len() {
+            return false;
+        }
+    }
+    fn ty_ok(ty: Ty) -> bool {
+        match ty.kind() {
+            TyKind::FnPtr(_)
+            | TyKind::Dynamic(_)
+            | TyKind::Opaque(_)
+            | TyKind::Infer(_)
+            | TyKind::Error => false,
+            _ => ty.children().all(ty_ok),
+        }
+    }
+    for &method in &data.functions {
+        let function = &items.functions[method];
+        let (Some(signature), Some(regions)) = (sigs.fns.get(method), sigs.regions.fns.get(method))
+        else {
+            return false;
+        };
+        if function.owner != Some(Owner::Trait(id))
+            || function.is_unsafe
+            || function.is_extern
+            || function.is_const
+            || function.is_variadic
+            || !function.generics.params.is_empty()
+            || !function.generics.predicates.is_empty()
+            || !function.opaques.is_empty()
+            || regions.owner != 1
+            || regions.names.first() != owner.names.first()
+            || diagnosed(diagnostics, function.loc.file, function.item_range)
+        {
+            return false;
+        }
+        if !ty_ok(signature.ret)
+            || signature.params.iter().any(|&ty| !ty_ok(ty))
+            || regions.params.len() != signature.params.len()
+        {
+            return false;
+        }
+        let valid = |r: &Region| {
+            matches!(r, Region::Static)
+                || matches!(r,Region::Param(i)if(*i as usize)<regions.names.len())
+        };
+        if regions.ret.len() != super::slots(items, signature.ret)
+            || !regions.ret.iter().all(valid)
+            || signature
+                .params
+                .iter()
+                .zip(regions.params.iter())
+                .any(|(&ty, row)| row.len() != super::slots(items, ty) || !row.iter().all(valid))
+        {
+            return false;
+        }
+        let names = crate::generic_names(items, Some(Owner::Trait(id)), &function.generics);
+        let mut walker = Walker::new(
+            items,
+            function.loc.module,
+            owner
+                .names
+                .iter()
+                .map(|n| n.name)
+                .chain(function.generics.lifetimes.iter().map(|l| Some(l.name)))
+                .collect(),
+        );
+        walker.scope = TypeScope {
+            self_ty: Some(Ty::param(0, flux_intern::kw::SelfUpper)),
+            generics: &names,
+            ..TypeScope::default()
+        };
+        walker.self_projection_owner = Some((id, Box::new([Region::Param(0)])));
+        walker.elided = Elided::Fresh;
+        let mut distinct = Vec::new();
+        for ((written, &ty), expected) in function
+            .params
+            .iter()
+            .zip(signature.params.iter())
+            .zip(regions.params.iter())
+        {
+            let row = walker.regions(&written.ty, ty);
+            if row != *expected {
+                return false;
+            }
+            let mut own = Vec::new();
+            for &r in &row {
+                if !own.contains(&r) {
+                    own.push(r)
+                }
+            }
+            distinct.extend(own);
+        }
+        walker.elided = if function.has_self
+            && matches!(
+                function.params.first().map(|p| &p.ty),
+                Some(TypeRef::Ref { .. })
+            ) {
+            Elided::Is(
+                regions
+                    .params
+                    .first()
+                    .and_then(|p| p.first())
+                    .copied()
+                    .unwrap_or(Region::Erased),
+            )
+        } else if distinct.len() == 1 {
+            Elided::Is(distinct[0])
+        } else {
+            Elided::Missing(None)
+        };
+        if walker.regions(&function.ret, signature.ret) != regions.ret || !walker.errors.is_empty()
+        {
+            return false;
+        }
+        let expected_names: Vec<_> = owner
+            .names
+            .iter()
+            .copied()
+            .chain(function.generics.lifetimes.iter().map(|l| LifetimeName {
+                name: Some(l.name),
+                range: l.range,
+            }))
+            .chain(
+                walker
+                    .fresh
+                    .iter()
+                    .map(|&range| LifetimeName { name: None, range }),
+            )
+            .collect();
+        if expected_names.as_slice() != regions.names.as_ref() {
+            return false;
+        }
+    }
+    data.supertraits.iter().all(|bound| {
+        items
+            .resolve_trait(data.loc.module, bound)
+            .0
+            .is_some_and(|t| items.traits[t].generics.lifetimes.is_empty())
+    })
 }

@@ -35,7 +35,7 @@ use support::inventory::collect as inventory;
 use support::inventory::report;
 
 #[test]
-#[ignore = "readiness audit requires unsupported GAT, CRC and std APIs; run explicitly with --ignored"]
+#[ignore = "readiness audit requires broader trait lifetime bounds and std APIs; run explicitly with --ignored"]
 fn unchanged_keel_asm_matches_rustc() {
     if std::env::var_os("FLUX_KEEL_ASM_ROOT").is_some() {
         keel_asm_worker();
