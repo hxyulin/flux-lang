@@ -1,3 +1,12 @@
+
+#[repr(C)]#[derive(Clone,Copy)]pub enum Mode { A=3, B=19 }
+#[repr(i8)]#[derive(Clone,Copy)]pub enum Signed { A=-7, B=101 }
+#[repr(u16)]#[derive(Clone,Copy)]pub enum Unsigned { A=7, B=65000 }
+#[repr(C)]#[derive(Clone,Copy)]pub struct Callbacks { cb: Option<extern "C" fn(u64)->u64>, mode: Mode }
+
+extern "C" fn plus_local(x:u64)->u64 { x+13 }
+extern "C" fn local_nullable(x:Option<extern "C" fn(u64)->u64>)->Option<extern "C" fn(u64)->u64> { if x.is_some() { None } else { Some(plus_local) } }
+extern "C" fn local_signed(x:Signed)->Signed { match x { Signed::A=>Signed::B, Signed::B=>Signed::A } }
 #[repr(C)]#[derive(Clone, Copy)]struct Words { words: [u64; 2] }
 #[repr(C)]#[derive(Clone, Copy)]struct Padded { lead: u8, payload: u64, tail: u16 }
 #[repr(C)]#[derive(Clone, Copy)]struct Small { a: u8, b: u16, c: u32 }
@@ -35,6 +44,23 @@ fn main() {
     assert_eq!(rust_words(value).words[1], 25);
     unsafe {
         let lib = dlopen(c"__LIBRARY__".as_ptr(), 2); assert!(!lib.is_null());
+
+        let mode:unsafe extern "C" fn(Mode)->Mode=core::mem::transmute(dlsym(lib,c"enum_mode".as_ptr()));
+        assert_eq!(mode(Mode::A) as i32,19); assert_eq!(mode(Mode::B) as i32,3);
+        let signed:unsafe extern "C" fn(Signed)->Signed=core::mem::transmute(dlsym(lib,c"enum_signed".as_ptr()));
+        assert_eq!(signed(Signed::B) as i8,-7);
+        let unsigned:unsafe extern "C" fn(Unsigned)->Unsigned=core::mem::transmute(dlsym(lib,c"enum_unsigned".as_ptr()));
+        assert_eq!(unsigned(Unsigned::A) as u16,65000);
+        let unsafe_cb:unsafe extern "C" fn(Option<unsafe extern "C" fn(u64)->u64>)->Option<unsafe extern "C" fn(u64)->u64>=core::mem::transmute(dlsym(lib,c"nullable_unsafe".as_ptr()));
+        let got=unsafe_cb(None).unwrap(); assert_eq!(got(11),34);assert!(unsafe_cb(Some(got)).is_none());
+        let nullable:unsafe extern "C" fn(Option<extern "C" fn(u64)->u64>)->Option<extern "C" fn(u64)->u64>=core::mem::transmute(dlsym(lib,c"nullable".as_ptr()));
+        assert_eq!(nullable(None).unwrap()(11),18); assert!(nullable(Some(plus_local)).is_none());
+        let invoke:unsafe extern "C" fn(extern "C" fn(Option<extern "C" fn(u64)->u64>)->Option<extern "C" fn(u64)->u64>)->u64=core::mem::transmute(dlsym(lib,c"invoke_nullable".as_ptr()));
+        assert_eq!(invoke(local_nullable),24);
+        let enum_cb:unsafe extern "C" fn(extern "C" fn(Signed)->Signed)->i8=core::mem::transmute(dlsym(lib,c"enum_callback".as_ptr()));
+        assert_eq!(enum_cb(local_signed),101);
+        let record:unsafe extern "C" fn(Callbacks)->u64=core::mem::transmute(dlsym(lib,c"callback_record".as_ptr()));
+        assert_eq!(record(Callbacks{cb:Some(plus_local),mode:Mode::B}),32);
         let sum: unsafe extern "C" fn(Words) -> u64 = core::mem::transmute(dlsym(lib, c"sum_words".as_ptr()));
         let call: unsafe extern "C" fn(extern "C" fn(Words) -> Words) -> u64 = core::mem::transmute(dlsym(lib, c"call_words".as_ptr()));
         assert_eq!(call(identity::<Words>), 42);

@@ -38,6 +38,7 @@ pub(super) enum Convention {
 
 pub(super) enum Argument {
     Ignore,
+    Scalar(Ty),
     Direct,
     Indirect,
     ByVal(Layout),
@@ -50,7 +51,11 @@ impl Convention {
 
     /// The same classification drives declaration, caller and callee lowering.
     pub fn argument(self, sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Argument {
-        if self.is_c() && c_aggregate(ty) {
+        if self.is_c()
+            && let Some(scalar) = c_scalar(sigs, layouts, ty)
+        {
+            Argument::Scalar(scalar)
+        } else if self.is_c() && c_aggregate(ty) {
             let layout =
                 c_layout(sigs, layouts, ty).expect("C ABI preflight checked the parameter layout");
             if layout.size() == 0 {
@@ -91,6 +96,7 @@ impl Convention {
         for &ty in &sig.params {
             match self.argument(sigs, layouts, ty) {
                 Argument::Ignore => {}
+                Argument::Scalar(ty) => signature.params.push(abi_param(ty).unwrap()),
                 Argument::Direct => signature
                     .params
                     .extend(leaves_of(sigs, ty).into_iter().filter_map(abi_param)),
@@ -119,35 +125,85 @@ fn c_layout(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Layout> {
     if !actual.exact || is_fat(sigs, ty) {
         return None;
     }
-    let layout = match ty.kind() {
-        TyKind::Tuple([]) | TyKind::Never => Layout::Struct(Vec::new()),
-        TyKind::Array(elem, count) => Layout::Array(
-            Box::new(c_layout(sigs, layouts, elem)?),
-            u32::try_from(count.as_usize()?).ok()?,
-        ),
-        TyKind::Adt(adt, _) => {
-            if sigs.unions.contains(&adt.strukt) || sigs.variants(ty).is_some() {
-                return None;
-            }
-            let fields = sigs.fields(ty)?;
-            let fields: Option<Vec<_>> = fields
-                .iter()
-                .map(|&field| c_layout(sigs, layouts, field))
-                .collect();
-            let fields = fields?;
-            let mut offset = 0u64;
-            for (i, field) in fields.iter().enumerate() {
-                offset = offset.next_multiple_of(field.align());
-                if offset != actual.field_offset(0, i as u32) {
+    let layout = if let Some(scalar) = c_scalar(sigs, layouts, ty) {
+        Layout::Scalar(keel_type(scalar)?)
+    } else {
+        match ty.kind() {
+            TyKind::Tuple([]) | TyKind::Never => Layout::Struct(Vec::new()),
+            TyKind::Array(elem, count) => Layout::Array(
+                Box::new(c_layout(sigs, layouts, elem)?),
+                u32::try_from(count.as_usize()?).ok()?,
+            ),
+            TyKind::Adt(adt, _) => {
+                if sigs.unions.contains(&adt.strukt) || sigs.variants(ty).is_some() {
                     return None;
                 }
-                offset += field.checked_size()?;
+                let fields = sigs.fields(ty)?;
+                let fields: Option<Vec<_>> = fields
+                    .iter()
+                    .map(|&field| c_layout(sigs, layouts, field))
+                    .collect();
+                let fields = fields?;
+                let mut offset = 0u64;
+                for (i, field) in fields.iter().enumerate() {
+                    offset = offset.next_multiple_of(field.align());
+                    if offset != actual.field_offset(0, i as u32) {
+                        return None;
+                    }
+                    offset += field.checked_size()?;
+                }
+                Layout::Struct(fields)
             }
-            Layout::Struct(fields)
+            _ => Layout::Scalar(keel_type(ty)?),
         }
-        _ => Layout::Scalar(keel_type(ty)?),
     };
     (layout.checked_size()? == actual.size && layout.align() == actual.align).then_some(layout)
+}
+
+/// Physical scalar representation of admitted enum shapes. Source enum leaves
+/// still contain decoded discriminants and payloads; call boundaries marshal
+/// through the actual layout rather than exposing those internal leaves.
+pub(super) fn c_scalar(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Ty> {
+    let variants = sigs.variants(ty)?;
+    let actual = layouts.of(ty);
+    if !actual.exact {
+        return None;
+    }
+    let super::Shape::Enum { tag: Some(tag), .. } = actual.shape else {
+        return None;
+    };
+    let scalar = if !variants.is_empty()
+        && variants.iter().all(|v| v.is_empty())
+        && matches!(tag.encoding, super::TagEncoding::Direct)
+    {
+        let int = super::tag_int(tag.bytes);
+        Ty::int(if tag.signed {
+            match tag.bytes {
+                1 => flux_ty::IntTy::I8,
+                2 => flux_ty::IntTy::I16,
+                4 => flux_ty::IntTy::I32,
+                8 => flux_ty::IntTy::I64,
+                _ => return None,
+            }
+        } else {
+            int
+        })
+    } else if variants.len() == 2
+        && tag.offset == 0
+        && tag.bytes == 8
+        && matches!(tag.encoding, super::TagEncoding::Niche { first, last, start: 0, .. } if first == last)
+        && variants.iter().filter(|v| v.is_empty()).count() == 1
+    {
+        let payload = variants.iter().find(|v| !v.is_empty())?;
+        if payload.len() != 1 || !matches!(payload[0].kind(), TyKind::FnPtr(_)) {
+            return None;
+        }
+        super::address_leaf()
+    } else {
+        return None;
+    };
+    let layout = Layout::Scalar(keel_type(scalar)?);
+    (layout.size() == actual.size && layout.align() == actual.align).then_some(scalar)
 }
 
 fn c_aggregate(ty: Ty) -> bool {
@@ -158,7 +214,9 @@ fn c_aggregate(ty: Ty) -> bool {
 }
 
 fn c_return_kind(sigs: &Signatures, layouts: &Layouts, ret: Ty) -> Return {
-    if c_aggregate(ret) {
+    if let Some(scalar) = c_scalar(sigs, layouts, ret) {
+        Return::Values(vec![abi_param(scalar).unwrap()])
+    } else if c_aggregate(ret) {
         let layout =
             c_layout(sigs, layouts, ret).expect("C ABI preflight checked the return layout");
         if layout.size() == 0 {
@@ -180,7 +238,7 @@ pub(super) fn c_signature(
     Convention::C.signature(sigs, layouts, sig, variadic)
 }
 
-fn c_admitted(items: &flux_hir::ItemTree, sigs: &Signatures, ty: Ty) -> bool {
+fn c_admitted(items: &flux_hir::ItemTree, sigs: &Signatures, layouts: &Layouts, ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Adt(adt, _) => {
             let data = &items.structs[adt.strukt];
@@ -188,15 +246,26 @@ fn c_admitted(items: &flux_hir::ItemTree, sigs: &Signatures, ty: Ty) -> bool {
             // classification differs from an integer struct of the same size.
             let vector = items.is_core(data.loc.module)
                 && items.modules[data.loc.module].name.as_str() == "aarch64";
+            if let Some(variants) = sigs.variants(ty) {
+                return c_scalar(sigs, layouts, ty).is_some()
+                    && ((variants.iter().any(|v| !v.is_empty())
+                        && items.is_core(data.loc.module)
+                        && data.name.as_str() == "Option"
+                        && items.modules[data.loc.module].name.as_str() == "option")
+                        || (variants.iter().all(|v| v.is_empty())
+                            && (data.repr_c || data.repr.is_some())));
+            }
             data.repr_c
                 && !vector
                 && !sigs.unions.contains(&adt.strukt)
                 && sigs.variants(ty).is_none()
-                && sigs
-                    .fields(ty)
-                    .is_some_and(|fields| fields.iter().all(|&ty| c_admitted(items, sigs, ty)))
+                && sigs.fields(ty).is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .all(|&ty| c_admitted(items, sigs, layouts, ty))
+                })
         }
-        TyKind::Array(elem, _) => c_admitted(items, sigs, elem),
+        TyKind::Array(elem, _) => c_admitted(items, sigs, layouts, elem),
         TyKind::Tuple(fields) => fields.is_empty(),
         _ => true,
     }
@@ -227,7 +296,7 @@ pub(super) fn check_c_abi(
     let supported = |sig: &FnSig| {
         !sig.params.iter().any(|&ty| c_contains_ref(&typed.sigs, ty))
             && sig.params.iter().copied().chain([sig.ret]).all(|ty| {
-                c_admitted(&hir.items, &typed.sigs, ty)
+                c_admitted(&hir.items, &typed.sigs, &layouts, ty)
                     && c_layout(&typed.sigs, &layouts, ty).is_some()
             })
     };

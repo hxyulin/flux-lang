@@ -16,3 +16,20 @@
 #[unsafe(no_mangle)]pub extern "C" fn nested(mut x: Nested) -> Nested { x.prefix += 1; x.small.c += 7; x.words.words[1] += 9; x }
 #[unsafe(no_mangle)]pub extern "C" fn big(mut x: Big) -> Big { x.words[0] += 11; x.words[4] += 13; x }
 #[unsafe(no_mangle)]pub extern "C" fn scalar(x: i8, y: u16) -> i64 { x as i64 + y as i64 }
+
+#[repr(C)]#[derive(Clone,Copy)]pub enum Mode { A=3, B=19 }
+#[repr(i8)]#[derive(Clone,Copy)]pub enum Signed { A=-7, B=101 }
+#[repr(u16)]#[derive(Clone,Copy)]pub enum Unsigned { A=7, B=65000 }
+#[repr(C)]#[derive(Clone,Copy)]pub struct Callbacks { cb: Option<extern "C" fn(u64)->u64>, mode: Mode }
+
+#[unsafe(no_mangle)]pub extern "C" fn enum_mode(x:Mode)->Mode { match x { Mode::A=>Mode::B, Mode::B=>Mode::A } }
+#[unsafe(no_mangle)]pub extern "C" fn enum_signed(x:Signed)->Signed { match x { Signed::A=>Signed::B, Signed::B=>Signed::A } }
+#[unsafe(no_mangle)]pub extern "C" fn enum_unsigned(x:Unsigned)->Unsigned { match x { Unsigned::A=>Unsigned::B, Unsigned::B=>Unsigned::A } }
+extern "C" fn plus(x:u64)->u64 { x+7 }
+#[unsafe(no_mangle)]pub extern "C" fn nullable(x:Option<extern "C" fn(u64)->u64>)->Option<extern "C" fn(u64)->u64> { if x.is_some() { None } else { Some(plus) } }
+#[unsafe(no_mangle)]pub extern "C" fn invoke_nullable(f:extern "C" fn(Option<extern "C" fn(u64)->u64>)->Option<extern "C" fn(u64)->u64>)->u64 { let a=f(None).unwrap()(11); assert!(f(Some(plus)).is_none()); a }
+#[unsafe(no_mangle)]pub extern "C" fn enum_callback(f:extern "C" fn(Signed)->Signed)->i8 { f(Signed::A) as i8 }
+#[unsafe(no_mangle)]pub extern "C" fn callback_record(x:Callbacks)->u64 { x.cb.unwrap()(x.mode as u64) }
+
+unsafe extern "C" fn unsafe_plus(x:u64)->u64{x+23}
+#[unsafe(no_mangle)]pub extern "C" fn nullable_unsafe(x:Option<unsafe extern "C" fn(u64)->u64>)->Option<unsafe extern "C" fn(u64)->u64>{if x.is_some(){None}else{Some(unsafe_plus)}}

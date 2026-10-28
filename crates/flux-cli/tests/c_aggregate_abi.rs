@@ -67,6 +67,22 @@ fn c_aggregates_match_native_rustc_off_and_on() {
 fn unsupported_c_shapes_fail_before_machine_code() {
     for (name, source) in [
         (
+            "rust_enum",
+            "enum Bad{A,B} unsafe extern \"C\"{fn take(x:Bad);}fn main(){}",
+        ),
+        (
+            "payload_enum",
+            "#[repr(C)]enum Bad{A,B(u64)} unsafe extern \"C\"{fn take(x:Bad);}fn main(){}",
+        ),
+        (
+            "aligned_enum",
+            "#[repr(u8,align(16))]enum Bad{A,B} unsafe extern \"C\"{fn take(x:Bad);}fn main(){}",
+        ),
+        (
+            "custom_nullable",
+            "enum Bad{A,B(extern \"C\" fn())} unsafe extern \"C\"{fn take(x:Bad);}fn main(){}",
+        ),
+        (
             "generic_rust_repr",
             "struct Bad{words:[u64;2]} extern \"C\" fn identity<T>(x:T)->T{x} fn main(){let _=identity(Bad{words:[1,2]});}",
         ),
@@ -141,8 +157,10 @@ fn direct_foreign_declarations_match_native_rustc_off_and_on() {
             .unwrap(),
     );
     let source = "#[repr(C)]struct Words{words:[u64;2]} #[repr(C)]struct Padded{lead:u8,payload:u64,tail:u16}
-        unsafe extern \"C\" {fn sum_words(x:Words)->u64;fn padded(x:Padded)->Padded;}
-        extern \"C\" fn wrapper()->u64{unsafe{let p=padded(Padded{lead:3,payload:1000,tail:7});sum_words(Words{words:[17,25]})+p.payload+p.lead as u64+p.tail as u64}}
+        #[repr(i8)]#[derive(Clone,Copy)]enum Signed{A=-7,B=101}
+        unsafe extern \"C\" {fn sum_words(x:Words)->u64;fn padded(x:Padded)->Padded; fn enum_signed(x:Signed)->Signed; fn nullable(x:Option<extern \"C\" fn(u64)->u64>)->Option<extern \"C\" fn(u64)->u64>;}
+        extern \"C\" fn plus(x:u64)->u64{x+13}
+        extern \"C\" fn wrapper()->u64{unsafe{assert_eq!(enum_signed(Signed::B) as i8,-7);assert_eq!(enum_signed(Signed::A) as i8,101); assert_eq!(nullable(None).unwrap()(11),18);assert!(nullable(Some(plus)).is_none());let p=padded(Padded{lead:3,payload:1000,tail:7});sum_words(Words{words:[17,25]})+p.payload+p.lead as u64+p.tail as u64}}
         fn main(){let _=wrapper();}";
     let (_, _, hir) = flux_hir::lower_text("main.rs", source);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);

@@ -27,6 +27,7 @@ these source graphs.
 | `mir_selfhost` | Complete unchanged MIR crate and its eleven-library source graph, with public MIR building, borrow checking and constant-evaluation consumers. |
 | `keel_asm_ir_readiness` | Complete pinned Keel assembly-IR source with original smallvec sources, structured assembly consumers and byte guards. |
 | `keel_asm_readiness` | Complete unchanged pinned assembler and its thirteen-package source graph, including object writing/reading and both hashbrown versions. |
+| `keel_backend_readiness`, with `FLUX_BACKEND_ONLY=full` | Complete pinned backend/linker source graph; emits AArch64 and x86 objects and links an AArch64 executable. Explicit ignored audit, with native off/on comparisons and byte guards. |
 | `keel_ir_readiness` | Complete pinned Keel IR source, layouts, empty-module parsing and verification. |
 | `keel_float_math` | Unchanged pinned Keel floating-point constant folder with the complete Keel IR dependency. |
 | `bumpalo_readiness` | Original bumpalo 3.20.3 with the resolved `collections` and `default` features, including collection ownership and zero-sized drops. |
@@ -47,6 +48,7 @@ cargo test -p flux-cli --test mir_selfhost
 cargo test -p flux-cli --test keel_asm_ir_readiness
 cargo test -p flux-cli --test keel_asm_readiness
 cargo test -p flux-cli --test keel_ir_readiness
+FLUX_BACKEND_ONLY=full cargo test -p flux-cli --test keel_backend_readiness -- --ignored --nocapture
 cargo test -p flux-cli --test keel_float_math
 cargo test -p flux-cli --test bumpalo_readiness
 cargo test -p flux-cli --test equivalent_readiness
@@ -278,7 +280,7 @@ bounds are checked in their own environments. This permits the represented
 region-free owner parameters/defaults of IntoDeserializer and
 IdentifierDeserializer, clearing the last two Serde trait-declaration lifetime
 gates. Other Serde alias/projection/lifetime diagnostics, crypto contracts, itoa
-inference and missing APIs still gate full backend MIR/codegen.
+inference and missing APIs gated full backend MIR/codegen at that stage.
 `trait_argument_bounds` covers 45 rustc/MIR cases plus native borrowed reader
 execution off/on. The separate itoa fallback experiment remains unapplied.
 
@@ -316,7 +318,7 @@ reading interior-mutable static contents. The focused suite compares 37 cases
 against rustc; native off/on coverage checks static and field identity, one-past
 pointers, const-fn splitting, mutable static addresses and generic function pointers.
 Wrapping offsets, pointer differences and mutable local raw-memory access remain
-outside this const subset. The full backend still stops before MIR at one
+outside this const subset. At that stage the full backend stopped before MIR at one
 hybrid-array qualified body lifetime and three Serde nominal projection rows.
 The expanded MIR consumer in `out/mir-selfhost/14545` also passes natively in
 both optimization modes, with zero frontend/MIR diagnostics and both byte
@@ -360,12 +362,12 @@ selection cases with rustc. Native off/on coverage includes borrowed owners,
 static outputs and generic array-family borrows. The typenum consumer also checks
 associated declarations using `Prod<U3, U2>` and `Prod<U13, U4>`.
 
-The full backend now passes MIR in `out/keel-backend-readiness/76539`, run with
+The full backend first passed MIR in `out/keel-backend-readiness/76539`, run with
 `FLUX_BACKEND_ONLY=full`: input, syntax, HIR, type and full MIR reports all contain
 zero diagnostics. All five byte-integrity guards pass, including the check before
-codegen. The run then stops in unoptimized codegen with twelve unsupported C ABI
+codegen. That run stopped in unoptimized codegen with twelve unsupported C ABI
 layout diagnostics in libc declarations. These concern nullable function-pointer
-callbacks and libc enums. No full-backend native execution is claimed.
+callbacks and libc enums. It did not reach full-backend native execution.
 
 The final MIR fixes preserve each abstract associated output's owner and family
 input rows while proving its declaration bounds and supertraits. Impl definitions
@@ -380,6 +382,23 @@ The final constant-evaluation blocker was Keel's `PASSES` table: trait-object
 unsizing now preserves offsets into named constant slices, including function
 pointer fields. Nineteen const-object cases and native off/on tests cover indexed
 views, raw null/one-past pointers and rejection of invalid references.
+
+The ABI follow-up `out/keel-backend-readiness/58646` passes the complete
+backend graph, including object generation and native execution with optimization
+disabled and enabled. Input, syntax, HIR, type and MIR reports contain zero
+diagnostics; all five byte-integrity guards are clean. Both native runs match
+rustc: AArch64 text size 28, x86 text size 17, and an AArch64 executable linked
+through the real Keel linker and SDK libSystem stub. This proves the exercised
+backend consumer, not a complete Flux compiler bootstrap.
+
+C call boundaries now marshal fieldless enums with explicit C/integer
+representations through their physical integer tags, and core nullable function
+pointers through one pointer. Rust's internal discriminant/payload leaves stay
+private. Native direct/indirect calls, returns, callbacks and C record fields
+cover signed/unsigned tags, safe/unsafe nullable pointers and null cases. Eleven
+unsupported-shape cases retain fail-closed admission. The harness supplies the
+same SDKROOT to both reference and Flux executions; its bounded worker budget
+covers frontend checking and both object-generation tiers.
 
 The maintained `typenum_readiness` test compiles unchanged typenum 1.20.1 in its
 original edition 2018 with the resolved `const-generics` feature. Its consumer

@@ -802,6 +802,12 @@ pointer ABIs are distinct; coercions preserve the ABI and may weaken safety.
 C functions and C pointers do not implement the Rust `Fn` traits.
 C aggregate calls support repr(C) records and recursively nested fixed arrays
 whose physical offsets, padding, size and alignment match Keel's natural layout.
+Fieldless enums with an explicit C or integer representation cross calls as
+their physical integer tag. Core `Option<fn(...)>` crosses as a nullable function
+pointer, including unsafe function pointers. Conversion at call boundaries keeps
+Rust's decoded discriminant and payload representation private. These enum forms
+also work inside supported C records. Other payload enums and custom option-like
+enums remain unsupported.
 Generic C definitions and indirect pointers use the same checks after
 instantiation. Other aggregate representations, vectors, wide pointers and
 unnamed variadic aggregate arguments reject before code generation. Ordinary

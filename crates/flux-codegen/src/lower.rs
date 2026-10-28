@@ -1523,6 +1523,12 @@ impl Lower<'_, '_, '_> {
                     self.write(&param.into(), &values);
                     continue;
                 }
+                Argument::Scalar(scalar) => {
+                    let value = self.b.append_block_param(entry, keel_type(scalar).unwrap());
+                    let values = self.decode_c_scalar(value, scalar, ty);
+                    self.write(&param.into(), &values);
+                    continue;
+                }
                 Argument::Direct => {}
             }
             let leaves = leaves_of(sigs, body.locals[param].ty);
@@ -3488,6 +3494,13 @@ impl Lower<'_, '_, '_> {
                     None if is_memory(self.sigs, ret) => {
                         self.b.ins().return_(&[]);
                     }
+                    None if self.convention.is_c()
+                        && abi::c_scalar(self.sigs, &self.ctx.layouts, ret).is_some() =>
+                    {
+                        let scalar = abi::c_scalar(self.sigs, &self.ctx.layouts, ret).unwrap();
+                        let value = self.encode_c_scalar(&values, ret, scalar);
+                        self.b.ins().return_(&[value]);
+                    }
                     None => {
                         self.b.ins().return_(&values);
                     }
@@ -3543,6 +3556,18 @@ impl Lower<'_, '_, '_> {
         self.argument(arg, ty, Convention::RustReified)
     }
 
+    fn encode_c_scalar(&mut self, values: &[Value], ty: Ty, scalar: Ty) -> Value {
+        let pointer = self.new_slot(ty);
+        self.store(pointer, ty, values);
+        self.load(Location::Memory(pointer), scalar)[0]
+    }
+
+    fn decode_c_scalar(&mut self, value: Value, scalar: Ty, ty: Ty) -> Values {
+        let pointer = self.new_slot(ty);
+        self.store(pointer, scalar, &[value]);
+        self.load(Location::Memory(pointer), ty)
+    }
+
     fn argument(&mut self, arg: &Operand, ty: Ty, convention: Convention) -> Values {
         let mode = convention.argument(self.sigs, &self.ctx.layouts, ty);
         if matches!(mode, Argument::Ignore) {
@@ -3550,6 +3575,7 @@ impl Lower<'_, '_, '_> {
         }
         let values = self.operand(arg);
         match mode {
+            Argument::Scalar(scalar) => smallvec![self.encode_c_scalar(&values, ty, scalar)],
             Argument::Indirect => {
                 let pointer = self.new_slot(ty);
                 self.store(pointer, ty, &values);
@@ -3647,6 +3673,13 @@ impl Lower<'_, '_, '_> {
                 }
                 Some((pointer, _)) if memory => smallvec![*pointer],
                 Some((pointer, layout)) => self.load_leaves(*pointer, layout),
+                None if convention.is_c()
+                    && abi::c_scalar(self.sigs, &self.ctx.layouts, ret).is_some() =>
+                {
+                    let scalar = abi::c_scalar(self.sigs, &self.ctx.layouts, ret).unwrap();
+                    let value = self.b.function().inst_results(call)[0];
+                    self.decode_c_scalar(value, scalar, ret)
+                }
                 None => self
                     .b
                     .function()

@@ -93,7 +93,7 @@ fn unchanged_backend_readiness() {
             .env("FLUX_BACKEND_ROOT", &root),
         &root,
         "audit",
-        300,
+        360,
     );
     let inventory = root.join("source-inventory.json");
     if inventory.exists() {
@@ -451,7 +451,9 @@ fn audit(root: &Path) {
                 .env("FLUX_BACKEND_ROOT", root)
                 .env("FLUX_BACKEND_FLUX", "1")
                 .env("FLUX_BACKEND_SCOPE", label);
-            let output = run(&mut command, root, &format!("{label}-audit"), 180);
+            // Complete frontend checks and both native optimization tiers within
+            // one bounded worker; successful codegen outlasts admission-only probes.
+            let output = run(&mut command, root, &format!("{label}-audit"), 240);
             if !output.status.success() {
                 failed.push(label);
             }
@@ -694,7 +696,12 @@ fn flux_core(root: &Path) {
         )
         .unwrap();
         let actual = run(
-            &mut Command::new(executable),
+            Command::new(executable).env(
+                "SDKROOT",
+                std::fs::read_to_string(root.join("sdk.stdout"))
+                    .unwrap()
+                    .trim(),
+            ),
             root,
             &format!("run-flux-{label}"),
             60,
