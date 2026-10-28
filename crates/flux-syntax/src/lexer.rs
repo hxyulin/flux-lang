@@ -438,7 +438,7 @@ impl Lexer<'_> {
         if ident == "_" {
             return UNDERSCORE;
         }
-        SyntaxKind::from_keyword(ident).unwrap_or(IDENT)
+        SyntaxKind::from_keyword_source(&self.bytes[start..], ident.len()).unwrap_or(IDENT)
     }
 
     /// Lexes a number after its first digit.

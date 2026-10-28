@@ -340,6 +340,22 @@ impl SyntaxKind {
         (key == word).then_some(kind)
     }
 
+    /// Classifies the first `len` bytes, using a word load when the source has room.
+    #[inline]
+    pub(crate) fn from_keyword_source(tail: &[u8], len: usize) -> Option<SyntaxKind> {
+        if !(2..=8).contains(&len) || tail[len - 1] == 0 {
+            return None;
+        }
+        let word = if let Some((bytes, _)) = tail.split_first_chunk::<8>() {
+            // Discard source bytes after the identifier before comparing the key.
+            u64::from_le_bytes(*bytes) & (u64::MAX >> ((8 - len) * 8))
+        } else {
+            pack_word(&tail[..len])
+        };
+        let (key, kind) = KEYWORD_TABLE[keyword_slot(word)];
+        (key == word).then_some(kind)
+    }
+
     /// The single-character punctuation token for `c`.
     pub fn from_char(c: char) -> Option<SyntaxKind> {
         let kind = match c {
@@ -673,6 +689,39 @@ mod tests {
             let mut word = [0; 8];
             word[..n].copy_from_slice(&bytes[..n]);
             assert_eq!(pack_word(&bytes[..n]), u64::from_le_bytes(word), "{n}");
+        }
+    }
+
+    #[test]
+    fn keywords_with_following_source() {
+        let non_keywords = [
+            "",
+            "a",
+            "As",
+            "self_",
+            "continues",
+            "fn\0",
+            "\0",
+            "matches",
+            "_",
+            "é",
+        ];
+        for (text, expected) in KEYWORDS
+            .into_iter()
+            .map(|(text, kind)| (text, Some(kind)))
+            .chain(non_keywords.into_iter().map(|text| (text, None)))
+        {
+            for extra in 0..=9 {
+                let mut tail = text.as_bytes().to_vec();
+                // Nonzero, non-ASCII bytes expose missing masks and avoid relying
+                // on padding or UTF-8 boundaries beyond the identifier.
+                tail.extend(std::iter::repeat_n(0xff, extra));
+                assert_eq!(
+                    SyntaxKind::from_keyword_source(&tail, text.len()),
+                    expected,
+                    "{text:?}, {extra} following bytes"
+                );
+            }
         }
     }
 }

@@ -8,6 +8,16 @@ pub(crate) fn run_selfhost_checks() {
         assert!(kind.is_keyword());
         assert!(!kind.is_punct());
         println!("keyword {text}: {actual:?} {}", kind.is_reserved_keyword());
+        for suffix in ["", "x", " /* comment */", "é"] {
+            let mut source = String::from(text);
+            source.push_str(suffix);
+            let actual = SyntaxKind::from_keyword_source(
+                core::hint::black_box(source.as_bytes()),
+                text.len(),
+            );
+            assert_eq!(actual, Some(kind));
+            println!("source keyword {text} with {suffix:?}: {actual:?}");
+        }
     }
     for text in ["", "a", "As", "self_", "continues", "fn\0", "\0", "matches", "_", "é", "long_identifier"] {
         assert_eq!(SyntaxKind::from_keyword(core::hint::black_box(text)), None);
