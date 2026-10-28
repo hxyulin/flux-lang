@@ -79,7 +79,7 @@ fn unrepresented_default_method_shapes_stay_gated() {
     for (name, source) in [
         (
             "owner_type_parameter",
-            "trait R<'a,T>{fn get(&self)->u8{7}}fn main(){}",
+            "trait R<'a,T: 'a>{fn get(&self)->u8{7}}fn main(){}",
         ),
         (
             "unsafe_method",

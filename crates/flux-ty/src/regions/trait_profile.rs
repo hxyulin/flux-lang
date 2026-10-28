@@ -399,7 +399,9 @@ fn method_profile(
     if data.generics.lifetimes.len() != 1 {
         return Err(fail(None, TraitProfileReason::OwnerLifetimes));
     }
-    if !data.generics.params.is_empty() || has_predicates(&data.generics) {
+    if (!projected && (!data.generics.params.is_empty() || has_predicates(&data.generics)))
+        || data.generics.params.iter().any(|p| p.is_const())
+    {
         return Err(fail(None, TraitProfileReason::TraitPredicates));
     }
     if (!projected && !data.types.is_empty()) || !data.consts.is_empty() {
@@ -566,18 +568,23 @@ fn method_profile(
         let self_ty = Ty::param(0, flux_intern::kw::SelfUpper);
         let receiver = match signature.params.first().copied().map(Ty::kind) {
             Some(TyKind::Param(parameter)) => {
-                parameter.index == 0 && (copy || (projected && sized))
+                parameter.index == 0 && (copy || (projected && (sized || !function.has_body)))
             }
             Some(TyKind::Ref(_, pointee)) => pointee == self_ty,
             _ => false,
         };
         if !(receiver || (projected && !function.has_self))
             || signature.params.len() != function.params.len()
-            || signature
-                .params
-                .iter()
-                .chain([&signature.ret])
-                .any(|&ty| method_slots(items, sigs, ty, 1 + own_names.len(), projected).is_none())
+            || signature.params.iter().chain([&signature.ret]).any(|&ty| {
+                method_slots(
+                    items,
+                    sigs,
+                    ty,
+                    1 + data.generics.params.len() + own_names.len(),
+                    projected,
+                )
+                .is_none()
+            })
         {
             return Err(bad(TraitProfileReason::SignatureType));
         }
@@ -593,12 +600,20 @@ fn method_profile(
         };
         if !projected
             && bounds.predicates.iter().any(|predicate| {
-                type_slots(items, sigs, predicate.self_ty, 1 + own_names.len()) != Some(0)
-                    || predicate
-                        .trait_ref
-                        .args
-                        .iter()
-                        .any(|&ty| type_slots(items, sigs, ty, 1 + own_names.len()) != Some(0))
+                type_slots(
+                    items,
+                    sigs,
+                    predicate.self_ty,
+                    1 + data.generics.params.len() + own_names.len(),
+                ) != Some(0)
+                    || predicate.trait_ref.args.iter().any(|&ty| {
+                        type_slots(
+                            items,
+                            sigs,
+                            ty,
+                            1 + data.generics.params.len() + own_names.len(),
+                        ) != Some(0)
+                    })
             })
         {
             return Err(bad(TraitProfileReason::MethodGenerics));
@@ -1254,6 +1269,47 @@ mod tests {
                 }
             }
             bad.regions.traits.insert(owner, row);
+            assert!(
+                generic_method_profile(&hir.items, &[], &bad, owner).is_err(),
+                "corruption {corruption}"
+            );
+        }
+    }
+
+    #[test]
+    fn trait_owned_argument_metadata_is_checked() {
+        let source = include_str!("../../../../tests/run/trait_argument_bounds.rs");
+        let (_, file, hir) = flux_hir::lower_text("owner-profile.rs", source);
+        let (sigs, errors) = crate::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let owner = hir
+            .items
+            .traits
+            .iter()
+            .find(|(_, t)| t.loc.file == file && t.name.as_str() == "IntoReader")
+            .unwrap()
+            .0;
+        assert!(generic_method_profile(&hir.items, &[], &sigs, owner).is_ok());
+        for corruption in 0..4 {
+            let mut bad = sigs.clone();
+            match corruption {
+                0 => {
+                    bad.trait_predicates.insert(owner, Box::default());
+                }
+                1 => {
+                    bad.trait_defaults.insert(owner, Box::default());
+                }
+                2 => {
+                    let mut signature = bad.traits[owner].clone();
+                    signature.families[0].1.owner_params = 1;
+                    bad.traits.insert(owner, signature);
+                }
+                _ => {
+                    let mut row = bad.regions.traits[owner].clone();
+                    row.families[0].1.output_projections[0].0.ty = Ty::BOOL;
+                    bad.regions.traits.insert(owner, row);
+                }
+            }
             assert!(
                 generic_method_profile(&hir.items, &[], &bad, owner).is_err(),
                 "corruption {corruption}"

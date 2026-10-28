@@ -3636,6 +3636,39 @@ pub fn check_trivial_bounds(
     }
 }
 
+/// Substituted declaration bounds on a trait's non-Self type parameters.
+fn trait_argument_requirements<'a>(
+    items: &'a ItemTree,
+    sigs: &'a Signatures,
+    predicate: Predicate,
+) -> impl Iterator<Item = Predicate> + 'a {
+    let args: Vec<_> = std::iter::once(predicate.self_ty)
+        .chain(predicate.trait_ref.args.iter().copied())
+        .collect();
+    let declared = sigs
+        .trait_predicates
+        .get(predicate.trait_ref.trait_)
+        .map_or(&[][..], |p| p.as_ref());
+    let explicit = declared.iter().map(move |p| p.subst(&args));
+    let implicit = items.traits[predicate.trait_ref.trait_]
+        .generics
+        .params
+        .iter()
+        .zip(predicate.trait_ref.args)
+        .filter(|(p, _)| !p.is_const() && !p.maybe_unsized)
+        .filter_map(move |(_, &ty)| {
+            sigs.builtins.sized.map(|id| {
+                TraitRef {
+                    trait_: id,
+                    name: items.traits[id].name,
+                    args: &[],
+                }
+                .with_self(ty)
+            })
+        });
+    explicit.chain(implicit)
+}
+
 /// Owner equalities exclude contracts quantified by a family's own binders.
 fn trait_owner_projections(sigs: &Signatures, id: TraitId) -> Vec<Projection> {
     let declared = sigs.trait_projections.get(id).map_or(&[][..], |p| p);
@@ -3691,10 +3724,12 @@ pub fn check_well_formed(
         projections.extend(implied_projections(sigs, &env));
         (env, projections)
     };
-    // Without bounds on structs, only the items that name associated
-    // types have anything to check.
+    // Nominal and trait argument bounds both create declaration obligations.
+    // Without either, only associated types require well-formedness checks.
     let struct_bounds = sigs.struct_predicates.iter().next().is_some()
         || sigs.struct_projections.iter().next().is_some();
+    let declaration_bounds =
+        struct_bounds || sigs.trait_predicates.iter().any(|(_, p)| !p.is_empty());
     let aliased = |tys: &[Ty]| tys.iter().any(|t| t.has_aliases());
     let aliased_bounds = |predicates: &[Predicate], declared: &[Projection]| {
         predicates
@@ -3730,11 +3765,12 @@ pub fn check_well_formed(
             s.def_range,
             diagnostics,
         );
-        if !struct_bounds && !aliased(sigs.structs[id]) && !aliased_bounds(own, declared) {
+        if !declaration_bounds && !aliased(sigs.structs[id]) && !aliased_bounds(own, declared) {
             continue;
         }
         let (env, projections) = scope(own.to_vec(), declared.to_vec());
         let wf = WfScope {
+            unsized_params: crate::unsized_params(items, None, &s.generics),
             env: &env,
             projections: &projections,
             aliases: true,
@@ -3766,7 +3802,7 @@ pub fn check_well_formed(
         );
         let types = sigs.impl_types.get(id).map_or(&[][..], |t| t);
         let trait_args = sigs.impl_traits.get(id).map_or(&[][..], |t| t.args);
-        if !struct_bounds
+        if !declaration_bounds
             && !sigs.impls[id].has_aliases()
             && !aliased(trait_args)
             && !types.iter().any(|&(_, t)| t.has_aliases())
@@ -3785,6 +3821,11 @@ pub fn check_well_formed(
         }
         let (env, projections) = scope(own.to_vec(), declared.to_vec());
         let wf = WfScope {
+            unsized_params: crate::unsized_params(
+                items,
+                Some(Owner::Impl(id)),
+                &Generics::default(),
+            ),
             env: &env,
             projections: &projections,
             aliases: true,
@@ -3798,6 +3839,7 @@ pub fn check_well_formed(
         };
         check.ty(sigs.impls[id], Some(&imp.self_ty), whole(imp.self_range));
         if let (Some(t), Some(bound)) = (sigs.impl_traits.get(id), &imp.trait_ref) {
+            check.trait_arguments(t.with_self(sigs.impls[id]), bound.range);
             let written = bound.path.args.last().and_then(Option::as_ref);
             for (i, &arg) in t.args.iter().enumerate() {
                 let part = written.and_then(|a| Some((a.types.get(i)?, a.ranges[i])));
@@ -3823,6 +3865,11 @@ pub fn check_well_formed(
             }
             let (env, projections) = scope(predicates, equalities);
             let wf = WfScope {
+                unsized_params: crate::unsized_params(
+                    items,
+                    Some(Owner::Impl(id)),
+                    &written.generics,
+                ),
                 env: &env,
                 projections: &projections,
                 aliases: true,
@@ -3855,7 +3902,7 @@ pub fn check_well_formed(
             t.def_range,
             diagnostics,
         );
-        if !struct_bounds && !aliased_bounds(own, &declared) && t.types.is_empty() {
+        if !declaration_bounds && !aliased_bounds(own, &declared) && t.types.is_empty() {
             continue;
         }
         let (env, projections) = scope(
@@ -3863,6 +3910,11 @@ pub fn check_well_formed(
             Vec::new(),
         );
         let wf = WfScope {
+            unsized_params: crate::unsized_params(
+                items,
+                Some(Owner::Trait(id)),
+                &Generics::default(),
+            ),
             env: &env,
             projections: &projections,
             aliases: true,
@@ -3871,11 +3923,24 @@ pub fn check_well_formed(
             t.def_range.start(),
             t.def_range.end().max(t.generics.range.end()),
         );
-        WfCheck::new(items, sigs, t.loc.file, &wf, span, diagnostics).bounds(
-            &t.generics,
-            own,
-            &declared,
-        );
+        let mut check = WfCheck::new(items, sigs, t.loc.file, &wf, span, diagnostics);
+        check.bounds(&t.generics, own, &declared);
+        if sigs.traits[id].defaults.iter().any(Option::is_some) {
+            let mut predicate = trait_self_predicate(items, id);
+            let mut args: Vec<_> = std::iter::once(predicate.self_ty)
+                .chain(predicate.trait_ref.args.iter().copied())
+                .collect();
+            for (index, default) in sigs.traits[id].defaults.iter().enumerate() {
+                if let Some(default) = default {
+                    args[index + 1] = default.subst(&args);
+                }
+            }
+            predicate.trait_ref.args = Ty::list(&args[1..]);
+            check.trait_argument_defaults(predicate, span);
+        }
+        for bound in &sigs.traits[id].supertraits {
+            check.trait_arguments(bound.with_self(Ty::param(0, kw::SelfUpper)), span);
+        }
         for written in &t.types {
             let family = sigs
                 .traits
@@ -3893,6 +3958,11 @@ pub fn check_well_formed(
             let (env, mut projections) = scope(predicates, declared.clone());
             projections.extend(family.projections.iter().copied());
             let wf = WfScope {
+                unsized_params: crate::unsized_params(
+                    items,
+                    Some(Owner::Trait(id)),
+                    &written.generics,
+                ),
                 env: &env,
                 projections: &projections,
                 aliases: true,
@@ -3906,6 +3976,23 @@ pub fn check_well_formed(
                 diagnostics,
             );
             check.bounds(&written.generics, &family.predicates, &family.projections);
+            let mut alias = alias_of(
+                items,
+                trait_self_predicate(items, id).trait_ref,
+                Ty::param(0, kw::SelfUpper),
+                written.name,
+            );
+            alias.family_args = Ty::list(&crate::params_of(
+                &written.generics,
+                family.owner_params as usize,
+            ));
+            for (_, bound) in sigs.traits[id]
+                .type_bounds
+                .iter()
+                .filter(|(name, _)| *name == written.name)
+            {
+                check.trait_arguments(bound.with_self(Ty::alias(alias)), written.item_range);
+            }
             let output: Vec<_> = all_declared
                 .iter()
                 .filter(|projection| {
@@ -3918,11 +4005,12 @@ pub fn check_well_formed(
         }
     }
     for (id, konst) in items.consts.iter().skip(from.consts as usize) {
-        if !struct_bounds && !sigs.consts[id].has_aliases() && !aliased_owner(konst.owner) {
+        if !declaration_bounds && !sigs.consts[id].has_aliases() && !aliased_owner(konst.owner) {
             continue;
         }
         let (env, projections) = scope(owner_predicates(items, sigs, konst.owner), Vec::new());
         let wf = WfScope {
+            unsized_params: crate::unsized_params(items, konst.owner, &Generics::default()),
             env: &env,
             projections: &projections,
             aliases: true,
@@ -3958,7 +4046,7 @@ pub fn check_well_formed(
             f.sig_range,
             diagnostics,
         );
-        if !struct_bounds
+        if !declaration_bounds
             && !aliased(&sig.params)
             && !sig.ret.has_aliases()
             && !aliased_bounds(own, declared)
@@ -3969,6 +4057,7 @@ pub fn check_well_formed(
         let env = elaborate(sigs, &predicates_of(items, sigs, id));
         let projections = projections_of(items, sigs, id);
         let wf = WfScope {
+            unsized_params: crate::unsized_params(items, f.owner, &f.generics),
             env: &env,
             projections: &projections,
             aliases: true,
@@ -4029,6 +4118,7 @@ pub fn check_well_formed(
         assumed.extend(theirs.map(|p| p.subst(&args)));
         let env = elaborate(sigs, &assumed);
         let wf = WfScope {
+            unsized_params: crate::unsized_params(items, f.owner, &f.generics),
             env: &env,
             projections: &projections,
             aliases: false,
@@ -4104,6 +4194,106 @@ impl<'a, 'd> WfCheck<'a, 'd> {
         for (range, message) in found {
             self.report(range, message);
         }
+        if !ty.has_aliases() {
+            return;
+        }
+        let mut work = vec![ty];
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some(ty) = work.pop() {
+            if !seen.insert(ty) {
+                continue;
+            }
+            if let TyKind::Alias(alias) = ty.kind() {
+                self.trait_arguments(alias_predicate(alias), range.bound);
+            }
+            work.extend(ty.children());
+        }
+    }
+
+    /// A bound on a trait's non-Self parameter is an obligation at each
+    /// occurrence, not a fact supplied by the bound being checked.
+    fn trait_arguments(&mut self, predicate: Predicate, range: TextRange) {
+        self.check_trait_arguments(predicate, range, false);
+    }
+
+    fn trait_argument_defaults(&mut self, predicate: Predicate, range: TextRange) {
+        self.check_trait_arguments(predicate, range, true);
+    }
+
+    fn check_trait_arguments(&mut self, predicate: Predicate, range: TextRange, defaults: bool) {
+        if self
+            .sigs
+            .trait_predicates
+            .get(predicate.trait_ref.trait_)
+            .is_none_or(|p| p.is_empty())
+            && self.items.traits[predicate.trait_ref.trait_]
+                .generics
+                .params
+                .iter()
+                .all(|p| p.is_const() || p.maybe_unsized)
+        {
+            return;
+        }
+        let proof = SignatureImplProof {
+            items: self.items,
+            sigs: self.sigs,
+            env: self
+                .scope
+                .env
+                .iter()
+                .map(|&p| {
+                    SignatureImplProof::normalize(self.items, self.sigs, self.scope.projections, p)
+                })
+                .collect(),
+            memberships: self.scope.env,
+            projections: self.scope.projections.to_vec(),
+            unsized_params: &self.scope.unsized_params,
+            depth: std::cell::Cell::new(0),
+        };
+        let normalized = |predicate: Predicate| Predicate {
+            self_ty: proof.normalize_ty(predicate.self_ty, None),
+            trait_ref: TraitRef {
+                args: crate::ty::map_list(predicate.trait_ref.args, |ty| {
+                    proof.normalize_ty(ty, None)
+                }),
+                ..predicate.trait_ref
+            },
+        };
+        let mut work = vec![(predicate, 0)];
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some((predicate, depth)) = work.pop() {
+            if !seen.insert(predicate) {
+                continue;
+            }
+            if depth > 128 {
+                self.report(
+                    range,
+                    "trait argument requirements exceed recursion limit".into(),
+                );
+                break;
+            }
+            for requirement in trait_argument_requirements(self.items, self.sigs, predicate) {
+                let goal = normalized(requirement);
+                // Generic defaults are conditional: Rust checks their bounds
+                // when a use selects the default. Concrete invalid defaults
+                // still fail at the declaration.
+                if defaults
+                    && (goal.self_ty.has_params()
+                        || goal.trait_ref.args.iter().any(|t| t.has_params()))
+                {
+                    continue;
+                }
+                if !proof.holds(requirement, &mut Vec::new()) && !proof.holds(goal, &mut Vec::new())
+                {
+                    let leaf = goal;
+                    if !self.reported.contains(&leaf) {
+                        self.reported.push(leaf);
+                        self.report(range, unmet(self.items, leaf));
+                    }
+                }
+                work.push((goal, depth + 1));
+            }
+        }
     }
 
     /// [`Self::ty`] for the types in bounds, `generics` as written and
@@ -4115,6 +4305,7 @@ impl<'a, 'd> WfCheck<'a, 'd> {
             return;
         }
         for (written, p) in generics.predicates.iter().zip(predicates) {
+            self.trait_arguments(*p, written.bound.range);
             let at = WfRange::at(written.bound.range);
             for ty in std::iter::once(p.self_ty).chain(p.trait_ref.args.iter().copied()) {
                 self.ty(ty, None, at);
@@ -4165,6 +4356,7 @@ impl<'a, 'd> WfCheck<'a, 'd> {
     fn bound_aliases(&mut self, predicates: &[Predicate], declared: &[Projection]) {
         for projection in declared.iter().filter(|p| !p.alias.family_args.is_empty()) {
             let scope = WfScope {
+                unsized_params: self.scope.unsized_params.clone(),
                 env: self.scope.env,
                 projections: self.scope.projections,
                 aliases: true,
@@ -4311,6 +4503,8 @@ fn collect_aliases(ty: Ty, out: &mut Vec<AliasTy>) {
 /// What a well-formedness check may assume: the elaborated bounds in
 /// scope, and what they say associated types are.
 pub struct WfScope<'a> {
+    /// Which declaration parameters may be unsized, in generic argument order.
+    pub unsized_params: Vec<bool>,
     pub env: &'a [Predicate],
     pub projections: &'a [Projection],
     /// Whether associated types need their traits: not where a trait's

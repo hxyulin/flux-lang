@@ -269,6 +269,19 @@ identity through an enum/variant-style pipeline, with rustc comparison off/on.
 prototype exposed missing validation of bounds on trait type arguments and was
 not retained. Other Serde lifetime and alias errors still block full MIR/codegen.
 
+The trait-argument well-formedness follow-up
+`out/keel-backend-readiness/6818` has zero input, syntax and HIR diagnostics and
+45 type diagnostics, with all four byte guards clean. Each written trait use
+now checks explicit and implicit-Sized requirements on its type arguments,
+using caller projections and declaration sizing information. Associated-family
+bounds are checked in their own environments. This permits the represented
+region-free owner parameters/defaults of IntoDeserializer and
+IdentifierDeserializer, clearing the last two Serde trait-declaration lifetime
+gates. Other Serde alias/projection/lifetime diagnostics, crypto contracts, itoa
+inference and missing APIs still gate full backend MIR/codegen.
+`trait_argument_bounds` covers 45 rustc/MIR cases plus native borrowed reader
+execution off/on. The separate itoa fallback experiment remains unapplied.
+
 The maintained `typenum_readiness` test compiles unchanged typenum 1.20.1 in its
 original edition 2018 with the resolved `const-generics` feature. Its consumer
 checks arithmetic projections, lengths and runtime subtraction/division/remainder.

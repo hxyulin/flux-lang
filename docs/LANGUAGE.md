@@ -1226,8 +1226,16 @@ Ordinary associated outputs may carry lifetime-bearing trait bounds and
 associated equalities, such as `type Variant: Access<'de, Error = Self::Error>`.
 Admission reconstructs the output's owner namespace, bound rows and equality
 rows and checks the saved erased and region-bearing contracts together.
-Trait-owned type parameters/predicates and combining this profile with GATs
-remain outside this admission boundary.
+Trait-owned type parameters, region-free predicates and defaults are admitted
+when those same contracts reconstruct. Written trait uses must satisfy explicit
+bounds on their type arguments and the implicit `Sized` requirements. This is
+checked in function/impl/nominal bounds, supertraits, associated outputs and
+projection uses, using caller equalities and sizing information. Generic defaults
+remain conditional until selected by a use; invalid concrete defaults reject at
+the declaration. Forming a trait object does not itself prove its argument bounds;
+method calls retain their own obligations, following Rust.
+Lifetime-bearing owner predicates, owner projection equalities and combining
+this profile with GATs remain outside this admission boundary.
 Impl compatibility, body checking and caller borrow obligations remain required.
 
 Functions, impls and nominal structs/enums can name lifetimes in tracked trait

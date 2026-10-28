@@ -116,3 +116,8 @@ fn serde_lifetime_methods() {
 fn serde_associated_lifetimes() {
     support::oracle::compare_fixture("serde_associated_lifetimes");
 }
+
+#[test]
+fn trait_argument_bounds() {
+    support::oracle::compare_fixture("trait_argument_bounds");
+}
