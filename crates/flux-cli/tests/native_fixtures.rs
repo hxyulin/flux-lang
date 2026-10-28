@@ -106,3 +106,8 @@ fn backend_std_prerequisites() {
 fn backend_owned_apis() {
     support::oracle::compare_fixture("backend_owned_apis");
 }
+
+#[test]
+fn serde_lifetime_methods() {
+    support::oracle::compare_fixture("serde_lifetime_methods");
+}

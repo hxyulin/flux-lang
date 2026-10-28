@@ -78,14 +78,6 @@ fn unrepresented_default_method_shapes_stay_gated() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source) in [
         (
-            "owned_noncopy",
-            "trait R<'a>:Sized{fn get(self)->&'a u8{panic!()}}fn main(){}",
-        ),
-        (
-            "named_method_lifetime",
-            "trait R<'a>:Copy{fn get<'b>(self,x:&'b u8)->&'b u8{x}}fn main(){}",
-        ),
-        (
             "owner_type_parameter",
             "trait R<'a,T>{fn get(&self)->u8{7}}fn main(){}",
         ),

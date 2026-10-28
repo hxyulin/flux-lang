@@ -249,6 +249,17 @@ wrapped queue growth, owned element destruction and boxed path/string views
 against rustc in both optimization modes. The remaining compiler and library
 groups still gate full-graph MIR/codegen.
 
+The Serde method-lifetime follow-up `out/keel-backend-readiness/63167`
+has zero input, syntax and HIR diagnostics and 48 type diagnostics, with all four
+byte guards clean. Generic safe method contracts clear seven declaration gates,
+including Deserialize, DeserializeSeed, Deserializer, Visitor and the sequence,
+map and variant access traits. EnumAccess's lifetime-bearing associated bound,
+the two trait-owned generic/predicate declarations, and other Serde lifetime and
+alias diagnostics remain gated. `serde_lifetime_methods` compares a borrowed
+visitor/reader/decoder pipeline against rustc off/on and checks rejected lifetime
+escapes and incompatible method contracts. Full backend MIR/codegen are not yet
+reached. The separate itoa fallback experiment is not part of this implementation.
+
 The maintained `typenum_readiness` test compiles unchanged typenum 1.20.1 in its
 original edition 2018 with the resolved `const-generics` feature. Its consumer
 checks arithmetic projections, lengths and runtime subtraction/division/remainder.

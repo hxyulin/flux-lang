@@ -1217,6 +1217,14 @@ remain outside that family profile. A safe-method profile also admits borrowed
 receivers and Copy by-value receivers, safe default bodies and method-local type
 parameters with represented region-free trait bounds. It reconstructs signatures,
 region rows, predicates and outlives requirements before admission.
+A generic-method profile additionally admits static methods, Sized by-value
+receivers, method-local lifetimes and `?Sized` type parameters, ordinary
+associated outputs, and method bounds such as `D: Reader<'de>` or
+`V: Visitor<'de, Value = &'de str>`. It reconstructs the full signature,
+owner/local region namespace, bound occurrence rows and projection equalities.
+Trait-owned type parameters/predicates, lifetime-bearing associated-type bounds,
+and combining this profile with GATs remain outside this admission boundary.
+Impl compatibility, body checking and caller borrow obligations remain required.
 
 Functions, impls and nominal structs/enums can name lifetimes in tracked trait
 bounds, including `R: ReadRef<'data>` and `T: From<&'a Q>`. Trait lifetime arguments

@@ -1213,9 +1213,19 @@ pub(super) fn safe_method_contract(
     let mut walker = Walker::new(
         items,
         function.loc.module,
-        owner_names.iter().map(|name| name.name).collect(),
+        owner_names
+            .iter()
+            .map(|name| name.name)
+            .chain(function.generics.lifetimes.iter().map(|l| Some(l.name)))
+            .collect(),
     );
     walker.scope = scope;
+    walker.self_projection_owner = Some((
+        owner,
+        (0..owner_names.len() as u32).map(Region::Param).collect(),
+    ));
+    walker.add_projection_bounds(&declaration.generics);
+    walker.add_projection_bounds(&function.generics);
     walker.elided = Elided::Fresh;
     let params: Box<[Box<[Region]>]> = function
         .params
@@ -1246,6 +1256,10 @@ pub(super) fn safe_method_contract(
     };
     let ret = walker.regions(&function.ret, signature.ret);
     let mut all_names = owner_names;
+    all_names.extend(function.generics.lifetimes.iter().map(|l| LifetimeName {
+        name: Some(l.name),
+        range: l.range,
+    }));
     all_names.extend(
         walker
             .fresh

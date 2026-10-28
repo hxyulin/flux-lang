@@ -1972,6 +1972,7 @@ pub(crate) fn check_trait_admission(
             || trait_profile::lifetime_marker_profile(items, diagnostics, sigs, id)
             || trait_profile::family_method_profile(items, diagnostics, sigs, id)
             || trait_profile::safe_method_profile(items, diagnostics, sigs, id).is_ok()
+            || trait_profile::generic_method_profile(items, diagnostics, sigs, id).is_ok()
         {
             continue;
         }

@@ -354,8 +354,6 @@ fn in_range_but_wrong_binder_and_elided_name_arities_reject() {
 fn unsupported_declarations_keep_the_production_gate() {
     for source in [
         "trait T<'a,U> {}",
-        "trait T<'a> {fn f() {}}",
-        "trait T<'a> {fn f<'b>(x: &'b i32);}",
         "trait T<'a> {fn f(x: fn(&'a i32));}",
         "trait T<'a>: A<'a> {} trait A<'b> {}",
         "trait T<'a>: A {} trait A:B<'static> {} trait B<'b> {}",
@@ -405,4 +403,17 @@ fn empty_lifetime_only_markers_keep_independent_owner_slots() {
     assert_eq!(regions.names.len(), 2);
     assert_ne!(regions.names[0].name, regions.names[1].name);
     assert!(regions.supertraits.is_empty());
+}
+
+#[test]
+fn generic_profile_admits_static_defaults_and_local_lifetimes() {
+    for source in [
+        "trait T<'a> {fn f() {}}",
+        "trait T<'a> {fn f<'b>(x: &'b i32);}",
+    ] {
+        let (hir, sigs, id) = resolve(source);
+        assert!(profile(&hir, &sigs, id).is_err());
+        let (_, diagnostics) = flux_ty::signatures(&hir.items);
+        assert!(diagnostics.is_empty(), "{source}: {diagnostics:?}");
+    }
 }
