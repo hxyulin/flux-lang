@@ -11,6 +11,14 @@ use crate::alloc_crate::vec::Vec;
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct OsString { pub(crate) bytes: Vec<u8> }
 impl OsString {
+    /// Transfers the owned bytes into a boxed OS string view.
+    pub fn into_boxed_os_str(self) -> crate::alloc_crate::boxed::Box<OsStr> {
+        use crate::alloc_crate::boxed::Box;
+        let bytes = self.bytes.into_boxed_slice();
+        // SAFETY: transparent OsStr has the same layout and metadata as [u8].
+        // Every Unix byte sequence is valid, and ownership transfers to the box.
+        unsafe { Box::from_raw(Box::into_raw(bytes) as *mut OsStr) }
+    }
     pub fn new() -> Self { Self { bytes: Vec::new() } }
     pub fn to_str(&self) -> Option<&str> { core::str::from_utf8(&self.bytes).ok() }
     pub fn to_string_lossy(&self) -> Cow<'_, str> { String::from_utf8_lossy(&self.bytes) }

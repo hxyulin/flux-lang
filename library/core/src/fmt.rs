@@ -27,6 +27,8 @@ impl Display for Error {
     }
 }
 
+impl crate::error::Error for Error {}
+
 /// What formatting gives.
 pub type Result = crate::result::Result<(), Error>;
 

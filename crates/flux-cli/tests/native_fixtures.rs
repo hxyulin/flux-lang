@@ -101,3 +101,8 @@ fn slice_callback_lifetimes() {
 fn backend_std_prerequisites() {
     support::oracle::compare_fixture("backend_std_prerequisites");
 }
+
+#[test]
+fn backend_owned_apis() {
+    support::oracle::compare_fixture("backend_owned_apis");
+}

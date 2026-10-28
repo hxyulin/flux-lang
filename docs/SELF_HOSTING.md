@@ -240,6 +240,15 @@ Serde lifetime and alias contracts, crypto associated bounds, itoa inference,
 constant pointer arithmetic, PhantomPinned and missing library APIs. Full-graph
 MIR/codegen remain gated.
 
+The owned-library follow-up `out/keel-backend-readiness/66015` has zero
+input, syntax and HIR diagnostics and 55 type diagnostics. All four byte guards
+pass. `VecDeque::reserve`, `PathBuf::into_boxed_path`,
+`OsString::into_boxed_os_str` and `fmt::Error`'s error trait implementation clear
+four Serde API diagnostics. The native `backend_owned_apis` fixture compares
+wrapped queue growth, owned element destruction and boxed path/string views
+against rustc in both optimization modes. The remaining compiler and library
+groups still gate full-graph MIR/codegen.
+
 The maintained `typenum_readiness` test compiles unchanged typenum 1.20.1 in its
 original edition 2018 with the resolved `const-generics` feature. Its consumer
 checks arithmetic projections, lengths and runtime subtraction/division/remainder.

@@ -135,6 +135,15 @@ impl Path {
     pub fn canonicalize(&self) -> crate::io::Result<PathBuf> { crate::fs::canonicalize(self) }
 }
 impl PathBuf {
+    /// Transfers the owned path bytes into a boxed path view.
+    pub fn into_boxed_path(self) -> crate::alloc_crate::boxed::Box<Path> {
+        use crate::alloc_crate::boxed::Box;
+        let os = self.inner.into_boxed_os_str();
+        // SAFETY: transparent Path has exactly OsStr's layout and validity.
+        // The cast preserves length metadata and transfers allocation ownership.
+        unsafe { Box::from_raw(Box::into_raw(os) as *mut Path) }
+    }
+
     pub fn new() -> Self { Self::default() }
     pub fn as_path(&self) -> &Path { Path::new(&self.inner) }
     pub fn into_os_string(self) -> OsString { self.inner }

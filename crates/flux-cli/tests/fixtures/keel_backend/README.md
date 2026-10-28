@@ -171,3 +171,11 @@ The separate maintained `typenum_readiness` harness proves unchanged typenum
 rustc, off/on. Full backend MIR/codegen still wait on Serde lifetime/alias
 contracts, crypto associated bounds, itoa inference and missing library APIs.
 This audit does not establish a complete compiler bootstrap.
+
+## Owned library APIs follow-up
+
+`out/keel-backend-readiness/66015` records zero input, syntax and HIR diagnostics
+and 55 type diagnostics, with all four byte guards clean. Queue reservation,
+boxed path/OS-string conversions and `fmt::Error: Error` clear four Serde
+API diagnostics. Native `backend_owned_apis` covers both optimization modes.
+The full backend remains gated before MIR/codegen by the remaining diagnostics.

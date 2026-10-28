@@ -70,3 +70,18 @@ fn replacing_noncopy_cell_payloads_drops_each_value_once() {
     .unwrap();
     assert_eq!(DROPS.load(Ordering::Relaxed), 2);
 }
+
+#[test]
+fn refcell_callbacks_enforce_borrows_and_release_them_after_unwind() {
+    static KEY: LocalKey<cell::RefCell<Vec<u32>>> = LocalKey::__new(|| cell::RefCell::new(vec![7]));
+    std::thread::spawn(|| {
+        KEY.with_borrow_mut(|values| values.push(19));
+        KEY.with_borrow(|values| {
+            assert_eq!(values, &[7, 19]);
+            assert!(std::panic::catch_unwind(|| KEY.with_borrow_mut(|_| ())).is_err());
+        });
+        assert!(std::panic::catch_unwind(|| KEY.with_borrow_mut(|_| panic!("callback"))).is_err());
+        KEY.with_borrow_mut(|values| values.push(23));
+        KEY.with_borrow(|values| assert_eq!(values, &[7, 19, 23]));
+    }).join().unwrap();
+}

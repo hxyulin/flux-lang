@@ -12,8 +12,12 @@ impl<T> VecDeque<T> {
     pub fn capacity(&self) -> usize { self.slots.len() }
     pub fn len(&self) -> usize { self.len }
     pub fn is_empty(&self) -> bool { self.len == 0 }
-    fn grow(&mut self) {
-        let capacity = if self.slots.is_empty() { 4 } else { self.slots.len().checked_mul(2).expect("capacity overflow") };
+    /// Reserves room for at least `additional` more elements.
+    /// Panics if the requested capacity overflows.
+    pub fn reserve(&mut self, additional: usize) {
+        let required = self.len.checked_add(additional).expect("capacity overflow");
+        if required <= self.capacity() { return; }
+        let capacity = required.max(self.capacity().saturating_mul(2)).max(4);
         let mut slots = Vec::with_capacity(capacity);
         slots.resize_with(capacity, || None);
         for index in 0..self.len {
@@ -23,6 +27,7 @@ impl<T> VecDeque<T> {
         self.slots = slots;
         self.head = 0;
     }
+    fn grow(&mut self) { self.reserve(1); }
     pub fn push_back(&mut self, value: T) {
         if self.len == self.slots.len() { self.grow(); }
         let index = (self.head + self.len) % self.slots.len();
