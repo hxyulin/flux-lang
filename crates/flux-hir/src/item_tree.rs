@@ -3374,14 +3374,24 @@ pub(crate) fn const_expr_root(expr: ast::Expr<'_>) -> ast::Expr<'_> {
 }
 
 /// Whether the constant `expr`, a [`const_expr_root`], is an anonymous
-/// constant: neither an integer or `bool` literal nor a path.
+/// constant: neither a scalar literal nor a single-name path. Paths through
+/// types need ordinary expression resolution to select associated constants.
 pub(crate) fn is_anon_const(expr: ast::Expr<'_>) -> bool {
     match expr {
         ast::Expr::Literal(literal) => !matches!(
             literal.kind(),
             Some(ast::LiteralKind::Int | ast::LiteralKind::Bool(_) | ast::LiteralKind::Char)
         ),
-        ast::Expr::PathExpr(_) => false,
+        ast::Expr::PathExpr(path) => path.path().is_some_and(|path| {
+            // A lone identifier may be a const parameter. Preserve it for
+            // declaration-scoped substitution; all qualified paths use the
+            // same checked/evaluated expression pipeline as const arithmetic.
+            path.qualifier().is_some()
+                || path.colon2_token().is_some()
+                || path.segment().is_some_and(|segment| {
+                    segment.generic_arg_list().is_some() || segment.l_angle_token().is_some()
+                })
+        }),
         _ => true,
     }
 }

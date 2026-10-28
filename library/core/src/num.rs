@@ -7,67 +7,54 @@
 //! are `Ord`'s, as in Rust.
 
 pub use crate::float::ParseFloatError;
-/// A nonzero `u32`. Only checked construction and value access are
-/// implemented so far, together with comparison, copying and formatting.
-/// The private field and checked constructor preserve the nonzero validity
-/// range; the compiler uses zero for `Option<NonZeroU32>::None`.
-#[lang = "nonzero_u32"]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NonZeroU32(u32);
-
-/// A nonzero `u64`, with zero available as the enclosing enum's niche.
-#[lang = "nonzero_u64"]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NonZeroU64(u64);
-
-impl NonZeroU64 {
-    pub const fn new(value: u64) -> Option<NonZeroU64> {
-        if value == 0 { None } else { Some(NonZeroU64(value)) }
-    }
-
-    /// The caller must ensure `value` is nonzero.
-    pub const unsafe fn new_unchecked(value: u64) -> NonZeroU64 {
-        NonZeroU64(value)
-    }
-
-    pub const fn get(self) -> u64 { self.0 }
-    pub const fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() }
-    pub const fn leading_zeros(self) -> u32 { self.0.leading_zeros() }
+/// Nonzero integer wrappers preserve zero as an enum niche.
+macro_rules! nonzero_impl {
+    ($name:ident, $t:ty, $lang:literal) => {
+        #[lang = $lang]
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name($t);
+        impl $name {
+            pub const fn new(value: $t) -> Option<Self> {
+                if value == 0 { None } else { Some(Self(value)) }
+            }
+            /// # Safety
+            /// `value` must not be zero.
+            pub const unsafe fn new_unchecked(value: $t) -> Self { Self(value) }
+            pub const fn get(self) -> $t { self.0 }
+            pub const fn leading_zeros(self) -> u32 { self.0.leading_zeros() }
+            pub const fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() }
+        }
+        impl crate::fmt::Debug for $name {
+            fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+                crate::fmt::Debug::fmt(&self.0, f)
+            }
+        }
+        impl crate::fmt::Display for $name {
+            fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+                crate::fmt::Display::fmt(&self.0, f)
+            }
+        }
+        impl From<$name> for $t { fn from(value: $name) -> $t { value.get() } }
+        impl crate::convert::TryFrom<$t> for $name {
+            type Error = TryFromIntError;
+            fn try_from(value: $t) -> Result<Self, TryFromIntError> {
+                Self::new(value).ok_or(TryFromIntError(IntErrorKind::Zero))
+            }
+        }
+    };
 }
-
-impl crate::fmt::Debug for NonZeroU64 {
-    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
-        crate::fmt::Debug::fmt(&self.0, f)
-    }
-}
-
-impl crate::fmt::Display for NonZeroU64 {
-    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
-        crate::fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl NonZeroU32 {
-    pub const fn new(value: u32) -> Option<NonZeroU32> {
-        if value == 0 { None } else { Some(NonZeroU32(value)) }
-    }
-
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-}
-
-impl crate::fmt::Debug for NonZeroU32 {
-    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
-        crate::fmt::Debug::fmt(&self.0, f)
-    }
-}
-
-impl crate::fmt::Display for NonZeroU32 {
-    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
-        crate::fmt::Display::fmt(&self.0, f)
-    }
-}
+nonzero_impl!(NonZeroI8, i8, "nonzero_i8");
+nonzero_impl!(NonZeroI16, i16, "nonzero_i16");
+nonzero_impl!(NonZeroI32, i32, "nonzero_i32");
+nonzero_impl!(NonZeroI64, i64, "nonzero_i64");
+nonzero_impl!(NonZeroI128, i128, "nonzero_i128");
+nonzero_impl!(NonZeroIsize, isize, "nonzero_isize");
+nonzero_impl!(NonZeroU8, u8, "nonzero_u8");
+nonzero_impl!(NonZeroU16, u16, "nonzero_u16");
+nonzero_impl!(NonZeroU32, u32, "nonzero_u32");
+nonzero_impl!(NonZeroU64, u64, "nonzero_u64");
+nonzero_impl!(NonZeroU128, u128, "nonzero_u128");
+nonzero_impl!(NonZeroUsize, usize, "nonzero_usize");
 
 /// Why an integer is not of another integer type: what `TryFrom`
 /// gives where the value is out of its range, too large or too small.

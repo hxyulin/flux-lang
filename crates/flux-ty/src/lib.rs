@@ -23,9 +23,9 @@ mod resolve;
 pub use resolve::{
     ArgTys, ArrayLens, LenEvaluator, LenValues, TypeScope, alias_type, arc_pointee, array_len,
     box_pointee, check_const_params, const_param_ty, const_value, generic_consts, generic_names,
-    impl_target, is_lang_struct, maybe_unsized, param_const_ty, primitive, resolve_generic_arg,
-    resolve_generic_args, resolve_type, self_ty, struct_type, unsized_error, unsized_params,
-    wrong_arg_count,
+    impl_target, is_lang_struct, maybe_unsized, nonzero_integer, param_const_ty, primitive,
+    resolve_generic_arg, resolve_generic_args, resolve_type, self_ty, struct_type, unsized_error,
+    unsized_params, wrong_arg_count,
 };
 use resolve::{
     alias_cycle, check_type_defaults, reaches_alias, resolve_or_report, resolve_predicates,

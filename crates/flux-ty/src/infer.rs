@@ -6380,7 +6380,9 @@ impl Ctx<'_> {
             | TyKind::Bool
             | TyKind::Tuple([])
             | TyKind::Error => true,
-            TyKind::Ref(_, pointee) | TyKind::Slice(pointee) => self.const_operand(pointee),
+            TyKind::Ref(_, pointee) | TyKind::Slice(pointee) | TyKind::Array(pointee, _) => {
+                self.const_operand(pointee)
+            }
             TyKind::Adt(adt, args) => {
                 let data = &self.items.structs[adt.strukt];
                 self.items.is_core(data.loc.module) && args.iter().all(|&a| self.const_operand(a))

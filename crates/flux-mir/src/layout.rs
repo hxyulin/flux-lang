@@ -499,18 +499,18 @@ impl<'a> Layouts<'a> {
                     end: u64::MAX as u128,
                 });
             }
-            if lang("nonzero_u32") || lang("nonzero_u64") {
-                // The private integer wrappers' constructors exclude zero.
-                // As for NonNull, preserve that scalar validity range through
-                // aggregates so an enclosing enum can fill the zero niche.
+            if let Some(integer) = flux_ty::nonzero_integer(self.items, strukt) {
+                // Every bit pattern except zero is valid, including signed
+                // negative values. Preserve the complete representation range.
+                let bits = integer.bits();
                 layout.niche = Some(Niche {
                     offset: 0,
-                    bytes: if lang("nonzero_u64") { 8 } else { 4 },
+                    bytes: (bits / 8) as u8,
                     start: 1,
-                    end: if lang("nonzero_u64") {
-                        u64::MAX as u128
+                    end: if bits == 128 {
+                        u128::MAX
                     } else {
-                        u32::MAX as u128
+                        (1u128 << bits) - 1
                     },
                 });
             }

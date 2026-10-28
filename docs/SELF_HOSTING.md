@@ -214,6 +214,16 @@ stay outside target compilation. The bridge is tied to a reviewed rustc commit;
 its [contract and restrictions](../crates/flux-cli/README.md#cargo-backed-source-builds)
 remain narrower than general Cargo compatibility. The rustc reference exercises the complete backend
 and linker successfully. See the [backend audit report](../crates/flux-cli/tests/fixtures/keel_backend/README.md).
+The API/array-length follow-up audit `out/keel-backend-readiness/16654` has zero
+input, syntax and HIR diagnostics, and 209 type diagnostics, with clean byte
+guards. Associated-constant array lengths now use the ordinary checked constant
+evaluator. Pointer/array borrowing and chunk APIs, ordered collection/path APIs,
+array indexing and borrowed slice-to-array conversions, NonZero integer families
+and smaller allocation/error APIs clear their earlier
+diagnostic groups. Remaining errors include Serde lifetime/projection contracts,
+typenum normalization, union fields, PhantomPinned and general constant pointer arithmetic. This full-only audit stops
+before MIR/codegen; it does not establish a new native backend milestone.
+
 CLI derives and the backend's remaining dependencies and generated outputs also
 belong to the complete source closure. Sourcegen and difftest are additional workspace targets,
 not prerequisites for the first compiler executable.

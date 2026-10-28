@@ -407,3 +407,41 @@ impl<T: ?Sized + core::hash::Hash> core::hash::Hash for Arc<T> {
         (**self).hash(state);
     }
 }
+
+impl<T> From<crate::boxed::Box<T>> for Arc<T> {
+    fn from(value: crate::boxed::Box<T>) -> Self {
+        // Allocate before moving, so allocation failure cannot consume T.
+        let (ptr, raw) = allocate(Layout::new::<T>());
+        let source = crate::boxed::Box::into_raw(value);
+        // SAFETY: source is an initialized owned Box allocation; raw is a
+        // distinct aligned destination. Transfer T once, then free only the
+        // source allocation, never its moved payload.
+        unsafe {
+            let data = raw as *mut T;
+            ptr::write(data, ptr::read(source));
+            let layout = Layout::new::<T>();
+            if layout.size() != 0 { dealloc(source as *mut u8, layout); }
+            Arc { ptr, data: NonNull::new_unchecked(data), owner: PhantomData }
+        }
+    }
+}
+impl<T> From<crate::boxed::Box<[T]>> for Arc<[T]> {
+    fn from(value: crate::boxed::Box<[T]>) -> Self { Arc::from(value.into_vec()) }
+}
+impl From<crate::boxed::Box<str>> for Arc<str> {
+    fn from(value: crate::boxed::Box<str>) -> Self {
+        let len = value.len();
+        let layout = Layout::array::<u8>(len).unwrap();
+        let (ptr, raw) = allocate(layout);
+        let source = crate::boxed::Box::into_raw(value);
+        // SAFETY: both allocations hold len bytes, raw is distinct storage,
+        // and copying UTF-8 preserves validity. Transfer ownership before
+        // freeing the original allocation using its exact layout.
+        unsafe {
+            ptr::copy_nonoverlapping(source as *const u8, raw, len);
+            if len != 0 { dealloc(source as *mut u8, layout); }
+            let bytes = core::slice::from_raw_parts_mut(raw, len);
+            Arc { ptr, data: NonNull::new_unchecked(bytes as *mut [u8] as *mut str), owner: PhantomData }
+        }
+    }
+}

@@ -102,7 +102,7 @@ pub(crate) const unsafe fn subslice_mut<'a, 'b, T>(
 /// The `len` elements from `data` on, as a slice, unchecked: they must
 /// be there for as long as the slice is used.
 #[rustc_intrinsic]
-pub(crate) unsafe fn slice_from_raw_parts<'a, T>(data: *const T, len: usize) -> &'a [T] {
+pub(crate) const unsafe fn slice_from_raw_parts<'a, T>(data: *const T, len: usize) -> &'a [T] {
     loop {}
 }
 
@@ -115,7 +115,7 @@ pub(crate) const fn raw_slice_len<T>(ptr: *const [T]) -> usize {
 
 /// The `len` elements from `data` on, as a mutable slice, unchecked.
 #[rustc_intrinsic]
-pub(crate) unsafe fn slice_from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T] {
+pub(crate) const unsafe fn slice_from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T] {
     loop {}
 }
 

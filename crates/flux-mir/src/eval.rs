@@ -854,14 +854,10 @@ impl<'a> Evaluator<'a> {
         if lang("non_null") && matches!(fields.first(), Some(Value::RawAddr(0))) {
             return Err(error(range, "null pointer in `NonNull` constant".into()));
         }
-        if (lang("nonzero_u32") || lang("nonzero_u64"))
+        if flux_ty::nonzero_integer(self.items, strukt).is_some()
             && matches!(fields.first(), Some(Value::Int { bits: 0, .. }))
         {
-            let name = if lang("nonzero_u64") {
-                "NonZeroU64"
-            } else {
-                "NonZeroU32"
-            };
+            let name = self.items.structs[strukt].name;
             return Err(error(range, format!("zero in `{name}` constant")));
         }
         if lang("alignment") {
@@ -1155,6 +1151,71 @@ impl<'a> Evaluator<'a> {
             },
             _ => unreachable!("reference form checked above"),
         })
+    }
+
+    /// Construct a slice only when the thin pointer retains an exact typed
+    /// array allocation. Keep allocation/frame identity; never invent storage
+    /// for an integer address or reinterpret unvalidated element bytes.
+    fn slice_from_pointer(
+        &mut self,
+        mut value: Value,
+        pointer_ty: Ty,
+        element: Ty,
+        len: u64,
+        mutable: bool,
+        range: TextRange,
+    ) -> Result<Value, EvalError> {
+        let mut stored = pointer_pointee(pointer_ty);
+        while let Value::PointerView {
+            pointer, source, ..
+        } = value
+        {
+            stored = pointer_pointee(source);
+            value = (*pointer).clone();
+        }
+        stored = match &value {
+            Value::Static(id) => Some(self.sigs.consts[*id]),
+            Value::StaticPart { id, path } => {
+                static_path_type(self.sigs, self.sigs.consts[*id], path)
+            }
+            _ => stored,
+        };
+        let (stored_element, count) = match stored.map(Ty::kind) {
+            Some(TyKind::Array(element, count)) => (element, count.as_usize()),
+            Some(TyKind::Slice(element)) => {
+                let count = match &value {
+                    Value::Ref(inner)
+                    | Value::InteriorRef(inner)
+                    | Value::LocalRef { value: inner, .. } => match &**inner {
+                        Value::Aggregate(elements) => Some(elements.len() as u64),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                (element, count)
+            }
+            _ => {
+                return Err(error(
+                    range,
+                    "constant raw slices require a typed array allocation".into(),
+                ));
+            }
+        };
+        if stored_element != element {
+            return Err(error(
+                range,
+                "reinterpreted raw slices in constants are not supported yet".into(),
+            ));
+        }
+        let Some(count) = count else {
+            return Err(unsupported_view(range));
+        };
+        if len > count {
+            return Err(error(range, "constant raw slice is out of bounds".into()));
+        }
+        // No reference is formed by raw-slice construction. Mutable references
+        // still obey subslice_value's existing constant-memory restrictions.
+        self.subslice_value(value, 0, len as usize, mutable, range)
     }
 
     /// The initial value of static `id`, read at `range`. A constant may
@@ -1594,6 +1655,44 @@ impl<'a> Evaluator<'a> {
                         == Some(flux_hir::Intrinsic::UnreachableUnchecked)
                     {
                         return Err(error(range, "entering unreachable code".into()));
+                    }
+                    if matches!(
+                        self.items.functions[*func].intrinsic,
+                        Some(
+                            flux_hir::Intrinsic::SliceFromRawParts
+                                | flux_hir::Intrinsic::SliceFromRawPartsMut
+                                | flux_hir::Intrinsic::RawSliceFromParts
+                                | flux_hir::Intrinsic::RawSliceFromPartsMut
+                        )
+                    ) && let [data, len] = &args[..]
+                    {
+                        let value = self.operand(locals, generics, data, range)?;
+                        let Value::Int { bits: len, .. } =
+                            self.operand(locals, generics, len, range)?
+                        else {
+                            return Err(unsupported_view(range));
+                        };
+                        let pointer_ty = flux_ty::traits::normalize(
+                            self.items,
+                            self.sigs,
+                            &[],
+                            body.operand_ty(data, self.sigs).subst(generics),
+                        );
+                        let element = flux_ty::traits::normalize(
+                            self.items,
+                            self.sigs,
+                            &[],
+                            generic_args[0].subst(generics),
+                        );
+                        let mutable = self.items.functions[*func].intrinsic
+                            == Some(flux_hir::Intrinsic::SliceFromRawPartsMut);
+                        let value = self.slice_from_pointer(
+                            value, pointer_ty, element, len as u64, mutable, range,
+                        )?;
+                        write(locals, dest, value, range)?;
+                        block = target
+                            .ok_or_else(|| error(range, "entering unreachable code".into()))?;
+                        continue;
                     }
                     if self.items.functions[*func].intrinsic
                         == Some(flux_hir::Intrinsic::RawSliceLen)

@@ -36,30 +36,29 @@ fn main() -> () {
     let mut _34: [i32; 3]; // c
     let _35: &[i32]; // s
     let _36: &[i32; 3];
-    let _37: &[i32];
-    let _38: RangeFull;
-    let _39: &[i32];
-    let _40: ();
-    let _41: &mut [i32; 3];
-    let _42: &mut [i32];
-    let _43: usize;
-    let _44: &[i32];
-    let mut _45: [i32; 3]; // d
-    let _46: ();
-    let _47: &mut [i32; 3];
-    let _48: &mut [i32];
+    let _37: RangeFull;
+    let _38: &[i32];
+    let _39: ();
+    let _40: &mut [i32; 3];
+    let _41: &mut [i32];
+    let _42: usize;
+    let _43: &[i32];
+    let mut _44: [i32; 3]; // d
+    let _45: ();
+    let _46: &mut [i32; 3];
+    let _47: &mut [i32];
+    let _48: usize;
     let _49: usize;
-    let _50: usize;
-    let _51: &[i32; 3];
-    let _52: &[i32];
-    let _53: &mut [i32]; // e
+    let _50: &[i32; 3];
+    let _51: &[i32];
+    let _52: &mut [i32]; // e
+    let _53: &mut [i32; 3];
     let _54: &mut [i32; 3];
-    let _55: &mut [i32; 3];
-    let _56: ();
-    let _57: &mut [i32];
+    let _55: ();
+    let _56: &mut [i32];
+    let _57: usize;
     let _58: usize;
-    let _59: usize;
-    let _60: &[i32];
+    let _59: &[i32];
 
     bb0: {
         _1 = [const 1_i32, const 2_i32, const 3_i32, const 4_i32];
@@ -135,56 +134,55 @@ fn main() -> () {
         _33 = const ();
         _34 = [const 3_i32, const 1_i32, const 2_i32];
         _36 = &_34;
-        _37 = copy _36 as &[i32] (unsize);
-        _38 = RangeFull;
-        _39 = index::<[i32], RangeFull>(move _37, copy _38) -> bb10;
+        _37 = RangeFull;
+        _38 = index::<[i32; 3], RangeFull>(move _36, copy _37) -> bb10;
     }
 
     bb10: {
-        _35 = &(*_39);
-        _41 = &mut _34;
-        _42 = move _41 as &mut [i32] (unsize);
-        _40 = sort::<i32>(move _42) -> bb11;
+        _35 = &(*_38);
+        _40 = &mut _34;
+        _41 = move _40 as &mut [i32] (unsize);
+        _39 = sort::<i32>(move _41) -> bb11;
     }
 
     bb11: {
-        _44 = &(*_35);
-        _43 = len::<i32>(copy _44) -> bb12;
+        _43 = &(*_35);
+        _42 = len::<i32>(copy _43) -> bb12;
     }
 
     bb12: {
-        StorageDead(_43);
-        _45 = [const 3_i32, const 1_i32, const 2_i32];
-        _47 = &mut _45;
-        _48 = move _47 as &mut [i32] (unsize);
-        _51 = &_45;
-        _52 = copy _51 as &[i32] (unsize);
-        _50 = len::<i32>(copy _52) -> bb13;
+        StorageDead(_42);
+        _44 = [const 3_i32, const 1_i32, const 2_i32];
+        _46 = &mut _44;
+        _47 = move _46 as &mut [i32] (unsize);
+        _50 = &_44;
+        _51 = copy _50 as &[i32] (unsize);
+        _49 = len::<i32>(copy _51) -> bb13;
     }
 
     bb13: {
-        _49 = Sub(copy _50, const 1_usize);
-        _46 = swap::<i32>(move _48, const 0_usize, copy _49) -> bb14;
+        _48 = Sub(copy _49, const 1_usize);
+        _45 = swap::<i32>(move _47, const 0_usize, copy _48) -> bb14;
     }
 
     bb14: {
-        _55 = &mut _45;
-        _54 = &mut (*_55);
-        _53 = move _54 as &mut [i32] (unsize);
-        _57 = &two_phase (*_53);
-        _60 = &(*_53);
-        _59 = len::<i32>(copy _60) -> bb15;
+        _54 = &mut _44;
+        _53 = &mut (*_54);
+        _52 = move _53 as &mut [i32] (unsize);
+        _56 = &two_phase (*_52);
+        _59 = &(*_52);
+        _58 = len::<i32>(copy _59) -> bb15;
     }
 
     bb15: {
-        _58 = Sub(copy _59, const 1_usize);
-        _56 = swap::<i32>(move _57, const 0_usize, copy _58) -> bb16;
+        _57 = Sub(copy _58, const 1_usize);
+        _55 = swap::<i32>(move _56, const 0_usize, copy _57) -> bb16;
     }
 
     bb16: {
         _0 = const ();
-        StorageDead(_53);
-        StorageDead(_45);
+        StorageDead(_52);
+        StorageDead(_44);
         StorageDead(_35);
         StorageDead(_34);
         StorageDead(_28);

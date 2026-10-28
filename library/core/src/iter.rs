@@ -1898,7 +1898,7 @@ impl<'a, T: Clone, I: DoubleEndedIterator<Item = &'a T>> DoubleEndedIterator for
 impl<'a, T: Clone, I: ExactSizeIterator<Item = &'a T>> ExactSizeIterator for Cloned<I> {}
 
 /// [`Iterator::fuse`]'s.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Fuse<I> {
     iter: Option<I>,
 }

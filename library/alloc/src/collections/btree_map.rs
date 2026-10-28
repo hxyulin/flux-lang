@@ -4,7 +4,7 @@
 //! vector, not the standard library's private B-tree layout. Links are indices;
 //! rotations never move keys or values between slots. Iterators use a stack
 //! bounded by tree height. Removed slots are reused through an index free list.
-//! Range and allocator APIs remain outside this subset.
+//! Allocator-parameter APIs remain outside this subset.
 use crate::vec::Vec;
 use core::borrow::Borrow;
 use core::cmp::Ordering;
@@ -70,6 +70,11 @@ impl<K, V> BTreeMap<K, V> {
     pub fn len(&self) -> usize {
         self.len
     }
+
+    /// Removes every entry before dropping its former storage.
+    pub fn clear(&mut self) { drop(core::mem::replace(self, Self::new())); }
+
+    pub fn into_values(self) -> IntoValues<K, V> { IntoValues { inner: self.into_iter() } }
 
     pub fn iter(&self) -> Iter<'_, K, V> {
         let mut iter = Iter {
@@ -265,6 +270,7 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> {
 pub struct IntoIter<K, V> {
     map: BTreeMap<K, V>,
     stack: Vec<usize>,
+    back_stack: Vec<usize>,
 }
 
 impl<K, V> IntoIter<K, V> {
@@ -272,6 +278,15 @@ impl<K, V> IntoIter<K, V> {
         while index != NONE {
             self.stack.push(index);
             index = self.map.nodes[index].left;
+        }
+    }
+}
+
+impl<K, V> IntoIter<K, V> {
+    fn descend_back(&mut self, mut index: usize) {
+        while index != NONE {
+            self.back_stack.push(index);
+            index = self.map.nodes[index].right;
         }
     }
 }
@@ -284,8 +299,10 @@ impl<K, V> IntoIterator for BTreeMap<K, V> {
         let mut iter = IntoIter {
             map: self,
             stack: Vec::new(),
+            back_stack: Vec::new(),
         };
         iter.descend(root);
+        iter.descend_back(root);
         iter
     }
 }
@@ -293,12 +310,39 @@ impl<K, V> IntoIterator for BTreeMap<K, V> {
 impl<K, V> Iterator for IntoIter<K, V> {
     type Item = (K, V);
     fn next(&mut self) -> Option<Self::Item> {
+        if self.map.len == 0 { return None; }
         let index = self.stack.pop()?;
         let right = self.map.nodes[index].right;
         self.descend(right);
+        self.map.len -= 1;
+        self.map.nodes[index].entry.take()
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) { (self.map.len, Some(self.map.len)) }
+}
+impl<K, V> core::iter::DoubleEndedIterator for IntoIter<K, V> {
+    fn next_back(&mut self) -> Option<(K, V)> {
+        if self.map.len == 0 { return None; }
+        let index = self.back_stack.pop()?;
+        let left = self.map.nodes[index].left;
+        self.descend_back(left);
+        self.map.len -= 1;
         self.map.nodes[index].entry.take()
     }
 }
+impl<K, V> core::iter::ExactSizeIterator for IntoIter<K, V> {}
+impl<K, V> core::iter::FusedIterator for IntoIter<K, V> {}
+
+pub struct IntoValues<K, V> { inner: IntoIter<K, V> }
+impl<K, V> Iterator for IntoValues<K, V> {
+    type Item = V;
+    fn next(&mut self) -> Option<V> { self.inner.next().map(|(_, value)| value) }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl<K, V> core::iter::DoubleEndedIterator for IntoValues<K, V> {
+    fn next_back(&mut self) -> Option<V> { self.inner.next_back().map(|(_, value)| value) }
+}
+impl<K, V> core::iter::ExactSizeIterator for IntoValues<K, V> {}
+impl<K, V> core::iter::FusedIterator for IntoValues<K, V> {}
 
 impl<K, V> BTreeMap<K, V> {
     /// Mutable values in key order. Each node index is visited once; taking
@@ -356,6 +400,125 @@ impl<K, V> BTreeMap<K, V> {
         if index == NONE { return None; }
         while self.nodes[index].left != NONE { index = self.nodes[index].left; }
         self.nodes[index].entry.as_ref().map(|(key, value)| (key, value))
+    }
+
+    pub fn last_key_value(&self) -> Option<(&K, &V)> where K: Ord {
+        let mut index = self.root;
+        if index == NONE { return None; }
+        while self.nodes[index].right != NONE { index = self.nodes[index].right; }
+        self.nodes[index].entry.as_ref().map(|(key, value)| (key, value))
+    }
+
+    pub fn pop_first(&mut self) -> Option<(K, V)> where K: Ord {
+        if self.root == NONE { return None; }
+        let (root, first) = self.detach_min(self.root);
+        self.root = root;
+        let entry = self.nodes[first].entry.take();
+        self.release(first);
+        entry
+    }
+
+    /// Visits entries in ascending key order, retaining those accepted by `f`.
+    pub fn retain<F: FnMut(&K, &mut V) -> bool>(&mut self, mut f: F) where K: Ord {
+        let mut order = Vec::new();
+        let mut stack = Vec::new();
+        let mut at = self.root;
+        while at != NONE || !stack.is_empty() {
+            while at != NONE { stack.push(at); at = self.nodes[at].left; }
+            at = stack.pop().unwrap();
+            order.push(at);
+            at = self.nodes[at].right;
+        }
+        for index in order {
+            let keep = {
+                let (key, value) = self.nodes[index].entry.as_mut().unwrap();
+                f(key, value)
+            };
+            if !keep {
+                // Determine the path before changing ownership. A comparison
+                // panic leaves all links and entries intact.
+                let mut path = Vec::new();
+                let key = &self.nodes[index].entry.as_ref().unwrap().0;
+                let mut at = self.root;
+                while at != index {
+                    let left = key < &self.nodes[at].entry.as_ref().unwrap().0;
+                    path.push(left);
+                    at = if left { self.nodes[at].left } else { self.nodes[at].right };
+                }
+                let (root, removed) = self.remove_path(self.root, &path);
+                self.root = root;
+                drop(removed);
+            }
+        }
+    }
+
+    // Keep surviving entries in their original slots, including successors
+    // already queued by retain. No user comparisons run after unlinking.
+    fn remove_path(&mut self, index: usize, path: &[bool]) -> (usize, Option<(K, V)>) {
+        if let Some((&left, rest)) = path.split_first() {
+            let child = if left { self.nodes[index].left } else { self.nodes[index].right };
+            let (child, entry) = self.remove_path(child, rest);
+            if left { self.nodes[index].left = child; } else { self.nodes[index].right = child; }
+            return (self.balance(index), entry);
+        }
+        let left = self.nodes[index].left;
+        let right = self.nodes[index].right;
+        let entry = self.nodes[index].entry.take();
+        let root = if left == NONE { right } else if right == NONE { left } else {
+            let (right, next) = self.detach_min(right);
+            self.nodes[next].left = left;
+            self.nodes[next].right = right;
+            self.balance(next)
+        };
+        self.release(index);
+        (root, entry)
+    }
+
+    /// Iterates over keys in the given bounds without copying entries.
+    ///
+    /// # Panics
+    /// Panics for reversed bounds or two equal excluded bounds.
+    pub fn range<Q: ?Sized, R>(&self, range: R) -> Range<'_, K, V>
+    where K: Borrow<Q> + Ord, Q: Ord, R: core::ops::RangeBounds<Q> {
+        use core::ops::Bound::{Included, Excluded, Unbounded};
+        // As in Rust's map, an empty tree has no interval to validate.
+        if self.root == NONE {
+            return Range { map: self, front: Vec::new(), back: Vec::new(), finished: true };
+        }
+        let start = range.start_bound();
+        let end = range.end_bound();
+        match (&start, &end) {
+            (Included(a) | Excluded(a), Included(b) | Excluded(b)) => {
+                match a.cmp(b) {
+                    Ordering::Greater => panic!("range start is greater than range end in BTreeMap"),
+                    Ordering::Equal if matches!((&start, &end), (Excluded(_), Excluded(_))) =>
+                        panic!("range start and end are equal and excluded in BTreeMap"),
+                    _ => {},
+                }
+            }
+            _ => {},
+        }
+        let mut front = Vec::new();
+        let mut at = self.root;
+        while at != NONE {
+            let key: &Q = self.nodes[at].entry.as_ref().unwrap().0.borrow();
+            let accept = match start { Included(bound) => key >= bound, Excluded(bound) => key > bound, Unbounded => true };
+            if accept { front.push(at); at = self.nodes[at].left; }
+            else { at = self.nodes[at].right; }
+        }
+        let mut back = Vec::new();
+        at = self.root;
+        while at != NONE {
+            let key: &Q = self.nodes[at].entry.as_ref().unwrap().0.borrow();
+            let accept = match end { Included(bound) => key <= bound, Excluded(bound) => key < bound, Unbounded => true };
+            if accept { back.push(at); at = self.nodes[at].right; }
+            else { at = self.nodes[at].left; }
+        }
+        let finished = match (front.last(), back.last()) {
+            (Some(&a), Some(&b)) => self.nodes[a].entry.as_ref().unwrap().0 > self.nodes[b].entry.as_ref().unwrap().0,
+            _ => true,
+        };
+        Range { map: self, front, back, finished }
     }
 
     pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Option<V>
@@ -675,4 +838,116 @@ mod tests {
         assert_eq!(drops.get(), 33);
     }
 
+    #[test]
+    fn retain_and_range_preserve_tree_and_unwinding_invariants() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use core::ops::Bound::{Included, Excluded};
+        let mut map = BTreeMap::new();
+        let mut reference = std::collections::BTreeMap::new();
+        for i in (0..1023).rev() { map.insert(i, i); reference.insert(i, i); }
+        for divisor in [3, 7, 13, 2] {
+            map.retain(|key, value| { *value += 3; key % divisor != 0 });
+            reference.retain(|key, value| { *value += 3; key % divisor != 0 });
+            validate(&map);
+            assert_eq!(map.iter().collect::<Vec<_>>(), reference.iter().collect::<Vec<_>>());
+        }
+        assert!(catch_unwind(AssertUnwindSafe(|| map.retain(|key, value| {
+            *value += 1;
+            if *key > 400 { panic!("retain callback"); }
+            key % 5 != 0
+        }))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| reference.retain(|key, value| {
+            *value += 1;
+            if *key > 400 { panic!("retain callback"); }
+            key % 5 != 0
+        }))).is_err());
+        validate(&map);
+        assert_eq!(map.iter().collect::<Vec<_>>(), reference.iter().collect::<Vec<_>>());
+        for lower in 0..32 {
+            for upper in lower..32 {
+                for (left, right) in [(Included(lower), Included(upper)), (Included(lower), Excluded(upper)), (Excluded(lower), Included(upper)), (Excluded(lower), Excluded(upper))] {
+                    if lower == upper && matches!((left, right), (Excluded(_), Excluded(_))) { continue; }
+                    let expected: Vec<_> = reference.range((left, right)).collect();
+                    assert_eq!(map.range((left, right)).collect::<Vec<_>>(), expected);
+                    let mut iter = map.range((left, right));
+                    let mut host = reference.range((left, right));
+                    while host.clone().next().is_some() {
+                        assert_eq!(iter.next(), host.next());
+                        assert_eq!(iter.next_back(), host.next_back());
+                    }
+                    assert!(iter.next().is_none());
+                    assert!(iter.next_back().is_none());
+                }
+            }
+        }
+        for bounds in [(Included(9), Included(2)), (Excluded(4), Excluded(4))] {
+            assert!(catch_unwind(|| map.range(bounds)).is_err());
+            assert!(catch_unwind(|| reference.range(bounds)).is_err());
+        }
+        map.clear(); reference.clear();
+        assert_eq!(map.range((Excluded(4), Excluded(4))).count(), 0);
+        validate(&map);
+        map.insert(1, 1); validate(&map);
+    }
+
+    #[test]
+    fn retained_value_drop_panics_after_tree_links_are_consistent() {
+        use std::cell::Cell;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        struct Value<'a> { key: i32, armed: &'a Cell<bool>, drops: &'a Cell<usize> }
+        impl Drop for Value<'_> {
+            fn drop(&mut self) {
+                self.drops.set(self.drops.get() + 1);
+                if self.key == 5 && self.armed.replace(false) { panic!("value destructor"); }
+            }
+        }
+        let armed = Cell::new(true);
+        let drops = Cell::new(0);
+        let mut map = BTreeMap::new();
+        for key in 0..31 { map.insert(key, Value { key, armed: &armed, drops: &drops }); }
+        assert!(catch_unwind(AssertUnwindSafe(|| map.retain(|key, _| key % 2 == 0))).is_err());
+        assert_eq!(map.len(), 28);
+        assert_eq!(drops.get(), 3);
+        assert!(!map.contains_key(&1) && !map.contains_key(&3) && !map.contains_key(&5));
+        assert_eq!(map.last_key_value().unwrap().0, &30);
+        map.insert(33, Value { key: 33, armed: &armed, drops: &drops });
+        drop(map);
+        assert_eq!(drops.get(), 32);
+    }
+
 }
+
+/// A borrowed, double-ended view over an ordered key interval.
+pub struct Range<'a, K, V> {
+    map: &'a BTreeMap<K, V>,
+    front: Vec<usize>,
+    back: Vec<usize>,
+    finished: bool,
+}
+impl<K, V> Clone for Range<'_, K, V> {
+    fn clone(&self) -> Self {
+        Self { map: self.map, front: self.front.clone(), back: self.back.clone(), finished: self.finished }
+    }
+}
+impl<'a, K, V> Iterator for Range<'a, K, V> {
+    type Item = (&'a K, &'a V);
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished { return None; }
+        let index = self.front.pop()?;
+        if self.back.last() == Some(&index) { self.finished = true; }
+        let mut at = self.map.nodes[index].right;
+        while at != NONE { self.front.push(at); at = self.map.nodes[at].left; }
+        self.map.nodes[index].entry.as_ref().map(|(key, value)| (key, value))
+    }
+}
+impl<'a, K, V> core::iter::DoubleEndedIterator for Range<'a, K, V> {
+    fn next_back(&mut self) -> Option<(&'a K, &'a V)> {
+        if self.finished { return None; }
+        let index = self.back.pop()?;
+        if self.front.last() == Some(&index) { self.finished = true; }
+        let mut at = self.map.nodes[index].left;
+        while at != NONE { self.back.push(at); at = self.map.nodes[at].right; }
+        self.map.nodes[index].entry.as_ref().map(|(key, value)| (key, value))
+    }
+}
+impl<K, V> core::iter::FusedIterator for Range<'_, K, V> {}

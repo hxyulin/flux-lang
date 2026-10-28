@@ -32,12 +32,12 @@ pub const fn from_mut<T>(value: &mut T) -> &mut [T] {
 
 /// The `len` values from `data` on, as a slice, which must be valid for
 /// as long as the slice is used.
-pub unsafe fn from_raw_parts<'a, T>(data: *const T, len: usize) -> &'a [T] {
+pub const unsafe fn from_raw_parts<'a, T>(data: *const T, len: usize) -> &'a [T] {
     unsafe { crate::intrinsics::slice_from_raw_parts(data, len) }
 }
 
 /// The `len` values from `data` on, as a mutable slice.
-pub unsafe fn from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T] {
+pub const unsafe fn from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T] {
     unsafe { crate::intrinsics::slice_from_raw_parts_mut(data, len) }
 }
 
@@ -92,6 +92,32 @@ impl<T> [T] {
     /// The number of elements in the slice.
     pub const fn len(&self) -> usize {
         crate::intrinsics::raw_slice_len(self as *const [T])
+    }
+
+    /// Splits into arrays of `N` elements and a remaining suffix.
+    /// Panics if `N` is zero.
+    #[track_caller]
+    pub fn as_chunks<const N: usize>(&self) -> (&[[T; N]], &[T]) {
+        assert!(N != 0, "chunk size must be non-zero");
+        let chunks = self.len() / N;
+        let (whole, remainder) = self.split_at(chunks * N);
+        // SAFETY: the prefix contains exactly chunks contiguous arrays, with
+        // T's alignment. Array grouping neither copies nor changes elements.
+        let whole = unsafe { from_raw_parts(whole.as_ptr() as *const [T; N], chunks) };
+        (whole, remainder)
+    }
+
+    /// Splits into disjoint mutable arrays of `N` elements and a suffix.
+    /// Panics if `N` is zero.
+    #[track_caller]
+    pub fn as_chunks_mut<const N: usize>(&mut self) -> (&mut [[T; N]], &mut [T]) {
+        assert!(N != 0, "chunk size must be non-zero");
+        let chunks = self.len() / N;
+        let (whole, remainder) = self.split_at_mut(chunks * N);
+        // SAFETY: split_at_mut made these ranges disjoint; grouping the exact
+        // prefix into arrays preserves alignment and unique ownership.
+        let whole = unsafe { from_raw_parts_mut(whole.as_mut_ptr() as *mut [T; N], chunks) };
+        (whole, remainder)
     }
 
     /// The first element, or `None` if the slice is empty.

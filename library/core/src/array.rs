@@ -24,6 +24,8 @@ impl crate::fmt::Display for TryFromSliceError {
     }
 }
 
+impl crate::error::Error for TryFromSliceError {}
+
 impl<T: Copy, const N: usize> TryFrom<&[T]> for [T; N] {
     type Error = TryFromSliceError;
 
@@ -42,6 +44,58 @@ impl<T: Copy, const N: usize> TryFrom<&mut [T]> for [T; N] {
     fn try_from(slice: &mut [T]) -> crate::result::Result<[T; N], TryFromSliceError> {
         <[T; N]>::try_from(&*slice)
     }
+}
+
+impl<'a, T, const N: usize> TryFrom<&'a [T]> for &'a [T; N] {
+    type Error = TryFromSliceError;
+
+    fn try_from(slice: &'a [T]) -> crate::result::Result<Self, TryFromSliceError> {
+        if slice.len() != N {
+            return crate::result::Result::Err(TryFromSliceError(()));
+        }
+        // SAFETY: the length check establishes exactly one initialized array.
+        // Array layout preserves the slice's alignment and borrowed allocation.
+        crate::result::Result::Ok(unsafe { &*(slice.as_ptr() as *const [T; N]) })
+    }
+}
+
+impl<'a, T, const N: usize> TryFrom<&'a mut [T]> for &'a mut [T; N] {
+    type Error = TryFromSliceError;
+
+    fn try_from(slice: &'a mut [T]) -> crate::result::Result<Self, TryFromSliceError> {
+        if slice.len() != N {
+            return crate::result::Result::Err(TryFromSliceError(()));
+        }
+        // SAFETY: the length and alignment match the array, and its unique
+        // borrow retains the input lifetime without moving any element.
+        crate::result::Result::Ok(unsafe { &mut *(slice.as_mut_ptr() as *mut [T; N]) })
+    }
+}
+
+impl<T, I: crate::slice::SliceIndex<[T]>, const N: usize> crate::ops::Index<I> for [T; N] {
+    type Output = I::Output;
+
+    #[track_caller]
+    fn index(&self, index: I) -> &I::Output {
+        let slice: &[T] = self;
+        crate::slice::SliceIndex::index(index, slice)
+    }
+}
+
+impl<T, I: crate::slice::SliceIndex<[T]>, const N: usize> crate::ops::IndexMut<I> for [T; N] {
+    #[track_caller]
+    fn index_mut(&mut self, index: I) -> &mut I::Output {
+        let slice: &mut [T] = self;
+        crate::slice::SliceIndex::index_mut(index, slice)
+    }
+}
+
+impl<T, const N: usize> crate::borrow::Borrow<[T]> for [T; N] {
+    fn borrow(&self) -> &[T] { self }
+}
+
+impl<T, const N: usize> crate::borrow::BorrowMut<[T]> for [T; N] {
+    fn borrow_mut(&mut self) -> &mut [T] { self }
 }
 
 /// An array of `N` elements, each `cb(i)` for its index `i`, made in

@@ -113,6 +113,7 @@ fn make_mut_preserves_ownership_when_clone_or_allocation_panics() {
         .replace("#[lang = \"arc\"]\n", "")
         .replace("use crate::alloc::", "use std::alloc::")
         .replace("use crate::vec::Vec;", "use std::vec::Vec;")
+        .replace("crate::boxed::Box", "std::boxed::Box")
         .replace(
             "crate::raw_vec::capacity_overflow()",
             "panic!(\"capacity overflow\")",
@@ -632,6 +633,7 @@ fn checked_counter_limits_abort_without_wrapping() {
         .replace("#[lang = \"arc\"]\n", "")
         .replace("use crate::alloc::", "use std::alloc::")
         .replace("use crate::vec::Vec;", "use std::vec::Vec;")
+        .replace("crate::boxed::Box", "std::boxed::Box")
         .replace(
             "crate::raw_vec::capacity_overflow()",
             "panic!(\"capacity overflow\")",

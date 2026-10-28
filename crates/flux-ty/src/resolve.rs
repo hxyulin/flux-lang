@@ -2028,6 +2028,24 @@ pub fn is_lang_struct(items: &ItemTree, strukt: StructId, lang: &str) -> bool {
     items.lang_enums.get(&Symbol::intern(lang)) == Some(&strukt)
 }
 
+/// Integer representation of a trusted core nonzero wrapper.
+pub fn nonzero_integer(items: &ItemTree, strukt: StructId) -> Option<IntTy> {
+    static NAMES: std::sync::LazyLock<Vec<(Symbol, IntTy)>> = std::sync::LazyLock::new(|| {
+        IntTy::ALL
+            .into_iter()
+            .map(|integer| {
+                (
+                    Symbol::intern(&format!("nonzero_{}", integer.name())),
+                    integer,
+                )
+            })
+            .collect()
+    });
+    NAMES.iter().find_map(|(name, integer)| {
+        (items.lang_enums.get(name) == Some(&strukt)).then_some(*integer)
+    })
+}
+
 /// What `Self` means in an item in `owner`, if any: an `impl` block's
 /// type, or a trait's first parameter.
 pub fn self_ty(sigs: &Signatures, owner: Option<Owner>) -> Option<Ty> {

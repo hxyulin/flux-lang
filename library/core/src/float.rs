@@ -31,6 +31,11 @@ macro_rules! float_impl {
             pub const fn is_sign_positive(self) -> bool { !self.is_sign_negative() }
             pub const fn is_normal(self) -> bool { let e = self.to_bits() & $exp; e != 0 && e != $exp }
             pub const fn is_subnormal(self) -> bool { (self.to_bits() & $exp) == 0 && (self.to_bits() & $frac) != 0 }
+            /// Copies the sign bit, including for zeros and NaNs.
+            pub const fn copysign(self, sign: Self) -> Self {
+                Self::from_bits((self.to_bits() & !$sign) | (sign.to_bits() & $sign))
+            }
+            pub const fn recip(self) -> Self { 1.0 / self }
             pub const fn abs(self) -> Self { Self::from_bits(self.to_bits() & !$sign) }
             /// Ignore one NaN; for equal values (including signed zeros),
             /// return an input as Rust's minimumNumber contract allows.

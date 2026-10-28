@@ -4,6 +4,12 @@ use crate::alloc_crate::vec::Vec;
 pub struct VecDeque<T> { slots: Vec<Option<T>>, head: usize, len: usize }
 impl<T> VecDeque<T> {
     pub const fn new() -> Self { Self { slots: Vec::new(), head: 0, len: 0 } }
+    pub fn with_capacity(capacity: usize) -> Self {
+        let mut slots = Vec::with_capacity(capacity);
+        slots.resize_with(capacity, || None);
+        Self { slots, head: 0, len: 0 }
+    }
+    pub fn capacity(&self) -> usize { self.slots.len() }
     pub fn len(&self) -> usize { self.len }
     pub fn is_empty(&self) -> bool { self.len == 0 }
     fn grow(&mut self) {

@@ -139,3 +139,20 @@ Current bounded APIs reject aggregate volatile accesses and lifetime-bearing
 GAT equality arguments. SHA helpers use scalar implementations, not accelerated
 instructions. `hint::spin_loop` currently uses a no-op hint fallback; atomics
 still supply synchronization.
+
+
+## API and array-length follow-up
+
+The full-only audit `out/keel-backend-readiness/16654` records zero input,
+syntax and HIR diagnostics and 209 type diagnostics. All four recorded byte
+guards are clean. There are no remaining diagnostics for associated array
+lengths, array Borrow/Index/IndexMut, borrowed slice-to-array conversions,
+wrapping_offset, the added ordered collection/path APIs
+or the supplied numeric/error APIs. These groups were cleared through genuine
+library implementations and the existing checked anonymous-constant evaluator.
+
+Full MIR/codegen remain gated. The remaining inventory includes Serde lifetime
+and projection contracts, typenum normalization, unsupported union fields, PhantomPinned and constant pointer add.
+The pointer slice supports bounded constant raw slice construction; it does
+not claim general constant pointer arithmetic. Saved per-message/per-crate
+counts are in this audit's blocker-summary.json.

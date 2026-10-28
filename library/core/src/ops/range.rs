@@ -200,7 +200,7 @@ impl<T: crate::clone::Clone> Bound<&T> {
 }
 
 /// What every range is: a start and an end bound, each a value or none.
-pub trait RangeBounds<T> {
+pub trait RangeBounds<T: ?Sized> {
     /// Where the range starts.
     fn start_bound(&self) -> Bound<&T>;
     /// Where the range ends.
@@ -224,7 +224,7 @@ pub trait RangeBounds<T> {
     }
 }
 
-impl<T> RangeBounds<T> for RangeFull {
+impl<T: ?Sized> RangeBounds<T> for RangeFull {
     fn start_bound(&self) -> Bound<&T> {
         Unbounded
     }
@@ -285,5 +285,14 @@ impl<T> RangeBounds<T> for (Bound<T>, Bound<T>) {
     }
     fn end_bound(&self) -> Bound<&T> {
         self.1.as_ref()
+    }
+}
+
+impl<T: ?Sized> RangeBounds<T> for (Bound<&T>, Bound<&T>) {
+    fn start_bound(&self) -> Bound<&T> {
+        match self.0 { Included(value) => Included(value), Excluded(value) => Excluded(value), Unbounded => Unbounded }
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        match self.1 { Included(value) => Included(value), Excluded(value) => Excluded(value), Unbounded => Unbounded }
     }
 }

@@ -239,6 +239,12 @@ impl<T> *const T {
         (self as usize).wrapping_sub(count.wrapping_mul(size_of::<T>())) as *const T
     }
 
+    /// Offsets by `count` elements, wrapping the address space.
+    /// The result need not be in bounds; accessing it still requires validity.
+    pub fn wrapping_offset(self, count: isize) -> *const T {
+        self.wrapping_add(count as usize)
+    }
+
     /// How many values `origin` is before the pointer.
     pub unsafe fn offset_from(self, origin: *const T) -> isize {
         ((self as usize).wrapping_sub(origin as usize) as isize) / (size_of::<T>() as isize)
@@ -345,6 +351,12 @@ impl<T> *mut T {
     /// [`Self::sub`], for any `count`.
     pub fn wrapping_sub(self, count: usize) -> *mut T {
         (self as usize).wrapping_sub(count.wrapping_mul(size_of::<T>())) as *mut T
+    }
+
+    /// Offsets by `count` elements, wrapping the address space.
+    /// The result need not be in bounds; accessing it still requires validity.
+    pub fn wrapping_offset(self, count: isize) -> *mut T {
+        self.wrapping_add(count as usize)
     }
 
     /// How many values `origin` is before the pointer.

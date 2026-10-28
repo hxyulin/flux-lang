@@ -41,6 +41,13 @@ impl fmt::Debug for FromUtf8Error {
     }
 }
 
+impl fmt::Display for FromUtf8Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.error, f)
+    }
+}
+impl core::error::Error for FromUtf8Error {}
+
 impl String {
     pub fn into_boxed_str(self) -> crate::boxed::Box<str> {
         let bytes = self.into_bytes().into_boxed_slice();
@@ -49,7 +56,7 @@ impl String {
         unsafe { crate::boxed::Box::from_raw(crate::boxed::Box::into_raw(bytes) as *mut str) }
     }
     /// An empty string, which allocates nothing yet.
-    pub fn new() -> String {
+    pub const fn new() -> String {
         String { vec: Vec::new() }
     }
 

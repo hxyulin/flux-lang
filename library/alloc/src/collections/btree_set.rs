@@ -11,6 +11,7 @@ impl<T> BTreeSet<T> {
     pub const fn new() -> Self { Self { map: BTreeMap::new() } }
     pub fn len(&self) -> usize { self.map.len() }
     pub fn is_empty(&self) -> bool { self.map.is_empty() }
+    pub fn clear(&mut self) { self.map.clear(); }
     pub fn iter(&self) -> Iter<'_, T> { Iter { inner: self.map.iter() } }
     pub fn contains<Q: ?Sized>(&self, value: &Q) -> bool
     where T: Borrow<Q> + Ord, Q: Ord {
@@ -18,6 +19,10 @@ impl<T> BTreeSet<T> {
     }
 }
 impl<T: Ord> BTreeSet<T> {
+    pub fn remove<Q: ?Sized>(&mut self, value: &Q) -> bool
+    where T: Borrow<Q>, Q: Ord { self.map.remove(value).is_some() }
+    pub fn pop_first(&mut self) -> Option<T> { self.map.pop_first().map(|(key, _)| key) }
+    pub fn retain<F: FnMut(&T) -> bool>(&mut self, mut f: F) { self.map.retain(|key, _| f(key)); }
     pub fn insert(&mut self, value: T) -> bool { self.map.insert(value, ()).is_none() }
 }
 impl<T> Default for BTreeSet<T> {

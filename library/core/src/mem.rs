@@ -182,7 +182,7 @@ impl<T> MaybeUninit<T> {
     }
 
     /// The value, which must have been written.
-    pub unsafe fn assume_init(self) -> T {
+    pub const unsafe fn assume_init(self) -> T {
         ManuallyDrop::into_inner(self.value)
     }
 

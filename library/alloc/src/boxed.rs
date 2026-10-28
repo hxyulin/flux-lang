@@ -260,3 +260,10 @@ impl<T: ?Sized + core::hash::Hash> core::hash::Hash for Box<T> {
         (**self).hash(state);
     }
 }
+
+impl<T: ?Sized> core::convert::AsRef<T> for Box<T> {
+    fn as_ref(&self) -> &T { self }
+}
+impl<T: ?Sized> core::convert::AsMut<T> for Box<T> {
+    fn as_mut(&mut self) -> &mut T { self }
+}

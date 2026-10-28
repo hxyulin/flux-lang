@@ -62,6 +62,50 @@ impl Path {
         }
         if !any || last_kind == 0 { None } else { Some(Path::new(OsStr::from_unix_bytes(&bytes[..parent_end]))) }
     }
+    /// Returns the final normal component, ignoring trailing separators and `.`.
+    pub fn file_name(&self) -> Option<&OsStr> {
+        let bytes = self.inner.as_encoded_bytes();
+        let mut position = 0;
+        let mut last = None;
+        while let Some((kind, start, end)) = component(bytes, &mut position) {
+            last = if kind == 3 { Some((start, end)) } else { None };
+        }
+        last.map(|(start, end)| OsStr::from_unix_bytes(&bytes[start..end]))
+    }
+    pub fn with_file_name<S: AsRef<OsStr>>(&self, file_name: S) -> PathBuf {
+        let mut result = match self.file_name() {
+            Some(_) => self.parent().unwrap().to_path_buf(),
+            None => self.to_path_buf(),
+        };
+        result.push(Path::new(file_name.as_ref()));
+        result
+    }
+    /// Replaces the final extension, preserving all preceding path bytes.
+    ///
+    /// # Panics
+    /// Panics if the extension contains a path separator.
+    pub fn with_extension<S: AsRef<OsStr>>(&self, extension: S) -> PathBuf {
+        let extension = extension.as_ref();
+        let bytes = self.inner.as_encoded_bytes();
+        // Copy through the old extension's dot, then use the same mutation
+        // operation as PathBuf. This also preserves Rust's component handling
+        // when the shortened filename becomes a parent component.
+        let mut end = bytes.len();
+        if let Some(name) = self.file_name() {
+            let name = name.as_encoded_bytes();
+            let mut at = name.len();
+            while at > 0 {
+                at -= 1;
+                if name[at] == b'.' {
+                    if at != 0 { end -= name.len() - at - 1; }
+                    break;
+                }
+            }
+        }
+        let mut result = PathBuf { inner: OsString { bytes: bytes[..end].to_vec() } };
+        result.set_extension(extension);
+        result
+    }
     pub fn strip_prefix<P: AsRef<Path>>(&self, base: P) -> Result<&Path, StripPrefixError> {
         let bytes = self.inner.as_encoded_bytes();
         let base = base.as_ref().inner.as_encoded_bytes();
@@ -94,6 +138,32 @@ impl PathBuf {
     pub fn new() -> Self { Self::default() }
     pub fn as_path(&self) -> &Path { Path::new(&self.inner) }
     pub fn into_os_string(self) -> OsString { self.inner }
+    /// Changes the final filename's extension, returning false without a filename.
+    ///
+    /// # Panics
+    /// Panics if the extension contains a path separator.
+    pub fn set_extension<S: AsRef<OsStr>>(&mut self, extension: S) -> bool {
+        let extension = extension.as_ref().as_encoded_bytes();
+        assert!(!extension.contains(&b'/'), "extension cannot contain path separators");
+        let Some(name) = self.file_name() else { return false; };
+        let name = name.as_encoded_bytes();
+        let mut stem_len = name.len();
+        let mut at = name.len();
+        while at > 0 {
+            at -= 1;
+            if name[at] == b'.' {
+                if at != 0 { stem_len = at; }
+                break;
+            }
+        }
+        let bytes = self.inner.as_encoded_bytes();
+        let mut position = 0;
+        let mut name_start = 0;
+        while let Some((_, start, _)) = component(bytes, &mut position) { name_start = start; }
+        self.inner.bytes.truncate(name_start + stem_len);
+        if !extension.is_empty() { self.inner.bytes.push(b'.'); self.inner.bytes.extend_from_slice(extension); }
+        true
+    }
     pub fn push<P: AsRef<Path>>(&mut self, path: P) {
         let path = path.as_ref();
         let bytes = path.inner.as_encoded_bytes();

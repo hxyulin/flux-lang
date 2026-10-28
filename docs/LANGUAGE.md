@@ -121,7 +121,8 @@ reported as "not supported yet":
   without lifetimes (`&T`, `&'a mut T`), raw pointers (`*const T`, `*mut T`),
   arrays (`[T; N]`, whose length is a constant expression of type
   `usize`: `[u8; 4]`, `[u8; N]`, `[u8; m::N]`, `[u8; N * 2 + 1]`,
-  `[u8; double(N)]`, `[u8; Self::CAP]`, or a const parameter), slices
+  `[u8; double(N)]`, `[u8; Self::CAP]`, `[u8; <Concrete as Trait>::CAP]`,
+  `[u8; Container::<u32>::CAP]`, or a const parameter), slices
   and `str` behind
   pointers (`&[T]`, `&mut [T]`, `&str`, `*const [u8]`),
   `core::ffi::CStr` behind a reference, and `_` inside bodies (`let p:
@@ -410,6 +411,10 @@ Structs, enums, tuples, arrays and slices cannot be passed to C yet.
 
 An array's length is part of its type: `[i32; 3]` and `[i32; 2]` differ
 ("expected an array with a size of 3, found one with a size of 2").
+Concrete associated constants, including trait-qualified paths and constants of
+concrete generic impls, use the same evaluator as arithmetic, blocks and const
+function calls. These are stable Rust const expressions, not generic const
+expressions such as `[u8; N + 1]` or `[u8; T::CAP]`.
 A length written as a constant is evaluated while types are checked,
 by the same evaluator as other constants, so its errors (E0080, a
 cycle) stop type checking, as in rustc. A repeat expression's value
@@ -1548,3 +1553,27 @@ Direct file builds do not discover host artifacts. Unsupported hygiene and token
 representations produce diagnostics rather than silently changing expansion
 semantics. See the [driver contract](../crates/flux-cli/README.md#cargo-backed-source-builds)
 for the exact toolchain and host-process restrictions.
+
+
+### Backend library API additions
+
+Raw pointers provide runtime `wrapping_offset`. Arrays implement `Borrow<[T]>`
+and `BorrowMut<[T]>`, generic Index/IndexMut, and shared/mutable slice-to-array
+reference TryFrom conversions without a Copy bound. Slice `as_chunks` and `as_chunks_mut` return fixed-array
+chunks and a remainder, and reject zero chunk sizes. Constant raw slice
+construction accepts represented, correctly typed array/slice storage; it does
+not enable arbitrary constant pointer arithmetic or manufacture valid references
+from integer addresses.
+
+All twelve signed and unsigned `NonZero` integer wrappers provide checked and
+unchecked construction, value access, formatting and integer conversions. Their
+layouts reserve zero as a niche, and constant construction validates that range.
+Float primitives provide const `copysign` and `recip`. `String::new` is const;
+`FromUtf8Error` implements Display and Error; Box implements AsRef/AsMut; Arc
+accepts owned boxes of sized values, slices and str. Fuse implements Debug, and
+VecDeque supports initial capacity.
+
+Ordered maps provide retain, borrowed-key ranges, into_values, last_key_value and
+clear. Ordered sets provide retain, remove, pop_first and clear. Unix paths
+provide file_name, with_file_name and with_extension using their byte component
+semantics. These APIs retain their allocation, ownership and panic contracts.
