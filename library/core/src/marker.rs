@@ -96,3 +96,12 @@ impl<T: ?Sized> crate::cmp::Ord for PhantomData<T> {
         crate::cmp::Ordering::Equal
     }
 }
+
+/// Types whose values may move after being pinned.
+#[lang = "unpin"]
+pub trait Unpin {}
+
+/// A zero-sized marker that prevents structural `Unpin` propagation.
+#[lang = "phantom_pinned"]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct PhantomPinned;

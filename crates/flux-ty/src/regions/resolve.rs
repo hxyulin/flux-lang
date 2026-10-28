@@ -1023,6 +1023,8 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
         );
         walker.names = all_names.iter().map(|n| n.name).collect();
         walker.self_regions = Some(&self_regions);
+        walker.scope.self_ty = Some(self_ty);
+        walker.self_projection_owner = trait_ref.map(|tr| (tr.trait_, trait_lifetimes.clone()));
         walker.elided = Elided::Missing(None);
         let mut type_selections = Vec::new();
         let types: Box<[(Symbol, Box<[Region]>)]> = imp
@@ -2204,8 +2206,8 @@ fn projection_regions(
     let Some(args) = args.filter(|a| a.parenthesized) else {
         return walker.regions(&binding.ty, projection.ty);
     };
-    let late_names = enter_fn_binder(walker, args, projection.alias.args.get(1).copied());
     let outer = std::mem::replace(&mut walker.elided, Elided::Is(Region::Erased));
+    let late_names = enter_fn_binder(walker, args, projection.alias.args.get(1).copied());
     let mut table = walker.regions(&binding.ty, projection.ty).to_vec();
     if let (Some(input), Some(&input_ty)) = (args.types.first(), projection.alias.args.get(1)) {
         // Count distinct input lifetimes, not slots: `&dyn Trait`

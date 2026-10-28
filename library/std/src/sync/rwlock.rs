@@ -12,16 +12,16 @@ use super::{LockResult, PoisonError};
 
 const WRITE: usize = usize::MAX;
 
-pub struct RwLock<T> {
+pub struct RwLock<T: ?Sized> {
     state: AtomicUsize,
     poisoned: AtomicUsize,
     value: UnsafeCell<T>,
 }
 
 // SAFETY: moving the lock transfers ownership of T.
-unsafe impl<T: Send> Send for RwLock<T> {}
+unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
 // SAFETY: the state permits either shared reads or one exclusive writer.
-unsafe impl<T: Send + Sync> Sync for RwLock<T> {}
+unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 
 impl<T> RwLock<T> {
     pub const fn new(value: T) -> RwLock<T> {
@@ -32,6 +32,16 @@ impl<T> RwLock<T> {
         }
     }
 
+    pub fn into_inner(self) -> LockResult<T> {
+        if self.is_poisoned() {
+            Err(PoisonError::new(self.value.into_inner()))
+        } else {
+            Ok(self.value.into_inner())
+        }
+    }
+}
+
+impl<T: ?Sized> RwLock<T> {
     pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
         loop {
             let state = self.state.load(Relaxed);
@@ -63,37 +73,29 @@ impl<T> RwLock<T> {
             Ok(self.value.get_mut())
         }
     }
-
-    pub fn into_inner(self) -> LockResult<T> {
-        if self.is_poisoned() {
-            Err(PoisonError::new(self.value.into_inner()))
-        } else {
-            Ok(self.value.into_inner())
-        }
-    }
 }
 
 impl<T: Default> Default for RwLock<T> {
     fn default() -> RwLock<T> { RwLock::new(T::default()) }
 }
 
-pub struct RwLockReadGuard<'a, T> {
+pub struct RwLockReadGuard<'a, T: ?Sized> {
     lock: &'a RwLock<T>,
     marker: PhantomData<*mut ()>,
 }
 
-pub struct RwLockWriteGuard<'a, T> {
+pub struct RwLockWriteGuard<'a, T: ?Sized> {
     lock: &'a RwLock<T>,
     panicking: bool,
     marker: PhantomData<*mut ()>,
 }
 
 // SAFETY: sharing either guard exposes only shared access to T.
-unsafe impl<T: Sync> Sync for RwLockReadGuard<'_, T> {}
+unsafe impl<T: ?Sized + Sync> Sync for RwLockReadGuard<'_, T> {}
 // SAFETY: sharing the write guard cannot mutate T without an exclusive borrow.
-unsafe impl<T: Sync> Sync for RwLockWriteGuard<'_, T> {}
+unsafe impl<T: ?Sized + Sync> Sync for RwLockWriteGuard<'_, T> {}
 
-impl<T> Deref for RwLockReadGuard<'_, T> {
+impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
         // SAFETY: the live reader count prevents exclusive access.
@@ -101,7 +103,7 @@ impl<T> Deref for RwLockReadGuard<'_, T> {
     }
 }
 
-impl<T> Deref for RwLockWriteGuard<'_, T> {
+impl<T: ?Sized> Deref for RwLockWriteGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
         // SAFETY: this guard holds the exclusive writer state.
@@ -109,18 +111,18 @@ impl<T> Deref for RwLockWriteGuard<'_, T> {
     }
 }
 
-impl<T> DerefMut for RwLockWriteGuard<'_, T> {
+impl<T: ?Sized> DerefMut for RwLockWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: this guard holds the writer state and is exclusively borrowed.
         unsafe { &mut *self.lock.value.get() }
     }
 }
 
-impl<T> Drop for RwLockReadGuard<'_, T> {
+impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) { self.lock.state.fetch_sub(1, Release); }
 }
 
-impl<T> Drop for RwLockWriteGuard<'_, T> {
+impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
         if !self.panicking && crate::thread::panicking() {
             self.lock.poisoned.store(1, Relaxed);

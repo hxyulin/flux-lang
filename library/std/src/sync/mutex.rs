@@ -10,16 +10,16 @@ use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 use super::{LockResult, PoisonError};
 
-pub struct Mutex<T> {
+pub struct Mutex<T: ?Sized> {
     locked: AtomicUsize,
     poisoned: AtomicUsize,
     value: UnsafeCell<T>,
 }
 
 // SAFETY: moving the mutex transfers ownership of T.
-unsafe impl<T: Send> Send for Mutex<T> {}
+unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
 // SAFETY: the atomic lock allows only one thread to access T at a time.
-unsafe impl<T: Send> Sync for Mutex<T> {}
+unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
 
 impl<T> Mutex<T> {
     pub const fn new(value: T) -> Mutex<T> {
@@ -30,6 +30,16 @@ impl<T> Mutex<T> {
         }
     }
 
+    pub fn into_inner(self) -> LockResult<T> {
+        if self.is_poisoned() {
+            Err(PoisonError::new(self.value.into_inner()))
+        } else {
+            Ok(self.value.into_inner())
+        }
+    }
+}
+
+impl<T: ?Sized> Mutex<T> {
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
         while self.locked.compare_exchange(0, 1, Acquire, Relaxed).is_err() {}
         let guard = MutexGuard {
@@ -55,14 +65,6 @@ impl<T> Mutex<T> {
             Ok(self.value.get_mut())
         }
     }
-
-    pub fn into_inner(self) -> LockResult<T> {
-        if self.is_poisoned() {
-            Err(PoisonError::new(self.value.into_inner()))
-        } else {
-            Ok(self.value.into_inner())
-        }
-    }
 }
 
 impl<T: Default> Default for Mutex<T> {
@@ -86,7 +88,7 @@ impl<T: core::fmt::Debug> core::fmt::Debug for Mutex<T> {
     }
 }
 
-pub struct MutexGuard<'a, T> {
+pub struct MutexGuard<'a, T: ?Sized> {
     lock: &'a Mutex<T>,
     panicking: bool,
     // Native lock guards must not move to another thread.
@@ -94,9 +96,9 @@ pub struct MutexGuard<'a, T> {
 }
 
 // SAFETY: sharing the guard exposes only shared access to T.
-unsafe impl<T: Sync> Sync for MutexGuard<'_, T> {}
+unsafe impl<T: ?Sized + Sync> Sync for MutexGuard<'_, T> {}
 
-impl<T> Deref for MutexGuard<'_, T> {
+impl<T: ?Sized> Deref for MutexGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
         // SAFETY: the guard owns the lock until its destructor releases it.
@@ -104,14 +106,14 @@ impl<T> Deref for MutexGuard<'_, T> {
     }
 }
 
-impl<T> DerefMut for MutexGuard<'_, T> {
+impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: the guard owns the lock and is exclusively borrowed.
         unsafe { &mut *self.lock.value.get() }
     }
 }
 
-impl<T> Drop for MutexGuard<'_, T> {
+impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
         if !self.panicking && crate::thread::panicking() {
             self.lock.poisoned.store(1, Relaxed);

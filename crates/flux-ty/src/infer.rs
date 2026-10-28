@@ -1036,6 +1036,18 @@ impl Ctx<'_> {
         {
             return;
         }
+        // A borrow may unsize a freshly constructed struct after its fields
+        // have been inferred. Do not turn the constructor's generic payload
+        // into an unsized value before inferring its arguments.
+        if let Some(&expected) = self.expected.get(expr)
+            && let (TyKind::Adt(a, _), TyKind::Adt(b, _)) =
+                (self.shallow(expected).kind(), self.shallow(ty).kind())
+            && a == b
+            && self.sigs.is_unsized(self.shallow(expected))
+            && !self.sigs.is_unsized(self.shallow(ty))
+        {
+            return;
+        }
         if let Some(&expected) = self.expected.get(expr)
             && self.can_unify(ty, expected)
         {

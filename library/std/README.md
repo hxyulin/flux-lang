@@ -11,7 +11,7 @@ The root exposes core's `any`, `arch`, `array`, `ascii`, `cell`, `char`, `clone`
 `ops`, `option`, `panic`, `ptr`, `result`, `slice` and `str`, and alloc's
 `alloc`, `borrow`, `boxed`, `fmt`, `prelude`, `string` and `vec`. Only the
 APIs actually implemented in those modules exist. `cell` includes the existing
-`Cell` and `RefCell` implementations, including sized borrow-guard dereferencing.
+`Cell` and `RefCell` implementations, including borrow guards over supported slice and str targets.
 `OnceCell<T>` supplies const `new`, `get`, `get_mut`, `set`, `get_or_init`, `take`,
 `into_inner`, Default, Clone, From and Debug. It is unsynchronized, Send when its
 payload is Send, and never Sync. Reentrant initialization panics; Flux panics abort.
@@ -108,12 +108,13 @@ core and alloc retain crate IDs 0 and 1. No rustc library metadata is loaded.
 and core's bounded atomic module. `OnceLock` supports static construction and
 single-winner initialization. `LazyLock` supports named functions and closures
 in statics, dereferencing and `force`.
-Sized `Mutex` and `RwLock` use acquire/release spin locks and guards that release
-on destruction. They expose lock results, poison errors, exclusive payload
-access and extraction. They do not promise fairness. The runtime aborts on panic;
+`Mutex` and `RwLock` use acquire/release spin locks and guards that release
+on destruction. Locking and exclusive access support slice and str payloads;
+construction and extraction still require sized payloads. They expose lock
+results and poison errors. They do not promise fairness. The runtime aborts on panic;
 poison behavior under unwinding is tested separately with rustc.
 Native contention tests use an audited C ABI bridge to call Flux-generated
-lock functions from host threads; this does not add Rust thread creation.
+lock functions from host threads.
 `Vec` and `Box` have Send/Sync implementations with element bounds.
 
 Floating math includes `mul_add`, `sqrt`, integral rounding and integer powers

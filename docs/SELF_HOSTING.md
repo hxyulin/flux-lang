@@ -282,6 +282,29 @@ inference and missing APIs still gate full backend MIR/codegen.
 `trait_argument_bounds` covers 45 rustc/MIR cases plus native borrowed reader
 execution off/on. The separate itoa fallback experiment remains unapplied.
 
+The integer-fallback and library/proof follow-up
+`out/keel-backend-readiness/69577` has zero input, syntax and HIR diagnostics
+and **6 type diagnostics**, down from 45. All saved input guards are clean.
+The backend core consumer still executes and matches rustc with optimization
+off and on; the full graph stops before MIR. Integer fallback now visits trait
+arguments as well as Self. RefCell, Mutex and RwLock accept unsized payloads and
+guards; PhantomPinned and structural Unpin distinguish payload ownership from
+movable references and heap handles. Alias-cycle detection separates qualified
+associated names from alias edges, and transitive Self bounds imply Sized.
+Selected associated-output bounds require an independent proof of their owning
+trait. Impl supertrait type proofs preserve caller equalities, and associated
+value signatures retain their owner lifetime namespace. Callback output elision
+enters its Fn binder before walking its inputs.
+
+The remaining type diagnostics are two non-const pointer `add` calls in
+hybrid-array, its named lifetime in a qualified body path, and three nominal
+lifetime uses hidden behind concrete IntoIterator projections in Serde fields.
+Pointer offsets need allocation-preserving constant evaluation. The lifetime
+cases need explicit occurrence rows; dropping their checks would hide missing
+borrow constraints. The focused supertrait/associated-value type tests do not
+claim support for every corresponding MIR declaration proof. `Pin` APIs are
+not supplied by the new marker support.
+
 The maintained `typenum_readiness` test compiles unchanged typenum 1.20.1 in its
 original edition 2018 with the resolved `const-generics` feature. Its consumer
 checks arithmetic projections, lengths and runtime subtraction/division/remainder.

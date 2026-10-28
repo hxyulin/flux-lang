@@ -445,3 +445,7 @@ impl From<crate::boxed::Box<str>> for Arc<str> {
         }
     }
 }
+
+// Moving the owner does not pin or move the separately allocated payload.
+impl<T: ?Sized> core::marker::Unpin for Arc<T> {}
+impl<T: ?Sized> core::marker::Unpin for Weak<T> {}

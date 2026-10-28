@@ -126,3 +126,13 @@ fn trait_argument_bounds() {
 fn trait_argument_integer_fallback() {
     support::oracle::compare_fixture("trait_argument_integer_fallback");
 }
+
+#[test]
+fn unsized_guards() {
+    support::oracle::compare_fixture("unsized_guards");
+}
+
+#[test]
+fn selected_output_bounds() {
+    support::oracle::compare_fixture("selected_output_bounds");
+}

@@ -497,6 +497,10 @@ impl Ctx<'_> {
         }
         match ty.kind() {
             TyKind::Alias(alias) => {
+                if self.normalizing.len() >= 128 {
+                    self.error(origin, "overflow evaluating associated type requirements");
+                    return Ty::ERROR;
+                }
                 // Known variables replaced, so that an alias met again
                 // through an `impl` block's fresh variables is the same.
                 let alias = alias.map_args(|a| {

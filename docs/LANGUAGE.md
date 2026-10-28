@@ -823,6 +823,10 @@ including their generic obligations; shared statics use the same Sync rules.
 Lifetime specialization/bounds in marker implementations and custom auto
 traits remain unsupported. Recursive structural proofs are conservatively
 depth-limited; no threading APIs are implied by these markers.
+`Unpin` also propagates structurally. `PhantomPinned` prevents that propagation;
+references, raw pointers, Box, Rc, Arc and Arc's Weak remain Unpin regardless of
+the payload. Owned fields and PhantomData retain their payload requirements.
+The marker support does not provide `Pin` APIs.
 
 Every program can use flux's own `core` library, which has the parts of
 Rust's that flux supports so far: the integer types' constants (`MIN`,
@@ -857,19 +861,21 @@ at once for integers, so a program's hasher gives rustc's hashes),
 a conflicting `borrow` or `borrow_mut` panics with rustc's message, at
 its caller; `Ref<T>` and `RefMut<T>` implement `Deref`, and `RefMut<T>`
 also implements `DerefMut`, with references tied to the borrowed guard;
-unsized guard targets remain unsupported; all of them, and `BorrowError` and `BorrowMutError`,
-are `Debug` as rustc writes them),
+slice and str guard targets are supported; guards implement Debug when their
+possibly unsized target does. Cells with supported Debug payloads, `BorrowError`
+and `BorrowMutError` also implement Debug),
 `core::cell::OnceCell<T>` supports const construction and runtime `get`,
 `get_mut`, `set`, `get_or_init`, `take` and `into_inner`, plus Default, Clone,
 From and Debug. It is Send when T is Send and is never Sync. Initializer panics
 do not publish a value; reentrant initialization panics without replacing the
 inner initializer's value. Flux runtime panics abort.
-`core::cell::UnsafeCell<T>` for sized payloads, with const `new` and runtime
-`get`, `get_mut`, and `into_inner`. It preserves payload size/alignment,
+`core::cell::UnsafeCell<T: ?Sized>` supports runtime `get` and `get_mut`,
+including slice/str payloads. Const `new` and runtime `into_inner` require sized
+payloads. It preserves payload size/alignment,
 suppresses niches, is invariant in `T`, and is Send when `T: Send`. Owned
 UnsafeCell borrowing during const evaluation and const accessors remain
 unsupported; represented genuine static addresses retain the earlier static
-borrow support. Unsizing is not provided.
+borrow support. Structural unsizing preserves slice metadata.
 `core::sync::atomic::{AtomicUsize, Ordering, fence}`, reexported through
 `std::sync::atomic`, provide const construction and runtime load/store,
 fetch_add/fetch_sub, compare_exchange/compare_exchange_weak, exclusive
@@ -900,13 +906,15 @@ element bounds, including unsized Box payloads.
 Named functions and closures work as static initializers. Closures in
 constants, statics and inline consts retain runtime bodies and ordinary capture
 and unsafe checks; construction and noncapturing pointer coercions are
-const-evaluated. Calling a closure during const evaluation remains rejected. `Mutex` and `RwLock` provide sized
-payloads, const construction, locking guards, `get_mut`, `into_inner`, `Default`,
-poison queries and clearing, plus `PoisonError` and `LockResult`. Locks spin with
+const-evaluated. Calling a closure during const evaluation remains rejected.
+`Mutex` and `RwLock` provide locking guards and `get_mut` for supported
+possibly unsized payloads, including slices and str. Const construction,
+`into_inner` and Default retain their sized payload requirements. The locks
+also provide poison queries and clearing, PoisonError and LockResult. Locks spin with
 acquire/release atomics; fairness and recursive locking are not provided.
 Guard destruction releases locks. Poisoning follows the abort-only runtime;
-the library implementations also have host-unwinding tests. Thread creation
-through the Rust standard library remains unsupported.
+the library implementations also have host-unwinding tests. Scoped thread
+creation is described below.
 `alloc::sync::{Arc, Weak}`, reexported through `std::sync`, support sized
 payloads with atomic reference counts: `Arc::new`, cloning, dereferencing,
 `downgrade`, `ptr_eq`, `Weak::new` and `upgrade`. Last-strong destruction and

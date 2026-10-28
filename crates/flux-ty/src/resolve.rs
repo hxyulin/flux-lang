@@ -209,12 +209,31 @@ fn maybe_unsized_with(
     match ty.kind() {
         TyKind::Param(p) => {
             unsized_params.get(p.index as usize) == Some(&true)
-                && !bounds.iter().any(|b| {
-                    b.self_ty == ty && items.traits[b.trait_ref.trait_].lang == Some(sym::sized)
-                })
+                && !bounds
+                    .iter()
+                    .any(|b| b.self_ty == ty && trait_requires_sized(items, b.trait_ref.trait_))
         }
         _ => ty.is_unsized(),
     }
+}
+
+/// A supertrait's Self bound applies even before its signature is installed.
+fn trait_requires_sized(items: &ItemTree, root: flux_hir::TraitId) -> bool {
+    let mut work = vec![root];
+    let mut seen = rustc_hash::FxHashSet::default();
+    while let Some(id) = work.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let data = &items.traits[id];
+        if data.lang == Some(sym::sized) {
+            return true;
+        }
+        for bound in data.supertraits.iter().chain(data.generics.predicates.iter().filter(|p| matches!(&p.ty, TypeRef::Path(path) if path.as_name() == Some(kw::SelfUpper))).map(|p| &p.bound)) {
+            if let (Some(target), _) = items.resolve_trait(data.loc.module, bound) { work.push(target); }
+        }
+    }
+    false
 }
 
 /// The types of the const parameters of an item in `owner` with its own
@@ -1872,6 +1891,12 @@ pub(super) fn alias_cycle(items: &ItemTree, alias: flux_hir::TypeAliasId) -> boo
     let mut found = false;
     visit_paths(&def.ty, &mut |path: &Path| {
         if !found
+            && path.qself.is_none()
+            && !(path.anchor == flux_hir::PathAnchor::Plain
+                && path
+                    .segments
+                    .first()
+                    .is_some_and(|name| def.generics.params.iter().any(|p| p.name == *name)))
             && let Ok(Resolved::Def(Def::TypeAlias(next))) =
                 items.resolve(def.loc.module, path, Ns::Types)
         {
@@ -1899,6 +1924,12 @@ pub(super) fn reaches_alias(
     let mut found = false;
     visit_paths(&def.ty, &mut |path: &Path| {
         if !found
+            && path.qself.is_none()
+            && !(path.anchor == flux_hir::PathAnchor::Plain
+                && path
+                    .segments
+                    .first()
+                    .is_some_and(|name| def.generics.params.iter().any(|p| p.name == *name)))
             && let Ok(Resolved::Def(Def::TypeAlias(next))) =
                 items.resolve(def.loc.module, path, Ns::Types)
         {
@@ -1917,9 +1948,24 @@ fn visit_paths(ty: &TypeRef, f: &mut impl FnMut(&Path)) {
                 for arg in args.types.iter() {
                     visit_paths(arg, f);
                 }
+                for binding in &args.bindings {
+                    visit_paths(&binding.ty, f);
+                }
             }
             if let Some(qself) = &path.qself {
                 visit_paths(&qself.ty, f);
+                for args in qself
+                    .trait_
+                    .iter()
+                    .flat_map(|path| path.args.iter().flatten())
+                {
+                    for arg in &args.types {
+                        visit_paths(arg, f);
+                    }
+                    for binding in &args.bindings {
+                        visit_paths(&binding.ty, f);
+                    }
+                }
             }
         }
         TypeRef::Tuple(elements) => elements.iter().for_each(|e| visit_paths(e, f)),

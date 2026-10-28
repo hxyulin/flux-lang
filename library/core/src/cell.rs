@@ -25,7 +25,7 @@ use crate::result::Result::{self, Err, Ok};
 /// Only construction is supported in constants; borrowing this storage and
 /// calling its accessors in constants are not supported yet.
 #[lang = "unsafe_cell"]
-pub struct UnsafeCell<T> {
+pub struct UnsafeCell<T: ?Sized> {
     value: T,
 }
 
@@ -35,6 +35,13 @@ impl<T> UnsafeCell<T> {
         UnsafeCell { value }
     }
 
+    /// Takes the value out of the cell.
+    pub fn into_inner(self) -> T {
+        self.value
+    }
+}
+
+impl<T: ?Sized> UnsafeCell<T> {
     /// A raw pointer to the value. Dereferencing it requires `unsafe`.
     /// Calling this in constants is not supported yet.
     pub fn get(&self) -> *mut T {
@@ -45,15 +52,10 @@ impl<T> UnsafeCell<T> {
     pub fn get_mut(&mut self) -> &mut T {
         &mut self.value
     }
-
-    /// Takes the value out of the cell.
-    pub fn into_inner(self) -> T {
-        self.value
-    }
 }
 
 /// A mutable place behind `value`, which a shared reference reaches.
-fn as_mut<T>(value: &T) -> &mut T {
+fn as_mut<T: ?Sized>(value: &T) -> &mut T {
     unsafe { &mut *(value as *const T as *mut T) }
 }
 
@@ -231,7 +233,7 @@ impl<T: Debug> Debug for RefCell<T> {
 /// any number of `Ref`s, or one `RefMut`. Like `Cell`, it hides its
 /// value's invalid values.
 #[lang = "ref_cell"]
-pub struct RefCell<T> {
+pub struct RefCell<T: ?Sized> {
     /// How many `Ref`s there are, or -1 for a `RefMut`.
     borrow: Cell<isize>,
     value: T,
@@ -248,6 +250,32 @@ impl<T> RefCell<T> {
         self.value
     }
 
+    /// Stores `t`, returning the old value; panics if it is lent.
+    #[track_caller]
+    pub fn replace(&self, t: T) -> T {
+        let mut r = self.borrow_mut();
+        mem::replace(r.value_mut(), t)
+    }
+
+    /// Replaces the value with `f` of it, returning the old one; panics
+    /// if it is lent.
+    #[track_caller]
+    pub fn replace_with<F: FnOnce(&mut T) -> T>(&self, f: F) -> T {
+        let mut r = self.borrow_mut();
+        let new = f(r.value_mut());
+        mem::replace(r.value_mut(), new)
+    }
+
+    /// Swaps the values of two cells; panics if either is lent.
+    #[track_caller]
+    pub fn swap(&self, other: &RefCell<T>) {
+        let mut a = self.borrow_mut();
+        let mut b = other.borrow_mut();
+        mem::swap(a.value_mut(), b.value_mut());
+    }
+}
+
+impl<T: ?Sized> RefCell<T> {
     /// A shared loan of the value; panics if it is lent mutably.
     #[track_caller]
     pub fn borrow(&self) -> Ref<'_, T> {
@@ -283,30 +311,6 @@ impl<T> RefCell<T> {
         }
         self.borrow.set(-1);
         Ok(RefMut { value: as_mut(&self.value), borrow: &self.borrow })
-    }
-
-    /// Stores `t`, returning the old value; panics if it is lent.
-    #[track_caller]
-    pub fn replace(&self, t: T) -> T {
-        let mut r = self.borrow_mut();
-        mem::replace(r.value_mut(), t)
-    }
-
-    /// Replaces the value with `f` of it, returning the old one; panics
-    /// if it is lent.
-    #[track_caller]
-    pub fn replace_with<F: FnOnce(&mut T) -> T>(&self, f: F) -> T {
-        let mut r = self.borrow_mut();
-        let new = f(r.value_mut());
-        mem::replace(r.value_mut(), new)
-    }
-
-    /// Swaps the values of two cells; panics if either is lent.
-    #[track_caller]
-    pub fn swap(&self, other: &RefCell<T>) {
-        let mut a = self.borrow_mut();
-        let mut b = other.borrow_mut();
-        mem::swap(a.value_mut(), b.value_mut());
     }
 
     /// The value, mutably: the cell is borrowed mutably, so no one else
@@ -363,12 +367,12 @@ impl<T> From<T> for RefCell<T> {
 }
 
 /// A shared loan of a `RefCell`'s value, given back when dropped.
-pub struct Ref<'b, T> {
+pub struct Ref<'b, T: ?Sized> {
     value: &'b T,
     borrow: &'b Cell<isize>,
 }
 
-impl<'b, T> Ref<'b, T> {
+impl<'b, T: ?Sized> Ref<'b, T> {
     /// Another loan of the same value.
     pub fn clone(orig: &Ref<'b, T>) -> Ref<'b, T> {
         orig.borrow.set(orig.borrow.get() + 1);
@@ -376,7 +380,7 @@ impl<'b, T> Ref<'b, T> {
     }
 }
 
-impl<'b, T> Deref for Ref<'b, T> {
+impl<'b, T: ?Sized> Deref for Ref<'b, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -385,31 +389,31 @@ impl<'b, T> Deref for Ref<'b, T> {
 }
 
 /// The value's.
-impl<'b, T: Debug> Debug for Ref<'b, T> {
+impl<'b, T: ?Sized + Debug> Debug for Ref<'b, T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         self.value.fmt(f)
     }
 }
 
-impl<'b, T> Drop for Ref<'b, T> {
+impl<'b, T: ?Sized> Drop for Ref<'b, T> {
     fn drop(&mut self) {
         self.borrow.set(self.borrow.get() - 1);
     }
 }
 
 /// A mutable loan of a `RefCell`'s value, given back when dropped.
-pub struct RefMut<'b, T> {
+pub struct RefMut<'b, T: ?Sized> {
     value: &'b mut T,
     borrow: &'b Cell<isize>,
 }
 
-impl<'b, T> RefMut<'b, T> {
+impl<'b, T: ?Sized> RefMut<'b, T> {
     fn value_mut(&mut self) -> &mut T {
         &mut *self.value
     }
 }
 
-impl<'b, T> Deref for RefMut<'b, T> {
+impl<'b, T: ?Sized> Deref for RefMut<'b, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -417,20 +421,20 @@ impl<'b, T> Deref for RefMut<'b, T> {
     }
 }
 
-impl<'b, T> DerefMut for RefMut<'b, T> {
+impl<'b, T: ?Sized> DerefMut for RefMut<'b, T> {
     fn deref_mut(&mut self) -> &mut T {
         self.value_mut()
     }
 }
 
 /// The value's.
-impl<'b, T: Debug> Debug for RefMut<'b, T> {
+impl<'b, T: ?Sized + Debug> Debug for RefMut<'b, T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         (*self.value).fmt(f)
     }
 }
 
-impl<'b, T> Drop for RefMut<'b, T> {
+impl<'b, T: ?Sized> Drop for RefMut<'b, T> {
     fn drop(&mut self) {
         self.borrow.set(0);
     }

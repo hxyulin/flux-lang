@@ -267,3 +267,6 @@ impl<T: ?Sized> core::convert::AsRef<T> for Box<T> {
 impl<T: ?Sized> core::convert::AsMut<T> for Box<T> {
     fn as_mut(&mut self) -> &mut T { self }
 }
+
+// Moving the owner does not pin or move the separately allocated payload.
+impl<T: ?Sized> core::marker::Unpin for Box<T> {}

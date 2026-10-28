@@ -85,11 +85,19 @@ fn selected_impl_projection_types_match_rustc() {
         );
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
         let typed = flux_mir::check_file(&hir);
-        assert!(
-            typed.diagnostics.is_empty(),
-            "{name}: {:?}",
-            typed.diagnostics
-        );
+        if !typed.diagnostics.is_empty() {
+            assert!(!accepts, "{name}: {:?}", typed.diagnostics);
+            assert!(
+                typed
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.message.starts_with("the trait bound `")
+                        && d.message.ends_with("is not satisfied")),
+                "{name}: {:?}",
+                typed.diagnostics
+            );
+            continue;
+        }
         let mir = flux_mir::build_file(&hir, &typed);
         assert_eq!(
             mir.diagnostics.is_empty(),

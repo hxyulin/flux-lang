@@ -8,7 +8,7 @@ pub mod rust_2024 {
     pub use crate::iter::{
         DoubleEndedIterator, ExactSizeIterator, Extend, FromIterator, IntoIterator, Iterator,
     };
-    pub use crate::marker::{Copy, Send, Sized, Sync};
+    pub use crate::marker::{Copy, Send, Sized, Sync, Unpin};
     pub use crate::mem::{align_of, align_of_val, drop, size_of, size_of_val};
     pub use crate::ops::{Drop, Fn, FnMut, FnOnce};
     pub use crate::option::Option;
@@ -24,7 +24,7 @@ pub mod rust_2018 {
     pub use crate::convert::{AsMut, AsRef, From, Into};
     pub use crate::default::Default;
     pub use crate::iter::{DoubleEndedIterator, ExactSizeIterator, Extend, IntoIterator, Iterator};
-    pub use crate::marker::{Copy, Send, Sized, Sync};
+    pub use crate::marker::{Copy, Send, Sized, Sync, Unpin};
     pub use crate::mem::{align_of, align_of_val, drop, size_of, size_of_val};
     pub use crate::ops::{Drop, Fn, FnMut, FnOnce};
     pub use crate::option::Option;

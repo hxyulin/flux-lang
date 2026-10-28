@@ -879,6 +879,14 @@ impl SignatureImplProof<'_> {
         if stack.len() >= 32 {
             return false;
         }
+        if let Some(owner) = declared_alias_bound(self.sigs, goal) {
+            stack.push(goal);
+            let proven = self.holds(owner, stack);
+            stack.pop();
+            if proven {
+                return true;
+            }
+        }
         if self.select(goal, stack).is_some() {
             return true;
         }
@@ -1182,6 +1190,18 @@ pub fn in_env(sigs: &Signatures, env: &[Predicate], goal: Predicate) -> bool {
             goal.self_ty.kind(),
             TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Dynamic(_)
         ) && alias_bounds(sigs, env, goal.self_ty).contains(&goal))
+}
+
+// A declared output bound is usable only after independently proving that
+// the projection's receiver implements its owning trait.
+fn declared_alias_bound(sigs: &Signatures, goal: Predicate) -> Option<Predicate> {
+    let TyKind::Alias(alias) = goal.self_ty.kind() else {
+        return None;
+    };
+    let owner = alias_predicate(alias);
+    alias_bounds(sigs, &[owner], goal.self_ty)
+        .contains(&goal)
+        .then_some(owner)
 }
 
 /// What trait object `ty`, `d`, implements: its trait, with its
@@ -2097,6 +2117,14 @@ fn holds_at(
     if stack.len() > 256 {
         return false;
     }
+    if let Some(owner) = declared_alias_bound(sigs, goal) {
+        stack.push(goal);
+        let proven = holds_at(items, sigs, env, owner, stack);
+        stack.pop();
+        if proven {
+            return true;
+        }
+    }
     // Outside bodies, a parameter is taken to be sized.
     if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized) {
         return !sigs.is_unsized(goal.self_ty);
@@ -2173,7 +2201,7 @@ fn holds_at(
 pub(crate) fn is_auto_trait(items: &ItemTree, t: TraitId) -> bool {
     items.traits[t]
         .lang
-        .is_some_and(|l| matches!(l.as_str(), "send" | "sync"))
+        .is_some_and(|l| matches!(l.as_str(), "send" | "sync" | "unpin"))
 }
 
 /// Structural auto-trait obligations. Explicit impls replace structural
@@ -2200,6 +2228,11 @@ pub(crate) fn auto_trait_requirements(
         | TyKind::CStr
         | TyKind::FnDef(_)
         | TyKind::FnPtr(_) => Vec::new(),
+        TyKind::Ref(_, _) | TyKind::RawPtr(_, _)
+            if items.traits[t].lang.is_some_and(|l| l.as_str() == "unpin") =>
+        {
+            Vec::new()
+        }
         TyKind::Tuple(types) => types.to_vec(),
         TyKind::Array(ty, _) | TyKind::Slice(ty) => vec![ty],
         TyKind::Ref(m, ty) => {
@@ -2222,6 +2255,11 @@ pub(crate) fn auto_trait_requirements(
             if items.trait_impls.get(&t).into_iter().flatten().any(|&imp| {
                 matches!(sigs.impls.get(imp).map(|ty| ty.kind()), Some(TyKind::Adt(a, _)) if a.strukt == adt.strukt)
             }) {
+                return None;
+            }
+            if crate::is_lang_struct(items, adt.strukt, "phantom_pinned")
+                && items.traits[t].lang.is_some_and(|l| l.as_str() == "unpin")
+            {
                 return None;
             }
             // The direct interior-mutability primitives are never structurally Sync.
@@ -2858,11 +2896,36 @@ pub fn check_impls(
             let args: Vec<Ty> = std::iter::once(self_ty)
                 .chain(trait_ref.args.iter().copied())
                 .collect();
+            let mut projections = caller_owner_projections(sigs, Some(Owner::Impl(id)));
+            projections.extend(caller_supertrait_projections(sigs, &env));
+            let parameters =
+                crate::unsized_params(items, Some(Owner::Impl(id)), &Generics::default());
+            let proof = SignatureImplProof {
+                items,
+                sigs,
+                env: env
+                    .iter()
+                    .map(|&p| SignatureImplProof::normalize(items, sigs, &projections, p))
+                    .collect(),
+                memberships: &env,
+                projections,
+                unsized_params: &parameters,
+                depth: std::cell::Cell::new(0),
+            };
             for sup in sigs.traits.get(t).map_or(&[][..], |s| &s.supertraits) {
                 // `trait Try: FromResidual<<Self as Try>::Residual>`
                 // names the block's own types.
-                let goal = normalize_predicate(items, sigs, sup.subst(&args).with_self(self_ty));
-                if !holds(items, sigs, &env, goal) {
+                let goal = sup.subst(&args).with_self(self_ty);
+                let goal = Predicate {
+                    self_ty: proof.normalize_ty(goal.self_ty, None),
+                    trait_ref: TraitRef {
+                        args: crate::ty::map_list(goal.trait_ref.args, |t| {
+                            proof.normalize_ty(t, None)
+                        }),
+                        ..goal.trait_ref
+                    },
+                };
+                if !proof.holds(goal, &mut Vec::new()) {
                     error(imp.self_range, unmet(items, goal));
                 }
             }

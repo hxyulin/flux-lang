@@ -219,6 +219,9 @@ impl<T: Clone> From<&[T]> for Rc<[T]> {
     }
 }
 
+// Moving the owner does not pin or move the separately allocated payload.
+impl<T: ?Sized> core::marker::Unpin for Rc<T> {}
+
 #[cfg(test)]
 mod tests {
     use super::Rc;
