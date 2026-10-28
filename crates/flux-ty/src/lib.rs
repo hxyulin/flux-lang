@@ -898,7 +898,7 @@ fn check_alias(
         },
         &mut errors,
     );
-    let ty = expand_alias(items, id, lens, &mut errors);
+    let ty = expand_alias(items, id, lens, Some(&sigs.trait_defaults), &mut errors);
     for (range, message) in errors {
         push(range, message);
     }
@@ -1754,7 +1754,13 @@ impl TypedFile {
         let lens = ArrayLens::new(&self.sigs.array_lens, &self.sigs.arg_tys);
         for (id, alias) in items.type_aliases.iter() {
             if items.in_main_crate(alias.loc.module) {
-                let ty = expand_alias(items, id, Some(&lens), &mut Vec::new());
+                let ty = expand_alias(
+                    items,
+                    id,
+                    Some(&lens),
+                    Some(&self.sigs.trait_defaults),
+                    &mut Vec::new(),
+                );
                 writeln!(out, "type {}{} = {ty}", alias.name, alias.generics).unwrap();
             }
         }
@@ -1797,8 +1803,14 @@ fn supported_union_field(
     // The depth bound also stops expanding generic cycles such as S<S<T>>.
     checked.insert(ty, false);
     let supported = match ty.kind() {
-        TyKind::Int(_) | TyKind::Bool => true,
-        TyKind::Tuple([]) => true,
+        TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool | TyKind::Char => true,
+        TyKind::Tuple(fields) => fields
+            .iter()
+            .all(|&field| supported_union_field(items, sigs, field, checked, depth + 1)),
+        // A raw pointer stores only its address. Pointee fields may be
+        // recursive and need no expansion; metadata and region slots still
+        // have to fit the region-free representation of this union subset.
+        TyKind::RawPtr(_, pointee) => regions::slots(items, ty) == 0 && !sigs.is_unsized(pointee),
         // Function pointers carry no borrowed value. Their parameter references
         // are late-bound; signature resolution rejects named lifetimes and
         // reference returns that would require tracking regions in the pointer.

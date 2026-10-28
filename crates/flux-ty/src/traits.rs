@@ -1610,6 +1610,19 @@ impl Normalizer<'_> {
                 if let Some(p) = self.env.iter().find(|p| p.alias == alias) {
                     return self.go(p.ty, depth + 1);
                 }
+                // Input normalization can change an environment key too,
+                // e.g. P<<W<T> as Select>::Out> and P<T>. Normalize only
+                // its inputs, never the constrained projection itself.
+                let env = self.env;
+                for p in env {
+                    if p.alias.trait_ == alias.trait_
+                        && p.alias.name == alias.name
+                        && p.ty != Ty::alias(p.alias)
+                        && p.alias.map_args(|ty| self.go(ty, depth + 1)) == alias
+                    {
+                        return self.go(p.ty, depth + 1);
+                    }
+                }
                 if let Some(ret) = closure_output(items, alias) {
                     return self.go(ret, depth + 1);
                 }
@@ -1730,14 +1743,15 @@ pub fn select_impl(
         .collect();
     let rigid_self = is_rigid(goal.self_ty);
     // Judging bounds normalizes their associated types, which selects
-    // blocks again: past a depth, as rustc's recursion limit, none.
+    // blocks again. A repeated goal cannot establish an inductive proof;
+    // growing goals retain the depth limit.
     thread_local! {
-        static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+        static ACTIVE: std::cell::RefCell<Vec<Predicate>> = const { std::cell::RefCell::new(Vec::new()) };
     }
-    if DEPTH.get() > 32 {
+    if ACTIVE.with_borrow(|active| active.len() > 32 || active.contains(&goal)) {
         return None;
     }
-    DEPTH.set(DEPTH.get() + 1);
+    ACTIVE.with_borrow_mut(|active| active.push(goal));
     // Selection needs only the number and index of eligible candidates.
     // Keep the header-matching and bounds-checking passes in their original
     // order: checking a bound can recursively select another impl.
@@ -1753,7 +1767,7 @@ pub fn select_impl(
             }
         }
     }
-    DEPTH.set(DEPTH.get() - 1);
+    ACTIVE.with_borrow_mut(|active| active.pop());
     let chosen = if definite_count == 1 {
         definite_index
     } else if !rigid_self && definite_count == 0 && judged_count == 1 {
@@ -1800,6 +1814,16 @@ fn impl_bounds(
 fn may_hold(items: &ItemTree, sigs: &Signatures, p: Predicate, depth: u32) -> Option<bool> {
     if holds(items, sigs, &[], p) {
         return Some(true);
+    }
+    // A concrete header can contain associated outputs introduced by another
+    // bound. Normalize those inputs after the direct proof, so generic and
+    // recursive proofs do not eagerly expand every candidate's projections.
+    let concrete = |ty: Ty| !ty.has_params() && !ty.has_infer() && !ty.has_opaques();
+    if concrete(p.self_ty) && p.trait_ref.args.iter().copied().all(concrete) {
+        let normalized = normalize_predicate(items, sigs, p);
+        if normalized != p && holds(items, sigs, &[], normalized) {
+            return Some(true);
+        }
     }
     let open = |t: Ty| t.has_params() || t.has_aliases() || t.has_infer();
     if !open(p.self_ty) && !p.trait_ref.args.iter().any(|&a| open(a)) {
@@ -2054,6 +2078,18 @@ fn holds_at(
     }
     if in_env(sigs, env, goal) {
         return true;
+    }
+    if env
+        .iter()
+        .any(|p| p.trait_ref.trait_ == goal.trait_ref.trait_)
+    {
+        let normalized = normalize_predicate(items, sigs, goal);
+        if env.iter().any(|&predicate| {
+            predicate.trait_ref.trait_ == goal.trait_ref.trait_
+                && normalize_predicate(items, sigs, predicate) == normalized
+        }) {
+            return true;
+        }
     }
     if let Some(coinductive) = auto_cycle(items, goal, stack) {
         return coinductive;

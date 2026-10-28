@@ -63,6 +63,11 @@ fn trait_projection_owners() {
 }
 
 #[test]
+fn union_pointer_fields() {
+    support::oracle::compare_fixture("union_pointer_fields");
+}
+
+#[test]
 fn repeat_autoref_promotion() {
     support::oracle::compare_fixture("repeat_autoref_promotion");
 }

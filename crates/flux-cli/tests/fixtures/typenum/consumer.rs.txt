@@ -1,0 +1,30 @@
+use typenum::{
+    Diff, Exp, Gcf, Integer, Length, Mod, N3, P5, Prod, Quot, Shleft, Shright, Sum, U2, U3, U4, U5,
+    U7, U12, U13, U18, Unsigned,
+};
+
+fn value<T: Unsigned>() -> u64 {
+    T::to_u64()
+}
+
+fn main() {
+    let values = [
+        value::<Sum<U2, U3>>(),
+        value::<Diff<U13, U5>>(),
+        value::<Prod<U7, U5>>(),
+        value::<Quot<U13, U5>>(),
+        value::<Mod<U13, U5>>(),
+        value::<Shleft<U13, U3>>(),
+        value::<Shright<U13, U2>>(),
+        value::<Gcf<U12, U18>>(),
+        value::<Exp<U3, U4>>(),
+        value::<Length<U13>>(),
+    ];
+    assert_eq!(values, [5, 8, 35, 2, 3, 104, 3, 6, 81, 4]);
+    let _: typenum::U8 = U13::new() - U5::new();
+    let _: typenum::U2 = U13::new() / U5::new();
+    let _: typenum::U3 = U13::new() % U5::new();
+    let signed = <Diff<N3, P5> as Integer>::to_i64();
+    assert_eq!(signed, -8);
+    println!("typenum {:?} {}", values, signed);
+}

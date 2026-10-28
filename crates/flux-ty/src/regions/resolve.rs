@@ -1993,7 +1993,10 @@ fn check_bound_wf(
     // Elaborating a trait bound may assume the trait's bounds on its
     // abstract Self. Bounds on the trait's other arguments remain obligations.
     for (predicate, regions) in predicates.iter().zip(traits) {
-        if !matches!(predicate.self_ty.kind(), TyKind::Param(_)) {
+        if !matches!(
+            predicate.self_ty.kind(),
+            TyKind::Param(_) | TyKind::Alias(_)
+        ) {
             continue;
         }
         let Some(declaration) = sigs.regions.traits.get(predicate.trait_ref.trait_) else {

@@ -20,6 +20,7 @@ these source graphs.
 | `arena_selfhost` | Complete unchanged arena crate, including owned, shared, layered and dropless arenas. |
 | `hashbrown_readiness` | Complete unchanged hashbrown 0.17.1, with default features disabled as requested by Flux. |
 | `interner_selfhost` | Complete unchanged interner with arena, hashbrown and rustc-hash sources, including native TLS and eight pthread workers. |
+| `typenum_readiness` | Original typenum 1.20.1 in edition 2018 with `const-generics`, arithmetic projections and runtime operators. |
 | `smallvec_readiness` | Unchanged smallvec 1.16.3 in its original edition 2018, using the workspace's resolved empty feature set. |
 | `hir_selfhost` | Complete unchanged HIR with arena, interner, syntax and dependency sources, original editions and resolved library features. |
 | `ty_selfhost` | Complete unchanged type checker and its nine-library source graph, with public inference and signature consumers. |
@@ -39,6 +40,7 @@ cargo test -p flux-cli --test typed_ast_readiness
 cargo test -p flux-cli --test hashbrown_readiness
 cargo test -p flux-cli --test interner_selfhost
 cargo test -p flux-cli --test smallvec_readiness
+cargo test -p flux-cli --test typenum_readiness
 cargo test -p flux-cli --test hir_selfhost
 cargo test -p flux-cli --test ty_selfhost
 cargo test -p flux-cli --test mir_selfhost
@@ -230,6 +232,23 @@ arguments and prove their selection against the header bounds. Ten broader
 Serde trait-declaration gates, two nested `Self` projection-owner occurrences,
 other outlives requirements, typenum normalization and union support still block
 the full graph. This audit also stops before full-graph MIR/codegen.
+
+The union/normalization follow-up `out/keel-backend-readiness/78346` has zero
+input, syntax and HIR diagnostics and 59 type diagnostics. All four byte guards
+pass. Typenum and union-field diagnostics are cleared. Remaining groups include
+Serde lifetime and alias contracts, crypto associated bounds, itoa inference,
+constant pointer arithmetic, PhantomPinned and missing library APIs. Full-graph
+MIR/codegen remain gated.
+
+The maintained `typenum_readiness` test compiles unchanged typenum 1.20.1 in its
+original edition 2018 with the resolved `const-generics` feature. Its consumer
+checks arithmetic projections, lengths and runtime subtraction/division/remainder.
+In `out/typenum-readiness/78705`, all compiler stages report zero diagnostics,
+both native optimization modes match rustc, and both byte guards pass. Projection
+normalization now canonicalizes environment inputs, preserves abstract caller
+outputs, and carries trait defaults through aliases. Nested region-free output
+bounds are proved before normalization; region-bearing selections retain their
+existing occurrence checks.
 
 CLI derives and the backend's remaining dependencies and generated outputs also
 belong to the complete source closure. Sourcegen and difftest are additional workspace targets,

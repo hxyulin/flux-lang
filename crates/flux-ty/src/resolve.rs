@@ -1820,7 +1820,7 @@ pub fn alias_type(
         }
     };
     fill_type_defaults(items, Def::TypeAlias(alias), &mut args, scope, errors);
-    let ty = expand_alias(items, alias, scope.lens, &mut Vec::new());
+    let ty = expand_alias(items, alias, scope.lens, scope.defaults, &mut Vec::new());
     if args.contains(&Ty::ERROR) {
         return Ty::ERROR;
     }
@@ -1838,6 +1838,7 @@ pub(crate) fn expand_alias(
     items: &ItemTree,
     alias: flux_hir::TypeAliasId,
     lens: Option<&ArrayLens<'_>>,
+    defaults: Option<&crate::traits::TraitDefaults>,
     errors: &mut Vec<(TextRange, String)>,
 ) -> Ty {
     let cycle = EXPANDING.with(|stack| {
@@ -1857,6 +1858,7 @@ pub(crate) fn expand_alias(
         generics: &generics,
         signature_of: Some("type aliases"),
         lens,
+        defaults,
         ..TypeScope::default()
     };
     let ty = resolve_type(items, def.loc.module, &def.ty, scope, def.ty_range, errors);

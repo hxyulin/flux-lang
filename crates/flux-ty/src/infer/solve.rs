@@ -520,7 +520,6 @@ impl Ctx<'_> {
                     self.normalizing.pop();
                     return normalized;
                 }
-                let self_ty = self.shallow(args[0]);
                 // The trait's arguments may pick the block too
                 // (`<u8 as TryFrom<?T>>::Error`).
                 let unknown = args
@@ -529,7 +528,12 @@ impl Ctx<'_> {
                     .any(|&a| self.has_unknown(a));
                 // A known type that does not implement the trait
                 // (reported where it is written).
-                if !self_ty.has_params() && !self_ty.has_aliases() && !unknown {
+                if !unknown
+                    && args
+                        .iter()
+                        .chain(alias.family_args)
+                        .all(|ty| !ty.has_params() && !ty.has_aliases() && !ty.has_opaques())
+                {
                     return Ty::ERROR;
                 }
                 if unknown {
@@ -600,11 +604,20 @@ impl Ctx<'_> {
             _ => {}
         }
         for p in candidates {
-            if p.alias.trait_ == alias.trait_
-                && p.alias.name == alias.name
-                && self.probe(|cx| cx.unify(Ty::alias(p.alias), target))
-            {
-                self.unify(Ty::alias(p.alias), target);
+            if p.alias.trait_ != alias.trait_ || p.alias.name != alias.name {
+                continue;
+            }
+            // Canonicalizing a tautology's inputs must not turn it into a
+            // rewrite back to the same projection under its original key.
+            if p.ty == Ty::alias(p.alias) {
+                continue;
+            }
+            let key = p.alias.map_args(|ty| {
+                let ty = self.known(ty);
+                crate::traits::normalize(self.items, self.sigs, &self.env_projections, ty)
+            });
+            if self.probe(|cx| cx.unify(Ty::alias(key), target)) {
+                self.unify(Ty::alias(key), target);
                 return Some(p.ty);
             }
         }
@@ -632,23 +645,28 @@ impl Ctx<'_> {
                 args: Ty::list(&alias.args[1..]),
             },
         };
-        // A type parameter (or rigid associated type) that a bound in
-        // scope says implements the trait: the bound decides, as rustc's
-        // where-clause candidates shadow `impl` blocks, so a blanket
-        // block does not apply to it.
-        if matches!(
-            self_ty.kind(),
-            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Dynamic(_)
-        ) {
-            let alias_bounds = self.alias_bounds(self_ty);
-            if self
-                .param_env
-                .iter()
-                .chain(&alias_bounds)
-                .any(|p| p.trait_ref.trait_ == alias.trait_ && p.self_ty == self_ty)
-            {
-                return None;
-            }
+        // A written where-clause candidate keeps its output abstract even
+        // for a compound Self such as UInt<U, B>. A merely matching blanket
+        // impl cannot replace it or supply that impl's unmet prerequisites.
+        let alias_bounds = self.alias_bounds(self_ty);
+        let bounds: Vec<_> = self
+            .param_env
+            .iter()
+            .chain(&alias_bounds)
+            .copied()
+            .filter(|p| p.trait_ref.trait_ == alias.trait_)
+            .collect();
+        let open = alias
+            .args
+            .iter()
+            .any(|ty| ty.has_params() || ty.has_aliases() || ty.has_infer())
+            || matches!(self_ty.kind(), TyKind::Opaque(_) | TyKind::Dynamic(_));
+        if open
+            && bounds
+                .into_iter()
+                .any(|p| self.probe(|cx| cx.unify_predicates(p, pred)))
+        {
+            return None;
         }
         let (items, sigs) = (self.items, self.sigs);
         let impls = sigs.impl_index.impls_for(items, alias.trait_, self_ty);
@@ -1896,7 +1914,13 @@ impl Ctx<'_> {
             let origin = self.source_map.types.get(ty).copied().unwrap_or_default();
             let count = items.type_aliases[alias].generics.len();
             let args: Vec<Ty> = (0..count).map(|_| self.new_var(false, origin)).collect();
-            let template = crate::expand_alias(items, alias, Some(&self.lens), &mut Vec::new());
+            let template = crate::expand_alias(
+                items,
+                alias,
+                Some(&self.lens),
+                Some(&self.sigs.trait_defaults),
+                &mut Vec::new(),
+            );
             return template.subst(&args);
         }
         self.resolve_type_ref(ty)

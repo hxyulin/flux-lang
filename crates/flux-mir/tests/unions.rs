@@ -184,7 +184,7 @@ fn aggregate_union_rejections() {
             "this union field type is not supported yet",
         ),
         (
-            "union U { a: (u32, u32) } fn main() {}",
+            "union U { a: (u32, &'static u32) } fn main() {}",
             "this union field type is not supported yet",
         ),
         (
@@ -299,13 +299,25 @@ fn concrete_copy_union_fields_match_rustc_boundary() {
             true,
             Some("this union field type is not supported yet"),
         ),
+        ("union U { pair: (u32, bool) } fn main() {}", true, None),
+        ("union U { pointer: *const u8 } fn main() {}", true, None),
         (
-            "union U { pair: (u32, bool) } fn main() {}",
+            "union U { number: f64, character: char } fn main() {}",
+            true,
+            None,
+        ),
+        (
+            "#[derive(Copy,Clone)] struct Node{next:*const Node} union U{node:Node,pointer:*mut Node} fn main(){}",
+            true,
+            None,
+        ),
+        (
+            "union U { pointer: *const [u8] } fn main() {}",
             true,
             Some("this union field type is not supported yet"),
         ),
         (
-            "union U { pointer: *const u8 } fn main() {}",
+            "union U { pointer: *const &'static u8 } fn main() {}",
             true,
             Some("this union field type is not supported yet"),
         ),

@@ -68,7 +68,9 @@ iterators support remaining views, Clone and Debug. Vec also supports
 `thread` exposes `panicking() -> bool` and native `LocalKey` storage through
 `thread_local!`. Initializers run once per thread, and POSIX thread-exit
 destructors mark a key inaccessible before dropping its value. `with` and
-`try_with` prevent callback references from escaping. Explicit, imported and
+`try_with` prevent callback references from escaping. RefCell keys also support
+`with_borrow` and `with_borrow_mut`, with the ordinary dynamic borrow checks.
+Explicit, imported and
 qualified std macro paths are supported. `panicking()` returns false. Flux's existing panic runtime
 prints the panic and calls C's abort, without unwinding or executing
 unwind destructors. Ordinary executing code therefore observes false.

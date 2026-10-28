@@ -156,3 +156,18 @@ and projection contracts, typenum normalization, unsupported union fields, Phant
 The pointer slice supports bounded constant raw slice construction; it does
 not claim general constant pointer arithmetic. Saved per-message/per-crate
 counts are in this audit's blocker-summary.json.
+
+
+## Union and normalization follow-up
+
+The full-only audit `out/keel-backend-readiness/78346` records zero input,
+syntax and HIR diagnostics and 59 type diagnostics. All four byte guards pass.
+Typenum has no remaining diagnostics, and the union-field restriction group is
+cleared by concrete tuple, float, char and thin raw-pointer fields. Generic,
+reference-bearing and wide-pointer unions remain explicitly unsupported.
+
+The separate maintained `typenum_readiness` harness proves unchanged typenum
+1.20.1 with the actual `const-generics` feature through native execution against
+rustc, off/on. Full backend MIR/codegen still wait on Serde lifetime/alias
+contracts, crypto associated bounds, itoa inference and missing library APIs.
+This audit does not establish a complete compiler bootstrap.

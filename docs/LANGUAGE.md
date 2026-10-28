@@ -1406,8 +1406,8 @@ legacy const expressions are explicitly rejected. The trailing argument is
 never evaluated at runtime. Explicit turbofish calls, parenthesized callees
 and function values retain the modern signature and its safety rules.
 
-Unions support signed/unsigned integers, bool, unit, function pointers, fixed
-arrays, concrete Copy structs, enums and nested unions whose stored fields
+Unions support signed/unsigned integers, floats, char, bool, tuples, function
+pointers, thin raw pointers, fixed arrays, concrete Copy structs, enums and nested unions whose stored fields
 recursively contain only those types, with default/`repr(C)`
 layout, Copy/Clone and whole-value moves. Fields share storage at offset
 zero; size is the largest field size rounded to maximum alignment, and no
@@ -1416,7 +1416,9 @@ require an initialized mutable union, and borrows of different fields overlap.
 Copy/Clone copy storage without reading inactive fields or calling field Clone
 implementations; fields have no implicit destructors. Struct type/const
 arguments must be fully resolved, and Copy is checked through the trait solver.
-Generic union declarations, nonempty tuples, stored references/raw pointers,
+Thin raw pointers are storage boundaries; their pointees need not be Copy.
+Pointers whose types retain lifetime slots, including pointers to references,
+and wide pointers remain unsupported. Generic union declarations, stored references,
 patterns, constant union storage, other derives/representation hints and field reinitialization after
 a move remain explicitly unsupported. Whole-value assignment can initialize
 or reinitialize a union; type-only size/alignment queries are supported.
@@ -1511,7 +1513,8 @@ The embedded `std` facade allows paths such as `std::fmt`,
 `std::mem`, `std::ops::Index` and `std::vec::Vec` to name the original
 `core`/`alloc` definitions. `thread::panicking()` returns false because Flux
 aborts without unwinding. Native `thread_local!` storage supports `LocalKey`
-access and thread-exit destruction through POSIX TLS. Qualified and imported
+access and thread-exit destruction through POSIX TLS. RefCell keys provide
+`with_borrow` and `with_borrow_mut`; their callback borrows cannot escape. Qualified and imported
 macro calls work, including explicit std imports in no_std crates. Callback
 borrows cannot escape, and destroyed keys reject access. Scoped native threads
 support borrowed closures through `thread::scope`, `Scope::spawn` and consuming

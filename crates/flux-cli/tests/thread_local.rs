@@ -15,6 +15,16 @@ fn callback_abi_and_tls_lifetimes_match_rustc() {
     std::fs::create_dir_all(&directory).unwrap();
     for (name, body, accepts) in [
         (
+            "with_borrow_escape",
+            "thread_local!{static KEY:std::cell::RefCell<u32>=std::cell::RefCell::new(3);} fn check()->&'static u32{KEY.with_borrow(|value|value)}",
+            false,
+        ),
+        (
+            "with_borrow_mut_escape",
+            "thread_local!{static KEY:std::cell::RefCell<u32>=std::cell::RefCell::new(3);} fn check()->&'static mut u32{KEY.with_borrow_mut(|value|value)}",
+            false,
+        ),
+        (
             "c_item",
             "extern \"C\" fn f(x:u32)->u32{x} fn check(){let p:extern \"C\" fn(u32)->u32=f;assert_eq!(p(3),3);}",
             true,

@@ -317,3 +317,13 @@ impl<T: 'static> LocalKey<core::cell::Cell<T>> {
 impl<T: Copy + 'static> LocalKey<core::cell::Cell<T>> {
     pub fn get(&'static self) -> T { self.with(|cell| cell.get()) }
 }
+
+impl<T: 'static> LocalKey<core::cell::RefCell<T>> {
+    pub fn with_borrow<F: FnOnce(&T) -> R, R>(&'static self, f: F) -> R {
+        self.with(|cell| f(&cell.borrow()))
+    }
+
+    pub fn with_borrow_mut<F: FnOnce(&mut T) -> R, R>(&'static self, f: F) -> R {
+        self.with(|cell| f(&mut cell.borrow_mut()))
+    }
+}

@@ -1,10 +1,11 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static INITIALIZED: AtomicUsize = AtomicUsize::new(0);
 static DROPPED: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
     static VALUE: Cell<usize> = const { Cell::new(0) };
+    static NUMBERS: RefCell<Vec<usize>> = RefCell::new(Vec::new());
     static GUARD: Guard = {
         INITIALIZED.fetch_add(1, Ordering::SeqCst);
         Guard
@@ -22,6 +23,10 @@ unsafe extern "C" {
     fn pthread_join(thread: *mut u8, result: *mut *mut u8) -> i32;
 }
 extern "C" fn worker(arg: *mut u8) -> *mut u8 {
+    NUMBERS.with_borrow(|numbers| assert!(numbers.is_empty()));
+    let length = NUMBERS.with_borrow_mut(|numbers| { numbers.push(7); numbers.len() });
+    assert_eq!(length, 1);
+    NUMBERS.with_borrow(|numbers| NUMBERS.with_borrow(|again| assert_eq!(numbers, again)));
     VALUE.with(|v| assert_eq!(v.get(), 0));
     for _ in 0..5 {
         VALUE.with(|v| v.set(v.get() + 1));
@@ -37,6 +42,7 @@ fn local_declaration() {
     LOCAL.with(|v| assert_eq!(v.get(), 19));
 }
 fn main() {
+    NUMBERS.with_borrow_mut(|numbers| numbers.push(42));
     VALUE.with(|v| v.set(37));
     let mut threads = [std::ptr::null_mut(); 8];
     for thread in &mut threads {
@@ -51,5 +57,6 @@ fn main() {
     assert_eq!(INITIALIZED.load(Ordering::SeqCst), 8);
     assert_eq!(DROPPED.load(Ordering::SeqCst), 8);
     local_declaration();
+    NUMBERS.with_borrow(|numbers| assert_eq!(numbers.as_slice(), &[42]));
     println!("tls 8 8 37 19");
 }

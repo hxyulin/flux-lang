@@ -691,7 +691,7 @@ fn impl_header_match(
                     }
                 }
             }
-            if !cx.impl_aliases_known(value, &[]) {
+            if !cx.impl_aliases_known(value, &[]) && !cx.impl_aliases_proven(value, &[], &env, 0) {
                 return None;
             }
             let vars = cx.instantiate_sig(value, table, &mut { map }, &[], &[])?;
@@ -1076,6 +1076,22 @@ impl<'a> Cx<'a> {
         args: &[Ty],
         arg_vars: &[Vec<Var>],
     ) -> Option<ImplRegionGoal> {
+        self.impl_region_goal_with_proof(p, table, trait_regions, lifetimes, args, arg_vars, None)
+    }
+
+    /// Selected impl predicates may normalize nested, region-free projections
+    /// only after their selection requirements have been discharged.
+    #[allow(clippy::too_many_arguments)]
+    fn impl_region_goal_with_proof(
+        &mut self,
+        p: flux_ty::Predicate,
+        table: &[Region],
+        trait_regions: &TraitRefRegions,
+        lifetimes: &[Var],
+        args: &[Ty],
+        arg_vars: &[Vec<Var>],
+        proof: Option<(&[ImplRegionGoal], u32)>,
+    ) -> Option<ImplRegionGoal> {
         if trait_regions.lifetimes.len()
             != self.items.traits[p.trait_ref.trait_]
                 .generics
@@ -1133,7 +1149,9 @@ impl<'a> Cx<'a> {
             } else {
                 trait_regions.args.get(k - 1).map_or(&[][..], |t| t)
             };
-            if !self.impl_aliases_known(ty, args) {
+            if !self.impl_aliases_known(ty, args)
+                && !proof.is_some_and(|(env, depth)| self.impl_aliases_proven(ty, args, env, depth))
+            {
                 return None;
             }
             let instance = self.normalize(if args.is_empty() { ty } else { ty.subst(args) });
@@ -1428,6 +1446,27 @@ impl<'a> Cx<'a> {
             }
             return true;
         }
+        // A header's associated output carries its declaration bounds even
+        // when nested in another output. This path has no erased region
+        // inputs; region-bearing selections need their occurrence tables.
+        if let TyKind::Alias(alias) = goal.predicate.self_ty.kind()
+            && !flux_ty::regions::has_projection_inputs(alias)
+            && self.items.traits[alias.trait_]
+                .generics
+                .lifetimes
+                .is_empty()
+            && goal.lifetimes.is_empty()
+            && goal.bound.is_empty()
+            && goal.vars.iter().all(Vec::is_empty)
+            && alias.args.iter().all(|&ty| self.slots(ty) == 0)
+        {
+            let header: Vec<_> = env.iter().map(|g| g.predicate).collect();
+            if flux_ty::traits::alias_bounds(self.sigs, &header, goal.predicate.self_ty)
+                .contains(&goal.predicate)
+            {
+                return true;
+            }
+        }
         let selected =
             flux_ty::traits::select_impl(self.items, self.sigs, goal.predicate).or_else(|| {
                 // Erased selection cannot discharge a blanket impl's bounds
@@ -1523,7 +1562,7 @@ impl<'a> Cx<'a> {
             .iter()
             .enumerate()
         {
-            let Some(next) = self.impl_region_goal(
+            let Some(next) = self.impl_region_goal_with_proof(
                 p,
                 block.bound_selfs.get(k).map_or(&[], |t| t),
                 block
@@ -1533,6 +1572,7 @@ impl<'a> Cx<'a> {
                 &lifetimes,
                 &args,
                 &type_vars,
+                Some((env, depth + 1)),
             ) else {
                 return false;
             };
