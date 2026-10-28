@@ -406,7 +406,11 @@ impl<'a> Evaluator<'a> {
                 if let TyKind::Ref(_,target)=ty.kind(){self.check_static_address(*id,path,target,range)?;}
             }
             Value::DynPointer { pointer, concrete, mutable, .. } => {
-                self.check_escaping_borrows(pointer, Ty::new(TyKind::Ref(*mutable, *concrete)), range)?;
+                let source = match ty.kind() {
+                    TyKind::RawPtr(..) => Ty::raw_ptr(*mutable, *concrete),
+                    _ => Ty::new(TyKind::Ref(*mutable, *concrete)),
+                };
+                self.check_escaping_borrows(pointer, source, range)?;
             }
             Value::InteriorRef(_) => return Err(error(range,
                 "shared borrow of a temporary with interior mutability cannot escape constant evaluation".into())),
@@ -3027,13 +3031,51 @@ impl<'a> Evaluator<'a> {
                         _ => unreachable!(),
                     };
                     return match value {
-                        Value::DynPointer {pointer,concrete,..} => Ok(Value::DynPointer {pointer,concrete,object,mutable}),
-                        Value::Ref(_) | Value::Static(_) | Value::StaticPart {..} | Value::LocalRef {..} | Value::InteriorRef(_) => {
-                            let concrete=pointer_pointee(from).ok_or_else(||unsupported_view(range))?;
-                            if concrete.is_dyn(){return Err(unsupported_view(range));}
-                            Ok(Value::DynPointer {pointer:Arc::new(value),concrete,object,mutable})
+                        Value::DynPointer {
+                            pointer, concrete, ..
+                        } => Ok(Value::DynPointer {
+                            pointer,
+                            concrete,
+                            object,
+                            mutable,
+                        }),
+                        Value::Ref(_)
+                        | Value::Static(_)
+                        | Value::StaticPart { .. }
+                        | Value::LocalRef { .. }
+                        | Value::InteriorRef(_)
+                        | Value::PointerView { .. }
+                        | Value::PointerOffset { .. } => {
+                            let concrete =
+                                pointer_pointee(from).ok_or_else(|| unsupported_view(range))?;
+                            if concrete.is_dyn() {
+                                return Err(unsupported_view(range));
+                            }
+                            Ok(Value::DynPointer {
+                                pointer: Arc::new(value),
+                                concrete,
+                                object,
+                                mutable,
+                            })
                         }
-                        _=>Err(error(range,"trait objects from reinterpreted or raw addresses in constants are not supported yet".into()))
+                        Value::RawAddr(_) if matches!(to.kind(), TyKind::RawPtr(..)) => {
+                            let concrete =
+                                pointer_pointee(from).ok_or_else(|| unsupported_view(range))?;
+                            if concrete.is_dyn() {
+                                return Err(unsupported_view(range));
+                            }
+                            Ok(Value::DynPointer {
+                                pointer: Arc::new(value),
+                                concrete,
+                                object,
+                                mutable,
+                            })
+                        }
+                        _ => Err(error(
+                            range,
+                            "trait object pointer representation is not supported in constants"
+                                .into(),
+                        )),
                     };
                 }
                 if let Value::PointerOffset {

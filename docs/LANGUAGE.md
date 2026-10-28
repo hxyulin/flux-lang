@@ -620,6 +620,20 @@ such as `ArraySize<ArrayType<T> = [T; N]>`. Owner arguments and family arguments
 remain separate during selection and substitution. Lifetime-bearing equality
 arguments remain explicitly unsupported.
 
+MIR uses declared static bounds on associated outputs, including static bounds
+inherited through their output traits. Type/const-only family projections can
+outlive a region when their owner and every family type argument do. This proof
+requires region-free inputs; lifetime-bearing projection occurrences retain their
+separate region-table checks.
+
+Associated-output declaration bounds and inherited bounds use the captured inputs
+of the same owning trait occurrence. Impl-associated definitions are substitutions
+for signature and supertrait comparisons. Type-only equalities implied by original
+header bounds are available during these proofs; required equalities remain
+obligations. Selected impl prerequisites are checked before their associated values
+are used. Family-local where-equality proofs still require separate output-region
+mapping and retain an explicit unsupported diagnostic in this declaration path.
+
 Trait objects reject callable GATs. A family unavailable because of a `Self: Sized`
 bound, including one implied by a supertrait, is excluded from object requirements.
 Associated-family region inputs in function-pointer signatures remain explicitly
@@ -674,8 +688,11 @@ outlive it, a bound may only shorten (behind `&mut` too, as rustc's
 unsizing coercion allows), and a parameter's lifetime bound (`T:
 'static`) holds of a trait object if its bound does (E0310, E0521, as
 rustc reports them). Shared trait-object references in constants and statics
-retain concrete values, vtables and reachable methods; normal `Sync` and constant
-validity checks still apply. Boxed trait-object constant evaluation remains
+retain concrete values, vtables and reachable methods, including indexed views
+into named constant slices. Their original allocation and byte offset are retained.
+Raw trait-object constants can hold null or one-past data pointers without reading
+the pointee; references retain alignment, bounds and validity checks. Normal
+`Sync` and constant validity checks still apply. Boxed trait-object constant evaluation remains
 unsupported. References and trait objects in a trait object's generic arguments,
 references to trait objects cast to raw pointers and `dyn Any` remain restricted.
 A trait's crate may

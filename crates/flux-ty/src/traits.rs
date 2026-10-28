@@ -2029,9 +2029,12 @@ pub(crate) fn bind_by_projections(
             // The block for its own parameters: the parameters themselves.
             let ty = if alias == Ty::alias(p.alias) {
                 p.ty
-            } else if alias.has_params() || has_error(alias) {
+            } else if has_error(alias) {
                 continue;
             } else {
+                // Bound inputs may contain the caller's rigid parameters.
+                // They are values of this substitution, not unbound impl
+                // variables; e.g. IntoIter<T>::Item still normalizes to T.
                 normalize(items, sigs, &[], alias)
             };
             if matches!(ty.kind(), TyKind::Alias(_)) {
@@ -2050,19 +2053,7 @@ pub(crate) fn bind_by_projections(
 }
 
 fn has_error(ty: Ty) -> bool {
-    match ty.kind() {
-        TyKind::Error => true,
-        TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
-            list.iter().any(|&t| has_error(t))
-        }
-        TyKind::Alias(alias) => alias
-            .args
-            .iter()
-            .chain(alias.family_args)
-            .any(|&t| has_error(t)),
-        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => has_error(t),
-        _ => false,
-    }
+    ty.has_error()
 }
 
 /// Whether `goal` holds given `env`, the elaborated bounds in scope, in

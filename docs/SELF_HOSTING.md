@@ -329,18 +329,57 @@ All four byte guards pass. Hybrid-array's qualified reference call now records
 its written Self regions; Serde's concrete iterator fields substitute selected
 impl header and output region tables. Projection inputs retain invariance and
 implied outlives requirements, including when the selected result erases them.
-The complete graph now reaches full MIR checking, which reports **258 diagnostics**.
+That run reached full MIR checking and reported **258 diagnostics**.
 These include 120 unresolved associated-bound proofs, 63 unresolved associated
 projection proofs, and projection outlives and header-lifetime requirements.
 Crypto-common contributes 171 diagnostics, hybrid-array 27, Serde/serde_core 21,
 and itoa one; the remaining 38 are in the rest of the graph.
-Full-backend codegen and native execution have not been reached.
+That run did not reach full-backend codegen or native execution.
 The focused qualified-lifetime tests compare 24 cases with rustc, and the native
 fixture covers owned and shared iterator fields plus qualified reference calls
 with optimization off and on.
 The unchanged full Flux MIR source graph also passes again in
 `out/mir-selfhost/52937`: all four compiler-stage reports are zero, both native
 optimization modes match rustc, and both byte guards are clean.
+
+The MIR follow-up `out/keel-backend-readiness/14205` reduces the complete graph
+from 258 to **46 MIR diagnostics**, with zero input, syntax, HIR and type errors
+and all four byte guards clean. Associated outputs use their declared static
+bounds, including static requirements inherited through output trait bounds.
+Type/const-only family projections can use outlives facts about their owner and
+all family arguments when those inputs have no region slots. Projections with
+lifetime-bearing inputs still require their occurrence tables. Nested selection
+proofs discharge child projections before matching normalized outer inputs;
+this clears the crypto-common arithmetic declaration failures.
+That audit had 18 associated-projection lifetime failures,
+11 unresolved associated bounds, eight unresolved supertrait proofs, four
+unresolved projection proofs, three impl-signature mismatches and two ADT
+trait-lifetime failures. It stopped before full-backend codegen.
+The focused regressions compare fifteen output-outlives cases and six nested
+selection cases with rustc. Native off/on coverage includes borrowed owners,
+static outputs and generic array-family borrows. The typenum consumer also checks
+associated declarations using `Prod<U3, U2>` and `Prod<U13, U4>`.
+
+The full backend now passes MIR in `out/keel-backend-readiness/76539`, run with
+`FLUX_BACKEND_ONLY=full`: input, syntax, HIR, type and full MIR reports all contain
+zero diagnostics. All five byte-integrity guards pass, including the check before
+codegen. The run then stops in unoptimized codegen with twelve unsupported C ABI
+layout diagnostics in libc declarations. These concern nullable function-pointer
+callbacks and libc enums. No full-backend native execution is claimed.
+
+The final MIR fixes preserve each abstract associated output's owner and family
+input rows while proving its declaration bounds and supertraits. Impl definitions
+are substitutions when checking required equalities; required equalities are not
+assumptions. Original header bounds supply their type-only supertrait equalities.
+Selected RHS substitutions remain available after their lifetime requirements are
+proved, including when impl matching infers an iterator item containing a caller's
+rigid generic parameter. Declaration ADT checks walk normalized output types with
+their output rows. Forty focused rustc cases cover forwarding, signatures, family
+prerequisites, inherited equalities, repeated projections and rejection cases.
+The final constant-evaluation blocker was Keel's `PASSES` table: trait-object
+unsizing now preserves offsets into named constant slices, including function
+pointer fields. Nineteen const-object cases and native off/on tests cover indexed
+views, raw null/one-past pointers and rejection of invalid references.
 
 The maintained `typenum_readiness` test compiles unchanged typenum 1.20.1 in its
 original edition 2018 with the resolved `const-generics` feature. Its consumer

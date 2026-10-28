@@ -3,6 +3,16 @@
 mod support;
 
 #[test]
+fn associated_output_bounds() {
+    support::oracle::compare_fixture("associated_output_bounds");
+}
+
+#[test]
+fn associated_output_outlives() {
+    support::oracle::compare_fixture("associated_output_outlives");
+}
+
+#[test]
 fn aggregate_literal_promotion() {
     support::oracle::compare_fixture("aggregate_literal_promotion");
 }

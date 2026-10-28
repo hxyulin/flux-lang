@@ -102,6 +102,25 @@ impl<T> Unused for Never<T> {
 }
 const UNUSED: &dyn Unused = &Never::<u8>(core::marker::PhantomData);
 
+struct Runnable {
+    run: fn() -> usize,
+    bias: usize,
+}
+fn eleven() -> usize { 11 }
+fn seventeen() -> usize { 17 }
+impl Pass for Runnable {
+    fn value(&self) -> usize { (self.run)() + self.bias }
+}
+const RUNNABLES: &[Runnable] = &[
+    Runnable { run: eleven, bias: 3 },
+    Runnable { run: seventeen, bias: 5 },
+];
+const RUN_PASSES: &[&dyn Pass] = &[&RUNNABLES[0], &RUNNABLES[1]];
+static STATIC_BUILTINS: [Builtin; 2] = [Builtin { value: 29 }, Builtin { value: 31 }];
+const OFFSET_PASS: &dyn Pass = unsafe { &*STATIC_BUILTINS.as_ptr().add(1) };
+const RAW_NULL: *const dyn Pass = core::ptr::null::<Builtin>();
+const RAW_PAST: *const dyn Pass = unsafe { STATIC_BUILTINS.as_ptr().add(2) };
+
 fn main() {
     let mut sum = 0;
     for pass in PASSES {
@@ -132,5 +151,11 @@ fn main() {
         core::mem::align_of_val(SINGLE),
         core::mem::align_of::<Builtin>()
     );
+    assert_eq!(RUN_PASSES[0].value(), 14);
+    assert_eq!(RUN_PASSES[1].value(), 22);
+    assert_eq!(RUN_PASSES[1].extra(), 23);
+    assert_eq!(OFFSET_PASS.value(), 31);
+    assert!((RAW_NULL as *const ()).is_null());
+    assert_eq!(RAW_PAST as *const (), STATIC_BUILTINS.as_ptr().wrapping_add(2) as *const ());
     println!("const traits {} {} {}", sum, BASE.base(), PAIR.0.value());
 }

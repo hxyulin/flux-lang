@@ -54,6 +54,24 @@ pub(crate) fn impl_associated_values_match(
 }
 
 impl Cx<'_> {
+    /// Supertrait equalities are consequences of original header assumptions,
+    /// not of the trait currently being implemented. Only type-only facts need
+    /// no additional syntax-to-region tables here.
+    pub(super) fn header_type_equalities(&mut self) {
+        fn type_only(items: &ItemTree, ty: Ty) -> bool {
+            flux_ty::regions::slots(items, ty) == 0
+                && ty.children().all(|child| type_only(items, child))
+        }
+        for projection in flux_ty::traits::implied_projections(self.sigs, &self.header_predicates) {
+            if type_only(self.items, Ty::alias(projection.alias))
+                && type_only(self.items, projection.ty)
+                && !self.env.iter().any(|known| known.alias == projection.alias)
+            {
+                self.env.push(projection);
+            }
+        }
+    }
+
     /// Integration contract: call once on a fresh `Cx`. Install only the original
     /// impl header's projection, predicate and outlives assumptions. Return
     /// universal header lifetimes and elaborated predicate goals; callers add
@@ -75,6 +93,7 @@ impl Cx<'_> {
             .map_or(Vec::new(), |predicates| {
                 flux_ty::traits::elaborate(self.sigs, predicates)
             });
+        self.header_type_equalities();
         self.new_universal("'static".into());
         let lifetimes: Vec<_> = (0..block.names.len())
             .map(|i| self.new_universal(format!("'{i}")))
@@ -130,7 +149,7 @@ impl Cx<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn associated_value_selections(
+    pub(super) fn associated_value_selections(
         &mut self,
         ty: Ty,
         selections: &[flux_ty::regions::ProjectionSelection],

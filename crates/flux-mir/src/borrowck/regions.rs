@@ -580,6 +580,7 @@ fn impl_header_match(
         .map_or(Vec::new(), |predicates| {
             flux_ty::traits::elaborate(sigs, predicates)
         });
+    cx.header_type_equalities();
     cx.new_universal("'static".into());
     let lifetimes: Vec<_> = (0..block.names.len())
         .map(|i| cx.new_universal(format!("'{i}")))
@@ -649,59 +650,68 @@ fn impl_header_match(
         root.vars.push(vars);
     }
     let mut goals = Vec::new();
-    if associated {
-        let args: Vec<_> = std::iter::once(self_ty)
-            .chain(trait_ref.args.iter().copied())
-            .collect();
-        // Definitions are substitutions, not the required equalities. Their
-        // projection-selection well-formedness is a separate declaration check.
-        for &(name, ref table) in &block.types {
-            if !items.traits[trait_ref.trait_].generics.lifetimes.is_empty()
-                || items.impls[imp].types.iter().any(|t| {
-                    t.name == name
-                        && (!t.generics.lifetimes.is_empty() || !t.generics.params.is_empty())
-                })
-            {
-                continue;
-            }
-            let value = flux_ty::traits::impl_type(sigs, imp, name)?;
-            // An abstract projection guaranteed by an original header bound
-            // carries that declaration's bounds. It selects no concrete impl.
-            if let TyKind::Alias(alias) = value.kind()
-                && cx.normalize(value) == value
-                && env.iter().any(|g| {
-                    g.predicate.self_ty == alias.args[0]
-                        && g.predicate.trait_ref.trait_ == alias.trait_
-                        && g.predicate.trait_ref.args == &alias.args[1..]
-                })
-            {
-                let header: Vec<_> = env.iter().map(|g| g.predicate).collect();
-                cx.header_aliases.push(alias);
-                for bound in flux_ty::traits::alias_bounds(sigs, &header, value) {
-                    let goal = cx.impl_region_goal(
-                        bound,
-                        &[],
-                        &TraitRefRegions::default(),
-                        &[],
-                        &[],
-                        &[],
-                    )?;
-                    if !cx.impl_super_goals(goal, &mut env, 0) {
-                        return None;
-                    }
+    let args: Vec<_> = std::iter::once(self_ty)
+        .chain(trait_ref.args.iter().copied())
+        .collect();
+    // Definitions are substitutions, not the required equalities. Their
+    // projection-selection well-formedness is a separate declaration check.
+    for &(name, ref table) in &block.types {
+        if !items.traits[trait_ref.trait_].generics.lifetimes.is_empty()
+            || items.impls[imp].types.iter().any(|t| {
+                t.name == name
+                    && (!t.generics.lifetimes.is_empty() || !t.generics.params.is_empty())
+            })
+        {
+            continue;
+        }
+        let value = flux_ty::traits::impl_type(sigs, imp, name)?;
+        // An abstract projection guaranteed by an original header bound
+        // carries that declaration's bounds. It selects no concrete impl.
+        if let TyKind::Alias(alias) = value.kind()
+            && !flux_ty::regions::has_projection_inputs(alias)
+            && cx.normalize(value) == value
+            && env.iter().any(|g| {
+                g.predicate.self_ty == alias.args[0]
+                    && g.predicate.trait_ref.trait_ == alias.trait_
+                    && g.predicate.trait_ref.args == &alias.args[1..]
+            })
+        {
+            let header: Vec<_> = env.iter().map(|g| g.predicate).collect();
+            cx.header_aliases.push(alias);
+            for bound in flux_ty::traits::alias_bounds(sigs, &header, value) {
+                let goal =
+                    cx.impl_region_goal(bound, &[], &TraitRefRegions::default(), &[], &[], &[])?;
+                if !cx.impl_super_goals(goal, &mut env, 0) {
+                    return None;
                 }
             }
-            if !cx.impl_aliases_known(value, &[]) && !cx.impl_aliases_proven(value, &[], &env, 0) {
-                return None;
-            }
-            let vars = cx.instantiate_sig(value, table, &mut { map }, &[], &[])?;
-            if vars.len() != cx.slots(cx.normalize(value)) as usize {
-                return None;
-            }
-            let alias = flux_ty::traits::alias_of(items, trait_ref, self_ty, name);
-            cx.env.push(flux_ty::Projection { alias, ty: value });
-            cx.env_regions.push((alias, vars));
         }
+        if !cx.impl_aliases_known(value, &[]) && !cx.impl_aliases_proven(value, &[], &env, 0) {
+            let selections = block
+                .type_selections
+                .iter()
+                .find(|(known, _)| *known == name)
+                .map_or(&[][..], |(_, selections)| selections);
+            if !cx.associated_value_selections(
+                value,
+                selections,
+                &lifetimes,
+                &env,
+                &mut FxHashMap::default(),
+                0,
+            ) {
+                return None;
+            }
+        }
+        let vars = cx.instantiate_sig(value, table, &mut { map }, &[], &[])?;
+        if vars.len() != cx.slots(cx.normalize(value)) as usize {
+            return None;
+        }
+        let alias = flux_ty::traits::alias_of(items, trait_ref, self_ty, name);
+        cx.env.push(flux_ty::Projection { alias, ty: value });
+        cx.env_regions.push((alias, vars));
+    }
+    if associated {
         let sig = sigs.traits.get(trait_ref.trait_)?;
         for &(name, bound) in &sig.type_bounds {
             if !items.traits[trait_ref.trait_].generics.lifetimes.is_empty()
@@ -1037,12 +1047,19 @@ impl<'a> Cx<'a> {
         {
             return false;
         }
+        // Child selections were proved above. Match the outer impl against
+        // their normalized types, retaining the original proof obligations.
         let predicate = flux_ty::Predicate {
-            self_ty: alias.args[0],
+            self_ty: self.normalize(alias.args[0]),
             trait_ref: flux_ty::TraitRef {
                 trait_: alias.trait_,
                 name: alias.trait_name,
-                args: &alias.args[1..],
+                args: Ty::list(
+                    &alias.args[1..]
+                        .iter()
+                        .map(|&ty| self.normalize(ty))
+                        .collect::<Vec<_>>(),
+                ),
             },
         };
         let goal = ImplRegionGoal {
@@ -1053,6 +1070,11 @@ impl<'a> Cx<'a> {
         };
         if !self.impl_prove_super(&goal, env, 0) {
             return false;
+        }
+        if self.declared_region_free_bound(&goal, env) {
+            // A header's abstract output supplies membership and its declared
+            // equalities; there is no concrete impl RHS to select here.
+            return true;
         }
         let Some((imp, impl_args)) = flux_ty::traits::select_impl(self.items, self.sigs, predicate)
         else {
@@ -1076,7 +1098,16 @@ impl<'a> Cx<'a> {
         args: &[Ty],
         arg_vars: &[Vec<Var>],
     ) -> Option<ImplRegionGoal> {
-        self.impl_region_goal_with_proof(p, table, trait_regions, lifetimes, args, arg_vars, None)
+        self.impl_region_goal_with_proof(
+            p,
+            table,
+            trait_regions,
+            lifetimes,
+            args,
+            arg_vars,
+            None,
+            false,
+        )
     }
 
     /// Selected impl predicates may normalize nested, region-free projections
@@ -1091,6 +1122,7 @@ impl<'a> Cx<'a> {
         args: &[Ty],
         arg_vars: &[Vec<Var>],
         proof: Option<(&[ImplRegionGoal], u32)>,
+        known_self: bool,
     ) -> Option<ImplRegionGoal> {
         if trait_regions.lifetimes.len()
             != self.items.traits[p.trait_ref.trait_]
@@ -1149,7 +1181,8 @@ impl<'a> Cx<'a> {
             } else {
                 trait_regions.args.get(k - 1).map_or(&[][..], |t| t)
             };
-            if !self.impl_aliases_known(ty, args)
+            if !(k == 0 && known_self)
+                && !self.impl_aliases_known(ty, args)
                 && !proof.is_some_and(|(env, depth)| self.impl_aliases_proven(ty, args, env, depth))
             {
                 return None;
@@ -1236,13 +1269,17 @@ impl<'a> Cx<'a> {
             return false;
         }
         for (&sup, table) in supers.iter().zip(tables) {
-            let Some(mut next) = self.impl_region_goal(
+            // Self is the same represented input on every supertrait edge.
+            // Reuse its row rather than reselecting an abstract projection.
+            let Some(mut next) = self.impl_region_goal_with_proof(
                 sup.with_self(Ty::param(0, flux_intern::kw::SelfUpper)),
                 &[],
                 table,
                 &goal.lifetimes,
                 &args,
                 &goal.vars,
+                None,
+                true,
             ) else {
                 return false;
             };
@@ -1296,7 +1333,9 @@ impl<'a> Cx<'a> {
             // Trait declarations have no region tables for written reference
             // lifetimes. Only slots substituted from Self/type arguments can
             // be represented here; do not invent regions for anything else.
-            if !self.impl_aliases_known(p.ty, &args) {
+            if !self.impl_aliases_known(p.ty, &args)
+                && !self.impl_aliases_proven(p.ty, &args, env, 0)
+            {
                 return None;
             }
             let expected_ty = self.normalize(p.ty.subst(&args));
@@ -1333,7 +1372,12 @@ impl<'a> Cx<'a> {
                 };
                 alias
             };
-            if !self.env.iter().any(|p| p.alias == alias) {
+            // A still-abstract output, or an equality inherited from a
+            // proven type-only declaration bound, selects no concrete RHS.
+            if !self.env.iter().any(|p| p.alias == alias)
+                && self.normalize(Ty::alias(alias)) != Ty::alias(alias)
+                && !self.declared_region_free_bound(&alias_goal, env)
+            {
                 let (imp, impl_args) =
                     flux_ty::traits::select_impl(self.items, self.sigs, alias_goal.predicate)?;
                 let value = flux_ty::traits::impl_type(self.sigs, imp, alias.name)?;
@@ -1365,6 +1409,51 @@ impl<'a> Cx<'a> {
             }
         }
         Some(true)
+    }
+
+    /// Select a candidate header; callers still prove every required bound.
+    fn matching_impl(&self, goal: flux_ty::Predicate) -> Option<(flux_hir::ImplId, Vec<Ty>)> {
+        flux_ty::traits::select_impl(self.items, self.sigs, goal)
+            .or_else(|| {
+                // A rigid generic input can prevent erased bound selection.
+                // A unique header is usable only after its region-aware proof.
+                let mut matches = self
+                    .sigs
+                    .impl_index
+                    .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
+                    .filter_map(|imp| {
+                        flux_ty::traits::match_impl(self.items, self.sigs, imp, goal)
+                            .map(|args| (imp, args))
+                    });
+                let candidate = matches.next()?;
+                matches.next().is_none().then_some(candidate)
+            })
+            .filter(|(_, args)| args.iter().all(|ty| !ty.has_error()))
+    }
+
+    /// Type-only declaration bounds follow from the original header predicates.
+    fn declared_region_free_bound(&self, goal: &ImplRegionGoal, env: &[ImplRegionGoal]) -> bool {
+        let TyKind::Alias(alias) = goal.predicate.self_ty.kind() else {
+            return false;
+        };
+        if flux_ty::regions::has_projection_inputs(alias)
+            || !self.items.traits[alias.trait_]
+                .generics
+                .lifetimes
+                .is_empty()
+            || !goal.lifetimes.is_empty()
+            || !goal.bound.is_empty()
+            || goal.vars.iter().any(|row| !row.is_empty())
+            || alias
+                .args
+                .iter()
+                .any(|&ty| flux_ty::regions::slots(self.items, ty) != 0)
+        {
+            return false;
+        }
+        let header: Vec<_> = env.iter().map(|goal| goal.predicate).collect();
+        flux_ty::traits::alias_bounds(self.sigs, &header, goal.predicate.self_ty)
+            .contains(&goal.predicate)
     }
 
     fn impl_prove_super(
@@ -1446,48 +1535,16 @@ impl<'a> Cx<'a> {
             }
             return true;
         }
-        // A header's associated output carries its declaration bounds even
-        // when nested in another output. This path has no erased region
-        // inputs; region-bearing selections need their occurrence tables.
-        if let TyKind::Alias(alias) = goal.predicate.self_ty.kind()
-            && !flux_ty::regions::has_projection_inputs(alias)
-            && self.items.traits[alias.trait_]
-                .generics
-                .lifetimes
-                .is_empty()
-            && goal.lifetimes.is_empty()
-            && goal.bound.is_empty()
-            && goal.vars.iter().all(Vec::is_empty)
-            && alias.args.iter().all(|&ty| self.slots(ty) == 0)
-        {
-            let header: Vec<_> = env.iter().map(|g| g.predicate).collect();
-            if flux_ty::traits::alias_bounds(self.sigs, &header, goal.predicate.self_ty)
-                .contains(&goal.predicate)
-            {
-                return true;
-            }
+        if self.declared_region_free_bound(goal, env) {
+            return true;
         }
-        let selected =
-            flux_ty::traits::select_impl(self.items, self.sigs, goal.predicate).or_else(|| {
-                // Erased selection cannot discharge a blanket impl's bounds
-                // on abstract parameters without this original header env.
-                // A unique matching header is enough to select a candidate;
-                // every bound is still proved below with its region tables.
-                let mut matches = self
-                    .sigs
-                    .impl_index
-                    .impls_for(
-                        self.items,
-                        goal.predicate.trait_ref.trait_,
-                        goal.predicate.self_ty,
-                    )
-                    .filter_map(|imp| {
-                        flux_ty::traits::match_impl(self.items, self.sigs, imp, goal.predicate)
-                            .map(|args| (imp, args))
-                    });
-                let candidate = matches.next()?;
-                matches.next().is_none().then_some(candidate)
-            });
+        if let Some(bounds) = self.associated_output_bounds(goal, env, depth)
+            && bounds.iter().any(|bound| bound.predicate == goal.predicate)
+            && self.impl_prove_super(goal, &bounds, depth + 1)
+        {
+            return true;
+        }
+        let selected = self.matching_impl(goal.predicate);
         let Some((imp, args)) = selected else {
             // Built-in, region-free obligations (notably Sized and Copy)
             // need no user impl. Never use erased environment bounds here.
@@ -1573,6 +1630,7 @@ impl<'a> Cx<'a> {
                 &args,
                 &type_vars,
                 Some((env, depth + 1)),
+                false,
             ) else {
                 return false;
             };
@@ -2994,6 +3052,28 @@ impl<'a> Cx<'a> {
                     && x.args
                         .iter()
                         .zip(y.args)
+                        .all(|(&a, &b)| self.match_at(a, table, t, b, vars, v, binding, eqs))
+            }
+            (TyKind::Alias(a), TyKind::Alias(b))
+                if flux_ty::regions::has_projection_inputs(a)
+                    && a.trait_ == b.trait_
+                    && a.name == b.name
+                    && a.owner_lifetimes == b.owner_lifetimes
+                    && a.family_lifetimes == b.family_lifetimes
+                    && a.args.len() == b.args.len()
+                    && a.family_args.len() == b.family_args.len() =>
+            {
+                // Abstract projections retain their occurrence inputs. Bind
+                // those inputs in the same order as instantiate_family.
+                (0..a.owner_lifetimes).all(|_| slot(t, v, binding, eqs))
+                    && a.args
+                        .iter()
+                        .zip(b.args)
+                        .all(|(&a, &b)| self.match_at(a, table, t, b, vars, v, binding, eqs))
+                    && (0..a.family_lifetimes).all(|_| slot(t, v, binding, eqs))
+                    && a.family_args
+                        .iter()
+                        .zip(b.family_args)
                         .all(|(&a, &b)| self.match_at(a, table, t, b, vars, v, binding, eqs))
             }
             (TyKind::FnPtr(a), TyKind::FnPtr(b)) => {
@@ -4882,48 +4962,13 @@ impl<'a> Cx<'a> {
         }
         if flux_ty::fn_trait_kind(self.items, goal.trait_ref.trait_).is_none() {
             let known = self.caller_ranked_goals();
-            for scheme in known.iter().filter(|known| known.predicate == goal) {
-                if scheme.lifetimes.len() != trait_lifetimes.len()
-                    || scheme.vars.len() != vars.len()
-                    || scheme
-                        .vars
-                        .iter()
-                        .zip(vars)
-                        .any(|(a, b)| a.len() != b.len())
-                {
-                    continue;
+            if let Some(equalities) =
+                self.caller_goal_equalities(&known, goal, vars, trait_lifetimes)
+            {
+                for (a, b) in equalities {
+                    self.equate(a, b, self.proving, range);
                 }
-                let mut instantiated = FxHashMap::default();
-                let mut equalities = Vec::new();
-                for (a, b) in scheme
-                    .lifetimes
-                    .iter()
-                    .copied()
-                    .zip(trait_lifetimes.iter().copied())
-                    .chain(
-                        scheme
-                            .vars
-                            .iter()
-                            .zip(vars)
-                            .flat_map(|(a, b)| a.iter().copied().zip(b.iter().copied())),
-                    )
-                {
-                    if scheme.bound.contains(&a) {
-                        if let Some(&old) = instantiated.get(&a) {
-                            equalities.push((old, b));
-                        } else {
-                            instantiated.insert(a, b);
-                        }
-                    } else {
-                        equalities.push((a, b));
-                    }
-                }
-                if self.caller_equalities_fit(&equalities) {
-                    for (a, b) in equalities {
-                        self.equate(a, b, self.proving, range);
-                    }
-                    return true;
-                }
+                return true;
             }
         }
         for (p, self_table, tables) in candidates {
@@ -5027,6 +5072,57 @@ impl<'a> Cx<'a> {
             return true;
         }
         self.caller_family_bound(goal, vars, trait_lifetimes, range)
+    }
+
+    /// Match represented assumptions without adding an inconsistent candidate.
+    fn caller_goal_equalities(
+        &self,
+        known: &[ImplRegionGoal],
+        goal: flux_ty::Predicate,
+        vars: &[Vec<Var>],
+        trait_lifetimes: &[Var],
+    ) -> Option<Vec<(Var, Var)>> {
+        for scheme in known.iter().filter(|known| known.predicate == goal) {
+            if scheme.lifetimes.len() != trait_lifetimes.len()
+                || scheme.vars.len() != vars.len()
+                || scheme
+                    .vars
+                    .iter()
+                    .zip(vars)
+                    .any(|(a, b)| a.len() != b.len())
+            {
+                continue;
+            }
+            let mut instantiated = FxHashMap::default();
+            let mut equalities = Vec::new();
+            for (a, b) in scheme
+                .lifetimes
+                .iter()
+                .copied()
+                .zip(trait_lifetimes.iter().copied())
+                .chain(
+                    scheme
+                        .vars
+                        .iter()
+                        .zip(vars)
+                        .flat_map(|(a, b)| a.iter().copied().zip(b.iter().copied())),
+                )
+            {
+                if scheme.bound.contains(&a) {
+                    if let Some(&old) = instantiated.get(&a) {
+                        equalities.push((old, b));
+                    } else {
+                        instantiated.insert(a, b);
+                    }
+                } else {
+                    equalities.push((a, b));
+                }
+            }
+            if self.caller_equalities_fit(&equalities) {
+                return Some(equalities);
+            }
+        }
+        None
     }
 
     fn trait_has_ranked_super(
@@ -6479,10 +6575,13 @@ impl<'a> Cx<'a> {
     /// trait references or type arguments need their represented region maps;
     /// do not infer anything from erased inputs in those cases.
     fn known_type_outlives(&self, ty: Ty, end: u32, active: &mut Vec<Ty>) -> bool {
-        // An erased Ty cannot identify which owner/family lifetime inputs an
-        // abstract projection occurrence used. Its concrete rows must prove
-        // these obligations; never reuse another occurrence's type-only fact.
-        if matches!(ty.kind(),TyKind::Alias(alias)if flux_ty::regions::has_projection_inputs(alias))
+        // Lifetime-bearing projections need their occurrence's concrete rows.
+        // Type/const-only families can use type facts when all their arguments
+        // have zero slots; no occurrence regions are erased in that case.
+        if matches!(ty.kind(), TyKind::Alias(alias)
+            if flux_ty::regions::has_projection_inputs(alias)
+                && (alias.owner_lifetimes != 0 || alias.family_lifetimes != 0
+                    || alias.template_args().iter().any(|&arg| flux_ty::regions::slots(self.items, arg) != 0)))
         {
             return false;
         }
@@ -6494,12 +6593,14 @@ impl<'a> Cx<'a> {
         // region-bearing projection inputs.
         let represented = match normalized.kind() {
             TyKind::Alias(alias) => {
-                self.items.traits[alias.trait_]
-                    .generics
-                    .lifetimes
-                    .is_empty()
+                alias.owner_lifetimes == 0
+                    && alias.family_lifetimes == 0
+                    && self.items.traits[alias.trait_]
+                        .generics
+                        .lifetimes
+                        .is_empty()
                     && alias
-                        .args
+                        .template_args()
                         .iter()
                         .all(|&arg| flux_ty::regions::slots(self.items, arg) == 0)
             }
@@ -6514,6 +6615,29 @@ impl<'a> Cx<'a> {
         let TyKind::Alias(alias) = ty.kind() else {
             return false;
         };
+        // A declared static output does not depend on the owner's lifetime.
+        // Selection and associated-value checks enforce this contract at its
+        // definition; using it must not require the owner itself to be static.
+        if self
+            .sigs
+            .regions
+            .traits
+            .get(alias.trait_)
+            .and_then(|contract| contract.families.iter().find(|(name, _)| *name == alias.name))
+            .is_some_and(|(_, output)| {
+                output.output_outlives.contains(&Region::Static)
+                    || output.output_traits.iter().any(|(bound, _)| {
+                        self.sigs.regions.traits.get(bound.trait_).is_some_and(|contract| {
+                            contract.outlives.iter().any(|requirement| {
+                                matches!(requirement, Outlives::Type(ty, Region::Static)
+                                    if matches!(ty.kind(), TyKind::Param(param) if param.index == 0))
+                            })
+                        })
+                    })
+            })
+        {
+            return true;
+        }
         if active.contains(&ty)
             || !self.items.traits[alias.trait_]
                 .generics
@@ -6521,14 +6645,14 @@ impl<'a> Cx<'a> {
                 .is_empty()
             || alias.args.is_empty()
             || alias
-                .args
+                .template_args()
                 .iter()
                 .any(|&arg| flux_ty::regions::slots(self.items, arg) != 0)
         {
             return false;
         }
         active.push(ty);
-        let holds = alias.args.iter().all(|&arg| {
+        let holds = alias.template_args().iter().all(|&arg| {
             flux_ty::regions::outlives_type_components(self.sigs, arg)
                 .into_iter()
                 .all(|component| self.known_type_outlives(component, end, active))

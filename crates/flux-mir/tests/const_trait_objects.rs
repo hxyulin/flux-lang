@@ -34,6 +34,36 @@ fn const_trait_object_contracts_match_rustc() {
             true,
         ),
         (
+            "indexed_const_slice",
+            "trait P{fn run(&self)->u32;}struct B{run:fn()->u32}fn f()->u32{7}impl P for B{fn run(&self)->u32{(self.run)()}}const B:&[B]=&[B{run:f},B{run:f}];const P:&[&dyn P]=&[&B[0],&B[1]];fn main(){}",
+            true,
+        ),
+        (
+            "offset_reference",
+            "trait P{}impl P for u32{}static A:[u32;2]=[7,9];const P:&dyn P=unsafe{&*A.as_ptr().add(1)};fn main(){}",
+            true,
+        ),
+        (
+            "raw_null_object",
+            "trait P{}impl P for u32{}const P:*const dyn P=core::ptr::null::<u32>();fn main(){}",
+            true,
+        ),
+        (
+            "raw_one_past_object",
+            "trait P{}impl P for u32{}static A:[u32;2]=[7,9];const P:*const dyn P=unsafe{A.as_ptr().add(2)};fn main(){}",
+            true,
+        ),
+        (
+            "null_object_reference",
+            "trait P{}impl P for u32{}const P:&dyn P=unsafe{&*core::ptr::null::<u32>()};fn main(){}",
+            false,
+        ),
+        (
+            "one_past_object_reference",
+            "trait P{}impl P for u32{}static A:[u32;2]=[7,9];const P:&dyn P=unsafe{&*A.as_ptr().add(2)};fn main(){}",
+            false,
+        ),
+        (
             "trait_bound",
             "trait P{}const P:&dyn P=&7u32;fn main(){}",
             false,

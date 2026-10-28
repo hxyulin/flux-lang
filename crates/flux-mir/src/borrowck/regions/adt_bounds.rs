@@ -291,6 +291,9 @@ impl Cx<'_> {
         vars: &[Var],
         env: &[ImplRegionGoal],
     ) -> Option<bool> {
+        // The supplied row describes the instantiated output, not captures
+        // of projections that normalization has already replaced.
+        let ty = self.normalize(ty);
         let mut uses = Vec::new();
         if !self.adt_uses(ty, vars, &mut uses, 0) {
             return None;
