@@ -174,9 +174,17 @@ impl Cx<'_> {
             }
             vars.push(v);
         }
+        let owner = selection.map_or(&[][..], |selection| &selection.lifetimes);
+        if owner.len() != alias.owner_lifetimes as usize {
+            return false;
+        }
+        let Some(owner_lifetimes) = owner.iter().copied().map(&mut map).collect::<Option<_>>()
+        else {
+            return false;
+        };
         if !self.impl_prove_super(
             &ImplRegionGoal {
-                lifetimes: Vec::new(),
+                lifetimes: owner_lifetimes,
                 predicate: flux_ty::Predicate {
                     self_ty: self.normalize(alias.args[0]),
                     trait_ref: flux_ty::TraitRef {

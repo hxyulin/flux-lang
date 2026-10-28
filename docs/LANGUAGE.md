@@ -1231,6 +1231,19 @@ opaque trait-argument regions retain explicit gates. Nominal lifetime contracts
 inside function-pointer signatures, and declaration equalities needing unrepresented
 owner/family projection input rows, also reject explicitly. Other existing use-site
 restrictions still apply.
+Projection occurrences such as `A::Error` retain the trait-owner lifetimes from
+their written bounds in impl headers, associated definitions, predicate subjects
+and trait arguments. Associated-value selection proves those same lifetime
+arguments against the impl header. A trait's own owner row applies only to its
+`Self` type; another generic parameter cannot inherit that row. Missing or
+inconsistent selection metadata rejects explicitly. This does not widen the
+trait declaration profiles described above.
+Selection inputs do not become stored output regions: `S::Out: 'static` does
+not imply that the lifetime argument in `S: Source<'a>` is `'static`. References
+and nominal types containing a projection preserve the same distinction.
+Explicit type-outlives bounds on lifetime-bearing projections remain unsupported
+until their selected output rows can be enforced at callers; this includes
+qualified spellings and nested projection subjects.
 Lifetimeless traits may require `Self: 'static`, including the colon form
 `trait Pod: Copy + 'static`. This contract propagates through represented
 supertraits and is enforced on implementations and callers. Named-lifetime

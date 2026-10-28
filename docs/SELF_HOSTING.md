@@ -223,6 +223,13 @@ and smaller allocation/error APIs clear their earlier
 diagnostic groups. Remaining errors include Serde lifetime/projection contracts,
 typenum normalization, union fields, PhantomPinned and general constant pointer arithmetic. This full-only audit stops
 before MIR/codegen; it does not establish a new native backend milestone.
+The trait-projection follow-up `out/keel-backend-readiness/56684` has zero input,
+syntax and HIR diagnostics, 166 type diagnostics, and clean byte guards.
+Impl and associated-value checking now retain written projection-owner lifetime
+arguments and prove their selection against the header bounds. Ten broader
+Serde trait-declaration gates, two nested `Self` projection-owner occurrences,
+other outlives requirements, typenum normalization and union support still block
+the full graph. This audit also stops before full-graph MIR/codegen.
 
 CLI derives and the backend's remaining dependencies and generated outputs also
 belong to the complete source closure. Sourcegen and difftest are additional workspace targets,

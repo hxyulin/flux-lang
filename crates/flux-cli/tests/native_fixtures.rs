@@ -58,6 +58,11 @@ fn projected_pointer_regions() {
 }
 
 #[test]
+fn trait_projection_owners() {
+    support::oracle::compare_fixture("trait_projection_owners");
+}
+
+#[test]
 fn repeat_autoref_promotion() {
     support::oracle::compare_fixture("repeat_autoref_promotion");
 }

@@ -115,6 +115,9 @@ fn family_contract(
         ..TypeScope::default()
     };
     walker.self_regions = self_regions;
+    if let Some(generics) = items.owner_generics(Some(owner)) {
+        walker.add_projection_bounds(generics);
+    }
     walker.add_projection_bounds(generics);
     walker.self_projection_owner = match owner {
         flux_hir::Owner::Trait(id) => Some((
@@ -147,7 +150,7 @@ fn family_contract(
             predicate.ty_range,
             errors,
         );
-        if matches!(ty.kind(),TyKind::Alias(alias)if has_projection_inputs(alias)) {
+        if has_projection_outlives_inputs(ty) {
             errors.push((
                 predicate.ty_range,
                 "associated family projection outlives subjects are not supported yet".into(),
@@ -156,7 +159,7 @@ fn family_contract(
         }
         let row = walker.regions(&predicate.ty, ty);
         if r != Region::Erased {
-            for &a in &row {
+            for a in stored_regions(items, ty, &row) {
                 if a != Region::Erased && a != r {
                     outlives.push(Outlives::Region(a, r));
                 }
@@ -878,6 +881,7 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
             signature_of: Some("implementations"),
             ..TypeScope::default()
         };
+        walker.add_projection_bounds(&imp.generics);
         walker.elided = Elided::Fresh;
         let self_regions = walker.regions(&imp.self_ty, self_ty);
         let trait_ref = sigs.impl_traits.get(id).copied();
@@ -1795,6 +1799,7 @@ fn bound_regions(
         generics: type_names,
         ..TypeScope::default()
     };
+    walker.add_projection_bounds(generics);
     bound_regions_with_walker(
         items,
         generics,
@@ -2396,11 +2401,18 @@ fn bounds_outlives(
         let r = walker.named(p.lifetime);
         let mut scratch = Vec::new();
         let ty = crate::resolve_type(items, module, &p.ty, scope, p.ty_range, &mut scratch);
+        if has_projection_outlives_inputs(ty) {
+            errors.push((
+                p.ty_range,
+                "type-outlives bounds on lifetime-bearing projections are not supported yet".into(),
+            ));
+            continue;
+        }
         let regions = walker.regions(&p.ty, ty);
         if r == Region::Erased {
             continue;
         }
-        for &a in regions.iter() {
+        for a in stored_regions(items, ty, &regions) {
             if a != Region::Erased && a != r {
                 out.push(Outlives::Region(a, r));
             }

@@ -295,6 +295,8 @@ pub struct ImplRegions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionSelection {
     pub alias: crate::AliasTy,
+    /// Trait-owner arguments from this occurrence, before Self's region row.
+    pub lifetimes: Box<[Region]>,
     /// Self followed by the trait's type arguments, beside `alias.args`.
     pub args: Box<[Box<[Region]>]>,
 }
@@ -327,6 +329,11 @@ impl RegionSigs {
 /// Legacy lifetimeless associated values keep their existing zero-slot model.
 pub fn has_projection_inputs(alias: crate::AliasTy) -> bool {
     alias.owner_lifetimes != 0 || alias.family_lifetimes != 0 || !alias.family_args.is_empty()
+}
+
+fn has_projection_outlives_inputs(ty: Ty) -> bool {
+    matches!(ty.kind(), TyKind::Alias(alias) if has_projection_inputs(alias))
+        || ty.children().any(has_projection_outlives_inputs)
 }
 
 /// How many region slots `ty` has.
@@ -738,7 +745,27 @@ impl<'a> Walker<'a> {
         if let TyKind::Alias(alias) = ty.kind()
             && has_projection_inputs(alias)
         {
+            let start = out.len();
             self.projection_inputs(path, alias, out);
+            if let Some(selections) = self.selections.as_mut() {
+                let row = &out[start..];
+                let mut offset = alias.owner_lifetimes as usize;
+                let args = alias
+                    .args
+                    .iter()
+                    .map(|&ty| {
+                        let len = slots(self.items, ty);
+                        let regions = row[offset..offset + len].into();
+                        offset += len;
+                        regions
+                    })
+                    .collect();
+                selections.push(ProjectionSelection {
+                    alias,
+                    lifetimes: row[..alias.owner_lifetimes as usize].into(),
+                    args,
+                });
+            }
             return;
         }
         if self.body && path.qself.is_some() {
@@ -769,6 +796,7 @@ impl<'a> Walker<'a> {
             }
             self.selections.as_mut().unwrap().push(ProjectionSelection {
                 alias,
+                lifetimes: Box::default(),
                 args: args.into(),
             });
         }
@@ -907,6 +935,7 @@ impl<'a> Walker<'a> {
                 self.trait_lifetimes(owner, alias.trait_, false, out);
             } else if let Some((trait_, lifetimes)) = &self.self_projection_owner
                 && *trait_ == alias.trait_
+                && self.scope.self_ty == Some(alias.args[0])
                 && lifetimes.len() == alias.owner_lifetimes as usize
             {
                 out.extend(lifetimes.iter().copied());
@@ -1543,6 +1572,48 @@ pub fn implied_outlives_with_static<R: Copy + PartialEq>(
     implied_at(items, sigs, ty, regions, &mut next, static_region, out);
 }
 
+/// Projection rows describe selection inputs, not references stored in the
+/// selected output. Its type-outlives requirement is kept separately.
+fn stored_regions<R: Copy>(items: &ItemTree, ty: Ty, regions: &[R]) -> Vec<R> {
+    fn visit<R: Copy>(items: &ItemTree, ty: Ty, row: &[R], next: &mut usize, out: &mut Vec<R>) {
+        let own = match ty.kind() {
+            TyKind::Alias(_) => {
+                *next += slots(items, ty);
+                return;
+            }
+            TyKind::Ref(..) | TyKind::Dynamic(_) => 1,
+            TyKind::Adt(adt, _) => items.structs[adt.strukt].generics.lifetimes.len(),
+            TyKind::Opaque(opaque) => opaque.lifetimes as usize,
+            TyKind::FnPtr(sig) => sig.regions.map_or(0, |r| r.free as usize),
+            _ => 0,
+        };
+        out.extend_from_slice(&row[(*next).min(row.len())..(*next + own).min(row.len())]);
+        *next += own;
+        match ty.kind() {
+            TyKind::Closure(_, args) => {
+                visit(items, ClosureArgs::split(args).upvars, row, next, out);
+            }
+            TyKind::FnPtr(sig) => {
+                if let Some(regions) = sig.regions {
+                    for &ty in regions.types {
+                        visit(items, ty, row, next, out);
+                    }
+                }
+            }
+            TyKind::Dynamic(_) | TyKind::FnDef(_) => {}
+            TyKind::Array(elem, _) => visit(items, elem, row, next, out),
+            _ => {
+                for child in ty.children() {
+                    visit(items, child, row, next, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    visit(items, ty, regions, &mut 0, &mut out);
+    out
+}
+
 fn implied_at<R: Copy + PartialEq>(
     items: &ItemTree,
     sigs: &Signatures,
@@ -1559,7 +1630,7 @@ fn implied_at<R: Copy + PartialEq>(
             let start = *next;
             implied_at(items, sigs, inner, regions, next, static_region, out);
             // Everything in the pointee outlives the reference.
-            for &inner_r in &regions[start..*next] {
+            for inner_r in stored_regions(items, inner, &regions[start..*next]) {
                 if inner_r != r {
                     out.push(Outlives::Region(inner_r, r));
                 }
@@ -1644,7 +1715,11 @@ fn implied_at<R: Copy + PartialEq>(
                         if let TyKind::Param(param) = ty.kind()
                             && let Some(&(start, end)) = arg_ranges.get(param.index as usize)
                         {
-                            for &a in &regions[start.min(regions.len())..end.min(regions.len())] {
+                            for a in stored_regions(
+                                items,
+                                args[param.index as usize],
+                                &regions[start.min(regions.len())..end.min(regions.len())],
+                            ) {
                                 if a != b {
                                     out.push(Outlives::Region(a, b));
                                 }
@@ -1697,7 +1772,11 @@ fn implied_at<R: Copy + PartialEq>(
                             continue;
                         };
                         let (from, to) = arg_ranges[p.index as usize];
-                        for &a in &regions[from.min(regions.len())..to.min(regions.len())] {
+                        for a in stored_regions(
+                            items,
+                            arg,
+                            &regions[from.min(regions.len())..to.min(regions.len())],
+                        ) {
                             if a != b {
                                 out.push(Outlives::Region(a, b));
                             }
