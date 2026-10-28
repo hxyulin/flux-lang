@@ -314,6 +314,15 @@ fn region_free_graph(
     sigs: &Signatures,
     trait_: TraitId,
 ) -> Result<bool, TraitProfileError> {
+    region_graph(items, sigs, trait_, false)
+}
+
+fn region_graph(
+    items: &ItemTree,
+    sigs: &Signatures,
+    trait_: TraitId,
+    associated: bool,
+) -> Result<bool, TraitProfileError> {
     // Iterative DFS keeps even long malformed cycles off the call stack.
     let mut copy = false;
     let mut active = rustc_hash::FxHashSet::default();
@@ -332,7 +341,7 @@ fn region_free_graph(
                 });
             }
             copy |= items.traits[id].lang == Some(flux_intern::sym::copy);
-            let edges = region_free_edges(items, sigs, id)?;
+            let edges = region_free_edges(items, sigs, id, associated && id == trait_)?;
             work.push((id, true));
             work.extend(edges.into_iter().rev().map(|id| (id, false)));
         }
@@ -429,44 +438,53 @@ fn method_profile(
         if owner.families.len() != data.types.len() {
             return Err(fail(None, TraitProfileReason::OwnerMetadata));
         }
+        let mut expected_projections = Vec::new();
         for family in &data.types {
-            let Some((_, contract)) = owner.families.iter().find(|(name, _)| *name == family.name)
-            else {
-                return Err(fail(None, TraitProfileReason::OwnerMetadata));
-            };
-            if has_predicates(&family.generics)
-                || contract.owner != 1
-                || contract.names != owner.names
-                || !contract.value.is_empty()
-                || !contract.outlives.is_empty()
-                || !contract.output_outlives.is_empty()
-                || !contract.output_projections.is_empty()
-                || !contract.bound_selfs.is_empty()
-                || !contract.bound_traits.is_empty()
-                || !contract.projections.is_empty()
-                || !contract.selections.is_empty()
-                || contract.output_traits.len() != family.bounds.len()
-                || contract
-                    .output_traits
-                    .iter()
-                    .any(|(_, row)| *row != super::TraitRefRegions::default())
-                || contract
-                    .output_traits
-                    .iter()
-                    .map(|(bound, _)| *bound)
-                    .collect::<Vec<_>>()
-                    != sigs.traits[trait_]
-                        .type_bounds
-                        .iter()
-                        .filter(|(name, _)| *name == family.name)
-                        .map(|(_, bound)| *bound)
-                        .collect::<Vec<_>>()
-            {
+            if family.bounds.iter().any(|bound| {
+                !bound.bound_lifetimes.is_empty()
+                    || bound.path.qself.is_some()
+                    || bound.path.args.iter().flatten().any(|args| {
+                        args.parenthesized
+                            || args.types.iter().any(|ty| !written_type(ty, false))
+                            || args.bindings.iter().any(|binding| {
+                                binding.args.is_some() || !written_type(&binding.ty, false)
+                            })
+                    })
+            }) {
                 return Err(fail(None, TraitProfileReason::AssociatedItems));
             }
+            let Some((expected, bounds, projections)) =
+                super::resolve::ordinary_associated_contract(items, sigs, trait_, family.name)
+            else {
+                return Err(fail(None, TraitProfileReason::AssociatedItems));
+            };
+            let saved = owner
+                .families
+                .iter()
+                .find(|(name, _)| *name == family.name)
+                .map(|(_, c)| c);
+            let erased: Vec<_> = sigs.traits[trait_]
+                .type_bounds
+                .iter()
+                .filter(|(name, _)| *name == family.name)
+                .map(|(_, bound)| *bound)
+                .collect();
+            if saved != Some(&expected) || bounds != erased {
+                return Err(fail(None, TraitProfileReason::AssociatedItems));
+            }
+            expected_projections.extend(projections);
+        }
+        if expected_projections.as_slice() != sigs.traits[trait_].implied.as_ref()
+            || sigs
+                .trait_projections
+                .get(trait_)
+                .map_or(&[][..], |p| p.as_ref())
+                != expected_projections.as_slice()
+        {
+            return Err(fail(None, TraitProfileReason::AssociatedItems));
         }
     }
-    let copy = region_free_graph(items, sigs, trait_)?;
+    let copy = region_graph(items, sigs, trait_, projected)?;
     let sized = sigs.traits.get(trait_).is_some_and(|t| {
         t.supertraits
             .iter()
@@ -716,6 +734,7 @@ fn region_free_edges(
     items: &ItemTree,
     sigs: &Signatures,
     id: TraitId,
+    associated: bool,
 ) -> Result<Vec<TraitId>, TraitProfileError> {
     let fail = |reason| TraitProfileError {
         trait_: id,
@@ -744,11 +763,12 @@ fn region_free_edges(
     if !t.generics.outlives.is_empty()
         || !t.generics.type_outlives.is_empty()
         || !regions.outlives.is_empty()
-        || !sig.implied.is_empty()
-        || sigs
-            .trait_projections
-            .get(id)
-            .is_some_and(|p| !p.is_empty())
+        || (!associated && !sig.implied.is_empty())
+        || (!associated
+            && sigs
+                .trait_projections
+                .get(id)
+                .is_some_and(|p| !p.is_empty()))
     {
         return Err(fail(TraitProfileReason::SupertraitRegions));
     }
@@ -788,7 +808,12 @@ fn region_free_edges(
     if t.supertraits
         .iter()
         .chain(t.generics.predicates.iter().map(|p| &p.bound))
-        .chain(t.types.iter().flat_map(|t| t.bounds.iter()))
+        .chain(
+            t.types
+                .iter()
+                .filter(|_| !associated)
+                .flat_map(|t| t.bounds.iter()),
+        )
         .any(|b| !valid_bound(b))
         || t.generics
             .predicates
@@ -875,7 +900,12 @@ fn region_free_edges(
         .supertraits
         .iter()
         .chain(predicates.iter().map(|p| &p.trait_ref))
-        .chain(sig.type_bounds.iter().map(|(_, r)| r))
+        .chain(
+            sig.type_bounds
+                .iter()
+                .filter(|_| !associated)
+                .map(|(_, r)| r),
+        )
     {
         let target = items
             .traits
@@ -1163,6 +1193,73 @@ pub(crate) fn lifetime_marker_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_associated_bounds_reconstruct_contracts() {
+        let source = include_str!("../../../../tests/run/serde_associated_lifetimes.rs");
+        let (_, file, hir) = flux_hir::lower_text("output-profile.rs", source);
+        let (sigs, _) = crate::signatures(&hir.items);
+        for (owner, data) in hir
+            .items
+            .traits
+            .iter()
+            .filter(|(_, t)| t.loc.file == file && t.name.as_str() == "Access")
+        {
+            let result = generic_method_profile(&hir.items, &hir.diagnostics, &sigs, owner);
+            assert!(
+                result.is_ok(),
+                "{}: {result:?}; predicates={:?}; projections={:?}; outlives={:?}",
+                data.name,
+                sigs.trait_predicates.get(owner),
+                sigs.trait_projections.get(owner),
+                sigs.regions.traits[owner].outlives
+            );
+        }
+    }
+
+    #[test]
+    fn associated_output_metadata_corruption_is_rejected() {
+        let source = include_str!("../../../../tests/run/serde_associated_lifetimes.rs");
+        let (_, file, hir) = flux_hir::lower_text("output-corruption.rs", source);
+        let (sigs, errors) = crate::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let owner = hir
+            .items
+            .traits
+            .iter()
+            .find(|(_, t)| t.loc.file == file && t.name.as_str() == "Access")
+            .unwrap()
+            .0;
+        for corruption in 0..6 {
+            let mut bad = sigs.clone();
+            let mut row = bad.regions.traits[owner].clone();
+            let contract = &mut row
+                .families
+                .iter_mut()
+                .find(|(name, _)| name.as_str() == "Variant")
+                .unwrap()
+                .1;
+            match corruption {
+                0 => contract.output_traits[0].1.lifetimes[0] = Region::Static,
+                1 => contract.output_projections = Box::default(),
+                2 => contract.owner = 0,
+                3 => contract.names = Box::default(),
+                4 => {
+                    let mut signature = bad.traits[owner].clone();
+                    signature.implied = Box::default();
+                    bad.traits.insert(owner, signature);
+                }
+                _ => {
+                    bad.trait_projections.insert(owner, Box::default());
+                }
+            }
+            bad.regions.traits.insert(owner, row);
+            assert!(
+                generic_method_profile(&hir.items, &[], &bad, owner).is_err(),
+                "corruption {corruption}"
+            );
+        }
+    }
 
     #[test]
     fn generic_method_profile_reconstructs_contracts() {

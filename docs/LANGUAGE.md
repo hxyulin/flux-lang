@@ -1222,8 +1222,12 @@ receivers, method-local lifetimes and `?Sized` type parameters, ordinary
 associated outputs, and method bounds such as `D: Reader<'de>` or
 `V: Visitor<'de, Value = &'de str>`. It reconstructs the full signature,
 owner/local region namespace, bound occurrence rows and projection equalities.
-Trait-owned type parameters/predicates, lifetime-bearing associated-type bounds,
-and combining this profile with GATs remain outside this admission boundary.
+Ordinary associated outputs may carry lifetime-bearing trait bounds and
+associated equalities, such as `type Variant: Access<'de, Error = Self::Error>`.
+Admission reconstructs the output's owner namespace, bound rows and equality
+rows and checks the saved erased and region-bearing contracts together.
+Trait-owned type parameters/predicates and combining this profile with GATs
+remain outside this admission boundary.
 Impl compatibility, body checking and caller borrow obligations remain required.
 
 Functions, impls and nominal structs/enums can name lifetimes in tracked trait

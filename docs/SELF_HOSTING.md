@@ -260,6 +260,15 @@ visitor/reader/decoder pipeline against rustc off/on and checks rejected lifetim
 escapes and incompatible method contracts. Full backend MIR/codegen are not yet
 reached. The separate itoa fallback experiment is not part of this implementation.
 
+The associated-output follow-up `out/keel-backend-readiness/91160` has zero
+input, syntax and HIR diagnostics and 47 type diagnostics; all four byte guards
+pass. Reconstructed ordinary output contracts clear EnumAccess's declaration
+gate. The `serde_associated_lifetimes` native fixture preserves borrowed string
+identity through an enum/variant-style pipeline, with rustc comparison off/on.
+`IntoDeserializer` and `IdentifierDeserializer` remain gated: the owner-generic
+prototype exposed missing validation of bounds on trait type arguments and was
+not retained. Other Serde lifetime and alias errors still block full MIR/codegen.
+
 The maintained `typenum_readiness` test compiles unchanged typenum 1.20.1 in its
 original edition 2018 with the resolved `const-generics` feature. Its consumer
 checks arithmetic projections, lengths and runtime subtraction/division/remainder.

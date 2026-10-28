@@ -245,6 +245,102 @@ fn family_contract(
     }
 }
 
+/// Reconstruct an ordinary associated output without using its saved region rows.
+pub(super) fn ordinary_associated_contract(
+    items: &ItemTree,
+    sigs: &Signatures,
+    owner: flux_hir::TraitId,
+    name: Symbol,
+) -> Option<(FamilyRegions, Vec<crate::TraitRef>, Vec<crate::Projection>)> {
+    let data = &items.traits[owner];
+    let family = data.types.iter().find(|f| f.name == name)?;
+    let schema = sigs
+        .traits
+        .get(owner)?
+        .families
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, schema)| schema)?;
+    if schema.owner_params != 1 + data.generics.params.len() as u32
+        || schema.lifetimes != 0
+        || !schema.params.is_empty()
+        || !schema.predicates.is_empty()
+        || !schema.projections.is_empty()
+    {
+        return None;
+    }
+
+    if !family.generics.lifetimes.is_empty()
+        || !family.generics.params.is_empty()
+        || !family.generics.predicates.is_empty()
+        || !family.generics.outlives.is_empty()
+        || !family.generics.type_outlives.is_empty()
+    {
+        return None;
+    }
+    let owner_names: Vec<_> = own_names(&data.generics).collect();
+    let names = crate::generic_names(items, Some(flux_hir::Owner::Trait(owner)), &family.generics);
+    let self_ty = Ty::param(0, kw::SelfUpper);
+    let predicate = crate::traits::trait_self_predicate(items, owner);
+    let bounds = crate::traits::owner_predicates(items, sigs, Some(flux_hir::Owner::Trait(owner)));
+    let scope = TypeScope {
+        self_ty: Some(self_ty),
+        generics: &names,
+        bounds: &bounds,
+        defaults: Some(&sigs.trait_defaults),
+        struct_fields: Some(&sigs.structs),
+        ..TypeScope::default()
+    };
+    let alias = Ty::alias(crate::traits::alias_of(
+        items,
+        predicate.trait_ref,
+        self_ty,
+        name,
+    ));
+    let mut errors = Vec::new();
+    let mut traits = Vec::new();
+    let mut projections = Vec::new();
+    for bound in &family.bounds {
+        let (target, implied) =
+            crate::traits::resolve_bound(items, data.loc.module, bound, alias, scope, &mut errors)?;
+        let args = bound.path.args(bound.path.segments.len().saturating_sub(1));
+        let bindings = args.map_or(&[][..], |a| &a.bindings);
+        if bindings.len() != implied.len() {
+            return None;
+        }
+        traits.push((bound, target));
+        projections.extend(
+            bindings
+                .iter()
+                .zip(implied)
+                .map(|(binding, projection)| (binding, args, projection)),
+        );
+    }
+    let contract = family_contract(
+        items,
+        sigs,
+        data.loc.module,
+        flux_hir::Owner::Trait(owner),
+        &owner_names,
+        &family.generics,
+        self_ty,
+        None,
+        None,
+        &family.lifetime_bounds,
+        &traits,
+        &projections,
+        None,
+        &mut errors,
+    );
+    errors.is_empty().then(|| {
+        (
+            contract,
+            traits.into_iter().map(|(_, t)| t).collect(),
+            projections.into_iter().map(|(_, _, p)| p).collect(),
+        )
+    })
+}
+
 fn resolve_trait_families(
     items: &ItemTree,
     sigs: &mut Signatures,

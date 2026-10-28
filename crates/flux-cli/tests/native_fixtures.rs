@@ -111,3 +111,8 @@ fn backend_owned_apis() {
 fn serde_lifetime_methods() {
     support::oracle::compare_fixture("serde_lifetime_methods");
 }
+
+#[test]
+fn serde_associated_lifetimes() {
+    support::oracle::compare_fixture("serde_associated_lifetimes");
+}
