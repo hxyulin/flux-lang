@@ -800,6 +800,9 @@ impl Ctx<'_> {
         for ob in &pending {
             let mut vars = Vec::new();
             self.int_vars(ob.pred.self_ty, &mut vars);
+            for &arg in ob.pred.trait_ref.args {
+                self.int_vars(arg, &mut vars);
+            }
             for var in vars {
                 self.vars[var.0 as usize].0 = super::VarValue::Known(Ty::int(IntTy::I32));
             }

@@ -121,3 +121,8 @@ fn serde_associated_lifetimes() {
 fn trait_argument_bounds() {
     support::oracle::compare_fixture("trait_argument_bounds");
 }
+
+#[test]
+fn trait_argument_integer_fallback() {
+    support::oracle::compare_fixture("trait_argument_integer_fallback");
+}
