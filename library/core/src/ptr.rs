@@ -215,18 +215,33 @@ impl<T> *const T {
     }
 
     /// The pointer `count` values on.
-    pub unsafe fn add(self, count: usize) -> *const T {
-        (self as usize).wrapping_add(count.wrapping_mul(size_of::<T>())) as *const T
+    ///
+    /// # Safety
+    /// The byte displacement must fit in isize and stay within the same
+    /// allocation or at its end. Zero-sized pointees do not move the address.
+    pub const unsafe fn add(self, count: usize) -> *const T {
+        // SAFETY: the caller guarantees the offset stays within the allocation.
+        unsafe { crate::intrinsics::ptr_add(self, count) }
     }
 
     /// The pointer `count` values back.
-    pub unsafe fn sub(self, count: usize) -> *const T {
-        (self as usize).wrapping_sub(count.wrapping_mul(size_of::<T>())) as *const T
+    ///
+    /// # Safety
+    /// The byte displacement must fit in isize and stay within the same
+    /// allocation or at its end. Zero-sized pointees do not move the address.
+    pub const unsafe fn sub(self, count: usize) -> *const T {
+        // SAFETY: the caller guarantees the offset stays within the allocation.
+        unsafe { crate::intrinsics::ptr_sub(self, count) }
     }
 
     /// The pointer `count` values on, or back if it is negative.
-    pub unsafe fn offset(self, count: isize) -> *const T {
-        (self as usize).wrapping_add((count as usize).wrapping_mul(size_of::<T>())) as *const T
+    ///
+    /// # Safety
+    /// The byte displacement must fit in isize and stay within the same
+    /// allocation or at its end. Zero-sized pointees do not move the address.
+    pub const unsafe fn offset(self, count: isize) -> *const T {
+        // SAFETY: the caller guarantees the offset stays within the allocation.
+        unsafe { crate::intrinsics::ptr_offset(self, count) }
     }
 
     /// [`Self::add`], for any `count`.
@@ -329,18 +344,33 @@ impl<T> *mut T {
     }
 
     /// The pointer `count` values on.
-    pub unsafe fn add(self, count: usize) -> *mut T {
-        (self as usize).wrapping_add(count.wrapping_mul(size_of::<T>())) as *mut T
+    ///
+    /// # Safety
+    /// The byte displacement must fit in isize and stay within the same
+    /// allocation or at its end. Zero-sized pointees do not move the address.
+    pub const unsafe fn add(self, count: usize) -> *mut T {
+        // SAFETY: the caller guarantees the offset stays within the allocation.
+        unsafe { crate::intrinsics::ptr_add(self as *const T, count) as *mut T }
     }
 
     /// The pointer `count` values back.
-    pub unsafe fn sub(self, count: usize) -> *mut T {
-        (self as usize).wrapping_sub(count.wrapping_mul(size_of::<T>())) as *mut T
+    ///
+    /// # Safety
+    /// The byte displacement must fit in isize and stay within the same
+    /// allocation or at its end. Zero-sized pointees do not move the address.
+    pub const unsafe fn sub(self, count: usize) -> *mut T {
+        // SAFETY: the caller guarantees the offset stays within the allocation.
+        unsafe { crate::intrinsics::ptr_sub(self as *const T, count) as *mut T }
     }
 
     /// The pointer `count` values on, or back if it is negative.
-    pub unsafe fn offset(self, count: isize) -> *mut T {
-        (self as usize).wrapping_add((count as usize).wrapping_mul(size_of::<T>())) as *mut T
+    ///
+    /// # Safety
+    /// The byte displacement must fit in isize and stay within the same
+    /// allocation or at its end. Zero-sized pointees do not move the address.
+    pub const unsafe fn offset(self, count: isize) -> *mut T {
+        // SAFETY: the caller guarantees the offset stays within the allocation.
+        unsafe { crate::intrinsics::ptr_offset(self as *const T, count) as *mut T }
     }
 
     /// [`Self::add`], for any `count`.
@@ -539,7 +569,11 @@ impl<T> NonNull<T> {
     }
 
     /// The pointer `count` values on.
-    pub unsafe fn add(self, count: usize) -> NonNull<T> {
+    ///
+    /// # Safety
+    /// The byte displacement must fit in isize and stay within the same
+    /// allocation or at its end. Zero-sized pointees do not move the address.
+    pub const unsafe fn add(self, count: usize) -> NonNull<T> {
         NonNull {
             pointer: unsafe { self.pointer.add(count) },
         }

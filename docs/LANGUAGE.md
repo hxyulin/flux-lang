@@ -1296,6 +1296,18 @@ The borrow checker enforces these written regions and their well-formedness
 constraints, including when the return value is unused. Named arguments in
 closures and function-item values remain unsupported; constructor paths and
 general named local annotations are outside this extension.
+Direct trait calls on a qualified reference type, such as
+`<&'a Self>::try_from(value)`, preserve the written Self lifetime row too.
+Named inherent reference paths and function-item values remain unsupported.
+Concrete qualified associated types in struct fields can normalize through a
+selected impl while retaining their written input lifetimes. This covers owned
+and borrowed `IntoIterator::IntoIter` fields, including nested fields. Selection
+inputs remain invariant and contribute their well-formedness requirements even
+when the selected output erases them. This mapping requires a fully resolved
+output, represented header substitutions, and no additional lifetime-dependent
+impl or trait prerequisites. Other selections retain explicit rejection.
+Projection normalization underneath an outer reference remains outside this
+mapping because its additional output-outlives obligation must be proved first.
 A trait's `impl` block may be for
 some lifetimes only:
 naming one twice (`impl<'a> PartialEq for Token<'a>`, whose `Rhs` is
@@ -1507,19 +1519,26 @@ requires the copied value to be valid and ownership to be respected.
 `core::mem` has
 `forget`, `ManuallyDrop` (with `Deref`) and `MaybeUninit` (`new`,
 `uninit`, `zeroed`, `write`, `as_ptr`, `as_mut_ptr`, `assume_init` and
-its `_read`, `_ref`, `_mut` and `_drop` forms). Pointer arithmetic in constants remains unsupported. Thin
-integer-to-pointer casts preserve thin raw addresses in constants. These
+its `_read`, `_ref`, `_mut` and `_drop` forms). Raw pointer `add`, `sub` and
+`offset`, plus `NonNull::add`, support constant evaluation for represented
+allocations. Offsets preserve the original allocation and static relocation,
+including through promoted subslices. Nonzero byte displacements must fit
+`isize` and stay in bounds or at the one-past address. One-past pointers can
+move back into bounds, but cannot be read or turned into nonempty references.
+Zero displacements, including arbitrary counts on zero-sized pointees, preserve
+unbacked raw addresses. Wrapping offsets and `offset_from` remain runtime-only.
+Thin integer-to-pointer casts preserve thin raw addresses in constants. These
 addresses grant no reference validity: dereferencing these unbacked addresses,
 constant pointer comparisons,
-pointer-to-integer casts, and wide-address casts remain rejected. Empty
+pointer-to-integer casts, and wide-address casts remain rejected.
 Constant pointer reinterpretation supports initialized scalar, fixed-array
 and concrete struct views with checked bounds, alignment and scalar validity.
 Pointer casts retain the original allocation layout and address, including
 slice metadata when represented. Read-only local storage is tracked for its
 frame lifetime; a reference into expired storage cannot escape. Copying a
 reference stored in a temporary Cell preserves the original referent. Padding
-reads, symbolic address bits, mutable local raw-memory reads, projected
-reborrows of views, unsizing views and nonempty Box ownership remain
+reads, symbolic address bits, mutable local raw-memory reads, unrepresented
+projected reborrows, general unsizing views and nonempty Box ownership remain
 unsupported. Owned UnsafeCell borrowing and general const allocation are not
 provided. Evaluation limits also bound aggregate view construction.
 `Vec::new` and `NonNull::dangling` are const constructors, preserving element
@@ -1606,8 +1625,8 @@ and `BorrowMut<[T]>`, generic Index/IndexMut, and shared/mutable slice-to-array
 reference TryFrom conversions without a Copy bound. Slice `as_chunks` and `as_chunks_mut` return fixed-array
 chunks and a remainder, and reject zero chunk sizes. Constant raw slice
 construction accepts represented, correctly typed array/slice storage; it does
-not enable arbitrary constant pointer arithmetic or manufacture valid references
-from integer addresses.
+not manufacture valid references from integer addresses. Offset slices retain
+their original allocation and element-count metadata.
 
 All twelve signed and unsigned `NonZero` integer wrappers provide checked and
 unchecked construction, value access, formatting and integer conversions. Their

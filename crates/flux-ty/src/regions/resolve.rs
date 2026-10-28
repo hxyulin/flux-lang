@@ -806,6 +806,9 @@ pub(crate) fn resolve_regions(
     structs(items, sigs, from, &mut errors);
     impls(items, sigs, from, &mut errors);
     resolve_impl_families(items, sigs, from, &mut errors);
+    // Concrete field projections can only map their occurrence regions once
+    // the selected impl's header and associated value tables exist.
+    structs_selected(items, sigs, from, &mut errors);
     functions(items, sigs, from, &mut errors);
     check_required_family_bounds(items, sigs, from, &mut errors);
     check_family_equality_outlives(items, sigs, from, &mut errors);
@@ -903,6 +906,7 @@ fn structs(
         sigs.regions.structs.insert(
             id,
             StructRegions {
+                selected_inputs: Box::default(),
                 bound_selfs,
                 bound_traits,
                 projections,
@@ -943,7 +947,71 @@ fn structs(
         );
         errors.extend(list.into_iter().map(|(r, m)| (data.loc.file, r, m)));
     }
-    for (id, s) in items.structs.iter().skip(from) {
+}
+
+fn structs_selected(
+    items: &ItemTree,
+    sigs: &mut Signatures,
+    from: flux_hir::ItemCounts,
+    errors: &mut Errors,
+) {
+    let start = from.structs as usize;
+    let mut changed = false;
+    for (id, s) in items.structs.iter().skip(start) {
+        let old = sigs.structs[id];
+        let fields = Ty::list(
+            &crate::all_fields(s)
+                .zip(old)
+                .map(|(field, &ty)| super::selected::field_type(items, sigs, &field.ty, ty))
+                .collect::<Vec<_>>(),
+        );
+        if fields == old {
+            continue;
+        }
+        let names = s.generics.lifetimes.iter().map(|l| Some(l.name)).collect();
+        let identity: Vec<_> = (0..s.generics.lifetimes.len() as u32)
+            .map(Region::Param)
+            .collect();
+        let generics: Vec<_> = s.generics.params.iter().map(|p| p.name).collect();
+        let consts = crate::generic_consts(items, None, &s.generics);
+        let bounds = sigs.struct_predicates.get(id).map_or(&[][..], |p| p);
+        let mut walker = Walker::new(items, s.loc.module, names);
+        walker.signatures = Some(sigs);
+        walker.self_regions = Some(&identity);
+        walker.scope = TypeScope {
+            self_ty: Some(Ty::adt(id, s.name, &crate::params_of(&s.generics, 0))),
+            generics: &generics,
+            consts: &consts,
+            bounds,
+            ..TypeScope::default()
+        };
+        walker.elided = Elided::Missing(None);
+        let rows = crate::all_fields(s)
+            .zip(fields)
+            .map(|(field, &ty)| walker.regions(&field.ty, ty))
+            .collect();
+        errors.extend(
+            walker
+                .errors
+                .into_iter()
+                .map(|(range, message)| (s.loc.file, range, message)),
+        );
+        let mut metadata = sigs.regions.structs[id].clone();
+        metadata.fields = rows;
+        // Recompute the fixed point from unused parameters, rather than
+        // retaining variance inferred from a now-normalized projection.
+        metadata.variances =
+            vec![Variance::Bivariant; s.generics.lifetimes.len() + s.generics.params.len()].into();
+        metadata.selected_inputs = walker.selected_inputs.into();
+        sigs.structs.insert(id, fields);
+        sigs.regions.structs.insert(id, metadata);
+        changed = true;
+    }
+    if changed {
+        struct_variances(items, sigs, start);
+        struct_outlives(items, sigs, start, errors);
+    }
+    for (id, s) in items.structs.iter().skip(start) {
         if sigs.structs[id].contains(&Ty::ERROR) {
             continue;
         }
@@ -2673,6 +2741,19 @@ fn struct_variances(items: &ItemTree, sigs: &mut Signatures, from: usize) {
                 };
                 walk.go(ty, Variance::Covariant);
             }
+            for (alias, regions) in &sigs.regions.structs[id].selected_inputs {
+                let mut walk = VarianceWalk {
+                    items,
+                    sigs,
+                    regions,
+                    next: 0,
+                    lifetimes,
+                    acc: &mut acc,
+                };
+                for &input in alias.args {
+                    walk.go(input, Variance::Invariant);
+                }
+            }
             if *acc != *sigs.regions.structs[id].variances {
                 changed = true;
                 let mut entry = sigs.regions.structs[id].clone();
@@ -2834,6 +2915,21 @@ fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors:
                     Some(Region::Static),
                     &mut out,
                 );
+            }
+            for (alias, regions) in &sigs.regions.structs[id].selected_inputs {
+                let mut at = 0;
+                for &input in alias.args {
+                    let count = slots(items, input);
+                    implied_outlives_with_static(
+                        items,
+                        sigs,
+                        input,
+                        &regions[at..at + count],
+                        Some(Region::Static),
+                        &mut out,
+                    );
+                    at += count;
+                }
             }
             out.retain(|p| match *p {
                 Outlives::Region(a, b) => {

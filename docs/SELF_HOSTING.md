@@ -109,7 +109,7 @@ from a source graph.
 The `mir_selfhost` audit extends the original HIR/type graph with unchanged
 smallvec and flux-mir sources. Its public consumer builds and checks MIR,
 observes borrow and initialization diagnostics, and evaluates constants across
-twelve separately rustc-checked cases. It preserves original editions, resolved
+fourteen separately rustc-checked cases. It preserves original editions, resolved
 features and every source byte, with integrity checks in both worker and parent.
 The guarded native comparison passes with optimization disabled and enabled,
 matching rustc output, stderr and exit status after zero syntax, HIR, type and
@@ -304,6 +304,43 @@ cases need explicit occurrence rows; dropping their checks would hide missing
 borrow constraints. The focused supertrait/associated-value type tests do not
 claim support for every corresponding MIR declaration proof. `Pin` APIs are
 not supplied by the new marker support.
+
+The const-pointer follow-up `out/keel-backend-readiness/46845`, run with
+`FLUX_BACKEND_ONLY=full`, has zero input, syntax and HIR diagnostics and **4 type
+diagnostics**, with all four input guards clean. Both hybrid-array pointer-add
+errors are cleared. Raw pointer add/sub/offset and NonNull::add are const-capable;
+the evaluator keeps allocation roots and byte offsets rather than converting
+addresses to integers. Promoted slices retain their original allocation, static
+initializers retain relocation addends, and slice metadata can be read without
+reading interior-mutable static contents. The focused suite compares 37 cases
+against rustc; native off/on coverage checks static and field identity, one-past
+pointers, const-fn splitting, mutable static addresses and generic function pointers.
+Wrapping offsets, pointer differences and mutable local raw-memory access remain
+outside this const subset. The full backend still stops before MIR at one
+hybrid-array qualified body lifetime and three Serde nominal projection rows.
+The expanded MIR consumer in `out/mir-selfhost/14545` also passes natively in
+both optimization modes, with zero frontend/MIR diagnostics and both byte
+guards clean. Its fourteen cases include evaluated pointer offsets through a
+slice and rejection of a nonzero field projection from a one-past pointer.
+
+The qualified-lifetime follow-up `out/keel-backend-readiness/68375`, run with
+`FLUX_BACKEND_ONLY=full`, has zero input, syntax, HIR and type diagnostics.
+All four byte guards pass. Hybrid-array's qualified reference call now records
+its written Self regions; Serde's concrete iterator fields substitute selected
+impl header and output region tables. Projection inputs retain invariance and
+implied outlives requirements, including when the selected result erases them.
+The complete graph now reaches full MIR checking, which reports **258 diagnostics**.
+These include 120 unresolved associated-bound proofs, 63 unresolved associated
+projection proofs, and projection outlives and header-lifetime requirements.
+Crypto-common contributes 171 diagnostics, hybrid-array 27, Serde/serde_core 21,
+and itoa one; the remaining 38 are in the rest of the graph.
+Full-backend codegen and native execution have not been reached.
+The focused qualified-lifetime tests compare 24 cases with rustc, and the native
+fixture covers owned and shared iterator fields plus qualified reference calls
+with optimization off and on.
+The unchanged full Flux MIR source graph also passes again in
+`out/mir-selfhost/52937`: all four compiler-stage reports are zero, both native
+optimization modes match rustc, and both byte guards are clean.
 
 The maintained `typenum_readiness` test compiles unchanged typenum 1.20.1 in its
 original edition 2018 with the resolved `const-generics` feature. Its consumer

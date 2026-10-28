@@ -6066,19 +6066,42 @@ impl Ctx<'_> {
             .map_or_else(Vec::new, |r| r.names.iter().map(|n| n.name).collect());
         let mut call_regions = ArenaMap::new();
         for (expr, instance) in calls.iter() {
-            let Some(written) = self
+            let written = self
                 .body
                 .generic_args
                 .get(expr)
-                .and_then(|g| g.item.as_ref())
-            else {
-                continue;
-            };
+                .and_then(|g| g.item.as_ref());
             let count = self.items.functions[instance.function].generics.len();
             let offset = instance.args.len().saturating_sub(count);
+            let mut written_types: Vec<_> = written
+                .into_iter()
+                .flat_map(|w| w.types.iter().enumerate())
+                .map(|(i, &ty)| ((offset + i) as u32, ty))
+                .collect();
+            if let Expr::Path(Res::Assoc {
+                ty: Some(written), ..
+            }) = self.body.exprs[expr]
+                && matches!(self.body.types[written], flux_hir::TypeRef::Ref { .. })
+            {
+                if matches!(
+                    self.items.functions[instance.function].owner,
+                    Some(flux_hir::Owner::Trait(_))
+                ) {
+                    written_types.push((0, written));
+                } else {
+                    let mut lifetimes = Vec::new();
+                    crate::regions::lifetimes_in(&self.body.types[written], &mut lifetimes);
+                    if let Some(lifetime) = lifetimes.iter().find(|l| !l.is_anonymous()) {
+                        self.error(
+                            lifetime.range,
+                            "named lifetimes in inherent reference paths are not supported yet",
+                        );
+                    }
+                }
+            }
             let mut tables = Vec::new();
-            for (i, &written) in written.types.iter().enumerate() {
-                let Some(&ty) = instance.args.get(offset + i) else {
+            for (index, written) in written_types {
+                let Some(&ty) = instance.args.get(index as usize) else {
                     continue;
                 };
                 let mut walker =
@@ -6109,7 +6132,7 @@ impl Ctx<'_> {
                     }
                 }
                 if regions.iter().any(|r| *r != crate::regions::Region::Erased) {
-                    tables.push(((offset + i) as u32, regions));
+                    tables.push((index, regions));
                 }
             }
             if !tables.is_empty() {

@@ -591,7 +591,9 @@ fn value_functions<'a>(
             Value::Ref(value) | Value::InteriorRef(value) | Value::LocalRef { value, .. } => {
                 values.push(value)
             }
-            Value::PointerView { pointer, .. } => values.push(pointer),
+            Value::PointerView { pointer, .. } | Value::PointerOffset { pointer, .. } => {
+                values.push(pointer)
+            }
             Value::Static(id) | Value::StaticPart { id, .. } if globals.insert(*id) => {
                 if let Some(value) = constants.items.get(*id) {
                     values.push(value);
@@ -1212,6 +1214,35 @@ pub fn expand_intrinsics(
                     ty: flux_ty::IntTy::Usize,
                 };
                 (dest, Rvalue::Use(Operand::Const(constant)))
+            }
+            (name @ ("ptr_add" | "ptr_sub" | "ptr_offset"), [ptr, count]) => {
+                let usize_ty = Ty::int(flux_ty::IntTy::Usize);
+                let mut temp = |ty, value| {
+                    let local = body.locals.alloc(LocalDecl {
+                        ty,
+                        kind: LocalKind::Temp,
+                    });
+                    body.blocks[block].statements.push(Statement {
+                        kind: StatementKind::Assign(local.into(), value),
+                        range,
+                    });
+                    Operand::Move(local.into())
+                };
+                let address = temp(usize_ty, Rvalue::Cast(ptr.clone(), usize_ty));
+                let count = temp(usize_ty, Rvalue::Cast(count.clone(), usize_ty));
+                let size = Operand::Const(Constant::Int {
+                    bits: u128::from(layouts.of(arg_ty).size),
+                    ty: flux_ty::IntTy::Usize,
+                });
+                let bytes = temp(usize_ty, Rvalue::BinaryOp(crate::BinOp::Mul, count, size));
+                let op = if name == "ptr_sub" {
+                    crate::BinOp::Sub
+                } else {
+                    crate::BinOp::Add
+                };
+                let address = temp(usize_ty, Rvalue::BinaryOp(op, address, bytes));
+                let ty = body.place_ty(&dest, sigs);
+                (dest, Rvalue::Cast(address, ty))
             }
             ("read", [src]) => {
                 let src = pointer(body, src);

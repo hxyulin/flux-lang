@@ -1930,7 +1930,14 @@ impl Ctx<'_> {
             );
             return template.subst(&args);
         }
-        self.resolve_type_ref(ty)
+        // Qualified reference receivers are recorded as the selected trait
+        // method's Self argument after inference, alongside written turbofish
+        // types. Other body types retain their existing annotation checks.
+        self.resolve_body_type(
+            ty,
+            false,
+            matches!(self.body.types[ty], flux_hir::TypeRef::Ref { .. }),
+        )
     }
 
     /// Whether a block for another instance of `ty`'s struct has a method

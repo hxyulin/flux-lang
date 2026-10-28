@@ -229,6 +229,7 @@ fn operand(
             | Value::StaticPart { .. }
             | Value::Ref(_)
             | Value::InteriorRef(_)
+            | Value::PointerOffset { .. }
             | Value::PointerView { .. }
             | Value::LocalRef { .. }
             | Value::RawAddr(_) => None,
@@ -323,6 +324,7 @@ fn evaluate(
                 | Value::StaticPart { .. }
                 | Value::Ref(_)
                 | Value::InteriorRef(_)
+                | Value::PointerOffset { .. }
                 | Value::PointerView { .. }
                 | Value::LocalRef { .. }
                 | Value::RawAddr(_) => {

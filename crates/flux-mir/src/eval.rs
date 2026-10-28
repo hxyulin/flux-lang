@@ -86,6 +86,15 @@ pub enum Value {
         source: Ty,
         target: Ty,
     },
+    /// An address within the same backing allocation, including its one-past
+    /// address. A slice view retains a length without replacing that allocation.
+    PointerOffset {
+        pointer: Arc<Value>,
+        source: Ty,
+        offset: u64,
+        target: Ty,
+        len: Option<u64>,
+    },
     /// Named frame storage is not promoted into a constant allocation. Raw
     /// access to it needs an addressable frame-memory model, not a value copy.
     LocalRef {
@@ -377,6 +386,10 @@ impl<'a> Evaluator<'a> {
             Value::LocalRef { .. } => return Err(error(range,
                 "reference to local storage cannot escape constant evaluation".into())),
 
+            Value::PointerOffset { pointer, source, target, .. } => {
+                self.check_escaping_borrows(pointer,*source,range)?;
+                if matches!(ty.kind(),TyKind::Ref(..)) { self.pointer_value(value,*target,ty,range)?; }
+            }
             Value::PointerView { pointer, source, target } => {
                 self.check_escaping_borrows(pointer, *source, range)?;
                 if let TyKind::Ref(_, pointee) = ty.kind() {
@@ -436,6 +449,309 @@ impl<'a> Evaluator<'a> {
         Ok(())
     }
 
+    /// Recover the allocation behind casts and offsets. Static projections
+    /// become byte displacements in the original static, not new allocations.
+    fn pointer_origin(
+        &mut self,
+        mut value: Value,
+        mut source: Ty,
+        range: TextRange,
+    ) -> Result<(Value, Ty, u64), EvalError> {
+        loop {
+            match value {
+                Value::PointerView {
+                    pointer,
+                    source: original,
+                    ..
+                } => {
+                    value = (*pointer).clone();
+                    source = original;
+                }
+                Value::DynPointer {
+                    pointer, concrete, ..
+                } => {
+                    value = (*pointer).clone();
+                    source = Ty::raw_ptr(flux_ty::Mutability::Not, concrete);
+                }
+                Value::PointerOffset {
+                    pointer,
+                    source,
+                    offset,
+                    ..
+                } => {
+                    return Ok(((*pointer).clone(), source, offset));
+                }
+                Value::StaticPart { id, path } => {
+                    let offset = self.static_path_offset(id, &path, range)?;
+                    return Ok((
+                        Value::Static(id),
+                        Ty::raw_ptr(flux_ty::Mutability::Not, self.sigs.consts[id]),
+                        offset,
+                    ));
+                }
+                Value::Static(id) => {
+                    return Ok((
+                        value,
+                        Ty::raw_ptr(flux_ty::Mutability::Not, self.sigs.consts[id]),
+                        0,
+                    ));
+                }
+                _ => return Ok((value, source, 0)),
+            }
+        }
+    }
+
+    fn allocation_type(
+        &self,
+        value: &Value,
+        source: Ty,
+        range: TextRange,
+    ) -> Result<Ty, EvalError> {
+        let ty = pointer_pointee(source).ok_or_else(|| unsupported_view(range))?;
+        let inner = match value {
+            Value::Ref(value) | Value::InteriorRef(value) => Some(value),
+            Value::LocalRef { value, origin, .. } => {
+                if !self.live_borrows.contains(&origin.token) {
+                    return Err(error(
+                        range,
+                        "dangling reference to local constant storage".into(),
+                    ));
+                }
+                Some(value)
+            }
+            Value::Static(_) => None,
+            _ => {
+                return Err(error(
+                    range,
+                    "constant pointer offset requires an allocation".into(),
+                ));
+            }
+        };
+        Ok(match (ty.kind(), inner.map(|v| &**v)) {
+            (TyKind::Slice(element), Some(Value::Aggregate(elements))) => {
+                Ty::array(element, elements.len() as u64)
+            }
+            (TyKind::Str, Some(Value::Aggregate(elements))) => {
+                Ty::array(Ty::int(IntTy::U8), elements.len() as u64)
+            }
+            _ => ty,
+        })
+    }
+
+    fn pointer_offset(
+        &mut self,
+        value: Value,
+        pointer_ty: Ty,
+        count: i128,
+        range: TextRange,
+    ) -> Result<Value, EvalError> {
+        let element = pointer_pointee(pointer_ty).ok_or_else(|| unsupported_view(range))?;
+        let layout = self.view_layout(element, range)?;
+        if !layout.exact || layout.size > i64::MAX as u64 {
+            return Err(error(
+                range,
+                "constant pointer element layout is not supported yet".into(),
+            ));
+        }
+        let bytes = count
+            .checked_mul(i128::from(layout.size))
+            .filter(|n| i64::try_from(*n).is_ok())
+            .ok_or_else(|| error(range, "constant pointer offset overflows isize".into()))?;
+        // A zero displacement requires no allocation, including for null and
+        // dangling raw addresses and arbitrary element counts on ZSTs.
+        if bytes == 0 {
+            return Ok(value);
+        }
+        let (pointer, source, current) = self.pointer_origin(value, pointer_ty, range)?;
+        let storage = self.allocation_type(&pointer, source, range)?;
+        let layout = self.view_layout(storage, range)?;
+        let offset = i128::from(current) + bytes;
+        if !layout.exact
+            || layout.size > i64::MAX as u64
+            || offset < 0
+            || offset > i128::from(layout.size)
+        {
+            return Err(error(
+                range,
+                "constant pointer offset is out of bounds".into(),
+            ));
+        }
+        Ok(Value::PointerOffset {
+            pointer: Arc::new(pointer),
+            source,
+            offset: offset as u64,
+            target: pointer_ty,
+            len: None,
+        })
+    }
+
+    /// A borrow of projected promoted storage keeps the allocation of its
+    /// base. Copying the projected value would change pointer identity/bounds.
+    fn projected_address(
+        &mut self,
+        value: Value,
+        source_ty: Ty,
+        projection: &[ProjectionElem],
+        locals: &[Option<Value>],
+        target: Ty,
+        range: TextRange,
+    ) -> Result<Value, EvalError> {
+        let mut ty = pointer_pointee(source_ty).ok_or_else(|| unsupported_view(range))?;
+        let mut sequence_len = ty.array_len().or_else(|| match &value {
+            Value::PointerOffset { len, .. } => *len,
+            Value::Ref(inner)
+            | Value::InteriorRef(inner)
+            | Value::LocalRef { value: inner, .. } => match &**inner {
+                Value::Aggregate(elements) => Some(elements.len() as u64),
+                _ => None,
+            },
+            _ => None,
+        });
+        let (mut pointer, source, mut offset) = self.pointer_origin(value, source_ty, range)?;
+        let mut variant = 0;
+        let mut metadata = None;
+        for p in projection {
+            let delta = match *p {
+                ProjectionElem::Downcast(v) => {
+                    variant = v;
+                    0
+                }
+                ProjectionElem::Field(i) => {
+                    let layout = self.view_layout(ty, range)?;
+                    if !layout.exact {
+                        return Err(unsupported_view(range));
+                    }
+                    let at = layout.field_offset(variant, i);
+                    ty = *self
+                        .sigs
+                        .variant_fields(ty, variant)
+                        .and_then(|f| f.get(i as usize))
+                        .ok_or_else(|| unsupported_view(range))?;
+                    sequence_len = ty.array_len();
+                    variant = 0;
+                    at
+                }
+                ProjectionElem::Index(i) => {
+                    let i = index(locals, i) as u64;
+                    if sequence_len.is_none_or(|len| i >= len) {
+                        return Err(error(range, "constant index is out of bounds".into()));
+                    }
+                    ty = ty.sequence_elem().ok_or_else(|| unsupported_view(range))?;
+                    sequence_len = ty.array_len();
+                    i.checked_mul(self.view_layout(ty, range)?.size)
+                        .ok_or_else(|| unsupported_view(range))?
+                }
+                ProjectionElem::ConstantIndex {
+                    offset: i,
+                    from_end,
+                    ..
+                } => {
+                    let len = sequence_len.ok_or_else(|| unsupported_view(range))?;
+                    let i = if from_end {
+                        len.checked_sub(u64::from(i))
+                    } else {
+                        Some(u64::from(i))
+                    }
+                    .filter(|&i| i < len)
+                    .ok_or_else(|| error(range, "constant index is out of bounds".into()))?;
+                    ty = ty.sequence_elem().ok_or_else(|| unsupported_view(range))?;
+                    sequence_len = ty.array_len();
+                    i.checked_mul(self.view_layout(ty, range)?.size)
+                        .ok_or_else(|| unsupported_view(range))?
+                }
+                ProjectionElem::Subslice { from, to, from_end } => {
+                    let len = sequence_len.ok_or_else(|| unsupported_view(range))?;
+                    let end = if from_end {
+                        len.checked_sub(u64::from(to))
+                    } else {
+                        Some(u64::from(to))
+                    }
+                    .filter(|&end| end <= len && u64::from(from) <= end)
+                    .ok_or_else(|| error(range, "constant subslice is out of bounds".into()))?;
+                    let element = ty.sequence_elem().ok_or_else(|| unsupported_view(range))?;
+                    metadata = Some(end - u64::from(from));
+                    sequence_len = metadata;
+                    ty = Ty::array(element, metadata.unwrap());
+                    u64::from(from)
+                        .checked_mul(self.view_layout(element, range)?.size)
+                        .ok_or_else(|| unsupported_view(range))?
+                }
+                _ => return Err(unsupported_view(range)),
+            };
+            offset = offset
+                .checked_add(delta)
+                .ok_or_else(|| unsupported_view(range))?;
+        }
+        let storage = self.allocation_type(&pointer, source, range)?;
+        let layout = self.view_layout(storage, range)?;
+        if !layout.exact || offset > layout.size {
+            return Err(error(
+                range,
+                "constant pointer offset is out of bounds".into(),
+            ));
+        }
+        if pointer_pointee(target).is_some_and(|ty| self.sigs.is_unsized(ty)) && metadata.is_none()
+        {
+            return Err(unsupported_view(range));
+        }
+        if matches!(target.kind(), TyKind::RawPtr(..)) {
+            mark_raw_origin(&mut pointer);
+        }
+        Ok(Value::PointerOffset {
+            pointer: Arc::new(pointer),
+            source,
+            offset,
+            target,
+            len: metadata,
+        })
+    }
+
+    /// The byte displacement of a projection within its original static.
+    fn static_path_offset(
+        &mut self,
+        id: ConstId,
+        path: &[StaticProjection],
+        range: TextRange,
+    ) -> Result<u64, EvalError> {
+        let mut ty = self.sigs.consts[id];
+        let mut offset = 0;
+        let mut variant = 0;
+        for projection in path.iter() {
+            let delta = match *projection {
+                StaticProjection::Downcast(v) => {
+                    variant = v;
+                    0
+                }
+                StaticProjection::Field(field) => {
+                    let delta = self.view_layout(ty, range)?.field_offset(variant, field);
+                    ty = *self
+                        .sigs
+                        .variant_fields(ty, variant)
+                        .and_then(|f| f.get(field as usize))
+                        .ok_or_else(|| unsupported_view(range))?;
+                    variant = 0;
+                    delta
+                }
+                StaticProjection::Index(index) => {
+                    ty = ty.sequence_elem().ok_or_else(|| unsupported_view(range))?;
+                    index
+                        .checked_mul(self.view_layout(ty, range)?.size)
+                        .ok_or_else(|| unsupported_view(range))?
+                }
+                StaticProjection::Subslice { from, len } => {
+                    let element = ty.sequence_elem().ok_or_else(|| unsupported_view(range))?;
+                    let delta = from
+                        .checked_mul(self.view_layout(element, range)?.size)
+                        .ok_or_else(|| unsupported_view(range))?;
+                    ty = Ty::array(element, len);
+                    delta
+                }
+            };
+            offset = u64::checked_add(offset, delta).ok_or_else(|| unsupported_view(range))?;
+        }
+        Ok(offset)
+    }
+
     /// Minimum alignment retained by a field address within its allocation.
     fn static_address_alignment(
         &mut self,
@@ -443,35 +759,8 @@ impl<'a> Evaluator<'a> {
         path: &[StaticProjection],
         range: TextRange,
     ) -> Result<u64, EvalError> {
-        let mut ty = self.sigs.consts[id];
-        let base = self.view_layout(ty, range)?.align;
-        let mut offset = 0u64;
-        let mut variant = 0;
-        for projection in path {
-            match *projection {
-                StaticProjection::Downcast(v) => variant = v,
-                StaticProjection::Field(field) => {
-                    offset += self.view_layout(ty, range)?.field_offset(variant, field);
-                    ty = *self
-                        .sigs
-                        .variant_fields(ty, variant)
-                        .and_then(|fields| fields.get(field as usize))
-                        .ok_or_else(|| unsupported_view(range))?;
-                    variant = 0;
-                }
-                StaticProjection::Index(index) => {
-                    ty = ty.sequence_elem().ok_or_else(|| unsupported_view(range))?;
-                    offset += index * self.view_layout(ty, range)?.size;
-                }
-                StaticProjection::Subslice { from, len } => {
-                    let element = ty.sequence_elem().ok_or_else(|| unsupported_view(range))?;
-                    offset += from * self.view_layout(element, range)?.size;
-                    // A subslice keeps a bounded sequence view. Subsequent
-                    // subslices or indices are relative to this view's start.
-                    ty = Ty::array(element, len);
-                }
-            }
-        }
+        let base = self.view_layout(self.sigs.consts[id], range)?.align;
+        let offset = self.static_path_offset(id, path, range)?;
         Ok(if offset == 0 {
             base
         } else {
@@ -504,6 +793,49 @@ impl<'a> Evaluator<'a> {
         target: Ty,
         range: TextRange,
     ) -> Result<Value, EvalError> {
+        if let Value::PointerOffset {
+            pointer: base,
+            source: allocation,
+            offset,
+            target: original,
+            len,
+        } = pointer
+        {
+            let target = if target == Ty::ERROR {
+                *original
+            } else {
+                target
+            };
+            let mut to = pointer_pointee(target).ok_or_else(|| unsupported_view(range))?;
+            if let Some(len) = len {
+                to = match to.kind() {
+                    TyKind::Slice(element) => Ty::array(element, *len),
+                    TyKind::Str => Ty::array(Ty::int(IntTy::U8), *len),
+                    _ => to,
+                };
+            }
+            let from = self.allocation_type(base, *allocation, range)?;
+            let base_align = self.view_layout(from, range)?.align;
+            let align = if *offset == 0 {
+                base_align
+            } else {
+                base_align.min(1u64 << offset.trailing_zeros())
+            };
+            if align < self.view_layout(to, range)?.align {
+                return Err(error(
+                    range,
+                    "unaligned reference or pointer read in constant".into(),
+                ));
+            }
+            let stored = self.pointer_value(base, *allocation, *allocation, range)?;
+            let result = self.memory_value(&stored, from, *offset, to, range, 0)?;
+            if matches!(pointer_pointee(target).map(Ty::kind), Some(TyKind::Str))
+                && str_value(&Value::Ref(Arc::new(result.clone()))).is_none()
+            {
+                return Err(error(range, "invalid utf-8 in constant reference".into()));
+            }
+            return Ok(result);
+        }
         let value = match pointer {
             Value::Ref(value) | Value::InteriorRef(value) => (**value).clone(),
             Value::LocalRef { value, origin, raw } => {
@@ -1085,6 +1417,7 @@ impl<'a> Evaluator<'a> {
         value: Value,
         start: usize,
         end: usize,
+        source_ty: Ty,
         mutable: bool,
         range: TextRange,
     ) -> Result<Value, EvalError> {
@@ -1116,40 +1449,64 @@ impl<'a> Evaluator<'a> {
                 path: path.into(),
             });
         }
-        let inner = match &value {
-            Value::Ref(inner) | Value::InteriorRef(inner) => inner,
-            Value::LocalRef { value, .. } => value,
-            _ => {
-                return Err(error(
-                    range,
-                    "slicing reinterpreted pointers in constants is not supported yet".into(),
-                ));
+        let pointee = pointer_pointee(source_ty).ok_or_else(|| unsupported_view(range))?;
+        let element = pointee
+            .sequence_elem()
+            .or_else(|| (pointee == Ty::STR).then_some(Ty::int(IntTy::U8)))
+            .ok_or_else(|| unsupported_view(range))?;
+        let mut view = &value;
+        while let Value::PointerView { pointer, .. } = view {
+            view = pointer;
+        }
+        let count = match view {
+            Value::PointerOffset { len: Some(len), .. } => Some(*len),
+            Value::Ref(inner)
+            | Value::InteriorRef(inner)
+            | Value::LocalRef { value: inner, .. } => match &**inner {
+                Value::Aggregate(elements) => Some(elements.len() as u64),
+                _ => None,
+            },
+            Value::Static(id) => self.sigs.consts[*id].array_len(),
+            Value::StaticPart { id, path } => {
+                static_path_type(self.sigs, self.sigs.consts[*id], path).and_then(Ty::array_len)
             }
-        };
-        let Value::Aggregate(elements) = &**inner else {
-            return Err(error(range, "constant subslice requires an array".into()));
-        };
-        let elements = elements
-            .get(start..end)
-            .ok_or_else(|| error(range, "constant subslice is out of bounds".into()))?;
-        // Mutable constant memory retains its existing explicit restriction.
-        // Empty promoted mutable slices have no reachable storage to modify.
-        if mutable && (!elements.is_empty() || matches!(value, Value::LocalRef { .. })) {
+            _ => pointee.array_len(),
+        }
+        .ok_or_else(|| unsupported_view(range))?;
+        if start > end || end as u64 > count {
+            return Err(error(range, "constant subslice is out of bounds".into()));
+        }
+        let (pointer, source, offset) = self.pointer_origin(value, source_ty, range)?;
+        if mutable && (start != end || matches!(pointer, Value::LocalRef { .. })) {
             return Err(error(
                 range,
                 "mutable references in constants are not supported yet".into(),
             ));
         }
-        let sliced = Arc::new(Value::Aggregate(elements.into()));
-        Ok(match value {
-            Value::Ref(_) => Value::Ref(sliced),
-            Value::InteriorRef(_) => Value::InteriorRef(sliced),
-            Value::LocalRef { origin, raw, .. } => Value::LocalRef {
-                value: sliced,
-                origin,
-                raw,
+        let delta = (start as u64)
+            .checked_mul(self.view_layout(element, range)?.size)
+            .ok_or_else(|| unsupported_view(range))?;
+        let offset = offset
+            .checked_add(delta)
+            .ok_or_else(|| unsupported_view(range))?;
+        let target = Ty::new(TyKind::Ref(
+            if mutable {
+                flux_ty::Mutability::Mut
+            } else {
+                flux_ty::Mutability::Not
             },
-            _ => unreachable!("reference form checked above"),
+            if pointee == Ty::STR {
+                Ty::STR
+            } else {
+                Ty::new(TyKind::Slice(element))
+            },
+        ));
+        Ok(Value::PointerOffset {
+            pointer: Arc::new(pointer),
+            source,
+            offset,
+            target,
+            len: Some((end - start) as u64),
         })
     }
 
@@ -1160,11 +1517,14 @@ impl<'a> Evaluator<'a> {
         &mut self,
         mut value: Value,
         pointer_ty: Ty,
-        element: Ty,
         len: u64,
-        mutable: bool,
+        result_ty: Ty,
         range: TextRange,
     ) -> Result<Value, EvalError> {
+        let element = pointer_pointee(result_ty)
+            .and_then(Ty::sequence_elem)
+            .ok_or_else(|| unsupported_view(range))?;
+        let mutable = matches!(result_ty.kind(), TyKind::Ref(flux_ty::Mutability::Mut, _));
         let mut stored = pointer_pointee(pointer_ty);
         while let Value::PointerView {
             pointer, source, ..
@@ -1172,6 +1532,35 @@ impl<'a> Evaluator<'a> {
         {
             stored = pointer_pointee(source);
             value = (*pointer).clone();
+        }
+        if matches!(value, Value::PointerOffset { .. }) {
+            let (pointer, source, offset) = self.pointer_origin(value, pointer_ty, range)?;
+            let storage = self.allocation_type(&pointer, source, range)?;
+            let size = self.view_layout(storage, range)?.size;
+            let bytes = len
+                .checked_mul(self.view_layout(element, range)?.size)
+                .filter(|&n| n <= i64::MAX as u64)
+                .ok_or_else(|| error(range, "constant raw slice size overflows isize".into()))?;
+            if offset.checked_add(bytes).is_none_or(|end| end > size) {
+                return Err(error(range, "constant raw slice is out of bounds".into()));
+            }
+            if mutable && (len != 0 || matches!(pointer, Value::LocalRef { .. })) {
+                return Err(error(
+                    range,
+                    "mutable references in constants are not supported yet".into(),
+                ));
+            }
+            let view = Value::PointerOffset {
+                pointer: Arc::new(pointer),
+                source,
+                offset,
+                target: result_ty,
+                len: Some(len),
+            };
+            if matches!(result_ty.kind(), TyKind::Ref(..)) {
+                self.pointer_value(&view, result_ty, result_ty, range)?;
+            }
+            return Ok(view);
         }
         stored = match &value {
             Value::Static(id) => Some(self.sigs.consts[*id]),
@@ -1215,7 +1604,15 @@ impl<'a> Evaluator<'a> {
         }
         // No reference is formed by raw-slice construction. Mutable references
         // still obey subslice_value's existing constant-memory restrictions.
-        self.subslice_value(value, 0, len as usize, mutable, range)
+        let source_ty = Ty::raw_ptr(
+            flux_ty::Mutability::Not,
+            stored.ok_or_else(|| unsupported_view(range))?,
+        );
+        let mut view = self.subslice_value(value, 0, len as usize, source_ty, mutable, range)?;
+        if let Value::PointerOffset { target, .. } = &mut view {
+            *target = result_ty;
+        }
+        Ok(view)
     }
 
     /// The initial value of static `id`, read at `range`. A constant may
@@ -1531,6 +1928,7 @@ impl<'a> Evaluator<'a> {
                         | Value::RawAddr(_)
                         | Value::Ref(_)
                         | Value::InteriorRef(_)
+                        | Value::PointerOffset { .. }
                         | Value::PointerView { .. }
                         | Value::LocalRef { .. } => {
                             unreachable!("switches on scalars")
@@ -1659,6 +2057,44 @@ impl<'a> Evaluator<'a> {
                     if matches!(
                         self.items.functions[*func].intrinsic,
                         Some(
+                            flux_hir::Intrinsic::PtrAdd
+                                | flux_hir::Intrinsic::PtrSub
+                                | flux_hir::Intrinsic::PtrOffset
+                        )
+                    ) && let [pointer, count] = &args[..]
+                    {
+                        let value = self.operand(locals, generics, pointer, range)?;
+                        let Value::Int { bits, ty } =
+                            self.operand(locals, generics, count, range)?
+                        else {
+                            return Err(unsupported_view(range));
+                        };
+                        let count = if self.items.functions[*func].intrinsic
+                            == Some(flux_hir::Intrinsic::PtrOffset)
+                        {
+                            sign_extend(bits, ty)
+                        } else if self.items.functions[*func].intrinsic
+                            == Some(flux_hir::Intrinsic::PtrSub)
+                        {
+                            -(bits as i128)
+                        } else {
+                            bits as i128
+                        };
+                        let pointer_ty = flux_ty::traits::normalize(
+                            self.items,
+                            self.sigs,
+                            &[],
+                            body.operand_ty(pointer, self.sigs).subst(generics),
+                        );
+                        let value = self.pointer_offset(value, pointer_ty, count, range)?;
+                        write(locals, dest, value, range)?;
+                        block = target
+                            .ok_or_else(|| error(range, "entering unreachable code".into()))?;
+                        continue;
+                    }
+                    if matches!(
+                        self.items.functions[*func].intrinsic,
+                        Some(
                             flux_hir::Intrinsic::SliceFromRawParts
                                 | flux_hir::Intrinsic::SliceFromRawPartsMut
                                 | flux_hir::Intrinsic::RawSliceFromParts
@@ -1678,16 +2114,17 @@ impl<'a> Evaluator<'a> {
                             &[],
                             body.operand_ty(data, self.sigs).subst(generics),
                         );
-                        let element = flux_ty::traits::normalize(
-                            self.items,
-                            self.sigs,
-                            &[],
-                            generic_args[0].subst(generics),
-                        );
-                        let mutable = self.items.functions[*func].intrinsic
-                            == Some(flux_hir::Intrinsic::SliceFromRawPartsMut);
                         let value = self.slice_from_pointer(
-                            value, pointer_ty, element, len as u64, mutable, range,
+                            value,
+                            pointer_ty,
+                            len as u64,
+                            flux_ty::traits::normalize(
+                                self.items,
+                                self.sigs,
+                                &[],
+                                body.place_ty(dest, self.sigs).subst(generics),
+                            ),
+                            range,
                         )?;
                         write(locals, dest, value, range)?;
                         block = target
@@ -1738,6 +2175,12 @@ impl<'a> Evaluator<'a> {
                             value,
                             start as usize,
                             end as usize,
+                            flux_ty::traits::normalize(
+                                self.items,
+                                self.sigs,
+                                &[],
+                                body.operand_ty(slice, self.sigs).subst(generics),
+                            ),
                             self.items.functions[*func].intrinsic
                                 == Some(flux_hir::Intrinsic::SubsliceMut),
                             range,
@@ -2145,9 +2588,9 @@ impl<'a> Evaluator<'a> {
             Value::Ref(value) | Value::InteriorRef(value) | Value::LocalRef { value, .. } => {
                 self.promoted_layouts(value, range)?
             }
-            Value::PointerView { pointer, .. } | Value::DynPointer { pointer, .. } => {
-                self.promoted_layouts(pointer, range)?
-            }
+            Value::PointerView { pointer, .. }
+            | Value::PointerOffset { pointer, .. }
+            | Value::DynPointer { pointer, .. } => self.promoted_layouts(pointer, range)?,
             Value::Float { .. }
             | Value::Int { .. }
             | Value::Bool(_)
@@ -2243,6 +2686,12 @@ impl<'a> Evaluator<'a> {
                     while let Some(Value::PointerView { pointer: inner, .. }) = pointer {
                         pointer = Some(inner.as_ref());
                     }
+                    if let Some(Value::PointerOffset { len: Some(len), .. }) = pointer {
+                        return Ok(Value::Int {
+                            bits: u128::from(*len),
+                            ty: IntTy::Usize,
+                        });
+                    }
                     match pointer {
                         Some(Value::Static(id)) => Some(self.sigs.consts[*id]),
                         Some(Value::StaticPart { id, path }) => {
@@ -2289,11 +2738,41 @@ impl<'a> Evaluator<'a> {
             // it is borrowed: a copy of it.
             Rvalue::Ref {
                 raw,
-                mutability: flux_ty::Mutability::Not,
+                mutability,
                 place,
                 ..
-            } => {
+            } if *raw || *mutability == flux_ty::Mutability::Not => {
                 if place.projection.first() == Some(&ProjectionElem::Deref) {
+                    if place.projection.len() > 1
+                        && !place.projection[1..].contains(&ProjectionElem::Deref)
+                        && let Some(Some(
+                            value @ (Value::Ref(_)
+                            | Value::InteriorRef(_)
+                            | Value::LocalRef { .. }
+                            | Value::PointerView { .. }
+                            | Value::PointerOffset { .. }),
+                        )) = locals.get(place.local.index())
+                    {
+                        let source = body.locals[place.local].ty.subst(generics);
+                        let pointee = body.place_ty(place, self.sigs).subst(generics);
+                        let target = if *raw {
+                            Ty::raw_ptr(*mutability, pointee)
+                        } else {
+                            Ty::new(TyKind::Ref(*mutability, pointee))
+                        };
+                        let value = self.projected_address(
+                            value.clone(),
+                            source,
+                            &place.projection[1..],
+                            locals,
+                            target,
+                            range,
+                        )?;
+                        if !*raw {
+                            self.pointer_value(&value, target, target, range)?;
+                        }
+                        return Ok(value);
+                    }
                     if place.projection.len() == 1
                         && let Some(Some(Value::DynPointer {
                             pointer,
@@ -2306,29 +2785,34 @@ impl<'a> Evaluator<'a> {
                             pointer: pointer.clone(),
                             concrete: *concrete,
                             object: *object,
-                            mutable: flux_ty::Mutability::Not,
+                            mutable: *mutability,
                         });
                     }
-                    if let Some(Some(value @ Value::PointerView { .. })) =
-                        locals.get(place.local.index())
+                    if let Some(Some(
+                        value @ (Value::PointerView { .. } | Value::PointerOffset { .. }),
+                    )) = locals.get(place.local.index())
                     {
                         if place.projection.len() != 1 {
                             return Err(unsupported_view(range));
                         }
-                        if let Value::PointerView {
-                            pointer,
-                            source,
-                            target,
-                        } = value
+                        if !*raw
+                            && let Value::PointerView {
+                                pointer,
+                                source,
+                                target,
+                            } = value
                         {
                             self.pointer_value(pointer, *source, *target, range)?;
+                        }
+                        if !*raw && let Value::PointerOffset { target, .. } = value {
+                            self.pointer_value(value, *target, *target, range)?;
                         }
                         let pointee = body.place_ty(place, self.sigs).subst(generics);
                         return Ok(pointer_view(
                             value.clone(),
                             body.locals[place.local].ty.subst(generics),
                             if *raw {
-                                Ty::raw_ptr(flux_ty::Mutability::Not, pointee)
+                                Ty::raw_ptr(*mutability, pointee)
                             } else {
                                 Ty::new(TyKind::Ref(flux_ty::Mutability::Not, pointee))
                             },
@@ -2552,6 +3036,29 @@ impl<'a> Evaluator<'a> {
                         _=>Err(error(range,"trait objects from reinterpreted or raw addresses in constants are not supported yet".into()))
                     };
                 }
+                if let Value::PointerOffset {
+                    pointer,
+                    source,
+                    offset,
+                    ..
+                } = &value
+                {
+                    if let (Some(TyKind::Array(element, count)), Some(TyKind::Slice(target))) = (
+                        pointer_pointee(from).map(Ty::kind),
+                        pointer_pointee(to).map(Ty::kind),
+                    ) && element == target
+                        && let Some(len) = count.as_usize()
+                    {
+                        return Ok(Value::PointerOffset {
+                            pointer: pointer.clone(),
+                            source: *source,
+                            offset: *offset,
+                            target: to,
+                            len: Some(len),
+                        });
+                    }
+                    return Err(unsupported_view(range));
+                }
                 if matches!(value, Value::RawAddr(_) | Value::PointerView { .. }) {
                     return Err(error(
                         range,
@@ -2576,7 +3083,20 @@ impl<'a> Evaluator<'a> {
                         "constant subslice bounds must be integers".into(),
                     ));
                 };
-                self.subslice_value(value, start as usize, end as usize, mutable, range)
+                let source_ty = flux_ty::traits::normalize(
+                    self.items,
+                    self.sigs,
+                    &[],
+                    body.operand_ty(slice, self.sigs).subst(generics),
+                );
+                self.subslice_value(
+                    value,
+                    start as usize,
+                    end as usize,
+                    source_ty,
+                    mutable,
+                    range,
+                )
             }
             Rvalue::Ref { .. } => Err(error(
                 range,
@@ -2607,6 +3127,7 @@ impl<'a> Evaluator<'a> {
                         | Value::InteriorRef(_)
                         | Value::Static(_)
                         | Value::StaticPart { .. }
+                        | Value::PointerOffset { .. }
                         | Value::PointerView { .. }
                         | Value::LocalRef { .. } => Ok(pointer_view(
                             value,
@@ -2637,6 +3158,7 @@ impl<'a> Evaluator<'a> {
                 | Value::Static(_)
                 | Value::StaticPart { .. }
                 | Value::RawAddr(_)
+                | Value::PointerOffset { .. }
                 | Value::PointerView { .. }
                 | Value::LocalRef { .. } = value
                 {
@@ -2661,6 +3183,7 @@ impl<'a> Evaluator<'a> {
                     | Value::RawAddr(_)
                     | Value::Ref(_)
                     | Value::InteriorRef(_)
+                    | Value::PointerOffset { .. }
                     | Value::PointerView { .. }
                     | Value::LocalRef { .. } => {
                         unreachable!("casts are of scalars")
@@ -2746,18 +3269,23 @@ fn pointer_pointee(ty: Ty) -> Option<Ty> {
     }
 }
 
-fn pointer_view(value: Value, source: Ty, target: Ty) -> Value {
+fn mark_raw_origin(value: &mut Value) {
+    match value {
+        Value::LocalRef { raw, .. } => *raw = true,
+        Value::PointerOffset { pointer, .. } | Value::PointerView { pointer, .. } => {
+            mark_raw_origin(Arc::make_mut(pointer))
+        }
+        _ => {}
+    }
+}
+
+fn pointer_view(mut value: Value, source: Ty, target: Ty) -> Value {
     if matches!(value, Value::RawAddr(_)) {
         return value;
     }
-    let value = match value {
-        Value::LocalRef { value, origin, raw } => Value::LocalRef {
-            value,
-            origin,
-            raw: raw || matches!(target.kind(), TyKind::RawPtr(..)),
-        },
-        value => value,
-    };
+    if matches!(target.kind(), TyKind::RawPtr(..)) {
+        mark_raw_origin(&mut value);
+    }
     let (pointer, source) = match value {
         Value::PointerView {
             pointer, source, ..
@@ -2946,6 +3474,17 @@ fn project_with_reader(
                     local: Some(*local),
                 };
                 let viewed = reader(reference, Ty::ERROR, Ty::ERROR, range)?;
+                return project_with_reader(
+                    locals,
+                    &viewed,
+                    &projection[k + 1..],
+                    range,
+                    origin,
+                    reader,
+                );
+            }
+            (ProjectionElem::Deref, offset @ Value::PointerOffset { target, .. }) => {
+                let viewed = reader(offset, *target, *target, range)?;
                 return project_with_reader(
                     locals,
                     &viewed,
@@ -3226,6 +3765,11 @@ pub fn show(value: &Value) -> String {
         Value::Aggregate(_) | Value::Variant { .. } => "{aggregate}".to_owned(),
         Value::Static(_) | Value::StaticPart { .. } => "{static}".to_owned(),
         Value::RawAddr(address) => format!("0x{address:x}"),
+        Value::PointerOffset {
+            ref pointer,
+            offset,
+            ..
+        } => format!("{}+{offset}", show(pointer)),
         Value::PointerView { ref pointer, .. } => show(pointer),
         Value::LocalRef { ref value, .. } => format!("&{}", show(value)),
         Value::Ref(ref pointee) | Value::InteriorRef(ref pointee) => format!("&{}", show(pointee)),

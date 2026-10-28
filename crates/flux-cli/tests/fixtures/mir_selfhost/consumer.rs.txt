@@ -49,6 +49,7 @@ fn main() {
                 if name=="const_loop" {assert_eq!(shown,"21_u32");}
                 if name=="enum_const" {assert_eq!(shown,"7_u32");}
                 if name=="const_reference" {assert_eq!(shown,"29_u32");}
+                if name=="const_pointer_offsets" {assert_eq!(shown,"13_u32");}
                 println!("const ANSWER {shown}");
             }
         }

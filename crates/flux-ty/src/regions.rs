@@ -42,6 +42,7 @@ pub(crate) const BODY_PROJECTION_LIFETIMES: &str =
     "lifetimes in associated type annotations are not supported yet";
 
 mod resolve;
+mod selected;
 mod trait_profile;
 
 pub use trait_profile::{
@@ -197,6 +198,9 @@ pub struct OpaqueRegions {
 /// The lifetimes of a struct's or enum's fields.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StructRegions {
+    /// Concrete field selection inputs remain invariant and well formed even
+    /// when the selected output no longer mentions all of their lifetimes.
+    pub selected_inputs: Box<[(crate::AliasTy, Box<[Region]>)]>,
     /// Original declaration predicates, beside `Signatures::struct_predicates`.
     pub bound_selfs: Box<[Box<[Region]>]>,
     pub bound_traits: Box<[TraitRefRegions]>,
@@ -498,6 +502,10 @@ pub(crate) struct Walker<'a> {
     pub inherited_self_types: &'a [(Symbol, Box<[Region]>)],
     /// For resolving the types an alias is given.
     pub scope: TypeScope<'a>,
+    /// Completed impl signatures for concrete qualified projection occurrences.
+    pub signatures: Option<&'a Signatures>,
+    /// Selection inputs stay invariant even when normalization erases them.
+    pub selected_inputs: Vec<(crate::AliasTy, Box<[Region]>)>,
     /// Local annotations cannot yet map associated projections' written lifetimes.
     pub body: bool,
     pub elided: Elided,
@@ -530,6 +538,8 @@ impl<'a> Walker<'a> {
             unmapped_self_types: &[],
             inherited_self_types: &[],
             scope: TypeScope::default(),
+            signatures: None,
+            selected_inputs: Vec::new(),
             body: false,
             elided: Elided::Is(Region::Erased),
             fresh: Vec::new(),
@@ -742,6 +752,43 @@ impl<'a> Walker<'a> {
     }
 
     fn path(&mut self, path: &Path, ty: Ty, out: &mut Vec<Region>) {
+        if path.qself.is_some()
+            && let Some(sigs) = self.signatures
+        {
+            let raw = crate::resolve_type(
+                self.items,
+                self.module,
+                &TypeRef::Path(path.clone()),
+                self.scope,
+                path.range(0, TextRange::default()),
+                &mut Vec::new(),
+            );
+            if let TyKind::Alias(alias) = raw.kind()
+                && !has_projection_inputs(alias)
+                && crate::traits::normalize(self.items, sigs, &[], raw) == ty
+                && raw != ty
+            {
+                let mut inputs = Vec::new();
+                self.projection_inputs(path, alias, &mut inputs);
+                if let Some(row) = selected::projection(self.items, sigs, alias, &inputs) {
+                    self.selected_inputs.push((alias, inputs.into()));
+                    out.extend(row);
+                } else {
+                    self.errors.push((
+                        path.range(0, TextRange::default()),
+                        "selected projection lifetime mapping is not supported yet".into(),
+                    ));
+                }
+                return;
+            }
+            if raw != ty {
+                self.errors.push((
+                    path.range(0, TextRange::default()),
+                    "selected projection lifetime mapping is not supported yet".into(),
+                ));
+                return;
+            }
+        }
         if let TyKind::Alias(alias) = ty.kind()
             && has_projection_inputs(alias)
         {

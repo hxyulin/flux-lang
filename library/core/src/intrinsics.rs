@@ -4,6 +4,23 @@
 //! their bodies never run; their signatures are what the borrow checker
 //! sees.
 
+/// Allocation-preserving pointer arithmetic. The caller must keep the result
+/// within the allocation or at its end, with an isize-sized displacement.
+#[rustc_intrinsic]
+pub(crate) const unsafe fn ptr_add<T>(pointer: *const T, count: usize) -> *const T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) const unsafe fn ptr_sub<T>(pointer: *const T, count: usize) -> *const T {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) const unsafe fn ptr_offset<T>(pointer: *const T, count: isize) -> *const T {
+    loop {}
+}
+
 /// A bitwise copy of `*src`, which need not be `Copy`: the caller makes
 /// sure that only one of the two is used and dropped.
 #[rustc_intrinsic]

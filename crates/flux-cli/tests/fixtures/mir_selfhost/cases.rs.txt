@@ -12,4 +12,6 @@ pub const CASES: &[(&str, &str, bool, bool)] = &[
     ("move", "fn target(){let value=String::from(\"x\");let moved=value;let n=value.len();}fn main(){target();}", true, false),
     ("borrow", "fn target(){let mut value=3;let borrowed=&value;value=5;let n=*borrowed;}fn main(){target();}", true, false),
     ("const_overflow", "const ANSWER:u8=255u8+1;fn main(){let answer=ANSWER;}", true, false),
+    ("const_pointer_offsets", "static DATA:[u32;4]=[7,11,13,17];const REST:&[u32]=unsafe{std::slice::from_raw_parts(DATA.as_ptr().add(1),3)};const ANSWER:u32=unsafe{*REST.as_ptr().add(3).sub(2)};fn main(){let answer=ANSWER;}", true, true),
+    ("const_projected_pointer_oob", "#[repr(C)]struct S{x:u32,y:u32}static DATA:[S;1]=[S{x:7,y:11}];const BAD:*const u32=unsafe{&raw const (*DATA.as_ptr().add(1)).y};fn main(){let _=BAD;}", true, false),
 ];

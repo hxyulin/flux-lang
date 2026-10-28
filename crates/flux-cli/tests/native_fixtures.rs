@@ -136,3 +136,13 @@ fn unsized_guards() {
 fn selected_output_bounds() {
     support::oracle::compare_fixture("selected_output_bounds");
 }
+
+#[test]
+fn const_pointer_offsets() {
+    support::oracle::compare_fixture("const_pointer_offsets");
+}
+
+#[test]
+fn qualified_lifetime_regions() {
+    support::oracle::compare_fixture("qualified_lifetime_regions");
+}

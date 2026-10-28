@@ -1029,6 +1029,45 @@ impl Ctx<'_> {
             V::InteriorRef(_) | V::LocalRef { .. } => {
                 unreachable!("escaping transient borrows are rejected")
             }
+            V::PointerOffset {
+                pointer,
+                source,
+                offset,
+                len,
+                ..
+            } => {
+                let mut original = vec![0; self.layouts.of(*source).size as usize];
+                let mut pointers = Vec::new();
+                self.write_bytes(pointer, *source, 0, &mut original, &mut pointers);
+                bytes[at..at + 8].copy_from_slice(&original[..8]);
+                for (_, symbol, addend) in pointers.into_iter().filter(|(at, _, _)| *at == 0) {
+                    let addend = u64::from(addend)
+                        .checked_add(*offset)
+                        .and_then(|n| u32::try_from(n).ok())
+                        .unwrap_or_else(|| {
+                            let mut diagnostic = Diagnostic::new(
+                                Default::default(),
+                                "constant pointer addends larger than u32 are not supported yet",
+                            );
+                            if let V::Static(id) = pointer.as_ref() {
+                                let declaration = &self.hir.items.consts[*id];
+                                diagnostic.file = declaration.loc.file;
+                                diagnostic.range = declaration.def_range;
+                            }
+                            self.data_errors.push(diagnostic);
+                            0
+                        });
+                    addresses.push((at, symbol, addend));
+                }
+                if layout.size > 8 {
+                    put(
+                        bytes,
+                        at + 8,
+                        u128::from(len.expect("wide offset pointer has metadata")),
+                        8,
+                    );
+                }
+            }
             V::PointerView {
                 pointer, source, ..
             } => {
@@ -2374,6 +2413,23 @@ impl Lower<'_, '_, '_> {
             }
             V::InteriorRef(_) | V::LocalRef { .. } => {
                 unreachable!("escaping transient borrows are rejected")
+            }
+            V::PointerOffset {
+                pointer,
+                source,
+                offset,
+                len,
+                ..
+            } => {
+                let mut original = Values::new();
+                self.value_leaves(pointer, *source, &mut original);
+                out.push(self.offset(original[0], *offset));
+                if self.ctx.layouts.of(ty).size > 8 {
+                    out.push(self.int_const(
+                        u128::from(len.expect("wide offset pointer has metadata")),
+                        IntTy::Usize,
+                    ));
+                }
             }
             V::PointerView {
                 pointer, source, ..
