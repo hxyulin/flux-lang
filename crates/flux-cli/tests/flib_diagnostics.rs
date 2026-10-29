@@ -149,6 +149,7 @@ fn compare(source: &str, stage: &'static str, message: &str, span: &str) {
         hash: [7; 32],
         dependencies: &dependencies,
         object: None,
+        required_instances: &[],
         freshness: None,
     })
     .unwrap();
@@ -189,7 +190,7 @@ fn compare(source: &str, stage: &'static str, message: &str, span: &str) {
         Symbol::intern("b"),
         vec![(Symbol::intern("a"), decoded.dependency.krate)],
     );
-    let actual = diagnostics(&consumer, Some((&types, &imported, &roots)));
+    let actual = diagnostics(&consumer, Some((&types, &imported, &roots.functions)));
     assert_eq!(actual, expected);
 }
 

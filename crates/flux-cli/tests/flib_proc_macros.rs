@@ -132,6 +132,7 @@ use proc_macro::TokenStream;
         hash: [8; 32],
         dependencies: &dependencies,
         object: None,
+        required_instances: &[],
         freshness: None,
     })
     .unwrap();

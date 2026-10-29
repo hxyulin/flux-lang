@@ -44,6 +44,7 @@ fn checked_crate_loads_without_source_or_dependency_checking() {
         hash: [7; 32],
         dependencies: &deps,
         object: None,
+        required_instances: &[],
         freshness: None,
     })
     .unwrap();
@@ -90,6 +91,7 @@ fn checked_crate_loads_without_source_or_dependency_checking() {
         hash: [7; 32],
         dependencies: &deps,
         object: None,
+        required_instances: &[],
         freshness: None,
     })
     .unwrap();
@@ -102,6 +104,7 @@ fn checked_crate_loads_without_source_or_dependency_checking() {
         hash: [7; 32],
         dependencies: &deps,
         object: Some(vec![1, 2, 3]),
+        required_instances: &[],
         freshness: None,
     })
     .unwrap();
@@ -121,8 +124,16 @@ fn checked_crate_loads_without_source_or_dependency_checking() {
     )
     .unwrap();
     let mut e = flux_hir::flib::Encoder::new();
-    flux_hir::flib::Encode::encode(&(1u32, "wrong-target".to_owned(), None::<Vec<u8>>), &mut e)
-        .unwrap();
+    flux_hir::flib::Encode::encode(
+        &(
+            2u32,
+            "wrong-target".to_owned(),
+            None::<Vec<u8>>,
+            Vec::<u8>::new(),
+        ),
+        &mut e,
+    )
+    .unwrap();
     metadata
         .sections
         .iter_mut()
@@ -178,6 +189,7 @@ fn call_positions_inside_utf8_codepoints_are_rejected() {
         hash: [9; 32],
         dependencies: &deps,
         object: None,
+        required_instances: &[],
         freshness: None,
     })
     .unwrap();
@@ -193,4 +205,49 @@ fn call_positions_inside_utf8_codepoints_are_rejected() {
     )
     .unwrap_err();
     assert!(error.contains("invalid MIR source range"), "{error}");
+}
+
+#[test]
+fn obsolete_linkage_abi_is_rejected_before_reading_instance_requirements() {
+    use flux_cli::flib::{Archive, Metadata, Section};
+    use flux_hir::flib::{Encode, Encoder};
+    let mut identity = Encoder::new();
+    ("old-library", vec![3u8; 32], Vec::<Vec<u8>>::new())
+        .encode(&mut identity)
+        .unwrap();
+    let mut linkage = Encoder::new();
+    // This is the actual ABI 1 layout: no structural-instance payload follows.
+    (
+        1u32,
+        flux_codegen::Target::host().unwrap().triple(),
+        None::<Vec<u8>>,
+    )
+        .encode(&mut linkage)
+        .unwrap();
+    let identity = identity.into_bytes();
+    let linkage = linkage.into_bytes();
+    let metadata = Metadata {
+        compiler: flux_cli::flib::compiler_identity().unwrap(),
+        sections: (1..=9)
+            .map(|tag| Section {
+                tag,
+                bytes: match tag {
+                    1 => identity.clone(),
+                    9 => linkage.clone(),
+                    _ => Vec::new(),
+                },
+            })
+            .collect(),
+    }
+    .encode()
+    .unwrap();
+    let bytes = Archive {
+        metadata,
+        object: None,
+    }
+    .encode()
+    .unwrap();
+    let error = flux_cli::flib::semantic::manifest(&bytes).unwrap_err();
+    assert!(error.contains("linkage ABI 1"), "{error}");
+    assert!(error.contains("rebuild the artifact"), "{error}");
 }

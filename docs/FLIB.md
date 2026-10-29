@@ -31,8 +31,9 @@ to the metadata member. A trailing SHA-256 checksum covers the header, directory
 and section bytes; framing readers detect damaged payloads before freshness or
 semantic decoding. Version 1 requires every defined section; empty sections
 have zero records. Reject unknown versions, unknown section tags, duplicates,
-overlapping ranges and trailing payload bytes. Any incompatible schema change
-increments the version. There is no migration or best-effort decode.
+overlapping ranges and trailing payload bytes. Container changes increment the
+format version; link-record changes increment the linkage ABI. Compiler identity
+rejects metadata from other IR builds. There is no migration or best-effort decode.
 
 Use explicit numeric variant tags, little-endian fixed-width integers, `u32`
 record counts and byte lengths, UTF-8 strings, and canonical record ordering.
@@ -243,11 +244,24 @@ signature tables and source arena boundary; `signatures_from` resolves only
 new declarations. `flux_mir::imported::ImportedMir` supplies checked MIR without
 requiring imported HIR or inference records.
 
-`ImportedMir::required_functions` scans imported calls, vtables, promotions and
-constant allocations once. Its roots feed type checking, MIR construction and
-codegen. This matters even for an unused emitted library function: its object
+`ImportedMir::required_functions` produces one root bundle from imported calls,
+vtables, promotions, constant allocations and the concrete instances required by
+dependency objects. Function roots feed type checking and MIR construction;
+concrete instance roots retain generic arguments for codegen. This matters even for an unused emitted library function: its object
 may still contain references to embedded runtime functions. Lookup through the
 provider decides whether a visited body is already checked.
+
+Linkage ABI 2 records concrete instance requirements from the producing object's
+actual monomorphization traversal, before imported definitions are excluded from
+emission. Retained but unused generic MIR is not another source of object roots.
+A function ID alone cannot describe a generic built-in call required only by an
+upstream object. ABI 1 is rejected before reading the instance stream, with a
+request to rebuild the artifact.
+
+Symbolic exported templates use structural substitution and conservative local
+implementation reachability. Concrete monomorphization still normalizes types
+and resolves trait instances. Private helpers reached through fixed associated
+type projections and opaque iterator returns have native boundary regressions.
 
 Runtime `TypeId` uses 128 bits of a structural SHA-256 fingerprint after the
 solver's existing normalization and binder canonicalization. Definition keys

@@ -566,9 +566,14 @@ impl<'a> Reach<'a> {
                 if matches!(
                     wanted.kind(),
                     TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)
-                ) && !self.call_available(self_ty, t)
-                {
-                    continue;
+                ) {
+                    // An unknown receiver can select this crate's native
+                    // helpers. Foreign implementations are instantiated by
+                    // the downstream concrete caller, rather than expanding
+                    // every foreign adapter around an unknown parameter.
+                    if !self.own(self.items.impls[imp].module) || !self.call_available(self_ty, t) {
+                        continue;
+                    }
                 }
             }
             if !self.trait_arguments_match(imp, c.args) {
@@ -583,19 +588,22 @@ impl<'a> Reach<'a> {
     }
 
     fn call(&mut self, f: FunctionId, args: flux_ty::GenericArgs, runtime: bool) {
+        // Symbolic templates do not provide the concrete bounds required for
+        // instance selection. Retain matching implementations conservatively.
+        if args.iter().any(|ty| ty.has_params()) {
+            self.function_args(f, args, runtime);
+            if matches!(self.items.functions[f].owner, Some(Owner::Trait(_))) {
+                self.symbolic_calls.insert((f, args, runtime));
+                self.symbolic_call(f, args, runtime);
+            }
+            return;
+        }
         let resolved = flux_solve::traits::resolve_instance(
             self.items,
             self.sigs,
             Instance { function: f, args },
         );
         self.function_args(resolved.function, resolved.args, runtime);
-        if resolved.function == f
-            && args.iter().any(|ty| ty.has_params())
-            && matches!(self.items.functions[f].owner, Some(Owner::Trait(_)))
-        {
-            self.symbolic_calls.insert((f, args, runtime));
-            self.symbolic_call(f, args, runtime);
-        }
     }
 
     fn symbolic_call(&mut self, f: FunctionId, args: flux_ty::GenericArgs, runtime: bool) {
@@ -610,9 +618,14 @@ impl<'a> Reach<'a> {
                 if matches!(
                     wanted.kind(),
                     TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)
-                ) && !self.call_available(self_ty, t)
-                {
-                    continue;
+                ) {
+                    // An unknown receiver can select this crate's native
+                    // helpers. Foreign implementations are instantiated by
+                    // the downstream concrete caller, rather than expanding
+                    // every foreign adapter around an unknown parameter.
+                    if !self.own(self.items.impls[imp].module) || !self.call_available(self_ty, t) {
+                        continue;
+                    }
                 }
             }
             if !self.trait_arguments_match(imp, args) {
@@ -641,17 +654,33 @@ impl<'a> Reach<'a> {
     }
 
     fn template_matches(&self, left: Ty, right: Ty) -> bool {
-        fn erase_unresolved(ty: Ty) -> Ty {
-            match ty.kind() {
+        fn erase_unresolved(ty: Ty, memo: &mut FxHashMap<Ty, Ty>) -> Ty {
+            if let Some(&erased) = memo.get(&ty) {
+                return erased;
+            }
+            let erased = match ty.kind() {
                 TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Infer(_) => {
                     Ty::param(u32::MAX, flux_intern::Symbol::intern("_flib"))
                 }
-                _ => ty.map_children(erase_unresolved),
-            }
+                _ => ty.map_children(|child| erase_unresolved(child, memo)),
+            };
+            memo.insert(ty, erased);
+            erased
         }
-        let left = flux_solve::traits::normalize(self.items, self.sigs, &[], left);
-        let right = flux_solve::traits::normalize(self.items, self.sigs, &[], right);
-        flux_ty_ir::overlap(erase_unresolved(left), erase_unresolved(right))
+        let normalize = |ty: Ty| {
+            if ty.has_params() {
+                ty
+            } else {
+                flux_solve::traits::normalize(self.items, self.sigs, &[], ty)
+            }
+        };
+        let left = normalize(left);
+        let right = normalize(right);
+        let mut memo = FxHashMap::default();
+        flux_ty_ir::overlap(
+            erase_unresolved(left, &mut memo),
+            erase_unresolved(right, &mut memo),
+        )
     }
 
     fn call_available(&self, ty: Ty, trait_: TraitId) -> bool {
@@ -827,10 +856,19 @@ impl<'a> Reach<'a> {
                 self.current = template.ancestors;
                 self.current.push(template.context);
                 let mir = self.mir;
+                let hir = self.hir;
+                let sigs = self.sigs;
+                let subst = |body: &Body| {
+                    if args.iter().any(|ty| ty.has_params()) {
+                        flux_mir::mono::subst_template(body, args)
+                    } else {
+                        flux_mir::mono::subst_body(hir, sigs, body, args)
+                    }
+                };
                 match owner {
                     ClosureOwner::Function(f) => {
                         if let Some(body) = mir.bodies.get(f) {
-                            let body = flux_mir::mono::subst_body(self.hir, self.sigs, body, args);
+                            let body = subst(body);
                             self.body(&body, template.runtime);
                         }
                     }
@@ -838,14 +876,14 @@ impl<'a> Reach<'a> {
                         if let Some(value) = mir.const_values.get(c, args) {
                             self.value(value);
                         } else if let Some(body) = mir.consts.get(c) {
-                            let body = flux_mir::mono::subst_body(self.hir, self.sigs, body, args);
+                            let body = subst(body);
                             self.body(&body, false);
                         }
                     }
                 }
                 if let Some(bodies) = self.closures.get(&owner).cloned() {
                     for body in bodies {
-                        let body = flux_mir::mono::subst_body(self.hir, self.sigs, body, args);
+                        let body = subst(body);
                         self.body(&body, template.runtime);
                     }
                 }

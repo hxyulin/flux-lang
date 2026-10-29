@@ -47,6 +47,7 @@ fn sibling_artifacts_resolve_transitive_hashes_before_semantic_loading() {
         hash: a_hash,
         dependencies: &initial.dependencies,
         object: None,
+        required_instances: &[],
         freshness: None,
     })
     .unwrap();
@@ -64,6 +65,7 @@ fn sibling_artifacts_resolve_transitive_hashes_before_semantic_loading() {
         hash: b_hash,
         dependencies: &dependencies,
         object: None,
+        required_instances: &[],
         freshness: None,
     })
     .unwrap();

@@ -113,6 +113,7 @@ fn module(library_only: bool, padding: bool) -> keel_ir::Module {
             } else {
                 std::slice::from_ref(&library)
             },
+            required_instances: &[],
             required_functions: &[],
         },
     )
@@ -194,6 +195,14 @@ fn separate_objects_link_with_generics_statics_and_function_pointers() {
 type TestCrate<'a> = (&'a str, &'a str, &'a [(&'a str, usize)], u8);
 
 fn staged_module(sources: &[TestCrate<'_>], library: Option<usize>) -> keel_ir::Module {
+    staged_lowered(sources, library, &[]).module
+}
+
+fn staged_lowered(
+    sources: &[TestCrate<'_>],
+    library: Option<usize>,
+    required_instances: &[flux_ty::Instance],
+) -> flux_codegen::LoweredCrate {
     let mut db = SourceDb::new();
     let roots: Vec<_> = sources
         .iter()
@@ -240,7 +249,7 @@ fn staged_module(sources: &[TestCrate<'_>], library: Option<usize>) -> keel_ir::
         .enumerate()
         .filter_map(|(i, &id)| (i != own).then_some(id))
         .collect();
-    flux_codegen::lower_crate(
+    flux_codegen::lower_crate_with_requirements(
         &hir,
         &typed,
         &mir,
@@ -250,6 +259,7 @@ fn staged_module(sources: &[TestCrate<'_>], library: Option<usize>) -> keel_ir::
             }),
             crate_hashes: &hashes,
             imported: &imported,
+            required_instances,
             required_functions: &[],
         },
     )
@@ -518,6 +528,7 @@ fn main() {}
             kind: OutputKind::Executable,
             crate_hashes: &hashes,
             imported: &[],
+            required_instances: &[],
             required_functions: &required,
         },
     )
@@ -761,6 +772,7 @@ fn forty_level_constant_allocation_dags_keep_shared_storage() {
         kind: OutputKind::Library(krate),
         crate_hashes: &hashes,
         imported: &[],
+        required_instances: &[],
         required_functions: &[],
     };
     let named = flux_codegen::lower_crate(&hir, &typed, &mir, compilation).unwrap();
@@ -798,4 +810,66 @@ fn forty_level_constant_allocation_dags_keep_shared_storage() {
         )
         .unwrap();
     }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[test]
+fn object_requirements_keep_concrete_embedded_instances() {
+    let library = r#"
+#[derive(Clone)]
+pub struct Wrapper(pub u32);
+pub fn cloned(value: u32) -> u32 { Wrapper(value).clone().0 }
+pub fn initialized() -> std::sync::OnceLock<u32> { Default::default() }
+pub fn characters<I: IntoIterator<Item = char>>(iter: I) -> String {
+    let mut string = String::new();
+    string.extend(iter);
+    string
+}
+fn dead<T>() { dead::<(T, T)>(); }
+"#;
+    // The executable never calls the non-generic exports. Their object still
+    // requires concrete embedded calls from both function bodies. The generic
+    // export also checks deferred foreign adapters after concrete substitution.
+    let sources = [
+        ("a", library, &[][..], 101),
+        (
+            "root",
+            "fn main() { assert_eq!(a::characters(['o', 'k']), \"ok\"); println!(\"42\"); }",
+            &[("a", 0)][..],
+            102,
+        ),
+    ];
+    let a = staged_lowered(&sources, Some(0), &[]);
+    assert!(!a.required_instances.is_empty());
+    assert!(
+        a.required_instances
+            .iter()
+            .any(|instance| !instance.args.is_empty())
+    );
+    assert!(
+        !a.module
+            .functions
+            .iter()
+            .any(|function| function.name.contains("dead"))
+    );
+    let b = staged_lowered(&sources, None, &a.required_instances);
+    for declaration in &a.module.decls {
+        if declaration.name.contains("assert_param_is_clone")
+            || declaration.name.contains("once_lock")
+        {
+            assert!(
+                b.module
+                    .functions
+                    .iter()
+                    .any(|function| function.name == declaration.name),
+                "missing {}",
+                declaration.name
+            );
+        }
+    }
+    run_objects(
+        &[a.module, b.module],
+        "concrete-object-requirements",
+        "42\n",
+    );
 }

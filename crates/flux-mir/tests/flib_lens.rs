@@ -71,7 +71,7 @@ fn source_array_lengths_use_imported_mir_and_values_without_inference() {
         "{:?}",
         consumer.diagnostics
     );
-    let checked = flux_mir::check_file_from(&consumer, &loaded, &imported, &roots);
+    let checked = flux_mir::check_file_from(&consumer, &loaded, &imported, &roots.functions);
     assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     assert!(
         checked

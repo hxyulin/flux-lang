@@ -83,6 +83,7 @@ pub(crate) fn compile(
     let loaded = flux_ty::flib::LoadedTypes::new(&state.items, state.sigs, &loaded_hashes)
         .map_err(|e| e.to_string())?;
     let imported = flux_mir::imported::ImportedMir::new(state.mir, state.items.counts())
+        .and_then(|provider| provider.with_required_instances(state.required_instances))
         .map_err(|e| e.to_string())?;
     let root = if let Some(exports) = &input.host_macros {
         state
@@ -119,7 +120,7 @@ pub(crate) fn compile(
     loaded.signatures().type_ids.set_crate_hashes(&hashes);
     let roots = imported.required_functions(&hir.items, loaded.signatures());
     let typed = timings.time("types (includes const evaluation)", || {
-        flux_mir::check_file_from(&hir, &loaded, &imported, &roots)
+        flux_mir::check_file_from(&hir, &loaded, &imported, &roots.functions)
     });
     let mut errors = state.db.syntax_errors();
     errors.extend(flux_cli::identifiers::diagnostics(&state.db));
@@ -138,7 +139,7 @@ pub(crate) fn compile(
         return Ok(false);
     }
     let mir = timings.time("mir build + checks", || {
-        flux_mir::build_file_from(&hir, &typed, &imported, &roots)
+        flux_mir::build_file_from(&hir, &typed, &imported, &roots.functions)
     });
     errors.extend(mir.diagnostics.iter().cloned());
     if !errors.is_empty() {
@@ -147,12 +148,13 @@ pub(crate) fn compile(
     }
     let target = flux_codegen::Target::host().ok_or("unsupported host target")?;
     let imported_crates: Vec<_> = loaded_hashes.iter().map(|&(krate, _)| krate).collect();
+    let mut object_requirements = Vec::new();
     let object = if metadata_only {
         None
     } else {
-        let mut module = timings
+        let lowered = timings
             .time("mono + keel lowering", || {
-                flux_codegen::lower_crate(
+                flux_codegen::lower_crate_with_requirements(
                     &hir,
                     &typed,
                     &mir,
@@ -163,7 +165,8 @@ pub(crate) fn compile(
                         },
                         crate_hashes: &hashes,
                         imported: &imported_crates,
-                        required_functions: &roots,
+                        required_functions: &roots.functions,
+                        required_instances: &roots.instances,
                     },
                 )
             })
@@ -171,6 +174,8 @@ pub(crate) fn compile(
                 report_all(&state.db, &mut errors);
                 "cannot lower crate".to_owned()
             })?;
+        let mut module = lowered.module;
+        object_requirements = lowered.required_instances;
         let tier = if options.optimize {
             flux_codegen::OptimizationTier::Full
         } else {
@@ -238,6 +243,7 @@ pub(crate) fn compile(
             hash,
             dependencies: &state.dependencies,
             object,
+            required_instances: &object_requirements,
             freshness: freshness.as_ref(),
         })?;
         flux_cli::flib::write_atomic(output, &bytes)

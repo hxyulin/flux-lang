@@ -6,11 +6,19 @@ use flux_ty::{ClosureId, ClosureKind, ClosureOwner};
 
 use crate::{Body, FileMir};
 
+/// One provider contribution shared by source checking and code generation.
+#[derive(Debug, Default)]
+pub struct RequiredRoots {
+    pub functions: Vec<FunctionId>,
+    pub instances: Vec<flux_ty::Instance>,
+}
+
 /// A checked MIR snapshot loaded before the source crate is collected.
 #[derive(Debug)]
 pub struct ImportedMir {
     mir: FileMir,
     source_counts: ItemCounts,
+    required_instances: Vec<flux_ty::Instance>,
 }
 
 impl ImportedMir {
@@ -34,7 +42,29 @@ impl ImportedMir {
         {
             return Err(Error::new("imported MIR exceeds source boundary"));
         }
-        Ok(Self { mir, source_counts })
+        Ok(Self {
+            mir,
+            source_counts,
+            required_instances: Vec::new(),
+        })
+    }
+
+    /// Adds concrete dependencies recorded by the producing object's collector.
+    pub fn with_required_instances(
+        mut self,
+        instances: Vec<flux_ty::Instance>,
+    ) -> Result<Self, Error> {
+        if instances.iter().any(|instance| {
+            instance.function.into_raw() >= self.source_counts.functions
+                || instance
+                    .args
+                    .iter()
+                    .any(|ty| ty.has_params() || ty.has_infer() || ty.has_error())
+        }) {
+            return Err(Error::new("invalid imported object instance"));
+        }
+        self.required_instances = instances;
+        Ok(self)
     }
 
     /// The boundary captured before adding the source crate.
@@ -76,8 +106,11 @@ impl ImportedMir {
         &self,
         items: &flux_hir::ItemTree,
         sigs: &flux_ty::Signatures,
-    ) -> Vec<FunctionId> {
+    ) -> RequiredRoots {
         let mut roots = std::collections::BTreeSet::new();
+        for instance in &self.required_instances {
+            roots.extend(flux_ty::call_targets(items, instance.function));
+        }
         let mut values = Vec::new();
         for body in self
             .mir
@@ -107,7 +140,10 @@ impl ImportedMir {
                 roots.extend(flux_ty::call_targets(items, instance.function));
             }
         }
-        roots.into_iter().collect()
+        RequiredRoots {
+            functions: roots.into_iter().collect(),
+            instances: self.required_instances.clone(),
+        }
     }
 
     /// Copies checked dependency MIR into a fresh compilation's evaluation tables.

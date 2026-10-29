@@ -2132,9 +2132,20 @@ fn truncated(ty: Ty, depth: u32) -> String {
 /// `body`, of a generic function, with generic arguments `args`
 /// substituted for its parameters.
 pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Body {
+    map_body_types(body, |ty| {
+        flux_solve::traits::instance_ty(&hir.items, sigs, ty, args)
+    })
+}
+
+/// Substitutes a library template while retaining its unresolved projections.
+/// Symbolic reachability has no concrete instance with which to select impls.
+/// Concrete monomorphization must continue to use [`subst_body`].
+pub fn subst_template(body: &Body, args: &[Ty]) -> Body {
+    map_body_types(body, |ty| ty.subst(args))
+}
+
+fn map_body_types(body: &Body, subst: impl Fn(Ty) -> Ty) -> Body {
     let mut body = body.clone();
-    let items = &hir.items;
-    let subst = |ty: Ty| flux_solve::traits::instance_ty(items, sigs, ty, args);
     for local in body.locals.values_mut() {
         local.ty = subst(local.ty);
     }

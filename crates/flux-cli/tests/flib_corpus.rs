@@ -66,6 +66,7 @@ fn round_trip(fixture: &str) {
         hash,
         dependencies: &dependencies,
         object: None,
+        required_instances: &[],
         freshness: None,
     })
     .unwrap_or_else(|error| panic!("{fixture}: encode: {error}"));
@@ -136,6 +137,7 @@ fn round_trip(fixture: &str) {
         hash,
         dependencies: &dependencies,
         object: None,
+        required_instances: &[],
         freshness: None,
     })
     .unwrap_or_else(|error| panic!("{fixture}: re-encode: {error}"));

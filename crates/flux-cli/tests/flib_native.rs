@@ -72,6 +72,7 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
                 crate_hashes: &a_hashes,
                 imported: &[],
                 required_functions: &[],
+                required_instances: &[],
             },
         )
         .unwrap();
@@ -84,6 +85,7 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
             hash: a_hash,
             dependencies: &dependencies,
             object: Some(object),
+            required_instances: &[],
             freshness: None,
         })
         .unwrap();
@@ -123,9 +125,14 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
         );
         assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
         let required_functions = provider.required_functions(&hir.items, loaded_types.signatures());
-        let typed = flux_mir::check_file_from(&hir, &loaded_types, &provider, &required_functions);
+        let typed = flux_mir::check_file_from(
+            &hir,
+            &loaded_types,
+            &provider,
+            &required_functions.functions,
+        );
         assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
-        let mir = flux_mir::build_file_from(&hir, &typed, &provider, &required_functions);
+        let mir = flux_mir::build_file_from(&hir, &typed, &provider, &required_functions.functions);
         assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
         assert!(mir.bugs.is_empty(), "{:?}", mir.bugs);
         let b_id = hir.items.main_crate();
@@ -142,7 +149,8 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
                 kind: flux_codegen::OutputKind::Executable,
                 crate_hashes: &hashes,
                 imported: &[a_id],
-                required_functions: &required_functions,
+                required_functions: &required_functions.functions,
+                required_instances: &required_functions.instances,
             },
         )
         .unwrap();

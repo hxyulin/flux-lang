@@ -70,7 +70,7 @@ pub fn lower_module(
     typed: &TypedFile,
     mir: &FileMir,
 ) -> Result<Module, Vec<Diagnostic>> {
-    lower_inner(hir, typed, mir, None)
+    lower_inner(hir, typed, mir, None).map(|lowered| lowered.module)
 }
 
 /// Which crate an object defines. Dependencies supply their own non-generic code.
@@ -97,6 +97,15 @@ pub struct Compilation<'a> {
     /// Only monomorphic bodies become explicit roots; generic instances are
     /// collected from calls with their concrete arguments.
     pub required_functions: &'a [FunctionId],
+    /// Concrete calls required by dependency objects, retaining generic arguments.
+    /// These come from each object's actual monomorphization traversal.
+    pub required_instances: &'a [Instance],
+}
+
+/// One lowered object and the concrete definitions it expects other objects to supply.
+pub struct LoweredCrate {
+    pub module: Module,
+    pub required_instances: Vec<Instance>,
 }
 
 /// Lowers one object using stable crate identities and a fixed Rust convention.
@@ -119,6 +128,24 @@ pub fn lower_crate(
     mir: &FileMir,
     compilation: Compilation<'_>,
 ) -> Result<Module, Vec<Diagnostic>> {
+    lower_crate_with_requirements(hir, typed, mir, compilation).map(|lowered| lowered.module)
+}
+
+/// Lowers an object and records its concrete dependencies before ownership filtering.
+///
+/// Persist `required_instances` with the owning object. Consumers add them to
+/// [`Compilation::required_instances`] so embedded generic code needed only by
+/// dependency objects is emitted with its original concrete arguments.
+///
+/// # Errors
+///
+/// Returns the same checking and lowering diagnostics as [`lower_crate`].
+pub fn lower_crate_with_requirements(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+    compilation: Compilation<'_>,
+) -> Result<LoweredCrate, Vec<Diagnostic>> {
     lower_inner(hir, typed, mir, Some(compilation))
 }
 
@@ -127,7 +154,7 @@ fn lower_inner(
     typed: &TypedFile,
     mir: &FileMir,
     compilation: Option<Compilation<'_>>,
-) -> Result<Module, Vec<Diagnostic>> {
+) -> Result<LoweredCrate, Vec<Diagnostic>> {
     let monomorphic = |id: FunctionId| {
         let function = &hir.items.functions[id];
         let instance = Instance {
@@ -186,6 +213,9 @@ fn lower_inner(
         .into_iter()
         .filter_map(monomorphic)
         .collect();
+    if let Some(compilation) = compilation {
+        roots.extend_from_slice(compilation.required_instances);
+    }
     roots.sort_unstable_by_key(|i| i.function);
     let mut static_roots: Vec<_> = retained_statics.iter().copied().collect();
     static_roots.sort_unstable();
@@ -208,6 +238,13 @@ fn lower_inner(
     }
     .map_err(|d| vec![d])?;
     let instances = collected.instances;
+    let required_instances = compilation.map_or_else(Vec::new, |compilation| {
+        instances
+            .iter()
+            .copied()
+            .filter(|&instance| !owns_instance(&hir.items, instance, compilation))
+            .collect()
+    });
     let errors = check_c_abi(hir, typed, mir, &instances);
     if !errors.is_empty() {
         return Err(errors);
@@ -568,7 +605,10 @@ fn lower_inner(
         module.functions.push(entry);
     }
     module.sync_function_attrs();
-    Ok(module)
+    Ok(LoweredCrate {
+        module,
+        required_instances,
+    })
 }
 
 fn content_symbol(domain: &str, bytes: &[u8]) -> String {

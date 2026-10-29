@@ -20,6 +20,7 @@ pub struct Dependency {
 pub struct Loaded {
     pub dependency: Dependency,
     pub object: Option<Vec<u8>>,
+    pub required_instances: Vec<flux_ty::Instance>,
 }
 
 /// Computes a crate identity from its source inputs and exact dependency identities.
@@ -160,6 +161,7 @@ pub struct CheckedCrate<'a> {
     pub hash: [u8; 32],
     pub dependencies: &'a [Dependency],
     pub object: Option<Vec<u8>>,
+    pub required_instances: &'a [flux_ty::Instance],
     pub freshness: Option<&'a super::freshness::Snapshot>,
 }
 
@@ -173,6 +175,7 @@ pub fn write_checked(checked: CheckedCrate<'_>) -> Result<Vec<u8>, String> {
         hash,
         dependencies,
         object,
+        required_instances,
         freshness,
     } = checked;
     let mut ids = IdMap::strict();
@@ -198,16 +201,22 @@ pub fn write_checked(checked: CheckedCrate<'_>) -> Result<Vec<u8>, String> {
     flux_hir::flib::write_items(items, krate, &mut names).map_err(|e| e.to_string())?;
     let mut types = Encoder::with_ids(ids.clone());
     sigs.encode_flib(&mut types).map_err(|e| e.to_string())?;
+    validate_required_instances(items, required_instances)?;
+    let mut requirements = Encoder::with_ids(ids.clone());
+    required_instances
+        .encode(&mut requirements)
+        .map_err(|e| e.to_string())?;
     let mut bodies = Encoder::with_ids(ids);
     mir.encode_flib(&mut bodies).map_err(|e| e.to_string())?;
     let mut linkage = Encoder::new();
     let target = artifact_target()?;
     (
-        1u32,
+        2u32,
         target,
         object
             .as_ref()
             .map(|bytes| flux_hir::flib::digest(bytes).to_vec()),
+        requirements.into_bytes(),
     )
         .encode(&mut linkage)
         .map_err(|e| e.to_string())?;
@@ -317,6 +326,11 @@ fn load_checked_with_resolver(
     sigs.decode_flib_into(&mut types, items)
         .map_err(|e| e.to_string())?;
     types.finish().map_err(|e| e.to_string())?;
+    let mut requirements = Decoder::with_ids(link_requirements(&metadata)?, names.ids.clone());
+    let required_instances =
+        Vec::<flux_ty::Instance>::decode(&mut requirements).map_err(|e| e.to_string())?;
+    requirements.finish().map_err(|e| e.to_string())?;
+    validate_required_instances(items, &required_instances)?;
     let mut bodies = Decoder::with_ids(section(8)?, names.ids);
     mir.decode_flib_into(&mut bodies, items, sigs)
         .map_err(|e| e.to_string())?;
@@ -340,6 +354,7 @@ fn load_checked_with_resolver(
             indices,
         },
         object: archive.object,
+        required_instances,
     })
 }
 fn decode_hash(d: &mut Decoder<'_>) -> Result<[u8; 32], String> {
@@ -496,6 +511,7 @@ pub struct DependencyState {
     pub mir: FileMir,
     pub dependencies: Vec<Dependency>,
     pub objects: Vec<(std::path::PathBuf, Vec<u8>)>,
+    pub required_instances: Vec<flux_ty::Instance>,
 }
 
 impl DependencyState {
@@ -536,6 +552,7 @@ impl DependencyState {
             },
             dependencies,
             objects: Vec::new(),
+            required_instances: Vec::new(),
         })
     }
 
@@ -557,6 +574,7 @@ impl DependencyState {
                 return Err("inconsistent artifact identity".into());
             }
             self.dependencies.push(loaded.dependency);
+            self.required_instances.extend(loaded.required_instances);
             if let Some(object) = loaded.object {
                 self.objects.push((artifact.path, object));
             }
@@ -620,12 +638,19 @@ fn validate_linkage(metadata: &Metadata, object: Option<&[u8]>) -> Result<bool, 
         .find(|s| s.tag == 9)
         .ok_or("missing flux link requirements")?;
     let mut d = Decoder::new(&section.bytes);
-    let (abi, target, checksum) =
-        <(u32, String, Option<Vec<u8>>)>::decode(&mut d).map_err(|e| e.to_string())?;
-    d.finish().map_err(|e| e.to_string())?;
-    if abi != 1 || target != artifact_target()? {
-        return Err("flux artifact ABI or target mismatch; rebuild the artifact".into());
+    let abi = u32::decode(&mut d).map_err(|e| e.to_string())?;
+    if abi != 2 {
+        return Err(format!(
+            "unsupported flux linkage ABI {abi}; expected 2; rebuild the artifact"
+        ));
     }
+    let target = String::decode(&mut d).map_err(|e| e.to_string())?;
+    if target != artifact_target()? {
+        return Err("flux artifact target mismatch; rebuild the artifact".into());
+    }
+    let checksum = Option::<Vec<u8>>::decode(&mut d).map_err(|e| e.to_string())?;
+    Vec::<u8>::decode(&mut d).map_err(|e| e.to_string())?;
+    d.finish().map_err(|e| e.to_string())?;
     match (checksum, object) {
         (None, None) => Ok(false),
         (Some(checksum), Some(bytes)) if checksum.as_slice() == flux_hir::flib::digest(bytes) => {
@@ -633,4 +658,48 @@ fn validate_linkage(metadata: &Metadata, object: Option<&[u8]>) -> Result<bool, 
         }
         _ => Err("flux artifact object checksum mismatch; rebuild the artifact".into()),
     }
+}
+
+fn link_requirements(metadata: &Metadata) -> Result<&[u8], String> {
+    let section = metadata
+        .sections
+        .iter()
+        .find(|s| s.tag == 9)
+        .ok_or("missing flux link requirements")?;
+    // Three bounded fields precede the length-delimited structural instance stream.
+    let mut d = Decoder::new(&section.bytes);
+    u32::decode(&mut d).map_err(|e| e.to_string())?;
+    String::decode(&mut d).map_err(|e| e.to_string())?;
+    Option::<Vec<u8>>::decode(&mut d).map_err(|e| e.to_string())?;
+    let length = d.length().map_err(|e| e.to_string())?;
+    let bytes = d.read(length).map_err(|e| e.to_string())?;
+    d.finish().map_err(|e| e.to_string())?;
+    Ok(bytes)
+}
+
+fn validate_required_instances(
+    items: &ItemTree,
+    instances: &[flux_ty::Instance],
+) -> Result<(), String> {
+    for instance in instances {
+        let function = items
+            .functions
+            .get(instance.function)
+            .ok_or("invalid object requirement function")?;
+        let owner_count = match function.owner {
+            Some(flux_hir::Owner::Impl(id)) => items.impls[id].generics.len(),
+            Some(flux_hir::Owner::Trait(id)) => 1 + items.traits[id].generics.len(),
+            None => 0,
+        };
+        let count = function.generics.len() + owner_count;
+        if instance.args.len() != count
+            || instance
+                .args
+                .iter()
+                .any(|ty| ty.has_params() || ty.has_infer() || ty.has_error())
+        {
+            return Err("invalid concrete object requirement".into());
+        }
+    }
+    Ok(())
 }
