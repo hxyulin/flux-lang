@@ -72,6 +72,73 @@ pub struct Collected {
 
 /// [`collect`], with the instances whose address is taken.
 pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collected, Diagnostic> {
+    collect_roots(hir, sigs, mir, None, None, &[], None)
+}
+
+/// Collects executable roots and additional concrete instances in one traversal.
+/// The usual main, termination runner, stdout flush and static roots remain active.
+pub fn collect_all_with_roots(
+    hir: &Hir,
+    sigs: &Signatures,
+    mir: &FileMir,
+    additional_roots: &[Instance],
+) -> Result<Collected, Diagnostic> {
+    collect_roots(hir, sigs, mir, None, None, additional_roots, None)
+}
+
+/// Collects instances reachable from explicit roots, without an executable entry point.
+pub fn collect_from_roots(
+    hir: &Hir,
+    sigs: &Signatures,
+    mir: &FileMir,
+    roots: &[Instance],
+) -> Result<Collected, Diagnostic> {
+    collect_roots(hir, sigs, mir, Some(roots), None, &[], None)
+}
+
+/// Collects explicit roots and only the selected crates' static initializers.
+/// Other crates' statics belong to their own separately compiled objects.
+pub fn collect_from_roots_in_crates(
+    hir: &Hir,
+    sigs: &Signatures,
+    mir: &FileMir,
+    roots: &[Instance],
+    static_crates: &[flux_hir::CrateId],
+) -> Result<Collected, Diagnostic> {
+    collect_roots(hir, sigs, mir, Some(roots), Some(static_crates), &[], None)
+}
+
+/// Collects executable roots with an explicit set of retained static definitions.
+pub fn collect_all_with_roots_and_statics(
+    hir: &Hir,
+    sigs: &Signatures,
+    mir: &FileMir,
+    additional_roots: &[Instance],
+    statics: &[flux_hir::ConstId],
+) -> Result<Collected, Diagnostic> {
+    collect_roots(hir, sigs, mir, None, None, additional_roots, Some(statics))
+}
+
+/// Collects library instances and only its retained static definitions.
+pub fn collect_from_roots_and_statics(
+    hir: &Hir,
+    sigs: &Signatures,
+    mir: &FileMir,
+    roots: &[Instance],
+    statics: &[flux_hir::ConstId],
+) -> Result<Collected, Diagnostic> {
+    collect_roots(hir, sigs, mir, Some(roots), None, &[], Some(statics))
+}
+
+fn collect_roots(
+    hir: &Hir,
+    sigs: &Signatures,
+    mir: &FileMir,
+    roots: Option<&[Instance]>,
+    static_crates: Option<&[flux_hir::CrateId]>,
+    additional_roots: &[Instance],
+    static_items: Option<&[flux_hir::ConstId]>,
+) -> Result<Collected, Diagnostic> {
     let mut reified = FxHashSet::default();
     let mut instances = Vec::new();
     let mut depths: FxHashMap<Instance, u32> = FxHashMap::default();
@@ -81,7 +148,13 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         let f = &items.functions[id];
         f.name.as_str() == "main" && f.loc.module == root && f.owner.is_none()
     });
-    if let Some(function) = main {
+    if let Some(roots) = roots {
+        for &instance in roots {
+            if depths.insert(instance, 0).is_none() {
+                instances.push(instance);
+            }
+        }
+    } else if let Some(function) = main {
         let instance = Instance {
             function,
             args: &[],
@@ -113,11 +186,21 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
             instances.push(instance);
         }
     }
+    for &instance in additional_roots {
+        if depths.insert(instance, 0).is_none() {
+            instances.push(instance);
+        }
+    }
     // All statics are emitted, but an ordinary constant becomes a root only
     // when reachable code uses it. Otherwise an unused pointer could trigger
     // unbounded monomorphization of a function that is never called.
     for (id, value) in mir.const_values.items.iter() {
-        if items.consts[id].is_static.is_none() {
+        if items.consts[id].is_static.is_none()
+            || static_crates.is_some_and(|crates| {
+                !crates.contains(&items.modules[items.consts[id].loc.module].krate)
+            })
+            || static_items.is_some_and(|items| !items.contains(&id))
+        {
             continue;
         }
         let mut found = Vec::new();
@@ -133,7 +216,8 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         }
     }
     let names = |id| items.const_name(id);
-    let mut evaluator = crate::eval::Evaluator::new(items, sigs, &mir.bodies, &mir.consts, &names);
+    let mut evaluator = crate::eval::Evaluator::new(items, sigs, &mir.bodies, &mir.consts, &names)
+        .with_imported(&mir.const_values, &mir.discriminants);
     let mut const_values = FxHashMap::default();
     let mut next = 0;
     while let Some(&caller) = instances.get(next) {
@@ -601,7 +685,7 @@ fn may_contain_function_address(items: &ItemTree, sigs: &Signatures, ty: Ty) -> 
 }
 
 /// Function addresses nested in a constant's stored value.
-fn value_functions<'a>(
+pub(crate) fn value_functions<'a>(
     value: &'a crate::eval::Value,
     constants: &'a crate::eval::ConstValues,
     items: &ItemTree,

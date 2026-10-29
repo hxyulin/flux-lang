@@ -195,6 +195,8 @@ pub struct Evaluator<'a> {
     /// Each constant's name, for messages.
     pub names: &'a dyn Fn(ConstId) -> String,
     values: FxHashMap<ConstInstance, Result<Value, EvalError>>,
+    imported_values: Option<&'a ConstValues>,
+    imported_discriminants: Option<&'a crate::Discriminants>,
     in_progress: Vec<ConstInstance>,
     /// The promoted constants of each body being run, innermost last.
     promoted: Vec<&'a [Value]>,
@@ -237,6 +239,8 @@ impl<'a> Evaluator<'a> {
             consts,
             names,
             values: FxHashMap::default(),
+            imported_values: None,
+            imported_discriminants: None,
             in_progress: Vec::new(),
             discriminants: FxHashMap::default(),
             switched: FxHashSet::default(),
@@ -273,6 +277,12 @@ impl<'a> Evaluator<'a> {
         let c = flux_solve::traits::resolve_const(self.items, self.sigs, c);
         if let Some(result) = self.values.get(&c) {
             return result.clone();
+        }
+        if let Some(value) = self
+            .imported_values
+            .and_then(|values| values.get(c.konst, c.args))
+        {
+            return Ok(value.clone());
         }
         let Some(body) = self.consts.get(c.konst) else {
             self.unbuilt.push(c.konst);
@@ -1810,6 +1820,12 @@ impl<'a> Evaluator<'a> {
     pub fn discriminants(&mut self, strukt: flux_hir::StructId) -> Result<Box<[u128]>, EvalError> {
         if let Some(result) = self.discriminants.get(&strukt) {
             return result.clone();
+        }
+        if let Some(values) = self
+            .imported_discriminants
+            .and_then(|table| table.get(strukt))
+        {
+            return Ok(values.clone());
         }
         let count = self.items.structs[strukt].variant_count() as u32;
         let result: Result<Box<[u128]>, EvalError> =
@@ -4047,6 +4063,20 @@ fn float_binary(op: BinOp, l: &Value, r: &Value) -> Option<Value> {
         FloatTy::F32 => calculate!(f32::from_bits(a as u32), f32::from_bits(b as u32)),
         FloatTy::F64 => calculate!(f64::from_bits(a), f64::from_bits(b)),
     })
+}
+
+impl<'a> Evaluator<'a> {
+    /// Reuses checked dependency values before requesting initializer MIR.
+    /// Generic values absent from the snapshot still evaluate their MIR templates.
+    pub fn with_imported(
+        mut self,
+        values: &'a ConstValues,
+        discriminants: &'a crate::Discriminants,
+    ) -> Self {
+        self.imported_values = Some(values);
+        self.imported_discriminants = Some(discriminants);
+        self
+    }
 }
 
 #[cfg(test)]
