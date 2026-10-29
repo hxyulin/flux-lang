@@ -218,7 +218,8 @@ fn abi(p: &mut Parser<'_>) {
 
 /// Parses `open (element sep)* close`, allowing a trailing separator.
 /// `element` is called only when the current token is in `first`; anything
-/// else is reported and skipped so the loop always makes progress.
+/// else, and a token in `first` that `element` does not consume, is
+/// reported and skipped so the loop always makes progress.
 fn delimited(
     p: &mut Parser<'_>,
     open: SyntaxKind,
@@ -236,7 +237,7 @@ fn delimited(
             p.err_and_bump(&format!("expected {what}"));
             continue;
         }
-        element(p);
+        p.list_element(what, &mut element);
         if !p.at(close) && !p.eat(T![,]) {
             if p.at_ts(first) {
                 p.error("expected `,`");

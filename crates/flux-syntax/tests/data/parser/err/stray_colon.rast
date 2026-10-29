@@ -1,0 +1,151 @@
+SOURCE_FILE@0..164
+  FN@0..72
+    COMMENT@0..44 "// A lone `:` can sta ..."
+    WHITESPACE@44..45 "\n"
+    FN_KW@45..47 "fn"
+    WHITESPACE@47..48 " "
+    NAME@48..53
+      IDENT@48..53 "slice"
+    PARAM_LIST@53..55
+      L_PAREN@53..54 "("
+      R_PAREN@54..55 ")"
+    WHITESPACE@55..56 " "
+    BLOCK_EXPR@56..72
+      L_CURLY@56..57 "{"
+      WHITESPACE@57..58 " "
+      LET_STMT@58..70
+        LET_KW@58..61 "let"
+        WHITESPACE@61..62 " "
+        SLICE_PAT@62..65
+          L_BRACK@62..63 "["
+          ERROR@63..64
+            COLON@63..64 ":"
+          R_BRACK@64..65 "]"
+        WHITESPACE@65..66 " "
+        EQ@66..67 "="
+        WHITESPACE@67..68 " "
+        PATH_EXPR@68..69
+          PATH@68..69
+            PATH_SEGMENT@68..69
+              NAME_REF@68..69
+                IDENT@68..69 "x"
+        SEMICOLON@69..70 ";"
+      WHITESPACE@70..71 " "
+      R_CURLY@71..72 "}"
+  WHITESPACE@72..73 "\n"
+  FN@73..108
+    FN_KW@73..75 "fn"
+    WHITESPACE@75..76 " "
+    NAME@76..88
+      IDENT@76..88 "tuple_struct"
+    PARAM_LIST@88..90
+      L_PAREN@88..89 "("
+      R_PAREN@89..90 ")"
+    WHITESPACE@90..91 " "
+    BLOCK_EXPR@91..108
+      L_CURLY@91..92 "{"
+      WHITESPACE@92..93 " "
+      LET_STMT@93..106
+        LET_KW@93..96 "let"
+        WHITESPACE@96..97 " "
+        TUPLE_STRUCT_PAT@97..101
+          PATH@97..98
+            PATH_SEGMENT@97..98
+              NAME_REF@97..98
+                IDENT@97..98 "S"
+          L_PAREN@98..99 "("
+          ERROR@99..100
+            COLON@99..100 ":"
+          R_PAREN@100..101 ")"
+        WHITESPACE@101..102 " "
+        EQ@102..103 "="
+        WHITESPACE@103..104 " "
+        PATH_EXPR@104..105
+          PATH@104..105
+            PATH_SEGMENT@104..105
+              NAME_REF@104..105
+                IDENT@104..105 "x"
+        SEMICOLON@105..106 ";"
+      WHITESPACE@106..107 " "
+      R_CURLY@107..108 "}"
+  WHITESPACE@108..109 "\n"
+  FN@109..128
+    FN_KW@109..111 "fn"
+    WHITESPACE@111..112 " "
+    NAME@112..117
+      IDENT@112..117 "param"
+    PARAM_LIST@117..125
+      L_PAREN@117..118 "("
+      PARAM@118..124
+        SLICE_PAT@118..121
+          L_BRACK@118..119 "["
+          ERROR@119..120
+            COLON@119..120 ":"
+          R_BRACK@120..121 "]"
+        COLON@121..122 ":"
+        WHITESPACE@122..123 " "
+        PATH_TYPE@123..124
+          PATH@123..124
+            PATH_SEGMENT@123..124
+              NAME_REF@123..124
+                IDENT@123..124 "T"
+      R_PAREN@124..125 ")"
+    WHITESPACE@125..126 " "
+    BLOCK_EXPR@126..128
+      L_CURLY@126..127 "{"
+      R_CURLY@127..128 "}"
+  WHITESPACE@128..129 "\n"
+  FN@129..148
+    FN_KW@129..131 "fn"
+    WHITESPACE@131..132 " "
+    NAME@132..136
+      IDENT@132..136 "call"
+    PARAM_LIST@136..138
+      L_PAREN@136..137 "("
+      R_PAREN@137..138 ")"
+    WHITESPACE@138..139 " "
+    BLOCK_EXPR@139..148
+      L_CURLY@139..140 "{"
+      WHITESPACE@140..141 " "
+      EXPR_STMT@141..146
+        CALL_EXPR@141..145
+          PATH_EXPR@141..142
+            PATH@141..142
+              PATH_SEGMENT@141..142
+                NAME_REF@141..142
+                  IDENT@141..142 "f"
+          ARG_LIST@142..145
+            L_PAREN@142..143 "("
+            ERROR@143..144
+              COLON@143..144 ":"
+            R_PAREN@144..145 ")"
+        SEMICOLON@145..146 ";"
+      WHITESPACE@146..147 " "
+      R_CURLY@147..148 "}"
+  WHITESPACE@148..149 "\n"
+  TYPE_ALIAS@149..163
+    TYPE_KW@149..153 "type"
+    WHITESPACE@153..154 " "
+    NAME@154..155
+      IDENT@154..155 "G"
+    WHITESPACE@155..156 " "
+    EQ@156..157 "="
+    WHITESPACE@157..158 " "
+    PATH_TYPE@158..162
+      PATH@158..162
+        PATH_SEGMENT@158..162
+          NAME_REF@158..159
+            IDENT@158..159 "X"
+          GENERIC_ARG_LIST@159..162
+            L_ANGLE@159..160 "<"
+            TYPE_ARG@160..161
+              ERROR@160..161
+                COLON@160..161 ":"
+            R_ANGLE@161..162 ">"
+    SEMICOLON@162..163 ";"
+  WHITESPACE@163..164 "\n"
+error 63..63: expected a pattern
+error 99..99: expected a pattern
+error 119..119: expected a pattern
+error 143..143: expected an expression
+error 160..160: expected a type

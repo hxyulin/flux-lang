@@ -314,6 +314,26 @@ impl<'i> Parser<'i> {
         m.complete(self, ERROR);
     }
 
+    /// Parses one element of a list with `element`. If it consumed
+    /// nothing, as at a `:` that can start a path (`::a`) but does not,
+    /// skips the token in an `ERROR` node so that the list loop moves on,
+    /// reporting "expected {what}" unless `element` already reported an
+    /// error.
+    pub(crate) fn list_element(&mut self, what: &str, element: impl FnOnce(&mut Parser<'i>)) {
+        let (pos, errors) = (self.pos, self.output.errors.len());
+        element(self);
+        if self.pos != pos || self.at_end() {
+            return;
+        }
+        if self.output.errors.len() == errors {
+            self.err_and_bump(&format!("expected {what}"));
+        } else {
+            let m = self.start();
+            self.bump_any();
+            m.complete(self, ERROR);
+        }
+    }
+
     pub(crate) fn start(&mut self) -> Marker {
         let pos = self.output.events.len() as u32;
         self.output.events.push(Event::tombstone());
