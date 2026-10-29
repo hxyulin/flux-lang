@@ -134,7 +134,7 @@ def in_group(target: Target, group: str) -> bool:
     packages = {
         "syntax": {"flux-syntax", "flux-sourcegen"},
         "names": {"flux-hir"},
-        "inference": {"flux-ty"},
+        "inference": {"flux-ty-ir", "flux-solve", "flux-ty"},
         "borrowing": {"flux-mir"},
         "codegen": {"flux-codegen", "flux-cli"},
         "library": {"flux-cli"},

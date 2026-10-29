@@ -37,8 +37,8 @@ these source graphs.
 | `typenum_readiness` | Original typenum 1.20.1 in edition 2018 with `const-generics`, arithmetic projections and runtime operators. |
 | `smallvec_readiness` | Unchanged smallvec 1.16.3 in its original edition 2018, using the workspace's resolved empty feature set. |
 | `hir_selfhost` | Complete unchanged HIR with arena, interner, syntax and dependency sources, original editions and resolved library features. |
-| `ty_selfhost` | Complete unchanged type checker and its nine-library source graph, with public inference and signature consumers. |
-| `mir_selfhost` | Complete unchanged MIR crate and its eleven-library source graph, with public MIR building, borrow checking and constant-evaluation consumers. |
+| `ty_selfhost` | Complete unchanged type checker and its eleven-library source graph, with public inference and signature consumers. |
+| `mir_selfhost` | Complete unchanged MIR crate and its thirteen-library source graph, with public MIR building, borrow checking and constant-evaluation consumers. |
 | `keel_asm_ir_readiness` | Complete pinned Keel assembly-IR source with original smallvec sources, structured assembly consumers and byte guards. |
 | `keel_asm_readiness` | Complete unchanged pinned assembler and its thirteen-package source graph, including object writing/reading and both hashbrown versions. |
 | `keel_backend_readiness`, with `FLUX_BACKEND_ONLY=full` | Complete pinned backend/linker source graph; emits AArch64 and x86 objects and links an AArch64 executable. Explicit ignored audit, with native off/on comparisons and byte guards. |

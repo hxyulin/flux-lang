@@ -331,7 +331,6 @@ dependencies = [
  "flux-solve",
  "flux-syntax",
  "flux-ty-ir",
- "hashbrown 0.17.1",
  "rustc-hash",
 ]
 

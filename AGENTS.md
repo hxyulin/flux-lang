@@ -14,9 +14,18 @@ flux is an experimental compiler for a subset of Rust (edition 2024). Use
   privacy) and HIR: bodies lowered from the AST with names resolved.
   Fixtures in `tests/data/{ok,err}` with `.hir`
   snapshots; `ok/` fixtures must also compile with rustc.
-- `crates/flux-ty/`: type inference and checking per body. Fixtures in
-  `tests/data/{ok,err}` with `.ty` snapshots; `ok/` fixtures must compile
-  with rustc, and `err/` diagnostics should match rustc's.
+- `crates/flux-ty-ir/`: the type representation that the solver and the
+  type checker share: interned `Ty`, predicates, `Signatures` and the
+  region tables beside them. Data and pure functions only.
+- `crates/flux-solve/`: trait solving outside bodies (elaboration,
+  normalization, `impl` selection, whether a predicate holds, instance
+  resolution) and the queries over `Signatures` and the item tree that
+  type checking shares with it. It depends on `flux-ty-ir`, never on
+  `flux-ty`; other crates call it through `flux_solve::`.
+- `crates/flux-ty/`: type inference and checking per body, signature and
+  bound resolution, and the `impl`, coherence and well-formedness checks.
+  Fixtures in `tests/data/{ok,err}` with `.ty` snapshots; `ok/` fixtures
+  must compile with rustc, and `err/` diagnostics should match rustc's.
 - `crates/flux-mir/`: MIR built from typed HIR, the initialization and
   borrow checks, constant evaluation and rustc's overflow lints.
   Fixtures in `tests/data/{ok,err}` with `.mir` snapshots.

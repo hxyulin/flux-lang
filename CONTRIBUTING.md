@@ -37,6 +37,8 @@ just check
 | `crates/flux-syntax/tests/` | Snapshot, robustness, self-hosting and corpus tests |
 | `crates/flux-syntax/examples/bench.rs` | Per-phase throughput benchmark |
 | `crates/flux-hir/` | Item tree and HIR lowering: names resolved, `while` desugared |
+| `crates/flux-ty-ir/` | Type representation shared by the solver and the type checker: `Ty`, predicates, `Signatures` |
+| `crates/flux-solve/` | Trait solving: whether predicates hold, normalization, `impl` selection |
 | `crates/flux-ty/` | Type inference and checking, one body at a time |
 | `crates/flux-mir/` | MIR: control-flow graphs with explicit runtime checks; initialization check |
 | `crates/flux-codegen/` | MIR to keel IR, native objects and executables |

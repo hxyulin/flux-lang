@@ -26,7 +26,7 @@ use flux_ty_ir::{
 
 /// Which generic parameters of an item in `owner` with its own
 /// `generics` have no implicit `Sized` bound, in the order of
-/// [`generic_names`]: a trait's `Self`, and those bounded `?Sized`.
+/// `flux_ty::generic_names`: a trait's `Self`, and those bounded `?Sized`.
 pub fn unsized_params(items: &ItemTree, owner: Option<Owner>, own: &Generics) -> Vec<bool> {
     let mut out = Vec::new();
     if let Some(Owner::Trait(_)) = owner {

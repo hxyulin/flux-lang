@@ -104,16 +104,18 @@ fn mir_selfhost_worker() {
         "unicode_ident",
         "flux_syntax",
         "flux_hir",
+        "flux_ty_ir",
+        "flux_solve",
         "flux_ty",
         "smallvec",
         "flux_mir",
         "consumer",
     ];
     let versions = [
-        "0.1.0", "0.17.1", "2.1.3", "0.1.0", "2.8.3", "1.0.27", "0.1.0", "0.1.0", "0.1.0",
-        "1.16.3", "0.1.0",
+        "0.1.0", "0.17.1", "2.1.3", "0.1.0", "2.8.3", "1.0.27", "0.1.0", "0.1.0", "0.1.0", "0.1.0",
+        "0.1.0", "1.16.3", "0.1.0",
     ];
-    let dependencies: [&[usize]; 12] = [
+    let dependencies: [&[usize]; 14] = [
         &[],
         &[],
         &[],
@@ -123,16 +125,18 @@ fn mir_selfhost_worker() {
         &[4, 5],
         &[0, 2, 3, 6],
         &[0, 1, 2, 3, 6, 7],
-        &[],
+        &[0, 2, 3, 7, 8],
         &[0, 2, 3, 6, 7, 8, 9],
-        &[3, 7, 8, 10],
+        &[],
+        &[0, 2, 3, 6, 7, 9, 10, 11],
+        &[3, 7, 10, 12],
     ];
     let mut roots = Vec::new();
     let mut editions = Vec::new();
     let mut features: Vec<Vec<String>> = Vec::new();
     let mut config = Vec::new();
     let mut originals = Vec::new();
-    for index in 0..11 {
+    for index in 0..13 {
         let package = metadata["packages"]
             .as_array()
             .unwrap()
@@ -194,9 +198,9 @@ fn mir_selfhost_worker() {
         config.push(serde_json::json!({"name": names[index], "version": versions[index], "root": roots[index], "manifest": manifest, "edition": package["edition"], "features": features[index], "dependencies": expected}));
         inventory(roots[index].parent().unwrap(), &mut originals);
     }
-    assert_eq!(editions[9], Edition::E2018);
+    assert_eq!(editions[11], Edition::E2018);
     assert!(
-        features[9].is_empty(),
+        features[11].is_empty(),
         "review newly enabled smallvec features"
     );
     originals.push((
@@ -245,8 +249,8 @@ fn mir_selfhost_worker() {
         let oracle = root.join("oracle");
         std::fs::create_dir_all(&oracle).unwrap();
         let mut libraries: Vec<PathBuf> = Vec::new();
-        for index in 0..12 {
-            let output = if index < 11 {
+        for index in 0..14 {
+            let output = if index < 13 {
                 oracle.join(format!("lib{}.rlib", names[index]))
             } else {
                 oracle.join("reference")
@@ -272,7 +276,7 @@ fn mir_selfhost_worker() {
                 .arg(&oracle)
                 .arg("-o")
                 .arg(&output);
-            if index < 11 {
+            if index < 13 {
                 command.arg("--crate-type=rlib");
             }
             for feature in &features[index] {
@@ -309,7 +313,7 @@ fn mir_selfhost_worker() {
             );
         }
         let expected = bounded(
-            &mut Command::new(&libraries[11]),
+            &mut Command::new(&libraries[13]),
             &root,
             "run-reference",
             NATIVE_RUN_SECONDS,

@@ -113,7 +113,7 @@ pub struct Signatures {
     /// Where each variant of an enum starts in its `structs` entry, and
     /// where the last ends.
     pub variant_starts: LayeredArenaMap<Struct, Box<[u32]>>,
-    /// The type of each enum's discriminant: [`discriminant_ty`].
+    /// The type of each enum's discriminant: `flux_ty::discriminant_ty`.
     pub discriminants: LayeredArenaMap<Struct, IntTy>,
     pub impls: LayeredArenaMap<Impl, Ty>,
     pub consts: LayeredArenaMap<Const, Ty>,
@@ -137,11 +137,11 @@ pub struct Signatures {
     pub impl_types: LayeredArenaMap<Impl, Box<[(Symbol, Ty)]>>,
     pub impl_families: LayeredArenaMap<Impl, Box<[(Symbol, traits::AssociatedTypeSig)]>>,
     /// The bounds of each function's opaque types (the `impl Trait`s of
-    /// its return type), by index: [`traits::opaque_bounds`].
+    /// its return type), by index: `flux_solve::traits::opaque_bounds`.
     pub opaques: LayeredArenaMap<Function, Box<[OpaqueSig]>>,
     /// The hidden type of each opaque type, in terms of its function's
     /// generic parameters, once the function's body is inferred: what
-    /// code generation sees ([`traits::reveal`]).
+    /// code generation sees (`flux_solve::traits::reveal`).
     pub hidden: rustc_hash::FxHashMap<(FunctionId, u32), Ty>,
     /// The defaults of each trait's parameters.
     pub trait_defaults: traits::TraitDefaults,
@@ -175,7 +175,7 @@ pub struct OpaqueSig {
     pub projections: Box<[Projection]>,
 }
 
-/// The traits of `core` that [`Signatures::field_types`] needs to know,
+/// The traits of `core` that `flux_solve::field_types` needs to know,
 /// recorded from the items: `Sized`, which every type implements.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Builtins {

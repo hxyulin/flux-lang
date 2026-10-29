@@ -111,7 +111,7 @@ fn production_lexer_matches_rustc() {
         "crates/flux-syntax/src/syntax_kind.rs",
         "crates/flux-syntax/src/tree.rs",
         "crates/flux-hir/src/macros/tt.rs",
-        "crates/flux-ty/src/ty.rs",
+        "crates/flux-ty-ir/src/ty.rs",
         "crates/flux-mir/src/bitset.rs",
         "crates/flux-difftest/src/rng.rs",
         "library/core/src/str.rs",

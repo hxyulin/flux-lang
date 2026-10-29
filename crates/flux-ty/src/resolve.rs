@@ -47,7 +47,7 @@ pub struct TypeScope<'a> {
     /// return type names.
     pub function: Option<FunctionId>,
     /// Which of `generics` have no implicit `Sized` bound
-    /// ([`unsized_params`]); empty where all do.
+    /// ([`flux_solve::unsized_params`]); empty where all do.
     pub unsized_params: &'a [bool],
     /// Resolved fields for structural DST tails, when signatures are available.
     pub struct_fields: Option<&'a LayeredArenaMap<Struct, &'static [Ty]>>,
@@ -123,7 +123,7 @@ impl<'a> ArrayLens<'a> {
 
 impl TypeScope<'_> {
     /// Whether values of `ty` may have no size known at compile time
-    /// here ([`maybe_unsized`]).
+    /// here ([`flux_solve::maybe_unsized`]).
     pub fn is_unsized(&self, items: &ItemTree, ty: Ty) -> bool {
         flux_solve::maybe_unsized_with(
             items,

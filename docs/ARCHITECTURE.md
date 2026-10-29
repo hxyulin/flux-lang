@@ -8,6 +8,8 @@ flux is a Cargo workspace:
 | [`flux-syntax`](../crates/flux-syntax/src/lib.rs) | Source text to lossless syntax trees, and the typed AST over them |
 | [`flux-sourcegen`](../crates/flux-sourcegen/src/lib.rs) | Generates the typed AST from [`flux.ungram`](../crates/flux-syntax/flux.ungram) |
 | [`flux-hir`](../crates/flux-hir/src/lib.rs) | Item tree and HIR: function bodies with names resolved |
+| [`flux-ty-ir`](../crates/flux-ty-ir/src/lib.rs) | Types, predicates and signatures, shared by the solver and the type checker |
+| [`flux-solve`](../crates/flux-solve/src/lib.rs) | Trait solving outside bodies, and queries over signatures |
 | [`flux-ty`](../crates/flux-ty/src/lib.rs) | Type inference and checking |
 | [`flux-mir`](../crates/flux-mir/src/lib.rs) | MIR: control-flow graphs built from typed HIR |
 | [`flux-codegen`](../crates/flux-codegen/src/lib.rs) | MIR to keel IR, objects and executables |
@@ -22,6 +24,12 @@ Within HIR, `item_tree` owns the data model. Its `collect`, `attributes` and
 `generics` modules handle collection policy, attribute admission and generic
 syntax separately. Type checking separates written-type resolution (`resolve`)
 from signature construction (`signature`) and per-body inference.
+
+The type representation (`Ty`, predicates, `Signatures` and their region
+tables) is `flux-ty-ir`'s. Trait solving is `flux-solve`'s: it depends on
+`flux-ty-ir` and not on `flux-ty`, so it cannot reach into inference.
+`flux-ty` re-exports the representation at its own paths, but not the
+solver: every crate calls the solver through `flux_solve::`.
 
 `Ty::children` and `Ty::map_children` define structural traversal, including
 callable recipe captures. Inference resolution and substitution share those
@@ -440,13 +448,13 @@ arguments cannot give. One in its return type is an *opaque type*
 arguments, since edition 2024 captures them all. Its bounds
 (`Signatures::opaques`, with the opaque type as an extra parameter)
 are all that is known of it, as a parameter's are: the solver's item
-bounds (`traits::alias_bounds`) and normalization give its methods and
+bounds (`flux_solve::traits::alias_bounds`) and normalization give its methods and
 associated types. Inferring the function's own body, each of its
 opaque types is a variable instead (and so is the type a call of
 itself returns), whose bounds are obligations; once the body is
 inferred, the variable's value is the *hidden type*
 (`Signatures::hidden`). MIR building gives the body's return place the
-hidden types, and monomorphization (`traits::instance_ty`) and the MIR
+hidden types, and monomorphization (`flux_solve::traits::instance_ty`) and the MIR
 validator reveal every opaque type, so code generation sees only the
 hidden ones.
 
@@ -464,9 +472,10 @@ is its trait, the trait's arguments and the values of every associated
 type of the trait and its supertraits, in one order (`dyn_assoc`), so
 `dyn Iterator<Item = u32>` is one type however it is written. Whether a
 trait can be one (rustc's dyn compatibility, E0038) and its supertraits
-are read from the item tree alone, as the types that name it are
-resolved. Its bounds are its trait elaborated with `Self` the object
-(`traits::dyn_bounds`), which the solver, method probing and calls of
+are read from the item tree alone
+([`flux_solve::objects`](../crates/flux-solve/src/objects.rs)), as the
+types that name it are resolved. Its bounds are its trait elaborated with `Self` the object
+(`flux_solve::traits::dyn_bounds`), which the solver, method probing and calls of
 `Fn`-family objects find as they find an opaque type's, and its
 associated types normalize to what it gives (`dyn_projections`).
 `coerce` unsizes a reference or pointer to a value whose type must then
@@ -488,10 +497,11 @@ has. Type checking matches rustc's `Try` and `FromResidual` bounds
 with the function's return type, and for a `Result`, records the
 `From::from` call that converts the error, an obligation like any
 other; MIR building tests the variant and returns the rest. Outside bodies, where every type is known up to rigid parameters,
-[`traits`](../crates/flux-ty/src/traits.rs) answers whether a predicate
-holds by matching `impl` headers, which checks supertraits, overlapping
-blocks (E0119, with bounds that rule types out) and blocks' methods
-against their traits (E0046, E0053, ...).
+[`flux_solve::traits`](../crates/flux-solve/src/traits.rs) answers whether
+a predicate holds by matching `impl` headers, which flux-ty's
+[`traits`](../crates/flux-ty/src/traits.rs) uses to check supertraits,
+overlapping blocks (E0119, with bounds that rule types out) and blocks'
+methods against their traits (E0046, E0053, ...).
 
 A struct's bounds are not assumed where it is named, as in rustc: each
 type in a signature must meet the bounds of the structs it names, and

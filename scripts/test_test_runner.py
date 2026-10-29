@@ -16,8 +16,9 @@ import test as runner
 def metadata():
     packages = []
     for name, dependencies in (("flux-syntax", []), ("flux-hir", ["flux-syntax"]),
-                               ("flux-ty", ["flux-hir"]), ("flux-mir", ["flux-ty"]),
-                               ("flux-cli", ["flux-mir"])):
+                               ("flux-ty-ir", ["flux-hir"]), ("flux-solve", ["flux-ty-ir"]),
+                               ("flux-ty", ["flux-hir", "flux-ty-ir", "flux-solve"]),
+                               ("flux-mir", ["flux-ty", "flux-solve"]), ("flux-cli", ["flux-mir"])):
         root = runner.ROOT / "crates" / name
         names = [name.removeprefix("flux-")]
         if name == "flux-cli":
@@ -41,6 +42,19 @@ class Planning(unittest.TestCase):
         selected = self.affected("crates/flux-ty/src/infer.rs")
         self.assertEqual({t.package for t in selected}, {"flux-ty", "flux-mir", "flux-cli"})
         self.assertTrue(any(t.name == "mir_selfhost" for t in selected))
+
+    def test_type_ir_and_solver_changes_select_the_type_checker(self):
+        selected = self.affected("crates/flux-ty-ir/src/ty.rs")
+        self.assertEqual({t.package for t in selected},
+                         {"flux-ty-ir", "flux-solve", "flux-ty", "flux-mir", "flux-cli"})
+        selected = self.affected("crates/flux-solve/src/traits.rs")
+        self.assertEqual({t.package for t in selected}, {"flux-solve", "flux-ty", "flux-mir", "flux-cli"})
+
+    def test_type_ir_and_solver_belong_to_inference(self):
+        for package in ("flux-ty-ir", "flux-solve", "flux-ty"):
+            target = runner.Target(package, package.replace("-", "_"), "lib", f"/{package}/src/lib.rs")
+            self.assertTrue(runner.in_group(target, "inference"), package)
+            self.assertFalse(runner.in_group(target, "borrowing"), package)
 
     def test_library_unknown_and_configuration_changes_fall_back_to_all(self):
         for path in ("library/core/src/ptr.rs", "Cargo.lock", "scripts/new.py", "README.md"):

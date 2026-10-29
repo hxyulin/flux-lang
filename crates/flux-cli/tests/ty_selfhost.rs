@@ -97,13 +97,16 @@ fn ty_selfhost_worker() {
         "unicode_ident",
         "flux_syntax",
         "flux_hir",
+        "flux_ty_ir",
+        "flux_solve",
         "flux_ty",
         "consumer",
     ];
     let versions = [
-        "0.1.0", "0.17.1", "2.1.3", "0.1.0", "2.8.3", "1.0.27", "0.1.0", "0.1.0", "0.1.0",
+        "0.1.0", "0.17.1", "2.1.3", "0.1.0", "2.8.3", "1.0.27", "0.1.0", "0.1.0", "0.1.0", "0.1.0",
+        "0.1.0",
     ];
-    let dependencies: [&[usize]; 10] = [
+    let dependencies: [&[usize]; 12] = [
         &[],
         &[],
         &[],
@@ -113,14 +116,16 @@ fn ty_selfhost_worker() {
         &[4, 5],
         &[0, 2, 3, 6],
         &[0, 1, 2, 3, 6, 7],
-        &[3, 7, 8],
+        &[0, 2, 3, 7, 8],
+        &[0, 2, 3, 6, 7, 8, 9],
+        &[3, 7, 10],
     ];
     let mut roots = Vec::new();
     let mut editions = Vec::new();
     let mut features: Vec<Vec<String>> = Vec::new();
     let mut config = Vec::new();
     let mut originals = Vec::new();
-    for index in 0..9 {
+    for index in 0..11 {
         let package = metadata["packages"]
             .as_array()
             .unwrap()
@@ -227,8 +232,8 @@ fn ty_selfhost_worker() {
         let oracle = root.join("oracle");
         std::fs::create_dir_all(&oracle).unwrap();
         let mut libraries: Vec<PathBuf> = Vec::new();
-        for index in 0..10 {
-            let output = if index < 9 {
+        for index in 0..12 {
+            let output = if index < 11 {
                 oracle.join(format!("lib{}.rlib", names[index]))
             } else {
                 oracle.join("reference")
@@ -253,7 +258,7 @@ fn ty_selfhost_worker() {
                 .arg(&oracle)
                 .arg("-o")
                 .arg(&output);
-            if index < 9 {
+            if index < 11 {
                 command.arg("--crate-type=rlib");
             }
             for feature in &features[index] {
@@ -289,7 +294,12 @@ fn ty_selfhost_worker() {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        let expected = bounded(&mut Command::new(&libraries[9]), &root, "run-reference", 60);
+        let expected = bounded(
+            &mut Command::new(&libraries[11]),
+            &root,
+            "run-reference",
+            60,
+        );
         success(&expected, &root, "run-reference");
         let mut db = SourceDb::new();
         let sources: Vec<_> = roots

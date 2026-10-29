@@ -15,7 +15,6 @@ flux-intern.workspace = true
 flux-solve.workspace = true
 flux-syntax.workspace = true
 flux-ty-ir.workspace = true
-hashbrown = { version = "0.17", default-features = false }
 rustc-hash = "2"
 
 [lints]

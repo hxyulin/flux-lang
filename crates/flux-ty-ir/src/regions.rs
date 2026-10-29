@@ -130,12 +130,12 @@ pub struct FnRegions {
     pub has_bounds: bool,
     pub callback_binder: CallbackBinder,
     /// The slots of the types its own bounds are on (`&'a T` in `where
-    /// &'a T: Tr`), as [`Signatures::fn_predicates`] lists them.
+    /// &'a T: Tr`), as [`crate::Signatures::fn_predicates`] lists them.
     pub bound_selfs: Box<[Box<[Region]>]>,
     /// Each resolved predicate's trait arguments, in the same order.
     pub bound_traits: Box<[TraitRefRegions]>,
     /// The slots of what its own bounds say associated types are
-    /// (`I: Iterator<Item = &'a T>`), as [`Signatures::fn_projections`]
+    /// (`I: Iterator<Item = &'a T>`), as [`crate::Signatures::fn_projections`]
     /// lists them.
     pub projections: Box<[Box<[Region]>]>,
     /// Its opaque types', by index.
@@ -182,7 +182,7 @@ pub struct StructRegions {
     pub projections: Box<[Box<[Region]>]>,
     /// How many lifetime parameters it has.
     pub lifetimes: u32,
-    /// The slots of each field's type, as [`Signatures::structs`] lists
+    /// The slots of each field's type, as [`crate::Signatures::structs`] lists
     /// them.
     pub fields: Box<[Box<[Region]>]>,
     /// Its lifetime parameters', then its type parameters'.
@@ -264,12 +264,12 @@ pub struct ImplRegions {
     /// meet.
     pub bounds: Box<[Outlives<Region>]>,
     /// The slots of the types its bounds are on, as
-    /// [`Signatures::impl_predicates`] lists them.
+    /// [`crate::Signatures::impl_predicates`] lists them.
     pub bound_selfs: Box<[Box<[Region]>]>,
     /// Each resolved predicate's trait arguments, in the same order.
     pub bound_traits: Box<[TraitRefRegions]>,
     /// The slots of what its bounds say associated types are, as
-    /// [`Signatures::impl_projections`] lists them.
+    /// [`crate::Signatures::impl_projections`] lists them.
     pub projections: Box<[Box<[Region]>]>,
 }
 
