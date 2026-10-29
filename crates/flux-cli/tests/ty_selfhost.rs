@@ -44,8 +44,8 @@ fn unchanged_full_ty_matches_rustc() {
         .join("../..")
         .canonicalize()
         .unwrap();
-    let root = repo.join(format!("out/ty-selfhost/{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    let scratch = support::scratch::Scratch::new(repo.join("out/ty-selfhost"));
+    let root = scratch.path().to_path_buf();
     let mut worker = Command::new(std::env::current_exe().unwrap());
     worker
         .args(["--exact", "ty_selfhost_worker", "--ignored", "--nocapture"])

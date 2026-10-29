@@ -1,5 +1,8 @@
 //! Executes the unchanged Values iterator excerpt, not the complete arena crate.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+
+mod support;
+
 use std::process::Command;
 
 #[test]
@@ -10,8 +13,8 @@ fn actual_arena_values_matches_rustc() {
     let end = original[start..].find("impl<T> Index<Idx<T>>").unwrap() + start;
     let excerpt = &original[start..end];
     assert!(excerpt.contains("fn next_back(&mut self) -> Option<Self::Item>"));
-    let dir = std::env::temp_dir().join(format!("flux-arena-values-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let scratch = support::scratch::Scratch::new(std::env::temp_dir().join("flux-arena-values"));
+    let dir = scratch.path();
     let path = dir.join("main.rs");
     let driver = r#"
 fn main() {
@@ -66,5 +69,4 @@ fn main() {
         }
     }
     assert_eq!(std::fs::read_to_string(file).unwrap(), original);
-    std::fs::remove_dir_all(dir).unwrap();
 }

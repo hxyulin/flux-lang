@@ -64,8 +64,8 @@ fn unchanged_arena_root_matches_rustc() {
         (path, bytes)
     })
     .collect();
-    let root = repo.join(format!("out/arena-selfhost/{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    let scratch = support::scratch::Scratch::new(repo.join("out/arena-selfhost"));
+    let root = scratch.path().to_path_buf();
     let driver = root.join("consumer.rs");
     std::fs::write(
         &driver,

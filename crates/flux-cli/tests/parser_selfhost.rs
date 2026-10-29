@@ -6,6 +6,8 @@
 //! retains its original manifest. This is not a full flux-syntax crate build.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -39,9 +41,9 @@ fn write(root: &Path, path: &str, text: &str) {
 #[test]
 fn unchanged_parser_sources_match_rustc() {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    // Keep the assembled production-source reproducer, including on failure.
-    let root = std::env::temp_dir().join(format!("flux-parser-selfhost-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    // Keep the assembled production-source reproducer when the test fails.
+    let scratch = support::scratch::Scratch::new(std::env::temp_dir().join("flux-parser-selfhost"));
+    let root = scratch.path().to_path_buf();
     let metadata = Command::new("cargo")
         .current_dir(&repository)
         .args([

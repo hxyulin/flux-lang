@@ -1,25 +1,23 @@
 //! Compile the unchanged production lexer through an explicit AST-free boundary.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
-use std::path::{Path, PathBuf};
+mod support;
+
+use std::path::Path;
 use std::process::{Command, Output};
 
-struct Probe(PathBuf);
+// Preserves the complete source graph and executable on failure.
+struct Probe(support::scratch::Scratch);
 
 impl Probe {
+    fn path(&self) -> &Path {
+        self.0.path()
+    }
+
     fn write(&self, path: &str, contents: &str) {
-        let path = self.0.join(path);
+        let path = self.path().join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
-    }
-}
-
-impl Drop for Probe {
-    fn drop(&mut self) {
-        // Preserve the complete source graph and executable on failure.
-        if !std::thread::panicking() {
-            std::fs::remove_dir_all(&self.0).unwrap();
-        }
     }
 }
 
@@ -63,10 +61,10 @@ fn production_lexer_matches_rustc() {
             .unwrap(),
     );
     let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout).unwrap();
-    let probe =
-        Probe(std::env::temp_dir().join(format!("flux-lexer-selfhost-{}", std::process::id())));
-    eprintln!("source graph: {}", probe.0.display());
-    std::fs::create_dir_all(&probe.0).unwrap();
+    let probe = Probe(support::scratch::Scratch::new(
+        std::env::temp_dir().join("flux-lexer-selfhost"),
+    ));
+    eprintln!("source graph: {}", probe.path().display());
     for name in ["memchr", "unicode-ident"] {
         let package = metadata["packages"]
             .as_array()
@@ -78,7 +76,7 @@ fn production_lexer_matches_rustc() {
         eprintln!("{} {}: {}", name, package["version"], manifest.display());
         copy(
             manifest.parent().unwrap(),
-            &probe.0.join(format!("{name}-src")),
+            &probe.path().join(format!("{name}-src")),
         );
     }
     // memchr's original manifest is outside the package driver's supported
@@ -130,7 +128,7 @@ fn production_lexer_matches_rustc() {
     );
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(
-        probe.0.join("deny-rustc"),
+        probe.path().join("deny-rustc"),
         std::fs::Permissions::from_mode(0o755),
     )
     .unwrap();
@@ -141,7 +139,7 @@ fn production_lexer_matches_rustc() {
             ("unicode_ident", "unicode-ident-src/src/lib.rs", "2021"),
             ("syntax_lexer", "syntax/src/lib.rs", "2024"),
         ] {
-            let library = probe.0.join(format!("lib{name}.rlib"));
+            let library = probe.path().join(format!("lib{name}.rlib"));
             let mut command = Command::new("rustc");
             command
                 .args([
@@ -152,9 +150,9 @@ fn production_lexer_matches_rustc() {
                     edition,
                 ])
                 .args(flags)
-                .arg(probe.0.join(path))
+                .arg(probe.path().join(path))
                 .arg("-L")
-                .arg(&probe.0)
+                .arg(probe.path())
                 .arg("-o")
                 .arg(&library);
             for dependency in &externs {
@@ -163,7 +161,7 @@ fn production_lexer_matches_rustc() {
             success(command.output().unwrap());
             externs.push(format!("{name}={}", library.display()));
         }
-        let executable = probe.0.join("reference");
+        let executable = probe.path().join("reference");
         let mut command = Command::new("rustc");
         command
             .args([
@@ -174,9 +172,9 @@ fn production_lexer_matches_rustc() {
                 "overflow-checks=off",
             ])
             .args(flags)
-            .arg(probe.0.join("src/main.rs"))
+            .arg(probe.path().join("src/main.rs"))
             .arg("-L")
-            .arg(&probe.0)
+            .arg(probe.path())
             .arg("-o")
             .arg(&executable);
         for dependency in &externs {
@@ -186,13 +184,13 @@ fn production_lexer_matches_rustc() {
         let expected = success(Command::new(executable).output().unwrap());
         let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
         command
-            .current_dir(&probe.0)
+            .current_dir(probe.path())
             .args(["package", "run", "--manifest-path", "Cargo.toml"])
             .args(flags)
-            .env("CARGO_HOME", probe.0.join("cargo-home"))
-            .env("RUSTC_CALL_LOG", probe.0.join("rustc-calls"));
+            .env("CARGO_HOME", probe.path().join("cargo-home"))
+            .env("RUSTC_CALL_LOG", probe.path().join("rustc-calls"));
         for name in ["RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"] {
-            command.env(name, probe.0.join("deny-rustc"));
+            command.env(name, probe.path().join("deny-rustc"));
         }
         for (key, _) in std::env::vars_os() {
             let name = key.to_string_lossy();
@@ -208,7 +206,7 @@ fn production_lexer_matches_rustc() {
             }
         }
         let actual = success(command.output().unwrap());
-        assert!(!probe.0.join("rustc-calls").exists());
+        assert!(!probe.path().join("rustc-calls").exists());
         assert_eq!(actual.stdout, expected.stdout);
         assert_eq!(actual.stderr, expected.stderr);
         eprintln!(

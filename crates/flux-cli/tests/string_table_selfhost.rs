@@ -55,8 +55,8 @@ fn unchanged_string_table_matches_rustc() {
     let start = text.find("struct StringTable {").unwrap();
     let end = start + text[start..].find("\n#[cfg(test)]").unwrap();
     let implementation = &text[start..end];
-    let root = repo.join(format!("out/string-table-selfhost/{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    let scratch = support::scratch::Scratch::new(repo.join("out/string-table-selfhost"));
+    let root = scratch.path().to_path_buf();
     std::fs::write(root.join("unchanged-string-table.rs"), implementation).unwrap();
     let driver = root.join("consumer.rs");
     std::fs::write(&driver, format!("use std::ptr;\nuse std::sync::atomic::{{AtomicPtr, Ordering}};\nuse std::sync::OnceLock;\n{implementation}\n{}", include_str!("fixtures/string_table/consumer.rs.txt"))).unwrap();

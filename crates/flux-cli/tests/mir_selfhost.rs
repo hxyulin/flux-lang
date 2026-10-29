@@ -53,8 +53,8 @@ fn unchanged_full_mir_matches_rustc() {
         .join("../..")
         .canonicalize()
         .unwrap();
-    let root = repo.join(format!("out/mir-selfhost/{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    let scratch = support::scratch::Scratch::new(repo.join("out/mir-selfhost"));
+    let root = scratch.path().to_path_buf();
     let mut worker = Command::new(std::env::current_exe().unwrap());
     worker
         .args(["--exact", "unchanged_full_mir_matches_rustc", "--nocapture"])

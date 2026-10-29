@@ -1,5 +1,8 @@
 //! Execute unchanged owned-arena excerpts; shared/Arc arenas remain excluded.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+
+mod support;
+
 use std::process::Command;
 
 #[test]
@@ -77,8 +80,8 @@ fn main() {
     println!("constant {:?} {}",idx,constant[idx]);
 }
 "#;
-    let dir = std::env::temp_dir().join(format!("flux-owned-arenas-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let scratch = support::scratch::Scratch::new(std::env::temp_dir().join("flux-owned-arenas"));
+    let dir = scratch.path();
     let path = dir.join("main.rs");
     std::fs::write(&path, format!("{first}\n{map}\n{driver}")).unwrap();
     let mut expected = None;
@@ -119,5 +122,4 @@ fn main() {
         }
     }
     assert_eq!(std::fs::read_to_string(file).unwrap(), original);
-    std::fs::remove_dir_all(dir).unwrap();
 }
