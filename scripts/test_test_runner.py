@@ -371,6 +371,48 @@ class Planning(unittest.TestCase):
         self.assertEqual(executables[first], Path("/target/first"))
         self.assertEqual(executables[second], Path("/target/second"))
 
+    def test_filtered_build_stages_the_emitted_compiler_once(self):
+        target = runner.Target("flux-cli", "sample", "test", "/fixture/tests/sample.rs", "cli-id")
+        messages = [
+            {"reason": "compiler-artifact", "package_id": "cli-id", "profile": {"test": False},
+             "target": {"name": "flux", "kind": ["bin"], "src_path": str(runner.ROOT / "crates/flux-cli/src/main.rs")},
+             "executable": "/fixture/target/debug/flux"},
+            {"reason": "compiler-artifact", "package_id": "cli-id", "profile": {"test": True},
+             "target": {"name": "sample", "kind": ["test"], "src_path": target.source},
+             "executable": "/fixture/target/debug/deps/sample"},
+        ]
+        result = SimpleNamespace(stdout="\n".join(json.dumps(m) for m in messages), returncode=0)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(runner.subprocess, "run", return_value=result), \
+                patch.object(runner, "stage_builtins") as stage:
+            directory = Path(temporary)
+            runner.build("cargo", [target], directory)
+            stage.assert_called_once_with(Path("/fixture/target/debug/flux"), directory)
+
+    def test_staging_failure_stops_the_plan_and_keeps_its_log(self):
+        result = SimpleNamespace(stdout="eager built-in failure", returncode=2)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(runner.subprocess, "run", return_value=result):
+            directory = Path(temporary)
+            with self.assertRaisesRegex(RuntimeError, "built-in staging failed"):
+                runner.stage_builtins(Path("/fixture/target/debug/flux"), directory)
+            self.assertEqual((directory / "builtins.log").read_text(), result.stdout)
+
+    def test_component_without_cli_builds_its_staging_compiler(self):
+        target = runner.Target("flux-mir", "mir", "test", "/fixture/tests/mir.rs", "mir-id")
+        message = {"reason": "compiler-artifact", "package_id": "mir-id", "profile": {"test": True},
+                   "target": {"name": "mir", "kind": ["test"], "src_path": target.source},
+                   "executable": "/fixture/target/debug/deps/mir"}
+        result = SimpleNamespace(stdout=json.dumps(message), returncode=0)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(runner.subprocess, "run", return_value=result), \
+                patch.object(runner, "build_compiler", return_value=Path("/fixture/target/debug/flux")) as compiler, \
+                patch.object(runner, "stage_builtins") as stage:
+            directory = Path(temporary)
+            runner.build("cargo", [target], directory, require_compiler=True)
+            compiler.assert_called_once_with("cargo", directory)
+            stage.assert_called_once_with(Path("/fixture/target/debug/flux"), directory)
+
     def test_shared_source_file_still_has_distinct_package_artifacts(self):
         first = runner.Target("first", "shared", "test", "/shared/tests/shared.rs", "first-id")
         second = runner.Target("second", "shared", "test", "/shared/tests/shared.rs", "second-id")

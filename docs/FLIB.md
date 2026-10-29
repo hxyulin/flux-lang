@@ -220,6 +220,45 @@ data needs the tested coalescing rule.
 The executable alone owns the C `main` wrapper and embedded runtime definitions.
 Link each dependency object once, in addition to downstream monomorphizations.
 
+## Staged built-in suite
+
+`flux build-builtins` eagerly checks every built-in function and constant, then
+writes one trusted `flux-builtins.flib` beside the executable under `target/` or
+`out/`. It contains the interleaved `core`, `alloc` and `std` prefix, complete
+source records, signatures and checked MIR. Ordinary user artifacts cannot load
+compiler-owned roles. There is no build script or first-run cache creation.
+
+The default suite holds metadata. Each program emits the built-in functions it
+reaches at its requested optimization tier. `build-builtins --native-object`
+also stores one object containing all non-generic definitions; `-O` selects its
+Full tier. A consumer uses that object only at the same tier, otherwise it uses
+the MIR. `FLUX_BUILTINS_MIR_ONLY=1` disables native suite objects for comparison.
+Keel currently strips whole input sections, so it cannot remove an unused
+function that shares a live object's text section. This makes an eager native
+suite object a binary-size tradeoff, rather than the default.
+
+The header records the executable's SHA-256 and its device, inode, size, and
+nanosecond modification and change times. Matching stat fields avoid hashing
+the executable again. Any mismatch requires the full content hash; copying the
+compiler can still accept the suite, while a dirty rebuild rejects it. Missing
+or stale suites select source mode for the process. Corrupt matching suites
+name the artifact and instruct the user to run `flux build-builtins` again.
+Staging validates an existing matching suite without rebuilding it. New contents
+are written to a temporary file in the same directory and renamed into place.
+
+`FLUX_BUILTINS_SOURCE=1` forces source mode. `FLUX_BUILTINS_TRACE=1` reports the
+selected mode, identity check and suite load time. The CLI selects its mode once;
+suite mode forbids later access to source `Core`, including its process cache.
+In-process library consumers keep using their existing caches unless they
+explicitly request suite providers.
+
+`just build` stages after building. The test runner stages the compiler emitted
+by Cargo before launching tests, including filtered and changed-target plans.
+Plain `cargo build` and `cargo test` do not require a staged suite. The source
+native target forces source mode, and the suite target stages its own scratch
+compiler to compare both modes. Neither the runner nor compilation assumes that
+an existing suite remains fresh after another compiler build.
+
 ## Delivery and acceptance
 
 1. Commit this design and link it from the Cargo integration later gates.

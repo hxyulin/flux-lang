@@ -6,6 +6,7 @@ default:
 # Debug build of flux.
 build:
     cargo build
+    target/debug/flux build-builtins
 
 # Compile selected compiler modules with rustc and flux and compare execution.
 selfhost-subset:

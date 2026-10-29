@@ -305,7 +305,8 @@ def affected(metadata: dict, paths: list[str], available: list[Target],
     return selected
 
 
-def build(cargo: str, selected: list[Target], directory: Path, complete: bool = False) -> dict[Target, Path]:
+def build(cargo: str, selected: list[Target], directory: Path, complete: bool = False,
+          require_compiler: bool = False) -> dict[Target, Path]:
     """Build every selected Cargo target with one command."""
     executables = {t: Path(sys.executable) for t in selected if t.kind == "python"}
     selected = [t for t in selected if t.kind != "python"]
@@ -329,6 +330,7 @@ def build(cargo: str, selected: list[Target], directory: Path, complete: bool = 
     (directory / "build.jsonl").write_text(result.stdout)
     if result.returncode:
         raise RuntimeError("build failed")
+    compiler = None
     for line in result.stdout.splitlines():
         try:
             artifact = json.loads(line)
@@ -337,6 +339,9 @@ def build(cargo: str, selected: list[Target], directory: Path, complete: bool = 
         if artifact.get("reason") != "compiler-artifact" or not artifact.get("executable"):
             continue
         if not artifact["profile"]["test"]:
+            if (artifact["target"]["name"] == "flux" and "bin" in artifact["target"]["kind"]
+                    and Path(artifact["target"]["src_path"]) == ROOT / "crates/flux-cli/src/main.rs"):
+                compiler = Path(artifact["executable"])
             continue
         for target in selected:
             if (artifact["target"]["name"] == target.name
@@ -347,7 +352,46 @@ def build(cargo: str, selected: list[Target], directory: Path, complete: bool = 
     missing = set(selected) - executables.keys()
     if missing:
         raise RuntimeError(f"missing test executables: {missing}")
+    if compiler is None and require_compiler:
+        compiler = build_compiler(cargo, directory)
+    if compiler is not None:
+        stage_builtins(compiler, directory)
     return executables
+
+
+def build_compiler(cargo: str, directory: Path) -> Path:
+    """Prepare the test-profile compiler when a focused plan does not build it."""
+    result = subprocess.run([cargo, "build", "--profile", "test", "-p", "flux-cli", "--bin", "flux",
+                             "--message-format=json"], cwd=ROOT, stdout=subprocess.PIPE, text=True)
+    (directory / "compiler-build.jsonl").write_text(result.stdout)
+    if result.returncode:
+        raise RuntimeError("compiler build for staging failed")
+    for line in result.stdout.splitlines():
+        try:
+            artifact = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (artifact.get("reason") == "compiler-artifact" and artifact.get("executable")
+                and not artifact["profile"]["test"] and artifact["target"]["name"] == "flux"
+                and "bin" in artifact["target"]["kind"]
+                and Path(artifact["target"]["src_path"]) == ROOT / "crates/flux-cli/src/main.rs"):
+            return Path(artifact["executable"])
+    raise RuntimeError("missing compiler executable for staging")
+
+
+def stage_builtins(compiler: Path, directory: Path):
+    """Stage once after building, including filtered and changed-target plans."""
+    print("Staging built-in types and MIR", flush=True)
+    start = time.monotonic()
+    result = subprocess.run([str(compiler), "build-builtins"], cwd=ROOT,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    (directory / "builtins.log").write_text(result.stdout)
+    (directory / "builtins.json").write_text(json.dumps({
+        "compiler": str(compiler), "seconds": round(time.monotonic() - start, 4),
+        "exit_code": result.returncode,
+    }, indent=2) + "\n")
+    if result.returncode:
+        raise RuntimeError(f"built-in staging failed; see {directory / 'builtins.log'}")
 
 
 class RunControl:
@@ -581,7 +625,7 @@ def main() -> int:
         "selections": {t.label: {"filter": settings[t].filter, "case": settings[t].case} for t in selected},
         "targets": [t.label for t in pool + exclusive],
     }, indent=2) + "\n")
-    executables = build(args.cargo, selected, directory, complete=selected == available)
+    executables = build(args.cargo, selected, directory, complete=selected == available, require_compiler=True)
     deduplicate = owns_native_sweep(selected, args)
     records = []
 

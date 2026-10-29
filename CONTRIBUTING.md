@@ -16,10 +16,18 @@ reports are useful contributions.
 git clone https://github.com/hxyulin/flux-lang.git
 cd flux-lang
 cargo build
+target/debug/flux build-builtins
 just check
 ```
 
 `just` lists the available recipes.
+
+The staging command writes checked built-in types and MIR beside the compiler.
+It returns without rebuilding when the suite already matches. `just build`
+and the test runner run it automatically; plain Cargo commands also work without
+it and use the source library path. A rebuilt compiler rejects a stale suite.
+Use `FLUX_BUILTINS_SOURCE=1` to force source mode, or
+`FLUX_BUILTINS_TRACE=1` to report which mode a CLI compilation selects.
 
 ## Find the right source
 
