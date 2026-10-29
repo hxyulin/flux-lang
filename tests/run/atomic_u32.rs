@@ -9,7 +9,7 @@ struct Guarded {
     after: u32,
 }
 // Selected counter excerpts, retaining the actual fields, method signatures,
-// and counter expressions from flux-intern/src/lib.rs and flux-ty/src/ty.rs.
+// and counter expressions from flux-intern/src/lib.rs and flux-ty-ir/src/ty.rs.
 // The surrounding interner algorithms and sources are not compiled here.
 mod symbol_counter_probe {
     use std::sync::atomic::{AtomicU32, Ordering};
