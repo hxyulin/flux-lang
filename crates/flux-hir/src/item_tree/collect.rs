@@ -45,7 +45,7 @@ fn associated_generics(t: ast::TypeAlias<'_>, diagnostics: &mut Vec<Diagnostic>)
 }
 
 impl ItemTree {
-    pub(super) fn add_source_crate(
+    pub(crate) fn add_source_crate(
         &mut self,
         db: &mut SourceDb,
         root: FileId,
@@ -225,6 +225,7 @@ impl Collector<'_> {
             block: None,
         });
         self.items.crates.push(CrateData {
+            input_trace: crate::inputs::InputTrace::default(),
             compilation_dir: self.db.crate_directory(root),
             environment: self.db.crate_env(root),
             macro_use: Vec::new(),

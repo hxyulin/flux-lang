@@ -144,6 +144,7 @@ enum Op {
 /// them by index.
 #[derive(Debug)]
 pub struct Rules {
+    pub(crate) edition: flux_syntax::Edition,
     pub(crate) local_inner_macros: bool,
     pub(crate) toks: Box<[Tok]>,
     glued: Box<[Glued]>,
@@ -785,6 +786,7 @@ pub(crate) fn parse_rules(
     }
     let errors = reader.errors;
     let rules = Rules {
+        edition,
         local_inner_macros: false,
         invalid: !errors.is_empty(),
         toks: toks.into(),

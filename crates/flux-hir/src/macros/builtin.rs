@@ -71,10 +71,13 @@ impl Builtin {
     }
 }
 
+type RecordEnvironment<'a> = dyn Fn(&str, Option<&str>) -> Result<(), String> + 'a;
+
 /// What a built-in macro needs to know about its call.
 pub(crate) struct BuiltinCx<'a> {
     pub name: Symbol,
     pub environment: Option<&'a std::collections::BTreeMap<String, String>>,
+    pub track_environment: &'a RecordEnvironment<'a>,
     pub edition: flux_syntax::Edition,
     pub cfg: Option<&'a flux_syntax::CfgOptions>,
     pub toks: &'a [Tok],
@@ -280,7 +283,7 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
             };
             let name = string(args.args[0].1)?;
             let message = args.args.get(1).map(|arg| string(arg.1)).transpose()?;
-            match cx.environment.map_or_else(
+            let value = cx.environment.map_or_else(
                 || std::env::var(&name),
                 |environment| {
                     environment
@@ -288,7 +291,13 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
                         .cloned()
                         .ok_or(std::env::VarError::NotPresent)
                 },
-            ) {
+            );
+            let tracked_value = match &value {
+                Ok(value) => Some(value.as_str()),
+                Err(_) => None,
+            };
+            (cx.track_environment)(&name, tracked_value).map_err(|message| (cx.call, message))?;
+            match value {
                 Ok(value) if builtin == Builtin::Env => out.push(cx.string(&value, cx.origin())),
                 Ok(value) => {
                     cx.quote("{core}::option::Option::Some(", &mut out);

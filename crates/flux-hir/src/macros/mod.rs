@@ -75,10 +75,10 @@ pub struct MacroScope {
     pub name: Symbol,
     pub def: MacroId,
     /// How many definitions are before it, `parent`'s included.
-    depth: u32,
+    pub(crate) depth: u32,
     /// An ancestor further up, for finding one at a given depth in
     /// logarithmic time (skew-binary jump pointers).
-    jump: Option<MacroScopeId>,
+    pub(crate) jump: Option<MacroScopeId>,
 }
 
 impl ItemTree {
@@ -738,11 +738,21 @@ fn expand_at_depth(
             let source = site.items.files.get(&site.real_file);
             let include_str = |path: &str| {
                 let source = source.ok_or_else(|| "include source file is unknown".to_owned())?;
-                (site.read_text)(source, path)
+                let text = (site.read_text)(source, path)?;
+                let physical = crate::source::SourceDb::include_path(source, path)?;
+                site.items.crates[site.krate.0 as usize]
+                    .record_file_input(physical, text.as_bytes())?;
+                Ok(text)
             };
             let read_bytes = |path: &str| {
                 let source = source.ok_or_else(|| "include source file is unknown".to_owned())?;
-                crate::source::SourceDb::read_include_bytes(source, path)
+                let bytes = crate::source::SourceDb::read_include_bytes(source, path)?;
+                let physical = crate::source::SourceDb::include_path(source, path)?;
+                site.items.crates[site.krate.0 as usize].record_file_input(physical, &bytes)?;
+                Ok(bytes)
+            };
+            let track_environment = |name: &str, value: Option<&str>| {
+                site.items.crates[site.krate.0 as usize].record_environment_input(name, value)
             };
             let edition = call
                 .children()
@@ -766,6 +776,7 @@ fn expand_at_depth(
                 module_path: &module_path,
                 include_str: &include_str,
                 read_bytes: &read_bytes,
+                track_environment: &track_environment,
             };
             if builtin == Builtin::Include {
                 let result = (|| {

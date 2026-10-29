@@ -22,7 +22,10 @@
 mod body;
 mod cfg;
 pub mod def_map;
+pub mod flib;
+mod inputs;
 mod intrinsic;
+pub use inputs::TrackedInputs;
 pub use intrinsic::Intrinsic;
 mod item_tree;
 mod library;
@@ -124,13 +127,37 @@ pub fn lower_sources(db: &mut SourceDb, sources: &[SourceCrate]) -> Hir {
     lower_items(db, items, true)
 }
 
-fn lower_items(db: &SourceDb, mut items: ItemTree, with_core: bool) -> Hir {
+/// Collects and lowers one source crate after previously loaded artifact crates.
+/// Dependency IDs refer to existing crates in `items`.
+pub fn lower_source_on(
+    db: &mut SourceDb,
+    mut items: ItemTree,
+    root: FileId,
+    name: Symbol,
+    dependencies: Vec<(Symbol, CrateId)>,
+) -> Hir {
+    let from = items.counts();
+    items.add_source_crate(db, root, name, false, dependencies);
+    lower_items_from(db, items, true, from)
+}
+
+fn lower_items(db: &SourceDb, items: ItemTree, with_core: bool) -> Hir {
+    let from = items.core;
+    lower_items_from(db, items, with_core, from)
+}
+
+fn lower_items_from(
+    db: &SourceDb,
+    mut items: ItemTree,
+    with_core: bool,
+    from: item_tree::ItemCounts,
+) -> Hir {
     let mut diagnostics = std::mem::take(&mut items.diagnostics);
     if with_core {
         diagnostics.extend(Core::get().diagnostics.iter().cloned());
     }
     let mut bodies = ArenaMap::new();
-    let functions = items.functions.iter().skip(items.core.functions as usize);
+    let functions = items.functions.iter().skip(from.functions as usize);
     for (id, function) in functions {
         if function.has_body {
             let tree = db.file(function.loc.file).parse.tree();
@@ -142,7 +169,7 @@ fn lower_items(db: &SourceDb, mut items: ItemTree, with_core: bool) -> Hir {
             bodies.insert(id, (lowered.body, lowered.source_map));
         }
     }
-    let const_bodies = lower_consts(db, &items, items.core.consts as usize, &mut diagnostics);
+    let const_bodies = lower_consts(db, &items, from.consts as usize, &mut diagnostics);
     for d in &mut diagnostics {
         items.resolve_diagnostic(d);
     }

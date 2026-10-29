@@ -4,8 +4,11 @@
 
 mod attributes;
 mod collect;
+#[path = "flib/crate_data.rs"]
+mod flib_data;
 mod generics;
 mod sized_dispatch;
+
 pub(crate) use attributes::{attr_name, check_attr, check_attrs};
 use attributes::{
     check_inert_attrs, check_inner_attrs, enum_repr, non_exhaustive_attr, repr_attr, struct_repr,
@@ -121,6 +124,8 @@ pub struct ItemTree {
     pub macro_prelude: rustc_hash::FxHashMap<Symbol, MacroId>,
     /// The files read, for `line!`, `column!` and `file!`.
     pub files: rustc_hash::FxHashMap<FileId, Arc<SourceFile>>,
+    /// Diagnostic files retained by decoded crates, including body-only includes.
+    pub(crate) artifact_files: rustc_hash::FxHashMap<CrateId, Vec<FileId>>,
     /// The file each expansion of a macro call in item position is part
     /// of, by the file its items are in.
     pub expansion_files: rustc_hash::FxHashMap<FileId, FileId>,
@@ -164,6 +169,7 @@ pub struct ItemCounts {
 
 #[derive(Debug, Clone)]
 pub struct CrateData {
+    pub(crate) input_trace: crate::inputs::InputTrace,
     /// Compiler process cwd, distinct from CARGO_MANIFEST_DIR.
     pub compilation_dir: Option<PathBuf>,
     /// Isolated compilation inputs; None retains standalone process lookup.

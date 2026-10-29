@@ -81,6 +81,11 @@ pub struct NodeId(u32);
 impl NodeId {
     pub const ROOT: NodeId = NodeId(0);
 
+    /// Restores an artifact-local node index; source ownership is checked by the loader.
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
     pub fn index(self) -> usize {
         self.0 as usize
     }

@@ -39,6 +39,7 @@ impl FileId {
 
 #[derive(Debug, Clone)]
 pub struct SourceFile {
+    pub(crate) diagnostic_text: Option<Arc<str>>,
     pub path: PathBuf,
     pub edition: flux_syntax::Edition,
     /// Included fragments occupy distinct coordinates while semantic passes
@@ -67,7 +68,9 @@ impl SourceFile {
     }
 
     pub fn text(&self) -> &str {
-        self.parse.tree().text()
+        self.diagnostic_text
+            .as_deref()
+            .unwrap_or_else(|| self.parse.tree().text())
     }
 }
 
@@ -448,6 +451,7 @@ pub(crate) fn core_files() -> &'static [Arc<SourceFile>] {
                 .chain(std)
                 .map(|(root, name, text)| {
                     scope.spawn(move || SourceFile {
+                        diagnostic_text: None,
                         path: Path::new(root).join(name),
                         parse: flux_syntax::parse_source_file(text),
                         edition: flux_syntax::Edition::E2024,
@@ -637,6 +641,7 @@ impl SourceDb {
         let id = FileId(self.files.len() as u32);
         let path = self.file(file).path.clone();
         self.files.push(Arc::new(SourceFile {
+            diagnostic_text: None,
             path,
             parse,
             edition: self.file(file).edition,
@@ -664,6 +669,7 @@ impl SourceDb {
             .ok_or_else(|| "included source size limit exceeded".to_owned())?;
         let parse = parse.with_source_offset(range_base);
         self.files.push(Arc::new(SourceFile {
+            diagnostic_text: None,
             path,
             parse,
             edition,
@@ -714,6 +720,7 @@ impl SourceDb {
         let path = path.into();
         self.by_path.entry(path.clone()).or_insert(id);
         self.files.push(Arc::new(SourceFile {
+            diagnostic_text: None,
             path,
             parse,
             edition,
@@ -721,6 +728,53 @@ impl SourceDb {
             range_base: 0,
         }));
         id
+    }
+
+    /// Adds artifact source text for diagnostics without parsing dependency code.
+    pub fn add_metadata_source(
+        &mut self,
+        path: PathBuf,
+        text: String,
+        edition: flux_syntax::Edition,
+    ) -> FileId {
+        let id = FileId(self.files.len() as u32);
+        self.files.push(Arc::new(SourceFile {
+            diagnostic_text: Some(Arc::from(text.into_boxed_str())),
+            path,
+            edition,
+            range_base: 0,
+            parse: flux_syntax::parse_source_file(""),
+            expansion_of: None,
+        }));
+        id
+    }
+
+    /// Assigns an included artifact source fresh coordinates in this compilation.
+    pub(crate) fn allocate_metadata_include(
+        &mut self,
+        id: FileId,
+    ) -> Result<u32, crate::flib::Error> {
+        let size = u32::try_from(self.file(id).text().len())
+            .map_err(|_| crate::flib::Error("included source is too large"))?;
+        let base = self.next_include_offset;
+        self.next_include_offset = base
+            .checked_add(size)
+            .and_then(|end| end.checked_add(1))
+            .ok_or(crate::flib::Error("included source coordinate overflow"))?;
+        Arc::make_mut(&mut self.files[id.0 as usize]).range_base = base;
+        Ok(base)
+    }
+
+    /// Restores diagnostic coordinates after artifact-local file IDs are remapped.
+    pub(crate) fn set_metadata_origin(
+        &mut self,
+        id: FileId,
+        range_base: u32,
+        expansion_of: Option<FileId>,
+    ) {
+        let file = Arc::make_mut(&mut self.files[id.0 as usize]);
+        file.range_base = range_base;
+        file.expansion_of = expansion_of;
     }
 
     /// The file at `path`, read and parsed if it was not already.
