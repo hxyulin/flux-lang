@@ -47,3 +47,25 @@ fn cases_match_names_and_paths_without_broadening_the_filter() {
     assert!(!support::cases::matches_filter("borrow", "owned"));
     assert!(std::panic::catch_unwind(|| support::cases::matches_filter("x", " ")).is_err());
 }
+
+#[test]
+fn scratch_directories_are_unique_and_kept_only_on_failure() {
+    let parent = std::env::temp_dir().join("flux-test-support-scratch");
+    let first = support::scratch::Scratch::new(&parent);
+    let second = support::scratch::Scratch::new(&parent);
+    assert_ne!(first.path(), second.path());
+    let passed = first.path().to_path_buf();
+    std::fs::write(passed.join("artifact"), "kept only on failure").unwrap();
+    drop(first);
+    assert!(!passed.exists());
+    let failed = std::thread::spawn(move || {
+        let path = second.path().to_path_buf();
+        let _scratch = second;
+        std::panic::panic_any(path);
+    })
+    .join()
+    .unwrap_err();
+    let failed = failed.downcast::<std::path::PathBuf>().unwrap();
+    assert!(failed.is_dir());
+    std::fs::remove_dir_all(*failed).unwrap();
+}

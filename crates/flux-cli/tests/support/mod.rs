@@ -10,3 +10,5 @@ pub mod process;
 
 #[path = "../../../../tests/support/cases.rs"]
 pub mod cases;
+#[path = "../../../../tests/support/scratch.rs"]
+pub mod scratch;
