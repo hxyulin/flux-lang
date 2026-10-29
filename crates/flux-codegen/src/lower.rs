@@ -3050,25 +3050,15 @@ impl Lower<'_, '_, '_> {
                 target,
                 value,
             ),
-            (None, Some(_)) => {
-                let mut value = value;
-                if bits(from) < 32 {
-                    value = if from.is_signed_int() {
-                        self.b.ins().sext(Type::I32, value)
-                    } else {
-                        self.b.ins().uext(Type::I32, value)
-                    };
-                }
-                self.b.ins().convert(
-                    if from.is_signed_int() {
-                        ConvertOp::Sitofp
-                    } else {
-                        ConvertOp::Uitofp
-                    },
-                    target,
-                    value,
-                )
-            }
+            (None, Some(_)) => self.b.ins().convert(
+                if from.is_signed_int() {
+                    ConvertOp::Sitofp
+                } else {
+                    ConvertOp::Uitofp
+                },
+                target,
+                value,
+            ),
             (Some(_), None) => {
                 let wide = if bits(to) < 32 { Type::I32 } else { target };
                 let converted = self.b.ins().convert(
