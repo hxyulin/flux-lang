@@ -23,6 +23,11 @@ use crate::{
 /// The embedded libraries' bodies are built and checked once per
 /// process ([`crate::library`]); a compilation copies those it reaches.
 pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
+    build_file_with_roots(hir, typed, &[])
+}
+
+/// Builds and checks additional function roots, including otherwise unused library code.
+pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId]) -> FileMir {
     let mut diagnostics = crate::alignment::check_declarations(&hir.items, &typed.sigs);
     let check = |body: &Body, file, is_const, requirements: &crate::borrowck::Requirements| {
         let (found, own) = check_body(hir, typed, body, is_const, requirements);
@@ -74,6 +79,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         consts.insert(id, built.body);
     }
     queue.extend(flux_ty::core_roots(&hir.items));
+    queue.extend_from_slice(roots);
     queue.extend(flux_ty::entry::main_runner(&hir.items, &typed.sigs));
     queue.extend(
         hir.bodies

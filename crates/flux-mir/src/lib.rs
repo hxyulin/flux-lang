@@ -94,7 +94,7 @@ pub fn discriminant_bits(
     }
 }
 
-pub use build::{build, build_file, check_clean_bodies};
+pub use build::{build, build_file, build_file_with_roots, check_clean_bodies};
 pub use lens::check_file;
 
 pub type Local = Idx<LocalDecl>;
