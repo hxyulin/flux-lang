@@ -50,6 +50,22 @@ static COUNT:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(
     while let Some(t)=iter.next(){if matches!(&t,TokenTree::Ident(i) if i.to_string()=="struct"){name=iter.next().map(|t|t.to_string());break;}}
     format!("impl {}{{fn answer()->usize{{42}}}}",name.unwrap()).parse().unwrap()
 }
+
+macro_rules! declare_generated {
+    ($bang:ident, $attribute:ident, $derive:ident, $helper:ident) => {
+        #[proc_macro] pub fn $bang(input:TokenStream)->TokenStream {input}
+        #[proc_macro_attribute] pub fn $attribute(_:TokenStream,input:TokenStream)->TokenStream {input}
+        #[proc_macro_derive($derive)] pub fn generated_derive(input:TokenStream)->TokenStream {
+            let mut iter=input.into_iter();let mut name=None;
+            while let Some(t)=iter.next(){if matches!(&t,TokenTree::Ident(i) if i.to_string()=="struct"){name=iter.next().map(|t|t.to_string());break;}}
+            format!("impl {}{{fn generated()->usize{{43}}}}",name.unwrap()).parse().unwrap()
+        }
+        #[proc_macro_derive(GeneratedHelper,attributes($helper))]
+        pub fn generated_helper(_:TokenStream)->TokenStream {TokenStream::new()}
+    };
+}
+declare_generated!(generated_identity, generated_attribute, Generated, generated_helper_attr);
+#[cfg(any())] declare_generated!(disabled_identity, disabled_attribute, Disabled, disabled_helper);
 "##;
 const PROGRAM: &str = r####"
 use host::{identity as id,add,Answer};
@@ -63,9 +79,12 @@ id!(/// retained item docs
 #[host::docs]
 /// retained function docs
 fn documented()->usize{23}
+#[derive(host::Generated)] struct GeneratedItem;
+#[host::generated_attribute] fn generated_attribute_value()->usize{host::generated_identity!(31)}
 type Number=id!(usize);
 fn borrowed<'a>(x:&'a Number)->&'a Number{id!(x)}
 fn main(){
+    assert_eq!(GeneratedItem::generated(),43);assert_eq!(generated_attribute_value(),31);
     let a=host::counter!();let b=host::counter!();assert_ne!(a,b);assert_eq!(a+b,1);
     let value=Item{value:3};assert_eq!(value.clone().value,3);assert_eq!(Item::answer(),42);
     assert_eq!(original()+added()+generated(),59);
@@ -190,7 +209,47 @@ fn direct_expansion_contracts_match_rustc() {
         cfg,
     )
     .unwrap();
-    for (name, text, expected) in [
+    assert!(
+        exports
+            .iter()
+            .find(|m| m.name.as_str() == "Generated")
+            .unwrap()
+            .helpers
+            .is_none()
+    );
+    assert!(
+        exports
+            .iter()
+            .find(|m| m.name.as_str() == "GeneratedHelper")
+            .unwrap()
+            .helpers
+            .is_none()
+    );
+    assert!(!exports.iter().any(|m| m.name.as_str() == "Disabled"));
+    assert!(
+        exports
+            .iter()
+            .find(|m| m.name.as_str() == "Answer")
+            .unwrap()
+            .helpers
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|s| s.as_str() == "answer")
+    );
+    for (name, text, expected, flux_expected) in [
+        ("generated_function_helper_shadow", "use host::{GeneratedHelper,remove as generated_helper_attr};#[generated_helper_attr]#[derive(GeneratedHelper)]fn bad(){}fn main(){}", false),
+        ("generated_derive_before_attribute", "#[derive(host::GeneratedHelper)]#[host::remove]fn bad(){}fn main(){}", false),
+        ("generated_attribute_before_derive", "#[host::remove]#[derive(host::GeneratedHelper)]fn bad(){}fn main(){}", true),
+        ("generated_disabled_variant", "#[derive(host::GeneratedHelper)]enum E{#[cfg(any())]Disabled{#[allow(dead_code)]value:Missing},Enabled}fn main(){}", true),
+        ("generated_qualified_attribute", "#[derive(host::Generated)]#[host::generated_attribute]struct S;fn main(){assert_eq!(S::generated(),43);}", true),
+        ("generated_configured_fields", "#[cfg_attr(all(),derive(host::Generated))]struct S{#[cfg(any())]#[allow(dead_code)]missing:Missing,n:u32}fn main(){assert_eq!(S::generated(),43);}", true),
+        ("generated_helper_macro_shadow", "use host::{GeneratedHelper, add as generated_helper_attr};#[derive(GeneratedHelper)]#[generated_helper_attr(37)]struct S;fn main(){let _=added();}", false),
+        ("generated_derive", "#[derive(host::Generated)]struct S;fn main(){assert_eq!(S::generated(),43);}", true),
+        ("generated_attribute", "#[host::generated_attribute]fn f(){}fn main(){f();}", true),
+        ("generated_function", "host::generated_identity!(fn f(){});fn main(){f();}", true),
+        ("generated_unknown_helper", "#[derive(host::Generated)]#[invented_helper]struct S;fn main(){}", false),
+        ("disabled_generated_export", "#[derive(host::Disabled)]struct S;fn main(){}", false),
         (
             "qualified",
             "host::identity!(fn value()->u32{7});fn main(){assert_eq!(value(),7);}",
@@ -279,7 +338,14 @@ fn direct_expansion_contracts_match_rustc() {
             "#![no_std] fn value(x:f64)->f64{host::identity!(x).sqrt()}fn main(){}",
             false,
         ),
-    ] {
+    ].into_iter().map(|(name,text,expected)|(name,text,expected,expected)).chain([
+        ("generated_builtin_attribute", "#[derive(host::Generated)]#[repr(C)]struct S;fn main(){}", true, false),
+        ("generated_field_attribute", "#[derive(host::Generated)]struct S{#[allow(dead_code)]n:u32}fn main(){}", true, false),
+        // Generated helper declarations are not present in the host catalog.
+        // Keep this Rust-valid form explicitly unsupported rather than treating
+        // every unrecognized attribute as a helper.
+        ("generated_helper_metadata", "#[derive(host::GeneratedHelper)]#[generated_helper_attr]struct S;fn main(){}", true, false),
+    ]) {
         let file = root.join(format!("{name}.rs"));
         std::fs::write(&file, text).unwrap();
         let output = run(
@@ -333,9 +399,12 @@ fn direct_expansion_contracts_match_rustc() {
                 diagnostics.extend(mir.diagnostics);
             }
         }
+        if matches!(name, "generated_helper_metadata" | "generated_helper_macro_shadow" | "generated_builtin_attribute" | "generated_field_attribute") {
+            assert!(diagnostics.iter().any(|d| d.message.contains("attribute")), "helper metadata boundary: {diagnostics:?}");
+        }
         assert_eq!(
             diagnostics.is_empty(),
-            expected,
+            flux_expected,
             "Flux {name}: {diagnostics:?}"
         );
     }

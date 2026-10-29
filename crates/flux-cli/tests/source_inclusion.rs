@@ -273,24 +273,29 @@ fn actual_keel_selector_include_and_generated_table() {
         .lines()
         .find(|line| line.starts_with("include!(concat!(env!"))
         .unwrap();
-    let build = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("build");
-    let generated = std::fs::read_dir(build)
-        .unwrap()
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            path.file_name()?
-                .to_str()?
-                .starts_with("keel-codegen-")
-                .then(|| path.join("out/patterns.rs"))
-        })
-        .find(|path| path.is_file())
-        .expect("Keel generated selector source");
+    // Run this revision's unchanged generator in an isolated output directory.
+    // Scanning target/build can accidentally select another revision's table.
+    let directory = keel.join("crates/keel-codegen");
+    let generator = case.0.join("keel-selector-generator");
+    success(
+        Command::new("rustc")
+            .args(["--edition=2024", "--crate-name=keel_selector_generator"])
+            .arg(directory.join("build.rs"))
+            .arg("-o")
+            .arg(&generator)
+            .output()
+            .unwrap(),
+    );
+    let generated_dir = case.0.join("generated");
+    std::fs::create_dir_all(&generated_dir).unwrap();
+    success(
+        Command::new(&generator)
+            .current_dir(&directory)
+            .env("OUT_DIR", &generated_dir)
+            .output()
+            .unwrap(),
+    );
+    let generated = generated_dir.join("patterns.rs");
     let patterns = std::fs::read_to_string(&generated).unwrap();
     // The complete original selector source must reach its generated helper.
     // Other selector dependencies are outside this focused source-loading probe.
@@ -309,9 +314,16 @@ fn actual_keel_selector_include_and_generated_table() {
     // production types. This is the table excerpt, not the full selector.
     let table = &patterns[..patterns.find("fn generated_hint").unwrap()];
     case.write("generated/patterns.rs", table);
-    let declarations = &selector[selector
-        .find("#[derive(Clone, Copy, PartialEq, Eq)]")
-        .unwrap()..selector.find(inclusion).unwrap()];
+    use flux_syntax::ast::{self, AstNode};
+    let parsed = flux_syntax::parse_source_file(&selector);
+    let target = parsed
+        .root()
+        .children()
+        .filter_map(ast::Enum::cast)
+        .find(|item| item.name().is_some_and(|name| name.text() == "Target"))
+        .expect("selector Target declaration");
+    let declarations =
+        &selector[target.syntax().text_range().start() as usize..selector.find(inclusion).unwrap()];
     case.write("declarations.rs", declarations);
     let inst = std::fs::read_to_string(keel.join("crates/keel-ir/src/inst.rs")).unwrap();
     let start = inst.find("pub enum BinaryOp {").unwrap();

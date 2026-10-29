@@ -9,7 +9,7 @@ Set `FLUX_BACKEND_ONLY=core` or `FLUX_BACKEND_ONLY=full` to audit just one
 source closure while investigating a blocker. The report records that selection;
 a core-only pass does not establish full-backend support.
 
-The frozen `graph.json` records the 39-package normal dependency closure of
+The frozen `graph.json` records the 49-package normal dependency closure of
 Keel assembler, IR, codegen, frontend, optimizer and linker, at the workspace's
 pinned revision. Package IDs, versions, source identities, editions, features,
 and aliased dependency edges are checked against locked offline Cargo metadata
@@ -35,19 +35,31 @@ Generated executable instructions are not executed.
 
 ## Input admission and core audit
 
-The complete graph now admits host procedural macros through the matching
-toolchain server. Cargo builds serde_derive as host code; its expanded tokens
-enter ordinary Flux collection and checking. Host-only syn, quote, proc-macro2
-and unicode-ident dependencies are excluded from the target source closure.
-The complete metadata inventory still records all 39 packages. The target worker
-loads 34 source crates and one host export root. The macro dylib and bridge source
-are included in the byte guard; `host-macros.json` records the artifact.
+The complete metadata inventory now records 49 packages, including the new
+bbtree/Verus closure. The target worker models host procedural macros through
+the matching toolchain server; host-only source dependencies remain outside its
+target source closure. Cargo supplies real macro dylibs and the macro bridge
+sources are included in the byte guard.
+
+The git-pinned `d17902eb` audit in `out/keel-backend-readiness/57609` built and
+ran the full rustc reference consumer, then stopped during discovery of Verus's
+macro-generated `Structural` export. Flux currently requires an explicit
+proc-macro declaration in the host source root. This happened before syntax/HIR
+checking, so no new full-backend native milestone is established. Both final
+source guards were clean. Generated host exports now load from the catalog. The
+rerun in `out/keel-backend-readiness/31393` reaches frontend admission: four syntax
+and 339 HIR diagnostics, with both byte guards clean. Missing macro reexports,
+`offset_of!`, negative impls, async constructs and trait return-position `impl
+Trait` occur in this new closure; many import diagnostics are cascades. No
+helper-metadata gate appears in this report. Types, MIR and codegen did not run.
+The earlier observations below refer to prior pins.
 
 `SourceDb::set_crate_env` supplies isolated per-crate environments. The audit
 passes real Cargo OUT_DIR and rustc-env outputs to each source crate; it does not
 combine generated directories or mutate the worker's process environment.
-`input.diagnostics` is now empty. Full graph syntax/HIR can run; types, MIR and
-codegen remain gated when ordinary source diagnostics exist. This is a supplied
+`input.diagnostics` records reference input admission. Syntax/HIR, types, MIR
+and codegen remain gated on successful host export discovery and clean
+preceding stages. This is a supplied
 source-graph audit, not a package manager or rustc rlib bridge.
 
 A separate 18-package core closure excludes the linker and its additional

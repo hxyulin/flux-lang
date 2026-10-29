@@ -91,9 +91,6 @@ pub fn exports(
     names
         .into_iter()
         .map(|(name, kind)| {
-            let declared = helpers.get(&name).ok_or_else(|| {
-                format!("proc macro `{name}` needs an explicit declaration in its host source root")
-            })?;
             let kind = match kind {
                 protocol::ProcMacroKind::CustomDerive => flux_hir::ProcMacroKind::Derive,
                 protocol::ProcMacroKind::Attr => flux_hir::ProcMacroKind::Attribute,
@@ -102,7 +99,15 @@ pub fn exports(
             Ok(ProcMacro {
                 name: Symbol::intern(&name),
                 kind,
-                helpers: declared.iter().map(|s| Symbol::intern(s)).collect(),
+                // The compiled catalog also includes macro-generated exports.
+                // Only derives need helper metadata; missing source metadata
+                // must not turn unknown attributes into inert helpers.
+                helpers: match kind {
+                    flux_hir::ProcMacroKind::Derive => helpers
+                        .get(&name)
+                        .map(|names| names.iter().map(|s| Symbol::intern(s)).collect()),
+                    _ => Some(Vec::new()),
+                },
                 expander: Arc::new(Host {
                     catalog: catalog.clone(),
                     dylib: dylib.to_owned(),
@@ -463,7 +468,7 @@ mod tests {
             .collect::<Vec<_>>();
         for name in ["Serialize", "Deserialize"] {
             let mac = macros.iter().find(|m| m.name.as_str() == name).unwrap();
-            assert!(mac.helpers.iter().any(|s| s.as_str() == "serde"));
+            assert!(mac.helpers.iter().flatten().any(|s| s.as_str() == "serde"));
             let output = mac
                 .expander
                 .expand(ProcMacroInput {

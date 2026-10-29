@@ -4,6 +4,7 @@
     reason = "each integration binary uses a different subset of the shared harness"
 )]
 pub mod inventory;
+pub mod keel_ir;
 pub mod oracle;
 pub mod process;
 

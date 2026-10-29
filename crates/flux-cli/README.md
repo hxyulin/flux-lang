@@ -42,7 +42,12 @@ attribute and derive proc macros execute in the toolchain's separate
 `rust-analyzer-proc-macro-srv` process. Cargo/rustc compile the host dylibs; Flux
 checks and compiles their expanded target code. Imports, renamed exports, derive
 helpers, cfg filtering, source locations, call-site and supported mixed-site
-hygiene are retained. Each invocation crate has its own persistent host state.
+hygiene are retained. Macro-generated exports use the compiled host catalog.
+Helper lists come from checked explicit source declarations; generated derives
+without recoverable helper metadata reject ambiguous bare attributes before
+attribute expansion, including builtin names that could be helpers. Such derives
+work without these attributes; cfg, derive and qualified attributes keep their
+ordinary handling. Each invocation crate has its own persistent host state.
 Macro processes inherit the host environment, receive the invocation crate's
 explicit overrides, and run from the workspace root. Flux's process environment
 and current directory do not change.

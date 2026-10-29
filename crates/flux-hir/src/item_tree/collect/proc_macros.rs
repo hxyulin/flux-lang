@@ -41,8 +41,78 @@ impl Collector<'_> {
         let syntax = shared.parse.tree().node(node);
         let attrs = crate::cfg::Attrs::new(syntax.children().filter_map(ast::Attr::cast));
         let mut active = attrs.iter().collect::<Vec<_>>();
+        let mut unavailable_helpers = false;
+        for attr in active
+            .iter()
+            .filter(|attr| attr_name(**attr) == Some("derive"))
+        {
+            let Some(tree) = attr.meta().and_then(|meta| meta.token_tree()) else {
+                continue;
+            };
+            let mut tokens = Vec::new();
+            macros::tt::tokens_of(tree.syntax(), &mut tokens);
+            for path in macros::strip_delimiters(&tokens).split(|t| t.kind == T![,]) {
+                if let Some(id) = self.proc_path(ctx, path)
+                    && let macros::MacroKind::ProcMacro(host) = &self.items.macros[id].kind
+                    && host.kind == crate::ProcMacroKind::Derive
+                    && host.helpers.is_none()
+                {
+                    unavailable_helpers = true;
+                }
+            }
+        }
+        if unavailable_helpers {
+            // Helper names can shadow both builtin attributes and imported
+            // attribute macros. Do not execute or interpret an ambiguous bare
+            // attribute before knowing whether the deriving macro declares it.
+            let mut enabled_from = 0;
+            for node in syntax.descendants().filter(|node| {
+                node.id() == syntax.id()
+                    || matches!(
+                        node.kind(),
+                        SyntaxKind::STRUCT
+                            | SyntaxKind::ENUM
+                            | SyntaxKind::UNION
+                            | SyntaxKind::VARIANT
+                            | SyntaxKind::RECORD_FIELD
+                            | SyntaxKind::TUPLE_FIELD
+                    )
+            }) {
+                if node.raw_range().start() < enabled_from {
+                    continue;
+                }
+                if !item_enabled(node, &mut self.items.diagnostics) {
+                    enabled_from = node.raw_range().end();
+                    continue;
+                }
+                let attrs = crate::cfg::Attrs::new(node.children().filter_map(ast::Attr::cast));
+                for attr in attrs.iter() {
+                    if let Some(name) = attr_name(attr)
+                        && !matches!(name, "derive" | "cfg" | "cfg_attr")
+                    {
+                        self.items.diagnostics.push(Diagnostic::new(
+                            attr.syntax().text_range(),
+                            "bare attributes on derives without helper metadata are not supported yet",
+                        ));
+                        return true;
+                    }
+                }
+            }
+        }
         let mut attribute = None;
         for (index, attr) in active.iter().enumerate() {
+            if attr_name(*attr) == Some("derive")
+                && !matches!(
+                    syntax.kind(),
+                    SyntaxKind::STRUCT | SyntaxKind::ENUM | SyntaxKind::UNION
+                )
+            {
+                self.items.diagnostics.push(Diagnostic::new(
+                    attr.syntax().text_range(),
+                    "derive may only be applied to structs, enums and unions",
+                ));
+                return true;
+            }
             let Some(path) = attr.meta().and_then(|m| m.path()) else {
                 continue;
             };
@@ -118,7 +188,7 @@ impl Collector<'_> {
                                 ));
                                 return true;
                             }
-                            helper_names.extend(host.helpers.iter().copied());
+                            helper_names.extend(host.helpers.iter().flatten().copied());
                             derives.push((host.clone(), attr.syntax().text_range()));
                         } else {
                             if !kept.is_empty() {

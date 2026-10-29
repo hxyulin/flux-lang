@@ -242,7 +242,7 @@ fn keel_asm_worker() {
         if index == 2 || index == 12 {
             assert_eq!(
                 package["source"],
-                "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb"
+                "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd"
             );
             let workspace = manifest.ancestors().nth(3).unwrap().join("Cargo.toml");
             originals.push((workspace.clone(), std::fs::read(workspace).unwrap()));

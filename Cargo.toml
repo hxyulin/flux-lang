@@ -31,12 +31,12 @@ flux-codegen = { path = "crates/flux-codegen" }
 # keel, pinned to a commit on its main branch. To build against a local
 # checkout, add a `[patch."https://github.com/hxyulin/keel"]` section to
 # `.cargo/config.toml` (git-ignored); see CONTRIBUTING.md.
-keel-asm = { git = "https://github.com/hxyulin/keel", rev = "f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb" }
-keel-codegen = { git = "https://github.com/hxyulin/keel", rev = "f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb" }
-keel-frontend = { git = "https://github.com/hxyulin/keel", rev = "f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb" }
-keel-ir = { git = "https://github.com/hxyulin/keel", rev = "f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb" }
-keel-link = { git = "https://github.com/hxyulin/keel", rev = "f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb" }
-keel-opt = { git = "https://github.com/hxyulin/keel", rev = "f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb" }
+keel-asm = { git = "https://github.com/hxyulin/keel", rev = "d17902eb0b45730e02cc41f653f0b5f49b2043dd" }
+keel-codegen = { git = "https://github.com/hxyulin/keel", rev = "d17902eb0b45730e02cc41f653f0b5f49b2043dd" }
+keel-frontend = { git = "https://github.com/hxyulin/keel", rev = "d17902eb0b45730e02cc41f653f0b5f49b2043dd" }
+keel-ir = { git = "https://github.com/hxyulin/keel", rev = "d17902eb0b45730e02cc41f653f0b5f49b2043dd" }
+keel-link = { git = "https://github.com/hxyulin/keel", rev = "d17902eb0b45730e02cc41f653f0b5f49b2043dd" }
+keel-opt = { git = "https://github.com/hxyulin/keel", rev = "d17902eb0b45730e02cc41f653f0b5f49b2043dd" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

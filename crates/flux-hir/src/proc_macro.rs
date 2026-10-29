@@ -45,18 +45,21 @@ pub trait ProcMacroExpander: std::fmt::Debug + Send + Sync {
     fn expand(&self, input: ProcMacroInput) -> Result<Vec<ProcMacroToken>, String>;
 }
 
-/// A host export, with helper names from its checked root declaration.
+/// A host export, optionally supplemented by checked helper declarations.
 #[derive(Debug, Clone)]
 pub struct ProcMacro {
     pub name: flux_intern::Symbol,
     pub kind: ProcMacroKind,
-    pub helpers: Vec<flux_intern::Symbol>,
+    /// `None` means helper metadata is unavailable, not that arbitrary
+    /// attributes are allowed. Derives with unavailable metadata reject
+    /// ambiguous bare attributes before attribute expansion.
+    pub helpers: Option<Vec<flux_intern::Symbol>>,
     pub expander: Arc<dyn ProcMacroExpander>,
 }
 
 /// Reads literal host export declarations under their actual Cargo cfg inputs.
-/// Generated declarations need a richer host export interface and are rejected
-/// by the driver when no matching declaration can be recovered.
+/// The host catalog supplies export names and kinds independently. Generated
+/// exports absent from this map have no recovered helper metadata.
 pub fn proc_macro_declarations(
     source: &SourceFile,
 ) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {

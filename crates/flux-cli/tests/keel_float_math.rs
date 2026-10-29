@@ -1,5 +1,6 @@
 //! Native differential of unchanged pinned Keel float-folding source and IR types.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 fn inventory(dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
@@ -54,17 +55,7 @@ fn unchanged_keel_float_folding_matches_rustc_default_environment() {
         package["source"]
             .as_str()
             .unwrap()
-            .ends_with("#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb")
-    );
-    let ir = PathBuf::from(
-        package["targets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["kind"].as_array().unwrap().iter().any(|k| k == "lib"))
-            .unwrap()["src_path"]
-            .as_str()
-            .unwrap(),
+            .ends_with("#d17902eb0b45730e02cc41f653f0b5f49b2043dd")
     );
     let opt = packages.iter().find(|p| p["name"] == "keel-opt").unwrap();
     let fp = PathBuf::from(opt["manifest_path"].as_str().unwrap())
@@ -72,7 +63,14 @@ fn unchanged_keel_float_folding_matches_rustc_default_environment() {
         .unwrap()
         .join("src/const_fold/fp.rs");
     let mut originals = vec![(fp.clone(), std::fs::read(&fp).unwrap())];
-    inventory(ir.parent().unwrap(), &mut originals);
+    for dependency in support::keel_ir::packages(&metadata) {
+        inventory(
+            support::keel_ir::source(dependency).parent().unwrap(),
+            &mut originals,
+        );
+        let manifest = PathBuf::from(dependency["manifest_path"].as_str().unwrap());
+        originals.push((manifest.clone(), std::fs::read(manifest).unwrap()));
+    }
     inventory(&repo.join("library"), &mut originals);
     originals.push((
         repo.join("crates/flux-hir/src/source.rs"),
@@ -91,31 +89,15 @@ fn unchanged_keel_float_folding_matches_rustc_default_environment() {
                 .replace("__FLOAT_SOURCE__", fp.to_str().unwrap()),
         )
         .unwrap();
-        let library = root.join("libkeel_ir.rlib");
-        let output = Command::new("rustc")
-            .args([
-                "--edition=2024",
-                "--crate-name=keel_ir",
-                "--crate-type=rlib",
-                "-C",
-                "panic=abort",
-            ])
-            .arg(&ir)
-            .arg("-o")
-            .arg(&library)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let library = support::keel_ir::compile_reference(&metadata, &root);
         let reference = root.join("reference");
         let output = Command::new("rustc")
             .args(["--edition=2024", "-C", "panic=abort"])
             .arg(&consumer)
             .arg("--extern")
             .arg(format!("keel_ir={}", library.display()))
+            .arg("-L")
+            .arg(format!("dependency={}", root.display()))
             .arg("-o")
             .arg(&reference)
             .output()
@@ -129,23 +111,14 @@ fn unchanged_keel_float_folding_matches_rustc_default_environment() {
         assert!(expected.status.success());
         std::fs::write(root.join("rustc.stdout"), &expected.stdout).unwrap();
         let mut db = flux_hir::SourceDb::new();
-        let library = db.load(&ir).unwrap();
+        let mut sources = support::keel_ir::sources(&mut db, &metadata);
         let consumer = db.load(&consumer).unwrap();
-        let hir = flux_hir::lower_sources(
-            &mut db,
-            &[
-                flux_hir::SourceCrate {
-                    root: library,
-                    name: flux_intern::Symbol::intern("keel_ir"),
-                    dependencies: vec![],
-                },
-                flux_hir::SourceCrate {
-                    root: consumer,
-                    name: flux_intern::Symbol::intern("consumer"),
-                    dependencies: vec![(flux_intern::Symbol::intern("keel_ir"), 0)],
-                },
-            ],
-        );
+        sources.push(flux_hir::SourceCrate {
+            root: consumer,
+            name: flux_intern::Symbol::intern("consumer"),
+            dependencies: vec![(flux_intern::Symbol::intern("keel_ir"), 2)],
+        });
+        let hir = flux_hir::lower_sources(&mut db, &sources);
         let files: Vec<_> = db
             .files()
             .map(|(id, file)| (id.0, file.path.clone()))

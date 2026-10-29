@@ -12,30 +12,30 @@
     {
       "name": "bumpalo",
       "version": "3.20.3",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [
         "collections",
         "default"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "smallvec",
       "version": "1.16.3",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2018",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "keel-asm-ir",
       "version": "0.1.0",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
       "proc_macro": false,
       "dependencies": [
         {
@@ -47,33 +47,33 @@
     {
       "name": "memchr",
       "version": "2.8.3",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [
         "alloc",
         "default",
         "std"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "cfg-if",
       "version": "1.0.5",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2018",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "crc32fast",
       "version": "1.5.3",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [
         "std"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
@@ -85,20 +85,20 @@
     {
       "name": "foldhash",
       "version": "0.1.5",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "hashbrown",
       "version": "0.15.5",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [
         "default-hasher"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
@@ -110,30 +110,30 @@
     {
       "name": "equivalent",
       "version": "1.0.3",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2015",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "hashbrown",
       "version": "0.17.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2024",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "indexmap",
       "version": "2.14.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2024",
       "features": [
         "default",
         "std"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
@@ -149,6 +149,7 @@
     {
       "name": "object",
       "version": "0.36.7",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2018",
       "features": [
         "archive",
@@ -165,7 +166,6 @@
         "write_std",
         "xcoff"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
@@ -189,9 +189,9 @@
     {
       "name": "keel-asm",
       "version": "0.1.0",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
       "proc_macro": false,
       "dependencies": [
         {
@@ -219,27 +219,32 @@
     {
       "name": "keel-ir",
       "version": "0.1.0",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
       "proc_macro": false,
-      "dependencies": []
+      "dependencies": [
+        {
+          "name": "keel_asm_ir",
+          "index": 2
+        }
+      ]
     },
     {
       "name": "profiling",
       "version": "1.0.18",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2018",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "keel-codegen",
       "version": "0.1.0",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
       "proc_macro": false,
       "dependencies": [
         {
@@ -259,9 +264,9 @@
     {
       "name": "keel-frontend",
       "version": "0.1.0",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
       "proc_macro": false,
       "dependencies": [
         {
@@ -275,64 +280,295 @@
       ]
     },
     {
-      "name": "serde_core",
-      "version": "1.0.229",
-      "edition": "2021",
-      "features": [
-        "alloc",
-        "result",
-        "std"
-      ],
+      "name": "verus_builtin",
+      "version": "0.0.0-2026-08-30-0159",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2018",
+      "features": [],
+      "proc_macro": false,
+      "dependencies": []
+    },
+    {
+      "name": "convert_case",
+      "version": "0.4.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2018",
+      "features": [],
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "unicode-ident",
       "version": "1.0.27",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "proc-macro2",
       "version": "1.0.107",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [
         "default",
-        "proc-macro"
+        "proc-macro",
+        "span-locations"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
           "name": "unicode_ident",
-          "index": 18
+          "index": 19
         }
       ]
     },
     {
       "name": "quote",
       "version": "1.0.47",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [
         "default",
         "proc-macro"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
           "name": "proc_macro2",
-          "index": 19
+          "index": 20
         }
       ]
     },
     {
       "name": "syn",
+      "version": "2.0.119",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2021",
+      "features": [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "proc_macro2",
+          "index": 20
+        },
+        {
+          "name": "quote",
+          "index": 21
+        },
+        {
+          "name": "unicode_ident",
+          "index": 19
+        }
+      ]
+    },
+    {
+      "name": "synstructure",
+      "version": "0.13.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2018",
+      "features": [
+        "default",
+        "proc-macro"
+      ],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "proc_macro2",
+          "index": 20
+        },
+        {
+          "name": "quote",
+          "index": 21
+        },
+        {
+          "name": "syn",
+          "index": 22
+        }
+      ]
+    },
+    {
+      "name": "verus_syn",
+      "version": "0.0.0-2026-08-02-0125",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2021",
+      "features": [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "proc_macro2",
+          "index": 20
+        },
+        {
+          "name": "quote",
+          "index": 21
+        },
+        {
+          "name": "unicode_ident",
+          "index": 19
+        }
+      ]
+    },
+    {
+      "name": "verus_prettyplease",
+      "version": "0.0.0-2026-08-09-0044",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2021",
+      "features": [],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "proc_macro2",
+          "index": 20
+        },
+        {
+          "name": "verus_syn",
+          "index": 24
+        }
+      ]
+    },
+    {
+      "name": "verus_builtin_macros",
+      "version": "0.0.0-2026-08-30-0159",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2018",
+      "features": [],
+      "proc_macro": true,
+      "dependencies": [
+        {
+          "name": "convert_case",
+          "index": 18
+        },
+        {
+          "name": "proc_macro2",
+          "index": 20
+        },
+        {
+          "name": "quote",
+          "index": 21
+        },
+        {
+          "name": "syn",
+          "index": 22
+        },
+        {
+          "name": "synstructure",
+          "index": 23
+        },
+        {
+          "name": "verus_prettyplease",
+          "index": 25
+        },
+        {
+          "name": "verus_syn",
+          "index": 24
+        }
+      ]
+    },
+    {
+      "name": "verus_state_machines_macros",
+      "version": "0.0.0-2026-08-02-0125",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2018",
+      "features": [],
+      "proc_macro": true,
+      "dependencies": [
+        {
+          "name": "indexmap",
+          "index": 10
+        },
+        {
+          "name": "proc_macro2",
+          "index": 20
+        },
+        {
+          "name": "quote",
+          "index": 21
+        },
+        {
+          "name": "verus_syn",
+          "index": 24
+        }
+      ]
+    },
+    {
+      "name": "vstd",
+      "version": "0.0.0-2026-08-30-0159",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2021",
+      "features": [],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "verus_builtin",
+          "index": 17
+        },
+        {
+          "name": "verus_builtin_macros",
+          "index": 26
+        },
+        {
+          "name": "verus_state_machines_macros",
+          "index": 27
+        }
+      ]
+    },
+    {
+      "name": "bbtree",
+      "version": "0.1.5",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
+      "edition": "2024",
+      "features": [
+        "cache-line-alignment"
+      ],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "vstd",
+          "index": 28
+        }
+      ]
+    },
+    {
+      "name": "serde_core",
+      "version": "1.0.229",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2021",
+      "features": [
+        "alloc",
+        "result",
+        "std"
+      ],
+      "proc_macro": false,
+      "dependencies": []
+    },
+    {
+      "name": "syn",
       "version": "3.0.9",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [
         "clone-impls",
@@ -343,50 +579,50 @@
         "printing",
         "proc-macro"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
           "name": "proc_macro2",
-          "index": 19
-        },
-        {
-          "name": "quote",
           "index": 20
         },
         {
+          "name": "quote",
+          "index": 21
+        },
+        {
           "name": "unicode_ident",
-          "index": 18
+          "index": 19
         }
       ]
     },
     {
       "name": "serde_derive",
       "version": "1.0.229",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [
         "default"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": true,
       "dependencies": [
         {
           "name": "proc_macro2",
-          "index": 19
-        },
-        {
-          "name": "quote",
           "index": 20
         },
         {
-          "name": "syn",
+          "name": "quote",
           "index": 21
+        },
+        {
+          "name": "syn",
+          "index": 31
         }
       ]
     },
     {
       "name": "serde",
       "version": "1.0.229",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [
         "alloc",
@@ -395,52 +631,51 @@
         "serde_derive",
         "std"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
           "name": "serde_core",
-          "index": 17
+          "index": 30
         },
         {
           "name": "serde_derive",
-          "index": 22
+          "index": 32
         }
       ]
     },
     {
       "name": "itoa",
       "version": "1.0.18",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "ryu",
       "version": "1.0.23",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "unsafe-libyaml",
       "version": "0.2.11",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "serde_yaml",
       "version": "0.9.34+deprecated",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
@@ -449,110 +684,111 @@
         },
         {
           "name": "itoa",
-          "index": 24
+          "index": 34
         },
         {
           "name": "ryu",
-          "index": 25
+          "index": 35
         },
         {
           "name": "serde",
-          "index": 23
+          "index": 33
         },
         {
           "name": "unsafe_libyaml",
-          "index": 26
+          "index": 36
         }
       ]
     },
     {
       "name": "libc",
       "version": "0.2.191",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2021",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "cpufeatures",
       "version": "0.3.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2024",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
           "name": "libc",
-          "index": 28
+          "index": 38
         }
       ]
     },
     {
       "name": "typenum",
       "version": "1.20.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2018",
       "features": [
         "const-generics"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "hybrid-array",
       "version": "0.4.15",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2024",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
           "name": "typenum",
-          "index": 30
+          "index": 40
         }
       ]
     },
     {
       "name": "block-buffer",
       "version": "0.12.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2024",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
           "name": "hybrid_array",
-          "index": 31
+          "index": 41
         }
       ]
     },
     {
       "name": "const-oid",
       "version": "0.10.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2024",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": []
     },
     {
       "name": "crypto-common",
       "version": "0.2.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2024",
       "features": [],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
           "name": "hybrid_array",
-          "index": 31
+          "index": 41
         }
       ]
     },
     {
       "name": "digest",
       "version": "0.11.3",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2024",
       "features": [
         "alloc",
@@ -560,33 +796,32 @@
         "default",
         "oid"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
           "name": "block_buffer",
-          "index": 32
+          "index": 42
         },
         {
           "name": "const_oid",
-          "index": 33
+          "index": 43
         },
         {
           "name": "common",
-          "index": 34
+          "index": 44
         }
       ]
     },
     {
       "name": "sha2",
       "version": "0.11.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "edition": "2024",
       "features": [
         "alloc",
         "default",
         "oid"
       ],
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
       "proc_macro": false,
       "dependencies": [
         {
@@ -595,46 +830,50 @@
         },
         {
           "name": "cpufeatures",
-          "index": 29
+          "index": 39
         },
         {
           "name": "digest",
-          "index": 35
+          "index": 45
         }
       ]
     },
     {
       "name": "keel-link",
       "version": "0.1.0",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
       "proc_macro": false,
       "dependencies": [
+        {
+          "name": "bbtree",
+          "index": 29
+        },
         {
           "name": "object",
           "index": 11
         },
         {
           "name": "serde",
-          "index": 23
+          "index": 33
         },
         {
           "name": "serde_yaml",
-          "index": 27
+          "index": 37
         },
         {
           "name": "sha2",
-          "index": 36
+          "index": 46
         }
       ]
     },
     {
       "name": "keel-opt",
       "version": "0.1.0",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
       "proc_macro": false,
       "dependencies": [
         {

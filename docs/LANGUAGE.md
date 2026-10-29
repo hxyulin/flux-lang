@@ -1677,7 +1677,14 @@ synchronization follow the bounded APIs described above.
 
 Procedural macros supplied by the Cargo-backed driver support function-like,
 attribute and derive expansion, including imported aliases and declared derive
-helpers. The driver uses rustc-built host dylibs through a matching out-of-process
+helpers. Export names and kinds come from the compiled host catalog, so
+macro-generated exports are supported even without literal source declarations.
+Derive helpers are recovered only from checked explicit declarations. When helper
+metadata is unavailable, ambiguous bare attributes on the item or its fields
+are rejected before attribute macros execute. This includes builtin attributes
+such as `repr`, which can collide with derive helpers. Helper-bearing generated
+derives are not yet supported; cfg, derive and qualified attributes retain their
+ordinary handling. The driver uses rustc-built host dylibs through a matching out-of-process
 toolchain server; the expanded target code still passes Flux's ordinary checks.
 Direct file builds do not discover host artifacts. Unsupported hygiene and token
 representations produce diagnostics rather than silently changing expansion

@@ -1,6 +1,6 @@
 {
   "target": "aarch64-apple-darwin",
-  "root_index": 73,
+  "root_index": 83,
   "packages": [
     {
       "name": "anstyle",
@@ -185,7 +185,8 @@
       "edition": "2021",
       "features": [
         "default",
-        "proc-macro"
+        "proc-macro",
+        "span-locations"
       ],
       "proc_macro": false,
       "dependencies": [
@@ -502,7 +503,7 @@
     {
       "name": "keel-asm-ir",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
@@ -636,7 +637,7 @@
     {
       "name": "keel-asm",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
@@ -666,11 +667,16 @@
     {
       "name": "keel-ir",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
-      "dependencies": []
+      "dependencies": [
+        {
+          "name": "keel_asm_ir",
+          "index": 28
+        }
+      ]
     },
     {
       "name": "profiling",
@@ -684,7 +690,7 @@
     {
       "name": "keel-codegen",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
@@ -706,7 +712,7 @@
     {
       "name": "keel-frontend",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
@@ -718,6 +724,235 @@
         {
           "name": "smallvec",
           "index": 25
+        }
+      ]
+    },
+    {
+      "name": "verus_builtin",
+      "version": "0.0.0-2026-08-30-0159",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2018",
+      "features": [],
+      "proc_macro": false,
+      "dependencies": []
+    },
+    {
+      "name": "convert_case",
+      "version": "0.4.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2018",
+      "features": [],
+      "proc_macro": false,
+      "dependencies": []
+    },
+    {
+      "name": "syn",
+      "version": "2.0.119",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2021",
+      "features": [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "proc_macro2",
+          "index": 12
+        },
+        {
+          "name": "quote",
+          "index": 13
+        },
+        {
+          "name": "unicode_ident",
+          "index": 11
+        }
+      ]
+    },
+    {
+      "name": "synstructure",
+      "version": "0.13.2",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2018",
+      "features": [
+        "default",
+        "proc-macro"
+      ],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "proc_macro2",
+          "index": 12
+        },
+        {
+          "name": "quote",
+          "index": 13
+        },
+        {
+          "name": "syn",
+          "index": 43
+        }
+      ]
+    },
+    {
+      "name": "verus_syn",
+      "version": "0.0.0-2026-08-02-0125",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2021",
+      "features": [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "proc_macro2",
+          "index": 12
+        },
+        {
+          "name": "quote",
+          "index": 13
+        },
+        {
+          "name": "unicode_ident",
+          "index": 11
+        }
+      ]
+    },
+    {
+      "name": "verus_prettyplease",
+      "version": "0.0.0-2026-08-09-0044",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2021",
+      "features": [],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "proc_macro2",
+          "index": 12
+        },
+        {
+          "name": "verus_syn",
+          "index": 45
+        }
+      ]
+    },
+    {
+      "name": "verus_builtin_macros",
+      "version": "0.0.0-2026-08-30-0159",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2018",
+      "features": [],
+      "proc_macro": true,
+      "dependencies": [
+        {
+          "name": "convert_case",
+          "index": 42
+        },
+        {
+          "name": "proc_macro2",
+          "index": 12
+        },
+        {
+          "name": "quote",
+          "index": 13
+        },
+        {
+          "name": "syn",
+          "index": 43
+        },
+        {
+          "name": "synstructure",
+          "index": 44
+        },
+        {
+          "name": "verus_prettyplease",
+          "index": 46
+        },
+        {
+          "name": "verus_syn",
+          "index": 45
+        }
+      ]
+    },
+    {
+      "name": "verus_state_machines_macros",
+      "version": "0.0.0-2026-08-02-0125",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2018",
+      "features": [],
+      "proc_macro": true,
+      "dependencies": [
+        {
+          "name": "indexmap",
+          "index": 34
+        },
+        {
+          "name": "proc_macro2",
+          "index": 12
+        },
+        {
+          "name": "quote",
+          "index": 13
+        },
+        {
+          "name": "verus_syn",
+          "index": 45
+        }
+      ]
+    },
+    {
+      "name": "vstd",
+      "version": "0.0.0-2026-08-30-0159",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "edition": "2021",
+      "features": [],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "verus_builtin",
+          "index": 41
+        },
+        {
+          "name": "verus_builtin_macros",
+          "index": 47
+        },
+        {
+          "name": "verus_state_machines_macros",
+          "index": 48
+        }
+      ]
+    },
+    {
+      "name": "bbtree",
+      "version": "0.1.5",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
+      "edition": "2024",
+      "features": [
+        "cache-line-alignment"
+      ],
+      "proc_macro": false,
+      "dependencies": [
+        {
+          "name": "vstd",
+          "index": 49
         }
       ]
     },
@@ -774,11 +1009,11 @@
       "dependencies": [
         {
           "name": "serde_core",
-          "index": 41
+          "index": 51
         },
         {
           "name": "serde_derive",
-          "index": 42
+          "index": 52
         }
       ]
     },
@@ -823,19 +1058,19 @@
         },
         {
           "name": "itoa",
-          "index": 44
+          "index": 54
         },
         {
           "name": "ryu",
-          "index": 45
+          "index": 55
         },
         {
           "name": "serde",
-          "index": 43
+          "index": 53
         },
         {
           "name": "unsafe_libyaml",
-          "index": 46
+          "index": 56
         }
       ]
     },
@@ -858,7 +1093,7 @@
       "dependencies": [
         {
           "name": "libc",
-          "index": 48
+          "index": 58
         }
       ]
     },
@@ -883,7 +1118,7 @@
       "dependencies": [
         {
           "name": "typenum",
-          "index": 50
+          "index": 60
         }
       ]
     },
@@ -897,7 +1132,7 @@
       "dependencies": [
         {
           "name": "hybrid_array",
-          "index": 51
+          "index": 61
         }
       ]
     },
@@ -920,7 +1155,7 @@
       "dependencies": [
         {
           "name": "hybrid_array",
-          "index": 51
+          "index": 61
         }
       ]
     },
@@ -939,15 +1174,15 @@
       "dependencies": [
         {
           "name": "block_buffer",
-          "index": 52
+          "index": 62
         },
         {
           "name": "const_oid",
-          "index": 53
+          "index": 63
         },
         {
           "name": "common",
-          "index": 54
+          "index": 64
         }
       ]
     },
@@ -969,44 +1204,48 @@
         },
         {
           "name": "cpufeatures",
-          "index": 49
+          "index": 59
         },
         {
           "name": "digest",
-          "index": 55
+          "index": 65
         }
       ]
     },
     {
       "name": "keel-link",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
       "dependencies": [
+        {
+          "name": "bbtree",
+          "index": 50
+        },
         {
           "name": "object",
           "index": 35
         },
         {
           "name": "serde",
-          "index": 43
+          "index": 53
         },
         {
           "name": "serde_yaml",
-          "index": 47
+          "index": 57
         },
         {
           "name": "sha2",
-          "index": 56
+          "index": 66
         }
       ]
     },
     {
       "name": "keel-opt",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb#f37f0bd48b14993e69f3db0eeb70d5babd7cd3fb",
+      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
@@ -1067,11 +1306,11 @@
         },
         {
           "name": "keel_link",
-          "index": 57
+          "index": 67
         },
         {
           "name": "keel_opt",
-          "index": 58
+          "index": 68
         },
         {
           "name": "rustc_hash",
@@ -1115,7 +1354,7 @@
       "dependencies": [
         {
           "name": "thiserror_impl",
-          "index": 60
+          "index": 70
         }
       ]
     },
@@ -1129,7 +1368,7 @@
       "dependencies": [
         {
           "name": "thiserror",
-          "index": 61
+          "index": 71
         }
       ]
     },
@@ -1167,19 +1406,19 @@
       "dependencies": [
         {
           "name": "cobs",
-          "index": 62
+          "index": 72
         },
         {
           "name": "embedded_io_04",
-          "index": 63
+          "index": 73
         },
         {
           "name": "embedded_io_06",
-          "index": 64
+          "index": 74
         },
         {
           "name": "serde",
-          "index": 43
+          "index": 53
         }
       ]
     },
@@ -1205,7 +1444,7 @@
       "dependencies": [
         {
           "name": "itoa",
-          "index": 44
+          "index": 54
         },
         {
           "name": "memchr",
@@ -1213,11 +1452,11 @@
         },
         {
           "name": "serde_core",
-          "index": 41
+          "index": 51
         },
         {
           "name": "zmij",
-          "index": 66
+          "index": 76
         }
       ]
     },
@@ -1233,7 +1472,7 @@
       "dependencies": [
         {
           "name": "serde",
-          "index": 43
+          "index": 53
         }
       ]
     },
@@ -1249,7 +1488,7 @@
       "dependencies": [
         {
           "name": "serde",
-          "index": 43
+          "index": 53
         }
       ]
     },
@@ -1288,19 +1527,19 @@
         },
         {
           "name": "serde",
-          "index": 43
+          "index": 53
         },
         {
           "name": "serde_spanned",
-          "index": 68
+          "index": 78
         },
         {
           "name": "toml_datetime",
-          "index": 69
+          "index": 79
         },
         {
           "name": "winnow",
-          "index": 70
+          "index": 80
         }
       ]
     },
@@ -1316,19 +1555,19 @@
       "dependencies": [
         {
           "name": "serde",
-          "index": 43
+          "index": 53
         },
         {
           "name": "serde_spanned",
-          "index": 68
+          "index": 78
         },
         {
           "name": "toml_datetime",
-          "index": 69
+          "index": 79
         },
         {
           "name": "toml_edit",
-          "index": 71
+          "index": 81
         }
       ]
     },
@@ -1346,7 +1585,7 @@
         },
         {
           "name": "flux_codegen",
-          "index": 59
+          "index": 69
         },
         {
           "name": "flux_hir",
@@ -1370,19 +1609,19 @@
         },
         {
           "name": "postcard",
-          "index": 65
+          "index": 75
         },
         {
           "name": "serde",
-          "index": 43
+          "index": 53
         },
         {
           "name": "serde_json",
-          "index": 67
+          "index": 77
         },
         {
           "name": "toml",
-          "index": 72
+          "index": 82
         }
       ]
     }

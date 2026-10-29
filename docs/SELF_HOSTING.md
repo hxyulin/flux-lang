@@ -6,6 +6,18 @@ compiles and executes a smoke program in both optimization modes. It has not yet
 rebuilt the complete compiler graph. Cargo and rustc still supply host build
 scripts and procedural macros.
 
+The current git pin is Keel `d17902eb0b45730e02cc41f653f0b5f49b2043dd`, which
+includes the vector-assembly fixes and needs no local backend override for host
+builds. The stage-1 proof below records the earlier locally patched `f37f0bd`
+snapshot. The new complete backend graph adds bbtree and Verus; its first audit
+initially stopped during discovery of the generated `Structural` host export.
+That catalog blocker is fixed. The guarded backend rerun in
+`out/keel-backend-readiness/31393` reaches frontend admission, with four syntax
+and 339 HIR diagnostics, including negative impls, macro reexports and
+`offset_of!`. Both byte guards are clean. Types, MIR and native execution remain
+gated. The updated Keel IR, assembly-IR and float-folder source comparisons pass
+independently.
+
 ## Executable source graphs
 
 The maintained native tests run on arm64 macOS. Each loads production Rust

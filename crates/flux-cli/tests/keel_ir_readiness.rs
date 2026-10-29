@@ -2,8 +2,7 @@
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod support;
 
-use flux_hir::{SourceCrate, SourceDb};
-use flux_intern::Symbol;
+use flux_hir::SourceDb;
 use flux_syntax::Edition;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -91,25 +90,15 @@ fn worker() {
         .find(|n| n["id"] == package["id"])
         .unwrap();
     assert!(node["features"].as_array().unwrap().is_empty());
-    assert!(node["deps"].as_array().unwrap().iter().all(|d| {
-        d["dep_kinds"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|k| !k["kind"].is_null())
-    }));
-    let source = PathBuf::from(
-        package["targets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["kind"].as_array().unwrap().iter().any(|k| k == "lib"))
-            .unwrap()["src_path"]
-            .as_str()
-            .unwrap(),
-    );
     let mut originals = Vec::new();
-    inventory(source.parent().unwrap(), &mut originals);
+    for dependency in support::keel_ir::packages(&metadata) {
+        inventory(
+            support::keel_ir::source(dependency).parent().unwrap(),
+            &mut originals,
+        );
+        let manifest = PathBuf::from(dependency["manifest_path"].as_str().unwrap());
+        originals.push((manifest.clone(), std::fs::read(manifest).unwrap()));
+    }
     inventory(&repo.join("library"), &mut originals);
     for path in [
         repo.join("Cargo.lock"),
@@ -126,31 +115,15 @@ fn worker() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let consumer = root.join("consumer.rs");
         std::fs::write(&consumer, include_str!("fixtures/keel_ir/consumer.rs.txt")).unwrap();
-        let library = root.join("libkeel_ir.rlib");
-        let output = Command::new("rustc")
-            .args([
-                "--edition=2024",
-                "--crate-name=keel_ir",
-                "--crate-type=rlib",
-                "-C",
-                "panic=abort",
-            ])
-            .arg(&source)
-            .arg("-o")
-            .arg(&library)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let library = support::keel_ir::compile_reference(&metadata, &root);
         let reference = root.join("reference");
         let output = Command::new("rustc")
             .args(["--edition=2024", "-C", "panic=abort"])
             .arg(&consumer)
             .arg("--extern")
             .arg(format!("keel_ir={}", library.display()))
+            .arg("-L")
+            .arg(format!("dependency={}", root.display()))
             .arg("-o")
             .arg(&reference)
             .output()
@@ -164,23 +137,14 @@ fn worker() {
         assert!(expected.status.success());
         std::fs::write(root.join("reference.stdout"), &expected.stdout).unwrap();
         let mut db = SourceDb::new();
-        let library = db.load_with_edition(&source, Edition::E2024).unwrap();
+        let mut sources = support::keel_ir::sources(&mut db, &metadata);
         let consumer = db.load_with_edition(&consumer, Edition::E2024).unwrap();
-        let hir = flux_hir::lower_sources(
-            &mut db,
-            &[
-                SourceCrate {
-                    root: library,
-                    name: Symbol::intern("keel_ir"),
-                    dependencies: vec![],
-                },
-                SourceCrate {
-                    root: consumer,
-                    name: Symbol::intern("consumer"),
-                    dependencies: vec![(Symbol::intern("keel_ir"), 0)],
-                },
-            ],
-        );
+        sources.push(flux_hir::SourceCrate {
+            root: consumer,
+            name: flux_intern::Symbol::intern("consumer"),
+            dependencies: vec![(flux_intern::Symbol::intern("keel_ir"), 2)],
+        });
+        let hir = flux_hir::lower_sources(&mut db, &sources);
         report(&root, "syntax", &db, &db.syntax_errors());
         report(&root, "hir", &db, &hir.diagnostics);
         assert!(

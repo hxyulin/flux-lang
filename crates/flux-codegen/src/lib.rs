@@ -101,6 +101,12 @@ fn compile_object_inner(
                     "code generation for AArch64 Linux is not supported yet",
                 ));
             }
+            Target::Wasm32UnknownUnknown => {
+                return Err(Error::message(
+                    Stage::Codegen,
+                    "code generation for WebAssembly is not supported yet",
+                ));
+            }
         };
         object.map_err(Error::assemble)
     })
@@ -161,6 +167,10 @@ pub fn link_executable_with_libraries(
         Target::Aarch64LinuxGnu => Err(Error::message(
             Stage::Link,
             "linking for AArch64 Linux is not supported yet",
+        )),
+        Target::Wasm32UnknownUnknown => Err(Error::message(
+            Stage::Link,
+            "linking for WebAssembly is not supported yet",
         )),
     }
 }
