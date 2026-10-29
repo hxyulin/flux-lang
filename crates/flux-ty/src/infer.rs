@@ -3424,11 +3424,14 @@ impl Ctx<'_> {
             match result {
                 None => result = Some(arm_ty),
                 Some(first) => {
-                    if self.can_unify(first, arm_ty) {
-                        self.unify(first, arm_ty);
+                    // `unify` may fail where `can_unify` held, on a
+                    // variable that occurs twice.
+                    let unified = if self.can_unify(first, arm_ty) {
+                        self.unify(first, arm_ty)
                     } else if self.can_coerce(arm_ty, first, arm.body) {
                         self.coerce(arm_ty, first, arm.body);
                         coerced = true;
+                        true
                     } else if target.is_none()
                         && !coerced
                         && values[..values.len() - 1]
@@ -3441,7 +3444,11 @@ impl Ctx<'_> {
                         }
                         coerced = true;
                         result = Some(arm_ty);
-                    } else if !self.unify(first, arm_ty) {
+                        true
+                    } else {
+                        self.unify(first, arm_ty)
+                    };
+                    if !unified {
                         let (a, b) = (self.describe(first), self.describe(arm_ty));
                         self.error(
                             self.range(arm.body),
@@ -3606,19 +3613,20 @@ impl Ctx<'_> {
         if self.shallow(else_ty) == Ty::NEVER {
             return then_ty;
         }
-        if self.can_unify(then_ty, else_ty) {
-            self.unify(then_ty, else_ty);
-            return then_ty;
-        }
-        if self.can_coerce(else_ty, then_ty, else_branch) {
+        // `can_unify` checks each occurrence of a variable on its own:
+        // `(a, a)` and `(i32, u8)` can unify, but `unify` fails.
+        let unified = if self.can_unify(then_ty, else_ty) {
+            self.unify(then_ty, else_ty)
+        } else if self.can_coerce(else_ty, then_ty, else_branch) {
             self.coerce(else_ty, then_ty, else_branch);
             return then_ty;
-        }
-        if self.can_coerce(then_ty, else_ty, then_branch) {
+        } else if self.can_coerce(then_ty, else_ty, then_branch) {
             self.coerce(then_ty, else_ty, then_branch);
             return else_ty;
-        }
-        if self.unify(then_ty, else_ty) {
+        } else {
+            self.unify(then_ty, else_ty)
+        };
+        if unified {
             return then_ty;
         }
         let (a, b) = (self.describe(then_ty), self.describe(else_ty));
