@@ -1,0 +1,117 @@
+fn struct_field() -> i32 {
+    let mut _0: i32;
+    let mut _1: i32; // a
+    let mut _2: i32; // b
+    let _3: (i32, i32);
+    let mut _4: S; // s
+    let _5: &mut i32;
+    let _6: &mut i32;
+    let _7: &mut i32; // x
+    let _8: ();
+    let _9: S;
+    let _10: &mut i32;
+    let _11: &mut i32;
+    let _12: ();
+    let _13: i32;
+    let _14: i32;
+    let _15: i32;
+
+    bb0: {
+        _3 = (const 1_i32, const 2_i32);
+        _1 = copy _3.0;
+        _2 = copy _3.1;
+        StorageDead(_3);
+        _6 = &mut _1;
+        _5 = &mut (*_6);
+        _4 = S { r: move _5 };
+        _7 = &mut (*_4.0);
+        _11 = &mut _2;
+        _10 = &mut (*_11);
+        _9 = S { r: move _10 };
+        _4 = move _9;
+        _8 = const ();
+        _13 = copy (*_7);
+        (*_7) = Add(copy _13, const 1_i32);
+        _12 = const ();
+        _14 = copy (*_4.0);
+        _15 = copy _1;
+        _0 = Add(copy _14, copy _15);
+        StorageDead(_7);
+        StorageDead(_4);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn nested_field() -> i32 {
+    let mut _0: i32;
+    let mut _1: i32; // a
+    let mut _2: i32; // b
+    let _3: (i32, i32);
+    let mut _4: W; // w
+    let _5: S;
+    let _6: &mut i32;
+    let _7: &mut i32;
+    let _8: &mut i32; // x
+    let _9: ();
+    let _10: W;
+    let _11: S;
+    let _12: &mut i32;
+    let _13: &mut i32;
+    let _14: ();
+    let _15: i32;
+    let _16: i32;
+    let _17: i32;
+
+    bb0: {
+        _3 = (const 1_i32, const 2_i32);
+        _1 = copy _3.0;
+        _2 = copy _3.1;
+        StorageDead(_3);
+        _7 = &mut _1;
+        _6 = &mut (*_7);
+        _5 = S { r: move _6 };
+        _4 = W { s: move _5 };
+        _8 = &mut (*_4.0.0);
+        _13 = &mut _2;
+        _12 = &mut (*_13);
+        _11 = S { r: move _12 };
+        _10 = W { s: move _11 };
+        _4 = move _10;
+        _9 = const ();
+        _15 = copy (*_8);
+        (*_8) = Add(copy _15, const 10_i32);
+        _14 = const ();
+        _16 = copy (*_4.0.0);
+        _17 = copy _1;
+        _0 = Add(copy _16, copy _17);
+        StorageDead(_8);
+        StorageDead(_4);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: i32;
+    let _2: i32;
+
+    bb0: {
+        _1 = struct_field() -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_1);
+        _2 = nested_field() -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_2);
+        _0 = const ();
+        return;
+    }
+}
+

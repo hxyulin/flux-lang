@@ -1136,10 +1136,14 @@ impl Checker<'_> {
             if !self.is_live(id, live) || !overlaps(self.body, self.sigs, place, &loan.place) {
                 continue;
             }
-            // Overwriting a pointer leaves what it points to, and the
-            // loans of that, alone (rustc's shallow write).
+            // Overwriting a place leaves what pointers in it point to, and
+            // the loans of that, alone (rustc's shallow write).
             if access == Access::Write
-                && loan.place.projection.get(place.projection.len()) == Some(&ProjectionElem::Deref)
+                && loan
+                    .place
+                    .projection
+                    .get(place.projection.len()..)
+                    .is_some_and(|rest| rest.contains(&ProjectionElem::Deref))
             {
                 continue;
             }
