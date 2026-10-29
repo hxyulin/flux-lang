@@ -108,6 +108,7 @@ fn module(library_only: bool, padding: bool) -> keel_ir::Module {
                 OutputKind::Executable
             },
             crate_hashes: &hashes,
+            builtin_object: false,
             imported: if library_only {
                 &[]
             } else {
@@ -258,6 +259,7 @@ fn staged_lowered(
                 OutputKind::Library(ids[index])
             }),
             crate_hashes: &hashes,
+            builtin_object: false,
             imported: &imported,
             required_instances,
             required_functions: &[],
@@ -527,6 +529,7 @@ fn main() {}
         Compilation {
             kind: OutputKind::Executable,
             crate_hashes: &hashes,
+            builtin_object: false,
             imported: &[],
             required_instances: &[],
             required_functions: &required,
@@ -771,6 +774,7 @@ fn forty_level_constant_allocation_dags_keep_shared_storage() {
     let compilation = Compilation {
         kind: OutputKind::Library(krate),
         crate_hashes: &hashes,
+        builtin_object: false,
         imported: &[],
         required_instances: &[],
         required_functions: &[],
@@ -972,4 +976,128 @@ fn main() {
         "weak-odr-inlining",
         "999000 20 true\n",
     );
+}
+
+#[test]
+fn native_builtin_suite_owns_prefix_definitions_and_shared_generic_addresses() {
+    let (_, _, mut hir) = flux_hir::lower_text_bare(
+        "builtin-prefix.rs",
+        r#"
+unsafe extern "C" { fn abort() -> !; }
+fn identity<T>(value: T) -> T { value }
+fn unused() -> u64 { 99 }
+pub fn pointer() -> fn(u64) -> u64 { identity::<u64> }
+pub static VALUE: u64 = 42;
+pub static CALLBACK: fn(u64) -> u64 = identity::<u64>;
+fn main() {
+    let a = pointer();
+    let b: fn(u64) -> u64 = identity::<u64>;
+    if a as usize != b as usize || VALUE != 42 || CALLBACK(7) != 7 {
+        unsafe { abort(); }
+    }
+}
+"#,
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mut mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+    let main = hir
+        .items
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.as_str() == "main")
+        .unwrap()
+        .0;
+    // The bare fixture stands in for a decoded trusted prefix. Its source main
+    // follows every builtin function; no source body is consulted by codegen.
+    hir.items.core = hir.items.counts();
+    hir.items.core.functions = main.into_raw();
+    let hashes = [(hir.items.main_crate(), [112; 32])];
+    let compilation = Compilation {
+        kind: OutputKind::BuiltinSuite,
+        crate_hashes: &hashes,
+        imported: &[],
+        builtin_object: false,
+        required_functions: &[],
+        required_instances: &[],
+    };
+    let suite =
+        flux_codegen::lower_crate_with_requirements(&hir, &typed, &mir, compilation).unwrap();
+    assert!(suite.required_instances.is_empty());
+    assert!(!suite.module.functions.iter().any(|f| f.name == "main"));
+    assert!(
+        suite
+            .module
+            .functions
+            .iter()
+            .any(|f| f.name.contains("6unused"))
+    );
+    assert_eq!(
+        suite
+            .module
+            .functions
+            .iter()
+            .filter(|f| !f.weak_odr)
+            .count(),
+        2
+    );
+    assert!(suite.module.functions.iter().any(|f| f.weak_odr));
+    assert_eq!(
+        suite
+            .module
+            .data
+            .iter()
+            .filter(|d| d.init.is_some())
+            .count(),
+        2
+    );
+    let consumer = flux_codegen::lower_crate(
+        &hir,
+        &typed,
+        &mir,
+        Compilation {
+            kind: OutputKind::Executable,
+            builtin_object: true,
+            ..compilation
+        },
+    )
+    .unwrap();
+    assert!(
+        !consumer
+            .functions
+            .iter()
+            .any(|f| f.name.contains("7pointer"))
+    );
+    assert!(consumer.functions.iter().any(|f| f.weak_odr));
+    assert!(consumer.data.iter().all(|d| d.init.is_none()));
+    assert!(consumer.data.iter().any(|d| d.name.contains("VALUE")));
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    run_objects(&[suite.module, consumer], "builtin-prefix", "");
+    let value_id = hir
+        .items
+        .consts
+        .iter()
+        .find(|(_, c)| c.name.is_some_and(|name| name.as_str() == "VALUE"))
+        .unwrap()
+        .0;
+    let value = mir.const_values.items.remove(value_id).unwrap();
+    let errors = flux_codegen::lower_crate(&hir, &typed, &mir, compilation)
+        .err()
+        .unwrap();
+    assert_eq!(errors[0].message, "missing checked built-in static value");
+    mir.const_values.items.insert(value_id, value);
+    mir.bodies.remove(
+        hir.items
+            .functions
+            .iter()
+            .find(|(_, f)| f.name.as_str() == "unused")
+            .unwrap()
+            .0,
+    );
+    let errors = flux_codegen::lower_crate(&hir, &typed, &mir, compilation)
+        .err()
+        .unwrap();
+    assert_eq!(errors[0].message, "missing checked built-in MIR");
 }
