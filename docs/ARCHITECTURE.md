@@ -355,6 +355,19 @@ they see the same `core` as if everything were resolved together (a
 test checks this for every fixture). `core`'s `impl` blocks are checked
 against their traits by its tests, not on every build.
 
+`core`'s bodies are inferred once per process too, apart from any
+program ([`LibraryTypes`](../crates/flux-ty/src/library.rs)): against
+its signatures alone, in `Core::hir`, a tree of `core`'s items only.
+rustc type-checks `core` before the crates that use it, so a program's
+`impl` blocks cannot change what a `core` body selects, and `cfg` and
+the target are the host's in every compilation. Its constants are
+inferred the first time any compilation needs them, and its functions
+the first time a compilation reaches them; each compilation copies the
+results it reaches. `check_file` asks `LibraryTypes` for every item it
+`owns`, which relies on `core`'s items being a prefix of every
+program's tree, with the same ids. `check_file_all`, for `core`'s
+tests, infers everything again.
+
 A `Ty` is a 4-byte handle into one process-wide table of `TyKind`s, like
 `Symbol` for names: types compare and hash as integers, and a type made
 of types (`*const T`) stays `Copy`. The primitive types are interned
@@ -764,8 +777,13 @@ functions of `core` that something calls or names as a value (a
 function item passed on, `.all(u8::is_ascii_digit)`, whose shim calls
 it once monomorphized, or a pointer). A generic function is built
 and checked once, in terms of its parameters; its calls record their
-generic arguments in terms of its own. A constant's value is MIR too,
-which [`eval`](../crates/flux-mir/src/eval.rs) runs at compile time, with
+generic arguments in terms of its own. `core`'s constants and
+functions are built and borrow-checked once per process, from their
+shared inference ([`library`](../crates/flux-mir/src/library.rs)), with
+their closures, shims and what checking them found; each compilation
+copies those it reaches, and checks only its own. A constant's value
+is MIR too, which [`eval`](../crates/flux-mir/src/eval.rs) runs at
+compile time, with
 any `const fn` it calls, so constants support every expression form.
 Division by zero is an error there (E0080, with rustc's messages), and
 so is overflow in a constant's own initializer ("attempt to compute
@@ -1188,12 +1206,16 @@ mostly for nodes (0.69 per token, trivia included).
 Interning all 52.6M identifiers and lifetimes (938K distinct) takes
 12 ns/name on one thread, and 74 ms in total on 18.
 
-Building `core`'s part of the front end (parsing, item tree, constants,
-signatures) takes about 1.2 ms, once per process. A compilation in a
-process that has built it, such as the test suites, starts from it:
-copying its item tree takes about 5 µs and its signatures 9 µs, so
-lowering and type-checking an empty program takes about 35 µs instead
-of 1.1 ms. A single `flux build` still builds `core` once.
+The embedded libraries' work is done once per process: their front end
+(parsing, item tree, constants, signatures), and the inference, MIR and
+checks of the bodies a program reaches. An empty program reaches about
+3,150 of their 7,050 functions, through their `Drop` impls, the
+runtime's lang functions and the trait methods those call. In a release
+build on the same machine, its first compilation in a process takes
+500 to 600 ms, nearly all of it that work. Each later one, as in the
+test suites, copies what it reaches and takes about 15 ms: 5 ms of type
+checking and 8 ms of MIR. A single `flux build` still does the
+libraries' work once.
 
 ## Testing
 
